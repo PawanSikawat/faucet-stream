@@ -2,6 +2,7 @@
 
 pub mod cursor;
 pub mod link_header;
+pub mod next_link_body;
 pub mod offset;
 pub mod page;
 
@@ -19,6 +20,13 @@ pub enum PaginationStyle {
         param_name: String,
     },
     LinkHeader,
+    /// The full URL of the next page is embedded in the response body.
+    /// `next_link_path` is a JSONPath expression pointing to that URL field
+    /// (e.g. `"$.next_link"`).  Pagination stops when the field is absent,
+    /// null, or an empty string.
+    NextLinkInBody {
+        next_link_path: String,
+    },
     PageNumber {
         param_name: String,
         start_page: usize,
@@ -50,6 +58,7 @@ impl PaginationStyle {
                 cursor::apply_params(params, param_name, &state.next_token);
             }
             PaginationStyle::LinkHeader => {}
+            PaginationStyle::NextLinkInBody { .. } => {}
             PaginationStyle::PageNumber {
                 param_name,
                 start_page,
@@ -100,6 +109,9 @@ impl PaginationStyle {
                     Ok(false)
                 }
             },
+            PaginationStyle::NextLinkInBody { next_link_path } => {
+                next_link_body::advance(body, next_link_path, &mut state.next_link)
+            }
             PaginationStyle::PageNumber { .. } => {
                 state.page += 1;
                 Ok(record_count > 0)

@@ -52,7 +52,9 @@ impl RestStream {
             // For LinkHeader pagination, subsequent requests use the full URL from the
             // Link header rather than constructing from base_url + path.
             let url_override = match &self.config.pagination {
-                PaginationStyle::LinkHeader => state.next_link.clone(),
+                PaginationStyle::LinkHeader | PaginationStyle::NextLinkInBody { .. } => {
+                    state.next_link.clone()
+                }
                 _ => None,
             };
 
@@ -137,7 +139,9 @@ impl RestStream {
                 self.config.pagination.apply_params(&mut params, &state);
 
                 let url_override = match &self.config.pagination {
-                    PaginationStyle::LinkHeader => state.next_link.clone(),
+                    PaginationStyle::LinkHeader | PaginationStyle::NextLinkInBody { .. } => {
+                        state.next_link.clone()
+                    }
                     _ => None,
                 };
 

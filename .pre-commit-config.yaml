@@ -53,7 +53,7 @@ repos:
       # 3a. Lint fix — applies safe, machine-fixable suggestions automatically.
       - id: cargo-clippy-fix
         name: "rust: cargo clippy --fix"
-        entry: cargo clippy --fix --allow-staged
+        entry: cargo clippy --fix  --allow-dirty --allow-staged
         language: system
         types: [rust]
         pass_filenames: false

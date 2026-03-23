@@ -137,6 +137,46 @@ async fn test_link_header_pagination() {
 }
 
 #[tokio::test]
+async fn test_next_link_in_body_pagination() {
+    let server = MockServer::start().await;
+    let page2_url = format!("{}/api/workers?page=2", server.uri());
+
+    Mock::given(method("GET"))
+        .and(path("/api/workers"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "results": [{"id": 1}, {"id": 2}],
+            "next_link": page2_url,
+        })))
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path("/api/workers"))
+        .and(query_param("page", "2"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "results": [{"id": 3}],
+            "next_link": null,
+        })))
+        .mount(&server)
+        .await;
+
+    let stream = RestStream::new(
+        RestStreamConfig::new(&server.uri(), "/api/workers")
+            .records_path("$.results[*]")
+            .pagination(PaginationStyle::NextLinkInBody {
+                next_link_path: "$.next_link".into(),
+            }),
+    )
+    .unwrap();
+
+    let records = stream.fetch_all().await.unwrap();
+    assert_eq!(records.len(), 3);
+    assert_eq!(records[0]["id"], 1);
+    assert_eq!(records[2]["id"], 3);
+}
+
+#[tokio::test]
 async fn test_max_pages_enforced_for_cursor_pagination() {
     let server = MockServer::start().await;
 

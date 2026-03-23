@@ -140,3 +140,48 @@ fn link_header_stops_when_no_next() {
     assert!(!has_next);
     assert!(state.next_link.is_none());
 }
+
+#[test]
+fn next_link_in_body_extracts_url() {
+    let style = PaginationStyle::NextLinkInBody {
+        next_link_path: "$.next_link".into(),
+    };
+    let body = json!({"results": [], "next_link": "https://api.example.com/workers?page=2"});
+    let mut state = PaginationState::default();
+
+    let has_next = style.advance(&body, &no_headers(), &mut state, 10).unwrap();
+    assert!(has_next);
+    assert_eq!(
+        state.next_link,
+        Some("https://api.example.com/workers?page=2".into())
+    );
+}
+
+#[test]
+fn next_link_in_body_stops_on_null() {
+    let style = PaginationStyle::NextLinkInBody {
+        next_link_path: "$.next_link".into(),
+    };
+    let body = json!({"results": [], "next_link": null});
+    let mut state = PaginationState {
+        next_link: Some("stale".into()),
+        ..Default::default()
+    };
+
+    let has_next = style.advance(&body, &no_headers(), &mut state, 0).unwrap();
+    assert!(!has_next);
+    assert!(state.next_link.is_none());
+}
+
+#[test]
+fn next_link_in_body_stops_when_field_absent() {
+    let style = PaginationStyle::NextLinkInBody {
+        next_link_path: "$.next_link".into(),
+    };
+    let body = json!({"results": []});
+    let mut state = PaginationState::default();
+
+    let has_next = style.advance(&body, &no_headers(), &mut state, 0).unwrap();
+    assert!(!has_next);
+    assert!(state.next_link.is_none());
+}
