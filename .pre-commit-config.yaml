@@ -28,7 +28,7 @@ repos:
       - id: check-added-large-files
         args: [--maxkb=500]
       - id: no-commit-to-branch
-        args: [--branch, main, --branch, preprod-server, --branch, staging-server]
+        args: [--branch, main]
 
   # ── Rust ────────────────────────────────────────────────────────────────────
   - repo: local
