@@ -37,11 +37,11 @@ impl RestStream {
         let mut pages_fetched = 0usize;
 
         loop {
-            if let Some(max) = self.config.max_pages {
-                if pages_fetched >= max {
-                    tracing::warn!("max pages ({max}) reached");
-                    break;
-                }
+            if let Some(max) = self.config.max_pages
+                && pages_fetched >= max
+            {
+                tracing::warn!("max pages ({max}) reached");
+                break;
             }
 
             let mut params = self.config.query_params.clone();
@@ -66,7 +66,10 @@ impl RestStream {
             let count = records.len();
             all_records.extend(records);
 
-            let has_next = self.config.pagination.advance(&body, &resp_headers, &mut state, count)?;
+            let has_next =
+                self.config
+                    .pagination
+                    .advance(&body, &resp_headers, &mut state, count)?;
             pages_fetched += 1;
             if !has_next {
                 break;

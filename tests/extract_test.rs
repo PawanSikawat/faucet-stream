@@ -1,5 +1,5 @@
-use serde_json::json;
 use faucet_stream::extract::extract_records;
+use serde_json::json;
 
 #[test]
 fn extract_deeply_nested() {

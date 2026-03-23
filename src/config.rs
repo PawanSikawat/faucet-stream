@@ -59,8 +59,14 @@ impl RestStreamConfig {
         }
     }
 
-    pub fn method(mut self, m: Method) -> Self { self.method = m; self }
-    pub fn auth(mut self, a: Auth) -> Self { self.auth = a; self }
+    pub fn method(mut self, m: Method) -> Self {
+        self.method = m;
+        self
+    }
+    pub fn auth(mut self, a: Auth) -> Self {
+        self.auth = a;
+        self
+    }
 
     pub fn header(mut self, k: &str, v: &str) -> Self {
         self.headers.insert(
@@ -75,13 +81,34 @@ impl RestStreamConfig {
         self
     }
 
-    pub fn body(mut self, b: Value) -> Self { self.body = Some(b); self }
-    pub fn pagination(mut self, p: PaginationStyle) -> Self { self.pagination = p; self }
-    pub fn records_path(mut self, p: &str) -> Self { self.records_path = Some(p.into()); self }
-    pub fn max_pages(mut self, n: usize) -> Self { self.max_pages = Some(n); self }
-    pub fn request_delay(mut self, d: Duration) -> Self { self.request_delay = Some(d); self }
-    pub fn timeout(mut self, d: Duration) -> Self { self.timeout = Some(d); self }
-    pub fn max_retries(mut self, n: u32) -> Self { self.max_retries = n; self }
+    pub fn body(mut self, b: Value) -> Self {
+        self.body = Some(b);
+        self
+    }
+    pub fn pagination(mut self, p: PaginationStyle) -> Self {
+        self.pagination = p;
+        self
+    }
+    pub fn records_path(mut self, p: &str) -> Self {
+        self.records_path = Some(p.into());
+        self
+    }
+    pub fn max_pages(mut self, n: usize) -> Self {
+        self.max_pages = Some(n);
+        self
+    }
+    pub fn request_delay(mut self, d: Duration) -> Self {
+        self.request_delay = Some(d);
+        self
+    }
+    pub fn timeout(mut self, d: Duration) -> Self {
+        self.timeout = Some(d);
+        self
+    }
+    pub fn max_retries(mut self, n: u32) -> Self {
+        self.max_retries = n;
+        self
+    }
 
     pub fn retry_backoff(mut self, d: Duration) -> Self {
         self.retry_backoff = d;

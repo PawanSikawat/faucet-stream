@@ -19,7 +19,11 @@ where
         match operation().await {
             Ok(val) => return Ok(val),
             Err(e) => {
-                tracing::warn!("request failed (attempt {}/{}): {e}", attempt + 1, max_retries + 1);
+                tracing::warn!(
+                    "request failed (attempt {}/{}): {e}",
+                    attempt + 1,
+                    max_retries + 1
+                );
                 last_err = Some(e);
                 if attempt < max_retries {
                     let wait = base_backoff * 2u32.pow(attempt);

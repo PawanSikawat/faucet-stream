@@ -1,5 +1,5 @@
-use serde_json::json;
 use faucet_stream::{Auth, PaginationStyle, RestStream, RestStreamConfig};
+use serde_json::json;
 use wiremock::matchers::{method, path, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -90,8 +90,7 @@ async fn test_typed_deserialization() {
     }
 
     let stream = RestStream::new(
-        RestStreamConfig::new(&server.uri(), "/api/users")
-            .records_path("$.data[*]"),
+        RestStreamConfig::new(&server.uri(), "/api/users").records_path("$.data[*]"),
     )
     .unwrap();
 
@@ -119,10 +118,7 @@ async fn test_link_header_pagination() {
     Mock::given(method("GET"))
         .and(path("/api/items"))
         .and(query_param("page", "2"))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_json(json!({"items": [{"id": 3}]})),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"items": [{"id": 3}]})))
         .mount(&server)
         .await;
 

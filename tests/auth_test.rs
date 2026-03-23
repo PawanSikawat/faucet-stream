@@ -1,10 +1,12 @@
-use reqwest::header::HeaderMap;
 use faucet_stream::Auth;
+use reqwest::header::HeaderMap;
 
 #[test]
 fn bearer_auth_sets_header() {
     let mut headers = HeaderMap::new();
-    Auth::Bearer("test-token".into()).apply(&mut headers).unwrap();
+    Auth::Bearer("test-token".into())
+        .apply(&mut headers)
+        .unwrap();
     assert_eq!(headers.get("authorization").unwrap(), "Bearer test-token");
 }
 

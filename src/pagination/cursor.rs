@@ -5,7 +5,11 @@ use jsonpath_rust::JsonPath;
 use serde_json::Value;
 use std::collections::HashMap;
 
-pub fn apply_params(params: &mut HashMap<String, String>, param_name: &str, token: &Option<String>) {
+pub fn apply_params(
+    params: &mut HashMap<String, String>,
+    param_name: &str,
+    token: &Option<String>,
+) {
     if let Some(t) = token {
         params.insert(param_name.to_string(), t.clone());
     }

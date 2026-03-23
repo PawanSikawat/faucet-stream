@@ -5,10 +5,10 @@ pub mod link_header;
 pub mod offset;
 pub mod page;
 
+use crate::error::FaucetError;
 use reqwest::header::HeaderMap;
 use serde_json::Value;
 use std::collections::HashMap;
-use crate::error::FaucetError;
 
 /// Supported pagination strategies.
 #[derive(Debug, Clone)]
@@ -50,10 +50,27 @@ impl PaginationStyle {
                 cursor::apply_params(params, param_name, &state.next_token);
             }
             PaginationStyle::LinkHeader => {}
-            PaginationStyle::PageNumber { param_name, start_page, page_size, page_size_param } => {
-                page::apply_params(params, param_name, *start_page, state.page, *page_size, page_size_param.as_deref());
+            PaginationStyle::PageNumber {
+                param_name,
+                start_page,
+                page_size,
+                page_size_param,
+            } => {
+                page::apply_params(
+                    params,
+                    param_name,
+                    *start_page,
+                    state.page,
+                    *page_size,
+                    page_size_param.as_deref(),
+                );
             }
-            PaginationStyle::Offset { offset_param, limit_param, limit, .. } => {
+            PaginationStyle::Offset {
+                offset_param,
+                limit_param,
+                limit,
+                ..
+            } => {
                 offset::apply_params(params, offset_param, limit_param, state.offset, *limit);
             }
         }
@@ -70,28 +87,32 @@ impl PaginationStyle {
     ) -> Result<bool, FaucetError> {
         match self {
             PaginationStyle::None => Ok(false),
-            PaginationStyle::Cursor { next_token_path, .. } => {
-                cursor::advance(body, next_token_path, &mut state.next_token)
-            }
-            PaginationStyle::LinkHeader => {
-                match link_header::extract_next_link(headers) {
-                    Some(link) => {
-                        state.next_link = Some(link);
-                        Ok(true)
-                    }
-                    None => {
-                        state.next_link = None;
-                        Ok(false)
-                    }
+            PaginationStyle::Cursor {
+                next_token_path, ..
+            } => cursor::advance(body, next_token_path, &mut state.next_token),
+            PaginationStyle::LinkHeader => match link_header::extract_next_link(headers) {
+                Some(link) => {
+                    state.next_link = Some(link);
+                    Ok(true)
                 }
-            }
+                None => {
+                    state.next_link = None;
+                    Ok(false)
+                }
+            },
             PaginationStyle::PageNumber { .. } => {
                 state.page += 1;
                 Ok(record_count > 0)
             }
-            PaginationStyle::Offset { limit, total_path, .. } => {
-                offset::advance(body, &mut state.offset, record_count, *limit, total_path.as_deref())
-            }
+            PaginationStyle::Offset {
+                limit, total_path, ..
+            } => offset::advance(
+                body,
+                &mut state.offset,
+                record_count,
+                *limit,
+                total_path.as_deref(),
+            ),
         }
     }
 }

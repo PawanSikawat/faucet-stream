@@ -1,8 +1,8 @@
-use serde_json::json;
-use std::collections::HashMap;
 use faucet_stream::PaginationStyle;
 use faucet_stream::pagination::PaginationState;
 use reqwest::header::HeaderMap;
+use serde_json::json;
+use std::collections::HashMap;
 
 /// Convenience: an empty HeaderMap for tests that don't need response headers.
 fn no_headers() -> HeaderMap {
@@ -124,7 +124,10 @@ fn link_header_extracts_next_link() {
 
     let has_next = style.advance(&body, &headers, &mut state, 10).unwrap();
     assert!(has_next);
-    assert_eq!(state.next_link, Some("https://api.example.com/items?page=2".into()));
+    assert_eq!(
+        state.next_link,
+        Some("https://api.example.com/items?page=2".into())
+    );
 }
 
 #[test]

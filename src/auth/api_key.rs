@@ -1,7 +1,7 @@
 //! API key header authentication.
 
-use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use crate::error::FaucetError;
+use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 
 pub fn apply(headers: &mut HeaderMap, header: &str, value: &str) -> Result<(), FaucetError> {
     let name = HeaderName::from_bytes(header.as_bytes())
