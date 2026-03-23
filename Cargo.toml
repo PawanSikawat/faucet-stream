@@ -8,7 +8,7 @@ license = "MIT OR Apache-2.0"
 repository = "https://github.com/PawanSikawat/faucet-stream"
 documentation = "https://docs.rs/faucet-stream"
 readme = "README.md"
-keywords = ["rest", "api", "pagination", "http", "streaming", "meltano", "singer", "stream", "data"]
+keywords = ["rest", "api", "meltano", "http", "streaming"]
 categories = ["web-programming::http-client"]
 exclude = [".trunk/"]
 
