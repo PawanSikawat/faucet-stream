@@ -1,0 +1,29 @@
+# Rust
+/target/
+Cargo.lock
+
+# Environment
+.env
+.env.*
+!.env.example
+env/.env.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docker
+*.tar
+
+# AI Instructions
+CLAUDE.md
+.claude/
+
+# Cargo
+Cargo.lock
