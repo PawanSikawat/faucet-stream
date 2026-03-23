@@ -7,11 +7,11 @@ use crate::pagination::{PaginationState, PaginationStyle};
 use crate::retry;
 use futures_core::Stream;
 use reqwest::Client;
-use std::pin::Pin;
 use reqwest::header::HeaderMap;
 use serde::Deserialize;
 use serde_json::Value;
 use std::collections::HashMap;
+use std::pin::Pin;
 
 /// A configured REST API stream that handles pagination, auth, and extraction.
 pub struct RestStream {
@@ -118,7 +118,9 @@ impl RestStream {
     /// # Ok(())
     /// # }
     /// ```
-    pub fn stream_pages(&self) -> Pin<Box<dyn Stream<Item = Result<Vec<Value>, FaucetError>> + '_>> {
+    pub fn stream_pages(
+        &self,
+    ) -> Pin<Box<dyn Stream<Item = Result<Vec<Value>, FaucetError>> + '_>> {
         Box::pin(async_stream::try_stream! {
             let mut state = PaginationState::default();
             let mut pages_fetched = 0usize;
