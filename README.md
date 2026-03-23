@@ -115,6 +115,30 @@ let config = RestStreamConfig::new("https://api.example.com", "/data")
     .auth(Auth::Bearer(token));
 ```
 
+### Streaming page-by-page
+
+Process records as each page arrives without waiting for all pages to complete:
+
+```rust
+use faucet_stream::{RestStream, RestStreamConfig, PaginationStyle};
+use futures::StreamExt;
+
+let stream = RestStream::new(
+    RestStreamConfig::new("https://api.example.com", "/v1/events")
+        .records_path("$.events[*]")
+        .pagination(PaginationStyle::Cursor {
+            next_token_path: "$.next_cursor".into(),
+            param_name: "cursor".into(),
+        }),
+)?;
+
+let mut pages = stream.stream_pages();
+while let Some(result) = pages.next().await {
+    let records = result?;
+    println!("processing page of {} records", records.len());
+}
+```
+
 ### Typed deserialization
 
 ```rust

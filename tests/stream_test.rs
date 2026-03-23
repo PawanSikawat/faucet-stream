@@ -1,4 +1,5 @@
 use faucet_stream::{Auth, PaginationStyle, RestStream, RestStreamConfig};
+use futures::StreamExt;
 use serde_json::json;
 use wiremock::matchers::{method, path, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -185,4 +186,51 @@ async fn test_bearer_auth_sent() {
 
     let records = stream.fetch_all().await.unwrap();
     assert!(records.is_empty());
+}
+
+#[tokio::test]
+async fn test_stream_pages_yields_per_page() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .and(path("/api/items"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "items": [{"id": 1}, {"id": 2}],
+            "next_cursor": "page2"
+        })))
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path("/api/items"))
+        .and(query_param("cursor", "page2"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "items": [{"id": 3}],
+            "next_cursor": null
+        })))
+        .mount(&server)
+        .await;
+
+    let stream = RestStream::new(
+        RestStreamConfig::new(&server.uri(), "/api/items")
+            .records_path("$.items[*]")
+            .pagination(PaginationStyle::Cursor {
+                next_token_path: "$.next_cursor".into(),
+                param_name: "cursor".into(),
+            }),
+    )
+    .unwrap();
+
+    let mut pages = stream.stream_pages();
+
+    let page1 = pages.next().await.unwrap().unwrap();
+    assert_eq!(page1.len(), 2);
+    assert_eq!(page1[0]["id"], 1);
+
+    let page2 = pages.next().await.unwrap().unwrap();
+    assert_eq!(page2.len(), 1);
+    assert_eq!(page2[0]["id"], 3);
+
+    assert!(pages.next().await.is_none());
 }

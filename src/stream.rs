@@ -5,7 +5,9 @@ use crate::error::FaucetError;
 use crate::extract;
 use crate::pagination::{PaginationState, PaginationStyle};
 use crate::retry;
+use futures_core::Stream;
 use reqwest::Client;
+use std::pin::Pin;
 use reqwest::header::HeaderMap;
 use serde::Deserialize;
 use serde_json::Value;
@@ -95,6 +97,75 @@ impl RestStream {
             .into_iter()
             .map(|v| serde_json::from_value(v).map_err(FaucetError::Json))
             .collect()
+    }
+
+    /// Stream records page-by-page, yielding one `Vec<Value>` per page as it arrives.
+    ///
+    /// Unlike [`fetch_all`](Self::fetch_all), this does not wait for all pages to be fetched
+    /// before returning — callers can process each page immediately.
+    ///
+    /// ```rust,no_run
+    /// use faucet_stream::{RestStream, RestStreamConfig};
+    /// use futures::StreamExt;
+    ///
+    /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+    /// let stream = RestStream::new(RestStreamConfig::new("https://api.example.com", "/items"))?;
+    /// let mut pages = stream.stream_pages();
+    /// while let Some(page) = pages.next().await {
+    ///     let records = page?;
+    ///     println!("got {} records", records.len());
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn stream_pages(&self) -> Pin<Box<dyn Stream<Item = Result<Vec<Value>, FaucetError>> + '_>> {
+        Box::pin(async_stream::try_stream! {
+            let mut state = PaginationState::default();
+            let mut pages_fetched = 0usize;
+
+            loop {
+                if let Some(max) = self.config.max_pages
+                    && pages_fetched >= max
+                {
+                    tracing::warn!("max pages ({max}) reached");
+                    break;
+                }
+
+                let mut params = self.config.query_params.clone();
+                self.config.pagination.apply_params(&mut params, &state);
+
+                let url_override = match &self.config.pagination {
+                    PaginationStyle::LinkHeader => state.next_link.clone(),
+                    _ => None,
+                };
+
+                let params_clone = params.clone();
+                let (body, resp_headers) = retry::execute_with_retry(
+                    self.config.max_retries,
+                    self.config.retry_backoff,
+                    || self.execute_request(&params_clone, url_override.as_deref()),
+                )
+                .await?;
+
+                let records = extract::extract_records(&body, self.config.records_path.as_deref())?;
+                let count = records.len();
+
+                yield records;
+
+                let has_next = self
+                    .config
+                    .pagination
+                    .advance(&body, &resp_headers, &mut state, count)?;
+                pages_fetched += 1;
+                if !has_next {
+                    break;
+                }
+
+                if let Some(delay) = self.config.request_delay {
+                    tokio::time::sleep(delay).await;
+                }
+            }
+        })
     }
 
     /// Execute a single HTTP request and return the response body and headers.
