@@ -50,8 +50,16 @@ repos:
         types: [rust]
         pass_filenames: false
 
-      # 3. Lint — -D warnings makes all warnings hard failures.
-      #    --all-targets includes test code, examples, and benchmarks.
+      # 3a. Lint fix — applies safe, machine-fixable suggestions automatically.
+      - id: cargo-clippy-fix
+        name: "rust: cargo clippy --fix"
+        entry: cargo clippy --fix --allow-staged
+        language: system
+        types: [rust]
+        pass_filenames: false
+
+      # 3b. Lint — -D warnings makes all warnings hard failures.
+      #     --all-targets includes test code, examples, and benchmarks.
       - id: cargo-clippy
         name: "rust: cargo clippy"
         entry: cargo clippy --all-targets -- -D warnings
