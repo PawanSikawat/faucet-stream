@@ -1,0 +1,82 @@
+# Pre-commit hooks for ipaas-server.
+#
+# Setup (one-time):
+#   pip install pre-commit
+#   cargo install cargo-audit
+#   pre-commit install
+#
+# Run manually against all files:
+#   pre-commit run --all-files
+#
+# Hooks run in the order listed. Fast checks (fmt, check) are placed first
+# so they fail quickly before heavier checks (clippy, tests, audit).
+
+default_stages: [pre-commit]
+
+repos:
+
+  # ── General file hygiene ────────────────────────────────────────────────────
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-toml
+      - id: check-merge-conflict
+      - id: check-case-conflict         # catches case-insensitive filename collisions
+      - id: check-added-large-files
+        args: [--maxkb=500]
+      - id: no-commit-to-branch
+        args: [--branch, main, --branch, preprod-server, --branch, staging-server]
+
+  # ── Rust ────────────────────────────────────────────────────────────────────
+  - repo: local
+    hooks:
+
+      # 1. Format — fastest, catches style issues immediately.
+      - id: cargo-fmt
+        name: "rust: cargo fmt"
+        entry: cargo fmt --all -- --check
+        language: system
+        types: [rust]
+        pass_filenames: false
+
+      # 2. Compile — catches type errors, missing imports, broken references.
+      - id: cargo-check
+        name: "rust: cargo check"
+        entry: cargo check --all-targets
+        language: system
+        types: [rust]
+        pass_filenames: false
+
+      # 3. Lint — -D warnings makes all warnings hard failures.
+      #    --all-targets includes test code, examples, and benchmarks.
+      - id: cargo-clippy
+        name: "rust: cargo clippy"
+        entry: cargo clippy --all-targets -- -D warnings
+        language: system
+        types: [rust]
+        pass_filenames: false
+
+      # 4. Unit tests — runs in-lib tests only (no DB required, always fast).
+      #    Integration tests (sqlx::test) run in CI where a DB is available.
+      - id: cargo-test
+        name: "rust: cargo test --lib"
+        entry: cargo test --lib
+        language: system
+        types: [rust]
+        pass_filenames: false
+
+      # 5. Security audit — scans Cargo.lock for known CVEs.
+      #    Only runs when dependency files change to keep commits fast.
+      #    Requires: cargo install cargo-audit
+      # RUSTSEC-2023-0071 (rsa Marvin Attack): ignored — comes from sqlx-mysql 0.8
+      # which is pinned; no upstream fix exists for sqlx 0.8. Re-evaluate when
+      # sqlx 0.9 is stable and we upgrade.
+      - id: cargo-audit
+        name: "rust: cargo audit"
+        entry: cargo audit --ignore RUSTSEC-2023-0071
+        language: system
+        pass_filenames: false
+        files: Cargo\.(toml|lock)
