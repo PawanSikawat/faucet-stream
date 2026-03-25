@@ -185,3 +185,97 @@ fn next_link_in_body_stops_when_field_absent() {
     assert!(!has_next);
     assert!(state.next_link.is_none());
 }
+
+// ── Loop detection ────────────────────────────────────────────────────────────
+
+#[test]
+fn cursor_loop_detection_stops_on_duplicate_token() {
+    let style = PaginationStyle::Cursor {
+        next_token_path: "$.cursor".into(),
+        param_name: "cursor".into(),
+    };
+
+    let mut state = PaginationState::default();
+
+    // First advance: cursor "abc" — should succeed.
+    let body = json!({"cursor": "abc"});
+    let has_next = style.advance(&body, &no_headers(), &mut state, 10).unwrap();
+    assert!(has_next);
+    assert_eq!(state.next_token, Some("abc".into()));
+
+    // Second advance: same cursor "abc" — loop detected, should stop.
+    let has_next = style.advance(&body, &no_headers(), &mut state, 10).unwrap();
+    assert!(!has_next, "expected loop detection to stop pagination");
+}
+
+#[test]
+fn cursor_loop_detection_allows_distinct_tokens() {
+    let style = PaginationStyle::Cursor {
+        next_token_path: "$.cursor".into(),
+        param_name: "cursor".into(),
+    };
+
+    let mut state = PaginationState::default();
+
+    let body1 = json!({"cursor": "page2"});
+    assert!(
+        style
+            .advance(&body1, &no_headers(), &mut state, 10)
+            .unwrap()
+    );
+
+    let body2 = json!({"cursor": "page3"});
+    assert!(
+        style
+            .advance(&body2, &no_headers(), &mut state, 10)
+            .unwrap()
+    );
+
+    let body3 = json!({"cursor": null});
+    assert!(
+        !style
+            .advance(&body3, &no_headers(), &mut state, 10)
+            .unwrap()
+    );
+}
+
+#[test]
+fn link_header_loop_detection_stops_on_duplicate() {
+    use reqwest::header::HeaderValue;
+
+    let style = PaginationStyle::LinkHeader;
+    let body = json!({});
+    let mut state = PaginationState::default();
+
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        "link",
+        HeaderValue::from_static(r#"<https://api.example.com/items?page=2>; rel="next""#),
+    );
+
+    // First advance: new link — succeeds.
+    let has_next = style.advance(&body, &headers, &mut state, 10).unwrap();
+    assert!(has_next);
+
+    // Second advance: same link — loop detected.
+    let has_next = style.advance(&body, &headers, &mut state, 10).unwrap();
+    assert!(!has_next, "expected loop detection to stop pagination");
+}
+
+#[test]
+fn next_link_body_loop_detection_stops_on_duplicate() {
+    let style = PaginationStyle::NextLinkInBody {
+        next_link_path: "$.next_link".into(),
+    };
+
+    let mut state = PaginationState::default();
+    let body = json!({"results": [], "next_link": "https://api.example.com/page=2"});
+
+    // First advance: new link — succeeds.
+    let has_next = style.advance(&body, &no_headers(), &mut state, 10).unwrap();
+    assert!(has_next);
+
+    // Second advance: same link — loop detected.
+    let has_next = style.advance(&body, &no_headers(), &mut state, 10).unwrap();
+    assert!(!has_next, "expected loop detection to stop pagination");
+}

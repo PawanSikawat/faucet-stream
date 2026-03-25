@@ -48,6 +48,11 @@ pub struct PaginationState {
     pub next_token: Option<String>,
     pub offset: usize,
     pub next_link: Option<String>,
+    /// The previous page's token/link, used for loop detection.
+    /// If `advance()` produces the same value twice in a row, pagination
+    /// is stuck and we stop rather than looping forever.
+    #[doc(hidden)]
+    pub previous_token: Option<String>,
 }
 
 impl PaginationStyle {
@@ -87,6 +92,10 @@ impl PaginationStyle {
 
     /// Advance pagination state based on the response body and headers.
     /// Returns `true` if there is a next page to fetch.
+    ///
+    /// Includes **loop detection**: if a cursor or next-link value is identical
+    /// to the previous page's value, pagination stops with a warning instead of
+    /// looping forever.
     pub fn advance(
         &self,
         body: &Value,
@@ -98,9 +107,30 @@ impl PaginationStyle {
             PaginationStyle::None => Ok(false),
             PaginationStyle::Cursor {
                 next_token_path, ..
-            } => cursor::advance(body, next_token_path, &mut state.next_token),
+            } => {
+                let has_next = cursor::advance(body, next_token_path, &mut state.next_token)?;
+                if has_next {
+                    if state.next_token == state.previous_token {
+                        tracing::warn!(
+                            "pagination loop detected: cursor {:?} repeated — stopping",
+                            state.next_token
+                        );
+                        return Ok(false);
+                    }
+                    state.previous_token = state.next_token.clone();
+                }
+                Ok(has_next)
+            }
             PaginationStyle::LinkHeader => match link_header::extract_next_link(headers) {
                 Some(link) => {
+                    if Some(&link) == state.previous_token.as_ref() {
+                        tracing::warn!(
+                            "pagination loop detected: link {link:?} repeated — stopping"
+                        );
+                        state.next_link = None;
+                        return Ok(false);
+                    }
+                    state.previous_token = Some(link.clone());
                     state.next_link = Some(link);
                     Ok(true)
                 }
@@ -110,7 +140,18 @@ impl PaginationStyle {
                 }
             },
             PaginationStyle::NextLinkInBody { next_link_path } => {
-                next_link_body::advance(body, next_link_path, &mut state.next_link)
+                let has_next = next_link_body::advance(body, next_link_path, &mut state.next_link)?;
+                if has_next {
+                    if state.next_link == state.previous_token {
+                        tracing::warn!(
+                            "pagination loop detected: next_link {:?} repeated — stopping",
+                            state.next_link
+                        );
+                        return Ok(false);
+                    }
+                    state.previous_token = state.next_link.clone();
+                }
+                Ok(has_next)
             }
             PaginationStyle::PageNumber { .. } => {
                 state.page += 1;

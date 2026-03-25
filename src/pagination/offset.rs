@@ -28,8 +28,17 @@ pub fn advance(
         let results = body
             .query(tp)
             .map_err(|e| FaucetError::JsonPath(format!("{e}")))?;
-        if let Some(total) = results.first() {
-            let total = total.as_u64().unwrap_or(0) as usize;
+        if let Some(total_val) = results.first() {
+            let total = match total_val.as_u64() {
+                Some(n) => n as usize,
+                None => {
+                    tracing::warn!(
+                        "total_path '{tp}' resolved to non-numeric value {total_val}; \
+                         falling back to record-count heuristic"
+                    );
+                    return Ok(record_count >= limit);
+                }
+            };
             return Ok(*offset < total);
         }
     }
