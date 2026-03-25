@@ -12,6 +12,24 @@ keywords = ["rest", "api", "meltano", "http", "streaming"]
 categories = ["web-programming::http-client"]
 exclude = [".trunk/"]
 
+[features]
+## Enable all built-in record transforms (default).
+default = ["transform-flatten", "transform-rename-keys", "transform-snake-case"]
+
+## Flatten nested JSON objects into a single-level map.
+transform-flatten = []
+
+## Apply regex-based key substitutions to every record.
+## Pulls in the `regex` crate.
+transform-rename-keys = ["dep:regex"]
+
+## Convert all record keys to snake_case using Meltano's normalisation algorithm.
+## Pulls in the `regex` crate.
+transform-snake-case = ["dep:regex"]
+
+## Convenience feature that enables all three built-in transforms.
+transforms = ["transform-flatten", "transform-rename-keys", "transform-snake-case"]
+
 [package.metadata.docs.rs]
 all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
@@ -27,6 +45,7 @@ base64 = "0.22"
 tracing = "0.1"
 async-stream = "0.3.6"
 futures-core = "0.3.32"
+regex = { version = "1", optional = true }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full", "test-util"] }
