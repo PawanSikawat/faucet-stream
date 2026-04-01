@@ -5,9 +5,11 @@ pub mod basic;
 pub mod bearer;
 pub mod custom;
 pub mod oauth2;
+pub mod token_endpoint;
 
 use crate::error::FaucetError;
 use reqwest::header::HeaderMap;
+pub use token_endpoint::ResponseValidator;
 
 /// Supported authentication methods.
 #[derive(Debug, Clone)]
@@ -41,6 +43,36 @@ pub enum Auth {
         /// Defaults to `0.9` (refresh after 90 % of the token lifetime).
         expiry_ratio: f64,
     },
+    /// Fetch a token from an arbitrary HTTP endpoint.
+    ///
+    /// The endpoint is called, the token is extracted from the JSON response
+    /// using `token_path` (a JSONPath expression), and then used as a Bearer
+    /// token (or in a custom header if `header_name` is set).
+    ///
+    /// Tokens are cached and refreshed automatically when `expiry_path`
+    /// is provided and the server returns an expiry value.
+    TokenEndpoint {
+        /// URL of the token endpoint.
+        url: String,
+        /// HTTP method for the token request (e.g. GET, POST).
+        method: reqwest::Method,
+        /// Headers to send with the token request (e.g. API keys, content type).
+        headers: HeaderMap,
+        /// Optional JSON body for the token request.
+        body: Option<serde_json::Value>,
+        /// JSONPath expression to extract the token string from the response.
+        token_path: String,
+        /// Optional JSONPath expression to extract the expiry (in seconds)
+        /// from the response. When absent, the token is cached indefinitely.
+        expiry_path: Option<String>,
+        /// Fraction of the expiry after which the token is proactively refreshed.
+        /// Must be in `(0.0, 1.0]`. Defaults to `0.9`.
+        expiry_ratio: f64,
+        /// Optional callback to decide whether the token endpoint response is
+        /// successful. Receives the HTTP status code. When `None`, defaults to
+        /// `status.is_success()` (2xx).
+        response_validator: Option<ResponseValidator>,
+    },
     Custom(HeaderMap),
 }
 
@@ -64,6 +96,13 @@ impl Auth {
                  fetch_oauth2_token() and use Auth::Bearer"
                     .into(),
             )),
+            // TokenEndpoint is resolved to Auth::Bearer by RestStream before apply().
+            Auth::TokenEndpoint { .. } => Err(FaucetError::Auth(
+                "TokenEndpoint auth must be resolved to a bearer token before applying; \
+                 use RestStream (which resolves it automatically) or call \
+                 fetch_token_from_endpoint() and use Auth::Bearer"
+                    .into(),
+            )),
             Auth::Custom(h) => {
                 custom::apply(headers, h);
                 Ok(())
@@ -73,3 +112,4 @@ impl Auth {
 }
 
 pub use oauth2::fetch_oauth2_token;
+pub use token_endpoint::fetch_token_from_endpoint;

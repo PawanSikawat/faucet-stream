@@ -14,7 +14,7 @@ Inspired by [Meltano's RESTStream](https://sdk.meltano.com/en/latest/classes/sin
 
 ## Features
 
-- **Authentication** — Bearer, Basic, API Key (header or query param), OAuth2 (client credentials), or custom headers
+- **Authentication** — Bearer, Basic, API Key (header or query param), OAuth2 (client credentials), Token Endpoint (fetch from any API), or custom headers
 - **Pagination** — cursor/token (JSONPath), page number, offset/limit, Link header, next-link-in-body
 - **JSONPath extraction** — point at where records live in any JSON response
 - **Record transforms** — flatten nested objects, rename keys (regex), snake_case normalisation, or custom closures
@@ -118,6 +118,53 @@ let token = fetch_oauth2_token(
 
 let config = RestStreamConfig::new("https://api.example.com", "/data")
     .auth(Auth::Bearer(token));
+```
+
+### Token endpoint (fetch credentials from an API)
+
+When your auth token comes from an external API (e.g. a login endpoint, a secrets
+manager, or a custom auth service), use `Auth::TokenEndpoint` to fetch and cache
+it automatically:
+
+```rust
+use faucet_stream::{Auth, RestStream, RestStreamConfig, ResponseValidator, DEFAULT_TOKEN_ENDPOINT_EXPIRY_RATIO};
+use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
+use serde_json::json;
+
+let mut token_headers = HeaderMap::new();
+token_headers.insert(
+    HeaderName::from_static("x-api-key"),
+    HeaderValue::from_static("bootstrap-key"),
+);
+
+let config = RestStreamConfig::new("https://api.example.com", "/data")
+    .auth(Auth::TokenEndpoint {
+        url: "https://auth.example.com/token".into(),
+        method: reqwest::Method::POST,
+        headers: token_headers,
+        body: Some(json!({"grant_type": "api_key"})),
+        token_path: "$.access_token".into(),           // JSONPath to extract the token
+        expiry_path: Some("$.expires_in".into()),       // optional: seconds until expiry
+        expiry_ratio: DEFAULT_TOKEN_ENDPOINT_EXPIRY_RATIO,
+        response_validator: None,                       // None = default 2xx check
+    });
+
+let stream = RestStream::new(config)?;
+let records = stream.fetch_all().await?;
+```
+
+The token is cached across pages and automatically refreshed when the expiry is
+reached (at `expiry_ratio` of the reported lifetime, default 90%).
+
+Pass a `ResponseValidator` to customize which HTTP status codes are considered
+successful for the token endpoint:
+
+```rust
+// Accept 200 and 202 as success:
+response_validator: Some(ResponseValidator::new(|status| status == 200 || status == 202)),
+
+// Accept anything below 400:
+response_validator: Some(ResponseValidator::new(|status| status < 400)),
 ```
 
 ### Streaming page-by-page
@@ -268,6 +315,7 @@ let repos = stream.fetch_all().await?;
 | `ApiKey` | Custom header (e.g. `X-Api-Key: secret`) |
 | `ApiKeyQuery` | API key as a query parameter (e.g. `?api_key=secret`) |
 | `OAuth2` | Client credentials flow with automatic token caching and refresh |
+| `TokenEndpoint` | Fetch token from any HTTP API via JSONPath, with caching and refresh |
 | `Custom` | Arbitrary headers |
 
 ## Pagination Styles
@@ -308,6 +356,7 @@ src/
     api_key.rs        — API key header auth
     custom.rs         — Custom header auth
     oauth2.rs         — OAuth2 client credentials with token caching
+    token_endpoint.rs — Generic token endpoint auth with JSONPath extraction and caching
   pagination/
     mod.rs            — PaginationStyle enum and PaginationState
     cursor.rs         — Cursor/token-based pagination

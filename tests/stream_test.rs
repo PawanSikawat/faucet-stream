@@ -1,6 +1,6 @@
 use faucet_stream::{
-    Auth, FaucetError, PaginationStyle, RecordTransform, ReplicationMethod, RestStream,
-    RestStreamConfig,
+    Auth, DEFAULT_TOKEN_ENDPOINT_EXPIRY_RATIO, FaucetError, PaginationStyle, RecordTransform,
+    ReplicationMethod, ResponseValidator, RestStream, RestStreamConfig,
 };
 use futures::StreamExt;
 use serde_json::json;
@@ -961,4 +961,286 @@ async fn test_cursor_loop_detection_stops_fetching() {
     // First page: cursor "same-token" (new, accepted).
     // Second page: cursor "same-token" (duplicate, loop detected → stop).
     assert_eq!(records.len(), 2);
+}
+
+#[tokio::test]
+async fn test_token_endpoint_auth_fetches_and_uses_token() {
+    use reqwest::header::HeaderMap;
+    use wiremock::matchers::header;
+
+    let server = MockServer::start().await;
+
+    // Mock the token endpoint.
+    Mock::given(method("POST"))
+        .and(path("/auth/token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "access_token": "fetched-secret-token",
+            "expires_in": 3600
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    // Mock the data endpoint — expects the fetched token.
+    Mock::given(method("GET"))
+        .and(path("/api/data"))
+        .and(header("authorization", "Bearer fetched-secret-token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([{"id": 1}, {"id": 2}])))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let stream = RestStream::new(RestStreamConfig::new(&server.uri(), "/api/data").auth(
+        Auth::TokenEndpoint {
+            url: format!("{}/auth/token", server.uri()),
+            method: reqwest::Method::POST,
+            headers: HeaderMap::new(),
+            body: None,
+            token_path: "$.access_token".into(),
+            expiry_path: Some("$.expires_in".into()),
+            expiry_ratio: DEFAULT_TOKEN_ENDPOINT_EXPIRY_RATIO,
+            response_validator: None,
+        },
+    ))
+    .unwrap();
+
+    let records = stream.fetch_all().await.unwrap();
+    assert_eq!(records.len(), 2);
+    assert_eq!(records[0]["id"], 1);
+}
+
+#[tokio::test]
+async fn test_token_endpoint_auth_with_custom_headers_and_body() {
+    use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
+    use wiremock::matchers::header;
+
+    let server = MockServer::start().await;
+
+    // Mock the token endpoint — expects custom header and body.
+    Mock::given(method("POST"))
+        .and(path("/auth/login"))
+        .and(header("x-api-key", "setup-key"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "result": {
+                "token": "dynamic-bearer-value"
+            }
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    // Mock the data endpoint.
+    Mock::given(method("GET"))
+        .and(path("/api/items"))
+        .and(header("authorization", "Bearer dynamic-bearer-value"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([{"name": "item1"}])))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let mut token_headers = HeaderMap::new();
+    token_headers.insert(
+        HeaderName::from_static("x-api-key"),
+        HeaderValue::from_static("setup-key"),
+    );
+
+    let stream = RestStream::new(RestStreamConfig::new(&server.uri(), "/api/items").auth(
+        Auth::TokenEndpoint {
+            url: format!("{}/auth/login", server.uri()),
+            method: reqwest::Method::POST,
+            headers: token_headers,
+            body: Some(json!({"username": "admin", "password": "secret"})),
+            token_path: "$.result.token".into(),
+            expiry_path: None,
+            expiry_ratio: DEFAULT_TOKEN_ENDPOINT_EXPIRY_RATIO,
+            response_validator: None,
+        },
+    ))
+    .unwrap();
+
+    let records = stream.fetch_all().await.unwrap();
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0]["name"], "item1");
+}
+
+#[tokio::test]
+async fn test_token_endpoint_auth_caches_token_across_pages() {
+    use reqwest::header::HeaderMap;
+    use wiremock::matchers::header;
+
+    let server = MockServer::start().await;
+
+    // Token endpoint should only be called ONCE even though we fetch 2 pages.
+    Mock::given(method("POST"))
+        .and(path("/auth/token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "token": "cached-token",
+            "ttl": 3600
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    // Page 1.
+    Mock::given(method("GET"))
+        .and(path("/api/items"))
+        .and(header("authorization", "Bearer cached-token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": [{"id": 1}],
+            "next_cursor": "page2"
+        })))
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+
+    // Page 2.
+    Mock::given(method("GET"))
+        .and(path("/api/items"))
+        .and(query_param("cursor", "page2"))
+        .and(header("authorization", "Bearer cached-token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": [{"id": 2}],
+            "next_cursor": null
+        })))
+        .mount(&server)
+        .await;
+
+    let stream = RestStream::new(
+        RestStreamConfig::new(&server.uri(), "/api/items")
+            .records_path("$.data[*]")
+            .pagination(PaginationStyle::Cursor {
+                next_token_path: "$.next_cursor".into(),
+                param_name: "cursor".into(),
+            })
+            .auth(Auth::TokenEndpoint {
+                url: format!("{}/auth/token", server.uri()),
+                method: reqwest::Method::POST,
+                headers: HeaderMap::new(),
+                body: None,
+                token_path: "$.token".into(),
+                expiry_path: Some("$.ttl".into()),
+                expiry_ratio: DEFAULT_TOKEN_ENDPOINT_EXPIRY_RATIO,
+                response_validator: None,
+            }),
+    )
+    .unwrap();
+
+    let records = stream.fetch_all().await.unwrap();
+    assert_eq!(records.len(), 2);
+}
+
+#[tokio::test]
+async fn test_token_endpoint_auth_error_on_failed_fetch() {
+    use reqwest::header::HeaderMap;
+
+    let server = MockServer::start().await;
+
+    // Token endpoint returns 401.
+    Mock::given(method("POST"))
+        .and(path("/auth/token"))
+        .respond_with(ResponseTemplate::new(401).set_body_string("Unauthorized"))
+        .mount(&server)
+        .await;
+
+    let stream = RestStream::new(RestStreamConfig::new(&server.uri(), "/api/data").auth(
+        Auth::TokenEndpoint {
+            url: format!("{}/auth/token", server.uri()),
+            method: reqwest::Method::POST,
+            headers: HeaderMap::new(),
+            body: None,
+            token_path: "$.token".into(),
+            expiry_path: None,
+            expiry_ratio: DEFAULT_TOKEN_ENDPOINT_EXPIRY_RATIO,
+            response_validator: None,
+        },
+    ))
+    .unwrap();
+
+    let err = stream.fetch_all().await.unwrap_err();
+    match err {
+        FaucetError::Auth(msg) => {
+            assert!(msg.contains("401"), "expected 401 in error: {msg}");
+        }
+        other => panic!("expected Auth error, got: {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn test_token_endpoint_custom_response_validator() {
+    use reqwest::header::HeaderMap;
+    use wiremock::matchers::header;
+
+    let server = MockServer::start().await;
+
+    // Token endpoint returns 202 Accepted (not a standard 2xx success for
+    // most checks, but our custom validator will accept it).
+    Mock::given(method("POST"))
+        .and(path("/auth/token"))
+        .respond_with(ResponseTemplate::new(202).set_body_json(json!({"token": "accepted-token"})))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path("/api/data"))
+        .and(header("authorization", "Bearer accepted-token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([{"id": 1}])))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let stream = RestStream::new(RestStreamConfig::new(&server.uri(), "/api/data").auth(
+        Auth::TokenEndpoint {
+            url: format!("{}/auth/token", server.uri()),
+            method: reqwest::Method::POST,
+            headers: HeaderMap::new(),
+            body: None,
+            token_path: "$.token".into(),
+            expiry_path: None,
+            expiry_ratio: DEFAULT_TOKEN_ENDPOINT_EXPIRY_RATIO,
+            response_validator: Some(ResponseValidator::new(|status| {
+                status == 200 || status == 202
+            })),
+        },
+    ))
+    .unwrap();
+
+    let records = stream.fetch_all().await.unwrap();
+    assert_eq!(records.len(), 1);
+}
+
+#[tokio::test]
+async fn test_token_endpoint_custom_validator_rejects_response() {
+    use reqwest::header::HeaderMap;
+
+    let server = MockServer::start().await;
+
+    // Token endpoint returns 200, but our strict validator only accepts 201.
+    Mock::given(method("POST"))
+        .and(path("/auth/token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"token": "t"})))
+        .mount(&server)
+        .await;
+
+    let stream = RestStream::new(RestStreamConfig::new(&server.uri(), "/api/data").auth(
+        Auth::TokenEndpoint {
+            url: format!("{}/auth/token", server.uri()),
+            method: reqwest::Method::POST,
+            headers: HeaderMap::new(),
+            body: None,
+            token_path: "$.token".into(),
+            expiry_path: None,
+            expiry_ratio: DEFAULT_TOKEN_ENDPOINT_EXPIRY_RATIO,
+            response_validator: Some(ResponseValidator::new(|status| status == 201)),
+        },
+    ))
+    .unwrap();
+
+    let err = stream.fetch_all().await.unwrap_err();
+    match err {
+        FaucetError::Auth(msg) => {
+            assert!(msg.contains("200"), "expected 200 in error: {msg}");
+        }
+        other => panic!("expected Auth error, got: {other:?}"),
+    }
 }
