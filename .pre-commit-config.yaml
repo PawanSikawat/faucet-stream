@@ -45,7 +45,7 @@ repos:
       # 2. Compile — catches type errors, missing imports, broken references.
       - id: cargo-check
         name: "rust: cargo check"
-        entry: cargo check --all-targets
+        entry: cargo check --workspace --all-targets
         language: system
         types: [rust]
         pass_filenames: false
@@ -53,7 +53,7 @@ repos:
       # 3a. Lint fix — applies safe, machine-fixable suggestions automatically.
       - id: cargo-clippy-fix
         name: "rust: cargo clippy --fix"
-        entry: cargo clippy --fix  --allow-dirty --allow-staged
+        entry: cargo clippy --workspace --fix  --allow-dirty --allow-staged
         language: system
         types: [rust]
         pass_filenames: false
@@ -62,7 +62,7 @@ repos:
       #     --all-targets includes test code, examples, and benchmarks.
       - id: cargo-clippy
         name: "rust: cargo clippy"
-        entry: cargo clippy --all-targets -- -D warnings
+        entry: cargo clippy --workspace --all-targets -- -D warnings
         language: system
         types: [rust]
         pass_filenames: false
@@ -71,7 +71,7 @@ repos:
       #    Integration tests (sqlx::test) run in CI where a DB is available.
       - id: cargo-test
         name: "rust: cargo test --lib"
-        entry: cargo test --lib
+        entry: cargo test --workspace --lib
         language: system
         types: [rust]
         pass_filenames: false

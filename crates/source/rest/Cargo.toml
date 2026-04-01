@@ -1,0 +1,35 @@
+[package]
+name = "faucet-source-rest"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "REST API source connector for the faucet-stream ecosystem"
+
+[features]
+default = ["transform-flatten", "transform-rename-keys", "transform-snake-case"]
+transform-flatten = ["faucet-core/transform-flatten"]
+transform-rename-keys = ["faucet-core/transform-rename-keys"]
+transform-snake-case = ["faucet-core/transform-snake-case"]
+transforms = ["faucet-core/transforms"]
+
+[dependencies]
+faucet-core.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+jsonpath-rust = "1"
+tokio = { version = "1", features = ["time"] }
+base64 = "0.22"
+tracing.workspace = true
+async-stream = "0.3.6"
+futures-core = "0.3.32"
+async-trait.workspace = true
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full", "test-util"] }
+wiremock = "0.6"
+tracing-subscriber = "0.3"
+futures = "0.3.32"
+serde = { version = "1", features = ["derive"] }

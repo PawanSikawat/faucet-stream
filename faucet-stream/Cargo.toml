@@ -1,0 +1,37 @@
+[package]
+name = "faucet-stream"
+version = "0.2.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "A declarative, config-driven data pipeline with pluggable source and sink connectors"
+readme = "../README.md"
+keywords = ["rest", "api", "meltano", "bigquery", "streaming"]
+categories = ["web-programming::http-client"]
+exclude = [".trunk/"]
+
+[features]
+default = ["source-rest"]
+
+## All source connectors.
+source = ["source-rest"]
+## All sink connectors.
+sink = ["sink-bigquery"]
+## Every connector.
+full = ["source", "sink"]
+
+## Individual connectors.
+source-rest = ["dep:faucet-source-rest"]
+sink-bigquery = ["dep:faucet-sink-bigquery"]
+
+## Transform features (forwarded to source-rest when enabled).
+transform-flatten = ["faucet-source-rest?/transform-flatten"]
+transform-rename-keys = ["faucet-source-rest?/transform-rename-keys"]
+transform-snake-case = ["faucet-source-rest?/transform-snake-case"]
+transforms = ["faucet-source-rest?/transforms"]
+
+[dependencies]
+faucet-core.workspace = true
+faucet-source-rest = { workspace = true, optional = true }
+faucet-sink-bigquery = { workspace = true, optional = true }

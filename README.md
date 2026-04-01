@@ -5,14 +5,46 @@
 [![CI](https://github.com/PawanSikawat/faucet-stream/actions/workflows/ci.yml/badge.svg)](https://github.com/PawanSikawat/faucet-stream/actions)
 [![License](https://img.shields.io/crates/l/faucet-stream.svg)](LICENSE-MIT)
 
-A declarative, config-driven REST API client for Rust with pluggable
-authentication, pagination, record transforms, schema inference, and
-incremental replication.
+A modular, config-driven data pipeline toolkit for Rust with pluggable
+**source** and **sink** connectors.
 
 Inspired by [Meltano's RESTStream](https://sdk.meltano.com/en/latest/classes/singer_sdk.RESTStream.html)
 — but for Rust, and as a reusable library.
 
+## Architecture
+
+faucet-stream is a Cargo workspace with four crates:
+
+| Crate | Description |
+|-------|-------------|
+| [`faucet-core`](crates/core) | Shared types, traits (`Source`, `Sink`), transforms, error types |
+| [`faucet-source-rest`](crates/source/rest) | REST API source — auth, pagination, extraction, schema inference |
+| [`faucet-sink-bigquery`](crates/sink/bigquery) | Google BigQuery streaming insert sink |
+| [`faucet-stream`](faucet-stream) | Umbrella crate — feature-gated re-exports of all connectors |
+
+Install only what you need:
+
+```toml
+# Everything (default includes REST source)
+faucet-stream = "0.2"
+
+# All sources
+faucet-stream = { version = "0.2", features = ["source"] }
+
+# All sinks
+faucet-stream = { version = "0.2", features = ["sink"] }
+
+# All connectors
+faucet-stream = { version = "0.2", features = ["full"] }
+
+# Or use individual crates directly
+faucet-source-rest = "0.1"
+faucet-sink-bigquery = "0.1"
+```
+
 ## Features
+
+### Source: REST API (`faucet-source-rest`)
 
 - **Authentication** — Bearer, Basic, API Key (header or query param), OAuth2 (client credentials), Token Endpoint (fetch from any API), or custom headers
 - **Pagination** — cursor/token (JSONPath), page number, offset/limit, Link header, next-link-in-body
@@ -23,6 +55,13 @@ Inspired by [Meltano's RESTStream](https://sdk.meltano.com/en/latest/classes/sin
 - **Partitions** — run the same stream across multiple contexts (e.g. per-org, per-repo)
 - **Retries with backoff** — exponential backoff with configurable limits and 429 rate-limit handling
 - **Typed deserialization** — get `Vec<Value>` or deserialize directly into your structs
+
+### Sink: BigQuery (`faucet-sink-bigquery`)
+
+- **Streaming inserts** — write `Vec<Value>` records via the BigQuery `insertAll` API
+- **Batch control** — configurable batch size (default 500 rows per request)
+- **Authentication** — service account key file, inline JSON key, or application default credentials
+- **Error reporting** — per-row error details from BigQuery
 - **Async-first** — built on `reqwest` + `tokio`
 
 ## Quick Start
@@ -330,49 +369,54 @@ let repos = stream.fetch_all().await?;
 
 All pagination styles include loop detection — if the same cursor or link is returned twice in a row, pagination stops automatically.
 
-## Feature Flags
+## Feature Flags (umbrella crate)
 
 | Feature | Default | Description |
 |---------|---------|-------------|
-| `transform-flatten` | yes | `RecordTransform::Flatten` — flatten nested objects |
-| `transform-rename-keys` | yes | `RecordTransform::RenameKeys` — regex key renaming (pulls in `regex`) |
-| `transform-snake-case` | yes | `RecordTransform::KeysToSnakeCase` — Meltano-compatible snake_case (pulls in `regex`) |
-| `transforms` | no | Convenience: enables all three transform features |
+| `source-rest` | yes | REST API source connector |
+| `sink-bigquery` | no | Google BigQuery sink connector |
+| `source` | no | All source connectors |
+| `sink` | no | All sink connectors |
+| `full` | no | Every connector |
+| `transform-flatten` | yes | Flatten nested objects (forwarded to source-rest) |
+| `transform-rename-keys` | yes | Regex key renaming (forwarded to source-rest) |
+| `transform-snake-case` | yes | Snake_case normalisation (forwarded to source-rest) |
 
 `RecordTransform::Custom` is always available regardless of feature flags.
 
 ## Project Structure
 
 ```
-src/
-  lib.rs              — library entry point and re-exports
-  config.rs           — RestStreamConfig with fluent builder API
-  stream.rs           — RestStream: main executor (fetch_all, stream_pages, infer_schema)
-  error.rs            — FaucetError enum
-  auth/
-    mod.rs            — Auth enum
-    bearer.rs         — Bearer token auth
-    basic.rs          — HTTP Basic auth
-    api_key.rs        — API key header auth
-    custom.rs         — Custom header auth
-    oauth2.rs         — OAuth2 client credentials with token caching
-    token_endpoint.rs — Generic token endpoint auth with JSONPath extraction and caching
-  pagination/
-    mod.rs            — PaginationStyle enum and PaginationState
-    cursor.rs         — Cursor/token-based pagination
-    page.rs           — Page number pagination
-    offset.rs         — Offset/limit pagination
-    link_header.rs    — Link header pagination
-    next_link_body.rs — Next-link-in-body pagination
-  extract/            — JSONPath record extraction
-  retry/              — Exponential backoff retry executor
-  replication.rs      — Incremental replication (filtering + bookmarking)
-  schema.rs           — JSON Schema inference from record samples
-  transform.rs        — Record transform pipeline (flatten, rename, snake_case, custom)
-tests/
-  auth_test.rs        — Auth integration tests
-  pagination_test.rs  — Pagination integration tests
-  stream_test.rs      — Stream integration tests
+Cargo.toml                    — workspace manifest
+crates/
+  core/                       — faucet-core: shared types and traits
+    src/
+      lib.rs                  — crate root and re-exports
+      error.rs                — FaucetError enum
+      traits.rs               — Source and Sink async traits
+      transform.rs            — RecordTransform pipeline
+      replication.rs          — Incremental replication (filtering + bookmarking)
+      schema.rs               — JSON Schema inference from record samples
+  source/
+    rest/                     — faucet-source-rest: REST API source
+      src/
+        lib.rs                — crate root and re-exports
+        config.rs             — RestStreamConfig with fluent builder API
+        stream.rs             — RestStream executor + Source trait impl
+        auth/                 — Auth strategies (bearer, basic, api_key, oauth2, token_endpoint, custom)
+        pagination/           — Pagination strategies (cursor, page, offset, link_header, next_link_body)
+        extract/              — JSONPath record extraction
+        retry/                — Exponential backoff retry executor
+      examples/               — Usage examples
+      tests/                  — Integration tests (wiremock)
+  sink/
+    bigquery/                 — faucet-sink-bigquery: BigQuery streaming insert sink
+      src/
+        lib.rs                — crate root and re-exports
+        config.rs             — BigQuerySinkConfig with builder API
+        sink.rs               — BigQuerySink executor + Sink trait impl
+faucet-stream/                — umbrella crate with feature-gated re-exports
+  src/lib.rs
 ```
 
 ## License
