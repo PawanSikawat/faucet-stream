@@ -13,7 +13,8 @@
 //! ## Key capabilities
 //!
 //! - **Authentication**: Bearer, Basic, API Key (header or query), OAuth2
-//!   (client credentials with automatic token caching), or custom headers
+//!   (client credentials with automatic token caching), Token Endpoint
+//!   (fetch credentials from any HTTP API with JSONPath extraction), or custom headers
 //! - **Pagination**: cursor/token, page number, offset/limit, Link header,
 //!   or next-link-in-body — all with automatic loop detection
 //! - **JSONPath extraction**: point at where records live in any JSON response
@@ -40,7 +41,8 @@ pub mod stream;
 pub mod transform;
 
 pub use auth::oauth2::DEFAULT_EXPIRY_RATIO;
-pub use auth::{Auth, fetch_oauth2_token};
+pub use auth::token_endpoint::DEFAULT_TOKEN_ENDPOINT_EXPIRY_RATIO;
+pub use auth::{Auth, ResponseValidator, fetch_oauth2_token, fetch_token_from_endpoint};
 pub use config::RestStreamConfig;
 pub use error::FaucetError;
 pub use pagination::PaginationStyle;

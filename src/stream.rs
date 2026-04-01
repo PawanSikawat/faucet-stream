@@ -2,6 +2,7 @@
 
 use crate::auth::Auth;
 use crate::auth::oauth2::TokenCache;
+use crate::auth::token_endpoint::TokenEndpointCache;
 use crate::config::RestStreamConfig;
 use crate::error::FaucetError;
 use crate::extract;
@@ -27,6 +28,8 @@ pub struct RestStream {
     compiled_transforms: Vec<CompiledTransform>,
     /// Shared OAuth2 token cache (only used when `config.auth` is `Auth::OAuth2`).
     token_cache: TokenCache,
+    /// Shared token endpoint cache (only used when `config.auth` is `Auth::TokenEndpoint`).
+    token_endpoint_cache: TokenEndpointCache,
 }
 
 impl RestStream {
@@ -36,12 +39,18 @@ impl RestStream {
     /// transform contains an invalid regex pattern — fail-fast before any
     /// HTTP requests are made.
     pub fn new(config: RestStreamConfig) -> Result<Self, FaucetError> {
-        // Validate OAuth2 expiry_ratio at construction time.
-        if let Auth::OAuth2 { expiry_ratio, .. } = &config.auth
-            && (*expiry_ratio <= 0.0 || *expiry_ratio > 1.0)
+        // Validate expiry_ratio at construction time.
+        let expiry_ratio_to_validate = match &config.auth {
+            Auth::OAuth2 { expiry_ratio, .. } | Auth::TokenEndpoint { expiry_ratio, .. } => {
+                Some(*expiry_ratio)
+            }
+            _ => None,
+        };
+        if let Some(ratio) = expiry_ratio_to_validate
+            && (ratio <= 0.0 || ratio > 1.0)
         {
             return Err(FaucetError::Auth(format!(
-                "expiry_ratio must be in (0.0, 1.0], got {expiry_ratio}"
+                "expiry_ratio must be in (0.0, 1.0], got {ratio}"
             )));
         }
 
@@ -60,6 +69,7 @@ impl RestStream {
             client: builder.build()?,
             compiled_transforms,
             token_cache: TokenCache::new(),
+            token_endpoint_cache: TokenEndpointCache::new(),
         })
     }
 
@@ -322,9 +332,9 @@ impl RestStream {
             }
         };
 
-        // Resolve OAuth2 credentials to a Bearer token before applying auth headers.
-        // The token is cached and reused until it expires, avoiding a token
-        // fetch on every HTTP request.
+        // Resolve OAuth2 / TokenEndpoint credentials to a Bearer token before
+        // applying auth headers. Tokens are cached and reused until they expire,
+        // avoiding a token fetch on every HTTP request.
         let resolved_auth = match &self.config.auth {
             Auth::OAuth2 {
                 token_url,
@@ -342,6 +352,32 @@ impl RestStream {
                         client_secret,
                         scopes,
                         *expiry_ratio,
+                    )
+                    .await?;
+                Auth::Bearer(token)
+            }
+            Auth::TokenEndpoint {
+                url: token_url,
+                method: token_method,
+                headers: token_headers,
+                body: token_body,
+                token_path,
+                expiry_path,
+                expiry_ratio,
+                response_validator,
+            } => {
+                let token = self
+                    .token_endpoint_cache
+                    .get_or_refresh(
+                        &self.client,
+                        token_url,
+                        token_method,
+                        token_headers,
+                        token_body.as_ref(),
+                        token_path,
+                        expiry_path.as_deref(),
+                        *expiry_ratio,
+                        response_validator.as_ref(),
                     )
                     .await?;
                 Auth::Bearer(token)

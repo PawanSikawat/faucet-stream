@@ -1,4 +1,6 @@
-use faucet_stream::{Auth, DEFAULT_EXPIRY_RATIO, RestStream, RestStreamConfig};
+use faucet_stream::{
+    Auth, DEFAULT_EXPIRY_RATIO, DEFAULT_TOKEN_ENDPOINT_EXPIRY_RATIO, RestStream, RestStreamConfig,
+};
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 
 #[test]
@@ -138,6 +140,57 @@ fn expiry_ratio_one_accepted() {
             client_secret: "secret".into(),
             scopes: vec![],
             expiry_ratio: 1.0,
+        },
+    ));
+    assert!(result.is_ok());
+}
+
+#[test]
+fn token_endpoint_apply_without_resolution_returns_error() {
+    let mut headers = HeaderMap::new();
+    let result = Auth::TokenEndpoint {
+        url: "https://example.com/auth".into(),
+        method: reqwest::Method::POST,
+        headers: HeaderMap::new(),
+        body: None,
+        token_path: "$.token".into(),
+        expiry_path: None,
+        expiry_ratio: DEFAULT_TOKEN_ENDPOINT_EXPIRY_RATIO,
+        response_validator: None,
+    }
+    .apply(&mut headers);
+    assert!(result.is_err());
+}
+
+#[test]
+fn token_endpoint_expiry_ratio_zero_rejected() {
+    let result = RestStream::new(RestStreamConfig::new("https://example.com", "/api").auth(
+        Auth::TokenEndpoint {
+            url: "https://example.com/auth".into(),
+            method: reqwest::Method::POST,
+            headers: HeaderMap::new(),
+            body: None,
+            token_path: "$.token".into(),
+            expiry_path: None,
+            expiry_ratio: 0.0,
+            response_validator: None,
+        },
+    ));
+    assert!(result.is_err());
+}
+
+#[test]
+fn token_endpoint_expiry_ratio_valid_accepted() {
+    let result = RestStream::new(RestStreamConfig::new("https://example.com", "/api").auth(
+        Auth::TokenEndpoint {
+            url: "https://example.com/auth".into(),
+            method: reqwest::Method::POST,
+            headers: HeaderMap::new(),
+            body: None,
+            token_path: "$.token".into(),
+            expiry_path: None,
+            expiry_ratio: 0.9,
+            response_validator: None,
         },
     ));
     assert!(result.is_ok());
