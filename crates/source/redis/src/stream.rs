@@ -178,6 +178,11 @@ impl faucet_core::Source for RedisSource {
     async fn fetch_all(&self) -> Result<Vec<Value>, FaucetError> {
         RedisSource::fetch_all(self).await
     }
+
+    fn config_schema(&self) -> serde_json::Value {
+        serde_json::to_value(faucet_core::schema_for!(RedisSourceConfig))
+            .expect("schema serialization")
+    }
 }
 
 #[cfg(test)]

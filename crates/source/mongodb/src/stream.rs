@@ -94,6 +94,11 @@ impl faucet_core::Source for MongoSource {
     async fn fetch_all(&self) -> Result<Vec<Value>, FaucetError> {
         MongoSource::fetch_all(self).await
     }
+
+    fn config_schema(&self) -> serde_json::Value {
+        serde_json::to_value(faucet_core::schema_for!(MongoSourceConfig))
+            .expect("schema serialization")
+    }
 }
 
 /// Convert a `serde_json::Value` to a `bson::Document`.

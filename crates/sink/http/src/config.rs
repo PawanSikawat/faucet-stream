@@ -1,10 +1,11 @@
 //! HTTP sink configuration.
 
 use reqwest::header::HeaderMap;
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 /// Authentication method for the HTTP sink.
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "type")]
 pub enum HttpSinkAuth {
     /// No authentication.
@@ -39,7 +40,7 @@ impl std::fmt::Debug for HttpSinkAuth {
 }
 
 /// How records are sent in HTTP requests.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "type")]
 pub enum HttpBatchMode {
     /// Send one HTTP request per record.
@@ -49,12 +50,13 @@ pub enum HttpBatchMode {
 }
 
 /// Configuration for the HTTP sink connector.
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, JsonSchema)]
 pub struct HttpSinkConfig {
     /// Target endpoint URL.
     pub url: String,
     /// HTTP method (default: POST).
     #[serde(with = "crate::serde_helpers::http_method")]
+    #[schemars(with = "String")]
     pub method: reqwest::Method,
     /// Additional request headers.
     #[serde(skip, default)]

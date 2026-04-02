@@ -76,6 +76,10 @@ impl S3Sink {
 
 #[async_trait]
 impl faucet_core::Sink for S3Sink {
+    fn config_schema(&self) -> serde_json::Value {
+        serde_json::to_value(faucet_core::schema_for!(S3SinkConfig)).expect("schema serialization")
+    }
+
     async fn write_batch(&self, records: &[Value]) -> Result<usize, FaucetError> {
         if records.is_empty() {
             return Ok(0);

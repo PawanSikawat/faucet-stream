@@ -1,9 +1,10 @@
 //! CSV source configuration.
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 /// Configuration for the CSV file source.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct CsvSourceConfig {
     /// Path to the CSV file.
     pub path: String,

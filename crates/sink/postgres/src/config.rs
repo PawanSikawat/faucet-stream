@@ -1,9 +1,10 @@
 //! PostgreSQL sink configuration.
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 /// How to map JSON records to table columns.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum PostgresColumnMapping {
     /// Insert each record as a single `jsonb` column. The column name
@@ -23,7 +24,7 @@ impl Default for PostgresColumnMapping {
 }
 
 /// Configuration for the PostgreSQL sink.
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, JsonSchema)]
 pub struct PostgresSinkConfig {
     /// PostgreSQL connection URL (e.g. `postgres://user:pass@host/db`).
     pub connection_url: String,

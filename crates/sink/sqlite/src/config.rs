@@ -1,9 +1,10 @@
 //! SQLite sink configuration.
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 /// How to map JSON records to table columns.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum SqliteColumnMapping {
     /// Insert each record as a single JSON text column. The column name
@@ -23,7 +24,7 @@ impl Default for SqliteColumnMapping {
 }
 
 /// Configuration for the SQLite sink.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct SqliteSinkConfig {
     /// SQLite database URL (file path or `:memory:`).
     pub database_url: String,

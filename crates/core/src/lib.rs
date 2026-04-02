@@ -29,4 +29,5 @@ pub use transform::RecordTransform;
 // Re-export dependencies that connector authors need, so they only depend on
 // `faucet-core` instead of adding `async-trait` and `serde_json` themselves.
 pub use async_trait::async_trait;
+pub use schemars::{self, JsonSchema, schema_for};
 pub use serde_json::{self, Value, json};

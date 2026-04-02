@@ -32,6 +32,11 @@ impl faucet_core::Source for CsvSource {
             .await
             .map_err(|e| FaucetError::Config(format!("CSV read task failed: {e}")))?
     }
+
+    fn config_schema(&self) -> serde_json::Value {
+        serde_json::to_value(faucet_core::schema_for!(CsvSourceConfig))
+            .expect("schema serialization")
+    }
 }
 
 /// Synchronous CSV reading logic.

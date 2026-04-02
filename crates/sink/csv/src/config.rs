@@ -1,9 +1,10 @@
 //! CSV sink configuration.
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 /// Configuration for the CSV file sink.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct CsvSinkConfig {
     /// Path to the output CSV file.
     pub path: String,

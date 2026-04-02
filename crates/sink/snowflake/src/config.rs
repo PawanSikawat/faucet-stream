@@ -1,9 +1,10 @@
 //! Snowflake sink configuration.
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 /// Authentication method for Snowflake.
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "type")]
 pub enum SnowflakeAuth {
     /// JWT key-pair authentication.
@@ -34,7 +35,7 @@ impl std::fmt::Debug for SnowflakeAuth {
 }
 
 /// Configuration for the Snowflake sink.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct SnowflakeSinkConfig {
     /// Snowflake account identifier (e.g. `"xy12345.us-east-1"`).
     pub account: String,

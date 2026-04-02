@@ -9,6 +9,7 @@ description = "SQLite query source connector for the faucet-stream ecosystem"
 
 [dependencies]
 faucet-core.workspace = true
+schemars.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 async-trait.workspace = true

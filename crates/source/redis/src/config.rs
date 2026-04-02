@@ -1,9 +1,10 @@
 //! Redis source configuration.
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 /// The type of Redis data structure to read from.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "type")]
 pub enum RedisSourceType {
     /// Read all elements from a Redis list via `LRANGE 0 -1`.
@@ -30,7 +31,7 @@ pub enum RedisSourceType {
 }
 
 /// Configuration for the Redis source connector.
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, JsonSchema)]
 pub struct RedisSourceConfig {
     /// Redis connection URL (e.g. `"redis://127.0.0.1:6379"`).
     pub url: String,

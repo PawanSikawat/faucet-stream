@@ -1,9 +1,10 @@
 //! Elasticsearch sink configuration.
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 /// Authentication method for the Elasticsearch sink.
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "type", content = "value")]
 pub enum ElasticsearchSinkAuth {
     /// No authentication.
@@ -32,7 +33,7 @@ impl std::fmt::Debug for ElasticsearchSinkAuth {
 }
 
 /// Configuration for the Elasticsearch bulk index sink.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ElasticsearchSinkConfig {
     /// Base URL of the Elasticsearch cluster (e.g. `"http://localhost:9200"`).
     pub base_url: String,

@@ -1,10 +1,11 @@
 //! Elasticsearch source configuration.
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 /// Authentication method for Elasticsearch.
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "type", content = "value")]
 pub enum ElasticsearchAuth {
     /// No authentication.
@@ -33,7 +34,7 @@ impl std::fmt::Debug for ElasticsearchAuth {
 }
 
 /// Configuration for the Elasticsearch search source.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ElasticsearchSourceConfig {
     /// Base URL of the Elasticsearch cluster (e.g. `"http://localhost:9200"`).
     pub base_url: String,

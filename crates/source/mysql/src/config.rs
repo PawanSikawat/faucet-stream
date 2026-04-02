@@ -1,9 +1,10 @@
 //! MySQL source configuration.
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 /// Configuration for the MySQL query source.
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, JsonSchema)]
 pub struct MysqlSourceConfig {
     /// MySQL connection URL (e.g. `mysql://user:pass@host/db`).
     pub connection_url: String,

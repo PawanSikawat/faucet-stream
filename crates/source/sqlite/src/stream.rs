@@ -83,6 +83,11 @@ impl faucet_core::Source for SqliteSource {
         );
         Ok(records)
     }
+
+    fn config_schema(&self) -> serde_json::Value {
+        serde_json::to_value(faucet_core::schema_for!(SqliteSourceConfig))
+            .expect("schema serialization")
+    }
 }
 
 #[cfg(test)]

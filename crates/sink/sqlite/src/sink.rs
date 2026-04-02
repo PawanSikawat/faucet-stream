@@ -183,6 +183,11 @@ impl SqliteSink {
 
 #[async_trait]
 impl faucet_core::Sink for SqliteSink {
+    fn config_schema(&self) -> serde_json::Value {
+        serde_json::to_value(faucet_core::schema_for!(SqliteSinkConfig))
+            .expect("schema serialization")
+    }
+
     async fn write_batch(&self, records: &[Value]) -> Result<usize, FaucetError> {
         let mut total = 0;
         for chunk in records.chunks(self.config.batch_size) {

@@ -33,6 +33,11 @@ impl RedisSink {
 
 #[async_trait]
 impl faucet_core::Sink for RedisSink {
+    fn config_schema(&self) -> serde_json::Value {
+        serde_json::to_value(faucet_core::schema_for!(RedisSinkConfig))
+            .expect("schema serialization")
+    }
+
     async fn write_batch(&self, records: &[Value]) -> Result<usize, FaucetError> {
         if records.is_empty() {
             return Ok(0);

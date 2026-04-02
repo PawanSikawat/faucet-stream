@@ -8,13 +8,14 @@ use reqwest::{
     Method,
     header::{HeaderMap, HeaderName, HeaderValue},
 };
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::time::Duration;
 
 /// Configuration for a RestStream.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct RestStreamConfig {
     // ── Core request ──────────────────────────────────────────────────────────
     pub base_url: String,
@@ -22,6 +23,7 @@ pub struct RestStreamConfig {
     /// are substituted per-partition (e.g. `"/orgs/{org_id}/users"`).
     pub path: String,
     #[serde(with = "crate::serde_helpers::http_method")]
+    #[schemars(with = "String")]
     pub method: Method,
     pub auth: Auth,
     #[serde(skip, default)]
@@ -34,13 +36,16 @@ pub struct RestStreamConfig {
     pub records_path: Option<String>,
     pub max_pages: Option<usize>,
     #[serde(with = "faucet_core::config::duration_secs_option", default)]
+    #[schemars(with = "Option<u64>")]
     pub request_delay: Option<Duration>,
 
     // ── Reliability ───────────────────────────────────────────────────────────
     #[serde(with = "faucet_core::config::duration_secs_option", default)]
+    #[schemars(with = "Option<u64>")]
     pub timeout: Option<Duration>,
     pub max_retries: u32,
     #[serde(with = "faucet_core::config::duration_secs")]
+    #[schemars(with = "u64")]
     pub retry_backoff: Duration,
     /// HTTP status codes that should **not** cause an error. Responses with
     /// these codes are treated as empty pages (no records, no further pages).

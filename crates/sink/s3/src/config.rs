@@ -1,9 +1,10 @@
 //! S3 sink configuration.
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 /// Configuration for the S3 sink connector.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct S3SinkConfig {
     /// S3 bucket name.
     pub bucket: String,

@@ -506,6 +506,11 @@ impl faucet_core::Source for RestStream {
     async fn fetch_all_incremental(&self) -> Result<(Vec<Value>, Option<Value>), FaucetError> {
         RestStream::fetch_all_incremental(self).await
     }
+
+    fn config_schema(&self) -> serde_json::Value {
+        serde_json::to_value(faucet_core::schema_for!(RestStreamConfig))
+            .expect("schema serialization")
+    }
 }
 
 #[cfg(test)]

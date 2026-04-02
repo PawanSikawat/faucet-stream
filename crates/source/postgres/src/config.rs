@@ -1,10 +1,11 @@
 //! PostgreSQL source configuration.
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 /// Configuration for the PostgreSQL query source.
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, JsonSchema)]
 pub struct PostgresSourceConfig {
     /// PostgreSQL connection URL (e.g. `postgres://user:pass@host/db`).
     pub connection_url: String,

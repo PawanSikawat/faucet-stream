@@ -157,4 +157,9 @@ impl faucet_core::Source for ElasticsearchSource {
 
         Ok(all_records)
     }
+
+    fn config_schema(&self) -> serde_json::Value {
+        serde_json::to_value(faucet_core::schema_for!(ElasticsearchSourceConfig))
+            .expect("schema serialization")
+    }
 }

@@ -110,6 +110,11 @@ impl faucet_core::Source for WebhookSource {
     async fn fetch_all(&self) -> Result<Vec<Value>, FaucetError> {
         WebhookSource::fetch_all(self).await
     }
+
+    fn config_schema(&self) -> serde_json::Value {
+        serde_json::to_value(faucet_core::schema_for!(WebhookSourceConfig))
+            .expect("schema serialization")
+    }
 }
 
 #[cfg(test)]

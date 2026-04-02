@@ -1,9 +1,10 @@
 //! SQLite source configuration.
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 /// Configuration for the SQLite query source.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct SqliteSourceConfig {
     /// SQLite database URL (file path or `sqlite::memory:`).
     pub database_url: String,

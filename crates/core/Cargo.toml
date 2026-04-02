@@ -26,6 +26,7 @@ regex = { workspace = true, optional = true }
 futures-core.workspace = true
 dotenvy = "0.15"
 envy = "0.4"
+schemars.workspace = true
 
 [dev-dependencies]
 serde_json.workspace = true

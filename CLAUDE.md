@@ -80,6 +80,19 @@ faucet-core  <──  faucet-source-rest
              <──  faucet-stream (umbrella, all optional)
 ```
 
+## Keeping This File Up to Date
+
+**Whenever you change the project structure, add/remove crates, modify traits, add new patterns, or change any fundamental aspect of the codebase, update this CLAUDE.md file immediately to reflect those changes.** This file is the single source of truth for how the project works. Stale documentation wastes time on every future conversation.
+
+Specifically, update CLAUDE.md when:
+- Adding, removing, or renaming crates or modules
+- Changing trait signatures (`Source`, `Sink`, `Pipeline`)
+- Adding new re-exports to `faucet-core`
+- Changing error variants in `FaucetError`
+- Adding new workspace dependencies
+- Changing feature flags
+- Adding new architectural patterns or conventions
+
 ## Primary Goal
 
 **All sources and sinks must be as fast, efficient, and reliable as possible.** This is the number one priority for every decision — architecture, implementation, dependency choice, and API design. Performance and reliability are not afterthoughts; they are the reason this library exists. Every connector should be the fastest way to move data between its endpoints in Rust.
@@ -100,7 +113,7 @@ When reviewing or modifying any part of the codebase, **proactively fix** any is
 
 This crate is designed as a **marketplace ecosystem** — third-party developers should be able to build and publish their own `faucet-source-*` and `faucet-sink-*` crates with minimal friction. Every change must preserve and improve this experience:
 
-- **`faucet-core` is the only required dependency** for connector authors. It re-exports `async_trait`, `serde_json`, `Value`, and `json!` so third-party crates don't need to add those separately. If a new common dependency is needed by connector authors, re-export it from `faucet-core` rather than requiring them to add it.
+- **`faucet-core` is the only required dependency** for connector authors. It re-exports `async_trait`, `serde_json` (`Value`, `json!`), and `schemars` (`JsonSchema`, `schema_for!`) so third-party crates don't need to add those separately. If a new common dependency is needed by connector authors, re-export it from `faucet-core` rather than requiring them to add it.
 - **`Source` and `Sink` traits must stay simple and object-safe.** Don't add methods that require connector-specific types, complex generics, or associated types that break `Box<dyn Source>` / `Box<dyn Sink>`. New trait methods must have default implementations so existing connectors don't break.
 - **`FaucetError` must accommodate third-party errors.** The `Custom(Box<dyn Error + Send + Sync>)` variant lets connector authors wrap their own error types without losing the chain. Don't remove it. If adding new error variants, consider whether third-party connectors would need them.
 - **`Pipeline` must remain generic** over any `Source` + `Sink` combination. Don't introduce coupling to specific connectors in the pipeline or core crate.
@@ -149,10 +162,11 @@ cargo publish --dry-run -p faucet-stream
 
 ### faucet-core (`crates/core/`)
 
-- **`src/lib.rs`** — crate root; re-exports `FaucetError`, `Source`, `Sink`, `Pipeline`, `PipelineResult`, `run_stream`, `RecordTransform`, `ReplicationMethod`
-- **`src/error.rs`** — `FaucetError` enum: `Http`, `HttpStatus`, `Json`, `JsonPath`, `Auth`, `RateLimited`, `Url`, `Transform`, `Config`, `Sink`
+- **`src/lib.rs`** — crate root; re-exports `FaucetError`, `Source`, `Sink`, `Pipeline`, `PipelineResult`, `run_stream`, `RecordTransform`, `ReplicationMethod`. Also re-exports third-party crates for connector authors: `async_trait`, `serde_json` (+ `Value`, `json!`), `schemars` (+ `JsonSchema`, `schema_for!`)
+- **`src/error.rs`** — `FaucetError` enum: `Http`, `HttpStatus`, `Json`, `JsonPath`, `Auth`, `RateLimited`, `Url`, `Transform`, `Config`, `Source`, `Sink`, `Custom(Box<dyn Error>)`
+- **`src/config.rs`** — Config loading utilities: `load_json()` (from JSON file), `load_env()` (from env vars with prefix), `load_env_file()` (load `.env` then env vars). Also `duration_secs` and `duration_secs_option` serde helper modules for `Duration` fields
 - **`src/util.rs`** — Shared utilities: `quote_ident()` (SQL injection prevention), `extract_records()` (JSONPath extraction), `check_http_response()` (HTTP status error handling)
-- **`src/traits.rs`** — `Source` and `Sink` async traits (the core abstractions)
+- **`src/traits.rs`** — `Source` and `Sink` async traits. Both include `config_schema(&self) -> Value` method that returns a JSON Schema describing the connector's configuration (auto-generated via `schemars`)
 - **`src/pipeline.rs`** — `Pipeline` struct (batch source→sink), `run_stream()` (streaming source→sink), `PipelineResult`
 - **`src/transform.rs`** — `RecordTransform` enum + `CompiledTransform`: flatten, rename keys (regex), snake_case, custom closures; feature-gated built-ins
 - **`src/replication.rs`** — `ReplicationMethod` enum, `filter_incremental()`, `max_replication_value()` for bookmark-based incremental replication
@@ -161,12 +175,13 @@ cargo publish --dry-run -p faucet-stream
 ### faucet-source-rest (`crates/source/rest/`)
 
 - **`src/lib.rs`** — crate root; re-exports core types + REST-specific types
-- **`src/config.rs`** — `RestStreamConfig` struct with fluent builder (base_url, path, method, auth, headers, query_params, body, pagination, records_path, max_pages, request_delay, timeout, max_retries, retry_backoff, replication, transforms, partitions, schema, tolerated_http_errors)
-- **`src/stream.rs`** — `RestStream`: the main executor; `new(config)`, `fetch_all()`, `fetch_all_as::<T>()`, `fetch_all_incremental()`, `infer_schema()`, `stream_pages()`; implements `faucet_core::Source`
+- **`src/config.rs`** — `RestStreamConfig` struct with fluent builder (base_url, path, method, auth, headers, query_params, body, pagination, records_path, max_pages, request_delay, timeout, max_retries, retry_backoff, replication, transforms, partitions, schema, tolerated_http_errors). All config types derive `Serialize, Deserialize, JsonSchema`
+- **`src/stream.rs`** — `RestStream`: the main executor; `new(config)`, `fetch_all()`, `fetch_all_as::<T>()`, `fetch_all_incremental()`, `infer_schema()`, `stream_pages()`; implements `faucet_core::Source` (incl. `config_schema()`)
 - **`src/auth/`** — `Auth` enum + per-strategy impls: `bearer.rs`, `basic.rs`, `api_key.rs`, `custom.rs`, `oauth2.rs`, `token_endpoint.rs`
 - **`src/pagination/`** — `PaginationStyle` enum + `PaginationState` + per-strategy impls: `cursor.rs`, `page.rs`, `offset.rs`, `link_header.rs`, `next_link_body.rs`
 - **`src/extract/`** — `extract_records()`: JSONPath extraction from response bodies
 - **`src/retry/`** — `execute_with_retry()`: generic exponential backoff retry executor
+- **`src/serde_helpers.rs`** — `http_method` module: serialize/deserialize `reqwest::Method` as string
 
 ### faucet-source-graphql (`crates/source/graphql/`)
 
@@ -180,6 +195,7 @@ cargo publish --dry-run -p faucet-stream
 - **`src/config.rs`** — `XmlStreamConfig`, `XmlAuth`, `XmlPagination` (page-number, offset)
 - **`src/convert.rs`** — `xml_to_json()`: event-based XML-to-JSON conversion; `extract_at_path()`: dot-path record extraction
 - **`src/stream.rs`** — `XmlStream`: pagination, XML-to-JSON conversion pipeline; implements `faucet_core::Source`
+- **`src/serde_helpers.rs`** — `http_method` module: serialize/deserialize `reqwest::Method` as string
 
 ### faucet-source-grpc (`crates/source/grpc/`)
 
@@ -296,6 +312,7 @@ cargo publish --dry-run -p faucet-stream
 
 - **`src/config.rs`** — `HttpSinkConfig`, `HttpSinkAuth`, `HttpBatchMode` (Individual, Array)
 - **`src/sink.rs`** — `HttpSink`: POST records individually or as array; implements `faucet_core::Sink`
+- **`src/serde_helpers.rs`** — `http_method` module: serialize/deserialize `reqwest::Method` as string
 
 ### faucet-stream (umbrella, `faucet-stream/`)
 
@@ -361,7 +378,8 @@ When the user points out something fundamental about how code in this library sh
 ### Module Boundaries
 
 #### faucet-core
-- `src/traits.rs` — trait definitions only. No HTTP or connector-specific logic.
+- `src/traits.rs` — trait definitions only (`Source`, `Sink` with `config_schema()`). No HTTP or connector-specific logic.
+- `src/config.rs` — config loading helpers (`load_json`, `load_env`, `load_env_file`) and serde Duration modules. No connector-specific logic.
 - `src/pipeline.rs` — source→sink orchestration only. Depends only on `Source` and `Sink` traits. No connector-specific logic.
 - `src/transform.rs` — record transform compilation and application only. No HTTP logic. Built-in transforms are feature-gated.
 - `src/replication.rs` — incremental replication filtering and bookmark computation only. No HTTP logic.
@@ -440,6 +458,36 @@ When the user points out something fundamental about how code in this library sh
 - `src/config.rs` — configuration types only. No HTTP logic.
 - `src/sink.rs` — HTTP POST with auth, individual or batched mode.
 
+### Config Loading
+
+All connector config structs derive `Serialize` + `Deserialize` + `JsonSchema`, so they can be loaded from JSON files, environment variables, or `.env` files using the helpers in `faucet_core::config`:
+
+- `load_json::<T>(path)` — deserialize from a JSON file
+- `load_env::<T>(prefix)` — deserialize from environment variables (e.g. prefix `"BQ"` reads `BQ_PROJECT_ID`, `BQ_DATASET_ID`, etc.)
+- `load_env_file::<T>(env_path, prefix)` — load a `.env` file first, then read env vars
+
+Duration fields use `#[serde(with = "faucet_core::config::duration_secs")]` to serialize as `u64` seconds. Optional Durations use `duration_secs_option`.
+
+Fields that can't be serialized (closures, `HeaderMap`, `reqwest::Method`) use:
+- `#[serde(skip)]` / `#[serde(skip, default)]` for non-serializable fields
+- `#[serde(with = "crate::serde_helpers::http_method")]` + `#[schemars(with = "String")]` for `reqwest::Method`
+
+### Config Schema Introspection
+
+Every `Source` and `Sink` has a `config_schema(&self) -> Value` method that returns a JSON Schema describing the config the connector accepts. This is auto-generated via `schemars::schema_for!()` from the config struct.
+
+Usage:
+```rust
+let source = RestStream::new(config).await?;
+let schema = source.config_schema(); // JSON Schema as serde_json::Value
+println!("{}", serde_json::to_string_pretty(&schema)?);
+```
+
+When adding a new connector, always:
+1. Derive `JsonSchema` on the config struct and all its sub-types (auth enums, etc.)
+2. Add `#[schemars(with = "...")]` for fields with custom serde (Duration, Method)
+3. Override `config_schema()` in the `Source`/`Sink` impl
+
 ### Error Handling
 
 All errors must map to a `FaucetError` variant. Never use `.unwrap()` or `.expect()` on values that can fail at runtime. Use `.expect()` only for programmer errors (invariants validated at construction time). All error types use `thiserror` derive macros.
@@ -484,6 +532,22 @@ Always use the **highest available stable version** for every crate, the Rust to
 - When upgrading existing crates, check with `cargo search <crate>` and update to the latest stable.
 - Never use alpha, beta, or rc versions unless there is no stable alternative.
 - Shared dependencies should be declared in the workspace `[workspace.dependencies]` table and referenced with `.workspace = true` in member crates.
+
+### Key Workspace Dependencies
+
+| Crate | Version | Purpose |
+|-------|---------|---------|
+| `serde` | 1 (derive) | Serialize/Deserialize for all config structs |
+| `serde_json` | 1 | JSON Value type, used everywhere |
+| `schemars` | 1.2 | JSON Schema generation from config structs via `JsonSchema` derive |
+| `async-trait` | 0.1 | Async trait support for Source/Sink |
+| `thiserror` | 2 | Derive macros for FaucetError |
+| `reqwest` | 0.13 | HTTP client (REST, GraphQL, XML, HTTP sink, Elasticsearch, Snowflake) |
+| `tokio` | 1 | Async runtime |
+| `tracing` | 0.1 | Structured logging |
+| `sqlx` | 0.8 | Database pool/queries (PostgreSQL, MySQL, SQLite) |
+| `dotenvy` | 0.15 | `.env` file loading (in faucet-core) |
+| `envy` | 0.4 | Env var → struct deserialization (in faucet-core) |
 
 ## Publishing
 

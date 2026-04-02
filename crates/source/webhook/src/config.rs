@@ -1,9 +1,10 @@
 //! Webhook source configuration.
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 /// Configuration for the webhook receiver source.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(default)]
 pub struct WebhookSourceConfig {
     /// Address to bind the HTTP server to (default: `"0.0.0.0:8080"`).

@@ -157,6 +157,11 @@ impl faucet_core::Source for GraphqlStream {
     async fn fetch_all(&self) -> Result<Vec<Value>, FaucetError> {
         GraphqlStream::fetch_all(self).await
     }
+
+    fn config_schema(&self) -> serde_json::Value {
+        serde_json::to_value(faucet_core::schema_for!(GraphqlStreamConfig))
+            .expect("schema serialization")
+    }
 }
 
 fn extract_string(body: &Value, path: &str) -> Option<String> {

@@ -1,10 +1,11 @@
 //! XML source configuration.
 
 use reqwest::header::HeaderMap;
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 /// Authentication for XML API endpoints.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "type")]
 pub enum XmlAuth {
     /// No authentication.
@@ -19,7 +20,7 @@ pub enum XmlAuth {
 }
 
 /// Pagination configuration for XML APIs.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "type")]
 pub enum XmlPagination {
     /// Page-number pagination with a query parameter.
@@ -38,7 +39,7 @@ pub enum XmlPagination {
 }
 
 /// Configuration for the XML source.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct XmlStreamConfig {
     /// Base URL of the API.
     pub base_url: String,
@@ -46,6 +47,7 @@ pub struct XmlStreamConfig {
     pub path: String,
     /// HTTP method (GET or POST for SOAP).
     #[serde(with = "crate::serde_helpers::http_method")]
+    #[schemars(with = "String")]
     pub method: reqwest::Method,
     /// Authentication method.
     pub auth: XmlAuth,

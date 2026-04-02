@@ -88,4 +88,9 @@ impl faucet_core::Source for MysqlSource {
         tracing::info!(rows = records.len(), query = %self.config.query, "MySQL source fetch complete");
         Ok(records)
     }
+
+    fn config_schema(&self) -> serde_json::Value {
+        serde_json::to_value(faucet_core::schema_for!(MysqlSourceConfig))
+            .expect("schema serialization")
+    }
 }

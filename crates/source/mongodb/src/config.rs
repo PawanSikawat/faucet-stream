@@ -1,5 +1,6 @@
 //! MongoDB source configuration.
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::fmt;
@@ -23,7 +24,7 @@ use std::fmt;
 /// .limit(1000)
 /// .batch_size(200);
 /// ```
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, JsonSchema)]
 pub struct MongoSourceConfig {
     /// MongoDB connection URI (e.g. `mongodb://localhost:27017`).
     pub connection_uri: String,

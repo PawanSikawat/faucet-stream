@@ -1,9 +1,10 @@
 //! MySQL sink configuration.
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 /// How to map JSON records to table columns.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum MysqlColumnMapping {
     /// Insert each record as a single JSON column. The column name
@@ -23,7 +24,7 @@ impl Default for MysqlColumnMapping {
 }
 
 /// Configuration for the MySQL sink.
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, JsonSchema)]
 pub struct MysqlSinkConfig {
     /// MySQL connection URL (e.g. `mysql://user:pass@host/db`).
     pub connection_url: String,

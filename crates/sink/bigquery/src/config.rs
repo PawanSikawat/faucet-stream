@@ -1,9 +1,10 @@
 //! BigQuery sink configuration.
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 /// How to authenticate with Google BigQuery.
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "type", content = "value")]
 pub enum BigQueryCredentials {
     /// Path to a service account JSON key file.
@@ -27,7 +28,7 @@ impl std::fmt::Debug for BigQueryCredentials {
 }
 
 /// Configuration for the BigQuery streaming insert sink.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct BigQuerySinkConfig {
     /// GCP project ID.
     pub project_id: String,
