@@ -41,3 +41,12 @@ jobs:
 
       - name: Test
         run: cargo test --workspace --all-features
+
+      - name: Check no-default-features
+        run: cargo check -p faucet-stream --no-default-features
+
+      - name: Check individual features
+        run: |
+          cargo check -p faucet-stream --no-default-features --features source-graphql
+          cargo check -p faucet-stream --no-default-features --features sink-jsonl
+          cargo check -p faucet-stream --no-default-features --features source,sink

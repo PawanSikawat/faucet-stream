@@ -21,6 +21,12 @@ struct SnowflakeResponse {
     code: Option<String>,
 }
 
+/// Quote a Snowflake identifier to prevent SQL injection.
+/// Doubles any embedded double-quotes per SQL standard.
+fn quote_ident(name: &str) -> String {
+    format!("\"{}\"", name.replace('"', "\"\""))
+}
+
 impl SnowflakeSink {
     /// Create a new Snowflake sink.
     pub fn new(config: SnowflakeSinkConfig) -> Self {
@@ -58,14 +64,14 @@ impl SnowflakeSink {
                 });
 
                 let key = jsonwebtoken::EncodingKey::from_rsa_pem(private_key_pem.as_bytes())
-                    .map_err(|e| FaucetError::Sink(format!("invalid RSA key: {e}")))?;
+                    .map_err(|e| FaucetError::Auth(format!("invalid RSA key: {e}")))?;
 
                 let token = jsonwebtoken::encode(
                     &jsonwebtoken::Header::new(jsonwebtoken::Algorithm::RS256),
                     &claims,
                     &key,
                 )
-                .map_err(|e| FaucetError::Sink(format!("JWT generation failed: {e}")))?;
+                .map_err(|e| FaucetError::Auth(format!("JWT generation failed: {e}")))?;
 
                 Ok(format!("Bearer {token}"))
             }
@@ -125,36 +131,27 @@ impl SnowflakeSink {
         Ok(())
     }
 
-    /// Build an INSERT VALUES statement for a batch of records.
+    /// Build an INSERT statement for a batch of records using PARSE_JSON
+    /// with parameterised identifiers.
     fn build_insert_sql(&self, records: &[Value]) -> Result<String, FaucetError> {
-        let mut values_parts = Vec::with_capacity(records.len());
-
         for record in records {
-            let obj = record.as_object().ok_or_else(|| {
+            record.as_object().ok_or_else(|| {
                 FaucetError::Sink("Snowflake sink requires JSON object records".into())
             })?;
-
-            // Build column list from first record's keys.
-            if values_parts.is_empty() {
-                let _columns: Vec<&str> = obj.keys().map(String::as_str).collect();
-            }
-
-            let escaped = serde_json::to_string(record)
-                .map_err(|e| FaucetError::Sink(format!("JSON serialization failed: {e}")))?
-                .replace('\'', "\\'");
-            values_parts.push(format!("(PARSE_JSON('{escaped}'))"));
         }
 
+        // Serialize all records into a JSON array, then use FLATTEN to insert.
+        let json_array: Vec<String> = records
+            .iter()
+            .map(|r| serde_json::to_string(r).unwrap_or_default())
+            .collect();
+
         Ok(format!(
-            "INSERT INTO {}.{}.{} (SELECT * FROM TABLE(FLATTEN(input => PARSE_JSON('[{}]')))) ",
-            self.config.database,
-            self.config.schema,
-            self.config.table,
-            records
-                .iter()
-                .map(|r| serde_json::to_string(r).unwrap_or_default())
-                .collect::<Vec<_>>()
-                .join(",")
+            "INSERT INTO {}.{}.{} (SELECT * FROM TABLE(FLATTEN(input => PARSE_JSON('[{}]'))))",
+            quote_ident(&self.config.database),
+            quote_ident(&self.config.schema),
+            quote_ident(&self.config.table),
+            json_array.join(",")
         ))
     }
 }
@@ -223,5 +220,31 @@ mod tests {
         let sink = SnowflakeSink::new(config);
         let header = sink.auth_header().unwrap();
         assert_eq!(header, "Snowflake Token=\"my-token\"");
+    }
+
+    #[test]
+    fn quote_ident_simple() {
+        assert_eq!(quote_ident("my_table"), "\"my_table\"");
+    }
+
+    #[test]
+    fn quote_ident_with_quotes() {
+        assert_eq!(quote_ident("my\"table"), "\"my\"\"table\"");
+    }
+
+    #[test]
+    fn build_insert_sql_uses_quoted_identifiers() {
+        let config = SnowflakeSinkConfig::new(
+            "acct",
+            "wh",
+            "MY_DB",
+            "PUBLIC",
+            "events",
+            SnowflakeAuth::OAuth { token: "t".into() },
+        );
+        let sink = SnowflakeSink::new(config);
+        let records = vec![serde_json::json!({"id": 1})];
+        let sql = sink.build_insert_sql(&records).unwrap();
+        assert!(sql.contains("\"MY_DB\".\"PUBLIC\".\"events\""));
     }
 }

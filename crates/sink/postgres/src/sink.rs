@@ -13,6 +13,12 @@ pub struct PostgresSink {
     pool: PgPool,
 }
 
+/// Quote a SQL identifier to prevent SQL injection.
+/// Doubles any embedded double-quotes per SQL standard.
+fn quote_ident(name: &str) -> String {
+    format!("\"{}\"", name.replace('"', "\"\""))
+}
+
 impl PostgresSink {
     /// Create a new PostgreSQL sink. Establishes a connection pool.
     pub async fn new(config: PostgresSinkConfig) -> Result<Self, FaucetError> {
@@ -35,7 +41,8 @@ impl PostgresSink {
         let json_values: Vec<serde_json::Value> = records.to_vec();
         let query = format!(
             "INSERT INTO {} ({}) SELECT * FROM unnest($1::jsonb[])",
-            self.config.table_name, column
+            quote_ident(&self.config.table_name),
+            quote_ident(column)
         );
 
         sqlx::query(&query)
@@ -49,7 +56,7 @@ impl PostgresSink {
 
     /// Insert a batch of records using auto-mapped columns.
     ///
-    /// Discovers column names from the first record's keys and maps
+    /// Discovers column names from the table schema and maps
     /// top-level JSON fields to columns. Values are inserted as JSONB.
     async fn insert_auto_map(&self, records: &[Value]) -> Result<usize, FaucetError> {
         if records.is_empty() {
@@ -88,15 +95,20 @@ impl PostgresSink {
                 .collect();
 
             if matching.is_empty() {
+                tracing::warn!(
+                    record_keys = ?obj.keys().collect::<Vec<_>>(),
+                    table_columns = ?columns,
+                    "record has no keys matching table columns, skipping"
+                );
                 continue;
             }
 
-            let col_names: Vec<&str> = matching.iter().map(|(c, _)| c.as_str()).collect();
+            let col_names: Vec<String> = matching.iter().map(|(c, _)| quote_ident(c)).collect();
             let placeholders: Vec<String> = (1..=matching.len()).map(|i| format!("${i}")).collect();
 
             let query = format!(
                 "INSERT INTO {} ({}) VALUES ({})",
-                self.config.table_name,
+                quote_ident(&self.config.table_name),
                 col_names.join(", "),
                 placeholders.join(", ")
             );

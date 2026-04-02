@@ -21,14 +21,14 @@ impl GrpcStream {
     /// Create a new gRPC stream. Loads the `FileDescriptorSet` from disk.
     pub fn new(config: GrpcStreamConfig) -> Result<Self, FaucetError> {
         let descriptor_bytes = std::fs::read(&config.descriptor_set_path).map_err(|e| {
-            FaucetError::Auth(format!(
+            FaucetError::Config(format!(
                 "failed to read descriptor set at {}: {e}",
                 config.descriptor_set_path.display()
             ))
         })?;
 
         let pool = DescriptorPool::decode(Bytes::from(descriptor_bytes))
-            .map_err(|e| FaucetError::Auth(format!("failed to parse FileDescriptorSet: {e}")))?;
+            .map_err(|e| FaucetError::Config(format!("failed to parse FileDescriptorSet: {e}")))?;
 
         Ok(Self { config, pool })
     }
@@ -42,7 +42,7 @@ impl GrpcStream {
             .pool
             .get_service_by_name(&self.config.service_name)
             .ok_or_else(|| {
-                FaucetError::Auth(format!(
+                FaucetError::Config(format!(
                     "service '{}' not found in descriptor set",
                     self.config.service_name
                 ))
@@ -52,7 +52,7 @@ impl GrpcStream {
             .methods()
             .find(|m| m.name() == self.config.method_name)
             .ok_or_else(|| {
-                FaucetError::Auth(format!(
+                FaucetError::Config(format!(
                     "method '{}' not found in service '{}'",
                     self.config.method_name, self.config.service_name
                 ))
@@ -61,7 +61,7 @@ impl GrpcStream {
         // Build the request message from JSON.
         let input_desc = method.input();
         let request_msg = DynamicMessage::deserialize(input_desc, &self.config.request)
-            .map_err(|e| FaucetError::Auth(format!("failed to build request message: {e}")))?;
+            .map_err(|e| FaucetError::Config(format!("failed to build request message: {e}")))?;
 
         // Connect to the gRPC endpoint.
         let use_tls = self
@@ -70,20 +70,20 @@ impl GrpcStream {
             .unwrap_or_else(|| self.config.endpoint.starts_with("https"));
 
         let endpoint = Channel::from_shared(self.config.endpoint.clone())
-            .map_err(|e| FaucetError::Auth(format!("invalid endpoint: {e}")))?;
+            .map_err(|e| FaucetError::Url(format!("invalid gRPC endpoint: {e}")))?;
 
         let channel: Channel = if use_tls {
             endpoint
                 .tls_config(tonic::transport::ClientTlsConfig::new())
-                .map_err(|e| FaucetError::Auth(format!("TLS config failed: {e}")))?
+                .map_err(|e| FaucetError::Config(format!("TLS config failed: {e}")))?
                 .connect()
                 .await
-                .map_err(|e| FaucetError::Auth(format!("gRPC connect failed: {e}")))?
+                .map_err(|e| FaucetError::Config(format!("gRPC connect failed: {e}")))?
         } else {
             endpoint
                 .connect()
                 .await
-                .map_err(|e| FaucetError::Auth(format!("gRPC connect failed: {e}")))?
+                .map_err(|e| FaucetError::Config(format!("gRPC connect failed: {e}")))?
         };
 
         let output_desc = method.output();
@@ -92,11 +92,11 @@ impl GrpcStream {
         grpc_client
             .ready()
             .await
-            .map_err(|e| FaucetError::Auth(format!("gRPC channel not ready: {e}")))?;
+            .map_err(|e| FaucetError::Config(format!("gRPC channel not ready: {e}")))?;
 
         let codec = DynamicCodec::new(output_desc);
         let path = tonic::codegen::http::uri::PathAndQuery::from_maybe_shared(full_method)
-            .map_err(|e| FaucetError::Auth(format!("invalid method path: {e}")))?;
+            .map_err(|e| FaucetError::Url(format!("invalid method path: {e}")))?;
 
         let mut request = tonic::Request::new(request_msg.encode_to_vec());
 
@@ -126,7 +126,7 @@ impl GrpcStream {
         let response: tonic::Response<DynamicMessage> = grpc_client
             .unary(request, path, codec)
             .await
-            .map_err(|e| FaucetError::Auth(format!("gRPC call failed: {e}")))?;
+            .map_err(|e| FaucetError::Sink(format!("gRPC call failed: {e}")))?;
 
         let resp_msg = response.into_inner();
 
@@ -134,7 +134,9 @@ impl GrpcStream {
         let serialize_opts = SerializeOptions::new().stringify_64_bit_integers(false);
         let json_value = resp_msg
             .serialize_with_options(serde_json::value::Serializer, &serialize_opts)
-            .map_err(|e| FaucetError::Auth(format!("failed to serialize response to JSON: {e}")))?;
+            .map_err(|e| {
+                FaucetError::Transform(format!("failed to serialize gRPC response to JSON: {e}"))
+            })?;
 
         // Extract records using JSONPath if configured.
         let records: Vec<Value> = match &self.config.records_path {
@@ -142,7 +144,7 @@ impl GrpcStream {
                 use jsonpath_rust::JsonPath;
                 json_value
                     .query(path)
-                    .map_err(|e| FaucetError::JsonPath(format!("{e}")))?
+                    .map_err(|e| FaucetError::JsonPath(format!("JSONPath error: {e}")))?
                     .into_iter()
                     .cloned()
                     .collect()

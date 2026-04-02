@@ -29,6 +29,7 @@ impl XmlStream {
         let mut pages_fetched = 0usize;
         let mut offset = 0usize;
         let mut page_number = None;
+        let mut prev_record_count: Option<usize> = None;
 
         // Initialize pagination state.
         if let Some(XmlPagination::PageNumber { start_page, .. }) = &self.config.pagination {
@@ -64,17 +65,28 @@ impl XmlStream {
                     if record_count == 0 {
                         break;
                     }
+                    // Stop if page_size is set and we got fewer records than the page size.
+                    if let Some(size) = page_size
+                        && record_count < *size
+                    {
+                        break;
+                    }
                     page_number = page_number.map(|p| p + 1);
-                    let _ = page_size; // Used in params
                 }
                 Some(XmlPagination::Offset { limit, .. }) => {
                     if record_count < *limit {
+                        break;
+                    }
+                    // Loop detection: stop if record count is identical and offset hasn't advanced.
+                    if prev_record_count == Some(record_count) && record_count == 0 {
+                        tracing::warn!("offset pagination loop detected, stopping");
                         break;
                     }
                     offset += record_count;
                 }
                 None => break,
             }
+            prev_record_count = Some(record_count);
         }
 
         tracing::info!(

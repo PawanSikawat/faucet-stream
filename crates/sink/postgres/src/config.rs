@@ -20,7 +20,7 @@ impl Default for PostgresColumnMapping {
 }
 
 /// Configuration for the PostgreSQL sink.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct PostgresSinkConfig {
     /// PostgreSQL connection URL (e.g. `postgres://user:pass@host/db`).
     pub connection_url: String,
@@ -30,6 +30,17 @@ pub struct PostgresSinkConfig {
     pub column_mapping: PostgresColumnMapping,
     /// Maximum number of rows per INSERT statement. Defaults to 500.
     pub batch_size: usize,
+}
+
+impl std::fmt::Debug for PostgresSinkConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PostgresSinkConfig")
+            .field("connection_url", &"***")
+            .field("table_name", &self.table_name)
+            .field("column_mapping", &self.column_mapping)
+            .field("batch_size", &self.batch_size)
+            .finish()
+    }
 }
 
 impl PostgresSinkConfig {

@@ -27,6 +27,7 @@ impl GraphqlStream {
         let mut all_records = Vec::new();
         let mut cursor: Option<String> = None;
         let mut pages_fetched = 0usize;
+        let mut prev_cursor: Option<String> = None;
 
         loop {
             if let Some(max) = self.config.max_pages
@@ -52,6 +53,12 @@ impl GraphqlStream {
                     if next_cursor.is_none() {
                         break;
                     }
+                    // Loop detection: stop if cursor hasn't changed.
+                    if next_cursor == prev_cursor {
+                        tracing::warn!("cursor loop detected, stopping pagination");
+                        break;
+                    }
+                    prev_cursor = cursor;
                     cursor = next_cursor;
                 }
                 None => break,
@@ -129,7 +136,11 @@ impl GraphqlStream {
                 .filter_map(|e| e.get("message").and_then(|m| m.as_str()))
                 .collect::<Vec<_>>()
                 .join("; ");
-            return Err(FaucetError::Auth(format!("GraphQL errors: {msg}")));
+            return Err(FaucetError::HttpStatus {
+                status: 200,
+                url: self.config.endpoint.clone(),
+                body: format!("GraphQL errors: {msg}"),
+            });
         }
 
         Ok(body)

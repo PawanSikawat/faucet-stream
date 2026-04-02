@@ -44,6 +44,10 @@ pub enum FaucetError {
     #[error("Transform error: {0}")]
     Transform(String),
 
+    /// A configuration or validation error (e.g. invalid endpoint, missing descriptor).
+    #[error("Config error: {0}")]
+    Config(String),
+
     /// A sink operation failed (e.g. BigQuery insert error).
     #[error("Sink error: {0}")]
     Sink(String),
@@ -165,6 +169,18 @@ mod tests {
         assert!(msg.contains("422"));
         assert!(msg.contains("https://api.example.com/test"));
         assert!(msg.contains("Unprocessable Entity"));
+    }
+
+    #[test]
+    fn config_error_is_not_retriable() {
+        let err = FaucetError::Config("bad endpoint".into());
+        assert!(!err.is_retriable());
+    }
+
+    #[test]
+    fn config_error_display() {
+        let err = FaucetError::Config("missing descriptor".into());
+        assert_eq!(err.to_string(), "Config error: missing descriptor");
     }
 
     #[test]

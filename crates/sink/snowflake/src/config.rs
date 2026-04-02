@@ -1,7 +1,7 @@
 //! Snowflake sink configuration.
 
 /// Authentication method for Snowflake.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub enum SnowflakeAuth {
     /// JWT key-pair authentication.
     ///
@@ -15,6 +15,19 @@ pub enum SnowflakeAuth {
     },
     /// OAuth2 bearer token (e.g. from an external identity provider).
     OAuth { token: String },
+}
+
+impl std::fmt::Debug for SnowflakeAuth {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::KeyPair { user, .. } => f
+                .debug_struct("KeyPair")
+                .field("user", user)
+                .field("private_key_pem", &"***")
+                .finish(),
+            Self::OAuth { .. } => f.debug_struct("OAuth").field("token", &"***").finish(),
+        }
+    }
 }
 
 /// Configuration for the Snowflake sink.

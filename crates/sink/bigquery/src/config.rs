@@ -1,7 +1,7 @@
 //! BigQuery sink configuration.
 
 /// How to authenticate with Google BigQuery.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub enum BigQueryCredentials {
     /// Path to a service account JSON key file.
     ServiceAccountKeyPath(String),
@@ -9,6 +9,18 @@ pub enum BigQueryCredentials {
     ServiceAccountKey(String),
     /// Use application default credentials (e.g. workload identity, `gcloud auth`).
     ApplicationDefault,
+}
+
+impl std::fmt::Debug for BigQueryCredentials {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ServiceAccountKeyPath(path) => {
+                f.debug_tuple("ServiceAccountKeyPath").field(path).finish()
+            }
+            Self::ServiceAccountKey(_) => write!(f, "ServiceAccountKey(***)"),
+            Self::ApplicationDefault => write!(f, "ApplicationDefault"),
+        }
+    }
 }
 
 /// Configuration for the BigQuery streaming insert sink.
@@ -115,9 +127,18 @@ mod tests {
     }
 
     #[test]
-    fn credentials_debug_format() {
+    fn credentials_debug_masks_secrets() {
         let creds = BigQueryCredentials::ApplicationDefault;
         assert_eq!(format!("{creds:?}"), "ApplicationDefault");
+
+        let creds = BigQueryCredentials::ServiceAccountKey("secret-json".into());
+        let debug = format!("{creds:?}");
+        assert!(debug.contains("***"));
+        assert!(!debug.contains("secret-json"));
+
+        let creds = BigQueryCredentials::ServiceAccountKeyPath("/path/to/key.json".into());
+        let debug = format!("{creds:?}");
+        assert!(debug.contains("/path/to/key.json"));
     }
 
     #[test]
