@@ -13,7 +13,7 @@ This is a library workspace — there is no binary, no database, no migrations, 
 
 ## Workspace Structure
 
-The project is a Cargo workspace with 28 crates:
+The project is a Cargo workspace with 26 crates:
 
 | Crate | Path | Description |
 |-------|------|-------------|
@@ -24,7 +24,7 @@ The project is a Cargo workspace with 28 crates:
 | `faucet-source-grpc` | `crates/source/grpc/` | gRPC source — dynamic protobuf via `prost-reflect` |
 | `faucet-source-postgres` | `crates/source/postgres/` | PostgreSQL query source — run SQL, return rows as JSON |
 | `faucet-source-mysql` | `crates/source/mysql/` | MySQL query source — run SQL, return rows as JSON |
-| `faucet-source-kafka` | `crates/source/kafka/` | Kafka consumer source — consume topic messages as JSON |
+
 | `faucet-source-s3` | `crates/source/s3/` | AWS S3 source — read objects as JSONL, JSON array, or raw text |
 | `faucet-source-mongodb` | `crates/source/mongodb/` | MongoDB source — find() query with filter/projection/sort |
 | `faucet-source-redis` | `crates/source/redis/` | Redis source — read from streams, lists, or key patterns |
@@ -37,7 +37,7 @@ The project is a Cargo workspace with 28 crates:
 | `faucet-sink-snowflake` | `crates/sink/snowflake/` | Snowflake SQL REST API sink |
 | `faucet-sink-mysql` | `crates/sink/mysql/` | MySQL sink — JSON column or auto-mapped columns |
 | `faucet-sink-sqlite` | `crates/sink/sqlite/` | SQLite sink — JSON column or auto-mapped columns |
-| `faucet-sink-kafka` | `crates/sink/kafka/` | Kafka producer sink — produce JSON messages to topic |
+
 | `faucet-sink-s3` | `crates/sink/s3/` | AWS S3 sink — write JSONL files to S3 bucket |
 | `faucet-sink-mongodb` | `crates/sink/mongodb/` | MongoDB sink — insert_many documents |
 | `faucet-sink-redis` | `crates/sink/redis/` | Redis sink — write to streams, lists, or key-value pairs |
@@ -55,7 +55,7 @@ faucet-core  <──  faucet-source-rest
              <──  faucet-source-grpc
              <──  faucet-source-postgres
              <──  faucet-source-mysql
-             <──  faucet-source-kafka
+
              <──  faucet-source-s3
              <──  faucet-source-mongodb
              <──  faucet-source-redis
@@ -68,7 +68,7 @@ faucet-core  <──  faucet-source-rest
              <──  faucet-sink-snowflake
              <──  faucet-sink-mysql
              <──  faucet-sink-sqlite
-             <──  faucet-sink-kafka
+
              <──  faucet-sink-s3
              <──  faucet-sink-mongodb
              <──  faucet-sink-redis
@@ -191,10 +191,6 @@ cargo publish --dry-run -p faucet-stream
 - **`src/config.rs`** — `MysqlSourceConfig` with connection_url, query
 - **`src/stream.rs`** — `MysqlSource`: MySqlPool, row-to-JSON conversion; implements `faucet_core::Source`
 
-### faucet-source-kafka (`crates/source/kafka/`)
-
-- **`src/config.rs`** — `KafkaSourceConfig` with brokers, topic, group_id, max_messages, timeout
-- **`src/stream.rs`** — `KafkaSource`: StreamConsumer, JSON deserialization; implements `faucet_core::Source`
 
 ### faucet-source-s3 (`crates/source/s3/`)
 
@@ -236,10 +232,6 @@ cargo publish --dry-run -p faucet-stream
 - **`src/config.rs`** — `SqliteSinkConfig`, `SqliteColumnMapping` (Json, AutoMap)
 - **`src/sink.rs`** — `SqliteSink`: PRAGMA table_info column discovery; implements `faucet_core::Sink`
 
-### faucet-sink-kafka (`crates/sink/kafka/`)
-
-- **`src/config.rs`** — `KafkaSinkConfig` with brokers, topic, key_field
-- **`src/sink.rs`** — `KafkaSink`: FutureProducer, JSON serialization; implements `faucet_core::Sink`
 
 ### faucet-sink-s3 (`crates/sink/s3/`)
 
@@ -285,7 +277,7 @@ cargo publish --dry-run -p faucet-stream
 | `source-grpc` | no | gRPC source connector |
 | `source-postgres` | no | PostgreSQL query source |
 | `source-mysql` | no | MySQL query source |
-| `source-kafka` | no | Kafka consumer source (requires cmake) |
+
 | `source-s3` | no | AWS S3 file source |
 | `source-mongodb` | no | MongoDB query source |
 | `source-redis` | no | Redis source (streams, lists, keys) |
@@ -298,7 +290,7 @@ cargo publish --dry-run -p faucet-stream
 | `sink-snowflake` | no | Snowflake sink connector |
 | `sink-mysql` | no | MySQL sink |
 | `sink-sqlite` | no | SQLite sink |
-| `sink-kafka` | no | Kafka producer sink (requires cmake) |
+
 | `sink-s3` | no | AWS S3 file sink |
 | `sink-mongodb` | no | MongoDB insert sink |
 | `sink-redis` | no | Redis sink (streams, lists, key-value) |
@@ -380,9 +372,6 @@ When the user points out something fundamental about how code in this library sh
 - `src/config.rs` — configuration types only. No SQL logic.
 - `src/stream.rs` — connection pool, query execution, row-to-JSON conversion, Source trait impl.
 
-#### faucet-source-kafka / faucet-sink-kafka
-- `src/config.rs` — configuration types only. No Kafka logic.
-- `src/stream.rs` / `src/sink.rs` — consumer/producer creation, message serialization.
 
 #### faucet-source-s3 / faucet-sink-s3
 - `src/config.rs` — configuration types only. No AWS logic.
@@ -445,7 +434,7 @@ cargo test --workspace --all-features
 # Single crate (examples)
 cargo test -p faucet-core
 cargo test -p faucet-source-rest
-cargo test -p faucet-source-kafka
+
 cargo test -p faucet-sink-mongodb
 cargo test -p faucet-stream --features full
 ```
@@ -466,7 +455,7 @@ Always use the **highest available stable version** for every crate, the Rust to
 Crates must be published in dependency order with delays for crates.io index propagation:
 
 1. `faucet-core`
-2. All sources + sinks (after 30s): `faucet-source-rest`, `faucet-source-graphql`, `faucet-source-xml`, `faucet-source-grpc`, `faucet-source-postgres`, `faucet-source-mysql`, `faucet-source-kafka`, `faucet-source-s3`, `faucet-source-mongodb`, `faucet-source-redis`, `faucet-source-webhook`, `faucet-source-csv`, `faucet-source-elasticsearch`, `faucet-sink-bigquery`, `faucet-sink-postgres`, `faucet-sink-jsonl`, `faucet-sink-snowflake`, `faucet-sink-mysql`, `faucet-sink-sqlite`, `faucet-sink-kafka`, `faucet-sink-s3`, `faucet-sink-mongodb`, `faucet-sink-redis`, `faucet-sink-csv`, `faucet-sink-elasticsearch`, `faucet-sink-http`
+2. All sources + sinks (after 30s): `faucet-source-rest`, `faucet-source-graphql`, `faucet-source-xml`, `faucet-source-grpc`, `faucet-source-postgres`, `faucet-source-mysql`, `faucet-source-s3`, `faucet-source-mongodb`, `faucet-source-redis`, `faucet-source-webhook`, `faucet-source-csv`, `faucet-source-elasticsearch`, `faucet-sink-bigquery`, `faucet-sink-postgres`, `faucet-sink-jsonl`, `faucet-sink-snowflake`, `faucet-sink-mysql`, `faucet-sink-sqlite`, `faucet-sink-s3`, `faucet-sink-mongodb`, `faucet-sink-redis`, `faucet-sink-csv`, `faucet-sink-elasticsearch`, `faucet-sink-http`
 3. `faucet-stream` (after 30s)
 
 The `.github/workflows/publish.yml` handles this automatically on version tags (`v*.*.*`).

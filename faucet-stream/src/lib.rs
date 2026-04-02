@@ -13,7 +13,7 @@
 //! | `source-grpc` | gRPC source with dynamic protobuf messages |
 //! | `source-postgres` | PostgreSQL query source |
 //! | `source-mysql` | MySQL query source |
-//! | `source-kafka` | Kafka consumer source |
+
 //! | `source-s3` | AWS S3 file source |
 //! | `source-mongodb` | MongoDB query source |
 //! | `source-redis` | Redis source (streams, lists, keys) |
@@ -26,7 +26,7 @@
 //! | `sink-snowflake` | Snowflake SQL REST API sink |
 //! | `sink-mysql` | MySQL sink |
 //! | `sink-sqlite` | SQLite sink |
-//! | `sink-kafka` | Kafka producer sink |
+
 //! | `sink-s3` | AWS S3 file sink |
 //! | `sink-mongodb` | MongoDB insert sink |
 //! | `sink-redis` | Redis sink (streams, lists, key-value) |
@@ -71,11 +71,6 @@ pub mod source {
     #[cfg(feature = "source-mysql")]
     pub mod mysql {
         pub use faucet_source_mysql::*;
-    }
-
-    #[cfg(feature = "source-kafka")]
-    pub mod kafka {
-        pub use faucet_source_kafka::*;
     }
 
     #[cfg(feature = "source-s3")]
@@ -135,11 +130,6 @@ pub mod source {
     #[cfg(feature = "source-mysql")]
     pub mod mysql {
         pub use faucet_source_mysql::*;
-    }
-
-    #[cfg(feature = "source-kafka")]
-    pub mod kafka {
-        pub use faucet_source_kafka::*;
     }
 
     #[cfg(feature = "source-s3")]
@@ -212,11 +202,6 @@ pub mod sink {
     #[cfg(feature = "sink-sqlite")]
     pub mod sqlite {
         pub use faucet_sink_sqlite::*;
-    }
-
-    #[cfg(feature = "sink-kafka")]
-    pub mod kafka {
-        pub use faucet_sink_kafka::*;
     }
 
     #[cfg(feature = "sink-s3")]

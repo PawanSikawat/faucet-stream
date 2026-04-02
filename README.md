@@ -13,7 +13,7 @@ Inspired by [Meltano's RESTStream](https://sdk.meltano.com/en/latest/classes/sin
 
 ## Architecture
 
-faucet-stream is a Cargo workspace with 28 crates — 13 sources, 13 sinks, a shared core, and an umbrella crate:
+faucet-stream is a Cargo workspace with 26 crates — 12 sources, 12 sinks, a shared core, and an umbrella crate:
 
 | Crate | Description |
 |-------|-------------|
@@ -25,7 +25,7 @@ faucet-stream is a Cargo workspace with 28 crates — 13 sources, 13 sinks, a sh
 | [`faucet-source-grpc`](crates/source/grpc) | gRPC — dynamic protobuf via `prost-reflect`, TLS support |
 | [`faucet-source-postgres`](crates/source/postgres) | PostgreSQL — run SQL queries, return rows as JSON |
 | [`faucet-source-mysql`](crates/source/mysql) | MySQL — run SQL queries, return rows as JSON |
-| [`faucet-source-kafka`](crates/source/kafka) | Kafka — consume topic messages as JSON |
+
 | [`faucet-source-s3`](crates/source/s3) | AWS S3 — read objects as JSONL, JSON array, or raw text |
 | [`faucet-source-mongodb`](crates/source/mongodb) | MongoDB — find() with filter, projection, sort |
 | [`faucet-source-redis`](crates/source/redis) | Redis — read from streams, lists, or key patterns |
@@ -39,7 +39,7 @@ faucet-stream is a Cargo workspace with 28 crates — 13 sources, 13 sinks, a sh
 | [`faucet-sink-snowflake`](crates/sink/snowflake) | Snowflake — SQL REST API with JWT/OAuth |
 | [`faucet-sink-mysql`](crates/sink/mysql) | MySQL — JSON column or auto-mapped columns |
 | [`faucet-sink-sqlite`](crates/sink/sqlite) | SQLite — JSON column or auto-mapped columns |
-| [`faucet-sink-kafka`](crates/sink/kafka) | Kafka — produce JSON messages to topic |
+
 | [`faucet-sink-s3`](crates/sink/s3) | AWS S3 — write JSONL files to bucket |
 | [`faucet-sink-mongodb`](crates/sink/mongodb) | MongoDB — insert_many documents |
 | [`faucet-sink-redis`](crates/sink/redis) | Redis — write to streams, lists, or key-value |
@@ -68,7 +68,7 @@ faucet-stream = { version = "0.2", features = ["source-rest", "sink-postgres", "
 
 # Or use individual crates directly
 faucet-source-rest = "0.1"
-faucet-sink-kafka = "0.1"
+
 faucet-source-mongodb = "0.1"
 ```
 
@@ -153,12 +153,6 @@ faucet-source-mongodb = "0.1"
 - **SQL queries** — run any SQL query and get results as JSON records
 - **Connection pooling** — built on `sqlx` with `MySqlPool`
 
-### Source: Kafka (`faucet-source-kafka`)
-
-- **Topic consumption** — consume messages from a Kafka topic
-- **JSON deserialization** — automatic JSON parsing; non-JSON payloads wrapped as strings
-- **Configurable** — group ID, offset reset, timeout, max messages, additional librdkafka config
-- **Note:** requires `cmake` for building (uses `rdkafka` with bundled librdkafka)
 
 ### Source: AWS S3 (`faucet-source-s3`)
 
@@ -204,11 +198,6 @@ faucet-source-mongodb = "0.1"
 - **Auto-map mode** — discover columns from PRAGMA table_info
 - **File or in-memory** — supports file paths or `:memory:` databases
 
-### Sink: Kafka (`faucet-sink-kafka`)
-
-- **Topic production** — produce JSON messages to a Kafka topic
-- **Message keys** — optionally extract a message key from a record field
-- **Note:** requires `cmake` (same as source)
 
 ### Sink: AWS S3 (`faucet-sink-s3`)
 
@@ -633,7 +622,7 @@ All pagination styles include loop detection — if the same cursor or link is r
 | `source-grpc` | no | gRPC source |
 | `source-postgres` | no | PostgreSQL query source |
 | `source-mysql` | no | MySQL query source |
-| `source-kafka` | no | Kafka consumer source (requires cmake) |
+
 | `source-s3` | no | AWS S3 file source |
 | `source-mongodb` | no | MongoDB query source |
 | `source-redis` | no | Redis source |
@@ -646,7 +635,7 @@ All pagination styles include loop detection — if the same cursor or link is r
 | `sink-snowflake` | no | Snowflake sink |
 | `sink-mysql` | no | MySQL sink |
 | `sink-sqlite` | no | SQLite sink |
-| `sink-kafka` | no | Kafka producer sink (requires cmake) |
+
 | `sink-s3` | no | AWS S3 file sink |
 | `sink-mongodb` | no | MongoDB sink |
 | `sink-redis` | no | Redis sink |
@@ -678,7 +667,7 @@ crates/
     grpc/                     — gRPC (dynamic protobuf)
     postgres/                 — PostgreSQL queries
     mysql/                    — MySQL queries
-    kafka/                    — Kafka consumer
+
     s3/                       — AWS S3 object reader
     mongodb/                  — MongoDB find()
     redis/                    — Redis streams/lists/keys
@@ -692,7 +681,7 @@ crates/
     snowflake/                — Snowflake SQL REST API
     mysql/                    — MySQL (JSON or auto-map)
     sqlite/                   — SQLite (JSON or auto-map)
-    kafka/                    — Kafka producer
+
     s3/                       — AWS S3 JSONL writer
     mongodb/                  — MongoDB insert_many
     redis/                    — Redis streams/lists/key-value

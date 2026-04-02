@@ -27,3 +27,5 @@ CLAUDE.md
 
 # Cargo
 Cargo.lock
+doc/
+libtest_compile.rlib

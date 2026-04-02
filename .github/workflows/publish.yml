@@ -53,9 +53,6 @@ jobs:
 
       # Publish in dependency order: core -> source/sink -> umbrella.
       # Sleep between publishes to allow crates.io index to propagate.
-      - name: Install system dependencies
-        run: sudo apt-get update && sudo apt-get install -y cmake libcurl4-openssl-dev pkg-config libssl-dev
-
       - name: Publish (dry run)
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run == 'true' }}
         run: |
@@ -66,7 +63,7 @@ jobs:
           cargo publish --dry-run -p faucet-source-grpc
           cargo publish --dry-run -p faucet-source-postgres
           cargo publish --dry-run -p faucet-source-mysql
-          cargo publish --dry-run -p faucet-source-kafka
+
           cargo publish --dry-run -p faucet-source-s3
           cargo publish --dry-run -p faucet-source-mongodb
           cargo publish --dry-run -p faucet-source-redis
@@ -79,7 +76,7 @@ jobs:
           cargo publish --dry-run -p faucet-sink-snowflake
           cargo publish --dry-run -p faucet-sink-mysql
           cargo publish --dry-run -p faucet-sink-sqlite
-          cargo publish --dry-run -p faucet-sink-kafka
+
           cargo publish --dry-run -p faucet-sink-s3
           cargo publish --dry-run -p faucet-sink-mongodb
           cargo publish --dry-run -p faucet-sink-redis
@@ -101,7 +98,7 @@ jobs:
           cargo publish -p faucet-source-grpc
           cargo publish -p faucet-source-postgres
           cargo publish -p faucet-source-mysql
-          cargo publish -p faucet-source-kafka
+
           cargo publish -p faucet-source-s3
           cargo publish -p faucet-source-mongodb
           cargo publish -p faucet-source-redis
@@ -114,7 +111,7 @@ jobs:
           cargo publish -p faucet-sink-snowflake
           cargo publish -p faucet-sink-mysql
           cargo publish -p faucet-sink-sqlite
-          cargo publish -p faucet-sink-kafka
+
           cargo publish -p faucet-sink-s3
           cargo publish -p faucet-sink-mongodb
           cargo publish -p faucet-sink-redis

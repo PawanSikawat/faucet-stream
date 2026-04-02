@@ -22,7 +22,6 @@ source = [
     "source-grpc",
     "source-postgres",
     "source-mysql",
-    "source-kafka",
     "source-s3",
     "source-mongodb",
     "source-redis",
@@ -38,7 +37,6 @@ sink = [
     "sink-snowflake",
     "sink-mysql",
     "sink-sqlite",
-    "sink-kafka",
     "sink-s3",
     "sink-mongodb",
     "sink-redis",
@@ -56,7 +54,7 @@ source-xml = ["dep:faucet-source-xml"]
 source-grpc = ["dep:faucet-source-grpc"]
 source-postgres = ["dep:faucet-source-postgres"]
 source-mysql = ["dep:faucet-source-mysql"]
-source-kafka = ["dep:faucet-source-kafka"]
+
 source-s3 = ["dep:faucet-source-s3"]
 source-mongodb = ["dep:faucet-source-mongodb"]
 source-redis = ["dep:faucet-source-redis"]
@@ -71,7 +69,7 @@ sink-jsonl = ["dep:faucet-sink-jsonl"]
 sink-snowflake = ["dep:faucet-sink-snowflake"]
 sink-mysql = ["dep:faucet-sink-mysql"]
 sink-sqlite = ["dep:faucet-sink-sqlite"]
-sink-kafka = ["dep:faucet-sink-kafka"]
+
 sink-s3 = ["dep:faucet-sink-s3"]
 sink-mongodb = ["dep:faucet-sink-mongodb"]
 sink-redis = ["dep:faucet-sink-redis"]
@@ -93,7 +91,7 @@ faucet-source-xml = { workspace = true, optional = true }
 faucet-source-grpc = { workspace = true, optional = true }
 faucet-source-postgres = { workspace = true, optional = true }
 faucet-source-mysql = { workspace = true, optional = true }
-faucet-source-kafka = { workspace = true, optional = true }
+
 faucet-source-s3 = { workspace = true, optional = true }
 faucet-source-mongodb = { workspace = true, optional = true }
 faucet-source-redis = { workspace = true, optional = true }
@@ -106,7 +104,7 @@ faucet-sink-jsonl = { workspace = true, optional = true }
 faucet-sink-snowflake = { workspace = true, optional = true }
 faucet-sink-mysql = { workspace = true, optional = true }
 faucet-sink-sqlite = { workspace = true, optional = true }
-faucet-sink-kafka = { workspace = true, optional = true }
+
 faucet-sink-s3 = { workspace = true, optional = true }
 faucet-sink-mongodb = { workspace = true, optional = true }
 faucet-sink-redis = { workspace = true, optional = true }
