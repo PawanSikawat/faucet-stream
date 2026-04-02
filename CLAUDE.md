@@ -13,7 +13,7 @@ This is a library workspace — there is no binary, no database, no migrations, 
 
 ## Workspace Structure
 
-The project is a Cargo workspace with ten crates:
+The project is a Cargo workspace with 28 crates:
 
 | Crate | Path | Description |
 |-------|------|-------------|
@@ -22,10 +22,28 @@ The project is a Cargo workspace with ten crates:
 | `faucet-source-graphql` | `crates/source/graphql/` | GraphQL API source — cursor pagination, variable injection |
 | `faucet-source-xml` | `crates/source/xml/` | XML/SOAP API source — XML-to-JSON conversion, dot-path extraction |
 | `faucet-source-grpc` | `crates/source/grpc/` | gRPC source — dynamic protobuf via `prost-reflect` |
+| `faucet-source-postgres` | `crates/source/postgres/` | PostgreSQL query source — run SQL, return rows as JSON |
+| `faucet-source-mysql` | `crates/source/mysql/` | MySQL query source — run SQL, return rows as JSON |
+| `faucet-source-kafka` | `crates/source/kafka/` | Kafka consumer source — consume topic messages as JSON |
+| `faucet-source-s3` | `crates/source/s3/` | AWS S3 source — read objects as JSONL, JSON array, or raw text |
+| `faucet-source-mongodb` | `crates/source/mongodb/` | MongoDB source — find() query with filter/projection/sort |
+| `faucet-source-redis` | `crates/source/redis/` | Redis source — read from streams, lists, or key patterns |
+| `faucet-source-webhook` | `crates/source/webhook/` | Webhook source — temporary HTTP server collecting POST payloads |
+| `faucet-source-csv` | `crates/source/csv/` | CSV file source — read CSV rows as JSON objects |
+| `faucet-source-elasticsearch` | `crates/source/elasticsearch/` | Elasticsearch source — search/scroll API pagination |
 | `faucet-sink-bigquery` | `crates/sink/bigquery/` | Google BigQuery streaming insert sink |
 | `faucet-sink-postgres` | `crates/sink/postgres/` | PostgreSQL sink — JSONB or auto-mapped columns |
 | `faucet-sink-jsonl` | `crates/sink/jsonl/` | JSON Lines file sink |
 | `faucet-sink-snowflake` | `crates/sink/snowflake/` | Snowflake SQL REST API sink |
+| `faucet-sink-mysql` | `crates/sink/mysql/` | MySQL sink — JSON column or auto-mapped columns |
+| `faucet-sink-sqlite` | `crates/sink/sqlite/` | SQLite sink — JSON column or auto-mapped columns |
+| `faucet-sink-kafka` | `crates/sink/kafka/` | Kafka producer sink — produce JSON messages to topic |
+| `faucet-sink-s3` | `crates/sink/s3/` | AWS S3 sink — write JSONL files to S3 bucket |
+| `faucet-sink-mongodb` | `crates/sink/mongodb/` | MongoDB sink — insert_many documents |
+| `faucet-sink-redis` | `crates/sink/redis/` | Redis sink — write to streams, lists, or key-value pairs |
+| `faucet-sink-csv` | `crates/sink/csv/` | CSV file sink — write JSON records as CSV rows |
+| `faucet-sink-elasticsearch` | `crates/sink/elasticsearch/` | Elasticsearch sink — bulk index API |
+| `faucet-sink-http` | `crates/sink/http/` | HTTP POST sink — send records to HTTP endpoint |
 | `faucet-stream` | `faucet-stream/` | Umbrella crate — feature-gated re-exports of all connectors |
 
 ### Crate Dependency Graph
@@ -35,19 +53,29 @@ faucet-core  <──  faucet-source-rest
              <──  faucet-source-graphql
              <──  faucet-source-xml
              <──  faucet-source-grpc
+             <──  faucet-source-postgres
+             <──  faucet-source-mysql
+             <──  faucet-source-kafka
+             <──  faucet-source-s3
+             <──  faucet-source-mongodb
+             <──  faucet-source-redis
+             <──  faucet-source-webhook
+             <──  faucet-source-csv
+             <──  faucet-source-elasticsearch
              <──  faucet-sink-bigquery
              <──  faucet-sink-postgres
              <──  faucet-sink-jsonl
              <──  faucet-sink-snowflake
-             <──  faucet-stream (umbrella)
-                    ├── optional dep: faucet-source-rest
-                    ├── optional dep: faucet-source-graphql
-                    ├── optional dep: faucet-source-xml
-                    ├── optional dep: faucet-source-grpc
-                    ├── optional dep: faucet-sink-bigquery
-                    ├── optional dep: faucet-sink-postgres
-                    ├── optional dep: faucet-sink-jsonl
-                    └── optional dep: faucet-sink-snowflake
+             <──  faucet-sink-mysql
+             <──  faucet-sink-sqlite
+             <──  faucet-sink-kafka
+             <──  faucet-sink-s3
+             <──  faucet-sink-mongodb
+             <──  faucet-sink-redis
+             <──  faucet-sink-csv
+             <──  faucet-sink-elasticsearch
+             <──  faucet-sink-http
+             <──  faucet-stream (umbrella, all optional)
 ```
 
 ## Code Quality Standard
@@ -153,6 +181,96 @@ cargo publish --dry-run -p faucet-stream
 - **`src/config.rs`** — `SnowflakeSinkConfig`, `SnowflakeAuth` (KeyPair JWT, OAuth)
 - **`src/sink.rs`** — `SnowflakeSink`: SQL REST API with JWT/OAuth auth, PARSE_JSON inserts; implements `faucet_core::Sink`
 
+### faucet-source-postgres (`crates/source/postgres/`)
+
+- **`src/config.rs`** — `PostgresSourceConfig` with connection_url, query, params
+- **`src/stream.rs`** — `PostgresSource`: PgPool, row-to-JSON conversion; implements `faucet_core::Source`
+
+### faucet-source-mysql (`crates/source/mysql/`)
+
+- **`src/config.rs`** — `MysqlSourceConfig` with connection_url, query
+- **`src/stream.rs`** — `MysqlSource`: MySqlPool, row-to-JSON conversion; implements `faucet_core::Source`
+
+### faucet-source-kafka (`crates/source/kafka/`)
+
+- **`src/config.rs`** — `KafkaSourceConfig` with brokers, topic, group_id, max_messages, timeout
+- **`src/stream.rs`** — `KafkaSource`: StreamConsumer, JSON deserialization; implements `faucet_core::Source`
+
+### faucet-source-s3 (`crates/source/s3/`)
+
+- **`src/config.rs`** — `S3SourceConfig`, `S3FileFormat` (JsonLines, JsonArray, RawText)
+- **`src/stream.rs`** — `S3Source`: list + get objects, format-based parsing; implements `faucet_core::Source`
+
+### faucet-source-mongodb (`crates/source/mongodb/`)
+
+- **`src/config.rs`** — `MongoSourceConfig` with filter, projection, sort, limit
+- **`src/stream.rs`** — `MongoSource`: find() with BSON conversion; implements `faucet_core::Source`
+
+### faucet-source-redis (`crates/source/redis/`)
+
+- **`src/config.rs`** — `RedisSourceConfig`, `RedisSourceType` (List, Stream, Keys)
+- **`src/stream.rs`** — `RedisSource`: LRANGE/XREAD/SCAN+GET; implements `faucet_core::Source`
+
+### faucet-source-webhook (`crates/source/webhook/`)
+
+- **`src/config.rs`** — `WebhookSourceConfig` with listen_addr, path, timeout, max_payloads
+- **`src/stream.rs`** — `WebhookSource`: temporary axum server collecting POSTs; implements `faucet_core::Source`
+
+### faucet-source-csv (`crates/source/csv/`)
+
+- **`src/config.rs`** — `CsvSourceConfig` with path, headers, delimiter, quote
+- **`src/stream.rs`** — `CsvSource`: csv::Reader in spawn_blocking; implements `faucet_core::Source`
+
+### faucet-source-elasticsearch (`crates/source/elasticsearch/`)
+
+- **`src/config.rs`** — `ElasticsearchSourceConfig`, `ElasticsearchAuth` (None, Basic, Bearer, ApiKey)
+- **`src/stream.rs`** — `ElasticsearchSource`: scroll API pagination; implements `faucet_core::Source`
+
+### faucet-sink-mysql (`crates/sink/mysql/`)
+
+- **`src/config.rs`** — `MysqlSinkConfig`, `MysqlColumnMapping` (Json, AutoMap)
+- **`src/sink.rs`** — `MysqlSink`: backtick-quoted inserts; implements `faucet_core::Sink`
+
+### faucet-sink-sqlite (`crates/sink/sqlite/`)
+
+- **`src/config.rs`** — `SqliteSinkConfig`, `SqliteColumnMapping` (Json, AutoMap)
+- **`src/sink.rs`** — `SqliteSink`: PRAGMA table_info column discovery; implements `faucet_core::Sink`
+
+### faucet-sink-kafka (`crates/sink/kafka/`)
+
+- **`src/config.rs`** — `KafkaSinkConfig` with brokers, topic, key_field
+- **`src/sink.rs`** — `KafkaSink`: FutureProducer, JSON serialization; implements `faucet_core::Sink`
+
+### faucet-sink-s3 (`crates/sink/s3/`)
+
+- **`src/config.rs`** — `S3SinkConfig` with bucket, prefix, max_records_per_file
+- **`src/sink.rs`** — `S3Sink`: UUID-keyed JSONL uploads; implements `faucet_core::Sink`
+
+### faucet-sink-mongodb (`crates/sink/mongodb/`)
+
+- **`src/config.rs`** — `MongoSinkConfig` with connection_uri, database, collection
+- **`src/sink.rs`** — `MongoSink`: insert_many with BSON conversion; implements `faucet_core::Sink`
+
+### faucet-sink-redis (`crates/sink/redis/`)
+
+- **`src/config.rs`** — `RedisSinkConfig`, `RedisSinkType` (List, Stream, KeyValue)
+- **`src/sink.rs`** — `RedisSink`: RPUSH/XADD/SET via pipeline; implements `faucet_core::Sink`
+
+### faucet-sink-csv (`crates/sink/csv/`)
+
+- **`src/config.rs`** — `CsvSinkConfig` with path, delimiter, headers, append
+- **`src/sink.rs`** — `CsvSink`: csv::Writer in spawn_blocking; implements `faucet_core::Sink`
+
+### faucet-sink-elasticsearch (`crates/sink/elasticsearch/`)
+
+- **`src/config.rs`** — `ElasticsearchSinkConfig`, `ElasticsearchSinkAuth`
+- **`src/sink.rs`** — `ElasticsearchSink`: NDJSON bulk API; implements `faucet_core::Sink`
+
+### faucet-sink-http (`crates/sink/http/`)
+
+- **`src/config.rs`** — `HttpSinkConfig`, `HttpSinkAuth`, `HttpBatchMode` (Individual, Array)
+- **`src/sink.rs`** — `HttpSink`: POST records individually or as array; implements `faucet_core::Sink`
+
 ### faucet-stream (umbrella, `faucet-stream/`)
 
 - **`src/lib.rs`** — feature-gated re-exports of all connectors; `pub use faucet_core::*` always available; backwards-compatible flat re-exports for existing users
@@ -165,10 +283,28 @@ cargo publish --dry-run -p faucet-stream
 | `source-graphql` | no | GraphQL API source connector |
 | `source-xml` | no | XML/SOAP API source connector |
 | `source-grpc` | no | gRPC source connector |
+| `source-postgres` | no | PostgreSQL query source |
+| `source-mysql` | no | MySQL query source |
+| `source-kafka` | no | Kafka consumer source (requires cmake) |
+| `source-s3` | no | AWS S3 file source |
+| `source-mongodb` | no | MongoDB query source |
+| `source-redis` | no | Redis source (streams, lists, keys) |
+| `source-webhook` | no | Webhook HTTP receiver source |
+| `source-csv` | no | CSV file source |
+| `source-elasticsearch` | no | Elasticsearch search/scroll source |
 | `sink-bigquery` | no | Google BigQuery sink connector |
 | `sink-postgres` | no | PostgreSQL sink connector |
 | `sink-jsonl` | no | JSON Lines file sink connector |
 | `sink-snowflake` | no | Snowflake sink connector |
+| `sink-mysql` | no | MySQL sink |
+| `sink-sqlite` | no | SQLite sink |
+| `sink-kafka` | no | Kafka producer sink (requires cmake) |
+| `sink-s3` | no | AWS S3 file sink |
+| `sink-mongodb` | no | MongoDB insert sink |
+| `sink-redis` | no | Redis sink (streams, lists, key-value) |
+| `sink-csv` | no | CSV file sink |
+| `sink-elasticsearch` | no | Elasticsearch bulk index sink |
+| `sink-http` | no | HTTP POST sink |
 | `source` | no | All source connectors |
 | `sink` | no | All sink connectors |
 | `full` | no | Every connector |
@@ -240,6 +376,46 @@ When the user points out something fundamental about how code in this library sh
 - `src/config.rs` — configuration and auth types only. No HTTP logic.
 - `src/sink.rs` — Snowflake SQL REST API calls, JWT generation, and Sink trait impl.
 
+#### faucet-source-postgres / faucet-source-mysql
+- `src/config.rs` — configuration types only. No SQL logic.
+- `src/stream.rs` — connection pool, query execution, row-to-JSON conversion, Source trait impl.
+
+#### faucet-source-kafka / faucet-sink-kafka
+- `src/config.rs` — configuration types only. No Kafka logic.
+- `src/stream.rs` / `src/sink.rs` — consumer/producer creation, message serialization.
+
+#### faucet-source-s3 / faucet-sink-s3
+- `src/config.rs` — configuration types only. No AWS logic.
+- `src/stream.rs` / `src/sink.rs` — S3 client creation, object listing/reading/writing.
+
+#### faucet-source-mongodb / faucet-sink-mongodb
+- `src/config.rs` — configuration types only. No MongoDB logic.
+- `src/stream.rs` / `src/sink.rs` — MongoDB client, BSON conversion, find/insert operations.
+
+#### faucet-source-redis / faucet-sink-redis
+- `src/config.rs` — configuration types only. No Redis logic.
+- `src/stream.rs` / `src/sink.rs` — Redis connection, command execution per source/sink type.
+
+#### faucet-source-webhook
+- `src/config.rs` — configuration types only. No HTTP server logic.
+- `src/stream.rs` — axum server lifecycle, payload collection, timeout handling.
+
+#### faucet-source-csv / faucet-sink-csv
+- `src/config.rs` — configuration types only. No I/O logic.
+- `src/stream.rs` / `src/sink.rs` — csv crate Reader/Writer in spawn_blocking.
+
+#### faucet-source-elasticsearch / faucet-sink-elasticsearch
+- `src/config.rs` — configuration types only. No HTTP logic.
+- `src/stream.rs` / `src/sink.rs` — scroll/bulk API calls, auth application.
+
+#### faucet-sink-mysql / faucet-sink-sqlite
+- `src/config.rs` — configuration types only. No SQL logic.
+- `src/sink.rs` — connection pool, column discovery, auto-mapped or JSON inserts.
+
+#### faucet-sink-http
+- `src/config.rs` — configuration types only. No HTTP logic.
+- `src/sink.rs` — HTTP POST with auth, individual or batched mode.
+
 ### Error Handling
 
 All errors must map to a `FaucetError` variant. Never use `.unwrap()` or `.expect()` on values that can fail at runtime. Use `.expect()` only for programmer errors (invariants validated at construction time). All error types use `thiserror` derive macros.
@@ -266,16 +442,11 @@ Every non-trivial piece of logic must have tests. Untested public API surface is
 # All workspace tests
 cargo test --workspace --all-features
 
-# Single crate
+# Single crate (examples)
 cargo test -p faucet-core
 cargo test -p faucet-source-rest
-cargo test -p faucet-source-graphql
-cargo test -p faucet-source-xml
-cargo test -p faucet-source-grpc
-cargo test -p faucet-sink-bigquery
-cargo test -p faucet-sink-postgres
-cargo test -p faucet-sink-jsonl
-cargo test -p faucet-sink-snowflake
+cargo test -p faucet-source-kafka
+cargo test -p faucet-sink-mongodb
 cargo test -p faucet-stream --features full
 ```
 
@@ -295,7 +466,7 @@ Always use the **highest available stable version** for every crate, the Rust to
 Crates must be published in dependency order with delays for crates.io index propagation:
 
 1. `faucet-core`
-2. All sources + sinks (after 30s): `faucet-source-rest`, `faucet-source-graphql`, `faucet-source-xml`, `faucet-source-grpc`, `faucet-sink-bigquery`, `faucet-sink-postgres`, `faucet-sink-jsonl`, `faucet-sink-snowflake`
+2. All sources + sinks (after 30s): `faucet-source-rest`, `faucet-source-graphql`, `faucet-source-xml`, `faucet-source-grpc`, `faucet-source-postgres`, `faucet-source-mysql`, `faucet-source-kafka`, `faucet-source-s3`, `faucet-source-mongodb`, `faucet-source-redis`, `faucet-source-webhook`, `faucet-source-csv`, `faucet-source-elasticsearch`, `faucet-sink-bigquery`, `faucet-sink-postgres`, `faucet-sink-jsonl`, `faucet-sink-snowflake`, `faucet-sink-mysql`, `faucet-sink-sqlite`, `faucet-sink-kafka`, `faucet-sink-s3`, `faucet-sink-mongodb`, `faucet-sink-redis`, `faucet-sink-csv`, `faucet-sink-elasticsearch`, `faucet-sink-http`
 3. `faucet-stream` (after 30s)
 
 The `.github/workflows/publish.yml` handles this automatically on version tags (`v*.*.*`).

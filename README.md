@@ -13,19 +13,39 @@ Inspired by [Meltano's RESTStream](https://sdk.meltano.com/en/latest/classes/sin
 
 ## Architecture
 
-faucet-stream is a Cargo workspace with ten crates:
+faucet-stream is a Cargo workspace with 28 crates — 13 sources, 13 sinks, a shared core, and an umbrella crate:
 
 | Crate | Description |
 |-------|-------------|
 | [`faucet-core`](crates/core) | Shared types, traits (`Source`, `Sink`), pipeline orchestration, transforms, error types |
-| [`faucet-source-rest`](crates/source/rest) | REST API source — auth, pagination, extraction, schema inference |
-| [`faucet-source-graphql`](crates/source/graphql) | GraphQL API source — cursor-based pagination, variable injection |
-| [`faucet-source-xml`](crates/source/xml) | XML/SOAP API source — XML-to-JSON conversion, dot-path extraction |
-| [`faucet-source-grpc`](crates/source/grpc) | gRPC source — dynamic protobuf via `prost-reflect`, TLS support |
-| [`faucet-sink-bigquery`](crates/sink/bigquery) | Google BigQuery streaming insert sink |
-| [`faucet-sink-postgres`](crates/sink/postgres) | PostgreSQL sink — JSONB column or auto-mapped columns via `sqlx` |
-| [`faucet-sink-jsonl`](crates/sink/jsonl) | JSON Lines file sink — append/truncate modes, buffered async writes |
-| [`faucet-sink-snowflake`](crates/sink/snowflake) | Snowflake sink — SQL REST API with JWT (key-pair) and OAuth auth |
+| **Sources** | |
+| [`faucet-source-rest`](crates/source/rest) | REST API — auth, pagination, extraction, schema inference |
+| [`faucet-source-graphql`](crates/source/graphql) | GraphQL API — cursor-based pagination, variable injection |
+| [`faucet-source-xml`](crates/source/xml) | XML/SOAP API — XML-to-JSON conversion, dot-path extraction |
+| [`faucet-source-grpc`](crates/source/grpc) | gRPC — dynamic protobuf via `prost-reflect`, TLS support |
+| [`faucet-source-postgres`](crates/source/postgres) | PostgreSQL — run SQL queries, return rows as JSON |
+| [`faucet-source-mysql`](crates/source/mysql) | MySQL — run SQL queries, return rows as JSON |
+| [`faucet-source-kafka`](crates/source/kafka) | Kafka — consume topic messages as JSON |
+| [`faucet-source-s3`](crates/source/s3) | AWS S3 — read objects as JSONL, JSON array, or raw text |
+| [`faucet-source-mongodb`](crates/source/mongodb) | MongoDB — find() with filter, projection, sort |
+| [`faucet-source-redis`](crates/source/redis) | Redis — read from streams, lists, or key patterns |
+| [`faucet-source-webhook`](crates/source/webhook) | Webhook — temporary HTTP server collecting POST payloads |
+| [`faucet-source-csv`](crates/source/csv) | CSV — read CSV files as JSON objects |
+| [`faucet-source-elasticsearch`](crates/source/elasticsearch) | Elasticsearch — search/scroll API |
+| **Sinks** | |
+| [`faucet-sink-bigquery`](crates/sink/bigquery) | Google BigQuery — streaming inserts |
+| [`faucet-sink-postgres`](crates/sink/postgres) | PostgreSQL — JSONB or auto-mapped columns |
+| [`faucet-sink-jsonl`](crates/sink/jsonl) | JSON Lines — file output with append/truncate |
+| [`faucet-sink-snowflake`](crates/sink/snowflake) | Snowflake — SQL REST API with JWT/OAuth |
+| [`faucet-sink-mysql`](crates/sink/mysql) | MySQL — JSON column or auto-mapped columns |
+| [`faucet-sink-sqlite`](crates/sink/sqlite) | SQLite — JSON column or auto-mapped columns |
+| [`faucet-sink-kafka`](crates/sink/kafka) | Kafka — produce JSON messages to topic |
+| [`faucet-sink-s3`](crates/sink/s3) | AWS S3 — write JSONL files to bucket |
+| [`faucet-sink-mongodb`](crates/sink/mongodb) | MongoDB — insert_many documents |
+| [`faucet-sink-redis`](crates/sink/redis) | Redis — write to streams, lists, or key-value |
+| [`faucet-sink-csv`](crates/sink/csv) | CSV — write JSON records as CSV rows |
+| [`faucet-sink-elasticsearch`](crates/sink/elasticsearch) | Elasticsearch — bulk index API |
+| [`faucet-sink-http`](crates/sink/http) | HTTP — POST records to any endpoint |
 | [`faucet-stream`](faucet-stream) | Umbrella crate — feature-gated re-exports of all connectors |
 
 Install only what you need:
@@ -43,15 +63,13 @@ faucet-stream = { version = "0.2", features = ["sink"] }
 # All connectors
 faucet-stream = { version = "0.2", features = ["full"] }
 
+# Pick individual connectors
+faucet-stream = { version = "0.2", features = ["source-rest", "sink-postgres", "sink-s3"] }
+
 # Or use individual crates directly
 faucet-source-rest = "0.1"
-faucet-source-graphql = "0.1"
-faucet-source-xml = "0.1"
-faucet-source-grpc = "0.1"
-faucet-sink-bigquery = "0.1"
-faucet-sink-postgres = "0.1"
-faucet-sink-jsonl = "0.1"
-faucet-sink-snowflake = "0.1"
+faucet-sink-kafka = "0.1"
+faucet-source-mongodb = "0.1"
 ```
 
 ## Features
@@ -122,6 +140,110 @@ faucet-sink-snowflake = "0.1"
 - **Authentication** — JWT (key-pair) with RSA private key, or OAuth token
 - **Batch inserts** — wraps records in `PARSE_JSON()` for VARIANT column insertion
 - **Configurable** — account, warehouse, database, schema, role all configurable
+
+### Source: PostgreSQL (`faucet-source-postgres`)
+
+- **SQL queries** — run any SQL query and get results as JSON records
+- **Connection pooling** — built on `sqlx` with `PgPool`
+- **Type conversion** — automatic row-to-JSON conversion (strings, numbers, booleans, JSON/JSONB columns)
+- **Parameterised queries** — bind parameters to prevent SQL injection
+
+### Source: MySQL (`faucet-source-mysql`)
+
+- **SQL queries** — run any SQL query and get results as JSON records
+- **Connection pooling** — built on `sqlx` with `MySqlPool`
+
+### Source: Kafka (`faucet-source-kafka`)
+
+- **Topic consumption** — consume messages from a Kafka topic
+- **JSON deserialization** — automatic JSON parsing; non-JSON payloads wrapped as strings
+- **Configurable** — group ID, offset reset, timeout, max messages, additional librdkafka config
+- **Note:** requires `cmake` for building (uses `rdkafka` with bundled librdkafka)
+
+### Source: AWS S3 (`faucet-source-s3`)
+
+- **Object listing** — list and read objects from a bucket with optional prefix filter
+- **Multiple formats** — JSONL (one record per line), JSON array, or raw text mode
+- **S3-compatible** — custom endpoint URL for MinIO, LocalStack, etc.
+
+### Source: MongoDB (`faucet-source-mongodb`)
+
+- **Find queries** — configurable filter, projection, sort, limit, batch size
+- **BSON conversion** — automatic JSON ↔ BSON document conversion
+
+### Source: Redis (`faucet-source-redis`)
+
+- **Multiple data types** — read from lists (LRANGE), streams (XREAD/XREADGROUP), or key patterns (SCAN+GET)
+- **JSON parsing** — automatic JSON deserialization; non-JSON values wrapped as strings
+
+### Source: Webhook (`faucet-source-webhook`)
+
+- **HTTP receiver** — starts a temporary axum HTTP server to collect incoming POST payloads
+- **Configurable** — listen address, path, timeout, max payloads
+
+### Source: CSV (`faucet-source-csv`)
+
+- **File reading** — read CSV files with configurable delimiter, quote character, headers
+- **JSON mapping** — each row becomes a JSON object keyed by header names
+
+### Source: Elasticsearch (`faucet-source-elasticsearch`)
+
+- **Scroll API** — efficient pagination through large result sets
+- **Query DSL** — pass any Elasticsearch query as JSON
+- **Authentication** — None, Basic, Bearer, or API key
+
+### Sink: MySQL (`faucet-sink-mysql`)
+
+- **JSON mode** — insert records as JSON strings into a column
+- **Auto-map mode** — discover columns from INFORMATION_SCHEMA, map JSON fields automatically
+- **Connection pooling** — built on `sqlx` with `MySqlPool`
+
+### Sink: SQLite (`faucet-sink-sqlite`)
+
+- **JSON mode** — insert records as JSON text
+- **Auto-map mode** — discover columns from PRAGMA table_info
+- **File or in-memory** — supports file paths or `:memory:` databases
+
+### Sink: Kafka (`faucet-sink-kafka`)
+
+- **Topic production** — produce JSON messages to a Kafka topic
+- **Message keys** — optionally extract a message key from a record field
+- **Note:** requires `cmake` (same as source)
+
+### Sink: AWS S3 (`faucet-sink-s3`)
+
+- **JSONL output** — write records as JSON Lines files to S3
+- **UUID file names** — unique object keys with configurable prefix and extension
+- **File splitting** — optionally limit records per file
+
+### Sink: MongoDB (`faucet-sink-mongodb`)
+
+- **Bulk inserts** — `insert_many` with configurable batch size
+- **BSON conversion** — automatic JSON-to-BSON document conversion
+
+### Sink: Redis (`faucet-sink-redis`)
+
+- **Multiple modes** — write to lists (RPUSH), streams (XADD), or key-value (SET)
+- **Pipeline batching** — efficient Redis pipeline execution
+
+### Sink: CSV (`faucet-sink-csv`)
+
+- **File output** — write JSON records as CSV rows
+- **Auto headers** — column order derived from first record's keys
+- **Append mode** — append to existing files or overwrite
+
+### Sink: Elasticsearch (`faucet-sink-elasticsearch`)
+
+- **Bulk API** — NDJSON bulk index with configurable batch size
+- **Document IDs** — optionally extract `_id` from a record field
+- **Error checking** — per-item error detection in bulk responses
+
+### Sink: HTTP (`faucet-sink-http`)
+
+- **POST records** — send records to any HTTP endpoint
+- **Batch modes** — individual (one request per record) or array (single request)
+- **Authentication** — Bearer, Basic, or custom headers
+- **Retries** — configurable retry with retriable status detection
 
 ### Pipeline (`faucet-core`)
 
@@ -453,28 +575,28 @@ use faucet_stream::{Source, Sink, FaucetError, Pipeline};
 use async_trait::async_trait;
 use serde_json::Value;
 
-struct MyCsvSource { /* ... */ }
+struct MyCustomSource { /* ... */ }
 
 #[async_trait]
-impl Source for MyCsvSource {
+impl Source for MyCustomSource {
     async fn fetch_all(&self) -> Result<Vec<Value>, FaucetError> {
-        // Read CSV rows, return as JSON values
+        // Fetch records from your custom system
         todo!()
     }
 }
 
-struct MyS3Sink { /* ... */ }
+struct MyCustomSink { /* ... */ }
 
 #[async_trait]
-impl Sink for MyS3Sink {
+impl Sink for MyCustomSink {
     async fn write_batch(&self, records: &[Value]) -> Result<usize, FaucetError> {
-        // Upload records to S3
+        // Write records to your custom system
         todo!()
     }
 }
 
 // Any source works with any sink
-// Pipeline::new(&MyCsvSource { .. }, &MyS3Sink { .. }).run().await?;
+// Pipeline::new(&MyCustomSource { .. }, &MyCustomSink { .. }).run().await?;
 ```
 
 ## Authentication Methods
@@ -505,14 +627,32 @@ All pagination styles include loop detection — if the same cursor or link is r
 
 | Feature | Default | Description |
 |---------|---------|-------------|
-| `source-rest` | yes | REST API source connector |
-| `source-graphql` | no | GraphQL API source connector |
-| `source-xml` | no | XML/SOAP API source connector |
-| `source-grpc` | no | gRPC source connector |
-| `sink-bigquery` | no | Google BigQuery sink connector |
-| `sink-postgres` | no | PostgreSQL sink connector |
-| `sink-jsonl` | no | JSON Lines file sink connector |
-| `sink-snowflake` | no | Snowflake sink connector |
+| `source-rest` | yes | REST API source |
+| `source-graphql` | no | GraphQL API source |
+| `source-xml` | no | XML/SOAP API source |
+| `source-grpc` | no | gRPC source |
+| `source-postgres` | no | PostgreSQL query source |
+| `source-mysql` | no | MySQL query source |
+| `source-kafka` | no | Kafka consumer source (requires cmake) |
+| `source-s3` | no | AWS S3 file source |
+| `source-mongodb` | no | MongoDB query source |
+| `source-redis` | no | Redis source |
+| `source-webhook` | no | Webhook HTTP receiver |
+| `source-csv` | no | CSV file source |
+| `source-elasticsearch` | no | Elasticsearch source |
+| `sink-bigquery` | no | Google BigQuery sink |
+| `sink-postgres` | no | PostgreSQL sink |
+| `sink-jsonl` | no | JSON Lines file sink |
+| `sink-snowflake` | no | Snowflake sink |
+| `sink-mysql` | no | MySQL sink |
+| `sink-sqlite` | no | SQLite sink |
+| `sink-kafka` | no | Kafka producer sink (requires cmake) |
+| `sink-s3` | no | AWS S3 file sink |
+| `sink-mongodb` | no | MongoDB sink |
+| `sink-redis` | no | Redis sink |
+| `sink-csv` | no | CSV file sink |
+| `sink-elasticsearch` | no | Elasticsearch bulk index sink |
+| `sink-http` | no | HTTP POST sink |
 | `source` | no | All source connectors |
 | `sink` | no | All sink connectors |
 | `full` | no | Every connector |
@@ -527,59 +667,39 @@ All pagination styles include loop detection — if the same cursor or link is r
 ```
 Cargo.toml                    — workspace manifest
 crates/
-  core/                       — faucet-core: shared types and traits
+  core/                       — faucet-core: shared types, traits, pipeline
     src/
-      lib.rs                  — crate root and re-exports
-      error.rs                — FaucetError enum
-      traits.rs               — Source and Sink async traits
-      pipeline.rs             — Pipeline orchestration (source → sink)
-      transform.rs            — RecordTransform pipeline
-      replication.rs          — Incremental replication (filtering + bookmarking)
-      schema.rs               — JSON Schema inference from record samples
+      lib.rs, error.rs, traits.rs, pipeline.rs, transform.rs,
+      replication.rs, schema.rs, util.rs
   source/
-    rest/                     — faucet-source-rest: REST API source
-      src/
-        lib.rs                — crate root and re-exports
-        config.rs             — RestStreamConfig with fluent builder API
-        stream.rs             — RestStream executor + Source trait impl
-        auth/                 — Auth strategies (bearer, basic, api_key, oauth2, token_endpoint, custom)
-        pagination/           — Pagination strategies (cursor, page, offset, link_header, next_link_body)
-        extract/              — JSONPath record extraction
-        retry/                — Exponential backoff retry executor
-      examples/               — Usage examples
-      tests/                  — Integration tests (wiremock)
-    graphql/                  — faucet-source-graphql: GraphQL API source
-      src/
-        config.rs             — GraphqlStreamConfig, GraphqlAuth, GraphqlPagination
-        stream.rs             — GraphqlStream executor + Source trait impl
-    xml/                      — faucet-source-xml: XML/SOAP API source
-      src/
-        config.rs             — XmlStreamConfig, XmlAuth, XmlPagination
-        convert.rs            — xml_to_json(), extract_at_path()
-        stream.rs             — XmlStream executor + Source trait impl
-    grpc/                     — faucet-source-grpc: gRPC source
-      src/
-        config.rs             — GrpcStreamConfig, GrpcAuth
-        stream.rs             — GrpcStream with dynamic protobuf + Source trait impl
+    rest/                     — REST API (auth, pagination, extraction, retry)
+    graphql/                  — GraphQL API (cursor pagination)
+    xml/                      — XML/SOAP API (XML-to-JSON conversion)
+    grpc/                     — gRPC (dynamic protobuf)
+    postgres/                 — PostgreSQL queries
+    mysql/                    — MySQL queries
+    kafka/                    — Kafka consumer
+    s3/                       — AWS S3 object reader
+    mongodb/                  — MongoDB find()
+    redis/                    — Redis streams/lists/keys
+    webhook/                  — HTTP webhook receiver
+    csv/                      — CSV file reader
+    elasticsearch/            — Elasticsearch search/scroll
   sink/
-    bigquery/                 — faucet-sink-bigquery: BigQuery streaming insert sink
-      src/
-        config.rs             — BigQuerySinkConfig with builder API
-        sink.rs               — BigQuerySink executor + Sink trait impl
-    postgres/                 — faucet-sink-postgres: PostgreSQL sink
-      src/
-        config.rs             — PostgresSinkConfig, PostgresColumnMapping
-        sink.rs               — PostgresSink with JSONB/auto-map modes + Sink trait impl
-    jsonl/                    — faucet-sink-jsonl: JSON Lines file sink
-      src/
-        config.rs             — JsonlSinkConfig with builder API
-        sink.rs               — JsonlSink with buffered async writes + Sink trait impl
-    snowflake/                — faucet-sink-snowflake: Snowflake sink
-      src/
-        config.rs             — SnowflakeSinkConfig, SnowflakeAuth
-        sink.rs               — SnowflakeSink via SQL REST API + Sink trait impl
+    bigquery/                 — Google BigQuery streaming inserts
+    postgres/                 — PostgreSQL (JSONB or auto-map)
+    jsonl/                    — JSON Lines file output
+    snowflake/                — Snowflake SQL REST API
+    mysql/                    — MySQL (JSON or auto-map)
+    sqlite/                   — SQLite (JSON or auto-map)
+    kafka/                    — Kafka producer
+    s3/                       — AWS S3 JSONL writer
+    mongodb/                  — MongoDB insert_many
+    redis/                    — Redis streams/lists/key-value
+    csv/                      — CSV file writer
+    elasticsearch/            — Elasticsearch bulk index
+    http/                     — HTTP POST
 faucet-stream/                — umbrella crate with feature-gated re-exports
-  src/lib.rs
 ```
 
 ## License

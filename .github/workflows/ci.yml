@@ -30,6 +30,9 @@ jobs:
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-cargo-
 
+      - name: Install cmake
+        run: sudo apt-get install -y cmake
+
       - name: Check formatting
         run: cargo fmt --all --check
 

@@ -11,10 +11,28 @@
 //! | `source-graphql` | GraphQL API source with cursor pagination |
 //! | `source-xml` | XML/SOAP API source with XML-to-JSON conversion |
 //! | `source-grpc` | gRPC source with dynamic protobuf messages |
+//! | `source-postgres` | PostgreSQL query source |
+//! | `source-mysql` | MySQL query source |
+//! | `source-kafka` | Kafka consumer source |
+//! | `source-s3` | AWS S3 file source |
+//! | `source-mongodb` | MongoDB query source |
+//! | `source-redis` | Redis source (streams, lists, keys) |
+//! | `source-webhook` | Webhook HTTP receiver source |
+//! | `source-csv` | CSV file source |
+//! | `source-elasticsearch` | Elasticsearch search/scroll source |
 //! | `sink-bigquery` | Google BigQuery streaming insert sink |
 //! | `sink-postgres` | PostgreSQL sink (jsonb or auto-mapped columns) |
 //! | `sink-jsonl` | JSON Lines file sink |
 //! | `sink-snowflake` | Snowflake SQL REST API sink |
+//! | `sink-mysql` | MySQL sink |
+//! | `sink-sqlite` | SQLite sink |
+//! | `sink-kafka` | Kafka producer sink |
+//! | `sink-s3` | AWS S3 file sink |
+//! | `sink-mongodb` | MongoDB insert sink |
+//! | `sink-redis` | Redis sink (streams, lists, key-value) |
+//! | `sink-csv` | CSV file sink |
+//! | `sink-elasticsearch` | Elasticsearch bulk index sink |
+//! | `sink-http` | HTTP POST sink |
 //! | `source` | All source connectors |
 //! | `sink` | All sink connectors |
 //! | `full` | Every connector |
@@ -44,6 +62,51 @@ pub mod source {
     pub mod grpc {
         pub use faucet_source_grpc::*;
     }
+
+    #[cfg(feature = "source-postgres")]
+    pub mod postgres {
+        pub use faucet_source_postgres::*;
+    }
+
+    #[cfg(feature = "source-mysql")]
+    pub mod mysql {
+        pub use faucet_source_mysql::*;
+    }
+
+    #[cfg(feature = "source-kafka")]
+    pub mod kafka {
+        pub use faucet_source_kafka::*;
+    }
+
+    #[cfg(feature = "source-s3")]
+    pub mod s3 {
+        pub use faucet_source_s3::*;
+    }
+
+    #[cfg(feature = "source-mongodb")]
+    pub mod mongodb {
+        pub use faucet_source_mongodb::*;
+    }
+
+    #[cfg(feature = "source-redis")]
+    pub mod redis {
+        pub use faucet_source_redis::*;
+    }
+
+    #[cfg(feature = "source-webhook")]
+    pub mod webhook {
+        pub use faucet_source_webhook::*;
+    }
+
+    #[cfg(feature = "source-csv")]
+    pub mod csv {
+        pub use faucet_source_csv::*;
+    }
+
+    #[cfg(feature = "source-elasticsearch")]
+    pub mod elasticsearch {
+        pub use faucet_source_elasticsearch::*;
+    }
 }
 
 // Source modules available without source-rest (when only other sources are enabled).
@@ -62,6 +125,51 @@ pub mod source {
     #[cfg(feature = "source-grpc")]
     pub mod grpc {
         pub use faucet_source_grpc::*;
+    }
+
+    #[cfg(feature = "source-postgres")]
+    pub mod postgres {
+        pub use faucet_source_postgres::*;
+    }
+
+    #[cfg(feature = "source-mysql")]
+    pub mod mysql {
+        pub use faucet_source_mysql::*;
+    }
+
+    #[cfg(feature = "source-kafka")]
+    pub mod kafka {
+        pub use faucet_source_kafka::*;
+    }
+
+    #[cfg(feature = "source-s3")]
+    pub mod s3 {
+        pub use faucet_source_s3::*;
+    }
+
+    #[cfg(feature = "source-mongodb")]
+    pub mod mongodb {
+        pub use faucet_source_mongodb::*;
+    }
+
+    #[cfg(feature = "source-redis")]
+    pub mod redis {
+        pub use faucet_source_redis::*;
+    }
+
+    #[cfg(feature = "source-webhook")]
+    pub mod webhook {
+        pub use faucet_source_webhook::*;
+    }
+
+    #[cfg(feature = "source-csv")]
+    pub mod csv {
+        pub use faucet_source_csv::*;
+    }
+
+    #[cfg(feature = "source-elasticsearch")]
+    pub mod elasticsearch {
+        pub use faucet_source_elasticsearch::*;
     }
 }
 
@@ -94,5 +202,50 @@ pub mod sink {
     #[cfg(feature = "sink-snowflake")]
     pub mod snowflake {
         pub use faucet_sink_snowflake::*;
+    }
+
+    #[cfg(feature = "sink-mysql")]
+    pub mod mysql {
+        pub use faucet_sink_mysql::*;
+    }
+
+    #[cfg(feature = "sink-sqlite")]
+    pub mod sqlite {
+        pub use faucet_sink_sqlite::*;
+    }
+
+    #[cfg(feature = "sink-kafka")]
+    pub mod kafka {
+        pub use faucet_sink_kafka::*;
+    }
+
+    #[cfg(feature = "sink-s3")]
+    pub mod s3 {
+        pub use faucet_sink_s3::*;
+    }
+
+    #[cfg(feature = "sink-mongodb")]
+    pub mod mongodb {
+        pub use faucet_sink_mongodb::*;
+    }
+
+    #[cfg(feature = "sink-redis")]
+    pub mod redis {
+        pub use faucet_sink_redis::*;
+    }
+
+    #[cfg(feature = "sink-csv")]
+    pub mod csv {
+        pub use faucet_sink_csv::*;
+    }
+
+    #[cfg(feature = "sink-elasticsearch")]
+    pub mod elasticsearch {
+        pub use faucet_sink_elasticsearch::*;
+    }
+
+    #[cfg(feature = "sink-http")]
+    pub mod http {
+        pub use faucet_sink_http::*;
     }
 }
