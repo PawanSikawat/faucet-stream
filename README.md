@@ -659,6 +659,94 @@ All pagination styles include loop detection — if the same cursor or link is r
 
 `RecordTransform::Custom` is always available regardless of feature flags.
 
+## Building Custom Connectors
+
+You can build your own source or sink connector as a standalone crate. The only
+dependency you need is `faucet-core` — it re-exports everything required:
+
+```toml
+[dependencies]
+faucet-core = "0.1"
+tokio = { version = "1", features = ["rt"] }
+```
+
+### Custom Source
+
+```rust
+use faucet_core::{async_trait, FaucetError, Source, Value, json};
+
+pub struct MySource {
+    api_url: String,
+}
+
+#[async_trait]
+impl Source for MySource {
+    async fn fetch_all(&self) -> Result<Vec<Value>, FaucetError> {
+        // Your logic here — fetch from an API, database, file, etc.
+        Ok(vec![json!({"id": 1, "name": "example"})])
+    }
+}
+```
+
+### Custom Sink
+
+```rust
+use faucet_core::{async_trait, FaucetError, Sink, Value};
+
+pub struct MySink {
+    output_path: String,
+}
+
+#[async_trait]
+impl Sink for MySink {
+    async fn write_batch(&self, records: &[Value]) -> Result<usize, FaucetError> {
+        // Your logic here — write to a database, file, API, etc.
+        Ok(records.len())
+    }
+}
+```
+
+### Error Handling
+
+Map your errors to `FaucetError` variants:
+
+- `FaucetError::Source("...")` — source-specific failures (query errors, connection issues)
+- `FaucetError::Sink("...")` — sink-specific failures (write errors, insert failures)
+- `FaucetError::Config("...")` — configuration or validation errors
+- `FaucetError::Custom(boxed_err)` — wrap any `std::error::Error` without losing the error chain
+
+```rust
+use faucet_core::FaucetError;
+
+// Wrap a custom error type
+let err: FaucetError = Box::new(my_lib::Error::ConnectionFailed).into();
+
+// Or use a string variant
+let err = FaucetError::Source("query returned invalid data".into());
+```
+
+### Using with Pipeline
+
+Custom connectors work seamlessly with the built-in pipeline and all existing connectors:
+
+```rust
+use faucet_core::Pipeline;
+
+let source = MySource { api_url: "https://api.example.com".into() };
+let sink = faucet_sink_jsonl::JsonlSink::new(
+    faucet_sink_jsonl::JsonlSinkConfig::new("/tmp/output.jsonl")
+);
+
+let result = Pipeline::new(&source, &sink).run().await?;
+println!("Wrote {} records", result.records_written);
+```
+
+### Naming Convention
+
+If you publish your connector to crates.io, use the naming convention:
+- Sources: `faucet-source-<name>` (e.g. `faucet-source-dynamodb`)
+- Sinks: `faucet-sink-<name>` (e.g. `faucet-sink-kafka`)
+
 ## Project Structure
 
 ```

@@ -92,6 +92,17 @@ Every code change must be production-library quality:
 
 When reviewing or modifying any part of the codebase, **proactively fix** any issue that falls below this standard. If a change is large enough to warrant a conversation first, call it out clearly and explain the fix, but default to fixing rather than flagging.
 
+## Third-Party Connector Friendliness
+
+This crate is designed as a **marketplace ecosystem** — third-party developers should be able to build and publish their own `faucet-source-*` and `faucet-sink-*` crates with minimal friction. Every change must preserve and improve this experience:
+
+- **`faucet-core` is the only required dependency** for connector authors. It re-exports `async_trait`, `serde_json`, `Value`, and `json!` so third-party crates don't need to add those separately. If a new common dependency is needed by connector authors, re-export it from `faucet-core` rather than requiring them to add it.
+- **`Source` and `Sink` traits must stay simple and object-safe.** Don't add methods that require connector-specific types, complex generics, or associated types that break `Box<dyn Source>` / `Box<dyn Sink>`. New trait methods must have default implementations so existing connectors don't break.
+- **`FaucetError` must accommodate third-party errors.** The `Custom(Box<dyn Error + Send + Sync>)` variant lets connector authors wrap their own error types without losing the chain. Don't remove it. If adding new error variants, consider whether third-party connectors would need them.
+- **`Pipeline` must remain generic** over any `Source` + `Sink` combination. Don't introduce coupling to specific connectors in the pipeline or core crate.
+- **Naming convention: `faucet-source-<name>` / `faucet-sink-<name>`** — all first-party crates follow this, and the README guides third-party authors to do the same.
+- **Don't add mandatory dependencies to `faucet-core`** that connector authors wouldn't need (e.g. database drivers, cloud SDKs). Keep core lightweight — connector-specific deps belong in their own crates.
+
 ## Commands
 
 ```bash
