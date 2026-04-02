@@ -13,23 +13,41 @@ This is a library workspace — there is no binary, no database, no migrations, 
 
 ## Workspace Structure
 
-The project is a Cargo workspace with four crates:
+The project is a Cargo workspace with ten crates:
 
 | Crate | Path | Description |
 |-------|------|-------------|
-| `faucet-core` | `crates/core/` | Shared types, traits (`Source`, `Sink`), transforms, error types |
+| `faucet-core` | `crates/core/` | Shared types, traits (`Source`, `Sink`), pipeline orchestration, transforms, error types |
 | `faucet-source-rest` | `crates/source/rest/` | REST API source — auth, pagination, extraction, schema inference |
+| `faucet-source-graphql` | `crates/source/graphql/` | GraphQL API source — cursor pagination, variable injection |
+| `faucet-source-xml` | `crates/source/xml/` | XML/SOAP API source — XML-to-JSON conversion, dot-path extraction |
+| `faucet-source-grpc` | `crates/source/grpc/` | gRPC source — dynamic protobuf via `prost-reflect` |
 | `faucet-sink-bigquery` | `crates/sink/bigquery/` | Google BigQuery streaming insert sink |
+| `faucet-sink-postgres` | `crates/sink/postgres/` | PostgreSQL sink — JSONB or auto-mapped columns |
+| `faucet-sink-jsonl` | `crates/sink/jsonl/` | JSON Lines file sink |
+| `faucet-sink-snowflake` | `crates/sink/snowflake/` | Snowflake SQL REST API sink |
 | `faucet-stream` | `faucet-stream/` | Umbrella crate — feature-gated re-exports of all connectors |
 
 ### Crate Dependency Graph
 
 ```
 faucet-core  <──  faucet-source-rest
+             <──  faucet-source-graphql
+             <──  faucet-source-xml
+             <──  faucet-source-grpc
              <──  faucet-sink-bigquery
+             <──  faucet-sink-postgres
+             <──  faucet-sink-jsonl
+             <──  faucet-sink-snowflake
              <──  faucet-stream (umbrella)
                     ├── optional dep: faucet-source-rest
-                    └── optional dep: faucet-sink-bigquery
+                    ├── optional dep: faucet-source-graphql
+                    ├── optional dep: faucet-source-xml
+                    ├── optional dep: faucet-source-grpc
+                    ├── optional dep: faucet-sink-bigquery
+                    ├── optional dep: faucet-sink-postgres
+                    ├── optional dep: faucet-sink-jsonl
+                    └── optional dep: faucet-sink-snowflake
 ```
 
 ## Code Quality Standard
@@ -91,11 +109,48 @@ cargo publish --dry-run -p faucet-stream
 - **`src/extract/`** — `extract_records()`: JSONPath extraction from response bodies
 - **`src/retry/`** — `execute_with_retry()`: generic exponential backoff retry executor
 
+### faucet-source-graphql (`crates/source/graphql/`)
+
+- **`src/lib.rs`** — crate root; re-exports config + stream types
+- **`src/config.rs`** — `GraphqlStreamConfig`, `GraphqlAuth`, `GraphqlPagination` (Relay cursor)
+- **`src/stream.rs`** — `GraphqlStream`: cursor pagination loop, JSONPath extraction, GraphQL error handling; implements `faucet_core::Source`
+
+### faucet-source-xml (`crates/source/xml/`)
+
+- **`src/lib.rs`** — crate root; re-exports config + stream types
+- **`src/config.rs`** — `XmlStreamConfig`, `XmlAuth`, `XmlPagination` (page-number, offset)
+- **`src/convert.rs`** — `xml_to_json()`: event-based XML-to-JSON conversion; `extract_at_path()`: dot-path record extraction
+- **`src/stream.rs`** — `XmlStream`: pagination, XML-to-JSON conversion pipeline; implements `faucet_core::Source`
+
+### faucet-source-grpc (`crates/source/grpc/`)
+
+- **`src/lib.rs`** — crate root; re-exports config + stream types
+- **`src/config.rs`** — `GrpcStreamConfig`, `GrpcAuth` (bearer, metadata)
+- **`src/stream.rs`** — `GrpcStream`: dynamic protobuf via `prost-reflect`, custom `DynamicCodec` for tonic; implements `faucet_core::Source`
+
 ### faucet-sink-bigquery (`crates/sink/bigquery/`)
 
 - **`src/lib.rs`** — crate root; re-exports core types + sink types
 - **`src/config.rs`** — `BigQuerySinkConfig` with builder, `BigQueryCredentials` enum
 - **`src/sink.rs`** — `BigQuerySink`: streaming insert executor; implements `faucet_core::Sink`
+
+### faucet-sink-postgres (`crates/sink/postgres/`)
+
+- **`src/lib.rs`** — crate root; re-exports config + sink types
+- **`src/config.rs`** — `PostgresSinkConfig`, `PostgresColumnMapping` (Jsonb or AutoMap)
+- **`src/sink.rs`** — `PostgresSink`: JSONB unnest inserts or auto-mapped column inserts; implements `faucet_core::Sink`
+
+### faucet-sink-jsonl (`crates/sink/jsonl/`)
+
+- **`src/lib.rs`** — crate root; re-exports config + sink types
+- **`src/config.rs`** — `JsonlSinkConfig` with builder (path, append, pretty)
+- **`src/sink.rs`** — `JsonlSink`: lazy file open, buffered async writes; implements `faucet_core::Sink`
+
+### faucet-sink-snowflake (`crates/sink/snowflake/`)
+
+- **`src/lib.rs`** — crate root; re-exports config + sink types
+- **`src/config.rs`** — `SnowflakeSinkConfig`, `SnowflakeAuth` (KeyPair JWT, OAuth)
+- **`src/sink.rs`** — `SnowflakeSink`: SQL REST API with JWT/OAuth auth, PARSE_JSON inserts; implements `faucet_core::Sink`
 
 ### faucet-stream (umbrella, `faucet-stream/`)
 
@@ -106,7 +161,13 @@ cargo publish --dry-run -p faucet-stream
 | Feature | Default | Description |
 |---------|---------|-------------|
 | `source-rest` | yes | REST API source connector |
+| `source-graphql` | no | GraphQL API source connector |
+| `source-xml` | no | XML/SOAP API source connector |
+| `source-grpc` | no | gRPC source connector |
 | `sink-bigquery` | no | Google BigQuery sink connector |
+| `sink-postgres` | no | PostgreSQL sink connector |
+| `sink-jsonl` | no | JSON Lines file sink connector |
+| `sink-snowflake` | no | Snowflake sink connector |
 | `source` | no | All source connectors |
 | `sink` | no | All sink connectors |
 | `full` | no | Every connector |
@@ -149,9 +210,34 @@ When the user points out something fundamental about how code in this library sh
 - `src/retry/` — retry/backoff logic only. Generic over the return type.
 - `src/stream.rs` — the only place where HTTP requests are executed. Orchestrates all other modules.
 
+#### faucet-source-graphql
+- `src/config.rs` — configuration types only. No HTTP logic.
+- `src/stream.rs` — HTTP requests, pagination loop, JSONPath extraction.
+
+#### faucet-source-xml
+- `src/config.rs` — configuration types only. No HTTP logic.
+- `src/convert.rs` — XML parsing and JSON conversion only. No HTTP logic.
+- `src/stream.rs` — HTTP requests, pagination loop, XML-to-JSON pipeline.
+
+#### faucet-source-grpc
+- `src/config.rs` — configuration types only. No gRPC logic.
+- `src/stream.rs` — gRPC channel setup, protobuf encoding/decoding, RPC execution.
+
 #### faucet-sink-bigquery
 - `src/config.rs` — configuration and credential types only.
 - `src/sink.rs` — BigQuery API calls and Sink trait impl.
+
+#### faucet-sink-postgres
+- `src/config.rs` — configuration types only. No SQL logic.
+- `src/sink.rs` — PostgreSQL inserts (JSONB or auto-mapped) and Sink trait impl.
+
+#### faucet-sink-jsonl
+- `src/config.rs` — configuration types only. No I/O logic.
+- `src/sink.rs` — File I/O and Sink trait impl.
+
+#### faucet-sink-snowflake
+- `src/config.rs` — configuration and auth types only. No HTTP logic.
+- `src/sink.rs` — Snowflake SQL REST API calls, JWT generation, and Sink trait impl.
 
 ### Error Handling
 
@@ -182,7 +268,13 @@ cargo test --workspace --all-features
 # Single crate
 cargo test -p faucet-core
 cargo test -p faucet-source-rest
+cargo test -p faucet-source-graphql
+cargo test -p faucet-source-xml
+cargo test -p faucet-source-grpc
 cargo test -p faucet-sink-bigquery
+cargo test -p faucet-sink-postgres
+cargo test -p faucet-sink-jsonl
+cargo test -p faucet-sink-snowflake
 cargo test -p faucet-stream --features full
 ```
 
@@ -202,7 +294,7 @@ Always use the **highest available stable version** for every crate, the Rust to
 Crates must be published in dependency order with delays for crates.io index propagation:
 
 1. `faucet-core`
-2. `faucet-source-rest` + `faucet-sink-bigquery` (after 30s)
+2. All sources + sinks (after 30s): `faucet-source-rest`, `faucet-source-graphql`, `faucet-source-xml`, `faucet-source-grpc`, `faucet-sink-bigquery`, `faucet-sink-postgres`, `faucet-sink-jsonl`, `faucet-sink-snowflake`
 3. `faucet-stream` (after 30s)
 
 The `.github/workflows/publish.yml` handles this automatically on version tags (`v*.*.*`).
@@ -210,3 +302,13 @@ The `.github/workflows/publish.yml` handles this automatically on version tags (
 ## Project Structure Sync
 
 **When adding, removing, or moving files or directories, update the Project Structure section in README.md to reflect the change.**
+
+## GitHub Auth Switching
+
+This repo is pushed under the `PawanSikawat` GitHub account, but the default CLI auth is `pawan-dt`. Before any `git push`, `git pull`, or `gh` commands that interact with the remote:
+
+1. Switch to the correct account: `gh auth switch --user PawanSikawat`
+2. Perform the git/gh operation
+3. Switch back to the default account: `gh auth switch --user pawan-dt`
+
+Always revert back to `pawan-dt` once the operation is done.

@@ -13,13 +13,19 @@ Inspired by [Meltano's RESTStream](https://sdk.meltano.com/en/latest/classes/sin
 
 ## Architecture
 
-faucet-stream is a Cargo workspace with four crates:
+faucet-stream is a Cargo workspace with ten crates:
 
 | Crate | Description |
 |-------|-------------|
 | [`faucet-core`](crates/core) | Shared types, traits (`Source`, `Sink`), pipeline orchestration, transforms, error types |
 | [`faucet-source-rest`](crates/source/rest) | REST API source — auth, pagination, extraction, schema inference |
+| [`faucet-source-graphql`](crates/source/graphql) | GraphQL API source — cursor-based pagination, variable injection |
+| [`faucet-source-xml`](crates/source/xml) | XML/SOAP API source — XML-to-JSON conversion, dot-path extraction |
+| [`faucet-source-grpc`](crates/source/grpc) | gRPC source — dynamic protobuf via `prost-reflect`, TLS support |
 | [`faucet-sink-bigquery`](crates/sink/bigquery) | Google BigQuery streaming insert sink |
+| [`faucet-sink-postgres`](crates/sink/postgres) | PostgreSQL sink — JSONB column or auto-mapped columns via `sqlx` |
+| [`faucet-sink-jsonl`](crates/sink/jsonl) | JSON Lines file sink — append/truncate modes, buffered async writes |
+| [`faucet-sink-snowflake`](crates/sink/snowflake) | Snowflake sink — SQL REST API with JWT (key-pair) and OAuth auth |
 | [`faucet-stream`](faucet-stream) | Umbrella crate — feature-gated re-exports of all connectors |
 
 Install only what you need:
@@ -39,7 +45,13 @@ faucet-stream = { version = "0.2", features = ["full"] }
 
 # Or use individual crates directly
 faucet-source-rest = "0.1"
+faucet-source-graphql = "0.1"
+faucet-source-xml = "0.1"
+faucet-source-grpc = "0.1"
 faucet-sink-bigquery = "0.1"
+faucet-sink-postgres = "0.1"
+faucet-sink-jsonl = "0.1"
+faucet-sink-snowflake = "0.1"
 ```
 
 ## Features
@@ -56,6 +68,31 @@ faucet-sink-bigquery = "0.1"
 - **Retries with backoff** — exponential backoff with configurable limits and 429 rate-limit handling
 - **Typed deserialization** — get `Vec<Value>` or deserialize directly into your structs
 
+### Source: GraphQL API (`faucet-source-graphql`)
+
+- **Cursor-based pagination** — Relay-style with configurable `hasNextPage` and `endCursor` JSONPaths
+- **Variable injection** — cursor and page size automatically injected into GraphQL variables
+- **JSONPath extraction** — extract records from nested GraphQL response structures
+- **Authentication** — Bearer token or custom headers
+- **GraphQL error handling** — detects and reports errors from the `errors` array
+
+### Source: XML/SOAP API (`faucet-source-xml`)
+
+- **XML-to-JSON conversion** — automatic conversion using `quick-xml` with attribute (`@`), text (`#text`), and repeated-element (array) handling
+- **SOAP support** — handles namespace-prefixed elements (e.g. `soap:Envelope`)
+- **Dot-path extraction** — extract records from nested XML structures (e.g. `Envelope.Body.Response.Items.Item`)
+- **Pagination** — page-number and offset/limit styles
+- **Authentication** — Bearer, Basic, or custom headers
+- **POST bodies** — supports SOAP request bodies for POST-based APIs
+
+### Source: gRPC (`faucet-source-grpc`)
+
+- **Dynamic protobuf** — call any gRPC method at runtime using a compiled `FileDescriptorSet` (no code generation)
+- **JSON request/response** — send requests as JSON, receive responses as JSON via `prost-reflect`
+- **TLS support** — automatic TLS detection from `https://` endpoint, or explicit override
+- **Authentication** — Bearer token or custom metadata key-value pairs
+- **JSONPath extraction** — extract records from the response using JSONPath
+
 ### Sink: BigQuery (`faucet-sink-bigquery`)
 
 - **Streaming inserts** — write `Vec<Value>` records via the BigQuery `insertAll` API
@@ -63,6 +100,28 @@ faucet-sink-bigquery = "0.1"
 - **Authentication** — service account key file, inline JSON key, or application default credentials
 - **Error reporting** — per-row error details from BigQuery
 - **Async-first** — built on `reqwest` + `tokio`
+
+### Sink: PostgreSQL (`faucet-sink-postgres`)
+
+- **JSONB mode** — insert entire records as JSONB values into a single column
+- **Auto-map mode** — discover table columns from `information_schema` and map JSON fields to columns automatically
+- **Connection pooling** — built on `sqlx` with `PgPool` for efficient async connections
+- **Batch inserts** — uses `UNNEST` for efficient multi-row inserts
+
+### Sink: JSON Lines (`faucet-sink-jsonl`)
+
+- **File output** — write records as one-JSON-per-line to a local file
+- **Append/truncate modes** — append to existing files or overwrite
+- **Pretty printing** — optional pretty-printed JSON output
+- **Buffered async I/O** — uses `tokio::io::BufWriter` for efficient writes
+- **Lazy file opening** — file is created on first write, not at construction
+
+### Sink: Snowflake (`faucet-sink-snowflake`)
+
+- **SQL REST API** — uses Snowflake's SQL REST API for INSERT operations
+- **Authentication** — JWT (key-pair) with RSA private key, or OAuth token
+- **Batch inserts** — wraps records in `PARSE_JSON()` for VARIANT column insertion
+- **Configurable** — account, warehouse, database, schema, role all configurable
 
 ### Pipeline (`faucet-core`)
 
@@ -447,7 +506,13 @@ All pagination styles include loop detection — if the same cursor or link is r
 | Feature | Default | Description |
 |---------|---------|-------------|
 | `source-rest` | yes | REST API source connector |
+| `source-graphql` | no | GraphQL API source connector |
+| `source-xml` | no | XML/SOAP API source connector |
+| `source-grpc` | no | gRPC source connector |
 | `sink-bigquery` | no | Google BigQuery sink connector |
+| `sink-postgres` | no | PostgreSQL sink connector |
+| `sink-jsonl` | no | JSON Lines file sink connector |
+| `sink-snowflake` | no | Snowflake sink connector |
 | `source` | no | All source connectors |
 | `sink` | no | All sink connectors |
 | `full` | no | Every connector |
@@ -483,12 +548,36 @@ crates/
         retry/                — Exponential backoff retry executor
       examples/               — Usage examples
       tests/                  — Integration tests (wiremock)
+    graphql/                  — faucet-source-graphql: GraphQL API source
+      src/
+        config.rs             — GraphqlStreamConfig, GraphqlAuth, GraphqlPagination
+        stream.rs             — GraphqlStream executor + Source trait impl
+    xml/                      — faucet-source-xml: XML/SOAP API source
+      src/
+        config.rs             — XmlStreamConfig, XmlAuth, XmlPagination
+        convert.rs            — xml_to_json(), extract_at_path()
+        stream.rs             — XmlStream executor + Source trait impl
+    grpc/                     — faucet-source-grpc: gRPC source
+      src/
+        config.rs             — GrpcStreamConfig, GrpcAuth
+        stream.rs             — GrpcStream with dynamic protobuf + Source trait impl
   sink/
     bigquery/                 — faucet-sink-bigquery: BigQuery streaming insert sink
       src/
-        lib.rs                — crate root and re-exports
         config.rs             — BigQuerySinkConfig with builder API
         sink.rs               — BigQuerySink executor + Sink trait impl
+    postgres/                 — faucet-sink-postgres: PostgreSQL sink
+      src/
+        config.rs             — PostgresSinkConfig, PostgresColumnMapping
+        sink.rs               — PostgresSink with JSONB/auto-map modes + Sink trait impl
+    jsonl/                    — faucet-sink-jsonl: JSON Lines file sink
+      src/
+        config.rs             — JsonlSinkConfig with builder API
+        sink.rs               — JsonlSink with buffered async writes + Sink trait impl
+    snowflake/                — faucet-sink-snowflake: Snowflake sink
+      src/
+        config.rs             — SnowflakeSinkConfig, SnowflakeAuth
+        sink.rs               — SnowflakeSink via SQL REST API + Sink trait impl
 faucet-stream/                — umbrella crate with feature-gated re-exports
   src/lib.rs
 ```

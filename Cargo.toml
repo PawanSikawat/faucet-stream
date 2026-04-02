@@ -3,7 +3,13 @@ resolver = "3"
 members = [
     "crates/core",
     "crates/source/rest",
+    "crates/source/graphql",
+    "crates/source/xml",
+    "crates/source/grpc",
     "crates/sink/bigquery",
+    "crates/sink/postgres",
+    "crates/sink/jsonl",
+    "crates/sink/snowflake",
     "faucet-stream",
 ]
 
@@ -17,7 +23,13 @@ repository = "https://github.com/PawanSikawat/faucet-stream"
 # Internal crates
 faucet-core = { path = "crates/core", version = "0.1.0" }
 faucet-source-rest = { path = "crates/source/rest", version = "0.1.0" }
+faucet-source-graphql = { path = "crates/source/graphql", version = "0.1.0" }
+faucet-source-xml = { path = "crates/source/xml", version = "0.1.0" }
+faucet-source-grpc = { path = "crates/source/grpc", version = "0.1.0" }
 faucet-sink-bigquery = { path = "crates/sink/bigquery", version = "0.1.0" }
+faucet-sink-postgres = { path = "crates/sink/postgres", version = "0.1.0" }
+faucet-sink-jsonl = { path = "crates/sink/jsonl", version = "0.1.0" }
+faucet-sink-snowflake = { path = "crates/sink/snowflake", version = "0.1.0" }
 
 # Shared external deps
 serde = { version = "1", features = ["derive"] }
@@ -29,3 +41,13 @@ async-trait = "0.1.89"
 regex = "1"
 reqwest = { version = "0.13", features = ["json", "form", "query"] }
 futures-core = "0.3"
+jsonpath-rust = "1.0.1"
+quick-xml = { version = "0.37", features = ["serialize"] }
+tonic = { version = "0.13", features = ["transport", "tls-ring"] }
+prost = "0.13"
+prost-reflect = { version = "0.15", features = ["serde"] }
+prost-types = "0.13"
+sqlx = { version = "0.8", features = ["runtime-tokio", "tls-rustls", "postgres", "json"] }
+jsonwebtoken = "9"
+base64 = "0.22"
+uuid = { version = "1", features = ["v4"] }

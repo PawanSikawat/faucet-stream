@@ -15,15 +15,23 @@ exclude = [".trunk/"]
 default = ["source-rest"]
 
 ## All source connectors.
-source = ["source-rest"]
+source = ["source-rest", "source-graphql", "source-xml", "source-grpc"]
 ## All sink connectors.
-sink = ["sink-bigquery"]
+sink = ["sink-bigquery", "sink-postgres", "sink-jsonl", "sink-snowflake"]
 ## Every connector.
 full = ["source", "sink"]
 
-## Individual connectors.
+## Individual source connectors.
 source-rest = ["dep:faucet-source-rest"]
+source-graphql = ["dep:faucet-source-graphql"]
+source-xml = ["dep:faucet-source-xml"]
+source-grpc = ["dep:faucet-source-grpc"]
+
+## Individual sink connectors.
 sink-bigquery = ["dep:faucet-sink-bigquery"]
+sink-postgres = ["dep:faucet-sink-postgres"]
+sink-jsonl = ["dep:faucet-sink-jsonl"]
+sink-snowflake = ["dep:faucet-sink-snowflake"]
 
 ## Transform features (forwarded to source-rest when enabled).
 transform-flatten = ["faucet-source-rest?/transform-flatten"]
@@ -34,4 +42,10 @@ transforms = ["faucet-source-rest?/transforms"]
 [dependencies]
 faucet-core.workspace = true
 faucet-source-rest = { workspace = true, optional = true }
+faucet-source-graphql = { workspace = true, optional = true }
+faucet-source-xml = { workspace = true, optional = true }
+faucet-source-grpc = { workspace = true, optional = true }
 faucet-sink-bigquery = { workspace = true, optional = true }
+faucet-sink-postgres = { workspace = true, optional = true }
+faucet-sink-jsonl = { workspace = true, optional = true }
+faucet-sink-snowflake = { workspace = true, optional = true }

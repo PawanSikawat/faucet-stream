@@ -58,7 +58,13 @@ jobs:
         run: |
           cargo publish --dry-run -p faucet-core
           cargo publish --dry-run -p faucet-source-rest
+          cargo publish --dry-run -p faucet-source-graphql
+          cargo publish --dry-run -p faucet-source-xml
+          cargo publish --dry-run -p faucet-source-grpc
           cargo publish --dry-run -p faucet-sink-bigquery
+          cargo publish --dry-run -p faucet-sink-postgres
+          cargo publish --dry-run -p faucet-sink-jsonl
+          cargo publish --dry-run -p faucet-sink-snowflake
           cargo publish --dry-run -p faucet-stream
 
       - name: Publish
@@ -69,6 +75,12 @@ jobs:
           cargo publish -p faucet-core
           sleep 30
           cargo publish -p faucet-source-rest
+          cargo publish -p faucet-source-graphql
+          cargo publish -p faucet-source-xml
+          cargo publish -p faucet-source-grpc
           cargo publish -p faucet-sink-bigquery
+          cargo publish -p faucet-sink-postgres
+          cargo publish -p faucet-sink-jsonl
+          cargo publish -p faucet-sink-snowflake
           sleep 30
           cargo publish -p faucet-stream
