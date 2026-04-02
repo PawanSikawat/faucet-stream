@@ -17,7 +17,7 @@ faucet-stream is a Cargo workspace with four crates:
 
 | Crate | Description |
 |-------|-------------|
-| [`faucet-core`](crates/core) | Shared types, traits (`Source`, `Sink`), transforms, error types |
+| [`faucet-core`](crates/core) | Shared types, traits (`Source`, `Sink`), pipeline orchestration, transforms, error types |
 | [`faucet-source-rest`](crates/source/rest) | REST API source — auth, pagination, extraction, schema inference |
 | [`faucet-sink-bigquery`](crates/sink/bigquery) | Google BigQuery streaming insert sink |
 | [`faucet-stream`](faucet-stream) | Umbrella crate — feature-gated re-exports of all connectors |
@@ -63,6 +63,13 @@ faucet-sink-bigquery = "0.1"
 - **Authentication** — service account key file, inline JSON key, or application default credentials
 - **Error reporting** — per-row error details from BigQuery
 - **Async-first** — built on `reqwest` + `tokio`
+
+### Pipeline (`faucet-core`)
+
+- **Source → Sink orchestration** — connect any source to any sink with `Pipeline::new(&source, &sink).run()`
+- **Batch mode** — fetch all records, then write; supports incremental replication bookmarks
+- **Streaming mode** — write page-by-page as records arrive, keeping memory bounded
+- **Plug-and-play** — implement `Source` or `Sink` for your own connectors and they work with everything
 
 ## Quick Start
 
@@ -345,6 +352,72 @@ let stream = RestStream::new(
 let repos = stream.fetch_all().await?;
 ```
 
+### Pipeline: Source → Sink
+
+Connect any source to any sink — the pipeline handles data transfer automatically:
+
+```rust
+use faucet_stream::{Pipeline, RestStream, RestStreamConfig, PaginationStyle};
+// Assume `bigquery_sink` is a configured BigQuerySink
+
+// Batch mode: fetch all, then write
+let source = RestStream::new(
+    RestStreamConfig::new("https://api.example.com", "/v1/users")
+        .records_path("$.data[*]")
+        .pagination(PaginationStyle::Cursor {
+            next_token_path: "$.meta.next_cursor".into(),
+            param_name: "cursor".into(),
+        }),
+)?;
+
+let result = Pipeline::new(&source, &bigquery_sink).run().await?;
+println!("Wrote {} records", result.records_written);
+// result.bookmark contains the incremental replication bookmark
+```
+
+For large datasets, use streaming mode to write page-by-page (bounded memory):
+
+```rust
+use faucet_stream::run_stream;
+use futures::StreamExt;
+
+let result = run_stream(source.stream_pages(), &bigquery_sink).await?;
+```
+
+### Custom connectors
+
+Implement `Source` or `Sink` to build your own connectors — they plug into the
+pipeline and work with every existing connector automatically:
+
+```rust
+use faucet_stream::{Source, Sink, FaucetError, Pipeline};
+use async_trait::async_trait;
+use serde_json::Value;
+
+struct MyCsvSource { /* ... */ }
+
+#[async_trait]
+impl Source for MyCsvSource {
+    async fn fetch_all(&self) -> Result<Vec<Value>, FaucetError> {
+        // Read CSV rows, return as JSON values
+        todo!()
+    }
+}
+
+struct MyS3Sink { /* ... */ }
+
+#[async_trait]
+impl Sink for MyS3Sink {
+    async fn write_batch(&self, records: &[Value]) -> Result<usize, FaucetError> {
+        // Upload records to S3
+        todo!()
+    }
+}
+
+// Any source works with any sink
+// Pipeline::new(&MyCsvSource { .. }, &MyS3Sink { .. }).run().await?;
+```
+
 ## Authentication Methods
 
 | Method | Description |
@@ -394,6 +467,7 @@ crates/
       lib.rs                  — crate root and re-exports
       error.rs                — FaucetError enum
       traits.rs               — Source and Sink async traits
+      pipeline.rs             — Pipeline orchestration (source → sink)
       transform.rs            — RecordTransform pipeline
       replication.rs          — Incremental replication (filtering + bookmarking)
       schema.rs               — JSON Schema inference from record samples

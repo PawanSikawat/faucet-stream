@@ -73,9 +73,10 @@ cargo publish --dry-run -p faucet-stream
 
 ### faucet-core (`crates/core/`)
 
-- **`src/lib.rs`** — crate root; re-exports `FaucetError`, `Source`, `Sink`, `RecordTransform`, `ReplicationMethod`
+- **`src/lib.rs`** — crate root; re-exports `FaucetError`, `Source`, `Sink`, `Pipeline`, `PipelineResult`, `run_stream`, `RecordTransform`, `ReplicationMethod`
 - **`src/error.rs`** — `FaucetError` enum: `Http`, `HttpStatus`, `Json`, `JsonPath`, `Auth`, `RateLimited`, `Url`, `Transform`, `Sink`
 - **`src/traits.rs`** — `Source` and `Sink` async traits (the core abstractions)
+- **`src/pipeline.rs`** — `Pipeline` struct (batch source→sink), `run_stream()` (streaming source→sink), `PipelineResult`
 - **`src/transform.rs`** — `RecordTransform` enum + `CompiledTransform`: flatten, rename keys (regex), snake_case, custom closures; feature-gated built-ins
 - **`src/replication.rs`** — `ReplicationMethod` enum, `filter_incremental()`, `max_replication_value()` for bookmark-based incremental replication
 - **`src/schema.rs`** — `infer_schema()`: JSON Schema inference from record samples with type merging and nullable detection
@@ -136,6 +137,7 @@ When the user points out something fundamental about how code in this library sh
 
 #### faucet-core
 - `src/traits.rs` — trait definitions only. No HTTP or connector-specific logic.
+- `src/pipeline.rs` — source→sink orchestration only. Depends only on `Source` and `Sink` traits. No connector-specific logic.
 - `src/transform.rs` — record transform compilation and application only. No HTTP logic. Built-in transforms are feature-gated.
 - `src/replication.rs` — incremental replication filtering and bookmark computation only. No HTTP logic.
 - `src/schema.rs` — JSON Schema inference from `Vec<Value>` only. No HTTP logic.

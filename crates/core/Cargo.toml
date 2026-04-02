@@ -22,7 +22,9 @@ tracing.workspace = true
 async-trait.workspace = true
 reqwest.workspace = true
 regex = { workspace = true, optional = true }
+futures-core.workspace = true
 
 [dev-dependencies]
 serde_json.workspace = true
 tokio = { workspace = true, features = ["macros", "rt"] }
+futures = "0.3"
