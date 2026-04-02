@@ -3,6 +3,7 @@
 use crate::config::{GraphqlAuth, GraphqlStreamConfig};
 use async_trait::async_trait;
 use faucet_core::FaucetError;
+use faucet_core::util::{self, DEFAULT_ERROR_BODY_MAX_LEN};
 use jsonpath_rust::JsonPath;
 use reqwest::Client;
 use serde_json::{Value, json};
@@ -112,17 +113,7 @@ impl GraphqlStream {
         }
 
         let resp = req.send().await.map_err(FaucetError::Http)?;
-
-        let status = resp.status();
-        if !status.is_success() {
-            let url = resp.url().to_string();
-            let body_text = resp.text().await.unwrap_or_default();
-            return Err(FaucetError::HttpStatus {
-                status: status.as_u16(),
-                url,
-                body: body_text,
-            });
-        }
+        let resp = util::check_http_response(resp, DEFAULT_ERROR_BODY_MAX_LEN).await?;
 
         let body: Value = resp.json().await.map_err(FaucetError::Http)?;
 
@@ -149,14 +140,9 @@ impl GraphqlStream {
     /// Extract records from a GraphQL response using the configured JSONPath.
     fn extract_records(&self, body: &Value) -> Result<Vec<Value>, FaucetError> {
         match &self.config.records_path {
-            Some(path) => {
-                let results = body
-                    .query(path)
-                    .map_err(|e| FaucetError::JsonPath(format!("JSONPath error: {e}")))?;
-                Ok(results.into_iter().cloned().collect())
-            }
+            Some(path) => util::extract_records(body, Some(path)),
             None => {
-                // Return the data field as a single record.
+                // GraphQL-specific: return the `data` field as a single record.
                 match body.get("data") {
                     Some(data) => Ok(vec![data.clone()]),
                     None => Ok(vec![body.clone()]),

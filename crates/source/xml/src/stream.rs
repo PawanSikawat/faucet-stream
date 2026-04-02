@@ -4,6 +4,7 @@ use crate::config::{XmlAuth, XmlPagination, XmlStreamConfig};
 use crate::convert;
 use async_trait::async_trait;
 use faucet_core::FaucetError;
+use faucet_core::util::{self, DEFAULT_ERROR_BODY_MAX_LEN};
 use reqwest::Client;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -167,18 +168,7 @@ impl XmlStream {
         }
 
         let resp = req.send().await.map_err(FaucetError::Http)?;
-        let status = resp.status();
-
-        if !status.is_success() {
-            let resp_url = resp.url().to_string();
-            let body_text = resp.text().await.unwrap_or_default();
-            return Err(FaucetError::HttpStatus {
-                status: status.as_u16(),
-                url: resp_url,
-                body: body_text,
-            });
-        }
-
+        let resp = util::check_http_response(resp, DEFAULT_ERROR_BODY_MAX_LEN).await?;
         resp.text().await.map_err(FaucetError::Http)
     }
 }

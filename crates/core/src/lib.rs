@@ -17,6 +17,7 @@ pub mod replication;
 pub mod schema;
 pub mod traits;
 pub mod transform;
+pub mod util;
 
 pub use error::FaucetError;
 pub use pipeline::{Pipeline, PipelineResult, run_stream};

@@ -17,7 +17,6 @@ tonic.workspace = true
 prost.workspace = true
 prost-reflect.workspace = true
 prost-types.workspace = true
-jsonpath-rust.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt"] }

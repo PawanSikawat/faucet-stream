@@ -3,6 +3,7 @@
 use crate::config::{PostgresColumnMapping, PostgresSinkConfig};
 use async_trait::async_trait;
 use faucet_core::FaucetError;
+use faucet_core::util::quote_ident;
 use serde_json::Value;
 use sqlx::postgres::PgPoolOptions;
 use sqlx::{PgPool, Row};
@@ -11,12 +12,6 @@ use sqlx::{PgPool, Row};
 pub struct PostgresSink {
     config: PostgresSinkConfig,
     pool: PgPool,
-}
-
-/// Quote a SQL identifier to prevent SQL injection.
-/// Doubles any embedded double-quotes per SQL standard.
-fn quote_ident(name: &str) -> String {
-    format!("\"{}\"", name.replace('"', "\"\""))
 }
 
 impl PostgresSink {

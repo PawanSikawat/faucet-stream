@@ -139,18 +139,8 @@ impl GrpcStream {
             })?;
 
         // Extract records using JSONPath if configured.
-        let records: Vec<Value> = match &self.config.records_path {
-            Some(path) => {
-                use jsonpath_rust::JsonPath;
-                json_value
-                    .query(path)
-                    .map_err(|e| FaucetError::JsonPath(format!("JSONPath error: {e}")))?
-                    .into_iter()
-                    .cloned()
-                    .collect()
-            }
-            None => vec![json_value],
-        };
+        let records =
+            faucet_core::util::extract_records(&json_value, self.config.records_path.as_deref())?;
 
         tracing::info!(records = records.len(), "gRPC fetch complete");
         Ok(records)

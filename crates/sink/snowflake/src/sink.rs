@@ -3,6 +3,7 @@
 use crate::config::{SnowflakeAuth, SnowflakeSinkConfig};
 use async_trait::async_trait;
 use faucet_core::FaucetError;
+use faucet_core::util::quote_ident;
 use reqwest::Client;
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -19,12 +20,6 @@ struct SnowflakeResponse {
     message: Option<String>,
     #[serde(default)]
     code: Option<String>,
-}
-
-/// Quote a Snowflake identifier to prevent SQL injection.
-/// Doubles any embedded double-quotes per SQL standard.
-fn quote_ident(name: &str) -> String {
-    format!("\"{}\"", name.replace('"', "\"\""))
 }
 
 impl SnowflakeSink {
@@ -220,16 +215,6 @@ mod tests {
         let sink = SnowflakeSink::new(config);
         let header = sink.auth_header().unwrap();
         assert_eq!(header, "Snowflake Token=\"my-token\"");
-    }
-
-    #[test]
-    fn quote_ident_simple() {
-        assert_eq!(quote_ident("my_table"), "\"my_table\"");
-    }
-
-    #[test]
-    fn quote_ident_with_quotes() {
-        assert_eq!(quote_ident("my\"table"), "\"my\"\"table\"");
     }
 
     #[test]
