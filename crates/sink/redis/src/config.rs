@@ -1,7 +1,10 @@
 //! Redis sink configuration.
 
+use serde::{Deserialize, Serialize};
+
 /// The type of Redis data structure to write to.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type")]
 pub enum RedisSinkType {
     /// Append records to a Redis list via `RPUSH`.
     List {
@@ -21,7 +24,7 @@ pub enum RedisSinkType {
 }
 
 /// Configuration for the Redis sink connector.
-#[derive(Clone)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct RedisSinkConfig {
     /// Redis connection URL (e.g. `"redis://127.0.0.1:6379"`).
     pub url: String,

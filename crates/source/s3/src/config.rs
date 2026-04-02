@@ -1,7 +1,10 @@
 //! S3 source configuration.
 
+use serde::{Deserialize, Serialize};
+
 /// Format of files stored in S3.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum S3FileFormat {
     /// Each line in the file is a separate JSON record.
     #[default]
@@ -13,7 +16,7 @@ pub enum S3FileFormat {
 }
 
 /// Configuration for the S3 source connector.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct S3SourceConfig {
     /// S3 bucket name.
     pub bucket: String,

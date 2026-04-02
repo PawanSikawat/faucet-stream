@@ -11,6 +11,7 @@
 //! - [`ReplicationMethod`] — incremental replication support
 //! - [`schema::infer_schema`] — JSON Schema inference from record samples
 
+pub mod config;
 pub mod error;
 pub mod pipeline;
 pub mod replication;

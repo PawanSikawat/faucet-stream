@@ -1,5 +1,6 @@
 //! MongoDB sink configuration.
 
+use serde::{Deserialize, Serialize};
 use std::fmt;
 
 /// Configuration for the MongoDB sink connector.
@@ -16,7 +17,7 @@ use std::fmt;
 /// )
 /// .batch_size(1000);
 /// ```
-#[derive(Clone)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct MongoSinkConfig {
     /// MongoDB connection URI (e.g. `mongodb://localhost:27017`).
     pub connection_uri: String,

@@ -1,10 +1,12 @@
 //! gRPC source configuration.
 
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::path::PathBuf;
 
 /// Authentication for gRPC endpoints.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type")]
 pub enum GrpcAuth {
     /// No authentication.
     None,
@@ -15,7 +17,7 @@ pub enum GrpcAuth {
 }
 
 /// Configuration for the gRPC source.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GrpcStreamConfig {
     /// gRPC endpoint URL (e.g. `"http://localhost:50051"`).
     pub endpoint: String,

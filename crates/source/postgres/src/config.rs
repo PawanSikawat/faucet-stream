@@ -1,18 +1,25 @@
 //! PostgreSQL source configuration.
 
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 /// Configuration for the PostgreSQL query source.
-#[derive(Clone)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct PostgresSourceConfig {
     /// PostgreSQL connection URL (e.g. `postgres://user:pass@host/db`).
     pub connection_url: String,
     /// SQL query to execute.
     pub query: String,
     /// Bind parameters for the query. Defaults to empty.
+    #[serde(default)]
     pub params: Vec<Value>,
     /// Maximum number of connections in the pool. Defaults to 10.
+    #[serde(default = "default_max_connections")]
     pub max_connections: u32,
+}
+
+fn default_max_connections() -> u32 {
+    10
 }
 
 impl std::fmt::Debug for PostgresSourceConfig {

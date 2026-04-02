@@ -5,6 +5,7 @@
 
 pub mod config;
 pub mod convert;
+pub mod serde_helpers;
 pub mod stream;
 
 pub use faucet_core::{FaucetError, Source};

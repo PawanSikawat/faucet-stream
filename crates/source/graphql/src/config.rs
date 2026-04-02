@@ -1,16 +1,19 @@
 //! GraphQL source configuration.
 
 use reqwest::header::HeaderMap;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 /// Authentication for GraphQL endpoints.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type")]
 pub enum GraphqlAuth {
     /// No authentication.
     None,
     /// Bearer token in the Authorization header.
     Bearer(String),
     /// Custom headers (e.g. API keys, cookies).
+    #[serde(skip)]
     Custom(HeaderMap),
 }
 
@@ -18,7 +21,7 @@ pub enum GraphqlAuth {
 ///
 /// Most GraphQL APIs use the Relay cursor specification with
 /// `pageInfo { hasNextPage, endCursor }`.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GraphqlPagination {
     /// JSONPath to the `hasNextPage` boolean in the response.
     pub has_next_page_path: String,
@@ -45,7 +48,7 @@ impl Default for GraphqlPagination {
 }
 
 /// Configuration for the GraphQL source.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GraphqlStreamConfig {
     /// GraphQL endpoint URL.
     pub endpoint: String,
@@ -56,6 +59,7 @@ pub struct GraphqlStreamConfig {
     /// Authentication method.
     pub auth: GraphqlAuth,
     /// Additional request headers.
+    #[serde(skip, default)]
     pub headers: HeaderMap,
     /// JSONPath expression to extract records from the response.
     pub records_path: Option<String>,

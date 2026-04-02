@@ -9,6 +9,7 @@ description = "Elasticsearch source connector for the faucet-stream ecosystem"
 
 [dependencies]
 faucet-core.workspace = true
+serde.workspace = true
 serde_json.workspace = true
 async-trait.workspace = true
 tracing.workspace = true

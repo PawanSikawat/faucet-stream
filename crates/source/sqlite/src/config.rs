@@ -1,14 +1,21 @@
 //! SQLite source configuration.
 
+use serde::{Deserialize, Serialize};
+
 /// Configuration for the SQLite query source.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SqliteSourceConfig {
     /// SQLite database URL (file path or `sqlite::memory:`).
     pub database_url: String,
     /// SQL query to execute.
     pub query: String,
     /// Maximum number of connections in the pool. Defaults to 10.
+    #[serde(default = "default_max_connections")]
     pub max_connections: u32,
+}
+
+fn default_max_connections() -> u32 {
+    10
 }
 
 impl SqliteSourceConfig {

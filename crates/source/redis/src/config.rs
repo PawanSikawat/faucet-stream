@@ -1,7 +1,10 @@
 //! Redis source configuration.
 
+use serde::{Deserialize, Serialize};
+
 /// The type of Redis data structure to read from.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type")]
 pub enum RedisSourceType {
     /// Read all elements from a Redis list via `LRANGE 0 -1`.
     List {
@@ -27,7 +30,7 @@ pub enum RedisSourceType {
 }
 
 /// Configuration for the Redis source connector.
-#[derive(Clone)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct RedisSourceConfig {
     /// Redis connection URL (e.g. `"redis://127.0.0.1:6379"`).
     pub url: String,

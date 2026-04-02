@@ -8,11 +8,13 @@ pub mod page;
 
 use faucet_core::FaucetError;
 use reqwest::header::HeaderMap;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 
 /// Supported pagination strategies.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type")]
 pub enum PaginationStyle {
     None,
     Cursor {

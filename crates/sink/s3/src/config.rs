@@ -1,7 +1,9 @@
 //! S3 sink configuration.
 
+use serde::{Deserialize, Serialize};
+
 /// Configuration for the S3 sink connector.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct S3SinkConfig {
     /// S3 bucket name.
     pub bucket: String,

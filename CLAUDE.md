@@ -80,6 +80,10 @@ faucet-core  <──  faucet-source-rest
              <──  faucet-stream (umbrella, all optional)
 ```
 
+## Primary Goal
+
+**All sources and sinks must be as fast, efficient, and reliable as possible.** This is the number one priority for every decision — architecture, implementation, dependency choice, and API design. Performance and reliability are not afterthoughts; they are the reason this library exists. Every connector should be the fastest way to move data between its endpoints in Rust.
+
 ## Code Quality Standard
 
 Every code change must be production-library quality:

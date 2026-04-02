@@ -2,14 +2,18 @@
 
 use std::path::PathBuf;
 
+use serde::{Deserialize, Serialize};
+
 /// Configuration for the JSON Lines file sink.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JsonlSinkConfig {
     /// Path to the output file.
     pub path: PathBuf,
     /// Whether to append to an existing file (default: false, truncates).
+    #[serde(default)]
     pub append: bool,
     /// Whether to pretty-print each JSON record (default: false, compact).
+    #[serde(default)]
     pub pretty: bool,
 }
 

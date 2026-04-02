@@ -1,16 +1,33 @@
 //! CSV source configuration.
 
+use serde::{Deserialize, Serialize};
+
 /// Configuration for the CSV file source.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CsvSourceConfig {
     /// Path to the CSV file.
     pub path: String,
     /// Whether the file has a header row. Defaults to `true`.
+    #[serde(default = "default_true")]
     pub has_headers: bool,
     /// Field delimiter byte. Defaults to `b','`.
+    #[serde(default = "default_delimiter")]
     pub delimiter: u8,
     /// Quote character byte. Defaults to `b'"'`.
+    #[serde(default = "default_quote")]
     pub quote: u8,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn default_delimiter() -> u8 {
+    b','
+}
+
+fn default_quote() -> u8 {
+    b'"'
 }
 
 impl CsvSourceConfig {

@@ -1,16 +1,29 @@
 //! CSV sink configuration.
 
+use serde::{Deserialize, Serialize};
+
 /// Configuration for the CSV file sink.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CsvSinkConfig {
     /// Path to the output CSV file.
     pub path: String,
     /// Field delimiter byte. Defaults to `b','`.
+    #[serde(default = "default_delimiter")]
     pub delimiter: u8,
     /// Whether to write a header row. Defaults to `true`.
+    #[serde(default = "default_true")]
     pub write_headers: bool,
     /// Whether to append to an existing file. Defaults to `false` (truncates).
+    #[serde(default)]
     pub append: bool,
+}
+
+fn default_delimiter() -> u8 {
+    b','
+}
+
+fn default_true() -> bool {
+    true
 }
 
 impl CsvSinkConfig {

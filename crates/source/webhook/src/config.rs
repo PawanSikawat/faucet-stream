@@ -1,7 +1,10 @@
 //! Webhook source configuration.
 
+use serde::{Deserialize, Serialize};
+
 /// Configuration for the webhook receiver source.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct WebhookSourceConfig {
     /// Address to bind the HTTP server to (default: `"0.0.0.0:8080"`).
     pub listen_addr: String,

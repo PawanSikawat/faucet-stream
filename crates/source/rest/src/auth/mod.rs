@@ -9,10 +9,12 @@ pub mod token_endpoint;
 
 use faucet_core::FaucetError;
 use reqwest::header::HeaderMap;
+use serde::{Deserialize, Serialize};
 pub use token_endpoint::ResponseValidator;
 
 /// Supported authentication methods.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type")]
 pub enum Auth {
     None,
     Bearer(String),
@@ -55,8 +57,10 @@ pub enum Auth {
         /// URL of the token endpoint.
         url: String,
         /// HTTP method for the token request (e.g. GET, POST).
+        #[serde(with = "crate::serde_helpers::http_method")]
         method: reqwest::Method,
         /// Headers to send with the token request (e.g. API keys, content type).
+        #[serde(skip, default)]
         headers: HeaderMap,
         /// Optional JSON body for the token request.
         body: Option<serde_json::Value>,
@@ -71,8 +75,10 @@ pub enum Auth {
         /// Optional callback to decide whether the token endpoint response is
         /// successful. Receives the HTTP status code. When `None`, defaults to
         /// `status.is_success()` (2xx).
+        #[serde(skip, default)]
         response_validator: Option<ResponseValidator>,
     },
+    #[serde(skip)]
     Custom(HeaderMap),
 }
 

@@ -4,6 +4,7 @@
 //! either individually or as a JSON array batch.
 
 pub mod config;
+pub mod serde_helpers;
 pub mod sink;
 
 pub use faucet_core::{FaucetError, Sink};

@@ -1,7 +1,10 @@
 //! Elasticsearch sink configuration.
 
+use serde::{Deserialize, Serialize};
+
 /// Authentication method for the Elasticsearch sink.
-#[derive(Clone)]
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(tag = "type", content = "value")]
 pub enum ElasticsearchSinkAuth {
     /// No authentication.
     None,
@@ -29,7 +32,7 @@ impl std::fmt::Debug for ElasticsearchSinkAuth {
 }
 
 /// Configuration for the Elasticsearch bulk index sink.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ElasticsearchSinkConfig {
     /// Base URL of the Elasticsearch cluster (e.g. `"http://localhost:9200"`).
     pub base_url: String,

@@ -1,14 +1,21 @@
 //! MySQL source configuration.
 
+use serde::{Deserialize, Serialize};
+
 /// Configuration for the MySQL query source.
-#[derive(Clone)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct MysqlSourceConfig {
     /// MySQL connection URL (e.g. `mysql://user:pass@host/db`).
     pub connection_url: String,
     /// SQL query to execute.
     pub query: String,
     /// Maximum number of connections in the pool. Defaults to 10.
+    #[serde(default = "default_max_connections")]
     pub max_connections: u32,
+}
+
+fn default_max_connections() -> u32 {
+    10
 }
 
 impl std::fmt::Debug for MysqlSourceConfig {
