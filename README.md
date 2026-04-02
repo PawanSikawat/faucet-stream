@@ -13,7 +13,7 @@ Inspired by [Meltano's RESTStream](https://sdk.meltano.com/en/latest/classes/sin
 
 ## Architecture
 
-faucet-stream is a Cargo workspace with 26 crates — 12 sources, 12 sinks, a shared core, and an umbrella crate:
+faucet-stream is a Cargo workspace with 27 crates — 13 sources, 12 sinks, a shared core, and an umbrella crate:
 
 | Crate | Description |
 |-------|-------------|
@@ -25,6 +25,7 @@ faucet-stream is a Cargo workspace with 26 crates — 12 sources, 12 sinks, a sh
 | [`faucet-source-grpc`](crates/source/grpc) | gRPC — dynamic protobuf via `prost-reflect`, TLS support |
 | [`faucet-source-postgres`](crates/source/postgres) | PostgreSQL — run SQL queries, return rows as JSON |
 | [`faucet-source-mysql`](crates/source/mysql) | MySQL — run SQL queries, return rows as JSON |
+| [`faucet-source-sqlite`](crates/source/sqlite) | SQLite — run SQL queries, return rows as JSON |
 
 | [`faucet-source-s3`](crates/source/s3) | AWS S3 — read objects as JSONL, JSON array, or raw text |
 | [`faucet-source-mongodb`](crates/source/mongodb) | MongoDB — find() with filter, projection, sort |
@@ -153,6 +154,12 @@ faucet-source-mongodb = "0.1"
 - **SQL queries** — run any SQL query and get results as JSON records
 - **Connection pooling** — built on `sqlx` with `MySqlPool`
 
+### Source: SQLite (`faucet-source-sqlite`)
+
+- **SQL queries** — run any SQL query and get results as JSON records
+- **Connection pooling** — built on `sqlx` with `SqlitePool`
+- **Dynamic typing** — automatic type probing (JSON, string, integer, float, boolean) for SQLite's flexible type system
+- **In-memory support** — works with `sqlite::memory:` for testing and ephemeral use cases
 
 ### Source: AWS S3 (`faucet-source-s3`)
 
@@ -622,6 +629,7 @@ All pagination styles include loop detection — if the same cursor or link is r
 | `source-grpc` | no | gRPC source |
 | `source-postgres` | no | PostgreSQL query source |
 | `source-mysql` | no | MySQL query source |
+| `source-sqlite` | no | SQLite query source |
 
 | `source-s3` | no | AWS S3 file source |
 | `source-mongodb` | no | MongoDB query source |
@@ -667,6 +675,7 @@ crates/
     grpc/                     — gRPC (dynamic protobuf)
     postgres/                 — PostgreSQL queries
     mysql/                    — MySQL queries
+    sqlite/                   — SQLite queries
 
     s3/                       — AWS S3 object reader
     mongodb/                  — MongoDB find()

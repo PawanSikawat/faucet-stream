@@ -22,6 +22,7 @@ source = [
     "source-grpc",
     "source-postgres",
     "source-mysql",
+    "source-sqlite",
     "source-s3",
     "source-mongodb",
     "source-redis",
@@ -54,7 +55,7 @@ source-xml = ["dep:faucet-source-xml"]
 source-grpc = ["dep:faucet-source-grpc"]
 source-postgres = ["dep:faucet-source-postgres"]
 source-mysql = ["dep:faucet-source-mysql"]
-
+source-sqlite = ["dep:faucet-source-sqlite"]
 source-s3 = ["dep:faucet-source-s3"]
 source-mongodb = ["dep:faucet-source-mongodb"]
 source-redis = ["dep:faucet-source-redis"]
@@ -91,7 +92,7 @@ faucet-source-xml = { workspace = true, optional = true }
 faucet-source-grpc = { workspace = true, optional = true }
 faucet-source-postgres = { workspace = true, optional = true }
 faucet-source-mysql = { workspace = true, optional = true }
-
+faucet-source-sqlite = { workspace = true, optional = true }
 faucet-source-s3 = { workspace = true, optional = true }
 faucet-source-mongodb = { workspace = true, optional = true }
 faucet-source-redis = { workspace = true, optional = true }

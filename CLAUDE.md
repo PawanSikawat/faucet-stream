@@ -13,7 +13,7 @@ This is a library workspace — there is no binary, no database, no migrations, 
 
 ## Workspace Structure
 
-The project is a Cargo workspace with 26 crates:
+The project is a Cargo workspace with 27 crates:
 
 | Crate | Path | Description |
 |-------|------|-------------|
@@ -24,6 +24,7 @@ The project is a Cargo workspace with 26 crates:
 | `faucet-source-grpc` | `crates/source/grpc/` | gRPC source — dynamic protobuf via `prost-reflect` |
 | `faucet-source-postgres` | `crates/source/postgres/` | PostgreSQL query source — run SQL, return rows as JSON |
 | `faucet-source-mysql` | `crates/source/mysql/` | MySQL query source — run SQL, return rows as JSON |
+| `faucet-source-sqlite` | `crates/source/sqlite/` | SQLite query source — run SQL, return rows as JSON |
 
 | `faucet-source-s3` | `crates/source/s3/` | AWS S3 source — read objects as JSONL, JSON array, or raw text |
 | `faucet-source-mongodb` | `crates/source/mongodb/` | MongoDB source — find() query with filter/projection/sort |
@@ -55,6 +56,7 @@ faucet-core  <──  faucet-source-rest
              <──  faucet-source-grpc
              <──  faucet-source-postgres
              <──  faucet-source-mysql
+             <──  faucet-source-sqlite
 
              <──  faucet-source-s3
              <──  faucet-source-mongodb
@@ -191,6 +193,10 @@ cargo publish --dry-run -p faucet-stream
 - **`src/config.rs`** — `MysqlSourceConfig` with connection_url, query
 - **`src/stream.rs`** — `MysqlSource`: MySqlPool, row-to-JSON conversion; implements `faucet_core::Source`
 
+### faucet-source-sqlite (`crates/source/sqlite/`)
+
+- **`src/config.rs`** — `SqliteSourceConfig` with database_url, query
+- **`src/stream.rs`** — `SqliteSource`: SqlitePool, `sqlite_value_to_json()` type probing, row-to-JSON conversion; implements `faucet_core::Source`
 
 ### faucet-source-s3 (`crates/source/s3/`)
 
@@ -277,6 +283,7 @@ cargo publish --dry-run -p faucet-stream
 | `source-grpc` | no | gRPC source connector |
 | `source-postgres` | no | PostgreSQL query source |
 | `source-mysql` | no | MySQL query source |
+| `source-sqlite` | no | SQLite query source |
 
 | `source-s3` | no | AWS S3 file source |
 | `source-mongodb` | no | MongoDB query source |
@@ -368,7 +375,7 @@ When the user points out something fundamental about how code in this library sh
 - `src/config.rs` — configuration and auth types only. No HTTP logic.
 - `src/sink.rs` — Snowflake SQL REST API calls, JWT generation, and Sink trait impl.
 
-#### faucet-source-postgres / faucet-source-mysql
+#### faucet-source-postgres / faucet-source-mysql / faucet-source-sqlite
 - `src/config.rs` — configuration types only. No SQL logic.
 - `src/stream.rs` — connection pool, query execution, row-to-JSON conversion, Source trait impl.
 
@@ -455,7 +462,7 @@ Always use the **highest available stable version** for every crate, the Rust to
 Crates must be published in dependency order with delays for crates.io index propagation:
 
 1. `faucet-core`
-2. All sources + sinks (after 30s): `faucet-source-rest`, `faucet-source-graphql`, `faucet-source-xml`, `faucet-source-grpc`, `faucet-source-postgres`, `faucet-source-mysql`, `faucet-source-s3`, `faucet-source-mongodb`, `faucet-source-redis`, `faucet-source-webhook`, `faucet-source-csv`, `faucet-source-elasticsearch`, `faucet-sink-bigquery`, `faucet-sink-postgres`, `faucet-sink-jsonl`, `faucet-sink-snowflake`, `faucet-sink-mysql`, `faucet-sink-sqlite`, `faucet-sink-s3`, `faucet-sink-mongodb`, `faucet-sink-redis`, `faucet-sink-csv`, `faucet-sink-elasticsearch`, `faucet-sink-http`
+2. All sources + sinks (after 30s): `faucet-source-rest`, `faucet-source-graphql`, `faucet-source-xml`, `faucet-source-grpc`, `faucet-source-postgres`, `faucet-source-mysql`, `faucet-source-sqlite`, `faucet-source-s3`, `faucet-source-mongodb`, `faucet-source-redis`, `faucet-source-webhook`, `faucet-source-csv`, `faucet-source-elasticsearch`, `faucet-sink-bigquery`, `faucet-sink-postgres`, `faucet-sink-jsonl`, `faucet-sink-snowflake`, `faucet-sink-mysql`, `faucet-sink-sqlite`, `faucet-sink-s3`, `faucet-sink-mongodb`, `faucet-sink-redis`, `faucet-sink-csv`, `faucet-sink-elasticsearch`, `faucet-sink-http`
 3. `faucet-stream` (after 30s)
 
 The `.github/workflows/publish.yml` handles this automatically on version tags (`v*.*.*`).

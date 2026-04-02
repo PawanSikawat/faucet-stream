@@ -1,0 +1,19 @@
+[package]
+name = "faucet-source-sqlite"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "SQLite query source connector for the faucet-stream ecosystem"
+
+[dependencies]
+faucet-core.workspace = true
+serde_json.workspace = true
+async-trait.workspace = true
+tracing.workspace = true
+sqlx = { workspace = true, features = ["runtime-tokio", "sqlite", "json"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt"] }
+serde_json.workspace = true

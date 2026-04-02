@@ -13,6 +13,7 @@
 //! | `source-grpc` | gRPC source with dynamic protobuf messages |
 //! | `source-postgres` | PostgreSQL query source |
 //! | `source-mysql` | MySQL query source |
+//! | `source-sqlite` | SQLite query source |
 
 //! | `source-s3` | AWS S3 file source |
 //! | `source-mongodb` | MongoDB query source |
@@ -73,6 +74,11 @@ pub mod source {
         pub use faucet_source_mysql::*;
     }
 
+    #[cfg(feature = "source-sqlite")]
+    pub mod sqlite {
+        pub use faucet_source_sqlite::*;
+    }
+
     #[cfg(feature = "source-s3")]
     pub mod s3 {
         pub use faucet_source_s3::*;
@@ -130,6 +136,11 @@ pub mod source {
     #[cfg(feature = "source-mysql")]
     pub mod mysql {
         pub use faucet_source_mysql::*;
+    }
+
+    #[cfg(feature = "source-sqlite")]
+    pub mod sqlite {
+        pub use faucet_source_sqlite::*;
     }
 
     #[cfg(feature = "source-s3")]

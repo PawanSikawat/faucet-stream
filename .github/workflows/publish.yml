@@ -63,6 +63,7 @@ jobs:
           cargo publish --dry-run -p faucet-source-grpc
           cargo publish --dry-run -p faucet-source-postgres
           cargo publish --dry-run -p faucet-source-mysql
+          cargo publish --dry-run -p faucet-source-sqlite
 
           cargo publish --dry-run -p faucet-source-s3
           cargo publish --dry-run -p faucet-source-mongodb
@@ -98,6 +99,7 @@ jobs:
           cargo publish -p faucet-source-grpc
           cargo publish -p faucet-source-postgres
           cargo publish -p faucet-source-mysql
+          cargo publish -p faucet-source-sqlite
 
           cargo publish -p faucet-source-s3
           cargo publish -p faucet-source-mongodb

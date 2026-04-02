@@ -13,6 +13,7 @@ members = [
     "crates/source/mongodb",
     "crates/source/redis",
     "crates/source/webhook",
+    "crates/source/sqlite",
     "crates/source/csv",
     "crates/source/elasticsearch",
     "crates/sink/bigquery",
@@ -55,6 +56,7 @@ faucet-source-s3 = { path = "crates/source/s3", version = "0.1.0" }
 faucet-source-mongodb = { path = "crates/source/mongodb", version = "0.1.0" }
 faucet-source-redis = { path = "crates/source/redis", version = "0.1.0" }
 faucet-source-webhook = { path = "crates/source/webhook", version = "0.1.0" }
+faucet-source-sqlite = { path = "crates/source/sqlite", version = "0.1.0" }
 faucet-source-csv = { path = "crates/source/csv", version = "0.1.0" }
 faucet-source-elasticsearch = { path = "crates/source/elasticsearch", version = "0.1.0" }
 faucet-sink-mysql = { path = "crates/sink/mysql", version = "0.1.0" }
