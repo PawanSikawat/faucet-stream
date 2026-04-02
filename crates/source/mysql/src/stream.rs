@@ -17,7 +17,7 @@ impl MysqlSource {
     /// Create a new MySQL source. Establishes a connection pool.
     pub async fn new(config: MysqlSourceConfig) -> Result<Self, FaucetError> {
         let pool = MySqlPoolOptions::new()
-            .max_connections(5)
+            .max_connections(config.max_connections)
             .connect(&config.connection_url)
             .await
             .map_err(|e| FaucetError::Config(format!("MySQL connection failed: {e}")))?;

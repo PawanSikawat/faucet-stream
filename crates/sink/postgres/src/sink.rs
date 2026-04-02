@@ -18,7 +18,7 @@ impl PostgresSink {
     /// Create a new PostgreSQL sink. Establishes a connection pool.
     pub async fn new(config: PostgresSinkConfig) -> Result<Self, FaucetError> {
         let pool = PgPoolOptions::new()
-            .max_connections(5)
+            .max_connections(config.max_connections)
             .connect(&config.connection_url)
             .await
             .map_err(|e| FaucetError::Sink(format!("PostgreSQL connection failed: {e}")))?;
@@ -53,6 +53,7 @@ impl PostgresSink {
     ///
     /// Discovers column names from the table schema and maps
     /// top-level JSON fields to columns. Values are inserted as JSONB.
+    /// Uses a single multi-row INSERT for efficiency.
     async fn insert_auto_map(&self, records: &[Value]) -> Result<usize, FaucetError> {
         if records.is_empty() {
             return Ok(0);
@@ -77,13 +78,20 @@ impl PostgresSink {
             )));
         }
 
-        let mut total = 0;
+        // Pre-validate all records and collect matched column values.
+        // Each entry is the list of (column_index, value) for one record.
+        let mut matched_rows: Vec<Vec<(&String, &Value)>> = Vec::with_capacity(records.len());
+
+        // Determine the set of columns used across all records by using
+        // the columns from the first valid record. All rows in a single
+        // multi-row INSERT must share the same column list.
+        let mut insert_columns: Option<Vec<String>> = None;
+
         for record in records {
             let obj = record
                 .as_object()
                 .ok_or_else(|| FaucetError::Sink("AutoMap requires JSON object records".into()))?;
 
-            // Only insert keys that match existing columns.
             let matching: Vec<(&String, &Value)> = columns
                 .iter()
                 .filter_map(|col| obj.get(col).map(|v| (col, v)))
@@ -98,29 +106,58 @@ impl PostgresSink {
                 continue;
             }
 
-            let col_names: Vec<String> = matching.iter().map(|(c, _)| quote_ident(c)).collect();
-            let placeholders: Vec<String> = (1..=matching.len()).map(|i| format!("${i}")).collect();
-
-            let query = format!(
-                "INSERT INTO {} ({}) VALUES ({})",
-                quote_ident(&self.config.table_name),
-                col_names.join(", "),
-                placeholders.join(", ")
-            );
-
-            let mut q = sqlx::query(&query);
-            for (_, val) in &matching {
-                q = q.bind(*val);
+            // Fix the column set from the first valid record.
+            if insert_columns.is_none() {
+                insert_columns = Some(matching.iter().map(|(c, _)| (*c).clone()).collect());
             }
 
-            q.execute(&self.pool)
-                .await
-                .map_err(|e| FaucetError::Sink(format!("PostgreSQL insert failed: {e}")))?;
-
-            total += 1;
+            matched_rows.push(matching);
         }
 
-        Ok(total)
+        let insert_columns = match insert_columns {
+            Some(cols) => cols,
+            None => return Ok(0),
+        };
+
+        if matched_rows.is_empty() {
+            return Ok(0);
+        }
+
+        let num_cols = insert_columns.len();
+        let num_rows = matched_rows.len();
+        let col_names: Vec<String> = insert_columns.iter().map(|c| quote_ident(c)).collect();
+
+        // Build multi-row VALUES clause: ($1, $2), ($3, $4), ...
+        let mut value_tuples: Vec<String> = Vec::with_capacity(num_rows);
+        for row_idx in 0..num_rows {
+            let start = row_idx * num_cols + 1;
+            let placeholders: Vec<String> =
+                (start..start + num_cols).map(|i| format!("${i}")).collect();
+            value_tuples.push(format!("({})", placeholders.join(", ")));
+        }
+
+        let query = format!(
+            "INSERT INTO {} ({}) VALUES {}",
+            quote_ident(&self.config.table_name),
+            col_names.join(", "),
+            value_tuples.join(", ")
+        );
+
+        let mut q = sqlx::query(&query);
+        for matched in &matched_rows {
+            // Bind values in the fixed column order. If a record is missing
+            // a column that appeared in the first record, bind null.
+            for col in &insert_columns {
+                let val = matched.iter().find(|(c, _)| *c == col).map(|(_, v)| *v);
+                q = q.bind(val.cloned());
+            }
+        }
+
+        q.execute(&self.pool)
+            .await
+            .map_err(|e| FaucetError::Sink(format!("PostgreSQL insert failed: {e}")))?;
+
+        Ok(num_rows)
     }
 }
 

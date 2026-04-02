@@ -9,23 +9,30 @@ use mongodb::options::FindOptions;
 use serde_json::Value;
 
 /// A configured MongoDB source that connects to a collection and fetches documents.
+///
+/// The MongoDB `Client` is created once during construction and reused across
+/// all `fetch_all()` calls. It maintains an internal connection pool.
 pub struct MongoSource {
     config: MongoSourceConfig,
+    client: Client,
 }
 
 impl MongoSource {
     /// Create a new MongoDB source from the given configuration.
-    pub fn new(config: MongoSourceConfig) -> Self {
-        Self { config }
+    ///
+    /// This establishes the MongoDB client (with its internal connection pool)
+    /// immediately.
+    pub async fn new(config: MongoSourceConfig) -> Result<Self, FaucetError> {
+        let client = Client::with_uri_str(&config.connection_uri)
+            .await
+            .map_err(|e| FaucetError::Config(format!("MongoDB connection failed: {e}")))?;
+
+        Ok(Self { config, client })
     }
 
     /// Fetch all matching documents from the configured collection.
     pub async fn fetch_all(&self) -> Result<Vec<Value>, FaucetError> {
-        let client = Client::with_uri_str(&self.config.connection_uri)
-            .await
-            .map_err(|e| FaucetError::Config(format!("MongoDB connection failed: {e}")))?;
-
-        let db = client.database(&self.config.database);
+        let db = self.client.database(&self.config.database);
         let collection = db.collection::<Document>(&self.config.collection);
 
         let filter = self

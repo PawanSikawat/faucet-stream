@@ -65,6 +65,9 @@ pub struct RestStreamConfig {
     /// placeholders. The stream is executed once per partition and results are
     /// concatenated.  Empty means run once with no substitution.
     pub partitions: Vec<HashMap<String, Value>>,
+    /// Maximum number of partitions to fetch concurrently.
+    /// `None` means sequential processing (backward compatible default).
+    pub partition_concurrency: Option<usize>,
 
     // ── Record transforms ─────────────────────────────────────────────────────
     /// Transformations applied to every record in order.
@@ -98,6 +101,7 @@ impl Default for RestStreamConfig {
             schema: None,
             schema_sample_size: 100,
             partitions: Vec::new(),
+            partition_concurrency: None,
             transforms: Vec::new(),
         }
     }
@@ -239,6 +243,13 @@ impl RestStreamConfig {
     /// substituting `{key}` placeholders in `path` with values from the context.
     pub fn add_partition(mut self, ctx: HashMap<String, Value>) -> Self {
         self.partitions.push(ctx);
+        self
+    }
+
+    /// Set the maximum number of partitions to fetch concurrently.
+    /// `None` (default) means sequential processing.
+    pub fn partition_concurrency(mut self, concurrency: Option<usize>) -> Self {
+        self.partition_concurrency = concurrency;
         self
     }
 

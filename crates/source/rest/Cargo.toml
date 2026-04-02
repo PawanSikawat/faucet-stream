@@ -25,6 +25,7 @@ base64 = "0.22"
 tracing.workspace = true
 async-stream = "0.3.6"
 futures-core = "0.3.32"
+futures = "0.3"  # try_join_all for concurrent partitions
 async-trait.workspace = true
 
 [dev-dependencies]

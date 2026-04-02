@@ -15,6 +15,8 @@ pub struct S3SinkConfig {
     pub file_extension: String,
     /// Maximum records per file. `None` writes all records to a single file.
     pub max_records_per_file: Option<usize>,
+    /// Maximum number of concurrent file uploads (default: 10).
+    pub concurrency: usize,
 }
 
 impl S3SinkConfig {
@@ -27,6 +29,7 @@ impl S3SinkConfig {
             endpoint_url: None,
             file_extension: ".jsonl".to_string(),
             max_records_per_file: None,
+            concurrency: 10,
         }
     }
 
@@ -57,6 +60,12 @@ impl S3SinkConfig {
     /// Set the maximum number of records per file.
     pub fn max_records_per_file(mut self, max: usize) -> Self {
         self.max_records_per_file = Some(max);
+        self
+    }
+
+    /// Set the maximum number of concurrent file uploads.
+    pub fn concurrency(mut self, concurrency: usize) -> Self {
+        self.concurrency = concurrency;
         self
     }
 }

@@ -73,6 +73,44 @@ faucet-source-rest = "0.1"
 faucet-source-mongodb = "0.1"
 ```
 
+## Performance
+
+Every connector is optimised for throughput out of the box:
+
+| Technique | Where |
+|-----------|-------|
+| **Parallel I/O** | S3 reads/writes objects concurrently (configurable `concurrency`); HTTP sink sends requests in parallel; REST source processes partitions concurrently |
+| **Multi-row INSERT** | PostgreSQL, MySQL, and SQLite sinks batch records into single INSERT statements instead of one per row |
+| **Transaction wrapping** | SQLite sink wraps batches in `BEGIN`/`COMMIT` for 10-50x write speedup |
+| **Connection pooling** | All database connectors (PostgreSQL, MySQL, SQLite) use connection pools with configurable `max_connections` |
+| **Connection reuse** | S3, MongoDB, Redis, Elasticsearch, and HTTP connectors create clients once and reuse across all operations |
+| **Redis pipelining** | Redis sink batches commands with `pipe()`; Redis source uses `MGET` for bulk key reads |
+| **Bulk APIs** | Elasticsearch uses the bulk NDJSON API; BigQuery uses `insertAll`; MongoDB uses `insert_many` |
+| **Buffered I/O** | JSONL sink uses `BufWriter`; CSV uses buffered readers/writers in blocking threads |
+| **Streaming pagination** | REST, GraphQL, XML, and Elasticsearch sources stream pages one at a time via `stream_pages()` to bound memory |
+
+### Tuning
+
+Most connectors expose configuration knobs for throughput:
+
+```rust
+// S3: parallel object reads
+let config = S3SourceConfig::new("my-bucket")
+    .with_concurrency(20);  // default: 10
+
+// PostgreSQL: connection pool size
+let config = PostgresSourceConfig::new("postgres://...", "SELECT ...")
+    .with_max_connections(20);  // default: 10
+
+// HTTP sink: parallel requests
+let config = HttpSinkConfig::new("https://api.example.com/ingest")
+    .with_concurrency(20);  // default: 10
+
+// REST: parallel partition processing
+let config = RestStreamConfig::new("https://api.example.com")
+    .partition_concurrency(Some(5));  // default: sequential
+```
+
 ## Features
 
 ### Source: REST API (`faucet-source-rest`)

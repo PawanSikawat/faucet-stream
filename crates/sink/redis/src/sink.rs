@@ -6,25 +6,28 @@ use faucet_core::FaucetError;
 use serde_json::Value;
 
 /// A configured Redis sink that writes records to Redis data structures.
+///
+/// The connection is established once during construction and reused across
+/// all `write_batch()` calls.
 pub struct RedisSink {
     config: RedisSinkConfig,
+    conn: redis::aio::MultiplexedConnection,
 }
 
 impl RedisSink {
     /// Create a new Redis sink from the given configuration.
-    pub fn new(config: RedisSinkConfig) -> Self {
-        Self { config }
-    }
-
-    /// Open a multiplexed async connection to Redis.
-    async fn connect(&self) -> Result<redis::aio::MultiplexedConnection, FaucetError> {
-        let client = redis::Client::open(self.config.url.as_str())
+    ///
+    /// This opens a multiplexed async connection to Redis immediately.
+    pub async fn new(config: RedisSinkConfig) -> Result<Self, FaucetError> {
+        let client = redis::Client::open(config.url.as_str())
             .map_err(|e| FaucetError::Config(format!("invalid Redis URL: {e}")))?;
 
-        client
+        let conn = client
             .get_multiplexed_async_connection()
             .await
-            .map_err(|e| FaucetError::Sink(format!("Redis connection failed: {e}")))
+            .map_err(|e| FaucetError::Sink(format!("Redis connection failed: {e}")))?;
+
+        Ok(Self { config, conn })
     }
 }
 
@@ -35,7 +38,9 @@ impl faucet_core::Sink for RedisSink {
             return Ok(0);
         }
 
-        let mut conn = self.connect().await?;
+        // MultiplexedConnection is cheaply cloneable (it shares the
+        // underlying connection), so we clone to satisfy the &self receiver.
+        let mut conn = self.conn.clone();
         let mut written = 0usize;
 
         // Process in chunks of batch_size using redis pipelines.
@@ -126,12 +131,14 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn creates_sink() {
+    fn config_fields_accessible() {
         let config = RedisSinkConfig::new(
             "redis://localhost",
             RedisSinkType::List { key: "test".into() },
         );
-        let _sink = RedisSink::new(config);
+        // RedisSink::new() is async and requires a live Redis connection,
+        // so we only verify the config here.
+        assert_eq!(config.batch_size, 500);
     }
 
     #[test]

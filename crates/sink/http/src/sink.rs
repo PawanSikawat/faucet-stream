@@ -99,13 +99,27 @@ impl faucet_core::Sink for HttpSink {
 
         match &self.config.batch_mode {
             HttpBatchMode::Individual => {
-                let mut count = 0usize;
+                let concurrency = self.config.concurrency.max(1);
+                let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(concurrency));
+                let mut handles = Vec::with_capacity(records.len());
+
                 for record in records {
-                    self.send_with_retry(record).await?;
-                    count += 1;
+                    let permit =
+                        semaphore.clone().acquire_owned().await.map_err(|e| {
+                            FaucetError::Sink(format!("semaphore acquire failed: {e}"))
+                        })?;
+                    let fut = self.send_with_retry(record);
+                    handles.push(async move {
+                        let result = fut.await;
+                        drop(permit);
+                        result
+                    });
                 }
-                tracing::debug!(records = count, "HTTP individual batch written");
-                Ok(count)
+
+                futures::future::try_join_all(handles).await?;
+
+                tracing::debug!(records = records.len(), "HTTP individual batch written");
+                Ok(records.len())
             }
             HttpBatchMode::Array => {
                 let array = Value::Array(records.to_vec());

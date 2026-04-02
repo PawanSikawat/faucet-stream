@@ -4,28 +4,33 @@ use crate::config::S3SinkConfig;
 use async_trait::async_trait;
 use aws_sdk_s3::Client;
 use faucet_core::FaucetError;
+use futures::stream::{self, StreamExt, TryStreamExt};
 use serde_json::Value;
 
 /// A sink that writes JSON records to S3 as JSON Lines files.
 pub struct S3Sink {
     config: S3SinkConfig,
+    client: Client,
 }
 
 impl S3Sink {
     /// Create a new S3 sink from the given configuration.
-    pub fn new(config: S3SinkConfig) -> Self {
-        Self { config }
+    ///
+    /// Builds the S3 client eagerly so it is reused across calls.
+    pub async fn new(config: S3SinkConfig) -> Result<Self, FaucetError> {
+        let client = Self::build_client(&config).await?;
+        Ok(Self { config, client })
     }
 
     /// Build an S3 client from the configuration.
-    async fn build_client(&self) -> Result<Client, FaucetError> {
+    async fn build_client(config: &S3SinkConfig) -> Result<Client, FaucetError> {
         let mut config_loader = aws_config::defaults(aws_config::BehaviorVersion::latest());
 
-        if let Some(ref region) = self.config.region {
+        if let Some(ref region) = config.region {
             config_loader = config_loader.region(aws_config::Region::new(region.clone()));
         }
 
-        if let Some(ref endpoint) = self.config.endpoint_url {
+        if let Some(ref endpoint) = config.endpoint_url {
             config_loader = config_loader.endpoint_url(endpoint);
         }
 
@@ -53,13 +58,8 @@ impl S3Sink {
     }
 
     /// Upload a single JSONL file to S3.
-    async fn upload_file(
-        &self,
-        client: &Client,
-        key: &str,
-        body: String,
-    ) -> Result<(), FaucetError> {
-        client
+    async fn upload_file(&self, key: &str, body: String) -> Result<(), FaucetError> {
+        self.client
             .put_object()
             .bucket(&self.config.bucket)
             .key(key)
@@ -81,22 +81,33 @@ impl faucet_core::Sink for S3Sink {
             return Ok(0);
         }
 
-        let client = self.build_client().await?;
-
         let chunks: Vec<&[Value]> = match self.config.max_records_per_file {
             Some(max) if max > 0 => records.chunks(max).collect(),
             _ => vec![records],
         };
 
-        for chunk in &chunks {
-            let body = Self::serialize_jsonl(chunk)?;
-            let key = self.generate_key();
-            self.upload_file(&client, &key, body).await?;
-        }
+        let total_files = chunks.len();
+        let concurrency = self.config.concurrency.max(1);
+
+        // Pre-serialize each chunk and generate keys before uploading.
+        let prepared: Vec<(String, String)> = chunks
+            .iter()
+            .map(|chunk| {
+                let body = Self::serialize_jsonl(chunk)?;
+                let key = self.generate_key();
+                Ok((key, body))
+            })
+            .collect::<Result<Vec<_>, FaucetError>>()?;
+
+        stream::iter(prepared)
+            .map(|(key, body)| async move { self.upload_file(&key, body).await })
+            .buffer_unordered(concurrency)
+            .try_collect::<Vec<()>>()
+            .await?;
 
         tracing::info!(
             records = records.len(),
-            files = chunks.len(),
+            files = total_files,
             "S3 batch write complete"
         );
         Ok(records.len())
@@ -108,6 +119,15 @@ mod tests {
     use super::*;
     use crate::config::S3SinkConfig;
     use serde_json::json;
+
+    /// Helper to build an S3Sink synchronously for tests that never make network calls.
+    fn test_sink(config: S3SinkConfig) -> S3Sink {
+        let sdk_config = aws_config::SdkConfig::builder()
+            .behavior_version(aws_config::BehaviorVersion::latest())
+            .build();
+        let client = Client::new(&sdk_config);
+        S3Sink { config, client }
+    }
 
     #[test]
     fn serialize_jsonl_produces_newline_delimited() {
@@ -131,7 +151,7 @@ mod tests {
 
     #[test]
     fn generate_key_uses_prefix_and_extension() {
-        let sink = S3Sink::new(
+        let sink = test_sink(
             S3SinkConfig::new("bucket")
                 .prefix("data/")
                 .file_extension(".jsonl"),
@@ -145,7 +165,7 @@ mod tests {
 
     #[test]
     fn generate_key_no_prefix() {
-        let sink = S3Sink::new(S3SinkConfig::new("bucket"));
+        let sink = test_sink(S3SinkConfig::new("bucket"));
         let key = sink.generate_key();
         assert!(key.ends_with(".jsonl"));
         // No prefix means key starts with UUID

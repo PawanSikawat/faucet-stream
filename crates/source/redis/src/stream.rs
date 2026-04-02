@@ -128,7 +128,7 @@ impl RedisSource {
         Ok(records)
     }
 
-    /// Scan for keys matching a pattern, then GET each key.
+    /// Scan for keys matching a pattern, then MGET all keys in a single round-trip.
     async fn fetch_keys(
         &self,
         conn: &mut redis::aio::MultiplexedConnection,
@@ -147,13 +147,18 @@ impl RedisSource {
             collected
         };
 
-        let mut records = Vec::new();
-        for key in &keys {
-            let value: Option<String> = conn
-                .get(key)
-                .await
-                .map_err(|e| FaucetError::Config(format!("GET failed for key '{key}': {e}")))?;
+        if keys.is_empty() {
+            return Ok(Vec::new());
+        }
 
+        let values: Vec<Option<String>> = redis::cmd("MGET")
+            .arg(&keys)
+            .query_async(conn)
+            .await
+            .map_err(|e| FaucetError::Config(format!("MGET failed: {e}")))?;
+
+        let mut records = Vec::new();
+        for (key, value) in keys.iter().zip(values.into_iter()) {
             if let Some(v) = value {
                 let parsed =
                     serde_json::from_str::<Value>(&v).unwrap_or_else(|_| Value::String(v.clone()));

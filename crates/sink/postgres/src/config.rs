@@ -30,6 +30,8 @@ pub struct PostgresSinkConfig {
     pub column_mapping: PostgresColumnMapping,
     /// Maximum number of rows per INSERT statement. Defaults to 500.
     pub batch_size: usize,
+    /// Maximum number of connections in the pool. Defaults to 5.
+    pub max_connections: u32,
 }
 
 impl std::fmt::Debug for PostgresSinkConfig {
@@ -39,6 +41,7 @@ impl std::fmt::Debug for PostgresSinkConfig {
             .field("table_name", &self.table_name)
             .field("column_mapping", &self.column_mapping)
             .field("batch_size", &self.batch_size)
+            .field("max_connections", &self.max_connections)
             .finish()
     }
 }
@@ -51,6 +54,7 @@ impl PostgresSinkConfig {
             table_name: table_name.into(),
             column_mapping: PostgresColumnMapping::default(),
             batch_size: 500,
+            max_connections: 5,
         }
     }
 
@@ -63,6 +67,12 @@ impl PostgresSinkConfig {
     /// Set the batch size for INSERT statements.
     pub fn batch_size(mut self, n: usize) -> Self {
         self.batch_size = n;
+        self
+    }
+
+    /// Set the maximum number of connections in the pool.
+    pub fn max_connections(mut self, n: u32) -> Self {
+        self.max_connections = n;
         self
     }
 }

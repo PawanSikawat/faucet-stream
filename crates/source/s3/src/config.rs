@@ -27,6 +27,8 @@ pub struct S3SourceConfig {
     pub file_format: S3FileFormat,
     /// Maximum number of objects to read.
     pub max_objects: Option<usize>,
+    /// Maximum number of concurrent object reads (default: 10).
+    pub concurrency: usize,
 }
 
 impl S3SourceConfig {
@@ -39,6 +41,7 @@ impl S3SourceConfig {
             endpoint_url: None,
             file_format: S3FileFormat::default(),
             max_objects: None,
+            concurrency: 10,
         }
     }
 
@@ -69,6 +72,12 @@ impl S3SourceConfig {
     /// Set the maximum number of objects to read.
     pub fn max_objects(mut self, max: usize) -> Self {
         self.max_objects = Some(max);
+        self
+    }
+
+    /// Set the maximum number of concurrent object reads.
+    pub fn concurrency(mut self, concurrency: usize) -> Self {
+        self.concurrency = concurrency;
         self
     }
 }

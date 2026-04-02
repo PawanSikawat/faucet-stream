@@ -17,7 +17,7 @@ impl PostgresSource {
     /// Create a new PostgreSQL source. Establishes a connection pool.
     pub async fn new(config: PostgresSourceConfig) -> Result<Self, FaucetError> {
         let pool = PgPoolOptions::new()
-            .max_connections(5)
+            .max_connections(config.max_connections)
             .connect(&config.connection_url)
             .await
             .map_err(|e| FaucetError::Config(format!("PostgreSQL connection failed: {e}")))?;

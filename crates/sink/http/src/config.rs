@@ -59,6 +59,8 @@ pub struct HttpSinkConfig {
     pub batch_mode: HttpBatchMode,
     /// Number of retries on transient failures (default: 0).
     pub max_retries: usize,
+    /// Maximum number of concurrent requests in Individual mode (default: 10).
+    pub concurrency: usize,
 }
 
 impl std::fmt::Debug for HttpSinkConfig {
@@ -70,6 +72,7 @@ impl std::fmt::Debug for HttpSinkConfig {
             .field("auth", &self.auth)
             .field("batch_mode", &self.batch_mode)
             .field("max_retries", &self.max_retries)
+            .field("concurrency", &self.concurrency)
             .finish()
     }
 }
@@ -84,6 +87,7 @@ impl HttpSinkConfig {
             auth: HttpSinkAuth::None,
             batch_mode: HttpBatchMode::Individual,
             max_retries: 0,
+            concurrency: 10,
         }
     }
 
@@ -114,6 +118,12 @@ impl HttpSinkConfig {
     /// Set the maximum number of retries.
     pub fn max_retries(mut self, retries: usize) -> Self {
         self.max_retries = retries;
+        self
+    }
+
+    /// Set the maximum number of concurrent requests in Individual mode.
+    pub fn concurrency(mut self, concurrency: usize) -> Self {
+        self.concurrency = concurrency;
         self
     }
 }

@@ -7,6 +7,8 @@ pub struct SqliteSourceConfig {
     pub database_url: String,
     /// SQL query to execute.
     pub query: String,
+    /// Maximum number of connections in the pool. Defaults to 10.
+    pub max_connections: u32,
 }
 
 impl SqliteSourceConfig {
@@ -15,7 +17,14 @@ impl SqliteSourceConfig {
         Self {
             database_url: database_url.into(),
             query: query.into(),
+            max_connections: 10,
         }
+    }
+
+    /// Set the maximum number of connections in the pool.
+    pub fn with_max_connections(mut self, max_connections: u32) -> Self {
+        self.max_connections = max_connections;
+        self
     }
 }
 

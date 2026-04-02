@@ -4,28 +4,33 @@ use crate::config::{S3FileFormat, S3SourceConfig};
 use async_trait::async_trait;
 use aws_sdk_s3::Client;
 use faucet_core::FaucetError;
+use futures::stream::{self, StreamExt, TryStreamExt};
 use serde_json::Value;
 
 /// An S3 source that lists and reads objects from a bucket.
 pub struct S3Source {
     config: S3SourceConfig,
+    client: Client,
 }
 
 impl S3Source {
     /// Create a new S3 source from the given configuration.
-    pub fn new(config: S3SourceConfig) -> Self {
-        Self { config }
+    ///
+    /// Builds the S3 client eagerly so it is reused across calls.
+    pub async fn new(config: S3SourceConfig) -> Result<Self, FaucetError> {
+        let client = Self::build_client(&config).await?;
+        Ok(Self { config, client })
     }
 
     /// Build an S3 client from the configuration.
-    async fn build_client(&self) -> Result<Client, FaucetError> {
+    async fn build_client(config: &S3SourceConfig) -> Result<Client, FaucetError> {
         let mut config_loader = aws_config::defaults(aws_config::BehaviorVersion::latest());
 
-        if let Some(ref region) = self.config.region {
+        if let Some(ref region) = config.region {
             config_loader = config_loader.region(aws_config::Region::new(region.clone()));
         }
 
-        if let Some(ref endpoint) = self.config.endpoint_url {
+        if let Some(ref endpoint) = config.endpoint_url {
             config_loader = config_loader.endpoint_url(endpoint);
         }
 
@@ -35,12 +40,12 @@ impl S3Source {
     }
 
     /// List object keys matching the configured bucket and prefix.
-    async fn list_object_keys(&self, client: &Client) -> Result<Vec<String>, FaucetError> {
+    async fn list_object_keys(&self) -> Result<Vec<String>, FaucetError> {
         let mut keys = Vec::new();
         let mut continuation_token: Option<String> = None;
 
         loop {
-            let mut req = client.list_objects_v2().bucket(&self.config.bucket);
+            let mut req = self.client.list_objects_v2().bucket(&self.config.bucket);
 
             if let Some(ref prefix) = self.config.prefix {
                 req = req.prefix(prefix);
@@ -82,8 +87,9 @@ impl S3Source {
     }
 
     /// Read and parse a single S3 object into records.
-    async fn read_object(&self, client: &Client, key: &str) -> Result<Vec<Value>, FaucetError> {
-        let response = client
+    async fn read_object(&self, key: &str) -> Result<Vec<Value>, FaucetError> {
+        let response = self
+            .client
             .get_object()
             .bucket(&self.config.bucket)
             .key(key)
@@ -151,8 +157,7 @@ impl S3Source {
 #[async_trait]
 impl faucet_core::Source for S3Source {
     async fn fetch_all(&self) -> Result<Vec<Value>, FaucetError> {
-        let client = self.build_client().await?;
-        let keys = self.list_object_keys(&client).await?;
+        let keys = self.list_object_keys().await?;
 
         tracing::info!(
             bucket = %self.config.bucket,
@@ -160,12 +165,19 @@ impl faucet_core::Source for S3Source {
             "Listed S3 objects"
         );
 
-        let mut all_records = Vec::new();
-        for key in &keys {
-            let records = self.read_object(&client, key).await?;
-            tracing::debug!(key = %key, records = records.len(), "Read S3 object");
-            all_records.extend(records);
-        }
+        let concurrency = self.config.concurrency.max(1);
+
+        let results: Vec<Vec<Value>> = stream::iter(keys)
+            .map(|key| async move {
+                let records = self.read_object(&key).await?;
+                tracing::debug!(key = %key, records = records.len(), "Read S3 object");
+                Ok::<Vec<Value>, FaucetError>(records)
+            })
+            .buffer_unordered(concurrency)
+            .try_collect()
+            .await?;
+
+        let all_records: Vec<Value> = results.into_iter().flatten().collect();
 
         tracing::info!(total_records = all_records.len(), "S3 fetch complete");
         Ok(all_records)
@@ -190,9 +202,21 @@ mod tests {
     use crate::config::S3SourceConfig;
     use serde_json::json;
 
+    /// Helper to build an S3Source synchronously for parse-only tests.
+    /// We construct it directly to avoid needing an async runtime for unit tests
+    /// that only exercise `parse_content`.
+    fn test_source(config: S3SourceConfig) -> S3Source {
+        // Build a dummy client — these tests never make network calls.
+        let sdk_config = aws_config::SdkConfig::builder()
+            .behavior_version(aws_config::BehaviorVersion::latest())
+            .build();
+        let client = Client::new(&sdk_config);
+        S3Source { config, client }
+    }
+
     #[test]
     fn parse_json_lines() {
-        let source = S3Source::new(S3SourceConfig::new("test"));
+        let source = test_source(S3SourceConfig::new("test"));
         let text = r#"{"id":1,"name":"Alice"}
 {"id":2,"name":"Bob"}
 "#;
@@ -204,7 +228,7 @@ mod tests {
 
     #[test]
     fn parse_json_lines_skips_empty() {
-        let source = S3Source::new(S3SourceConfig::new("test"));
+        let source = test_source(S3SourceConfig::new("test"));
         let text = r#"{"id":1}
 
 {"id":2}
@@ -216,7 +240,7 @@ mod tests {
 
     #[test]
     fn parse_json_lines_invalid() {
-        let source = S3Source::new(S3SourceConfig::new("test"));
+        let source = test_source(S3SourceConfig::new("test"));
         let text = "not json\n";
         let result = source.parse_content("test.jsonl", text);
         assert!(result.is_err());
@@ -227,8 +251,7 @@ mod tests {
 
     #[test]
     fn parse_json_array() {
-        let source =
-            S3Source::new(S3SourceConfig::new("test").file_format(S3FileFormat::JsonArray));
+        let source = test_source(S3SourceConfig::new("test").file_format(S3FileFormat::JsonArray));
         let text = r#"[{"id":1},{"id":2}]"#;
         let records = source.parse_content("test.json", text).unwrap();
         assert_eq!(records.len(), 2);
@@ -237,8 +260,7 @@ mod tests {
 
     #[test]
     fn parse_json_array_not_array() {
-        let source =
-            S3Source::new(S3SourceConfig::new("test").file_format(S3FileFormat::JsonArray));
+        let source = test_source(S3SourceConfig::new("test").file_format(S3FileFormat::JsonArray));
         let text = r#"{"id":1}"#;
         let result = source.parse_content("test.json", text);
         assert!(result.is_err());
@@ -248,7 +270,7 @@ mod tests {
 
     #[test]
     fn parse_raw_text() {
-        let source = S3Source::new(S3SourceConfig::new("test").file_format(S3FileFormat::RawText));
+        let source = test_source(S3SourceConfig::new("test").file_format(S3FileFormat::RawText));
         let text = "hello world\nline two";
         let records = source.parse_content("data/file.txt", text).unwrap();
         assert_eq!(records.len(), 1);

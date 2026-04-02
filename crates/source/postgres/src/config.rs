@@ -11,6 +11,8 @@ pub struct PostgresSourceConfig {
     pub query: String,
     /// Bind parameters for the query. Defaults to empty.
     pub params: Vec<Value>,
+    /// Maximum number of connections in the pool. Defaults to 10.
+    pub max_connections: u32,
 }
 
 impl std::fmt::Debug for PostgresSourceConfig {
@@ -19,6 +21,7 @@ impl std::fmt::Debug for PostgresSourceConfig {
             .field("connection_url", &"***")
             .field("query", &self.query)
             .field("params", &self.params)
+            .field("max_connections", &self.max_connections)
             .finish()
     }
 }
@@ -30,12 +33,19 @@ impl PostgresSourceConfig {
             connection_url: connection_url.into(),
             query: query.into(),
             params: Vec::new(),
+            max_connections: 10,
         }
     }
 
     /// Set bind parameters for the query.
     pub fn params(mut self, params: Vec<Value>) -> Self {
         self.params = params;
+        self
+    }
+
+    /// Set the maximum number of connections in the pool.
+    pub fn with_max_connections(mut self, max_connections: u32) -> Self {
+        self.max_connections = max_connections;
         self
     }
 }

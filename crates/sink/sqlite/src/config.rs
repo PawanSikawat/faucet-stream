@@ -30,6 +30,8 @@ pub struct SqliteSinkConfig {
     pub column_mapping: SqliteColumnMapping,
     /// Maximum number of rows per INSERT batch. Defaults to 500.
     pub batch_size: usize,
+    /// Maximum number of connections in the pool. Defaults to 5.
+    pub max_connections: u32,
 }
 
 impl SqliteSinkConfig {
@@ -40,6 +42,7 @@ impl SqliteSinkConfig {
             table_name: table_name.into(),
             column_mapping: SqliteColumnMapping::default(),
             batch_size: 500,
+            max_connections: 5,
         }
     }
 
@@ -52,6 +55,12 @@ impl SqliteSinkConfig {
     /// Set the batch size for INSERT statements.
     pub fn batch_size(mut self, n: usize) -> Self {
         self.batch_size = n;
+        self
+    }
+
+    /// Set the maximum number of connections in the pool.
+    pub fn max_connections(mut self, n: u32) -> Self {
+        self.max_connections = n;
         self
     }
 }

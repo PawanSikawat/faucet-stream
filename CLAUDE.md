@@ -103,6 +103,19 @@ This crate is designed as a **marketplace ecosystem** — third-party developers
 - **Naming convention: `faucet-source-<name>` / `faucet-sink-<name>`** — all first-party crates follow this, and the README guides third-party authors to do the same.
 - **Don't add mandatory dependencies to `faucet-core`** that connector authors wouldn't need (e.g. database drivers, cloud SDKs). Keep core lightweight — connector-specific deps belong in their own crates.
 
+## Performance
+
+All connectors must be optimised for throughput by default. When modifying or adding connectors, apply these principles:
+
+- **Reuse clients/connections** — create S3 clients, MongoDB clients, Redis connections, HTTP clients in `new()` and store in the struct. Never recreate per-call.
+- **Connection pooling** — all database connectors (PostgreSQL, MySQL, SQLite) must use configurable `max_connections` pools (default: 10 for sources, 5 for sinks).
+- **Multi-row INSERT** — database sinks (PostgreSQL, MySQL, SQLite) must use multi-row `INSERT INTO ... VALUES (...), (...), ...` instead of one INSERT per record.
+- **Transaction wrapping** — SQLite sink wraps batches in `BEGIN`/`COMMIT` transactions.
+- **Parallel I/O** — S3 source/sink uses `buffer_unordered()` for concurrent object reads/writes. HTTP sink sends Individual-mode requests concurrently via semaphore. REST source processes partitions concurrently when `partition_concurrency` is set.
+- **Bulk APIs** — prefer bulk/batch APIs when available (Elasticsearch bulk NDJSON, BigQuery insertAll, MongoDB insert_many, Redis pipelines + MGET).
+- **Buffered I/O** — file sinks (JSONL, CSV) must use buffered writers. CSV uses `spawn_blocking` to avoid blocking the async runtime.
+- **Configurable concurrency** — expose `concurrency` or `max_connections` fields on configs with sensible defaults so users can tune throughput.
+
 ## Commands
 
 ```bash

@@ -17,7 +17,7 @@ impl SqliteSource {
     /// Create a new SQLite source. Establishes a connection pool.
     pub async fn new(config: SqliteSourceConfig) -> Result<Self, FaucetError> {
         let pool = SqlitePoolOptions::new()
-            .max_connections(5)
+            .max_connections(config.max_connections)
             .connect(&config.database_url)
             .await
             .map_err(|e| FaucetError::Config(format!("SQLite connection failed: {e}")))?;

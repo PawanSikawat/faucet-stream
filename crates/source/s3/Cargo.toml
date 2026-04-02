@@ -15,6 +15,7 @@ tracing.workspace = true
 tokio.workspace = true
 aws-sdk-s3 = { workspace = true }
 aws-config = { workspace = true }
+futures = "0.3"
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt"] }
