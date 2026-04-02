@@ -53,8 +53,8 @@ jobs:
 
       # Publish in dependency order: core -> source/sink -> umbrella.
       # Sleep between publishes to allow crates.io index to propagate.
-      - name: Install cmake
-        run: sudo apt-get install -y cmake
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y cmake libcurl4-openssl-dev pkg-config libssl-dev
 
       - name: Publish (dry run)
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run == 'true' }}
