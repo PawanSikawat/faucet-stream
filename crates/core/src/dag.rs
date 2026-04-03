@@ -6,8 +6,11 @@
 
 use crate::error::FaucetError;
 use crate::traits::{Sink, Source};
+use crate::util::extract_context;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::sync::Arc;
+use tokio::sync::Semaphore;
 
 /// A node in the source DAG.
 pub struct DagNode {
@@ -235,6 +238,196 @@ impl SourceDAG {
     pub fn concurrency_limit(&self) -> usize {
         self.concurrency
     }
+
+    /// Compute topological order using Kahn's algorithm.
+    ///
+    /// Assumes the DAG has already been validated (no cycles).
+    fn topological_order(&self) -> Vec<String> {
+        let mut in_degree: HashMap<&str, usize> = HashMap::new();
+        for name in self.nodes.keys() {
+            in_degree.insert(name.as_str(), 0);
+        }
+        for children in self.edges.values() {
+            for child in children {
+                *in_degree.entry(child.as_str()).or_default() += 1;
+            }
+        }
+
+        let mut queue: VecDeque<&str> = in_degree
+            .iter()
+            .filter(|(_, deg)| **deg == 0)
+            .map(|(name, _)| *name)
+            .collect();
+
+        let mut order = Vec::with_capacity(self.nodes.len());
+        while let Some(node) = queue.pop_front() {
+            order.push(node.to_string());
+            if let Some(children) = self.edges.get(node) {
+                for child in children {
+                    let deg = in_degree.get_mut(child.as_str()).expect("node in edges");
+                    *deg -= 1;
+                    if *deg == 0 {
+                        queue.push_back(child.as_str());
+                    }
+                }
+            }
+        }
+        order
+    }
+
+    /// Find the parent of a child node.
+    fn parent_of(&self, child: &str) -> Option<String> {
+        for (parent, children) in &self.edges {
+            if children.iter().any(|c| c == child) {
+                return Some(parent.clone());
+            }
+        }
+        None
+    }
+
+    /// Execute the DAG: fetch from all sources and write to all sinks.
+    ///
+    /// Root nodes are processed sequentially in topological order. For each
+    /// child node, parent records are expanded concurrently (bounded by
+    /// [`concurrency`](Self::concurrency)).
+    pub async fn run(&self) -> Result<DagResult, FaucetError> {
+        self.validate()?;
+
+        let order = self.topological_order();
+        let semaphore = Arc::new(Semaphore::new(self.concurrency));
+
+        // Stores output records per node for use by children.
+        let mut node_records: HashMap<String, Vec<Value>> = HashMap::new();
+        let mut node_results: HashMap<String, DagNodeResult> = HashMap::new();
+
+        for name in &order {
+            let node = self.nodes.get(name).expect("node exists after validation");
+            let is_root = !self.children.contains(name);
+
+            if is_root {
+                // Root node: fetch with empty context
+                let records = node.source.fetch_with_context(&HashMap::new()).await?;
+                let written = node.sink.write_batch(&records).await?;
+                node_records.insert(name.clone(), records);
+                node_results.insert(
+                    name.clone(),
+                    DagNodeResult {
+                        records_written: written,
+                        parent_records_processed: 0,
+                        errors: Vec::new(),
+                    },
+                );
+            } else {
+                // Child node: expand over parent records concurrently
+                let parent_name = self
+                    .parent_of(name)
+                    .expect("child must have parent after validation");
+                let parent_records = node_records.get(&parent_name).cloned().unwrap_or_default();
+
+                let parent_count = parent_records.len();
+
+                // Build a future for each parent record, bounded by semaphore.
+                let source = &node.source;
+                let sink = &node.sink;
+                let mapping = &node.context_mapping;
+                let inject = node.inject_context;
+
+                let futs: Vec<_> = parent_records
+                    .iter()
+                    .map(|parent_record| {
+                        let sem = Arc::clone(&semaphore);
+                        async move {
+                            let _permit = sem.acquire().await.expect("semaphore not closed");
+
+                            let ctx = match extract_context(parent_record, mapping) {
+                                Ok(c) => c,
+                                Err(e) => {
+                                    return (
+                                        Vec::new(),
+                                        Some(DagNodeError {
+                                            context: HashMap::new(),
+                                            error: e,
+                                        }),
+                                        0usize,
+                                    );
+                                }
+                            };
+
+                            let mut records = match source.fetch_with_context(&ctx).await {
+                                Ok(r) => r,
+                                Err(e) => {
+                                    return (
+                                        Vec::new(),
+                                        Some(DagNodeError {
+                                            context: ctx,
+                                            error: e,
+                                        }),
+                                        0usize,
+                                    );
+                                }
+                            };
+
+                            // Inject context into records if configured
+                            if inject {
+                                for record in &mut records {
+                                    if let Value::Object(map) = record {
+                                        for (k, v) in &ctx {
+                                            map.insert(k.clone(), v.clone());
+                                        }
+                                    }
+                                }
+                            }
+
+                            // Write to sink
+                            match sink.write_batch(&records).await {
+                                Ok(n) => (records, None, n),
+                                Err(e) => (
+                                    Vec::new(),
+                                    Some(DagNodeError {
+                                        context: ctx,
+                                        error: e,
+                                    }),
+                                    0usize,
+                                ),
+                            }
+                        }
+                    })
+                    .collect();
+
+                let results = futures::future::join_all(futs).await;
+
+                let mut all_records: Vec<Value> = Vec::new();
+                let mut errors: Vec<DagNodeError> = Vec::new();
+                let mut total_written: usize = 0;
+
+                for (records, maybe_err, written) in results {
+                    total_written += written;
+                    all_records.extend(records);
+                    if let Some(err) = maybe_err {
+                        errors.push(err);
+                    }
+                }
+
+                node_records.insert(name.clone(), all_records);
+                node_results.insert(
+                    name.clone(),
+                    DagNodeResult {
+                        records_written: total_written,
+                        parent_records_processed: parent_count,
+                        errors,
+                    },
+                );
+            }
+        }
+
+        // Flush all sinks
+        for name in &order {
+            let node = self.nodes.get(name).expect("node exists");
+            node.sink.flush().await?;
+        }
+
+        Ok(DagResult { node_results })
+    }
 }
 
 impl Default for SourceDAG {
@@ -436,5 +629,253 @@ mod tests {
                 true,
             );
         assert!(dag.validate().is_ok());
+    }
+
+    // ── Additional test helpers for run() tests ─────────────────────────
+
+    /// Arc wrapper so we can inspect sink contents after DAG run.
+    struct ArcSink(std::sync::Arc<CollectingSink>);
+
+    #[async_trait]
+    impl Sink for ArcSink {
+        async fn write_batch(&self, records: &[Value]) -> Result<usize, FaucetError> {
+            self.0.write_batch(records).await
+        }
+    }
+
+    /// Source that echoes its context as a single record.
+    struct ContextEchoSource;
+
+    #[async_trait]
+    impl Source for ContextEchoSource {
+        async fn fetch_with_context(
+            &self,
+            context: &HashMap<String, Value>,
+        ) -> Result<Vec<Value>, FaucetError> {
+            let record: serde_json::Map<String, Value> = context
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect();
+            Ok(vec![Value::Object(record)])
+        }
+    }
+
+    /// Source that always fails.
+    struct FailingSource;
+
+    #[async_trait]
+    impl Source for FailingSource {
+        async fn fetch_with_context(
+            &self,
+            _context: &HashMap<String, Value>,
+        ) -> Result<Vec<Value>, FaucetError> {
+            Err(FaucetError::Source("boom".into()))
+        }
+    }
+
+    fn arc_sink() -> (std::sync::Arc<CollectingSink>, Box<dyn Sink>) {
+        let inner = std::sync::Arc::new(CollectingSink::new());
+        (inner.clone(), Box::new(ArcSink(inner)))
+    }
+
+    // ── run() tests ────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn run_single_root_writes_to_sink() {
+        let (sink_inner, sink) = arc_sink();
+        let dag = SourceDAG::new().add_root(
+            "root",
+            mock_source(vec![json!({"id": 1}), json!({"id": 2})]),
+            sink,
+        );
+
+        let result = dag.run().await.unwrap();
+        let root_result = &result.node_results["root"];
+        assert_eq!(root_result.records_written, 2);
+        assert_eq!(root_result.parent_records_processed, 0);
+        assert!(root_result.errors.is_empty());
+
+        let written = sink_inner.written.lock().unwrap();
+        assert_eq!(written.len(), 2);
+        assert_eq!(written[0]["id"], 1);
+        assert_eq!(written[1]["id"], 2);
+    }
+
+    #[tokio::test]
+    async fn run_parent_child_passes_context() {
+        let (child_sink_inner, child_sink) = arc_sink();
+        let dag = SourceDAG::new()
+            .add_root(
+                "orgs",
+                mock_source(vec![
+                    json!({"org_id": 10, "name": "acme"}),
+                    json!({"org_id": 20, "name": "globex"}),
+                ]),
+                mock_sink(),
+            )
+            .add_child(
+                "repos",
+                "orgs",
+                Box::new(ContextEchoSource),
+                child_sink,
+                HashMap::from([("org_id".into(), "$.org_id".into())]),
+                false,
+            );
+
+        let result = dag.run().await.unwrap();
+        let child_result = &result.node_results["repos"];
+        assert_eq!(child_result.parent_records_processed, 2);
+        assert_eq!(child_result.records_written, 2);
+        assert!(child_result.errors.is_empty());
+
+        let written = child_sink_inner.written.lock().unwrap();
+        assert_eq!(written.len(), 2);
+        // Each record should contain the org_id from the parent
+        let org_ids: Vec<&Value> = written.iter().map(|r| &r["org_id"]).collect();
+        assert!(org_ids.contains(&&json!(10)));
+        assert!(org_ids.contains(&&json!(20)));
+    }
+
+    #[tokio::test]
+    async fn run_inject_context_merges_parent_fields() {
+        let (child_sink_inner, child_sink) = arc_sink();
+        let dag = SourceDAG::new()
+            .add_root(
+                "orgs",
+                mock_source(vec![json!({"org_id": 42})]),
+                mock_sink(),
+            )
+            .add_child(
+                "repos",
+                "orgs",
+                // Child source returns its own record
+                mock_source(vec![json!({"repo": "faucet"})]),
+                child_sink,
+                HashMap::from([("org_id".into(), "$.org_id".into())]),
+                true, // inject_context
+            );
+
+        let result = dag.run().await.unwrap();
+        let child_result = &result.node_results["repos"];
+        assert_eq!(child_result.records_written, 1);
+
+        let written = child_sink_inner.written.lock().unwrap();
+        assert_eq!(written.len(), 1);
+        // The record should have both the original field and the injected context
+        assert_eq!(written[0]["repo"], json!("faucet"));
+        assert_eq!(written[0]["org_id"], json!(42));
+    }
+
+    #[tokio::test]
+    async fn run_fan_out_two_children_of_same_parent() {
+        let (users_sink_inner, users_sink) = arc_sink();
+        let (repos_sink_inner, repos_sink) = arc_sink();
+
+        let dag = SourceDAG::new()
+            .add_root(
+                "orgs",
+                mock_source(vec![json!({"org_id": 1}), json!({"org_id": 2})]),
+                mock_sink(),
+            )
+            .add_child(
+                "users",
+                "orgs",
+                Box::new(ContextEchoSource),
+                users_sink,
+                HashMap::from([("org_id".into(), "$.org_id".into())]),
+                false,
+            )
+            .add_child(
+                "repos",
+                "orgs",
+                Box::new(ContextEchoSource),
+                repos_sink,
+                HashMap::from([("org_id".into(), "$.org_id".into())]),
+                false,
+            );
+
+        let result = dag.run().await.unwrap();
+
+        // Both children should have processed 2 parent records
+        assert_eq!(result.node_results["users"].parent_records_processed, 2);
+        assert_eq!(result.node_results["repos"].parent_records_processed, 2);
+        assert_eq!(result.node_results["users"].records_written, 2);
+        assert_eq!(result.node_results["repos"].records_written, 2);
+
+        let users_written = users_sink_inner.written.lock().unwrap();
+        let repos_written = repos_sink_inner.written.lock().unwrap();
+        assert_eq!(users_written.len(), 2);
+        assert_eq!(repos_written.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn run_linear_chain_three_levels() {
+        let (c_sink_inner, c_sink) = arc_sink();
+
+        let dag = SourceDAG::new()
+            .add_root("A", mock_source(vec![json!({"a_id": 1})]), mock_sink())
+            .add_child(
+                "B",
+                "A",
+                // B echoes context (gets a_id), then adds b_id
+                mock_source(vec![json!({"b_id": 100, "a_id": 1})]),
+                mock_sink(),
+                HashMap::from([("a_id".into(), "$.a_id".into())]),
+                false,
+            )
+            .add_child(
+                "C",
+                "B",
+                Box::new(ContextEchoSource),
+                c_sink,
+                HashMap::from([("b_id".into(), "$.b_id".into())]),
+                false,
+            );
+
+        let result = dag.run().await.unwrap();
+
+        // A -> 1 record, B -> 1 record (from A's 1 parent record), C -> 1 record
+        assert_eq!(result.node_results["A"].records_written, 1);
+        assert_eq!(result.node_results["B"].records_written, 1);
+        assert_eq!(result.node_results["C"].records_written, 1);
+
+        let c_written = c_sink_inner.written.lock().unwrap();
+        assert_eq!(c_written.len(), 1);
+        // C should have received b_id=100 from B's output
+        assert_eq!(c_written[0]["b_id"], json!(100));
+    }
+
+    #[tokio::test]
+    async fn run_child_error_is_non_fatal() {
+        let dag = SourceDAG::new()
+            .add_root(
+                "orgs",
+                mock_source(vec![json!({"org_id": 1}), json!({"org_id": 2})]),
+                mock_sink(),
+            )
+            .add_child(
+                "repos",
+                "orgs",
+                Box::new(FailingSource),
+                mock_sink(),
+                HashMap::from([("org_id".into(), "$.org_id".into())]),
+                false,
+            );
+
+        let result = dag.run().await.unwrap();
+
+        // Root should succeed
+        assert_eq!(result.node_results["orgs"].records_written, 2);
+
+        // Child should have 2 errors (one per parent record) but no panic/abort
+        let child_result = &result.node_results["repos"];
+        assert_eq!(child_result.parent_records_processed, 2);
+        assert_eq!(child_result.records_written, 0);
+        assert_eq!(child_result.errors.len(), 2);
+
+        // Verify the errors contain the expected message
+        for err in &child_result.errors {
+            assert!(err.error.to_string().contains("boom"));
+        }
     }
 }
