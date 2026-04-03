@@ -2,7 +2,7 @@
 # See: https://github.com/crate-ci/cargo-release/blob/master/docs/reference.md
 
 # Allow release from these branches
-allow-branch = ["main", "restructure-workspace-with-tests"]
+allow-branch = ["main"]
 
 sign-commit = false
 sign-tag = false
