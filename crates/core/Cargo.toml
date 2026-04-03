@@ -24,6 +24,7 @@ reqwest.workspace = true
 jsonpath-rust.workspace = true
 regex = { workspace = true, optional = true }
 futures-core.workspace = true
+futures = "0.3"
 dotenvy = "0.15"
 envy = "0.4"
 schemars.workspace = true
