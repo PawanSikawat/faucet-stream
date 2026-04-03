@@ -490,6 +490,10 @@ mod tests {
                 written: Mutex::new(Vec::new()),
             }
         }
+
+        fn records(&self) -> Vec<Value> {
+            self.written.lock().unwrap().clone()
+        }
     }
 
     #[async_trait]
@@ -919,5 +923,121 @@ mod tests {
         for err in &child_result.errors {
             assert!(err.error.to_string().contains("boom"));
         }
+    }
+
+    // ── DynamicSource for integration test ─────────────────────────────
+
+    /// Source that returns different records based on context values.
+    struct DynamicSource {
+        responses: HashMap<String, Vec<Value>>,
+    }
+
+    impl DynamicSource {
+        fn new(responses: Vec<(String, Vec<Value>)>) -> Self {
+            Self {
+                responses: responses.into_iter().collect(),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl Source for DynamicSource {
+        async fn fetch_with_context(
+            &self,
+            context: &HashMap<String, Value>,
+        ) -> Result<Vec<Value>, FaucetError> {
+            // Use the first context value as a lookup key
+            for v in context.values() {
+                let key = match v {
+                    Value::String(s) => s.clone(),
+                    Value::Number(n) => n.to_string(),
+                    _ => v.to_string(),
+                };
+                if let Some(records) = self.responses.get(&key) {
+                    return Ok(records.clone());
+                }
+            }
+            Ok(vec![])
+        }
+    }
+
+    // ── Integration test ───────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn integration_github_style_dag() {
+        // Simulate: orgs -> users per org, with context injection
+        let orgs_sink = std::sync::Arc::new(CollectingSink::new());
+        let users_sink = std::sync::Arc::new(CollectingSink::new());
+
+        let user_source = DynamicSource::new(vec![
+            (
+                "1".to_string(),
+                vec![
+                    json!({"user_id": 10, "name": "Alice"}),
+                    json!({"user_id": 11, "name": "Bob"}),
+                ],
+            ),
+            (
+                "2".to_string(),
+                vec![json!({"user_id": 20, "name": "Charlie"})],
+            ),
+        ]);
+
+        let mut ctx_map = HashMap::new();
+        ctx_map.insert("org_id".to_string(), "$.id".to_string());
+
+        let dag = SourceDAG::new()
+            .add_root(
+                "orgs",
+                Box::new(MockSource {
+                    records: vec![
+                        json!({"id": 1, "name": "Acme"}),
+                        json!({"id": 2, "name": "Beta"}),
+                    ],
+                }),
+                Box::new(ArcSink(orgs_sink.clone())),
+            )
+            .add_child(
+                "users",
+                "orgs",
+                Box::new(user_source),
+                Box::new(ArcSink(users_sink.clone())),
+                ctx_map,
+                true, // inject org_id into each user record
+            )
+            .concurrency(2);
+
+        let result = dag.run().await.unwrap();
+
+        // Orgs
+        assert_eq!(result.node_results["orgs"].records_written, 2);
+        assert_eq!(orgs_sink.records().len(), 2);
+
+        // Users
+        let users_result = &result.node_results["users"];
+        assert_eq!(users_result.records_written, 3); // 2 from org 1 + 1 from org 2
+        assert_eq!(users_result.parent_records_processed, 2);
+        assert!(users_result.errors.is_empty());
+
+        let user_records = users_sink.records();
+        assert_eq!(user_records.len(), 3);
+
+        // Every user record should have org_id injected
+        for record in &user_records {
+            assert!(record.get("org_id").is_some(), "missing org_id in {record}");
+            assert!(record.get("name").is_some(), "missing name in {record}");
+        }
+
+        // Verify the right org_ids were injected
+        let org1_users: Vec<_> = user_records
+            .iter()
+            .filter(|r| r["org_id"] == json!(1))
+            .collect();
+        let org2_users: Vec<_> = user_records
+            .iter()
+            .filter(|r| r["org_id"] == json!(2))
+            .collect();
+        assert_eq!(org1_users.len(), 2);
+        assert_eq!(org2_users.len(), 1);
     }
 }
