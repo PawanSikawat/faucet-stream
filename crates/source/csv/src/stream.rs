@@ -23,7 +23,10 @@ impl CsvSource {
 
 #[async_trait]
 impl faucet_core::Source for CsvSource {
-    async fn fetch_all(&self) -> Result<Vec<Value>, FaucetError> {
+    async fn fetch_with_context(
+        &self,
+        _context: &std::collections::HashMap<String, serde_json::Value>,
+    ) -> Result<Vec<Value>, FaucetError> {
         let config = self.config.clone();
 
         // CSV reading is synchronous I/O — run on a blocking thread to avoid

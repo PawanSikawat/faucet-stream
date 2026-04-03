@@ -156,7 +156,10 @@ impl S3Source {
 
 #[async_trait]
 impl faucet_core::Source for S3Source {
-    async fn fetch_all(&self) -> Result<Vec<Value>, FaucetError> {
+    async fn fetch_with_context(
+        &self,
+        _context: &std::collections::HashMap<String, serde_json::Value>,
+    ) -> Result<Vec<Value>, FaucetError> {
         let keys = self.list_object_keys().await?;
 
         tracing::info!(

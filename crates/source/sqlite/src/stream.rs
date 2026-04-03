@@ -59,7 +59,10 @@ fn sqlite_value_to_json(row: &sqlx::sqlite::SqliteRow, col_name: &str) -> Value 
 
 #[async_trait]
 impl faucet_core::Source for SqliteSource {
-    async fn fetch_all(&self) -> Result<Vec<Value>, FaucetError> {
+    async fn fetch_with_context(
+        &self,
+        _context: &std::collections::HashMap<String, serde_json::Value>,
+    ) -> Result<Vec<Value>, FaucetError> {
         let rows = sqlx::query(&self.config.query)
             .fetch_all(&self.pool)
             .await

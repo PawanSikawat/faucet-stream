@@ -68,7 +68,10 @@ fn pg_value_to_json(row: &sqlx::postgres::PgRow, col_name: &str) -> Value {
 
 #[async_trait]
 impl faucet_core::Source for PostgresSource {
-    async fn fetch_all(&self) -> Result<Vec<Value>, FaucetError> {
+    async fn fetch_with_context(
+        &self,
+        _context: &std::collections::HashMap<String, serde_json::Value>,
+    ) -> Result<Vec<Value>, FaucetError> {
         let mut query = sqlx::query(&self.config.query);
 
         for param in &self.config.params {

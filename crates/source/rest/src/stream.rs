@@ -499,11 +499,17 @@ fn parse_retry_after(headers: &HeaderMap) -> Duration {
 
 #[async_trait]
 impl faucet_core::Source for RestStream {
-    async fn fetch_all(&self) -> Result<Vec<Value>, FaucetError> {
+    async fn fetch_with_context(
+        &self,
+        _context: &std::collections::HashMap<String, serde_json::Value>,
+    ) -> Result<Vec<Value>, FaucetError> {
         RestStream::fetch_all(self).await
     }
 
-    async fn fetch_all_incremental(&self) -> Result<(Vec<Value>, Option<Value>), FaucetError> {
+    async fn fetch_with_context_incremental(
+        &self,
+        _context: &std::collections::HashMap<String, serde_json::Value>,
+    ) -> Result<(Vec<Value>, Option<Value>), FaucetError> {
         RestStream::fetch_all_incremental(self).await
     }
 
