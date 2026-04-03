@@ -1,0 +1,136 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      scope:
+        description: "What to release"
+        required: true
+        type: choice
+        options:
+          - all         # bump + publish every crate
+          - core        # faucet-core only
+          - connectors  # all sources + sinks (not core, not umbrella)
+          - umbrella    # faucet-stream umbrella only
+          - custom      # specify crates in custom_crates input
+      bump:
+        description: "Version bump"
+        required: true
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+      custom_crates:
+        description: "Comma-separated crate names (only when scope=custom), e.g. faucet-sink-postgres,faucet-source-rest"
+        required: false
+        default: ""
+      dry_run:
+        description: "Dry run (no publish, no git changes)"
+        required: false
+        default: true
+        type: boolean
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  release:
+    name: Release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.94.0"
+          components: rustfmt, clippy
+
+      - name: Install cargo-release
+        run: cargo install cargo-release --locked
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-release-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-release-
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Check formatting
+        run: cargo fmt --all --check
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+      - name: Test
+        run: cargo test --workspace --all-features
+
+      # Build the list of -p flags based on scope
+      - name: Determine crates to release
+        id: crates
+        run: |
+          SCOPE="${{ inputs.scope }}"
+          case "$SCOPE" in
+            all)
+              echo "packages=-p faucet-core -p faucet-source-rest -p faucet-source-graphql -p faucet-source-xml -p faucet-source-grpc -p faucet-source-postgres -p faucet-source-mysql -p faucet-source-sqlite -p faucet-source-s3 -p faucet-source-mongodb -p faucet-source-redis -p faucet-source-webhook -p faucet-source-csv -p faucet-source-elasticsearch -p faucet-sink-bigquery -p faucet-sink-postgres -p faucet-sink-jsonl -p faucet-sink-snowflake -p faucet-sink-mysql -p faucet-sink-sqlite -p faucet-sink-s3 -p faucet-sink-mongodb -p faucet-sink-redis -p faucet-sink-csv -p faucet-sink-elasticsearch -p faucet-sink-http -p faucet-stream" >> "$GITHUB_OUTPUT"
+              ;;
+            core)
+              echo "packages=-p faucet-core" >> "$GITHUB_OUTPUT"
+              ;;
+            connectors)
+              echo "packages=-p faucet-source-rest -p faucet-source-graphql -p faucet-source-xml -p faucet-source-grpc -p faucet-source-postgres -p faucet-source-mysql -p faucet-source-sqlite -p faucet-source-s3 -p faucet-source-mongodb -p faucet-source-redis -p faucet-source-webhook -p faucet-source-csv -p faucet-source-elasticsearch -p faucet-sink-bigquery -p faucet-sink-postgres -p faucet-sink-jsonl -p faucet-sink-snowflake -p faucet-sink-mysql -p faucet-sink-sqlite -p faucet-sink-s3 -p faucet-sink-mongodb -p faucet-sink-redis -p faucet-sink-csv -p faucet-sink-elasticsearch -p faucet-sink-http" >> "$GITHUB_OUTPUT"
+              ;;
+            umbrella)
+              echo "packages=-p faucet-stream" >> "$GITHUB_OUTPUT"
+              ;;
+            custom)
+              CRATES="${{ inputs.custom_crates }}"
+              PKGS=""
+              IFS=',' read -ra ARR <<< "$CRATES"
+              for crate in "${ARR[@]}"; do
+                crate=$(echo "$crate" | xargs)  # trim whitespace
+                PKGS="$PKGS -p $crate"
+              done
+              echo "packages=$PKGS" >> "$GITHUB_OUTPUT"
+              ;;
+          esac
+
+      - name: Release (dry run)
+        if: ${{ inputs.dry_run }}
+        run: |
+          cargo release ${{ inputs.bump }} \
+            ${{ steps.crates.outputs.packages }} \
+            --no-confirm \
+            --no-push \
+            --no-tag \
+            --no-publish \
+            --verbose
+
+      - name: Release
+        if: ${{ !inputs.dry_run }}
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: |
+          cargo release ${{ inputs.bump }} \
+            ${{ steps.crates.outputs.packages }} \
+            --no-confirm \
+            --execute
+
+      - name: Push tags and commits
+        if: ${{ !inputs.dry_run }}
+        run: |
+          git push --follow-tags origin HEAD
