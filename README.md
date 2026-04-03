@@ -26,7 +26,6 @@ faucet-stream is a Cargo workspace with 27 crates — 13 sources, 12 sinks, a sh
 | [`faucet-source-postgres`](crates/source/postgres) | PostgreSQL — run SQL queries, return rows as JSON |
 | [`faucet-source-mysql`](crates/source/mysql) | MySQL — run SQL queries, return rows as JSON |
 | [`faucet-source-sqlite`](crates/source/sqlite) | SQLite — run SQL queries, return rows as JSON |
-
 | [`faucet-source-s3`](crates/source/s3) | AWS S3 — read objects as JSONL, JSON array, or raw text |
 | [`faucet-source-mongodb`](crates/source/mongodb) | MongoDB — find() with filter, projection, sort |
 | [`faucet-source-redis`](crates/source/redis) | Redis — read from streams, lists, or key patterns |
@@ -40,7 +39,6 @@ faucet-stream is a Cargo workspace with 27 crates — 13 sources, 12 sinks, a sh
 | [`faucet-sink-snowflake`](crates/sink/snowflake) | Snowflake — SQL REST API with JWT/OAuth |
 | [`faucet-sink-mysql`](crates/sink/mysql) | MySQL — JSON column or auto-mapped columns |
 | [`faucet-sink-sqlite`](crates/sink/sqlite) | SQLite — JSON column or auto-mapped columns |
-
 | [`faucet-sink-s3`](crates/sink/s3) | AWS S3 — write JSONL files to bucket |
 | [`faucet-sink-mongodb`](crates/sink/mongodb) | MongoDB — insert_many documents |
 | [`faucet-sink-redis`](crates/sink/redis) | Redis — write to streams, lists, or key-value |
@@ -242,7 +240,6 @@ let config = RestStreamConfig::new("https://api.example.com")
 - **JSON mode** — insert records as JSON text
 - **Auto-map mode** — discover columns from PRAGMA table_info
 - **File or in-memory** — supports file paths or `:memory:` databases
-
 
 ### Sink: AWS S3 (`faucet-sink-s3`)
 
@@ -700,7 +697,6 @@ All pagination styles include loop detection — if the same cursor or link is r
 | `source-postgres` | no | PostgreSQL query source |
 | `source-mysql` | no | MySQL query source |
 | `source-sqlite` | no | SQLite query source |
-
 | `source-s3` | no | AWS S3 file source |
 | `source-mongodb` | no | MongoDB query source |
 | `source-redis` | no | Redis source |
@@ -713,7 +709,6 @@ All pagination styles include loop detection — if the same cursor or link is r
 | `sink-snowflake` | no | Snowflake sink |
 | `sink-mysql` | no | MySQL sink |
 | `sink-sqlite` | no | SQLite sink |
-
 | `sink-s3` | no | AWS S3 file sink |
 | `sink-mongodb` | no | MongoDB sink |
 | `sink-redis` | no | Redis sink |

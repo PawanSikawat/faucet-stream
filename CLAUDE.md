@@ -25,7 +25,6 @@ The project is a Cargo workspace with 27 crates:
 | `faucet-source-postgres` | `crates/source/postgres/` | PostgreSQL query source — run SQL, return rows as JSON |
 | `faucet-source-mysql` | `crates/source/mysql/` | MySQL query source — run SQL, return rows as JSON |
 | `faucet-source-sqlite` | `crates/source/sqlite/` | SQLite query source — run SQL, return rows as JSON |
-
 | `faucet-source-s3` | `crates/source/s3/` | AWS S3 source — read objects as JSONL, JSON array, or raw text |
 | `faucet-source-mongodb` | `crates/source/mongodb/` | MongoDB source — find() query with filter/projection/sort |
 | `faucet-source-redis` | `crates/source/redis/` | Redis source — read from streams, lists, or key patterns |
@@ -38,7 +37,6 @@ The project is a Cargo workspace with 27 crates:
 | `faucet-sink-snowflake` | `crates/sink/snowflake/` | Snowflake SQL REST API sink |
 | `faucet-sink-mysql` | `crates/sink/mysql/` | MySQL sink — JSON column or auto-mapped columns |
 | `faucet-sink-sqlite` | `crates/sink/sqlite/` | SQLite sink — JSON column or auto-mapped columns |
-
 | `faucet-sink-s3` | `crates/sink/s3/` | AWS S3 sink — write JSONL files to S3 bucket |
 | `faucet-sink-mongodb` | `crates/sink/mongodb/` | MongoDB sink — insert_many documents |
 | `faucet-sink-redis` | `crates/sink/redis/` | Redis sink — write to streams, lists, or key-value pairs |
@@ -282,7 +280,6 @@ cargo publish --dry-run -p faucet-stream
 - **`src/config.rs`** — `SqliteSinkConfig`, `SqliteColumnMapping` (Json, AutoMap)
 - **`src/sink.rs`** — `SqliteSink`: PRAGMA table_info column discovery; implements `faucet_core::Sink`
 
-
 ### faucet-sink-s3 (`crates/sink/s3/`)
 
 - **`src/config.rs`** — `S3SinkConfig` with bucket, prefix, max_records_per_file
@@ -329,7 +326,6 @@ cargo publish --dry-run -p faucet-stream
 | `source-postgres` | no | PostgreSQL query source |
 | `source-mysql` | no | MySQL query source |
 | `source-sqlite` | no | SQLite query source |
-
 | `source-s3` | no | AWS S3 file source |
 | `source-mongodb` | no | MongoDB query source |
 | `source-redis` | no | Redis source (streams, lists, keys) |
@@ -342,7 +338,6 @@ cargo publish --dry-run -p faucet-stream
 | `sink-snowflake` | no | Snowflake sink connector |
 | `sink-mysql` | no | MySQL sink |
 | `sink-sqlite` | no | SQLite sink |
-
 | `sink-s3` | no | AWS S3 file sink |
 | `sink-mongodb` | no | MongoDB insert sink |
 | `sink-redis` | no | Redis sink (streams, lists, key-value) |
