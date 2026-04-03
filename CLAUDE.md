@@ -164,15 +164,16 @@ cargo publish --dry-run -p faucet-stream
 
 ### faucet-core (`crates/core/`)
 
-- **`src/lib.rs`** — crate root; re-exports `FaucetError`, `Source`, `Sink`, `Pipeline`, `PipelineResult`, `run_stream`, `RecordTransform`, `ReplicationMethod`. Also re-exports third-party crates for connector authors: `async_trait`, `serde_json` (+ `Value`, `json!`), `schemars` (+ `JsonSchema`, `schema_for!`)
+- **`src/lib.rs`** — crate root; re-exports `FaucetError`, `Source`, `Sink`, `Pipeline`, `PipelineResult`, `run_stream`, `RecordTransform`, `ReplicationMethod`, `SourceDAG`, `DagResult`, `DagNodeResult`, `DagNodeError`, `DagNode`. Also re-exports third-party crates for connector authors: `async_trait`, `serde_json` (+ `Value`, `json!`), `schemars` (+ `JsonSchema`, `schema_for!`)
 - **`src/error.rs`** — `FaucetError` enum: `Http`, `HttpStatus`, `Json`, `JsonPath`, `Auth`, `RateLimited`, `Url`, `Transform`, `Config`, `Source`, `Sink`, `Custom(Box<dyn Error>)`
 - **`src/config.rs`** — Config loading utilities: `load_json()` (from JSON file), `load_env()` (from env vars with prefix), `load_env_file()` (load `.env` then env vars). Also `duration_secs` and `duration_secs_option` serde helper modules for `Duration` fields
-- **`src/util.rs`** — Shared utilities: `quote_ident()` (SQL injection prevention), `extract_records()` (JSONPath extraction), `check_http_response()` (HTTP status error handling)
-- **`src/traits.rs`** — `Source` and `Sink` async traits. Both include `config_schema(&self) -> Value` method that returns a JSON Schema describing the connector's configuration (auto-generated via `schemars`)
+- **`src/util.rs`** — Shared utilities: `quote_ident()` (SQL injection prevention), `extract_records()` (JSONPath extraction), `check_http_response()` (HTTP status error handling), `substitute_context()` (placeholder substitution for parent-child context), `extract_context()` (JSONPath-based context extraction from parent records)
+- **`src/traits.rs`** — `Source` and `Sink` async traits. `Source` uses `fetch_with_context()` as primary method (receives parent context); `fetch_all()` is a convenience wrapper. Both include `config_schema(&self) -> Value` method that returns a JSON Schema describing the connector's configuration (auto-generated via `schemars`)
 - **`src/pipeline.rs`** — `Pipeline` struct (batch source→sink), `run_stream()` (streaming source→sink), `PipelineResult`
 - **`src/transform.rs`** — `RecordTransform` enum + `CompiledTransform`: flatten, rename keys (regex), snake_case, custom closures; feature-gated built-ins
 - **`src/replication.rs`** — `ReplicationMethod` enum, `filter_incremental()`, `max_replication_value()` for bookmark-based incremental replication
 - **`src/schema.rs`** — `infer_schema()`: JSON Schema inference from record samples with type merging and nullable detection
+- **`src/dag.rs`** — `SourceDAG` builder and executor: parent-child DAG of source-sink pairs with context passing, concurrent child execution, and non-fatal error collection
 
 ### faucet-source-rest (`crates/source/rest/`)
 
