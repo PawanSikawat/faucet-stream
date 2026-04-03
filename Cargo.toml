@@ -40,34 +40,34 @@ repository = "https://github.com/PawanSikawat/faucet-stream"
 
 [workspace.dependencies]
 # Internal crates
-faucet-core = { path = "crates/core", version = "0.1.0" }
-faucet-source-rest = { path = "crates/source/rest", version = "0.1.0" }
-faucet-source-graphql = { path = "crates/source/graphql", version = "0.1.0" }
-faucet-source-xml = { path = "crates/source/xml", version = "0.1.0" }
-faucet-source-grpc = { path = "crates/source/grpc", version = "0.1.0" }
-faucet-sink-bigquery = { path = "crates/sink/bigquery", version = "0.1.0" }
-faucet-sink-postgres = { path = "crates/sink/postgres", version = "0.1.0" }
-faucet-sink-jsonl = { path = "crates/sink/jsonl", version = "0.1.0" }
-faucet-sink-snowflake = { path = "crates/sink/snowflake", version = "0.1.0" }
-faucet-source-postgres = { path = "crates/source/postgres", version = "0.1.0" }
-faucet-source-mysql = { path = "crates/source/mysql", version = "0.1.0" }
+faucet-core = { path = "crates/core", version = "0.2.0" }
+faucet-source-rest = { path = "crates/source/rest", version = "0.2.0" }
+faucet-source-graphql = { path = "crates/source/graphql", version = "0.2.0" }
+faucet-source-xml = { path = "crates/source/xml", version = "0.2.0" }
+faucet-source-grpc = { path = "crates/source/grpc", version = "0.2.0" }
+faucet-sink-bigquery = { path = "crates/sink/bigquery", version = "0.2.0" }
+faucet-sink-postgres = { path = "crates/sink/postgres", version = "0.2.0" }
+faucet-sink-jsonl = { path = "crates/sink/jsonl", version = "0.2.0" }
+faucet-sink-snowflake = { path = "crates/sink/snowflake", version = "0.2.0" }
+faucet-source-postgres = { path = "crates/source/postgres", version = "0.2.0" }
+faucet-source-mysql = { path = "crates/source/mysql", version = "0.2.0" }
 
-faucet-source-s3 = { path = "crates/source/s3", version = "0.1.0" }
-faucet-source-mongodb = { path = "crates/source/mongodb", version = "0.1.0" }
-faucet-source-redis = { path = "crates/source/redis", version = "0.1.0" }
-faucet-source-webhook = { path = "crates/source/webhook", version = "0.1.0" }
-faucet-source-sqlite = { path = "crates/source/sqlite", version = "0.1.0" }
-faucet-source-csv = { path = "crates/source/csv", version = "0.1.0" }
-faucet-source-elasticsearch = { path = "crates/source/elasticsearch", version = "0.1.0" }
-faucet-sink-mysql = { path = "crates/sink/mysql", version = "0.1.0" }
-faucet-sink-sqlite = { path = "crates/sink/sqlite", version = "0.1.0" }
+faucet-source-s3 = { path = "crates/source/s3", version = "0.2.0" }
+faucet-source-mongodb = { path = "crates/source/mongodb", version = "0.2.0" }
+faucet-source-redis = { path = "crates/source/redis", version = "0.2.0" }
+faucet-source-webhook = { path = "crates/source/webhook", version = "0.2.0" }
+faucet-source-sqlite = { path = "crates/source/sqlite", version = "0.2.0" }
+faucet-source-csv = { path = "crates/source/csv", version = "0.2.0" }
+faucet-source-elasticsearch = { path = "crates/source/elasticsearch", version = "0.2.0" }
+faucet-sink-mysql = { path = "crates/sink/mysql", version = "0.2.0" }
+faucet-sink-sqlite = { path = "crates/sink/sqlite", version = "0.2.0" }
 
-faucet-sink-s3 = { path = "crates/sink/s3", version = "0.1.0" }
-faucet-sink-mongodb = { path = "crates/sink/mongodb", version = "0.1.0" }
-faucet-sink-redis = { path = "crates/sink/redis", version = "0.1.0" }
-faucet-sink-csv = { path = "crates/sink/csv", version = "0.1.0" }
-faucet-sink-elasticsearch = { path = "crates/sink/elasticsearch", version = "0.1.0" }
-faucet-sink-http = { path = "crates/sink/http", version = "0.1.0" }
+faucet-sink-s3 = { path = "crates/sink/s3", version = "0.2.0" }
+faucet-sink-mongodb = { path = "crates/sink/mongodb", version = "0.2.0" }
+faucet-sink-redis = { path = "crates/sink/redis", version = "0.2.0" }
+faucet-sink-csv = { path = "crates/sink/csv", version = "0.2.0" }
+faucet-sink-elasticsearch = { path = "crates/sink/elasticsearch", version = "0.2.0" }
+faucet-sink-http = { path = "crates/sink/http", version = "0.2.0" }
 
 # Shared external deps
 serde = { version = "1", features = ["derive"] }
