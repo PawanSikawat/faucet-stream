@@ -286,13 +286,45 @@ let config = RestStreamConfig::new("https://api.example.com")
 - **Streaming mode** — write page-by-page as records arrive, keeping memory bounded
 - **Plug-and-play** — implement `Source` or `Sink` for your own connectors and they work with everything
 
+## Config Loading
+
+All connector configs support loading from JSON files, environment variables, or `.env` files:
+
+```rust
+use faucet_core::config::{load_json, load_env, load_env_file};
+use faucet_source_rest::RestStreamConfig;
+use faucet_sink_bigquery::BigQuerySinkConfig;
+
+// From a JSON file
+let source: RestStreamConfig = load_json("source_config.json")?;
+
+// From environment variables (reads REST_BASE_URL, REST_PATH, etc.)
+let source: RestStreamConfig = load_env("REST")?;
+
+// From a .env file + environment variables
+let sink: BigQuerySinkConfig = load_env_file(".env", "BQ")?;
+```
+
+### Config Schema Introspection
+
+Every source and sink can tell you exactly what configuration it needs via `config_schema()`:
+
+```rust
+let source = RestStream::new(config)?;
+let schema = source.config_schema();
+println!("{}", serde_json::to_string_pretty(&schema)?);
+// Prints a full JSON Schema with field names, types, required/optional, defaults
+```
+
+This is auto-generated from the config struct — it always stays in sync with the code.
+
 ## Quick Start
 
 Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-faucet-stream = "0.1"
+faucet-stream = "0.2"
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
 ```
@@ -506,7 +538,7 @@ Disable transforms you don't need:
 
 ```toml
 [dependencies]
-faucet-stream = { version = "0.1", default-features = false, features = ["transform-flatten"] }
+faucet-stream = { version = "0.2", default-features = false, features = ["transform-flatten"] }
 ```
 
 ### Schema inference
@@ -700,21 +732,33 @@ All pagination styles include loop detection — if the same cursor or link is r
 ## Building Custom Connectors
 
 You can build your own source or sink connector as a standalone crate. The only
-dependency you need is `faucet-core` — it re-exports everything required:
+dependency you need is `faucet-core` — it re-exports everything required
+(`async_trait`, `serde_json`, `Value`, `json!`, `JsonSchema`, `schema_for!`):
 
 ```toml
 [dependencies]
 faucet-core = "0.1"
+serde = { version = "1", features = ["derive"] }
 tokio = { version = "1", features = ["rt"] }
 ```
 
 ### Custom Source
 
 ```rust
-use faucet_core::{async_trait, FaucetError, Source, Value, json};
+use faucet_core::{async_trait, FaucetError, Source, Value, json, JsonSchema, schema_for};
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct MySourceConfig {
+    pub api_url: String,
+    pub api_key: String,
+    #[serde(default = "default_batch")]
+    pub batch_size: usize,
+}
+fn default_batch() -> usize { 100 }
 
 pub struct MySource {
-    api_url: String,
+    config: MySourceConfig,
 }
 
 #[async_trait]
@@ -723,16 +767,26 @@ impl Source for MySource {
         // Your logic here — fetch from an API, database, file, etc.
         Ok(vec![json!({"id": 1, "name": "example"})])
     }
+
+    fn config_schema(&self) -> Value {
+        serde_json::to_value(schema_for!(MySourceConfig)).expect("schema serialization")
+    }
 }
 ```
 
 ### Custom Sink
 
 ```rust
-use faucet_core::{async_trait, FaucetError, Sink, Value};
+use faucet_core::{async_trait, FaucetError, Sink, Value, JsonSchema, schema_for};
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct MySinkConfig {
+    pub output_path: String,
+}
 
 pub struct MySink {
-    output_path: String,
+    config: MySinkConfig,
 }
 
 #[async_trait]
@@ -740,6 +794,10 @@ impl Sink for MySink {
     async fn write_batch(&self, records: &[Value]) -> Result<usize, FaucetError> {
         // Your logic here — write to a database, file, API, etc.
         Ok(records.len())
+    }
+
+    fn config_schema(&self) -> Value {
+        serde_json::to_value(schema_for!(MySinkConfig)).expect("schema serialization")
     }
 }
 ```
@@ -790,12 +848,12 @@ If you publish your connector to crates.io, use the naming convention:
 ```
 Cargo.toml                    — workspace manifest
 crates/
-  core/                       — faucet-core: shared types, traits, pipeline
+  core/                       — faucet-core: shared types, traits, pipeline, config loading
     src/
-      lib.rs, error.rs, traits.rs, pipeline.rs, transform.rs,
-      replication.rs, schema.rs, util.rs
+      lib.rs, error.rs, traits.rs, pipeline.rs, config.rs,
+      transform.rs, replication.rs, schema.rs, util.rs
   source/
-    rest/                     — REST API (auth, pagination, extraction, retry)
+    rest/                     — REST API (auth, pagination, extraction, retry, serde_helpers)
     graphql/                  — GraphQL API (cursor pagination)
     xml/                      — XML/SOAP API (XML-to-JSON conversion)
     grpc/                     — gRPC (dynamic protobuf)
