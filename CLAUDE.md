@@ -91,6 +91,8 @@ Specifically, update CLAUDE.md when:
 - Changing feature flags
 - Adding new architectural patterns or conventions
 
+**Also update the README.md of any crate you modify.** Every crate under `crates/source/`, `crates/sink/`, `crates/core/`, and `faucet-stream/` has its own README. When you change a crate's config fields, add new methods, change defaults, add auth variants, or modify behavior, update that crate's README to reflect the change. The root `README.md` should also be updated if the change affects the overall project description or examples.
+
 ## Primary Goal
 
 **All sources and sinks must be as fast, efficient, and reliable as possible.** This is the number one priority for every decision — architecture, implementation, dependency choice, and API design. Performance and reliability are not afterthoughts; they are the reason this library exists. Every connector should be the fastest way to move data between its endpoints in Rust.
