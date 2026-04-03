@@ -1,20 +1,18 @@
 # cargo-release configuration
 # See: https://github.com/crate-ci/cargo-release/blob/master/docs/reference.md
 
-# Allow release from the main working branch
+# Allow release from these branches
 allow-branch = ["main", "restructure-workspace-with-tests"]
 
-# Sign commits and tags (disable if you don't have GPG set up)
 sign-commit = false
 sign-tag = false
 
 # Automatically update workspace dependency version references
-# e.g. when bumping faucet-core, update all `faucet-core = { version = "0.1.0" }`
-# references in other crates' Cargo.tomls
+# e.g. when bumping faucet-core, update all version refs in other crates
 dependent-version = "upgrade"
 
-# Shared settings for all crates
-shared-version = false  # each crate versions independently
+# Each crate versions independently
+shared-version = false
 
 # Tag format: crate-name-vX.Y.Z (e.g. faucet-core-v0.2.0)
 tag-prefix = ""
@@ -23,8 +21,4 @@ tag-name = "{{crate_name}}-v{{version}}"
 # Commit message format
 pre-release-commit-message = "release: {{crate_name}} v{{version}}"
 
-# Publish timeout — wait for crates.io index to propagate between publishes
-publish-delay = "30s"
-
-# Don't create GitHub releases (we use tags only)
 push-remote = "origin"
