@@ -6,47 +6,108 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  RUSTFLAGS: "-C debuginfo=0"
 
 jobs:
-  ci:
-    name: Build & Test
+  fmt:
+    name: Format
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@master
+      - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: "1.94.0"
-          components: rustfmt, clippy
+          components: rustfmt
+      - run: cargo fmt --all --check
 
-      - name: Cache cargo registry
-        uses: actions/cache@v4
+  clippy:
+    name: Clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.94.0"
+          components: clippy
+      - uses: actions/cache@v4
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-cargo-
+          key: ${{ runner.os }}-clippy-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-clippy-
+      - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
 
-      - name: Check formatting
-        run: cargo fmt --all --check
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.94.0"
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-test-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-test-
+      - run: cargo test --workspace --all-features
 
-      - name: Clippy
-        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
-
-      - name: Build
-        run: cargo build --workspace --all-features
-
-      - name: Test
-        run: cargo test --workspace --all-features
-
-      - name: Check no-default-features
-        run: cargo check -p faucet-stream --no-default-features
-
-      - name: Check individual features
-        run: |
-          cargo check -p faucet-stream --no-default-features --features source-graphql
-          cargo check -p faucet-stream --no-default-features --features sink-jsonl
-          cargo check -p faucet-stream --no-default-features --features source,sink
+  # Verify each feature compiles in isolation (catches accidental cross-feature deps)
+  feature-check:
+    name: Feature isolation
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        feature:
+          # Sources
+          - source-rest
+          - source-graphql
+          - source-xml
+          - source-grpc
+          - source-postgres
+          - source-mysql
+          - source-sqlite
+          - source-s3
+          - source-mongodb
+          - source-redis
+          - source-webhook
+          - source-csv
+          - source-elasticsearch
+          # Sinks
+          - sink-bigquery
+          - sink-postgres
+          - sink-jsonl
+          - sink-snowflake
+          - sink-mysql
+          - sink-sqlite
+          - sink-s3
+          - sink-mongodb
+          - sink-redis
+          - sink-csv
+          - sink-elasticsearch
+          - sink-http
+          # Aggregates
+          - source
+          - sink
+          - full
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.94.0"
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-feat-${{ matrix.feature }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-feat-${{ matrix.feature }}-
+      - run: cargo check -p faucet-stream --no-default-features --features ${{ matrix.feature }}

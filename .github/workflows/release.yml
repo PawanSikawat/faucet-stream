@@ -8,7 +8,7 @@ on:
         required: true
         type: choice
         options:
-          - all         # bump + publish every crate
+          - all         # bump + publish every crate (in rate-limited waves)
           - core        # faucet-core only
           - connectors  # all sources + sinks (not core, not umbrella)
           - umbrella    # faucet-stream umbrella only
@@ -79,56 +79,148 @@ jobs:
       - name: Test
         run: cargo test --workspace --all-features
 
-      # Build the list of -p flags based on scope
-      - name: Determine crates to release
-        id: crates
-        run: |
-          SCOPE="${{ inputs.scope }}"
-          case "$SCOPE" in
-            all)
-              echo "packages=-p faucet-core -p faucet-source-rest -p faucet-source-graphql -p faucet-source-xml -p faucet-source-grpc -p faucet-source-postgres -p faucet-source-mysql -p faucet-source-sqlite -p faucet-source-s3 -p faucet-source-mongodb -p faucet-source-redis -p faucet-source-webhook -p faucet-source-csv -p faucet-source-elasticsearch -p faucet-sink-bigquery -p faucet-sink-postgres -p faucet-sink-jsonl -p faucet-sink-snowflake -p faucet-sink-mysql -p faucet-sink-sqlite -p faucet-sink-s3 -p faucet-sink-mongodb -p faucet-sink-redis -p faucet-sink-csv -p faucet-sink-elasticsearch -p faucet-sink-http -p faucet-stream" >> "$GITHUB_OUTPUT"
-              ;;
-            core)
-              echo "packages=-p faucet-core" >> "$GITHUB_OUTPUT"
-              ;;
-            connectors)
-              echo "packages=-p faucet-source-rest -p faucet-source-graphql -p faucet-source-xml -p faucet-source-grpc -p faucet-source-postgres -p faucet-source-mysql -p faucet-source-sqlite -p faucet-source-s3 -p faucet-source-mongodb -p faucet-source-redis -p faucet-source-webhook -p faucet-source-csv -p faucet-source-elasticsearch -p faucet-sink-bigquery -p faucet-sink-postgres -p faucet-sink-jsonl -p faucet-sink-snowflake -p faucet-sink-mysql -p faucet-sink-sqlite -p faucet-sink-s3 -p faucet-sink-mongodb -p faucet-sink-redis -p faucet-sink-csv -p faucet-sink-elasticsearch -p faucet-sink-http" >> "$GITHUB_OUTPUT"
-              ;;
-            umbrella)
-              echo "packages=-p faucet-stream" >> "$GITHUB_OUTPUT"
-              ;;
-            custom)
-              CRATES="${{ inputs.custom_crates }}"
-              PKGS=""
-              IFS=',' read -ra ARR <<< "$CRATES"
-              for crate in "${ARR[@]}"; do
-                crate=$(echo "$crate" | xargs)  # trim whitespace
-                PKGS="$PKGS -p $crate"
-              done
-              echo "packages=$PKGS" >> "$GITHUB_OUTPUT"
-              ;;
-          esac
-
+      # ── Dry run ───────────────────────────────────────────────────────
       - name: Release (dry run)
         if: ${{ inputs.dry_run }}
         run: |
-          cargo release ${{ inputs.bump }} \
-            ${{ steps.crates.outputs.packages }} \
-            --no-confirm \
-            --no-push \
-            --no-tag \
-            --no-publish \
-            --verbose
+          SCOPE="${{ inputs.scope }}"
+          BUMP="${{ inputs.bump }}"
 
+          # Dry run: bump versions locally, no publish, no git changes
+          all_crates=(
+            faucet-core
+            faucet-source-rest faucet-source-graphql faucet-source-xml
+            faucet-source-grpc faucet-source-postgres faucet-source-mysql
+            faucet-source-sqlite faucet-source-s3 faucet-source-mongodb
+            faucet-source-redis faucet-source-webhook faucet-source-csv
+            faucet-source-elasticsearch
+            faucet-sink-bigquery faucet-sink-postgres faucet-sink-jsonl
+            faucet-sink-snowflake faucet-sink-mysql faucet-sink-sqlite
+            faucet-sink-s3 faucet-sink-mongodb faucet-sink-redis
+            faucet-sink-csv faucet-sink-elasticsearch faucet-sink-http
+            faucet-stream
+          )
+          connectors=(
+            faucet-source-rest faucet-source-graphql faucet-source-xml
+            faucet-source-grpc faucet-source-postgres faucet-source-mysql
+            faucet-source-sqlite faucet-source-s3 faucet-source-mongodb
+            faucet-source-redis faucet-source-webhook faucet-source-csv
+            faucet-source-elasticsearch
+            faucet-sink-bigquery faucet-sink-postgres faucet-sink-jsonl
+            faucet-sink-snowflake faucet-sink-mysql faucet-sink-sqlite
+            faucet-sink-s3 faucet-sink-mongodb faucet-sink-redis
+            faucet-sink-csv faucet-sink-elasticsearch faucet-sink-http
+          )
+
+          case "$SCOPE" in
+            all)      selected=("${all_crates[@]}") ;;
+            core)     selected=(faucet-core) ;;
+            connectors) selected=("${connectors[@]}") ;;
+            umbrella) selected=(faucet-stream) ;;
+            custom)
+              IFS=',' read -ra selected <<< "${{ inputs.custom_crates }}"
+              selected=("${selected[@]// /}")  # trim whitespace
+              ;;
+          esac
+
+          PKGS=""
+          for c in "${selected[@]}"; do PKGS="$PKGS -p $c"; done
+
+          echo "==> Dry run: cargo release $BUMP $PKGS"
+          cargo release "$BUMP" $PKGS --no-confirm --no-push --no-tag --no-publish --verbose
+
+      # ── Real release ──────────────────────────────────────────────────
+      #
+      # crates.io rate-limits new crate registrations to 5 per window.
+      # For "all" and "connectors" scopes, we bump versions first (no publish),
+      # then publish in waves of 5 with 10-minute waits between waves.
+      # For small scopes (core, umbrella, custom <=5), publish directly.
+      #
       - name: Release
         if: ${{ !inputs.dry_run }}
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
         run: |
-          cargo release ${{ inputs.bump }} \
-            ${{ steps.crates.outputs.packages }} \
-            --no-confirm \
-            --execute
+          SCOPE="${{ inputs.scope }}"
+          BUMP="${{ inputs.bump }}"
+
+          all_crates=(
+            faucet-core
+            faucet-source-rest faucet-source-graphql faucet-source-xml
+            faucet-source-grpc faucet-source-postgres faucet-source-mysql
+            faucet-source-sqlite faucet-source-s3 faucet-source-mongodb
+            faucet-source-redis faucet-source-webhook faucet-source-csv
+            faucet-source-elasticsearch
+            faucet-sink-bigquery faucet-sink-postgres faucet-sink-jsonl
+            faucet-sink-snowflake faucet-sink-mysql faucet-sink-sqlite
+            faucet-sink-s3 faucet-sink-mongodb faucet-sink-redis
+            faucet-sink-csv faucet-sink-elasticsearch faucet-sink-http
+            faucet-stream
+          )
+          connectors=(
+            faucet-source-rest faucet-source-graphql faucet-source-xml
+            faucet-source-grpc faucet-source-postgres faucet-source-mysql
+            faucet-source-sqlite faucet-source-s3 faucet-source-mongodb
+            faucet-source-redis faucet-source-webhook faucet-source-csv
+            faucet-source-elasticsearch
+            faucet-sink-bigquery faucet-sink-postgres faucet-sink-jsonl
+            faucet-sink-snowflake faucet-sink-mysql faucet-sink-sqlite
+            faucet-sink-s3 faucet-sink-mongodb faucet-sink-redis
+            faucet-sink-csv faucet-sink-elasticsearch faucet-sink-http
+          )
+
+          case "$SCOPE" in
+            all)        selected=("${all_crates[@]}") ;;
+            core)       selected=(faucet-core) ;;
+            connectors) selected=("${connectors[@]}") ;;
+            umbrella)   selected=(faucet-stream) ;;
+            custom)
+              IFS=',' read -ra selected <<< "${{ inputs.custom_crates }}"
+              selected=("${selected[@]// /}")
+              ;;
+          esac
+
+          # If 5 or fewer crates, publish directly with cargo-release
+          if [ ${#selected[@]} -le 5 ]; then
+            PKGS=""
+            for c in "${selected[@]}"; do PKGS="$PKGS -p $c"; done
+            echo "==> Publishing ${#selected[@]} crates directly"
+            cargo release "$BUMP" $PKGS --no-confirm --execute
+          else
+            # Step 1: Bump versions, commit, tag — but don't publish yet
+            PKGS=""
+            for c in "${selected[@]}"; do PKGS="$PKGS -p $c"; done
+            echo "==> Step 1: Bumping versions for ${#selected[@]} crates"
+            cargo release "$BUMP" $PKGS --no-confirm --no-publish --execute
+
+            # Step 2: Publish in waves of 5 with 10-minute waits
+            WAVE_SIZE=5
+            WAVE_WAIT=600  # 10 minutes
+            total=${#selected[@]}
+            wave=1
+
+            for (( i=0; i<total; i+=WAVE_SIZE )); do
+              wave_crates=("${selected[@]:i:WAVE_SIZE}")
+              echo ""
+              echo "==> Wave $wave: publishing ${wave_crates[*]}"
+
+              for crate in "${wave_crates[@]}"; do
+                echo "  Publishing $crate..."
+                cargo publish -p "$crate" --no-verify || {
+                  echo "  WARNING: $crate publish failed (may already exist), continuing..."
+                }
+                sleep 5  # small delay between individual publishes
+              done
+
+              remaining=$(( total - i - WAVE_SIZE ))
+              if [ $remaining -gt 0 ]; then
+                echo "==> Waiting ${WAVE_WAIT}s for crates.io rate limit reset..."
+                sleep $WAVE_WAIT
+              fi
+
+              wave=$((wave + 1))
+            done
+          fi
 
       - name: Push tags and commits
         if: ${{ !inputs.dry_run }}
