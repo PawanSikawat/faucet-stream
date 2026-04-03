@@ -346,7 +346,7 @@ impl RestStream {
             Some(u) => u.to_string(),
             None => {
                 let path = match path_context {
-                    Some(ctx) => resolve_path(&self.config.path, ctx),
+                    Some(ctx) => faucet_core::util::substitute_context(&self.config.path, ctx),
                     None => self.config.path.clone(),
                 };
                 format!("{}/{}", self.config.base_url, path.trim_start_matches('/'))
@@ -472,20 +472,6 @@ impl RestStream {
     }
 }
 
-/// Substitute `{key}` placeholders in `path` with values from `context`.
-fn resolve_path(path: &str, context: &HashMap<String, Value>) -> String {
-    let mut result = path.to_string();
-    for (key, value) in context {
-        let placeholder = format!("{{{key}}}");
-        let replacement = match value {
-            Value::String(s) => s.clone(),
-            other => other.to_string(),
-        };
-        result = result.replace(&placeholder, &replacement);
-    }
-    result
-}
-
 /// Parse the `Retry-After` header as a number of seconds.
 /// Falls back to 60 s if the header is absent or unparseable.
 fn parse_retry_after(headers: &HeaderMap) -> Duration {
@@ -525,26 +511,27 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn test_resolve_path_substitutes_placeholders() {
+    fn test_substitute_context_substitutes_placeholders() {
         let mut ctx = HashMap::new();
         ctx.insert("org_id".to_string(), json!("acme"));
         ctx.insert("repo".to_string(), json!("myrepo"));
-        let result = resolve_path("/orgs/{org_id}/repos/{repo}/issues", &ctx);
+        let result =
+            faucet_core::util::substitute_context("/orgs/{org_id}/repos/{repo}/issues", &ctx);
         assert_eq!(result, "/orgs/acme/repos/myrepo/issues");
     }
 
     #[test]
-    fn test_resolve_path_no_placeholders() {
+    fn test_substitute_context_no_placeholders() {
         let ctx = HashMap::new();
-        let result = resolve_path("/api/users", &ctx);
+        let result = faucet_core::util::substitute_context("/api/users", &ctx);
         assert_eq!(result, "/api/users");
     }
 
     #[test]
-    fn test_resolve_path_numeric_value() {
+    fn test_substitute_context_numeric_value() {
         let mut ctx = HashMap::new();
         ctx.insert("id".to_string(), json!(42));
-        let result = resolve_path("/items/{id}", &ctx);
+        let result = faucet_core::util::substitute_context("/items/{id}", &ctx);
         assert_eq!(result, "/items/42");
     }
 
@@ -653,18 +640,18 @@ mod tests {
     }
 
     #[test]
-    fn test_resolve_path_missing_placeholder_unchanged() {
+    fn test_substitute_context_missing_placeholder_unchanged() {
         let mut ctx = HashMap::new();
         ctx.insert("org".to_string(), json!("acme"));
-        let result = resolve_path("/items/{missing}", &ctx);
+        let result = faucet_core::util::substitute_context("/items/{missing}", &ctx);
         assert_eq!(result, "/items/{missing}");
     }
 
     #[test]
-    fn test_resolve_path_boolean_value() {
+    fn test_substitute_context_boolean_value() {
         let mut ctx = HashMap::new();
         ctx.insert("flag".to_string(), json!(true));
-        let result = resolve_path("/items/{flag}", &ctx);
+        let result = faucet_core::util::substitute_context("/items/{flag}", &ctx);
         assert_eq!(result, "/items/true");
     }
 }
