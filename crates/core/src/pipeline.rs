@@ -83,7 +83,10 @@ impl<'a, So: Source + ?Sized, Si: Sink + ?Sized> Pipeline<'a, So, Si> {
     /// 3. Calls [`Sink::flush`] to ensure all data is committed.
     /// 4. Returns a [`PipelineResult`] with the total count and bookmark.
     pub async fn run(&self) -> Result<PipelineResult, FaucetError> {
-        let (records, bookmark) = self.source.fetch_all_incremental().await?;
+        let (records, bookmark) = self
+            .source
+            .fetch_with_context_incremental(&std::collections::HashMap::new())
+            .await?;
 
         let records_written = if records.is_empty() {
             0
@@ -157,7 +160,10 @@ mod tests {
 
     #[async_trait]
     impl Source for MockSource {
-        async fn fetch_all(&self) -> Result<Vec<Value>, FaucetError> {
+        async fn fetch_with_context(
+            &self,
+            _context: &std::collections::HashMap<String, Value>,
+        ) -> Result<Vec<Value>, FaucetError> {
             Ok(self.0.clone())
         }
     }
@@ -169,10 +175,16 @@ mod tests {
 
     #[async_trait]
     impl Source for IncrementalSource {
-        async fn fetch_all(&self) -> Result<Vec<Value>, FaucetError> {
+        async fn fetch_with_context(
+            &self,
+            _context: &std::collections::HashMap<String, Value>,
+        ) -> Result<Vec<Value>, FaucetError> {
             Ok(self.records.clone())
         }
-        async fn fetch_all_incremental(&self) -> Result<(Vec<Value>, Option<Value>), FaucetError> {
+        async fn fetch_with_context_incremental(
+            &self,
+            _context: &std::collections::HashMap<String, Value>,
+        ) -> Result<(Vec<Value>, Option<Value>), FaucetError> {
             Ok((self.records.clone(), Some(self.bookmark.clone())))
         }
     }
@@ -181,7 +193,10 @@ mod tests {
 
     #[async_trait]
     impl Source for FailingSource {
-        async fn fetch_all(&self) -> Result<Vec<Value>, FaucetError> {
+        async fn fetch_with_context(
+            &self,
+            _context: &std::collections::HashMap<String, Value>,
+        ) -> Result<Vec<Value>, FaucetError> {
             Err(FaucetError::Auth("no credentials".into()))
         }
     }

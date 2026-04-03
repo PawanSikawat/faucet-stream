@@ -7,29 +7,44 @@ use serde_json::Value;
 /// A source fetches records from an external system.
 #[async_trait]
 pub trait Source: Send + Sync {
-    /// Fetch all records.
-    async fn fetch_all(&self) -> Result<Vec<Value>, FaucetError>;
+    /// Primary fetch method. Receives context from a parent source's records.
+    ///
+    /// An empty context map means this is a root source (no parent).
+    /// Connectors that support being a child should use
+    /// [`substitute_context()`](crate::util::substitute_context) to resolve
+    /// `{placeholder}` tokens in their URL path, query parameters, headers,
+    /// or body. Connectors that don't need parent context ignore the map.
+    async fn fetch_with_context(
+        &self,
+        context: &std::collections::HashMap<String, Value>,
+    ) -> Result<Vec<Value>, FaucetError>;
 
-    /// Fetch all records with incremental replication support.
+    /// Convenience: fetch with no parent context.
+    async fn fetch_all(&self) -> Result<Vec<Value>, FaucetError> {
+        self.fetch_with_context(&std::collections::HashMap::new())
+            .await
+    }
+
+    /// Incremental fetch with parent context support.
     ///
-    /// Returns the records and an optional bookmark value. The bookmark
-    /// should be persisted by the caller and passed back on the next run
-    /// to resume from where the previous run left off.
-    ///
-    /// The default implementation delegates to [`fetch_all`](Self::fetch_all)
-    /// and returns `None` for the bookmark.
-    async fn fetch_all_incremental(&self) -> Result<(Vec<Value>, Option<Value>), FaucetError> {
-        let records = self.fetch_all().await?;
+    /// Returns the records and an optional bookmark value for incremental
+    /// replication. The default delegates to `fetch_with_context` and
+    /// returns `None` for the bookmark.
+    async fn fetch_with_context_incremental(
+        &self,
+        context: &std::collections::HashMap<String, Value>,
+    ) -> Result<(Vec<Value>, Option<Value>), FaucetError> {
+        let records = self.fetch_with_context(context).await?;
         Ok((records, None))
     }
 
+    /// Convenience: incremental fetch with no parent context.
+    async fn fetch_all_incremental(&self) -> Result<(Vec<Value>, Option<Value>), FaucetError> {
+        self.fetch_with_context_incremental(&std::collections::HashMap::new())
+            .await
+    }
+
     /// Return a JSON Schema describing the configuration this source accepts.
-    ///
-    /// The schema is auto-generated from the config struct using `schemars`.
-    /// Callers can inspect it to discover required fields, types, defaults,
-    /// and descriptions before constructing the source.
-    ///
-    /// The default returns an empty object schema.
     fn config_schema(&self) -> Value {
         serde_json::json!({"type": "object", "properties": {}})
     }
@@ -76,7 +91,10 @@ mod tests {
 
     #[async_trait]
     impl Source for MockSource {
-        async fn fetch_all(&self) -> Result<Vec<Value>, FaucetError> {
+        async fn fetch_with_context(
+            &self,
+            _context: &std::collections::HashMap<String, Value>,
+        ) -> Result<Vec<Value>, FaucetError> {
             Ok(self.records.clone())
         }
     }
@@ -88,11 +106,17 @@ mod tests {
 
     #[async_trait]
     impl Source for IncrementalSource {
-        async fn fetch_all(&self) -> Result<Vec<Value>, FaucetError> {
+        async fn fetch_with_context(
+            &self,
+            _context: &std::collections::HashMap<String, Value>,
+        ) -> Result<Vec<Value>, FaucetError> {
             Ok(self.records.clone())
         }
 
-        async fn fetch_all_incremental(&self) -> Result<(Vec<Value>, Option<Value>), FaucetError> {
+        async fn fetch_with_context_incremental(
+            &self,
+            _context: &std::collections::HashMap<String, Value>,
+        ) -> Result<(Vec<Value>, Option<Value>), FaucetError> {
             Ok((self.records.clone(), Some(self.bookmark.clone())))
         }
     }
@@ -101,7 +125,10 @@ mod tests {
 
     #[async_trait]
     impl Source for FailingSource {
-        async fn fetch_all(&self) -> Result<Vec<Value>, FaucetError> {
+        async fn fetch_with_context(
+            &self,
+            _context: &std::collections::HashMap<String, Value>,
+        ) -> Result<Vec<Value>, FaucetError> {
             Err(FaucetError::Auth("no credentials".into()))
         }
     }
