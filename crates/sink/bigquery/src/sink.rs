@@ -91,6 +91,11 @@ impl BigQuerySink {
 
 #[async_trait]
 impl faucet_core::Sink for BigQuerySink {
+    fn config_schema(&self) -> serde_json::Value {
+        serde_json::to_value(faucet_core::schema_for!(BigQuerySinkConfig))
+            .expect("schema serialization")
+    }
+
     /// Write records to BigQuery, splitting into batches of `config.batch_size`.
     async fn write_batch(&self, records: &[Value]) -> Result<usize, FaucetError> {
         let mut total = 0;

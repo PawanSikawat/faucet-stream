@@ -10,6 +10,7 @@ description = "BigQuery sink connector for the faucet-stream ecosystem"
 [dependencies]
 faucet-core.workspace = true
 gcp-bigquery-client = "0.28.0"
+schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true

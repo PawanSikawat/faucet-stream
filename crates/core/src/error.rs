@@ -44,9 +44,30 @@ pub enum FaucetError {
     #[error("Transform error: {0}")]
     Transform(String),
 
+    /// A configuration or validation error (e.g. invalid endpoint, missing descriptor).
+    #[error("Config error: {0}")]
+    Config(String),
+
+    /// A source operation failed (e.g. database query error, file read error).
+    #[error("Source error: {0}")]
+    Source(String),
+
     /// A sink operation failed (e.g. BigQuery insert error).
     #[error("Sink error: {0}")]
     Sink(String),
+
+    /// A custom error from a third-party connector.
+    ///
+    /// Use this to wrap your own error types without losing the error chain:
+    /// ```rust
+    /// use faucet_core::FaucetError;
+    /// let err = FaucetError::Custom(Box::new(std::io::Error::new(
+    ///     std::io::ErrorKind::Other,
+    ///     "my connector failed",
+    /// )));
+    /// ```
+    #[error("Connector error: {0}")]
+    Custom(#[from] Box<dyn std::error::Error + Send + Sync>),
 }
 
 impl FaucetError {
@@ -165,6 +186,50 @@ mod tests {
         assert!(msg.contains("422"));
         assert!(msg.contains("https://api.example.com/test"));
         assert!(msg.contains("Unprocessable Entity"));
+    }
+
+    #[test]
+    fn config_error_is_not_retriable() {
+        let err = FaucetError::Config("bad endpoint".into());
+        assert!(!err.is_retriable());
+    }
+
+    #[test]
+    fn config_error_display() {
+        let err = FaucetError::Config("missing descriptor".into());
+        assert_eq!(err.to_string(), "Config error: missing descriptor");
+    }
+
+    #[test]
+    fn source_error_is_not_retriable() {
+        let err = FaucetError::Source("query failed".into());
+        assert!(!err.is_retriable());
+    }
+
+    #[test]
+    fn source_error_display() {
+        let err = FaucetError::Source("connection refused".into());
+        assert_eq!(err.to_string(), "Source error: connection refused");
+    }
+
+    #[test]
+    fn custom_error_is_not_retriable() {
+        let err = FaucetError::Custom(Box::new(std::io::Error::other("custom failure")));
+        assert!(!err.is_retriable());
+    }
+
+    #[test]
+    fn custom_error_display() {
+        let err = FaucetError::Custom(Box::new(std::io::Error::other("custom failure")));
+        assert_eq!(err.to_string(), "Connector error: custom failure");
+    }
+
+    #[test]
+    fn custom_error_from_boxed() {
+        let io_err = std::io::Error::other("file missing");
+        let boxed: Box<dyn std::error::Error + Send + Sync> = Box::new(io_err);
+        let err: FaucetError = boxed.into();
+        assert!(matches!(err, FaucetError::Custom(_)));
     }
 
     #[test]

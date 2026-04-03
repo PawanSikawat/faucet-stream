@@ -8,6 +8,7 @@ pub mod config;
 pub mod extract;
 pub mod pagination;
 pub mod retry;
+pub mod serde_helpers;
 pub mod stream;
 
 // Re-export core types so users don't need a separate faucet-core dependency.

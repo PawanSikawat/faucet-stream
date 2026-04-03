@@ -3,7 +3,32 @@ resolver = "3"
 members = [
     "crates/core",
     "crates/source/rest",
+    "crates/source/graphql",
+    "crates/source/xml",
+    "crates/source/grpc",
+    "crates/source/postgres",
+    "crates/source/mysql",
+
+    "crates/source/s3",
+    "crates/source/mongodb",
+    "crates/source/redis",
+    "crates/source/webhook",
+    "crates/source/sqlite",
+    "crates/source/csv",
+    "crates/source/elasticsearch",
     "crates/sink/bigquery",
+    "crates/sink/postgres",
+    "crates/sink/jsonl",
+    "crates/sink/snowflake",
+    "crates/sink/mysql",
+    "crates/sink/sqlite",
+
+    "crates/sink/s3",
+    "crates/sink/mongodb",
+    "crates/sink/redis",
+    "crates/sink/csv",
+    "crates/sink/elasticsearch",
+    "crates/sink/http",
     "faucet-stream",
 ]
 
@@ -17,7 +42,32 @@ repository = "https://github.com/PawanSikawat/faucet-stream"
 # Internal crates
 faucet-core = { path = "crates/core", version = "0.1.0" }
 faucet-source-rest = { path = "crates/source/rest", version = "0.1.0" }
+faucet-source-graphql = { path = "crates/source/graphql", version = "0.1.0" }
+faucet-source-xml = { path = "crates/source/xml", version = "0.1.0" }
+faucet-source-grpc = { path = "crates/source/grpc", version = "0.1.0" }
 faucet-sink-bigquery = { path = "crates/sink/bigquery", version = "0.1.0" }
+faucet-sink-postgres = { path = "crates/sink/postgres", version = "0.1.0" }
+faucet-sink-jsonl = { path = "crates/sink/jsonl", version = "0.1.0" }
+faucet-sink-snowflake = { path = "crates/sink/snowflake", version = "0.1.0" }
+faucet-source-postgres = { path = "crates/source/postgres", version = "0.1.0" }
+faucet-source-mysql = { path = "crates/source/mysql", version = "0.1.0" }
+
+faucet-source-s3 = { path = "crates/source/s3", version = "0.1.0" }
+faucet-source-mongodb = { path = "crates/source/mongodb", version = "0.1.0" }
+faucet-source-redis = { path = "crates/source/redis", version = "0.1.0" }
+faucet-source-webhook = { path = "crates/source/webhook", version = "0.1.0" }
+faucet-source-sqlite = { path = "crates/source/sqlite", version = "0.1.0" }
+faucet-source-csv = { path = "crates/source/csv", version = "0.1.0" }
+faucet-source-elasticsearch = { path = "crates/source/elasticsearch", version = "0.1.0" }
+faucet-sink-mysql = { path = "crates/sink/mysql", version = "0.1.0" }
+faucet-sink-sqlite = { path = "crates/sink/sqlite", version = "0.1.0" }
+
+faucet-sink-s3 = { path = "crates/sink/s3", version = "0.1.0" }
+faucet-sink-mongodb = { path = "crates/sink/mongodb", version = "0.1.0" }
+faucet-sink-redis = { path = "crates/sink/redis", version = "0.1.0" }
+faucet-sink-csv = { path = "crates/sink/csv", version = "0.1.0" }
+faucet-sink-elasticsearch = { path = "crates/sink/elasticsearch", version = "0.1.0" }
+faucet-sink-http = { path = "crates/sink/http", version = "0.1.0" }
 
 # Shared external deps
 serde = { version = "1", features = ["derive"] }
@@ -28,3 +78,22 @@ tracing = "0.1"
 async-trait = "0.1.89"
 regex = "1"
 reqwest = { version = "0.13", features = ["json", "form", "query"] }
+futures-core = "0.3"
+jsonpath-rust = "1.0.1"
+quick-xml = { version = "0.37", features = ["serialize"] }
+tonic = { version = "0.13", features = ["transport", "tls-ring"] }
+prost = "0.13"
+prost-reflect = { version = "0.15", features = ["serde"] }
+prost-types = "0.13"
+sqlx = { version = "0.8", features = ["runtime-tokio", "tls-rustls", "postgres", "mysql", "sqlite", "json"] }
+jsonwebtoken = "9"
+base64 = "0.22"
+uuid = { version = "1", features = ["v4"] }
+aws-sdk-s3 = "1"
+aws-config = { version = "1", features = ["behavior-version-latest"] }
+
+mongodb = "3"
+csv = "1.3"
+redis = { version = "0.29", features = ["tokio-comp", "aio"] }
+axum = "0.8"
+schemars = "1.2.1"

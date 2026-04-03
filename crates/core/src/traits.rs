@@ -22,6 +22,17 @@ pub trait Source: Send + Sync {
         let records = self.fetch_all().await?;
         Ok((records, None))
     }
+
+    /// Return a JSON Schema describing the configuration this source accepts.
+    ///
+    /// The schema is auto-generated from the config struct using `schemars`.
+    /// Callers can inspect it to discover required fields, types, defaults,
+    /// and descriptions before constructing the source.
+    ///
+    /// The default returns an empty object schema.
+    fn config_schema(&self) -> Value {
+        serde_json::json!({"type": "object", "properties": {}})
+    }
 }
 
 /// A sink writes records to an external system.
@@ -38,6 +49,17 @@ pub trait Sink: Send + Sync {
     /// write immediately in `write_batch`).
     async fn flush(&self) -> Result<(), FaucetError> {
         Ok(())
+    }
+
+    /// Return a JSON Schema describing the configuration this sink accepts.
+    ///
+    /// The schema is auto-generated from the config struct using `schemars`.
+    /// Callers can inspect it to discover required fields, types, defaults,
+    /// and descriptions before constructing the sink.
+    ///
+    /// The default returns an empty object schema.
+    fn config_schema(&self) -> Value {
+        serde_json::json!({"type": "object", "properties": {}})
     }
 }
 

@@ -13,13 +13,40 @@ Inspired by [Meltano's RESTStream](https://sdk.meltano.com/en/latest/classes/sin
 
 ## Architecture
 
-faucet-stream is a Cargo workspace with four crates:
+faucet-stream is a Cargo workspace with 27 crates — 13 sources, 12 sinks, a shared core, and an umbrella crate:
 
 | Crate | Description |
 |-------|-------------|
-| [`faucet-core`](crates/core) | Shared types, traits (`Source`, `Sink`), transforms, error types |
-| [`faucet-source-rest`](crates/source/rest) | REST API source — auth, pagination, extraction, schema inference |
-| [`faucet-sink-bigquery`](crates/sink/bigquery) | Google BigQuery streaming insert sink |
+| [`faucet-core`](crates/core) | Shared types, traits (`Source`, `Sink`), pipeline orchestration, transforms, error types |
+| **Sources** | |
+| [`faucet-source-rest`](crates/source/rest) | REST API — auth, pagination, extraction, schema inference |
+| [`faucet-source-graphql`](crates/source/graphql) | GraphQL API — cursor-based pagination, variable injection |
+| [`faucet-source-xml`](crates/source/xml) | XML/SOAP API — XML-to-JSON conversion, dot-path extraction |
+| [`faucet-source-grpc`](crates/source/grpc) | gRPC — dynamic protobuf via `prost-reflect`, TLS support |
+| [`faucet-source-postgres`](crates/source/postgres) | PostgreSQL — run SQL queries, return rows as JSON |
+| [`faucet-source-mysql`](crates/source/mysql) | MySQL — run SQL queries, return rows as JSON |
+| [`faucet-source-sqlite`](crates/source/sqlite) | SQLite — run SQL queries, return rows as JSON |
+
+| [`faucet-source-s3`](crates/source/s3) | AWS S3 — read objects as JSONL, JSON array, or raw text |
+| [`faucet-source-mongodb`](crates/source/mongodb) | MongoDB — find() with filter, projection, sort |
+| [`faucet-source-redis`](crates/source/redis) | Redis — read from streams, lists, or key patterns |
+| [`faucet-source-webhook`](crates/source/webhook) | Webhook — temporary HTTP server collecting POST payloads |
+| [`faucet-source-csv`](crates/source/csv) | CSV — read CSV files as JSON objects |
+| [`faucet-source-elasticsearch`](crates/source/elasticsearch) | Elasticsearch — search/scroll API |
+| **Sinks** | |
+| [`faucet-sink-bigquery`](crates/sink/bigquery) | Google BigQuery — streaming inserts |
+| [`faucet-sink-postgres`](crates/sink/postgres) | PostgreSQL — JSONB or auto-mapped columns |
+| [`faucet-sink-jsonl`](crates/sink/jsonl) | JSON Lines — file output with append/truncate |
+| [`faucet-sink-snowflake`](crates/sink/snowflake) | Snowflake — SQL REST API with JWT/OAuth |
+| [`faucet-sink-mysql`](crates/sink/mysql) | MySQL — JSON column or auto-mapped columns |
+| [`faucet-sink-sqlite`](crates/sink/sqlite) | SQLite — JSON column or auto-mapped columns |
+
+| [`faucet-sink-s3`](crates/sink/s3) | AWS S3 — write JSONL files to bucket |
+| [`faucet-sink-mongodb`](crates/sink/mongodb) | MongoDB — insert_many documents |
+| [`faucet-sink-redis`](crates/sink/redis) | Redis — write to streams, lists, or key-value |
+| [`faucet-sink-csv`](crates/sink/csv) | CSV — write JSON records as CSV rows |
+| [`faucet-sink-elasticsearch`](crates/sink/elasticsearch) | Elasticsearch — bulk index API |
+| [`faucet-sink-http`](crates/sink/http) | HTTP — POST records to any endpoint |
 | [`faucet-stream`](faucet-stream) | Umbrella crate — feature-gated re-exports of all connectors |
 
 Install only what you need:
@@ -37,9 +64,51 @@ faucet-stream = { version = "0.2", features = ["sink"] }
 # All connectors
 faucet-stream = { version = "0.2", features = ["full"] }
 
+# Pick individual connectors
+faucet-stream = { version = "0.2", features = ["source-rest", "sink-postgres", "sink-s3"] }
+
 # Or use individual crates directly
 faucet-source-rest = "0.1"
-faucet-sink-bigquery = "0.1"
+
+faucet-source-mongodb = "0.1"
+```
+
+## Performance
+
+Every connector is optimised for throughput out of the box:
+
+| Technique | Where |
+|-----------|-------|
+| **Parallel I/O** | S3 reads/writes objects concurrently (configurable `concurrency`); HTTP sink sends requests in parallel; REST source processes partitions concurrently |
+| **Multi-row INSERT** | PostgreSQL, MySQL, and SQLite sinks batch records into single INSERT statements instead of one per row |
+| **Transaction wrapping** | SQLite sink wraps batches in `BEGIN`/`COMMIT` for 10-50x write speedup |
+| **Connection pooling** | All database connectors (PostgreSQL, MySQL, SQLite) use connection pools with configurable `max_connections` |
+| **Connection reuse** | S3, MongoDB, Redis, Elasticsearch, and HTTP connectors create clients once and reuse across all operations |
+| **Redis pipelining** | Redis sink batches commands with `pipe()`; Redis source uses `MGET` for bulk key reads |
+| **Bulk APIs** | Elasticsearch uses the bulk NDJSON API; BigQuery uses `insertAll`; MongoDB uses `insert_many` |
+| **Buffered I/O** | JSONL sink uses `BufWriter`; CSV uses buffered readers/writers in blocking threads |
+| **Streaming pagination** | REST, GraphQL, XML, and Elasticsearch sources stream pages one at a time via `stream_pages()` to bound memory |
+
+### Tuning
+
+Most connectors expose configuration knobs for throughput:
+
+```rust
+// S3: parallel object reads
+let config = S3SourceConfig::new("my-bucket")
+    .with_concurrency(20);  // default: 10
+
+// PostgreSQL: connection pool size
+let config = PostgresSourceConfig::new("postgres://...", "SELECT ...")
+    .with_max_connections(20);  // default: 10
+
+// HTTP sink: parallel requests
+let config = HttpSinkConfig::new("https://api.example.com/ingest")
+    .with_concurrency(20);  // default: 10
+
+// REST: parallel partition processing
+let config = RestStreamConfig::new("https://api.example.com")
+    .partition_concurrency(Some(5));  // default: sequential
 ```
 
 ## Features
@@ -56,6 +125,31 @@ faucet-sink-bigquery = "0.1"
 - **Retries with backoff** — exponential backoff with configurable limits and 429 rate-limit handling
 - **Typed deserialization** — get `Vec<Value>` or deserialize directly into your structs
 
+### Source: GraphQL API (`faucet-source-graphql`)
+
+- **Cursor-based pagination** — Relay-style with configurable `hasNextPage` and `endCursor` JSONPaths
+- **Variable injection** — cursor and page size automatically injected into GraphQL variables
+- **JSONPath extraction** — extract records from nested GraphQL response structures
+- **Authentication** — Bearer token or custom headers
+- **GraphQL error handling** — detects and reports errors from the `errors` array
+
+### Source: XML/SOAP API (`faucet-source-xml`)
+
+- **XML-to-JSON conversion** — automatic conversion using `quick-xml` with attribute (`@`), text (`#text`), and repeated-element (array) handling
+- **SOAP support** — handles namespace-prefixed elements (e.g. `soap:Envelope`)
+- **Dot-path extraction** — extract records from nested XML structures (e.g. `Envelope.Body.Response.Items.Item`)
+- **Pagination** — page-number and offset/limit styles
+- **Authentication** — Bearer, Basic, or custom headers
+- **POST bodies** — supports SOAP request bodies for POST-based APIs
+
+### Source: gRPC (`faucet-source-grpc`)
+
+- **Dynamic protobuf** — call any gRPC method at runtime using a compiled `FileDescriptorSet` (no code generation)
+- **JSON request/response** — send requests as JSON, receive responses as JSON via `prost-reflect`
+- **TLS support** — automatic TLS detection from `https://` endpoint, or explicit override
+- **Authentication** — Bearer token or custom metadata key-value pairs
+- **JSONPath extraction** — extract records from the response using JSONPath
+
 ### Sink: BigQuery (`faucet-sink-bigquery`)
 
 - **Streaming inserts** — write `Vec<Value>` records via the BigQuery `insertAll` API
@@ -63,6 +157,134 @@ faucet-sink-bigquery = "0.1"
 - **Authentication** — service account key file, inline JSON key, or application default credentials
 - **Error reporting** — per-row error details from BigQuery
 - **Async-first** — built on `reqwest` + `tokio`
+
+### Sink: PostgreSQL (`faucet-sink-postgres`)
+
+- **JSONB mode** — insert entire records as JSONB values into a single column
+- **Auto-map mode** — discover table columns from `information_schema` and map JSON fields to columns automatically
+- **Connection pooling** — built on `sqlx` with `PgPool` for efficient async connections
+- **Batch inserts** — uses `UNNEST` for efficient multi-row inserts
+
+### Sink: JSON Lines (`faucet-sink-jsonl`)
+
+- **File output** — write records as one-JSON-per-line to a local file
+- **Append/truncate modes** — append to existing files or overwrite
+- **Pretty printing** — optional pretty-printed JSON output
+- **Buffered async I/O** — uses `tokio::io::BufWriter` for efficient writes
+- **Lazy file opening** — file is created on first write, not at construction
+
+### Sink: Snowflake (`faucet-sink-snowflake`)
+
+- **SQL REST API** — uses Snowflake's SQL REST API for INSERT operations
+- **Authentication** — JWT (key-pair) with RSA private key, or OAuth token
+- **Batch inserts** — wraps records in `PARSE_JSON()` for VARIANT column insertion
+- **Configurable** — account, warehouse, database, schema, role all configurable
+
+### Source: PostgreSQL (`faucet-source-postgres`)
+
+- **SQL queries** — run any SQL query and get results as JSON records
+- **Connection pooling** — built on `sqlx` with `PgPool`
+- **Type conversion** — automatic row-to-JSON conversion (strings, numbers, booleans, JSON/JSONB columns)
+- **Parameterised queries** — bind parameters to prevent SQL injection
+
+### Source: MySQL (`faucet-source-mysql`)
+
+- **SQL queries** — run any SQL query and get results as JSON records
+- **Connection pooling** — built on `sqlx` with `MySqlPool`
+
+### Source: SQLite (`faucet-source-sqlite`)
+
+- **SQL queries** — run any SQL query and get results as JSON records
+- **Connection pooling** — built on `sqlx` with `SqlitePool`
+- **Dynamic typing** — automatic type probing (JSON, string, integer, float, boolean) for SQLite's flexible type system
+- **In-memory support** — works with `sqlite::memory:` for testing and ephemeral use cases
+
+### Source: AWS S3 (`faucet-source-s3`)
+
+- **Object listing** — list and read objects from a bucket with optional prefix filter
+- **Multiple formats** — JSONL (one record per line), JSON array, or raw text mode
+- **S3-compatible** — custom endpoint URL for MinIO, LocalStack, etc.
+
+### Source: MongoDB (`faucet-source-mongodb`)
+
+- **Find queries** — configurable filter, projection, sort, limit, batch size
+- **BSON conversion** — automatic JSON ↔ BSON document conversion
+
+### Source: Redis (`faucet-source-redis`)
+
+- **Multiple data types** — read from lists (LRANGE), streams (XREAD/XREADGROUP), or key patterns (SCAN+GET)
+- **JSON parsing** — automatic JSON deserialization; non-JSON values wrapped as strings
+
+### Source: Webhook (`faucet-source-webhook`)
+
+- **HTTP receiver** — starts a temporary axum HTTP server to collect incoming POST payloads
+- **Configurable** — listen address, path, timeout, max payloads
+
+### Source: CSV (`faucet-source-csv`)
+
+- **File reading** — read CSV files with configurable delimiter, quote character, headers
+- **JSON mapping** — each row becomes a JSON object keyed by header names
+
+### Source: Elasticsearch (`faucet-source-elasticsearch`)
+
+- **Scroll API** — efficient pagination through large result sets
+- **Query DSL** — pass any Elasticsearch query as JSON
+- **Authentication** — None, Basic, Bearer, or API key
+
+### Sink: MySQL (`faucet-sink-mysql`)
+
+- **JSON mode** — insert records as JSON strings into a column
+- **Auto-map mode** — discover columns from INFORMATION_SCHEMA, map JSON fields automatically
+- **Connection pooling** — built on `sqlx` with `MySqlPool`
+
+### Sink: SQLite (`faucet-sink-sqlite`)
+
+- **JSON mode** — insert records as JSON text
+- **Auto-map mode** — discover columns from PRAGMA table_info
+- **File or in-memory** — supports file paths or `:memory:` databases
+
+
+### Sink: AWS S3 (`faucet-sink-s3`)
+
+- **JSONL output** — write records as JSON Lines files to S3
+- **UUID file names** — unique object keys with configurable prefix and extension
+- **File splitting** — optionally limit records per file
+
+### Sink: MongoDB (`faucet-sink-mongodb`)
+
+- **Bulk inserts** — `insert_many` with configurable batch size
+- **BSON conversion** — automatic JSON-to-BSON document conversion
+
+### Sink: Redis (`faucet-sink-redis`)
+
+- **Multiple modes** — write to lists (RPUSH), streams (XADD), or key-value (SET)
+- **Pipeline batching** — efficient Redis pipeline execution
+
+### Sink: CSV (`faucet-sink-csv`)
+
+- **File output** — write JSON records as CSV rows
+- **Auto headers** — column order derived from first record's keys
+- **Append mode** — append to existing files or overwrite
+
+### Sink: Elasticsearch (`faucet-sink-elasticsearch`)
+
+- **Bulk API** — NDJSON bulk index with configurable batch size
+- **Document IDs** — optionally extract `_id` from a record field
+- **Error checking** — per-item error detection in bulk responses
+
+### Sink: HTTP (`faucet-sink-http`)
+
+- **POST records** — send records to any HTTP endpoint
+- **Batch modes** — individual (one request per record) or array (single request)
+- **Authentication** — Bearer, Basic, or custom headers
+- **Retries** — configurable retry with retriable status detection
+
+### Pipeline (`faucet-core`)
+
+- **Source → Sink orchestration** — connect any source to any sink with `Pipeline::new(&source, &sink).run()`
+- **Batch mode** — fetch all records, then write; supports incremental replication bookmarks
+- **Streaming mode** — write page-by-page as records arrive, keeping memory bounded
+- **Plug-and-play** — implement `Source` or `Sink` for your own connectors and they work with everything
 
 ## Quick Start
 
@@ -345,6 +567,72 @@ let stream = RestStream::new(
 let repos = stream.fetch_all().await?;
 ```
 
+### Pipeline: Source → Sink
+
+Connect any source to any sink — the pipeline handles data transfer automatically:
+
+```rust
+use faucet_stream::{Pipeline, RestStream, RestStreamConfig, PaginationStyle};
+// Assume `bigquery_sink` is a configured BigQuerySink
+
+// Batch mode: fetch all, then write
+let source = RestStream::new(
+    RestStreamConfig::new("https://api.example.com", "/v1/users")
+        .records_path("$.data[*]")
+        .pagination(PaginationStyle::Cursor {
+            next_token_path: "$.meta.next_cursor".into(),
+            param_name: "cursor".into(),
+        }),
+)?;
+
+let result = Pipeline::new(&source, &bigquery_sink).run().await?;
+println!("Wrote {} records", result.records_written);
+// result.bookmark contains the incremental replication bookmark
+```
+
+For large datasets, use streaming mode to write page-by-page (bounded memory):
+
+```rust
+use faucet_stream::run_stream;
+use futures::StreamExt;
+
+let result = run_stream(source.stream_pages(), &bigquery_sink).await?;
+```
+
+### Custom connectors
+
+Implement `Source` or `Sink` to build your own connectors — they plug into the
+pipeline and work with every existing connector automatically:
+
+```rust
+use faucet_stream::{Source, Sink, FaucetError, Pipeline};
+use async_trait::async_trait;
+use serde_json::Value;
+
+struct MyCustomSource { /* ... */ }
+
+#[async_trait]
+impl Source for MyCustomSource {
+    async fn fetch_all(&self) -> Result<Vec<Value>, FaucetError> {
+        // Fetch records from your custom system
+        todo!()
+    }
+}
+
+struct MyCustomSink { /* ... */ }
+
+#[async_trait]
+impl Sink for MyCustomSink {
+    async fn write_batch(&self, records: &[Value]) -> Result<usize, FaucetError> {
+        // Write records to your custom system
+        todo!()
+    }
+}
+
+// Any source works with any sink
+// Pipeline::new(&MyCustomSource { .. }, &MyCustomSink { .. }).run().await?;
+```
+
 ## Authentication Methods
 
 | Method | Description |
@@ -373,8 +661,33 @@ All pagination styles include loop detection — if the same cursor or link is r
 
 | Feature | Default | Description |
 |---------|---------|-------------|
-| `source-rest` | yes | REST API source connector |
-| `sink-bigquery` | no | Google BigQuery sink connector |
+| `source-rest` | yes | REST API source |
+| `source-graphql` | no | GraphQL API source |
+| `source-xml` | no | XML/SOAP API source |
+| `source-grpc` | no | gRPC source |
+| `source-postgres` | no | PostgreSQL query source |
+| `source-mysql` | no | MySQL query source |
+| `source-sqlite` | no | SQLite query source |
+
+| `source-s3` | no | AWS S3 file source |
+| `source-mongodb` | no | MongoDB query source |
+| `source-redis` | no | Redis source |
+| `source-webhook` | no | Webhook HTTP receiver |
+| `source-csv` | no | CSV file source |
+| `source-elasticsearch` | no | Elasticsearch source |
+| `sink-bigquery` | no | Google BigQuery sink |
+| `sink-postgres` | no | PostgreSQL sink |
+| `sink-jsonl` | no | JSON Lines file sink |
+| `sink-snowflake` | no | Snowflake sink |
+| `sink-mysql` | no | MySQL sink |
+| `sink-sqlite` | no | SQLite sink |
+
+| `sink-s3` | no | AWS S3 file sink |
+| `sink-mongodb` | no | MongoDB sink |
+| `sink-redis` | no | Redis sink |
+| `sink-csv` | no | CSV file sink |
+| `sink-elasticsearch` | no | Elasticsearch bulk index sink |
+| `sink-http` | no | HTTP POST sink |
 | `source` | no | All source connectors |
 | `sink` | no | All sink connectors |
 | `full` | no | Every connector |
@@ -384,39 +697,133 @@ All pagination styles include loop detection — if the same cursor or link is r
 
 `RecordTransform::Custom` is always available regardless of feature flags.
 
+## Building Custom Connectors
+
+You can build your own source or sink connector as a standalone crate. The only
+dependency you need is `faucet-core` — it re-exports everything required:
+
+```toml
+[dependencies]
+faucet-core = "0.1"
+tokio = { version = "1", features = ["rt"] }
+```
+
+### Custom Source
+
+```rust
+use faucet_core::{async_trait, FaucetError, Source, Value, json};
+
+pub struct MySource {
+    api_url: String,
+}
+
+#[async_trait]
+impl Source for MySource {
+    async fn fetch_all(&self) -> Result<Vec<Value>, FaucetError> {
+        // Your logic here — fetch from an API, database, file, etc.
+        Ok(vec![json!({"id": 1, "name": "example"})])
+    }
+}
+```
+
+### Custom Sink
+
+```rust
+use faucet_core::{async_trait, FaucetError, Sink, Value};
+
+pub struct MySink {
+    output_path: String,
+}
+
+#[async_trait]
+impl Sink for MySink {
+    async fn write_batch(&self, records: &[Value]) -> Result<usize, FaucetError> {
+        // Your logic here — write to a database, file, API, etc.
+        Ok(records.len())
+    }
+}
+```
+
+### Error Handling
+
+Map your errors to `FaucetError` variants:
+
+- `FaucetError::Source("...")` — source-specific failures (query errors, connection issues)
+- `FaucetError::Sink("...")` — sink-specific failures (write errors, insert failures)
+- `FaucetError::Config("...")` — configuration or validation errors
+- `FaucetError::Custom(boxed_err)` — wrap any `std::error::Error` without losing the error chain
+
+```rust
+use faucet_core::FaucetError;
+
+// Wrap a custom error type
+let err: FaucetError = Box::new(my_lib::Error::ConnectionFailed).into();
+
+// Or use a string variant
+let err = FaucetError::Source("query returned invalid data".into());
+```
+
+### Using with Pipeline
+
+Custom connectors work seamlessly with the built-in pipeline and all existing connectors:
+
+```rust
+use faucet_core::Pipeline;
+
+let source = MySource { api_url: "https://api.example.com".into() };
+let sink = faucet_sink_jsonl::JsonlSink::new(
+    faucet_sink_jsonl::JsonlSinkConfig::new("/tmp/output.jsonl")
+);
+
+let result = Pipeline::new(&source, &sink).run().await?;
+println!("Wrote {} records", result.records_written);
+```
+
+### Naming Convention
+
+If you publish your connector to crates.io, use the naming convention:
+- Sources: `faucet-source-<name>` (e.g. `faucet-source-dynamodb`)
+- Sinks: `faucet-sink-<name>` (e.g. `faucet-sink-kafka`)
+
 ## Project Structure
 
 ```
 Cargo.toml                    — workspace manifest
 crates/
-  core/                       — faucet-core: shared types and traits
+  core/                       — faucet-core: shared types, traits, pipeline
     src/
-      lib.rs                  — crate root and re-exports
-      error.rs                — FaucetError enum
-      traits.rs               — Source and Sink async traits
-      transform.rs            — RecordTransform pipeline
-      replication.rs          — Incremental replication (filtering + bookmarking)
-      schema.rs               — JSON Schema inference from record samples
+      lib.rs, error.rs, traits.rs, pipeline.rs, transform.rs,
+      replication.rs, schema.rs, util.rs
   source/
-    rest/                     — faucet-source-rest: REST API source
-      src/
-        lib.rs                — crate root and re-exports
-        config.rs             — RestStreamConfig with fluent builder API
-        stream.rs             — RestStream executor + Source trait impl
-        auth/                 — Auth strategies (bearer, basic, api_key, oauth2, token_endpoint, custom)
-        pagination/           — Pagination strategies (cursor, page, offset, link_header, next_link_body)
-        extract/              — JSONPath record extraction
-        retry/                — Exponential backoff retry executor
-      examples/               — Usage examples
-      tests/                  — Integration tests (wiremock)
+    rest/                     — REST API (auth, pagination, extraction, retry)
+    graphql/                  — GraphQL API (cursor pagination)
+    xml/                      — XML/SOAP API (XML-to-JSON conversion)
+    grpc/                     — gRPC (dynamic protobuf)
+    postgres/                 — PostgreSQL queries
+    mysql/                    — MySQL queries
+    sqlite/                   — SQLite queries
+
+    s3/                       — AWS S3 object reader
+    mongodb/                  — MongoDB find()
+    redis/                    — Redis streams/lists/keys
+    webhook/                  — HTTP webhook receiver
+    csv/                      — CSV file reader
+    elasticsearch/            — Elasticsearch search/scroll
   sink/
-    bigquery/                 — faucet-sink-bigquery: BigQuery streaming insert sink
-      src/
-        lib.rs                — crate root and re-exports
-        config.rs             — BigQuerySinkConfig with builder API
-        sink.rs               — BigQuerySink executor + Sink trait impl
+    bigquery/                 — Google BigQuery streaming inserts
+    postgres/                 — PostgreSQL (JSONB or auto-map)
+    jsonl/                    — JSON Lines file output
+    snowflake/                — Snowflake SQL REST API
+    mysql/                    — MySQL (JSON or auto-map)
+    sqlite/                   — SQLite (JSON or auto-map)
+
+    s3/                       — AWS S3 JSONL writer
+    mongodb/                  — MongoDB insert_many
+    redis/                    — Redis streams/lists/key-value
+    csv/                      — CSV file writer
+    elasticsearch/            — Elasticsearch bulk index
+    http/                     — HTTP POST
 faucet-stream/                — umbrella crate with feature-gated re-exports
-  src/lib.rs
 ```
 
 ## License

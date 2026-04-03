@@ -1,0 +1,26 @@
+[package]
+name = "faucet-sink-snowflake"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Snowflake sink connector for the faucet-stream ecosystem"
+
+[dependencies]
+faucet-core.workspace = true
+schemars.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+async-trait.workspace = true
+tracing.workspace = true
+tokio.workspace = true
+reqwest.workspace = true
+jsonwebtoken.workspace = true
+base64.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt"] }
+serde_json.workspace = true
+wiremock = "0.6"

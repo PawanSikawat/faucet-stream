@@ -1,0 +1,14 @@
+//! # faucet-source-sqlite
+//!
+//! SQLite query source connector for the faucet-stream ecosystem.
+//!
+//! Connects to a SQLite database (file or `:memory:`), executes a configurable
+//! SQL query, and returns rows as `serde_json::Value` records.
+
+pub mod config;
+pub mod stream;
+
+pub use faucet_core::{FaucetError, Source};
+
+pub use config::SqliteSourceConfig;
+pub use stream::SqliteSource;

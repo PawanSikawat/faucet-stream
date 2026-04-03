@@ -11,13 +11,23 @@
 //! - [`ReplicationMethod`] — incremental replication support
 //! - [`schema::infer_schema`] — JSON Schema inference from record samples
 
+pub mod config;
 pub mod error;
+pub mod pipeline;
 pub mod replication;
 pub mod schema;
 pub mod traits;
 pub mod transform;
+pub mod util;
 
 pub use error::FaucetError;
+pub use pipeline::{Pipeline, PipelineResult, run_stream};
 pub use replication::ReplicationMethod;
 pub use traits::{Sink, Source};
 pub use transform::RecordTransform;
+
+// Re-export dependencies that connector authors need, so they only depend on
+// `faucet-core` instead of adding `async-trait` and `serde_json` themselves.
+pub use async_trait::async_trait;
+pub use schemars::{self, JsonSchema, schema_for};
+pub use serde_json::{self, Value, json};

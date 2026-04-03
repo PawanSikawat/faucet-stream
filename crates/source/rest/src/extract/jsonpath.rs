@@ -1,24 +1,10 @@
 //! JSONPath-based record extraction.
+//!
+//! This module re-exports [`faucet_core::util::extract_records`] for backwards
+//! compatibility. New code should use `faucet_core::util::extract_records`
+//! directly.
 
-use faucet_core::FaucetError;
-use jsonpath_rust::JsonPath;
-use serde_json::Value;
-
-/// Extract records from a JSON response body using a JSONPath expression.
-pub fn extract_records(body: &Value, path: Option<&str>) -> Result<Vec<Value>, FaucetError> {
-    match path {
-        Some(p) => {
-            let results = body
-                .query(p)
-                .map_err(|e| FaucetError::JsonPath(format!("invalid JSONPath '{p}': {e}")))?;
-            Ok(results.into_iter().cloned().collect())
-        }
-        None => match body {
-            Value::Array(arr) => Ok(arr.clone()),
-            other => Ok(vec![other.clone()]),
-        },
-    }
-}
+pub use faucet_core::util::extract_records;
 
 #[cfg(test)]
 mod tests {

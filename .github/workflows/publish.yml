@@ -58,7 +58,32 @@ jobs:
         run: |
           cargo publish --dry-run -p faucet-core
           cargo publish --dry-run -p faucet-source-rest
+          cargo publish --dry-run -p faucet-source-graphql
+          cargo publish --dry-run -p faucet-source-xml
+          cargo publish --dry-run -p faucet-source-grpc
+          cargo publish --dry-run -p faucet-source-postgres
+          cargo publish --dry-run -p faucet-source-mysql
+          cargo publish --dry-run -p faucet-source-sqlite
+
+          cargo publish --dry-run -p faucet-source-s3
+          cargo publish --dry-run -p faucet-source-mongodb
+          cargo publish --dry-run -p faucet-source-redis
+          cargo publish --dry-run -p faucet-source-webhook
+          cargo publish --dry-run -p faucet-source-csv
+          cargo publish --dry-run -p faucet-source-elasticsearch
           cargo publish --dry-run -p faucet-sink-bigquery
+          cargo publish --dry-run -p faucet-sink-postgres
+          cargo publish --dry-run -p faucet-sink-jsonl
+          cargo publish --dry-run -p faucet-sink-snowflake
+          cargo publish --dry-run -p faucet-sink-mysql
+          cargo publish --dry-run -p faucet-sink-sqlite
+
+          cargo publish --dry-run -p faucet-sink-s3
+          cargo publish --dry-run -p faucet-sink-mongodb
+          cargo publish --dry-run -p faucet-sink-redis
+          cargo publish --dry-run -p faucet-sink-csv
+          cargo publish --dry-run -p faucet-sink-elasticsearch
+          cargo publish --dry-run -p faucet-sink-http
           cargo publish --dry-run -p faucet-stream
 
       - name: Publish
@@ -69,6 +94,31 @@ jobs:
           cargo publish -p faucet-core
           sleep 30
           cargo publish -p faucet-source-rest
+          cargo publish -p faucet-source-graphql
+          cargo publish -p faucet-source-xml
+          cargo publish -p faucet-source-grpc
+          cargo publish -p faucet-source-postgres
+          cargo publish -p faucet-source-mysql
+          cargo publish -p faucet-source-sqlite
+
+          cargo publish -p faucet-source-s3
+          cargo publish -p faucet-source-mongodb
+          cargo publish -p faucet-source-redis
+          cargo publish -p faucet-source-webhook
+          cargo publish -p faucet-source-csv
+          cargo publish -p faucet-source-elasticsearch
           cargo publish -p faucet-sink-bigquery
+          cargo publish -p faucet-sink-postgres
+          cargo publish -p faucet-sink-jsonl
+          cargo publish -p faucet-sink-snowflake
+          cargo publish -p faucet-sink-mysql
+          cargo publish -p faucet-sink-sqlite
+
+          cargo publish -p faucet-sink-s3
+          cargo publish -p faucet-sink-mongodb
+          cargo publish -p faucet-sink-redis
+          cargo publish -p faucet-sink-csv
+          cargo publish -p faucet-sink-elasticsearch
+          cargo publish -p faucet-sink-http
           sleep 30
           cargo publish -p faucet-stream

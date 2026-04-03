@@ -1,10 +1,13 @@
 //! Incremental replication support.
 
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::cmp::Ordering;
 
 /// Determines how records are replicated from the source.
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "type")]
 pub enum ReplicationMethod {
     /// All records are fetched on every run (default).
     #[default]

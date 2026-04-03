@@ -1,0 +1,23 @@
+[package]
+name = "faucet-source-mongodb"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "MongoDB source connector for the faucet-stream ecosystem"
+
+[dependencies]
+faucet-core.workspace = true
+schemars.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+async-trait.workspace = true
+tracing.workspace = true
+mongodb = { workspace = true }
+tokio.workspace = true
+futures-core.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt"] }
+serde_json.workspace = true
