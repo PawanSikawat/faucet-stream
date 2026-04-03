@@ -216,6 +216,25 @@ impl SourceDAG {
             return Err(FaucetError::Config("DAG contains a cycle".into()));
         }
 
+        // 5. Each child node may have at most one parent.
+        //    The current builder API (`add_child`) only wires one parent per call,
+        //    but a caller could add the same child under two parents by calling
+        //    `add_child` twice with different parents (the second call overwrites
+        //    the node but both edges survive).  Catch that here.
+        let mut child_in_degree: HashMap<&str, usize> = HashMap::new();
+        for children in self.edges.values() {
+            for child in children {
+                *child_in_degree.entry(child.as_str()).or_insert(0) += 1;
+            }
+        }
+        for (child, degree) in &child_in_degree {
+            if *degree > 1 {
+                return Err(FaucetError::Config(format!(
+                    "child node '{child}' has multiple parents; diamond dependencies are not supported"
+                )));
+            }
+        }
+
         Ok(())
     }
 
@@ -594,6 +613,29 @@ mod tests {
         assert!(result.is_err());
         let msg = result.unwrap_err().to_string();
         assert!(msg.contains("no root"), "unexpected error: {msg}");
+    }
+
+    #[test]
+    fn validate_multi_parent_returns_error() {
+        // Build a diamond: A -> C and B -> C
+        let mut dag = SourceDAG::new()
+            .add_root("a", mock_source(vec![]), mock_sink())
+            .add_root("b", mock_source(vec![]), mock_sink())
+            .add_child(
+                "c",
+                "a",
+                mock_source(vec![]),
+                mock_sink(),
+                HashMap::new(),
+                false,
+            );
+        // Manually add a second parent edge: b -> c (the builder only wires one parent)
+        dag.edges.entry("b".into()).or_default().push("c".into());
+
+        let result = dag.validate();
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("multiple parents"), "unexpected error: {msg}");
     }
 
     #[test]
