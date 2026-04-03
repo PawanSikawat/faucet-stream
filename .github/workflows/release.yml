@@ -133,7 +133,7 @@ jobs:
       #
       # crates.io rate-limits new crate registrations to 5 per window.
       # For "all" and "connectors" scopes, we bump versions first (no publish),
-      # then publish in waves of 5 with 10-minute waits between waves.
+      # then publish in waves of 5 with 15-minute waits between waves.
       # For small scopes (core, umbrella, custom <=5), publish directly.
       #
       - name: Release
@@ -193,9 +193,9 @@ jobs:
             echo "==> Step 1: Bumping versions for ${#selected[@]} crates"
             cargo release "$BUMP" $PKGS --no-confirm --no-publish --execute
 
-            # Step 2: Publish in waves of 5 with 10-minute waits
+            # Step 2: Publish in waves of 5 with 15-minute waits
             WAVE_SIZE=5
-            WAVE_WAIT=600  # 10 minutes
+            WAVE_WAIT=900  # 15 minutes
             total=${#selected[@]}
             wave=1
 
