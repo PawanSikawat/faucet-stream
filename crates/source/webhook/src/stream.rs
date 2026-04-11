@@ -107,7 +107,10 @@ async fn webhook_handler(
 
 #[async_trait]
 impl faucet_core::Source for WebhookSource {
-    async fn fetch_all(&self) -> Result<Vec<Value>, FaucetError> {
+    async fn fetch_with_context(
+        &self,
+        _context: &std::collections::HashMap<String, serde_json::Value>,
+    ) -> Result<Vec<Value>, FaucetError> {
         WebhookSource::fetch_all(self).await
     }
 

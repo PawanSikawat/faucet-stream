@@ -91,7 +91,10 @@ impl MongoSource {
 
 #[async_trait]
 impl faucet_core::Source for MongoSource {
-    async fn fetch_all(&self) -> Result<Vec<Value>, FaucetError> {
+    async fn fetch_with_context(
+        &self,
+        _context: &std::collections::HashMap<String, serde_json::Value>,
+    ) -> Result<Vec<Value>, FaucetError> {
         MongoSource::fetch_all(self).await
     }
 

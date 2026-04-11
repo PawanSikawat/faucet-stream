@@ -71,7 +71,10 @@ impl ElasticsearchSource {
 
 #[async_trait]
 impl faucet_core::Source for ElasticsearchSource {
-    async fn fetch_all(&self) -> Result<Vec<Value>, FaucetError> {
+    async fn fetch_with_context(
+        &self,
+        _context: &std::collections::HashMap<String, serde_json::Value>,
+    ) -> Result<Vec<Value>, FaucetError> {
         let mut all_records = Vec::new();
 
         // Initial search request with scroll.

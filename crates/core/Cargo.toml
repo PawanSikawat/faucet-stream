@@ -24,6 +24,8 @@ reqwest.workspace = true
 jsonpath-rust.workspace = true
 regex = { workspace = true, optional = true }
 futures-core.workspace = true
+futures.workspace = true
+tokio = { workspace = true, features = ["sync"] }
 dotenvy = "0.15"
 envy = "0.4"
 schemars.workspace = true
@@ -31,4 +33,4 @@ schemars.workspace = true
 [dev-dependencies]
 serde_json.workspace = true
 tokio = { workspace = true, features = ["macros", "rt"] }
-futures = "0.3"
+futures.workspace = true

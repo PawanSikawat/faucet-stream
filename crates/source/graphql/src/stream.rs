@@ -25,6 +25,15 @@ impl GraphqlStream {
 
     /// Fetch all records across all pages.
     pub async fn fetch_all(&self) -> Result<Vec<Value>, FaucetError> {
+        self.fetch_all_with_context(&std::collections::HashMap::new())
+            .await
+    }
+
+    /// Fetch all records, merging parent context values into GraphQL variables.
+    async fn fetch_all_with_context(
+        &self,
+        context: &std::collections::HashMap<String, Value>,
+    ) -> Result<Vec<Value>, FaucetError> {
         let mut all_records = Vec::new();
         let mut cursor: Option<String> = None;
         let mut pages_fetched = 0usize;
@@ -38,7 +47,7 @@ impl GraphqlStream {
                 break;
             }
 
-            let body = self.execute_query(&cursor).await?;
+            let body = self.execute_query(&cursor, context).await?;
             let records = self.extract_records(&body)?;
             all_records.extend(records);
             pages_fetched += 1;
@@ -74,9 +83,22 @@ impl GraphqlStream {
         Ok(all_records)
     }
 
-    /// Execute a single GraphQL query.
-    async fn execute_query(&self, cursor: &Option<String>) -> Result<Value, FaucetError> {
+    /// Execute a single GraphQL query, merging parent context into variables.
+    async fn execute_query(
+        &self,
+        cursor: &Option<String>,
+        context: &std::collections::HashMap<String, Value>,
+    ) -> Result<Value, FaucetError> {
         let mut variables = self.config.variables.clone();
+
+        // Merge parent context values into GraphQL variables.
+        if !context.is_empty()
+            && let Value::Object(ref mut map) = variables
+        {
+            for (key, value) in context {
+                map.insert(key.clone(), value.clone());
+            }
+        }
 
         // Inject cursor and page size into variables.
         if let (Some(pag), Some(cursor_val)) = (&self.config.pagination, cursor)
@@ -154,8 +176,11 @@ impl GraphqlStream {
 
 #[async_trait]
 impl faucet_core::Source for GraphqlStream {
-    async fn fetch_all(&self) -> Result<Vec<Value>, FaucetError> {
-        GraphqlStream::fetch_all(self).await
+    async fn fetch_with_context(
+        &self,
+        context: &std::collections::HashMap<String, serde_json::Value>,
+    ) -> Result<Vec<Value>, FaucetError> {
+        self.fetch_all_with_context(context).await
     }
 
     fn config_schema(&self) -> serde_json::Value {

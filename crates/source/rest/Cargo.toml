@@ -26,12 +26,12 @@ base64 = "0.22"
 tracing.workspace = true
 async-stream = "0.3.6"
 futures-core = "0.3.32"
-futures = "0.3"  # try_join_all for concurrent partitions
+futures.workspace = true  # try_join_all for concurrent partitions
 async-trait.workspace = true
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full", "test-util"] }
 wiremock = "0.6"
 tracing-subscriber = "0.3"
-futures = "0.3.32"
+futures.workspace = true
 serde = { version = "1", features = ["derive"] }
