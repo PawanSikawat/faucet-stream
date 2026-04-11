@@ -415,7 +415,17 @@ impl RestStream {
             .headers(headers);
 
         if !use_override {
-            req = req.query(params);
+            // When parent context is available, substitute {placeholders} in
+            // query param values so child sources can be parameterised.
+            if let Some(ctx) = path_context {
+                let substituted: HashMap<String, String> = params
+                    .iter()
+                    .map(|(k, v)| (k.clone(), faucet_core::util::substitute_context(v, ctx)))
+                    .collect();
+                req = req.query(&substituted.iter().collect::<Vec<_>>());
+            } else {
+                req = req.query(params);
+            }
         }
 
         // ApiKeyQuery: inject the API key as a query parameter.
@@ -424,7 +434,16 @@ impl RestStream {
         }
 
         if let Some(body) = &self.config.body {
-            req = req.json(body);
+            // Substitute context into body string values when available.
+            if let Some(ctx) = path_context {
+                let body_str = body.to_string();
+                let substituted = faucet_core::util::substitute_context(&body_str, ctx);
+                let substituted_value: Value = serde_json::from_str(&substituted)
+                    .unwrap_or_else(|_| Value::String(substituted));
+                req = req.json(&substituted_value);
+            } else {
+                req = req.json(body);
+            }
         }
 
         let resp = req.send().await?;
@@ -487,16 +506,38 @@ fn parse_retry_after(headers: &HeaderMap) -> Duration {
 impl faucet_core::Source for RestStream {
     async fn fetch_with_context(
         &self,
-        _context: &std::collections::HashMap<String, serde_json::Value>,
+        context: &std::collections::HashMap<String, serde_json::Value>,
     ) -> Result<Vec<Value>, FaucetError> {
-        RestStream::fetch_all(self).await
+        if context.is_empty() {
+            // No parent context — use normal fetch_all with partitions
+            RestStream::fetch_all(self).await
+        } else if self.config.partitions.is_empty() {
+            // Parent context, no partitions — use context directly as partition context
+            self.fetch_partition(Some(context), None).await
+        } else {
+            // Both parent context and partitions — merge context into each partition
+            let mut all_records = Vec::new();
+            for partition in &self.config.partitions {
+                let mut merged = context.clone();
+                merged.extend(partition.iter().map(|(k, v)| (k.clone(), v.clone())));
+                all_records.extend(self.fetch_partition(Some(&merged), None).await?);
+            }
+            Ok(all_records)
+        }
     }
 
     async fn fetch_with_context_incremental(
         &self,
-        _context: &std::collections::HashMap<String, serde_json::Value>,
+        context: &std::collections::HashMap<String, serde_json::Value>,
     ) -> Result<(Vec<Value>, Option<Value>), FaucetError> {
-        RestStream::fetch_all_incremental(self).await
+        let records = self.fetch_with_context(context).await?;
+        let bookmark = self
+            .config
+            .replication_key
+            .as_deref()
+            .and_then(|key| faucet_core::replication::max_replication_value(&records, key))
+            .cloned();
+        Ok((records, bookmark))
     }
 
     fn config_schema(&self) -> serde_json::Value {

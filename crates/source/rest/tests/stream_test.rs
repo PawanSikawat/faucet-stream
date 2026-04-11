@@ -1,3 +1,4 @@
+use faucet_core::Source;
 use faucet_source_rest::{
     Auth, DEFAULT_TOKEN_ENDPOINT_EXPIRY_RATIO, FaucetError, PaginationStyle, RecordTransform,
     ReplicationMethod, ResponseValidator, RestStream, RestStreamConfig,
@@ -1243,4 +1244,120 @@ async fn test_token_endpoint_custom_validator_rejects_response() {
         }
         other => panic!("expected Auth error, got: {other:?}"),
     }
+}
+
+// ── Parent context integration tests ────────────────────────────────────────
+
+#[tokio::test]
+async fn test_fetch_with_context_substitutes_path() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .and(path("/orgs/acme/users"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([{"id": 1, "name": "Alice"}])))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let stream = RestStream::new(
+        RestStreamConfig::new(&server.uri(), "/orgs/{org_id}/users")
+            .pagination(PaginationStyle::None),
+    )
+    .unwrap();
+
+    let mut context = HashMap::new();
+    context.insert("org_id".to_string(), json!("acme"));
+
+    let records = stream.fetch_with_context(&context).await.unwrap();
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0]["name"], "Alice");
+}
+
+#[tokio::test]
+async fn test_fetch_with_context_substitutes_query_params() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .and(path("/api/items"))
+        .and(query_param("org", "acme"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([{"id": 1}])))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let stream = RestStream::new(
+        RestStreamConfig::new(&server.uri(), "/api/items")
+            .query("org", "{org_id}")
+            .pagination(PaginationStyle::None),
+    )
+    .unwrap();
+
+    let mut context = HashMap::new();
+    context.insert("org_id".to_string(), json!("acme"));
+
+    let records = stream.fetch_with_context(&context).await.unwrap();
+    assert_eq!(records.len(), 1);
+}
+
+#[tokio::test]
+async fn test_fetch_with_context_merges_with_partitions() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .and(path("/orgs/acme/repos/alpha/issues"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([{"id": 1}])))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path("/orgs/acme/repos/beta/issues"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([{"id": 2}])))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let stream = RestStream::new(
+        RestStreamConfig::new(&server.uri(), "/orgs/{org_id}/repos/{repo}/issues")
+            .pagination(PaginationStyle::None)
+            .add_partition({
+                let mut p = HashMap::new();
+                p.insert("repo".to_string(), json!("alpha"));
+                p
+            })
+            .add_partition({
+                let mut p = HashMap::new();
+                p.insert("repo".to_string(), json!("beta"));
+                p
+            }),
+    )
+    .unwrap();
+
+    // Parent context provides org_id, partitions provide repo.
+    let mut context = HashMap::new();
+    context.insert("org_id".to_string(), json!("acme"));
+
+    let records = stream.fetch_with_context(&context).await.unwrap();
+    assert_eq!(records.len(), 2);
+}
+
+#[tokio::test]
+async fn test_fetch_with_empty_context_uses_fetch_all() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .and(path("/api/items"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([{"id": 1}])))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let stream = RestStream::new(
+        RestStreamConfig::new(&server.uri(), "/api/items").pagination(PaginationStyle::None),
+    )
+    .unwrap();
+
+    // Empty context should behave like fetch_all.
+    let records = stream.fetch_with_context(&HashMap::new()).await.unwrap();
+    assert_eq!(records.len(), 1);
 }

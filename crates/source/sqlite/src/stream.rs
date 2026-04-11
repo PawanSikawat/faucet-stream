@@ -61,9 +61,14 @@ fn sqlite_value_to_json(row: &sqlx::sqlite::SqliteRow, col_name: &str) -> Value 
 impl faucet_core::Source for SqliteSource {
     async fn fetch_with_context(
         &self,
-        _context: &std::collections::HashMap<String, serde_json::Value>,
+        context: &std::collections::HashMap<String, serde_json::Value>,
     ) -> Result<Vec<Value>, FaucetError> {
-        let rows = sqlx::query(&self.config.query)
+        let query_str = if context.is_empty() {
+            self.config.query.clone()
+        } else {
+            faucet_core::util::substitute_context(&self.config.query, context)
+        };
+        let rows = sqlx::query(&query_str)
             .fetch_all(&self.pool)
             .await
             .map_err(|e| FaucetError::Config(format!("SQLite query failed: {e}")))?;
@@ -152,5 +157,23 @@ mod tests {
         let source = SqliteSource::new(config).await.unwrap();
         let result = source.fetch_all().await;
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn fetch_with_context_substitutes_query_placeholders() {
+        let config = SqliteSourceConfig::new(
+            "sqlite::memory:",
+            "SELECT {val} AS result, '{name}' AS name",
+        );
+        let source = SqliteSource::new(config).await.unwrap();
+
+        let mut context = std::collections::HashMap::new();
+        context.insert("val".to_string(), serde_json::json!(42));
+        context.insert("name".to_string(), serde_json::json!("hello"));
+
+        let records = source.fetch_with_context(&context).await.unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0]["result"], 42);
+        assert_eq!(records[0]["name"], "hello");
     }
 }

@@ -70,9 +70,14 @@ fn mysql_value_to_json(row: &sqlx::mysql::MySqlRow, col_name: &str) -> Value {
 impl faucet_core::Source for MysqlSource {
     async fn fetch_with_context(
         &self,
-        _context: &std::collections::HashMap<String, serde_json::Value>,
+        context: &std::collections::HashMap<String, serde_json::Value>,
     ) -> Result<Vec<Value>, FaucetError> {
-        let rows = sqlx::query(&self.config.query)
+        let query_str = if context.is_empty() {
+            self.config.query.clone()
+        } else {
+            faucet_core::util::substitute_context(&self.config.query, context)
+        };
+        let rows = sqlx::query(&query_str)
             .fetch_all(&self.pool)
             .await
             .map_err(|e| FaucetError::Config(format!("MySQL query failed: {e}")))?;

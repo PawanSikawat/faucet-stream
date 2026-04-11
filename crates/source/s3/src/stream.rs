@@ -40,14 +40,22 @@ impl S3Source {
     }
 
     /// List object keys matching the configured bucket and prefix.
-    async fn list_object_keys(&self) -> Result<Vec<String>, FaucetError> {
+    ///
+    /// When `prefix_override` is `Some`, it is used instead of `self.config.prefix`
+    /// (used for parent-context substitution).
+    async fn list_object_keys(
+        &self,
+        prefix_override: Option<&str>,
+    ) -> Result<Vec<String>, FaucetError> {
         let mut keys = Vec::new();
         let mut continuation_token: Option<String> = None;
+
+        let effective_prefix = prefix_override.or(self.config.prefix.as_deref());
 
         loop {
             let mut req = self.client.list_objects_v2().bucket(&self.config.bucket);
 
-            if let Some(ref prefix) = self.config.prefix {
+            if let Some(prefix) = effective_prefix {
                 req = req.prefix(prefix);
             }
 
@@ -158,9 +166,19 @@ impl S3Source {
 impl faucet_core::Source for S3Source {
     async fn fetch_with_context(
         &self,
-        _context: &std::collections::HashMap<String, serde_json::Value>,
+        context: &std::collections::HashMap<String, serde_json::Value>,
     ) -> Result<Vec<Value>, FaucetError> {
-        let keys = self.list_object_keys().await?;
+        // Substitute context into prefix when parent context is provided.
+        let substituted_prefix: Option<String> = if !context.is_empty() {
+            self.config
+                .prefix
+                .as_ref()
+                .map(|p| faucet_core::util::substitute_context(p, context))
+        } else {
+            None
+        };
+
+        let keys = self.list_object_keys(substituted_prefix.as_deref()).await?;
 
         tracing::info!(
             bucket = %self.config.bucket,
