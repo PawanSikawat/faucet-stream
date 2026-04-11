@@ -93,14 +93,91 @@ impl MongoSource {
 impl faucet_core::Source for MongoSource {
     async fn fetch_with_context(
         &self,
-        _context: &std::collections::HashMap<String, serde_json::Value>,
+        context: &std::collections::HashMap<String, serde_json::Value>,
     ) -> Result<Vec<Value>, FaucetError> {
-        MongoSource::fetch_all(self).await
+        if context.is_empty() {
+            return MongoSource::fetch_all(self).await;
+        }
+
+        // Substitute context placeholders into filter, projection, and sort.
+        let filter = substitute_optional_value(&self.config.filter, context, "filter")?;
+        let projection = substitute_optional_value(&self.config.projection, context, "projection")?;
+        let sort = substitute_optional_value(&self.config.sort, context, "sort")?;
+
+        let db = self.client.database(&self.config.database);
+        let collection = db.collection::<Document>(&self.config.collection);
+
+        let filter_doc = filter.as_ref().map(json_value_to_document).transpose()?;
+
+        let mut find_options = FindOptions::default();
+        if let Some(ref proj) = projection {
+            find_options.projection = Some(json_value_to_document(proj)?);
+        }
+        if let Some(ref s) = sort {
+            find_options.sort = Some(json_value_to_document(s)?);
+        }
+        if let Some(limit) = self.config.limit {
+            find_options.limit = Some(limit);
+        }
+        if let Some(batch_size) = self.config.batch_size {
+            find_options.batch_size = Some(batch_size);
+        }
+
+        let mut cursor = collection
+            .find(filter_doc.unwrap_or_default())
+            .with_options(find_options)
+            .await
+            .map_err(|e| FaucetError::Config(format!("MongoDB find failed: {e}")))?;
+
+        let mut records = Vec::new();
+        while cursor
+            .advance()
+            .await
+            .map_err(|e| FaucetError::Config(format!("MongoDB cursor advance failed: {e}")))?
+        {
+            let doc = cursor
+                .deserialize_current()
+                .map_err(|e| FaucetError::Config(format!("MongoDB deserialization failed: {e}")))?;
+            records.push(bson_document_to_json_value(&doc)?);
+        }
+
+        tracing::info!(
+            records = records.len(),
+            database = %self.config.database,
+            collection = %self.config.collection,
+            "MongoDB fetch complete (with context)"
+        );
+
+        Ok(records)
     }
 
     fn config_schema(&self) -> serde_json::Value {
         serde_json::to_value(faucet_core::schema_for!(MongoSourceConfig))
             .expect("schema serialization")
+    }
+}
+
+/// Substitute context placeholders in an optional JSON value.
+///
+/// Serialises the value to a string, runs `substitute_context`, then
+/// deserialises back. Returns `None` when the input is `None`.
+fn substitute_optional_value(
+    value: &Option<Value>,
+    context: &std::collections::HashMap<String, Value>,
+    field_name: &str,
+) -> Result<Option<Value>, FaucetError> {
+    match value {
+        Some(v) => {
+            let s = serde_json::to_string(v).map_err(|e| {
+                FaucetError::Config(format!("failed to serialize {field_name}: {e}"))
+            })?;
+            let s = faucet_core::util::substitute_context(&s, context);
+            let resolved = serde_json::from_str(&s).map_err(|e| {
+                FaucetError::Config(format!("failed to parse substituted {field_name}: {e}"))
+            })?;
+            Ok(Some(resolved))
+        }
+        None => Ok(None),
     }
 }
 

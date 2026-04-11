@@ -73,22 +73,33 @@ impl ElasticsearchSource {
 impl faucet_core::Source for ElasticsearchSource {
     async fn fetch_with_context(
         &self,
-        _context: &std::collections::HashMap<String, serde_json::Value>,
+        context: &std::collections::HashMap<String, serde_json::Value>,
     ) -> Result<Vec<Value>, FaucetError> {
+        // Resolve index and query with context substitution.
+        let index = if context.is_empty() {
+            self.config.index.clone()
+        } else {
+            faucet_core::util::substitute_context(&self.config.index, context)
+        };
+        let query = if context.is_empty() {
+            self.config.query.clone()
+        } else {
+            let s = serde_json::to_string(&self.config.query)
+                .map_err(|e| FaucetError::Config(format!("failed to serialize query: {e}")))?;
+            let s = faucet_core::util::substitute_context(&s, context);
+            serde_json::from_str(&s).map_err(|e| {
+                FaucetError::Config(format!("failed to parse substituted query: {e}"))
+            })?
+        };
+
         let mut all_records = Vec::new();
 
         // Initial search request with scroll.
         let url = format!(
             "{}/{}/_search?scroll={}&size={}",
-            self.config.base_url,
-            self.config.index,
-            self.config.scroll_timeout,
-            self.config.scroll_size
+            self.config.base_url, index, self.config.scroll_timeout, self.config.scroll_size
         );
-        let req = self
-            .client
-            .post(&url)
-            .json(&json!({"query": self.config.query}));
+        let req = self.client.post(&url).json(&json!({"query": query}));
         let req = self.apply_auth(req);
 
         let resp = req.send().await?;
