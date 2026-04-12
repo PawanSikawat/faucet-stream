@@ -89,6 +89,11 @@ pub const DEFAULT_ERROR_BODY_MAX_LEN: usize = 2048;
 /// - `Array` / `Object` -> JSON-serialized string
 ///
 /// Unmatched placeholders are left as-is.
+///
+/// **Warning:** Do NOT use this for SQL queries (SQL injection risk) or for
+/// substitution into serialized JSON (corruption risk with special characters).
+/// Use [`substitute_context_bind_params`] for SQL and [`substitute_context_json`]
+/// for serialized JSON.
 pub fn substitute_context(template: &str, context: &HashMap<String, Value>) -> String {
     let mut result = template.to_string();
     for (key, value) in context {
@@ -105,6 +110,112 @@ pub fn substitute_context(template: &str, context: &HashMap<String, Value>) -> S
         }
     }
     result
+}
+
+/// Replace `{key}` placeholders with SQL bind-parameter markers, returning
+/// the rewritten query and an ordered list of values to bind.
+///
+/// Scans the template left-to-right; each recognised placeholder is replaced
+/// with the marker produced by `marker_fn(index)`, and the corresponding
+/// value is appended to the returned vector.  The same key appearing multiple
+/// times produces one bind value per occurrence.
+///
+/// `start_index` is the 1-based index for the first parameter.
+///
+/// # Marker functions
+///
+/// - PostgreSQL: `|i| format!("${i}")`
+/// - MySQL / SQLite: `|_| "?".to_string()`
+///
+/// Placeholders whose key is not present in `context` are left unchanged.
+pub fn substitute_context_bind_params(
+    template: &str,
+    context: &HashMap<String, Value>,
+    start_index: usize,
+    marker_fn: impl Fn(usize) -> String,
+) -> (String, Vec<Value>) {
+    if context.is_empty() {
+        return (template.to_string(), Vec::new());
+    }
+
+    let mut result = String::with_capacity(template.len());
+    let mut values = Vec::new();
+    let mut param_idx = start_index;
+    let mut last_copied = 0;
+    let mut search_from = 0;
+
+    while search_from < template.len() {
+        let Some(open_offset) = template[search_from..].find('{') else {
+            break;
+        };
+        let open = search_from + open_offset;
+
+        let Some(close_offset) = template[open + 1..].find('}') else {
+            break;
+        };
+        let close = open + 1 + close_offset;
+        let key = &template[open + 1..close];
+
+        if let Some(value) = context.get(key) {
+            result.push_str(&template[last_copied..open]);
+            result.push_str(&marker_fn(param_idx));
+            values.push(value.clone());
+            param_idx += 1;
+            last_copied = close + 1;
+            search_from = close + 1;
+        } else {
+            search_from = open + 1;
+        }
+    }
+
+    result.push_str(&template[last_copied..]);
+    (result, values)
+}
+
+/// Substitute `{key}` placeholders within a serialized JSON string, escaping
+/// string values so that the result remains valid JSON.
+///
+/// Use this instead of [`substitute_context`] when the template is a
+/// `serde_json`-serialized value that will be deserialized back after
+/// substitution.  String values are JSON-escaped (double-quotes, backslashes,
+/// and control characters).  Numbers, bools, and null are substituted as-is.
+pub fn substitute_context_json(template: &str, context: &HashMap<String, Value>) -> String {
+    let mut result = template.to_string();
+    for (key, value) in context {
+        let placeholder = format!("{{{key}}}");
+        if result.contains(&placeholder) {
+            let replacement = match value {
+                Value::String(s) => json_escape_string(s),
+                Value::Number(n) => n.to_string(),
+                Value::Bool(b) => b.to_string(),
+                Value::Null => "null".to_string(),
+                other => other.to_string(),
+            };
+            result = result.replace(&placeholder, &replacement);
+        }
+    }
+    result
+}
+
+/// Escape a string for safe embedding inside a JSON string value.
+///
+/// Handles double-quotes, backslashes, and control characters per RFC 8259.
+fn json_escape_string(s: &str) -> String {
+    let mut escaped = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '"' => escaped.push_str("\\\""),
+            '\\' => escaped.push_str("\\\\"),
+            '\n' => escaped.push_str("\\n"),
+            '\r' => escaped.push_str("\\r"),
+            '\t' => escaped.push_str("\\t"),
+            c if c.is_control() => {
+                escaped.push_str(&format!("\\u{:04x}", c as u32));
+            }
+            c => escaped.push(c),
+        }
+    }
+    escaped
 }
 
 /// Extract context values from a record using JSONPath expressions.
@@ -295,5 +406,165 @@ mod tests {
         let mapping = HashMap::new();
         let ctx = extract_context(&record, &mapping).unwrap();
         assert!(ctx.is_empty());
+    }
+
+    // ── substitute_context_bind_params ──────────────────────────────────
+
+    #[test]
+    fn bind_params_postgres_style() {
+        let mut ctx = HashMap::new();
+        ctx.insert("org".to_string(), json!("acme"));
+        ctx.insert("id".to_string(), json!(42));
+        let (query, values) = substitute_context_bind_params(
+            "SELECT * FROM t WHERE org = {org} AND id = {id}",
+            &ctx,
+            1,
+            |i| format!("${i}"),
+        );
+        assert_eq!(query, "SELECT * FROM t WHERE org = $1 AND id = $2");
+        assert_eq!(values.len(), 2);
+        assert_eq!(values[0], json!("acme"));
+        assert_eq!(values[1], json!(42));
+    }
+
+    #[test]
+    fn bind_params_question_mark_style() {
+        let mut ctx = HashMap::new();
+        ctx.insert("name".to_string(), json!("test"));
+        let (query, values) =
+            substitute_context_bind_params("SELECT * FROM t WHERE name = {name}", &ctx, 1, |_| {
+                "?".to_string()
+            });
+        assert_eq!(query, "SELECT * FROM t WHERE name = ?");
+        assert_eq!(values, vec![json!("test")]);
+    }
+
+    #[test]
+    fn bind_params_duplicate_key_produces_multiple_binds() {
+        let mut ctx = HashMap::new();
+        ctx.insert("id".to_string(), json!(5));
+        let (query, values) = substitute_context_bind_params(
+            "SELECT * FROM t WHERE a = {id} OR b = {id}",
+            &ctx,
+            3,
+            |i| format!("${i}"),
+        );
+        assert_eq!(query, "SELECT * FROM t WHERE a = $3 OR b = $4");
+        assert_eq!(values, vec![json!(5), json!(5)]);
+    }
+
+    #[test]
+    fn bind_params_unknown_key_left_as_is() {
+        let ctx = HashMap::new();
+        let (query, values) =
+            substitute_context_bind_params("SELECT * FROM t WHERE x = {unknown}", &ctx, 1, |i| {
+                format!("${i}")
+            });
+        assert_eq!(query, "SELECT * FROM t WHERE x = {unknown}");
+        assert!(values.is_empty());
+    }
+
+    #[test]
+    fn bind_params_mixed_known_and_unknown() {
+        let mut ctx = HashMap::new();
+        ctx.insert("id".to_string(), json!(1));
+        let (query, values) = substitute_context_bind_params(
+            "SELECT * FROM t WHERE id = {id} AND x = {unknown}",
+            &ctx,
+            1,
+            |i| format!("${i}"),
+        );
+        assert_eq!(query, "SELECT * FROM t WHERE id = $1 AND x = {unknown}");
+        assert_eq!(values, vec![json!(1)]);
+    }
+
+    #[test]
+    fn bind_params_empty_context() {
+        let ctx = HashMap::new();
+        let (query, values) =
+            substitute_context_bind_params("SELECT 1", &ctx, 1, |i| format!("${i}"));
+        assert_eq!(query, "SELECT 1");
+        assert!(values.is_empty());
+    }
+
+    #[test]
+    fn bind_params_start_index_offset() {
+        let mut ctx = HashMap::new();
+        ctx.insert("name".to_string(), json!("x"));
+        let (query, values) =
+            substitute_context_bind_params("SELECT * FROM t WHERE name = {name}", &ctx, 5, |i| {
+                format!("${i}")
+            });
+        assert_eq!(query, "SELECT * FROM t WHERE name = $5");
+        assert_eq!(values, vec![json!("x")]);
+    }
+
+    // ── substitute_context_json ─────────────────────────────────────────
+
+    #[test]
+    fn json_sub_escapes_double_quotes() {
+        let mut ctx = HashMap::new();
+        ctx.insert("name".to_string(), json!(r#"O'Brien "Bob""#));
+        let template = r#"{"name":"{name}"}"#;
+        let result = substitute_context_json(template, &ctx);
+        let parsed: Value = serde_json::from_str(&result).unwrap();
+        assert_eq!(parsed["name"], r#"O'Brien "Bob""#);
+    }
+
+    #[test]
+    fn json_sub_escapes_backslashes() {
+        let mut ctx = HashMap::new();
+        ctx.insert("path".to_string(), json!("C:\\Users\\test"));
+        let template = r#"{"path":"{path}"}"#;
+        let result = substitute_context_json(template, &ctx);
+        let parsed: Value = serde_json::from_str(&result).unwrap();
+        assert_eq!(parsed["path"], "C:\\Users\\test");
+    }
+
+    #[test]
+    fn json_sub_escapes_control_chars() {
+        let mut ctx = HashMap::new();
+        ctx.insert("text".to_string(), json!("line1\nline2\ttab"));
+        let template = r#"{"text":"{text}"}"#;
+        let result = substitute_context_json(template, &ctx);
+        let parsed: Value = serde_json::from_str(&result).unwrap();
+        assert_eq!(parsed["text"], "line1\nline2\ttab");
+    }
+
+    #[test]
+    fn json_sub_number_value() {
+        let mut ctx = HashMap::new();
+        ctx.insert("id".to_string(), json!(42));
+        let template = r#"{"user_id":"{id}"}"#;
+        let result = substitute_context_json(template, &ctx);
+        let parsed: Value = serde_json::from_str(&result).unwrap();
+        assert_eq!(parsed["user_id"], "42");
+    }
+
+    #[test]
+    fn json_sub_preserves_valid_json_without_special_chars() {
+        let mut ctx = HashMap::new();
+        ctx.insert("name".to_string(), json!("alice"));
+        let template = r#"{"filter":{"name":"{name}"}}"#;
+        let result = substitute_context_json(template, &ctx);
+        let parsed: Value = serde_json::from_str(&result).unwrap();
+        assert_eq!(parsed["filter"]["name"], "alice");
+    }
+
+    // ── json_escape_string ──────────────────────────────────────────────
+
+    #[test]
+    fn json_escape_plain_string() {
+        assert_eq!(json_escape_string("hello"), "hello");
+    }
+
+    #[test]
+    fn json_escape_quotes_and_backslashes() {
+        assert_eq!(json_escape_string(r#"a"b\c"#), r#"a\"b\\c"#);
+    }
+
+    #[test]
+    fn json_escape_newlines_and_tabs() {
+        assert_eq!(json_escape_string("a\nb\tc"), "a\\nb\\tc");
     }
 }

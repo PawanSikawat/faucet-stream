@@ -133,8 +133,10 @@ impl SourceDAG {
     }
 
     /// Set the maximum number of concurrent child-source invocations.
+    ///
+    /// Values below 1 are clamped to 1 to prevent deadlocks.
     pub fn concurrency(mut self, n: usize) -> Self {
-        self.concurrency = n;
+        self.concurrency = n.max(1);
         self
     }
 
@@ -313,7 +315,7 @@ impl SourceDAG {
         self.validate()?;
 
         let order = self.topological_order();
-        let semaphore = Arc::new(Semaphore::new(self.concurrency));
+        let semaphore = Arc::new(Semaphore::new(self.concurrency.max(1)));
 
         // Stores output records per node for use by children.
         let mut node_records: HashMap<String, Vec<Value>> = HashMap::new();
@@ -652,6 +654,12 @@ mod tests {
     fn concurrency_is_configurable() {
         let dag = SourceDAG::new().concurrency(5);
         assert_eq!(dag.concurrency_limit(), 5);
+    }
+
+    #[test]
+    fn concurrency_zero_clamps_to_one() {
+        let dag = SourceDAG::new().concurrency(0);
+        assert_eq!(dag.concurrency_limit(), 1);
     }
 
     #[test]
