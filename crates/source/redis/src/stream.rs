@@ -177,9 +177,51 @@ impl RedisSource {
 impl faucet_core::Source for RedisSource {
     async fn fetch_with_context(
         &self,
-        _context: &std::collections::HashMap<String, serde_json::Value>,
+        context: &std::collections::HashMap<String, serde_json::Value>,
     ) -> Result<Vec<Value>, FaucetError> {
-        RedisSource::fetch_all(self).await
+        if context.is_empty() {
+            return RedisSource::fetch_all(self).await;
+        }
+
+        let client = redis::Client::open(self.config.url.as_str())
+            .map_err(|e| FaucetError::Config(format!("invalid Redis URL: {e}")))?;
+
+        let mut conn = client
+            .get_multiplexed_async_connection()
+            .await
+            .map_err(|e| FaucetError::Config(format!("Redis connection failed: {e}")))?;
+
+        // Substitute context into the key/pattern of each source type variant.
+        let mut records = match &self.config.source_type {
+            RedisSourceType::List { key } => {
+                let resolved_key = faucet_core::util::substitute_context(key, context);
+                self.fetch_list(&mut conn, &resolved_key).await?
+            }
+            RedisSourceType::Stream {
+                key,
+                group,
+                consumer,
+                count,
+            } => {
+                let resolved_key = faucet_core::util::substitute_context(key, context);
+                self.fetch_stream(&mut conn, &resolved_key, group, consumer, count)
+                    .await?
+            }
+            RedisSourceType::Keys { pattern } => {
+                let resolved_pattern = faucet_core::util::substitute_context(pattern, context);
+                self.fetch_keys(&mut conn, &resolved_pattern).await?
+            }
+        };
+
+        if let Some(max) = self.config.max_records {
+            records.truncate(max);
+        }
+
+        tracing::info!(
+            records = records.len(),
+            "Redis fetch complete (with context)"
+        );
+        Ok(records)
     }
 
     fn config_schema(&self) -> serde_json::Value {

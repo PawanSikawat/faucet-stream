@@ -26,6 +26,14 @@ impl XmlStream {
 
     /// Fetch all records across all pages.
     pub async fn fetch_all(&self) -> Result<Vec<Value>, FaucetError> {
+        self.fetch_all_with_context(&HashMap::new()).await
+    }
+
+    /// Fetch all records, substituting parent context into path, query_params, and body.
+    async fn fetch_all_with_context(
+        &self,
+        context: &HashMap<String, serde_json::Value>,
+    ) -> Result<Vec<Value>, FaucetError> {
         let mut all_records = Vec::new();
         let mut pages_fetched = 0usize;
         let mut offset = 0usize;
@@ -48,7 +56,7 @@ impl XmlStream {
             let mut params = self.config.query_params.clone();
             self.apply_pagination_params(&mut params, page_number, offset);
 
-            let xml_text = self.execute_request(&params).await?;
+            let xml_text = self.execute_request(&params, context).await?;
             let json = convert::xml_to_json(&xml_text)?;
 
             let records = match &self.config.records_element_path {
@@ -133,18 +141,31 @@ impl XmlStream {
     async fn execute_request(
         &self,
         params: &HashMap<String, String>,
+        context: &HashMap<String, serde_json::Value>,
     ) -> Result<String, FaucetError> {
-        let url = format!(
-            "{}/{}",
-            self.config.base_url,
-            self.config.path.trim_start_matches('/')
-        );
+        let path = if context.is_empty() {
+            self.config.path.clone()
+        } else {
+            faucet_core::util::substitute_context(&self.config.path, context)
+        };
+
+        let url = format!("{}/{}", self.config.base_url, path.trim_start_matches('/'));
+
+        // Substitute context into query parameter values.
+        let resolved_params: HashMap<String, String> = if context.is_empty() {
+            params.clone()
+        } else {
+            params
+                .iter()
+                .map(|(k, v)| (k.clone(), faucet_core::util::substitute_context(v, context)))
+                .collect()
+        };
 
         let mut req = self
             .client
             .request(self.config.method.clone(), &url)
             .headers(self.config.headers.clone())
-            .query(params);
+            .query(&resolved_params);
 
         // Apply auth.
         match &self.config.auth {
@@ -160,11 +181,16 @@ impl XmlStream {
             }
         }
 
-        // Set body for POST requests (SOAP).
+        // Set body for POST requests (SOAP), with context substitution.
         if let Some(body) = &self.config.body {
+            let resolved_body = if context.is_empty() {
+                body.clone()
+            } else {
+                faucet_core::util::substitute_context(body, context)
+            };
             req = req
                 .header("Content-Type", "text/xml; charset=utf-8")
-                .body(body.clone());
+                .body(resolved_body);
         }
 
         let resp = req.send().await.map_err(FaucetError::Http)?;
@@ -177,9 +203,9 @@ impl XmlStream {
 impl faucet_core::Source for XmlStream {
     async fn fetch_with_context(
         &self,
-        _context: &std::collections::HashMap<String, serde_json::Value>,
+        context: &std::collections::HashMap<String, serde_json::Value>,
     ) -> Result<Vec<Value>, FaucetError> {
-        XmlStream::fetch_all(self).await
+        self.fetch_all_with_context(context).await
     }
 
     fn config_schema(&self) -> serde_json::Value {

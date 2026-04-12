@@ -109,9 +109,63 @@ async fn webhook_handler(
 impl faucet_core::Source for WebhookSource {
     async fn fetch_with_context(
         &self,
-        _context: &std::collections::HashMap<String, serde_json::Value>,
+        context: &std::collections::HashMap<String, serde_json::Value>,
     ) -> Result<Vec<Value>, FaucetError> {
-        WebhookSource::fetch_all(self).await
+        if context.is_empty() {
+            return WebhookSource::fetch_all(self).await;
+        }
+
+        // Substitute context into the webhook path.
+        let resolved_path = faucet_core::util::substitute_context(&self.config.path, context);
+
+        let state = Arc::new(AppState {
+            records: Mutex::new(Vec::new()),
+            max_payloads: self.config.max_payloads,
+            done: Notify::new(),
+        });
+
+        let app = Router::new()
+            .route(&resolved_path, post(webhook_handler))
+            .with_state(Arc::clone(&state));
+
+        let listener = tokio::net::TcpListener::bind(&self.config.listen_addr)
+            .await
+            .map_err(|e| {
+                FaucetError::Config(format!(
+                    "failed to bind to {}: {e}",
+                    self.config.listen_addr
+                ))
+            })?;
+
+        tracing::info!(
+            addr = %self.config.listen_addr,
+            path = %resolved_path,
+            "webhook server listening (with context)"
+        );
+
+        let timeout = tokio::time::sleep(std::time::Duration::from_secs(self.config.timeout_secs));
+        let done_notified = state.done.notified();
+
+        tokio::select! {
+            result = axum::serve(listener, app).into_future() => {
+                if let Err(e) = result {
+                    return Err(FaucetError::Config(format!("webhook server error: {e}")));
+                }
+            }
+            () = timeout => {
+                tracing::info!("webhook timeout reached");
+            }
+            () = done_notified => {
+                tracing::info!("max payloads reached");
+            }
+        }
+
+        let records = state.records.lock().await.clone();
+        tracing::info!(
+            records = records.len(),
+            "webhook fetch complete (with context)"
+        );
+        Ok(records)
     }
 
     fn config_schema(&self) -> serde_json::Value {

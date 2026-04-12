@@ -25,9 +25,13 @@ impl CsvSource {
 impl faucet_core::Source for CsvSource {
     async fn fetch_with_context(
         &self,
-        _context: &std::collections::HashMap<String, serde_json::Value>,
+        context: &std::collections::HashMap<String, serde_json::Value>,
     ) -> Result<Vec<Value>, FaucetError> {
-        let config = self.config.clone();
+        let mut config = self.config.clone();
+
+        if !context.is_empty() {
+            config.path = faucet_core::util::substitute_context(&config.path, context);
+        }
 
         // CSV reading is synchronous I/O — run on a blocking thread to avoid
         // starving the async runtime.

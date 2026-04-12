@@ -35,52 +35,64 @@ impl GrpcStream {
 
     /// Fetch all records by calling the configured gRPC method.
     pub async fn fetch_all(&self) -> Result<Vec<Value>, FaucetError> {
-        let full_method = format!("/{}/{}", self.config.service_name, self.config.method_name);
+        self.fetch_resolved(
+            &self.config.endpoint,
+            &self.config.service_name,
+            &self.config.method_name,
+            &self.config.request,
+        )
+        .await
+    }
+
+    /// Internal fetch with resolved (context-substituted) parameters.
+    async fn fetch_resolved(
+        &self,
+        endpoint: &str,
+        service_name: &str,
+        method_name: &str,
+        request: &Value,
+    ) -> Result<Vec<Value>, FaucetError> {
+        let full_method = format!("/{service_name}/{method_name}");
 
         // Look up the method descriptor.
-        let service = self
-            .pool
-            .get_service_by_name(&self.config.service_name)
-            .ok_or_else(|| {
-                FaucetError::Config(format!(
-                    "service '{}' not found in descriptor set",
-                    self.config.service_name
-                ))
-            })?;
+        let service = self.pool.get_service_by_name(service_name).ok_or_else(|| {
+            FaucetError::Config(format!(
+                "service '{service_name}' not found in descriptor set",
+            ))
+        })?;
 
         let method = service
             .methods()
-            .find(|m| m.name() == self.config.method_name)
+            .find(|m| m.name() == method_name)
             .ok_or_else(|| {
                 FaucetError::Config(format!(
-                    "method '{}' not found in service '{}'",
-                    self.config.method_name, self.config.service_name
+                    "method '{method_name}' not found in service '{service_name}'",
                 ))
             })?;
 
         // Build the request message from JSON.
         let input_desc = method.input();
-        let request_msg = DynamicMessage::deserialize(input_desc, &self.config.request)
+        let request_msg = DynamicMessage::deserialize(input_desc, request)
             .map_err(|e| FaucetError::Config(format!("failed to build request message: {e}")))?;
 
         // Connect to the gRPC endpoint.
         let use_tls = self
             .config
             .tls
-            .unwrap_or_else(|| self.config.endpoint.starts_with("https"));
+            .unwrap_or_else(|| endpoint.starts_with("https"));
 
-        let endpoint = Channel::from_shared(self.config.endpoint.clone())
+        let channel_endpoint = Channel::from_shared(endpoint.to_string())
             .map_err(|e| FaucetError::Url(format!("invalid gRPC endpoint: {e}")))?;
 
         let channel: Channel = if use_tls {
-            endpoint
+            channel_endpoint
                 .tls_config(tonic::transport::ClientTlsConfig::new())
                 .map_err(|e| FaucetError::Config(format!("TLS config failed: {e}")))?
                 .connect()
                 .await
                 .map_err(|e| FaucetError::Config(format!("gRPC connect failed: {e}")))?
         } else {
-            endpoint
+            channel_endpoint
                 .connect()
                 .await
                 .map_err(|e| FaucetError::Config(format!("gRPC connect failed: {e}")))?
@@ -151,9 +163,28 @@ impl GrpcStream {
 impl faucet_core::Source for GrpcStream {
     async fn fetch_with_context(
         &self,
-        _context: &std::collections::HashMap<String, serde_json::Value>,
+        context: &std::collections::HashMap<String, serde_json::Value>,
     ) -> Result<Vec<Value>, FaucetError> {
-        GrpcStream::fetch_all(self).await
+        if context.is_empty() {
+            return GrpcStream::fetch_all(self).await;
+        }
+
+        let endpoint = faucet_core::util::substitute_context(&self.config.endpoint, context);
+        let service_name =
+            faucet_core::util::substitute_context(&self.config.service_name, context);
+        let method_name = faucet_core::util::substitute_context(&self.config.method_name, context);
+
+        let request = {
+            let s = serde_json::to_string(&self.config.request)
+                .map_err(|e| FaucetError::Config(format!("failed to serialize request: {e}")))?;
+            let s = faucet_core::util::substitute_context(&s, context);
+            serde_json::from_str(&s).map_err(|e| {
+                FaucetError::Config(format!("failed to parse substituted request: {e}"))
+            })?
+        };
+
+        self.fetch_resolved(&endpoint, &service_name, &method_name, &request)
+            .await
     }
 
     fn config_schema(&self) -> serde_json::Value {
