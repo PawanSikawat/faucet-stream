@@ -86,7 +86,7 @@ impl faucet_core::Source for ElasticsearchSource {
         } else {
             let s = serde_json::to_string(&self.config.query)
                 .map_err(|e| FaucetError::Config(format!("failed to serialize query: {e}")))?;
-            let s = faucet_core::util::substitute_context(&s, context);
+            let s = faucet_core::util::substitute_context_json(&s, context);
             serde_json::from_str(&s).map_err(|e| {
                 FaucetError::Config(format!("failed to parse substituted query: {e}"))
             })?

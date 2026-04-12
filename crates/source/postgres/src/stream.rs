@@ -72,15 +72,30 @@ impl faucet_core::Source for PostgresSource {
         &self,
         context: &std::collections::HashMap<String, serde_json::Value>,
     ) -> Result<Vec<Value>, FaucetError> {
-        let query_str = if context.is_empty() {
-            self.config.query.clone()
+        let (query_str, bind_values) = if context.is_empty() {
+            (self.config.query.clone(), Vec::new())
         } else {
-            faucet_core::util::substitute_context(&self.config.query, context)
+            faucet_core::util::substitute_context_bind_params(
+                &self.config.query,
+                context,
+                self.config.params.len() + 1,
+                |i| format!("${i}"),
+            )
         };
         let mut query = sqlx::query(&query_str);
 
         for param in &self.config.params {
             query = query.bind(param);
+        }
+        for value in &bind_values {
+            query = match value {
+                Value::String(s) => query.bind(s.clone()),
+                Value::Number(n) if n.is_i64() => query.bind(n.as_i64().unwrap()),
+                Value::Number(n) => query.bind(n.as_f64().unwrap_or(0.0)),
+                Value::Bool(b) => query.bind(*b),
+                Value::Null => query.bind(None::<String>),
+                _ => query.bind(value.to_string()),
+            };
         }
 
         let rows = query

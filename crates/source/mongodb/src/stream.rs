@@ -159,8 +159,9 @@ impl faucet_core::Source for MongoSource {
 
 /// Substitute context placeholders in an optional JSON value.
 ///
-/// Serialises the value to a string, runs `substitute_context`, then
-/// deserialises back. Returns `None` when the input is `None`.
+/// Serialises the value to a string, runs [`substitute_context_json`] (which
+/// properly escapes string values for JSON safety), then deserialises back.
+/// Returns `None` when the input is `None`.
 fn substitute_optional_value(
     value: &Option<Value>,
     context: &std::collections::HashMap<String, Value>,
@@ -171,7 +172,7 @@ fn substitute_optional_value(
             let s = serde_json::to_string(v).map_err(|e| {
                 FaucetError::Config(format!("failed to serialize {field_name}: {e}"))
             })?;
-            let s = faucet_core::util::substitute_context(&s, context);
+            let s = faucet_core::util::substitute_context_json(&s, context);
             let resolved = serde_json::from_str(&s).map_err(|e| {
                 FaucetError::Config(format!("failed to parse substituted {field_name}: {e}"))
             })?;

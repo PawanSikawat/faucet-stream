@@ -177,7 +177,7 @@ impl faucet_core::Source for GrpcStream {
         let request = {
             let s = serde_json::to_string(&self.config.request)
                 .map_err(|e| FaucetError::Config(format!("failed to serialize request: {e}")))?;
-            let s = faucet_core::util::substitute_context(&s, context);
+            let s = faucet_core::util::substitute_context_json(&s, context);
             serde_json::from_str(&s).map_err(|e| {
                 FaucetError::Config(format!("failed to parse substituted request: {e}"))
             })?
