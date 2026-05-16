@@ -119,12 +119,31 @@ println!("Wrote {} records", result.records_written);
 let result = run_stream(source.stream_pages(), &sink).await?;
 ```
 
+## Examples
+
+Runnable examples live in [`examples/`](examples/):
+
+| Example | What it shows |
+|---------|---------------|
+| `rest_to_jsonl` | Minimum-viable pipeline: REST source → JSONL sink |
+| `rest_streaming` | `run_stream` mode — write each page as it arrives, bounded memory |
+| `dag_users_posts` | `SourceDAG` — fetch users, then per-user posts with parent context injected |
+
+Run any of them with:
+
+```bash
+cargo run -p faucet-stream --example rest_to_jsonl --features "source-rest sink-jsonl"
+```
+
+All three examples hit `https://jsonplaceholder.typicode.com` and write to `/tmp/`.
+
 ## What's Re-exported
 
 This crate re-exports everything from `faucet-core` unconditionally:
 
 - `Source`, `Sink` traits
 - `Pipeline`, `PipelineResult`, `run_stream`
+- `SourceDAG`, `DagNode`, `DagResult`, `DagNodeResult`, `DagNodeError`
 - `FaucetError`
 - `RecordTransform`, `ReplicationMethod`
 - `config::load_json`, `config::load_env`, `config::load_env_file`

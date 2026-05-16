@@ -112,3 +112,18 @@ faucet-sink-redis = { workspace = true, optional = true }
 faucet-sink-csv = { workspace = true, optional = true }
 faucet-sink-elasticsearch = { workspace = true, optional = true }
 faucet-sink-http = { workspace = true, optional = true }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+
+[[example]]
+name = "rest_to_jsonl"
+required-features = ["source-rest", "sink-jsonl"]
+
+[[example]]
+name = "rest_streaming"
+required-features = ["source-rest", "sink-jsonl"]
+
+[[example]]
+name = "dag_users_posts"
+required-features = ["source-rest", "sink-jsonl"]
