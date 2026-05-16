@@ -1,8 +1,7 @@
-//! MongoDB → PostgreSQL (document → relational mirror).
+//! MongoDB → PostgreSQL — full builder showcase for both connectors.
 //!
-//! Streams MongoDB documents into Postgres using the default JSONB column
-//! mapping (one row per document, payload in the `data` column). Useful
-//! when promoting MongoDB content into a relational system of record.
+//! MongoDB source uses a filter, projection, sort, and tuned batch size.
+//! Postgres sink uses the JSONB column mapping with batch + pool tuning.
 //!
 //! Run:
 //! ```bash
@@ -10,23 +9,30 @@
 //!     --features "source-mongodb sink-postgres"
 //! ```
 
-use faucet_stream::Pipeline;
-use faucet_stream::sink::postgres::{PostgresSink, PostgresSinkConfig};
+use faucet_stream::sink::postgres::{PostgresColumnMapping, PostgresSink, PostgresSinkConfig};
 use faucet_stream::source::mongodb::{MongoSource, MongoSourceConfig};
+use faucet_stream::{Pipeline, json};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let source = MongoSource::new(MongoSourceConfig::new(
-        "mongodb://localhost:27017",
-        "shop",
-        "orders",
-    ))
+    let source = MongoSource::new(
+        MongoSourceConfig::new("mongodb://localhost:27017", "shop", "orders")
+            .filter(json!({ "status": "completed" }))
+            .projection(json!({ "_id": 1, "customer_id": 1, "total": 1, "items": 1 }))
+            .sort(json!({ "created_at": 1 }))
+            .limit(500_000)
+            .batch_size(1000),
+    )
     .await?;
 
-    let sink = PostgresSink::new(PostgresSinkConfig::new(
-        "postgres://user:pass@localhost/warehouse",
-        "orders_mirror",
-    ))
+    let sink = PostgresSink::new(
+        PostgresSinkConfig::new("postgres://user:pass@localhost/warehouse", "orders_mirror")
+            .column_mapping(PostgresColumnMapping::Jsonb {
+                column: "payload".into(),
+            })
+            .batch_size(1000)
+            .max_connections(10),
+    )
     .await?;
 
     let result = Pipeline::new(&source, &sink).run().await?;

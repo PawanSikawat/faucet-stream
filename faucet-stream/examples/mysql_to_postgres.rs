@@ -1,8 +1,8 @@
-//! MySQL → PostgreSQL migration.
+//! MySQL → PostgreSQL migration — full builder showcase for both connectors.
 //!
-//! Reads from a MySQL source query and writes to a Postgres table using the
-//! default JSONB column mapping (one row per source row, payload in `data`).
-//! Swap to `PostgresColumnMapping::AutoMap` to write into explicit columns.
+//! MySQL source uses a tuned pool. Postgres sink demonstrates the
+//! `AutoMap` column mapping (each source column written into a matching
+//! Postgres column) plus batch size and pool sizing.
 //!
 //! Run:
 //! ```bash
@@ -11,21 +11,29 @@
 //! ```
 
 use faucet_stream::Pipeline;
-use faucet_stream::sink::postgres::{PostgresSink, PostgresSinkConfig};
+use faucet_stream::sink::postgres::{PostgresColumnMapping, PostgresSink, PostgresSinkConfig};
 use faucet_stream::source::mysql::{MysqlSource, MysqlSourceConfig};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let source = MysqlSource::new(MysqlSourceConfig::new(
-        "mysql://user:pass@localhost/legacy",
-        "SELECT id, name, address, created_at FROM customers",
-    ))
+    let source = MysqlSource::new(
+        MysqlSourceConfig::new(
+            "mysql://user:pass@localhost/legacy",
+            "SELECT id, name, address, created_at FROM customers ORDER BY id",
+        )
+        .with_max_connections(16),
+    )
     .await?;
 
-    let sink = PostgresSink::new(PostgresSinkConfig::new(
-        "postgres://user:pass@localhost/modern",
-        "customers_imported",
-    ))
+    let sink = PostgresSink::new(
+        PostgresSinkConfig::new(
+            "postgres://user:pass@localhost/modern",
+            "customers_imported",
+        )
+        .column_mapping(PostgresColumnMapping::AutoMap)
+        .batch_size(1000)
+        .max_connections(10),
+    )
     .await?;
 
     let result = Pipeline::new(&source, &sink).run().await?;

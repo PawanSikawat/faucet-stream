@@ -1,9 +1,8 @@
-//! MongoDB → Elasticsearch.
+//! MongoDB → Elasticsearch — full builder showcase for both connectors.
 //!
-//! Mirror a MongoDB collection into an Elasticsearch index for full-text
-//! search. The source's default options return every document with no filter
-//! or projection; constrain it with `filter` / `projection` for a partial
-//! mirror.
+//! MongoDB source uses a filter, projection, sort, limit, and tuned cursor
+//! batch size. Elasticsearch sink shows Basic auth, batch sizing, and the
+//! `id_field` knob (uses each doc's `_id`-like field as the ES `_id`).
 //!
 //! Run:
 //! ```bash
@@ -11,23 +10,33 @@
 //!     --features "source-mongodb sink-elasticsearch"
 //! ```
 
-use faucet_stream::Pipeline;
-use faucet_stream::sink::elasticsearch::{ElasticsearchSink, ElasticsearchSinkConfig};
+use faucet_stream::sink::elasticsearch::{
+    ElasticsearchSink, ElasticsearchSinkAuth, ElasticsearchSinkConfig,
+};
 use faucet_stream::source::mongodb::{MongoSource, MongoSourceConfig};
+use faucet_stream::{Pipeline, json};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let source = MongoSource::new(MongoSourceConfig::new(
-        "mongodb://localhost:27017",
-        "shop",
-        "products",
-    ))
+    let source = MongoSource::new(
+        MongoSourceConfig::new("mongodb://localhost:27017", "shop", "products")
+            .filter(json!({ "available": true }))
+            .projection(json!({ "_id": 1, "name": 1, "description": 1, "tags": 1 }))
+            .sort(json!({ "updated_at": -1 }))
+            .limit(100_000)
+            .batch_size(1000),
+    )
     .await?;
 
-    let sink = ElasticsearchSink::new(ElasticsearchSinkConfig::new(
-        "http://localhost:9200",
-        "products",
-    ));
+    let sink = ElasticsearchSink::new(
+        ElasticsearchSinkConfig::new("https://es.example.com:9200", "products")
+            .auth(ElasticsearchSinkAuth::Basic {
+                username: std::env::var("ES_USER")?,
+                password: std::env::var("ES_PASS")?,
+            })
+            .batch_size(1000)
+            .id_field("_id"),
+    );
 
     let result = Pipeline::new(&source, &sink).run().await?;
     println!(

@@ -8,5 +8,5 @@ pub mod stream;
 
 pub use faucet_core::{FaucetError, Source};
 
-pub use config::GraphqlStreamConfig;
+pub use config::{GraphqlAuth, GraphqlPagination, GraphqlStreamConfig};
 pub use stream::GraphqlStream;

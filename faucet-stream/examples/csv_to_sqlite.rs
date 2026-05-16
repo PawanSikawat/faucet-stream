@@ -1,7 +1,7 @@
-//! CSV file → SQLite (local persistence).
+//! CSV → SQLite — full builder showcase for both connectors.
 //!
-//! Imports a CSV file into a local SQLite database. The default JSON column
-//! mapping stores each row as a JSON blob in a `data` column.
+//! CSV source uses a TSV-like config (tab delimiter, no headers). SQLite
+//! sink demonstrates the JSON column mapping plus batch and pool tuning.
 //!
 //! Run:
 //! ```bash
@@ -10,14 +10,27 @@
 //! ```
 
 use faucet_stream::Pipeline;
-use faucet_stream::sink::sqlite::{SqliteSink, SqliteSinkConfig};
+use faucet_stream::sink::sqlite::{SqliteColumnMapping, SqliteSink, SqliteSinkConfig};
 use faucet_stream::source::csv::{CsvSource, CsvSourceConfig};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let source = CsvSource::new(CsvSourceConfig::new("inventory.csv"));
+    let source = CsvSource::new(
+        CsvSourceConfig::new("inventory.tsv")
+            .has_headers(false)
+            .delimiter(b'\t')
+            .quote(b'\''),
+    );
 
-    let sink = SqliteSink::new(SqliteSinkConfig::new("sqlite:./inventory.db", "inventory")).await?;
+    let sink = SqliteSink::new(
+        SqliteSinkConfig::new("sqlite:./inventory.db", "inventory")
+            .column_mapping(SqliteColumnMapping::Json {
+                column: "row".into(),
+            })
+            .batch_size(500)
+            .max_connections(4),
+    )
+    .await?;
 
     let result = Pipeline::new(&source, &sink).run().await?;
     println!(

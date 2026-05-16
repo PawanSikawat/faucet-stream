@@ -1,7 +1,7 @@
-//! SQLite query → JSON Lines file.
+//! SQLite → JSONL — full builder showcase for both connectors.
 //!
-//! Useful for one-shot exports of a local SQLite database into a portable
-//! line-delimited JSON dump.
+//! SQLite source uses a tuned pool. JSONL sink demonstrates append and
+//! pretty-printing modes.
 //!
 //! Run:
 //! ```bash
@@ -15,13 +15,17 @@ use faucet_stream::source::sqlite::{SqliteSource, SqliteSourceConfig};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let source = SqliteSource::new(SqliteSourceConfig::new(
-        "sqlite:./app.db",
-        "SELECT * FROM events ORDER BY ts",
-    ))
+    let source = SqliteSource::new(
+        SqliteSourceConfig::new("sqlite:./app.db", "SELECT * FROM events ORDER BY ts")
+            .with_max_connections(4),
+    )
     .await?;
 
-    let sink = JsonlSink::new(JsonlSinkConfig::new("events.jsonl"));
+    let sink = JsonlSink::new(
+        JsonlSinkConfig::new("events.jsonl")
+            .append(true)
+            .pretty(false),
+    );
 
     let result = Pipeline::new(&source, &sink).run().await?;
     println!("dumped {} events to events.jsonl", result.records_written);

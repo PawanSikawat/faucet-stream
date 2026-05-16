@@ -1,8 +1,8 @@
-//! PostgreSQL → Elasticsearch (DB → search backend).
+//! PostgreSQL → Elasticsearch — full builder showcase for both connectors.
 //!
-//! Materialise rows from Postgres into an Elasticsearch index so they can
-//! power full-text search. Tune `batch_size` on the sink for indexing
-//! throughput; the default is 500 per bulk request.
+//! Postgres source uses a parameterised query and a tuned pool. ES sink
+//! shows API-key auth, batch sizing, and `id_field` (the source column
+//! used as the Elasticsearch `_id`).
 //!
 //! Run:
 //! ```bash
@@ -10,22 +10,30 @@
 //!     --features "source-postgres sink-elasticsearch"
 //! ```
 
-use faucet_stream::Pipeline;
-use faucet_stream::sink::elasticsearch::{ElasticsearchSink, ElasticsearchSinkConfig};
+use faucet_stream::sink::elasticsearch::{
+    ElasticsearchSink, ElasticsearchSinkAuth, ElasticsearchSinkConfig,
+};
 use faucet_stream::source::postgres::{PostgresSource, PostgresSourceConfig};
+use faucet_stream::{Pipeline, json};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let source = PostgresSource::new(PostgresSourceConfig::new(
-        "postgres://user:pass@localhost/app",
-        "SELECT id, title, body, tags FROM articles",
-    ))
+    let source = PostgresSource::new(
+        PostgresSourceConfig::new(
+            "postgres://user:pass@localhost/app",
+            "SELECT id, title, body, tags FROM articles WHERE published = $1",
+        )
+        .params(vec![json!(true)])
+        .with_max_connections(8),
+    )
     .await?;
 
-    let sink = ElasticsearchSink::new(ElasticsearchSinkConfig::new(
-        "http://localhost:9200",
-        "articles",
-    ));
+    let sink = ElasticsearchSink::new(
+        ElasticsearchSinkConfig::new("https://es.example.com:9200", "articles")
+            .auth(ElasticsearchSinkAuth::ApiKey(std::env::var("ES_API_KEY")?))
+            .batch_size(500)
+            .id_field("id"),
+    );
 
     let result = Pipeline::new(&source, &sink).run().await?;
     println!(

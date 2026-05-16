@@ -1,7 +1,7 @@
-//! MySQL query → Snowflake (OAuth auth).
+//! MySQL → Snowflake (OAuth auth) — full builder showcase.
 //!
-//! Required: a Snowflake account using OAuth (token from your IdP) and a
-//! reachable MySQL instance.
+//! MySQL source uses a tuned pool. Snowflake sink demonstrates the OAuth
+//! auth variant and batch sizing.
 //!
 //! Run:
 //! ```bash
@@ -15,22 +15,28 @@ use faucet_stream::source::mysql::{MysqlSource, MysqlSourceConfig};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let source = MysqlSource::new(MysqlSourceConfig::new(
-        "mysql://user:pass@localhost/sales",
-        "SELECT order_id, customer_id, total, ordered_at FROM orders",
-    ))
+    let source = MysqlSource::new(
+        MysqlSourceConfig::new(
+            "mysql://user:pass@localhost/sales",
+            "SELECT order_id, customer_id, total, ordered_at FROM orders",
+        )
+        .with_max_connections(16),
+    )
     .await?;
 
-    let sink = SnowflakeSink::new(SnowflakeSinkConfig::new(
-        "xy12345.us-east-1",
-        "LOAD_WH",
-        "ANALYTICS",
-        "STAGING",
-        "ORDERS",
-        SnowflakeAuth::OAuth {
-            token: std::env::var("SNOWFLAKE_OAUTH_TOKEN")?,
-        },
-    ));
+    let sink = SnowflakeSink::new(
+        SnowflakeSinkConfig::new(
+            "xy12345.us-east-1",
+            "LOAD_WH",
+            "ANALYTICS",
+            "STAGING",
+            "ORDERS",
+            SnowflakeAuth::OAuth {
+                token: std::env::var("SNOWFLAKE_OAUTH_TOKEN")?,
+            },
+        )
+        .batch_size(1000),
+    );
 
     let result = Pipeline::new(&source, &sink).run().await?;
     println!("loaded {} orders into Snowflake", result.records_written);

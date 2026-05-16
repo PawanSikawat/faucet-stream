@@ -1,7 +1,7 @@
-//! SQLite query → CSV file.
+//! SQLite → CSV — full builder showcase for both connectors.
 //!
-//! Reads rows out of a local SQLite database and writes them as a CSV file
-//! with headers (taken from the first record's keys).
+//! SQLite source uses a tuned pool. CSV sink demonstrates delimiter,
+//! header toggle, and append mode.
 //!
 //! Run:
 //! ```bash
@@ -15,13 +15,21 @@ use faucet_stream::source::sqlite::{SqliteSource, SqliteSourceConfig};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let source = SqliteSource::new(SqliteSourceConfig::new(
-        "sqlite:local.db",
-        "SELECT id, name, price FROM products ORDER BY id",
-    ))
+    let source = SqliteSource::new(
+        SqliteSourceConfig::new(
+            "sqlite:local.db",
+            "SELECT id, name, price FROM products ORDER BY id",
+        )
+        .with_max_connections(4),
+    )
     .await?;
 
-    let sink = CsvSink::new(CsvSinkConfig::new("products.csv"));
+    let sink = CsvSink::new(
+        CsvSinkConfig::new("products.csv")
+            .delimiter(b',')
+            .write_headers(true)
+            .append(false),
+    );
 
     let result = Pipeline::new(&source, &sink).run().await?;
     println!(

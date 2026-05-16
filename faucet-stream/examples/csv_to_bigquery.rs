@@ -1,8 +1,7 @@
-//! CSV file → Google BigQuery (one-shot CSV upload to DW).
+//! CSV → BigQuery — full builder showcase for both connectors.
 //!
-//! The most common destination for an ad-hoc CSV upload. For very large
-//! files prefer BigQuery's native `bq load` path; this pattern is best for
-//! repeated programmatic loads or continuous flows.
+//! CSV source uses non-default delimiter + quote. BigQuery sink shows the
+//! key-path credential variant and batch sizing.
 //!
 //! Run:
 //! ```bash
@@ -16,14 +15,22 @@ use faucet_stream::source::csv::{CsvSource, CsvSourceConfig};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let source = CsvSource::new(CsvSourceConfig::new("transactions.csv"));
+    let source = CsvSource::new(
+        CsvSourceConfig::new("transactions.csv")
+            .has_headers(true)
+            .delimiter(b',')
+            .quote(b'"'),
+    );
 
-    let sink = BigQuerySink::new(BigQuerySinkConfig::new(
-        "my-gcp-project",
-        "warehouse",
-        "transactions",
-        BigQueryCredentials::ServiceAccountKeyPath("service-account.json".into()),
-    ))
+    let sink = BigQuerySink::new(
+        BigQuerySinkConfig::new(
+            "my-gcp-project",
+            "warehouse",
+            "transactions",
+            BigQueryCredentials::ServiceAccountKeyPath("service-account.json".into()),
+        )
+        .batch_size(1000),
+    )
     .await?;
 
     let result = Pipeline::new(&source, &sink).run().await?;

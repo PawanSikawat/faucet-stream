@@ -1,8 +1,8 @@
-//! Webhook receiver → HTTP POST forwarder.
+//! Webhook receiver → HTTP forwarder — full builder showcase.
 //!
-//! Stands up a temporary HTTP server, collects POST payloads sent to it, and
-//! forwards each one to a downstream HTTP endpoint. The webhook source exits
-//! after `timeout_secs` of inactivity (default 30s) or `max_payloads`.
+//! Webhook source uses listen-addr, path, max-payloads, and timeout knobs.
+//! HTTP sink exercises method, headers, auth, batch mode, retries, and
+//! concurrency.
 //!
 //! Run:
 //! ```bash
@@ -11,14 +11,32 @@
 //! ```
 
 use faucet_stream::Pipeline;
-use faucet_stream::sink::http::{HttpSink, HttpSinkConfig};
+use faucet_stream::sink::http::{HttpBatchMode, HttpSink, HttpSinkAuth, HttpSinkConfig};
 use faucet_stream::source::webhook::{WebhookSource, WebhookSourceConfig};
+use reqwest::header::{HeaderMap, HeaderValue};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let source = WebhookSource::new(WebhookSourceConfig::new());
+    let source = WebhookSource::new(
+        WebhookSourceConfig::new()
+            .listen_addr("0.0.0.0:8080")
+            .path("/webhook")
+            .max_payloads(10_000)
+            .timeout_secs(60),
+    );
 
-    let sink = HttpSink::new(HttpSinkConfig::new("https://downstream.example.com/ingest"));
+    let mut headers = HeaderMap::new();
+    headers.insert("X-Source", HeaderValue::from_static("faucet-stream"));
+
+    let sink = HttpSink::new(
+        HttpSinkConfig::new("https://downstream.example.com/ingest")
+            .method(reqwest::Method::POST)
+            .auth(HttpSinkAuth::Bearer(std::env::var("INGEST_TOKEN")?))
+            .headers(headers)
+            .batch_mode(HttpBatchMode::Individual)
+            .max_retries(3)
+            .concurrency(16),
+    );
 
     let result = Pipeline::new(&source, &sink).run().await?;
     println!("forwarded {} webhook payloads", result.records_written);

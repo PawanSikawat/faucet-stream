@@ -1,8 +1,7 @@
-//! CSV file → MySQL.
+//! CSV → MySQL — full builder showcase for both connectors.
 //!
-//! Bulk-load a CSV file into MySQL using the default JSON column mapping.
-//! Switch to `MysqlColumnMapping::AutoMap` to write each CSV column into a
-//! matching SQL column.
+//! CSV source uses non-default delimiter and quote characters. MySQL sink
+//! demonstrates the `AutoMap` column mapping plus batch and pool tuning.
 //!
 //! Run:
 //! ```bash
@@ -11,17 +10,24 @@
 //! ```
 
 use faucet_stream::Pipeline;
-use faucet_stream::sink::mysql::{MysqlSink, MysqlSinkConfig};
+use faucet_stream::sink::mysql::{MysqlColumnMapping, MysqlSink, MysqlSinkConfig};
 use faucet_stream::source::csv::{CsvSource, CsvSourceConfig};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let source = CsvSource::new(CsvSourceConfig::new("customers.csv"));
+    let source = CsvSource::new(
+        CsvSourceConfig::new("customers.csv")
+            .has_headers(true)
+            .delimiter(b',')
+            .quote(b'"'),
+    );
 
-    let sink = MysqlSink::new(MysqlSinkConfig::new(
-        "mysql://user:pass@localhost/crm",
-        "customers_imported",
-    ))
+    let sink = MysqlSink::new(
+        MysqlSinkConfig::new("mysql://user:pass@localhost/crm", "customers_imported")
+            .column_mapping(MysqlColumnMapping::AutoMap)
+            .batch_size(1000)
+            .max_connections(10),
+    )
     .await?;
 
     let result = Pipeline::new(&source, &sink).run().await?;

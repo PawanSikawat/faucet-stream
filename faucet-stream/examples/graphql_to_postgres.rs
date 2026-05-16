@@ -1,7 +1,8 @@
-//! GraphQL API → PostgreSQL (JSONB column).
+//! GraphQL → PostgreSQL — full builder showcase for both connectors.
 //!
-//! Required: a Postgres database reachable at `DATABASE_URL`, with a table
-//! containing a `jsonb` column called `data` (the default mapping).
+//! GraphQL source uses variables, custom auth headers, Relay cursor
+//! pagination, and a records-path. Postgres sink demonstrates both column
+//! mappings (`AutoMap` here) plus batch size and pool sizing.
 //!
 //! Run:
 //! ```bash
@@ -9,34 +10,52 @@
 //!     --features "source-graphql sink-postgres"
 //! ```
 
-use faucet_stream::Pipeline;
-use faucet_stream::sink::postgres::{PostgresSink, PostgresSinkConfig};
-use faucet_stream::source::graphql::{GraphqlStream, GraphqlStreamConfig};
+use faucet_stream::sink::postgres::{PostgresColumnMapping, PostgresSink, PostgresSinkConfig};
+use faucet_stream::source::graphql::{
+    GraphqlAuth, GraphqlPagination, GraphqlStream, GraphqlStreamConfig,
+};
+use faucet_stream::{Pipeline, json};
+use reqwest::header::{HeaderMap, HeaderValue};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let query = r#"
-        query Users {
-          users(first: 100) {
-            id
-            name
-            email
+        query Users($after: String, $first: Int!) {
+          users(first: $first, after: $after) {
+            edges { node { id name email createdAt } }
+            pageInfo { endCursor hasNextPage }
           }
         }
     "#;
 
-    let source = GraphqlStream::new(GraphqlStreamConfig::new(
-        "https://api.example.com/graphql",
-        query,
-    ));
+    let mut headers = HeaderMap::new();
+    headers.insert("X-Client", HeaderValue::from_static("faucet-stream"));
 
-    let sink = PostgresSink::new(PostgresSinkConfig::new(
-        "postgres://user:pass@localhost/mydb",
-        "users_raw",
-    ))
+    let source = GraphqlStream::new(
+        GraphqlStreamConfig::new("https://api.example.com/graphql", query)
+            .variables(json!({ "first": 100 }))
+            .auth(GraphqlAuth::Bearer(std::env::var("API_TOKEN")?))
+            .headers(headers)
+            .records_path("$.data.users.edges[*].node")
+            .pagination(GraphqlPagination {
+                has_next_page_path: "$.data.users.pageInfo.hasNextPage".into(),
+                cursor_path: "$.data.users.pageInfo.endCursor".into(),
+                cursor_variable: "after".into(),
+                page_size: Some(100),
+                page_size_variable: "first".into(),
+            })
+            .max_pages(usize::MAX),
+    );
+
+    let sink = PostgresSink::new(
+        PostgresSinkConfig::new("postgres://user:pass@localhost/app", "users_imported")
+            .column_mapping(PostgresColumnMapping::AutoMap)
+            .batch_size(1000)
+            .max_connections(8),
+    )
     .await?;
 
     let result = Pipeline::new(&source, &sink).run().await?;
-    println!("inserted {} rows into users_raw", result.records_written);
+    println!("inserted {} users into Postgres", result.records_written);
     Ok(())
 }
