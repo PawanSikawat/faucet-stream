@@ -137,29 +137,39 @@ The remaining examples illustrate popular source→sink pairings. They compile u
 
 | Example | Source → Sink |
 |---------|---------------|
+| `rest_to_postgres` | REST → PostgreSQL — canonical API → operational-DB ELT |
 | `rest_to_bigquery` | REST → BigQuery |
+| `rest_to_s3` | REST → S3 — data-lake landing zone |
 | `graphql_to_postgres` | GraphQL → PostgreSQL |
 | `graphql_to_bigquery` | GraphQL → BigQuery |
 | `xml_to_s3` | XML/SOAP → S3 |
 | `xml_to_mongodb` | XML/SOAP → MongoDB |
 | `grpc_to_elasticsearch` | gRPC → Elasticsearch |
-| `grpc_to_http` | gRPC → HTTP POST |
+| `grpc_to_http` | gRPC → HTTP — also demonstrates the full HTTP sink builder (auth, headers, method, batch mode) |
 | `postgres_to_bigquery` | PostgreSQL → BigQuery |
 | `postgres_to_snowflake` | PostgreSQL → Snowflake (key-pair auth) |
+| `postgres_to_s3` | PostgreSQL → S3 archive |
+| `postgres_to_elasticsearch` | PostgreSQL → Elasticsearch search index |
 | `mysql_to_postgres` | MySQL → PostgreSQL |
 | `mysql_to_snowflake` | MySQL → Snowflake (OAuth) |
+| `mysql_to_bigquery` | MySQL → BigQuery |
 | `sqlite_to_csv` | SQLite → CSV |
 | `sqlite_to_jsonl` | SQLite → JSONL |
 | `s3_to_postgres` | S3 → PostgreSQL |
 | `s3_to_mongodb` | S3 → MongoDB |
+| `s3_to_bigquery` | S3 → BigQuery — classic data-lake → DW |
+| `s3_to_snowflake` | S3 → Snowflake — data-lake → DW (alt) |
 | `mongodb_to_elasticsearch` | MongoDB → Elasticsearch |
 | `mongodb_to_redis` | MongoDB → Redis stream |
+| `mongodb_to_postgres` | MongoDB → PostgreSQL — document → relational mirror |
 | `redis_to_mysql` | Redis stream → MySQL |
 | `redis_to_sqlite` | Redis list → SQLite |
 | `webhook_to_http` | Webhook → HTTP forwarder |
 | `webhook_to_csv` | Webhook → CSV |
+| `webhook_to_postgres` | Webhook → PostgreSQL — durable webhook capture |
 | `csv_to_mysql` | CSV → MySQL |
 | `csv_to_sqlite` | CSV → SQLite |
+| `csv_to_bigquery` | CSV → BigQuery |
 | `elasticsearch_to_s3` | Elasticsearch → S3 backup |
 | `elasticsearch_to_redis` | Elasticsearch → Redis cache |
 

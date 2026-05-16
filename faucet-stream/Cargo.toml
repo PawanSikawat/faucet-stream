@@ -115,6 +115,7 @@ faucet-sink-http = { workspace = true, optional = true }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+reqwest = { version = "0.13", default-features = false }
 
 [[example]]
 name = "rest_to_jsonl"
@@ -227,3 +228,43 @@ required-features = ["source-elasticsearch", "sink-s3"]
 [[example]]
 name = "elasticsearch_to_redis"
 required-features = ["source-elasticsearch", "sink-redis"]
+
+[[example]]
+name = "rest_to_postgres"
+required-features = ["source-rest", "sink-postgres"]
+
+[[example]]
+name = "rest_to_s3"
+required-features = ["source-rest", "sink-s3"]
+
+[[example]]
+name = "s3_to_bigquery"
+required-features = ["source-s3", "sink-bigquery"]
+
+[[example]]
+name = "s3_to_snowflake"
+required-features = ["source-s3", "sink-snowflake"]
+
+[[example]]
+name = "postgres_to_s3"
+required-features = ["source-postgres", "sink-s3"]
+
+[[example]]
+name = "postgres_to_elasticsearch"
+required-features = ["source-postgres", "sink-elasticsearch"]
+
+[[example]]
+name = "webhook_to_postgres"
+required-features = ["source-webhook", "sink-postgres"]
+
+[[example]]
+name = "mysql_to_bigquery"
+required-features = ["source-mysql", "sink-bigquery"]
+
+[[example]]
+name = "mongodb_to_postgres"
+required-features = ["source-mongodb", "sink-postgres"]
+
+[[example]]
+name = "csv_to_bigquery"
+required-features = ["source-csv", "sink-bigquery"]
