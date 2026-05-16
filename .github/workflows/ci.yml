@@ -142,6 +142,6 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-cli-${{ matrix.features }}-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-cli-${{ hashFiles('**/Cargo.lock') }}-${{ hashFiles('cli/**/*.rs', 'cli/Cargo.toml') }}
           restore-keys: ${{ runner.os }}-cli-
       - run: cargo build -p faucet-cli --no-default-features --features "${{ matrix.features }}"
