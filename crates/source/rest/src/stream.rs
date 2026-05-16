@@ -19,7 +19,9 @@ use serde::Deserialize;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::pin::Pin;
+use std::sync::Arc;
 use std::time::Duration;
+use tokio::sync::Mutex as AsyncMutex;
 
 /// A configured REST API stream that handles pagination, auth, and extraction.
 pub struct RestStream {
@@ -31,6 +33,10 @@ pub struct RestStream {
     token_cache: TokenCache,
     /// Shared token endpoint cache (only used when `config.auth` is `Auth::TokenEndpoint`).
     token_endpoint_cache: TokenEndpointCache,
+    /// Bookmark applied at runtime via
+    /// [`Source::apply_start_bookmark`](faucet_core::Source::apply_start_bookmark).
+    /// Takes precedence over `config.start_replication_value` when set.
+    runtime_start: Arc<AsyncMutex<Option<Value>>>,
 }
 
 impl RestStream {
@@ -71,6 +77,7 @@ impl RestStream {
             compiled_transforms,
             token_cache: TokenCache::new(),
             token_endpoint_cache: TokenEndpointCache::new(),
+            runtime_start: Arc::new(AsyncMutex::new(None)),
         })
     }
 
@@ -210,6 +217,17 @@ impl RestStream {
         let owned_context: Option<HashMap<String, Value>> = context.cloned();
 
         Box::pin(async_stream::try_stream! {
+            // Resolve the effective start-bookmark once at the top of the stream.
+            // A runtime override (applied via `Source::apply_start_bookmark` —
+            // typically by the pipeline reading from a `StateStore`) takes
+            // precedence over the static config value.
+            let effective_start: Option<Value> = {
+                let guard = self.runtime_start.lock().await;
+                guard
+                    .clone()
+                    .or_else(|| self.config.start_replication_value.clone())
+            };
+
             let mut state = PaginationState::default();
             let mut pages_fetched = 0usize;
 
@@ -246,10 +264,9 @@ impl RestStream {
 
                 let records =
                     if self.config.replication_method == ReplicationMethod::Incremental {
-                        if let (Some(key), Some(start)) = (
-                            &self.config.replication_key,
-                            &self.config.start_replication_value,
-                        ) {
+                        if let (Some(key), Some(start)) =
+                            (&self.config.replication_key, effective_start.as_ref())
+                        {
                             filter_incremental(raw_records, key, start)
                         } else {
                             raw_records
@@ -543,6 +560,15 @@ impl faucet_core::Source for RestStream {
     fn config_schema(&self) -> serde_json::Value {
         serde_json::to_value(faucet_core::schema_for!(RestStreamConfig))
             .expect("schema serialization")
+    }
+
+    fn state_key(&self) -> Option<String> {
+        self.config.state_key.clone()
+    }
+
+    async fn apply_start_bookmark(&self, bookmark: Value) -> Result<(), FaucetError> {
+        *self.runtime_start.lock().await = Some(bookmark);
+        Ok(())
     }
 }
 

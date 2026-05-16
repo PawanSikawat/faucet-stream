@@ -35,3 +35,5 @@ wiremock = "0.6"
 tracing-subscriber = "0.3"
 futures.workspace = true
 serde = { version = "1", features = ["derive"] }
+tempfile = "3"
+async-trait.workspace = true

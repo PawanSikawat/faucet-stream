@@ -58,6 +58,13 @@ pub struct RestStreamConfig {
     /// Bookmark value: records where `record[replication_key] <= start_replication_value`
     /// are filtered out when `replication_method` is `Incremental`.
     pub start_replication_value: Option<Value>,
+    /// Opt-in identifier used by [`Pipeline::with_state_store`](faucet_core::Pipeline::with_state_store)
+    /// to persist this stream's bookmark across runs. When set, the pipeline
+    /// will load any previously-stored bookmark before fetching and write the
+    /// new bookmark only after the sink confirms the batch.
+    ///
+    /// Keys must satisfy [`faucet_core::state::validate_state_key`].
+    pub state_key: Option<String>,
 
     // ── Singer / Meltano metadata ─────────────────────────────────────────────
     /// Human-readable stream name (used in logging and Singer SCHEMA messages).
@@ -108,6 +115,7 @@ impl Default for RestStreamConfig {
             replication_method: ReplicationMethod::FullTable,
             replication_key: None,
             start_replication_value: None,
+            state_key: None,
             name: None,
             primary_keys: Vec::new(),
             schema: None,
@@ -220,6 +228,15 @@ impl RestStreamConfig {
     /// when using `ReplicationMethod::Incremental`.
     pub fn start_replication_value(mut self, v: Value) -> Self {
         self.start_replication_value = Some(v);
+        self
+    }
+
+    /// Opt the stream into resumable runs by giving it a stable state key.
+    /// When this is set and the [`Pipeline`](faucet_core::Pipeline) is
+    /// configured with a state store, the previously persisted bookmark is
+    /// applied to the stream before fetching.
+    pub fn state_key(mut self, key: &str) -> Self {
+        self.state_key = Some(key.into());
         self
     }
 
