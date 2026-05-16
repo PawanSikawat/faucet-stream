@@ -6,14 +6,53 @@
 [![License](https://img.shields.io/crates/l/faucet-stream.svg)](LICENSE-MIT)
 
 A modular, config-driven data pipeline toolkit for Rust with pluggable
-**source** and **sink** connectors.
+**source** and **sink** connectors — plus the `faucet` CLI binary that runs
+pipelines declaratively from a YAML/JSON file. No Rust code required.
 
 Inspired by [Meltano's RESTStream](https://sdk.meltano.com/en/latest/classes/singer_sdk.RESTStream.html)
-— but for Rust, and as a reusable library.
+— but for Rust, both as a reusable library and as a standalone CLI.
+
+## Run a pipeline from a YAML file (no Rust required)
+
+```bash
+cargo install faucet-cli
+faucet init my_pipeline      # scaffold pipeline.yaml
+faucet validate pipeline.yaml
+faucet run pipeline.yaml
+```
+
+```yaml
+# pipeline.yaml
+version: 1
+source:
+  type: rest
+  config:
+    base_url: https://api.github.com
+    path: /repos/PawanSikawat/faucet-stream/issues
+    method: GET
+    auth: { type: ApiKey, header: Authorization, value: "Bearer ${env:GITHUB_TOKEN}" }
+    query_params: { state: open }
+    pagination: { type: LinkHeader }
+    max_retries: 3
+    retry_backoff: 1
+    tolerated_http_errors: []
+    replication_method: { type: FullTable }
+    primary_keys: ["id"]
+    partitions: []
+    schema_sample_size: 100
+transforms:
+  - type: snake_case
+sink:
+  type: jsonl
+  config:
+    path: ./out/issues.jsonl
+```
+
+See [`cli/README.md`](cli/README.md) and [`cli/examples/`](cli/examples/) for the full CLI reference and ready-to-run pipeline YAMLs.
 
 ## Architecture
 
-faucet-stream is a Cargo workspace with 27 crates — 13 sources, 12 sinks, a shared core, and an umbrella crate:
+faucet-stream is a Cargo workspace with 31 crates — 13 sources, 13 sinks, 2 state-store backends, the shared core, the umbrella crate, and the CLI binary:
 
 | Crate | Description |
 |-------|-------------|
@@ -50,6 +89,8 @@ faucet-stream is a Cargo workspace with 27 crates — 13 sources, 12 sinks, a sh
 | [`faucet-state-redis`](crates/state/redis) | Redis-backed `StateStore` for persistent bookmarks |
 | [`faucet-state-postgres`](crates/state/postgres) | PostgreSQL-backed `StateStore` for persistent bookmarks |
 | [`faucet-stream`](faucet-stream) | Umbrella crate — feature-gated re-exports of all connectors and state backends |
+| **CLI** | |
+| [`faucet-cli`](cli) | `faucet` binary — YAML/JSON config-driven pipeline runner (`run`, `validate`, `schema`, `list`, `preview`, `init`) |
 
 Install only what you need:
 
@@ -884,7 +925,18 @@ crates/
     csv/                      — CSV file writer
     elasticsearch/            — Elasticsearch bulk index
     http/                     — HTTP POST
+    stdout/                   — Stdout / stderr (JSON Lines, pretty JSON, TSV)
+  state/
+    redis/                    — Redis-backed StateStore
+    postgres/                 — PostgreSQL-backed StateStore
 faucet-stream/                — umbrella crate with feature-gated re-exports
+cli/                          — faucet-cli: `faucet` binary, YAML/JSON pipeline runner
+  src/
+    main.rs, lib.rs, cli.rs, config.rs, interpolate.rs,
+    registry.rs, state.rs, transforms.rs, error.rs,
+    commands/{run, validate, schema, list, preview, init}.rs
+  examples/                   — ready-to-run pipeline YAMLs
+  tests/                      — assert_cmd + wiremock integration tests
 ```
 
 ## License

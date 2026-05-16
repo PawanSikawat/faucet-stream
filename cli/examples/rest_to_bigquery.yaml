@@ -1,0 +1,47 @@
+# YAML equivalent of `faucet-stream/examples/rest_to_bigquery.rs`.
+# REST (Basic auth, page-number pagination) → BigQuery service account.
+version: 1
+name: rest_to_bigquery
+
+source:
+  type: rest
+  config:
+    base_url: https://api.example.com
+    path: /v1/events
+    method: GET
+    name: events
+    auth:
+      type: Basic
+      username: ${env:API_USER}
+      password: ${env:API_PASS}
+    query_params:
+      type: purchase
+    records_path: $.events[*]
+    pagination:
+      type: PageNumber
+      param_name: page
+      start_page: 1
+      page_size: 500
+      page_size_param: per_page
+    max_pages: 200
+    request_delay: 0
+    timeout: 45
+    max_retries: 5
+    retry_backoff: 2
+    tolerated_http_errors: [404]
+    replication_method:
+      type: FullTable
+    primary_keys: [event_id]
+    partitions: []
+    schema_sample_size: 100
+
+sink:
+  type: bigquery
+  config:
+    project_id: my-gcp-project
+    dataset_id: analytics
+    table_id: events
+    credentials:
+      type: ServiceAccountKeyPath
+      value: service-account.json
+    batch_size: 1000

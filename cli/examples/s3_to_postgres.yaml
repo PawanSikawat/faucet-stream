@@ -1,0 +1,26 @@
+# YAML equivalent of `faucet-stream/examples/s3_to_postgres.rs`.
+# S3 (JSON Lines + endpoint override) → PostgreSQL JSONB.
+version: 1
+name: s3_to_postgres
+
+source:
+  type: s3
+  config:
+    bucket: my-data-lake
+    prefix: events/2026/
+    region: us-east-1
+    endpoint_url: https://s3.us-east-1.amazonaws.com
+    file_format: json_lines
+    max_objects: 1000
+    concurrency: 16
+
+sink:
+  type: postgres
+  config:
+    connection_url: postgres://user:pass@localhost/warehouse
+    table_name: events_raw
+    column_mapping:
+      type: jsonb
+      column: payload
+    batch_size: 1000
+    max_connections: 10

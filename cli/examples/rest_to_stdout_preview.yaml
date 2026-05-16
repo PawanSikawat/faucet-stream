@@ -1,0 +1,33 @@
+# A read-only REST → stdout flow you can pipe into `jq` or another shell tool:
+#
+#   faucet run cli/examples/rest_to_stdout_preview.yaml | jq '.id'
+version: 1
+name: rest_preview
+
+source:
+  type: rest
+  config:
+    base_url: https://jsonplaceholder.typicode.com
+    path: /posts
+    method: GET
+    auth:
+      type: None
+    query_params: {}
+    pagination:
+      type: None
+    max_retries: 3
+    retry_backoff: 1
+    tolerated_http_errors: []
+    replication_method:
+      type: FullTable
+    primary_keys: ["id"]
+    partitions: []
+    schema_sample_size: 0
+
+sink:
+  type: stdout
+  config:
+    destination: stdout
+    format: json_lines
+    flush_per_record: true
+    max_records: 10

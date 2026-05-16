@@ -1,0 +1,27 @@
+# YAML equivalent of `faucet-stream/examples/redis_to_mysql.rs`.
+# Redis stream (consumer group) → MySQL JSON column.
+version: 1
+name: redis_to_mysql
+
+source:
+  type: redis
+  config:
+    url: redis://localhost:6379
+    source_type:
+      type: Stream
+      key: events:raw
+      group: archiver
+      consumer: worker-1
+      count: 1000
+    max_records: 100000
+
+sink:
+  type: mysql
+  config:
+    connection_url: mysql://user:pass@localhost/archive
+    table_name: events_raw
+    column_mapping:
+      type: json
+      column: payload
+    batch_size: 1000
+    max_connections: 10

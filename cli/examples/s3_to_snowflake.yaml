@@ -1,0 +1,27 @@
+# YAML equivalent of `faucet-stream/examples/s3_to_snowflake.rs`.
+# S3 (JSON Lines) → Snowflake (key-pair auth).
+version: 1
+name: s3_to_snowflake
+
+source:
+  type: s3
+  config:
+    bucket: my-data-lake
+    prefix: raw/events/
+    region: us-east-1
+    file_format: json_lines
+    concurrency: 16
+
+sink:
+  type: snowflake
+  config:
+    account: xy12345.us-east-1
+    warehouse: LOAD_WH
+    database: ANALYTICS
+    schema: RAW
+    table: EVENTS
+    auth:
+      type: KeyPair
+      user: LOADER
+      private_key_pem: ${file:./snowflake_key.pem}
+    batch_size: 1000

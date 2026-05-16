@@ -1,0 +1,48 @@
+# YAML equivalent of `faucet-stream/examples/dag_users_posts.rs`.
+#
+# Limitation: the `faucet` CLI today only runs a single source → sink
+# pipeline. The Rust example uses `SourceDAG` to fan out per-user post
+# fetches with `context_mapping` + `inject_context`. Until the CLI gains
+# a `dag:` section (tracking issue pending), wire DAGs via the library
+# API. The YAML below captures the parent (users) leg only.
+version: 1
+name: dag_users_posts__parent_only
+
+source:
+  type: rest
+  config:
+    base_url: https://api.example.com
+    path: /v1/users
+    method: GET
+    name: users
+    auth:
+      type: ApiKey
+      header: Authorization
+      value: Bearer ${env:API_TOKEN}
+    headers: {}
+    query_params:
+      active: "true"
+    records_path: $.data[*]
+    pagination:
+      type: PageNumber
+      param_name: page
+      start_page: 1
+      page_size: 100
+      page_size_param: per_page
+    max_pages: 20
+    timeout: 30
+    max_retries: 3
+    retry_backoff: 1
+    tolerated_http_errors: []
+    replication_method:
+      type: FullTable
+    primary_keys: [id]
+    partitions: []
+    schema_sample_size: 100
+
+sink:
+  type: jsonl
+  config:
+    path: users.jsonl
+    append: false
+    pretty: false

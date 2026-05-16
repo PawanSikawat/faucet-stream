@@ -1,0 +1,26 @@
+# YAML equivalent of `faucet-stream/examples/mongodb_to_redis.rs`.
+# MongoDB filter + sort + cursor batch → Redis stream sink.
+version: 1
+name: mongodb_to_redis
+
+source:
+  type: mongodb
+  config:
+    connection_uri: mongodb://localhost:27017
+    database: events
+    collection: raw
+    filter:
+      processed: false
+    sort:
+      created_at: 1
+    limit: 50000
+    batch_size: 500
+
+sink:
+  type: redis
+  config:
+    url: redis://localhost:6379
+    sink_type:
+      type: Stream
+      key: events:raw
+    batch_size: 1000

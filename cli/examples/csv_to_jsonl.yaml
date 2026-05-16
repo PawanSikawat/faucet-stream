@@ -1,0 +1,17 @@
+# Pipe a local CSV file through to JSONL. Useful as the simplest possible
+# smoke test for a fresh `faucet` install:
+#
+#   faucet validate cli/examples/csv_to_jsonl.yaml
+#   faucet run      cli/examples/csv_to_jsonl.yaml
+version: 1
+name: csv_to_jsonl
+
+source:
+  type: csv
+  config:
+    path: ./data/input.csv
+
+sink:
+  type: jsonl
+  config:
+    path: ./out/records.jsonl

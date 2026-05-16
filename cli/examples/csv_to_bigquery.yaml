@@ -1,0 +1,23 @@
+# YAML equivalent of `faucet-stream/examples/csv_to_bigquery.rs`.
+# CSV → BigQuery with service-account key path + non-default batch size.
+version: 1
+name: csv_to_bigquery
+
+source:
+  type: csv
+  config:
+    path: transactions.csv
+    has_headers: true
+    delimiter: 44   # b','
+    quote: 34       # b'"'
+
+sink:
+  type: bigquery
+  config:
+    project_id: my-gcp-project
+    dataset_id: warehouse
+    table_id: transactions
+    credentials:
+      type: ServiceAccountKeyPath
+      value: service-account.json
+    batch_size: 1000

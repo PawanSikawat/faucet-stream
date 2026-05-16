@@ -2,18 +2,19 @@
 
 ## Library Purpose
 
-`faucet-stream` is a modular, config-driven data pipeline toolkit for Rust with pluggable **source** and **sink** connectors.
+`faucet-stream` is a modular, config-driven data pipeline toolkit for Rust with pluggable **source** and **sink** connectors, plus a `faucet` CLI binary that runs pipelines declaratively from YAML/JSON — no Rust code required.
 
 - **Sources** fetch data from external systems (e.g. REST APIs).
 - **Sinks** write data to external systems (e.g. BigQuery).
+- **`faucet` CLI** (`cli/`) wires source → transforms → sink together based on a config file.
 
-Design goal: callers configure a source or sink once, call `fetch_all()` or `write_batch()`, and get/write all records — no manual pagination loop, no auth boilerplate.
+Design goal: callers configure a source or sink once, call `fetch_all()` or `write_batch()`, and get/write all records — no manual pagination loop, no auth boilerplate. Rust users embed the library directly; everyone else runs the `faucet` binary.
 
-This is a library workspace — there is no binary, no database, no migrations, no server.
+This workspace produces both library crates (`faucet-core` + every connector and state backend) and the `faucet` CLI binary. There is no database, no migrations, and no server.
 
 ## Workspace Structure
 
-The project is a Cargo workspace with 30 crates:
+The project is a Cargo workspace with 31 crates (30 libraries + the `faucet-cli` binary):
 
 | Crate | Path | Description |
 |-------|------|-------------|
@@ -47,6 +48,7 @@ The project is a Cargo workspace with 30 crates:
 | `faucet-state-redis` | `crates/state/redis/` | Redis-backed `StateStore` for replication bookmarks |
 | `faucet-state-postgres` | `crates/state/postgres/` | PostgreSQL-backed `StateStore` for replication bookmarks |
 | `faucet-stream` | `faucet-stream/` | Umbrella crate — feature-gated re-exports of all connectors and state backends |
+| `faucet-cli` | `cli/` | `faucet` binary — YAML/JSON config-driven pipeline runner (`run`, `validate`, `schema`, `list`, `preview`, `init`) |
 
 ### Crate Dependency Graph
 
@@ -82,6 +84,7 @@ faucet-core  <──  faucet-source-rest
              <──  faucet-state-redis
              <──  faucet-state-postgres
              <──  faucet-stream (umbrella, all optional)
+             <──  faucet-cli (binary — depends on every connector + state crate via optional features)
 ```
 
 ## Capturing Feature Ideas as GitHub Issues
@@ -189,6 +192,18 @@ cargo publish --dry-run -p faucet-core
 cargo publish --dry-run -p faucet-source-rest
 cargo publish --dry-run -p faucet-sink-bigquery
 cargo publish --dry-run -p faucet-stream
+cargo publish --dry-run -p faucet-cli
+
+# Build / install the CLI binary
+cargo build -p faucet-cli                     # debug build → target/debug/faucet
+cargo install --path cli                      # release install → ~/.cargo/bin/faucet
+cargo install --path cli --no-default-features --features "source-rest,sink-jsonl,sink-stdout,transforms"  # slim build
+
+# Drive the CLI on a config file
+./target/debug/faucet list
+./target/debug/faucet schema source rest
+./target/debug/faucet validate cli/examples/csv_to_jsonl.yaml
+./target/debug/faucet run cli/examples/csv_to_jsonl.yaml
 ```
 
 ## Architecture
@@ -364,6 +379,23 @@ cargo publish --dry-run -p faucet-stream
 ### faucet-stream (umbrella, `faucet-stream/`)
 
 - **`src/lib.rs`** — feature-gated re-exports of all connectors; `pub use faucet_core::*` always available; backwards-compatible flat re-exports for existing users
+
+### faucet-cli (binary, `cli/`)
+
+- **`src/main.rs`** — `tokio::main` entry point; installs `tracing-subscriber` against `--log-level` / `FAUCET_LOG`, then dispatches to `commands::*::run`. Reports `CliError` to stderr and exits 1 on failure.
+- **`src/lib.rs`** — library half of the crate; re-exports `cli`, `commands`, `config`, `error`, `interpolate`, `registry`, `state`, `transforms` so tests (and downstream tooling) can drive the same code paths the binary does.
+- **`src/cli.rs`** — `clap` argument types: `Cli`, `Command::{Run, Validate, Schema, List, Preview, Init}`, and per-subcommand arg structs (`RunArgs`, `ValidateArgs`, `SchemaArgs`, `PreviewArgs`, `InitArgs`).
+- **`src/config.rs`** — `PipelineConfig` (top-level YAML/JSON schema) with `ConnectorSpec { kind, config }`, `TransformSpec`, `StateStoreSpec`. `from_path()` reads + interpolates + dispatches to the YAML or JSON parser based on the file extension. Rejects `version != 1`.
+- **`src/interpolate.rs`** — substitutes `${env:VAR}`, `${file:PATH}`, `${secret:VAR}` (today an alias for `env`) in raw config text before parsing. `$${` is the escape for a literal `${`. Unclosed directives are left untouched.
+- **`src/registry.rs`** — feature-gated `build_source` / `build_sink` async dispatchers, plus `source_schema` / `sink_schema` (via `schemars::schema_for!`) and `source_descriptions` / `sink_descriptions` for `faucet list`.
+- **`src/state.rs`** — `build_state_store(&StateStoreSpec)` returns `Arc<dyn StateStore>`. Built-in `memory` and `file` backends are always available; `redis` / `postgres` are feature-gated.
+- **`src/transforms.rs`** — `compile_transforms(&[TransformSpec])` turns YAML transform blocks into `RecordTransform` values. Only the built-in `flatten`, `rename_keys`, `snake_case` transforms are exposed via config; custom-closure transforms remain Rust-only.
+- **`src/commands/run.rs`** — orchestrates a single `Pipeline` run, wrapping the source with `TransformingSource` when transforms are configured, and the sink with `LimitedSink` for `--limit` or `CountingSink` for `--dry-run`. Wires in a state store from `cfg.state` or `--state-path`.
+- **`src/commands/validate.rs`** — parses the config and verifies the source/sink kinds, transform names, and state-store kind are compiled into the binary. Prints a one-line summary on success.
+- **`src/commands/schema.rs`** — prints `source_schema()` / `sink_schema()` for the requested connector.
+- **`src/commands/list.rs`** — two-column listing of every compiled-in source, sink, transform, and state-store backend.
+- **`src/commands/preview.rs`** — runs only the source side, applies transforms, then writes the first `--limit` records to stdout via `faucet-sink-stdout`. Gated by the `sink-stdout` feature.
+- **`src/commands/init.rs`** — scaffolds a starter `pipeline.yaml` (REST → JSONL with a file state store). Refuses to overwrite unless `--force`.
 
 ## Feature Flags (umbrella crate)
 
