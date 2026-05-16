@@ -45,7 +45,11 @@ faucet-stream is a Cargo workspace with 27 crates — 13 sources, 12 sinks, a sh
 | [`faucet-sink-csv`](crates/sink/csv) | CSV — write JSON records as CSV rows |
 | [`faucet-sink-elasticsearch`](crates/sink/elasticsearch) | Elasticsearch — bulk index API |
 | [`faucet-sink-http`](crates/sink/http) | HTTP — POST records to any endpoint |
-| [`faucet-stream`](faucet-stream) | Umbrella crate — feature-gated re-exports of all connectors |
+| [`faucet-sink-stdout`](crates/sink/stdout) | Stdout/stderr — JSON Lines, pretty JSON, or TSV |
+| **State stores** | |
+| [`faucet-state-redis`](crates/state/redis) | Redis-backed `StateStore` for persistent bookmarks |
+| [`faucet-state-postgres`](crates/state/postgres) | PostgreSQL-backed `StateStore` for persistent bookmarks |
+| [`faucet-stream`](faucet-stream) | Umbrella crate — feature-gated re-exports of all connectors and state backends |
 
 Install only what you need:
 
@@ -715,9 +719,13 @@ All pagination styles include loop detection — if the same cursor or link is r
 | `sink-csv` | no | CSV file sink |
 | `sink-elasticsearch` | no | Elasticsearch bulk index sink |
 | `sink-http` | no | HTTP POST sink |
+| `sink-stdout` | no | Stdout/stderr sink (JSON Lines, pretty JSON, TSV) |
+| `state-redis` | no | Redis-backed `StateStore` backend |
+| `state-postgres` | no | PostgreSQL-backed `StateStore` backend |
 | `source` | no | All source connectors |
 | `sink` | no | All sink connectors |
-| `full` | no | Every connector |
+| `state` | no | All state-store backends (file backend lives in `faucet-core` directly) |
+| `full` | no | Every connector and state backend |
 | `transform-flatten` | yes | Flatten nested objects (forwarded to source-rest) |
 | `transform-rename-keys` | yes | Regex key renaming (forwarded to source-rest) |
 | `transform-snake-case` | yes | Snake_case normalisation (forwarded to source-rest) |

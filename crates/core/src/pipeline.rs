@@ -40,10 +40,12 @@
 //! ```
 
 use crate::error::FaucetError;
+use crate::state::{StateStore, validate_state_key};
 use crate::traits::{Sink, Source};
 use futures_core::Stream;
 use serde_json::Value;
 use std::pin::Pin;
+use std::sync::Arc;
 
 /// Result of a pipeline run.
 #[derive(Debug, Clone)]
@@ -67,22 +69,56 @@ pub struct PipelineResult {
 pub struct Pipeline<'a, So: Source + ?Sized, Si: Sink + ?Sized> {
     source: &'a So,
     sink: &'a Si,
+    state_store: Option<Arc<dyn StateStore>>,
 }
 
 impl<'a, So: Source + ?Sized, Si: Sink + ?Sized> Pipeline<'a, So, Si> {
     /// Create a new pipeline from a source and a sink.
     pub fn new(source: &'a So, sink: &'a Si) -> Self {
-        Self { source, sink }
+        Self {
+            source,
+            sink,
+            state_store: None,
+        }
+    }
+
+    /// Attach a [`StateStore`] for persistent incremental-replication bookmarks.
+    ///
+    /// When configured, `run()` will:
+    /// 1. Read any previously stored bookmark at the source's
+    ///    [`state_key`](Source::state_key) and call
+    ///    [`apply_start_bookmark`](Source::apply_start_bookmark) on the source
+    ///    so it can resume from that point.
+    /// 2. Run the fetch + write as usual.
+    /// 3. Persist the new bookmark **only after** the sink confirms the
+    ///    batch was written and flushed.
+    ///
+    /// Sources that do not return a [`state_key`](Source::state_key) are
+    /// unaffected — the store is consulted only when the source opts in.
+    pub fn with_state_store(mut self, store: Arc<dyn StateStore>) -> Self {
+        self.state_store = Some(store);
+        self
     }
 
     /// Run the pipeline in batch mode.
     ///
-    /// 1. Calls [`Source::fetch_all_incremental`] to get all records and an
+    /// 1. Loads the stored bookmark and pushes it to the source (if a state
+    ///    store is configured and the source returns a `state_key`).
+    /// 2. Calls [`Source::fetch_all_incremental`] to get all records and an
     ///    optional bookmark.
-    /// 2. Writes the records to the sink via [`Sink::write_batch`].
-    /// 3. Calls [`Sink::flush`] to ensure all data is committed.
-    /// 4. Returns a [`PipelineResult`] with the total count and bookmark.
+    /// 3. Writes the records to the sink via [`Sink::write_batch`].
+    /// 4. Calls [`Sink::flush`] to ensure all data is committed.
+    /// 5. Persists the new bookmark to the state store.
+    /// 6. Returns a [`PipelineResult`] with the total count and bookmark.
     pub async fn run(&self) -> Result<PipelineResult, FaucetError> {
+        let state_key = self.source.state_key();
+        if let (Some(store), Some(key)) = (self.state_store.as_ref(), state_key.as_ref()) {
+            validate_state_key(key)?;
+            if let Some(prior) = store.get(key).await? {
+                self.source.apply_start_bookmark(prior).await?;
+            }
+        }
+
         let (records, bookmark) = self
             .source
             .fetch_with_context_incremental(&std::collections::HashMap::new())
@@ -96,9 +132,18 @@ impl<'a, So: Source + ?Sized, Si: Sink + ?Sized> Pipeline<'a, So, Si> {
 
         self.sink.flush().await?;
 
+        if let (Some(store), Some(key), Some(value)) = (
+            self.state_store.as_ref(),
+            state_key.as_ref(),
+            bookmark.as_ref(),
+        ) {
+            store.put(key, value).await?;
+        }
+
         tracing::info!(
             records_written,
             has_bookmark = bookmark.is_some(),
+            persisted = self.state_store.is_some() && state_key.is_some() && bookmark.is_some(),
             "pipeline batch run complete"
         );
 
@@ -383,5 +428,192 @@ mod tests {
 
         let result = run_stream(stream, sink.as_ref()).await.unwrap();
         assert_eq!(result.records_written, 1);
+    }
+
+    // ── State-store integration tests ───────────────────────────────────────
+
+    use crate::state::{FileStateStore, MemoryStateStore, StateStore};
+    use std::sync::Arc;
+    use tempfile::TempDir;
+
+    /// Source that opts into state persistence. It records the bookmark it
+    /// received via `apply_start_bookmark` so tests can verify the pipeline
+    /// pushed the stored value back into it on resume.
+    struct StatefulSource {
+        key: String,
+        records: Vec<Value>,
+        new_bookmark: Value,
+        seen_bookmark: std::sync::Mutex<Option<Value>>,
+    }
+
+    impl StatefulSource {
+        fn new(key: &str, records: Vec<Value>, new_bookmark: Value) -> Self {
+            Self {
+                key: key.into(),
+                records,
+                new_bookmark,
+                seen_bookmark: std::sync::Mutex::new(None),
+            }
+        }
+        fn observed_start(&self) -> Option<Value> {
+            self.seen_bookmark.lock().unwrap().clone()
+        }
+    }
+
+    #[async_trait]
+    impl Source for StatefulSource {
+        async fn fetch_with_context(
+            &self,
+            _ctx: &std::collections::HashMap<String, Value>,
+        ) -> Result<Vec<Value>, FaucetError> {
+            Ok(self.records.clone())
+        }
+        async fn fetch_with_context_incremental(
+            &self,
+            _ctx: &std::collections::HashMap<String, Value>,
+        ) -> Result<(Vec<Value>, Option<Value>), FaucetError> {
+            Ok((self.records.clone(), Some(self.new_bookmark.clone())))
+        }
+        fn state_key(&self) -> Option<String> {
+            Some(self.key.clone())
+        }
+        async fn apply_start_bookmark(&self, bookmark: Value) -> Result<(), FaucetError> {
+            *self.seen_bookmark.lock().unwrap() = Some(bookmark);
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn pipeline_with_state_store_persists_bookmark_after_sink() {
+        let store: Arc<dyn StateStore> = Arc::new(MemoryStateStore::new());
+        let source = StatefulSource::new(
+            "github_issues",
+            vec![json!({"id": 1, "ts": "2026-05-01"})],
+            json!("2026-05-01"),
+        );
+        let sink = MockSink::new();
+        let result = Pipeline::new(&source, &sink)
+            .with_state_store(Arc::clone(&store))
+            .run()
+            .await
+            .unwrap();
+
+        assert_eq!(result.records_written, 1);
+        assert_eq!(result.bookmark, Some(json!("2026-05-01")));
+        // Stored value matches what the source returned.
+        let stored = store.get("github_issues").await.unwrap();
+        assert_eq!(stored, Some(json!("2026-05-01")));
+    }
+
+    #[tokio::test]
+    async fn pipeline_with_state_store_resumes_from_stored_bookmark() {
+        let store: Arc<dyn StateStore> = Arc::new(MemoryStateStore::new());
+        store
+            .put("github_issues", &json!("2026-04-30"))
+            .await
+            .unwrap();
+
+        let source =
+            StatefulSource::new("github_issues", vec![json!({"id": 2})], json!("2026-05-01"));
+        let sink = MockSink::new();
+        Pipeline::new(&source, &sink)
+            .with_state_store(Arc::clone(&store))
+            .run()
+            .await
+            .unwrap();
+
+        // The pipeline pushed the previously-stored bookmark back into the source.
+        assert_eq!(source.observed_start(), Some(json!("2026-04-30")));
+        // And then overwrote it with the new value from this run.
+        assert_eq!(
+            store.get("github_issues").await.unwrap(),
+            Some(json!("2026-05-01"))
+        );
+    }
+
+    #[tokio::test]
+    async fn pipeline_with_state_store_does_not_persist_when_sink_fails() {
+        let store: Arc<dyn StateStore> = Arc::new(MemoryStateStore::new());
+        let source = StatefulSource::new("k", vec![json!({"id": 1})], json!("2026-05-01"));
+        let sink = FailingSink;
+
+        let result = Pipeline::new(&source, &sink)
+            .with_state_store(Arc::clone(&store))
+            .run()
+            .await;
+        assert!(result.is_err());
+        assert!(store.get("k").await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn pipeline_with_state_store_no_state_key_means_no_persist() {
+        let store: Arc<dyn StateStore> = Arc::new(MemoryStateStore::new());
+        let source = IncrementalSource {
+            records: vec![json!({"id": 1})],
+            bookmark: json!("ignored"),
+        };
+        let sink = MockSink::new();
+        Pipeline::new(&source, &sink)
+            .with_state_store(Arc::clone(&store))
+            .run()
+            .await
+            .unwrap();
+        // IncrementalSource doesn't override state_key, so nothing was persisted.
+        // Cross-check that no keys exist by trying a likely one.
+        assert!(store.get("anything").await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn pipeline_with_state_store_skips_persist_when_bookmark_is_none() {
+        let store: Arc<dyn StateStore> = Arc::new(MemoryStateStore::new());
+        struct NoBookmarkSource;
+        #[async_trait]
+        impl Source for NoBookmarkSource {
+            async fn fetch_with_context(
+                &self,
+                _ctx: &std::collections::HashMap<String, Value>,
+            ) -> Result<Vec<Value>, FaucetError> {
+                Ok(vec![json!({"id": 1})])
+            }
+            fn state_key(&self) -> Option<String> {
+                Some("k".into())
+            }
+        }
+        let source = NoBookmarkSource;
+        let sink = MockSink::new();
+        Pipeline::new(&source, &sink)
+            .with_state_store(Arc::clone(&store))
+            .run()
+            .await
+            .unwrap();
+        assert!(store.get("k").await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn pipeline_with_file_state_store_round_trips_across_runs() {
+        let dir = TempDir::new().unwrap();
+        let store: Arc<dyn StateStore> = Arc::new(FileStateStore::new(dir.path()));
+
+        // Run 1: nothing stored yet, persist new bookmark.
+        let s1 = StatefulSource::new("k", vec![json!({"i": 1})], json!("v1"));
+        let sink1 = MockSink::new();
+        Pipeline::new(&s1, &sink1)
+            .with_state_store(Arc::clone(&store))
+            .run()
+            .await
+            .unwrap();
+        assert_eq!(s1.observed_start(), None);
+        assert_eq!(store.get("k").await.unwrap(), Some(json!("v1")));
+
+        // Run 2: resume from v1, persist v2.
+        let s2 = StatefulSource::new("k", vec![json!({"i": 2})], json!("v2"));
+        let sink2 = MockSink::new();
+        Pipeline::new(&s2, &sink2)
+            .with_state_store(Arc::clone(&store))
+            .run()
+            .await
+            .unwrap();
+        assert_eq!(s2.observed_start(), Some(json!("v1")));
+        assert_eq!(store.get("k").await.unwrap(), Some(json!("v2")));
     }
 }

@@ -56,6 +56,11 @@ pub enum FaucetError {
     #[error("Sink error: {0}")]
     Sink(String),
 
+    /// A state-store operation failed (read/write/delete of a replication
+    /// bookmark, checkpoint, or other persisted pipeline state).
+    #[error("State error: {0}")]
+    State(String),
+
     /// A custom error from a third-party connector.
     ///
     /// Use this to wrap your own error types without losing the error chain:

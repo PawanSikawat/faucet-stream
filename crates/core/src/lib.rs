@@ -17,6 +17,7 @@ pub mod error;
 pub mod pipeline;
 pub mod replication;
 pub mod schema;
+pub mod state;
 pub mod traits;
 pub mod transform;
 pub mod util;
@@ -25,6 +26,7 @@ pub use dag::{DagNode, DagNodeError, DagNodeResult, DagResult, SourceDAG};
 pub use error::FaucetError;
 pub use pipeline::{Pipeline, PipelineResult, run_stream};
 pub use replication::ReplicationMethod;
+pub use state::{FileStateStore, MemoryStateStore, StateStore};
 pub use traits::{Sink, Source};
 pub use transform::RecordTransform;
 

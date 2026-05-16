@@ -1,0 +1,19 @@
+[package]
+name = "faucet-state-redis"
+version = "0.2.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Redis-backed StateStore for faucet-stream incremental replication"
+
+[dependencies]
+faucet-core.workspace = true
+async-trait.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+redis.workspace = true
+tokio = { workspace = true, features = ["sync"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt"] }
