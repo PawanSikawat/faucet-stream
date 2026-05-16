@@ -79,12 +79,30 @@ repos:
       # 5. Security audit — scans Cargo.lock for known CVEs.
       #    Only runs when dependency files change to keep commits fast.
       #    Requires: cargo install cargo-audit
-      # RUSTSEC-2023-0071 (rsa Marvin Attack): ignored — comes from sqlx-mysql 0.8
-      # which is pinned; no upstream fix exists for sqlx 0.8. Re-evaluate when
-      # sqlx 0.9 is stable and we upgrade.
+      #
+      # Ignored advisories (re-evaluate each time the relevant upstream releases):
+      #   RUSTSEC-2023-0071 (rsa Marvin Attack)
+      #     Via: sqlx-mysql 0.8 → rsa 0.9. No fix in sqlx 0.8 line; revisit on sqlx 0.9.
+      #   RUSTSEC-2026-0118 (hickory-proto NSEC3 unbounded loop)
+      #     Via: mongodb 3.6 → hickory-resolver 0.25 → hickory-proto 0.25.2.
+      #     No upstream fix published.
+      #   RUSTSEC-2026-0119 (hickory-proto O(n²) name compression)
+      #     Via: same path as 0118. Fix is in hickory-proto 0.26.1, but mongodb 3.6
+      #     (latest) still pins 0.25.2. Drop when mongodb bumps hickory.
+      #   RUSTSEC-2026-0098 / 0099 / 0104 (rustls-webpki 0.101.7)
+      #     Via: aws-config 1.8 → aws-smithy-http-client 1.1 → rustls 0.21.
+      #     aws-config 1.8 (latest) still pins the old rustls chain. Drop when
+      #     aws-sdk-rust moves off rustls 0.21.
       - id: cargo-audit
         name: "rust: cargo audit"
-        entry: cargo audit --ignore RUSTSEC-2023-0071
+        entry: >-
+          cargo audit
+          --ignore RUSTSEC-2023-0071
+          --ignore RUSTSEC-2026-0118
+          --ignore RUSTSEC-2026-0119
+          --ignore RUSTSEC-2026-0098
+          --ignore RUSTSEC-2026-0099
+          --ignore RUSTSEC-2026-0104
         language: system
         pass_filenames: false
         files: Cargo\.(toml|lock)

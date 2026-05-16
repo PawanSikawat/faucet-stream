@@ -438,8 +438,8 @@ impl RestStream {
             if let Some(ctx) = path_context {
                 let body_str = body.to_string();
                 let substituted = faucet_core::util::substitute_context(&body_str, ctx);
-                let substituted_value: Value = serde_json::from_str(&substituted)
-                    .unwrap_or_else(|_| Value::String(substituted));
+                let substituted_value: Value =
+                    serde_json::from_str(&substituted).unwrap_or(Value::String(substituted));
                 req = req.json(&substituted_value);
             } else {
                 req = req.json(body);

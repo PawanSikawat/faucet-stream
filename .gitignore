@@ -24,6 +24,7 @@ Thumbs.db
 # AI Instructions
 CLAUDE.md
 .claude/
+docs/superpowers/
 
 # Cargo
 Cargo.lock
