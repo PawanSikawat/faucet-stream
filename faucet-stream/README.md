@@ -121,7 +121,9 @@ let result = run_stream(source.stream_pages(), &sink).await?;
 
 ## Examples
 
-Runnable examples live in [`examples/`](examples/):
+Runnable examples live in [`examples/`](examples/). Each one declares its required Cargo features so `cargo check --all-targets` skips examples whose connectors aren't enabled.
+
+### Pipeline shape (these run end-to-end against `jsonplaceholder.typicode.com`)
 
 | Example | What it shows |
 |---------|---------------|
@@ -129,13 +131,44 @@ Runnable examples live in [`examples/`](examples/):
 | `rest_streaming` | `run_stream` mode — write each page as it arrives, bounded memory |
 | `dag_users_posts` | `SourceDAG` — fetch users, then per-user posts with parent context injected |
 
-Run any of them with:
+### Connector matrix (compile-only without external infra)
+
+The remaining examples illustrate popular source→sink pairings. They compile under their feature gates, but actually running them needs the listed infrastructure (DB, S3 bucket, GCP credentials, etc.).
+
+| Example | Source → Sink |
+|---------|---------------|
+| `rest_to_bigquery` | REST → BigQuery |
+| `graphql_to_postgres` | GraphQL → PostgreSQL |
+| `graphql_to_bigquery` | GraphQL → BigQuery |
+| `xml_to_s3` | XML/SOAP → S3 |
+| `xml_to_mongodb` | XML/SOAP → MongoDB |
+| `grpc_to_elasticsearch` | gRPC → Elasticsearch |
+| `grpc_to_http` | gRPC → HTTP POST |
+| `postgres_to_bigquery` | PostgreSQL → BigQuery |
+| `postgres_to_snowflake` | PostgreSQL → Snowflake (key-pair auth) |
+| `mysql_to_postgres` | MySQL → PostgreSQL |
+| `mysql_to_snowflake` | MySQL → Snowflake (OAuth) |
+| `sqlite_to_csv` | SQLite → CSV |
+| `sqlite_to_jsonl` | SQLite → JSONL |
+| `s3_to_postgres` | S3 → PostgreSQL |
+| `s3_to_mongodb` | S3 → MongoDB |
+| `mongodb_to_elasticsearch` | MongoDB → Elasticsearch |
+| `mongodb_to_redis` | MongoDB → Redis stream |
+| `redis_to_mysql` | Redis stream → MySQL |
+| `redis_to_sqlite` | Redis list → SQLite |
+| `webhook_to_http` | Webhook → HTTP forwarder |
+| `webhook_to_csv` | Webhook → CSV |
+| `csv_to_mysql` | CSV → MySQL |
+| `csv_to_sqlite` | CSV → SQLite |
+| `elasticsearch_to_s3` | Elasticsearch → S3 backup |
+| `elasticsearch_to_redis` | Elasticsearch → Redis cache |
+
+Run any example with the feature flags it documents at the top of the file, e.g.:
 
 ```bash
-cargo run -p faucet-stream --example rest_to_jsonl --features "source-rest sink-jsonl"
+cargo run -p faucet-stream --example postgres_to_bigquery \
+    --features "source-postgres sink-bigquery"
 ```
-
-All three examples hit `https://jsonplaceholder.typicode.com` and write to `/tmp/`.
 
 ## What's Re-exported
 
