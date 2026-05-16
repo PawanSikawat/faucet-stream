@@ -1,0 +1,42 @@
+# YAML equivalent of `faucet-stream/examples/graphql_to_bigquery.rs`.
+# GraphQL (Relay cursor pagination) → BigQuery with ApplicationDefault credentials.
+#
+# Limitation: the GraphQL source's `headers` and `auth: Custom(HeaderMap)`
+# variants are `#[serde(skip)]`, so the Rust example's per-request header
+# auth is not yet expressible in YAML. Pending follow-up issue.
+version: 1
+name: graphql_to_bigquery
+
+source:
+  type: graphql
+  config:
+    endpoint: https://api.example.com/graphql
+    query: |
+      query Orders($after: String, $first: Int!) {
+        orders(first: $first, after: $after) {
+          edges { node { id total status createdAt } }
+          pageInfo { endCursor hasNextPage }
+        }
+      }
+    variables:
+      first: 200
+    auth:
+      type: None
+    records_path: $.data.orders.edges[*].node
+    pagination:
+      has_next_page_path: $.data.orders.pageInfo.hasNextPage
+      cursor_path: $.data.orders.pageInfo.endCursor
+      cursor_variable: after
+      page_size: 200
+      page_size_variable: first
+    max_pages: 500
+
+sink:
+  type: bigquery
+  config:
+    project_id: my-gcp-project
+    dataset_id: raw
+    table_id: orders
+    credentials:
+      type: ApplicationDefault
+    batch_size: 1000

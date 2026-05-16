@@ -1,0 +1,43 @@
+# YAML equivalent of `faucet-stream/examples/rest_streaming.rs`.
+#
+# Note: the Rust example uses `run_stream` to write pages as they arrive,
+# keeping memory bounded across multi-million-record feeds. The `faucet`
+# CLI today only runs the batch `Pipeline::run` path — for very large
+# feeds, either fall back to the Rust API or wait for the streaming-mode
+# follow-up issue.
+version: 1
+name: rest_streaming
+
+source:
+  type: rest
+  config:
+    base_url: https://api.example.com
+    path: /v1/comments
+    method: GET
+    name: comments
+    auth:
+      type: ApiKey
+      header: X-API-Key
+      value: ${env:API_KEY}
+    query_params: {}
+    pagination:
+      type: LinkHeader
+    records_path: $.items[*]
+    max_pages: 4294967295
+    request_delay: 0
+    timeout: 60
+    max_retries: 5
+    retry_backoff: 2
+    tolerated_http_errors: [429]
+    replication_method:
+      type: FullTable
+    primary_keys: []
+    partitions: []
+    schema_sample_size: 100
+
+sink:
+  type: jsonl
+  config:
+    path: comments.jsonl
+    append: false
+    pretty: false

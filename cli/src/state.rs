@@ -1,0 +1,135 @@
+//! Build a `StateStore` from a `(kind, config)` pair, with feature-gated
+//! backends for Redis and PostgreSQL.
+
+use crate::config::StateStoreSpec;
+use crate::error::{CliError, CliResult};
+use faucet_core::{FileStateStore, MemoryStateStore, StateStore};
+use serde::Deserialize;
+use std::path::PathBuf;
+use std::sync::Arc;
+
+/// Config block for the built-in file backend.
+#[derive(Debug, Deserialize)]
+struct FileStateConfig {
+    path: PathBuf,
+}
+
+#[cfg(feature = "state-redis")]
+#[derive(Debug, Deserialize)]
+struct RedisStateConfig {
+    url: String,
+    #[serde(default = "default_redis_namespace")]
+    namespace: String,
+}
+
+#[cfg(feature = "state-redis")]
+fn default_redis_namespace() -> String {
+    "faucet".to_owned()
+}
+
+#[cfg(feature = "state-postgres")]
+#[derive(Debug, Deserialize)]
+struct PostgresStateConfig {
+    url: String,
+    #[serde(default = "default_pg_table")]
+    table: String,
+    #[serde(default)]
+    ensure_table: bool,
+}
+
+#[cfg(feature = "state-postgres")]
+fn default_pg_table() -> String {
+    "faucet_state".to_owned()
+}
+
+/// Construct a state store from the parsed `state:` block.
+pub async fn build_state_store(spec: &StateStoreSpec) -> CliResult<Arc<dyn StateStore>> {
+    match spec.kind.as_str() {
+        "memory" => Ok(Arc::new(MemoryStateStore::new())),
+        "file" => {
+            let cfg = decode::<FileStateConfig>("file", spec.config.clone())?;
+            Ok(Arc::new(FileStateStore::new(cfg.path)))
+        }
+        #[cfg(feature = "state-redis")]
+        "redis" => {
+            let cfg = decode::<RedisStateConfig>("redis", spec.config.clone())?;
+            Ok(Arc::new(
+                faucet_state_redis::RedisStateStore::connect(&cfg.url, &cfg.namespace).await?,
+            ))
+        }
+        #[cfg(feature = "state-postgres")]
+        "postgres" => {
+            let cfg = decode::<PostgresStateConfig>("postgres", spec.config.clone())?;
+            let store =
+                faucet_state_postgres::PostgresStateStore::connect_with(&cfg.url, 5, &cfg.table)
+                    .await?;
+            if cfg.ensure_table {
+                store.ensure_table().await?;
+            }
+            Ok(Arc::new(store))
+        }
+        other => Err(CliError::UnknownStateStore {
+            name: other.to_owned(),
+            available: available_state_kinds().join(", "),
+        }),
+    }
+}
+
+/// Names of every state-store backend compiled into this build.
+pub fn available_state_kinds() -> Vec<&'static str> {
+    let mut v = vec!["memory", "file"];
+    #[cfg(feature = "state-redis")]
+    v.push("redis");
+    #[cfg(feature = "state-postgres")]
+    v.push("postgres");
+    v
+}
+
+fn decode<T: serde::de::DeserializeOwned>(name: &str, config: serde_json::Value) -> CliResult<T> {
+    serde_json::from_value(config).map_err(|e| CliError::InvalidConnectorConfig {
+        kind: "state",
+        name: name.to_owned(),
+        message: e.to_string(),
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[tokio::test]
+    async fn builds_memory_store() {
+        let spec = StateStoreSpec {
+            kind: "memory".into(),
+            config: json!({}),
+        };
+        let store = build_state_store(&spec).await.unwrap();
+        store.put("k", &json!(1)).await.unwrap();
+        assert_eq!(store.get("k").await.unwrap(), Some(json!(1)));
+    }
+
+    #[tokio::test]
+    async fn builds_file_store() {
+        let dir = tempfile::tempdir().unwrap();
+        let spec = StateStoreSpec {
+            kind: "file".into(),
+            config: json!({"path": dir.path().to_str().unwrap()}),
+        };
+        let store = build_state_store(&spec).await.unwrap();
+        store.put("k", &json!("v")).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn unknown_kind_errors() {
+        let spec = StateStoreSpec {
+            kind: "nope".into(),
+            config: json!({}),
+        };
+        let err = build_state_store(&spec).await.err().expect("should fail");
+        match err {
+            CliError::UnknownStateStore { name, .. } => assert_eq!(name, "nope"),
+            other => panic!("expected UnknownStateStore, got {other:?}"),
+        }
+    }
+}

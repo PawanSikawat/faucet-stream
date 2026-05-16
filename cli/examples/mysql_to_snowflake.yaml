@@ -1,0 +1,23 @@
+# YAML equivalent of `faucet-stream/examples/mysql_to_snowflake.rs`.
+version: 1
+name: mysql_to_snowflake
+
+source:
+  type: mysql
+  config:
+    connection_url: mysql://user:pass@localhost/sales
+    query: SELECT order_id, customer_id, total, ordered_at FROM orders
+    max_connections: 16
+
+sink:
+  type: snowflake
+  config:
+    account: xy12345.us-east-1
+    warehouse: LOAD_WH
+    database: ANALYTICS
+    schema: STAGING
+    table: ORDERS
+    auth:
+      type: OAuth
+      token: ${env:SNOWFLAKE_OAUTH_TOKEN}
+    batch_size: 1000

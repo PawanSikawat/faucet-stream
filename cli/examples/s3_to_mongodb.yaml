@@ -1,0 +1,22 @@
+# YAML equivalent of `faucet-stream/examples/s3_to_mongodb.rs`.
+# S3 (JSON array files) → MongoDB.
+version: 1
+name: s3_to_mongodb
+
+source:
+  type: s3
+  config:
+    bucket: my-data-lake
+    prefix: snapshots/users/
+    region: us-west-2
+    file_format: json_array
+    max_objects: 500
+    concurrency: 8
+
+sink:
+  type: mongodb
+  config:
+    connection_uri: mongodb://localhost:27017
+    database: warehouse
+    collection: users
+    batch_size: 2000

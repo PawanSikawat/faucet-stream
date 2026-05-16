@@ -1,0 +1,137 @@
+[package]
+name = "faucet-cli"
+version = "0.2.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Config-driven CLI runner for faucet-stream pipelines (YAML / JSON, Meltano-style)"
+readme = "README.md"
+keywords = ["pipeline", "etl", "cli", "meltano", "faucet"]
+categories = ["command-line-utilities"]
+
+[[bin]]
+name = "faucet"
+path = "src/main.rs"
+
+[features]
+# Default: every first-party source, sink, and state backend so `cargo install`
+# yields a binary that can run any of the published example YAMLs out of the box.
+default = ["full"]
+
+full = ["source", "sink", "state", "transforms"]
+
+source = [
+    "source-rest",
+    "source-graphql",
+    "source-xml",
+    "source-grpc",
+    "source-postgres",
+    "source-mysql",
+    "source-sqlite",
+    "source-s3",
+    "source-mongodb",
+    "source-redis",
+    "source-webhook",
+    "source-csv",
+    "source-elasticsearch",
+]
+sink = [
+    "sink-bigquery",
+    "sink-postgres",
+    "sink-jsonl",
+    "sink-snowflake",
+    "sink-mysql",
+    "sink-sqlite",
+    "sink-s3",
+    "sink-mongodb",
+    "sink-redis",
+    "sink-csv",
+    "sink-elasticsearch",
+    "sink-http",
+    "sink-stdout",
+]
+state = ["state-redis", "state-postgres"]
+
+source-rest = ["dep:faucet-source-rest"]
+source-graphql = ["dep:faucet-source-graphql"]
+source-xml = ["dep:faucet-source-xml"]
+source-grpc = ["dep:faucet-source-grpc"]
+source-postgres = ["dep:faucet-source-postgres"]
+source-mysql = ["dep:faucet-source-mysql"]
+source-sqlite = ["dep:faucet-source-sqlite"]
+source-s3 = ["dep:faucet-source-s3"]
+source-mongodb = ["dep:faucet-source-mongodb"]
+source-redis = ["dep:faucet-source-redis"]
+source-webhook = ["dep:faucet-source-webhook"]
+source-csv = ["dep:faucet-source-csv"]
+source-elasticsearch = ["dep:faucet-source-elasticsearch"]
+
+sink-bigquery = ["dep:faucet-sink-bigquery"]
+sink-postgres = ["dep:faucet-sink-postgres"]
+sink-jsonl = ["dep:faucet-sink-jsonl"]
+sink-snowflake = ["dep:faucet-sink-snowflake"]
+sink-mysql = ["dep:faucet-sink-mysql"]
+sink-sqlite = ["dep:faucet-sink-sqlite"]
+sink-s3 = ["dep:faucet-sink-s3"]
+sink-mongodb = ["dep:faucet-sink-mongodb"]
+sink-redis = ["dep:faucet-sink-redis"]
+sink-csv = ["dep:faucet-sink-csv"]
+sink-elasticsearch = ["dep:faucet-sink-elasticsearch"]
+sink-http = ["dep:faucet-sink-http"]
+sink-stdout = ["dep:faucet-sink-stdout"]
+
+state-redis = ["dep:faucet-state-redis"]
+state-postgres = ["dep:faucet-state-postgres"]
+
+transforms = [
+    "faucet-core/transforms",
+    "faucet-source-rest?/transforms",
+]
+
+[dependencies]
+faucet-core.workspace = true
+faucet-source-rest = { workspace = true, optional = true }
+faucet-source-graphql = { workspace = true, optional = true }
+faucet-source-xml = { workspace = true, optional = true }
+faucet-source-grpc = { workspace = true, optional = true }
+faucet-source-postgres = { workspace = true, optional = true }
+faucet-source-mysql = { workspace = true, optional = true }
+faucet-source-sqlite = { workspace = true, optional = true }
+faucet-source-s3 = { workspace = true, optional = true }
+faucet-source-mongodb = { workspace = true, optional = true }
+faucet-source-redis = { workspace = true, optional = true }
+faucet-source-webhook = { workspace = true, optional = true }
+faucet-source-csv = { workspace = true, optional = true }
+faucet-source-elasticsearch = { workspace = true, optional = true }
+faucet-sink-bigquery = { workspace = true, optional = true }
+faucet-sink-postgres = { workspace = true, optional = true }
+faucet-sink-jsonl = { workspace = true, optional = true }
+faucet-sink-snowflake = { workspace = true, optional = true }
+faucet-sink-mysql = { workspace = true, optional = true }
+faucet-sink-sqlite = { workspace = true, optional = true }
+faucet-sink-s3 = { workspace = true, optional = true }
+faucet-sink-mongodb = { workspace = true, optional = true }
+faucet-sink-redis = { workspace = true, optional = true }
+faucet-sink-csv = { workspace = true, optional = true }
+faucet-sink-elasticsearch = { workspace = true, optional = true }
+faucet-sink-http = { workspace = true, optional = true }
+faucet-sink-stdout = { workspace = true, optional = true }
+faucet-state-redis = { workspace = true, optional = true }
+faucet-state-postgres = { workspace = true, optional = true }
+
+clap = { version = "4", features = ["derive", "env"] }
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml = "0.9"
+thiserror.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "signal", "fs"] }
+tracing.workspace = true
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+async-trait.workspace = true
+
+[dev-dependencies]
+tempfile = "3"
+assert_cmd = "2"
+predicates = "3"
+wiremock = "0.6"

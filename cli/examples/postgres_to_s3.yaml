@@ -1,0 +1,23 @@
+# YAML equivalent of `faucet-stream/examples/postgres_to_s3.rs`.
+version: 1
+name: postgres_to_s3
+
+source:
+  type: postgres
+  config:
+    connection_url: postgres://user:pass@localhost/app
+    query: SELECT * FROM events WHERE created_at < $1
+    params:
+      - "2026-01-01T00:00:00Z"
+    max_connections: 12
+
+sink:
+  type: s3
+  config:
+    bucket: my-archive-bucket
+    prefix: events/2025/
+    region: us-east-1
+    endpoint_url: https://s3.us-east-1.amazonaws.com
+    file_extension: .jsonl
+    max_records_per_file: 50000
+    concurrency: 16

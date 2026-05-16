@@ -1,0 +1,40 @@
+# GitHub-style REST API → JSONL on disk.
+#
+# Required env vars:
+#   GITHUB_TOKEN — personal access token with `repo` scope
+#
+#   faucet run cli/examples/rest_to_jsonl.yaml
+version: 1
+name: github_issues_to_jsonl
+
+source:
+  type: rest
+  config:
+    base_url: https://api.github.com
+    path: /repos/PawanSikawat/faucet-stream/issues
+    method: GET
+    auth:
+      type: ApiKey
+      header: Authorization
+      value: Bearer ${env:GITHUB_TOKEN}
+    query_params:
+      state: open
+      per_page: "100"
+    pagination:
+      type: LinkHeader
+    max_retries: 3
+    retry_backoff: 1
+    tolerated_http_errors: []
+    replication_method:
+      type: FullTable
+    primary_keys: ["id"]
+    partitions: []
+    schema_sample_size: 100
+
+transforms:
+  - type: snake_case
+
+sink:
+  type: jsonl
+  config:
+    path: ./out/issues.jsonl

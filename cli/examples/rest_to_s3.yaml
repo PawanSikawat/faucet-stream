@@ -1,0 +1,45 @@
+# YAML equivalent of `faucet-stream/examples/rest_to_s3.rs`.
+# REST (ApiKey + offset pagination) → S3 sharded JSONL.
+version: 1
+name: rest_to_s3
+
+source:
+  type: rest
+  config:
+    base_url: https://api.example.com
+    path: /v1/events
+    method: GET
+    name: events
+    auth:
+      type: ApiKey
+      header: X-Auth-Token
+      value: ${env:AUTH_TOKEN}
+    query_params:
+      source: web
+    records_path: $.events[*]
+    pagination:
+      type: Offset
+      offset_param: offset
+      limit_param: limit
+      limit: 500
+      total_path: $.meta.total
+    request_delay: 0
+    timeout: 30
+    max_retries: 3
+    retry_backoff: 1
+    tolerated_http_errors: []
+    replication_method:
+      type: FullTable
+    primary_keys: []
+    partitions: []
+    schema_sample_size: 0
+
+sink:
+  type: s3
+  config:
+    bucket: my-data-lake
+    prefix: events/raw/
+    region: us-east-1
+    file_extension: .jsonl
+    max_records_per_file: 10000
+    concurrency: 8

@@ -1,0 +1,26 @@
+# Backfill JSONL files in S3 into a BigQuery table.
+#
+# Required env vars:
+#   AWS_*                            — standard AWS credential chain
+#   GOOGLE_APPLICATION_CREDENTIALS   — path to a BigQuery service-account JSON
+version: 1
+name: s3_jsonl_to_bigquery
+
+source:
+  type: s3
+  config:
+    bucket: my-data-lake
+    prefix: events/2026/
+    file_format:
+      type: json_lines
+    region: us-east-1
+
+sink:
+  type: bigquery
+  config:
+    project_id: my-gcp-project
+    dataset_id: analytics
+    table_id: events
+    credentials:
+      type: service_account_json
+      path: ${env:GOOGLE_APPLICATION_CREDENTIALS}

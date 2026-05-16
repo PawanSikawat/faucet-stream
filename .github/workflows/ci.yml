@@ -102,6 +102,8 @@ jobs:
           - sink
           - state
           - full
+          # CLI build matrix — verify the binary builds with every default-on
+          # feature plus a slim "only the bare minimum" combo.
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
@@ -116,3 +118,30 @@ jobs:
           key: ${{ runner.os }}-feat-${{ matrix.feature }}-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-feat-${{ matrix.feature }}-
       - run: cargo check -p faucet-stream --no-default-features --features ${{ matrix.feature }}
+
+  cli-build:
+    name: CLI build
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Defaults pull in every connector; the slim profile covers the
+        # smallest interesting combination so accidental cross-feature deps
+        # surface immediately.
+        features:
+          - "full"
+          - "source-rest,sink-jsonl,sink-stdout,transforms"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.94.0"
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cli-${{ matrix.features }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cli-
+      - run: cargo build -p faucet-cli --no-default-features --features "${{ matrix.features }}"

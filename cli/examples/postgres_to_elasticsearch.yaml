@@ -1,0 +1,23 @@
+# YAML equivalent of `faucet-stream/examples/postgres_to_elasticsearch.rs`.
+version: 1
+name: postgres_to_elasticsearch
+
+source:
+  type: postgres
+  config:
+    connection_url: postgres://user:pass@localhost/app
+    query: SELECT id, title, body, tags FROM articles WHERE published = $1
+    params:
+      - true
+    max_connections: 8
+
+sink:
+  type: elasticsearch
+  config:
+    base_url: https://es.example.com:9200
+    index: articles
+    auth:
+      type: ApiKey
+      value: ${env:ES_API_KEY}
+    batch_size: 500
+    id_field: id
