@@ -48,6 +48,33 @@ pub trait Source: Send + Sync {
     fn config_schema(&self) -> Value {
         serde_json::json!({"type": "object", "properties": {}})
     }
+
+    /// Stable key under which this source's incremental-replication bookmark
+    /// should be persisted in a [`StateStore`](crate::state::StateStore).
+    ///
+    /// Returning `Some(key)` opts this source into resumable runs: when the
+    /// pipeline is configured with a state store via
+    /// [`Pipeline::with_state_store`](crate::Pipeline::with_state_store), it
+    /// reads the bookmark at `key` before fetching and writes the new
+    /// bookmark back only after the sink confirms the batch was written.
+    ///
+    /// The default returns `None`, meaning the source is not persisted.
+    /// Keys must satisfy [`validate_state_key`](crate::state::validate_state_key).
+    fn state_key(&self) -> Option<String> {
+        None
+    }
+
+    /// Apply a bookmark loaded from a [`StateStore`](crate::state::StateStore)
+    /// as this run's starting point.
+    ///
+    /// The default implementation ignores the value, which keeps existing
+    /// sources backwards-compatible. Sources that support incremental
+    /// replication override this — typically by storing the value behind
+    /// interior mutability and consulting it inside
+    /// `fetch_with_context_incremental`.
+    async fn apply_start_bookmark(&self, _bookmark: Value) -> Result<(), FaucetError> {
+        Ok(())
+    }
 }
 
 /// A sink writes records to an external system.

@@ -244,4 +244,23 @@ pub mod sink {
     pub mod http {
         pub use faucet_sink_http::*;
     }
+
+    #[cfg(feature = "sink-stdout")]
+    pub mod stdout {
+        pub use faucet_sink_stdout::*;
+    }
+}
+
+// ── State-store backends ─────────────────────────────────────────────────────
+
+pub mod state {
+    #[cfg(feature = "state-redis")]
+    pub mod redis {
+        pub use faucet_state_redis::*;
+    }
+
+    #[cfg(feature = "state-postgres")]
+    pub mod postgres {
+        pub use faucet_state_postgres::*;
+    }
 }

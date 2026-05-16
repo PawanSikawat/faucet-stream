@@ -44,9 +44,15 @@ sink = [
     "sink-csv",
     "sink-elasticsearch",
     "sink-http",
+    "sink-stdout",
 ]
-## Every connector.
-full = ["source", "sink"]
+## All state-store backends (file backend is exposed via `faucet-core` directly).
+state = [
+    "state-redis",
+    "state-postgres",
+]
+## Every connector and state backend.
+full = ["source", "sink", "state"]
 
 ## Individual source connectors.
 source-rest = ["dep:faucet-source-rest"]
@@ -77,6 +83,11 @@ sink-redis = ["dep:faucet-sink-redis"]
 sink-csv = ["dep:faucet-sink-csv"]
 sink-elasticsearch = ["dep:faucet-sink-elasticsearch"]
 sink-http = ["dep:faucet-sink-http"]
+sink-stdout = ["dep:faucet-sink-stdout"]
+
+## Individual state-store backends.
+state-redis = ["dep:faucet-state-redis"]
+state-postgres = ["dep:faucet-state-postgres"]
 
 ## Transform features (forwarded to source-rest when enabled).
 transform-flatten = ["faucet-source-rest?/transform-flatten"]
@@ -112,6 +123,10 @@ faucet-sink-redis = { workspace = true, optional = true }
 faucet-sink-csv = { workspace = true, optional = true }
 faucet-sink-elasticsearch = { workspace = true, optional = true }
 faucet-sink-http = { workspace = true, optional = true }
+faucet-sink-stdout = { workspace = true, optional = true }
+
+faucet-state-redis = { workspace = true, optional = true }
+faucet-state-postgres = { workspace = true, optional = true }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

@@ -13,7 +13,7 @@ This is a library workspace — there is no binary, no database, no migrations, 
 
 ## Workspace Structure
 
-The project is a Cargo workspace with 27 crates:
+The project is a Cargo workspace with 30 crates:
 
 | Crate | Path | Description |
 |-------|------|-------------|
@@ -43,7 +43,10 @@ The project is a Cargo workspace with 27 crates:
 | `faucet-sink-csv` | `crates/sink/csv/` | CSV file sink — write JSON records as CSV rows |
 | `faucet-sink-elasticsearch` | `crates/sink/elasticsearch/` | Elasticsearch sink — bulk index API |
 | `faucet-sink-http` | `crates/sink/http/` | HTTP POST sink — send records to HTTP endpoint |
-| `faucet-stream` | `faucet-stream/` | Umbrella crate — feature-gated re-exports of all connectors |
+| `faucet-sink-stdout` | `crates/sink/stdout/` | Stdout/stderr sink — JSON Lines, pretty JSON, or TSV |
+| `faucet-state-redis` | `crates/state/redis/` | Redis-backed `StateStore` for replication bookmarks |
+| `faucet-state-postgres` | `crates/state/postgres/` | PostgreSQL-backed `StateStore` for replication bookmarks |
+| `faucet-stream` | `faucet-stream/` | Umbrella crate — feature-gated re-exports of all connectors and state backends |
 
 ### Crate Dependency Graph
 
@@ -75,8 +78,36 @@ faucet-core  <──  faucet-source-rest
              <──  faucet-sink-csv
              <──  faucet-sink-elasticsearch
              <──  faucet-sink-http
+             <──  faucet-sink-stdout
+             <──  faucet-state-redis
+             <──  faucet-state-postgres
              <──  faucet-stream (umbrella, all optional)
 ```
+
+## Capturing Feature Ideas as GitHub Issues
+
+**Whenever a new feature, enhancement, or bug surfaces in conversation — whether the user asks for it directly, you propose it, or it emerges as a side observation while working on something else — file it as a GitHub issue immediately, before continuing the current task.** This is how future sessions inherit the full context without needing to re-derive it from chat history.
+
+Rules:
+
+- **File the issue right away.** Don't wait until the end of the session, and don't batch multiple ideas into one issue unless they are genuinely the same change. One issue per discrete piece of work.
+- **Be exhaustively descriptive.** Each issue must stand alone — a fresh Claude session opening it cold should have everything needed to scope and implement the work. Include:
+  - **Summary** — one-paragraph statement of the problem and the proposed change.
+  - **Motivation** — why this matters (performance, correctness, ergonomics, third-party connector friendliness, etc.). Tie it back to the [Primary Goal](#primary-goal) or [Third-Party Connector Friendliness](#third-party-connector-friendliness) sections where relevant.
+  - **Proposed design** — concrete API shape, config field names, trait method signatures, file paths to touch. Show example usage in Rust where useful.
+  - **Affected crates / files** — explicit list of crates and modules that need changes, mirroring the [Architecture](#architecture) layout in this file.
+  - **Edge cases & failure modes** — what could go wrong, what error variants apply, what tests are needed.
+  - **Acceptance criteria** — bullet list of what "done" looks like (tests pass, docs updated, README updated, CI matrix updated if a new feature flag is added, etc.).
+  - **Out of scope** — anything explicitly deferred so the scope doesn't drift.
+  - **References** — links to related issues, PRs, upstream docs, or specific lines in this CLAUDE.md.
+- **Apply two labels to every issue:**
+  - **Type:** exactly one of `feature` (brand-new capability — a new connector, a new transform), `enhancement` (improvement to existing capability — new auth method on REST, new pagination style), or `bug` (incorrect behavior in existing code).
+  - **Tier:** exactly one of `tier-1` (critical — correctness bug, broken API, blocks a core use case, regression), `tier-2` (important — significant improvement, frequently-requested connector, perf win on a hot path), or `tier-3` (nice-to-have — niche connector, minor ergonomic polish, speculative idea).
+- **If a required label doesn't exist, create it first** with `gh label create <name> --description "<desc>" --color <hex>` before filing the issue. The repo uses GitHub's default `bug` and `enhancement` labels; `feature`, `tier-1`, `tier-2`, and `tier-3` may need to be created on first use.
+- **Confirm the GitHub remote auth flow** before running `gh` commands — see the [GitHub Auth Switching](#github-auth-switching) section at the bottom of this file.
+- **Don't file duplicates.** Search existing open issues (`gh issue list --search "<keywords>" --state open`) before creating a new one. If a related issue exists, comment on it instead.
+- **Mention the issue number in any follow-up PR** so the work links back automatically.
+- **Cross-link to the roadmap epic.** The repo maintains a single tracking epic — currently **[#38 Roadmap: faucet-stream connector & runtime coverage](https://github.com/PawanSikawat/faucet-stream/issues/38)** (labelled `epic`) — that organizes every feature/enhancement by tier and by area. When you file a new issue in scope of that roadmap, add a row to the relevant table in the epic (either by editing the epic body or by leaving a comment that links the new issue) so the epic stays a complete index. If the open `epic`-labelled issue has changed, follow the most recent one — find it with `gh issue list --label epic --state open`.
 
 ## Keeping This File Up to Date
 
@@ -164,12 +195,13 @@ cargo publish --dry-run -p faucet-stream
 
 ### faucet-core (`crates/core/`)
 
-- **`src/lib.rs`** — crate root; re-exports `FaucetError`, `Source`, `Sink`, `Pipeline`, `PipelineResult`, `run_stream`, `RecordTransform`, `ReplicationMethod`, `SourceDAG`, `DagResult`, `DagNodeResult`, `DagNodeError`, `DagNode`. Also re-exports third-party crates for connector authors: `async_trait`, `serde_json` (+ `Value`, `json!`), `schemars` (+ `JsonSchema`, `schema_for!`)
-- **`src/error.rs`** — `FaucetError` enum: `Http`, `HttpStatus`, `Json`, `JsonPath`, `Auth`, `RateLimited`, `Url`, `Transform`, `Config`, `Source`, `Sink`, `Custom(Box<dyn Error>)`
+- **`src/lib.rs`** — crate root; re-exports `FaucetError`, `Source`, `Sink`, `Pipeline`, `PipelineResult`, `run_stream`, `RecordTransform`, `ReplicationMethod`, `SourceDAG`, `DagResult`, `DagNodeResult`, `DagNodeError`, `DagNode`, `StateStore`, `MemoryStateStore`, `FileStateStore`. Also re-exports third-party crates for connector authors: `async_trait`, `serde_json` (+ `Value`, `json!`), `schemars` (+ `JsonSchema`, `schema_for!`)
+- **`src/error.rs`** — `FaucetError` enum: `Http`, `HttpStatus`, `Json`, `JsonPath`, `Auth`, `RateLimited`, `Url`, `Transform`, `Config`, `Source`, `Sink`, `State`, `Custom(Box<dyn Error>)`
 - **`src/config.rs`** — Config loading utilities: `load_json()` (from JSON file), `load_env()` (from env vars with prefix), `load_env_file()` (load `.env` then env vars). Also `duration_secs` and `duration_secs_option` serde helper modules for `Duration` fields
 - **`src/util.rs`** — Shared utilities: `quote_ident()` (SQL injection prevention), `extract_records()` (JSONPath extraction), `check_http_response()` (HTTP status error handling), `substitute_context()` (placeholder substitution for URLs/paths — NOT safe for SQL or JSON), `substitute_context_bind_params()` (SQL-safe substitution using bind parameter markers), `substitute_context_json()` (JSON-safe substitution with proper escaping), `extract_context()` (JSONPath-based context extraction from parent records)
-- **`src/traits.rs`** — `Source` and `Sink` async traits. `Source` uses `fetch_with_context()` as primary method (receives parent context); `fetch_all()` is a convenience wrapper. Both include `config_schema(&self) -> Value` method that returns a JSON Schema describing the connector's configuration (auto-generated via `schemars`)
-- **`src/pipeline.rs`** — `Pipeline` struct (batch source→sink), `run_stream()` (streaming source→sink), `PipelineResult`
+- **`src/traits.rs`** — `Source` and `Sink` async traits. `Source` uses `fetch_with_context()` as primary method (receives parent context); `fetch_all()` is a convenience wrapper. Both include `config_schema(&self) -> Value`. `Source` also exposes `state_key(&self) -> Option<String>` and `apply_start_bookmark(&self, bookmark)` for opting into resumable runs via a `StateStore` (both default no-ops, backwards-compatible).
+- **`src/pipeline.rs`** — `Pipeline` struct (batch source→sink), `run_stream()` (streaming source→sink), `PipelineResult`. `Pipeline::with_state_store(Arc<dyn StateStore>)` wires in durable bookmarks — read before fetch, persisted only after sink confirms the batch.
+- **`src/state.rs`** — `StateStore` async trait (`get` / `put` / `delete` over `serde_json::Value`), plus two built-in implementations: `MemoryStateStore` (in-process, for tests) and `FileStateStore` (one JSON file per key, written via atomic rename). Keys are validated by `validate_state_key`. Heavier backends (Redis, Postgres) live in their own crates to keep `faucet-core` dependency-light.
 - **`src/transform.rs`** — `RecordTransform` enum + `CompiledTransform`: flatten, rename keys (regex), snake_case, custom closures; feature-gated built-ins
 - **`src/replication.rs`** — `ReplicationMethod` enum, `filter_incremental()`, `max_replication_value()` for bookmark-based incremental replication
 - **`src/schema.rs`** — `infer_schema()`: JSON Schema inference from record samples with type merging and nullable detection
@@ -316,6 +348,19 @@ cargo publish --dry-run -p faucet-stream
 - **`src/sink.rs`** — `HttpSink`: POST records individually or as array; implements `faucet_core::Sink`
 - **`src/serde_helpers.rs`** — `http_method` module: serialize/deserialize `reqwest::Method` as string
 
+### faucet-sink-stdout (`crates/sink/stdout/`)
+
+- **`src/config.rs`** — `StdoutSinkConfig`, `StdStream` (Stdout, Stderr), `StdoutFormat` (JsonLines, PrettyJson, Tsv)
+- **`src/sink.rs`** — `StdoutSink`: writes encoded records to the chosen standard stream behind a `Mutex<Box<dyn AsyncWrite + Unpin + Send>>`. Treats `BrokenPipe` as clean termination. Honors `max_records` and `flush_per_record`. `StdoutSink::with_writer(...)` accepts a custom writer for tests and redirected output.
+
+### faucet-state-redis (`crates/state/redis/`)
+
+- **`src/store.rs`** — `RedisStateStore`: Redis-backed `StateStore`. Uses `redis::aio::MultiplexedConnection`, namespaces keys as `{namespace}:{key}`, exposes `connect(url, namespace)`, `from_connection(conn, namespace)`, and `ensure_table` is not needed (Redis is schemaless). Helper functions `build_redis_key`, `validate_namespace` are unit-tested.
+
+### faucet-state-postgres (`crates/state/postgres/`)
+
+- **`src/store.rs`** — `PostgresStateStore`: PostgreSQL-backed `StateStore`. Single table `faucet_state(key TEXT PRIMARY KEY, value JSONB, updated_at TIMESTAMPTZ)`. `connect`, `connect_with(url, max_connections, table)`, `from_pool(pool, table)`, and `ensure_table()` for schema bootstrap. Upsert via `ON CONFLICT (key) DO UPDATE`. SQL builders (`create_table_sql`, `select_sql`, `upsert_sql`, `delete_sql`) are free functions for unit testing.
+
 ### faucet-stream (umbrella, `faucet-stream/`)
 
 - **`src/lib.rs`** — feature-gated re-exports of all connectors; `pub use faucet_core::*` always available; backwards-compatible flat re-exports for existing users
@@ -349,9 +394,13 @@ cargo publish --dry-run -p faucet-stream
 | `sink-csv` | no | CSV file sink |
 | `sink-elasticsearch` | no | Elasticsearch bulk index sink |
 | `sink-http` | no | HTTP POST sink |
+| `sink-stdout` | no | Stdout/stderr sink (JSON Lines, pretty JSON, TSV) |
+| `state-redis` | no | Redis-backed `StateStore` backend |
+| `state-postgres` | no | PostgreSQL-backed `StateStore` backend |
 | `source` | no | All source connectors |
 | `sink` | no | All sink connectors |
-| `full` | no | Every connector |
+| `state` | no | All state-store backends (file lives in `faucet-core`) |
+| `full` | no | Every connector and state backend |
 | `transform-flatten` | yes (via source-rest) | Flatten nested objects |
 | `transform-rename-keys` | yes (via source-rest) | Regex key renaming |
 | `transform-snake-case` | yes (via source-rest) | Snake_case normalisation |
@@ -384,6 +433,7 @@ When the user points out something fundamental about how code in this library sh
 - `src/transform.rs` — record transform compilation and application only. No HTTP logic. Built-in transforms are feature-gated.
 - `src/replication.rs` — incremental replication filtering and bookmark computation only. No HTTP logic.
 - `src/schema.rs` — JSON Schema inference from `Vec<Value>` only. No HTTP logic.
+- `src/state.rs` — `StateStore` trait + in-memory and file-backed implementations only. No external service code (Redis / Postgres backends live in their own crates).
 
 #### faucet-source-rest
 - `src/auth/` — auth strategies only. No HTTP logic here.

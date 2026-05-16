@@ -93,9 +93,14 @@ jobs:
           - sink-csv
           - sink-elasticsearch
           - sink-http
+          - sink-stdout
+          # State-store backends
+          - state-redis
+          - state-postgres
           # Aggregates
           - source
           - sink
+          - state
           - full
     steps:
       - uses: actions/checkout@v4
