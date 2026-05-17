@@ -27,6 +27,7 @@ source = [
     "source-xml",
     "source-grpc",
     "source-postgres",
+    "source-postgres-cdc",
     "source-mysql",
     "source-sqlite",
     "source-s3",
@@ -62,6 +63,7 @@ source-graphql = ["dep:faucet-source-graphql"]
 source-xml = ["dep:faucet-source-xml"]
 source-grpc = ["dep:faucet-source-grpc"]
 source-postgres = ["dep:faucet-source-postgres"]
+source-postgres-cdc = ["dep:faucet-source-postgres-cdc"]
 source-mysql = ["dep:faucet-source-mysql"]
 source-sqlite = ["dep:faucet-source-sqlite"]
 source-s3 = ["dep:faucet-source-s3"]
@@ -109,6 +111,7 @@ faucet-source-graphql = { workspace = true, optional = true }
 faucet-source-xml = { workspace = true, optional = true }
 faucet-source-grpc = { workspace = true, optional = true }
 faucet-source-postgres = { workspace = true, optional = true }
+faucet-source-postgres-cdc = { workspace = true, optional = true }
 faucet-source-mysql = { workspace = true, optional = true }
 faucet-source-sqlite = { workspace = true, optional = true }
 faucet-source-s3 = { workspace = true, optional = true }

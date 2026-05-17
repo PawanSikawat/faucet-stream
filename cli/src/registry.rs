@@ -43,6 +43,17 @@ pub async fn build_source(kind: &str, config: Value) -> CliResult<Box<dyn Source
                 faucet_source_postgres::PostgresSource::new(cfg).await?,
             ))
         }
+        #[cfg(feature = "source-postgres-cdc")]
+        "postgres-cdc" => {
+            let cfg = decode::<faucet_source_postgres_cdc::PostgresCdcSourceConfig>(
+                "source",
+                "postgres-cdc",
+                config,
+            )?;
+            Ok(Box::new(
+                faucet_source_postgres_cdc::PostgresCdcSource::new(cfg).await?,
+            ))
+        }
         #[cfg(feature = "source-mysql")]
         "mysql" => {
             let cfg = decode::<faucet_source_mysql::MysqlSourceConfig>("source", "mysql", config)?;
@@ -221,6 +232,8 @@ pub fn source_schema(kind: &str) -> CliResult<Value> {
         "grpc" => Ok(schema::<faucet_source_grpc::GrpcStreamConfig>()),
         #[cfg(feature = "source-postgres")]
         "postgres" => Ok(schema::<faucet_source_postgres::PostgresSourceConfig>()),
+        #[cfg(feature = "source-postgres-cdc")]
+        "postgres-cdc" => Ok(schema::<faucet_source_postgres_cdc::PostgresCdcSourceConfig>()),
         #[cfg(feature = "source-mysql")]
         "mysql" => Ok(schema::<faucet_source_mysql::MysqlSourceConfig>()),
         #[cfg(feature = "source-sqlite")]
@@ -298,6 +311,11 @@ pub fn source_descriptions() -> Vec<(&'static str, &'static str)> {
     v.push(("grpc", "gRPC source with dynamic protobuf"));
     #[cfg(feature = "source-postgres")]
     v.push(("postgres", "PostgreSQL query source"));
+    #[cfg(feature = "source-postgres-cdc")]
+    v.push((
+        "postgres-cdc",
+        "PostgreSQL CDC source (logical replication)",
+    ));
     #[cfg(feature = "source-mysql")]
     v.push(("mysql", "MySQL query source"));
     #[cfg(feature = "source-sqlite")]
