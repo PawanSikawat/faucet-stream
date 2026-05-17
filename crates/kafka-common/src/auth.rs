@@ -191,6 +191,34 @@ mod tests {
     }
 
     #[test]
+    fn apply_sasl_scram_sha256() {
+        let mut cfg = ClientConfig::new();
+        KafkaAuth::SaslScram {
+            mechanism: ScramMechanism::Sha256,
+            username: "bob".into(),
+            password: "pw".into(),
+        }
+        .apply(&mut cfg)
+        .unwrap();
+        assert_eq!(cfg.get("sasl.mechanism"), Some("SCRAM-SHA-256"));
+    }
+
+    #[test]
+    fn apply_ssl_sets_key_password_when_provided() {
+        let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
+        let mut cfg = ClientConfig::new();
+        KafkaAuth::Ssl {
+            ca_path: manifest.clone(),
+            cert_path: manifest.clone(),
+            key_path: manifest,
+            key_password: Some("topsecret".into()),
+        }
+        .apply(&mut cfg)
+        .unwrap();
+        assert_eq!(cfg.get("ssl.key.password"), Some("topsecret"));
+    }
+
+    #[test]
     fn apply_sasl_plain_rejects_empty_username() {
         let mut cfg = ClientConfig::new();
         let err = KafkaAuth::SaslPlain {
@@ -238,6 +266,11 @@ mod tests {
         .unwrap();
         assert_eq!(cfg.get("security.protocol"), Some("SASL_SSL"));
         assert_eq!(cfg.get("sasl.username"), Some("u"));
+        // Confirm the inner ssl.apply() actually wrote the SSL location properties
+        // before SaslSsl flipped the protocol — guards against a dropped ssl.apply() call.
+        assert!(cfg.get("ssl.ca.location").is_some());
+        assert!(cfg.get("ssl.certificate.location").is_some());
+        assert!(cfg.get("ssl.key.location").is_some());
     }
 
     #[test]
