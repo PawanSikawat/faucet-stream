@@ -135,6 +135,18 @@ Specifically, update CLAUDE.md when:
 
 **When adding or removing a source/sink connector**, also update `.github/workflows/ci.yml` to add/remove the feature from the `feature-check` matrix so it gets tested in isolation.
 
+## Cleaning Up Stale Artifacts After PR Merge
+
+**When the user asks for a cleanup after a PR merge, remove stale artifact files and any files that are no longer needed.** These are typically gitignored build outputs or generated trees that accumulate in the working tree and waste space — for example, rustdoc HTML in `doc/`, stray `*.rlib` files at the repo root, or other regenerable build products. They are not useful and should be deleted.
+
+Rules:
+
+- **Only act on the user's cleanup request.** Do not proactively delete files between tasks. Wait until the user explicitly asks to clean up (typically after a PR merge).
+- **If a file is needed, don't touch it.** "Needed" means: tracked by git, referenced by build/config, contains in-progress work (e.g. recently modified design docs under `docs/superpowers/`), or is otherwise actively used. When unsure, leave it.
+- **If a file is not needed, delete it.** Stale rustdoc output, stray compile artifacts (`*.rlib`, `*.dylib`, `*.so`), old log files, leftover temp files — all safe to remove if regenerable and gitignored.
+- **Never delete `docs/` or anything under it.** The user keeps design docs and superpowers plans/specs there as reference, even when gitignored. Distinguish carefully between `doc/` (rustdoc output, deletable) and `docs/` (reference material, keep).
+- **Report what was deleted and what was kept**, so the user can correct course if you removed something they wanted.
+
 ## Primary Goal
 
 **All sources and sinks must be as fast, efficient, and reliable as possible.** This is the number one priority for every decision — architecture, implementation, dependency choice, and API design. Performance and reliability are not afterthoughts; they are the reason this library exists. Every connector should be the fastest way to move data between its endpoints in Rust.
