@@ -63,7 +63,7 @@ pub fn parse_lsn(s: &str) -> Result<u64, FaucetError> {
     let (hi, lo) = s.split_once('/').ok_or_else(|| {
         FaucetError::State(format!("postgres-cdc invalid LSN '{s}': missing '/'"))
     })?;
-    if hi.is_empty() || lo.is_empty() || hi.contains('/') || lo.contains('/') {
+    if hi.is_empty() || lo.is_empty() || lo.contains('/') {
         return Err(FaucetError::State(format!(
             "postgres-cdc invalid LSN '{s}'"
         )));
@@ -133,5 +133,26 @@ mod tests {
     #[test]
     fn state_key_for_slot() {
         assert_eq!(state_key("faucet_slot"), "postgres-cdc:faucet_slot");
+    }
+
+    #[test]
+    fn parse_lsn_is_case_insensitive() {
+        assert_eq!(
+            parse_lsn("0/16a4f88").unwrap(),
+            parse_lsn("0/16A4F88").unwrap()
+        );
+        assert_eq!(
+            parse_lsn("1a/beefcafe").unwrap(),
+            parse_lsn("1A/BEEFCAFE").unwrap()
+        );
+    }
+
+    #[test]
+    fn format_parse_lsn_boundaries() {
+        assert_eq!(parse_lsn(&format_lsn(0)).unwrap(), 0);
+        assert_eq!(parse_lsn(&format_lsn(u64::MAX)).unwrap(), u64::MAX);
+        // also verify a value with non-zero high+low so the `(hi << 32) | lo` join is exercised
+        let v: u64 = 0x1234_5678_9ABC_DEF0;
+        assert_eq!(parse_lsn(&format_lsn(v)).unwrap(), v);
     }
 }
