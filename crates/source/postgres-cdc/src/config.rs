@@ -22,7 +22,7 @@ fn default_tcp_keepalive() -> Duration {
 }
 
 /// Configuration for [`PostgresCdcSource`](crate::PostgresCdcSource).
-#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Serialize, Deserialize, JsonSchema)]
 pub struct PostgresCdcSourceConfig {
     /// Connection URL pointing at the database whose WAL we want to read.
     /// The crate internally upgrades the connection to `replication=database`
@@ -89,10 +89,27 @@ pub struct PostgresCdcSourceConfig {
     pub tcp_keepalive: Duration,
 }
 
+impl std::fmt::Debug for PostgresCdcSourceConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PostgresCdcSourceConfig")
+            .field("connection_url", &"***")
+            .field("slot_name", &self.slot_name)
+            .field("publication_name", &self.publication_name)
+            .field("create_slot_if_missing", &self.create_slot_if_missing)
+            .field("start_lsn", &self.start_lsn)
+            .field("proto_version", &self.proto_version)
+            .field("idle_timeout", &self.idle_timeout)
+            .field("max_messages", &self.max_messages)
+            .field("status_update_interval", &self.status_update_interval)
+            .field("tcp_keepalive", &self.tcp_keepalive)
+            .finish()
+    }
+}
+
 impl PostgresCdcSourceConfig {
     /// Validate fail-fast invariants. Called from `PostgresCdcSource::new`.
     pub fn validate(&self) -> Result<(), FaucetError> {
-        if self.connection_url.is_empty() {
+        if self.connection_url.trim().is_empty() {
             return Err(FaucetError::Config(
                 "postgres-cdc: connection_url must not be empty".into(),
             ));
@@ -230,14 +247,43 @@ mod tests {
     }
 
     #[test]
-    fn proto_version_must_be_one_or_two() {
+    fn rejects_invalid_proto_version() {
         let mut c = minimal();
         c.proto_version = 0;
         assert!(c.validate().is_err());
         c.proto_version = 3;
         assert!(c.validate().is_err());
+    }
+
+    #[test]
+    fn accepts_valid_proto_versions() {
+        let mut c = minimal();
         c.proto_version = 1;
         assert!(c.validate().is_ok());
+        c.proto_version = 2;
+        assert!(c.validate().is_ok());
+    }
+
+    #[test]
+    fn rejects_empty_connection_url() {
+        let mut c = minimal();
+        c.connection_url = String::new();
+        assert!(c.validate().is_err());
+    }
+
+    #[test]
+    fn rejects_whitespace_connection_url() {
+        let mut c = minimal();
+        c.connection_url = "   ".into();
+        assert!(c.validate().is_err());
+    }
+
+    #[test]
+    fn debug_redacts_connection_url() {
+        let cfg = minimal();
+        let dbg = format!("{cfg:?}");
+        assert!(dbg.contains("connection_url: \"***\""));
+        assert!(!dbg.contains("u:p@localhost"));
     }
 
     #[test]
