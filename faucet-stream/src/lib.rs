@@ -12,6 +12,7 @@
 //! | `source-xml` | XML/SOAP API source with XML-to-JSON conversion |
 //! | `source-grpc` | gRPC source with dynamic protobuf messages |
 //! | `source-postgres` | PostgreSQL query source |
+//! | `source-postgres-cdc` | PostgreSQL CDC source (logical replication) |
 //! | `source-mysql` | MySQL query source |
 //! | `source-sqlite` | SQLite query source |
 
@@ -72,6 +73,11 @@ pub mod source {
     #[cfg(feature = "source-postgres")]
     pub mod postgres {
         pub use faucet_source_postgres::*;
+    }
+
+    #[cfg(feature = "source-postgres-cdc")]
+    pub mod postgres_cdc {
+        pub use faucet_source_postgres_cdc::*;
     }
 
     #[cfg(feature = "source-mysql")]
@@ -146,6 +152,11 @@ pub mod source {
     #[cfg(feature = "source-postgres")]
     pub mod postgres {
         pub use faucet_source_postgres::*;
+    }
+
+    #[cfg(feature = "source-postgres-cdc")]
+    pub mod postgres_cdc {
+        pub use faucet_source_postgres_cdc::*;
     }
 
     #[cfg(feature = "source-mysql")]
