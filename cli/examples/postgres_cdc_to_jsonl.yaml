@@ -1,0 +1,32 @@
+# End-to-end Postgres CDC -> JSONL demo.
+#
+# Setup before running:
+#   psql appdb <<SQL
+#     CREATE TABLE IF NOT EXISTS users (id int4 PRIMARY KEY, name text);
+#     CREATE PUBLICATION faucet_pub FOR TABLE users;
+#   SQL
+#
+# Then:
+#   faucet run cli/examples/postgres_cdc_to_jsonl.yaml
+#
+# Open another psql session and INSERT/UPDATE/DELETE rows — the connector
+# will drain them every fetch cycle until idle_timeout fires.
+
+version: 1
+source:
+  kind: postgres-cdc
+  config:
+    connection_url: postgres://faucet:faucet@localhost:5432/appdb
+    slot_name: faucet_slot
+    publication_name: faucet_pub
+    create_slot_if_missing: true
+    idle_timeout: 30
+sink:
+  kind: jsonl
+  config:
+    path: ./out/changes.jsonl
+    append: true
+state:
+  kind: file
+  config:
+    path: ./state

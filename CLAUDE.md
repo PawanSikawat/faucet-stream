@@ -14,7 +14,7 @@ This workspace produces both library crates (`faucet-core` + every connector and
 
 ## Workspace Structure
 
-The project is a Cargo workspace with 34 crates (33 libraries + the `faucet-cli` binary):
+The project is a Cargo workspace with 35 crates (34 libraries + the `faucet-cli` binary):
 
 | Crate | Path | Description |
 |-------|------|-------------|
@@ -24,6 +24,7 @@ The project is a Cargo workspace with 34 crates (33 libraries + the `faucet-cli`
 | `faucet-source-xml` | `crates/source/xml/` | XML/SOAP API source — XML-to-JSON conversion, dot-path extraction |
 | `faucet-source-grpc` | `crates/source/grpc/` | gRPC source — dynamic protobuf via `prost-reflect` |
 | `faucet-source-postgres` | `crates/source/postgres/` | PostgreSQL query source — run SQL, return rows as JSON |
+| `faucet-source-postgres-cdc` | `crates/source/postgres-cdc/` | PostgreSQL CDC (logical replication) source — pgoutput decoder, slot lifecycle, resumable via state store |
 | `faucet-source-mysql` | `crates/source/mysql/` | MySQL query source — run SQL, return rows as JSON |
 | `faucet-source-sqlite` | `crates/source/sqlite/` | SQLite query source — run SQL, return rows as JSON |
 | `faucet-source-s3` | `crates/source/s3/` | AWS S3 source — read objects as JSONL, JSON array, or raw text |
@@ -63,6 +64,7 @@ faucet-core  <──  faucet-source-rest
              <──  faucet-source-xml
              <──  faucet-source-grpc
              <──  faucet-source-postgres
+             <──  faucet-source-postgres-cdc
              <──  faucet-source-mysql
              <──  faucet-source-sqlite
 
@@ -304,6 +306,18 @@ cargo install --path cli --no-default-features --features "source-rest,sink-json
 - **`src/config.rs`** — `PostgresSourceConfig` with connection_url, query, params
 - **`src/stream.rs`** — `PostgresSource`: PgPool, row-to-JSON conversion; implements `faucet_core::Source`
 
+### faucet-source-postgres-cdc (`crates/source/postgres-cdc/`)
+
+- **`src/lib.rs`** — crate root; re-exports `Source`, `FaucetError`, `Bookmark`, `PostgresCdcSourceConfig`, `PostgresCdcSource`
+- **`src/config.rs`** — `PostgresCdcSourceConfig` (connection_url, slot_name, publication_name, create_slot_if_missing, start_lsn, proto_version, idle_timeout, max_messages, status_update_interval, tcp_keepalive) with `validate()`; manual `Debug` impl masks `connection_url`
+- **`src/state.rs`** — `Bookmark { last_lsn }` <-> JSON; `format_lsn`/`parse_lsn` for Postgres' `XXXXXXXX/XXXXXXXX` hex form; `state_key(slot_name) = "postgres-cdc:<slot>"`
+- **`src/pgoutput/messages.rs`** — `MessageKind`, `ReplicaIdentity`, `ColumnDesc`, `Begin`, `Commit`, `Relation`, `TupleCell` (Null/UnchangedToast/Text), `TupleData`, `Insert`, `Update` (with `UpdateOldKind`), `Delete` (with `DeleteOldKind`), `Truncate`, `Message`
+- **`src/pgoutput/decoder.rs`** — `XLogDataHeader::decode`, `PrimaryKeepAlive::decode`, `decode_message` (dispatches on message kind byte), text-mode tuple decoder, per-kind error context
+- **`src/pgoutput/registry.rs`** — `RelationRegistry` — OID → `Relation` cache; required because Insert/Update/Delete only carry the relation OID and rely on a prior Relation message for column metadata
+- **`src/pgoutput/values.rs`** — `text_to_json(type_oid, text)` for the common built-in Postgres OIDs (bool, int2/4/8, float4/8, numeric, bytea, json/jsonb), with a string fallback for anything else
+- **`src/replication.rs`** — `pgwire-replication` glue: `connect`, `ensure_slot` (via `sqlx` because pgwire-replication is replication-only), `start_replication` (returns a CopyBoth `Duplex`), `send_status_update`, `recv` (filters KeepAlive/StoppedAt, surfaces Begin/Commit/XLogData/Message), `postgres_clock_*`
+- **`src/stream.rs`** — `PostgresCdcSource`: holds config, `pending_bookmark`, `confirmed_lsn`; `fetch_with_context_incremental` opens a fresh replication connection per call, sends an initial Standby Status Update from the bookmarked LSN, drains the event stream until `idle_timeout` / `max_messages` / Ctrl+C, buffers each transaction in memory and only emits records to the output Vec on `Commit` (so partial transactions never leak). Implements `faucet_core::Source` with `state_key()`/`apply_start_bookmark`.
+
 ### faucet-source-mysql (`crates/source/mysql/`)
 
 - **`src/config.rs`** — `MysqlSourceConfig` with connection_url, query
@@ -465,6 +479,7 @@ cargo install --path cli --no-default-features --features "source-rest,sink-json
 | `source-xml` | no | XML/SOAP API source connector |
 | `source-grpc` | no | gRPC source connector |
 | `source-postgres` | no | PostgreSQL query source |
+| `source-postgres-cdc` | no | PostgreSQL CDC source (logical replication) |
 | `source-mysql` | no | MySQL query source |
 | `source-sqlite` | no | SQLite query source |
 | `source-s3` | no | AWS S3 file source |
@@ -571,6 +586,12 @@ When the user points out something fundamental about how code in this library sh
 - `src/config.rs` — configuration types only. No SQL logic.
 - `src/stream.rs` — connection pool, query execution, row-to-JSON conversion, Source trait impl.
 
+#### faucet-source-postgres-cdc
+- `src/config.rs` — configuration types only. No protocol logic.
+- `src/state.rs` — bookmark <-> JSON + LSN parse/format. No protocol logic.
+- `src/pgoutput/` — pgoutput message types, wire decoder, relation registry, OID-to-JSON mapping. No `pgwire-replication` types appear here.
+- `src/replication.rs` — `pgwire-replication` glue (replication connection, slot lifecycle, COPY BOTH event stream, Standby Status Updates). No pgoutput semantics here.
+- `src/stream.rs` — wires `replication.rs` and `pgoutput::` together, implements `Source`.
 
 #### faucet-source-s3 / faucet-sink-s3
 - `src/config.rs` — configuration types only. No AWS logic.
@@ -732,7 +753,7 @@ Always use the **highest available stable version** for every crate, the Rust to
 Crates must be published in dependency order with delays for crates.io index propagation:
 
 1. `faucet-core`
-2. All sources + sinks (after 30s): `faucet-source-rest`, `faucet-source-graphql`, `faucet-source-xml`, `faucet-source-grpc`, `faucet-source-postgres`, `faucet-source-mysql`, `faucet-source-sqlite`, `faucet-source-s3`, `faucet-source-mongodb`, `faucet-source-redis`, `faucet-source-webhook`, `faucet-source-csv`, `faucet-source-elasticsearch`, `faucet-source-parquet`, `faucet-kafka-common`, `faucet-source-kafka`, `faucet-sink-bigquery`, `faucet-sink-postgres`, `faucet-sink-jsonl`, `faucet-sink-snowflake`, `faucet-sink-mysql`, `faucet-sink-sqlite`, `faucet-sink-s3`, `faucet-sink-mongodb`, `faucet-sink-redis`, `faucet-sink-csv`, `faucet-sink-elasticsearch`, `faucet-sink-http`, `faucet-sink-kafka`, `faucet-sink-parquet`
+2. All sources + sinks (after 30s): `faucet-source-rest`, `faucet-source-graphql`, `faucet-source-xml`, `faucet-source-grpc`, `faucet-source-postgres`, `faucet-source-postgres-cdc`, `faucet-source-mysql`, `faucet-source-sqlite`, `faucet-source-s3`, `faucet-source-mongodb`, `faucet-source-redis`, `faucet-source-webhook`, `faucet-source-csv`, `faucet-source-elasticsearch`, `faucet-source-parquet`, `faucet-kafka-common`, `faucet-source-kafka`, `faucet-sink-bigquery`, `faucet-sink-postgres`, `faucet-sink-jsonl`, `faucet-sink-snowflake`, `faucet-sink-mysql`, `faucet-sink-sqlite`, `faucet-sink-s3`, `faucet-sink-mongodb`, `faucet-sink-redis`, `faucet-sink-csv`, `faucet-sink-elasticsearch`, `faucet-sink-http`, `faucet-sink-kafka`, `faucet-sink-parquet`
 3. `faucet-stream` (after 30s)
 
 The `.github/workflows/publish.yml` handles this automatically on version tags (`v*.*.*`).
