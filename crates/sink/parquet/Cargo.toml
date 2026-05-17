@@ -1,0 +1,30 @@
+[package]
+name = "faucet-sink-parquet"
+version = "0.2.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Apache Parquet file sink connector for the faucet-stream ecosystem"
+
+[dependencies]
+faucet-core.workspace = true
+schemars.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+async-trait.workspace = true
+tracing.workspace = true
+tokio = { workspace = true, features = ["fs", "io-util", "rt", "sync"] }
+futures.workspace = true
+arrow.workspace = true
+arrow-json.workspace = true
+parquet = { workspace = true }
+object_store = { workspace = true, features = ["aws"] }
+uuid.workspace = true
+url.workspace = true
+bytes.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "fs", "io-util"] }
+serde_json.workspace = true
+tempfile = "3"

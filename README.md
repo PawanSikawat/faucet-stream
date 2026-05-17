@@ -72,6 +72,7 @@ faucet-stream is a Cargo workspace with 34 crates — 14 sources, 14 sinks, 1 sh
 | [`faucet-source-csv`](crates/source/csv) | CSV — read CSV files as JSON objects |
 | [`faucet-source-elasticsearch`](crates/source/elasticsearch) | Elasticsearch — search/scroll API |
 | [`faucet-source-kafka`](crates/source/kafka) | Apache Kafka — consumer with idle/max-messages termination |
+| [`faucet-source-parquet`](crates/source/parquet) | Apache Parquet — local file, glob, or S3; vectorized Arrow async reader, column projection |
 | **Sinks** | |
 | [`faucet-sink-bigquery`](crates/sink/bigquery) | Google BigQuery — streaming inserts |
 | [`faucet-sink-postgres`](crates/sink/postgres) | PostgreSQL — JSONB or auto-mapped columns |
@@ -87,6 +88,7 @@ faucet-stream is a Cargo workspace with 34 crates — 14 sources, 14 sinks, 1 sh
 | [`faucet-sink-http`](crates/sink/http) | HTTP — POST records to any endpoint |
 | [`faucet-sink-stdout`](crates/sink/stdout) | Stdout/stderr — JSON Lines, pretty JSON, or TSV |
 | [`faucet-sink-kafka`](crates/sink/kafka) | Apache Kafka — producer with FuturesUnordered batching, multi-topic routing |
+| [`faucet-sink-parquet`](crates/sink/parquet) | Apache Parquet — local file or S3; schema inference, compression, row/byte rollover |
 | **Shared libraries** | |
 | [`faucet-kafka-common`](crates/kafka-common) | Shared Kafka types — auth, value formats, Schema Registry client |
 | **State stores** | |
@@ -753,6 +755,7 @@ All pagination styles include loop detection — if the same cursor or link is r
 | `source-csv` | no | CSV file source |
 | `source-elasticsearch` | no | Elasticsearch source |
 | `source-kafka` | no | Apache Kafka consumer source |
+| `source-parquet` | no | Apache Parquet file source (local, glob, S3) |
 | `sink-bigquery` | no | Google BigQuery sink |
 | `sink-postgres` | no | PostgreSQL sink |
 | `sink-jsonl` | no | JSON Lines file sink |
@@ -767,6 +770,7 @@ All pagination styles include loop detection — if the same cursor or link is r
 | `sink-http` | no | HTTP POST sink |
 | `sink-stdout` | no | Stdout/stderr sink (JSON Lines, pretty JSON, TSV) |
 | `sink-kafka` | no | Apache Kafka producer sink |
+| `sink-parquet` | no | Apache Parquet file sink (local, S3) |
 | `kafka-schema-registry` | no | Confluent Schema Registry support for the Kafka pair (Avro, Protobuf, JSON Schema) |
 | `state-redis` | no | Redis-backed `StateStore` backend |
 | `state-postgres` | no | PostgreSQL-backed `StateStore` backend |
@@ -919,6 +923,7 @@ crates/
     csv/                      — CSV file reader
     elasticsearch/            — Elasticsearch search/scroll
     kafka/                    — Apache Kafka consumer
+    parquet/                  — Apache Parquet reader (local, glob, S3)
   sink/
     bigquery/                 — Google BigQuery streaming inserts
     postgres/                 — PostgreSQL (JSONB or auto-map)
@@ -935,6 +940,7 @@ crates/
     http/                     — HTTP POST
     stdout/                   — Stdout / stderr (JSON Lines, pretty JSON, TSV)
     kafka/                    — Apache Kafka producer
+    parquet/                  — Apache Parquet writer (local, S3)
   kafka-common/               — faucet-kafka-common: shared Kafka auth, formats, Schema Registry
   state/
     redis/                    — Redis-backed StateStore

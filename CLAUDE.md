@@ -32,6 +32,7 @@ The project is a Cargo workspace with 34 crates (33 libraries + the `faucet-cli`
 | `faucet-source-webhook` | `crates/source/webhook/` | Webhook source — temporary HTTP server collecting POST payloads |
 | `faucet-source-csv` | `crates/source/csv/` | CSV file source — read CSV rows as JSON objects |
 | `faucet-source-elasticsearch` | `crates/source/elasticsearch/` | Elasticsearch source — search/scroll API pagination |
+| `faucet-source-parquet` | `crates/source/parquet/` | Apache Parquet source — local path, glob, or S3; vectorized Arrow async reader, column projection |
 | `faucet-sink-bigquery` | `crates/sink/bigquery/` | Google BigQuery streaming insert sink |
 | `faucet-sink-postgres` | `crates/sink/postgres/` | PostgreSQL sink — JSONB or auto-mapped columns |
 | `faucet-sink-jsonl` | `crates/sink/jsonl/` | JSON Lines file sink |
@@ -45,6 +46,7 @@ The project is a Cargo workspace with 34 crates (33 libraries + the `faucet-cli`
 | `faucet-sink-elasticsearch` | `crates/sink/elasticsearch/` | Elasticsearch sink — bulk index API |
 | `faucet-sink-http` | `crates/sink/http/` | HTTP POST sink — send records to HTTP endpoint |
 | `faucet-sink-stdout` | `crates/sink/stdout/` | Stdout/stderr sink — JSON Lines, pretty JSON, or TSV |
+| `faucet-sink-parquet` | `crates/sink/parquet/` | Apache Parquet sink — local path or S3; schema inference, compression, row/byte rollover |
 | `faucet-kafka-common` | `crates/kafka-common/` | Shared types for Kafka source/sink — auth, value formats, Schema Registry client |
 | `faucet-source-kafka` | `crates/source/kafka/` | Apache Kafka consumer — subscribes to topics, drains with idle/max-messages termination |
 | `faucet-sink-kafka` | `crates/sink/kafka/` | Apache Kafka producer — FuturesUnordered batched sends, QueueFull retry, multi-topic routing |
@@ -70,6 +72,7 @@ faucet-core  <──  faucet-source-rest
              <──  faucet-source-webhook
              <──  faucet-source-csv
              <──  faucet-source-elasticsearch
+             <──  faucet-source-parquet
              <──  faucet-sink-bigquery
              <──  faucet-sink-postgres
              <──  faucet-sink-jsonl
@@ -84,6 +87,7 @@ faucet-core  <──  faucet-source-rest
              <──  faucet-sink-elasticsearch
              <──  faucet-sink-http
              <──  faucet-sink-stdout
+             <──  faucet-sink-parquet
              <──  faucet-kafka-common
              <──  faucet-source-kafka  (depends on faucet-kafka-common)
              <──  faucet-sink-kafka  (depends on faucet-kafka-common)
@@ -340,6 +344,13 @@ cargo install --path cli --no-default-features --features "source-rest,sink-json
 - **`src/config.rs`** — `ElasticsearchSourceConfig`, `ElasticsearchAuth` (None, Basic, Bearer, ApiKey)
 - **`src/stream.rs`** — `ElasticsearchSource`: scroll API pagination; implements `faucet_core::Source`
 
+### faucet-source-parquet (`crates/source/parquet/`)
+
+- **`src/lib.rs`** — crate root; re-exports config + stream + convert helpers
+- **`src/config.rs`** — `ParquetSourceConfig`, `ParquetLocation` (`LocalPath` / `Glob` / `S3`), `ParquetS3Config`; fluent builder; defaults `batch_size = 1024`, `concurrency = 4`
+- **`src/convert.rs`** — `record_batch_to_json()`: Arrow `RecordBatch` → `Vec<serde_json::Value>` via `arrow_json::ArrayWriter`
+- **`src/stream.rs`** — `ParquetSource`: resolves files (single, glob, or S3 list), opens each via `ParquetRecordBatchStreamBuilder` (local: `tokio::fs::File`; S3: `ParquetObjectReader`), applies column projection (`ProjectionMask`), streams batches concurrently with `buffer_unordered(concurrency)`. Multi-file schema mismatch is detected and surfaced as `FaucetError::Source` with both file paths. Implements `faucet_core::Source`
+
 ### faucet-sink-mysql (`crates/sink/mysql/`)
 
 - **`src/config.rs`** — `MysqlSinkConfig`, `MysqlColumnMapping` (Json, AutoMap)
@@ -385,6 +396,13 @@ cargo install --path cli --no-default-features --features "source-rest,sink-json
 
 - **`src/config.rs`** — `StdoutSinkConfig`, `StdStream` (Stdout, Stderr), `StdoutFormat` (JsonLines, PrettyJson, Tsv)
 - **`src/sink.rs`** — `StdoutSink`: writes encoded records to the chosen standard stream behind a `Mutex<Box<dyn AsyncWrite + Unpin + Send>>`. Treats `BrokenPipe` as clean termination. Honors `max_records` and `flush_per_record`. `StdoutSink::with_writer(...)` accepts a custom writer for tests and redirected output.
+
+### faucet-sink-parquet (`crates/sink/parquet/`)
+
+- **`src/lib.rs`** — crate root; re-exports config + sink types and the `DEFAULT_ROW_GROUP_SIZE` / `DEFAULT_SAMPLE_SIZE` constants
+- **`src/config.rs`** — `ParquetSinkConfig`, `ParquetDestination` (`LocalPath` / `S3`), `ParquetS3Destination`, `SchemaSource` (`Inferred { sample_size }` / `Explicit { fields }` — explicit is reserved/rejected for v1), `ParquetCompression` (`Uncompressed`, `Snappy` default, `Gzip`, `Zstd`, `Lz4`); `validate()` for fail-fast construction. Local-path single-file mode is auto-detected when the path ends in `.parquet` and no rollover thresholds are set.
+- **`src/schema.rs`** — `infer_schema()`: wraps `arrow_json::reader::infer_json_schema_from_iterator` over a sample of records, then recursively forces every field nullable. Empty / non-object samples error out.
+- **`src/sink.rs`** — `ParquetSink`: builds an `object_store::ObjectStore` (`LocalFileSystem` or `AmazonS3Builder`) in `new()`; lazily opens an `AsyncArrowWriter<ParquetObjectWriter>` on first batch so the schema can be inferred from real records. Unknown fields are dropped with a one-shot `tracing::warn!`; type drift returns `FaucetError::Sink` naming the field. Rollover checks `rows_in_current_file >= max_rows_per_file` OR `bytes_written + in_progress_size >= max_bytes_per_file` after every batch and closes+reopens a UUID-suffixed file. `flush()` writes the Parquet footer — callers MUST flush before drop or the multipart upload is aborted (no visible file). Implements `faucet_core::Sink`.
 
 ### faucet-kafka-common (`crates/kafka-common/`)
 
@@ -456,6 +474,7 @@ cargo install --path cli --no-default-features --features "source-rest,sink-json
 | `source-csv` | no | CSV file source |
 | `source-elasticsearch` | no | Elasticsearch search/scroll source |
 | `source-kafka` | no | Apache Kafka consumer source |
+| `source-parquet` | no | Apache Parquet file source (local, glob, S3) |
 | `sink-bigquery` | no | Google BigQuery sink connector |
 | `sink-postgres` | no | PostgreSQL sink connector |
 | `sink-jsonl` | no | JSON Lines file sink connector |
@@ -470,6 +489,7 @@ cargo install --path cli --no-default-features --features "source-rest,sink-json
 | `sink-http` | no | HTTP POST sink |
 | `sink-stdout` | no | Stdout/stderr sink (JSON Lines, pretty JSON, TSV) |
 | `sink-kafka` | no | Apache Kafka producer sink |
+| `sink-parquet` | no | Apache Parquet file sink (local, S3) |
 | `kafka-schema-registry` | no | Confluent Schema Registry (Avro / Protobuf / JSON Schema) support for the Kafka pair |
 | `state-redis` | no | Redis-backed `StateStore` backend |
 | `state-postgres` | no | PostgreSQL-backed `StateStore` backend |
@@ -575,6 +595,12 @@ When the user points out something fundamental about how code in this library sh
 #### faucet-source-elasticsearch / faucet-sink-elasticsearch
 - `src/config.rs` — configuration types only. No HTTP logic.
 - `src/stream.rs` / `src/sink.rs` — scroll/bulk API calls, auth application.
+
+#### faucet-source-parquet / faucet-sink-parquet
+- `src/config.rs` — configuration types only. No Arrow / parquet / object_store logic.
+- `src/convert.rs` (source only) — Arrow `RecordBatch` → JSON conversion only.
+- `src/schema.rs` (sink only) — Arrow schema inference only.
+- `src/stream.rs` / `src/sink.rs` — `parquet::arrow` async reader/writer wired through `object_store` (local + S3 share the same code path).
 
 #### faucet-sink-mysql / faucet-sink-sqlite
 - `src/config.rs` — configuration types only. No SQL logic.
@@ -706,7 +732,7 @@ Always use the **highest available stable version** for every crate, the Rust to
 Crates must be published in dependency order with delays for crates.io index propagation:
 
 1. `faucet-core`
-2. All sources + sinks (after 30s): `faucet-source-rest`, `faucet-source-graphql`, `faucet-source-xml`, `faucet-source-grpc`, `faucet-source-postgres`, `faucet-source-mysql`, `faucet-source-sqlite`, `faucet-source-s3`, `faucet-source-mongodb`, `faucet-source-redis`, `faucet-source-webhook`, `faucet-source-csv`, `faucet-source-elasticsearch`, `faucet-kafka-common`, `faucet-source-kafka`, `faucet-sink-bigquery`, `faucet-sink-postgres`, `faucet-sink-jsonl`, `faucet-sink-snowflake`, `faucet-sink-mysql`, `faucet-sink-sqlite`, `faucet-sink-s3`, `faucet-sink-mongodb`, `faucet-sink-redis`, `faucet-sink-csv`, `faucet-sink-elasticsearch`, `faucet-sink-http`, `faucet-sink-kafka`
+2. All sources + sinks (after 30s): `faucet-source-rest`, `faucet-source-graphql`, `faucet-source-xml`, `faucet-source-grpc`, `faucet-source-postgres`, `faucet-source-mysql`, `faucet-source-sqlite`, `faucet-source-s3`, `faucet-source-mongodb`, `faucet-source-redis`, `faucet-source-webhook`, `faucet-source-csv`, `faucet-source-elasticsearch`, `faucet-source-parquet`, `faucet-kafka-common`, `faucet-source-kafka`, `faucet-sink-bigquery`, `faucet-sink-postgres`, `faucet-sink-jsonl`, `faucet-sink-snowflake`, `faucet-sink-mysql`, `faucet-sink-sqlite`, `faucet-sink-s3`, `faucet-sink-mongodb`, `faucet-sink-redis`, `faucet-sink-csv`, `faucet-sink-elasticsearch`, `faucet-sink-http`, `faucet-sink-kafka`, `faucet-sink-parquet`
 3. `faucet-stream` (after 30s)
 
 The `.github/workflows/publish.yml` handles this automatically on version tags (`v*.*.*`).
