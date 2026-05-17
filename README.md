@@ -52,7 +52,7 @@ See [`cli/README.md`](cli/README.md) and [`cli/examples/`](cli/examples/) for th
 
 ## Architecture
 
-faucet-stream is a Cargo workspace with 31 crates — 13 sources, 13 sinks, 2 state-store backends, the shared core, the umbrella crate, and the CLI binary:
+faucet-stream is a Cargo workspace with 34 crates — 14 sources, 14 sinks, 1 shared connector library, 2 state-store backends, the shared core, the umbrella crate, and the CLI binary:
 
 | Crate | Description |
 |-------|-------------|
@@ -71,6 +71,7 @@ faucet-stream is a Cargo workspace with 31 crates — 13 sources, 13 sinks, 2 st
 | [`faucet-source-webhook`](crates/source/webhook) | Webhook — temporary HTTP server collecting POST payloads |
 | [`faucet-source-csv`](crates/source/csv) | CSV — read CSV files as JSON objects |
 | [`faucet-source-elasticsearch`](crates/source/elasticsearch) | Elasticsearch — search/scroll API |
+| [`faucet-source-kafka`](crates/source/kafka) | Apache Kafka — consumer with idle/max-messages termination |
 | **Sinks** | |
 | [`faucet-sink-bigquery`](crates/sink/bigquery) | Google BigQuery — streaming inserts |
 | [`faucet-sink-postgres`](crates/sink/postgres) | PostgreSQL — JSONB or auto-mapped columns |
@@ -85,6 +86,9 @@ faucet-stream is a Cargo workspace with 31 crates — 13 sources, 13 sinks, 2 st
 | [`faucet-sink-elasticsearch`](crates/sink/elasticsearch) | Elasticsearch — bulk index API |
 | [`faucet-sink-http`](crates/sink/http) | HTTP — POST records to any endpoint |
 | [`faucet-sink-stdout`](crates/sink/stdout) | Stdout/stderr — JSON Lines, pretty JSON, or TSV |
+| [`faucet-sink-kafka`](crates/sink/kafka) | Apache Kafka — producer with FuturesUnordered batching, multi-topic routing |
+| **Shared libraries** | |
+| [`faucet-kafka-common`](crates/kafka-common) | Shared Kafka types — auth, value formats, Schema Registry client |
 | **State stores** | |
 | [`faucet-state-redis`](crates/state/redis) | Redis-backed `StateStore` for persistent bookmarks |
 | [`faucet-state-postgres`](crates/state/postgres) | PostgreSQL-backed `StateStore` for persistent bookmarks |
@@ -748,6 +752,7 @@ All pagination styles include loop detection — if the same cursor or link is r
 | `source-webhook` | no | Webhook HTTP receiver |
 | `source-csv` | no | CSV file source |
 | `source-elasticsearch` | no | Elasticsearch source |
+| `source-kafka` | no | Apache Kafka consumer source |
 | `sink-bigquery` | no | Google BigQuery sink |
 | `sink-postgres` | no | PostgreSQL sink |
 | `sink-jsonl` | no | JSON Lines file sink |
@@ -761,6 +766,8 @@ All pagination styles include loop detection — if the same cursor or link is r
 | `sink-elasticsearch` | no | Elasticsearch bulk index sink |
 | `sink-http` | no | HTTP POST sink |
 | `sink-stdout` | no | Stdout/stderr sink (JSON Lines, pretty JSON, TSV) |
+| `sink-kafka` | no | Apache Kafka producer sink |
+| `kafka-schema-registry` | no | Confluent Schema Registry support for the Kafka pair (Avro, Protobuf, JSON Schema) |
 | `state-redis` | no | Redis-backed `StateStore` backend |
 | `state-postgres` | no | PostgreSQL-backed `StateStore` backend |
 | `source` | no | All source connectors |
@@ -911,6 +918,7 @@ crates/
     webhook/                  — HTTP webhook receiver
     csv/                      — CSV file reader
     elasticsearch/            — Elasticsearch search/scroll
+    kafka/                    — Apache Kafka consumer
   sink/
     bigquery/                 — Google BigQuery streaming inserts
     postgres/                 — PostgreSQL (JSONB or auto-map)
@@ -926,6 +934,8 @@ crates/
     elasticsearch/            — Elasticsearch bulk index
     http/                     — HTTP POST
     stdout/                   — Stdout / stderr (JSON Lines, pretty JSON, TSV)
+    kafka/                    — Apache Kafka producer
+  kafka-common/               — faucet-kafka-common: shared Kafka auth, formats, Schema Registry
   state/
     redis/                    — Redis-backed StateStore
     postgres/                 — PostgreSQL-backed StateStore
