@@ -1,93 +1,168 @@
-//! Kafka value/key serialization formats and related error policies.
-//!
-//! TODO(Task 3): Implement encoding/decoding logic for each `KafkaValueFormat`
-//! variant, including Confluent Schema Registry wire-format envelope handling
-//! (magic byte 0x00 + 4-byte schema ID prefix).
+//! Kafka value/key serialization formats and policy enums shared by
+//! `faucet-source-kafka` and `faucet-sink-kafka`.
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-/// How to handle a message whose key cannot be decoded.
-///
-/// TODO(Task 3): wire into the source fetch loop.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
+/// How a Kafka message value (or key) is encoded on the wire.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum KafkaValueFormat {
+    /// Parse value bytes as a JSON document.
+    #[default]
+    Json,
+    /// Treat value bytes as a UTF-8 string. Invalid UTF-8 fails per `OnDecodeError`.
+    RawString,
+    /// Pass value bytes through as a base64-encoded string inside the JSON record.
+    /// On the sink side, expects a base64 string in the source record.
+    Bytes,
+
+    /// Confluent-wire-format Avro: magic byte + schema_id + Avro binary.
+    #[cfg(feature = "schema-registry")]
+    ConfluentAvro {
+        schema_registry: crate::SchemaRegistryConfig,
+    },
+
+    /// Confluent-wire-format Protobuf: magic byte + schema_id + protobuf binary.
+    #[cfg(feature = "schema-registry")]
+    ConfluentProtobuf {
+        schema_registry: crate::SchemaRegistryConfig,
+    },
+
+    /// Confluent-wire-format JSON Schema: magic byte + schema_id + JSON payload.
+    /// When `validate` is true, decoded JSON is validated against the registered schema.
+    #[cfg(feature = "schema-registry")]
+    ConfluentJsonSchema {
+        schema_registry: crate::SchemaRegistryConfig,
+        #[serde(default)]
+        validate: bool,
+    },
+}
+
+/// Producer-side compression for outbound batches.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum CompressionType {
+    #[default]
+    None,
+    Gzip,
+    Snappy,
+    Lz4,
+    Zstd,
+}
+
+impl CompressionType {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            CompressionType::None => "none",
+            CompressionType::Gzip => "gzip",
+            CompressionType::Snappy => "snappy",
+            CompressionType::Lz4 => "lz4",
+            CompressionType::Zstd => "zstd",
+        }
+    }
+}
+
+/// What the source does when a single message fails to decode.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum OnDecodeError {
+    /// Drop the message and continue (logs a warning).
+    Skip,
+    /// Surface `FaucetError::Source` and abort the batch.
+    #[default]
+    Fail,
+}
+
+/// What the sink does when key/partition extraction fails for a record.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum OnKeyError {
-    /// Skip the message and log a warning.
+    /// Drop the record (logs a warning).
     Skip,
-    /// Return a decoding error and abort.
+    /// Surface `FaucetError::Sink` and abort the batch.
     #[default]
     Fail,
     /// Send the record with no key (librdkafka picks the partition).
     RoundRobin,
 }
 
-/// How to handle a message whose value cannot be decoded.
-///
-/// TODO(Task 3): wire into the source fetch loop.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum OnDecodeError {
-    /// Skip the message and log a warning.
-    Skip,
-    /// Return a decoding error and abort.
-    #[default]
-    Fail,
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-/// Producer-side compression codec applied to message batches.
-///
-/// TODO(Task 3): map to `rdkafka` `compression.codec` config value.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum CompressionType {
-    /// No compression.
-    #[default]
-    None,
-    /// Gzip compression.
-    Gzip,
-    /// Snappy compression.
-    Snappy,
-    /// LZ4 compression.
-    Lz4,
-    /// Zstandard compression.
-    Zstd,
-}
+    #[test]
+    fn value_format_json_serializes_as_object_with_type() {
+        let v = serde_json::to_value(KafkaValueFormat::Json).unwrap();
+        assert_eq!(v["type"], "json");
+    }
 
-/// Serialization format used for Kafka message values (and optionally keys).
-///
-/// TODO(Task 3): implement `encode(&self, record: &Value) -> Result<Vec<u8>>` and
-/// `decode(&self, bytes: &[u8]) -> Result<Value>` for each variant, integrating
-/// the Schema Registry client when the `schema-registry` feature is enabled.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
-#[serde(tag = "format", rename_all = "snake_case")]
-pub enum KafkaValueFormat {
-    /// UTF-8 JSON — decode bytes as a JSON value.
-    #[default]
-    Json,
-    /// Raw UTF-8 string — wrap in `{"value": "<string>"}`.
-    RawString,
-    /// Raw bytes — base64-encode into `{"value": "<base64>"}`.
-    Bytes,
-    /// Avro with Confluent Schema Registry wire envelope (magic byte + schema ID).
-    ///
-    /// Requires the `schema-registry` feature.
-    ConfluentAvro {
-        /// Schema Registry base URL (e.g. `http://localhost:8081`).
-        schema_registry_url: String,
-    },
-    /// Protobuf with Confluent Schema Registry wire envelope.
-    ///
-    /// Requires the `schema-registry` feature.
-    ConfluentProtobuf {
-        /// Schema Registry base URL.
-        schema_registry_url: String,
-    },
-    /// JSON Schema with Confluent Schema Registry validation.
-    ///
-    /// Requires the `schema-registry` feature.
-    ConfluentJsonSchema {
-        /// Schema Registry base URL.
-        schema_registry_url: String,
-    },
+    #[test]
+    fn value_format_deserializes_raw_string() {
+        let parsed: KafkaValueFormat =
+            serde_json::from_value(serde_json::json!({"type": "raw_string"})).unwrap();
+        assert!(matches!(parsed, KafkaValueFormat::RawString));
+    }
+
+    #[test]
+    fn value_format_bytes_round_trip() {
+        let parsed: KafkaValueFormat =
+            serde_json::from_value(serde_json::json!({"type": "bytes"})).unwrap();
+        assert!(matches!(parsed, KafkaValueFormat::Bytes));
+    }
+
+    #[test]
+    fn compression_round_trip() {
+        for v in [
+            CompressionType::None,
+            CompressionType::Gzip,
+            CompressionType::Snappy,
+            CompressionType::Lz4,
+            CompressionType::Zstd,
+        ] {
+            let s = serde_json::to_value(v).unwrap();
+            let back: CompressionType = serde_json::from_value(s.clone()).unwrap();
+            assert_eq!(v, back);
+            assert_eq!(s.as_str().unwrap(), v.as_str());
+        }
+    }
+
+    #[test]
+    fn on_decode_error_default_is_fail() {
+        assert_eq!(OnDecodeError::default(), OnDecodeError::Fail);
+    }
+
+    #[test]
+    fn on_key_error_default_is_fail() {
+        assert_eq!(OnKeyError::default(), OnKeyError::Fail);
+    }
+
+    #[test]
+    fn compression_default_is_none() {
+        assert_eq!(CompressionType::default(), CompressionType::None);
+    }
+
+    #[test]
+    fn schema_for_format_types_compile() {
+        let _ = schemars::schema_for!(KafkaValueFormat);
+        let _ = schemars::schema_for!(CompressionType);
+        let _ = schemars::schema_for!(OnDecodeError);
+        let _ = schemars::schema_for!(OnKeyError);
+    }
+
+    #[cfg(feature = "schema-registry")]
+    #[test]
+    fn confluent_avro_round_trips_through_serde() {
+        let cfg = crate::SchemaRegistryConfig {
+            url: "http://localhost:8081".into(),
+            auth: None,
+        };
+        let format = KafkaValueFormat::ConfluentAvro {
+            schema_registry: cfg,
+        };
+        let s = serde_json::to_value(&format).unwrap();
+        assert_eq!(s["type"], "confluent_avro");
+        let parsed: KafkaValueFormat = serde_json::from_value(s).unwrap();
+        assert!(matches!(parsed, KafkaValueFormat::ConfluentAvro { .. }));
+    }
 }
