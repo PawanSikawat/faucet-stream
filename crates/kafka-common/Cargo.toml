@@ -26,6 +26,8 @@ prost-reflect = { workspace = true, optional = true }
 prost = { workspace = true, optional = true }
 jsonschema = { workspace = true, optional = true }
 tokio = { workspace = true, features = ["sync"], optional = true }
+url = { workspace = true, optional = true }
+urlencoding = { workspace = true, optional = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt", "sync"] }
@@ -43,4 +45,6 @@ schema-registry = [
     "dep:prost",
     "dep:jsonschema",
     "dep:tokio",
+    "dep:url",
+    "dep:urlencoding",
 ]

@@ -153,10 +153,7 @@ mod tests {
     #[cfg(feature = "schema-registry")]
     #[test]
     fn confluent_avro_round_trips_through_serde() {
-        let cfg = crate::SchemaRegistryConfig {
-            url: "http://localhost:8081".into(),
-            auth: None,
-        };
+        let cfg = crate::SchemaRegistryConfig::new("http://localhost:8081");
         let format = KafkaValueFormat::ConfluentAvro {
             schema_registry: cfg,
         };

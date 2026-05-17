@@ -113,3 +113,5 @@ apache-avro = { version = "0.21", default-features = false, features = ["snappy"
 jsonschema = { version = "0.46", default-features = false }
 lru = "0.18"
 bytes = "1"
+url = "2"
+urlencoding = "2"
