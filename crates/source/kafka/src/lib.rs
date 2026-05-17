@@ -6,6 +6,7 @@
 //! offset/timestamp/headers fields.
 
 pub mod config;
+pub mod context;
 pub mod decode;
 pub mod state;
 pub mod stream;
