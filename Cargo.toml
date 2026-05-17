@@ -7,6 +7,7 @@ members = [
     "crates/source/graphql",
     "crates/source/xml",
     "crates/source/grpc",
+    "crates/source/kafka",
     "crates/source/postgres",
     "crates/source/mysql",
 
@@ -51,6 +52,7 @@ faucet-source-rest = { path = "crates/source/rest", version = "0.2.0" }
 faucet-source-graphql = { path = "crates/source/graphql", version = "0.2.0" }
 faucet-source-xml = { path = "crates/source/xml", version = "0.2.0" }
 faucet-source-grpc = { path = "crates/source/grpc", version = "0.2.0" }
+faucet-source-kafka = { path = "crates/source/kafka", version = "0.2.0" }
 faucet-sink-bigquery = { path = "crates/sink/bigquery", version = "0.2.0" }
 faucet-sink-postgres = { path = "crates/sink/postgres", version = "0.2.0" }
 faucet-sink-jsonl = { path = "crates/sink/jsonl", version = "0.2.0" }
