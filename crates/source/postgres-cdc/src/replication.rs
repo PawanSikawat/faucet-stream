@@ -8,10 +8,9 @@
 //!
 //! `pgwire_replication` handles everything from TCP connect through auth,
 //! `START_REPLICATION`, keepalive replies, and `StandbyStatusUpdate` — all
-//! internally.  The library delivers events as a typed enum; the
-//! [`ReplicationEvent::XLogData`] variant carries the raw pgoutput payload
-//! bytes (header already stripped) that our [`crate::pgoutput`] decoder
-//! consumes.
+//! internally.  The library delivers events as a typed enum; [`recv`] surfaces
+//! the full [`ReplicationEvent`] to callers (absorbing only [`KeepAlive`] and
+//! [`StoppedAt`] internally) so Tasks 9+ can observe transaction boundaries.
 //!
 //! Slot creation (`CREATE_REPLICATION_SLOT`) is a control-plane operation that
 //! requires an ordinary (non-replication) SQL connection, so `ensure_slot`
@@ -27,13 +26,19 @@
 //!   opened.
 //! - [`Duplex`] — the live replication stream; a thin wrapper around
 //!   [`pgwire_replication::ReplicationClient`].
+//!
+//! [`KeepAlive`]: ReplicationEvent::KeepAlive
+//! [`StoppedAt`]: ReplicationEvent::StoppedAt
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use bytes::Bytes;
 use faucet_core::FaucetError;
-use pgwire_replication::{Lsn, ReplicationClient, ReplicationConfig, ReplicationEvent, TlsConfig};
+use pgwire_replication::{Lsn, ReplicationClient, ReplicationConfig, TlsConfig};
 use sqlx::postgres::PgConnectOptions;
+
+/// Re-export so downstream modules (`stream.rs`, Task 9) can import the event
+/// type without depending on `pgwire_replication` directly.
+pub use pgwire_replication::ReplicationEvent;
 use sqlx::{Executor, PgConnection};
 use tracing::debug;
 
@@ -55,7 +60,9 @@ pub struct Client {
 /// Obtained from [`start_replication`].
 pub struct Duplex {
     inner: ReplicationClient,
-    /// Latest WAL end seen from XLogData / KeepAlive, used by `update_applied`.
+    /// Latest server WAL end seen on this stream. Read by `recv()` to
+    /// de-duplicate `update_applied_lsn` calls across repeated KeepAlives
+    /// with the same position. Not consulted by `send_status_update`.
     last_wal_end: Lsn,
 }
 
@@ -72,14 +79,18 @@ pub struct ReplicationParams<'a> {
     pub slot_name: &'a str,
     /// Publication name — must already exist on the server.
     pub publication_name: &'a str,
-    /// pgoutput protocol version (1 or 2).
+    /// pgoutput protocol version. Only `1` is currently supported.
     pub proto_version: u32,
     /// Create the slot if it does not already exist.
     pub create_slot_if_missing: bool,
     /// Optional LSN to resume from.  `None` means "start from the slot's
     /// `confirmed_flush_lsn`".
     pub start_lsn: Option<u64>,
-    /// TCP keepalive interval for the replication connection.
+    /// Protocol-level Standby Status Update cadence — must be shorter than
+    /// the server's `wal_sender_timeout`.
+    pub status_update_interval: Duration,
+    /// TCP-level keepalive interval. Larger than `status_update_interval`
+    /// in normal operation.
     pub tcp_keepalive: Duration,
 }
 
@@ -137,6 +148,8 @@ pub async fn connect(params: &ReplicationParams<'_>) -> Result<Client, FaucetErr
             proto_version: params.proto_version,
             create_slot_if_missing: params.create_slot_if_missing,
             start_lsn: params.start_lsn,
+            // Duration is Copy — no leak needed.
+            status_update_interval: params.status_update_interval,
             tcp_keepalive: params.tcp_keepalive,
         },
     })
@@ -209,6 +222,14 @@ pub async fn start_replication(
     _client: &Client,
     params: &ReplicationParams<'_>,
 ) -> Result<Duplex, FaucetError> {
+    if params.proto_version != 1 {
+        return Err(FaucetError::Config(format!(
+            "postgres-cdc: pgwire-replication 0.3.2 supports proto_version = 1 only; \
+             got {}",
+            params.proto_version
+        )));
+    }
+
     let coords = parse_url(params.connection_url)?;
 
     let start_lsn = Lsn::from_u64(params.start_lsn.unwrap_or(0));
@@ -224,10 +245,11 @@ pub async fn start_replication(
         publication: params.publication_name.to_owned(),
         start_lsn,
         stop_at_lsn: None,
-        // Use the caller-supplied keepalive as the status update interval.
-        status_interval: params.tcp_keepalive,
-        // Wake up at least every keepalive interval when idle.
-        idle_wakeup_interval: params.tcp_keepalive,
+        // Use the dedicated status-update interval (not tcp_keepalive) so that
+        // Standby Status Updates fire on their own cadence.
+        status_interval: params.status_update_interval,
+        // Wake up the worker at least as often as we send status updates.
+        idle_wakeup_interval: params.status_update_interval,
         buffer_events: 8192,
     };
 
@@ -261,22 +283,23 @@ pub async fn send_status_update(
     Ok(())
 }
 
-/// Receive the next raw pgoutput payload from the server.
+/// Receive the next meaningful replication event from the server.
 ///
 /// Returns:
-/// - `Ok(Some(bytes))` — an [`XLogData`][ReplicationEvent::XLogData] message
-///   with its 24-byte wire header already stripped.  These bytes are the exact
-///   input expected by [`crate::pgoutput::decode_message`].
+/// - `Ok(Some(event))` — the next [`ReplicationEvent`] that the caller should
+///   handle.  This includes [`ReplicationEvent::XLogData`],
+///   [`ReplicationEvent::Begin`], [`ReplicationEvent::Commit`], and
+///   [`ReplicationEvent::Message`].  Callers (Task 9+) can match on the full
+///   event type to observe transaction boundaries.
 /// - `Ok(None)` — stream ended cleanly (slot stopped, stop LSN reached, or
 ///   `Duplex` was shut down).
 /// - `Err(_)` — network / protocol error.
 ///
-/// [`KeepAlive`][ReplicationEvent::KeepAlive] events are absorbed here and
-/// used to advance the applied-LSN watermark so the library's internal
-/// feedback loop stays current.  [`Begin`][ReplicationEvent::Begin] and
-/// [`Commit`][ReplicationEvent::Commit] are absorbed too — the caller's
-/// decoder re-derives those from the pgoutput payload.
-pub async fn recv(duplex: &mut Duplex) -> Result<Option<Bytes>, FaucetError> {
+/// [`ReplicationEvent::KeepAlive`] events are absorbed here and used to
+/// advance the applied-LSN watermark so the library's internal feedback loop
+/// stays current.  [`ReplicationEvent::StoppedAt`] is converted to
+/// `Ok(None)`.
+pub async fn recv(duplex: &mut Duplex) -> Result<Option<ReplicationEvent>, FaucetError> {
     loop {
         match duplex
             .inner
@@ -286,15 +309,12 @@ pub async fn recv(duplex: &mut Duplex) -> Result<Option<Bytes>, FaucetError> {
         {
             None => return Ok(None),
 
-            Some(ReplicationEvent::XLogData { data, wal_end, .. }) => {
-                if wal_end > duplex.last_wal_end {
-                    duplex.last_wal_end = wal_end;
-                }
-                return Ok(Some(data));
+            Some(ReplicationEvent::StoppedAt { .. }) => {
+                return Ok(None);
             }
 
             Some(ReplicationEvent::KeepAlive { wal_end, .. }) => {
-                // Advance watermark so the worker's periodic feedback is
+                // Advance watermark so the library's periodic feedback is
                 // current even when we have nothing to ack ourselves.
                 if wal_end > duplex.last_wal_end {
                     duplex.last_wal_end = wal_end;
@@ -303,15 +323,16 @@ pub async fn recv(duplex: &mut Duplex) -> Result<Option<Bytes>, FaucetError> {
                 // Continue the loop — do not surface keepalives to the caller.
             }
 
-            Some(ReplicationEvent::Begin { .. })
-            | Some(ReplicationEvent::Commit { .. })
-            | Some(ReplicationEvent::Message { .. }) => {
-                // Begin/Commit/Message are decoded from the XLogData payload
-                // by our pgoutput decoder upstream; absorb here.
-            }
-
-            Some(ReplicationEvent::StoppedAt { .. }) => {
-                return Ok(None);
+            Some(ev) => {
+                // Surface Begin, Commit, XLogData, Message (and any future
+                // variants) to the caller.  For XLogData, also advance the
+                // last_wal_end watermark so bookmarking stays accurate.
+                if let ReplicationEvent::XLogData { wal_end, .. } = &ev
+                    && *wal_end > duplex.last_wal_end
+                {
+                    duplex.last_wal_end = *wal_end;
+                }
+                return Ok(Some(ev));
             }
         }
     }

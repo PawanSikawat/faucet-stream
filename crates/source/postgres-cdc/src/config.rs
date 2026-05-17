@@ -120,9 +120,10 @@ impl PostgresCdcSourceConfig {
                 "postgres-cdc: publication_name must not be empty".into(),
             ));
         }
-        if !matches!(self.proto_version, 1 | 2) {
+        if self.proto_version != 1 {
             return Err(FaucetError::Config(format!(
-                "postgres-cdc: proto_version must be 1 or 2, got {}",
+                "postgres-cdc: proto_version must be 1 (v2 streaming-transaction \
+                 support is not yet available via pgwire-replication), got {}",
                 self.proto_version
             )));
         }
@@ -248,19 +249,20 @@ mod tests {
 
     #[test]
     fn rejects_invalid_proto_version() {
+        // 0, 2, and 3 are all rejected — only 1 is supported.
         let mut c = minimal();
         c.proto_version = 0;
+        assert!(c.validate().is_err());
+        c.proto_version = 2;
         assert!(c.validate().is_err());
         c.proto_version = 3;
         assert!(c.validate().is_err());
     }
 
     #[test]
-    fn accepts_valid_proto_versions() {
+    fn accepts_proto_version_one() {
         let mut c = minimal();
         c.proto_version = 1;
-        assert!(c.validate().is_ok());
-        c.proto_version = 2;
         assert!(c.validate().is_ok());
     }
 
