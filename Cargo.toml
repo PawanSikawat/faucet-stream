@@ -31,6 +31,7 @@ members = [
     "crates/sink/csv",
     "crates/sink/elasticsearch",
     "crates/sink/http",
+    "crates/sink/kafka",
     "crates/sink/stdout",
     "crates/state/redis",
     "crates/state/postgres",
@@ -76,6 +77,7 @@ faucet-sink-redis = { path = "crates/sink/redis", version = "0.2.0" }
 faucet-sink-csv = { path = "crates/sink/csv", version = "0.2.0" }
 faucet-sink-elasticsearch = { path = "crates/sink/elasticsearch", version = "0.2.0" }
 faucet-sink-http = { path = "crates/sink/http", version = "0.2.0" }
+faucet-sink-kafka = { path = "crates/sink/kafka", version = "0.2.0" }
 faucet-sink-stdout = { path = "crates/sink/stdout", version = "0.2.0" }
 faucet-state-redis = { path = "crates/state/redis", version = "0.2.0" }
 faucet-state-postgres = { path = "crates/state/postgres", version = "0.2.0" }
