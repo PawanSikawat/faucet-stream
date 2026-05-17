@@ -1,9 +1,5 @@
 //! pgoutput message types — high-level structs decoded from the wire.
 
-// These types are consumed by `decoder.rs` (Task 5) and `stream.rs` (Task 9).
-// The dead-code allow can be removed once those modules land.
-#![allow(dead_code)]
-
 use faucet_core::FaucetError;
 
 /// pgoutput message kind byte (the first byte of every payload).
