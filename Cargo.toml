@@ -2,10 +2,12 @@
 resolver = "3"
 members = [
     "crates/core",
+    "crates/kafka-common",
     "crates/source/rest",
     "crates/source/graphql",
     "crates/source/xml",
     "crates/source/grpc",
+    "crates/source/kafka",
     "crates/source/postgres",
     "crates/source/mysql",
 
@@ -29,6 +31,7 @@ members = [
     "crates/sink/csv",
     "crates/sink/elasticsearch",
     "crates/sink/http",
+    "crates/sink/kafka",
     "crates/sink/stdout",
     "crates/state/redis",
     "crates/state/postgres",
@@ -45,10 +48,12 @@ repository = "https://github.com/PawanSikawat/faucet-stream"
 [workspace.dependencies]
 # Internal crates
 faucet-core = { path = "crates/core", version = "0.2.0" }
+faucet-kafka-common = { path = "crates/kafka-common", version = "0.2.0" }
 faucet-source-rest = { path = "crates/source/rest", version = "0.2.0" }
 faucet-source-graphql = { path = "crates/source/graphql", version = "0.2.0" }
 faucet-source-xml = { path = "crates/source/xml", version = "0.2.0" }
 faucet-source-grpc = { path = "crates/source/grpc", version = "0.2.0" }
+faucet-source-kafka = { path = "crates/source/kafka", version = "0.2.0" }
 faucet-sink-bigquery = { path = "crates/sink/bigquery", version = "0.2.0" }
 faucet-sink-postgres = { path = "crates/sink/postgres", version = "0.2.0" }
 faucet-sink-jsonl = { path = "crates/sink/jsonl", version = "0.2.0" }
@@ -72,6 +77,7 @@ faucet-sink-redis = { path = "crates/sink/redis", version = "0.2.0" }
 faucet-sink-csv = { path = "crates/sink/csv", version = "0.2.0" }
 faucet-sink-elasticsearch = { path = "crates/sink/elasticsearch", version = "0.2.0" }
 faucet-sink-http = { path = "crates/sink/http", version = "0.2.0" }
+faucet-sink-kafka = { path = "crates/sink/kafka", version = "0.2.0" }
 faucet-sink-stdout = { path = "crates/sink/stdout", version = "0.2.0" }
 faucet-state-redis = { path = "crates/state/redis", version = "0.2.0" }
 faucet-state-postgres = { path = "crates/state/postgres", version = "0.2.0" }
@@ -106,3 +112,11 @@ redis = { version = "0.29", features = ["tokio-comp", "aio"] }
 axum = "0.8"
 schemars = "1.2.1"
 futures = "0.3"
+rdkafka = { version = "0.39", default-features = false, features = ["tokio", "cmake-build", "ssl-vendored", "sasl"] }
+apache-avro = { version = "0.21", default-features = false, features = ["snappy"] }
+jsonschema = { version = "0.46", default-features = false }
+lru = "0.18"
+bytes = "1"
+url = "2"
+urlencoding = "2"
+protox = "0.9"

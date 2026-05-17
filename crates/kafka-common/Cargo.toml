@@ -1,0 +1,52 @@
+[package]
+name = "faucet-kafka-common"
+version = "0.2.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Shared configuration types for the faucet-stream Kafka source and sink connectors"
+
+[dependencies]
+faucet-core.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+schemars.workspace = true
+thiserror.workspace = true
+rdkafka.workspace = true
+tracing.workspace = true
+base64.workspace = true
+
+# Schema-registry-only deps
+reqwest = { workspace = true, optional = true }
+lru = { workspace = true, optional = true }
+bytes = { workspace = true, optional = true }
+apache-avro = { workspace = true, optional = true }
+prost-reflect = { workspace = true, optional = true }
+prost = { workspace = true, optional = true }
+protox = { workspace = true, optional = true }
+jsonschema = { workspace = true, optional = true }
+tokio = { workspace = true, features = ["sync"], optional = true }
+url = { workspace = true, optional = true }
+urlencoding = { workspace = true, optional = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt", "sync"] }
+serde_json.workspace = true
+wiremock = "0.6"
+
+[features]
+default = []
+schema-registry = [
+    "dep:reqwest",
+    "dep:lru",
+    "dep:bytes",
+    "dep:apache-avro",
+    "dep:prost-reflect",
+    "dep:prost",
+    "dep:protox",
+    "dep:jsonschema",
+    "dep:tokio",
+    "dep:url",
+    "dep:urlencoding",
+]

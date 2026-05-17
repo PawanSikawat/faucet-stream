@@ -35,6 +35,7 @@ source = [
     "source-webhook",
     "source-csv",
     "source-elasticsearch",
+    "source-kafka",
 ]
 sink = [
     "sink-bigquery",
@@ -50,6 +51,7 @@ sink = [
     "sink-elasticsearch",
     "sink-http",
     "sink-stdout",
+    "sink-kafka",
 ]
 state = ["state-redis", "state-postgres"]
 
@@ -66,6 +68,7 @@ source-redis = ["dep:faucet-source-redis"]
 source-webhook = ["dep:faucet-source-webhook"]
 source-csv = ["dep:faucet-source-csv"]
 source-elasticsearch = ["dep:faucet-source-elasticsearch"]
+source-kafka = ["dep:faucet-source-kafka"]
 
 sink-bigquery = ["dep:faucet-sink-bigquery"]
 sink-postgres = ["dep:faucet-sink-postgres"]
@@ -80,6 +83,12 @@ sink-csv = ["dep:faucet-sink-csv"]
 sink-elasticsearch = ["dep:faucet-sink-elasticsearch"]
 sink-http = ["dep:faucet-sink-http"]
 sink-stdout = ["dep:faucet-sink-stdout"]
+sink-kafka = ["dep:faucet-sink-kafka"]
+
+kafka-schema-registry = [
+    "faucet-source-kafka?/schema-registry",
+    "faucet-sink-kafka?/schema-registry",
+]
 
 state-redis = ["dep:faucet-state-redis"]
 state-postgres = ["dep:faucet-state-postgres"]
@@ -104,6 +113,7 @@ faucet-source-redis = { workspace = true, optional = true }
 faucet-source-webhook = { workspace = true, optional = true }
 faucet-source-csv = { workspace = true, optional = true }
 faucet-source-elasticsearch = { workspace = true, optional = true }
+faucet-source-kafka = { workspace = true, optional = true }
 faucet-sink-bigquery = { workspace = true, optional = true }
 faucet-sink-postgres = { workspace = true, optional = true }
 faucet-sink-jsonl = { workspace = true, optional = true }
@@ -116,6 +126,7 @@ faucet-sink-redis = { workspace = true, optional = true }
 faucet-sink-csv = { workspace = true, optional = true }
 faucet-sink-elasticsearch = { workspace = true, optional = true }
 faucet-sink-http = { workspace = true, optional = true }
+faucet-sink-kafka = { workspace = true, optional = true }
 faucet-sink-stdout = { workspace = true, optional = true }
 faucet-state-redis = { workspace = true, optional = true }
 faucet-state-postgres = { workspace = true, optional = true }

@@ -14,7 +14,7 @@ This workspace produces both library crates (`faucet-core` + every connector and
 
 ## Workspace Structure
 
-The project is a Cargo workspace with 31 crates (30 libraries + the `faucet-cli` binary):
+The project is a Cargo workspace with 34 crates (33 libraries + the `faucet-cli` binary):
 
 | Crate | Path | Description |
 |-------|------|-------------|
@@ -45,6 +45,9 @@ The project is a Cargo workspace with 31 crates (30 libraries + the `faucet-cli`
 | `faucet-sink-elasticsearch` | `crates/sink/elasticsearch/` | Elasticsearch sink — bulk index API |
 | `faucet-sink-http` | `crates/sink/http/` | HTTP POST sink — send records to HTTP endpoint |
 | `faucet-sink-stdout` | `crates/sink/stdout/` | Stdout/stderr sink — JSON Lines, pretty JSON, or TSV |
+| `faucet-kafka-common` | `crates/kafka-common/` | Shared types for Kafka source/sink — auth, value formats, Schema Registry client |
+| `faucet-source-kafka` | `crates/source/kafka/` | Apache Kafka consumer — subscribes to topics, drains with idle/max-messages termination |
+| `faucet-sink-kafka` | `crates/sink/kafka/` | Apache Kafka producer — FuturesUnordered batched sends, QueueFull retry, multi-topic routing |
 | `faucet-state-redis` | `crates/state/redis/` | Redis-backed `StateStore` for replication bookmarks |
 | `faucet-state-postgres` | `crates/state/postgres/` | PostgreSQL-backed `StateStore` for replication bookmarks |
 | `faucet-stream` | `faucet-stream/` | Umbrella crate — feature-gated re-exports of all connectors and state backends |
@@ -81,6 +84,9 @@ faucet-core  <──  faucet-source-rest
              <──  faucet-sink-elasticsearch
              <──  faucet-sink-http
              <──  faucet-sink-stdout
+             <──  faucet-kafka-common
+             <──  faucet-source-kafka  (depends on faucet-kafka-common)
+             <──  faucet-sink-kafka  (depends on faucet-kafka-common)
              <──  faucet-state-redis
              <──  faucet-state-postgres
              <──  faucet-stream (umbrella, all optional)
@@ -175,7 +181,7 @@ All connectors must be optimised for throughput by default. When modifying or ad
 # Build (all crates)
 cargo build --workspace
 
-# Run all tests (no external dependencies required)
+# Run all tests (no external services required; Kafka integration tests require Docker)
 cargo test --workspace --all-features
 
 # Format
@@ -368,6 +374,29 @@ cargo install --path cli --no-default-features --features "source-rest,sink-json
 - **`src/config.rs`** — `StdoutSinkConfig`, `StdStream` (Stdout, Stderr), `StdoutFormat` (JsonLines, PrettyJson, Tsv)
 - **`src/sink.rs`** — `StdoutSink`: writes encoded records to the chosen standard stream behind a `Mutex<Box<dyn AsyncWrite + Unpin + Send>>`. Treats `BrokenPipe` as clean termination. Honors `max_records` and `flush_per_record`. `StdoutSink::with_writer(...)` accepts a custom writer for tests and redirected output.
 
+### faucet-kafka-common (`crates/kafka-common/`)
+
+- **`src/lib.rs`** — crate root; re-exports all shared Kafka types (`KafkaAuth`, `KafkaValueFormat`, `SchemaRegistryConfig`, `KafkaCompression`, `KafkaTlsConfig`)
+- **`src/auth.rs`** — `KafkaAuth` enum: `None`, `SaslPlain`, `SaslScram256`, `SaslScram512`, `Ssl`; maps to `rdkafka` `ClientConfig` entries
+- **`src/format.rs`** — `KafkaValueFormat` enum: `Json`, `Avro`, `Protobuf`, `JsonSchema`, `RawBytes`; schema-registry-backed formats are gated on `kafka-schema-registry`
+- **`src/registry.rs`** — `SchemaRegistryConfig` (url, credentials) + `SchemaRegistryClient`: fetches and caches schemas by subject/version; used by Avro/Protobuf/JsonSchema decoders
+- **`src/compression.rs`** — `KafkaCompression` enum: `None`, `Gzip`, `Snappy`, `Lz4`, `Zstd`; serializes to the `compression.type` producer config string
+
+### faucet-source-kafka (`crates/source/kafka/`)
+
+- **`src/lib.rs`** — crate root; re-exports `Source`, `FaucetError`, and `Kafka*` config types from `faucet-kafka-common`
+- **`src/config.rs`** — `KafkaSourceConfig` (brokers, topics, group_id, auth, formats, termination), `OffsetReset` enum (`Earliest`, `Latest`), `TerminationPolicy` (idle timeout + optional max-messages cap), validation
+- **`src/decode.rs`** — value/key decoder dispatch on `KafkaValueFormat`; JSON decoded directly, Avro/Protobuf/JsonSchema require Schema Registry, raw bytes wrapped as base64 strings
+- **`src/state.rs`** — `Bookmark` type (partition → offset map); `state_key()` generator derives a stable key from group_id + topics; `apply_start_bookmark()` seeks each partition to its stored offset on first poll
+- **`src/stream.rs`** — `KafkaSource`: builds a `StreamConsumer` from config, drives `tokio::select!` over `recv`/`idle_timeout`/`ctrl_c`, sets `enable.auto.commit=false`, seeks to bookmark offsets before first message, collects into a `Vec<Value>` and implements `faucet_core::Source`
+
+### faucet-sink-kafka (`crates/sink/kafka/`)
+
+- **`src/lib.rs`** — crate root; re-exports `Sink`, `FaucetError`, and `Kafka*` config types from `faucet-kafka-common`
+- **`src/config.rs`** — `KafkaSinkConfig` (brokers, default_topic, topic_field, auth, value_format, key_field, compression, acks, linger_ms, batch_size), validation
+- **`src/encode.rs`** — value encoder dispatch on `KafkaValueFormat`; JSON serialized via `serde_json`, schema-registry formats gated on `kafka-schema-registry`
+- **`src/sink.rs`** — `KafkaSink`: builds an `rdkafka::FutureProducer` in `new()`, sends records via `FuturesUnordered` for maximum parallelism, retries on `QueueFull` with exponential backoff, routes each record to the correct topic via `topic_field` override or `default_topic`, implements `faucet_core::Sink`
+
 ### faucet-state-redis (`crates/state/redis/`)
 
 - **`src/store.rs`** — `RedisStateStore`: Redis-backed `StateStore`. Uses `redis::aio::MultiplexedConnection`, namespaces keys as `{namespace}:{key}`, exposes `connect(url, namespace)`, `from_connection(conn, namespace)`, and `ensure_table` is not needed (Redis is schemaless). Helper functions `build_redis_key`, `validate_namespace` are unit-tested.
@@ -414,6 +443,7 @@ cargo install --path cli --no-default-features --features "source-rest,sink-json
 | `source-webhook` | no | Webhook HTTP receiver source |
 | `source-csv` | no | CSV file source |
 | `source-elasticsearch` | no | Elasticsearch search/scroll source |
+| `source-kafka` | no | Apache Kafka consumer source |
 | `sink-bigquery` | no | Google BigQuery sink connector |
 | `sink-postgres` | no | PostgreSQL sink connector |
 | `sink-jsonl` | no | JSON Lines file sink connector |
@@ -427,6 +457,8 @@ cargo install --path cli --no-default-features --features "source-rest,sink-json
 | `sink-elasticsearch` | no | Elasticsearch bulk index sink |
 | `sink-http` | no | HTTP POST sink |
 | `sink-stdout` | no | Stdout/stderr sink (JSON Lines, pretty JSON, TSV) |
+| `sink-kafka` | no | Apache Kafka producer sink |
+| `kafka-schema-registry` | no | Confluent Schema Registry (Avro / Protobuf / JSON Schema) support for the Kafka pair |
 | `state-redis` | no | Redis-backed `StateStore` backend |
 | `state-postgres` | no | PostgreSQL-backed `StateStore` backend |
 | `source` | no | All source connectors |
@@ -540,6 +572,32 @@ When the user points out something fundamental about how code in this library sh
 - `src/config.rs` — configuration types only. No HTTP logic.
 - `src/sink.rs` — HTTP POST with auth, individual or batched mode.
 
+#### faucet-kafka-common
+- `src/auth.rs` — auth mapping types only. No rdkafka client creation.
+- `src/format.rs` — value format enum only. No encode/decode logic.
+- `src/registry.rs` — Schema Registry HTTP client and schema cache only.
+- `src/compression.rs` — compression enum + string serialization only.
+
+#### faucet-source-kafka / faucet-sink-kafka
+- `src/config.rs` — configuration types only. No rdkafka logic.
+- `src/decode.rs` / `src/encode.rs` — format-specific encoding/decoding only. No consumer/producer logic.
+- `src/state.rs` (source only) — bookmark type and state key derivation only.
+- `src/stream.rs` / `src/sink.rs` — rdkafka consumer/producer creation, message loop, Source/Sink trait impl.
+
+### Source/Sink Pair Config Sharing
+
+When a connector ships both a `faucet-source-<name>` and a `faucet-sink-<name>` crate
+for the same external system, shared configuration types (auth, value formats,
+compression, TLS, etc.) live in a dedicated `faucet-<name>-common` crate. Both
+the source and sink crates depend on the common crate and re-export the shared
+types so end-user imports do not change. See `faucet-kafka-common` for the
+reference implementation.
+
+Existing pairs (`postgres`, `mysql`, `sqlite`, `redis`, `mongodb`, `s3`, `csv`,
+`elasticsearch`) predate this convention and currently duplicate their tiny
+shared config surface; backfilling them is tracked separately (#43). New pairs
+must follow the convention from the start.
+
 ### Config Loading
 
 All connector config structs derive `Serialize` + `Deserialize` + `JsonSchema`, so they can be loaded from JSON files, environment variables, or `.env` files using the helpers in `faucet_core::config`:
@@ -636,7 +694,7 @@ Always use the **highest available stable version** for every crate, the Rust to
 Crates must be published in dependency order with delays for crates.io index propagation:
 
 1. `faucet-core`
-2. All sources + sinks (after 30s): `faucet-source-rest`, `faucet-source-graphql`, `faucet-source-xml`, `faucet-source-grpc`, `faucet-source-postgres`, `faucet-source-mysql`, `faucet-source-sqlite`, `faucet-source-s3`, `faucet-source-mongodb`, `faucet-source-redis`, `faucet-source-webhook`, `faucet-source-csv`, `faucet-source-elasticsearch`, `faucet-sink-bigquery`, `faucet-sink-postgres`, `faucet-sink-jsonl`, `faucet-sink-snowflake`, `faucet-sink-mysql`, `faucet-sink-sqlite`, `faucet-sink-s3`, `faucet-sink-mongodb`, `faucet-sink-redis`, `faucet-sink-csv`, `faucet-sink-elasticsearch`, `faucet-sink-http`
+2. All sources + sinks (after 30s): `faucet-source-rest`, `faucet-source-graphql`, `faucet-source-xml`, `faucet-source-grpc`, `faucet-source-postgres`, `faucet-source-mysql`, `faucet-source-sqlite`, `faucet-source-s3`, `faucet-source-mongodb`, `faucet-source-redis`, `faucet-source-webhook`, `faucet-source-csv`, `faucet-source-elasticsearch`, `faucet-kafka-common`, `faucet-source-kafka`, `faucet-sink-bigquery`, `faucet-sink-postgres`, `faucet-sink-jsonl`, `faucet-sink-snowflake`, `faucet-sink-mysql`, `faucet-sink-sqlite`, `faucet-sink-s3`, `faucet-sink-mongodb`, `faucet-sink-redis`, `faucet-sink-csv`, `faucet-sink-elasticsearch`, `faucet-sink-http`, `faucet-sink-kafka`
 3. `faucet-stream` (after 30s)
 
 The `.github/workflows/publish.yml` handles this automatically on version tags (`v*.*.*`).
@@ -654,3 +712,19 @@ This repo is pushed under the `PawanSikawat` GitHub account, but the default CLI
 3. Switch back to the default account: `gh auth switch --user pawan-dt`
 
 Always revert back to `pawan-dt` once the operation is done.
+
+## Merging Pull Requests
+
+**Whenever the user asks to merge a PR, first verify that every CI check on that PR has passed before merging.** Never merge a PR with failing, pending, or skipped required checks — the failing job almost always represents a real defect that would land on `main` if merged.
+
+The check:
+
+```bash
+gh pr checks <PR-number>
+```
+
+- If every line says `pass`, proceed with the merge.
+- If any line says `fail` or `pending`, **stop and report the failing jobs to the user before merging.** Pull the job logs (`gh run view --log-failed --job <job-id>`) and surface the root cause so the user can decide whether to fix-then-merge or merge-anyway (rare — only if the failure is in an unrelated job the user explicitly tells you to ignore).
+- If checks are still running, wait for them to finish before merging rather than racing.
+
+This rule applies regardless of how the merge was requested — "merge it", "ship it", "land the PR", or anything similar. The verification is non-negotiable.

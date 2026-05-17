@@ -30,6 +30,10 @@ jobs:
         with:
           toolchain: "1.94.0"
           components: clippy
+      - name: Install librdkafka prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libsasl2-dev libssl-dev libcurl4-openssl-dev cmake build-essential
       - uses: actions/cache@v4
         with:
           path: |
@@ -48,6 +52,10 @@ jobs:
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: "1.94.0"
+      - name: Install librdkafka prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libsasl2-dev libssl-dev libcurl4-openssl-dev cmake build-essential
       - uses: actions/cache@v4
         with:
           path: |
@@ -80,6 +88,7 @@ jobs:
           - source-webhook
           - source-csv
           - source-elasticsearch
+          - source-kafka
           # Sinks
           - sink-bigquery
           - sink-postgres
@@ -94,6 +103,9 @@ jobs:
           - sink-elasticsearch
           - sink-http
           - sink-stdout
+          - sink-kafka
+          # Kafka extras
+          - kafka-schema-registry
           # State-store backends
           - state-redis
           - state-postgres
@@ -117,6 +129,15 @@ jobs:
             target
           key: ${{ runner.os }}-feat-${{ matrix.feature }}-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-feat-${{ matrix.feature }}-
+      - name: Install librdkafka prerequisites (Ubuntu)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libsasl2-dev libssl-dev libcurl4-openssl-dev cmake build-essential
+      - name: Install librdkafka prerequisites (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          brew install cmake openssl@3 curl
       - run: cargo check -p faucet-stream --no-default-features --features ${{ matrix.feature }}
 
   cli-build:
@@ -136,6 +157,11 @@ jobs:
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: "1.94.0"
+      - name: Install librdkafka prerequisites
+        if: contains(matrix.features, 'full') || contains(matrix.features, 'kafka')
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libsasl2-dev libssl-dev libcurl4-openssl-dev cmake build-essential
       - uses: actions/cache@v4
         with:
           path: |
@@ -145,3 +171,32 @@ jobs:
           key: ${{ runner.os }}-cli-${{ hashFiles('**/Cargo.lock') }}-${{ hashFiles('cli/**/*.rs', 'cli/Cargo.toml') }}
           restore-keys: ${{ runner.os }}-cli-
       - run: cargo build -p faucet-cli --no-default-features --features "${{ matrix.features }}"
+
+  kafka-integration:
+    name: Kafka integration tests (Docker)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.94.0"
+      - name: Install librdkafka prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libsasl2-dev libssl-dev libcurl4-openssl-dev cmake build-essential
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-kafka-integration-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-kafka-integration-
+      - name: Run kafka source integration tests
+        run: cargo test -p faucet-source-kafka --test integration -- --test-threads=1
+      - name: Run kafka sink integration tests
+        run: cargo test -p faucet-sink-kafka --test integration -- --test-threads=1
+      - name: Run kafka schema-registry-enabled tests
+        run: cargo test -p faucet-kafka-common --all-features

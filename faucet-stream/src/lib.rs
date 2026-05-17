@@ -21,6 +21,7 @@
 //! | `source-webhook` | Webhook HTTP receiver source |
 //! | `source-csv` | CSV file source |
 //! | `source-elasticsearch` | Elasticsearch search/scroll source |
+//! | `source-kafka` | Apache Kafka consumer source |
 //! | `sink-bigquery` | Google BigQuery streaming insert sink |
 //! | `sink-postgres` | PostgreSQL sink (jsonb or auto-mapped columns) |
 //! | `sink-jsonl` | JSON Lines file sink |
@@ -34,6 +35,8 @@
 //! | `sink-csv` | CSV file sink |
 //! | `sink-elasticsearch` | Elasticsearch bulk index sink |
 //! | `sink-http` | HTTP POST sink |
+//! | `sink-kafka` | Apache Kafka producer sink |
+//! | `kafka-schema-registry` | Schema Registry support for Kafka connectors |
 //! | `source` | All source connectors |
 //! | `sink` | All sink connectors |
 //! | `full` | Every connector |
@@ -108,6 +111,11 @@ pub mod source {
     pub mod elasticsearch {
         pub use faucet_source_elasticsearch::*;
     }
+
+    #[cfg(feature = "source-kafka")]
+    pub mod kafka {
+        pub use faucet_source_kafka::*;
+    }
 }
 
 // Source modules available without source-rest (when only other sources are enabled).
@@ -171,6 +179,11 @@ pub mod source {
     #[cfg(feature = "source-elasticsearch")]
     pub mod elasticsearch {
         pub use faucet_source_elasticsearch::*;
+    }
+
+    #[cfg(feature = "source-kafka")]
+    pub mod kafka {
+        pub use faucet_source_kafka::*;
     }
 }
 
@@ -249,6 +262,18 @@ pub mod sink {
     pub mod stdout {
         pub use faucet_sink_stdout::*;
     }
+
+    #[cfg(feature = "sink-kafka")]
+    pub mod kafka {
+        pub use faucet_sink_kafka::*;
+    }
+}
+
+// ── Kafka common types ───────────────────────────────────────────────────────
+
+#[cfg(any(feature = "source-kafka", feature = "sink-kafka"))]
+pub mod kafka_common {
+    pub use faucet_kafka_common::*;
 }
 
 // ── State-store backends ─────────────────────────────────────────────────────

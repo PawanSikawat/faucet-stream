@@ -1,0 +1,30 @@
+[package]
+name = "faucet-source-kafka"
+version = "0.2.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Apache Kafka consumer source for the faucet-stream ecosystem"
+
+[dependencies]
+faucet-core.workspace = true
+faucet-kafka-common.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+schemars.workspace = true
+thiserror.workspace = true
+async-trait.workspace = true
+tracing.workspace = true
+rdkafka.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync", "signal", "time"] }
+base64.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync", "signal", "time", "test-util"] }
+testcontainers = "0.27"
+testcontainers-modules = { version = "0.15", features = ["kafka"] }
+
+[features]
+default = []
+schema-registry = ["faucet-kafka-common/schema-registry"]
