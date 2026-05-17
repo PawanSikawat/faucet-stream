@@ -40,6 +40,7 @@ impl MessageKind {
             }
         })
     }
+
     pub fn as_byte(&self) -> u8 {
         match self {
             Self::Begin => b'B',
@@ -73,12 +74,13 @@ impl ReplicaIdentity {
             b'i' => Self::Index,
             other => {
                 return Err(FaucetError::Source(format!(
-                    "pgoutput: unknown replica identity {:?}",
+                    "pgoutput: unknown replica identity {:?} (0x{other:02X})",
                     other as char
                 )));
             }
         })
     }
+
     pub fn as_byte(&self) -> u8 {
         match self {
             Self::Default => b'd',
@@ -92,7 +94,8 @@ impl ReplicaIdentity {
 /// One column descriptor inside a Relation message.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ColumnDesc {
-    pub flags: u8, // bit 0 = part of replica identity key
+    /// Bit 0 = part of the replica identity key.
+    pub flags: u8,
     pub name: String,
     pub type_oid: u32,
     pub type_modifier: i32,
@@ -112,7 +115,7 @@ pub struct Commit {
     pub flags: u8,
     pub commit_lsn: u64,
     pub end_lsn: u64,
-    pub commit_ts: i64,
+    pub commit_ts: i64, // microseconds since 2000-01-01 UTC
 }
 
 /// Decoded RELATION message — registers a relation OID and its column layout.
@@ -173,7 +176,9 @@ pub struct Update {
 /// What kind of "old tuple" the DELETE carries.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DeleteOldKind {
+    /// `K` — only the replica-identity-key columns are in the old tuple.
     Key,
+    /// `O` — the full old tuple (REPLICA IDENTITY FULL).
     Full,
 }
 
