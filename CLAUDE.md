@@ -712,3 +712,19 @@ This repo is pushed under the `PawanSikawat` GitHub account, but the default CLI
 3. Switch back to the default account: `gh auth switch --user pawan-dt`
 
 Always revert back to `pawan-dt` once the operation is done.
+
+## Merging Pull Requests
+
+**Whenever the user asks to merge a PR, first verify that every CI check on that PR has passed before merging.** Never merge a PR with failing, pending, or skipped required checks — the failing job almost always represents a real defect that would land on `main` if merged.
+
+The check:
+
+```bash
+gh pr checks <PR-number>
+```
+
+- If every line says `pass`, proceed with the merge.
+- If any line says `fail` or `pending`, **stop and report the failing jobs to the user before merging.** Pull the job logs (`gh run view --log-failed --job <job-id>`) and surface the root cause so the user can decide whether to fix-then-merge or merge-anyway (rare — only if the failure is in an unrelated job the user explicitly tells you to ignore).
+- If checks are still running, wait for them to finish before merging rather than racing.
+
+This rule applies regardless of how the merge was requested — "merge it", "ship it", "land the PR", or anything similar. The verification is non-negotiable.

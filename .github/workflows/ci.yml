@@ -30,6 +30,10 @@ jobs:
         with:
           toolchain: "1.94.0"
           components: clippy
+      - name: Install librdkafka prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libsasl2-dev libssl-dev libcurl4-openssl-dev cmake build-essential
       - uses: actions/cache@v4
         with:
           path: |
@@ -48,6 +52,10 @@ jobs:
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: "1.94.0"
+      - name: Install librdkafka prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libsasl2-dev libssl-dev libcurl4-openssl-dev cmake build-essential
       - uses: actions/cache@v4
         with:
           path: |
@@ -125,11 +133,11 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libsasl2-dev libssl-dev cmake build-essential
+          sudo apt-get install -y libsasl2-dev libssl-dev libcurl4-openssl-dev cmake build-essential
       - name: Install librdkafka prerequisites (macOS)
         if: runner.os == 'macOS'
         run: |
-          brew install cmake openssl@3
+          brew install cmake openssl@3 curl
       - run: cargo check -p faucet-stream --no-default-features --features ${{ matrix.feature }}
 
   cli-build:
@@ -149,6 +157,11 @@ jobs:
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: "1.94.0"
+      - name: Install librdkafka prerequisites
+        if: contains(matrix.features, 'full') || contains(matrix.features, 'kafka')
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libsasl2-dev libssl-dev libcurl4-openssl-dev cmake build-essential
       - uses: actions/cache@v4
         with:
           path: |
@@ -171,7 +184,7 @@ jobs:
       - name: Install librdkafka prerequisites
         run: |
           sudo apt-get update
-          sudo apt-get install -y libsasl2-dev libssl-dev cmake build-essential
+          sudo apt-get install -y libsasl2-dev libssl-dev libcurl4-openssl-dev cmake build-essential
       - name: Cache cargo
         uses: actions/cache@v4
         with:
