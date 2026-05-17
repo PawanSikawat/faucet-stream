@@ -7,7 +7,9 @@ use faucet_kafka_common::KafkaValueFormat;
 use serde_json::Value;
 
 #[cfg(feature = "schema-registry")]
-use faucet_kafka_common::schema_registry::{avro, client::SchemaRegistryClient, json_schema};
+use faucet_kafka_common::schema_registry::{
+    avro, client::SchemaRegistryClient, json_schema, protobuf,
+};
 
 #[derive(Default, Clone)]
 pub struct SchemaContext {
@@ -51,9 +53,15 @@ pub async fn encode(
             avro::encode(client, &schema_ctx.subject, schema_text, value).await
         }
         #[cfg(feature = "schema-registry")]
-        KafkaValueFormat::ConfluentProtobuf { .. } => Err(FaucetError::Config(
-            "ConfluentProtobuf encode is not implemented in v1; see follow-up issue #44".into(),
-        )),
+        KafkaValueFormat::ConfluentProtobuf { .. } => {
+            let client = sr_client.ok_or_else(|| {
+                FaucetError::Config("ConfluentProtobuf selected but no SchemaRegistryClient".into())
+            })?;
+            let schema_text = schema_ctx.schema_text.as_deref().ok_or_else(|| {
+                FaucetError::Config("ConfluentProtobuf requires schema_text".into())
+            })?;
+            protobuf::encode(client, &schema_ctx.subject, schema_text, value).await
+        }
         #[cfg(feature = "schema-registry")]
         KafkaValueFormat::ConfluentJsonSchema { .. } => {
             let client = sr_client.ok_or_else(|| {
