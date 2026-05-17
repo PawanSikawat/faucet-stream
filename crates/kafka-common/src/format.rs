@@ -10,35 +10,35 @@ use serde::{Deserialize, Serialize};
 /// How to handle a message whose key cannot be decoded.
 ///
 /// TODO(Task 3): wire into the source fetch loop.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum OnKeyError {
     /// Skip the message and log a warning.
-    #[default]
     Skip,
     /// Return a decoding error and abort.
+    #[default]
     Fail,
-    /// Include the message but set the key field to `null`.
-    Null,
+    /// Send the record with no key (librdkafka picks the partition).
+    RoundRobin,
 }
 
 /// How to handle a message whose value cannot be decoded.
 ///
 /// TODO(Task 3): wire into the source fetch loop.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum OnDecodeError {
     /// Skip the message and log a warning.
-    #[default]
     Skip,
     /// Return a decoding error and abort.
+    #[default]
     Fail,
 }
 
 /// Producer-side compression codec applied to message batches.
 ///
 /// TODO(Task 3): map to `rdkafka` `compression.codec` config value.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum CompressionType {
     /// No compression.
