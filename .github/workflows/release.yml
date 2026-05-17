@@ -89,27 +89,31 @@ jobs:
           # Dry run: bump versions locally, no publish, no git changes
           all_crates=(
             faucet-core
+            faucet-kafka-common
             faucet-source-rest faucet-source-graphql faucet-source-xml
             faucet-source-grpc faucet-source-postgres faucet-source-mysql
             faucet-source-sqlite faucet-source-s3 faucet-source-mongodb
             faucet-source-redis faucet-source-webhook faucet-source-csv
-            faucet-source-elasticsearch
+            faucet-source-elasticsearch faucet-source-kafka
             faucet-sink-bigquery faucet-sink-postgres faucet-sink-jsonl
             faucet-sink-snowflake faucet-sink-mysql faucet-sink-sqlite
             faucet-sink-s3 faucet-sink-mongodb faucet-sink-redis
             faucet-sink-csv faucet-sink-elasticsearch faucet-sink-http
+            faucet-sink-kafka
             faucet-stream
           )
           connectors=(
+            faucet-kafka-common
             faucet-source-rest faucet-source-graphql faucet-source-xml
             faucet-source-grpc faucet-source-postgres faucet-source-mysql
             faucet-source-sqlite faucet-source-s3 faucet-source-mongodb
             faucet-source-redis faucet-source-webhook faucet-source-csv
-            faucet-source-elasticsearch
+            faucet-source-elasticsearch faucet-source-kafka
             faucet-sink-bigquery faucet-sink-postgres faucet-sink-jsonl
             faucet-sink-snowflake faucet-sink-mysql faucet-sink-sqlite
             faucet-sink-s3 faucet-sink-mongodb faucet-sink-redis
             faucet-sink-csv faucet-sink-elasticsearch faucet-sink-http
+            faucet-sink-kafka
           )
 
           case "$SCOPE" in
@@ -146,27 +150,31 @@ jobs:
 
           all_crates=(
             faucet-core
+            faucet-kafka-common
             faucet-source-rest faucet-source-graphql faucet-source-xml
             faucet-source-grpc faucet-source-postgres faucet-source-mysql
             faucet-source-sqlite faucet-source-s3 faucet-source-mongodb
             faucet-source-redis faucet-source-webhook faucet-source-csv
-            faucet-source-elasticsearch
+            faucet-source-elasticsearch faucet-source-kafka
             faucet-sink-bigquery faucet-sink-postgres faucet-sink-jsonl
             faucet-sink-snowflake faucet-sink-mysql faucet-sink-sqlite
             faucet-sink-s3 faucet-sink-mongodb faucet-sink-redis
             faucet-sink-csv faucet-sink-elasticsearch faucet-sink-http
+            faucet-sink-kafka
             faucet-stream
           )
           connectors=(
+            faucet-kafka-common
             faucet-source-rest faucet-source-graphql faucet-source-xml
             faucet-source-grpc faucet-source-postgres faucet-source-mysql
             faucet-source-sqlite faucet-source-s3 faucet-source-mongodb
             faucet-source-redis faucet-source-webhook faucet-source-csv
-            faucet-source-elasticsearch
+            faucet-source-elasticsearch faucet-source-kafka
             faucet-sink-bigquery faucet-sink-postgres faucet-sink-jsonl
             faucet-sink-snowflake faucet-sink-mysql faucet-sink-sqlite
             faucet-sink-s3 faucet-sink-mongodb faucet-sink-redis
             faucet-sink-csv faucet-sink-elasticsearch faucet-sink-http
+            faucet-sink-kafka
           )
 
           case "$SCOPE" in
