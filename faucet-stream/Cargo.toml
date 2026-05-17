@@ -20,6 +20,7 @@ source = [
     "source-graphql",
     "source-xml",
     "source-grpc",
+    "source-kafka",
     "source-postgres",
     "source-mysql",
     "source-sqlite",
@@ -36,6 +37,7 @@ sink = [
     "sink-postgres",
     "sink-jsonl",
     "sink-snowflake",
+    "sink-kafka",
     "sink-mysql",
     "sink-sqlite",
     "sink-s3",
@@ -52,7 +54,7 @@ state = [
     "state-postgres",
 ]
 ## Every connector and state backend.
-full = ["source", "sink", "state"]
+full = ["source", "sink", "state", "kafka-schema-registry"]
 
 ## Individual source connectors.
 source-rest = ["dep:faucet-source-rest"]
@@ -68,6 +70,7 @@ source-redis = ["dep:faucet-source-redis"]
 source-webhook = ["dep:faucet-source-webhook"]
 source-csv = ["dep:faucet-source-csv"]
 source-elasticsearch = ["dep:faucet-source-elasticsearch"]
+source-kafka = ["dep:faucet-source-kafka", "dep:faucet-kafka-common"]
 
 ## Individual sink connectors.
 sink-bigquery = ["dep:faucet-sink-bigquery"]
@@ -84,6 +87,14 @@ sink-csv = ["dep:faucet-sink-csv"]
 sink-elasticsearch = ["dep:faucet-sink-elasticsearch"]
 sink-http = ["dep:faucet-sink-http"]
 sink-stdout = ["dep:faucet-sink-stdout"]
+sink-kafka = ["dep:faucet-sink-kafka", "dep:faucet-kafka-common"]
+
+## Kafka Schema Registry support (forwarded to kafka crates).
+kafka-schema-registry = [
+    "faucet-kafka-common?/schema-registry",
+    "faucet-source-kafka?/schema-registry",
+    "faucet-sink-kafka?/schema-registry",
+]
 
 ## Individual state-store backends.
 state-redis = ["dep:faucet-state-redis"]
@@ -97,10 +108,12 @@ transforms = ["faucet-source-rest?/transforms"]
 
 [dependencies]
 faucet-core.workspace = true
+faucet-kafka-common = { workspace = true, optional = true }
 faucet-source-rest = { workspace = true, optional = true }
 faucet-source-graphql = { workspace = true, optional = true }
 faucet-source-xml = { workspace = true, optional = true }
 faucet-source-grpc = { workspace = true, optional = true }
+faucet-source-kafka = { workspace = true, optional = true }
 faucet-source-postgres = { workspace = true, optional = true }
 faucet-source-mysql = { workspace = true, optional = true }
 faucet-source-sqlite = { workspace = true, optional = true }
@@ -114,6 +127,7 @@ faucet-sink-bigquery = { workspace = true, optional = true }
 faucet-sink-postgres = { workspace = true, optional = true }
 faucet-sink-jsonl = { workspace = true, optional = true }
 faucet-sink-snowflake = { workspace = true, optional = true }
+faucet-sink-kafka = { workspace = true, optional = true }
 faucet-sink-mysql = { workspace = true, optional = true }
 faucet-sink-sqlite = { workspace = true, optional = true }
 
