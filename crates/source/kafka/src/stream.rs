@@ -1,6 +1,7 @@
 //! `KafkaSource` — the Kafka consumer implementation.
 
 use crate::config::KafkaSourceConfig;
+use crate::context::BookmarkContext;
 use crate::decode;
 use crate::state::{Bookmark, state_key};
 use async_trait::async_trait;
@@ -16,7 +17,6 @@ use serde_json::{Map, Value, json};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::sync::Mutex;
 
 #[cfg(feature = "schema-registry")]
 use faucet_kafka_common::KafkaValueFormat;
@@ -25,8 +25,8 @@ use faucet_kafka_common::schema_registry::client::SchemaRegistryClient;
 
 pub struct KafkaSource {
     config: KafkaSourceConfig,
-    consumer: Arc<StreamConsumer>,
-    pending_bookmark: Mutex<Option<Bookmark>>,
+    consumer: Arc<StreamConsumer<BookmarkContext>>,
+    context: BookmarkContext,
     state_key_value: String,
     #[cfg(feature = "schema-registry")]
     sr_client: Option<SchemaRegistryClient>,
@@ -53,8 +53,9 @@ impl KafkaSource {
             client_config.set(k, v);
         }
 
-        let consumer: StreamConsumer = client_config
-            .create()
+        let context = BookmarkContext::new();
+        let consumer: StreamConsumer<BookmarkContext> = client_config
+            .create_with_context(context.clone())
             .map_err(|e| FaucetError::Source(format!("kafka consumer init: {e}")))?;
 
         let topic_refs: Vec<&str> = config.topics.iter().map(String::as_str).collect();
@@ -70,39 +71,11 @@ impl KafkaSource {
         Ok(Self {
             config,
             consumer: Arc::new(consumer),
-            pending_bookmark: Mutex::new(None),
+            context,
             state_key_value,
             #[cfg(feature = "schema-registry")]
             sr_client,
         })
-    }
-
-    /// Once the consumer has received its partition assignment, apply any
-    /// pending bookmark by seeking each partition to the stored offset.
-    async fn maybe_apply_seek(&self) -> Result<(), FaucetError> {
-        let bookmark = {
-            let mut guard = self.pending_bookmark.lock().await;
-            guard.take()
-        };
-        let Some(bookmark) = bookmark else {
-            return Ok(());
-        };
-        for entry in &bookmark.partition_offsets {
-            self.consumer
-                .seek(
-                    &entry.topic,
-                    entry.partition,
-                    rdkafka::Offset::Offset(entry.offset),
-                    Some(Duration::from_secs(5)),
-                )
-                .map_err(|e| {
-                    FaucetError::State(format!(
-                        "kafka seek topic={} partition={} offset={}: {e}",
-                        entry.topic, entry.partition, entry.offset
-                    ))
-                })?;
-        }
-        Ok(())
     }
 
     async fn message_to_value(
@@ -199,11 +172,22 @@ impl Source for KafkaSource {
         let mut records: Vec<Value> = Vec::new();
         let mut pending_offsets: HashMap<(String, i32), i64> = HashMap::new();
         let mut last_message_at = Instant::now();
-        let mut seek_applied = false;
         let max_messages = self.config.max_messages.unwrap_or(usize::MAX);
         let idle_timeout = self.config.idle_timeout;
 
         loop {
+            // Surface any error raised by the rebalance callback (e.g. a
+            // failed seek). Done before the next poll so we don't process
+            // additional messages after a bookmark application failure.
+            {
+                let mut guard = self.context.callback_error.lock().map_err(|e| {
+                    FaucetError::State(format!("kafka callback_error mutex poisoned: {e}"))
+                })?;
+                if let Some(e) = guard.take() {
+                    return Err(e);
+                }
+            }
+
             let idle_deadline = idle_timeout.map(|t| last_message_at + t);
             let poll_budget = match idle_deadline {
                 Some(deadline) => deadline
@@ -221,10 +205,6 @@ impl Source for KafkaSource {
                 recv = tokio::time::timeout(poll_budget, self.consumer.recv()) => {
                     match recv {
                         Ok(Ok(msg)) => {
-                            if !seek_applied {
-                                self.maybe_apply_seek().await?;
-                                seek_applied = true;
-                            }
                             match self.message_to_value(&msg).await {
                                 Ok(record) => {
                                     pending_offsets.insert(
@@ -280,7 +260,9 @@ impl Source for KafkaSource {
 
     async fn apply_start_bookmark(&self, bookmark: Value) -> Result<(), FaucetError> {
         let parsed = Bookmark::from_value(bookmark)?;
-        let mut guard = self.pending_bookmark.lock().await;
+        let mut guard = self.context.pending_bookmark.lock().map_err(|e| {
+            FaucetError::State(format!("kafka pending_bookmark mutex poisoned: {e}"))
+        })?;
         *guard = Some(parsed);
         Ok(())
     }

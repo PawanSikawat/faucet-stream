@@ -106,20 +106,20 @@ async fn round_trip_basic() {
 }
 
 /// Verifies that `apply_start_bookmark` causes the consumer to seek past
-/// previously-consumed offsets. Because the seek fires in response to the
-/// first received message (after partition assignment), the message that
-/// triggered the seek is still included in the output; subsequent messages
-/// come from the seeked position onward.
+/// previously-consumed offsets *before any message is delivered*, so the
+/// restart boundary does not emit duplicates.
 ///
 /// With 4 messages (id 1-4) and s1 draining the first 2 (ids 1 & 2):
 ///   bookmark = partition 0 → offset 2
-/// s2 starts fresh (group g-resume-2, earliest):
-///   - receives id=1 (offset 0) → triggers seek to offset 2 → seek_applied
-///   - receives id=3 (offset 2) and id=4 (offset 3)
+/// s2 starts fresh (group g-resume-2, earliest) with the bookmark applied:
+///   - rebalance callback fires on partition assignment → seeks to offset 2
+///   - first message delivered is id=3 (offset 2)
+///   - then id=4 (offset 3)
 ///   - idle_timeout fires → stops
-/// So second = [id=1, id=3, id=4] (3 records), with second[1] == id=3.
+/// So second = [id=3, id=4] (2 records). Crucially, id=1 (the message that
+/// used to trigger the post-poll seek) is no longer in the output.
 #[tokio::test(flavor = "multi_thread")]
-async fn resume_with_bookmark_seek_to_position() {
+async fn resume_with_bookmark_no_restart_duplicate() {
     let (_container, brokers) = start_kafka().await;
     let topic = "resume";
     produce(
@@ -144,19 +144,21 @@ async fn resume_with_bookmark_seek_to_position() {
     assert_eq!(first[1]["value"]["id"], 2);
     let bookmark = bookmark.expect("bookmark should be Some after consuming messages");
 
-    // Second run: new group, apply bookmark → seek to offset 2 after assignment.
-    // The message that triggers the seek (id=1, offset=0) is still emitted first;
-    // then id=3 and id=4 come from the seeked position.
+    // Second run: new group, apply bookmark → pre_rebalance seeks to offset 2
+    // *before* any poll. id=1 and id=2 are skipped entirely.
     let s2 = KafkaSource::new(source_config(&brokers, topic, "g-resume-2", 10))
         .await
         .unwrap();
     s2.apply_start_bookmark(bookmark).await.unwrap();
     let (second, _) = s2.fetch_all_incremental().await.unwrap();
 
-    // 3 records: the pre-seek trigger (id=1) + the 2 post-seek messages (id=3, id=4).
-    assert_eq!(second.len(), 3);
-    assert_eq!(second[1]["value"]["id"], 3);
-    assert_eq!(second[2]["value"]["id"], 4);
+    assert_eq!(
+        second.len(),
+        2,
+        "expected exactly 2 records with no restart duplicate, got {second:#?}"
+    );
+    assert_eq!(second[0]["value"]["id"], 3);
+    assert_eq!(second[1]["value"]["id"], 4);
 }
 
 #[tokio::test(flavor = "multi_thread")]

@@ -162,11 +162,7 @@ Topics are sorted alphabetically before joining, so the key is stable regardless
 kafka:my-group:alpha.beta
 ```
 
-**Important — at-least-once delivery on restart:**
-
-Because `seek` is called after the first poll (a librdkafka constraint — partition assignment is not final until the first message is received), exactly one message per assigned partition may be delivered twice across a restart boundary. This is at-least-once delivery. Sinks should be idempotent or otherwise accept duplicate records.
-
-A future enhancement will install a custom `ConsumerContext` with a `pre_rebalance` callback to eliminate the restart duplicate — tracked in the follow-up issue filed alongside this README.
+**Delivery semantics:** Offsets are persisted via faucet-stream's state store only after the sink confirms a batch, and on restart the consumer seeds the partition assignment with the bookmarked offset *before* any message is fetched. End-to-end this is at-least-once if the sink can fail mid-batch; pair with idempotent sinks if you need stricter guarantees.
 
 ---
 
