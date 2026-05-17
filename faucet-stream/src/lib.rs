@@ -22,6 +22,7 @@
 //! | `source-csv` | CSV file source |
 //! | `source-elasticsearch` | Elasticsearch search/scroll source |
 //! | `source-kafka` | Apache Kafka consumer source |
+//! | `source-parquet` | Apache Parquet file source (local, glob, S3) |
 //! | `sink-bigquery` | Google BigQuery streaming insert sink |
 //! | `sink-postgres` | PostgreSQL sink (jsonb or auto-mapped columns) |
 //! | `sink-jsonl` | JSON Lines file sink |
@@ -36,6 +37,7 @@
 //! | `sink-elasticsearch` | Elasticsearch bulk index sink |
 //! | `sink-http` | HTTP POST sink |
 //! | `sink-kafka` | Apache Kafka producer sink |
+//! | `sink-parquet` | Apache Parquet file sink (local, S3) |
 //! | `kafka-schema-registry` | Schema Registry support for Kafka connectors |
 //! | `source` | All source connectors |
 //! | `sink` | All sink connectors |
@@ -116,6 +118,11 @@ pub mod source {
     pub mod kafka {
         pub use faucet_source_kafka::*;
     }
+
+    #[cfg(feature = "source-parquet")]
+    pub mod parquet {
+        pub use faucet_source_parquet::*;
+    }
 }
 
 // Source modules available without source-rest (when only other sources are enabled).
@@ -184,6 +191,11 @@ pub mod source {
     #[cfg(feature = "source-kafka")]
     pub mod kafka {
         pub use faucet_source_kafka::*;
+    }
+
+    #[cfg(feature = "source-parquet")]
+    pub mod parquet {
+        pub use faucet_source_parquet::*;
     }
 }
 
@@ -266,6 +278,11 @@ pub mod sink {
     #[cfg(feature = "sink-kafka")]
     pub mod kafka {
         pub use faucet_sink_kafka::*;
+    }
+
+    #[cfg(feature = "sink-parquet")]
+    pub mod parquet {
+        pub use faucet_sink_parquet::*;
     }
 }
 

@@ -101,6 +101,14 @@ pub async fn build_source(kind: &str, config: Value) -> CliResult<Box<dyn Source
             let cfg = decode::<faucet_source_kafka::KafkaSourceConfig>("source", "kafka", config)?;
             Ok(Box::new(faucet_source_kafka::KafkaSource::new(cfg).await?))
         }
+        #[cfg(feature = "source-parquet")]
+        "parquet" => {
+            let cfg =
+                decode::<faucet_source_parquet::ParquetSourceConfig>("source", "parquet", config)?;
+            Ok(Box::new(
+                faucet_source_parquet::ParquetSource::new(cfg).await?,
+            ))
+        }
         other => Err(unknown(other, "source", source_kinds())),
     }
 }
@@ -191,6 +199,11 @@ pub async fn build_sink(kind: &str, config: Value) -> CliResult<Box<dyn Sink>> {
             let cfg = decode::<faucet_sink_stdout::StdoutSinkConfig>("sink", "stdout", config)?;
             Ok(Box::new(faucet_sink_stdout::StdoutSink::new(cfg)))
         }
+        #[cfg(feature = "sink-parquet")]
+        "parquet" => {
+            let cfg = decode::<faucet_sink_parquet::ParquetSinkConfig>("sink", "parquet", config)?;
+            Ok(Box::new(faucet_sink_parquet::ParquetSink::new(cfg).await?))
+        }
         other => Err(unknown(other, "sink", sink_kinds())),
     }
 }
@@ -228,6 +241,8 @@ pub fn source_schema(kind: &str) -> CliResult<Value> {
         >()),
         #[cfg(feature = "source-kafka")]
         "kafka" => Ok(schema::<faucet_source_kafka::KafkaSourceConfig>()),
+        #[cfg(feature = "source-parquet")]
+        "parquet" => Ok(schema::<faucet_source_parquet::ParquetSourceConfig>()),
         other => Err(unknown(other, "source", source_kinds())),
     }
 }
@@ -263,6 +278,8 @@ pub fn sink_schema(kind: &str) -> CliResult<Value> {
         "http" => Ok(schema::<faucet_sink_http::HttpSinkConfig>()),
         #[cfg(feature = "sink-stdout")]
         "stdout" => Ok(schema::<faucet_sink_stdout::StdoutSinkConfig>()),
+        #[cfg(feature = "sink-parquet")]
+        "parquet" => Ok(schema::<faucet_sink_parquet::ParquetSinkConfig>()),
         other => Err(unknown(other, "sink", sink_kinds())),
     }
 }
@@ -299,6 +316,8 @@ pub fn source_descriptions() -> Vec<(&'static str, &'static str)> {
     v.push(("elasticsearch", "Elasticsearch search / scroll source"));
     #[cfg(feature = "source-kafka")]
     v.push(("kafka", "Apache Kafka consumer (rdkafka). Subscribes to topics and drains messages with idle/max-messages termination."));
+    #[cfg(feature = "source-parquet")]
+    v.push(("parquet", "Apache Parquet file source (local path, glob, or S3). Streams record batches via the Arrow async reader."));
     v
 }
 
@@ -334,6 +353,8 @@ pub fn sink_descriptions() -> Vec<(&'static str, &'static str)> {
     v.push(("http", "HTTP POST sink (individual or array batch)"));
     #[cfg(feature = "sink-stdout")]
     v.push(("stdout", "Stdout / stderr sink (JSON Lines, pretty, TSV)"));
+    #[cfg(feature = "sink-parquet")]
+    v.push(("parquet", "Apache Parquet file sink (local path or S3). Schema-inferred, configurable compression, row/byte rollover."));
     v
 }
 

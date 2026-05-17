@@ -89,6 +89,7 @@ jobs:
           - source-csv
           - source-elasticsearch
           - source-kafka
+          - source-parquet
           # Sinks
           - sink-bigquery
           - sink-postgres
@@ -104,6 +105,7 @@ jobs:
           - sink-http
           - sink-stdout
           - sink-kafka
+          - sink-parquet
           # Kafka extras
           - kafka-schema-registry
           # State-store backends

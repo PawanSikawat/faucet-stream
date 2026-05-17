@@ -36,6 +36,7 @@ source = [
     "source-csv",
     "source-elasticsearch",
     "source-kafka",
+    "source-parquet",
 ]
 sink = [
     "sink-bigquery",
@@ -52,6 +53,7 @@ sink = [
     "sink-http",
     "sink-stdout",
     "sink-kafka",
+    "sink-parquet",
 ]
 state = ["state-redis", "state-postgres"]
 
@@ -69,6 +71,7 @@ source-webhook = ["dep:faucet-source-webhook"]
 source-csv = ["dep:faucet-source-csv"]
 source-elasticsearch = ["dep:faucet-source-elasticsearch"]
 source-kafka = ["dep:faucet-source-kafka"]
+source-parquet = ["dep:faucet-source-parquet"]
 
 sink-bigquery = ["dep:faucet-sink-bigquery"]
 sink-postgres = ["dep:faucet-sink-postgres"]
@@ -84,6 +87,7 @@ sink-elasticsearch = ["dep:faucet-sink-elasticsearch"]
 sink-http = ["dep:faucet-sink-http"]
 sink-stdout = ["dep:faucet-sink-stdout"]
 sink-kafka = ["dep:faucet-sink-kafka"]
+sink-parquet = ["dep:faucet-sink-parquet"]
 
 kafka-schema-registry = [
     "faucet-source-kafka?/schema-registry",
@@ -114,6 +118,7 @@ faucet-source-webhook = { workspace = true, optional = true }
 faucet-source-csv = { workspace = true, optional = true }
 faucet-source-elasticsearch = { workspace = true, optional = true }
 faucet-source-kafka = { workspace = true, optional = true }
+faucet-source-parquet = { workspace = true, optional = true }
 faucet-sink-bigquery = { workspace = true, optional = true }
 faucet-sink-postgres = { workspace = true, optional = true }
 faucet-sink-jsonl = { workspace = true, optional = true }
@@ -128,6 +133,7 @@ faucet-sink-elasticsearch = { workspace = true, optional = true }
 faucet-sink-http = { workspace = true, optional = true }
 faucet-sink-kafka = { workspace = true, optional = true }
 faucet-sink-stdout = { workspace = true, optional = true }
+faucet-sink-parquet = { workspace = true, optional = true }
 faucet-state-redis = { workspace = true, optional = true }
 faucet-state-postgres = { workspace = true, optional = true }
 

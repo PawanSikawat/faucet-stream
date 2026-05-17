@@ -18,6 +18,7 @@ members = [
     "crates/source/sqlite",
     "crates/source/csv",
     "crates/source/elasticsearch",
+    "crates/source/parquet",
     "crates/sink/bigquery",
     "crates/sink/postgres",
     "crates/sink/jsonl",
@@ -33,6 +34,7 @@ members = [
     "crates/sink/http",
     "crates/sink/kafka",
     "crates/sink/stdout",
+    "crates/sink/parquet",
     "crates/state/redis",
     "crates/state/postgres",
     "faucet-stream",
@@ -68,6 +70,7 @@ faucet-source-webhook = { path = "crates/source/webhook", version = "0.2.0" }
 faucet-source-sqlite = { path = "crates/source/sqlite", version = "0.2.0" }
 faucet-source-csv = { path = "crates/source/csv", version = "0.2.0" }
 faucet-source-elasticsearch = { path = "crates/source/elasticsearch", version = "0.2.0" }
+faucet-source-parquet = { path = "crates/source/parquet", version = "0.2.0" }
 faucet-sink-mysql = { path = "crates/sink/mysql", version = "0.2.0" }
 faucet-sink-sqlite = { path = "crates/sink/sqlite", version = "0.2.0" }
 
@@ -79,6 +82,7 @@ faucet-sink-elasticsearch = { path = "crates/sink/elasticsearch", version = "0.2
 faucet-sink-http = { path = "crates/sink/http", version = "0.2.0" }
 faucet-sink-kafka = { path = "crates/sink/kafka", version = "0.2.0" }
 faucet-sink-stdout = { path = "crates/sink/stdout", version = "0.2.0" }
+faucet-sink-parquet = { path = "crates/sink/parquet", version = "0.2.0" }
 faucet-state-redis = { path = "crates/state/redis", version = "0.2.0" }
 faucet-state-postgres = { path = "crates/state/postgres", version = "0.2.0" }
 faucet-cli = { path = "cli", version = "0.2.0" }
@@ -120,3 +124,8 @@ bytes = "1"
 url = "2"
 urlencoding = "2"
 protox = "0.9"
+arrow = "58"
+arrow-json = "58"
+parquet = { version = "58", features = ["async", "object_store"] }
+object_store = "0.13"
+glob = "0.3"
