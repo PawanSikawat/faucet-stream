@@ -26,18 +26,18 @@ use std::sync::{Arc, Mutex};
 /// inner `Arc`s, not the underlying data — both clones see the same bookmark
 /// and the same error slot.
 #[derive(Clone, Default)]
-pub struct BookmarkContext {
+pub(crate) struct BookmarkContext {
     /// Bookmark to apply on the next `Rebalance::Assign`. Taken (not peeked)
     /// when the assign fires, so subsequent rebalances do not re-seek.
-    pub pending_bookmark: Arc<Mutex<Option<Bookmark>>>,
+    pub(crate) pending_bookmark: Arc<Mutex<Option<Bookmark>>>,
     /// First error raised inside the rebalance callback (assign failures).
     /// The poll loop drains this between iterations and surfaces it to the
     /// caller.
-    pub callback_error: Arc<Mutex<Option<FaucetError>>>,
+    pub(crate) callback_error: Arc<Mutex<Option<FaucetError>>>,
 }
 
 impl BookmarkContext {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self::default()
     }
 
@@ -93,7 +93,6 @@ impl ConsumerContext for BookmarkContext {
                 };
 
                 if let Some(bookmark) = bookmark {
-                    // Build a (topic, partition) -> offset lookup.
                     let lookup: HashMap<(&str, i32), i64> = bookmark
                         .partition_offsets
                         .iter()
@@ -115,7 +114,6 @@ impl ConsumerContext for BookmarkContext {
                         })
                         .collect();
 
-                    // Apply bookmarked offsets to each matched partition.
                     // Partitions absent from the bookmark are left at their
                     // default offset (earliest/latest per `auto.offset.reset`).
                     for (topic, partition, offset) in seeks {
@@ -130,9 +128,6 @@ impl ConsumerContext for BookmarkContext {
                     }
                 }
 
-                // Call assign with the (possibly modified) TPL. Setting offsets
-                // in the TPL before assign makes them the initial fetch positions
-                // — no seek call is needed after the fact.
                 match base_consumer.rebalance_protocol() {
                     RebalanceProtocol::Cooperative => {
                         if let Err(e) = base_consumer.incremental_assign(tpl) {
@@ -184,7 +179,6 @@ impl ConsumerContext for BookmarkContext {
                 let error_code = rdkafka::error::RDKafkaErrorCode::from(err);
                 let rebalance = Rebalance::Error(KafkaError::Rebalance(error_code));
                 self.pre_rebalance(base_consumer, &rebalance);
-                // Error rebalance events: no assignment/unassignment needed.
                 self.post_rebalance(base_consumer, &rebalance);
             }
         }
