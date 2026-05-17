@@ -96,7 +96,8 @@ jobs:
             faucet-core
             faucet-kafka-common
             faucet-source-rest faucet-source-graphql faucet-source-xml
-            faucet-source-grpc faucet-source-postgres faucet-source-mysql
+            faucet-source-grpc faucet-source-postgres faucet-source-postgres-cdc
+            faucet-source-mysql
             faucet-source-sqlite faucet-source-s3 faucet-source-mongodb
             faucet-source-redis faucet-source-webhook faucet-source-csv
             faucet-source-elasticsearch faucet-source-kafka
@@ -110,7 +111,8 @@ jobs:
           connectors=(
             faucet-kafka-common
             faucet-source-rest faucet-source-graphql faucet-source-xml
-            faucet-source-grpc faucet-source-postgres faucet-source-mysql
+            faucet-source-grpc faucet-source-postgres faucet-source-postgres-cdc
+            faucet-source-mysql
             faucet-source-sqlite faucet-source-s3 faucet-source-mongodb
             faucet-source-redis faucet-source-webhook faucet-source-csv
             faucet-source-elasticsearch faucet-source-kafka
@@ -157,7 +159,8 @@ jobs:
             faucet-core
             faucet-kafka-common
             faucet-source-rest faucet-source-graphql faucet-source-xml
-            faucet-source-grpc faucet-source-postgres faucet-source-mysql
+            faucet-source-grpc faucet-source-postgres faucet-source-postgres-cdc
+            faucet-source-mysql
             faucet-source-sqlite faucet-source-s3 faucet-source-mongodb
             faucet-source-redis faucet-source-webhook faucet-source-csv
             faucet-source-elasticsearch faucet-source-kafka
@@ -171,7 +174,8 @@ jobs:
           connectors=(
             faucet-kafka-common
             faucet-source-rest faucet-source-graphql faucet-source-xml
-            faucet-source-grpc faucet-source-postgres faucet-source-mysql
+            faucet-source-grpc faucet-source-postgres faucet-source-postgres-cdc
+            faucet-source-mysql
             faucet-source-sqlite faucet-source-s3 faucet-source-mongodb
             faucet-source-redis faucet-source-webhook faucet-source-csv
             faucet-source-elasticsearch faucet-source-kafka

@@ -80,6 +80,7 @@ jobs:
           - source-xml
           - source-grpc
           - source-postgres
+          - source-postgres-cdc
           - source-mysql
           - source-sqlite
           - source-s3

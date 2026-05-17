@@ -52,7 +52,7 @@ See [`cli/README.md`](cli/README.md) and [`cli/examples/`](cli/examples/) for th
 
 ## Architecture
 
-faucet-stream is a Cargo workspace with 34 crates — 14 sources, 14 sinks, 1 shared connector library, 2 state-store backends, the shared core, the umbrella crate, and the CLI binary:
+faucet-stream is a Cargo workspace with 35 crates — 15 sources, 14 sinks, 1 shared connector library, 2 state-store backends, the shared core, the umbrella crate, and the CLI binary:
 
 | Crate | Description |
 |-------|-------------|
@@ -63,6 +63,7 @@ faucet-stream is a Cargo workspace with 34 crates — 14 sources, 14 sinks, 1 sh
 | [`faucet-source-xml`](crates/source/xml) | XML/SOAP API — XML-to-JSON conversion, dot-path extraction |
 | [`faucet-source-grpc`](crates/source/grpc) | gRPC — dynamic protobuf via `prost-reflect`, TLS support |
 | [`faucet-source-postgres`](crates/source/postgres) | PostgreSQL — run SQL queries, return rows as JSON |
+| [`faucet-source-postgres-cdc`](crates/source/postgres-cdc) | PostgreSQL CDC — logical replication via pgoutput, resumable with any StateStore |
 | [`faucet-source-mysql`](crates/source/mysql) | MySQL — run SQL queries, return rows as JSON |
 | [`faucet-source-sqlite`](crates/source/sqlite) | SQLite — run SQL queries, return rows as JSON |
 | [`faucet-source-s3`](crates/source/s3) | AWS S3 — read objects as JSONL, JSON array, or raw text |
@@ -746,6 +747,7 @@ All pagination styles include loop detection — if the same cursor or link is r
 | `source-xml` | no | XML/SOAP API source |
 | `source-grpc` | no | gRPC source |
 | `source-postgres` | no | PostgreSQL query source |
+| `source-postgres-cdc` | no | PostgreSQL CDC source (logical replication) |
 | `source-mysql` | no | MySQL query source |
 | `source-sqlite` | no | SQLite query source |
 | `source-s3` | no | AWS S3 file source |
@@ -913,6 +915,7 @@ crates/
     xml/                      — XML/SOAP API (XML-to-JSON conversion)
     grpc/                     — gRPC (dynamic protobuf)
     postgres/                 — PostgreSQL queries
+    postgres-cdc/             — PostgreSQL CDC (logical replication)
     mysql/                    — MySQL queries
     sqlite/                   — SQLite queries
 

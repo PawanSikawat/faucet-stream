@@ -19,6 +19,7 @@ members = [
     "crates/source/csv",
     "crates/source/elasticsearch",
     "crates/source/parquet",
+    "crates/source/postgres-cdc",
     "crates/sink/bigquery",
     "crates/sink/postgres",
     "crates/sink/jsonl",
@@ -61,6 +62,7 @@ faucet-sink-postgres = { path = "crates/sink/postgres", version = "0.2.0" }
 faucet-sink-jsonl = { path = "crates/sink/jsonl", version = "0.2.0" }
 faucet-sink-snowflake = { path = "crates/sink/snowflake", version = "0.2.0" }
 faucet-source-postgres = { path = "crates/source/postgres", version = "0.2.0" }
+faucet-source-postgres-cdc = { path = "crates/source/postgres-cdc", version = "0.2.0" }
 faucet-source-mysql = { path = "crates/source/mysql", version = "0.2.0" }
 
 faucet-source-s3 = { path = "crates/source/s3", version = "0.2.0" }
@@ -104,6 +106,9 @@ prost = "0.13"
 prost-reflect = { version = "0.15", features = ["serde"] }
 prost-types = "0.13"
 sqlx = { version = "0.8", features = ["runtime-tokio", "tls-rustls", "postgres", "mysql", "sqlite", "json"] }
+pgwire-replication = "=0.3.2"
+byteorder = "1"
+chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
 jsonwebtoken = "9"
 base64 = "0.22"
 uuid = { version = "1", features = ["v4"] }
