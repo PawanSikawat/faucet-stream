@@ -96,6 +96,11 @@ pub async fn build_source(kind: &str, config: Value) -> CliResult<Box<dyn Source
                 faucet_source_elasticsearch::ElasticsearchSource::new(cfg),
             ))
         }
+        #[cfg(feature = "source-kafka")]
+        "kafka" => {
+            let cfg = decode::<faucet_source_kafka::KafkaSourceConfig>("source", "kafka", config)?;
+            Ok(Box::new(faucet_source_kafka::KafkaSource::new(cfg).await?))
+        }
         other => Err(unknown(other, "source", source_kinds())),
     }
 }
@@ -171,6 +176,11 @@ pub async fn build_sink(kind: &str, config: Value) -> CliResult<Box<dyn Sink>> {
                 cfg,
             )))
         }
+        #[cfg(feature = "sink-kafka")]
+        "kafka" => {
+            let cfg = decode::<faucet_sink_kafka::KafkaSinkConfig>("sink", "kafka", config)?;
+            Ok(Box::new(faucet_sink_kafka::KafkaSink::new(cfg).await?))
+        }
         #[cfg(feature = "sink-http")]
         "http" => {
             let cfg = decode::<faucet_sink_http::HttpSinkConfig>("sink", "http", config)?;
@@ -216,6 +226,8 @@ pub fn source_schema(kind: &str) -> CliResult<Value> {
         "elasticsearch" => Ok(schema::<
             faucet_source_elasticsearch::ElasticsearchSourceConfig,
         >()),
+        #[cfg(feature = "source-kafka")]
+        "kafka" => Ok(schema::<faucet_source_kafka::KafkaSourceConfig>()),
         other => Err(unknown(other, "source", source_kinds())),
     }
 }
@@ -245,6 +257,8 @@ pub fn sink_schema(kind: &str) -> CliResult<Value> {
         "csv" => Ok(schema::<faucet_sink_csv::CsvSinkConfig>()),
         #[cfg(feature = "sink-elasticsearch")]
         "elasticsearch" => Ok(schema::<faucet_sink_elasticsearch::ElasticsearchSinkConfig>()),
+        #[cfg(feature = "sink-kafka")]
+        "kafka" => Ok(schema::<faucet_sink_kafka::KafkaSinkConfig>()),
         #[cfg(feature = "sink-http")]
         "http" => Ok(schema::<faucet_sink_http::HttpSinkConfig>()),
         #[cfg(feature = "sink-stdout")]
@@ -283,6 +297,8 @@ pub fn source_descriptions() -> Vec<(&'static str, &'static str)> {
     v.push(("csv", "CSV file source"));
     #[cfg(feature = "source-elasticsearch")]
     v.push(("elasticsearch", "Elasticsearch search / scroll source"));
+    #[cfg(feature = "source-kafka")]
+    v.push(("kafka", "Apache Kafka consumer (rdkafka). Subscribes to topics and drains messages with idle/max-messages termination."));
     v
 }
 
@@ -312,6 +328,8 @@ pub fn sink_descriptions() -> Vec<(&'static str, &'static str)> {
     v.push(("csv", "CSV file sink"));
     #[cfg(feature = "sink-elasticsearch")]
     v.push(("elasticsearch", "Elasticsearch bulk index sink"));
+    #[cfg(feature = "sink-kafka")]
+    v.push(("kafka", "Apache Kafka producer (rdkafka). FuturesUnordered batched sends with QueueFull retry; supports fixed or per-record topic routing."));
     #[cfg(feature = "sink-http")]
     v.push(("http", "HTTP POST sink (individual or array batch)"));
     #[cfg(feature = "sink-stdout")]
