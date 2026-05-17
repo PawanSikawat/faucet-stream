@@ -128,6 +128,10 @@ impl Source for PostgresCdcSource {
                 ev = tokio::time::timeout(budget, recv(&mut duplex)) => {
                     match ev {
                         Ok(Ok(Some(event))) => {
+                            // Reset on any server activity, not just committed output. This avoids
+                            // firing idle_timeout mid-transaction when the server is actively
+                            // streaming WAL we haven't yet COMMITTED. Compare with
+                            // `faucet-source-kafka`, which only resets on deliverable records.
                             last_message_at = Instant::now();
                             handle_event(event, &mut registry, &mut state, &mut records)?;
                             if records.len() >= max_messages {
@@ -180,6 +184,13 @@ impl Source for PostgresCdcSource {
     }
 }
 
+/// One decoded tuple, split into its values and the names of any unchanged
+/// (large/TOAST) columns whose value the server didn't re-send.
+struct TupleRow {
+    values: Map<String, Value>,
+    unchanged_toast: Vec<String>,
+}
+
 /// In-flight transaction state while draining the replication stream.
 #[derive(Default)]
 struct TxnState {
@@ -209,6 +220,13 @@ fn handle_event(
             commit_time_micros,
             xid: _,
         } => {
+            if state.in_txn {
+                tracing::warn!(
+                    "postgres-cdc: BEGIN received while previous transaction was \
+                     still in progress — discarding {} staged records",
+                    state.staged.len()
+                );
+            }
             state.in_txn = true;
             state.in_progress_lsn = final_lsn.as_u64();
             state.in_progress_ts = commit_time_micros;
@@ -327,9 +345,16 @@ fn record(
     rel: &Relation,
     op: &str,
     state: &TxnState,
-    before: Option<(Map<String, Value>, Vec<String>)>,
-    after: Option<(Map<String, Value>, Vec<String>)>,
+    before: Option<TupleRow>,
+    after: Option<TupleRow>,
 ) -> Value {
+    fn to_value(row: TupleRow) -> Value {
+        let mut o = row.values;
+        if !row.unchanged_toast.is_empty() {
+            o.insert("__unchanged_toast__".into(), json!(row.unchanged_toast));
+        }
+        Value::Object(o)
+    }
     let mut obj = Map::new();
     obj.insert("op".into(), json!(op));
     obj.insert("schema".into(), json!(rel.namespace));
@@ -339,57 +364,41 @@ fn record(
         "ts_ms".into(),
         json!(postgres_clock_to_unix_ms(state.in_progress_ts)),
     );
-    obj.insert(
-        "before".into(),
-        before
-            .map(|(m, _toast)| Value::Object(m))
-            .unwrap_or(Value::Null),
-    );
-    obj.insert(
-        "after".into(),
-        match after {
-            Some((m, toast)) => {
-                let mut o = m;
-                if !toast.is_empty() {
-                    o.insert("__unchanged_toast__".into(), json!(toast));
-                }
-                Value::Object(o)
-            }
-            None => Value::Null,
-        },
-    );
+    obj.insert("before".into(), before.map(to_value).unwrap_or(Value::Null));
+    obj.insert("after".into(), after.map(to_value).unwrap_or(Value::Null));
     Value::Object(obj)
 }
 
-/// Convert a tuple's text cells to a `(JSON object, unchanged-TOAST column names)` pair.
-fn tuple_to_object(
-    rel: &Relation,
-    tup: &TupleData,
-) -> Result<(Map<String, Value>, Vec<String>), FaucetError> {
+/// Convert a tuple's text cells to a [`TupleRow`].
+fn tuple_to_object(rel: &Relation, tup: &TupleData) -> Result<TupleRow, FaucetError> {
     if tup.cells.len() != rel.columns.len() {
         return Err(FaucetError::Source(format!(
-            "postgres-cdc: tuple has {} cells but relation {} has {} columns",
+            "postgres-cdc: tuple has {} cells but relation {}.{} has {} columns",
             tup.cells.len(),
+            rel.namespace,
             rel.name,
             rel.columns.len()
         )));
     }
-    let mut obj = Map::with_capacity(rel.columns.len());
-    let mut unchanged = Vec::new();
+    let mut values = Map::with_capacity(rel.columns.len());
+    let mut unchanged_toast = Vec::new();
     for (col, cell) in rel.columns.iter().zip(&tup.cells) {
         match cell {
             TupleCell::Null => {
-                obj.insert(col.name.clone(), Value::Null);
+                values.insert(col.name.clone(), Value::Null);
             }
             TupleCell::UnchangedToast => {
-                unchanged.push(col.name.clone());
+                unchanged_toast.push(col.name.clone());
             }
             TupleCell::Text(s) => {
-                obj.insert(col.name.clone(), text_to_json(col.type_oid, s)?);
+                values.insert(col.name.clone(), text_to_json(col.type_oid, s)?);
             }
         }
     }
-    Ok((obj, unchanged))
+    Ok(TupleRow {
+        values,
+        unchanged_toast,
+    })
 }
 
 #[cfg(test)]
@@ -422,26 +431,93 @@ mod tests {
         }
     }
 
-    fn insert_xlogdata(relation_oid: u32, cells: &[(&str, &str)]) -> ReplicationEvent {
-        // Build an XLogData event whose `data` is an INSERT pgoutput payload
-        // matching the test's expected cells.
-        let mut buf: Vec<u8> = Vec::new();
-        buf.push(b'I');
-        buf.extend_from_slice(&relation_oid.to_be_bytes());
-        buf.push(b'N');
-        let n: u16 = cells.len() as u16;
-        buf.extend_from_slice(&n.to_be_bytes());
-        for (_, val) in cells {
-            buf.push(b't');
-            let bytes = val.as_bytes();
-            buf.extend_from_slice(&(bytes.len() as u32).to_be_bytes());
-            buf.extend_from_slice(bytes);
-        }
+    fn xlogdata(payload: Vec<u8>) -> ReplicationEvent {
         ReplicationEvent::XLogData {
             wal_start: Lsn::from_u64(0),
             wal_end: Lsn::from_u64(0x16A_4F88),
             server_time_micros: 0,
-            data: bytes::Bytes::from(buf),
+            data: bytes::Bytes::from(payload),
+        }
+    }
+
+    fn insert_payload(relation_oid: u32, cells: &[(&str, &str)]) -> Vec<u8> {
+        let mut buf: Vec<u8> = Vec::new();
+        buf.push(b'I');
+        buf.extend_from_slice(&relation_oid.to_be_bytes());
+        buf.push(b'N');
+        buf.extend_from_slice(&(cells.len() as u16).to_be_bytes());
+        for (_, val) in cells {
+            text_cell(&mut buf, val);
+        }
+        buf
+    }
+
+    /// 'U' relation 'O' fullold 'N' new — exercises REPLICA IDENTITY FULL.
+    fn update_full_payload(
+        relation_oid: u32,
+        old_cells: &[(&str, &str)],
+        new_cells: &[(&str, &str)],
+    ) -> Vec<u8> {
+        let mut buf: Vec<u8> = Vec::new();
+        buf.push(b'U');
+        buf.extend_from_slice(&relation_oid.to_be_bytes());
+        buf.push(b'O');
+        buf.extend_from_slice(&(old_cells.len() as u16).to_be_bytes());
+        for (_, val) in old_cells {
+            text_cell(&mut buf, val);
+        }
+        buf.push(b'N');
+        buf.extend_from_slice(&(new_cells.len() as u16).to_be_bytes());
+        for (_, val) in new_cells {
+            text_cell(&mut buf, val);
+        }
+        buf
+    }
+
+    /// 'D' relation 'O' fullold — REPLICA IDENTITY FULL delete.
+    fn delete_full_payload(relation_oid: u32, old_cells: &[(&str, &str)]) -> Vec<u8> {
+        let mut buf: Vec<u8> = Vec::new();
+        buf.push(b'D');
+        buf.extend_from_slice(&relation_oid.to_be_bytes());
+        buf.push(b'O');
+        buf.extend_from_slice(&(old_cells.len() as u16).to_be_bytes());
+        for (_, val) in old_cells {
+            text_cell(&mut buf, val);
+        }
+        buf
+    }
+
+    /// 'T' flags=0 oids... — truncate without cascade/restart_identity.
+    fn truncate_payload(relation_oids: &[u32]) -> Vec<u8> {
+        let mut buf: Vec<u8> = Vec::new();
+        buf.push(b'T');
+        buf.extend_from_slice(&(relation_oids.len() as u32).to_be_bytes());
+        buf.push(0u8); // flags
+        for oid in relation_oids {
+            buf.extend_from_slice(&oid.to_be_bytes());
+        }
+        buf
+    }
+
+    fn text_cell(buf: &mut Vec<u8>, val: &str) {
+        buf.push(b't');
+        buf.extend_from_slice(&(val.len() as u32).to_be_bytes());
+        buf.extend_from_slice(val.as_bytes());
+    }
+
+    fn begin_event(final_lsn: u64) -> ReplicationEvent {
+        ReplicationEvent::Begin {
+            final_lsn: Lsn::from_u64(final_lsn),
+            xid: 1,
+            commit_time_micros: 0,
+        }
+    }
+
+    fn commit_event(lsn: u64) -> ReplicationEvent {
+        ReplicationEvent::Commit {
+            lsn: Lsn::from_u64(lsn),
+            end_lsn: Lsn::from_u64(lsn + 0x10),
+            commit_time_micros: 0,
         }
     }
 
@@ -452,21 +528,11 @@ mod tests {
         let mut state = TxnState::default();
         let mut out = vec![];
 
-        handle_event(
-            ReplicationEvent::Begin {
-                final_lsn: Lsn::from_u64(0x16A_4F88),
-                xid: 1,
-                commit_time_micros: 0,
-            },
-            &mut registry,
-            &mut state,
-            &mut out,
-        )
-        .unwrap();
+        handle_event(begin_event(0x16A_4F88), &mut registry, &mut state, &mut out).unwrap();
         assert!(out.is_empty());
 
         handle_event(
-            insert_xlogdata(16384, &[("id", "1"), ("name", "alice")]),
+            xlogdata(insert_payload(16384, &[("id", "1"), ("name", "alice")])),
             &mut registry,
             &mut state,
             &mut out,
@@ -475,11 +541,7 @@ mod tests {
         assert!(out.is_empty(), "records stay staged until COMMIT");
 
         handle_event(
-            ReplicationEvent::Commit {
-                lsn: Lsn::from_u64(0x16A_4F88),
-                end_lsn: Lsn::from_u64(0x16A_4FA0),
-                commit_time_micros: 0,
-            },
+            commit_event(0x16A_4F88),
             &mut registry,
             &mut state,
             &mut out,
@@ -524,25 +586,160 @@ mod tests {
         let mut state = TxnState::default();
         let mut out = vec![];
 
-        handle_event(
-            ReplicationEvent::Begin {
-                final_lsn: Lsn::from_u64(1),
-                xid: 1,
-                commit_time_micros: 0,
-            },
-            &mut registry,
-            &mut state,
-            &mut out,
-        )
-        .unwrap();
+        handle_event(begin_event(1), &mut registry, &mut state, &mut out).unwrap();
         // Insert references relation 99999 which is not in the registry.
         let err = handle_event(
-            insert_xlogdata(99999, &[("id", "1"), ("name", "alice")]),
+            xlogdata(insert_payload(99999, &[("id", "1"), ("name", "alice")])),
             &mut registry,
             &mut state,
             &mut out,
         )
         .unwrap_err();
         assert!(format!("{err}").contains("99999"));
+    }
+
+    #[test]
+    fn update_with_replica_identity_full_emits_before_and_after() {
+        let mut registry = RelationRegistry::new();
+        registry.insert(rel_users());
+        let mut state = TxnState::default();
+        let mut out = vec![];
+
+        handle_event(begin_event(0x16A_4F88), &mut registry, &mut state, &mut out).unwrap();
+        handle_event(
+            xlogdata(update_full_payload(
+                16384,
+                &[("id", "1"), ("name", "alice")],
+                &[("id", "1"), ("name", "alice2")],
+            )),
+            &mut registry,
+            &mut state,
+            &mut out,
+        )
+        .unwrap();
+        handle_event(
+            commit_event(0x16A_4F88),
+            &mut registry,
+            &mut state,
+            &mut out,
+        )
+        .unwrap();
+
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0]["op"], "update");
+        assert_eq!(out[0]["before"]["id"], 1);
+        assert_eq!(out[0]["before"]["name"], "alice");
+        assert_eq!(out[0]["after"]["name"], "alice2");
+    }
+
+    #[test]
+    fn delete_with_replica_identity_full_emits_before_only() {
+        let mut registry = RelationRegistry::new();
+        registry.insert(rel_users());
+        let mut state = TxnState::default();
+        let mut out = vec![];
+
+        handle_event(begin_event(0x16A_4F88), &mut registry, &mut state, &mut out).unwrap();
+        handle_event(
+            xlogdata(delete_full_payload(
+                16384,
+                &[("id", "1"), ("name", "alice")],
+            )),
+            &mut registry,
+            &mut state,
+            &mut out,
+        )
+        .unwrap();
+        handle_event(
+            commit_event(0x16A_4F88),
+            &mut registry,
+            &mut state,
+            &mut out,
+        )
+        .unwrap();
+
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0]["op"], "delete");
+        assert_eq!(out[0]["before"]["id"], 1);
+        assert_eq!(out[0]["before"]["name"], "alice");
+        assert_eq!(out[0]["after"], Value::Null);
+    }
+
+    #[test]
+    fn truncate_emits_one_record_per_relation() {
+        let mut registry = RelationRegistry::new();
+        registry.insert(rel_users());
+        // Build a second relation so the truncate-list has two known OIDs.
+        let mut second = rel_users();
+        second.oid = 16385;
+        second.name = "orders".into();
+        registry.insert(second);
+
+        let mut state = TxnState::default();
+        let mut out = vec![];
+
+        handle_event(begin_event(0x16A_4F88), &mut registry, &mut state, &mut out).unwrap();
+        handle_event(
+            xlogdata(truncate_payload(&[16384, 16385])),
+            &mut registry,
+            &mut state,
+            &mut out,
+        )
+        .unwrap();
+        handle_event(
+            commit_event(0x16A_4F88),
+            &mut registry,
+            &mut state,
+            &mut out,
+        )
+        .unwrap();
+
+        assert_eq!(out.len(), 2);
+        assert!(out.iter().all(|r| r["op"] == "truncate"));
+        let tables: Vec<_> = out.iter().map(|r| r["table"].as_str().unwrap()).collect();
+        assert!(tables.contains(&"users"));
+        assert!(tables.contains(&"orders"));
+    }
+
+    #[test]
+    fn unchanged_toast_in_before_surfaces_via_metadata() {
+        // Exercise Fix 1: a REPLICA IDENTITY FULL update with an UnchangedToast
+        // cell in the old tuple must record the column name in
+        // before.__unchanged_toast__.
+        let mut registry = RelationRegistry::new();
+        registry.insert(rel_users());
+        let mut state = TxnState::default();
+        let mut out = vec![];
+
+        handle_event(begin_event(0x16A_4F88), &mut registry, &mut state, &mut out).unwrap();
+        // Hand-build an UPDATE where the OLD tuple's `name` cell is 'u' (unchanged TOAST).
+        let mut buf: Vec<u8> = Vec::new();
+        buf.push(b'U');
+        buf.extend_from_slice(&16384u32.to_be_bytes());
+        buf.push(b'O');
+        buf.extend_from_slice(&2u16.to_be_bytes());
+        // id = text "1"
+        text_cell(&mut buf, "1");
+        // name = unchanged TOAST
+        buf.push(b'u');
+        // New tuple: id=1, name="alice2"
+        buf.push(b'N');
+        buf.extend_from_slice(&2u16.to_be_bytes());
+        text_cell(&mut buf, "1");
+        text_cell(&mut buf, "alice2");
+        handle_event(xlogdata(buf), &mut registry, &mut state, &mut out).unwrap();
+        handle_event(
+            commit_event(0x16A_4F88),
+            &mut registry,
+            &mut state,
+            &mut out,
+        )
+        .unwrap();
+
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0]["before"]["__unchanged_toast__"], json!(["name"]));
+        assert!(out[0]["before"].get("name").is_none());
+        assert_eq!(out[0]["before"]["id"], 1);
+        assert_eq!(out[0]["after"]["name"], "alice2");
     }
 }

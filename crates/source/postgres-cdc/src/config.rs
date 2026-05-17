@@ -67,6 +67,12 @@ pub struct PostgresCdcSourceConfig {
 
     /// Optional cap on the number of change events drained per fetch call.
     /// Acts as a safety bound — `idle_timeout` is the primary terminator.
+    ///
+    /// **Note:** the cap is checked **after each COMMIT**, never mid-
+    /// transaction. A single transaction larger than `max_messages` will
+    /// still be emitted atomically (the fetch returns only after that
+    /// transaction's COMMIT and may produce more records than `max_messages`).
+    /// Set `max_messages = None` (the default) for unbounded buffering.
     #[serde(default)]
     pub max_messages: Option<usize>,
 
