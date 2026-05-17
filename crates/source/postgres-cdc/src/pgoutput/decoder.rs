@@ -70,7 +70,7 @@ impl PrimaryKeepAlive {
 /// the message kind discriminator.
 pub fn decode_message(buf: &[u8]) -> Result<Message, FaucetError> {
     let mut c = Cursor::new(buf);
-    let kind = MessageKind::from_byte(c.read_u8().map_err(io_err)?)?;
+    let kind = MessageKind::from_byte(c.read_u8().map_err(io_err_in("kind byte"))?)?;
     Ok(match kind {
         MessageKind::Begin => Message::Begin(decode_begin(&mut c)?),
         MessageKind::Commit => Message::Commit(decode_commit(&mut c)?),
@@ -86,34 +86,34 @@ pub fn decode_message(buf: &[u8]) -> Result<Message, FaucetError> {
 
 fn decode_begin(c: &mut Cursor<&[u8]>) -> Result<Begin, FaucetError> {
     Ok(Begin {
-        final_lsn: c.read_u64::<BigEndian>().map_err(io_err)?,
-        commit_ts: c.read_i64::<BigEndian>().map_err(io_err)?,
-        xid: c.read_u32::<BigEndian>().map_err(io_err)?,
+        final_lsn: c.read_u64::<BigEndian>().map_err(io_err_in("BEGIN"))?,
+        commit_ts: c.read_i64::<BigEndian>().map_err(io_err_in("BEGIN"))?,
+        xid: c.read_u32::<BigEndian>().map_err(io_err_in("BEGIN"))?,
     })
 }
 
 fn decode_commit(c: &mut Cursor<&[u8]>) -> Result<Commit, FaucetError> {
     Ok(Commit {
-        flags: c.read_u8().map_err(io_err)?,
-        commit_lsn: c.read_u64::<BigEndian>().map_err(io_err)?,
-        end_lsn: c.read_u64::<BigEndian>().map_err(io_err)?,
-        commit_ts: c.read_i64::<BigEndian>().map_err(io_err)?,
+        flags: c.read_u8().map_err(io_err_in("COMMIT"))?,
+        commit_lsn: c.read_u64::<BigEndian>().map_err(io_err_in("COMMIT"))?,
+        end_lsn: c.read_u64::<BigEndian>().map_err(io_err_in("COMMIT"))?,
+        commit_ts: c.read_i64::<BigEndian>().map_err(io_err_in("COMMIT"))?,
     })
 }
 
 fn decode_relation(c: &mut Cursor<&[u8]>) -> Result<Relation, FaucetError> {
-    let oid = c.read_u32::<BigEndian>().map_err(io_err)?;
+    let oid = c.read_u32::<BigEndian>().map_err(io_err_in("RELATION"))?;
     let namespace = read_cstring(c)?;
     let name = read_cstring(c)?;
-    let replica_identity = ReplicaIdentity::from_byte(c.read_u8().map_err(io_err)?)?;
-    let n_columns = c.read_u16::<BigEndian>().map_err(io_err)?;
+    let replica_identity = ReplicaIdentity::from_byte(c.read_u8().map_err(io_err_in("RELATION"))?)?;
+    let n_columns = c.read_u16::<BigEndian>().map_err(io_err_in("RELATION"))?;
     let mut columns = Vec::with_capacity(n_columns as usize);
     for _ in 0..n_columns {
         columns.push(ColumnDesc {
-            flags: c.read_u8().map_err(io_err)?,
+            flags: c.read_u8().map_err(io_err_in("RELATION"))?,
             name: read_cstring(c)?,
-            type_oid: c.read_u32::<BigEndian>().map_err(io_err)?,
-            type_modifier: c.read_i32::<BigEndian>().map_err(io_err)?,
+            type_oid: c.read_u32::<BigEndian>().map_err(io_err_in("RELATION"))?,
+            type_modifier: c.read_i32::<BigEndian>().map_err(io_err_in("RELATION"))?,
         });
     }
     Ok(Relation {
@@ -126,8 +126,8 @@ fn decode_relation(c: &mut Cursor<&[u8]>) -> Result<Relation, FaucetError> {
 }
 
 fn decode_insert(c: &mut Cursor<&[u8]>) -> Result<Insert, FaucetError> {
-    let relation_oid = c.read_u32::<BigEndian>().map_err(io_err)?;
-    let tag = c.read_u8().map_err(io_err)?;
+    let relation_oid = c.read_u32::<BigEndian>().map_err(io_err_in("INSERT"))?;
+    let tag = c.read_u8().map_err(io_err_in("INSERT"))?;
     if tag != b'N' {
         return Err(FaucetError::Source(format!(
             "pgoutput INSERT: expected 'N' tuple tag, got {:?}",
@@ -141,25 +141,35 @@ fn decode_insert(c: &mut Cursor<&[u8]>) -> Result<Insert, FaucetError> {
 }
 
 fn decode_update(c: &mut Cursor<&[u8]>) -> Result<Update, FaucetError> {
-    let relation_oid = c.read_u32::<BigEndian>().map_err(io_err)?;
-    let mut tag = c.read_u8().map_err(io_err)?;
-    let (old_kind, old) = match tag {
-        b'K' => {
-            let t = decode_tuple(c)?;
-            tag = c.read_u8().map_err(io_err)?;
-            (UpdateOldKind::Key, Some(t))
+    let relation_oid = c.read_u32::<BigEndian>().map_err(io_err_in("UPDATE"))?;
+    let first = c.read_u8().map_err(io_err_in("UPDATE"))?;
+    let (old_kind, old) = match first {
+        b'K' => (UpdateOldKind::Key, Some(decode_tuple(c)?)),
+        b'O' => (UpdateOldKind::Full, Some(decode_tuple(c)?)),
+        b'N' => {
+            // No old tuple; the byte we just read is already the N tag, so
+            // decode the new tuple directly without re-reading.
+            return Ok(Update {
+                relation_oid,
+                old_kind: UpdateOldKind::None,
+                old: None,
+                new: decode_tuple(c)?,
+            });
         }
-        b'O' => {
-            let t = decode_tuple(c)?;
-            tag = c.read_u8().map_err(io_err)?;
-            (UpdateOldKind::Full, Some(t))
+        other => {
+            return Err(FaucetError::Source(format!(
+                "pgoutput UPDATE: invalid first tag byte {:?} (0x{other:02X}), \
+                 expected 'K', 'O', or 'N'",
+                other as char
+            )));
         }
-        _ => (UpdateOldKind::None, None),
     };
-    if tag != b'N' {
+    // After K or O old-tuple, the next byte must be 'N' for the new tuple.
+    let n_tag = c.read_u8().map_err(io_err_in("UPDATE"))?;
+    if n_tag != b'N' {
         return Err(FaucetError::Source(format!(
-            "pgoutput UPDATE: expected 'N' tuple tag, got {:?}",
-            tag as char
+            "pgoutput UPDATE: expected 'N' new-tuple tag after old tuple, got {:?}",
+            n_tag as char
         )));
     }
     Ok(Update {
@@ -171,8 +181,8 @@ fn decode_update(c: &mut Cursor<&[u8]>) -> Result<Update, FaucetError> {
 }
 
 fn decode_delete(c: &mut Cursor<&[u8]>) -> Result<Delete, FaucetError> {
-    let relation_oid = c.read_u32::<BigEndian>().map_err(io_err)?;
-    let tag = c.read_u8().map_err(io_err)?;
+    let relation_oid = c.read_u32::<BigEndian>().map_err(io_err_in("DELETE"))?;
+    let tag = c.read_u8().map_err(io_err_in("DELETE"))?;
     let old_kind = match tag {
         b'K' => DeleteOldKind::Key,
         b'O' => DeleteOldKind::Full,
@@ -191,11 +201,11 @@ fn decode_delete(c: &mut Cursor<&[u8]>) -> Result<Delete, FaucetError> {
 }
 
 fn decode_truncate(c: &mut Cursor<&[u8]>) -> Result<Truncate, FaucetError> {
-    let n = c.read_u32::<BigEndian>().map_err(io_err)?;
-    let flags = c.read_u8().map_err(io_err)?;
+    let n = c.read_u32::<BigEndian>().map_err(io_err_in("TRUNCATE"))?;
+    let flags = c.read_u8().map_err(io_err_in("TRUNCATE"))?;
     let mut oids = Vec::with_capacity(n as usize);
     for _ in 0..n {
-        oids.push(c.read_u32::<BigEndian>().map_err(io_err)?);
+        oids.push(c.read_u32::<BigEndian>().map_err(io_err_in("TRUNCATE"))?);
     }
     Ok(Truncate {
         relation_oids: oids,
@@ -205,17 +215,17 @@ fn decode_truncate(c: &mut Cursor<&[u8]>) -> Result<Truncate, FaucetError> {
 }
 
 fn decode_tuple(c: &mut Cursor<&[u8]>) -> Result<TupleData, FaucetError> {
-    let n = c.read_u16::<BigEndian>().map_err(io_err)?;
+    let n = c.read_u16::<BigEndian>().map_err(io_err_in("tuple"))?;
     let mut cells = Vec::with_capacity(n as usize);
     for _ in 0..n {
-        let kind = c.read_u8().map_err(io_err)?;
+        let kind = c.read_u8().map_err(io_err_in("tuple"))?;
         cells.push(match kind {
             b'n' => TupleCell::Null,
             b'u' => TupleCell::UnchangedToast,
             b't' => {
-                let len = c.read_u32::<BigEndian>().map_err(io_err)?;
+                let len = c.read_u32::<BigEndian>().map_err(io_err_in("tuple"))?;
                 let mut buf = vec![0u8; len as usize];
-                c.read_exact(&mut buf).map_err(io_err)?;
+                c.read_exact(&mut buf).map_err(io_err_in("tuple"))?;
                 TupleCell::Text(String::from_utf8(buf).map_err(|e| {
                     FaucetError::Source(format!("pgoutput tuple text not UTF-8: {e}"))
                 })?)
@@ -239,7 +249,7 @@ fn decode_tuple(c: &mut Cursor<&[u8]>) -> Result<TupleData, FaucetError> {
 fn read_cstring(c: &mut Cursor<&[u8]>) -> Result<String, FaucetError> {
     let mut out = Vec::new();
     loop {
-        let b = c.read_u8().map_err(io_err)?;
+        let b = c.read_u8().map_err(io_err_in("cstring"))?;
         if b == 0 {
             break;
         }
@@ -250,6 +260,10 @@ fn read_cstring(c: &mut Cursor<&[u8]>) -> Result<String, FaucetError> {
 
 fn io_err(e: std::io::Error) -> FaucetError {
     FaucetError::Source(format!("pgoutput decode: {e}"))
+}
+
+fn io_err_in(ctx: &'static str) -> impl Fn(std::io::Error) -> FaucetError {
+    move |e| FaucetError::Source(format!("pgoutput {ctx}: {e}"))
 }
 
 #[cfg(test)]
@@ -449,5 +463,79 @@ mod tests {
     fn decode_truncated_input_errors() {
         let bytes = hex("42 00 00"); // 'B' with no body
         assert!(decode_message(&bytes).is_err());
+    }
+
+    #[test]
+    fn decode_update_no_old_tuple() {
+        // 'U', relation=16384, 'N' (no K/O old), new{2, t,1,"1", t,3,"bob"}
+        let bytes = hex("55 \
+             00 00 40 00 \
+             4E \
+             00 02 74 00 00 00 01 31 74 00 00 00 03 62 6F 62");
+        match decode_message(&bytes).unwrap() {
+            Message::Update(u) => {
+                assert_eq!(u.old_kind, UpdateOldKind::None);
+                assert!(u.old.is_none());
+                assert_eq!(u.new.cells.len(), 2);
+                assert_eq!(u.new.cells[0], TupleCell::Text("1".into()));
+                assert_eq!(u.new.cells[1], TupleCell::Text("bob".into()));
+            }
+            other => panic!("expected Update, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn decode_update_with_full_old_tuple() {
+        // 'U', relation=16384, 'O', old{2, t,1,"1", t,5,"alice"}, 'N', new{2, t,1,"1", t,3,"bob"}
+        let bytes = hex("55 \
+             00 00 40 00 \
+             4F \
+             00 02 74 00 00 00 01 31 74 00 00 00 05 61 6C 69 63 65 \
+             4E \
+             00 02 74 00 00 00 01 31 74 00 00 00 03 62 6F 62");
+        match decode_message(&bytes).unwrap() {
+            Message::Update(u) => {
+                assert_eq!(u.old_kind, UpdateOldKind::Full);
+                let old = u.old.expect("old tuple present");
+                assert_eq!(old.cells.len(), 2);
+                assert_eq!(old.cells[1], TupleCell::Text("alice".into()));
+                assert_eq!(u.new.cells[1], TupleCell::Text("bob".into()));
+            }
+            other => panic!("expected Update, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn decode_truncate_restart_identity_only() {
+        // 'T', n=1, flags=0b10 (restart identity, no cascade), oid=16384
+        let bytes = hex("54 \
+             00 00 00 01 \
+             02 \
+             00 00 40 00");
+        match decode_message(&bytes).unwrap() {
+            Message::Truncate(t) => {
+                assert_eq!(t.relation_oids, vec![16384]);
+                assert!(!t.cascade);
+                assert!(t.restart_identity);
+            }
+            other => panic!("expected Truncate, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn decode_insert_empty_text_cell() {
+        // 'I', relation=16384, 'N', n=1, ('t', len=0)
+        let bytes = hex("49 \
+             00 00 40 00 \
+             4E \
+             00 01 \
+             74 00 00 00 00");
+        match decode_message(&bytes).unwrap() {
+            Message::Insert(i) => {
+                assert_eq!(i.new.cells.len(), 1);
+                assert_eq!(i.new.cells[0], TupleCell::Text(String::new()));
+            }
+            other => panic!("expected Insert, got {other:?}"),
+        }
     }
 }
