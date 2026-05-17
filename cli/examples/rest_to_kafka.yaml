@@ -1,0 +1,24 @@
+version: 1
+# Ingest from a REST endpoint and publish each record to Kafka, using one
+# field of the record as the message key.
+
+source:
+  type: rest
+  config:
+    base_url: "https://jsonplaceholder.typicode.com"
+    path: "/users"
+    method: GET
+    pagination: {type: none}
+
+sink:
+  type: kafka
+  config:
+    brokers: "localhost:9092"
+    topic: {type: fixed, name: "users"}
+    value_format: {type: json}
+    # Use the record's "id" field as the Kafka message key.
+    key_path: "$.id"
+    on_key_error: round_robin
+    acks: all
+    idempotent: true
+    compression: zstd
