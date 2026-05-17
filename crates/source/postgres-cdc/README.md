@@ -10,7 +10,7 @@ PostgreSQL CDC (Change Data Capture) source for [`faucet-stream`](https://github
 # pipeline.yaml
 version: 1
 source:
-  kind: postgres-cdc
+  type: postgres-cdc
   config:
     connection_url: postgres://user:pass@localhost:5432/appdb
     slot_name: faucet_slot
@@ -18,11 +18,11 @@ source:
     create_slot_if_missing: true
     idle_timeout: 30
 sink:
-  kind: jsonl
+  type: jsonl
   config:
     path: ./changes.jsonl
 state:
-  kind: file
+  type: file
   config: { path: ./state }
 ```
 

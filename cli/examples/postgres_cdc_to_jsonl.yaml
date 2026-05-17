@@ -14,7 +14,7 @@
 
 version: 1
 source:
-  kind: postgres-cdc
+  type: postgres-cdc
   config:
     connection_url: postgres://faucet:faucet@localhost:5432/appdb
     slot_name: faucet_slot
@@ -22,11 +22,11 @@ source:
     create_slot_if_missing: true
     idle_timeout: 30
 sink:
-  kind: jsonl
+  type: jsonl
   config:
     path: ./out/changes.jsonl
     append: true
 state:
-  kind: file
+  type: file
   config:
     path: ./state
