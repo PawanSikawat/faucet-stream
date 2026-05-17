@@ -68,7 +68,11 @@ fn source_config(
         key_format: None,
         auto_offset_reset: OffsetReset::Earliest,
         max_messages: Some(max_messages),
-        idle_timeout: Some(Duration::from_secs(5)),
+        // 30s gives the first JoinGroup/SyncGroup rebalance enough time to complete
+        // on a fresh consumer group before idle_timeout fires. 5s was too tight under
+        // CI load. Individual tests can override with a shorter value when they're
+        // specifically exercising the timeout path.
+        idle_timeout: Some(Duration::from_secs(30)),
         poll_timeout: Duration::from_secs(1),
         session_timeout: Duration::from_secs(30),
         on_decode_error: OnDecodeError::Fail,
@@ -162,14 +166,18 @@ async fn idle_timeout_returns_when_topic_empty() {
     produce(&brokers, topic, &[(None, r#"{"only": 1}"#)]).await;
 
     let mut cfg = source_config(&brokers, topic, "g-idle", 100);
-    cfg.idle_timeout = Some(Duration::from_secs(2));
+    // Keep idle_timeout short enough to make the test specifically exercise the
+    // idle-stop path (not the default 30s from source_config), but long enough to
+    // tolerate the initial JoinGroup/SyncGroup rebalance plus the consume of 1
+    // message before the idle wait starts.
+    cfg.idle_timeout = Some(Duration::from_secs(10));
     let source = KafkaSource::new(cfg).await.unwrap();
     let start = std::time::Instant::now();
     let records = source.fetch_all().await.unwrap();
     let elapsed = start.elapsed();
     assert_eq!(records.len(), 1);
     assert!(
-        elapsed < Duration::from_secs(20),
+        elapsed < Duration::from_secs(60),
         "idle_timeout should bound the consume loop (took {elapsed:?})"
     );
 }

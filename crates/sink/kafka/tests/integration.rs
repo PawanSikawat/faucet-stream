@@ -68,7 +68,8 @@ async fn drain_topic(brokers: &str, topic: &str, expect: usize) -> Vec<String> {
     consumer.subscribe(&[topic]).expect("subscribe");
     let mut out = Vec::new();
     while out.len() < expect {
-        let msg = tokio::time::timeout(Duration::from_secs(10), consumer.recv())
+        // 30s tolerates the initial JoinGroup/SyncGroup rebalance under CI load.
+        let msg = tokio::time::timeout(Duration::from_secs(30), consumer.recv())
             .await
             .expect("recv timeout")
             .expect("recv");
