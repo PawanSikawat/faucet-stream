@@ -6,6 +6,7 @@
 //!
 //! See `cli/README.md` and issue #42 for the user-facing variable schema.
 
+use crate::config::ConnectorSpec;
 use crate::error::{CliError, CliResult};
 use serde_json::{Map, Value};
 use std::collections::HashMap;
@@ -69,6 +70,38 @@ pub fn extract_scope(env: &HashMap<String, String>, prefix: &str) -> CliResult<V
 /// gotten via YAML.
 fn coerce_scalar(s: &str) -> Value {
     serde_json::from_str::<Value>(s).unwrap_or_else(|_| Value::String(s.to_owned()))
+}
+
+/// Construct the source [`ConnectorSpec`] from `FAUCET_SOURCE` + `FAUCET_SOURCE_<KIND>_*`.
+pub fn build_source(env: &HashMap<String, String>) -> CliResult<ConnectorSpec> {
+    let kind = env
+        .get("FAUCET_SOURCE")
+        .ok_or_else(|| CliError::MissingEnvSelector {
+            var: "FAUCET_SOURCE".to_owned(),
+        })?
+        .clone();
+    let prefix = format!(
+        "FAUCET_SOURCE_{}_",
+        kind.to_ascii_uppercase().replace('-', "_")
+    );
+    let config = extract_scope(env, &prefix)?;
+    Ok(ConnectorSpec { kind, config })
+}
+
+/// Construct the sink [`ConnectorSpec`] from `FAUCET_SINK` + `FAUCET_SINK_<KIND>_*`.
+pub fn build_sink(env: &HashMap<String, String>) -> CliResult<ConnectorSpec> {
+    let kind = env
+        .get("FAUCET_SINK")
+        .ok_or_else(|| CliError::MissingEnvSelector {
+            var: "FAUCET_SINK".to_owned(),
+        })?
+        .clone();
+    let prefix = format!(
+        "FAUCET_SINK_{}_",
+        kind.to_ascii_uppercase().replace('-', "_")
+    );
+    let config = extract_scope(env, &prefix)?;
+    Ok(ConnectorSpec { kind, config })
 }
 
 #[cfg(test)]
@@ -198,5 +231,61 @@ mod tests {
         let e = env(&[("PATH", "/usr/bin")]);
         let v = extract_scope(&e, "FAUCET_SOURCE_REST_").unwrap();
         assert_eq!(v, json!({}));
+    }
+
+    #[test]
+    fn build_source_reads_selector_and_scope() {
+        let e = env(&[
+            ("FAUCET_SOURCE", "rest"),
+            ("FAUCET_SOURCE_REST_BASE_URL", "https://x.example"),
+            ("FAUCET_SOURCE_REST_TIMEOUT_SECS", "30"),
+        ]);
+        let spec = build_source(&e).unwrap();
+        assert_eq!(spec.kind, "rest");
+        assert_eq!(spec.config["base_url"], json!("https://x.example"));
+        assert_eq!(spec.config["timeout_secs"], json!(30));
+    }
+
+    #[test]
+    fn build_source_uses_kind_scope_so_other_kinds_dont_leak() {
+        let e = env(&[
+            ("FAUCET_SOURCE", "csv"),
+            ("FAUCET_SOURCE_CSV_PATH", "./in.csv"),
+            ("FAUCET_SOURCE_REST_BASE_URL", "https://other.example"),
+        ]);
+        let spec = build_source(&e).unwrap();
+        assert_eq!(spec.kind, "csv");
+        assert_eq!(spec.config, json!({"path": "./in.csv"}));
+    }
+
+    #[test]
+    fn build_source_errors_when_selector_missing() {
+        let e = env(&[("FAUCET_SOURCE_REST_BASE_URL", "https://x.example")]);
+        let err = build_source(&e).unwrap_err();
+        match err {
+            CliError::MissingEnvSelector { var } => assert_eq!(var, "FAUCET_SOURCE"),
+            other => panic!("expected MissingEnvSelector, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn build_sink_reads_selector_and_scope() {
+        let e = env(&[
+            ("FAUCET_SINK", "jsonl"),
+            ("FAUCET_SINK_JSONL_PATH", "./out.jsonl"),
+        ]);
+        let spec = build_sink(&e).unwrap();
+        assert_eq!(spec.kind, "jsonl");
+        assert_eq!(spec.config, json!({"path": "./out.jsonl"}));
+    }
+
+    #[test]
+    fn build_sink_errors_when_selector_missing() {
+        let e = env(&[("FAUCET_SINK_JSONL_PATH", "./out.jsonl")]);
+        let err = build_sink(&e).unwrap_err();
+        match err {
+            CliError::MissingEnvSelector { var } => assert_eq!(var, "FAUCET_SINK"),
+            other => panic!("expected MissingEnvSelector, got {other:?}"),
+        }
     }
 }
