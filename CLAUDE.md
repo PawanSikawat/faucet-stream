@@ -150,6 +150,16 @@ All connectors must be optimised for throughput by default. When modifying or ad
 - **Buffered I/O** — file sinks (JSONL, CSV) must use buffered writers. CSV uses `spawn_blocking` to avoid blocking the async runtime.
 - **Configurable concurrency** — expose `concurrency` or `max_connections` fields on configs with sensible defaults.
 
+### Streaming and batching
+
+Every `Pipeline::run` drives `Source::stream_pages(ctx, batch_size)` internally and writes each emitted `StreamPage` to the sink as it arrives. This bounds **sink-side** memory at O(batch_size) regardless of total record volume. Source-side memory depends on the source: sources that override `stream_pages` (REST today, others rolling out per follow-up issue) stream natively; sources still using the default impl buffer the full result via `fetch_with_context_incremental` and then chunk.
+
+**Contract:**
+- `Source::stream_pages` returns `Stream<Item = Result<StreamPage, FaucetError>>` where `StreamPage { records, bookmark }`.
+- The pipeline calls `Sink::write_batch` once per yielded page, then `Sink::flush` and `StateStore::put` whenever a page carries `Some(bookmark)`. Most sources emit `Some` only on the final page; CDC-style sources emit `Some` per committed transaction and get per-transaction durability automatically.
+- `DEFAULT_BATCH_SIZE` is 1000; `MAX_BATCH_SIZE` is 1,000,000. Validate via `validate_batch_size` at config load time.
+- Per-source `batch_size` config fields map onto this hint — see each source's README for its native paging primitive.
+
 ## Commands
 
 ```bash

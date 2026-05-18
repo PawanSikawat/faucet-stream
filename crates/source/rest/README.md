@@ -226,6 +226,8 @@ println!("{}", serde_json::to_string_pretty(&schema)?);
 | `infer_schema()` | `Result<Value, FaucetError>` | Infer a JSON Schema from sampled records (or return the configured schema) |
 | `stream_pages()` | `Pin<Box<dyn Stream<Item = Result<Vec<Value>, FaucetError>>>>` | Stream records page-by-page without waiting for all pages |
 
+`RestStream` also implements the `faucet_core::Source::stream_pages` trait method, which is what `Pipeline::run` drives internally for memory-bounded streaming. The inherent `stream_pages()` method (which yields `Vec<Value>` pages) remains for direct callers who do not need per-page bookmarks.
+
 ## Examples
 
 ### Cursor-paginated API with bearer auth

@@ -24,6 +24,12 @@ tokio = { version = "1", features = ["rt"] }
 
 Both traits include a `config_schema()` method that returns a JSON Schema describing the connector's configuration.
 
+### `Source::stream_pages` (recommended for large sources)
+
+`stream_pages(ctx, batch_size)` returns a `Stream<Item = Result<StreamPage, FaucetError>>` where each `StreamPage` contains a chunk of records plus an optional bookmark. The default implementation wraps `fetch_with_context_incremental` and chunks the result in memory; sources that can stream natively (REST, CDC, query DBs with cursor pagination) override this method directly to bound source-side memory at O(batch_size). `Pipeline::run` drives this stream internally; library users do not normally call it themselves.
+
+`DEFAULT_BATCH_SIZE` is `1000`, `MAX_BATCH_SIZE` is `1_000_000`, and `validate_batch_size(n)` enforces the range with `FaucetError::Config` errors for connector authors to use at config-load time.
+
 ```rust
 use faucet_core::{async_trait, FaucetError, Source, Sink, Value};
 

@@ -140,6 +140,10 @@ Every connector is optimised for throughput out of the box:
 | **Buffered I/O** | JSONL sink uses `BufWriter`; CSV uses buffered readers/writers in blocking threads |
 | **Streaming pagination** | REST, GraphQL, XML, and Elasticsearch sources stream pages one at a time via `stream_pages()` to bound memory |
 
+## Streaming by default
+
+`Pipeline::run` drives sources via `stream_pages` and writes each page to the sink as it arrives, keeping sink-side memory bounded at the configured `batch_size`. See the "Performance" section in CLAUDE.md for the full contract.
+
 ### Tuning
 
 Most connectors expose configuration knobs for throughput:
