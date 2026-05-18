@@ -24,7 +24,7 @@ jsonpath-rust = "1"
 tokio = { version = "1", features = ["time"] }
 base64 = "0.22"
 tracing.workspace = true
-async-stream = "0.3.6"
+async-stream = { workspace = true }
 futures-core = "0.3.32"
 futures.workspace = true  # try_join_all for concurrent partitions
 async-trait.workspace = true

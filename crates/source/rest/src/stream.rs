@@ -9,7 +9,9 @@ use crate::pagination::{PaginationState, PaginationStyle};
 use crate::retry;
 use async_trait::async_trait;
 use faucet_core::FaucetError;
-use faucet_core::replication::{ReplicationMethod, filter_incremental, max_replication_value};
+use faucet_core::replication::{
+    ReplicationMethod, filter_incremental, max_replication_value, max_value,
+};
 use faucet_core::schema;
 use faucet_core::transform::{self, CompiledTransform};
 use futures_core::Stream;
@@ -173,13 +175,16 @@ impl RestStream {
         Ok((records, bookmark))
     }
 
-    /// Stream records page-by-page, yielding one `Vec<Value>` per page as it arrives.
+    /// Stream API pages without buffering the full result set.
     ///
-    /// Unlike [`fetch_all`](Self::fetch_all), this does not wait for all pages to be fetched
-    /// before returning — callers can process each page immediately.
+    /// This is a thin convenience wrapper around the
+    /// [`Source::stream_pages`](faucet_core::Source::stream_pages) trait
+    /// method — it discards bookmarks and yields one `Vec<Value>` per
+    /// upstream API page. Use the trait method directly if you need
+    /// per-page bookmarks for incremental replication.
     ///
-    /// Note: partitions are not supported by `stream_pages`. Use `fetch_all` for
-    /// multi-partition streams.
+    /// Note: partitions are not supported by `stream_pages`. Use `fetch_all`
+    /// for multi-partition streams.
     ///
     /// ```rust,no_run
     /// use faucet_source_rest::{RestStream, RestStreamConfig};
@@ -198,20 +203,32 @@ impl RestStream {
     pub fn stream_pages(
         &self,
     ) -> Pin<Box<dyn Stream<Item = Result<Vec<Value>, FaucetError>> + Send + '_>> {
-        self.stream_pages_inner(None)
+        let mut inner = self.stream_pages_inner(None);
+        Box::pin(async_stream::try_stream! {
+            loop {
+                let page = std::future::poll_fn(|cx| inner.as_mut().poll_next(cx)).await;
+                match page {
+                    Some(Ok(p)) => yield p.records,
+                    Some(Err(e)) => Err(e)?,
+                    None => break,
+                }
+            }
+        })
     }
 
     // ── Private helpers ───────────────────────────────────────────────────────
 
-    /// Core pagination loop shared by [`stream_pages`](Self::stream_pages) and
+    /// Core pagination loop shared by [`Source::stream_pages`] and
     /// [`fetch_partition`](Self::fetch_partition).
     ///
-    /// Yields one `Vec<Value>` per page.  When `context` is `Some`, path
-    /// placeholders are substituted for partition support.
+    /// Yields one [`faucet_core::StreamPage`] per page. The final page carries
+    /// the consolidated replication bookmark (`Some(value)`); all intermediate
+    /// pages carry `None`. When `context` is `Some`, path placeholders are
+    /// substituted for partition support.
     fn stream_pages_inner(
         &self,
         context: Option<&HashMap<String, Value>>,
-    ) -> Pin<Box<dyn Stream<Item = Result<Vec<Value>, FaucetError>> + Send + '_>> {
+    ) -> Pin<Box<dyn Stream<Item = Result<faucet_core::StreamPage, FaucetError>> + Send + '_>> {
         // Clone the context into an owned map so it can live inside the
         // `async_stream` generator without borrowing from the caller.
         let owned_context: Option<HashMap<String, Value>> = context.cloned();
@@ -230,6 +247,8 @@ impl RestStream {
 
             let mut state = PaginationState::default();
             let mut pages_fetched = 0usize;
+            let mut running_max: Option<Value> = effective_start.clone();
+            let mut any_page_fetched = false;
 
             loop {
                 if let Some(max) = self.config.max_pages
@@ -280,20 +299,59 @@ impl RestStream {
                     .map(|rec| transform::apply_all(rec, &self.compiled_transforms))
                     .collect();
 
-                yield records;
+                // Track the running max replication value across pages so the
+                // final page can carry the consolidated bookmark.
+                if self.config.replication_method == ReplicationMethod::Incremental
+                    && let Some(key) = self.config.replication_key.as_deref()
+                        && let Some(page_max) = max_replication_value(&records, key) {
+                            let page_max = page_max.clone();
+                            running_max = Some(match running_max.take() {
+                                Some(prev) => max_value(prev, page_max),
+                                None => page_max,
+                            });
+                        }
 
+                // Advance pagination state to learn whether there is a next
+                // page BEFORE yielding the current one. This way the bookmark
+                // is only attached to pages where `has_next == false`, and we
+                // never pre-fetch the next page just to classify the current
+                // one as "final" (which would prevent early exit in callers
+                // such as `fetch_partition` with `max_records`).
                 let has_next = self
                     .config
                     .pagination
                     .advance(&body, &resp_headers, &mut state, raw_count)?;
                 pages_fetched += 1;
-                if !has_next {
+                any_page_fetched = true;
+
+                if has_next {
+                    // Intermediate page — yield without bookmark so the
+                    // pipeline does not persist a partial checkpoint.
+                    yield faucet_core::StreamPage { records, bookmark: None };
+                } else {
+                    // Final page — attach the consolidated bookmark.
+                    yield faucet_core::StreamPage {
+                        records,
+                        bookmark: running_max.clone(),
+                    };
                     break;
                 }
 
                 if let Some(delay) = self.config.request_delay {
                     tokio::time::sleep(delay).await;
                 }
+            }
+
+            // If max_pages was hit before pagination naturally ended, emit one
+            // extra empty page carrying the running bookmark so the pipeline
+            // still persists incremental progress.
+            // Also handles the case where max_pages = 0 (no pages fetched) but
+            // a bookmark exists from start_replication_value.
+            if !any_page_fetched && running_max.is_some() {
+                yield faucet_core::StreamPage {
+                    records: Vec::new(),
+                    bookmark: running_max,
+                };
             }
         })
     }
@@ -319,8 +377,9 @@ impl RestStream {
             .await;
 
             match page {
-                Some(Ok(records)) => {
+                Some(Ok(page)) => {
                     pages_fetched += 1;
+                    let records = page.records;
                     match max_records {
                         Some(limit) => {
                             let remaining = limit.saturating_sub(all_records.len());
@@ -564,6 +623,17 @@ impl faucet_core::Source for RestStream {
 
     fn state_key(&self) -> Option<String> {
         self.config.state_key.clone()
+    }
+
+    fn stream_pages<'a>(
+        &'a self,
+        context: &'a HashMap<String, Value>,
+        _batch_size: usize,
+    ) -> Pin<Box<dyn Stream<Item = Result<faucet_core::StreamPage, FaucetError>> + Send + 'a>> {
+        // RestStream chunks by upstream-API page boundaries, not by an
+        // in-memory `batch_size` knob. The arg is accepted for trait
+        // conformance and reserved for a future `page_size` mapping.
+        self.stream_pages_inner(Some(context))
     }
 
     async fn apply_start_bookmark(&self, bookmark: Value) -> Result<(), FaucetError> {
