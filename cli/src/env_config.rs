@@ -6,10 +6,10 @@
 //!
 //! See `cli/README.md` and issue #42 for the user-facing variable schema.
 
-use crate::config::{ConnectorSpec, StateStoreSpec};
+use crate::config::{ConnectorSpec, StateStoreSpec, TransformSpec};
 use crate::error::{CliError, CliResult};
 use serde_json::{Map, Value};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 /// Walk every env var starting with `prefix`, strip the prefix, lowercase the
 /// remainder into a field name, apply the `_JSON` precedence rule, and assemble
@@ -118,6 +118,45 @@ pub fn build_state(env: &HashMap<String, String>) -> CliResult<Option<StateStore
     );
     let config = extract_scope(env, &prefix)?;
     Ok(Some(StateStoreSpec { kind, config }))
+}
+
+/// Construct an ordered `Vec<TransformSpec>` from `FAUCET_TRANSFORM_<N>` selectors
+/// and `FAUCET_TRANSFORM_<N>_<FIELD>` config fields. Indices must be contiguous
+/// starting at 1; any gap is an error so a misnumbered var never silently drops
+/// a transform.
+pub fn build_transforms(env: &HashMap<String, String>) -> CliResult<Vec<TransformSpec>> {
+    // Collect the kind selectors first — keys that are exactly
+    // `FAUCET_TRANSFORM_<digits>` (no trailing field name).
+    let mut kinds: BTreeMap<u32, String> = BTreeMap::new();
+    for (key, value) in env {
+        let Some(rest) = key.strip_prefix("FAUCET_TRANSFORM_") else {
+            continue;
+        };
+        if rest.is_empty() || !rest.chars().all(|c| c.is_ascii_digit()) {
+            continue;
+        }
+        let Ok(idx) = rest.parse::<u32>() else {
+            continue;
+        };
+        kinds.insert(idx, value.clone());
+    }
+    if kinds.is_empty() {
+        return Ok(Vec::new());
+    }
+    // Indices must be 1, 2, 3, …
+    for (expected, actual) in (1u32..).zip(kinds.keys().copied()) {
+        if expected != actual {
+            return Err(CliError::TransformIndexGap { missing: expected });
+        }
+    }
+    // Harvest per-transform config blocks.
+    let mut out = Vec::with_capacity(kinds.len());
+    for (idx, kind) in kinds {
+        let prefix = format!("FAUCET_TRANSFORM_{idx}_");
+        let config = extract_scope(env, &prefix)?;
+        out.push(TransformSpec { kind, config });
+    }
+    Ok(out)
 }
 
 #[cfg(test)]
@@ -356,5 +395,80 @@ mod tests {
         let spec = build_state(&e).unwrap().unwrap();
         assert_eq!(spec.kind, "memory");
         assert_eq!(spec.config, json!({}));
+    }
+
+    #[test]
+    fn build_transforms_empty_when_unset() {
+        let e = env(&[("FAUCET_SOURCE", "rest")]);
+        let t = build_transforms(&e).unwrap();
+        assert!(t.is_empty());
+    }
+
+    #[test]
+    fn build_transforms_single_kind_no_config() {
+        let e = env(&[("FAUCET_TRANSFORM_1", "snake_case")]);
+        let t = build_transforms(&e).unwrap();
+        assert_eq!(t.len(), 1);
+        assert_eq!(t[0].kind, "snake_case");
+        assert_eq!(t[0].config, json!({}));
+    }
+
+    #[test]
+    fn build_transforms_ordered_and_with_config() {
+        let e = env(&[
+            ("FAUCET_TRANSFORM_1", "snake_case"),
+            ("FAUCET_TRANSFORM_2", "flatten"),
+            ("FAUCET_TRANSFORM_2_SEPARATOR", "__"),
+        ]);
+        let t = build_transforms(&e).unwrap();
+        assert_eq!(t.len(), 2);
+        assert_eq!(t[0].kind, "snake_case");
+        assert_eq!(t[1].kind, "flatten");
+        assert_eq!(t[1].config, json!({"separator": "__"}));
+    }
+
+    #[test]
+    fn build_transforms_handles_double_digit_indices() {
+        let e = env(&[
+            ("FAUCET_TRANSFORM_1", "snake_case"),
+            ("FAUCET_TRANSFORM_2", "flatten"),
+            ("FAUCET_TRANSFORM_3", "rename_keys"),
+        ]);
+        let t = build_transforms(&e).unwrap();
+        assert_eq!(t.len(), 3);
+        assert_eq!(t[2].kind, "rename_keys");
+    }
+
+    #[test]
+    fn build_transforms_gap_errors() {
+        let e = env(&[
+            ("FAUCET_TRANSFORM_1", "snake_case"),
+            ("FAUCET_TRANSFORM_3", "flatten"),
+        ]);
+        let err = build_transforms(&e).unwrap_err();
+        match err {
+            CliError::TransformIndexGap { missing } => assert_eq!(missing, 2),
+            other => panic!("expected TransformIndexGap, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn build_transforms_must_start_at_one() {
+        let e = env(&[("FAUCET_TRANSFORM_2", "snake_case")]);
+        let err = build_transforms(&e).unwrap_err();
+        match err {
+            CliError::TransformIndexGap { missing } => assert_eq!(missing, 1),
+            other => panic!("expected TransformIndexGap, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn build_transforms_ignores_field_vars_when_indexing_kinds() {
+        // FAUCET_TRANSFORM_1_SEPARATOR should NOT be mistaken for a kind at index 1.
+        let e = env(&[("FAUCET_TRANSFORM_1_SEPARATOR", "__")]);
+        // No FAUCET_TRANSFORM_1 selector means no transforms at all (not a gap error,
+        // because the indices set is empty).
+        let t = build_transforms(&e).unwrap();
+        assert!(t.is_empty());
     }
 }
