@@ -78,6 +78,39 @@ pub enum CliError {
     #[error("refusing to overwrite existing file '{path}' — pass --force to overwrite")]
     ScaffoldExists { path: PathBuf },
 
+    /// The CLI was invoked with `--from-env` but the required selector env var
+    /// (`FAUCET_SOURCE` or `FAUCET_SINK`) is unset.
+    #[error(
+        "missing required environment variable '{var}' — set it before invoking `faucet run --from-env`"
+    )]
+    MissingEnvSelector { var: String },
+
+    /// `--env-file` was supplied without `--from-env`.
+    #[error(
+        "the argument '--env-file' cannot be used without '--from-env'\n\nUsage: faucet run --from-env --env-file <ENV_FILE>"
+    )]
+    EnvFileRequiresFromEnv,
+
+    /// Both a scalar env var and its `_JSON` counterpart were set for the same field.
+    #[error(
+        "conflicting environment variables for field '{field}': both '{scalar_var}' and '{json_var}' are set — pick one"
+    )]
+    EnvConflict {
+        field: String,
+        scalar_var: String,
+        json_var: String,
+    },
+
+    /// A `*_JSON` env var did not parse as JSON.
+    #[error("environment variable '{var}' is not valid JSON: {message}")]
+    InvalidEnvJson { var: String, message: String },
+
+    /// `FAUCET_TRANSFORM_<N>` indices are not contiguous starting at 1.
+    #[error(
+        "transform env vars must be contiguous starting at FAUCET_TRANSFORM_1; index {missing} is missing"
+    )]
+    TransformIndexGap { missing: u32 },
+
     /// Pass-through for failures bubbling up from `faucet-core` or a connector.
     #[error(transparent)]
     Faucet(#[from] faucet_core::FaucetError),
@@ -85,4 +118,50 @@ pub enum CliError {
     /// Pass-through I/O error.
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn missing_env_selector_renders() {
+        let e = CliError::MissingEnvSelector {
+            var: "FAUCET_SOURCE".to_owned(),
+        };
+        let msg = e.to_string();
+        assert!(msg.contains("FAUCET_SOURCE"));
+        assert!(msg.contains("--from-env"));
+    }
+
+    #[test]
+    fn env_conflict_names_both_vars() {
+        let e = CliError::EnvConflict {
+            field: "auth".to_owned(),
+            scalar_var: "FAUCET_SOURCE_REST_AUTH".to_owned(),
+            json_var: "FAUCET_SOURCE_REST_AUTH_JSON".to_owned(),
+        };
+        let msg = e.to_string();
+        assert!(msg.contains("FAUCET_SOURCE_REST_AUTH"));
+        assert!(msg.contains("FAUCET_SOURCE_REST_AUTH_JSON"));
+    }
+
+    #[test]
+    fn invalid_env_json_names_var_and_parse_error() {
+        let e = CliError::InvalidEnvJson {
+            var: "FAUCET_SOURCE_REST_AUTH_JSON".to_owned(),
+            message: "expected value at line 1 column 1".to_owned(),
+        };
+        let msg = e.to_string();
+        assert!(msg.contains("FAUCET_SOURCE_REST_AUTH_JSON"));
+        assert!(msg.contains("expected value"));
+    }
+
+    #[test]
+    fn transform_index_gap_reports_missing_index() {
+        let e = CliError::TransformIndexGap { missing: 2 };
+        let msg = e.to_string();
+        assert!(msg.contains('2'));
+        assert!(msg.to_ascii_lowercase().contains("transform"));
+    }
 }

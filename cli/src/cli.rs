@@ -34,9 +34,23 @@ pub enum Command {
 
 /// `faucet run` arguments.
 #[derive(Debug, Parser)]
+#[command(group(
+    clap::ArgGroup::new("source-of-truth")
+        .required(true)
+        .args(["config", "from_env"]),
+))]
 pub struct RunArgs {
     /// Path to a `.yaml`, `.yml`, or `.json` pipeline config.
-    pub config: PathBuf,
+    /// Mutually exclusive with `--from-env`.
+    pub config: Option<PathBuf>,
+    /// Build the pipeline entirely from `FAUCET_*` environment variables —
+    /// no YAML required. See `cli/README.md` for the variable schema.
+    #[arg(long)]
+    pub from_env: bool,
+    /// Path to a `.env` file to load before reading `FAUCET_*` variables.
+    /// Only honoured together with `--from-env`. Existing process-env values win.
+    #[arg(long, requires = "from_env")]
+    pub env_file: Option<PathBuf>,
     /// Stop after fetching from the source — write nothing to the sink.
     #[arg(long)]
     pub dry_run: bool,

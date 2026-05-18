@@ -2,7 +2,7 @@
 
 use crate::cli::RunArgs;
 use crate::config::PipelineConfig;
-use crate::error::CliResult;
+use crate::error::{CliError, CliResult};
 use crate::registry::{build_sink, build_source};
 use crate::state::build_state_store;
 use crate::transforms::compile_transforms;
@@ -98,10 +98,31 @@ impl Sink for CountingSink {
 
 /// Execute the `run` subcommand.
 pub async fn run(args: RunArgs) -> CliResult<()> {
-    let cfg = PipelineConfig::from_path(&args.config)?;
+    // `--env-file` is only meaningful with `--from-env`. Clap's `requires`
+    // directive does not reliably fire for a defaulted `bool` flag, so we
+    // enforce the constraint explicitly here and surface a clap-style error.
+    if args.env_file.is_some() && !args.from_env {
+        return Err(CliError::EnvFileRequiresFromEnv);
+    }
+    let cfg = if args.from_env {
+        if let Some(path) = &args.env_file {
+            dotenvy::from_path(path).map_err(|e| CliError::ReadConfig {
+                path: path.clone(),
+                source: std::io::Error::other(e),
+            })?;
+        }
+        crate::env_config::from_process_env()?
+    } else {
+        let path = args
+            .config
+            .as_ref()
+            .expect("clap ArgGroup guarantees one of config or --from-env");
+        PipelineConfig::from_path(path)?
+    };
     let pipeline_name = cfg.name.clone().unwrap_or_else(|| {
         args.config
-            .file_stem()
+            .as_ref()
+            .and_then(|p| p.file_stem())
             .and_then(|s| s.to_str())
             .unwrap_or("pipeline")
             .to_owned()

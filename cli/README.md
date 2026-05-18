@@ -93,6 +93,61 @@ transforms:
     config: { separator: "__" }
 ```
 
+## Running from environment variables (`--from-env`)
+
+`faucet` can build and run a pipeline entirely from `FAUCET_*` environment variables — no YAML file required. This mode is designed for container / Kubernetes / Airflow deployments where every config value naturally flows through the orchestrator's env-var interface.
+
+```bash
+faucet run --from-env
+```
+
+`--from-env` is mutually exclusive with a positional config path; you pick one source of truth or the other. Mixing them is rejected at argument-parse time.
+
+### Variable schema
+
+| Variable | Purpose |
+|---|---|
+| `FAUCET_SOURCE` | Source kind — same string keys as the YAML `source.type:` field (`rest`, `csv`, `postgres`, `postgres-cdc`, …). |
+| `FAUCET_SOURCE_<KIND>_<FIELD>` | Scalar source-config fields. Scope is keyed by `<KIND>` so two different sources can't collide. |
+| `FAUCET_SINK` | Sink kind. |
+| `FAUCET_SINK_<KIND>_<FIELD>` | Scalar sink-config fields. |
+| `FAUCET_STATE` | Optional. State store kind (`file`, `memory`, `redis`, `postgres`). |
+| `FAUCET_STATE_<KIND>_<FIELD>` | State-store config. |
+| `FAUCET_TRANSFORM_<N>` | Optional. Indexed transforms — `FAUCET_TRANSFORM_1=snake_case`, `FAUCET_TRANSFORM_2=flatten`. Indices must be contiguous starting at 1. |
+| `FAUCET_TRANSFORM_<N>_<FIELD>` | Per-transform config (e.g. `FAUCET_TRANSFORM_2_SEPARATOR=__`). |
+| `FAUCET_NAME` | Optional pipeline name (used in log messages). |
+
+Field names are case-insensitive: write env vars in `SCREAMING_SNAKE_CASE`; they are lowercased before being matched against connector field names. Hyphens in connector kinds (e.g. `postgres-cdc`) become underscores in the env scope (`FAUCET_SOURCE_POSTGRES_CDC_*`). Empty values for `FAUCET_SOURCE` / `FAUCET_SINK` / `FAUCET_STATE` / `FAUCET_NAME` are treated as unset.
+
+### Scalar values
+
+Scalar fields go through a JSON-parse-then-string-fallback coercion: `30` is a number, `true` is a bool, `null` is JSON null, and anything that doesn't parse as JSON is treated as a plain string. This matches how the same value would be typed in YAML.
+
+### Nested / tagged-enum fields (`*_JSON` escape hatch)
+
+Tagged-enum config fields (`auth`, `pagination`, `replication_method`, `column_mapping`, …) don't flatten cleanly into env-var names because different variants have different sub-fields. For those, set the entire value as JSON under a `*_JSON` suffix:
+
+```bash
+FAUCET_SOURCE=rest \
+FAUCET_SOURCE_REST_BASE_URL=https://api.github.com \
+FAUCET_SOURCE_REST_PATH=/repos/PawanSikawat/faucet-stream/issues \
+FAUCET_SOURCE_REST_AUTH_JSON='{"type":"Bearer","token":"ghp_xxx"}' \
+FAUCET_SOURCE_REST_PAGINATION_JSON='{"type":"LinkHeader"}' \
+FAUCET_SINK=jsonl \
+FAUCET_SINK_JSONL_PATH=./issues.jsonl \
+  faucet run --from-env
+```
+
+Setting both `FAUCET_SOURCE_REST_AUTH=...` and `FAUCET_SOURCE_REST_AUTH_JSON=...` for the same field is a hard error — pick one. The error names both variables.
+
+### Loading a `.env` file first
+
+Use `--env-file PATH` to load a `.env` file into the process environment before the env walker runs. Existing process-env values always win (12-factor convention). `--env-file` only works together with `--from-env`.
+
+```bash
+faucet run --from-env --env-file ./pipeline.env
+```
+
 ## Examples
 
 [`examples/`](examples/) ships YAML pipelines for every `faucet-stream/examples/*.rs` use case — the same source → sink combinations the library docs cover, expressed as config.
