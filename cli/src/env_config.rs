@@ -14,6 +14,9 @@ use std::collections::HashMap;
 /// remainder into a field name, apply the `_JSON` precedence rule, and assemble
 /// a `Value::Object`. Returns the object verbatim — no shape validation; the
 /// connector's own `Deserialize` impl is the gate.
+///
+/// The `_JSON` suffix is the escape hatch for nested / tagged-enum fields
+/// (auth, pagination, etc.) that don't flatten cleanly into env-var names.
 pub fn extract_scope(env: &HashMap<String, String>, prefix: &str) -> CliResult<Value> {
     let mut object: Map<String, Value> = Map::new();
     // Track which env var supplied each field so a conflict error can name both.
@@ -154,6 +157,32 @@ mod tests {
                 assert_eq!(json_var, "FAUCET_SOURCE_REST_AUTH_JSON");
             }
             other => panic!("expected EnvConflict, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn extract_scope_conflict_detection_is_order_independent() {
+        // HashMap iteration order is randomized per instance via the random
+        // hasher state; loop 50 times to exercise both ordering branches
+        // (scalar-arriving-first AND json-arriving-first) statistically.
+        for _ in 0..50 {
+            let e = env(&[
+                ("FAUCET_SOURCE_REST_AUTH", "bearer"),
+                ("FAUCET_SOURCE_REST_AUTH_JSON", r#"{"type":"ApiKey"}"#),
+            ]);
+            let err = extract_scope(&e, "FAUCET_SOURCE_REST_").unwrap_err();
+            match err {
+                CliError::EnvConflict {
+                    field,
+                    scalar_var,
+                    json_var,
+                } => {
+                    assert_eq!(field, "auth");
+                    assert_eq!(scalar_var, "FAUCET_SOURCE_REST_AUTH");
+                    assert_eq!(json_var, "FAUCET_SOURCE_REST_AUTH_JSON");
+                }
+                other => panic!("expected EnvConflict, got {other:?}"),
+            }
         }
     }
 
