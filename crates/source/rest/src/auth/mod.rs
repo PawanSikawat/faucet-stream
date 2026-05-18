@@ -11,6 +11,7 @@ use faucet_core::FaucetError;
 use reqwest::header::HeaderMap;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 pub use token_endpoint::ResponseValidator;
 
 /// Supported authentication methods.
@@ -18,7 +19,10 @@ pub use token_endpoint::ResponseValidator;
 #[serde(tag = "type")]
 pub enum Auth {
     None,
-    Bearer(String),
+    /// Bearer token in the `Authorization` header.
+    Bearer {
+        token: String,
+    },
     Basic {
         username: String,
         password: String,
@@ -80,8 +84,11 @@ pub enum Auth {
         #[serde(skip, default)]
         response_validator: Option<ResponseValidator>,
     },
-    #[serde(skip)]
-    Custom(HeaderMap),
+    /// Arbitrary headers attached to every request (e.g. multi-tenant routing,
+    /// API keys split across several headers).
+    Custom {
+        headers: HashMap<String, String>,
+    },
 }
 
 impl Auth {
@@ -92,7 +99,7 @@ impl Auth {
     pub fn apply(&self, headers: &mut HeaderMap) -> Result<(), FaucetError> {
         match self {
             Auth::None | Auth::ApiKeyQuery { .. } => Ok(()),
-            Auth::Bearer(token) => bearer::apply(headers, token),
+            Auth::Bearer { token } => bearer::apply(headers, token),
             Auth::Basic { username, password } => basic::apply(headers, username, password),
             Auth::ApiKey { header, value } => api_key::apply(headers, header, value),
             // OAuth2 is resolved to Auth::Bearer by RestStream before apply() is called.
@@ -101,20 +108,17 @@ impl Auth {
             Auth::OAuth2 { .. } => Err(FaucetError::Auth(
                 "OAuth2 auth must be resolved to a bearer token before applying; \
                  use RestStream (which resolves it automatically) or call \
-                 fetch_oauth2_token() and use Auth::Bearer"
+                 fetch_oauth2_token() and construct Auth::Bearer { token } directly"
                     .into(),
             )),
             // TokenEndpoint is resolved to Auth::Bearer by RestStream before apply().
             Auth::TokenEndpoint { .. } => Err(FaucetError::Auth(
                 "TokenEndpoint auth must be resolved to a bearer token before applying; \
                  use RestStream (which resolves it automatically) or call \
-                 fetch_token_from_endpoint() and use Auth::Bearer"
+                 fetch_token_from_endpoint() and construct Auth::Bearer { token } directly"
                     .into(),
             )),
-            Auth::Custom(h) => {
-                custom::apply(headers, h);
-                Ok(())
-            }
+            Auth::Custom { headers: extra } => custom::apply(headers, extra),
         }
     }
 }
@@ -136,7 +140,11 @@ mod tests {
     #[test]
     fn auth_bearer_sets_authorization_header() {
         let mut headers = HeaderMap::new();
-        Auth::Bearer("my-token".into()).apply(&mut headers).unwrap();
+        Auth::Bearer {
+            token: "my-token".into(),
+        }
+        .apply(&mut headers)
+        .unwrap();
         assert_eq!(headers.get("authorization").unwrap(), "Bearer my-token");
     }
 
@@ -212,14 +220,44 @@ mod tests {
 
     #[test]
     fn auth_custom_headers() {
-        let mut custom = HeaderMap::new();
-        custom.insert(
-            reqwest::header::HeaderName::from_static("x-custom"),
-            reqwest::header::HeaderValue::from_static("value"),
-        );
         let mut headers = HeaderMap::new();
-        Auth::Custom(custom).apply(&mut headers).unwrap();
+        let custom = Auth::Custom {
+            headers: [("x-custom".to_string(), "value".to_string())]
+                .into_iter()
+                .collect(),
+        };
+        custom.apply(&mut headers).unwrap();
         assert_eq!(headers.get("x-custom").unwrap(), "value");
+    }
+
+    #[test]
+    fn auth_custom_round_trips_through_json() {
+        let auth = Auth::Custom {
+            headers: [
+                ("x-tenant".to_string(), "acme".to_string()),
+                ("x-region".to_string(), "us".to_string()),
+            ]
+            .into_iter()
+            .collect(),
+        };
+        let json = serde_json::to_value(&auth).unwrap();
+        let restored: Auth = serde_json::from_value(json).unwrap();
+        let mut headers = HeaderMap::new();
+        restored.apply(&mut headers).unwrap();
+        assert_eq!(headers.get("x-tenant").unwrap(), "acme");
+        assert_eq!(headers.get("x-region").unwrap(), "us");
+    }
+
+    #[test]
+    fn auth_bearer_round_trips_through_json() {
+        let auth = Auth::Bearer {
+            token: "tok".into(),
+        };
+        let json = serde_json::to_value(&auth).unwrap();
+        let restored: Auth = serde_json::from_value(json).unwrap();
+        let mut headers = HeaderMap::new();
+        restored.apply(&mut headers).unwrap();
+        assert_eq!(headers.get("authorization").unwrap(), "Bearer tok");
     }
 
     #[test]
@@ -227,14 +265,18 @@ mod tests {
         let auth = Auth::None;
         assert_eq!(format!("{auth:?}"), "None");
 
-        let auth = Auth::Bearer("tok".into());
+        let auth = Auth::Bearer {
+            token: "tok".into(),
+        };
         let debug = format!("{auth:?}");
         assert!(debug.contains("Bearer"));
     }
 
     #[test]
     fn auth_clone() {
-        let auth = Auth::Bearer("token".into());
+        let auth = Auth::Bearer {
+            token: "token".into(),
+        };
         let cloned = auth.clone();
         let mut h = HeaderMap::new();
         cloned.apply(&mut h).unwrap();

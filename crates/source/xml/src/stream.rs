@@ -170,14 +170,25 @@ impl XmlStream {
         // Apply auth.
         match &self.config.auth {
             XmlAuth::None => {}
-            XmlAuth::Bearer(token) => {
+            XmlAuth::Bearer { token } => {
                 req = req.bearer_auth(token);
             }
             XmlAuth::Basic { username, password } => {
                 req = req.basic_auth(username, Some(password));
             }
-            XmlAuth::Custom(headers) => {
-                req = req.headers(headers.clone());
+            XmlAuth::Custom { headers } => {
+                let mut hm = reqwest::header::HeaderMap::new();
+                for (name, value) in headers {
+                    let n =
+                        reqwest::header::HeaderName::from_bytes(name.as_bytes()).map_err(|e| {
+                            FaucetError::Auth(format!("invalid custom header name {name:?}: {e}"))
+                        })?;
+                    let v = reqwest::header::HeaderValue::from_str(value).map_err(|e| {
+                        FaucetError::Auth(format!("invalid custom header value for {name:?}: {e}"))
+                    })?;
+                    hm.insert(n, v);
+                }
+                req = req.headers(hm);
             }
         }
 

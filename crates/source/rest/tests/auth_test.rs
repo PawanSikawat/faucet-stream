@@ -1,14 +1,16 @@
 use faucet_source_rest::{
     Auth, DEFAULT_EXPIRY_RATIO, DEFAULT_TOKEN_ENDPOINT_EXPIRY_RATIO, RestStream, RestStreamConfig,
 };
-use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
+use reqwest::header::HeaderMap;
 
 #[test]
 fn bearer_auth_sets_header() {
     let mut headers = HeaderMap::new();
-    Auth::Bearer("test-token".into())
-        .apply(&mut headers)
-        .unwrap();
+    Auth::Bearer {
+        token: "test-token".into(),
+    }
+    .apply(&mut headers)
+    .unwrap();
     assert_eq!(headers.get("authorization").unwrap(), "Bearer test-token");
 }
 
@@ -59,18 +61,16 @@ fn api_key_query_is_noop_on_headers() {
 
 #[test]
 fn custom_auth_merges_headers() {
-    let mut custom = HeaderMap::new();
-    custom.insert(
-        HeaderName::from_static("x-custom-auth"),
-        HeaderValue::from_static("token-123"),
-    );
-    custom.insert(
-        HeaderName::from_static("x-tenant"),
-        HeaderValue::from_static("acme"),
-    );
-
     let mut headers = HeaderMap::new();
-    Auth::Custom(custom).apply(&mut headers).unwrap();
+    let custom: std::collections::HashMap<String, String> = [
+        ("x-custom-auth".to_string(), "token-123".to_string()),
+        ("x-tenant".to_string(), "acme".to_string()),
+    ]
+    .into_iter()
+    .collect();
+    Auth::Custom { headers: custom }
+        .apply(&mut headers)
+        .unwrap();
     assert_eq!(headers.get("x-custom-auth").unwrap(), "token-123");
     assert_eq!(headers.get("x-tenant").unwrap(), "acme");
 }

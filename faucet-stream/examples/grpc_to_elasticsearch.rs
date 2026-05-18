@@ -13,7 +13,7 @@
 use faucet_stream::sink::elasticsearch::{
     ElasticsearchSink, ElasticsearchSinkAuth, ElasticsearchSinkConfig,
 };
-use faucet_stream::source::grpc::{GrpcAuth, GrpcStream, GrpcStreamConfig};
+use faucet_stream::source::grpc::{GrpcAuth, GrpcStream, GrpcStreamConfig, MetadataEntry};
 use faucet_stream::{Pipeline, json};
 
 #[tokio::main]
@@ -26,10 +26,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             "proto/events.bin",
         )
         .request(json!({ "since": "2026-01-01T00:00:00Z", "page_size": 1000 }))
-        .auth(GrpcAuth::Metadata(vec![
-            ("x-api-key".into(), std::env::var("GRPC_API_KEY")?),
-            ("x-tenant".into(), "acme".into()),
-        ]))
+        .auth(GrpcAuth::Metadata {
+            entries: vec![
+                MetadataEntry {
+                    key: "x-api-key".into(),
+                    value: std::env::var("GRPC_API_KEY")?,
+                },
+                MetadataEntry {
+                    key: "x-tenant".into(),
+                    value: "acme".into(),
+                },
+            ],
+        })
         .tls(true)
         .records_path("$.events[*]"),
     )?;

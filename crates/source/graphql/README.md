@@ -63,8 +63,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 | Variant | Description |
 |---------|-------------|
 | `None` | No authentication |
-| `Bearer(String)` | Bearer token in the `Authorization` header |
-| `Custom(HeaderMap)` | Custom headers (e.g. API keys, cookies). Not serializable |
+| `Bearer { token }` | Bearer token in the `Authorization` header |
+| `Custom { headers }` | Custom headers map (`HashMap<String, String>`) attached to every request |
 
 ### Pagination (GraphqlPagination)
 
@@ -101,7 +101,7 @@ let config: GraphqlStreamConfig = load_env_file(".env", "GRAPHQL")?;
   },
   "auth": {
     "type": "Bearer",
-    "value": "ghp_xxxxxxxxxxxx"
+    "token": "ghp_xxxxxxxxxxxx"
   },
   "records_path": "$.data.organization.repositories.edges[*].node",
   "pagination": {
@@ -147,7 +147,9 @@ let config = GraphqlStreamConfig::new(
     "query($id: ID!) { user(id: $id) { name email } }",
 )
 .variables(json!({"id": "user-123"}))
-.auth(GraphqlAuth::Bearer("your-token".into()));
+.auth(GraphqlAuth::Bearer {
+    token: "your-token".into(),
+});
 
 let stream = GraphqlStream::new(config);
 let records = stream.fetch_all().await?;
@@ -173,7 +175,9 @@ let config = GraphqlStreamConfig::new(
     }
     "#,
 )
-.auth(GraphqlAuth::Bearer("your-token".into()))
+.auth(GraphqlAuth::Bearer {
+    token: "your-token".into(),
+})
 .records_path("$.data.users.edges[*].node")
 .pagination(GraphqlPagination {
     has_next_page_path: "$.data.users.pageInfo.hasNextPage".into(),

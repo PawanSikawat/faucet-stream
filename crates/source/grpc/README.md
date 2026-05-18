@@ -78,8 +78,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 | Variant | Fields | Description |
 |---------|--------|-------------|
 | `None` | -- | No authentication |
-| `Bearer(String)` | token | Bearer token sent as `authorization` metadata |
-| `Metadata(Vec<(String, String)>)` | key-value pairs | Custom metadata key-value pairs attached to the gRPC request |
+| `Bearer { token }` | `String` | Bearer token sent as `authorization` metadata |
+| `Metadata { entries }` | `Vec<MetadataEntry { key, value }>` | Custom metadata pairs attached to the gRPC request — `Vec` preserves order and allows duplicate keys (gRPC permits both) |
 
 ## Config Loading
 
@@ -105,7 +105,7 @@ let config: GrpcStreamConfig = load_env_file(".env", "GRPC")?;
   },
   "auth": {
     "type": "Bearer",
-    "value": "your-api-token"
+    "token": "your-api-token"
   },
   "tls": true,
   "records_path": "$.products[*]"
@@ -169,7 +169,9 @@ let config = GrpcStreamConfig::new(
     "end_time": "2025-02-01T00:00:00Z",
     "limit": 1000
 }))
-.auth(GrpcAuth::Bearer("your-bearer-token".into()))
+.auth(GrpcAuth::Bearer {
+    token: "your-bearer-token".into(),
+})
 .tls(true)
 .records_path("$.events[*]");
 
@@ -181,7 +183,7 @@ println!("Fetched {} events", events.len());
 ### Custom metadata authentication
 
 ```rust
-use faucet_source_grpc::{GrpcStream, GrpcStreamConfig, GrpcAuth};
+use faucet_source_grpc::{GrpcAuth, GrpcStream, GrpcStreamConfig, MetadataEntry};
 
 let config = GrpcStreamConfig::new(
     "http://localhost:50051",
@@ -189,10 +191,12 @@ let config = GrpcStreamConfig::new(
     "ListItems",
     "proto/descriptor.bin",
 )
-.auth(GrpcAuth::Metadata(vec![
-    ("x-api-key".into(), "my-secret-key".into()),
-    ("x-tenant-id".into(), "tenant-123".into()),
-]));
+.auth(GrpcAuth::Metadata {
+    entries: vec![
+        MetadataEntry { key: "x-api-key".into(), value: "my-secret-key".into() },
+        MetadataEntry { key: "x-tenant-id".into(), value: "tenant-123".into() },
+    ],
+});
 
 let stream = GrpcStream::new(config)?;
 let items = stream.fetch_all().await?;

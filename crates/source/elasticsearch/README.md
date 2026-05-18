@@ -71,8 +71,8 @@ The source uses the Elasticsearch scroll API for efficient retrieval of large re
 |---------|--------|-------------|
 | `None` | -- | No authentication |
 | `Basic { username, password }` | `String`, `String` | HTTP Basic authentication. Password is masked in debug output |
-| `Bearer(String)` | token | Bearer token in the `Authorization` header. Masked in debug output |
-| `ApiKey(String)` | key | API key sent as `ApiKey <key>` in the `Authorization` header. Masked in debug output |
+| `Bearer { token }` | `String` | Bearer token in the `Authorization` header. Masked in debug output |
+| `ApiKey { key }` | `String` | API key sent as `ApiKey <key>` in the `Authorization` header. Masked in debug output |
 
 ## Config Loading
 
@@ -102,10 +102,8 @@ let config: ElasticsearchSourceConfig = load_env_file(".env", "ES_SOURCE")?;
   "scroll_size": 5000,
   "auth": {
     "type": "Basic",
-    "value": {
-      "username": "elastic",
-      "password": "changeme"
-    }
+    "username": "elastic",
+    "password": "changeme"
   },
   "max_pages": 100
 }
@@ -165,7 +163,9 @@ let config = ElasticsearchSourceConfig::new(
         ]
     }
 }))
-.auth(ElasticsearchAuth::Bearer("your-token".into()))
+.auth(ElasticsearchAuth::Bearer {
+    token: "your-token".into(),
+})
 .scroll_size(2000)
 .scroll_timeout("5m")
 .max_pages(50);
@@ -196,7 +196,9 @@ let config = ElasticsearchSourceConfig::new(
         }
     }
 }))
-.auth(ElasticsearchAuth::ApiKey("base64-encoded-api-key".into()))
+.auth(ElasticsearchAuth::ApiKey {
+    key: "base64-encoded-api-key".into(),
+})
 .scroll_size(5000);
 
 let source = ElasticsearchSource::new(config);

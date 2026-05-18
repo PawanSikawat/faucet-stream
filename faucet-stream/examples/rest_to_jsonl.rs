@@ -24,7 +24,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         RestStreamConfig::new("https://api.example.com", "/v1/orders")
             .name("orders")
             .method(reqwest::Method::GET)
-            .auth(Auth::Bearer(std::env::var("API_TOKEN")?))
+            .auth(Auth::Bearer {
+                token: std::env::var("API_TOKEN")?,
+            })
             .header("X-Client", "faucet-stream")
             .query("status", "completed")
             .records_path("$.data[*]")

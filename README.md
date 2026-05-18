@@ -387,7 +387,9 @@ use faucet_stream::{RestStream, RestStreamConfig, Auth, PaginationStyle};
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let stream = RestStream::new(
         RestStreamConfig::new("https://api.example.com", "/v1/users")
-            .auth(Auth::Bearer("my-token".into()))
+            .auth(Auth::Bearer {
+                token: "my-token".into(),
+            })
             .records_path("$.data[*]")
             .pagination(PaginationStyle::Cursor {
                 next_token_path: "$.meta.next_cursor".into(),
@@ -459,7 +461,7 @@ let token = fetch_oauth2_token(
 ).await?;
 
 let config = RestStreamConfig::new("https://api.example.com", "/data")
-    .auth(Auth::Bearer(token));
+    .auth(Auth::Bearer { token });
 ```
 
 ### Token endpoint (fetch credentials from an API)

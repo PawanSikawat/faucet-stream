@@ -5,16 +5,16 @@ use serde::{Deserialize, Serialize};
 
 /// Authentication method for the Elasticsearch sink.
 #[derive(Clone, Serialize, Deserialize, JsonSchema)]
-#[serde(tag = "type", content = "value")]
+#[serde(tag = "type")]
 pub enum ElasticsearchSinkAuth {
     /// No authentication.
     None,
     /// HTTP Basic authentication.
     Basic { username: String, password: String },
     /// Bearer token authentication.
-    Bearer(String),
+    Bearer { token: String },
     /// API key authentication (sent as `ApiKey` in the `Authorization` header).
-    ApiKey(String),
+    ApiKey { key: String },
 }
 
 impl std::fmt::Debug for ElasticsearchSinkAuth {
@@ -26,8 +26,8 @@ impl std::fmt::Debug for ElasticsearchSinkAuth {
                 .field("username", username)
                 .field("password", &"***")
                 .finish(),
-            Self::Bearer(_) => write!(f, "Bearer(***)"),
-            Self::ApiKey(_) => write!(f, "ApiKey(***)"),
+            Self::Bearer { .. } => write!(f, "Bearer(***)"),
+            Self::ApiKey { .. } => write!(f, "ApiKey(***)"),
         }
     }
 }
@@ -97,7 +97,9 @@ mod tests {
         let config = ElasticsearchSinkConfig::new("http://es:9200/", "idx")
             .batch_size(100)
             .id_field("doc_id")
-            .auth(ElasticsearchSinkAuth::Bearer("tok".into()));
+            .auth(ElasticsearchSinkAuth::Bearer {
+                token: "tok".into(),
+            });
         assert_eq!(config.base_url, "http://es:9200");
         assert_eq!(config.batch_size, 100);
         assert_eq!(config.id_field.as_deref(), Some("doc_id"));
@@ -117,12 +119,16 @@ mod tests {
         assert!(debug.contains("***"));
         assert!(!debug.contains("secret"));
 
-        let bearer = ElasticsearchSinkAuth::Bearer("my-token".into());
+        let bearer = ElasticsearchSinkAuth::Bearer {
+            token: "my-token".into(),
+        };
         let debug = format!("{bearer:?}");
         assert!(debug.contains("***"));
         assert!(!debug.contains("my-token"));
 
-        let api_key = ElasticsearchSinkAuth::ApiKey("my-key".into());
+        let api_key = ElasticsearchSinkAuth::ApiKey {
+            key: "my-key".into(),
+        };
         let debug = format!("{api_key:?}");
         assert!(debug.contains("***"));
         assert!(!debug.contains("my-key"));

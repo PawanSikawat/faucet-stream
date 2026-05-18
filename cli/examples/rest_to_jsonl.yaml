@@ -14,9 +14,8 @@ source:
     path: /repos/PawanSikawat/faucet-stream/issues
     method: GET
     auth:
-      type: ApiKey
-      header: Authorization
-      value: Bearer ${env:GITHUB_TOKEN}
+      type: Bearer
+      token: ${env:GITHUB_TOKEN}
     query_params:
       state: open
       per_page: "100"

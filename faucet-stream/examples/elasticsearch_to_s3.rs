@@ -23,7 +23,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .query(json!({ "match": { "level": "error" } }))
             .scroll_timeout("2m")
             .scroll_size(2000)
-            .auth(ElasticsearchAuth::ApiKey(std::env::var("ES_API_KEY")?))
+            .auth(ElasticsearchAuth::ApiKey {
+                key: std::env::var("ES_API_KEY")?,
+            })
             .max_pages(usize::MAX),
     );
 

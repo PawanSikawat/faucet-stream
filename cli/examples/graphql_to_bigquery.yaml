@@ -1,9 +1,6 @@
 # YAML equivalent of `faucet-stream/examples/graphql_to_bigquery.rs`.
-# GraphQL (Relay cursor pagination) → BigQuery with ApplicationDefault credentials.
-#
-# Limitation: the GraphQL source's `headers` and `auth: Custom(HeaderMap)`
-# variants are `#[serde(skip)]`, so the Rust example's per-request header
-# auth is not yet expressible in YAML. Pending follow-up issue.
+# GraphQL (Relay cursor pagination, custom-header auth) → BigQuery with
+# ApplicationDefault credentials.
 version: 1
 name: graphql_to_bigquery
 
@@ -21,7 +18,10 @@ source:
     variables:
       first: 200
     auth:
-      type: None
+      type: Custom
+      headers:
+        X-Api-Key: ${env:API_KEY}
+        X-Tenant: acme
     records_path: $.data.orders.edges[*].node
     pagination:
       has_next_page_path: $.data.orders.pageInfo.hasNextPage

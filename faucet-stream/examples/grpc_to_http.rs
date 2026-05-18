@@ -33,7 +33,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             "proto/metrics.bin",
         )
         .request(json!({ "window": "1h" }))
-        .auth(GrpcAuth::Bearer(std::env::var("GRPC_TOKEN")?))
+        .auth(GrpcAuth::Bearer {
+            token: std::env::var("GRPC_TOKEN")?,
+        })
         .tls(true)
         .records_path("$.metrics[*]"),
     )?;
@@ -45,7 +47,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let sink = HttpSink::new(
         HttpSinkConfig::new("https://ingest.example.com/v1/events?tenant=acme")
             .method(reqwest::Method::POST)
-            .auth(HttpSinkAuth::Bearer(std::env::var("INGEST_TOKEN")?))
+            .auth(HttpSinkAuth::Bearer {
+                token: std::env::var("INGEST_TOKEN")?,
+            })
             .headers(headers)
             .batch_mode(HttpBatchMode::Array)
             .max_retries(3)

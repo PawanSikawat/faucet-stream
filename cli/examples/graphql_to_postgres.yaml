@@ -1,10 +1,6 @@
 # YAML equivalent of `faucet-stream/examples/graphql_to_postgres.rs`.
-# GraphQL (Relay cursor pagination) → PostgreSQL with AutoMap column mapping.
-#
-# Limitation: GraphqlAuth::Bearer(String) is a newtype-in-tagged-enum and
-# can't round-trip through serde — see the follow-up issue. Until that's
-# fixed, the YAML version omits auth; add it on the wire-level proxy if
-# your endpoint requires a token.
+# GraphQL (Relay cursor pagination, Bearer auth) → PostgreSQL with
+# AutoMap column mapping.
 version: 1
 name: graphql_to_postgres
 
@@ -22,7 +18,8 @@ source:
     variables:
       first: 100
     auth:
-      type: None
+      type: Bearer
+      token: ${env:API_TOKEN}
     records_path: $.data.users.edges[*].node
     pagination:
       has_next_page_path: $.data.users.pageInfo.hasNextPage

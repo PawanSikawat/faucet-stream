@@ -16,9 +16,8 @@ source:
     method: GET
     name: users
     auth:
-      type: ApiKey
-      header: Authorization
-      value: Bearer ${env:API_TOKEN}
+      type: Bearer
+      token: ${env:API_TOKEN}
     headers: {}
     query_params:
       active: "true"

@@ -8,7 +8,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let stream = RestStream::new(
         RestStreamConfig::new("https://api.example.com", "/v1/users")
-            .auth(Auth::Bearer("your-token-here".into()))
+            .auth(Auth::Bearer {
+                token: "your-token-here".into(),
+            })
             .records_path("$.data[*]")
             .pagination(PaginationStyle::Cursor {
                 next_token_path: "$.meta.next_cursor".into(),

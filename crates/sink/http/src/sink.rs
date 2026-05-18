@@ -22,7 +22,7 @@ impl HttpSink {
     }
 
     /// Build an HTTP request with auth and headers applied.
-    fn build_request(&self, body: &Value) -> reqwest::RequestBuilder {
+    fn build_request(&self, body: &Value) -> Result<reqwest::RequestBuilder, FaucetError> {
         let mut req = self
             .client
             .request(self.config.method.clone(), &self.config.url)
@@ -31,18 +31,29 @@ impl HttpSink {
 
         match &self.config.auth {
             HttpSinkAuth::None => {}
-            HttpSinkAuth::Bearer(token) => {
+            HttpSinkAuth::Bearer { token } => {
                 req = req.bearer_auth(token);
             }
             HttpSinkAuth::Basic { username, password } => {
                 req = req.basic_auth(username, Some(password));
             }
-            HttpSinkAuth::Custom(headers) => {
-                req = req.headers(headers.clone());
+            HttpSinkAuth::Custom { headers } => {
+                let mut hm = reqwest::header::HeaderMap::new();
+                for (name, value) in headers {
+                    let n =
+                        reqwest::header::HeaderName::from_bytes(name.as_bytes()).map_err(|e| {
+                            FaucetError::Auth(format!("invalid custom header name {name:?}: {e}"))
+                        })?;
+                    let v = reqwest::header::HeaderValue::from_str(value).map_err(|e| {
+                        FaucetError::Auth(format!("invalid custom header value for {name:?}: {e}"))
+                    })?;
+                    hm.insert(n, v);
+                }
+                req = req.headers(hm);
             }
         }
 
-        req
+        Ok(req)
     }
 
     /// Send a single request with retry logic.
@@ -50,7 +61,7 @@ impl HttpSink {
         let mut last_error = None;
 
         for attempt in 0..=self.config.max_retries {
-            let req = self.build_request(body);
+            let req = self.build_request(body)?;
 
             match req.send().await {
                 Ok(resp) => match check_http_response(resp, DEFAULT_ERROR_BODY_MAX_LEN).await {
@@ -149,12 +160,15 @@ mod tests {
 
     #[test]
     fn build_request_applies_bearer_auth() {
-        let config = HttpSinkConfig::new("https://api.example.com/ingest")
-            .auth(HttpSinkAuth::Bearer("my-token".into()));
+        let config =
+            HttpSinkConfig::new("https://api.example.com/ingest").auth(HttpSinkAuth::Bearer {
+                token: "my-token".into(),
+            });
         let sink = HttpSink::new(config);
 
         let req = sink
             .build_request(&serde_json::json!({"test": true}))
+            .unwrap()
             .build()
             .unwrap();
 
@@ -179,6 +193,7 @@ mod tests {
 
         let req = sink
             .build_request(&serde_json::json!({"test": true}))
+            .unwrap()
             .build()
             .unwrap();
 
@@ -199,6 +214,7 @@ mod tests {
 
         let req = sink
             .build_request(&serde_json::json!({"test": true}))
+            .unwrap()
             .build()
             .unwrap();
 

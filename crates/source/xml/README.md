@@ -62,9 +62,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 | Variant | Fields | Description |
 |---------|--------|-------------|
 | `None` | -- | No authentication |
-| `Bearer(String)` | token | Bearer token in the `Authorization` header |
+| `Bearer { token }` | `String` | Bearer token in the `Authorization` header |
 | `Basic { username, password }` | `String`, `String` | HTTP Basic authentication |
-| `Custom(HeaderMap)` | headers | Custom headers (e.g. SOAP action headers, API keys). Not serializable |
+| `Custom { headers }` | `HashMap<String, String>` | Custom headers (e.g. SOAP action headers, API keys) attached to every request |
 
 ### Pagination (XmlPagination)
 

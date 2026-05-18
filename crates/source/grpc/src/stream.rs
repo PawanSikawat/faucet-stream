@@ -115,19 +115,21 @@ impl GrpcStream {
         // Apply auth metadata.
         match &self.config.auth {
             GrpcAuth::None => {}
-            GrpcAuth::Bearer(token) => {
+            GrpcAuth::Bearer { token } => {
                 let val: tonic::metadata::MetadataValue<tonic::metadata::Ascii> =
                     format!("Bearer {token}")
                         .parse()
                         .map_err(|e| FaucetError::Auth(format!("invalid bearer token: {e}")))?;
                 request.metadata_mut().insert("authorization", val);
             }
-            GrpcAuth::Metadata(pairs) => {
-                for (key, value) in pairs {
-                    let val: tonic::metadata::MetadataValue<tonic::metadata::Ascii> = value
+            GrpcAuth::Metadata { entries } => {
+                for entry in entries {
+                    let val: tonic::metadata::MetadataValue<tonic::metadata::Ascii> = entry
+                        .value
                         .parse()
                         .map_err(|e| FaucetError::Auth(format!("invalid metadata value: {e}")))?;
-                    let key: tonic::metadata::MetadataKey<tonic::metadata::Ascii> = key
+                    let key: tonic::metadata::MetadataKey<tonic::metadata::Ascii> = entry
+                        .key
                         .parse()
                         .map_err(|e| FaucetError::Auth(format!("invalid metadata key: {e}")))?;
                     request.metadata_mut().insert(key, val);

@@ -109,13 +109,13 @@ The `Auth` enum supports the following strategies:
 | Variant | Fields | Description |
 |---------|--------|-------------|
 | `None` | -- | No authentication |
-| `Bearer(token)` | `String` | Bearer token in the `Authorization` header |
+| `Bearer { token }` | `String` | Bearer token in the `Authorization` header |
 | `Basic { username, password }` | `String`, `String` | HTTP Basic authentication |
 | `ApiKey { header, value }` | `String`, `String` | API key sent in a custom request header |
 | `ApiKeyQuery { param, value }` | `String`, `String` | API key sent as a query parameter (e.g. `?api_key=secret`) |
 | `OAuth2 { token_url, client_id, client_secret, scopes, expiry_ratio }` | see below | Client credentials OAuth2 flow with token caching |
 | `TokenEndpoint { url, method, headers, body, token_path, expiry_path, expiry_ratio, response_validator }` | see below | Fetch token from an arbitrary HTTP endpoint |
-| `Custom(HeaderMap)` | `HeaderMap` | Arbitrary custom headers (not serializable) |
+| `Custom { headers }` | `HashMap<String, String>` | Arbitrary custom headers attached to every request |
 
 **OAuth2 fields:**
 - `token_url` (`String`): Token endpoint URL
@@ -171,7 +171,7 @@ let config: RestStreamConfig = load_env_file(".env", "REST")?;
   "method": "GET",
   "auth": {
     "type": "Bearer",
-    "value": "ghp_xxxxxxxxxxxx"
+    "token": "ghp_xxxxxxxxxxxx"
   },
   "query_params": {
     "state": "open",
@@ -234,7 +234,9 @@ println!("{}", serde_json::to_string_pretty(&schema)?);
 use faucet_source_rest::{RestStream, RestStreamConfig, Auth, PaginationStyle};
 
 let config = RestStreamConfig::new("https://api.example.com", "/v2/contacts")
-    .auth(Auth::Bearer("your-api-token".into()))
+    .auth(Auth::Bearer {
+        token: "your-api-token".into(),
+    })
     .pagination(PaginationStyle::Cursor {
         next_token_path: "$.meta.next_cursor".into(),
         param_name: "cursor".into(),
@@ -284,7 +286,9 @@ use std::collections::HashMap;
 use serde_json::json;
 
 let config = RestStreamConfig::new("https://api.example.com", "/orgs/{org_id}/members")
-    .auth(Auth::Bearer("token".into()))
+    .auth(Auth::Bearer {
+        token: "token".into(),
+    })
     .add_partition(HashMap::from([("org_id".into(), json!("acme"))]))
     .add_partition(HashMap::from([("org_id".into(), json!("globex"))]))
     .add_partition(HashMap::from([("org_id".into(), json!("initech"))]))

@@ -65,9 +65,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 | Variant | Fields | Description |
 |---------|--------|-------------|
 | `None` | -- | No authentication |
-| `Basic` | `username: String`, `password: String` | HTTP Basic authentication |
-| `Bearer` | `String` | Bearer token in the Authorization header |
-| `ApiKey` | `String` | API key sent as `ApiKey <key>` in the Authorization header |
+| `Basic { username, password }` | `String`, `String` | HTTP Basic authentication |
+| `Bearer { token }` | `String` | Bearer token in the Authorization header |
+| `ApiKey { key }` | `String` | API key sent as `ApiKey <key>` in the Authorization header |
 
 The `Debug` implementation masks passwords, tokens, and API keys with `***` to prevent credential leakage in logs.
 
@@ -114,10 +114,8 @@ let config: ElasticsearchSinkConfig = load_env_file(".env", "ES_SINK")?;
   "index": "events",
   "auth": {
     "type": "Basic",
-    "value": {
-      "username": "elastic",
-      "password": "changeme"
-    }
+    "username": "elastic",
+    "password": "changeme"
   },
   "batch_size": 500,
   "id_field": "event_id"
@@ -145,7 +143,7 @@ let config: ElasticsearchSinkConfig = load_env_file(".env", "ES_SINK")?;
   "index": "metrics",
   "auth": {
     "type": "ApiKey",
-    "value": "VnVhQ2ZHY0JDZGJrU..."
+    "key": "VnVhQ2ZHY0JDZGJrU..."
   },
   "batch_size": 500
 }
@@ -156,7 +154,7 @@ let config: ElasticsearchSinkConfig = load_env_file(".env", "ES_SINK")?;
 ```env
 ES_SINK_BASE_URL=http://localhost:9200
 ES_SINK_INDEX=events
-ES_SINK_AUTH='{"type":"Basic","value":{"username":"elastic","password":"changeme"}}'
+ES_SINK_AUTH='{"type":"Basic","username":"elastic","password":"changeme"}'
 ES_SINK_BATCH_SIZE=500
 ES_SINK_ID_FIELD=event_id
 ```
@@ -232,9 +230,9 @@ let config = ElasticsearchSinkConfig::new(
     "https://my-deployment.es.us-east-1.aws.found.io:9243",
     "application-events",
 )
-.auth(ElasticsearchSinkAuth::ApiKey(
-    std::env::var("ES_API_KEY")?
-))
+.auth(ElasticsearchSinkAuth::ApiKey {
+    key: std::env::var("ES_API_KEY")?,
+})
 .batch_size(2000);
 
 let sink = ElasticsearchSink::new(config);

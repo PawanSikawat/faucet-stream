@@ -3,6 +3,7 @@
 use reqwest::header::HeaderMap;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 /// Authentication method for the HTTP sink.
 #[derive(Clone, Serialize, Deserialize, JsonSchema)]
@@ -11,7 +12,10 @@ pub enum HttpSinkAuth {
     /// No authentication.
     None,
     /// Bearer token in the Authorization header.
-    Bearer(String),
+    Bearer {
+        /// The token value (sent as `Authorization: Bearer <token>`).
+        token: String,
+    },
     /// HTTP Basic authentication.
     Basic {
         /// Username.
@@ -20,21 +24,23 @@ pub enum HttpSinkAuth {
         password: String,
     },
     /// Custom headers for authentication (e.g. API keys).
-    #[serde(skip)]
-    Custom(HeaderMap),
+    Custom {
+        /// Header name → value map applied to every request.
+        headers: HashMap<String, String>,
+    },
 }
 
 impl std::fmt::Debug for HttpSinkAuth {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::None => write!(f, "None"),
-            Self::Bearer(_) => f.debug_tuple("Bearer").field(&"***").finish(),
+            Self::Bearer { .. } => f.debug_tuple("Bearer").field(&"***").finish(),
             Self::Basic { username, .. } => f
                 .debug_struct("Basic")
                 .field("username", username)
                 .field("password", &"***")
                 .finish(),
-            Self::Custom(_) => f.debug_tuple("Custom").field(&"***").finish(),
+            Self::Custom { .. } => f.debug_tuple("Custom").field(&"***").finish(),
         }
     }
 }
@@ -154,7 +160,9 @@ mod tests {
     fn builder_methods() {
         let config = HttpSinkConfig::new("https://api.example.com/ingest")
             .method(reqwest::Method::PUT)
-            .auth(HttpSinkAuth::Bearer("token123".into()))
+            .auth(HttpSinkAuth::Bearer {
+                token: "token123".into(),
+            })
             .batch_mode(HttpBatchMode::Array)
             .max_retries(3);
         assert_eq!(config.method, reqwest::Method::PUT);
@@ -164,7 +172,9 @@ mod tests {
 
     #[test]
     fn auth_debug_masks_secrets() {
-        let bearer = HttpSinkAuth::Bearer("secret-token".into());
+        let bearer = HttpSinkAuth::Bearer {
+            token: "secret-token".into(),
+        };
         let debug = format!("{bearer:?}");
         assert!(debug.contains("***"));
         assert!(!debug.contains("secret-token"));
@@ -178,7 +188,9 @@ mod tests {
         assert!(debug.contains("***"));
         assert!(!debug.contains("secret-pass"));
 
-        let custom = HttpSinkAuth::Custom(HeaderMap::new());
+        let custom = HttpSinkAuth::Custom {
+            headers: HashMap::new(),
+        };
         let debug = format!("{custom:?}");
         assert!(debug.contains("***"));
     }

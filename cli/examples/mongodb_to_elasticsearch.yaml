@@ -28,8 +28,7 @@ sink:
     index: products
     auth:
       type: Basic
-      value:
-        username: ${env:ES_USER}
-        password: ${env:ES_PASS}
+      username: ${env:ES_USER}
+      password: ${env:ES_PASS}
     batch_size: 1000
     id_field: _id

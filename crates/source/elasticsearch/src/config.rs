@@ -6,16 +6,16 @@ use serde_json::{Value, json};
 
 /// Authentication method for Elasticsearch.
 #[derive(Clone, Serialize, Deserialize, JsonSchema)]
-#[serde(tag = "type", content = "value")]
+#[serde(tag = "type")]
 pub enum ElasticsearchAuth {
     /// No authentication.
     None,
     /// HTTP Basic authentication.
     Basic { username: String, password: String },
     /// Bearer token authentication.
-    Bearer(String),
+    Bearer { token: String },
     /// API key authentication (sent as `ApiKey` in the `Authorization` header).
-    ApiKey(String),
+    ApiKey { key: String },
 }
 
 impl std::fmt::Debug for ElasticsearchAuth {
@@ -27,8 +27,8 @@ impl std::fmt::Debug for ElasticsearchAuth {
                 .field("username", username)
                 .field("password", &"***")
                 .finish(),
-            Self::Bearer(_) => write!(f, "Bearer(***)"),
-            Self::ApiKey(_) => write!(f, "ApiKey(***)"),
+            Self::Bearer { .. } => write!(f, "Bearer(***)"),
+            Self::ApiKey { .. } => write!(f, "ApiKey(***)"),
         }
     }
 }
@@ -119,7 +119,9 @@ mod tests {
             .scroll_timeout("5m")
             .scroll_size(500)
             .max_pages(10)
-            .auth(ElasticsearchAuth::Bearer("tok".into()));
+            .auth(ElasticsearchAuth::Bearer {
+                token: "tok".into(),
+            });
         assert_eq!(config.base_url, "http://es:9200");
         assert_eq!(config.scroll_timeout, "5m");
         assert_eq!(config.scroll_size, 500);
@@ -140,12 +142,16 @@ mod tests {
         assert!(debug.contains("***"));
         assert!(!debug.contains("secret"));
 
-        let bearer = ElasticsearchAuth::Bearer("my-token".into());
+        let bearer = ElasticsearchAuth::Bearer {
+            token: "my-token".into(),
+        };
         let debug = format!("{bearer:?}");
         assert!(debug.contains("***"));
         assert!(!debug.contains("my-token"));
 
-        let api_key = ElasticsearchAuth::ApiKey("my-key".into());
+        let api_key = ElasticsearchAuth::ApiKey {
+            key: "my-key".into(),
+        };
         let debug = format!("{api_key:?}");
         assert!(debug.contains("***"));
         assert!(!debug.contains("my-key"));

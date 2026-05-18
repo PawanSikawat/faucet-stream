@@ -14,9 +14,8 @@ source:
     path: /charges
     method: GET
     auth:
-      type: ApiKey
-      header: Authorization
-      value: Bearer ${env:STRIPE_TOKEN}
+      type: Bearer
+      token: ${env:STRIPE_TOKEN}
     query_params:
       limit: "100"
     pagination:

@@ -4,6 +4,7 @@ use reqwest::header::HeaderMap;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::HashMap;
 
 /// Authentication for GraphQL endpoints.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -12,10 +13,9 @@ pub enum GraphqlAuth {
     /// No authentication.
     None,
     /// Bearer token in the Authorization header.
-    Bearer(String),
+    Bearer { token: String },
     /// Custom headers (e.g. API keys, cookies).
-    #[serde(skip)]
-    Custom(HeaderMap),
+    Custom { headers: HashMap<String, String> },
 }
 
 /// Cursor-based pagination configuration for GraphQL.
@@ -146,7 +146,9 @@ mod tests {
                 .variables(json!({"org": "acme"}))
                 .records_path("$.data.users.edges[*].node")
                 .max_pages(10)
-                .auth(GraphqlAuth::Bearer("token".into()));
+                .auth(GraphqlAuth::Bearer {
+                    token: "token".into(),
+                });
         assert_eq!(config.variables["org"], "acme");
         assert_eq!(config.records_path.unwrap(), "$.data.users.edges[*].node");
         assert_eq!(config.max_pages, Some(10));

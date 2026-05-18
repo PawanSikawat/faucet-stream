@@ -29,8 +29,8 @@ impl ElasticsearchSink {
             ElasticsearchSinkAuth::Basic { username, password } => {
                 req.basic_auth(username, Some(password))
             }
-            ElasticsearchSinkAuth::Bearer(token) => req.bearer_auth(token),
-            ElasticsearchSinkAuth::ApiKey(key) => {
+            ElasticsearchSinkAuth::Bearer { token } => req.bearer_auth(token),
+            ElasticsearchSinkAuth::ApiKey { key } => {
                 req.header("Authorization", format!("ApiKey {key}"))
             }
         }

@@ -1,32 +1,39 @@
 //! Custom header-based authentication.
 
-use reqwest::header::HeaderMap;
+use faucet_core::FaucetError;
+use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
+use std::collections::HashMap;
 
-pub fn apply(headers: &mut HeaderMap, custom: &HeaderMap) {
-    headers.extend(custom.clone());
+pub fn apply(headers: &mut HeaderMap, custom: &HashMap<String, String>) -> Result<(), FaucetError> {
+    for (name, value) in custom {
+        let header_name = HeaderName::from_bytes(name.as_bytes())
+            .map_err(|e| FaucetError::Auth(format!("invalid custom header name {name:?}: {e}")))?;
+        let header_value = HeaderValue::from_str(value).map_err(|e| {
+            FaucetError::Auth(format!("invalid custom header value for {name:?}: {e}"))
+        })?;
+        headers.insert(header_name, header_value);
+    }
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use reqwest::header::{HeaderName, HeaderValue};
+    use reqwest::header::HeaderValue;
 
     #[test]
     fn apply_merges_custom_headers() {
         let mut headers = HeaderMap::new();
         headers.insert("existing", HeaderValue::from_static("keep"));
 
-        let mut custom = HeaderMap::new();
-        custom.insert(
-            HeaderName::from_static("x-custom"),
-            HeaderValue::from_static("val1"),
-        );
-        custom.insert(
-            HeaderName::from_static("x-another"),
-            HeaderValue::from_static("val2"),
-        );
+        let custom: HashMap<String, String> = [
+            ("x-custom".to_string(), "val1".to_string()),
+            ("x-another".to_string(), "val2".to_string()),
+        ]
+        .into_iter()
+        .collect();
 
-        apply(&mut headers, &custom);
+        apply(&mut headers, &custom).unwrap();
 
         assert_eq!(headers.get("existing").unwrap(), "keep");
         assert_eq!(headers.get("x-custom").unwrap(), "val1");
@@ -38,13 +45,11 @@ mod tests {
         let mut headers = HeaderMap::new();
         headers.insert("x-key", HeaderValue::from_static("old"));
 
-        let mut custom = HeaderMap::new();
-        custom.insert(
-            HeaderName::from_static("x-key"),
-            HeaderValue::from_static("new"),
-        );
+        let custom: HashMap<String, String> = [("x-key".to_string(), "new".to_string())]
+            .into_iter()
+            .collect();
 
-        apply(&mut headers, &custom);
+        apply(&mut headers, &custom).unwrap();
         assert_eq!(headers.get("x-key").unwrap(), "new");
     }
 
@@ -53,8 +58,26 @@ mod tests {
         let mut headers = HeaderMap::new();
         headers.insert("existing", HeaderValue::from_static("value"));
 
-        apply(&mut headers, &HeaderMap::new());
+        apply(&mut headers, &HashMap::new()).unwrap();
         assert_eq!(headers.len(), 1);
         assert_eq!(headers.get("existing").unwrap(), "value");
+    }
+
+    #[test]
+    fn apply_rejects_invalid_header_name() {
+        let mut headers = HeaderMap::new();
+        let custom: HashMap<String, String> = [("bad name".to_string(), "v".to_string())]
+            .into_iter()
+            .collect();
+        assert!(apply(&mut headers, &custom).is_err());
+    }
+
+    #[test]
+    fn apply_rejects_invalid_header_value() {
+        let mut headers = HeaderMap::new();
+        let custom: HashMap<String, String> = [("x-good".to_string(), "bad\nvalue".to_string())]
+            .into_iter()
+            .collect();
+        assert!(apply(&mut headers, &custom).is_err());
     }
 }

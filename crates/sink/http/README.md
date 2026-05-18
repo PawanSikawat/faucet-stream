@@ -65,9 +65,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 | Variant | Fields | Description |
 |---------|--------|-------------|
 | `None` | -- | No authentication |
-| `Bearer` | `String` | Bearer token in the Authorization header |
-| `Basic` | `username: String`, `password: String` | HTTP Basic authentication |
-| `Custom` | `HeaderMap` | Custom headers for authentication (e.g. API keys). Not serializable; set via builder only. |
+| `Bearer { token }` | `String` | Bearer token in the Authorization header |
+| `Basic { username, password }` | `String`, `String` | HTTP Basic authentication |
+| `Custom { headers }` | `HashMap<String, String>` | Header name → value map attached to every request |
 
 The `Debug` implementation masks tokens and passwords with `***` to prevent credential leakage in logs.
 
@@ -89,7 +89,7 @@ use faucet_sink_http::{HttpSinkConfig, HttpSinkAuth, HttpBatchMode};
 
 let config = HttpSinkConfig::new("https://api.example.com/ingest")
     .method(reqwest::Method::PUT)
-    .auth(HttpSinkAuth::Bearer("my-token".into()))
+    .auth(HttpSinkAuth::Bearer { token: "my-token".into() })
     .batch_mode(HttpBatchMode::Array)
     .max_retries(3)
     .concurrency(20);
@@ -108,7 +108,7 @@ let config: HttpSinkConfig = load_json("config.json")?;
 let config: HttpSinkConfig = load_env_file(".env", "HTTP_SINK")?;
 ```
 
-Note: The `headers` field and `Custom` auth variant use `HeaderMap` which is not serializable. These must be set programmatically via builder methods.
+Note: The `headers` field on `HttpSinkConfig` is `HeaderMap` and remains `#[serde(skip)]` — set it programmatically. The `Custom` auth variant uses a `HashMap<String, String>` and round-trips through JSON/YAML.
 
 ### Example JSON config (Individual mode with Bearer auth)
 
@@ -118,7 +118,7 @@ Note: The `headers` field and `Custom` auth variant use `HeaderMap` which is not
   "method": "POST",
   "auth": {
     "type": "Bearer",
-    "0": "my-api-token"
+    "token": "my-api-token"
   },
   "batch_mode": {
     "type": "Individual"
@@ -152,7 +152,7 @@ Note: The `headers` field and `Custom` auth variant use `HeaderMap` which is not
 ```env
 HTTP_SINK_URL=https://api.example.com/ingest
 HTTP_SINK_METHOD=POST
-HTTP_SINK_AUTH='{"type":"Bearer","0":"my-api-token"}'
+HTTP_SINK_AUTH='{"type":"Bearer","token":"my-api-token"}'
 HTTP_SINK_BATCH_MODE='{"type":"Individual"}'
 HTTP_SINK_MAX_RETRIES=3
 HTTP_SINK_CONCURRENCY=10
@@ -195,7 +195,7 @@ println!("Forwarded {} records", result.records_written);
 
 ```rust
 let config = HttpSinkConfig::new("https://webhooks.example.com/event")
-    .auth(HttpSinkAuth::Bearer("webhook-token".into()))
+    .auth(HttpSinkAuth::Bearer { token: "webhook-token".into() })
     .batch_mode(HttpBatchMode::Individual)
     .concurrency(20)
     .max_retries(2);
