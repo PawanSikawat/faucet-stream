@@ -1,8 +1,11 @@
 //! Shared traits for faucet sources and sinks.
 
 use crate::error::FaucetError;
+use crate::pipeline::StreamPage;
 use async_trait::async_trait;
+use futures_core::Stream;
 use serde_json::Value;
+use std::pin::Pin;
 
 /// A source fetches records from an external system.
 #[async_trait]
@@ -42,6 +45,67 @@ pub trait Source: Send + Sync {
     async fn fetch_all_incremental(&self) -> Result<(Vec<Value>, Option<Value>), FaucetError> {
         self.fetch_with_context_incremental(&std::collections::HashMap::new())
             .await
+    }
+
+    /// Stream records page-by-page so the pipeline can write to the sink as
+    /// pages arrive instead of buffering the full result set.
+    ///
+    /// `batch_size` is the *hint* the pipeline passes down; sources are free
+    /// to use a larger or smaller native chunk (e.g. one page per HTTP
+    /// response, one row-group per Parquet file) but should approximate it
+    /// where feasible.
+    ///
+    /// The default implementation fetches the full result set via
+    /// [`fetch_with_context_incremental`](Self::fetch_with_context_incremental)
+    /// and chunks it in memory by `batch_size`. The bookmark (when present)
+    /// is attached to the *final* page so the pipeline only persists after
+    /// the entire fetch has been written. Sources that can stream natively
+    /// override this method and may emit per-page bookmarks (e.g. CDC).
+    ///
+    /// An empty result with a `Some(bookmark)` still yields one empty page
+    /// carrying the bookmark, so incremental runs that produce no records
+    /// still advance their checkpoint.
+    fn stream_pages<'a>(
+        &'a self,
+        context: &'a std::collections::HashMap<String, Value>,
+        batch_size: usize,
+    ) -> Pin<Box<dyn Stream<Item = Result<StreamPage, FaucetError>> + Send + 'a>> {
+        Box::pin(async_stream::try_stream! {
+            let (records, bookmark) = self
+                .fetch_with_context_incremental(context)
+                .await?;
+            let total = records.len();
+            let chunk = batch_size.max(1);
+
+            if total == 0 {
+                if bookmark.is_some() {
+                    yield StreamPage {
+                        records: Vec::new(),
+                        bookmark,
+                    };
+                }
+                return;
+            }
+
+            let mut iter = records.into_iter();
+            let mut consumed = 0usize;
+            loop {
+                let batch: Vec<Value> = iter.by_ref().take(chunk).collect();
+                if batch.is_empty() {
+                    break;
+                }
+                consumed += batch.len();
+                let page_bookmark = if consumed >= total {
+                    bookmark.clone()
+                } else {
+                    None
+                };
+                yield StreamPage {
+                    records: batch,
+                    bookmark: page_bookmark,
+                };
+            }
+        })
     }
 
     /// Return a JSON Schema describing the configuration this source accepts.
@@ -294,5 +358,97 @@ mod tests {
         let sink: Box<dyn Sink> = Box::new(MockSink::new());
         let count = sink.write_batch(&[json!({"id": 1})]).await.unwrap();
         assert_eq!(count, 1);
+    }
+
+    // ── stream_pages tests ──────────────────────────────────────────────────
+
+    use crate::pipeline::DEFAULT_BATCH_SIZE;
+    use futures::StreamExt;
+
+    #[tokio::test]
+    async fn default_stream_pages_chunks_records() {
+        let source = MockSource {
+            records: (0..5).map(|i| json!({"i": i})).collect(),
+        };
+        let ctx = std::collections::HashMap::new();
+        let mut pages = source.stream_pages(&ctx, 2);
+        let mut all = Vec::new();
+        while let Some(page) = pages.next().await {
+            all.push(page.unwrap());
+        }
+        // 5 records, batch_size=2 → pages of [2, 2, 1]
+        assert_eq!(all.len(), 3);
+        assert_eq!(all[0].records.len(), 2);
+        assert_eq!(all[1].records.len(), 2);
+        assert_eq!(all[2].records.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn default_stream_pages_attaches_bookmark_to_final_page_only() {
+        let source = IncrementalSource {
+            records: (0..5).map(|i| json!({"i": i})).collect(),
+            bookmark: json!("v1"),
+        };
+        let ctx = std::collections::HashMap::new();
+        let mut pages = source.stream_pages(&ctx, 2);
+        let mut collected = Vec::new();
+        while let Some(page) = pages.next().await {
+            collected.push(page.unwrap());
+        }
+        assert_eq!(collected.len(), 3);
+        assert!(collected[0].bookmark.is_none());
+        assert!(collected[1].bookmark.is_none());
+        assert_eq!(collected[2].bookmark, Some(json!("v1")));
+    }
+
+    #[tokio::test]
+    async fn default_stream_pages_single_page_when_batch_size_exceeds_total() {
+        let source = MockSource {
+            records: vec![json!({"id": 1}), json!({"id": 2})],
+        };
+        let ctx = std::collections::HashMap::new();
+        let mut pages = source.stream_pages(&ctx, 100);
+        let mut collected = Vec::new();
+        while let Some(page) = pages.next().await {
+            collected.push(page.unwrap());
+        }
+        assert_eq!(collected.len(), 1);
+        assert_eq!(collected[0].records.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn default_stream_pages_empty_source_yields_no_pages() {
+        let source = MockSource { records: vec![] };
+        let ctx = std::collections::HashMap::new();
+        let mut pages = source.stream_pages(&ctx, DEFAULT_BATCH_SIZE);
+        assert!(pages.next().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn default_stream_pages_empty_source_with_bookmark_yields_single_empty_page() {
+        let source = IncrementalSource {
+            records: vec![],
+            bookmark: json!("v0"),
+        };
+        let ctx = std::collections::HashMap::new();
+        let mut pages = source.stream_pages(&ctx, DEFAULT_BATCH_SIZE);
+        let mut collected = Vec::new();
+        while let Some(page) = pages.next().await {
+            collected.push(page.unwrap());
+        }
+        // One empty-records page that carries the bookmark, so the pipeline
+        // still persists progress on otherwise-empty incremental runs.
+        assert_eq!(collected.len(), 1);
+        assert!(collected[0].records.is_empty());
+        assert_eq!(collected[0].bookmark, Some(json!("v0")));
+    }
+
+    #[tokio::test]
+    async fn default_stream_pages_propagates_fetch_errors() {
+        let source = FailingSource;
+        let ctx = std::collections::HashMap::new();
+        let mut pages = source.stream_pages(&ctx, DEFAULT_BATCH_SIZE);
+        let first = pages.next().await.unwrap();
+        assert!(matches!(first, Err(FaucetError::Auth(_))));
     }
 }
