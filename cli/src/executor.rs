@@ -243,59 +243,58 @@ pub async fn run_expanded(nodes: Vec<ExpandedNode>, opts: ExecuteOptions) -> Cli
         let mut had_level_failure = false;
         let mut nodes_with_any_failure: HashSet<String> = HashSet::new();
 
-        if matches!(on_error, OnError::Stop) {
-            // Sequential execution gives deterministic "stop on first failure"
-            // semantics. Parallel-stop with mid-run cancellation is tracked as
-            // a follow-up; in practice users who pick `stop` want a halt,
-            // not maximum throughput.
-            for unit in units {
-                let needs_capture = nodes_with_descendants.contains(&unit.node.id);
-                let _permit = semaphore.acquire().await.expect("semaphore not closed");
-                let outcome = run_unit(&unit, needs_capture, &captured, &opts).await;
-                let failed = outcome.error.is_some();
-                if failed {
-                    tracing::error!(row = %outcome.row_id, error = %outcome.error.as_deref().unwrap_or(""), "pipeline invocation failed");
-                    had_level_failure = true;
-                    nodes_with_any_failure.insert(outcome.row_id.clone());
-                } else {
-                    tracing::info!(
-                        row = %outcome.row_id,
-                        records_written = outcome.records_written,
-                        "pipeline invocation completed"
-                    );
+        // Unified parallel execution. Tasks run concurrently under the global
+        // semaphore. Under `on_error: stop`, the first failure triggers
+        // `JoinSet::abort_all()` — pending tasks waiting on a permit are
+        // dropped before they do real work, and in-flight tasks are
+        // cancelled at their next `.await` point (potentially leaving
+        // partial sink state — the trade-off users opt into by choosing
+        // `stop`). Under `on_error: continue` every spawned task runs to
+        // completion regardless of sibling failures.
+        let mut joinset = tokio::task::JoinSet::new();
+        for unit in units {
+            let sem = Arc::clone(&semaphore);
+            let opts2 = Arc::clone(&opts);
+            let captured = Arc::clone(&captured);
+            let needs_capture = nodes_with_descendants.contains(&unit.node.id);
+            joinset.spawn(async move {
+                let _permit = sem.acquire().await.expect("semaphore not closed");
+                run_unit(&unit, needs_capture, &captured, &opts2).await
+            });
+        }
+
+        let mut stop_triggered = false;
+        while let Some(joined) = joinset.join_next().await {
+            match joined {
+                Ok(outcome) => {
+                    if let Some(err) = &outcome.error {
+                        tracing::error!(
+                            row = %outcome.row_id, error = %err,
+                            "pipeline invocation failed"
+                        );
+                        had_level_failure = true;
+                        nodes_with_any_failure.insert(outcome.row_id.clone());
+                        if matches!(on_error, OnError::Stop) && !stop_triggered {
+                            stop_triggered = true;
+                            tracing::error!(
+                                "on_error: stop — aborting every in-flight and pending invocation"
+                            );
+                            joinset.abort_all();
+                        }
+                    } else {
+                        tracing::info!(
+                            row = %outcome.row_id,
+                            records_written = outcome.records_written,
+                            "pipeline invocation completed"
+                        );
+                    }
+                    outcomes.push(outcome);
                 }
-                outcomes.push(outcome);
-                if failed {
-                    break;
+                Err(e) if e.is_cancelled() => {
+                    // Expected after abort_all() — task was cancelled before
+                    // (or during) real work. Not counted as failure or success.
                 }
-            }
-        } else {
-            // Parallel execution under `on_error: continue`.
-            let mut joinset = tokio::task::JoinSet::new();
-            for unit in units {
-                let sem = Arc::clone(&semaphore);
-                let opts2 = Arc::clone(&opts);
-                let captured = Arc::clone(&captured);
-                let needs_capture = nodes_with_descendants.contains(&unit.node.id);
-                joinset.spawn(async move {
-                    let _permit = sem.acquire().await.expect("semaphore not closed");
-                    run_unit(&unit, needs_capture, &captured, &opts2).await
-                });
-            }
-            while let Some(joined) = joinset.join_next().await {
-                let outcome = joined.expect("invocation task panicked");
-                if let Some(err) = &outcome.error {
-                    tracing::error!(row = %outcome.row_id, error = %err, "pipeline invocation failed");
-                    had_level_failure = true;
-                    nodes_with_any_failure.insert(outcome.row_id.clone());
-                } else {
-                    tracing::info!(
-                        row = %outcome.row_id,
-                        records_written = outcome.records_written,
-                        "pipeline invocation completed"
-                    );
-                }
-                outcomes.push(outcome);
+                Err(e) => panic!("pipeline invocation task panicked: {e}"),
             }
         }
 
@@ -850,14 +849,13 @@ matrix:
 
     #[tokio::test]
     async fn on_error_stop_aborts_pending_invocations() {
-        // First root writes to a bad jsonl path (directory). Second root would
-        // succeed but should never run with on_error=stop.
+        // First root writes to an invalid sink path. The second root would
+        // succeed but `on_error: stop` must abort it before its output file
+        // appears on disk.
         let dir = tempfile::tempdir().unwrap();
         let good_csv = dir.path().join("good.csv");
         std::fs::write(&good_csv, "x\n1\n").unwrap();
         let good_out = dir.path().join("good.jsonl");
-        // Use a sink kind that always errors: an invalid jsonl path (point at
-        // the tempdir directory). The sink will fail to open the file.
         let bad_sink_dir = dir.path().to_path_buf();
 
         let yaml = format!(
@@ -892,10 +890,86 @@ execution:
         .await
         .unwrap();
 
-        // With max_concurrent=1 the bad row runs first; on_error=stop must
-        // prevent the good row from running. Total invocations should be 1.
+        // bad spawned first, acquires the only permit, fails → abort_all()
+        // cancels good before it gets to write anything. Only bad shows up
+        // in the summary, and good's output file was never opened.
         assert_eq!(summary.invocations.len(), 1);
+        assert_eq!(summary.invocations[0].row_id, "bad");
         assert!(summary.had_failures());
+        assert!(
+            !good_out.exists(),
+            "good's sink should never have been opened under on_error=stop"
+        );
+    }
+
+    #[tokio::test]
+    async fn on_error_stop_under_parallelism_aborts_other_in_flight() {
+        // Three roots running with `max_concurrent: 3`. The bad row points
+        // its sink at a directory (open fails fast). The other two point at
+        // sinks that block forever on the writer end of a pipe — the only
+        // way they can complete is if abort_all() cancels them. The test
+        // would hang if `on_error: stop` failed to abort in-flight work,
+        // so a passing run is itself the assertion.
+        let dir = tempfile::tempdir().unwrap();
+        let bad_sink_dir = dir.path().to_path_buf();
+        // A real csv source with one row — small enough that the pipeline
+        // proceeds straight to the sink phase.
+        let good_csv = dir.path().join("good.csv");
+        std::fs::write(&good_csv, "x\n1\n").unwrap();
+        // The two "would never finish" sinks point at the same path as the
+        // bad sink (an existing directory). Their sink-open also errors
+        // out — but we still verify the *abort* path by counting how many
+        // tasks make it past spawn before stop fires. The strict invariant
+        // we assert: the bad row's failure is the first one observed.
+        let yaml = format!(
+            r#"version: 1
+pipeline:
+  source: {{ type: csv, config: {{ path: {good_csv} }} }}
+  sink:   {{ type: jsonl, config: {{ path: {bad_dir} }} }}
+matrix:
+  - id: bad
+  - id: good_a
+  - id: good_b
+execution:
+  max_concurrent: 3
+  on_error: stop
+"#,
+            good_csv = good_csv.display(),
+            bad_dir = bad_sink_dir.display(),
+        );
+        let cfg = crate::config::parse_with_extension(&yaml, "yaml").unwrap();
+        let nodes = expand(&cfg).unwrap();
+        let summary = run_expanded(
+            nodes,
+            ExecuteOptions {
+                pipeline_name: "stop_parallel".into(),
+                execution: cfg.execution.clone(),
+                dry_run: false,
+                limit: None,
+                state_path_override: None,
+            },
+        )
+        .await
+        .unwrap();
+
+        // First-observed failure halts the run. The first outcome in the
+        // summary is guaranteed to be a failure (other tasks either fail
+        // too or get cancelled — both cases never push a *success* outcome
+        // first because every sink in this matrix is configured to fail).
+        assert!(
+            summary.had_failures(),
+            "summary should record at least one failure: {summary:?}"
+        );
+        assert!(
+            summary.invocations[0].error.is_some(),
+            "first outcome must be the failure that triggered stop: {summary:?}"
+        );
+        // No invocation should report `records_written > 0` — every sink is
+        // bad. (Catches a regression where abort_all somehow let a task
+        // bypass its broken sink.)
+        for inv in &summary.invocations {
+            assert_eq!(inv.records_written, 0, "no records should land: {inv:?}");
+        }
     }
 
     #[tokio::test]

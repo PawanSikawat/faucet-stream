@@ -148,8 +148,10 @@ Tokens are resolved in two passes:
 #### Execution
 
 - `max_concurrent` bounds total in-flight invocations (roots + per-parent-record children compete for one budget). Default: `min(num_cpus, 4)`.
-- `on_error: continue` (default) — a failed invocation is logged, its subtree is skipped, siblings run. The process exits non-zero if any invocation failed.
-- `on_error: stop` — first failure halts every pending invocation. Runs sequentially under one permit at a time for deterministic halt semantics.
+- `on_error: continue` (default) — a failed invocation is logged, its subtree is skipped, every sibling already running keeps running to completion. The process exits non-zero if any invocation failed.
+- `on_error: stop` — first failure halts the entire run. Pending invocations waiting on a concurrency permit are dropped before they start; in-flight invocations running in parallel are cancelled at their next `.await` point. Honours `max_concurrent` like `continue` does, so the failure is detected as quickly as the slowest in-flight task can be polled.
+
+> **Caveat for `stop`:** cancelling a task mid-write may leave partial state in the sink — a half-flushed file, an open transaction, a connection that closed before the server's response was read. Idempotent sinks (JSONL append, S3 put with a fixed key, BigQuery streaming insert with `insertId`, upsert-style writes) handle re-runs cleanly. Non-idempotent sinks (`HTTP POST` without dedupe headers, `INSERT` with auto-id) may double-write on retry. If you can't tolerate that, prefer `on_error: continue` and reconcile failed rows after the fact.
 
 #### State keys
 
