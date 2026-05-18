@@ -2,23 +2,24 @@
 version: 1
 name: postgres_to_bigquery
 
-source:
-  type: postgres
-  config:
-    connection_url: postgres://user:pass@localhost/app
-    query: SELECT id, created_at, payload FROM orders WHERE created_at > $1 AND status = $2
-    params:
-      - "2026-01-01T00:00:00Z"
-      - completed
-    max_connections: 16
+pipeline:
+  source:
+    type: postgres
+    config:
+      connection_url: postgres://user:pass@localhost/app
+      query: SELECT id, created_at, payload FROM orders WHERE created_at > $1 AND status = $2
+      params:
+        - "2026-01-01T00:00:00Z"
+        - completed
+      max_connections: 16
 
-sink:
-  type: bigquery
-  config:
-    project_id: my-gcp-project
-    dataset_id: warehouse
-    table_id: orders
-    credentials:
-      type: ServiceAccountKey
-      value: ${env:GCP_KEY_JSON}
-    batch_size: 1000
+  sink:
+    type: bigquery
+    config:
+      project_id: my-gcp-project
+      dataset_id: warehouse
+      table_id: orders
+      credentials:
+        type: ServiceAccountKey
+        value: ${env:GCP_KEY_JSON}
+      batch_size: 1000

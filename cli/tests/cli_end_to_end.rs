@@ -13,14 +13,15 @@ fn csv_to_jsonl_yaml(csv: &Path, out: &Path) -> String {
     format!(
         r#"version: 1
 name: csv_to_jsonl_smoke
-source:
-  type: csv
-  config:
-    path: {csv}
-sink:
-  type: jsonl
-  config:
-    path: {out}
+pipeline:
+  source:
+    type: csv
+    config:
+      path: {csv}
+  sink:
+    type: jsonl
+    config:
+      path: {out}
 "#,
         csv = csv.display(),
         out = out.display(),
@@ -108,7 +109,8 @@ fn validate_accepts_csv_to_jsonl_yaml() {
         .assert()
         .success()
         .stdout(contains("source=csv"))
-        .stdout(contains("sink=jsonl"));
+        .stdout(contains("sink=jsonl"))
+        .stdout(contains("rows=1"));
 }
 
 #[test]
@@ -128,7 +130,8 @@ fn run_executes_csv_to_jsonl_pipeline() {
         .arg(&cfg)
         .assert()
         .success()
-        .stdout(contains("wrote 2 records"));
+        .stdout(contains("wrote 2 records"))
+        .stdout(contains("1 invocation"));
 
     let lines: Vec<_> = fs::read_to_string(&out)
         .unwrap()
@@ -216,14 +219,15 @@ fn env_interpolation_resolves_inside_config_values() {
 
     let cfg_text = format!(
         r#"version: 1
-source:
-  type: csv
-  config:
-    path: ${{env:FAUCET_TEST_CSV_PATH}}
-sink:
-  type: jsonl
-  config:
-    path: {out}
+pipeline:
+  source:
+    type: csv
+    config:
+      path: ${{env:FAUCET_TEST_CSV_PATH}}
+  sink:
+    type: jsonl
+    config:
+      path: {out}
 "#,
         out = out.display()
     );
@@ -301,20 +305,120 @@ fn shipped_example_yamls_pass_validate() {
 }
 
 #[test]
+fn run_auto_discovers_faucet_yaml_and_dotenv_in_cwd() {
+    // #55: cwd-based config + .env auto-discovery. `faucet run` with no
+    // positional path picks up `faucet.yaml`, and `${env:VAR}` resolves
+    // against a `.env` in the same directory.
+    let dir = TempDir::new().unwrap();
+    let csv = dir.path().join("in.csv");
+    let out = dir.path().join("out.jsonl");
+    fs::write(&csv, "name\nzed\n").unwrap();
+    fs::write(
+        dir.path().join(".env"),
+        format!("DISCOVERED_OUT={}\n", out.display()),
+    )
+    .unwrap();
+    fs::write(
+        dir.path().join("faucet.yaml"),
+        format!(
+            r#"version: 1
+pipeline:
+  source:
+    type: csv
+    config:
+      path: {csv}
+  sink:
+    type: jsonl
+    config:
+      path: ${{env:DISCOVERED_OUT}}
+"#,
+            csv = csv.display(),
+        ),
+    )
+    .unwrap();
+
+    Command::cargo_bin("faucet")
+        .unwrap()
+        .current_dir(dir.path())
+        .env_remove("DISCOVERED_OUT")
+        .arg("run")
+        .assert()
+        .success()
+        .stdout(contains("wrote 1 record"));
+
+    assert!(out.exists(), "auto-discovered run should produce output");
+}
+
+#[test]
+fn run_with_no_config_and_no_from_env_errors() {
+    // No positional path, no --from-env, no faucet.* in cwd → clear error.
+    let dir = TempDir::new().unwrap();
+    Command::cargo_bin("faucet")
+        .unwrap()
+        .current_dir(dir.path())
+        .arg("run")
+        .assert()
+        .failure()
+        .stderr(contains("no pipeline config"));
+}
+
+#[test]
+fn run_no_env_file_skips_dotenv_auto_load() {
+    // With --no-env-file, a present .env must NOT be loaded. We prove this by
+    // requiring an env var that is only defined in .env, and asserting failure.
+    let dir = TempDir::new().unwrap();
+    let csv = dir.path().join("in.csv");
+    fs::write(&csv, "name\nx\n").unwrap();
+    fs::write(
+        dir.path().join(".env"),
+        "FAUCET_TEST_SKIPPED_PATH=/tmp/should-not-be-read.jsonl\n",
+    )
+    .unwrap();
+    fs::write(
+        dir.path().join("faucet.yaml"),
+        format!(
+            r#"version: 1
+pipeline:
+  source:
+    type: csv
+    config:
+      path: {csv}
+  sink:
+    type: jsonl
+    config:
+      path: ${{env:FAUCET_TEST_SKIPPED_PATH}}
+"#,
+            csv = csv.display(),
+        ),
+    )
+    .unwrap();
+
+    Command::cargo_bin("faucet")
+        .unwrap()
+        .current_dir(dir.path())
+        .env_remove("FAUCET_TEST_SKIPPED_PATH")
+        .args(["run", "--no-env-file"])
+        .assert()
+        .failure()
+        .stderr(contains("FAUCET_TEST_SKIPPED_PATH"));
+}
+
+#[test]
 fn missing_env_var_in_config_is_reported() {
     let dir = TempDir::new().unwrap();
     let cfg = dir.path().join("pipeline.yaml");
     fs::write(
         &cfg,
         r#"version: 1
-source:
-  type: csv
-  config:
-    path: ${env:FAUCET_DEFINITELY_UNSET}
-sink:
-  type: jsonl
-  config:
-    path: /tmp/no.jsonl
+pipeline:
+  source:
+    type: csv
+    config:
+      path: ${env:FAUCET_DEFINITELY_UNSET}
+  sink:
+    type: jsonl
+    config:
+      path: /tmp/no.jsonl
 "#,
     )
     .unwrap();

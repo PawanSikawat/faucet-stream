@@ -40,11 +40,17 @@ pub enum CliError {
         source: std::io::Error,
     },
 
-    /// An interpolation directive used an unknown prefix.
+    /// A `${row_id.path}` token referenced an unknown matrix row id at
+    /// expand-time (or a typo'd load-time prefix that survived to record-time).
     #[error(
-        "unsupported interpolation prefix '{prefix}' in '{full}' — expected env, file, or secret"
+        "interpolation '{token}' references unknown id '{id}' (must be a matrix row id, or one of env/file/secret)"
     )]
-    UnknownInterpolationPrefix { prefix: String, full: String },
+    UnknownInterpolationId { id: String, token: String },
+
+    /// A `${row_id.path}` resolved at record-time, but the dotted path doesn't
+    /// match any field in the parent record.
+    #[error("matrix row '{id}' has no field at path '{path}' in this parent record")]
+    MissingRecordField { id: String, path: String },
 
     /// The named connector is unknown (or its feature flag is disabled in this build).
     #[error("unknown {kind} '{name}'. Available: {available}")]
@@ -85,11 +91,16 @@ pub enum CliError {
     )]
     MissingEnvSelector { var: String },
 
-    /// `--env-file` was supplied without `--from-env`.
+    /// An explicit `--env-file` path does not exist on disk.
+    #[error("--env-file path '{}' does not exist", path.display())]
+    EnvFileNotFound { path: PathBuf },
+
+    /// `faucet run` invoked with neither a config path nor `--from-env`, and
+    /// auto-discovery found no `faucet.{yaml,yml,json}` in cwd.
     #[error(
-        "the argument '--env-file' cannot be used without '--from-env'\n\nUsage: faucet run --from-env --env-file <ENV_FILE>"
+        "no pipeline config: pass a path, --from-env, or create faucet.yaml (or .yml/.json) in the current directory"
     )]
-    EnvFileRequiresFromEnv,
+    NoConfigOrFromEnv,
 
     /// Both a scalar env var and its `_JSON` counterpart were set for the same field.
     #[error(
@@ -110,6 +121,37 @@ pub enum CliError {
         "transform env vars must be contiguous starting at FAUCET_TRANSFORM_1; index {missing} is missing"
     )]
     TransformIndexGap { missing: u32 },
+
+    /// A matrix row id collides with a load-time interpolation prefix.
+    #[error("matrix row id '{id}' is reserved (env, file, secret, matrix, pipeline)")]
+    ReservedRowId { id: String },
+
+    /// Two matrix rows declared the same id.
+    #[error("duplicate matrix row id '{id}'")]
+    DuplicateRowId { id: String },
+
+    /// A row's `parent:` field names a row that doesn't exist.
+    #[error("matrix row '{id}' references unknown parent '{parent}'")]
+    UnknownParent { id: String, parent: String },
+
+    /// The parent chain contains a cycle.
+    #[error("matrix has a parent cycle through: {}", ids.join(" -> "))]
+    ParentCycle { ids: Vec<String> },
+
+    /// Two child invocations sharing a parent produced the same state-key
+    /// suffix (i.e. the same value at `parent_key`).
+    #[error(
+        "duplicate state key '{state_key}' for matrix row '{id}' — another invocation of '{other_id}' already wrote to it; choose a more unique `parent_key`"
+    )]
+    DuplicateStateKey {
+        id: String,
+        other_id: String,
+        state_key: String,
+    },
+
+    /// One or more matrix invocations failed under `on_error: continue`.
+    #[error("{count} pipeline invocation(s) failed (see logs above for details)")]
+    PipelineHadFailures { count: usize },
 
     /// Pass-through for failures bubbling up from `faucet-core` or a connector.
     #[error(transparent)]

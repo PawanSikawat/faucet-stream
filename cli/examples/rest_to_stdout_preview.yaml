@@ -4,30 +4,31 @@
 version: 1
 name: rest_preview
 
-source:
-  type: rest
-  config:
-    base_url: https://jsonplaceholder.typicode.com
-    path: /posts
-    method: GET
-    auth:
-      type: None
-    query_params: {}
-    pagination:
-      type: None
-    max_retries: 3
-    retry_backoff: 1
-    tolerated_http_errors: []
-    replication_method:
-      type: FullTable
-    primary_keys: ["id"]
-    partitions: []
-    schema_sample_size: 0
+pipeline:
+  source:
+    type: rest
+    config:
+      base_url: https://jsonplaceholder.typicode.com
+      path: /posts
+      method: GET
+      auth:
+        type: None
+      query_params: {}
+      pagination:
+        type: None
+      max_retries: 3
+      retry_backoff: 1
+      tolerated_http_errors: []
+      replication_method:
+        type: FullTable
+      primary_keys: ["id"]
+      partitions: []
+      schema_sample_size: 0
 
-sink:
-  type: stdout
-  config:
-    destination: stdout
-    format: json_lines
-    flush_per_record: true
-    max_records: 10
+  sink:
+    type: stdout
+    config:
+      destination: stdout
+      format: json_lines
+      flush_per_record: true
+      max_records: 10

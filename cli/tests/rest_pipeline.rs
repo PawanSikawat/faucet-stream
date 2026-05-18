@@ -31,31 +31,32 @@ async fn rest_to_jsonl_round_trip() {
     let yaml = format!(
         r#"version: 1
 name: rest_smoke
-source:
-  type: rest
-  config:
-    base_url: {base}
-    path: /things
-    method: GET
-    auth:
-      type: ApiKey
-      header: X-Api-Key
-      value: ${{env:FAUCET_TEST_API_KEY}}
-    query_params: {{}}
-    pagination:
-      type: None
-    max_retries: 0
-    retry_backoff: 0
-    tolerated_http_errors: []
-    replication_method:
-      type: FullTable
-    primary_keys: []
-    partitions: []
-    schema_sample_size: 0
-sink:
-  type: jsonl
-  config:
-    path: {out}
+pipeline:
+  source:
+    type: rest
+    config:
+      base_url: {base}
+      path: /things
+      method: GET
+      auth:
+        type: ApiKey
+        header: X-Api-Key
+        value: ${{env:FAUCET_TEST_API_KEY}}
+      query_params: {{}}
+      pagination:
+        type: None
+      max_retries: 0
+      retry_backoff: 0
+      tolerated_http_errors: []
+      replication_method:
+        type: FullTable
+      primary_keys: []
+      partitions: []
+      schema_sample_size: 0
+  sink:
+    type: jsonl
+    config:
+      path: {out}
 "#,
         base = server.uri(),
         out = out.display(),

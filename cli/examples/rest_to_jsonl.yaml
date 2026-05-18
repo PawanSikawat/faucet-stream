@@ -7,33 +7,34 @@
 version: 1
 name: github_issues_to_jsonl
 
-source:
-  type: rest
-  config:
-    base_url: https://api.github.com
-    path: /repos/PawanSikawat/faucet-stream/issues
-    method: GET
-    auth:
-      type: Bearer
-      token: ${env:GITHUB_TOKEN}
-    query_params:
-      state: open
-      per_page: "100"
-    pagination:
-      type: LinkHeader
-    max_retries: 3
-    retry_backoff: 1
-    tolerated_http_errors: []
-    replication_method:
-      type: FullTable
-    primary_keys: ["id"]
-    partitions: []
-    schema_sample_size: 100
+pipeline:
+  source:
+    type: rest
+    config:
+      base_url: https://api.github.com
+      path: /repos/PawanSikawat/faucet-stream/issues
+      method: GET
+      auth:
+        type: Bearer
+        token: ${env:GITHUB_TOKEN}
+      query_params:
+        state: open
+        per_page: "100"
+      pagination:
+        type: LinkHeader
+      max_retries: 3
+      retry_backoff: 1
+      tolerated_http_errors: []
+      replication_method:
+        type: FullTable
+      primary_keys: ["id"]
+      partitions: []
+      schema_sample_size: 100
 
-transforms:
-  - type: snake_case
+  transforms:
+    - type: snake_case
 
-sink:
-  type: jsonl
-  config:
-    path: ./out/issues.jsonl
+  sink:
+    type: jsonl
+    config:
+      path: ./out/issues.jsonl

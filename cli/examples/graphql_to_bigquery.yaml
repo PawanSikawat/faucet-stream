@@ -4,39 +4,40 @@
 version: 1
 name: graphql_to_bigquery
 
-source:
-  type: graphql
-  config:
-    endpoint: https://api.example.com/graphql
-    query: |
-      query Orders($after: String, $first: Int!) {
-        orders(first: $first, after: $after) {
-          edges { node { id total status createdAt } }
-          pageInfo { endCursor hasNextPage }
+pipeline:
+  source:
+    type: graphql
+    config:
+      endpoint: https://api.example.com/graphql
+      query: |
+        query Orders($after: String, $first: Int!) {
+          orders(first: $first, after: $after) {
+            edges { node { id total status createdAt } }
+            pageInfo { endCursor hasNextPage }
+          }
         }
-      }
-    variables:
-      first: 200
-    auth:
-      type: Custom
-      headers:
-        X-Api-Key: ${env:API_KEY}
-        X-Tenant: acme
-    records_path: $.data.orders.edges[*].node
-    pagination:
-      has_next_page_path: $.data.orders.pageInfo.hasNextPage
-      cursor_path: $.data.orders.pageInfo.endCursor
-      cursor_variable: after
-      page_size: 200
-      page_size_variable: first
-    max_pages: 500
+      variables:
+        first: 200
+      auth:
+        type: Custom
+        headers:
+          X-Api-Key: ${env:API_KEY}
+          X-Tenant: acme
+      records_path: $.data.orders.edges[*].node
+      pagination:
+        has_next_page_path: $.data.orders.pageInfo.hasNextPage
+        cursor_path: $.data.orders.pageInfo.endCursor
+        cursor_variable: after
+        page_size: 200
+        page_size_variable: first
+      max_pages: 500
 
-sink:
-  type: bigquery
-  config:
-    project_id: my-gcp-project
-    dataset_id: raw
-    table_id: orders
-    credentials:
-      type: ApplicationDefault
-    batch_size: 1000
+  sink:
+    type: bigquery
+    config:
+      project_id: my-gcp-project
+      dataset_id: raw
+      table_id: orders
+      credentials:
+        type: ApplicationDefault
+      batch_size: 1000

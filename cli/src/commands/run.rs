@@ -1,126 +1,41 @@
-//! `faucet run` — load a pipeline config, build the connectors, and execute.
+//! `faucet run` — load a pipeline config, expand the matrix, execute every
+//! invocation under bounded concurrency.
 
 use crate::cli::RunArgs;
 use crate::config::PipelineConfig;
 use crate::error::{CliError, CliResult};
-use crate::registry::{build_sink, build_source};
-use crate::state::build_state_store;
-use crate::transforms::compile_transforms;
-use async_trait::async_trait;
-use faucet_core::transform::{CompiledTransform, apply_all, compile as compile_transform};
-use faucet_core::{FaucetError, Pipeline, Sink, Source, StateStore};
-use serde_json::Value;
-use std::collections::HashMap;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
-
-/// Adapter that applies a list of compiled transforms to every record before
-/// the sink sees them.
-struct TransformingSource {
-    inner: Box<dyn Source>,
-    transforms: Vec<CompiledTransform>,
-}
-
-#[async_trait]
-impl Source for TransformingSource {
-    async fn fetch_with_context(
-        &self,
-        ctx: &HashMap<String, Value>,
-    ) -> Result<Vec<Value>, FaucetError> {
-        let records = self.inner.fetch_with_context(ctx).await?;
-        Ok(records
-            .into_iter()
-            .map(|r| apply_all(r, &self.transforms))
-            .collect())
-    }
-
-    async fn fetch_with_context_incremental(
-        &self,
-        ctx: &HashMap<String, Value>,
-    ) -> Result<(Vec<Value>, Option<Value>), FaucetError> {
-        let (records, bookmark) = self.inner.fetch_with_context_incremental(ctx).await?;
-        let transformed = records
-            .into_iter()
-            .map(|r| apply_all(r, &self.transforms))
-            .collect();
-        Ok((transformed, bookmark))
-    }
-
-    fn state_key(&self) -> Option<String> {
-        self.inner.state_key()
-    }
-
-    async fn apply_start_bookmark(&self, bookmark: Value) -> Result<(), FaucetError> {
-        self.inner.apply_start_bookmark(bookmark).await
-    }
-}
-
-/// Sink wrapper that drops any records past a soft cap. Used by `--limit`.
-struct LimitedSink {
-    inner: Box<dyn Sink>,
-    remaining: AtomicUsize,
-}
-
-#[async_trait]
-impl Sink for LimitedSink {
-    async fn write_batch(&self, records: &[Value]) -> Result<usize, FaucetError> {
-        let remaining = self.remaining.load(Ordering::Relaxed);
-        if remaining == 0 {
-            return Ok(0);
-        }
-        let take = remaining.min(records.len());
-        let slice = &records[..take];
-        let written = self.inner.write_batch(slice).await?;
-        // Subtract however many actually landed, never going below zero.
-        self.remaining
-            .fetch_sub(written.min(remaining), Ordering::Relaxed);
-        Ok(written)
-    }
-
-    async fn flush(&self) -> Result<(), FaucetError> {
-        self.inner.flush().await
-    }
-}
-
-/// Sink that swallows every batch — used by `--dry-run` to exercise the source
-/// without touching the configured sink.
-struct CountingSink {
-    seen: AtomicUsize,
-}
-
-#[async_trait]
-impl Sink for CountingSink {
-    async fn write_batch(&self, records: &[Value]) -> Result<usize, FaucetError> {
-        self.seen.fetch_add(records.len(), Ordering::Relaxed);
-        Ok(records.len())
-    }
-}
+use crate::executor::{ExecuteOptions, run_expanded};
+use crate::expand::expand;
 
 /// Execute the `run` subcommand.
 pub async fn run(args: RunArgs) -> CliResult<()> {
-    // `--env-file` is only meaningful with `--from-env`. Clap's `requires`
-    // directive does not reliably fire for a defaulted `bool` flag, so we
-    // enforce the constraint explicitly here and surface a clap-style error.
-    if args.env_file.is_some() && !args.from_env {
-        return Err(CliError::EnvFileRequiresFromEnv);
-    }
+    let cwd = std::env::current_dir()?;
+    let env_path =
+        crate::env_loader::resolve_env_file(args.env_file.as_deref(), args.no_env_file, &cwd)?;
+    crate::env_loader::load_env_file_if_present(env_path.as_deref())?;
+
+    let resolved_config_path: Option<std::path::PathBuf> = if args.from_env {
+        None
+    } else {
+        Some(match args.config.as_ref() {
+            Some(p) => p.clone(),
+            None => {
+                crate::env_loader::discover_config_path(&cwd).ok_or(CliError::NoConfigOrFromEnv)?
+            }
+        })
+    };
+
     let cfg = if args.from_env {
-        if let Some(path) = &args.env_file {
-            dotenvy::from_path(path).map_err(|e| CliError::ReadConfig {
-                path: path.clone(),
-                source: std::io::Error::other(e),
-            })?;
-        }
         crate::env_config::from_process_env()?
     } else {
-        let path = args
-            .config
-            .as_ref()
-            .expect("clap ArgGroup guarantees one of config or --from-env");
-        PipelineConfig::from_path(path)?
+        PipelineConfig::from_path(
+            resolved_config_path
+                .as_ref()
+                .expect("YAML mode always resolves a path above"),
+        )?
     };
     let pipeline_name = cfg.name.clone().unwrap_or_else(|| {
-        args.config
+        resolved_config_path
             .as_ref()
             .and_then(|p| p.file_stem())
             .and_then(|s| s.to_str())
@@ -128,126 +43,52 @@ pub async fn run(args: RunArgs) -> CliResult<()> {
             .to_owned()
     });
 
-    let source = build_source(&cfg.source.kind, cfg.source.config.clone()).await?;
-    let transforms = compile_transforms(&cfg.transforms)?;
-    let source: Box<dyn Source> = if transforms.is_empty() {
-        source
-    } else {
-        let compiled = transforms
-            .iter()
-            .map(compile_transform)
-            .collect::<Result<Vec<_>, _>>()?;
-        Box::new(TransformingSource {
-            inner: source,
-            transforms: compiled,
-        })
-    };
+    let nodes = expand(&cfg)?;
+    let summary = run_expanded(
+        nodes,
+        ExecuteOptions {
+            pipeline_name: pipeline_name.clone(),
+            execution: cfg.execution.clone(),
+            dry_run: args.dry_run,
+            limit: args.limit,
+            state_path_override: args.state_path.clone(),
+        },
+    )
+    .await?;
 
-    let sink: Box<dyn Sink> = if args.dry_run {
-        tracing::info!("dry-run mode — sink writes are suppressed");
-        Box::new(CountingSink {
-            seen: AtomicUsize::new(0),
-        })
-    } else {
-        build_sink(&cfg.sink.kind, cfg.sink.config.clone()).await?
-    };
-
-    let sink: Box<dyn Sink> = match args.limit {
-        Some(n) => Box::new(LimitedSink {
-            inner: sink,
-            remaining: AtomicUsize::new(n),
-        }),
-        None => sink,
-    };
-
-    let state = match (&cfg.state, &args.state_path) {
-        (Some(spec), None) => Some(build_state_store(spec).await?),
-        (None, Some(path)) => {
-            // Default to file backend at the override path when the YAML has no
-            // state: block but the user passed `--state-path` anyway.
-            Some(state_from_override(path).await?)
-        }
-        (Some(spec), Some(path)) => {
-            // Honour explicit override on top of the configured backend.
-            if spec.kind == "file" {
-                Some(state_from_override(path).await?)
-            } else {
-                tracing::warn!(
-                    state = %spec.kind,
-                    "--state-path is only meaningful for the 'file' backend; ignoring override"
-                );
-                Some(build_state_store(spec).await?)
-            }
-        }
-        (None, None) => None,
-    };
-
-    let pipeline = Pipeline::new(source.as_ref(), sink.as_ref());
-    let pipeline = match state {
-        Some(store) => pipeline.with_state_store(Arc::clone(&store)),
-        None => pipeline,
-    };
-
-    let result = pipeline.run().await?;
+    let total_written: usize = summary.invocations.iter().map(|i| i.records_written).sum();
+    let success = summary
+        .invocations
+        .iter()
+        .filter(|i| i.error.is_none())
+        .count();
+    let failed = summary.failure_count();
 
     tracing::info!(
         pipeline = %pipeline_name,
-        records_written = result.records_written,
-        has_bookmark = result.bookmark.is_some(),
+        invocations = summary.invocations.len(),
+        succeeded = success,
+        failed,
+        records_written = total_written,
         "pipeline completed"
     );
     println!(
-        "{}: wrote {} record{}",
+        "{}: {} invocation{}, {} ok, {} failed, wrote {} record{}",
         pipeline_name,
-        result.records_written,
-        if result.records_written == 1 { "" } else { "s" }
+        summary.invocations.len(),
+        if summary.invocations.len() == 1 {
+            ""
+        } else {
+            "s"
+        },
+        success,
+        failed,
+        total_written,
+        if total_written == 1 { "" } else { "s" }
     );
+
+    if summary.had_failures() {
+        return Err(CliError::PipelineHadFailures { count: failed });
+    }
     Ok(())
-}
-
-async fn state_from_override(path: &std::path::Path) -> CliResult<Arc<dyn StateStore>> {
-    Ok(Arc::new(faucet_core::FileStateStore::new(path)) as Arc<dyn StateStore>)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use serde_json::json;
-
-    #[tokio::test]
-    async fn limited_sink_caps_writes() {
-        struct CountingInner(std::sync::Mutex<Vec<Value>>);
-        #[async_trait]
-        impl Sink for CountingInner {
-            async fn write_batch(&self, records: &[Value]) -> Result<usize, FaucetError> {
-                self.0.lock().unwrap().extend(records.iter().cloned());
-                Ok(records.len())
-            }
-        }
-        let inner: Box<dyn Sink> = Box::new(CountingInner(std::sync::Mutex::new(Vec::new())));
-        let sink = LimitedSink {
-            inner,
-            remaining: AtomicUsize::new(2),
-        };
-        let r1 = sink
-            .write_batch(&[json!({"a": 1}), json!({"a": 2}), json!({"a": 3})])
-            .await
-            .unwrap();
-        assert_eq!(r1, 2);
-        let r2 = sink.write_batch(&[json!({"a": 4})]).await.unwrap();
-        assert_eq!(r2, 0);
-    }
-
-    #[tokio::test]
-    async fn counting_sink_swallows_all_records() {
-        let sink = CountingSink {
-            seen: AtomicUsize::new(0),
-        };
-        let n = sink
-            .write_batch(&[json!({}), json!({}), json!({})])
-            .await
-            .unwrap();
-        assert_eq!(n, 3);
-        assert_eq!(sink.seen.load(Ordering::Relaxed), 3);
-    }
 }

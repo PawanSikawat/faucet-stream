@@ -34,23 +34,26 @@ pub enum Command {
 
 /// `faucet run` arguments.
 #[derive(Debug, Parser)]
-#[command(group(
-    clap::ArgGroup::new("source-of-truth")
-        .required(true)
-        .args(["config", "from_env"]),
-))]
 pub struct RunArgs {
     /// Path to a `.yaml`, `.yml`, or `.json` pipeline config.
+    /// If omitted (and `--from-env` is not set), auto-discover
+    /// `faucet.yaml` / `faucet.yml` / `faucet.json` in the current directory.
     /// Mutually exclusive with `--from-env`.
+    #[arg(conflicts_with = "from_env")]
     pub config: Option<PathBuf>,
     /// Build the pipeline entirely from `FAUCET_*` environment variables —
     /// no YAML required. See `cli/README.md` for the variable schema.
     #[arg(long)]
     pub from_env: bool,
-    /// Path to a `.env` file to load before reading `FAUCET_*` variables.
-    /// Only honoured together with `--from-env`. Existing process-env values win.
-    #[arg(long, requires = "from_env")]
+    /// Path to a `.env` file to load before reading variables. Works in both
+    /// YAML mode (for `${env:VAR}` interpolation) and `--from-env` mode.
+    /// When omitted, `.env` in the current directory is auto-loaded if present.
+    /// Existing process-env values always win over file-supplied ones.
+    #[arg(long, conflicts_with = "no_env_file")]
     pub env_file: Option<PathBuf>,
+    /// Skip auto-loading `.env` from the current directory.
+    #[arg(long)]
+    pub no_env_file: bool,
     /// Stop after fetching from the source — write nothing to the sink.
     #[arg(long)]
     pub dry_run: bool,
@@ -65,8 +68,16 @@ pub struct RunArgs {
 /// `faucet validate` arguments.
 #[derive(Debug, Parser)]
 pub struct ValidateArgs {
-    /// Path to a `.yaml`, `.yml`, or `.json` pipeline config.
-    pub config: PathBuf,
+    /// Path to a `.yaml`, `.yml`, or `.json` pipeline config. If omitted,
+    /// auto-discover `faucet.yaml` / `faucet.yml` / `faucet.json` in cwd.
+    pub config: Option<PathBuf>,
+    /// Path to a `.env` file to load for `${env:VAR}` interpolation.
+    /// Defaults to `.env` in cwd if present.
+    #[arg(long, conflicts_with = "no_env_file")]
+    pub env_file: Option<PathBuf>,
+    /// Skip auto-loading `.env` from cwd.
+    #[arg(long)]
+    pub no_env_file: bool,
 }
 
 /// `faucet schema` arguments.
@@ -82,11 +93,19 @@ pub struct SchemaArgs {
 /// `faucet preview` arguments.
 #[derive(Debug, Parser)]
 pub struct PreviewArgs {
-    /// Path to a `.yaml`, `.yml`, or `.json` pipeline config.
-    pub config: PathBuf,
+    /// Path to a `.yaml`, `.yml`, or `.json` pipeline config. If omitted,
+    /// auto-discover `faucet.yaml` / `faucet.yml` / `faucet.json` in cwd.
+    pub config: Option<PathBuf>,
     /// Stop after this many records. Default: 10.
     #[arg(long, default_value_t = 10)]
     pub limit: usize,
+    /// Path to a `.env` file to load for `${env:VAR}` interpolation.
+    /// Defaults to `.env` in cwd if present.
+    #[arg(long, conflicts_with = "no_env_file")]
+    pub env_file: Option<PathBuf>,
+    /// Skip auto-loading `.env` from cwd.
+    #[arg(long)]
+    pub no_env_file: bool,
 }
 
 /// `faucet init` arguments.

@@ -3,23 +3,24 @@
 version: 1
 name: webhook_to_http
 
-source:
-  type: webhook
-  config:
-    listen_addr: 0.0.0.0:8080
-    path: /webhook
-    max_payloads: 10000
-    timeout_secs: 60
+pipeline:
+  source:
+    type: webhook
+    config:
+      listen_addr: 0.0.0.0:8080
+      path: /webhook
+      max_payloads: 10000
+      timeout_secs: 60
 
-sink:
-  type: http
-  config:
-    url: https://downstream.example.com/ingest
-    method: POST
-    auth:
-      type: Bearer
-      token: ${env:INGEST_TOKEN}
-    batch_mode:
-      type: Individual
-    max_retries: 3
-    concurrency: 16
+  sink:
+    type: http
+    config:
+      url: https://downstream.example.com/ingest
+      method: POST
+      auth:
+        type: Bearer
+        token: ${env:INGEST_TOKEN}
+      batch_mode:
+        type: Individual
+      max_retries: 3
+      concurrency: 16

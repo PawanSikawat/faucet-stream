@@ -3,21 +3,22 @@
 version: 1
 name: webhook_to_postgres
 
-source:
-  type: webhook
-  config:
-    listen_addr: 0.0.0.0:8080
-    path: /inbox
-    max_payloads: 50000
-    timeout_secs: 300
+pipeline:
+  source:
+    type: webhook
+    config:
+      listen_addr: 0.0.0.0:8080
+      path: /inbox
+      max_payloads: 50000
+      timeout_secs: 300
 
-sink:
-  type: postgres
-  config:
-    connection_url: postgres://user:pass@localhost/inbox
-    table_name: webhook_events
-    column_mapping:
-      type: jsonb
-      column: body
-    batch_size: 500
-    max_connections: 8
+  sink:
+    type: postgres
+    config:
+      connection_url: postgres://user:pass@localhost/inbox
+      table_name: webhook_events
+      column_mapping:
+        type: jsonb
+        column: body
+      batch_size: 500
+      max_connections: 8

@@ -4,25 +4,26 @@
 version: 1
 name: postgres_to_snowflake
 
-source:
-  type: postgres
-  config:
-    connection_url: postgres://user:pass@localhost/app
-    query: SELECT id, email, created_at FROM users WHERE tenant_id = $1
-    params:
-      - acme
-    max_connections: 8
+pipeline:
+  source:
+    type: postgres
+    config:
+      connection_url: postgres://user:pass@localhost/app
+      query: SELECT id, email, created_at FROM users WHERE tenant_id = $1
+      params:
+        - acme
+      max_connections: 8
 
-sink:
-  type: snowflake
-  config:
-    account: xy12345.us-east-1
-    warehouse: INGEST_WH
-    database: ANALYTICS
-    schema: RAW
-    table: USERS
-    auth:
-      type: KeyPair
-      user: INGEST_USER
-      private_key_pem: ${file:./snowflake_key.pem}
-    batch_size: 500
+  sink:
+    type: snowflake
+    config:
+      account: xy12345.us-east-1
+      warehouse: INGEST_WH
+      database: ANALYTICS
+      schema: RAW
+      table: USERS
+      auth:
+        type: KeyPair
+        user: INGEST_USER
+        private_key_pem: ${file:./snowflake_key.pem}
+      batch_size: 500

@@ -6,7 +6,7 @@
 //!
 //! See `cli/README.md` and issue #42 for the user-facing variable schema.
 
-use crate::config::{ConnectorSpec, PipelineConfig, StateStoreSpec, TransformSpec};
+use crate::config::{ConnectorSpec, PipelineConfig, PipelineSpec, StateStoreSpec, TransformSpec};
 use crate::error::{CliError, CliResult};
 use serde_json::{Map, Value};
 use std::collections::{BTreeMap, HashMap};
@@ -169,10 +169,14 @@ pub fn build_pipeline_config(env: &HashMap<String, String>) -> CliResult<Pipelin
     Ok(PipelineConfig {
         version: 1,
         name,
-        source,
-        transforms,
-        sink,
-        state,
+        pipeline: PipelineSpec {
+            source,
+            sink,
+            transforms,
+            state,
+        },
+        matrix: Vec::new(),
+        execution: None,
     })
 }
 
@@ -505,12 +509,12 @@ mod tests {
         ]);
         let cfg = build_pipeline_config(&e).unwrap();
         assert_eq!(cfg.version, 1);
-        assert_eq!(cfg.source.kind, "csv");
-        assert_eq!(cfg.source.config, json!({"path": "./in.csv"}));
-        assert_eq!(cfg.sink.kind, "jsonl");
-        assert_eq!(cfg.sink.config, json!({"path": "./out.jsonl"}));
-        assert!(cfg.transforms.is_empty());
-        assert!(cfg.state.is_none());
+        assert_eq!(cfg.pipeline.source.kind, "csv");
+        assert_eq!(cfg.pipeline.source.config, json!({"path": "./in.csv"}));
+        assert_eq!(cfg.pipeline.sink.kind, "jsonl");
+        assert_eq!(cfg.pipeline.sink.config, json!({"path": "./out.jsonl"}));
+        assert!(cfg.pipeline.transforms.is_empty());
+        assert!(cfg.pipeline.state.is_none());
         assert!(cfg.name.is_none());
     }
 
@@ -554,8 +558,8 @@ mod tests {
             ("FAUCET_TRANSFORM_2_SEPARATOR", "__"),
         ]);
         let cfg = build_pipeline_config(&e).unwrap();
-        assert_eq!(cfg.transforms.len(), 2);
-        assert_eq!(cfg.state.as_ref().unwrap().kind, "file");
+        assert_eq!(cfg.pipeline.transforms.len(), 2);
+        assert_eq!(cfg.pipeline.state.as_ref().unwrap().kind, "file");
     }
 
     #[test]

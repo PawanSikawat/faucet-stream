@@ -3,34 +3,35 @@
 version: 1
 name: grpc_to_elasticsearch
 
-source:
-  type: grpc
-  config:
-    endpoint: https://grpc.example.com:443
-    service_name: events.EventService
-    method_name: ListEvents
-    descriptor_set_path: proto/events.bin
-    request:
-      since: "2026-01-01T00:00:00Z"
-      page_size: 1000
-    auth:
-      type: Metadata
-      entries:
-        - key: x-api-key
-          value: ${env:GRPC_API_KEY}
-        - key: x-tenant
-          value: acme
-    tls: true
-    records_path: $.events[*]
+pipeline:
+  source:
+    type: grpc
+    config:
+      endpoint: https://grpc.example.com:443
+      service_name: events.EventService
+      method_name: ListEvents
+      descriptor_set_path: proto/events.bin
+      request:
+        since: "2026-01-01T00:00:00Z"
+        page_size: 1000
+      auth:
+        type: Metadata
+        entries:
+          - key: x-api-key
+            value: ${env:GRPC_API_KEY}
+          - key: x-tenant
+            value: acme
+      tls: true
+      records_path: $.events[*]
 
-sink:
-  type: elasticsearch
-  config:
-    base_url: https://es.example.com:9200
-    index: events
-    auth:
-      type: Basic
-      username: ${env:ES_USER}
-      password: ${env:ES_PASS}
-    batch_size: 1000
-    id_field: event_id
+  sink:
+    type: elasticsearch
+    config:
+      base_url: https://es.example.com:9200
+      index: events
+      auth:
+        type: Basic
+        username: ${env:ES_USER}
+        password: ${env:ES_PASS}
+      batch_size: 1000
+      id_field: event_id

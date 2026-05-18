@@ -8,26 +8,27 @@ version: 1
 #   - A running Kafka or Redpanda broker on localhost:9092.
 #   - The topic 'orders' exists and has some messages.
 
-source:
-  type: kafka
-  config:
-    brokers: "localhost:9092"
-    topics: ["orders"]
-    group_id: "faucet-example-kafka-to-jsonl"
-    value_format: {type: json}
-    auto_offset_reset: earliest
-    # Stop when either condition fires.
-    max_messages: 1000
-    idle_timeout: 10
+pipeline:
+  source:
+    type: kafka
+    config:
+      brokers: "localhost:9092"
+      topics: ["orders"]
+      group_id: "faucet-example-kafka-to-jsonl"
+      value_format: {type: json}
+      auto_offset_reset: earliest
+      # Stop when either condition fires.
+      max_messages: 1000
+      idle_timeout: 10
 
-sink:
-  type: jsonl
-  config:
-    path: ./out/orders.jsonl
-    append: false
-    pretty: false
+  sink:
+    type: jsonl
+    config:
+      path: ./out/orders.jsonl
+      append: false
+      pretty: false
 
-state:
-  type: file
-  config:
-    path: ./.faucet-state
+  state:
+    type: file
+    config:
+      path: ./.faucet-state

@@ -215,16 +215,22 @@ Some connectors have noteworthy specifics worth knowing without reading the sour
 
 ### faucet-cli (`cli/`)
 
+Top-level YAML/JSON shape: `version: 1`, optional `name:`, required `pipeline: { source, sink, transforms, state }`, optional `matrix: [...]` (per-row overrides + parent/child fan-out), optional `execution: { max_concurrent, on_error }`. Each matrix row is deep-merged into `pipeline`; rows with `parent: <id>` run once per record produced by the parent, with `${parent_id.dotted.path}` tokens resolved per-record at runtime. Empty matrix = one anonymous invocation. State key is `{name}::{row_id}` for roots and `{name}::{row_id}::{parent_record_key}` for children. The full grammar lives in `cli/README.md`.
+
 - `main.rs` — `tokio::main` entry; installs `tracing-subscriber` against `--log-level` / `FAUCET_LOG`, dispatches to `commands::*::run`.
-- `lib.rs` — re-exports `cli`, `commands`, `config`, `error`, `interpolate`, `registry`, `state`, `transforms` so tests can drive the same code paths as the binary.
-- `cli.rs` — `clap` argument types: `Command::{Run, Validate, Schema, List, Preview, Init}`.
-- `config.rs` — `PipelineConfig` (top-level YAML/JSON schema) with `ConnectorSpec { kind, config }`, `TransformSpec`, `StateStoreSpec`. Rejects `version != 1`.
-- `interpolate.rs` — substitutes `${env:VAR}`, `${file:PATH}`, `${secret:VAR}` (today an alias for `env`) in raw config text before parsing. `$${` escapes a literal `${`.
+- `lib.rs` — re-exports every public module so integration tests and downstream crates can drive the same code paths as the binary.
+- `cli.rs` — `clap` argument types: `Command::{Run, Validate, Schema, List, Preview, Init}`. `run`/`validate`/`preview` take an optional `config` path (auto-discovered if omitted) and the `--env-file` / `--no-env-file` pair.
+- `config.rs` — `PipelineConfig { version, name, pipeline: PipelineSpec, matrix: Vec<MatrixRow>, execution: Option<ExecutionSpec> }` and `OnError { Continue, Stop }`. `MatrixRow` carries `Option<PartialConnector>` overrides for source/sink. Rejects `version != 1` and the pre-#54 top-level `source:`/`sink:` shape (with a clear hint).
+- `interpolate.rs` — two-stage: `interpolate(raw)` resolves `${env:VAR}` / `${file:PATH}` / `${secret:VAR}` at load time and leaves `${id.path}` tokens verbatim; `interpolate_record(s, ctx)` resolves those deferred tokens at runtime against a context map of parent records.
+- `merge.rs` — `merge_value(base, overlay)`: scalars replace, objects merge recursively, arrays replace wholesale. The single rule that defines matrix-row override semantics.
+- `expand.rs` — `expand(&PipelineConfig) -> Vec<ExpandedNode>`. Validates ids (reserved-prefix / duplicate / unknown-parent / cycle / unknown-interpolation-id), deep-merges each row, and emits nodes in BFS order so roots come before children.
+- `executor.rs` — `run_expanded(nodes, ExecuteOptions)`. One bounded `Semaphore` shared across roots and per-parent-record child fan-outs. Both `on_error` modes run in parallel via `JoinSet`: `continue` lets siblings finish on failure (the failed subtree is skipped); `stop` calls `JoinSet::abort_all()` on first failure, which drops pending tasks before they acquire a permit and cancels in-flight tasks at their next `.await` (accepting partial-sink-state risk — caveat documented in `cli/README.md`). State-key collisions among siblings under a single parent surface as `CliError::DuplicateStateKey`. Wraps each invocation's source with a `StateKeyOverride` so per-row state keys override the source's natural one.
 - `registry.rs` — feature-gated `build_source` / `build_sink` dispatchers, plus `source_schema` / `sink_schema` (via `schema_for!`) and descriptions for `faucet list`.
 - `state.rs` — `build_state_store(&StateStoreSpec) -> Arc<dyn StateStore>`. Built-in `memory` / `file` always available; `redis` / `postgres` feature-gated.
-- `env_config.rs` — pure-env mode: walks a `FAUCET_*` env-var snapshot and assembles the same `PipelineConfig` `from_path` would produce. Pure-function core (`extract_scope` + per-scope builders take a `HashMap`) plus a thin `from_process_env()` shell; `*_JSON` suffix handles nested/tagged-enum fields, scalar conflict errors name both vars, transform indices must be contiguous from 1.
+- `env_loader.rs` — `resolve_env_file` (explicit / cwd `.env` / disabled) and `discover_config_path` (`faucet.yaml` → `.yml` → `.json` in cwd). Both honour `--env-file` / `--no-env-file`.
+- `env_config.rs` — pure-env mode (`--from-env`): walks a `FAUCET_*` env-var snapshot and assembles a `PipelineConfig` with the matrix empty and the pipeline filled from `FAUCET_SOURCE_*` / `FAUCET_SINK_*` / `FAUCET_STATE_*` / `FAUCET_TRANSFORM_<N>_*`. `*_JSON` suffix handles nested/tagged-enum fields; scalar/json conflict errors name both vars; transform indices must be contiguous from 1.
 - `transforms.rs` — `compile_transforms`: only `flatten`, `rename_keys`, `snake_case` are exposed via config; custom-closure transforms remain Rust-only.
-- `commands/` — `run` wraps source with `TransformingSource` and sink with `LimitedSink`/`CountingSink` for `--limit`/`--dry-run`; `validate` checks compiled-in kinds; `schema`, `list`, `preview` (`preview` is gated on `sink-stdout`), `init` (scaffolds starter `pipeline.yaml`, refuses overwrite without `--force`).
+- `commands/` — `run` calls `expand` + `run_expanded`; `validate` calls `expand` and reports one line per row; `preview` runs the first root only (children need parent records to resolve `${parent.path}`); `schema`, `list`, `init` are unchanged in shape. `init` scaffolds the new pipeline/matrix template.
 
 ## Feature Flags (umbrella crate)
 

@@ -6,12 +6,13 @@
 version: 1
 name: csv_to_jsonl
 
-source:
-  type: csv
-  config:
-    path: ./data/input.csv
+pipeline:
+  source:
+    type: csv
+    config:
+      path: ./data/input.csv
 
-sink:
-  type: jsonl
-  config:
-    path: ./out/records.jsonl
+  sink:
+    type: jsonl
+    config:
+      path: ./out/records.jsonl
