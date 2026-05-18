@@ -6,7 +6,7 @@
 //!
 //! See `cli/README.md` and issue #42 for the user-facing variable schema.
 
-use crate::config::ConnectorSpec;
+use crate::config::{ConnectorSpec, StateStoreSpec};
 use crate::error::{CliError, CliResult};
 use serde_json::{Map, Value};
 use std::collections::HashMap;
@@ -104,6 +104,20 @@ pub fn build_sink(env: &HashMap<String, String>) -> CliResult<ConnectorSpec> {
     );
     let config = extract_scope(env, &prefix)?;
     Ok(ConnectorSpec { kind, config })
+}
+
+/// Construct an optional [`StateStoreSpec`] from `FAUCET_STATE` + `FAUCET_STATE_<KIND>_*`.
+/// Returns `Ok(None)` when `FAUCET_STATE` is unset or empty (the common case).
+pub fn build_state(env: &HashMap<String, String>) -> CliResult<Option<StateStoreSpec>> {
+    let Some(kind) = env.get("FAUCET_STATE").filter(|v| !v.is_empty()).cloned() else {
+        return Ok(None);
+    };
+    let prefix = format!(
+        "FAUCET_STATE_{}_",
+        kind.to_ascii_uppercase().replace('-', "_")
+    );
+    let config = extract_scope(env, &prefix)?;
+    Ok(Some(StateStoreSpec { kind, config }))
 }
 
 #[cfg(test)]
@@ -309,5 +323,38 @@ mod tests {
             CliError::MissingEnvSelector { var } => assert_eq!(var, "FAUCET_SINK"),
             other => panic!("expected MissingEnvSelector, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn build_state_returns_none_when_unset() {
+        let e = env(&[("FAUCET_SOURCE", "rest")]);
+        let spec = build_state(&e).unwrap();
+        assert!(spec.is_none());
+    }
+
+    #[test]
+    fn build_state_returns_none_when_empty() {
+        let e = env(&[("FAUCET_STATE", "")]);
+        let spec = build_state(&e).unwrap();
+        assert!(spec.is_none());
+    }
+
+    #[test]
+    fn build_state_reads_file_backend() {
+        let e = env(&[
+            ("FAUCET_STATE", "file"),
+            ("FAUCET_STATE_FILE_PATH", "./.faucet-state"),
+        ]);
+        let spec = build_state(&e).unwrap().unwrap();
+        assert_eq!(spec.kind, "file");
+        assert_eq!(spec.config, json!({"path": "./.faucet-state"}));
+    }
+
+    #[test]
+    fn build_state_reads_memory_with_empty_scope() {
+        let e = env(&[("FAUCET_STATE", "memory")]);
+        let spec = build_state(&e).unwrap().unwrap();
+        assert_eq!(spec.kind, "memory");
+        assert_eq!(spec.config, json!({}));
     }
 }
