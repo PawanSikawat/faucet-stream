@@ -76,6 +76,7 @@ fn coerce_scalar(s: &str) -> Value {
 pub fn build_source(env: &HashMap<String, String>) -> CliResult<ConnectorSpec> {
     let kind = env
         .get("FAUCET_SOURCE")
+        .filter(|v| !v.is_empty())
         .ok_or_else(|| CliError::MissingEnvSelector {
             var: "FAUCET_SOURCE".to_owned(),
         })?
@@ -92,6 +93,7 @@ pub fn build_source(env: &HashMap<String, String>) -> CliResult<ConnectorSpec> {
 pub fn build_sink(env: &HashMap<String, String>) -> CliResult<ConnectorSpec> {
     let kind = env
         .get("FAUCET_SINK")
+        .filter(|v| !v.is_empty())
         .ok_or_else(|| CliError::MissingEnvSelector {
             var: "FAUCET_SINK".to_owned(),
         })?
@@ -269,6 +271,16 @@ mod tests {
     }
 
     #[test]
+    fn build_source_errors_when_selector_empty() {
+        let e = env(&[("FAUCET_SOURCE", "")]);
+        let err = build_source(&e).unwrap_err();
+        match err {
+            CliError::MissingEnvSelector { var } => assert_eq!(var, "FAUCET_SOURCE"),
+            other => panic!("expected MissingEnvSelector, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn build_sink_reads_selector_and_scope() {
         let e = env(&[
             ("FAUCET_SINK", "jsonl"),
@@ -282,6 +294,16 @@ mod tests {
     #[test]
     fn build_sink_errors_when_selector_missing() {
         let e = env(&[("FAUCET_SINK_JSONL_PATH", "./out.jsonl")]);
+        let err = build_sink(&e).unwrap_err();
+        match err {
+            CliError::MissingEnvSelector { var } => assert_eq!(var, "FAUCET_SINK"),
+            other => panic!("expected MissingEnvSelector, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn build_sink_errors_when_selector_empty() {
+        let e = env(&[("FAUCET_SINK", "")]);
         let err = build_sink(&e).unwrap_err();
         match err {
             CliError::MissingEnvSelector { var } => assert_eq!(var, "FAUCET_SINK"),
