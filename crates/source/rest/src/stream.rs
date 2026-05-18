@@ -248,7 +248,7 @@ impl RestStream {
             let mut state = PaginationState::default();
             let mut pages_fetched = 0usize;
             let mut running_max: Option<Value> = effective_start.clone();
-            let mut any_page_fetched = false;
+            let mut bookmark_emitted = false;
 
             loop {
                 if let Some(max) = self.config.max_pages
@@ -322,7 +322,6 @@ impl RestStream {
                     .pagination
                     .advance(&body, &resp_headers, &mut state, raw_count)?;
                 pages_fetched += 1;
-                any_page_fetched = true;
 
                 if has_next {
                     // Intermediate page — yield without bookmark so the
@@ -330,6 +329,7 @@ impl RestStream {
                     yield faucet_core::StreamPage { records, bookmark: None };
                 } else {
                     // Final page — attach the consolidated bookmark.
+                    bookmark_emitted = running_max.is_some();
                     yield faucet_core::StreamPage {
                         records,
                         bookmark: running_max.clone(),
@@ -342,12 +342,12 @@ impl RestStream {
                 }
             }
 
-            // If max_pages was hit before pagination naturally ended, emit one
-            // extra empty page carrying the running bookmark so the pipeline
-            // still persists incremental progress.
-            // Also handles the case where max_pages = 0 (no pages fetched) but
-            // a bookmark exists from start_replication_value.
-            if !any_page_fetched && running_max.is_some() {
+            // Trailing checkpoint: if the loop exited without carrying the
+            // bookmark on a real page (e.g. via max_pages truncation, or with
+            // zero pages fetched and a seeded start bookmark), emit one empty
+            // page carrying the consolidated bookmark so the pipeline still
+            // persists incremental progress and the next run resumes from here.
+            if !bookmark_emitted && running_max.is_some() {
                 yield faucet_core::StreamPage {
                     records: Vec::new(),
                     bookmark: running_max,
