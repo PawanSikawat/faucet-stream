@@ -14,7 +14,7 @@ This workspace produces both library crates (`faucet-core` + every connector and
 
 ## Workspace Structure
 
-The project is a Cargo workspace with 35 crates (34 libraries + the `faucet-cli` binary):
+Cargo workspace, 35 crates (34 libraries + the `faucet-cli` binary). All connector crates depend only on `faucet-core`; the umbrella `faucet-stream` and the `faucet-cli` binary depend on every connector + state crate via optional features.
 
 | Crate | Path | Description |
 |-------|------|-------------|
@@ -25,79 +25,36 @@ The project is a Cargo workspace with 35 crates (34 libraries + the `faucet-cli`
 | `faucet-source-grpc` | `crates/source/grpc/` | gRPC source — dynamic protobuf via `prost-reflect` |
 | `faucet-source-postgres` | `crates/source/postgres/` | PostgreSQL query source — run SQL, return rows as JSON |
 | `faucet-source-postgres-cdc` | `crates/source/postgres-cdc/` | PostgreSQL CDC (logical replication) source — pgoutput decoder, slot lifecycle, resumable via state store |
-| `faucet-source-mysql` | `crates/source/mysql/` | MySQL query source — run SQL, return rows as JSON |
-| `faucet-source-sqlite` | `crates/source/sqlite/` | SQLite query source — run SQL, return rows as JSON |
-| `faucet-source-s3` | `crates/source/s3/` | AWS S3 source — read objects as JSONL, JSON array, or raw text |
-| `faucet-source-mongodb` | `crates/source/mongodb/` | MongoDB source — find() query with filter/projection/sort |
-| `faucet-source-redis` | `crates/source/redis/` | Redis source — read from streams, lists, or key patterns |
-| `faucet-source-webhook` | `crates/source/webhook/` | Webhook source — temporary HTTP server collecting POST payloads |
-| `faucet-source-csv` | `crates/source/csv/` | CSV file source — read CSV rows as JSON objects |
-| `faucet-source-elasticsearch` | `crates/source/elasticsearch/` | Elasticsearch source — search/scroll API pagination |
-| `faucet-source-parquet` | `crates/source/parquet/` | Apache Parquet source — local path, glob, or S3; vectorized Arrow async reader, column projection |
-| `faucet-sink-bigquery` | `crates/sink/bigquery/` | Google BigQuery streaming insert sink |
+| `faucet-source-mysql` | `crates/source/mysql/` | MySQL query source |
+| `faucet-source-sqlite` | `crates/source/sqlite/` | SQLite query source |
+| `faucet-source-s3` | `crates/source/s3/` | AWS S3 source — JSONL, JSON array, or raw text |
+| `faucet-source-mongodb` | `crates/source/mongodb/` | MongoDB source — find() with filter/projection/sort |
+| `faucet-source-redis` | `crates/source/redis/` | Redis source — streams, lists, key patterns |
+| `faucet-source-webhook` | `crates/source/webhook/` | Webhook source — temporary HTTP server collecting POSTs |
+| `faucet-source-csv` | `crates/source/csv/` | CSV file source |
+| `faucet-source-elasticsearch` | `crates/source/elasticsearch/` | Elasticsearch source — search/scroll API |
+| `faucet-source-parquet` | `crates/source/parquet/` | Parquet source — local, glob, or S3; vectorized Arrow async reader, projection |
+| `faucet-source-kafka` | `crates/source/kafka/` | Kafka consumer — subscribes to topics, drains with idle/max-messages termination |
+| `faucet-sink-bigquery` | `crates/sink/bigquery/` | BigQuery streaming insert sink |
 | `faucet-sink-postgres` | `crates/sink/postgres/` | PostgreSQL sink — JSONB or auto-mapped columns |
 | `faucet-sink-jsonl` | `crates/sink/jsonl/` | JSON Lines file sink |
 | `faucet-sink-snowflake` | `crates/sink/snowflake/` | Snowflake SQL REST API sink |
 | `faucet-sink-mysql` | `crates/sink/mysql/` | MySQL sink — JSON column or auto-mapped columns |
 | `faucet-sink-sqlite` | `crates/sink/sqlite/` | SQLite sink — JSON column or auto-mapped columns |
-| `faucet-sink-s3` | `crates/sink/s3/` | AWS S3 sink — write JSONL files to S3 bucket |
-| `faucet-sink-mongodb` | `crates/sink/mongodb/` | MongoDB sink — insert_many documents |
-| `faucet-sink-redis` | `crates/sink/redis/` | Redis sink — write to streams, lists, or key-value pairs |
-| `faucet-sink-csv` | `crates/sink/csv/` | CSV file sink — write JSON records as CSV rows |
+| `faucet-sink-s3` | `crates/sink/s3/` | S3 sink — JSONL files |
+| `faucet-sink-mongodb` | `crates/sink/mongodb/` | MongoDB sink — insert_many |
+| `faucet-sink-redis` | `crates/sink/redis/` | Redis sink — streams, lists, key-value |
+| `faucet-sink-csv` | `crates/sink/csv/` | CSV file sink |
 | `faucet-sink-elasticsearch` | `crates/sink/elasticsearch/` | Elasticsearch sink — bulk index API |
-| `faucet-sink-http` | `crates/sink/http/` | HTTP POST sink — send records to HTTP endpoint |
+| `faucet-sink-http` | `crates/sink/http/` | HTTP POST sink |
 | `faucet-sink-stdout` | `crates/sink/stdout/` | Stdout/stderr sink — JSON Lines, pretty JSON, or TSV |
-| `faucet-sink-parquet` | `crates/sink/parquet/` | Apache Parquet sink — local path or S3; schema inference, compression, row/byte rollover |
+| `faucet-sink-parquet` | `crates/sink/parquet/` | Parquet sink — local or S3; schema inference, compression, row/byte rollover |
+| `faucet-sink-kafka` | `crates/sink/kafka/` | Kafka producer — FuturesUnordered batched sends, QueueFull retry, multi-topic routing |
 | `faucet-kafka-common` | `crates/kafka-common/` | Shared types for Kafka source/sink — auth, value formats, Schema Registry client |
-| `faucet-source-kafka` | `crates/source/kafka/` | Apache Kafka consumer — subscribes to topics, drains with idle/max-messages termination |
-| `faucet-sink-kafka` | `crates/sink/kafka/` | Apache Kafka producer — FuturesUnordered batched sends, QueueFull retry, multi-topic routing |
 | `faucet-state-redis` | `crates/state/redis/` | Redis-backed `StateStore` for replication bookmarks |
 | `faucet-state-postgres` | `crates/state/postgres/` | PostgreSQL-backed `StateStore` for replication bookmarks |
 | `faucet-stream` | `faucet-stream/` | Umbrella crate — feature-gated re-exports of all connectors and state backends |
 | `faucet-cli` | `cli/` | `faucet` binary — YAML/JSON config-driven pipeline runner (`run`, `validate`, `schema`, `list`, `preview`, `init`) |
-
-### Crate Dependency Graph
-
-```
-faucet-core  <──  faucet-source-rest
-             <──  faucet-source-graphql
-             <──  faucet-source-xml
-             <──  faucet-source-grpc
-             <──  faucet-source-postgres
-             <──  faucet-source-postgres-cdc
-             <──  faucet-source-mysql
-             <──  faucet-source-sqlite
-
-             <──  faucet-source-s3
-             <──  faucet-source-mongodb
-             <──  faucet-source-redis
-             <──  faucet-source-webhook
-             <──  faucet-source-csv
-             <──  faucet-source-elasticsearch
-             <──  faucet-source-parquet
-             <──  faucet-sink-bigquery
-             <──  faucet-sink-postgres
-             <──  faucet-sink-jsonl
-             <──  faucet-sink-snowflake
-             <──  faucet-sink-mysql
-             <──  faucet-sink-sqlite
-
-             <──  faucet-sink-s3
-             <──  faucet-sink-mongodb
-             <──  faucet-sink-redis
-             <──  faucet-sink-csv
-             <──  faucet-sink-elasticsearch
-             <──  faucet-sink-http
-             <──  faucet-sink-stdout
-             <──  faucet-sink-parquet
-             <──  faucet-kafka-common
-             <──  faucet-source-kafka  (depends on faucet-kafka-common)
-             <──  faucet-sink-kafka  (depends on faucet-kafka-common)
-             <──  faucet-state-redis
-             <──  faucet-state-postgres
-             <──  faucet-stream (umbrella, all optional)
-             <──  faucet-cli (binary — depends on every connector + state crate via optional features)
-```
 
 ## Capturing Feature Ideas as GitHub Issues
 
@@ -110,7 +67,7 @@ Rules:
   - **Summary** — one-paragraph statement of the problem and the proposed change.
   - **Motivation** — why this matters (performance, correctness, ergonomics, third-party connector friendliness, etc.). Tie it back to the [Primary Goal](#primary-goal) or [Third-Party Connector Friendliness](#third-party-connector-friendliness) sections where relevant.
   - **Proposed design** — concrete API shape, config field names, trait method signatures, file paths to touch. Show example usage in Rust where useful.
-  - **Affected crates / files** — explicit list of crates and modules that need changes, mirroring the [Architecture](#architecture) layout in this file.
+  - **Affected crates / files** — explicit list of crates and modules that need changes.
   - **Edge cases & failure modes** — what could go wrong, what error variants apply, what tests are needed.
   - **Acceptance criteria** — bullet list of what "done" looks like (tests pass, docs updated, README updated, CI matrix updated if a new feature flag is added, etc.).
   - **Out of scope** — anything explicitly deferred so the scope doesn't drift.
@@ -171,13 +128,13 @@ When reviewing or modifying any part of the codebase, **proactively fix** any is
 
 ## Third-Party Connector Friendliness
 
-This crate is designed as a **marketplace ecosystem** — third-party developers should be able to build and publish their own `faucet-source-*` and `faucet-sink-*` crates with minimal friction. Every change must preserve and improve this experience:
+This crate is designed as a **marketplace ecosystem** — third-party developers should be able to build and publish their own `faucet-source-*` and `faucet-sink-*` crates with minimal friction.
 
-- **`faucet-core` is the only required dependency** for connector authors. It re-exports `async_trait`, `serde_json` (`Value`, `json!`), and `schemars` (`JsonSchema`, `schema_for!`) so third-party crates don't need to add those separately. If a new common dependency is needed by connector authors, re-export it from `faucet-core` rather than requiring them to add it.
+- **`faucet-core` is the only required dependency** for connector authors. It re-exports `async_trait`, `serde_json` (`Value`, `json!`), and `schemars` (`JsonSchema`, `schema_for!`). If a new common dependency is needed by connector authors, re-export it from `faucet-core` rather than requiring them to add it.
 - **`Source` and `Sink` traits must stay simple and object-safe.** Don't add methods that require connector-specific types, complex generics, or associated types that break `Box<dyn Source>` / `Box<dyn Sink>`. New trait methods must have default implementations so existing connectors don't break.
-- **`FaucetError` must accommodate third-party errors.** The `Custom(Box<dyn Error + Send + Sync>)` variant lets connector authors wrap their own error types without losing the chain. Don't remove it. If adding new error variants, consider whether third-party connectors would need them.
+- **`FaucetError` must accommodate third-party errors.** The `Custom(Box<dyn Error + Send + Sync>)` variant lets connector authors wrap their own error types without losing the chain. Don't remove it.
 - **`Pipeline` must remain generic** over any `Source` + `Sink` combination. Don't introduce coupling to specific connectors in the pipeline or core crate.
-- **Naming convention: `faucet-source-<name>` / `faucet-sink-<name>`** — all first-party crates follow this, and the README guides third-party authors to do the same.
+- **Naming convention: `faucet-source-<name>` / `faucet-sink-<name>`.**
 - **Don't add mandatory dependencies to `faucet-core`** that connector authors wouldn't need (e.g. database drivers, cloud SDKs). Keep core lightweight — connector-specific deps belong in their own crates.
 
 ## Performance
@@ -185,42 +142,32 @@ This crate is designed as a **marketplace ecosystem** — third-party developers
 All connectors must be optimised for throughput by default. When modifying or adding connectors, apply these principles:
 
 - **Reuse clients/connections** — create S3 clients, MongoDB clients, Redis connections, HTTP clients in `new()` and store in the struct. Never recreate per-call.
-- **Connection pooling** — all database connectors (PostgreSQL, MySQL, SQLite) must use configurable `max_connections` pools (default: 10 for sources, 5 for sinks).
-- **Multi-row INSERT** — database sinks (PostgreSQL, MySQL, SQLite) must use multi-row `INSERT INTO ... VALUES (...), (...), ...` instead of one INSERT per record.
+- **Connection pooling** — all database connectors must use configurable `max_connections` pools (default: 10 for sources, 5 for sinks).
+- **Multi-row INSERT** — database sinks must use multi-row `INSERT INTO ... VALUES (...), (...), ...` instead of one INSERT per record.
 - **Transaction wrapping** — SQLite sink wraps batches in `BEGIN`/`COMMIT` transactions.
 - **Parallel I/O** — S3 source/sink uses `buffer_unordered()` for concurrent object reads/writes. HTTP sink sends Individual-mode requests concurrently via semaphore. REST source processes partitions concurrently when `partition_concurrency` is set.
 - **Bulk APIs** — prefer bulk/batch APIs when available (Elasticsearch bulk NDJSON, BigQuery insertAll, MongoDB insert_many, Redis pipelines + MGET).
 - **Buffered I/O** — file sinks (JSONL, CSV) must use buffered writers. CSV uses `spawn_blocking` to avoid blocking the async runtime.
-- **Configurable concurrency** — expose `concurrency` or `max_connections` fields on configs with sensible defaults so users can tune throughput.
+- **Configurable concurrency** — expose `concurrency` or `max_connections` fields on configs with sensible defaults.
 
 ## Commands
 
 ```bash
-# Build (all crates)
+# Build / test / lint
 cargo build --workspace
-
-# Run all tests (no external services required; Kafka integration tests require Docker)
-cargo test --workspace --all-features
-
-# Format
+cargo test --workspace --all-features            # Kafka integration tests require Docker
 cargo fmt --all
-
-# Lint
 cargo clippy --workspace --all-targets --all-features -- -D warnings
-
-# Lint and apply safe fixes automatically
 cargo clippy --workspace --fix --allow-dirty --allow-staged
 
-# Dry-run publish (verify all crates are publishable)
+# Dry-run publish (sanity check)
 cargo publish --dry-run -p faucet-core
-cargo publish --dry-run -p faucet-source-rest
-cargo publish --dry-run -p faucet-sink-bigquery
 cargo publish --dry-run -p faucet-stream
 cargo publish --dry-run -p faucet-cli
 
 # Build / install the CLI binary
-cargo build -p faucet-cli                     # debug build → target/debug/faucet
-cargo install --path cli                      # release install → ~/.cargo/bin/faucet
+cargo build -p faucet-cli                        # → target/debug/faucet
+cargo install --path cli                         # → ~/.cargo/bin/faucet
 cargo install --path cli --no-default-features --features "source-rest,sink-jsonl,sink-stdout,transforms"  # slim build
 
 # Drive the CLI on a config file
@@ -234,289 +181,61 @@ cargo install --path cli --no-default-features --features "source-rest,sink-json
 
 ### faucet-core (`crates/core/`)
 
-- **`src/lib.rs`** — crate root; re-exports `FaucetError`, `Source`, `Sink`, `Pipeline`, `PipelineResult`, `run_stream`, `RecordTransform`, `ReplicationMethod`, `SourceDAG`, `DagResult`, `DagNodeResult`, `DagNodeError`, `DagNode`, `StateStore`, `MemoryStateStore`, `FileStateStore`. Also re-exports third-party crates for connector authors: `async_trait`, `serde_json` (+ `Value`, `json!`), `schemars` (+ `JsonSchema`, `schema_for!`)
-- **`src/error.rs`** — `FaucetError` enum: `Http`, `HttpStatus`, `Json`, `JsonPath`, `Auth`, `RateLimited`, `Url`, `Transform`, `Config`, `Source`, `Sink`, `State`, `Custom(Box<dyn Error>)`
-- **`src/config.rs`** — Config loading utilities: `load_json()` (from JSON file), `load_env()` (from env vars with prefix), `load_env_file()` (load `.env` then env vars). Also `duration_secs` and `duration_secs_option` serde helper modules for `Duration` fields
-- **`src/util.rs`** — Shared utilities: `quote_ident()` (SQL injection prevention), `extract_records()` (JSONPath extraction), `check_http_response()` (HTTP status error handling), `substitute_context()` (placeholder substitution for URLs/paths — NOT safe for SQL or JSON), `substitute_context_bind_params()` (SQL-safe substitution using bind parameter markers), `substitute_context_json()` (JSON-safe substitution with proper escaping), `extract_context()` (JSONPath-based context extraction from parent records)
-- **`src/traits.rs`** — `Source` and `Sink` async traits. `Source` uses `fetch_with_context()` as primary method (receives parent context); `fetch_all()` is a convenience wrapper. Both include `config_schema(&self) -> Value`. `Source` also exposes `state_key(&self) -> Option<String>` and `apply_start_bookmark(&self, bookmark)` for opting into resumable runs via a `StateStore` (both default no-ops, backwards-compatible).
-- **`src/pipeline.rs`** — `Pipeline` struct (batch source→sink), `run_stream()` (streaming source→sink), `PipelineResult`. `Pipeline::with_state_store(Arc<dyn StateStore>)` wires in durable bookmarks — read before fetch, persisted only after sink confirms the batch.
-- **`src/state.rs`** — `StateStore` async trait (`get` / `put` / `delete` over `serde_json::Value`), plus two built-in implementations: `MemoryStateStore` (in-process, for tests) and `FileStateStore` (one JSON file per key, written via atomic rename). Keys are validated by `validate_state_key`. Heavier backends (Redis, Postgres) live in their own crates to keep `faucet-core` dependency-light.
-- **`src/transform.rs`** — `RecordTransform` enum + `CompiledTransform`: flatten, rename keys (regex), snake_case, custom closures; feature-gated built-ins
-- **`src/replication.rs`** — `ReplicationMethod` enum, `filter_incremental()`, `max_replication_value()` for bookmark-based incremental replication
-- **`src/schema.rs`** — `infer_schema()`: JSON Schema inference from record samples with type merging and nullable detection
-- **`src/dag.rs`** — `SourceDAG` builder and executor: parent-child DAG of source-sink pairs with context passing, concurrent child execution, and non-fatal error collection
-
-### faucet-source-rest (`crates/source/rest/`)
-
-- **`src/lib.rs`** — crate root; re-exports core types + REST-specific types
-- **`src/config.rs`** — `RestStreamConfig` struct with fluent builder (base_url, path, method, auth, headers, query_params, body, pagination, records_path, max_pages, request_delay, timeout, max_retries, retry_backoff, replication, transforms, partitions, schema, tolerated_http_errors). All config types derive `Serialize, Deserialize, JsonSchema`
-- **`src/stream.rs`** — `RestStream`: the main executor; `new(config)`, `fetch_all()`, `fetch_all_as::<T>()`, `fetch_all_incremental()`, `infer_schema()`, `stream_pages()`; implements `faucet_core::Source` (incl. `config_schema()`)
-- **`src/auth/`** — `Auth` enum + per-strategy impls: `bearer.rs`, `basic.rs`, `api_key.rs`, `custom.rs`, `oauth2.rs`, `token_endpoint.rs`
-- **`src/pagination/`** — `PaginationStyle` enum + `PaginationState` + per-strategy impls: `cursor.rs`, `page.rs`, `offset.rs`, `link_header.rs`, `next_link_body.rs`
-- **`src/extract/`** — `extract_records()`: JSONPath extraction from response bodies
-- **`src/retry/`** — `execute_with_retry()`: generic exponential backoff retry executor
-- **`src/serde_helpers.rs`** — `http_method` module: serialize/deserialize `reqwest::Method` as string
-
-### faucet-source-graphql (`crates/source/graphql/`)
-
-- **`src/lib.rs`** — crate root; re-exports config + stream types
-- **`src/config.rs`** — `GraphqlStreamConfig`, `GraphqlAuth`, `GraphqlPagination` (Relay cursor)
-- **`src/stream.rs`** — `GraphqlStream`: cursor pagination loop, JSONPath extraction, GraphQL error handling; implements `faucet_core::Source`
-
-### faucet-source-xml (`crates/source/xml/`)
-
-- **`src/lib.rs`** — crate root; re-exports config + stream types
-- **`src/config.rs`** — `XmlStreamConfig`, `XmlAuth`, `XmlPagination` (page-number, offset)
-- **`src/convert.rs`** — `xml_to_json()`: event-based XML-to-JSON conversion; `extract_at_path()`: dot-path record extraction
-- **`src/stream.rs`** — `XmlStream`: pagination, XML-to-JSON conversion pipeline; implements `faucet_core::Source`
-- **`src/serde_helpers.rs`** — `http_method` module: serialize/deserialize `reqwest::Method` as string
-
-### faucet-source-grpc (`crates/source/grpc/`)
-
-- **`src/lib.rs`** — crate root; re-exports config + stream types
-- **`src/config.rs`** — `GrpcStreamConfig`, `GrpcAuth` (bearer, metadata)
-- **`src/stream.rs`** — `GrpcStream`: dynamic protobuf via `prost-reflect`, custom `DynamicCodec` for tonic; implements `faucet_core::Source`
-
-### faucet-sink-bigquery (`crates/sink/bigquery/`)
-
-- **`src/lib.rs`** — crate root; re-exports core types + sink types
-- **`src/config.rs`** — `BigQuerySinkConfig` with builder, `BigQueryCredentials` enum
-- **`src/sink.rs`** — `BigQuerySink`: streaming insert executor; implements `faucet_core::Sink`
-
-### faucet-sink-postgres (`crates/sink/postgres/`)
-
-- **`src/lib.rs`** — crate root; re-exports config + sink types
-- **`src/config.rs`** — `PostgresSinkConfig`, `PostgresColumnMapping` (Jsonb or AutoMap)
-- **`src/sink.rs`** — `PostgresSink`: JSONB unnest inserts or auto-mapped column inserts; implements `faucet_core::Sink`
-
-### faucet-sink-jsonl (`crates/sink/jsonl/`)
-
-- **`src/lib.rs`** — crate root; re-exports config + sink types
-- **`src/config.rs`** — `JsonlSinkConfig` with builder (path, append, pretty)
-- **`src/sink.rs`** — `JsonlSink`: lazy file open, buffered async writes; implements `faucet_core::Sink`
-
-### faucet-sink-snowflake (`crates/sink/snowflake/`)
-
-- **`src/lib.rs`** — crate root; re-exports config + sink types
-- **`src/config.rs`** — `SnowflakeSinkConfig`, `SnowflakeAuth` (KeyPair JWT, OAuth)
-- **`src/sink.rs`** — `SnowflakeSink`: SQL REST API with JWT/OAuth auth, PARSE_JSON inserts; implements `faucet_core::Sink`
-
-### faucet-source-postgres (`crates/source/postgres/`)
-
-- **`src/config.rs`** — `PostgresSourceConfig` with connection_url, query, params
-- **`src/stream.rs`** — `PostgresSource`: PgPool, row-to-JSON conversion; implements `faucet_core::Source`
-
-### faucet-source-postgres-cdc (`crates/source/postgres-cdc/`)
-
-- **`src/lib.rs`** — crate root; re-exports `Source`, `FaucetError`, `Bookmark`, `PostgresCdcSourceConfig`, `PostgresCdcSource`
-- **`src/config.rs`** — `PostgresCdcSourceConfig` (connection_url, slot_name, publication_name, create_slot_if_missing, start_lsn, proto_version, idle_timeout, max_messages, status_update_interval, tcp_keepalive) with `validate()`; manual `Debug` impl masks `connection_url`
-- **`src/state.rs`** — `Bookmark { last_lsn }` <-> JSON; `format_lsn`/`parse_lsn` for Postgres' `XXXXXXXX/XXXXXXXX` hex form; `state_key(slot_name) = "postgres-cdc:<slot>"`
-- **`src/pgoutput/messages.rs`** — `MessageKind`, `ReplicaIdentity`, `ColumnDesc`, `Begin`, `Commit`, `Relation`, `TupleCell` (Null/UnchangedToast/Text), `TupleData`, `Insert`, `Update` (with `UpdateOldKind`), `Delete` (with `DeleteOldKind`), `Truncate`, `Message`
-- **`src/pgoutput/decoder.rs`** — `XLogDataHeader::decode`, `PrimaryKeepAlive::decode`, `decode_message` (dispatches on message kind byte), text-mode tuple decoder, per-kind error context
-- **`src/pgoutput/registry.rs`** — `RelationRegistry` — OID → `Relation` cache; required because Insert/Update/Delete only carry the relation OID and rely on a prior Relation message for column metadata
-- **`src/pgoutput/values.rs`** — `text_to_json(type_oid, text)` for the common built-in Postgres OIDs (bool, int2/4/8, float4/8, numeric, bytea, json/jsonb), with a string fallback for anything else
-- **`src/replication.rs`** — `pgwire-replication` glue: `connect`, `ensure_slot` (via `sqlx` because pgwire-replication is replication-only), `start_replication` (returns a CopyBoth `Duplex`), `send_status_update`, `recv` (filters KeepAlive/StoppedAt, surfaces Begin/Commit/XLogData/Message), `postgres_clock_*`
-- **`src/stream.rs`** — `PostgresCdcSource`: holds config, `pending_bookmark`, `confirmed_lsn`; `fetch_with_context_incremental` opens a fresh replication connection per call, sends an initial Standby Status Update from the bookmarked LSN, drains the event stream until `idle_timeout` / `max_messages` / Ctrl+C, buffers each transaction in memory and only emits records to the output Vec on `Commit` (so partial transactions never leak). Implements `faucet_core::Source` with `state_key()`/`apply_start_bookmark`.
-
-### faucet-source-mysql (`crates/source/mysql/`)
-
-- **`src/config.rs`** — `MysqlSourceConfig` with connection_url, query
-- **`src/stream.rs`** — `MysqlSource`: MySqlPool, row-to-JSON conversion; implements `faucet_core::Source`
-
-### faucet-source-sqlite (`crates/source/sqlite/`)
-
-- **`src/config.rs`** — `SqliteSourceConfig` with database_url, query
-- **`src/stream.rs`** — `SqliteSource`: SqlitePool, `sqlite_value_to_json()` type probing, row-to-JSON conversion; implements `faucet_core::Source`
-
-### faucet-source-s3 (`crates/source/s3/`)
-
-- **`src/config.rs`** — `S3SourceConfig`, `S3FileFormat` (JsonLines, JsonArray, RawText)
-- **`src/stream.rs`** — `S3Source`: list + get objects, format-based parsing; implements `faucet_core::Source`
-
-### faucet-source-mongodb (`crates/source/mongodb/`)
-
-- **`src/config.rs`** — `MongoSourceConfig` with filter, projection, sort, limit
-- **`src/stream.rs`** — `MongoSource`: find() with BSON conversion; implements `faucet_core::Source`
-
-### faucet-source-redis (`crates/source/redis/`)
-
-- **`src/config.rs`** — `RedisSourceConfig`, `RedisSourceType` (List, Stream, Keys)
-- **`src/stream.rs`** — `RedisSource`: LRANGE/XREAD/SCAN+GET; implements `faucet_core::Source`
-
-### faucet-source-webhook (`crates/source/webhook/`)
-
-- **`src/config.rs`** — `WebhookSourceConfig` with listen_addr, path, timeout, max_payloads
-- **`src/stream.rs`** — `WebhookSource`: temporary axum server collecting POSTs; implements `faucet_core::Source`
-
-### faucet-source-csv (`crates/source/csv/`)
-
-- **`src/config.rs`** — `CsvSourceConfig` with path, headers, delimiter, quote
-- **`src/stream.rs`** — `CsvSource`: csv::Reader in spawn_blocking; implements `faucet_core::Source`
-
-### faucet-source-elasticsearch (`crates/source/elasticsearch/`)
-
-- **`src/config.rs`** — `ElasticsearchSourceConfig`, `ElasticsearchAuth` (None, Basic, Bearer, ApiKey)
-- **`src/stream.rs`** — `ElasticsearchSource`: scroll API pagination; implements `faucet_core::Source`
-
-### faucet-source-parquet (`crates/source/parquet/`)
-
-- **`src/lib.rs`** — crate root; re-exports config + stream + convert helpers
-- **`src/config.rs`** — `ParquetSourceConfig`, `ParquetLocation` (`LocalPath` / `Glob` / `S3`), `ParquetS3Config`; fluent builder; defaults `batch_size = 1024`, `concurrency = 4`
-- **`src/convert.rs`** — `record_batch_to_json()`: Arrow `RecordBatch` → `Vec<serde_json::Value>` via `arrow_json::ArrayWriter`
-- **`src/stream.rs`** — `ParquetSource`: resolves files (single, glob, or S3 list), opens each via `ParquetRecordBatchStreamBuilder` (local: `tokio::fs::File`; S3: `ParquetObjectReader`), applies column projection (`ProjectionMask`), streams batches concurrently with `buffer_unordered(concurrency)`. Multi-file schema mismatch is detected and surfaced as `FaucetError::Source` with both file paths. Implements `faucet_core::Source`
-
-### faucet-sink-mysql (`crates/sink/mysql/`)
-
-- **`src/config.rs`** — `MysqlSinkConfig`, `MysqlColumnMapping` (Json, AutoMap)
-- **`src/sink.rs`** — `MysqlSink`: backtick-quoted inserts; implements `faucet_core::Sink`
-
-### faucet-sink-sqlite (`crates/sink/sqlite/`)
-
-- **`src/config.rs`** — `SqliteSinkConfig`, `SqliteColumnMapping` (Json, AutoMap)
-- **`src/sink.rs`** — `SqliteSink`: PRAGMA table_info column discovery; implements `faucet_core::Sink`
-
-### faucet-sink-s3 (`crates/sink/s3/`)
-
-- **`src/config.rs`** — `S3SinkConfig` with bucket, prefix, max_records_per_file
-- **`src/sink.rs`** — `S3Sink`: UUID-keyed JSONL uploads; implements `faucet_core::Sink`
-
-### faucet-sink-mongodb (`crates/sink/mongodb/`)
-
-- **`src/config.rs`** — `MongoSinkConfig` with connection_uri, database, collection
-- **`src/sink.rs`** — `MongoSink`: insert_many with BSON conversion; implements `faucet_core::Sink`
-
-### faucet-sink-redis (`crates/sink/redis/`)
-
-- **`src/config.rs`** — `RedisSinkConfig`, `RedisSinkType` (List, Stream, KeyValue)
-- **`src/sink.rs`** — `RedisSink`: RPUSH/XADD/SET via pipeline; implements `faucet_core::Sink`
-
-### faucet-sink-csv (`crates/sink/csv/`)
-
-- **`src/config.rs`** — `CsvSinkConfig` with path, delimiter, headers, append
-- **`src/sink.rs`** — `CsvSink`: csv::Writer in spawn_blocking; implements `faucet_core::Sink`
-
-### faucet-sink-elasticsearch (`crates/sink/elasticsearch/`)
-
-- **`src/config.rs`** — `ElasticsearchSinkConfig`, `ElasticsearchSinkAuth`
-- **`src/sink.rs`** — `ElasticsearchSink`: NDJSON bulk API; implements `faucet_core::Sink`
-
-### faucet-sink-http (`crates/sink/http/`)
-
-- **`src/config.rs`** — `HttpSinkConfig`, `HttpSinkAuth`, `HttpBatchMode` (Individual, Array)
-- **`src/sink.rs`** — `HttpSink`: POST records individually or as array; implements `faucet_core::Sink`
-- **`src/serde_helpers.rs`** — `http_method` module: serialize/deserialize `reqwest::Method` as string
-
-### faucet-sink-stdout (`crates/sink/stdout/`)
-
-- **`src/config.rs`** — `StdoutSinkConfig`, `StdStream` (Stdout, Stderr), `StdoutFormat` (JsonLines, PrettyJson, Tsv)
-- **`src/sink.rs`** — `StdoutSink`: writes encoded records to the chosen standard stream behind a `Mutex<Box<dyn AsyncWrite + Unpin + Send>>`. Treats `BrokenPipe` as clean termination. Honors `max_records` and `flush_per_record`. `StdoutSink::with_writer(...)` accepts a custom writer for tests and redirected output.
-
-### faucet-sink-parquet (`crates/sink/parquet/`)
-
-- **`src/lib.rs`** — crate root; re-exports config + sink types and the `DEFAULT_ROW_GROUP_SIZE` / `DEFAULT_SAMPLE_SIZE` constants
-- **`src/config.rs`** — `ParquetSinkConfig`, `ParquetDestination` (`LocalPath` / `S3`), `ParquetS3Destination`, `SchemaSource` (`Inferred { sample_size }` / `Explicit { fields }` — explicit is reserved/rejected for v1), `ParquetCompression` (`Uncompressed`, `Snappy` default, `Gzip`, `Zstd`, `Lz4`); `validate()` for fail-fast construction. Local-path single-file mode is auto-detected when the path ends in `.parquet` and no rollover thresholds are set.
-- **`src/schema.rs`** — `infer_schema()`: wraps `arrow_json::reader::infer_json_schema_from_iterator` over a sample of records, then recursively forces every field nullable. Empty / non-object samples error out.
-- **`src/sink.rs`** — `ParquetSink`: builds an `object_store::ObjectStore` (`LocalFileSystem` or `AmazonS3Builder`) in `new()`; lazily opens an `AsyncArrowWriter<ParquetObjectWriter>` on first batch so the schema can be inferred from real records. Unknown fields are dropped with a one-shot `tracing::warn!`; type drift returns `FaucetError::Sink` naming the field. Rollover checks `rows_in_current_file >= max_rows_per_file` OR `bytes_written + in_progress_size >= max_bytes_per_file` after every batch and closes+reopens a UUID-suffixed file. `flush()` writes the Parquet footer — callers MUST flush before drop or the multipart upload is aborted (no visible file). Implements `faucet_core::Sink`.
-
-### faucet-kafka-common (`crates/kafka-common/`)
-
-- **`src/lib.rs`** — crate root; re-exports all shared Kafka types (`KafkaAuth`, `KafkaValueFormat`, `SchemaRegistryConfig`, `KafkaCompression`, `KafkaTlsConfig`)
-- **`src/auth.rs`** — `KafkaAuth` enum: `None`, `SaslPlain`, `SaslScram256`, `SaslScram512`, `Ssl`; maps to `rdkafka` `ClientConfig` entries
-- **`src/format.rs`** — `KafkaValueFormat` enum: `Json`, `Avro`, `Protobuf`, `JsonSchema`, `RawBytes`; schema-registry-backed formats are gated on `kafka-schema-registry`
-- **`src/registry.rs`** — `SchemaRegistryConfig` (url, credentials) + `SchemaRegistryClient`: fetches and caches schemas by subject/version; used by Avro/Protobuf/JsonSchema decoders
-- **`src/compression.rs`** — `KafkaCompression` enum: `None`, `Gzip`, `Snappy`, `Lz4`, `Zstd`; serializes to the `compression.type` producer config string
-
-### faucet-source-kafka (`crates/source/kafka/`)
-
-- **`src/lib.rs`** — crate root; re-exports `Source`, `FaucetError`, and `Kafka*` config types from `faucet-kafka-common`
-- **`src/config.rs`** — `KafkaSourceConfig` (brokers, topics, group_id, auth, formats, termination), `OffsetReset` enum (`Earliest`, `Latest`), `TerminationPolicy` (idle timeout + optional max-messages cap), validation
-- **`src/decode.rs`** — value/key decoder dispatch on `KafkaValueFormat`; JSON decoded directly, Avro/Protobuf/JsonSchema require Schema Registry, raw bytes wrapped as base64 strings
-- **`src/state.rs`** — `Bookmark` type (partition → offset map); `state_key()` generator derives a stable key from group_id + topics; `apply_start_bookmark()` seeks each partition to its stored offset on first poll
-- **`src/stream.rs`** — `KafkaSource`: builds a `StreamConsumer` from config, drives `tokio::select!` over `recv`/`idle_timeout`/`ctrl_c`, sets `enable.auto.commit=false`, seeks to bookmark offsets before first message, collects into a `Vec<Value>` and implements `faucet_core::Source`
-
-### faucet-sink-kafka (`crates/sink/kafka/`)
-
-- **`src/lib.rs`** — crate root; re-exports `Sink`, `FaucetError`, and `Kafka*` config types from `faucet-kafka-common`
-- **`src/config.rs`** — `KafkaSinkConfig` (brokers, default_topic, topic_field, auth, value_format, key_field, compression, acks, linger_ms, batch_size), validation
-- **`src/encode.rs`** — value encoder dispatch on `KafkaValueFormat`; JSON serialized via `serde_json`, schema-registry formats gated on `kafka-schema-registry`
-- **`src/sink.rs`** — `KafkaSink`: builds an `rdkafka::FutureProducer` in `new()`, sends records via `FuturesUnordered` for maximum parallelism, retries on `QueueFull` with exponential backoff, routes each record to the correct topic via `topic_field` override or `default_topic`, implements `faucet_core::Sink`
-
-### faucet-state-redis (`crates/state/redis/`)
-
-- **`src/store.rs`** — `RedisStateStore`: Redis-backed `StateStore`. Uses `redis::aio::MultiplexedConnection`, namespaces keys as `{namespace}:{key}`, exposes `connect(url, namespace)`, `from_connection(conn, namespace)`, and `ensure_table` is not needed (Redis is schemaless). Helper functions `build_redis_key`, `validate_namespace` are unit-tested.
-
-### faucet-state-postgres (`crates/state/postgres/`)
-
-- **`src/store.rs`** — `PostgresStateStore`: PostgreSQL-backed `StateStore`. Single table `faucet_state(key TEXT PRIMARY KEY, value JSONB, updated_at TIMESTAMPTZ)`. `connect`, `connect_with(url, max_connections, table)`, `from_pool(pool, table)`, and `ensure_table()` for schema bootstrap. Upsert via `ON CONFLICT (key) DO UPDATE`. SQL builders (`create_table_sql`, `select_sql`, `upsert_sql`, `delete_sql`) are free functions for unit testing.
-
-### faucet-stream (umbrella, `faucet-stream/`)
-
-- **`src/lib.rs`** — feature-gated re-exports of all connectors; `pub use faucet_core::*` always available; backwards-compatible flat re-exports for existing users
-
-### faucet-cli (binary, `cli/`)
-
-- **`src/main.rs`** — `tokio::main` entry point; installs `tracing-subscriber` against `--log-level` / `FAUCET_LOG`, then dispatches to `commands::*::run`. Reports `CliError` to stderr and exits 1 on failure.
-- **`src/lib.rs`** — library half of the crate; re-exports `cli`, `commands`, `config`, `error`, `interpolate`, `registry`, `state`, `transforms` so tests (and downstream tooling) can drive the same code paths the binary does.
-- **`src/cli.rs`** — `clap` argument types: `Cli`, `Command::{Run, Validate, Schema, List, Preview, Init}`, and per-subcommand arg structs (`RunArgs`, `ValidateArgs`, `SchemaArgs`, `PreviewArgs`, `InitArgs`).
-- **`src/config.rs`** — `PipelineConfig` (top-level YAML/JSON schema) with `ConnectorSpec { kind, config }`, `TransformSpec`, `StateStoreSpec`. `from_path()` reads + interpolates + dispatches to the YAML or JSON parser based on the file extension. Rejects `version != 1`.
-- **`src/interpolate.rs`** — substitutes `${env:VAR}`, `${file:PATH}`, `${secret:VAR}` (today an alias for `env`) in raw config text before parsing. `$${` is the escape for a literal `${`. Unclosed directives are left untouched.
-- **`src/registry.rs`** — feature-gated `build_source` / `build_sink` async dispatchers, plus `source_schema` / `sink_schema` (via `schemars::schema_for!`) and `source_descriptions` / `sink_descriptions` for `faucet list`.
-- **`src/state.rs`** — `build_state_store(&StateStoreSpec)` returns `Arc<dyn StateStore>`. Built-in `memory` and `file` backends are always available; `redis` / `postgres` are feature-gated.
-- **`src/transforms.rs`** — `compile_transforms(&[TransformSpec])` turns YAML transform blocks into `RecordTransform` values. Only the built-in `flatten`, `rename_keys`, `snake_case` transforms are exposed via config; custom-closure transforms remain Rust-only.
-- **`src/commands/run.rs`** — orchestrates a single `Pipeline` run, wrapping the source with `TransformingSource` when transforms are configured, and the sink with `LimitedSink` for `--limit` or `CountingSink` for `--dry-run`. Wires in a state store from `cfg.state` or `--state-path`.
-- **`src/commands/validate.rs`** — parses the config and verifies the source/sink kinds, transform names, and state-store kind are compiled into the binary. Prints a one-line summary on success.
-- **`src/commands/schema.rs`** — prints `source_schema()` / `sink_schema()` for the requested connector.
-- **`src/commands/list.rs`** — two-column listing of every compiled-in source, sink, transform, and state-store backend.
-- **`src/commands/preview.rs`** — runs only the source side, applies transforms, then writes the first `--limit` records to stdout via `faucet-sink-stdout`. Gated by the `sink-stdout` feature.
-- **`src/commands/init.rs`** — scaffolds a starter `pipeline.yaml` (REST → JSONL with a file state store). Refuses to overwrite unless `--force`.
+The only crate every connector depends on. Module layout:
+
+- `error.rs` — `FaucetError` enum: `Http`, `HttpStatus`, `Json`, `JsonPath`, `Auth`, `RateLimited`, `Url`, `Transform`, `Config`, `Source`, `Sink`, `State`, `Custom(Box<dyn Error>)`.
+- `traits.rs` — `Source` (primary: `fetch_with_context()`, convenience: `fetch_all()`, plus `state_key()` / `apply_start_bookmark()` for resumable runs) and `Sink` async traits. Both expose `config_schema(&self) -> Value`. Object-safe — no associated types, no generics on trait methods.
+- `pipeline.rs` — `Pipeline` (batch) and `run_stream()` (streaming). `Pipeline::with_state_store(Arc<dyn StateStore>)` wires durable bookmarks (read before fetch, persist only after sink confirms the batch).
+- `config.rs` — config loading helpers (`load_json`, `load_env`, `load_env_file`) and `duration_secs` / `duration_secs_option` serde modules.
+- `util.rs` — `quote_ident` (SQL injection prevention), `extract_records` (JSONPath), `check_http_response`, `substitute_context` (placeholder substitution for URLs/paths — NOT safe for SQL or JSON), `substitute_context_bind_params` (SQL-safe via bind markers), `substitute_context_json` (JSON-safe), `extract_context`.
+- `transform.rs` — `RecordTransform` / `CompiledTransform`: flatten, rename keys (regex), snake_case, custom closures. Built-in transforms are feature-gated.
+- `replication.rs` — `ReplicationMethod`, `filter_incremental`, `max_replication_value` for bookmark-based incremental replication.
+- `schema.rs` — `infer_schema` from record samples with type merging and nullable detection.
+- `dag.rs` — `SourceDAG` builder and executor: parent-child DAG of source-sink pairs with context passing, concurrent child execution, non-fatal error collection.
+- `state.rs` — `StateStore` async trait (`get` / `put` / `delete` over `Value`) + built-in `MemoryStateStore` and `FileStateStore` (one JSON file per key, atomic rename). Keys validated by `validate_state_key`. Heavier backends (Redis, Postgres) live in their own crates.
+
+`lib.rs` re-exports the trait + types named above, plus third-party crates connector authors need: `async_trait`, `serde_json` (+ `Value`, `json!`), `schemars` (+ `JsonSchema`, `schema_for!`).
+
+### Connector crate conventions
+
+Every source/sink crate follows the same module layout. Stick to this when adding a new connector:
+
+- `lib.rs` — re-exports config + the `Source`/`Sink` type.
+- `config.rs` — config struct + auth/format/pagination sub-enums. Derives `Serialize + Deserialize + JsonSchema`. **No I/O or protocol logic here.**
+- `stream.rs` (source) / `sink.rs` (sink) — the one place that performs I/O. Holds reusable clients/pools created in `new()`. Implements `faucet_core::Source` / `Sink` including `config_schema()` via `schemars::schema_for!`.
+- Optional helper modules — `auth/`, `pagination/`, `extract/`, `retry/`, `convert.rs`, `schema.rs`, `decode.rs` / `encode.rs`, `state.rs` for bookmarks, `serde_helpers.rs` for non-serializable types (`reqwest::Method` etc.).
+
+Some connectors have noteworthy specifics worth knowing without reading the source:
+
+- **`faucet-source-rest`** — split into `auth/`, `pagination/`, `extract/`, `retry/`, `stream.rs`. `stream.rs` is the only place HTTP requests run; all other modules are pure logic. `pagination::advance()` accepts both response body and headers.
+- **`faucet-source-postgres-cdc`** — `pgoutput/` (message types, decoder, relation registry, OID→JSON via `text_to_json`) is pure protocol; `replication.rs` is the `pgwire-replication` glue (replication connection, slot lifecycle via `sqlx`, CopyBoth duplex, Standby Status Updates). Transactions are buffered in memory and only emitted on Commit so partial transactions never leak. State key: `postgres-cdc:<slot>`.
+- **`faucet-source-parquet` / `faucet-sink-parquet`** — both use `parquet::arrow` async reader/writer wired through `object_store` so local and S3 share one code path. Source projects columns via `ProjectionMask` and streams batches via `buffer_unordered(concurrency)`; multi-file schema mismatch surfaces as `FaucetError::Source` naming both files. Sink lazily opens an `AsyncArrowWriter` on first batch (so schema is inferred from real records), drops unknown fields with a one-shot `tracing::warn!`, rolls over on row/byte thresholds, and **requires `flush()` before drop or the multipart upload aborts**.
+- **Kafka pair** — shared `faucet-kafka-common` holds `KafkaAuth`, `KafkaValueFormat`, `SchemaRegistryConfig`, `KafkaCompression`, `KafkaTlsConfig`. Schema-registry-backed formats (Avro / Protobuf / JsonSchema) are gated on the `kafka-schema-registry` feature. Source disables auto-commit and seeks to bookmark offsets before first message; sink uses `FuturesUnordered` with QueueFull retry.
+- **State backends** — `faucet-state-redis` namespaces keys as `{namespace}:{key}`; `faucet-state-postgres` uses a single `faucet_state(key TEXT PRIMARY KEY, value JSONB, updated_at TIMESTAMPTZ)` table with `ON CONFLICT DO UPDATE`.
+
+### faucet-cli (`cli/`)
+
+- `main.rs` — `tokio::main` entry; installs `tracing-subscriber` against `--log-level` / `FAUCET_LOG`, dispatches to `commands::*::run`.
+- `lib.rs` — re-exports `cli`, `commands`, `config`, `error`, `interpolate`, `registry`, `state`, `transforms` so tests can drive the same code paths as the binary.
+- `cli.rs` — `clap` argument types: `Command::{Run, Validate, Schema, List, Preview, Init}`.
+- `config.rs` — `PipelineConfig` (top-level YAML/JSON schema) with `ConnectorSpec { kind, config }`, `TransformSpec`, `StateStoreSpec`. Rejects `version != 1`.
+- `interpolate.rs` — substitutes `${env:VAR}`, `${file:PATH}`, `${secret:VAR}` (today an alias for `env`) in raw config text before parsing. `$${` escapes a literal `${`.
+- `registry.rs` — feature-gated `build_source` / `build_sink` dispatchers, plus `source_schema` / `sink_schema` (via `schema_for!`) and descriptions for `faucet list`.
+- `state.rs` — `build_state_store(&StateStoreSpec) -> Arc<dyn StateStore>`. Built-in `memory` / `file` always available; `redis` / `postgres` feature-gated.
+- `transforms.rs` — `compile_transforms`: only `flatten`, `rename_keys`, `snake_case` are exposed via config; custom-closure transforms remain Rust-only.
+- `commands/` — `run` wraps source with `TransformingSource` and sink with `LimitedSink`/`CountingSink` for `--limit`/`--dry-run`; `validate` checks compiled-in kinds; `schema`, `list`, `preview` (`preview` is gated on `sink-stdout`), `init` (scaffolds starter `pipeline.yaml`, refuses overwrite without `--force`).
 
 ## Feature Flags (umbrella crate)
 
-| Feature | Default | Description |
-|---------|---------|-------------|
-| `source-rest` | yes | REST API source connector |
-| `source-graphql` | no | GraphQL API source connector |
-| `source-xml` | no | XML/SOAP API source connector |
-| `source-grpc` | no | gRPC source connector |
-| `source-postgres` | no | PostgreSQL query source |
-| `source-postgres-cdc` | no | PostgreSQL CDC source (logical replication) |
-| `source-mysql` | no | MySQL query source |
-| `source-sqlite` | no | SQLite query source |
-| `source-s3` | no | AWS S3 file source |
-| `source-mongodb` | no | MongoDB query source |
-| `source-redis` | no | Redis source (streams, lists, keys) |
-| `source-webhook` | no | Webhook HTTP receiver source |
-| `source-csv` | no | CSV file source |
-| `source-elasticsearch` | no | Elasticsearch search/scroll source |
-| `source-kafka` | no | Apache Kafka consumer source |
-| `source-parquet` | no | Apache Parquet file source (local, glob, S3) |
-| `sink-bigquery` | no | Google BigQuery sink connector |
-| `sink-postgres` | no | PostgreSQL sink connector |
-| `sink-jsonl` | no | JSON Lines file sink connector |
-| `sink-snowflake` | no | Snowflake sink connector |
-| `sink-mysql` | no | MySQL sink |
-| `sink-sqlite` | no | SQLite sink |
-| `sink-s3` | no | AWS S3 file sink |
-| `sink-mongodb` | no | MongoDB insert sink |
-| `sink-redis` | no | Redis sink (streams, lists, key-value) |
-| `sink-csv` | no | CSV file sink |
-| `sink-elasticsearch` | no | Elasticsearch bulk index sink |
-| `sink-http` | no | HTTP POST sink |
-| `sink-stdout` | no | Stdout/stderr sink (JSON Lines, pretty JSON, TSV) |
-| `sink-kafka` | no | Apache Kafka producer sink |
-| `sink-parquet` | no | Apache Parquet file sink (local, S3) |
-| `kafka-schema-registry` | no | Confluent Schema Registry (Avro / Protobuf / JSON Schema) support for the Kafka pair |
-| `state-redis` | no | Redis-backed `StateStore` backend |
-| `state-postgres` | no | PostgreSQL-backed `StateStore` backend |
-| `source` | no | All source connectors |
-| `sink` | no | All sink connectors |
-| `state` | no | All state-store backends (file lives in `faucet-core`) |
-| `full` | no | Every connector and state backend |
-| `transform-flatten` | yes (via source-rest) | Flatten nested objects |
-| `transform-rename-keys` | yes (via source-rest) | Regex key renaming |
-| `transform-snake-case` | yes (via source-rest) | Snake_case normalisation |
+Default features: `source-rest`, `transform-flatten`, `transform-rename-keys`, `transform-snake-case`.
 
-## Pagination Styles
+Each connector has its own feature: `source-<name>` / `sink-<name>` (`rest`, `graphql`, `xml`, `grpc`, `postgres`, `postgres-cdc`, `mysql`, `sqlite`, `s3`, `mongodb`, `redis`, `webhook`, `csv`, `elasticsearch`, `parquet`, `kafka` for sources; `bigquery`, `postgres`, `jsonl`, `snowflake`, `mysql`, `sqlite`, `s3`, `mongodb`, `redis`, `csv`, `elasticsearch`, `http`, `stdout`, `parquet`, `kafka` for sinks).
+
+State backends: `state-redis`, `state-postgres` (file + memory live in `faucet-core`).
+
+Aggregate features: `source` (all sources), `sink` (all sinks), `state` (all state backends), `full` (everything). Kafka-only: `kafka-schema-registry` enables Avro / Protobuf / JSON Schema via Confluent Schema Registry.
+
+## Pagination Styles (REST source)
 
 | Style | Stops When |
 |-------|-----------|
@@ -527,7 +246,7 @@ cargo install --path cli --no-default-features --features "source-rest,sink-json
 | `LinkHeader` | No `rel="next"` in the `Link` response header |
 | `NextLinkInBody` | Next-page URL in response body is absent, null, or empty |
 
-`max_pages` acts as a hard cap across all pagination styles. All styles include loop detection — if the same cursor/link is returned twice in a row, pagination stops.
+`max_pages` acts as a hard cap across all styles. All styles include loop detection — if the same cursor/link is returned twice in a row, pagination stops.
 
 ## Coding Principles
 
@@ -535,189 +254,39 @@ cargo install --path cli --no-default-features --features "source-rest,sink-json
 
 When the user points out something fundamental about how code in this library should be written — module structure, naming, patterns, error handling, etc. — **add it to this file immediately** under the relevant section. The goal is that the user never has to repeat the same guidance twice.
 
-### Module Boundaries
+### Source/Sink pair shared config
 
-#### faucet-core
-- `src/traits.rs` — trait definitions only (`Source`, `Sink` with `config_schema()`). No HTTP or connector-specific logic.
-- `src/config.rs` — config loading helpers (`load_json`, `load_env`, `load_env_file`) and serde Duration modules. No connector-specific logic.
-- `src/pipeline.rs` — source→sink orchestration only. Depends only on `Source` and `Sink` traits. No connector-specific logic.
-- `src/transform.rs` — record transform compilation and application only. No HTTP logic. Built-in transforms are feature-gated.
-- `src/replication.rs` — incremental replication filtering and bookmark computation only. No HTTP logic.
-- `src/schema.rs` — JSON Schema inference from `Vec<Value>` only. No HTTP logic.
-- `src/state.rs` — `StateStore` trait + in-memory and file-backed implementations only. No external service code (Redis / Postgres backends live in their own crates).
+When a connector ships both a `faucet-source-<name>` and a `faucet-sink-<name>` crate for the same external system, shared configuration types (auth, value formats, compression, TLS, etc.) live in a dedicated `faucet-<name>-common` crate. Both the source and sink crates depend on the common crate and re-export the shared types so end-user imports do not change. See `faucet-kafka-common` for the reference implementation.
 
-#### faucet-source-rest
-- `src/auth/` — auth strategies only. No HTTP logic here.
-- `src/pagination/` — pagination parameter generation and state advancement only. No HTTP logic here. `advance()` accepts the response body and headers so each strategy can inspect whatever it needs.
-- `src/extract/` — record extraction from JSON values only.
-- `src/retry/` — retry/backoff logic only. Generic over the return type.
-- `src/stream.rs` — the only place where HTTP requests are executed. Orchestrates all other modules.
+Existing pairs (`postgres`, `mysql`, `sqlite`, `redis`, `mongodb`, `s3`, `csv`, `elasticsearch`) predate this convention and currently duplicate their tiny shared config surface; backfilling them is tracked separately (#43). New pairs must follow the convention from the start.
 
-#### faucet-source-graphql
-- `src/config.rs` — configuration types only. No HTTP logic.
-- `src/stream.rs` — HTTP requests, pagination loop, JSONPath extraction.
+### Config loading
 
-#### faucet-source-xml
-- `src/config.rs` — configuration types only. No HTTP logic.
-- `src/convert.rs` — XML parsing and JSON conversion only. No HTTP logic.
-- `src/stream.rs` — HTTP requests, pagination loop, XML-to-JSON pipeline.
+All connector config structs derive `Serialize + Deserialize + JsonSchema`. Load from JSON files, env vars, or `.env` files via the helpers in `faucet_core::config` (`load_json`, `load_env`, `load_env_file`). `Duration` fields use `#[serde(with = "faucet_core::config::duration_secs")]` (or `duration_secs_option`). Non-serializable fields use `#[serde(skip)]` / `#[serde(skip, default)]`; `reqwest::Method` uses the per-crate `serde_helpers::http_method` module + `#[schemars(with = "String")]`.
 
-#### faucet-source-grpc
-- `src/config.rs` — configuration types only. No gRPC logic.
-- `src/stream.rs` — gRPC channel setup, protobuf encoding/decoding, RPC execution.
+### Config schema introspection
 
-#### faucet-sink-bigquery
-- `src/config.rs` — configuration and credential types only.
-- `src/sink.rs` — BigQuery API calls and Sink trait impl.
+Every `Source` / `Sink` overrides `config_schema(&self) -> Value` to return `schema_for!(MyConfig)`. When adding a new connector: (1) derive `JsonSchema` on the config struct and all sub-types; (2) add `#[schemars(with = "...")]` for any custom-serde fields; (3) implement `config_schema()`.
 
-#### faucet-sink-postgres
-- `src/config.rs` — configuration types only. No SQL logic.
-- `src/sink.rs` — PostgreSQL inserts (JSONB or auto-mapped) and Sink trait impl.
+### Error handling
 
-#### faucet-sink-jsonl
-- `src/config.rs` — configuration types only. No I/O logic.
-- `src/sink.rs` — File I/O and Sink trait impl.
-
-#### faucet-sink-snowflake
-- `src/config.rs` — configuration and auth types only. No HTTP logic.
-- `src/sink.rs` — Snowflake SQL REST API calls, JWT generation, and Sink trait impl.
-
-#### faucet-source-postgres / faucet-source-mysql / faucet-source-sqlite
-- `src/config.rs` — configuration types only. No SQL logic.
-- `src/stream.rs` — connection pool, query execution, row-to-JSON conversion, Source trait impl.
-
-#### faucet-source-postgres-cdc
-- `src/config.rs` — configuration types only. No protocol logic.
-- `src/state.rs` — bookmark <-> JSON + LSN parse/format. No protocol logic.
-- `src/pgoutput/` — pgoutput message types, wire decoder, relation registry, OID-to-JSON mapping. No `pgwire-replication` types appear here.
-- `src/replication.rs` — `pgwire-replication` glue (replication connection, slot lifecycle, COPY BOTH event stream, Standby Status Updates). No pgoutput semantics here.
-- `src/stream.rs` — wires `replication.rs` and `pgoutput::` together, implements `Source`.
-
-#### faucet-source-s3 / faucet-sink-s3
-- `src/config.rs` — configuration types only. No AWS logic.
-- `src/stream.rs` / `src/sink.rs` — S3 client creation, object listing/reading/writing.
-
-#### faucet-source-mongodb / faucet-sink-mongodb
-- `src/config.rs` — configuration types only. No MongoDB logic.
-- `src/stream.rs` / `src/sink.rs` — MongoDB client, BSON conversion, find/insert operations.
-
-#### faucet-source-redis / faucet-sink-redis
-- `src/config.rs` — configuration types only. No Redis logic.
-- `src/stream.rs` / `src/sink.rs` — Redis connection, command execution per source/sink type.
-
-#### faucet-source-webhook
-- `src/config.rs` — configuration types only. No HTTP server logic.
-- `src/stream.rs` — axum server lifecycle, payload collection, timeout handling.
-
-#### faucet-source-csv / faucet-sink-csv
-- `src/config.rs` — configuration types only. No I/O logic.
-- `src/stream.rs` / `src/sink.rs` — csv crate Reader/Writer in spawn_blocking.
-
-#### faucet-source-elasticsearch / faucet-sink-elasticsearch
-- `src/config.rs` — configuration types only. No HTTP logic.
-- `src/stream.rs` / `src/sink.rs` — scroll/bulk API calls, auth application.
-
-#### faucet-source-parquet / faucet-sink-parquet
-- `src/config.rs` — configuration types only. No Arrow / parquet / object_store logic.
-- `src/convert.rs` (source only) — Arrow `RecordBatch` → JSON conversion only.
-- `src/schema.rs` (sink only) — Arrow schema inference only.
-- `src/stream.rs` / `src/sink.rs` — `parquet::arrow` async reader/writer wired through `object_store` (local + S3 share the same code path).
-
-#### faucet-sink-mysql / faucet-sink-sqlite
-- `src/config.rs` — configuration types only. No SQL logic.
-- `src/sink.rs` — connection pool, column discovery, auto-mapped or JSON inserts.
-
-#### faucet-sink-http
-- `src/config.rs` — configuration types only. No HTTP logic.
-- `src/sink.rs` — HTTP POST with auth, individual or batched mode.
-
-#### faucet-kafka-common
-- `src/auth.rs` — auth mapping types only. No rdkafka client creation.
-- `src/format.rs` — value format enum only. No encode/decode logic.
-- `src/registry.rs` — Schema Registry HTTP client and schema cache only.
-- `src/compression.rs` — compression enum + string serialization only.
-
-#### faucet-source-kafka / faucet-sink-kafka
-- `src/config.rs` — configuration types only. No rdkafka logic.
-- `src/decode.rs` / `src/encode.rs` — format-specific encoding/decoding only. No consumer/producer logic.
-- `src/state.rs` (source only) — bookmark type and state key derivation only.
-- `src/stream.rs` / `src/sink.rs` — rdkafka consumer/producer creation, message loop, Source/Sink trait impl.
-
-### Source/Sink Pair Config Sharing
-
-When a connector ships both a `faucet-source-<name>` and a `faucet-sink-<name>` crate
-for the same external system, shared configuration types (auth, value formats,
-compression, TLS, etc.) live in a dedicated `faucet-<name>-common` crate. Both
-the source and sink crates depend on the common crate and re-export the shared
-types so end-user imports do not change. See `faucet-kafka-common` for the
-reference implementation.
-
-Existing pairs (`postgres`, `mysql`, `sqlite`, `redis`, `mongodb`, `s3`, `csv`,
-`elasticsearch`) predate this convention and currently duplicate their tiny
-shared config surface; backfilling them is tracked separately (#43). New pairs
-must follow the convention from the start.
-
-### Config Loading
-
-All connector config structs derive `Serialize` + `Deserialize` + `JsonSchema`, so they can be loaded from JSON files, environment variables, or `.env` files using the helpers in `faucet_core::config`:
-
-- `load_json::<T>(path)` — deserialize from a JSON file
-- `load_env::<T>(prefix)` — deserialize from environment variables (e.g. prefix `"BQ"` reads `BQ_PROJECT_ID`, `BQ_DATASET_ID`, etc.)
-- `load_env_file::<T>(env_path, prefix)` — load a `.env` file first, then read env vars
-
-Duration fields use `#[serde(with = "faucet_core::config::duration_secs")]` to serialize as `u64` seconds. Optional Durations use `duration_secs_option`.
-
-Fields that can't be serialized (closures, `HeaderMap`, `reqwest::Method`) use:
-- `#[serde(skip)]` / `#[serde(skip, default)]` for non-serializable fields
-- `#[serde(with = "crate::serde_helpers::http_method")]` + `#[schemars(with = "String")]` for `reqwest::Method`
-
-### Config Schema Introspection
-
-Every `Source` and `Sink` has a `config_schema(&self) -> Value` method that returns a JSON Schema describing the config the connector accepts. This is auto-generated via `schemars::schema_for!()` from the config struct.
-
-Usage:
-```rust
-let source = RestStream::new(config).await?;
-let schema = source.config_schema(); // JSON Schema as serde_json::Value
-println!("{}", serde_json::to_string_pretty(&schema)?);
-```
-
-When adding a new connector, always:
-1. Derive `JsonSchema` on the config struct and all its sub-types (auth enums, etc.)
-2. Add `#[schemars(with = "...")]` for fields with custom serde (Duration, Method)
-3. Override `config_schema()` in the `Source`/`Sink` impl
-
-### Error Handling
-
-All errors must map to a `FaucetError` variant. Never use `.unwrap()` or `.expect()` on values that can fail at runtime. Use `.expect()` only for programmer errors (invariants validated at construction time). All error types use `thiserror` derive macros.
+All errors map to a `FaucetError` variant. Never `.unwrap()` / `.expect()` on values that can fail at runtime. Use `.expect()` only for programmer errors (invariants validated at construction time). All error types use `thiserror`.
 
 ## Testing
 
 Every non-trivial piece of logic must have tests. Untested public API surface is a liability.
 
-### Tools
-- **`wiremock`** — integration tests using a real in-process HTTP mock server. Use for end-to-end pagination and auth scenarios in `tests/`.
-- **`#[cfg(test)]`** modules — unit tests inside each source file for logic that doesn't need HTTP (JSONPath extraction, pagination state transitions, auth header generation, Link header parsing, trait impls).
-
-### Rules
-- Unit tests go in `#[cfg(test)]` modules at the bottom of each source file.
-- Integration tests go in `crates/source/rest/tests/` and use `wiremock`.
-- When adding a new feature (auth method, pagination style, etc.), add unit tests in the source file and integration tests in `tests/`.
+- **Unit tests** live in `#[cfg(test)]` modules at the bottom of each source file — for logic that doesn't need network I/O (JSONPath extraction, pagination state transitions, auth header generation, Link header parsing).
+- **Integration tests** live in the crate's `tests/` directory and use `wiremock` for HTTP-based connectors.
+- When adding a new feature (auth method, pagination style, etc.), add both unit and integration tests.
 - Tests must assert the specific outcome, not just "no panic".
-- **New code** — always write tests for new functions or behaviors. This is non-negotiable.
-- **Modified code** — do NOT automatically rewrite or update existing tests. If a code change breaks existing tests, that is signal — investigate whether the behaviour change is intentional before touching the test. Silently updating tests to match new behaviour defeats the purpose of having tests and can hide regressions.
-
-### Running tests
+- **New code** — always write tests for new functions or behaviors. Non-negotiable.
+- **Modified code** — do NOT automatically rewrite or update existing tests. If a code change breaks an existing test, investigate first; silently updating tests to match new behaviour hides regressions.
 
 ```bash
-# All workspace tests
 cargo test --workspace --all-features
-
-# Single crate (examples)
 cargo test -p faucet-core
 cargo test -p faucet-source-rest
-
-cargo test -p faucet-sink-mongodb
 cargo test -p faucet-stream --features full
 ```
 
@@ -725,38 +294,18 @@ cargo test -p faucet-stream --features full
 
 Always use the **highest available stable version** for every crate, the Rust toolchain, and the Rust edition.
 
-- Rust toolchain is pinned in `rust-toolchain.toml`. Update `channel` to the latest stable when upgrading.
-- Cargo.toml `edition` should always be the latest stable Rust edition. As of 2026, that is `"2024"`. Update this when a newer edition is released.
+- Rust toolchain is pinned in `rust-toolchain.toml`. Update `channel` to latest stable when upgrading.
+- `Cargo.toml` `edition` should always be the latest stable Rust edition (as of 2026: `"2024"`).
 - Before adding a new crate, check its latest stable release on crates.io and use that version.
-- When upgrading existing crates, check with `cargo search <crate>` and update to the latest stable.
-- Never use alpha, beta, or rc versions unless there is no stable alternative.
-- Shared dependencies should be declared in the workspace `[workspace.dependencies]` table and referenced with `.workspace = true` in member crates.
+- When upgrading, check with `cargo search <crate>`.
+- Never use alpha/beta/rc versions unless there is no stable alternative.
+- Shared dependencies go in workspace `[workspace.dependencies]` and member crates reference them with `.workspace = true`.
 
-### Key Workspace Dependencies
-
-| Crate | Version | Purpose |
-|-------|---------|---------|
-| `serde` | 1 (derive) | Serialize/Deserialize for all config structs |
-| `serde_json` | 1 | JSON Value type, used everywhere |
-| `schemars` | 1.2 | JSON Schema generation from config structs via `JsonSchema` derive |
-| `async-trait` | 0.1 | Async trait support for Source/Sink |
-| `thiserror` | 2 | Derive macros for FaucetError |
-| `reqwest` | 0.13 | HTTP client (REST, GraphQL, XML, HTTP sink, Elasticsearch, Snowflake) |
-| `tokio` | 1 | Async runtime |
-| `tracing` | 0.1 | Structured logging |
-| `sqlx` | 0.8 | Database pool/queries (PostgreSQL, MySQL, SQLite) |
-| `dotenvy` | 0.15 | `.env` file loading (in faucet-core) |
-| `envy` | 0.4 | Env var → struct deserialization (in faucet-core) |
+Key workspace deps: `serde` 1, `serde_json` 1, `schemars` 1.2, `async-trait` 0.1, `thiserror` 2, `reqwest` 0.13, `tokio` 1, `tracing` 0.1, `sqlx` 0.8, `dotenvy` 0.15, `envy` 0.4.
 
 ## Publishing
 
-Crates must be published in dependency order with delays for crates.io index propagation:
-
-1. `faucet-core`
-2. All sources + sinks (after 30s): `faucet-source-rest`, `faucet-source-graphql`, `faucet-source-xml`, `faucet-source-grpc`, `faucet-source-postgres`, `faucet-source-postgres-cdc`, `faucet-source-mysql`, `faucet-source-sqlite`, `faucet-source-s3`, `faucet-source-mongodb`, `faucet-source-redis`, `faucet-source-webhook`, `faucet-source-csv`, `faucet-source-elasticsearch`, `faucet-source-parquet`, `faucet-kafka-common`, `faucet-source-kafka`, `faucet-sink-bigquery`, `faucet-sink-postgres`, `faucet-sink-jsonl`, `faucet-sink-snowflake`, `faucet-sink-mysql`, `faucet-sink-sqlite`, `faucet-sink-s3`, `faucet-sink-mongodb`, `faucet-sink-redis`, `faucet-sink-csv`, `faucet-sink-elasticsearch`, `faucet-sink-http`, `faucet-sink-kafka`, `faucet-sink-parquet`
-3. `faucet-stream` (after 30s)
-
-The `.github/workflows/publish.yml` handles this automatically on version tags (`v*.*.*`).
+Crates publish in dependency order with delays for crates.io index propagation: (1) `faucet-core`; (2) all connector + state crates (after 30s); (3) `faucet-stream` umbrella + `faucet-cli` (after another 30s). `.github/workflows/publish.yml` handles this automatically on version tags (`v*.*.*`).
 
 ## Project Structure Sync
 
@@ -776,14 +325,12 @@ Always revert back to `pawan-dt` once the operation is done.
 
 **Whenever the user asks to merge a PR, first verify that every CI check on that PR has passed before merging.** Never merge a PR with failing, pending, or skipped required checks — the failing job almost always represents a real defect that would land on `main` if merged.
 
-The check:
-
 ```bash
 gh pr checks <PR-number>
 ```
 
 - If every line says `pass`, proceed with the merge.
 - If any line says `fail` or `pending`, **stop and report the failing jobs to the user before merging.** Pull the job logs (`gh run view --log-failed --job <job-id>`) and surface the root cause so the user can decide whether to fix-then-merge or merge-anyway (rare — only if the failure is in an unrelated job the user explicitly tells you to ignore).
-- If checks are still running, wait for them to finish before merging rather than racing.
+- If checks are still running, wait for them to finish rather than racing.
 
 This rule applies regardless of how the merge was requested — "merge it", "ship it", "land the PR", or anything similar. The verification is non-negotiable.
