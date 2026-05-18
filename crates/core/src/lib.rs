@@ -24,7 +24,10 @@ pub mod util;
 
 pub use dag::{DagNode, DagNodeError, DagNodeResult, DagResult, SourceDAG};
 pub use error::FaucetError;
-pub use pipeline::{Pipeline, PipelineResult, run_stream};
+pub use pipeline::{
+    DEFAULT_BATCH_SIZE, MAX_BATCH_SIZE, Pipeline, PipelineResult, StreamPage, run_stream,
+    validate_batch_size,
+};
 pub use replication::ReplicationMethod;
 pub use state::{FileStateStore, MemoryStateStore, StateStore};
 pub use traits::{Sink, Source};

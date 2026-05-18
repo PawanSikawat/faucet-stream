@@ -47,6 +47,51 @@ use serde_json::Value;
 use std::pin::Pin;
 use std::sync::Arc;
 
+/// Default page size used when a caller does not specify one.
+///
+/// Sources are free to override this from their own config when implementing
+/// [`Source::stream_pages`](crate::Source::stream_pages); the value passed
+/// from the pipeline acts as a hint when no source-side preference exists.
+pub const DEFAULT_BATCH_SIZE: usize = 1000;
+
+/// Hard upper bound on `batch_size`. Larger values are rejected at config
+/// validation time to prevent accidental O(total) buffering in the default
+/// implementation of [`Source::stream_pages`].
+pub const MAX_BATCH_SIZE: usize = 1_000_000;
+
+/// Validate a `batch_size` value against the global constraints.
+///
+/// Returns the unchanged value on success. Returns `FaucetError::Config` for
+/// zero or values above [`MAX_BATCH_SIZE`].
+pub fn validate_batch_size(batch_size: usize) -> Result<usize, FaucetError> {
+    if batch_size == 0 {
+        return Err(FaucetError::Config("batch_size must be at least 1".into()));
+    }
+    if batch_size > MAX_BATCH_SIZE {
+        return Err(FaucetError::Config(format!(
+            "batch_size {batch_size} exceeds maximum {MAX_BATCH_SIZE}"
+        )));
+    }
+    Ok(batch_size)
+}
+
+/// One page emitted by [`Source::stream_pages`](crate::Source::stream_pages).
+///
+/// `records` is the chunk of records for this page. `bookmark` is `Some` only
+/// when the source has a durable checkpoint to advance — most sources emit
+/// `Some` only on the final page (max-replication-value semantics); CDC-style
+/// sources emit `Some` per committed transaction. The pipeline flushes the
+/// sink and persists the bookmark every time a page carries one, so a
+/// mid-stream crash never advances past records the sink has not durably
+/// written.
+#[derive(Debug, Clone, Default)]
+pub struct StreamPage {
+    /// Records to write to the sink for this page.
+    pub records: Vec<Value>,
+    /// Optional bookmark to checkpoint after this page is durably written.
+    pub bookmark: Option<Value>,
+}
+
 /// Result of a pipeline run.
 #[derive(Debug, Clone)]
 pub struct PipelineResult {
@@ -275,6 +320,46 @@ mod tests {
             Err(FaucetError::Sink("write failed".into()))
         }
     }
+
+    // ── StreamPage / batch_size tests ───────────────────────────────────────
+
+    #[test]
+    fn stream_page_constructs() {
+        let page = StreamPage {
+            records: vec![json!({"id": 1})],
+            bookmark: Some(json!("2026-05-18")),
+        };
+        assert_eq!(page.records.len(), 1);
+        assert_eq!(page.bookmark, Some(json!("2026-05-18")));
+    }
+
+    #[test]
+    fn validate_batch_size_rejects_zero() {
+        let err = validate_batch_size(0).unwrap_err();
+        assert!(matches!(err, FaucetError::Config(_)));
+    }
+
+    #[test]
+    fn validate_batch_size_rejects_too_large() {
+        let err = validate_batch_size(MAX_BATCH_SIZE + 1).unwrap_err();
+        assert!(matches!(err, FaucetError::Config(_)));
+    }
+
+    #[test]
+    fn validate_batch_size_accepts_one() {
+        assert_eq!(validate_batch_size(1).unwrap(), 1);
+    }
+
+    #[test]
+    fn validate_batch_size_accepts_max() {
+        assert_eq!(validate_batch_size(MAX_BATCH_SIZE).unwrap(), MAX_BATCH_SIZE);
+    }
+
+    // Compile-time invariant: DEFAULT_BATCH_SIZE must be within [1, MAX_BATCH_SIZE].
+    const _: () = {
+        assert!(DEFAULT_BATCH_SIZE >= 1);
+        assert!(DEFAULT_BATCH_SIZE <= MAX_BATCH_SIZE);
+    };
 
     // ── Batch mode tests ────────────────────────────────────────────────────
 
