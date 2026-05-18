@@ -222,6 +222,7 @@ Some connectors have noteworthy specifics worth knowing without reading the sour
 - `interpolate.rs` — substitutes `${env:VAR}`, `${file:PATH}`, `${secret:VAR}` (today an alias for `env`) in raw config text before parsing. `$${` escapes a literal `${`.
 - `registry.rs` — feature-gated `build_source` / `build_sink` dispatchers, plus `source_schema` / `sink_schema` (via `schema_for!`) and descriptions for `faucet list`.
 - `state.rs` — `build_state_store(&StateStoreSpec) -> Arc<dyn StateStore>`. Built-in `memory` / `file` always available; `redis` / `postgres` feature-gated.
+- `env_config.rs` — pure-env mode: walks a `FAUCET_*` env-var snapshot and assembles the same `PipelineConfig` `from_path` would produce. Pure-function core (`extract_scope` + per-scope builders take a `HashMap`) plus a thin `from_process_env()` shell; `*_JSON` suffix handles nested/tagged-enum fields, scalar conflict errors name both vars, transform indices must be contiguous from 1.
 - `transforms.rs` — `compile_transforms`: only `flatten`, `rename_keys`, `snake_case` are exposed via config; custom-closure transforms remain Rust-only.
 - `commands/` — `run` wraps source with `TransformingSource` and sink with `LimitedSink`/`CountingSink` for `--limit`/`--dry-run`; `validate` checks compiled-in kinds; `schema`, `list`, `preview` (`preview` is gated on `sink-stdout`), `init` (scaffolds starter `pipeline.yaml`, refuses overwrite without `--force`).
 
