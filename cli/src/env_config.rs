@@ -6,7 +6,7 @@
 //!
 //! See `cli/README.md` and issue #42 for the user-facing variable schema.
 
-use crate::config::{ConnectorSpec, StateStoreSpec, TransformSpec};
+use crate::config::{ConnectorSpec, PipelineConfig, StateStoreSpec, TransformSpec};
 use crate::error::{CliError, CliResult};
 use serde_json::{Map, Value};
 use std::collections::{BTreeMap, HashMap};
@@ -157,6 +157,29 @@ pub fn build_transforms(env: &HashMap<String, String>) -> CliResult<Vec<Transfor
         out.push(TransformSpec { kind, config });
     }
     Ok(out)
+}
+
+/// Construct a complete [`PipelineConfig`] from an env snapshot.
+pub fn build_pipeline_config(env: &HashMap<String, String>) -> CliResult<PipelineConfig> {
+    let source = build_source(env)?;
+    let sink = build_sink(env)?;
+    let state = build_state(env)?;
+    let transforms = build_transforms(env)?;
+    let name = env.get("FAUCET_NAME").cloned().filter(|s| !s.is_empty());
+    Ok(PipelineConfig {
+        version: 1,
+        name,
+        source,
+        transforms,
+        sink,
+        state,
+    })
+}
+
+/// Snapshot `std::env::vars()` and call [`build_pipeline_config`].
+pub fn from_process_env() -> CliResult<PipelineConfig> {
+    let env: HashMap<String, String> = std::env::vars().collect();
+    build_pipeline_config(&env)
 }
 
 #[cfg(test)]
@@ -470,5 +493,81 @@ mod tests {
         // because the indices set is empty).
         let t = build_transforms(&e).unwrap();
         assert!(t.is_empty());
+    }
+
+    #[test]
+    fn build_pipeline_config_minimal_csv_to_jsonl() {
+        let e = env(&[
+            ("FAUCET_SOURCE", "csv"),
+            ("FAUCET_SOURCE_CSV_PATH", "./in.csv"),
+            ("FAUCET_SINK", "jsonl"),
+            ("FAUCET_SINK_JSONL_PATH", "./out.jsonl"),
+        ]);
+        let cfg = build_pipeline_config(&e).unwrap();
+        assert_eq!(cfg.version, 1);
+        assert_eq!(cfg.source.kind, "csv");
+        assert_eq!(cfg.source.config, json!({"path": "./in.csv"}));
+        assert_eq!(cfg.sink.kind, "jsonl");
+        assert_eq!(cfg.sink.config, json!({"path": "./out.jsonl"}));
+        assert!(cfg.transforms.is_empty());
+        assert!(cfg.state.is_none());
+        assert!(cfg.name.is_none());
+    }
+
+    #[test]
+    fn build_pipeline_config_uses_faucet_name_when_set() {
+        let e = env(&[
+            ("FAUCET_NAME", "github-issues"),
+            ("FAUCET_SOURCE", "csv"),
+            ("FAUCET_SOURCE_CSV_PATH", "./in.csv"),
+            ("FAUCET_SINK", "jsonl"),
+            ("FAUCET_SINK_JSONL_PATH", "./out.jsonl"),
+        ]);
+        let cfg = build_pipeline_config(&e).unwrap();
+        assert_eq!(cfg.name.as_deref(), Some("github-issues"));
+    }
+
+    #[test]
+    fn build_pipeline_config_with_state_and_transforms() {
+        let e = env(&[
+            ("FAUCET_SOURCE", "csv"),
+            ("FAUCET_SOURCE_CSV_PATH", "./in.csv"),
+            ("FAUCET_SINK", "jsonl"),
+            ("FAUCET_SINK_JSONL_PATH", "./out.jsonl"),
+            ("FAUCET_STATE", "file"),
+            ("FAUCET_STATE_FILE_PATH", "./.faucet-state"),
+            ("FAUCET_TRANSFORM_1", "snake_case"),
+            ("FAUCET_TRANSFORM_2", "flatten"),
+            ("FAUCET_TRANSFORM_2_SEPARATOR", "__"),
+        ]);
+        let cfg = build_pipeline_config(&e).unwrap();
+        assert_eq!(cfg.transforms.len(), 2);
+        assert_eq!(cfg.state.as_ref().unwrap().kind, "file");
+    }
+
+    #[test]
+    fn build_pipeline_config_missing_source_errors() {
+        let e = env(&[
+            ("FAUCET_SINK", "jsonl"),
+            ("FAUCET_SINK_JSONL_PATH", "./out.jsonl"),
+        ]);
+        let err = build_pipeline_config(&e).unwrap_err();
+        match err {
+            CliError::MissingEnvSelector { var } => assert_eq!(var, "FAUCET_SOURCE"),
+            other => panic!("expected MissingEnvSelector, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn build_pipeline_config_missing_sink_errors() {
+        let e = env(&[
+            ("FAUCET_SOURCE", "csv"),
+            ("FAUCET_SOURCE_CSV_PATH", "./in.csv"),
+        ]);
+        let err = build_pipeline_config(&e).unwrap_err();
+        match err {
+            CliError::MissingEnvSelector { var } => assert_eq!(var, "FAUCET_SINK"),
+            other => panic!("expected MissingEnvSelector, got {other:?}"),
+        }
     }
 }
