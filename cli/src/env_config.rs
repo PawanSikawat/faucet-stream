@@ -528,6 +528,19 @@ mod tests {
     }
 
     #[test]
+    fn build_pipeline_config_treats_empty_name_as_none() {
+        let e = env(&[
+            ("FAUCET_NAME", ""),
+            ("FAUCET_SOURCE", "csv"),
+            ("FAUCET_SOURCE_CSV_PATH", "./in.csv"),
+            ("FAUCET_SINK", "jsonl"),
+            ("FAUCET_SINK_JSONL_PATH", "./out.jsonl"),
+        ]);
+        let cfg = build_pipeline_config(&e).unwrap();
+        assert!(cfg.name.is_none());
+    }
+
+    #[test]
     fn build_pipeline_config_with_state_and_transforms() {
         let e = env(&[
             ("FAUCET_SOURCE", "csv"),
