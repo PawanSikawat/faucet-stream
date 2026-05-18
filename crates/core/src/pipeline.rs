@@ -21,20 +21,20 @@
 //!
 //! # Streaming mode
 //!
-//! Writes records page-by-page as they arrive from a stream, keeping memory
-//! usage bounded.  Use [`run_stream`] with any `Stream<Item =
-//! Result<Vec<Value>, FaucetError>>` (e.g.
-//! [`RestStream::stream_pages()`](https://docs.rs/faucet-source-rest)).
+//! Writes records page-by-page as they arrive from a source's
+//! [`stream_pages`](crate::Source::stream_pages) implementation, keeping
+//! memory usage bounded.  [`Pipeline::run`] uses this internally; callers
+//! that have already assembled a [`StreamPage`] stream can drive it directly
+//! via [`run_stream`].
 //!
 //! ```rust,no_run
-//! use faucet_core::{run_stream, Sink};
+//! use faucet_core::{run_stream, Sink, StreamPage, FaucetError};
 //! use futures_core::Stream;
-//! use serde_json::Value;
 //! # async fn example(
-//! #     pages: impl Stream<Item = Result<Vec<Value>, faucet_core::FaucetError>> + Unpin,
+//! #     pages: impl Stream<Item = Result<StreamPage, FaucetError>> + Unpin,
 //! #     sink: impl Sink,
-//! # ) -> Result<(), faucet_core::FaucetError> {
-//! let result = run_stream(pages, &sink).await?;
+//! # ) -> Result<(), FaucetError> {
+//! let result = run_stream(pages, &sink, None, None).await?;
 //! # Ok(())
 //! # }
 //! ```
@@ -99,11 +99,11 @@ pub struct PipelineResult {
     pub records_written: usize,
     /// Bookmark value for incremental replication.
     ///
-    /// `Some(value)` when the source supports incremental replication and
-    /// returned a bookmark.  Persist this and pass it back as
-    /// `start_replication_value` on the next run.
-    ///
-    /// Always `None` in streaming mode — use batch mode for bookmark support.
+    /// `Some(value)` when the source returned a bookmark on its final
+    /// (or, for streaming CDC sources, most recent) page. Persist this and
+    /// pass it back as `start_replication_value` on the next run; this is
+    /// handled automatically when a [`StateStore`] is attached via
+    /// [`Pipeline::with_state_store`].
     pub bookmark: Option<Value>,
 }
 
@@ -199,28 +199,53 @@ impl<'a, So: Source + ?Sized, Si: Sink + ?Sized> Pipeline<'a, So, Si> {
     }
 }
 
-/// Run a streaming pipeline, writing each page to the sink as it arrives.
+/// Run a streaming pipeline, writing each [`StreamPage`] to the sink as it
+/// arrives and persisting bookmarks per page.
 ///
 /// This keeps memory usage bounded — only one page of records is held at a
-/// time.  The stream can come from any source that supports page-by-page
-/// iteration (e.g. `RestStream::stream_pages()`).
+/// time. The stream comes from [`Source::stream_pages`] (or any
+/// `Stream<Item = Result<StreamPage, FaucetError>>` a caller assembles
+/// directly).
 ///
-/// Returns a [`PipelineResult`] with the total number of records written.
-/// The `bookmark` field is always `None` in streaming mode — use batch mode
-/// ([`Pipeline::run`]) when you need incremental replication bookmarks.
-pub async fn run_stream<S, Si>(mut pages: S, sink: &Si) -> Result<PipelineResult, FaucetError>
+/// Bookmark semantics: whenever a page carries `Some(bookmark)`, the sink is
+/// flushed and the bookmark is persisted (when `state_store` and `state_key`
+/// are both `Some`) before the next page is polled. Sources that only know
+/// their bookmark after seeing every record emit `Some` on the final page;
+/// CDC-style sources emit `Some` per committed transaction and get
+/// per-transaction durability automatically.
+///
+/// Returns the cumulative [`PipelineResult`] — `records_written` is the sum
+/// across all pages and `bookmark` is the last per-page bookmark observed.
+pub async fn run_stream<S, Si>(
+    mut pages: S,
+    sink: &Si,
+    state_store: Option<Arc<dyn StateStore>>,
+    state_key: Option<String>,
+) -> Result<PipelineResult, FaucetError>
 where
-    S: Stream<Item = Result<Vec<Value>, FaucetError>> + Unpin,
+    S: Stream<Item = Result<StreamPage, FaucetError>> + Unpin,
     Si: Sink + ?Sized,
 {
+    if let Some(key) = state_key.as_ref() {
+        validate_state_key(key)?;
+    }
+
     let mut records_written = 0usize;
+    let mut last_bookmark: Option<Value> = None;
 
     loop {
         let page = std::future::poll_fn(|cx| Pin::new(&mut pages).poll_next(cx)).await;
         match page {
-            Some(Ok(records)) => {
-                if !records.is_empty() {
-                    records_written += sink.write_batch(&records).await?;
+            Some(Ok(page)) => {
+                if !page.records.is_empty() {
+                    records_written += sink.write_batch(&page.records).await?;
+                }
+                if let Some(bookmark) = page.bookmark {
+                    sink.flush().await?;
+                    if let (Some(store), Some(key)) = (state_store.as_ref(), state_key.as_ref()) {
+                        store.put(key, &bookmark).await?;
+                    }
+                    last_bookmark = Some(bookmark);
                 }
             }
             Some(Err(e)) => return Err(e),
@@ -230,11 +255,16 @@ where
 
     sink.flush().await?;
 
-    tracing::info!(records_written, "pipeline streaming run complete");
+    tracing::info!(
+        records_written,
+        has_bookmark = last_bookmark.is_some(),
+        persisted = state_store.is_some() && state_key.is_some() && last_bookmark.is_some(),
+        "pipeline streaming run complete"
+    );
 
     Ok(PipelineResult {
         records_written,
-        bookmark: None,
+        bookmark: last_bookmark,
     })
 }
 
@@ -436,14 +466,20 @@ mod tests {
 
     #[tokio::test]
     async fn stream_pipeline_writes_pages() {
-        let pages: Vec<Result<Vec<Value>, FaucetError>> = vec![
-            Ok(vec![json!({"id": 1}), json!({"id": 2})]),
-            Ok(vec![json!({"id": 3})]),
+        let pages: Vec<Result<StreamPage, FaucetError>> = vec![
+            Ok(StreamPage {
+                records: vec![json!({"id": 1}), json!({"id": 2})],
+                bookmark: None,
+            }),
+            Ok(StreamPage {
+                records: vec![json!({"id": 3})],
+                bookmark: None,
+            }),
         ];
         let stream = futures::stream::iter(pages);
         let sink = MockSink::new();
 
-        let result = run_stream(stream, &sink).await.unwrap();
+        let result = run_stream(stream, &sink, None, None).await.unwrap();
 
         assert_eq!(result.records_written, 3);
         assert!(result.bookmark.is_none());
@@ -452,34 +488,46 @@ mod tests {
 
     #[tokio::test]
     async fn stream_pipeline_empty() {
-        let pages: Vec<Result<Vec<Value>, FaucetError>> = vec![];
+        let pages: Vec<Result<StreamPage, FaucetError>> = vec![];
         let stream = futures::stream::iter(pages);
         let sink = MockSink::new();
 
-        let result = run_stream(stream, &sink).await.unwrap();
+        let result = run_stream(stream, &sink, None, None).await.unwrap();
 
         assert_eq!(result.records_written, 0);
     }
 
     #[tokio::test]
     async fn stream_pipeline_skips_empty_pages() {
-        let pages: Vec<Result<Vec<Value>, FaucetError>> = vec![
-            Ok(vec![json!({"id": 1})]),
-            Ok(vec![]),
-            Ok(vec![json!({"id": 2})]),
+        let pages: Vec<Result<StreamPage, FaucetError>> = vec![
+            Ok(StreamPage {
+                records: vec![json!({"id": 1})],
+                bookmark: None,
+            }),
+            Ok(StreamPage {
+                records: vec![],
+                bookmark: None,
+            }),
+            Ok(StreamPage {
+                records: vec![json!({"id": 2})],
+                bookmark: None,
+            }),
         ];
         let stream = futures::stream::iter(pages);
         let sink = MockSink::new();
 
-        let result = run_stream(stream, &sink).await.unwrap();
+        let result = run_stream(stream, &sink, None, None).await.unwrap();
 
         assert_eq!(result.records_written, 2);
     }
 
     #[tokio::test]
     async fn stream_pipeline_error_in_page_propagates() {
-        let pages: Vec<Result<Vec<Value>, FaucetError>> = vec![
-            Ok(vec![json!({"id": 1})]),
+        let pages: Vec<Result<StreamPage, FaucetError>> = vec![
+            Ok(StreamPage {
+                records: vec![json!({"id": 1})],
+                bookmark: None,
+            }),
             Err(FaucetError::HttpStatus {
                 status: 500,
                 url: "https://example.com".into(),
@@ -489,7 +537,7 @@ mod tests {
         let stream = futures::stream::iter(pages);
         let sink = MockSink::new();
 
-        let result = run_stream(stream, &sink).await;
+        let result = run_stream(stream, &sink, None, None).await;
         assert!(result.is_err());
         // First page was written before the error
         assert_eq!(sink.written().len(), 1);
@@ -497,22 +545,90 @@ mod tests {
 
     #[tokio::test]
     async fn stream_pipeline_sink_error_propagates() {
-        let pages: Vec<Result<Vec<Value>, FaucetError>> = vec![Ok(vec![json!({"id": 1})])];
+        let pages: Vec<Result<StreamPage, FaucetError>> = vec![Ok(StreamPage {
+            records: vec![json!({"id": 1})],
+            bookmark: None,
+        })];
         let stream = futures::stream::iter(pages);
         let sink = FailingSink;
 
-        let result = run_stream(stream, &sink).await;
+        let result = run_stream(stream, &sink, None, None).await;
         assert!(result.is_err());
     }
 
     #[tokio::test]
     async fn stream_pipeline_with_trait_object_sink() {
-        let pages: Vec<Result<Vec<Value>, FaucetError>> = vec![Ok(vec![json!({"id": 1})])];
+        let pages: Vec<Result<StreamPage, FaucetError>> = vec![Ok(StreamPage {
+            records: vec![json!({"id": 1})],
+            bookmark: None,
+        })];
         let stream = futures::stream::iter(pages);
         let sink: Box<dyn Sink> = Box::new(MockSink::new());
 
-        let result = run_stream(stream, sink.as_ref()).await.unwrap();
+        let result = run_stream(stream, sink.as_ref(), None, None).await.unwrap();
         assert_eq!(result.records_written, 1);
+    }
+
+    #[tokio::test]
+    async fn stream_pipeline_persists_bookmark_when_page_carries_one() {
+        let store: Arc<dyn StateStore> = Arc::new(MemoryStateStore::new());
+        let pages: Vec<Result<StreamPage, FaucetError>> = vec![
+            Ok(StreamPage {
+                records: vec![json!({"id": 1})],
+                bookmark: None,
+            }),
+            Ok(StreamPage {
+                records: vec![json!({"id": 2})],
+                bookmark: Some(json!("checkpoint-final")),
+            }),
+        ];
+        let stream = futures::stream::iter(pages);
+        let sink = MockSink::new();
+
+        let result = run_stream(
+            stream,
+            &sink,
+            Some(Arc::clone(&store)),
+            Some("k".to_string()),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result.records_written, 2);
+        assert_eq!(result.bookmark, Some(json!("checkpoint-final")));
+        assert_eq!(
+            store.get("k").await.unwrap(),
+            Some(json!("checkpoint-final"))
+        );
+    }
+
+    #[tokio::test]
+    async fn stream_pipeline_persists_per_page_bookmarks() {
+        let store: Arc<dyn StateStore> = Arc::new(MemoryStateStore::new());
+        let pages: Vec<Result<StreamPage, FaucetError>> = vec![
+            Ok(StreamPage {
+                records: vec![json!({"id": 1})],
+                bookmark: Some(json!("tx-1")),
+            }),
+            Ok(StreamPage {
+                records: vec![json!({"id": 2})],
+                bookmark: Some(json!("tx-2")),
+            }),
+        ];
+        let stream = futures::stream::iter(pages);
+        let sink = MockSink::new();
+
+        run_stream(
+            stream,
+            &sink,
+            Some(Arc::clone(&store)),
+            Some("k".to_string()),
+        )
+        .await
+        .unwrap();
+
+        // Latest per-page bookmark wins.
+        assert_eq!(store.get("k").await.unwrap(), Some(json!("tx-2")));
     }
 
     // ── State-store integration tests ───────────────────────────────────────
