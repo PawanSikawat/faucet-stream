@@ -30,7 +30,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let sink = ElasticsearchSink::new(
         ElasticsearchSinkConfig::new("https://es.example.com:9200", "articles")
-            .auth(ElasticsearchSinkAuth::ApiKey(std::env::var("ES_API_KEY")?))
+            .auth(ElasticsearchSinkAuth::ApiKey {
+                key: std::env::var("ES_API_KEY")?,
+            })
             .batch_size(500)
             .id_field("id"),
     );

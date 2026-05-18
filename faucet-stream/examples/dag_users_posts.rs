@@ -25,7 +25,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let users_source = RestStream::new(
         RestStreamConfig::new("https://api.example.com", "/v1/users")
             .name("users")
-            .auth(Auth::Bearer(std::env::var("API_TOKEN")?))
+            .auth(Auth::Bearer {
+                token: std::env::var("API_TOKEN")?,
+            })
             .header("X-Client", "faucet-stream")
             .query("active", "true")
             .records_path("$.data[*]")
@@ -45,7 +47,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let posts_source = RestStream::new(
         RestStreamConfig::new("https://api.example.com", "/v1/users/{user_id}/posts")
             .name("posts")
-            .auth(Auth::Bearer(std::env::var("API_TOKEN")?))
+            .auth(Auth::Bearer {
+                token: std::env::var("API_TOKEN")?,
+            })
             .records_path("$.data[*]")
             .pagination(PaginationStyle::Cursor {
                 next_token_path: "$.meta.next_cursor".into(),

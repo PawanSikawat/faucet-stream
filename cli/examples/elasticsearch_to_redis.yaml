@@ -15,9 +15,8 @@ source:
     scroll_size: 1000
     auth:
       type: Basic
-      value:
-        username: ${env:ES_USER}
-        password: ${env:ES_PASS}
+      username: ${env:ES_USER}
+      password: ${env:ES_PASS}
     max_pages: 500
 
 sink:

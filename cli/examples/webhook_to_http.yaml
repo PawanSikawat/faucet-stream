@@ -1,9 +1,5 @@
 # YAML equivalent of `faucet-stream/examples/webhook_to_http.rs`.
-# HTTP receiver → HTTP forwarder.
-#
-# Limitation: HttpSinkAuth::Bearer is a newtype-in-tagged-enum variant and
-# cannot round-trip through serde today; this YAML falls back to Basic
-# auth. See the tracking issue for the wider connector serde fix-up.
+# HTTP receiver → HTTP forwarder with Bearer auth.
 version: 1
 name: webhook_to_http
 
@@ -21,9 +17,8 @@ sink:
     url: https://downstream.example.com/ingest
     method: POST
     auth:
-      type: Basic
-      username: ${env:INGEST_USER}
-      password: ${env:INGEST_PASS}
+      type: Bearer
+      token: ${env:INGEST_TOKEN}
     batch_mode:
       type: Individual
     max_retries: 3

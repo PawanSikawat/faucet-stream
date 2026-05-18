@@ -38,7 +38,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let source = GraphqlStream::new(
         GraphqlStreamConfig::new("https://api.example.com/graphql", query)
             .variables(json!({ "first": 200 }))
-            .auth(GraphqlAuth::Custom(headers.clone()))
+            .auth(GraphqlAuth::Custom {
+                headers: [
+                    ("X-Api-Key".to_string(), std::env::var("API_KEY")?),
+                    ("X-Tenant".to_string(), "acme".to_string()),
+                ]
+                .into_iter()
+                .collect(),
+            })
             .headers(headers)
             .records_path("$.data.orders.edges[*].node")
             .pagination(GraphqlPagination {

@@ -126,11 +126,22 @@ impl GraphqlStream {
         // Apply auth.
         match &self.config.auth {
             GraphqlAuth::None => {}
-            GraphqlAuth::Bearer(token) => {
+            GraphqlAuth::Bearer { token } => {
                 req = req.bearer_auth(token);
             }
-            GraphqlAuth::Custom(headers) => {
-                req = req.headers(headers.clone());
+            GraphqlAuth::Custom { headers } => {
+                let mut hm = reqwest::header::HeaderMap::new();
+                for (name, value) in headers {
+                    let n =
+                        reqwest::header::HeaderName::from_bytes(name.as_bytes()).map_err(|e| {
+                            FaucetError::Auth(format!("invalid custom header name {name:?}: {e}"))
+                        })?;
+                    let v = reqwest::header::HeaderValue::from_str(value).map_err(|e| {
+                        FaucetError::Auth(format!("invalid custom header value for {name:?}: {e}"))
+                    })?;
+                    hm.insert(n, v);
+                }
+                req = req.headers(hm);
             }
         }
 

@@ -5,6 +5,16 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::path::PathBuf;
 
+/// A single piece of gRPC request metadata.
+///
+/// Use a `Vec<MetadataEntry>` rather than a map because gRPC allows duplicate
+/// keys and order is occasionally observable.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct MetadataEntry {
+    pub key: String,
+    pub value: String,
+}
+
 /// Authentication for gRPC endpoints.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "type")]
@@ -12,9 +22,9 @@ pub enum GrpcAuth {
     /// No authentication.
     None,
     /// Bearer token sent as `authorization` metadata.
-    Bearer(String),
+    Bearer { token: String },
     /// Custom metadata key-value pairs.
-    Metadata(Vec<(String, String)>),
+    Metadata { entries: Vec<MetadataEntry> },
 }
 
 /// Configuration for the gRPC source.
@@ -110,11 +120,13 @@ mod tests {
         let config =
             GrpcStreamConfig::new("https://grpc.example.com", "svc.Svc", "Get", "desc.bin")
                 .request(json!({"page_size": 100}))
-                .auth(GrpcAuth::Bearer("tok".into()))
+                .auth(GrpcAuth::Bearer {
+                    token: "tok".into(),
+                })
                 .tls(true)
                 .records_path("$.users[*]");
         assert_eq!(config.request["page_size"], 100);
-        assert!(matches!(config.auth, GrpcAuth::Bearer(_)));
+        assert!(matches!(config.auth, GrpcAuth::Bearer { .. }));
         assert_eq!(config.tls, Some(true));
         assert_eq!(config.records_path.unwrap(), "$.users[*]");
     }

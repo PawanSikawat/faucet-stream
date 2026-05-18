@@ -1,9 +1,5 @@
 # YAML equivalent of `faucet-stream/examples/xml_to_mongodb.rs`.
-#
-# Limitation: XmlAuth::Bearer(String) is a newtype-in-tagged-enum variant
-# and can't round-trip through serde today. The Rust example uses Bearer
-# auth; this YAML falls back to None — adjust the upstream API or use the
-# library directly until the connector serde fix-up lands.
+# XML feed (Bearer auth, offset pagination) → MongoDB.
 version: 1
 name: xml_to_mongodb
 
@@ -14,7 +10,8 @@ source:
     path: /catalog
     method: GET
     auth:
-      type: None
+      type: Bearer
+      token: ${env:FEED_TOKEN}
     query_params:
       format: xml
     records_element_path: catalog.products.product

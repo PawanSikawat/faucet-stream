@@ -1,10 +1,5 @@
 # YAML equivalent of `faucet-stream/examples/grpc_to_http.rs`.
-# gRPC (TLS) → HTTP POST with Basic auth and array batching.
-#
-# Limitation: GrpcAuth::Bearer and HttpSinkAuth::Bearer are newtype variants
-# of internally-tagged enums and can't round-trip through serde today. The
-# YAML below uses Basic auth on the sink and no source auth as a closest
-# expressible equivalent — see the tracking issue.
+# gRPC (TLS, Bearer metadata) → HTTP POST with Bearer auth and array batching.
 version: 1
 name: grpc_to_http
 
@@ -18,7 +13,8 @@ source:
     request:
       window: 1h
     auth:
-      type: None
+      type: Bearer
+      token: ${env:GRPC_TOKEN}
     tls: true
     records_path: $.metrics[*]
 
@@ -28,9 +24,8 @@ sink:
     url: https://ingest.example.com/v1/events?tenant=acme
     method: POST
     auth:
-      type: Basic
-      username: ${env:INGEST_USER}
-      password: ${env:INGEST_PASS}
+      type: Bearer
+      token: ${env:INGEST_TOKEN}
     batch_mode:
       type: Array
     max_retries: 3

@@ -116,7 +116,7 @@ Mirrors of the Rust examples (one `.yaml` per `.rs`):
 - Webhook receiver: [`webhook_to_csv`](examples/webhook_to_csv.yaml), [`webhook_to_http`](examples/webhook_to_http.yaml), [`webhook_to_postgres`](examples/webhook_to_postgres.yaml)
 - DAG parent leg: [`dag_users_posts`](examples/dag_users_posts.yaml) — parent only (multi-node DAGs require the library API today)
 
-A handful of YAMLs note specific limitations in their header comment — chiefly that `Auth::Bearer(String)` and similar newtype-in-tagged-enum variants can't currently round-trip through serde. The [tracking issue](https://github.com/PawanSikawat/faucet-stream/issues) will replace those with struct variants so the YAML versions become 1:1 with the Rust ones.
+Every auth shape — Bearer, Basic, API key, OAuth2, custom headers, gRPC metadata — round-trips through YAML/JSON, so the YAML examples are 1:1 with the Rust ones.
 
 ## License
 

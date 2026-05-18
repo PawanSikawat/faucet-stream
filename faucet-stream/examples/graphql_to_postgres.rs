@@ -34,7 +34,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let source = GraphqlStream::new(
         GraphqlStreamConfig::new("https://api.example.com/graphql", query)
             .variables(json!({ "first": 100 }))
-            .auth(GraphqlAuth::Bearer(std::env::var("API_TOKEN")?))
+            .auth(GraphqlAuth::Bearer {
+                token: std::env::var("API_TOKEN")?,
+            })
             .headers(headers)
             .records_path("$.data.users.edges[*].node")
             .pagination(GraphqlPagination {

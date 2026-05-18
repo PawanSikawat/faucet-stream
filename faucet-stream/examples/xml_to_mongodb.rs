@@ -22,7 +22,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let source = XmlStream::new(
         XmlStreamConfig::new("https://feeds.example.com", "/catalog")
             .method(reqwest::Method::GET)
-            .auth(XmlAuth::Bearer(std::env::var("FEED_TOKEN")?))
+            .auth(XmlAuth::Bearer {
+                token: std::env::var("FEED_TOKEN")?,
+            })
             .headers(headers)
             .query_param("format", "xml")
             .records_element_path("catalog.products.product")

@@ -1,10 +1,5 @@
 # YAML equivalent of `faucet-stream/examples/grpc_to_elasticsearch.rs`.
-# gRPC (TLS) → Elasticsearch with Basic auth and id_field.
-#
-# Limitation: GrpcAuth::Metadata and GrpcAuth::Bearer are newtype variants of
-# an internally-tagged enum and cannot round-trip through serde today (see the
-# tracking issue). Run the .rs example for metadata-based auth until the
-# config type is split into struct variants.
+# gRPC (TLS, custom metadata) → Elasticsearch with Basic auth and id_field.
 version: 1
 name: grpc_to_elasticsearch
 
@@ -19,7 +14,12 @@ source:
       since: "2026-01-01T00:00:00Z"
       page_size: 1000
     auth:
-      type: None
+      type: Metadata
+      entries:
+        - key: x-api-key
+          value: ${env:GRPC_API_KEY}
+        - key: x-tenant
+          value: acme
     tls: true
     records_path: $.events[*]
 
@@ -30,8 +30,7 @@ sink:
     index: events
     auth:
       type: Basic
-      value:
-        username: ${env:ES_USER}
-        password: ${env:ES_PASS}
+      username: ${env:ES_USER}
+      password: ${env:ES_PASS}
     batch_size: 1000
     id_field: event_id

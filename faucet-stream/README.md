@@ -92,7 +92,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Configure a source
     let source = RestStream::new(
         RestStreamConfig::new("https://api.example.com", "/v1/users")
-            .auth(Auth::Bearer("my-token".into()))
+            .auth(Auth::Bearer {
+                token: "my-token".into(),
+            })
             .records_path("$.data[*]")
             .pagination(PaginationStyle::Cursor {
                 next_token_path: "$.meta.next_cursor".into(),

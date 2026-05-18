@@ -31,7 +31,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let sink = HttpSink::new(
         HttpSinkConfig::new("https://downstream.example.com/ingest")
             .method(reqwest::Method::POST)
-            .auth(HttpSinkAuth::Bearer(std::env::var("INGEST_TOKEN")?))
+            .auth(HttpSinkAuth::Bearer {
+                token: std::env::var("INGEST_TOKEN")?,
+            })
             .headers(headers)
             .batch_mode(HttpBatchMode::Individual)
             .max_retries(3)

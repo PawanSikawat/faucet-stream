@@ -29,8 +29,10 @@ impl ElasticsearchSource {
             ElasticsearchAuth::Basic { username, password } => {
                 req.basic_auth(username, Some(password))
             }
-            ElasticsearchAuth::Bearer(token) => req.bearer_auth(token),
-            ElasticsearchAuth::ApiKey(key) => req.header("Authorization", format!("ApiKey {key}")),
+            ElasticsearchAuth::Bearer { token } => req.bearer_auth(token),
+            ElasticsearchAuth::ApiKey { key } => {
+                req.header("Authorization", format!("ApiKey {key}"))
+            }
         }
     }
 

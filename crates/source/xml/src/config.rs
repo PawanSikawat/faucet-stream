@@ -3,6 +3,7 @@
 use reqwest::header::HeaderMap;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 /// Authentication for XML API endpoints.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -11,12 +12,11 @@ pub enum XmlAuth {
     /// No authentication.
     None,
     /// Bearer token.
-    Bearer(String),
+    Bearer { token: String },
     /// Basic authentication.
     Basic { username: String, password: String },
     /// Custom headers (e.g. SOAP action headers, API keys).
-    #[serde(skip)]
-    Custom(HeaderMap),
+    Custom { headers: HashMap<String, String> },
 }
 
 /// Pagination configuration for XML APIs.

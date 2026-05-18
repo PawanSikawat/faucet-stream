@@ -259,7 +259,9 @@ async fn test_bearer_auth_sent() {
 
     let stream = RestStream::new(
         RestStreamConfig::new(&server.uri(), "/api/secure")
-            .auth(Auth::Bearer("my-secret-token".into()))
+            .auth(Auth::Bearer {
+                token: "my-secret-token".into(),
+            })
             .records_path("$.data[*]"),
     )
     .unwrap();

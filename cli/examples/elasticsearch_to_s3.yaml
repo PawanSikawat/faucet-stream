@@ -15,7 +15,7 @@ source:
     scroll_size: 2000
     auth:
       type: ApiKey
-      value: ${env:ES_API_KEY}
+      key: ${env:ES_API_KEY}
 
 sink:
   type: s3

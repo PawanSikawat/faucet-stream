@@ -392,7 +392,7 @@ impl RestStream {
                         *expiry_ratio,
                     )
                     .await?;
-                Auth::Bearer(token)
+                Auth::Bearer { token }
             }
             Auth::TokenEndpoint {
                 url: token_url,
@@ -418,7 +418,7 @@ impl RestStream {
                         response_validator.as_ref(),
                     )
                     .await?;
-                Auth::Bearer(token)
+                Auth::Bearer { token }
             }
             other => other.clone(),
         };

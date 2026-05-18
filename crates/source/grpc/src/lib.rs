@@ -11,5 +11,5 @@ pub mod stream;
 
 pub use faucet_core::{FaucetError, Source};
 
-pub use config::{GrpcAuth, GrpcStreamConfig};
+pub use config::{GrpcAuth, GrpcStreamConfig, MetadataEntry};
 pub use stream::GrpcStream;
