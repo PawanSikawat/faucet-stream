@@ -1,6 +1,7 @@
 //! Integration tests for `faucet run --from-env` (pure-env mode, issue #42).
 
 use assert_cmd::Command;
+use predicates::prelude::*;
 use serial_test::serial;
 use std::fs;
 
@@ -38,8 +39,16 @@ fn csv_to_jsonl_via_env() {
         .success();
 
     let written = fs::read_to_string(&output).unwrap();
-    assert!(written.contains("\"name\":\"alice\""));
-    assert!(written.contains("\"name\":\"bob\""));
+    let records: Vec<serde_json::Value> = written
+        .lines()
+        .filter(|l| !l.is_empty())
+        .map(|l| serde_json::from_str::<serde_json::Value>(l).expect("line is valid JSON"))
+        .collect();
+    assert_eq!(records.len(), 2, "expected 2 records, got {records:?}");
+    assert_eq!(records[0]["name"], "alice");
+    assert_eq!(records[0]["id"], "1");
+    assert_eq!(records[1]["name"], "bob");
+    assert_eq!(records[1]["id"], "2");
 }
 
 #[test]
@@ -88,7 +97,8 @@ fn from_env_and_config_path_are_mutually_exclusive() {
         .args(["run", "--from-env"])
         .arg(&yaml)
         .assert()
-        .failure();
+        .failure()
+        .stderr(predicate::str::contains("cannot be used with"));
 }
 
 #[test]
@@ -115,7 +125,8 @@ fn env_file_flag_requires_from_env() {
     let envfile = dir.path().join("pipe.env");
     fs::write(&envfile, "X=1\n").unwrap();
 
-    // Passing --env-file without --from-env should be rejected by clap.
+    // Passing --env-file without --from-env should be rejected before any
+    // config processing — the error must mention both flags by name.
     Command::cargo_bin("faucet")
         .unwrap()
         .env_clear()
@@ -124,5 +135,6 @@ fn env_file_flag_requires_from_env() {
         .arg(&envfile)
         .arg(&yaml)
         .assert()
-        .failure();
+        .failure()
+        .stderr(predicate::str::contains("--env-file").and(predicate::str::contains("--from-env")));
 }

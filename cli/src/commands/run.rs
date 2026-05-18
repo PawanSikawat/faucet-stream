@@ -98,6 +98,12 @@ impl Sink for CountingSink {
 
 /// Execute the `run` subcommand.
 pub async fn run(args: RunArgs) -> CliResult<()> {
+    // `--env-file` is only meaningful with `--from-env`. Clap's `requires`
+    // directive does not reliably fire for a defaulted `bool` flag, so we
+    // enforce the constraint explicitly here and surface a clap-style error.
+    if args.env_file.is_some() && !args.from_env {
+        return Err(CliError::EnvFileRequiresFromEnv);
+    }
     let cfg = if args.from_env {
         if let Some(path) = &args.env_file {
             dotenvy::from_path(path).map_err(|e| CliError::ReadConfig {

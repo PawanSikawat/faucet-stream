@@ -85,6 +85,12 @@ pub enum CliError {
     )]
     MissingEnvSelector { var: String },
 
+    /// `--env-file` was supplied without `--from-env`.
+    #[error(
+        "the argument '--env-file' cannot be used without '--from-env'\n\nUsage: faucet run --from-env --env-file <ENV_FILE>"
+    )]
+    EnvFileRequiresFromEnv,
+
     /// Both a scalar env var and its `_JSON` counterpart were set for the same field.
     #[error(
         "conflicting environment variables for field '{field}': both '{scalar_var}' and '{json_var}' are set — pick one"
