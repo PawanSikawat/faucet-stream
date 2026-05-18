@@ -1,90 +1,179 @@
-//! `${env:VAR}` / `${file:PATH}` interpolation.
+//! Two-stage interpolation for pipeline configs.
 //!
-//! Runs over the raw config text *before* JSON/YAML parsing so the resolved
-//! values can be substituted into any string value — including ones that
-//! become structured types after parsing (numbers, durations, paths).
+//! **Load-time** ([`interpolate`]) resolves directives that are knowable
+//! before any pipeline has run — environment variables, file contents,
+//! secrets. Tokens that don't match one of these prefixes are left literal
+//! so the matrix expander can later treat them as `${row_id.field.path}`
+//! deferred references.
 //!
-//! Supported directives:
+//! **Record-time** ([`interpolate_record`]) resolves the remaining
+//! `${row_id.dotted.path}` tokens against a context map of parent records,
+//! producing a string ready to feed into a connector's `Deserialize` impl.
+//!
+//! Supported load-time directives:
 //!
 //! | Form               | Resolves to |
 //! |--------------------|-------------|
 //! | `${env:VAR}`       | the value of environment variable `VAR` |
-//! | `${file:PATH}`     | the contents of the file at `PATH` (trimmed of trailing whitespace) |
-//! | `${secret:VAR}`    | reserved — currently aliased to `${env:VAR}`. A future secrets backend will own this prefix. |
+//! | `${file:PATH}`     | the contents of the file at `PATH` (trimmed) |
+//! | `${secret:VAR}`    | alias for `${env:VAR}` (reserved for a future secrets backend) |
 //!
-//! Escapes: a literal `${` can be written as `$${` and is decoded by the
-//! interpolator. Anything that doesn't match `${prefix:body}` is left as-is.
+//! Anything else (including `${users.id}`, `${posts.author.name}`) is
+//! deferred to record-time. A literal `${` is written `$${`.
 
 use crate::error::{CliError, CliResult};
+use serde_json::Value;
+use std::collections::HashMap;
 use std::path::PathBuf;
 
-/// Resolve every `${prefix:body}` token in `input`. Returns the substituted
-/// string or the first error encountered.
+/// Resolve every load-time directive in `input`. Unknown prefixes (and
+/// tokens with no `:` at all — i.e. `${row_id.field}` references) survive
+/// verbatim for record-time resolution.
 pub fn interpolate(input: &str) -> CliResult<String> {
+    rewrite(input, |body| match split_directive(body) {
+        Directive::LoadTime { prefix, body } => match prefix {
+            "env" | "secret" => Ok(Some(std::env::var(body).map_err(|_| {
+                CliError::MissingEnvVar {
+                    var: body.to_owned(),
+                    location: format!("${{{prefix}:{body}}}"),
+                }
+            })?)),
+            "file" => Ok(Some(read_file_trimmed(body)?)),
+            // Any other ${prefix:body} that isn't env/file/secret — leave it
+            // literal so a downstream validator can flag truly bogus prefixes.
+            _ => Ok(None),
+        },
+        Directive::Deferred => Ok(None),
+    })
+}
+
+/// Resolve `${id.dotted.path}` tokens against `ctx`. Tokens that look like
+/// load-time directives (`${env:...}`, `${file:...}`, `${secret:...}`) are
+/// left untouched — they should already have been resolved by [`interpolate`].
+///
+/// Errors when an `id` is unknown or a dotted path does not resolve.
+pub fn interpolate_record(input: &str, ctx: &HashMap<String, Value>) -> CliResult<String> {
+    rewrite(input, |body| match split_directive(body) {
+        Directive::LoadTime { .. } => Ok(None),
+        Directive::Deferred => {
+            // `body` looks like `<id>.<dotted.path>`; split on first '.'.
+            let (id, path) = match body.split_once('.') {
+                Some((i, p)) => (i, p),
+                None => (body, ""), // `${id}` with no path → whole record stringified
+            };
+            let record = ctx
+                .get(id)
+                .ok_or_else(|| CliError::UnknownInterpolationId {
+                    id: id.to_owned(),
+                    token: format!("${{{body}}}"),
+                })?;
+            let resolved =
+                resolve_dotted(record, path).ok_or_else(|| CliError::MissingRecordField {
+                    id: id.to_owned(),
+                    path: path.to_owned(),
+                })?;
+            Ok(Some(value_to_string(&resolved)))
+        }
+    })
+}
+
+/// Walk `input` byte-by-byte, calling `resolve` on each `${...}` body.
+/// `resolve` returns `Some(s)` to substitute, or `None` to keep verbatim.
+fn rewrite<F>(input: &str, mut resolve: F) -> CliResult<String>
+where
+    F: FnMut(&str) -> CliResult<Option<String>>,
+{
     let mut out = String::with_capacity(input.len());
     let bytes = input.as_bytes();
     let mut i = 0;
     while i < bytes.len() {
-        // Escape: $${ → ${
+        // Escape: `$${` → literal `${`.
         if bytes[i] == b'$' && i + 2 < bytes.len() && bytes[i + 1] == b'$' && bytes[i + 2] == b'{' {
             out.push('$');
             i += 2;
             continue;
         }
         if bytes[i] == b'$' && i + 1 < bytes.len() && bytes[i + 1] == b'{' {
-            // Locate matching `}` — interpolations cannot nest.
             let start = i + 2;
             let Some(rel_end) = input[start..].find('}') else {
-                // No closing brace → emit literally and stop scanning for
-                // directives so we don't quietly swallow content.
+                // Unclosed directive — copy the rest verbatim and stop scanning.
                 out.push_str(&input[i..]);
                 break;
             };
             let end = start + rel_end;
-            let directive = &input[start..end];
-            let resolved = resolve_directive(directive)?;
-            out.push_str(&resolved);
+            let body = &input[start..end];
+            match resolve(body)? {
+                Some(s) => out.push_str(&s),
+                None => out.push_str(&input[i..=end]),
+            }
             i = end + 1;
             continue;
         }
-        out.push(input[i..].chars().next().unwrap());
-        i += input[i..].chars().next().unwrap().len_utf8();
+        let ch = input[i..].chars().next().unwrap();
+        out.push(ch);
+        i += ch.len_utf8();
     }
     Ok(out)
 }
 
-fn resolve_directive(directive: &str) -> CliResult<String> {
-    let (prefix, body) =
-        directive
-            .split_once(':')
-            .ok_or_else(|| CliError::UnknownInterpolationPrefix {
-                prefix: directive.to_owned(),
-                full: format!("${{{directive}}}"),
-            })?;
-    match prefix {
-        "env" | "secret" => std::env::var(body).map_err(|_| CliError::MissingEnvVar {
-            var: body.to_owned(),
-            location: format!("${{{directive}}}"),
-        }),
-        "file" => {
-            let path = PathBuf::from(body);
-            let bytes = std::fs::read(&path).map_err(|source| CliError::ReadInterpolatedFile {
-                path: path.clone(),
-                source,
-            })?;
-            let text = String::from_utf8_lossy(&bytes);
-            Ok(text.trim_end().to_owned())
-        }
-        other => Err(CliError::UnknownInterpolationPrefix {
-            prefix: other.to_owned(),
-            full: format!("${{{directive}}}"),
-        }),
+enum Directive<'a> {
+    /// Prefixed directive like `${env:VAR}` or `${file:./p}` — split on `:`.
+    LoadTime { prefix: &'a str, body: &'a str },
+    /// No `:` in the body — must be `${id.dotted.path}`, deferred to runtime.
+    Deferred,
+}
+
+fn split_directive(body: &str) -> Directive<'_> {
+    match body.split_once(':') {
+        Some((prefix, rest)) => Directive::LoadTime { prefix, body: rest },
+        None => Directive::Deferred,
+    }
+}
+
+fn read_file_trimmed(path_str: &str) -> CliResult<String> {
+    let path = PathBuf::from(path_str);
+    let bytes = std::fs::read(&path).map_err(|source| CliError::ReadInterpolatedFile {
+        path: path.clone(),
+        source,
+    })?;
+    Ok(String::from_utf8_lossy(&bytes).trim_end().to_owned())
+}
+
+/// Walk a dotted path through a JSON value. Returns `None` if any segment
+/// is missing or addresses through a non-object/array node.
+fn resolve_dotted(root: &Value, path: &str) -> Option<Value> {
+    if path.is_empty() {
+        return Some(root.clone());
+    }
+    let mut cur = root;
+    for segment in path.split('.') {
+        cur = match cur {
+            Value::Object(map) => map.get(segment)?,
+            Value::Array(arr) => {
+                let idx: usize = segment.parse().ok()?;
+                arr.get(idx)?
+            }
+            _ => return None,
+        };
+    }
+    Some(cur.clone())
+}
+
+/// Render a JSON value as a plain string suitable for substitution into a
+/// config field. Strings come through unquoted; everything else uses
+/// `to_string()` (numbers / bools / null / nested JSON).
+fn value_to_string(v: &Value) -> String {
+    match v {
+        Value::String(s) => s.clone(),
+        other => other.to_string(),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
+    use std::collections::HashMap;
 
     #[test]
     fn passes_through_text_with_no_directives() {
@@ -94,9 +183,6 @@ mod tests {
 
     #[test]
     fn substitutes_env_var() {
-        // SAFETY: tests run sequentially within this module via tokio's default
-        // single-thread runtime when used with #[tokio::test], and these
-        // synchronous tests don't share env state across cases.
         unsafe { std::env::set_var("FAUCET_TEST_VAR", "hello") };
         let out = interpolate("token=${env:FAUCET_TEST_VAR}").unwrap();
         assert_eq!(out, "token=hello");
@@ -132,17 +218,24 @@ mod tests {
     }
 
     #[test]
-    fn unknown_prefix_is_reported() {
-        let err = interpolate("${weird:thing}").unwrap_err();
-        match err {
-            CliError::UnknownInterpolationPrefix { prefix, .. } => assert_eq!(prefix, "weird"),
-            other => panic!("expected UnknownInterpolationPrefix, got {other:?}"),
-        }
+    fn load_time_leaves_id_path_tokens_alone() {
+        unsafe { std::env::set_var("FAUCET_T", "v") };
+        let out = interpolate("a=${env:FAUCET_T} b=${users.id}").unwrap();
+        assert_eq!(out, "a=v b=${users.id}");
+        unsafe { std::env::remove_var("FAUCET_T") };
+    }
+
+    #[test]
+    fn load_time_passes_unknown_prefix_through() {
+        // Unknown prefixes are deferred — the matrix expander decides if
+        // they reference a real row id later. (Pre-#54 behaviour was to error
+        // here; that responsibility moves to expand.rs.)
+        let out = interpolate("${weird:thing}").unwrap();
+        assert_eq!(out, "${weird:thing}");
     }
 
     #[test]
     fn dollar_dollar_brace_is_escaped() {
-        // `$${env:VAR}` should pass through as `${env:VAR}` without resolving.
         let out = interpolate("path=$${env:VAR}").unwrap();
         assert_eq!(out, "path=${env:VAR}");
     }
@@ -161,5 +254,72 @@ mod tests {
         assert_eq!(out, "one-two");
         unsafe { std::env::remove_var("FAUCET_A") };
         unsafe { std::env::remove_var("FAUCET_B") };
+    }
+
+    // ── record-time tests ───────────────────────────────────────────────
+
+    fn ctx_with(pairs: &[(&str, Value)]) -> HashMap<String, Value> {
+        pairs
+            .iter()
+            .map(|(k, v)| ((*k).into(), v.clone()))
+            .collect()
+    }
+
+    #[test]
+    fn record_resolves_simple_dotted_path() {
+        let ctx = ctx_with(&[("users", json!({"id": 42, "name": "alice"}))]);
+        let out = interpolate_record("/v1/users/${users.id}", &ctx).unwrap();
+        assert_eq!(out, "/v1/users/42");
+    }
+
+    #[test]
+    fn record_resolves_nested_dotted_path() {
+        let ctx = ctx_with(&[(
+            "users",
+            json!({"id": 1, "addr": {"city": "NYC", "zip": "10001"}}),
+        )]);
+        let out = interpolate_record("/${users.addr.city}/${users.addr.zip}", &ctx).unwrap();
+        assert_eq!(out, "/NYC/10001");
+    }
+
+    #[test]
+    fn record_resolves_array_index() {
+        let ctx = ctx_with(&[("users", json!({"tags": ["a", "b", "c"]}))]);
+        let out = interpolate_record("first=${users.tags.0}", &ctx).unwrap();
+        assert_eq!(out, "first=a");
+    }
+
+    #[test]
+    fn record_renders_numbers_and_booleans_as_strings() {
+        let ctx = ctx_with(&[("users", json!({"id": 7, "active": true}))]);
+        let out = interpolate_record("id=${users.id} active=${users.active}", &ctx).unwrap();
+        assert_eq!(out, "id=7 active=true");
+    }
+
+    #[test]
+    fn record_unknown_id_errors() {
+        let ctx = ctx_with(&[("users", json!({"id": 1}))]);
+        let err = interpolate_record("${nobody.x}", &ctx).unwrap_err();
+        assert!(matches!(err, CliError::UnknownInterpolationId { .. }));
+    }
+
+    #[test]
+    fn record_missing_field_errors() {
+        let ctx = ctx_with(&[("users", json!({"id": 1}))]);
+        let err = interpolate_record("${users.missing}", &ctx).unwrap_err();
+        match err {
+            CliError::MissingRecordField { id, path } => {
+                assert_eq!(id, "users");
+                assert_eq!(path, "missing");
+            }
+            other => panic!("expected MissingRecordField, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn record_leaves_load_time_directives_alone() {
+        let ctx = HashMap::new();
+        let out = interpolate_record("a=${env:NOPE} b=${file:./x}", &ctx).unwrap();
+        assert_eq!(out, "a=${env:NOPE} b=${file:./x}");
     }
 }

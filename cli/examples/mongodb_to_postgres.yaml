@@ -3,31 +3,32 @@
 version: 1
 name: mongodb_to_postgres
 
-source:
-  type: mongodb
-  config:
-    connection_uri: mongodb://localhost:27017
-    database: shop
-    collection: orders
-    filter:
-      status: completed
-    projection:
-      _id: 1
-      customer_id: 1
-      total: 1
-      items: 1
-    sort:
-      created_at: 1
-    limit: 500000
-    batch_size: 1000
+pipeline:
+  source:
+    type: mongodb
+    config:
+      connection_uri: mongodb://localhost:27017
+      database: shop
+      collection: orders
+      filter:
+        status: completed
+      projection:
+        _id: 1
+        customer_id: 1
+        total: 1
+        items: 1
+      sort:
+        created_at: 1
+      limit: 500000
+      batch_size: 1000
 
-sink:
-  type: postgres
-  config:
-    connection_url: postgres://user:pass@localhost/warehouse
-    table_name: orders_mirror
-    column_mapping:
-      type: jsonb
-      column: payload
-    batch_size: 1000
-    max_connections: 10
+  sink:
+    type: postgres
+    config:
+      connection_url: postgres://user:pass@localhost/warehouse
+      table_name: orders_mirror
+      column_mapping:
+        type: jsonb
+        column: payload
+      batch_size: 1000
+      max_connections: 10

@@ -2,20 +2,21 @@
 version: 1
 name: mysql_to_bigquery
 
-source:
-  type: mysql
-  config:
-    connection_url: mysql://user:pass@localhost/sales
-    query: SELECT order_id, customer_id, total, ordered_at FROM orders
-    max_connections: 16
+pipeline:
+  source:
+    type: mysql
+    config:
+      connection_url: mysql://user:pass@localhost/sales
+      query: SELECT order_id, customer_id, total, ordered_at FROM orders
+      max_connections: 16
 
-sink:
-  type: bigquery
-  config:
-    project_id: my-gcp-project
-    dataset_id: warehouse
-    table_id: orders
-    credentials:
-      type: ServiceAccountKeyPath
-      value: service-account.json
-    batch_size: 1000
+  sink:
+    type: bigquery
+    config:
+      project_id: my-gcp-project
+      dataset_id: warehouse
+      table_id: orders
+      credentials:
+        type: ServiceAccountKeyPath
+        value: service-account.json
+      batch_size: 1000

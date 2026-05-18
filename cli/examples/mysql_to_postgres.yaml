@@ -2,19 +2,20 @@
 version: 1
 name: mysql_to_postgres
 
-source:
-  type: mysql
-  config:
-    connection_url: mysql://user:pass@localhost/legacy
-    query: SELECT id, name, address, created_at FROM customers ORDER BY id
-    max_connections: 16
+pipeline:
+  source:
+    type: mysql
+    config:
+      connection_url: mysql://user:pass@localhost/legacy
+      query: SELECT id, name, address, created_at FROM customers ORDER BY id
+      max_connections: 16
 
-sink:
-  type: postgres
-  config:
-    connection_url: postgres://user:pass@localhost/modern
-    table_name: customers_imported
-    column_mapping:
-      type: auto_map
-    batch_size: 1000
-    max_connections: 10
+  sink:
+    type: postgres
+    config:
+      connection_url: postgres://user:pass@localhost/modern
+      table_name: customers_imported
+      column_mapping:
+        type: auto_map
+      batch_size: 1000
+      max_connections: 10

@@ -49,41 +49,114 @@ So `cd into-your-project && faucet run` is the short form for `faucet run --env-
 ```yaml
 version: 1
 name: github_to_jsonl
-source:
-  type: rest
-  config:
-    base_url: https://api.github.com
-    path: /repos/PawanSikawat/faucet-stream/issues
-    method: GET
-    auth:
-      type: ApiKey
-      header: Authorization
-      value: Bearer ${env:GITHUB_TOKEN}
-    query_params: {state: open}
-    pagination:
-      type: LinkHeader
-    max_retries: 3
-    retry_backoff: 1
-    tolerated_http_errors: []
-    replication_method: { type: FullTable }
-    primary_keys: ["id"]
-    partitions: []
-    schema_sample_size: 100
-transforms:
-  - type: snake_case
-sink:
-  type: jsonl
-  config:
-    path: ./out/issues.jsonl
-state:
-  type: file
-  config:
-    path: ./.faucet-state
+
+pipeline:
+  source:
+    type: rest
+    config:
+      base_url: https://api.github.com
+      path: /repos/PawanSikawat/faucet-stream/issues
+      method: GET
+      auth:
+        type: ApiKey
+        header: Authorization
+        value: Bearer ${env:GITHUB_TOKEN}
+      query_params: {state: open}
+      pagination:
+        type: LinkHeader
+      max_retries: 3
+      retry_backoff: 1
+      tolerated_http_errors: []
+      replication_method: { type: FullTable }
+      primary_keys: ["id"]
+      partitions: []
+      schema_sample_size: 100
+  transforms:
+    - type: snake_case
+  sink:
+    type: jsonl
+    config:
+      path: ./out/issues.jsonl
+  state:
+    type: file
+    config:
+      path: ./.faucet-state
 ```
 
-### Env / file interpolation
+`pipeline:` is the only required block. Anything you would have written at the top level pre-#54 (`source:`, `transforms:`, `sink:`, `state:`) now lives one level deeper inside `pipeline:`. Validation rejects the old shape with a clear hint.
 
-Anywhere in the config, `${env:VAR}` is replaced with the value of the environment variable, and `${file:./path}` with the (trimmed) contents of the file. Interpolation runs before YAML / JSON parsing, so resolved values can become any structured type. `${secret:VAR}` is an alias for `${env:VAR}` today; future releases will plug in a real secrets backend behind that prefix.
+### Matrix mode — run many invocations from one config
+
+Add a `matrix:` block to run multiple invocations from the same base. Each row is **deep-merged** into `pipeline:` (objects merge recursively, arrays replace wholesale, scalars replace). Rows with `parent:` become children that fan out one invocation per record produced by the parent row.
+
+```yaml
+version: 1
+name: api_to_warehouse
+
+pipeline:
+  source:
+    type: rest
+    config:
+      base_url: https://api.example.com
+      auth: { type: Bearer, token: ${env:API_TOKEN} }
+      pagination: { type: PageNumber, param_name: page, page_size: 100 }
+  sink:
+    type: bigquery
+    config:
+      service_account_key_path: ${env:GCP_SA_PATH}
+      project_id: my-project
+
+matrix:
+  # Independent roots — different paths/tables, shared auth + sink type.
+  - id: users
+    source: { config: { path: /v1/users } }
+    sink:   { config: { dataset: raw, table: users } }
+  - id: products
+    source: { config: { path: /v1/products } }
+    sink:   { config: { dataset: raw, table: products } }
+
+  # DAG fan-out — one child invocation per parent record.
+  - id: user_posts
+    parent: users
+    source: { config: { path: /v1/users/${users.id}/posts } }
+    sink:   { config: { dataset: raw, table: user_posts } }
+
+execution:
+  max_concurrent: 8
+  on_error: continue   # or `stop`
+```
+
+#### Deep-merge rules
+
+- Objects merge recursively (overlay keys win on collision).
+- Arrays replace wholesale — no element-merging, no concat. If a row needs to add to an inherited list, redeclare it.
+- Scalars / `null` / numbers / booleans replace.
+
+#### Two-stage interpolation
+
+Tokens are resolved in two passes:
+
+| Token | When |
+|-------|------|
+| `${env:VAR}` | Load-time, before YAML parsing. |
+| `${file:./path}` | Load-time. File contents trimmed of trailing whitespace. |
+| `${secret:VAR}` | Load-time. Alias for `${env:VAR}` today. |
+| `${row_id.dotted.path}` | Run-time, per parent record. The `row_id` must be the id of another matrix row. |
+
+`$${` escapes a literal `${`. Reserved row ids that can never appear in `matrix.id`: `env`, `file`, `secret`, `matrix`, `pipeline`.
+
+#### Execution
+
+- `max_concurrent` bounds total in-flight invocations (roots + per-parent-record children compete for one budget). Default: `min(num_cpus, 4)`.
+- `on_error: continue` (default) — a failed invocation is logged, its subtree is skipped, siblings run. The process exits non-zero if any invocation failed.
+- `on_error: stop` — first failure halts every pending invocation. Runs sequentially under one permit at a time for deterministic halt semantics.
+
+#### State keys
+
+- Root invocations: `{name}::{row_id}`.
+- Child invocations: `{name}::{row_id}::{parent_record_key}` where `parent_record_key` is the value at `parent_key` (default `id`) in the parent record.
+
+A state-key collision among siblings sharing a parent is detected upfront and errors with both offenders named.
 
 ### State stores
 

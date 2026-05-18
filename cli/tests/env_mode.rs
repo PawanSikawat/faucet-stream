@@ -88,7 +88,7 @@ fn from_env_and_config_path_are_mutually_exclusive() {
     clear_faucet_env();
     let dir = tempfile::tempdir().unwrap();
     let yaml = dir.path().join("pipe.yaml");
-    fs::write(&yaml, "version: 1\nsource: {type: csv, config: {path: x}}\nsink: {type: jsonl, config: {path: y}}\n").unwrap();
+    fs::write(&yaml, "version: 1\npipeline:\n  source: {type: csv, config: {path: x}}\n  sink: {type: jsonl, config: {path: y}}\n").unwrap();
 
     Command::cargo_bin("faucet")
         .unwrap()
@@ -136,14 +136,15 @@ fn env_file_works_in_yaml_mode() {
         &yaml,
         format!(
             r#"version: 1
-source:
-  type: csv
-  config:
-    path: {input}
-sink:
-  type: jsonl
-  config:
-    path: ${{env:FAUCET_TEST_OUT_PATH}}
+pipeline:
+  source:
+    type: csv
+    config:
+      path: {input}
+  sink:
+    type: jsonl
+    config:
+      path: ${{env:FAUCET_TEST_OUT_PATH}}
 "#,
             input = input.display(),
         ),

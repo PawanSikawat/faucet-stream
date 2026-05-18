@@ -3,32 +3,33 @@
 version: 1
 name: mongodb_to_elasticsearch
 
-source:
-  type: mongodb
-  config:
-    connection_uri: mongodb://localhost:27017
-    database: shop
-    collection: products
-    filter:
-      available: true
-    projection:
-      _id: 1
-      name: 1
-      description: 1
-      tags: 1
-    sort:
-      updated_at: -1
-    limit: 100000
-    batch_size: 1000
+pipeline:
+  source:
+    type: mongodb
+    config:
+      connection_uri: mongodb://localhost:27017
+      database: shop
+      collection: products
+      filter:
+        available: true
+      projection:
+        _id: 1
+        name: 1
+        description: 1
+        tags: 1
+      sort:
+        updated_at: -1
+      limit: 100000
+      batch_size: 1000
 
-sink:
-  type: elasticsearch
-  config:
-    base_url: https://es.example.com:9200
-    index: products
-    auth:
-      type: Basic
-      username: ${env:ES_USER}
-      password: ${env:ES_PASS}
-    batch_size: 1000
-    id_field: _id
+  sink:
+    type: elasticsearch
+    config:
+      base_url: https://es.example.com:9200
+      index: products
+      auth:
+        type: Basic
+        username: ${env:ES_USER}
+        password: ${env:ES_PASS}
+      batch_size: 1000
+      id_field: _id

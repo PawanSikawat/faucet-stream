@@ -1,4 +1,5 @@
-//! `faucet init` — scaffold a starter `pipeline.yaml`.
+//! `faucet init` — scaffold a starter `pipeline.yaml` in the new matrix-aware
+//! shape.
 
 use crate::cli::InitArgs;
 use crate::error::{CliError, CliResult};
@@ -6,51 +7,59 @@ use crate::error::{CliError, CliResult};
 const TEMPLATE: &str = r#"version: 1
 name: {NAME}
 
-# Pull JSON records from a REST API. Replace base_url/path with your own
-# endpoint, and configure auth + pagination as needed. See:
-#   faucet schema source rest
-source:
-  type: rest
-  config:
-    base_url: https://api.example.com
-    path: /things
-    method: GET
-    # Auth — see `faucet schema source rest` for every supported variant.
-    # ApiKey sends the value in a request header; swap to {type: Basic,
-    # username, password} for HTTP basic, or {type: None} for no auth.
-    auth:
-      type: ApiKey
-      header: Authorization
-      value: Bearer ${env:API_TOKEN}
-    query_params: {}
-    pagination:
-      type: None
-    max_retries: 3
-    retry_backoff: 1
-    tolerated_http_errors: []
-    replication_method:
-      type: FullTable
-    primary_keys: []
-    partitions: []
-    schema_sample_size: 100
+# The base pipeline. Every matrix row (below) is deep-merged into this.
+# Even with no matrix block, this section runs once on its own.
+pipeline:
+  source:
+    type: rest
+    config:
+      base_url: https://api.example.com
+      path: /things
+      method: GET
+      auth:
+        type: ApiKey
+        header: Authorization
+        value: Bearer ${env:API_TOKEN}
+      query_params: {}
+      pagination:
+        type: None
+      max_retries: 3
+      retry_backoff: 1
+      tolerated_http_errors: []
+      replication_method:
+        type: FullTable
+      primary_keys: []
+      partitions: []
+      schema_sample_size: 100
 
-# Optional transforms applied to every record, in declaration order.
-transforms:
-  - type: snake_case
+  transforms:
+    - type: snake_case
 
-# Where the records go. Replace with bigquery/postgres/s3/etc as needed:
-#   faucet list
-sink:
-  type: jsonl
-  config:
-    path: ./out.jsonl
+  sink:
+    type: jsonl
+    config:
+      path: ./out.jsonl
 
-# Optional. Tracks incremental-replication bookmarks across runs so the
-# pipeline resumes from where it left off.
-state:
-  type: file
-  config:
-    path: ./.faucet-state
+  state:
+    type: file
+    config:
+      path: ./.faucet-state
+
+# Optional. Each row is deep-merged into `pipeline:` above. Use `parent:` to
+# fan one row out per record produced by another row, and `${row_id.field}`
+# in any string to interpolate parent fields at runtime.
+#
+# matrix:
+#   - id: users
+#     source: { config: { path: /v1/users } }
+#   - id: posts
+#     parent: users
+#     source: { config: { path: "/v1/users/${users.id}/posts" } }
+
+# Optional execution controls.
+# execution:
+#   max_concurrent: 4
+#   on_error: continue   # or `stop`
 "#;
 
 /// Execute the `init` subcommand.

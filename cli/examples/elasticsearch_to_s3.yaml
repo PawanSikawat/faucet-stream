@@ -3,26 +3,27 @@
 version: 1
 name: elasticsearch_to_s3
 
-source:
-  type: elasticsearch
-  config:
-    base_url: https://es.example.com:9200
-    index: logs-2026-05
-    query:
-      match:
-        level: error
-    scroll_timeout: 2m
-    scroll_size: 2000
-    auth:
-      type: ApiKey
-      key: ${env:ES_API_KEY}
+pipeline:
+  source:
+    type: elasticsearch
+    config:
+      base_url: https://es.example.com:9200
+      index: logs-2026-05
+      query:
+        match:
+          level: error
+      scroll_timeout: 2m
+      scroll_size: 2000
+      auth:
+        type: ApiKey
+        key: ${env:ES_API_KEY}
 
-sink:
-  type: s3
-  config:
-    bucket: my-es-backups
-    prefix: logs/2026-05/
-    region: us-east-1
-    file_extension: .jsonl
-    max_records_per_file: 50000
-    concurrency: 16
+  sink:
+    type: s3
+    config:
+      bucket: my-es-backups
+      prefix: logs/2026-05/
+      region: us-east-1
+      file_extension: .jsonl
+      max_records_per_file: 50000
+      concurrency: 16

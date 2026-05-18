@@ -3,28 +3,29 @@
 version: 1
 name: xml_to_mongodb
 
-source:
-  type: xml
-  config:
-    base_url: https://feeds.example.com
-    path: /catalog
-    method: GET
-    auth:
-      type: Bearer
-      token: ${env:FEED_TOKEN}
-    query_params:
-      format: xml
-    records_element_path: catalog.products.product
-    pagination:
-      type: Offset
-      offset_param: offset
-      limit_param: limit
-      limit: 250
+pipeline:
+  source:
+    type: xml
+    config:
+      base_url: https://feeds.example.com
+      path: /catalog
+      method: GET
+      auth:
+        type: Bearer
+        token: ${env:FEED_TOKEN}
+      query_params:
+        format: xml
+      records_element_path: catalog.products.product
+      pagination:
+        type: Offset
+        offset_param: offset
+        limit_param: limit
+        limit: 250
 
-sink:
-  type: mongodb
-  config:
-    connection_uri: mongodb://localhost:27017
-    database: warehouse
-    collection: catalog_items
-    batch_size: 1000
+  sink:
+    type: mongodb
+    config:
+      connection_uri: mongodb://localhost:27017
+      database: warehouse
+      collection: catalog_items
+      batch_size: 1000

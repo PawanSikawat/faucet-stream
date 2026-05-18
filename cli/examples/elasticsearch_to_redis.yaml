@@ -3,27 +3,28 @@
 version: 1
 name: elasticsearch_to_redis
 
-source:
-  type: elasticsearch
-  config:
-    base_url: https://es.example.com:9200
-    index: products
-    query:
-      term:
-        available: true
-    scroll_timeout: 1m
-    scroll_size: 1000
-    auth:
-      type: Basic
-      username: ${env:ES_USER}
-      password: ${env:ES_PASS}
-    max_pages: 500
+pipeline:
+  source:
+    type: elasticsearch
+    config:
+      base_url: https://es.example.com:9200
+      index: products
+      query:
+        term:
+          available: true
+      scroll_timeout: 1m
+      scroll_size: 1000
+      auth:
+        type: Basic
+        username: ${env:ES_USER}
+        password: ${env:ES_PASS}
+      max_pages: 500
 
-sink:
-  type: redis
-  config:
-    url: redis://localhost:6379
-    sink_type:
-      type: KeyValue
-      key_field: id
-    batch_size: 2000
+  sink:
+    type: redis
+    config:
+      url: redis://localhost:6379
+      sink_type:
+        type: KeyValue
+        key_field: id
+      batch_size: 2000

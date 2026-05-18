@@ -13,20 +13,21 @@
 # will drain them every fetch cycle until idle_timeout fires.
 
 version: 1
-source:
-  type: postgres-cdc
-  config:
-    connection_url: postgres://faucet:faucet@localhost:5432/appdb
-    slot_name: faucet_slot
-    publication_name: faucet_pub
-    create_slot_if_missing: true
-    idle_timeout: 30
-sink:
-  type: jsonl
-  config:
-    path: ./out/changes.jsonl
-    append: true
-state:
-  type: file
-  config:
-    path: ./state
+pipeline:
+  source:
+    type: postgres-cdc
+    config:
+      connection_url: postgres://faucet:faucet@localhost:5432/appdb
+      slot_name: faucet_slot
+      publication_name: faucet_pub
+      create_slot_if_missing: true
+      idle_timeout: 30
+  sink:
+    type: jsonl
+    config:
+      path: ./out/changes.jsonl
+      append: true
+  state:
+    type: file
+    config:
+      path: ./state

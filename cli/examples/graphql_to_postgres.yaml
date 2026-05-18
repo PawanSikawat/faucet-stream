@@ -4,36 +4,37 @@
 version: 1
 name: graphql_to_postgres
 
-source:
-  type: graphql
-  config:
-    endpoint: https://api.example.com/graphql
-    query: |
-      query Users($after: String, $first: Int!) {
-        users(first: $first, after: $after) {
-          edges { node { id name email createdAt } }
-          pageInfo { endCursor hasNextPage }
+pipeline:
+  source:
+    type: graphql
+    config:
+      endpoint: https://api.example.com/graphql
+      query: |
+        query Users($after: String, $first: Int!) {
+          users(first: $first, after: $after) {
+            edges { node { id name email createdAt } }
+            pageInfo { endCursor hasNextPage }
+          }
         }
-      }
-    variables:
-      first: 100
-    auth:
-      type: Bearer
-      token: ${env:API_TOKEN}
-    records_path: $.data.users.edges[*].node
-    pagination:
-      has_next_page_path: $.data.users.pageInfo.hasNextPage
-      cursor_path: $.data.users.pageInfo.endCursor
-      cursor_variable: after
-      page_size: 100
-      page_size_variable: first
+      variables:
+        first: 100
+      auth:
+        type: Bearer
+        token: ${env:API_TOKEN}
+      records_path: $.data.users.edges[*].node
+      pagination:
+        has_next_page_path: $.data.users.pageInfo.hasNextPage
+        cursor_path: $.data.users.pageInfo.endCursor
+        cursor_variable: after
+        page_size: 100
+        page_size_variable: first
 
-sink:
-  type: postgres
-  config:
-    connection_url: postgres://user:pass@localhost/app
-    table_name: users_imported
-    column_mapping:
-      type: auto_map
-    batch_size: 1000
-    max_connections: 8
+  sink:
+    type: postgres
+    config:
+      connection_url: postgres://user:pass@localhost/app
+      table_name: users_imported
+      column_mapping:
+        type: auto_map
+      batch_size: 1000
+      max_connections: 8

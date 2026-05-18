@@ -13,14 +13,15 @@ fn csv_to_jsonl_yaml(csv: &Path, out: &Path) -> String {
     format!(
         r#"version: 1
 name: csv_to_jsonl_smoke
-source:
-  type: csv
-  config:
-    path: {csv}
-sink:
-  type: jsonl
-  config:
-    path: {out}
+pipeline:
+  source:
+    type: csv
+    config:
+      path: {csv}
+  sink:
+    type: jsonl
+    config:
+      path: {out}
 "#,
         csv = csv.display(),
         out = out.display(),
@@ -108,7 +109,8 @@ fn validate_accepts_csv_to_jsonl_yaml() {
         .assert()
         .success()
         .stdout(contains("source=csv"))
-        .stdout(contains("sink=jsonl"));
+        .stdout(contains("sink=jsonl"))
+        .stdout(contains("rows=1"));
 }
 
 #[test]
@@ -128,7 +130,8 @@ fn run_executes_csv_to_jsonl_pipeline() {
         .arg(&cfg)
         .assert()
         .success()
-        .stdout(contains("wrote 2 records"));
+        .stdout(contains("wrote 2 records"))
+        .stdout(contains("1 invocation"));
 
     let lines: Vec<_> = fs::read_to_string(&out)
         .unwrap()
@@ -216,14 +219,15 @@ fn env_interpolation_resolves_inside_config_values() {
 
     let cfg_text = format!(
         r#"version: 1
-source:
-  type: csv
-  config:
-    path: ${{env:FAUCET_TEST_CSV_PATH}}
-sink:
-  type: jsonl
-  config:
-    path: {out}
+pipeline:
+  source:
+    type: csv
+    config:
+      path: ${{env:FAUCET_TEST_CSV_PATH}}
+  sink:
+    type: jsonl
+    config:
+      path: {out}
 "#,
         out = out.display()
     );
@@ -318,14 +322,15 @@ fn run_auto_discovers_faucet_yaml_and_dotenv_in_cwd() {
         dir.path().join("faucet.yaml"),
         format!(
             r#"version: 1
-source:
-  type: csv
-  config:
-    path: {csv}
-sink:
-  type: jsonl
-  config:
-    path: ${{env:DISCOVERED_OUT}}
+pipeline:
+  source:
+    type: csv
+    config:
+      path: {csv}
+  sink:
+    type: jsonl
+    config:
+      path: ${{env:DISCOVERED_OUT}}
 "#,
             csv = csv.display(),
         ),
@@ -373,14 +378,15 @@ fn run_no_env_file_skips_dotenv_auto_load() {
         dir.path().join("faucet.yaml"),
         format!(
             r#"version: 1
-source:
-  type: csv
-  config:
-    path: {csv}
-sink:
-  type: jsonl
-  config:
-    path: ${{env:FAUCET_TEST_SKIPPED_PATH}}
+pipeline:
+  source:
+    type: csv
+    config:
+      path: {csv}
+  sink:
+    type: jsonl
+    config:
+      path: ${{env:FAUCET_TEST_SKIPPED_PATH}}
 "#,
             csv = csv.display(),
         ),
@@ -404,14 +410,15 @@ fn missing_env_var_in_config_is_reported() {
     fs::write(
         &cfg,
         r#"version: 1
-source:
-  type: csv
-  config:
-    path: ${env:FAUCET_DEFINITELY_UNSET}
-sink:
-  type: jsonl
-  config:
-    path: /tmp/no.jsonl
+pipeline:
+  source:
+    type: csv
+    config:
+      path: ${env:FAUCET_DEFINITELY_UNSET}
+  sink:
+    type: jsonl
+    config:
+      path: /tmp/no.jsonl
 "#,
     )
     .unwrap();

@@ -3,30 +3,31 @@
 version: 1
 name: grpc_to_http
 
-source:
-  type: grpc
-  config:
-    endpoint: https://grpc.example.com:443
-    service_name: metrics.MetricsService
-    method_name: ListMetrics
-    descriptor_set_path: proto/metrics.bin
-    request:
-      window: 1h
-    auth:
-      type: Bearer
-      token: ${env:GRPC_TOKEN}
-    tls: true
-    records_path: $.metrics[*]
+pipeline:
+  source:
+    type: grpc
+    config:
+      endpoint: https://grpc.example.com:443
+      service_name: metrics.MetricsService
+      method_name: ListMetrics
+      descriptor_set_path: proto/metrics.bin
+      request:
+        window: 1h
+      auth:
+        type: Bearer
+        token: ${env:GRPC_TOKEN}
+      tls: true
+      records_path: $.metrics[*]
 
-sink:
-  type: http
-  config:
-    url: https://ingest.example.com/v1/events?tenant=acme
-    method: POST
-    auth:
-      type: Bearer
-      token: ${env:INGEST_TOKEN}
-    batch_mode:
-      type: Array
-    max_retries: 3
-    concurrency: 8
+  sink:
+    type: http
+    config:
+      url: https://ingest.example.com/v1/events?tenant=acme
+      method: POST
+      auth:
+        type: Bearer
+        token: ${env:INGEST_TOKEN}
+      batch_mode:
+        type: Array
+      max_retries: 3
+      concurrency: 8

@@ -7,47 +7,48 @@
 version: 1
 name: stripe_charges_to_postgres
 
-source:
-  type: rest
-  config:
-    base_url: https://api.stripe.com/v1
-    path: /charges
-    method: GET
-    auth:
-      type: Bearer
-      token: ${env:STRIPE_TOKEN}
-    query_params:
-      limit: "100"
-    pagination:
-      type: Cursor
-      next_token_path: $.next_page
-      param_name: starting_after
-    max_retries: 5
-    retry_backoff: 2
-    tolerated_http_errors: []
-    replication_method:
-      type: Incremental
-    replication_key: created
-    primary_keys: ["id"]
-    partitions: []
-    schema_sample_size: 200
-    state_key: stripe:charges
+pipeline:
+  source:
+    type: rest
+    config:
+      base_url: https://api.stripe.com/v1
+      path: /charges
+      method: GET
+      auth:
+        type: Bearer
+        token: ${env:STRIPE_TOKEN}
+      query_params:
+        limit: "100"
+      pagination:
+        type: Cursor
+        next_token_path: $.next_page
+        param_name: starting_after
+      max_retries: 5
+      retry_backoff: 2
+      tolerated_http_errors: []
+      replication_method:
+        type: Incremental
+      replication_key: created
+      primary_keys: ["id"]
+      partitions: []
+      schema_sample_size: 200
+      state_key: stripe:charges
 
-transforms:
-  - type: snake_case
+  transforms:
+    - type: snake_case
 
-sink:
-  type: postgres
-  config:
-    connection_url: ${env:PG_URL}
-    table_name: stripe_charges
-    column_mapping:
-      type: jsonb
-      column: data
-    batch_size: 500
-    max_connections: 5
+  sink:
+    type: postgres
+    config:
+      connection_url: ${env:PG_URL}
+      table_name: stripe_charges
+      column_mapping:
+        type: jsonb
+        column: data
+      batch_size: 500
+      max_connections: 5
 
-state:
-  type: file
-  config:
-    path: ./.faucet-state
+  state:
+    type: file
+    config:
+      path: ./.faucet-state

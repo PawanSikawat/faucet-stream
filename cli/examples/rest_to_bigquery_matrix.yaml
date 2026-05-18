@@ -1,0 +1,86 @@
+# Three independent REST endpoints → three BigQuery tables, sharing one
+# base source config and one base sink config. Each row varies only in
+# the REST `path` and the BigQuery `(dataset_id, table_id)`. No DAG —
+# all three rows are root rows and run concurrently (bounded by
+# `execution.max_concurrent`).
+#
+# Required env vars:
+#   API_TOKEN       — bearer token for the source API
+#   GCP_KEY_JSON    — inline service-account JSON
+version: 1
+name: rest_to_bigquery_matrix
+
+pipeline:
+  source:
+    type: rest
+    config:
+      base_url: https://api.example.com
+      method: GET
+      auth:
+        type: Bearer
+        token: ${env:API_TOKEN}
+      pagination:
+        type: PageNumber
+        param_name: page
+        start_page: 1
+        page_size: 500
+        page_size_param: per_page
+      max_pages: 200
+      timeout: 30
+      max_retries: 5
+      retry_backoff: 2
+      tolerated_http_errors: []
+      replication_method:
+        type: FullTable
+      partitions: []
+      schema_sample_size: 100
+
+  sink:
+    type: bigquery
+    config:
+      project_id: my-gcp-project
+      credentials:
+        type: ServiceAccountKeyJson
+        value: ${env:GCP_KEY_JSON}
+      batch_size: 1000
+
+matrix:
+  - id: users
+    source:
+      config:
+        path: /v1/users
+        name: users
+        records_path: $.users[*]
+        primary_keys: [id]
+    sink:
+      config:
+        dataset_id: analytics
+        table_id: users
+
+  - id: products
+    source:
+      config:
+        path: /v1/products
+        name: products
+        records_path: $.products[*]
+        primary_keys: [sku]
+    sink:
+      config:
+        dataset_id: analytics
+        table_id: products
+
+  - id: orders
+    source:
+      config:
+        path: /v1/orders
+        name: orders
+        records_path: $.orders[*]
+        primary_keys: [order_id]
+    sink:
+      config:
+        dataset_id: analytics
+        table_id: orders
+
+execution:
+  max_concurrent: 3
+  on_error: continue

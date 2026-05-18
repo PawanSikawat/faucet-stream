@@ -3,18 +3,19 @@
 version: 1
 name: webhook_to_csv
 
-source:
-  type: webhook
-  config:
-    listen_addr: 127.0.0.1:9090
-    path: /inbox
-    max_payloads: 5000
-    timeout_secs: 120
+pipeline:
+  source:
+    type: webhook
+    config:
+      listen_addr: 127.0.0.1:9090
+      path: /inbox
+      max_payloads: 5000
+      timeout_secs: 120
 
-sink:
-  type: csv
-  config:
-    path: webhooks.csv
-    delimiter: 59     # b';'
-    write_headers: true
-    append: true
+  sink:
+    type: csv
+    config:
+      path: webhooks.csv
+      delimiter: 59     # b';'
+      write_headers: true
+      append: true

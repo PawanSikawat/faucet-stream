@@ -3,16 +3,17 @@
 version: 1
 name: sqlite_to_csv
 
-source:
-  type: sqlite
-  config:
-    database_url: sqlite://./data/app.db
-    query: SELECT id, email, created_at FROM users ORDER BY id
+pipeline:
+  source:
+    type: sqlite
+    config:
+      database_url: sqlite://./data/app.db
+      query: SELECT id, email, created_at FROM users ORDER BY id
 
-sink:
-  type: csv
-  config:
-    path: ./out/users.csv
-    delimiter: 44       # ','
-    write_headers: true
-    append: false
+  sink:
+    type: csv
+    config:
+      path: ./out/users.csv
+      delimiter: 44       # ','
+      write_headers: true
+      append: false

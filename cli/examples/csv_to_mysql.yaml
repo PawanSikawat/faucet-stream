@@ -3,20 +3,21 @@
 version: 1
 name: csv_to_mysql
 
-source:
-  type: csv
-  config:
-    path: customers.csv
-    has_headers: true
-    delimiter: 44   # b','
-    quote: 34       # b'"'
+pipeline:
+  source:
+    type: csv
+    config:
+      path: customers.csv
+      has_headers: true
+      delimiter: 44   # b','
+      quote: 34       # b'"'
 
-sink:
-  type: mysql
-  config:
-    connection_url: mysql://user:pass@localhost/crm
-    table_name: customers_imported
-    column_mapping:
-      type: auto_map
-    batch_size: 1000
-    max_connections: 10
+  sink:
+    type: mysql
+    config:
+      connection_url: mysql://user:pass@localhost/crm
+      table_name: customers_imported
+      column_mapping:
+        type: auto_map
+      batch_size: 1000
+      max_connections: 10

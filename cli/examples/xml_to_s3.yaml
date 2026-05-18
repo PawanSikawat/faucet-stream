@@ -7,41 +7,42 @@
 version: 1
 name: xml_to_s3
 
-source:
-  type: xml
-  config:
-    base_url: https://soap.example.com
-    path: /InventoryService
-    method: POST
-    auth:
-      type: Basic
-      username: ${env:SOAP_USER}
-      password: ${env:SOAP_PASS}
-    body: |
-      <?xml version="1.0"?>
-      <soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
-        <soap:Body>
-          <GetInventory><Region>us-east</Region></GetInventory>
-        </soap:Body>
-      </soap:Envelope>
-    query_params:
-      region: us-east
-    records_element_path: soap:Envelope.soap:Body.GetInventoryResponse.Items.Item
-    pagination:
-      type: PageNumber
-      param_name: page
-      start_page: 1
-      page_size: 500
-      page_size_param: size
-    max_pages: 50
+pipeline:
+  source:
+    type: xml
+    config:
+      base_url: https://soap.example.com
+      path: /InventoryService
+      method: POST
+      auth:
+        type: Basic
+        username: ${env:SOAP_USER}
+        password: ${env:SOAP_PASS}
+      body: |
+        <?xml version="1.0"?>
+        <soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
+          <soap:Body>
+            <GetInventory><Region>us-east</Region></GetInventory>
+          </soap:Body>
+        </soap:Envelope>
+      query_params:
+        region: us-east
+      records_element_path: soap:Envelope.soap:Body.GetInventoryResponse.Items.Item
+      pagination:
+        type: PageNumber
+        param_name: page
+        start_page: 1
+        page_size: 500
+        page_size_param: size
+      max_pages: 50
 
-sink:
-  type: s3
-  config:
-    bucket: my-data-lake
-    prefix: xml/inventory/
-    region: us-east-1
-    endpoint_url: https://s3.us-east-1.amazonaws.com
-    file_extension: .jsonl
-    max_records_per_file: 5000
-    concurrency: 8
+  sink:
+    type: s3
+    config:
+      bucket: my-data-lake
+      prefix: xml/inventory/
+      region: us-east-1
+      endpoint_url: https://s3.us-east-1.amazonaws.com
+      file_extension: .jsonl
+      max_records_per_file: 5000
+      concurrency: 8

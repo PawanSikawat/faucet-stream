@@ -2,22 +2,23 @@
 version: 1
 name: postgres_to_elasticsearch
 
-source:
-  type: postgres
-  config:
-    connection_url: postgres://user:pass@localhost/app
-    query: SELECT id, title, body, tags FROM articles WHERE published = $1
-    params:
-      - true
-    max_connections: 8
+pipeline:
+  source:
+    type: postgres
+    config:
+      connection_url: postgres://user:pass@localhost/app
+      query: SELECT id, title, body, tags FROM articles WHERE published = $1
+      params:
+        - true
+      max_connections: 8
 
-sink:
-  type: elasticsearch
-  config:
-    base_url: https://es.example.com:9200
-    index: articles
-    auth:
-      type: ApiKey
-      key: ${env:ES_API_KEY}
-    batch_size: 500
-    id_field: id
+  sink:
+    type: elasticsearch
+    config:
+      base_url: https://es.example.com:9200
+      index: articles
+      auth:
+        type: ApiKey
+        key: ${env:ES_API_KEY}
+      batch_size: 500
+      id_field: id

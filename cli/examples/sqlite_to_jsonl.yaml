@@ -2,16 +2,17 @@
 version: 1
 name: sqlite_to_jsonl
 
-source:
-  type: sqlite
-  config:
-    database_url: sqlite:./app.db
-    query: SELECT * FROM events ORDER BY ts
-    max_connections: 4
+pipeline:
+  source:
+    type: sqlite
+    config:
+      database_url: sqlite:./app.db
+      query: SELECT * FROM events ORDER BY ts
+      max_connections: 4
 
-sink:
-  type: jsonl
-  config:
-    path: events.jsonl
-    append: true
-    pretty: false
+  sink:
+    type: jsonl
+    config:
+      path: events.jsonl
+      append: true
+      pretty: false

@@ -1,0 +1,85 @@
+# Parent/child DAG: fetch the users list once, then for each user fan out
+# to fetch that user's posts and orders in parallel. `${users.id}` is
+# resolved per parent record at runtime, so each child invocation gets
+# its own URL and its own output file.
+#
+# Required env vars:
+#   API_TOKEN — bearer token for the source API
+version: 1
+name: rest_users_posts_dag
+
+pipeline:
+  source:
+    type: rest
+    config:
+      base_url: https://api.example.com
+      method: GET
+      auth:
+        type: Bearer
+        token: ${env:API_TOKEN}
+      pagination:
+        type: PageNumber
+        param_name: page
+        start_page: 1
+        page_size: 100
+        page_size_param: per_page
+      max_pages: 50
+      timeout: 30
+      max_retries: 3
+      retry_backoff: 1
+      tolerated_http_errors: []
+      replication_method:
+        type: FullTable
+      partitions: []
+      schema_sample_size: 100
+
+  sink:
+    type: jsonl
+    config:
+      append: false
+      pretty: false
+
+matrix:
+  # Root row: fetch the users list.
+  - id: users
+    source:
+      config:
+        path: /v1/users
+        name: users
+        records_path: $.users[*]
+        primary_keys: [id]
+    sink:
+      config:
+        path: ./out/users.jsonl
+
+  # Child row: one fetch per user, populated from `${users.id}`.
+  - id: user_posts
+    parent: users
+    parent_key: id
+    source:
+      config:
+        path: /v1/users/${users.id}/posts
+        name: user_posts
+        records_path: $.posts[*]
+        primary_keys: [id]
+    sink:
+      config:
+        path: ./out/posts-${users.id}.jsonl
+
+  # Second child row: also one fetch per user, but for orders.
+  - id: user_orders
+    parent: users
+    parent_key: id
+    source:
+      config:
+        path: /v1/users/${users.id}/orders
+        name: user_orders
+        records_path: $.orders[*]
+        primary_keys: [order_id]
+    sink:
+      config:
+        path: ./out/orders-${users.id}.jsonl
+
+execution:
+  max_concurrent: 8
+  on_error: continue

@@ -22,33 +22,34 @@ faucet run pipeline.yaml
 ```
 
 ```yaml
-# pipeline.yaml
+# faucet.yaml — `faucet run` auto-discovers this file (and a sibling `.env`) in cwd
 version: 1
-source:
-  type: rest
-  config:
-    base_url: https://api.github.com
-    path: /repos/PawanSikawat/faucet-stream/issues
-    method: GET
-    auth: { type: ApiKey, header: Authorization, value: "Bearer ${env:GITHUB_TOKEN}" }
-    query_params: { state: open }
-    pagination: { type: LinkHeader }
-    max_retries: 3
-    retry_backoff: 1
-    tolerated_http_errors: []
-    replication_method: { type: FullTable }
-    primary_keys: ["id"]
-    partitions: []
-    schema_sample_size: 100
-transforms:
-  - type: snake_case
-sink:
-  type: jsonl
-  config:
-    path: ./out/issues.jsonl
+pipeline:
+  source:
+    type: rest
+    config:
+      base_url: https://api.github.com
+      path: /repos/PawanSikawat/faucet-stream/issues
+      method: GET
+      auth: { type: ApiKey, header: Authorization, value: "Bearer ${env:GITHUB_TOKEN}" }
+      query_params: { state: open }
+      pagination: { type: LinkHeader }
+      max_retries: 3
+      retry_backoff: 1
+      tolerated_http_errors: []
+      replication_method: { type: FullTable }
+      primary_keys: ["id"]
+      partitions: []
+      schema_sample_size: 100
+  transforms:
+    - type: snake_case
+  sink:
+    type: jsonl
+    config:
+      path: ./out/issues.jsonl
 ```
 
-See [`cli/README.md`](cli/README.md) and [`cli/examples/`](cli/examples/) for the full CLI reference and ready-to-run pipeline YAMLs.
+Add a `matrix:` block to run many invocations from one config (independent fan-out or parent/child DAG), and `execution:` to bound concurrency. See [`cli/README.md`](cli/README.md) for the full grammar, [`cli/examples/rest_to_bigquery_matrix.yaml`](cli/examples/rest_to_bigquery_matrix.yaml) for independent matrix fan-out, and [`cli/examples/rest_users_posts_dag.yaml`](cli/examples/rest_users_posts_dag.yaml) for the DAG pattern.
 
 ## Architecture
 
