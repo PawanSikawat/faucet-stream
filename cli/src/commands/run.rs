@@ -98,29 +98,33 @@ impl Sink for CountingSink {
 
 /// Execute the `run` subcommand.
 pub async fn run(args: RunArgs) -> CliResult<()> {
-    // `--env-file` is only meaningful with `--from-env`. Clap's `requires`
-    // directive does not reliably fire for a defaulted `bool` flag, so we
-    // enforce the constraint explicitly here and surface a clap-style error.
-    if args.env_file.is_some() && !args.from_env {
-        return Err(CliError::EnvFileRequiresFromEnv);
-    }
+    let cwd = std::env::current_dir()?;
+    let env_path =
+        crate::env_loader::resolve_env_file(args.env_file.as_deref(), args.no_env_file, &cwd)?;
+    crate::env_loader::load_env_file_if_present(env_path.as_deref())?;
+
+    let resolved_config_path: Option<std::path::PathBuf> = if args.from_env {
+        None
+    } else {
+        Some(match args.config.as_ref() {
+            Some(p) => p.clone(),
+            None => {
+                crate::env_loader::discover_config_path(&cwd).ok_or(CliError::NoConfigOrFromEnv)?
+            }
+        })
+    };
+
     let cfg = if args.from_env {
-        if let Some(path) = &args.env_file {
-            dotenvy::from_path(path).map_err(|e| CliError::ReadConfig {
-                path: path.clone(),
-                source: std::io::Error::other(e),
-            })?;
-        }
         crate::env_config::from_process_env()?
     } else {
-        let path = args
-            .config
-            .as_ref()
-            .expect("clap ArgGroup guarantees one of config or --from-env");
-        PipelineConfig::from_path(path)?
+        PipelineConfig::from_path(
+            resolved_config_path
+                .as_ref()
+                .expect("YAML mode always resolves a path above"),
+        )?
     };
     let pipeline_name = cfg.name.clone().unwrap_or_else(|| {
-        args.config
+        resolved_config_path
             .as_ref()
             .and_then(|p| p.file_stem())
             .and_then(|s| s.to_str())

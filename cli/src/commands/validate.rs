@@ -2,14 +2,23 @@
 
 use crate::cli::ValidateArgs;
 use crate::config::PipelineConfig;
-use crate::error::CliResult;
+use crate::error::{CliError, CliResult};
 use crate::registry::{sink_schema, source_schema};
 use crate::state::available_state_kinds;
 use crate::transforms::available_transforms;
 
 /// Execute the `validate` subcommand.
 pub async fn run(args: ValidateArgs) -> CliResult<()> {
-    let cfg = PipelineConfig::from_path(&args.config)?;
+    let cwd = std::env::current_dir()?;
+    let env_path =
+        crate::env_loader::resolve_env_file(args.env_file.as_deref(), args.no_env_file, &cwd)?;
+    crate::env_loader::load_env_file_if_present(env_path.as_deref())?;
+
+    let path = match args.config {
+        Some(p) => p,
+        None => crate::env_loader::discover_config_path(&cwd).ok_or(CliError::NoConfigOrFromEnv)?,
+    };
+    let cfg = PipelineConfig::from_path(&path)?;
     // Verifying the schema lookup also catches unknown connector kinds.
     source_schema(&cfg.source.kind)?;
     sink_schema(&cfg.sink.kind)?;

@@ -30,6 +30,20 @@ cargo install faucet-cli --no-default-features \
 
 Pass `--log-level debug` (or set `FAUCET_LOG=debug`) for verbose tracing. Logs are written to stderr; pipeline records and command output go to stdout.
 
+### Config + `.env` auto-discovery
+
+`run`, `validate`, and `preview` all auto-discover their inputs from the current directory:
+
+| What | Behaviour |
+|------|-----------|
+| Config path omitted | Probe `faucet.yaml` → `faucet.yml` → `faucet.json` in cwd; first match wins. |
+| `.env` in cwd | Loaded automatically before any `${env:VAR}` interpolation runs. |
+| `--env-file <path>` | Forces a specific file. The file must exist or the command errors. Works in both YAML mode and `--from-env`. |
+| `--no-env-file` | Disables `.env` auto-loading. Cannot be combined with `--env-file`. |
+| Process env vs `.env` | Process env always wins — `.env` only fills in unset variables. |
+
+So `cd into-your-project && faucet run` is the short form for `faucet run --env-file .env faucet.yaml` whenever both files are present.
+
 ## Config shape
 
 ```yaml

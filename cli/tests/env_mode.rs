@@ -117,16 +117,39 @@ fn missing_selector_errors_clearly() {
 
 #[test]
 #[serial]
-fn env_file_flag_requires_from_env() {
+fn env_file_works_in_yaml_mode() {
+    // Lifting the old `--env-file` ↔ `--from-env` gate (#55): an explicit
+    // .env file must be loaded for `${env:VAR}` interpolation in YAML mode.
     clear_faucet_env();
     let dir = tempfile::tempdir().unwrap();
-    let yaml = dir.path().join("pipe.yaml");
-    fs::write(&yaml, "version: 1\nsource: {type: csv, config: {path: x}}\nsink: {type: jsonl, config: {path: y}}\n").unwrap();
+    let input = dir.path().join("in.csv");
+    let output = dir.path().join("out.jsonl");
     let envfile = dir.path().join("pipe.env");
-    fs::write(&envfile, "X=1\n").unwrap();
+    fs::write(&input, "name\nalice\n").unwrap();
+    fs::write(
+        &envfile,
+        format!("FAUCET_TEST_OUT_PATH={}\n", output.display()),
+    )
+    .unwrap();
+    let yaml = dir.path().join("pipe.yaml");
+    fs::write(
+        &yaml,
+        format!(
+            r#"version: 1
+source:
+  type: csv
+  config:
+    path: {input}
+sink:
+  type: jsonl
+  config:
+    path: ${{env:FAUCET_TEST_OUT_PATH}}
+"#,
+            input = input.display(),
+        ),
+    )
+    .unwrap();
 
-    // Passing --env-file without --from-env should be rejected before any
-    // config processing — the error must mention both flags by name.
     Command::cargo_bin("faucet")
         .unwrap()
         .env_clear()
@@ -135,6 +158,26 @@ fn env_file_flag_requires_from_env() {
         .arg(&envfile)
         .arg(&yaml)
         .assert()
+        .success();
+
+    assert!(output.exists());
+}
+
+#[test]
+#[serial]
+fn missing_env_file_path_errors() {
+    clear_faucet_env();
+    Command::cargo_bin("faucet")
+        .unwrap()
+        .env_clear()
+        .env("PATH", std::env::var("PATH").unwrap_or_default())
+        .args([
+            "run",
+            "--env-file",
+            "/path/does/not/exist.env",
+            "--from-env",
+        ])
+        .assert()
         .failure()
-        .stderr(predicate::str::contains("--env-file").and(predicate::str::contains("--from-env")));
+        .stderr(predicate::str::contains("does not exist"));
 }

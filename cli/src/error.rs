@@ -85,11 +85,16 @@ pub enum CliError {
     )]
     MissingEnvSelector { var: String },
 
-    /// `--env-file` was supplied without `--from-env`.
+    /// An explicit `--env-file` path does not exist on disk.
+    #[error("--env-file path '{}' does not exist", path.display())]
+    EnvFileNotFound { path: PathBuf },
+
+    /// `faucet run` invoked with neither a config path nor `--from-env`, and
+    /// auto-discovery found no `faucet.{yaml,yml,json}` in cwd.
     #[error(
-        "the argument '--env-file' cannot be used without '--from-env'\n\nUsage: faucet run --from-env --env-file <ENV_FILE>"
+        "no pipeline config: pass a path, --from-env, or create faucet.yaml (or .yml/.json) in the current directory"
     )]
-    EnvFileRequiresFromEnv,
+    NoConfigOrFromEnv,
 
     /// Both a scalar env var and its `_JSON` counterpart were set for the same field.
     #[error(

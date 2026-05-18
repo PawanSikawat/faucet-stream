@@ -301,6 +301,103 @@ fn shipped_example_yamls_pass_validate() {
 }
 
 #[test]
+fn run_auto_discovers_faucet_yaml_and_dotenv_in_cwd() {
+    // #55: cwd-based config + .env auto-discovery. `faucet run` with no
+    // positional path picks up `faucet.yaml`, and `${env:VAR}` resolves
+    // against a `.env` in the same directory.
+    let dir = TempDir::new().unwrap();
+    let csv = dir.path().join("in.csv");
+    let out = dir.path().join("out.jsonl");
+    fs::write(&csv, "name\nzed\n").unwrap();
+    fs::write(
+        dir.path().join(".env"),
+        format!("DISCOVERED_OUT={}\n", out.display()),
+    )
+    .unwrap();
+    fs::write(
+        dir.path().join("faucet.yaml"),
+        format!(
+            r#"version: 1
+source:
+  type: csv
+  config:
+    path: {csv}
+sink:
+  type: jsonl
+  config:
+    path: ${{env:DISCOVERED_OUT}}
+"#,
+            csv = csv.display(),
+        ),
+    )
+    .unwrap();
+
+    Command::cargo_bin("faucet")
+        .unwrap()
+        .current_dir(dir.path())
+        .env_remove("DISCOVERED_OUT")
+        .arg("run")
+        .assert()
+        .success()
+        .stdout(contains("wrote 1 record"));
+
+    assert!(out.exists(), "auto-discovered run should produce output");
+}
+
+#[test]
+fn run_with_no_config_and_no_from_env_errors() {
+    // No positional path, no --from-env, no faucet.* in cwd → clear error.
+    let dir = TempDir::new().unwrap();
+    Command::cargo_bin("faucet")
+        .unwrap()
+        .current_dir(dir.path())
+        .arg("run")
+        .assert()
+        .failure()
+        .stderr(contains("no pipeline config"));
+}
+
+#[test]
+fn run_no_env_file_skips_dotenv_auto_load() {
+    // With --no-env-file, a present .env must NOT be loaded. We prove this by
+    // requiring an env var that is only defined in .env, and asserting failure.
+    let dir = TempDir::new().unwrap();
+    let csv = dir.path().join("in.csv");
+    fs::write(&csv, "name\nx\n").unwrap();
+    fs::write(
+        dir.path().join(".env"),
+        "FAUCET_TEST_SKIPPED_PATH=/tmp/should-not-be-read.jsonl\n",
+    )
+    .unwrap();
+    fs::write(
+        dir.path().join("faucet.yaml"),
+        format!(
+            r#"version: 1
+source:
+  type: csv
+  config:
+    path: {csv}
+sink:
+  type: jsonl
+  config:
+    path: ${{env:FAUCET_TEST_SKIPPED_PATH}}
+"#,
+            csv = csv.display(),
+        ),
+    )
+    .unwrap();
+
+    Command::cargo_bin("faucet")
+        .unwrap()
+        .current_dir(dir.path())
+        .env_remove("FAUCET_TEST_SKIPPED_PATH")
+        .args(["run", "--no-env-file"])
+        .assert()
+        .failure()
+        .stderr(contains("FAUCET_TEST_SKIPPED_PATH"));
+}
+
+#[test]
 fn missing_env_var_in_config_is_reported() {
     let dir = TempDir::new().unwrap();
     let cfg = dir.path().join("pipeline.yaml");

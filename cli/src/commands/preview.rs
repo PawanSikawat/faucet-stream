@@ -17,7 +17,16 @@ use faucet_core::{Pipeline, Sink};
 #[cfg(feature = "sink-stdout")]
 pub async fn run(args: PreviewArgs) -> CliResult<()> {
     use faucet_sink_stdout::{StdoutFormat, StdoutSink, StdoutSinkConfig};
-    let cfg = PipelineConfig::from_path(&args.config)?;
+    let cwd = std::env::current_dir()?;
+    let env_path =
+        crate::env_loader::resolve_env_file(args.env_file.as_deref(), args.no_env_file, &cwd)?;
+    crate::env_loader::load_env_file_if_present(env_path.as_deref())?;
+    let path = match args.config {
+        Some(p) => p,
+        None => crate::env_loader::discover_config_path(&cwd)
+            .ok_or(crate::error::CliError::NoConfigOrFromEnv)?,
+    };
+    let cfg = PipelineConfig::from_path(&path)?;
     let source = build_source(&cfg.source.kind, cfg.source.config.clone()).await?;
 
     let transforms = compile_transforms(&cfg.transforms)?;

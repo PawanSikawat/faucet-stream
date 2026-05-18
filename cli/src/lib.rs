@@ -13,6 +13,7 @@ pub mod cli;
 pub mod commands;
 pub mod config;
 pub mod env_config;
+pub mod env_loader;
 pub mod error;
 pub mod interpolate;
 pub mod registry;
