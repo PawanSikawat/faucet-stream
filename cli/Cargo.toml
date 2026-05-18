@@ -141,6 +141,7 @@ faucet-state-redis = { workspace = true, optional = true }
 faucet-state-postgres = { workspace = true, optional = true }
 
 clap = { version = "4", features = ["derive", "env"] }
+dotenvy = "0.15"
 serde.workspace = true
 serde_json.workspace = true
 serde_yaml = "0.9"
