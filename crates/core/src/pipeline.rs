@@ -145,16 +145,19 @@ impl<'a, So: Source + ?Sized, Si: Sink + ?Sized> Pipeline<'a, So, Si> {
         self
     }
 
-    /// Run the pipeline in batch mode.
+    /// Run the pipeline in streaming mode.
     ///
     /// 1. Loads the stored bookmark and pushes it to the source (if a state
     ///    store is configured and the source returns a `state_key`).
-    /// 2. Calls [`Source::fetch_all_incremental`] to get all records and an
-    ///    optional bookmark.
-    /// 3. Writes the records to the sink via [`Sink::write_batch`].
-    /// 4. Calls [`Sink::flush`] to ensure all data is committed.
-    /// 5. Persists the new bookmark to the state store.
-    /// 6. Returns a [`PipelineResult`] with the total count and bookmark.
+    /// 2. Drives [`Source::stream_pages`] with [`DEFAULT_BATCH_SIZE`],
+    ///    writing each page to the sink as it arrives via
+    ///    [`Sink::write_batch`].
+    /// 3. Whenever a page carries `Some(bookmark)`, flushes the sink and
+    ///    persists the bookmark to the state store before polling the next
+    ///    page. This makes per-page CDC checkpointing automatic.
+    /// 4. Flushes the sink one final time after the stream completes.
+    /// 5. Returns a [`PipelineResult`] with the total count and the last
+    ///    bookmark observed.
     pub async fn run(&self) -> Result<PipelineResult, FaucetError> {
         let state_key = self.source.state_key();
         if let (Some(store), Some(key)) = (self.state_store.as_ref(), state_key.as_ref()) {
@@ -164,38 +167,9 @@ impl<'a, So: Source + ?Sized, Si: Sink + ?Sized> Pipeline<'a, So, Si> {
             }
         }
 
-        let (records, bookmark) = self
-            .source
-            .fetch_with_context_incremental(&std::collections::HashMap::new())
-            .await?;
-
-        let records_written = if records.is_empty() {
-            0
-        } else {
-            self.sink.write_batch(&records).await?
-        };
-
-        self.sink.flush().await?;
-
-        if let (Some(store), Some(key), Some(value)) = (
-            self.state_store.as_ref(),
-            state_key.as_ref(),
-            bookmark.as_ref(),
-        ) {
-            store.put(key, value).await?;
-        }
-
-        tracing::info!(
-            records_written,
-            has_bookmark = bookmark.is_some(),
-            persisted = self.state_store.is_some() && state_key.is_some() && bookmark.is_some(),
-            "pipeline batch run complete"
-        );
-
-        Ok(PipelineResult {
-            records_written,
-            bookmark,
-        })
+        let ctx = std::collections::HashMap::new();
+        let pages = self.source.stream_pages(&ctx, DEFAULT_BATCH_SIZE);
+        run_stream(pages, self.sink, self.state_store.clone(), state_key).await
     }
 }
 
@@ -788,6 +762,73 @@ mod tests {
             .await
             .unwrap();
         assert!(store.get("k").await.unwrap().is_none());
+    }
+
+    // ── Pipeline::run drives stream_pages ──────────────────────────────────
+
+    /// A source with a custom `stream_pages` impl that yields three pages.
+    /// Used to prove `Pipeline::run` drives the streaming path.
+    struct PagedSource;
+
+    #[async_trait]
+    impl Source for PagedSource {
+        async fn fetch_with_context(
+            &self,
+            _ctx: &std::collections::HashMap<String, Value>,
+        ) -> Result<Vec<Value>, FaucetError> {
+            // Should never be called when stream_pages is overridden.
+            unreachable!("Pipeline::run must drive stream_pages, not fetch_with_context");
+        }
+        fn stream_pages<'a>(
+            &'a self,
+            _ctx: &'a std::collections::HashMap<String, Value>,
+            _batch_size: usize,
+        ) -> std::pin::Pin<
+            Box<dyn futures_core::Stream<Item = Result<StreamPage, FaucetError>> + Send + 'a>,
+        > {
+            Box::pin(async_stream::try_stream! {
+                yield StreamPage { records: vec![json!({"i": 1})], bookmark: None };
+                yield StreamPage { records: vec![json!({"i": 2})], bookmark: None };
+                yield StreamPage { records: vec![json!({"i": 3})], bookmark: Some(json!("final")) };
+            })
+        }
+    }
+
+    /// Sink that counts how many distinct write_batch calls happen.
+    struct CountingSink {
+        calls: std::sync::Mutex<Vec<usize>>,
+    }
+
+    impl CountingSink {
+        fn new() -> Self {
+            Self {
+                calls: std::sync::Mutex::new(Vec::new()),
+            }
+        }
+        fn call_count(&self) -> usize {
+            self.calls.lock().unwrap().len()
+        }
+    }
+
+    #[async_trait]
+    impl Sink for CountingSink {
+        async fn write_batch(&self, records: &[Value]) -> Result<usize, FaucetError> {
+            self.calls.lock().unwrap().push(records.len());
+            Ok(records.len())
+        }
+    }
+
+    #[tokio::test]
+    async fn pipeline_run_drives_stream_pages() {
+        let source = PagedSource;
+        let sink = CountingSink::new();
+
+        let result = Pipeline::new(&source, &sink).run().await.unwrap();
+
+        // Three pages of one record each → three sink calls, three records.
+        assert_eq!(sink.call_count(), 3);
+        assert_eq!(result.records_written, 3);
+        assert_eq!(result.bookmark, Some(json!("final")));
     }
 
     #[tokio::test]
