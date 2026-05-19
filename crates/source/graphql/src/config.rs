@@ -1,5 +1,6 @@
 //! GraphQL source configuration.
 
+use faucet_core::DEFAULT_BATCH_SIZE;
 use reqwest::header::HeaderMap;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -30,9 +31,13 @@ pub struct GraphqlPagination {
     pub cursor_path: String,
     /// Name of the cursor variable in the GraphQL query (default: `"after"`).
     pub cursor_variable: String,
-    /// Optional page size. Added to variables as `first` (or `page_size_variable`).
-    pub page_size: Option<usize>,
     /// Name of the page size variable (default: `"first"`).
+    ///
+    /// The per-page record count itself comes from
+    /// [`GraphqlStreamConfig::batch_size`] — the variable named here is the
+    /// GraphQL variable that the `batch_size` value is injected into on each
+    /// request. The plain `batch_size = 0` sentinel omits the variable so the
+    /// upstream uses its own default page size.
     pub page_size_variable: String,
 }
 
@@ -42,7 +47,6 @@ impl Default for GraphqlPagination {
             has_next_page_path: "$.data.*.pageInfo.hasNextPage".into(),
             cursor_path: "$.data.*.pageInfo.endCursor".into(),
             cursor_variable: "after".into(),
-            page_size: None,
             page_size_variable: "first".into(),
         }
     }
@@ -68,6 +72,22 @@ pub struct GraphqlStreamConfig {
     pub pagination: Option<GraphqlPagination>,
     /// Maximum number of pages to fetch.
     pub max_pages: Option<usize>,
+    /// Records per emitted [`StreamPage`](faucet_core::StreamPage), and the
+    /// value injected as the GraphQL `first:` cursor argument (or whatever
+    /// variable name [`GraphqlPagination::page_size_variable`] specifies).
+    /// Defaults to [`DEFAULT_BATCH_SIZE`].
+    ///
+    /// `batch_size = 0` is the "no batching" sentinel: the page-size variable
+    /// is omitted from the request so the upstream uses its own default page
+    /// size, and the entire result set is emitted as a single page. If the
+    /// upstream schema requires a non-null `first:` argument this will
+    /// surface as `FaucetError::Config` at stream-time.
+    #[serde(default = "default_batch_size")]
+    pub batch_size: usize,
+}
+
+fn default_batch_size() -> usize {
+    DEFAULT_BATCH_SIZE
 }
 
 impl GraphqlStreamConfig {
@@ -82,6 +102,7 @@ impl GraphqlStreamConfig {
             records_path: None,
             pagination: None,
             max_pages: None,
+            batch_size: DEFAULT_BATCH_SIZE,
         }
     }
 
@@ -118,6 +139,17 @@ impl GraphqlStreamConfig {
     /// Set the maximum number of pages to fetch.
     pub fn max_pages(mut self, max: usize) -> Self {
         self.max_pages = Some(max);
+        self
+    }
+
+    /// Set the per-page record count for [`Source::stream_pages`](faucet_core::Source::stream_pages)
+    /// and the GraphQL `first:` cursor argument.
+    ///
+    /// Pass `0` to opt out of batching — the page-size variable is omitted
+    /// from the request so the upstream uses its own default page size, and
+    /// the response is emitted as a single [`StreamPage`](faucet_core::StreamPage).
+    pub fn with_batch_size(mut self, batch_size: usize) -> Self {
+        self.batch_size = batch_size;
         self
     }
 }
@@ -159,6 +191,49 @@ mod tests {
         let pag = GraphqlPagination::default();
         assert_eq!(pag.cursor_variable, "after");
         assert_eq!(pag.page_size_variable, "first");
-        assert!(pag.page_size.is_none());
+    }
+
+    #[test]
+    fn batch_size_defaults_to_default_batch_size() {
+        let config = GraphqlStreamConfig::new("https://api.example.com/graphql", "query { x }");
+        assert_eq!(config.batch_size, faucet_core::DEFAULT_BATCH_SIZE);
+    }
+
+    #[test]
+    fn with_batch_size_overrides_default() {
+        let config = GraphqlStreamConfig::new("https://api.example.com/graphql", "query { x }")
+            .with_batch_size(250);
+        assert_eq!(config.batch_size, 250);
+    }
+
+    #[test]
+    fn batch_size_zero_is_accepted_as_no_batching_sentinel() {
+        let config = GraphqlStreamConfig::new("https://api.example.com/graphql", "query { x }")
+            .with_batch_size(0);
+        assert_eq!(config.batch_size, 0);
+        assert!(faucet_core::validate_batch_size(config.batch_size).is_ok());
+    }
+
+    #[test]
+    fn batch_size_above_max_is_rejected_by_validate_batch_size() {
+        let config = GraphqlStreamConfig::new("https://api.example.com/graphql", "query { x }")
+            .with_batch_size(faucet_core::MAX_BATCH_SIZE + 1);
+        assert!(faucet_core::validate_batch_size(config.batch_size).is_err());
+    }
+
+    #[test]
+    fn batch_size_deserializes_from_json() {
+        let json = r#"{
+            "endpoint": "https://api.example.com/graphql",
+            "query": "query { x }",
+            "variables": {},
+            "auth": {"type": "None"},
+            "records_path": null,
+            "pagination": null,
+            "max_pages": null,
+            "batch_size": 500
+        }"#;
+        let config: GraphqlStreamConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(config.batch_size, 500);
     }
 }

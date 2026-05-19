@@ -52,9 +52,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 has_next_page_path: "$.data.orders.pageInfo.hasNextPage".into(),
                 cursor_path: "$.data.orders.pageInfo.endCursor".into(),
                 cursor_variable: "after".into(),
-                page_size: Some(200),
                 page_size_variable: "first".into(),
             })
+            .with_batch_size(200)
             .max_pages(500),
     );
 

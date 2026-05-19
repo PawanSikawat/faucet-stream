@@ -2,11 +2,12 @@
 
 use crate::config::{GraphqlAuth, GraphqlStreamConfig};
 use async_trait::async_trait;
-use faucet_core::FaucetError;
 use faucet_core::util::{self, DEFAULT_ERROR_BODY_MAX_LEN};
+use faucet_core::{FaucetError, Stream, StreamPage};
 use jsonpath_rust::JsonPath;
 use reqwest::Client;
 use serde_json::{Value, json};
+use std::pin::Pin;
 
 /// A configured GraphQL source that handles pagination and extraction.
 pub struct GraphqlStream {
@@ -106,10 +107,17 @@ impl GraphqlStream {
         {
             map.insert(pag.cursor_variable.clone(), json!(cursor_val));
         }
+        // Inject `first:` (or whatever `page_size_variable` is named) from
+        // `batch_size`. `batch_size = 0` is the "use upstream default"
+        // sentinel — we omit the variable entirely in that case.
         if let Some(pag) = &self.config.pagination
-            && let (Some(size), Value::Object(map)) = (pag.page_size, &mut variables)
+            && self.config.batch_size != 0
+            && let Value::Object(map) = &mut variables
         {
-            map.insert(pag.page_size_variable.clone(), json!(size));
+            map.insert(
+                pag.page_size_variable.clone(),
+                json!(self.config.batch_size),
+            );
         }
 
         let payload = json!({
@@ -160,6 +168,30 @@ impl GraphqlStream {
                 .filter_map(|e| e.get("message").and_then(|m| m.as_str()))
                 .collect::<Vec<_>>()
                 .join("; ");
+            // Surface "first: must be non-null" / similar variable validation
+            // errors as `FaucetError::Config` so callers can react to the
+            // `batch_size = 0` sentinel hitting a schema that requires a
+            // non-null page-size argument. Detect by message substring —
+            // GraphQL servers don't standardise an error-code field.
+            let lower = msg.to_lowercase();
+            if self.config.batch_size == 0
+                && let Some(pag) = &self.config.pagination
+            {
+                let var_name = pag.page_size_variable.to_lowercase();
+                if lower.contains(&var_name)
+                    && (lower.contains("non-null")
+                        || lower.contains("non null")
+                        || lower.contains("must not be null")
+                        || lower.contains("cannot be null")
+                        || lower.contains("required"))
+                {
+                    return Err(FaucetError::Config(format!(
+                        "batch_size = 0 requires the upstream to accept a null {}: argument \
+                         (GraphQL errors: {msg})",
+                        pag.page_size_variable
+                    )));
+                }
+            }
             return Err(FaucetError::HttpStatus {
                 status: 200,
                 url: self.config.endpoint.clone(),
@@ -183,6 +215,112 @@ impl GraphqlStream {
             }
         }
     }
+
+    /// Core pagination loop yielded as a [`StreamPage`] stream.
+    ///
+    /// Each upstream GraphQL response → one [`StreamPage`]. The page size
+    /// variable in the request comes from [`GraphqlStreamConfig::batch_size`];
+    /// `batch_size = 0` omits it so the upstream uses its own default page
+    /// size and emits a single page.
+    ///
+    /// Bookmarks are always `None` — the GraphQL source has no
+    /// incremental-replication mode today. The
+    /// [`bookmark_emitted`-style trailing-checkpoint](https://github.com/PawanSikawat/faucet-stream/commit/e6fdca5)
+    /// guard from the REST source is preserved structurally so any future
+    /// incremental mode picks it up without re-deriving the pattern.
+    fn stream_pages_inner(
+        &self,
+        context: &std::collections::HashMap<String, Value>,
+    ) -> Pin<Box<dyn Stream<Item = Result<StreamPage, FaucetError>> + Send + '_>> {
+        // Own the context so it can live inside the async-stream generator.
+        let owned_context: std::collections::HashMap<String, Value> = context.clone();
+
+        Box::pin(async_stream::try_stream! {
+            let mut cursor: Option<String> = None;
+            let mut prev_cursor: Option<String> = None;
+            let mut pages_fetched = 0usize;
+            // No incremental replication today — `running_max` stays `None`.
+            // The structure mirrors the REST source so a future replication
+            // mode can plug into the same scaffolding without reworking the
+            // bookmark guard.
+            let running_max: Option<Value> = None;
+            let mut bookmark_emitted = false;
+
+            loop {
+                if let Some(max) = self.config.max_pages
+                    && pages_fetched >= max
+                {
+                    tracing::warn!("max pages ({max}) reached");
+                    break;
+                }
+
+                let body = self.execute_query(&cursor, &owned_context).await?;
+                let records = self.extract_records(&body)?;
+                pages_fetched += 1;
+
+                // Advance pagination state BEFORE yielding the current page,
+                // so the bookmark is only attached on the final page.
+                let has_next = match &self.config.pagination {
+                    Some(pag) => {
+                        let next = extract_bool(&body, &pag.has_next_page_path).unwrap_or(false);
+                        if next {
+                            let next_cursor = extract_string(&body, &pag.cursor_path);
+                            match next_cursor {
+                                None => false,
+                                Some(next_cursor) => {
+                                    // Loop detection: stop if cursor hasn't changed.
+                                    if Some(&next_cursor) == prev_cursor.as_ref() {
+                                        tracing::warn!("cursor loop detected, stopping pagination");
+                                        false
+                                    } else {
+                                        prev_cursor = cursor.clone();
+                                        cursor = Some(next_cursor);
+                                        true
+                                    }
+                                }
+                            }
+                        } else {
+                            false
+                        }
+                    }
+                    None => false,
+                };
+
+                if has_next {
+                    // Intermediate page — bookmark stays `None`.
+                    yield StreamPage { records, bookmark: None };
+                } else {
+                    // Final page — attach the consolidated bookmark (always
+                    // `None` until incremental mode lands).
+                    bookmark_emitted = running_max.is_some();
+                    yield StreamPage {
+                        records,
+                        bookmark: running_max.clone(),
+                    };
+                    break;
+                }
+            }
+
+            // Trailing checkpoint: if the loop exited (e.g. via `max_pages`
+            // truncation) without carrying the bookmark on a real page, emit
+            // one empty page carrying it so the pipeline persists progress.
+            // No-op today because `running_max` is always `None`, but kept so
+            // a future incremental mode inherits the guard from the REST
+            // source's regression fix (commit e6fdca5).
+            if !bookmark_emitted && running_max.is_some() {
+                yield StreamPage {
+                    records: Vec::new(),
+                    bookmark: running_max,
+                };
+            }
+
+            tracing::info!(
+                pages = pages_fetched,
+                batch_size = self.config.batch_size,
+                "GraphQL source stream complete",
+            );
+        })
+    }
 }
 
 #[async_trait]
@@ -192,6 +330,20 @@ impl faucet_core::Source for GraphqlStream {
         context: &std::collections::HashMap<String, serde_json::Value>,
     ) -> Result<Vec<Value>, FaucetError> {
         self.fetch_all_with_context(context).await
+    }
+
+    /// Stream GraphQL responses page-by-page without buffering the full
+    /// result set. The trait-level `batch_size` argument is ignored in
+    /// favour of [`GraphqlStreamConfig::batch_size`] — the config field is
+    /// the user-facing knob the README documents, and routing the
+    /// pipeline-supplied hint through it would silently override an
+    /// explicit config value.
+    fn stream_pages<'a>(
+        &'a self,
+        context: &'a std::collections::HashMap<String, Value>,
+        _batch_size: usize,
+    ) -> Pin<Box<dyn Stream<Item = Result<StreamPage, FaucetError>> + Send + 'a>> {
+        self.stream_pages_inner(context)
     }
 
     fn config_schema(&self) -> serde_json::Value {
