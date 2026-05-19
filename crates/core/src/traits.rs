@@ -53,7 +53,12 @@ pub trait Source: Send + Sync {
     /// `batch_size` is the *hint* the pipeline passes down; sources are free
     /// to use a larger or smaller native chunk (e.g. one page per HTTP
     /// response, one row-group per Parquet file) but should approximate it
-    /// where feasible.
+    /// where feasible. The special value `batch_size = 0` means "do not
+    /// batch — emit the entire result set in a single page." Sources that
+    /// stream natively should treat `0` as "skip the chunking layer and
+    /// yield one page after the underlying read completes" (useful for
+    /// small lookup tables or for sinks like SQL `COPY` / BigQuery load
+    /// jobs that prefer one large request).
     ///
     /// The default implementation fetches the full result set via
     /// [`fetch_with_context_incremental`](Self::fetch_with_context_incremental)
@@ -75,7 +80,9 @@ pub trait Source: Send + Sync {
                 .fetch_with_context_incremental(context)
                 .await?;
             let total = records.len();
-            let chunk = batch_size.max(1);
+            // batch_size == 0 means "no batching" — emit all records as one
+            // page. Otherwise chunk into pages of size `batch_size`.
+            let chunk = if batch_size == 0 { usize::MAX } else { batch_size };
 
             if total == 0 {
                 if bookmark.is_some() {
@@ -414,6 +421,41 @@ mod tests {
         }
         assert_eq!(collected.len(), 1);
         assert_eq!(collected[0].records.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn default_stream_pages_batch_size_zero_emits_single_page() {
+        // batch_size = 0 is the "no batching" sentinel — yields every record
+        // in one page regardless of total count.
+        let source = MockSource {
+            records: (0..50_000).map(|i| json!({"i": i})).collect(),
+        };
+        let ctx = std::collections::HashMap::new();
+        let mut pages = source.stream_pages(&ctx, 0);
+        let mut collected = Vec::new();
+        while let Some(page) = pages.next().await {
+            collected.push(page.unwrap());
+        }
+        assert_eq!(
+            collected.len(),
+            1,
+            "batch_size=0 must emit exactly one page"
+        );
+        assert_eq!(collected[0].records.len(), 50_000);
+    }
+
+    #[tokio::test]
+    async fn default_stream_pages_batch_size_zero_attaches_bookmark_to_sole_page() {
+        let source = IncrementalSource {
+            records: (0..3).map(|i| json!({"i": i})).collect(),
+            bookmark: json!("v1"),
+        };
+        let ctx = std::collections::HashMap::new();
+        let mut pages = source.stream_pages(&ctx, 0);
+        let page = pages.next().await.unwrap().unwrap();
+        assert_eq!(page.records.len(), 3);
+        assert_eq!(page.bookmark, Some(json!("v1")));
+        assert!(pages.next().await.is_none());
     }
 
     #[tokio::test]

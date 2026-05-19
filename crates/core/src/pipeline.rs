@@ -54,22 +54,28 @@ use std::sync::Arc;
 /// from the pipeline acts as a hint when no source-side preference exists.
 pub const DEFAULT_BATCH_SIZE: usize = 1000;
 
-/// Hard upper bound on `batch_size`. Larger values are rejected at config
-/// validation time to prevent accidental O(total) buffering in the default
+/// Hard upper bound on `batch_size`. Values above this (other than the
+/// special `0` "no batching" sentinel) are rejected at config validation
+/// time to prevent accidental O(total) buffering in the default
 /// implementation of [`Source::stream_pages`].
 pub const MAX_BATCH_SIZE: usize = 1_000_000;
 
 /// Validate a `batch_size` value against the global constraints.
 ///
-/// Returns the unchanged value on success. Returns `FaucetError::Config` for
-/// zero or values above [`MAX_BATCH_SIZE`].
+/// `batch_size = 0` is the **opt-out-of-batching sentinel**: sources and
+/// sinks should treat it as "emit / accept the entire result set in one
+/// page." This is useful for small lookup tables or for sinks (e.g. SQL
+/// `COPY`, BigQuery load jobs) that prefer one large request to many small
+/// ones. Any non-zero value above [`MAX_BATCH_SIZE`] is rejected to prevent
+/// accidental unbounded buffering through a typo.
+///
+/// Returns the unchanged value on success. Returns `FaucetError::Config`
+/// only for values strictly greater than [`MAX_BATCH_SIZE`].
 pub fn validate_batch_size(batch_size: usize) -> Result<usize, FaucetError> {
-    if batch_size == 0 {
-        return Err(FaucetError::Config("batch_size must be at least 1".into()));
-    }
     if batch_size > MAX_BATCH_SIZE {
         return Err(FaucetError::Config(format!(
-            "batch_size {batch_size} exceeds maximum {MAX_BATCH_SIZE}"
+            "batch_size {batch_size} exceeds maximum {MAX_BATCH_SIZE} \
+             (use 0 to opt out of batching entirely)"
         )));
     }
     Ok(batch_size)
@@ -338,9 +344,9 @@ mod tests {
     }
 
     #[test]
-    fn validate_batch_size_rejects_zero() {
-        let err = validate_batch_size(0).unwrap_err();
-        assert!(matches!(err, FaucetError::Config(_)));
+    fn validate_batch_size_accepts_zero_as_no_batching_sentinel() {
+        // 0 means "do not batch — emit/accept the whole result set in one page".
+        assert_eq!(validate_batch_size(0).unwrap(), 0);
     }
 
     #[test]

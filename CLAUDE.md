@@ -176,6 +176,7 @@ Every `Pipeline::run` drives `Source::stream_pages(ctx, batch_size)` internally 
 - `Source::stream_pages` returns `Stream<Item = Result<StreamPage, FaucetError>>` where `StreamPage { records, bookmark }`.
 - The pipeline calls `Sink::write_batch` once per yielded page, then `Sink::flush` and `StateStore::put` whenever a page carries `Some(bookmark)`. Most sources emit `Some` only on the final page; CDC-style sources emit `Some` per committed transaction and get per-transaction durability automatically.
 - `DEFAULT_BATCH_SIZE` is 1000; `MAX_BATCH_SIZE` is 1,000,000. Validate via `validate_batch_size` at config load time.
+- **`batch_size = 0` is the "no batching" sentinel**: sources emit the entire result set in a single `StreamPage`, and sinks (once they expose their own `batch_size` field) accept whatever upstream hands them without re-chunking. Use it for small lookup tables, or for sinks like SQL `COPY` / BigQuery load jobs that prefer one large request to many small ones.
 - Per-source `batch_size` config fields map onto this hint — see each source's README for its native paging primitive.
 
 ## Commands

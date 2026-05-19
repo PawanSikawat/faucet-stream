@@ -28,7 +28,7 @@ Both traits include a `config_schema()` method that returns a JSON Schema descri
 
 `stream_pages(ctx, batch_size)` returns a `Stream<Item = Result<StreamPage, FaucetError>>` where each `StreamPage` contains a chunk of records plus an optional bookmark. The default implementation wraps `fetch_with_context_incremental` and chunks the result in memory; sources that can stream natively (REST, CDC, query DBs with cursor pagination) override this method directly to bound source-side memory at O(batch_size). `Pipeline::run` drives this stream internally; library users do not normally call it themselves.
 
-`DEFAULT_BATCH_SIZE` is `1000`, `MAX_BATCH_SIZE` is `1_000_000`, and `validate_batch_size(n)` enforces the range with `FaucetError::Config` errors for connector authors to use at config-load time.
+`DEFAULT_BATCH_SIZE` is `1000`, `MAX_BATCH_SIZE` is `1_000_000`, and `validate_batch_size(n)` enforces the range with `FaucetError::Config` errors for connector authors to use at config-load time. **`batch_size = 0` is the "no batching" sentinel** — sources emit the entire result set in a single `StreamPage` (and sinks that expose their own `batch_size` accept whatever upstream hands them without re-chunking). Use it for small lookup tables or for bulk-load-style sinks (SQL `COPY`, BigQuery load jobs) that prefer one large request to many small ones.
 
 ```rust
 use faucet_core::{async_trait, FaucetError, Source, Sink, Value};
