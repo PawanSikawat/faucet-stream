@@ -57,7 +57,34 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 | `projection` | `Option<Value>` | `None` | Field projection as a JSON object (e.g. `{"_id": 0, "name": 1}`) |
 | `sort` | `Option<Value>` | `None` | Sort specification as a JSON object (e.g. `{"created_at": -1}`) |
 | `limit` | `Option<i64>` | `None` | Maximum number of documents to return |
-| `batch_size` | `Option<u32>` | `None` | Cursor batch size (number of documents per server round-trip) |
+| `cursor_batch_size` | `Option<u32>` | `None` | MongoDB driver cursor batch size (documents per server round-trip). Wire-level tuning knob — see [Streaming and batching](#streaming-and-batching) for how this differs from `batch_size` |
+| `batch_size` | `usize` | `1000` | Records per `StreamPage` emitted by `Source::stream_pages`. See [Streaming and batching](#streaming-and-batching) below |
+
+> ⚠️ **Breaking rename**: the previous `batch_size: Option<u32>` field has been renamed to `cursor_batch_size` so that the new standardised `batch_size: usize` (records per `StreamPage`) can live alongside it. Existing JSON/YAML configs using `batch_size: <n>` now configure the *pipeline* page size — if you relied on it as the driver cursor knob, rename it to `cursor_batch_size`.
+
+### Streaming and batching
+
+`MongoSource::stream_pages` drives the MongoDB driver cursor (`Collection::find`)
+without buffering the full result. Documents are accumulated into a
+`batch_size` buffer and yielded as a `StreamPage` once the buffer fills;
+the trailing partial page (if any) is yielded after the cursor drains.
+
+`batch_size = 0` is the **"no batching" sentinel** — the cursor is drained
+completely and the entire result set is emitted in a single `StreamPage`.
+Use it for small lookup tables, or for downstream sinks (SQL `COPY`,
+BigQuery load jobs, Snowflake stage uploads) that prefer one large request
+to many small ones. Values larger than `MAX_BATCH_SIZE` (1,000,000) are
+rejected by `faucet_core::validate_batch_size`.
+
+`cursor_batch_size` is the **MongoDB driver's per-round-trip batch size**
+(`find().batch_size(N)`). It is independent of the pipeline-level
+`batch_size`: you can have the driver fetch 100 docs per round-trip and
+still yield `StreamPage`s of 1000 docs (or vice versa), trading network
+round-trips for buffering. Leave it unset to use the MongoDB driver's
+default (101 documents).
+
+The MongoDB source has no incremental-replication mode, so every emitted
+page carries `bookmark: None`.
 
 ### BSON Conversion
 
@@ -93,7 +120,8 @@ let config: MongoSourceConfig = load_env_file(".env", "MONGO_SOURCE")?;
   },
   "sort": { "timestamp": -1 },
   "limit": 10000,
-  "batch_size": 500
+  "cursor_batch_size": 500,
+  "batch_size": 5000
 }
 ```
 
@@ -104,7 +132,8 @@ MONGO_SOURCE_CONNECTION_URI=mongodb://localhost:27017
 MONGO_SOURCE_DATABASE=mydb
 MONGO_SOURCE_COLLECTION=users
 MONGO_SOURCE_LIMIT=5000
-MONGO_SOURCE_BATCH_SIZE=200
+MONGO_SOURCE_CURSOR_BATCH_SIZE=200
+MONGO_SOURCE_BATCH_SIZE=1000
 ```
 
 ## Config Schema Introspection
@@ -159,7 +188,7 @@ let config = MongoSourceConfig::new(
 }))
 .sort(json!({"total": -1}))
 .limit(500)
-.batch_size(100);
+.cursor_batch_size(100);
 
 let source = MongoSource::new(config).await?;
 let orders = source.fetch_all().await?;

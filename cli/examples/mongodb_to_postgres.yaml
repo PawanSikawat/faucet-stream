@@ -20,7 +20,7 @@ pipeline:
       sort:
         created_at: 1
       limit: 500000
-      batch_size: 1000
+      cursor_batch_size: 1000
 
   sink:
     type: postgres

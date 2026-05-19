@@ -20,7 +20,7 @@ pipeline:
       sort:
         updated_at: -1
       limit: 100000
-      batch_size: 1000
+      cursor_batch_size: 1000
 
   sink:
     type: elasticsearch

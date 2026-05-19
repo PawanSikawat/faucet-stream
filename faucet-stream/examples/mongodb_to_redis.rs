@@ -1,6 +1,6 @@
 //! MongoDB → Redis stream — full builder showcase for both connectors.
 //!
-//! MongoDB source uses filter, sort, limit, and batch-size for the cursor.
+//! MongoDB source uses filter, sort, limit, and cursor-batch-size for the cursor.
 //! Redis sink pushes onto a stream (swap `RedisSinkType::List` for a list,
 //! or `KeyValue { key_field }` to write one key per record) and tunes the
 //! pipeline batch size.
@@ -22,7 +22,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .filter(json!({ "processed": false }))
             .sort(json!({ "created_at": 1 }))
             .limit(50_000)
-            .batch_size(500),
+            .cursor_batch_size(500),
     )
     .await?;
 
