@@ -4,7 +4,10 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 /// Default Arrow `RecordBatch` size used when decoding Parquet row groups.
-pub const DEFAULT_BATCH_SIZE: usize = 1024;
+///
+/// Aliases [`faucet_core::DEFAULT_BATCH_SIZE`] so the parquet source's
+/// per-page size matches the rest of the streaming pipeline by default.
+pub const DEFAULT_BATCH_SIZE: usize = faucet_core::DEFAULT_BATCH_SIZE;
 
 /// Default parallel-file-read concurrency for glob / S3 prefix dispatch.
 pub const DEFAULT_CONCURRENCY: usize = 4;
@@ -23,10 +26,22 @@ pub struct ParquetSourceConfig {
     /// Where to read Parquet from — a local file, a local glob pattern, or S3.
     pub source: ParquetLocation,
 
-    /// Arrow `RecordBatch` size emitted by the Parquet reader.
+    /// Arrow `RecordBatch` size used as the per-page hint when streaming.
     ///
-    /// Larger batches improve throughput at the cost of memory. The reader
-    /// streams batches; this controls only the in-flight batch size.
+    /// Passed verbatim to
+    /// [`ParquetRecordBatchStreamBuilder::with_batch_size`], which is itself
+    /// only a hint — Arrow may emit smaller batches at row-group boundaries,
+    /// so a single emitted [`faucet_core::StreamPage`] can hold fewer rows
+    /// than this number. Larger values improve throughput at the cost of
+    /// memory.
+    ///
+    /// `batch_size = 0` is the "no batching" sentinel: the call to
+    /// `with_batch_size` is skipped and the underlying file's native
+    /// row-group size drives the page cadence (one page per row-group).
+    /// Useful for sinks like SQL `COPY` / BigQuery load jobs that prefer one
+    /// large request to many small ones.
+    ///
+    /// Defaults to [`DEFAULT_BATCH_SIZE`].
     #[serde(default = "default_batch_size")]
     pub batch_size: usize,
 
@@ -73,9 +88,21 @@ impl ParquetSourceConfig {
     }
 
     /// Override the Arrow `RecordBatch` size.
+    ///
+    /// Pass `0` to opt out of batching — the underlying file's native
+    /// row-group size drives the page cadence instead.
     pub fn batch_size(mut self, size: usize) -> Self {
         self.batch_size = size;
         self
+    }
+
+    /// Set the per-page row-count hint for
+    /// [`Source::stream_pages`](faucet_core::Source::stream_pages).
+    ///
+    /// Alias for [`Self::batch_size`] — provided so the builder reads the
+    /// same as every other faucet source.
+    pub fn with_batch_size(self, batch_size: usize) -> Self {
+        self.batch_size(batch_size)
     }
 
     /// Restrict decoding to the named columns.
@@ -231,5 +258,51 @@ mod tests {
     #[test]
     fn schema_generates_without_panicking() {
         let _ = faucet_core::schema_for!(ParquetSourceConfig);
+    }
+
+    #[test]
+    fn batch_size_defaults_to_faucet_core_default_batch_size() {
+        let cfg = ParquetSourceConfig::local("/tmp/x.parquet");
+        assert_eq!(cfg.batch_size, faucet_core::DEFAULT_BATCH_SIZE);
+    }
+
+    #[test]
+    fn with_batch_size_overrides_default() {
+        let cfg = ParquetSourceConfig::local("/tmp/x.parquet").with_batch_size(500);
+        assert_eq!(cfg.batch_size, 500);
+    }
+
+    #[test]
+    fn batch_size_zero_is_accepted_as_no_batching_sentinel() {
+        let cfg = ParquetSourceConfig::local("/tmp/x.parquet").with_batch_size(0);
+        assert_eq!(cfg.batch_size, 0);
+        assert!(faucet_core::validate_batch_size(cfg.batch_size).is_ok());
+    }
+
+    #[test]
+    fn batch_size_above_max_is_rejected_by_validate_batch_size() {
+        let cfg = ParquetSourceConfig::local("/tmp/x.parquet")
+            .with_batch_size(faucet_core::MAX_BATCH_SIZE + 1);
+        assert!(faucet_core::validate_batch_size(cfg.batch_size).is_err());
+    }
+
+    #[test]
+    fn batch_size_deserializes_from_json() {
+        let json = r#"{
+            "source": { "type": "local_path", "path": "/tmp/x.parquet" },
+            "batch_size": 250
+        }"#;
+        let cfg: ParquetSourceConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(cfg.batch_size, 250);
+    }
+
+    #[test]
+    fn batch_size_zero_deserializes_from_json() {
+        let json = r#"{
+            "source": { "type": "local_path", "path": "/tmp/x.parquet" },
+            "batch_size": 0
+        }"#;
+        let cfg: ParquetSourceConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(cfg.batch_size, 0);
     }
 }

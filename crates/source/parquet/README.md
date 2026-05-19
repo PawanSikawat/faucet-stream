@@ -109,9 +109,9 @@ Row → `serde_json::Value::Object`. Field encoding is delegated to
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `source` | enum | required | One of `LocalPath`, `Glob`, `S3`. See below. |
-| `batch_size` | `usize` | `1024` | Arrow `RecordBatch` size emitted by the reader. |
+| `batch_size` | `usize` | `1000` (`faucet_core::DEFAULT_BATCH_SIZE`) | Per-page row-count hint passed to `ParquetRecordBatchStreamBuilder::with_batch_size`. Arrow may emit smaller batches at row-group boundaries. `0` disables the override — the file's native row-group size drives page cadence. |
 | `columns` | `Vec<String>?` | `None` | Top-level columns to read. Unknown names error out. |
-| `concurrency` | `usize` | `4` | Files read in parallel for Glob / S3-prefix modes. |
+| `concurrency` | `usize` | `4` | Files read in parallel for Glob / S3-prefix modes (used by the eager `fetch_with_context` path; the streaming `stream_pages` path iterates files sequentially). |
 
 ### `ParquetS3Config`
 
@@ -125,6 +125,32 @@ Row → `serde_json::Value::Object`. Field encoding is delegated to
 
 S3 credentials are loaded from the standard `object_store` AWS chain
 (`AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`, IMDS, profile, etc.).
+
+## Streaming and batching
+
+`ParquetSource` implements
+[`Source::stream_pages`](https://docs.rs/faucet-core) so the pipeline can
+write each Arrow `RecordBatch` to the sink as it is decoded — client-side
+memory is bounded by `batch_size * row_width` rather than the file size.
+
+- `batch_size` is forwarded to
+  `ParquetRecordBatchStreamBuilder::with_batch_size`. The Arrow reader
+  treats it as a **hint**: a batch is *at most* `batch_size` rows, but a
+  smaller batch may be emitted at a row-group boundary. Consequently an
+  emitted `StreamPage` can hold fewer than `batch_size` rows.
+- `batch_size = 0` is the "no batching" sentinel. The call to
+  `with_batch_size` is skipped, so the Arrow reader emits one batch per
+  Parquet row-group. Useful for sinks (SQL `COPY`, BigQuery load jobs)
+  that prefer one large request per natural file boundary.
+- Multi-file scans (Glob / S3 prefix) flatten through the streaming
+  pipeline in sorted-path order. The first file's Arrow schema is the
+  reference; any subsequent file with a different schema surfaces as
+  `FaucetError::Source` naming both paths and the first diverging field
+  — matching the eager `fetch_with_context` behaviour.
+- Every page carries `bookmark: None` — the Parquet source has no
+  incremental-replication mode.
+- The trait-level `batch_size` argument that `Pipeline::run` passes is
+  intentionally ignored; the config field is the user-facing knob.
 
 ## Performance notes
 
@@ -145,7 +171,7 @@ medium; benchmark with your own data.
 
 | Condition | Error |
 |---|---|
-| `batch_size == 0` or `concurrency == 0` | `FaucetError::Config` |
+| `concurrency == 0` | `FaucetError::Config` |
 | S3 config with both `key` **and** `prefix`, or neither | `FaucetError::Config` |
 | Empty bucket name | `FaucetError::Config` |
 | Local file missing / unreadable | `FaucetError::Source` |
