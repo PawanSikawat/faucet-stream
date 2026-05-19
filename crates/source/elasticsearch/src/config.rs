@@ -1,5 +1,6 @@
 //! Elasticsearch source configuration.
 
+use faucet_core::DEFAULT_BATCH_SIZE;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -44,12 +45,29 @@ pub struct ElasticsearchSourceConfig {
     pub query: Value,
     /// Scroll context timeout (e.g. `"1m"`). Defaults to `"1m"`.
     pub scroll_timeout: String,
-    /// Number of documents per scroll page. Defaults to `1000`.
-    pub scroll_size: usize,
     /// Authentication method.
     pub auth: ElasticsearchAuth,
     /// Maximum number of scroll pages to fetch. `None` means no limit.
     pub max_pages: Option<usize>,
+    /// Records per emitted [`StreamPage`](faucet_core::StreamPage), which is
+    /// also the `size` parameter passed to the Elasticsearch scroll API
+    /// (`POST /{index}/_search?scroll={timeout}&size={batch_size}`). Each
+    /// scroll response becomes exactly one `StreamPage`. Defaults to
+    /// [`DEFAULT_BATCH_SIZE`].
+    ///
+    /// `batch_size = 0` is the "no batching" sentinel: the source issues a
+    /// single non-scroll `_search` request with `size = 10_000` (the default
+    /// `index.max_result_window`) and emits one `StreamPage`. Use it for
+    /// small indices or for sinks (e.g. SQL `COPY`, BigQuery load jobs) that
+    /// prefer one large request to many small ones. Indices that have raised
+    /// their `max_result_window` will still cap at 10_000 — raise this knob
+    /// or switch back to scroll if you need more.
+    #[serde(default = "default_batch_size")]
+    pub batch_size: usize,
+}
+
+fn default_batch_size() -> usize {
+    DEFAULT_BATCH_SIZE
 }
 
 impl ElasticsearchSourceConfig {
@@ -60,9 +78,9 @@ impl ElasticsearchSourceConfig {
             index: index.into(),
             query: json!({"match_all": {}}),
             scroll_timeout: "1m".to_string(),
-            scroll_size: 1000,
             auth: ElasticsearchAuth::None,
             max_pages: None,
+            batch_size: DEFAULT_BATCH_SIZE,
         }
     }
 
@@ -78,12 +96,6 @@ impl ElasticsearchSourceConfig {
         self
     }
 
-    /// Set the number of documents per scroll page.
-    pub fn scroll_size(mut self, n: usize) -> Self {
-        self.scroll_size = n;
-        self
-    }
-
     /// Set the authentication method.
     pub fn auth(mut self, a: ElasticsearchAuth) -> Self {
         self.auth = a;
@@ -93,6 +105,17 @@ impl ElasticsearchSourceConfig {
     /// Set the maximum number of scroll pages to fetch.
     pub fn max_pages(mut self, n: usize) -> Self {
         self.max_pages = Some(n);
+        self
+    }
+
+    /// Set the per-page document count for both the scroll API's `size`
+    /// parameter and the emitted [`StreamPage`](faucet_core::StreamPage)
+    /// size.
+    ///
+    /// Pass `0` to opt out of scroll entirely — the source will issue a
+    /// single `_search` with `size = 10_000` and emit one page.
+    pub fn with_batch_size(mut self, batch_size: usize) -> Self {
+        self.batch_size = batch_size;
         self
     }
 }
@@ -108,7 +131,6 @@ mod tests {
         assert_eq!(config.index, "my_index");
         assert_eq!(config.query, json!({"match_all": {}}));
         assert_eq!(config.scroll_timeout, "1m");
-        assert_eq!(config.scroll_size, 1000);
         assert!(config.max_pages.is_none());
     }
 
@@ -117,14 +139,12 @@ mod tests {
         let config = ElasticsearchSourceConfig::new("http://es:9200/", "idx")
             .query(json!({"term": {"status": "active"}}))
             .scroll_timeout("5m")
-            .scroll_size(500)
             .max_pages(10)
             .auth(ElasticsearchAuth::Bearer {
                 token: "tok".into(),
             });
         assert_eq!(config.base_url, "http://es:9200");
         assert_eq!(config.scroll_timeout, "5m");
-        assert_eq!(config.scroll_size, 500);
         assert_eq!(config.max_pages, Some(10));
     }
 
@@ -155,5 +175,60 @@ mod tests {
         let debug = format!("{api_key:?}");
         assert!(debug.contains("***"));
         assert!(!debug.contains("my-key"));
+    }
+
+    #[test]
+    fn batch_size_defaults_to_default_batch_size() {
+        let config = ElasticsearchSourceConfig::new("http://localhost:9200", "idx");
+        assert_eq!(config.batch_size, faucet_core::DEFAULT_BATCH_SIZE);
+    }
+
+    #[test]
+    fn with_batch_size_overrides_default() {
+        let config =
+            ElasticsearchSourceConfig::new("http://localhost:9200", "idx").with_batch_size(500);
+        assert_eq!(config.batch_size, 500);
+    }
+
+    #[test]
+    fn batch_size_zero_is_accepted_as_no_batching_sentinel() {
+        let config =
+            ElasticsearchSourceConfig::new("http://localhost:9200", "idx").with_batch_size(0);
+        assert_eq!(config.batch_size, 0);
+        assert!(faucet_core::validate_batch_size(config.batch_size).is_ok());
+    }
+
+    #[test]
+    fn batch_size_above_max_is_rejected_by_validate_batch_size() {
+        let config = ElasticsearchSourceConfig::new("http://localhost:9200", "idx")
+            .with_batch_size(faucet_core::MAX_BATCH_SIZE + 1);
+        assert!(faucet_core::validate_batch_size(config.batch_size).is_err());
+    }
+
+    #[test]
+    fn batch_size_deserializes_from_json() {
+        let json = r#"{
+            "base_url": "http://localhost:9200",
+            "index": "idx",
+            "query": {"match_all": {}},
+            "scroll_timeout": "1m",
+            "auth": {"type": "None"},
+            "batch_size": 250
+        }"#;
+        let config: ElasticsearchSourceConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(config.batch_size, 250);
+    }
+
+    #[test]
+    fn batch_size_defaults_when_missing_from_json() {
+        let json = r#"{
+            "base_url": "http://localhost:9200",
+            "index": "idx",
+            "query": {"match_all": {}},
+            "scroll_timeout": "1m",
+            "auth": {"type": "None"}
+        }"#;
+        let config: ElasticsearchSourceConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(config.batch_size, faucet_core::DEFAULT_BATCH_SIZE);
     }
 }
