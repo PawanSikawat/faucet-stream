@@ -110,6 +110,24 @@ Rules:
 - **Never delete `docs/` or anything under it.** The user keeps design docs and superpowers plans/specs there as reference, even when gitignored. Distinguish carefully between `doc/` (rustdoc output, deletable) and `docs/` (reference material, keep).
 - **Report what was deleted and what was kept**, so the user can correct course if you removed something they wanted.
 
+Concrete `target/` cleanup map (in order of safety, most-safe first — all gitignored and regenerable):
+
+- `target/doc/` — rustdoc HTML output (regenerates via `cargo doc`).
+- `target/package/` — old packaged builds from `cargo publish --dry-run` (e.g. `faucet-stream-0.1.x/`, `tmp-crate/`).
+- `target/tmp/` — scratch dir, often empty.
+- `target/flycheck0/` — rust-analyzer's separate check target; rebuilds on next analyzer session.
+- `target/debug/incremental/` and `target/release/incremental/` — compiler incremental cache. Deleting does **not** force a full rebuild — `*.rlib`s in `deps/` still link; cargo just recomputes incremental state on the next build.
+- `target/debug/examples/` and `target/release/examples/` — built example binaries; rebuild via `cargo build --examples`.
+- `target/**/.DS_Store` — macOS Finder metadata.
+- `cargo sweep --installed` — drops artifacts built against toolchains no longer installed by rustup (common after a `rust-toolchain.toml` bump). Use this before considering `cargo clean` — it's the safest way to reclaim multi-GB from `target/debug/deps/`.
+
+**Do not delete these without an explicit user instruction** — they'll trigger an expensive full workspace rebuild or break the incremental graph:
+
+- `target/debug/deps/` and `target/release/deps/` as a whole — the `.rlib`/`.rmeta` cargo links against. Cargo's mtime-on-use touches every file on every build, so `cargo sweep --time N` cannot identify per-hash duplicates as stale; only `cargo clean` (or per-crate `cargo clean -p`) clears them, which forces a full rebuild (~15–30 min on this workspace).
+- `target/debug/build/` and `target/release/build/` — build-script outputs (`bindgen`, protobuf, etc.). Deleting invalidates the incremental graph for any crate with a `build.rs`.
+- `target/debug/.fingerprint/` — cargo's per-artifact fingerprints; removing them desyncs cargo from the rlibs.
+- Top-level `target/debug/*.rlib` and binaries (e.g. `target/debug/faucet`) — the workspace's own outputs.
+
 ## Primary Goal
 
 **All sources and sinks must be as fast, efficient, and reliable as possible.** This is the number one priority for every decision — architecture, implementation, dependency choice, and API design. Performance and reliability are not afterthoughts; they are the reason this library exists. Every connector should be the fastest way to move data between its endpoints in Rust.
