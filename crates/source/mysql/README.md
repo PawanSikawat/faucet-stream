@@ -52,6 +52,31 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 | `connection_url` | `String` | *(required)* | MySQL connection URL (e.g. `mysql://user:pass@host:3306/db`). Masked in debug output for security |
 | `query` | `String` | *(required)* | SQL query to execute |
 | `max_connections` | `u32` | `10` | Maximum number of connections in the pool |
+| `batch_size` | `usize` | `1000` | Rows per `StreamPage` emitted by `Source::stream_pages`. See [Streaming and batching](#streaming-and-batching) below |
+
+### Streaming and batching
+
+`MysqlSource::stream_pages` drives a sqlx row cursor (`Query::fetch`)
+without buffering the full result. Rows are accumulated into a `batch_size`
+buffer and yielded as a `StreamPage` once the buffer fills; the trailing
+partial page (if any) is yielded after the cursor drains.
+
+`batch_size = 0` is the **"no batching" sentinel** — the cursor is drained
+completely and the entire result set is emitted in a single `StreamPage`.
+Use it for small lookup tables, or for downstream sinks (SQL `COPY`,
+BigQuery load jobs, Snowflake stage uploads) that prefer one large request
+to many small ones. Values larger than `MAX_BATCH_SIZE` (1,000,000) are
+rejected by `faucet_core::validate_batch_size`.
+
+The mysql query source has no incremental-replication mode, so every
+emitted page carries `bookmark: None`.
+
+> **Note** — MySQL's wire protocol sends rows from a simple `SELECT` in a
+> single response (no server-side cursor). The streaming implementation
+> bounds *client-side* memory at `O(batch_size)` and lets the sink begin
+> writing as soon as the first batch is parsed off the wire. True
+> server-side cursor streaming (via stored procedures or `STREAM`-style
+> options) is tracked separately as a follow-up.
 
 ### Supported Column Types
 
@@ -85,7 +110,8 @@ let config: MysqlSourceConfig = load_env_file(".env", "MYSQL_SOURCE")?;
 {
   "connection_url": "mysql://analytics:password@db.example.com:3306/warehouse",
   "query": "SELECT id, name, created_at, status FROM orders WHERE created_at > '2025-01-01' ORDER BY created_at",
-  "max_connections": 5
+  "max_connections": 5,
+  "batch_size": 5000
 }
 ```
 
