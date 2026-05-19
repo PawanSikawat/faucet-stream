@@ -45,7 +45,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 - If the file has headers, each row becomes a JSON object with header names as keys
 - If the file has no headers, keys are generated as `column_0`, `column_1`, etc.
 - All field values are returned as JSON strings (no type inference)
-- CSV reading is performed on a blocking thread via `spawn_blocking` to avoid starving the async runtime
+- `fetch_all` / `fetch_with_context` read the file via blocking I/O on a `spawn_blocking` task to avoid starving the async runtime
+- `Source::stream_pages` reads the file via async line-streaming on a tokio `BufReader` and parses each line through a single-record `csv::ReaderBuilder` parse
 
 ## Configuration
 
@@ -57,6 +58,31 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 | `has_headers` | `bool` | `true` | Whether the file has a header row |
 | `delimiter` | `u8` | `b','` (comma) | Field delimiter byte |
 | `quote` | `u8` | `b'"'` (double quote) | Quote character byte |
+| `batch_size` | `usize` | `DEFAULT_BATCH_SIZE` (1000) | Rows per emitted `StreamPage` in `Source::stream_pages`. `0` is the "no batching" sentinel — emits all rows in a single page |
+
+### Streaming and batching
+
+`CsvSource::stream_pages` is a true client-side stream: it opens the file via
+`tokio::fs::File` + `tokio::io::BufReader`, reads the header line first (if
+`has_headers`), then iterates the remaining lines via
+`AsyncBufReadExt::lines`. Each line is parsed through a single-record
+`csv::ReaderBuilder` so quoted fields containing the delimiter
+(e.g. `"hello, world"`) parse correctly. There is no server-side concern —
+the file is consumed lazily from the local filesystem, so client-side memory
+is bounded at O(`batch_size`) regardless of file size.
+
+`batch_size = 0` is the "no batching" sentinel: the file is fully drained
+and emitted as one page. Useful for small lookup tables or for sinks (SQL
+`COPY`, BigQuery load jobs) that prefer one large request to many small
+ones.
+
+#### Multi-line quoted records
+
+`AsyncBufReadExt::lines` splits on raw `\n`, so quoted fields containing
+embedded newlines are **not** supported on the streaming path — they will be
+mis-split into multiple broken records. Use `fetch_all` /
+`fetch_with_context` (the blocking-I/O path) for files that need multi-line
+records; the underlying `csv::Reader` handles them correctly there.
 
 ## Config Loading
 
