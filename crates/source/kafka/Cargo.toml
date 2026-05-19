@@ -15,6 +15,8 @@ serde_json.workspace = true
 schemars.workspace = true
 thiserror.workspace = true
 async-trait.workspace = true
+async-stream.workspace = true
+futures.workspace = true
 tracing.workspace = true
 rdkafka.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync", "signal", "time"] }

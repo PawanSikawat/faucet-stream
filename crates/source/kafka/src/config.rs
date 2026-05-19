@@ -1,6 +1,6 @@
 //! Configuration types for the Kafka source.
 
-use faucet_core::FaucetError;
+use faucet_core::{DEFAULT_BATCH_SIZE, FaucetError};
 use faucet_kafka_common::{KafkaAuth, KafkaValueFormat, OnDecodeError};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -57,6 +57,20 @@ pub struct KafkaSourceConfig {
     /// these can override anything set by `auth` or the typed fields above.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub extra_client_config: BTreeMap<String, String>,
+    /// Messages per emitted [`StreamPage`](faucet_core::StreamPage). Messages
+    /// drained from the consumer are accumulated into an in-memory buffer and
+    /// yielded whenever the buffer reaches this size or the idle window flushes
+    /// a partially-filled buffer. Defaults to [`DEFAULT_BATCH_SIZE`].
+    ///
+    /// `batch_size = 0` is the "drain-entire-run-window" sentinel: the source
+    /// accumulates **every** message produced by the run (until `max_messages`
+    /// or `idle_timeout` fires) into a single page before yielding. This
+    /// defeats the point of streaming and exists only for tests or one-shot
+    /// drain scenarios; prefer a finite `batch_size` for production pipelines
+    /// so each batch is durably committed via the state store as soon as the
+    /// sink confirms the write.
+    #[serde(default = "default_batch_size")]
+    pub batch_size: usize,
 }
 
 fn default_poll_timeout() -> Duration {
@@ -65,6 +79,10 @@ fn default_poll_timeout() -> Duration {
 
 fn default_session_timeout() -> Duration {
     Duration::from_secs(30)
+}
+
+fn default_batch_size() -> usize {
+    DEFAULT_BATCH_SIZE
 }
 
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
@@ -108,7 +126,21 @@ impl KafkaSourceConfig {
                 "kafka source: at least one of max_messages or idle_timeout must be set".into(),
             ));
         }
+        faucet_core::validate_batch_size(self.batch_size)?;
         Ok(())
+    }
+
+    /// Set the per-page message count for
+    /// [`Source::stream_pages`](faucet_core::Source::stream_pages).
+    ///
+    /// Pass `0` to drain the entire run window (until `max_messages` or
+    /// `idle_timeout` fires) into a single [`StreamPage`](faucet_core::StreamPage).
+    /// This is only useful for tests or one-shot drain scenarios — it negates
+    /// the streaming benefit of incremental sink writes plus per-page
+    /// bookmark persistence.
+    pub fn with_batch_size(mut self, batch_size: usize) -> Self {
+        self.batch_size = batch_size;
+        self
     }
 }
 
@@ -132,6 +164,7 @@ mod tests {
             session_timeout: Duration::from_secs(30),
             on_decode_error: OnDecodeError::Fail,
             extra_client_config: BTreeMap::new(),
+            batch_size: DEFAULT_BATCH_SIZE,
         }
     }
 
@@ -203,5 +236,50 @@ mod tests {
     fn offset_reset_as_str() {
         assert_eq!(OffsetReset::Earliest.as_str(), "earliest");
         assert_eq!(OffsetReset::Latest.as_str(), "latest");
+    }
+
+    #[test]
+    fn batch_size_defaults_to_default_batch_size() {
+        let j = json!({
+            "brokers": "broker:9092",
+            "topics": ["t1"],
+            "group_id": "g",
+            "max_messages": 100,
+        });
+        let parsed: KafkaSourceConfig = serde_json::from_value(j).unwrap();
+        assert_eq!(parsed.batch_size, faucet_core::DEFAULT_BATCH_SIZE);
+    }
+
+    #[test]
+    fn with_batch_size_overrides_default() {
+        let config = minimal_config().with_batch_size(500);
+        assert_eq!(config.batch_size, 500);
+    }
+
+    #[test]
+    fn batch_size_zero_is_accepted_as_drain_window_sentinel() {
+        let config = minimal_config().with_batch_size(0);
+        assert_eq!(config.batch_size, 0);
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn validate_rejects_batch_size_above_max() {
+        let config = minimal_config().with_batch_size(faucet_core::MAX_BATCH_SIZE + 1);
+        let err = config.validate().unwrap_err();
+        assert!(matches!(err, FaucetError::Config(_)));
+    }
+
+    #[test]
+    fn batch_size_deserializes_from_json() {
+        let j = json!({
+            "brokers": "broker:9092",
+            "topics": ["t1"],
+            "group_id": "g",
+            "max_messages": 100,
+            "batch_size": 250,
+        });
+        let parsed: KafkaSourceConfig = serde_json::from_value(j).unwrap();
+        assert_eq!(parsed.batch_size, 250);
     }
 }
