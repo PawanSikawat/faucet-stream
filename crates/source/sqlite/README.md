@@ -52,6 +52,31 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 | `database_url` | `String` | *(required)* | SQLite database URL. Can be a file path (e.g. `"sqlite:data.db"`, `"sqlite:/path/to/db"`) or in-memory (`"sqlite::memory:"`) |
 | `query` | `String` | *(required)* | SQL query to execute |
 | `max_connections` | `u32` | `10` | Maximum number of connections in the pool |
+| `batch_size` | `usize` | `1000` | Rows per `StreamPage` emitted by `Source::stream_pages`. See [Streaming and batching](#streaming-and-batching) below |
+
+### Streaming and batching
+
+`SqliteSource::stream_pages` drives a sqlx row cursor (`Query::fetch`)
+without buffering the full result. Rows are accumulated into a `batch_size`
+buffer and yielded as a `StreamPage` once the buffer fills; the trailing
+partial page (if any) is yielded after the cursor drains.
+
+`batch_size = 0` is the **"no batching" sentinel** — the cursor is drained
+completely and the entire result set is emitted in a single `StreamPage`.
+Use it for small lookup tables, or for downstream sinks (SQL `COPY`,
+BigQuery load jobs, Snowflake stage uploads) that prefer one large request
+to many small ones. Values larger than `MAX_BATCH_SIZE` (1,000,000) are
+rejected by `faucet_core::validate_batch_size`.
+
+The sqlite query source has no incremental-replication mode, so every
+emitted page carries `bookmark: None`.
+
+> **Note** — SQLite is an in-process, file-based engine: there is no
+> server-side cursor concept and no network wire to worry about. The
+> streaming implementation bounds *client-side* memory at `O(batch_size)`
+> and lets the sink begin writing as soon as the first batch is parsed
+> off disk, rather than waiting for the whole result set to materialise
+> in a `Vec`.
 
 ### Supported Column Types
 
@@ -83,7 +108,8 @@ let config: SqliteSourceConfig = load_env_file(".env", "SQLITE_SOURCE")?;
 {
   "database_url": "sqlite:/var/data/app.db",
   "query": "SELECT id, name, created_at, json_extract(metadata, '$.tags') AS tags FROM items WHERE active = 1",
-  "max_connections": 5
+  "max_connections": 5,
+  "batch_size": 5000
 }
 ```
 
@@ -93,6 +119,7 @@ let config: SqliteSourceConfig = load_env_file(".env", "SQLITE_SOURCE")?;
 SQLITE_SOURCE_DATABASE_URL=sqlite:data.db
 SQLITE_SOURCE_QUERY=SELECT * FROM events
 SQLITE_SOURCE_MAX_CONNECTIONS=10
+SQLITE_SOURCE_BATCH_SIZE=1000
 ```
 
 ## Config Schema Introspection
