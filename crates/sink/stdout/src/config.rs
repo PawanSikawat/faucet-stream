@@ -1,5 +1,6 @@
 //! Stdout/stderr sink configuration.
 
+use faucet_core::DEFAULT_BATCH_SIZE;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -29,7 +30,7 @@ pub enum StdoutFormat {
 }
 
 /// Configuration for the stdout/stderr sink.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct StdoutSinkConfig {
     /// Which standard stream to write to.
     #[serde(default)]
@@ -45,6 +46,34 @@ pub struct StdoutSinkConfig {
     /// `write_batch` calls become no-ops. `None` means unlimited.
     #[serde(default)]
     pub max_records: Option<usize>,
+    /// Records per upstream [`StreamPage`](faucet_core::StreamPage). The
+    /// stdout sink writes records to the chosen standard stream one at a time
+    /// through a buffered writer, so this field has **no behavioural impact**
+    /// at the sink — it is exposed purely for config parity across every sink
+    /// in the workspace. Defaults to [`DEFAULT_BATCH_SIZE`].
+    ///
+    /// `batch_size = 0` (the "no batching" sentinel) and any positive value
+    /// produce byte-for-byte identical output for this sink: each record is
+    /// serialised and written individually regardless of how upstream chunked
+    /// the page.
+    #[serde(default = "default_batch_size")]
+    pub batch_size: usize,
+}
+
+fn default_batch_size() -> usize {
+    DEFAULT_BATCH_SIZE
+}
+
+impl Default for StdoutSinkConfig {
+    fn default() -> Self {
+        Self {
+            destination: StdStream::default(),
+            format: StdoutFormat::default(),
+            flush_per_record: false,
+            max_records: None,
+            batch_size: DEFAULT_BATCH_SIZE,
+        }
+    }
 }
 
 impl StdoutSinkConfig {
@@ -74,6 +103,19 @@ impl StdoutSinkConfig {
     /// Stop after writing `n` records total.
     pub fn max_records(mut self, max_records: usize) -> Self {
         self.max_records = Some(max_records);
+        self
+    }
+
+    /// Set the per-page record count hint reported alongside other sink
+    /// configs.
+    ///
+    /// This sink writes per-record through a buffered writer, so the value is
+    /// observably a no-op: `0` (the "no batching" sentinel) and any positive
+    /// value produce the same stdout/stderr output. Present for symmetry with
+    /// sinks whose `batch_size` does drive I/O sizing (e.g. SQL multi-row
+    /// inserts, BigQuery streaming inserts).
+    pub fn with_batch_size(mut self, batch_size: usize) -> Self {
+        self.batch_size = batch_size;
         self
     }
 }
@@ -120,5 +162,47 @@ mod tests {
         let c: StdoutSinkConfig = serde_json::from_str("{}").unwrap();
         assert_eq!(c.destination, StdStream::Stdout);
         assert_eq!(c.format, StdoutFormat::JsonLines);
+    }
+
+    #[test]
+    fn batch_size_defaults_to_default_batch_size() {
+        let c = StdoutSinkConfig::new();
+        assert_eq!(c.batch_size, faucet_core::DEFAULT_BATCH_SIZE);
+    }
+
+    #[test]
+    fn with_batch_size_overrides_default() {
+        let c = StdoutSinkConfig::new().with_batch_size(250);
+        assert_eq!(c.batch_size, 250);
+    }
+
+    #[test]
+    fn batch_size_zero_is_accepted_as_no_batching_sentinel() {
+        let c = StdoutSinkConfig::new().with_batch_size(0);
+        assert_eq!(c.batch_size, 0);
+        assert!(faucet_core::validate_batch_size(c.batch_size).is_ok());
+    }
+
+    #[test]
+    fn batch_size_above_max_is_rejected_by_validate_batch_size() {
+        let c = StdoutSinkConfig::new().with_batch_size(faucet_core::MAX_BATCH_SIZE + 1);
+        assert!(faucet_core::validate_batch_size(c.batch_size).is_err());
+    }
+
+    #[test]
+    fn batch_size_deserializes_from_json() {
+        let json = r#"{
+            "destination": "stdout",
+            "format": "json_lines",
+            "batch_size": 500
+        }"#;
+        let c: StdoutSinkConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(c.batch_size, 500);
+    }
+
+    #[test]
+    fn batch_size_defaults_when_missing_in_json() {
+        let c: StdoutSinkConfig = serde_json::from_str("{}").unwrap();
+        assert_eq!(c.batch_size, faucet_core::DEFAULT_BATCH_SIZE);
     }
 }
