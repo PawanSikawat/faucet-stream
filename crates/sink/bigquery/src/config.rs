@@ -1,5 +1,6 @@
 //! BigQuery sink configuration.
 
+use faucet_core::DEFAULT_BATCH_SIZE;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -38,8 +39,26 @@ pub struct BigQuerySinkConfig {
     pub table_id: String,
     /// Authentication credentials.
     pub credentials: BigQueryCredentials,
-    /// Maximum number of rows per `insertAll` request. Defaults to 500.
+    /// Maximum rows per `tabledata.insertAll` request. Defaults to
+    /// [`DEFAULT_BATCH_SIZE`].
+    ///
+    /// When the upstream `StreamPage` carries more records than `batch_size`,
+    /// the sink slices the page into `batch_size`-row chunks and issues one
+    /// `insertAll` HTTP call per chunk. When `batch_size = 0`, the page is
+    /// sent as a single request — useful when the source already chunks to
+    /// BigQuery's preferred size (e.g. ~500 rows for streaming inserts).
+    ///
+    /// `batch_size = 0` is the "no batching" sentinel: the entire upstream
+    /// page is forwarded in one `insertAll` call, subject to BigQuery's
+    /// natural per-request limits (~10MB body, ~500 rows recommended).
+    /// Larger pages may exceed those limits — keep the default unless the
+    /// upstream `StreamPage` size is already tuned for BigQuery.
+    #[serde(default = "default_batch_size")]
     pub batch_size: usize,
+}
+
+fn default_batch_size() -> usize {
+    DEFAULT_BATCH_SIZE
 }
 
 impl BigQuerySinkConfig {
@@ -55,13 +74,17 @@ impl BigQuerySinkConfig {
             dataset_id: dataset_id.into(),
             table_id: table_id.into(),
             credentials,
-            batch_size: 500,
+            batch_size: DEFAULT_BATCH_SIZE,
         }
     }
 
-    /// Set the maximum batch size for streaming inserts.
-    pub fn batch_size(mut self, n: usize) -> Self {
-        self.batch_size = n;
+    /// Set the per-request row count for `tabledata.insertAll`.
+    ///
+    /// Pass `0` to opt out of re-chunking — the sink forwards each upstream
+    /// [`StreamPage`](faucet_core::StreamPage) as a single `insertAll` call.
+    /// BigQuery's streaming-insert sweet spot is ~500 rows per request.
+    pub fn with_batch_size(mut self, batch_size: usize) -> Self {
+        self.batch_size = batch_size;
         self
     }
 }
@@ -71,22 +94,22 @@ mod tests {
     use super::*;
 
     #[test]
-    fn default_batch_size_is_500() {
+    fn batch_size_defaults_to_default_batch_size() {
         let config = BigQuerySinkConfig::new(
             "my-project",
             "my_dataset",
             "my_table",
             BigQueryCredentials::ApplicationDefault,
         );
-        assert_eq!(config.batch_size, 500);
+        assert_eq!(config.batch_size, faucet_core::DEFAULT_BATCH_SIZE);
     }
 
     #[test]
-    fn batch_size_builder() {
+    fn with_batch_size_overrides_default() {
         let config =
             BigQuerySinkConfig::new("proj", "ds", "tbl", BigQueryCredentials::ApplicationDefault)
-                .batch_size(1000);
-        assert_eq!(config.batch_size, 1000);
+                .with_batch_size(500);
+        assert_eq!(config.batch_size, 500);
     }
 
     #[test]
@@ -125,8 +148,8 @@ mod tests {
     fn config_builder_chaining() {
         let config =
             BigQuerySinkConfig::new("p", "d", "t", BigQueryCredentials::ApplicationDefault)
-                .batch_size(100)
-                .batch_size(250);
+                .with_batch_size(100)
+                .with_batch_size(250);
         assert_eq!(config.batch_size, 250);
     }
 
@@ -149,9 +172,51 @@ mod tests {
     fn config_clone() {
         let config =
             BigQuerySinkConfig::new("proj", "ds", "tbl", BigQueryCredentials::ApplicationDefault)
-                .batch_size(42);
+                .with_batch_size(42);
         let cloned = config.clone();
         assert_eq!(cloned.project_id, "proj");
         assert_eq!(cloned.batch_size, 42);
+    }
+
+    #[test]
+    fn batch_size_zero_is_accepted_as_no_batching_sentinel() {
+        let config =
+            BigQuerySinkConfig::new("p", "d", "t", BigQueryCredentials::ApplicationDefault)
+                .with_batch_size(0);
+        assert_eq!(config.batch_size, 0);
+        assert!(faucet_core::validate_batch_size(config.batch_size).is_ok());
+    }
+
+    #[test]
+    fn batch_size_above_max_is_rejected_by_validate_batch_size() {
+        let config =
+            BigQuerySinkConfig::new("p", "d", "t", BigQueryCredentials::ApplicationDefault)
+                .with_batch_size(faucet_core::MAX_BATCH_SIZE + 1);
+        assert!(faucet_core::validate_batch_size(config.batch_size).is_err());
+    }
+
+    #[test]
+    fn batch_size_deserializes_from_json() {
+        let json = r#"{
+            "project_id": "p",
+            "dataset_id": "d",
+            "table_id": "t",
+            "credentials": {"type": "ApplicationDefault"},
+            "batch_size": 250
+        }"#;
+        let config: BigQuerySinkConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(config.batch_size, 250);
+    }
+
+    #[test]
+    fn batch_size_defaults_when_absent_in_json() {
+        let json = r#"{
+            "project_id": "p",
+            "dataset_id": "d",
+            "table_id": "t",
+            "credentials": {"type": "ApplicationDefault"}
+        }"#;
+        let config: BigQuerySinkConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(config.batch_size, faucet_core::DEFAULT_BATCH_SIZE);
     }
 }

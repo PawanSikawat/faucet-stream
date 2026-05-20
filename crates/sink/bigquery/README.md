@@ -7,6 +7,8 @@ Google BigQuery streaming insert sink for the [faucet-stream](https://github.com
 
 Writes JSON records to a BigQuery table using the `tabledata.insertAll` streaming API. Records are automatically split into configurable batch sizes to stay within BigQuery API limits. The BigQuery client is authenticated once at construction and reused across all writes.
 
+`write_batch` accepts whatever slice the pipeline hands it. When `batch_size > 0` and the slice is larger than `batch_size`, the sink re-chunks internally and issues one `insertAll` call per chunk; when `batch_size = 0`, the entire slice is sent in a single request — see [Streaming and batching](#streaming-and-batching) for the tradeoffs.
+
 ## Installation
 
 ```toml
@@ -36,7 +38,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "events",
         BigQueryCredentials::ServiceAccountKeyPath("/path/to/service-account.json".into()),
     )
-    .batch_size(500);
+    .with_batch_size(500);
 
     let sink = BigQuerySink::new(config).await?;
 
@@ -60,7 +62,30 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 | `dataset_id` | `String` | *(required)* | BigQuery dataset ID |
 | `table_id` | `String` | *(required)* | BigQuery table ID |
 | `credentials` | `BigQueryCredentials` | *(required)* | Authentication credentials (see below) |
-| `batch_size` | `usize` | `500` | Maximum number of rows per `insertAll` request |
+| `batch_size` | `usize` | `1000` | Maximum rows per `insertAll` request. See [Streaming and batching](#streaming-and-batching) below |
+
+### Streaming and batching
+
+The BigQuery sink re-chunks each incoming `StreamPage` to keep individual
+`tabledata.insertAll` calls under BigQuery's limits.
+
+- **`batch_size > 0`** (default `1000`) — the sink slices the incoming slice
+  into `batch_size`-row chunks and issues one `insertAll` HTTP call per
+  chunk. **Recommended value is `500`**: that's the documented sweet spot
+  for BigQuery streaming inserts (small enough to stay well under the
+  ~10MB request limit even for wide rows, large enough to amortise per-call
+  overhead). Bump it higher when rows are narrow; drop it when rows are
+  wide enough to push individual chunks past 10MB.
+- **`batch_size = 0`** — the "no batching" sentinel. The entire upstream
+  `StreamPage` is forwarded in a single `insertAll` call. Use this when the
+  source already emits page sizes tuned for BigQuery — for example a
+  Postgres source configured with `batch_size: 500`. Larger pages risk
+  HTTP-413 from BigQuery's ~10MB body limit.
+
+`batch_size` is purely a chunk-size knob — BigQuery's per-row error
+reporting and the sink's "first row that failed" error message are
+unchanged. Per-call retry is delegated to `gcp_bigquery_client`'s built-in
+retry middleware.
 
 ### Authentication (`BigQueryCredentials`)
 
@@ -85,7 +110,7 @@ let config = BigQuerySinkConfig::new(
     "my_table",
     BigQueryCredentials::ApplicationDefault,
 )
-.batch_size(1000);
+.with_batch_size(500);
 ```
 
 ## Config Loading
@@ -112,7 +137,7 @@ let config: BigQuerySinkConfig = load_env_file(".env", "BIGQUERY")?;
     "type": "ServiceAccountKeyPath",
     "value": "/etc/secrets/bigquery-sa.json"
   },
-  "batch_size": 500
+  "batch_size": 1000
 }
 ```
 
@@ -137,7 +162,7 @@ BIGQUERY_PROJECT_ID=my-gcp-project
 BIGQUERY_DATASET_ID=analytics
 BIGQUERY_TABLE_ID=events
 BIGQUERY_CREDENTIALS='{"type":"ServiceAccountKeyPath","value":"/etc/secrets/bigquery-sa.json"}'
-BIGQUERY_BATCH_SIZE=500
+BIGQUERY_BATCH_SIZE=1000
 ```
 
 ## Config Schema Introspection
@@ -185,7 +210,7 @@ let config = BigQuerySinkConfig::new(
         "/etc/secrets/bigquery-writer.json".into()
     ),
 )
-.batch_size(500);
+.with_batch_size(500);
 
 let sink = BigQuerySink::new(config).await?;
 let written = sink.write_batch(&records).await?;
@@ -215,7 +240,7 @@ let config = BigQuerySinkConfig::new(
     "test_table",
     BigQueryCredentials::ApplicationDefault,
 )
-.batch_size(100);
+.with_batch_size(100);
 
 let sink = BigQuerySink::new(config).await?;
 ```
@@ -223,7 +248,7 @@ let sink = BigQuerySink::new(config).await?;
 ## How It Works
 
 - The BigQuery client is created and authenticated in `BigQuerySink::new()`. This validates credentials eagerly so failures surface immediately.
-- `write_batch()` splits the input records into chunks of `batch_size` and sends each chunk as a separate `insertAll` request.
+- `write_batch()` slices the input into `batch_size`-row chunks (or forwards the whole slice when `batch_size = 0`) and sends each chunk as a separate `insertAll` request.
 - Per-row errors in the BigQuery response are detected and reported. If any rows fail, the entire batch returns an error with details about the first failure.
 - The client is reused across all `write_batch()` calls -- no re-authentication per request.
 

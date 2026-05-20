@@ -19,3 +19,6 @@ async-trait.workspace = true
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full", "test-util"] }
+wiremock = "0.6"
+tempfile = "3"
+serde = { workspace = true }

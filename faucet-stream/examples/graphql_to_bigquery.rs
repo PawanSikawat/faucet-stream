@@ -65,7 +65,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             "orders",
             BigQueryCredentials::ApplicationDefault,
         )
-        .batch_size(1000),
+        .with_batch_size(1000),
     )
     .await?;
 
