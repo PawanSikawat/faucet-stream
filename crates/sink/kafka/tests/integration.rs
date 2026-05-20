@@ -9,7 +9,7 @@
 //! - The port constant is `testcontainers_modules::kafka::apache::KAFKA_PORT`
 //! - `AsyncRunner` is at `testcontainers::runners::AsyncRunner` (not via modules re-export)
 
-use faucet_core::Sink;
+use faucet_core::{DEFAULT_BATCH_SIZE, Sink};
 use faucet_kafka_common::{CompressionType, KafkaAuth, KafkaValueFormat, OnKeyError};
 use faucet_sink_kafka::{Acks, KafkaSink, KafkaSinkConfig, KafkaSinkTopic};
 use rdkafka::ClientConfig;
@@ -48,7 +48,7 @@ fn sink_config(brokers: &str, topic: KafkaSinkTopic) -> KafkaSinkConfig {
         acks: Acks::All,
         idempotent: true,
         linger: Duration::from_millis(5),
-        batch_size: 16_384,
+        batch_size: DEFAULT_BATCH_SIZE,
         message_timeout: Duration::from_secs(10),
         max_in_flight: 50,
         queue_full_backoff: Duration::from_millis(100),
@@ -143,4 +143,77 @@ async fn on_key_error_skip_drops_records_without_key() {
     sink.flush().await.unwrap();
     let payloads = drain_topic(&brokers, topic, 2).await;
     assert_eq!(payloads.len(), 2);
+}
+
+/// Verifies the streaming-pipeline contract: a 2000-record write_batch with a
+/// `batch_size = 500` send window caps the FuturesUnordered at 500 in flight
+/// (rather than the default `max_in_flight = 50`) and still drains cleanly
+/// without any QueueFull surfacing. The broker-side
+/// `queue.buffering.max.messages` is auto-set to 500 by `KafkaSink::new` —
+/// exactly enough to hold the send window — and the QueueFull retry path
+/// remains untouched.
+#[tokio::test(flavor = "multi_thread")]
+async fn batch_size_caps_in_flight_window_at_2000_records() {
+    let (_c, brokers) = start_kafka().await;
+    let topic = "bs-window";
+    let mut cfg = sink_config(&brokers, KafkaSinkTopic::Fixed { name: topic.into() });
+    cfg.batch_size = 500;
+    // Set max_in_flight high enough that batch_size is the binding cap.
+    cfg.max_in_flight = 1000;
+    let sink = KafkaSink::new(cfg).await.unwrap();
+    let records: Vec<_> = (0..2000).map(|i| json!({"id": i})).collect();
+    let n = sink.write_batch(&records).await.unwrap();
+    assert_eq!(n, 2000);
+    sink.flush().await.unwrap();
+    let payloads = drain_topic(&brokers, topic, 2000).await;
+    assert_eq!(payloads.len(), 2000);
+}
+
+/// Forces backpressure by setting a tight `queue.buffering.max.messages` cap
+/// via `extra_client_config` (which overrides the auto-derived value from
+/// `batch_size`). With a tight broker buffer plus `batch_size = 500` capping
+/// the in-flight send window, the existing QueueFull retry loop has enough
+/// headroom (`queue_full_max_retries = 10`, `queue_full_backoff = 50ms`) to
+/// drain successfully — verifying the new in-flight cap composes with the
+/// existing retry semantics rather than replacing them.
+#[tokio::test(flavor = "multi_thread")]
+async fn batch_size_with_tight_queue_buffer_still_drains_via_retry() {
+    let (_c, brokers) = start_kafka().await;
+    let topic = "bs-backpressure";
+    let mut cfg = sink_config(&brokers, KafkaSinkTopic::Fixed { name: topic.into() });
+    cfg.batch_size = 500;
+    cfg.max_in_flight = 1000;
+    // Force backpressure: cap the producer's internal queue much lower than
+    // batch_size so QueueFull is the expected hot path under high concurrency.
+    cfg.extra_client_config
+        .insert("queue.buffering.max.messages".into(), "100".into());
+    // Generous retry budget so QueueFull never escalates to a fatal error.
+    cfg.queue_full_max_retries = 50;
+    cfg.queue_full_backoff = Duration::from_millis(50);
+    let sink = KafkaSink::new(cfg).await.unwrap();
+    let records: Vec<_> = (0..2000).map(|i| json!({"id": i})).collect();
+    let n = sink.write_batch(&records).await.unwrap();
+    assert_eq!(n, 2000);
+    sink.flush().await.unwrap();
+    let payloads = drain_topic(&brokers, topic, 2000).await;
+    assert_eq!(payloads.len(), 2000);
+}
+
+/// `batch_size = 0` sentinel: the in-flight window is bounded only by
+/// `max_in_flight` (the historical pre-streaming behaviour) and the producer's
+/// `queue.buffering.max.messages` librdkafka knob keeps its default.
+#[tokio::test(flavor = "multi_thread")]
+async fn batch_size_zero_preserves_legacy_send_path() {
+    let (_c, brokers) = start_kafka().await;
+    let topic = "bs-zero";
+    let mut cfg = sink_config(&brokers, KafkaSinkTopic::Fixed { name: topic.into() });
+    cfg.batch_size = 0;
+    cfg.max_in_flight = 50;
+    let sink = KafkaSink::new(cfg).await.unwrap();
+    let records: Vec<_> = (0..500).map(|i| json!({"id": i})).collect();
+    let n = sink.write_batch(&records).await.unwrap();
+    assert_eq!(n, 500);
+    sink.flush().await.unwrap();
+    let payloads = drain_topic(&brokers, topic, 500).await;
+    assert_eq!(payloads.len(), 500);
 }

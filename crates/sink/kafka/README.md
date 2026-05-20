@@ -58,7 +58,7 @@ All fields are top-level keys under `sink.config` in the pipeline YAML.
 | `acks` | `"none" \| "leader" \| "all"` | `"all"` | Broker acknowledgment level. Must be `"all"` when `idempotent: true`. |
 | `idempotent` | `bool` | `true` | Enable the idempotent producer (`enable.idempotence = true`). Requires `acks: all`. |
 | `linger` | `integer` (seconds) | `0` | Time the producer waits before flushing a partial batch. Use `extra_client_config: {linger.ms: "5"}` for millisecond precision. |
-| `batch_size` | `integer` | `16384` | Maximum bytes per produce batch (`batch.size` in librdkafka). |
+| `batch_size` | `integer` | `1000` (`DEFAULT_BATCH_SIZE`) | Maximum number of in-flight `FuturesUnordered` send futures per `write_batch` call. Also seeds librdkafka's `queue.buffering.max.messages` so the broker-side buffer matches the send window. `0` disables the explicit cap (bounded only by `max_in_flight`) and leaves `queue.buffering.max.messages` at its librdkafka default. See [Streaming and batching](#streaming-and-batching). |
 | `message_timeout` | `integer` (seconds) | `30` | Delivery timeout per message. |
 | `max_in_flight` | `integer` | `100` | Maximum concurrent produce requests. Must be ≥ 1. |
 | `queue_full_backoff` | `integer` (seconds) | `0` | Pause between retries on `QueueFull` error. |
@@ -172,11 +172,32 @@ acks: leader   # or "none" for fire-and-forget
 | Field | Default | Effect |
 |-------|---------|--------|
 | `linger` | `0` s | Time the producer waits to accumulate records. Increase for larger batches. Use `linger.ms` in `extra_client_config` for sub-second precision. |
-| `batch_size` | `16384` B | Max bytes per batch. Increase for high-volume records. |
+| `batch_size` | `1000` | In-flight `FuturesUnordered` send-window cap and seed for librdkafka's `queue.buffering.max.messages`. See [Streaming and batching](#streaming-and-batching). |
 | `max_in_flight` | `100` | Concurrent produce requests. Set to 1 with `idempotent: true` for strict ordering. |
 | `message_timeout` | `30` s | Delivery timeout. Increase for high-latency brokers. |
 | `queue_full_backoff` | `0` s | Backoff on `QueueFull`. Set to e.g. `1` to avoid tight-looping. |
 | `queue_full_max_retries` | `3` | Maximum `QueueFull` retries before the error surfaces. |
+
+Tune the librdkafka byte-size batch knob — historically exposed as `batch_size` (bytes) — via `extra_client_config: {batch.size: "16384"}`. The default (16 KiB) is rarely worth changing unless you have very small or very large records.
+
+---
+
+## Streaming and batching
+
+The sink is driven from the streaming pipeline via `Sink::write_batch`. Within a single `write_batch` call, records are produced to the broker through a `FuturesUnordered` of `send_result` futures so multiple sends can fly concurrently. The `batch_size` field bounds how many of those futures are in flight at any moment:
+
+- **Effective in-flight cap = `min(max_in_flight, batch_size)`** when `batch_size > 0`.
+- **Effective in-flight cap = `max_in_flight`** when `batch_size = 0` (the "no batching" sentinel — pre-streaming behaviour).
+
+When `batch_size > 0`, `KafkaSink::new` also sets librdkafka's `queue.buffering.max.messages` to `batch_size` so the producer's broker-side message buffer can hold one full send window. This avoids the asymmetry where the FuturesUnordered cap permits N concurrent sends but the producer queue rejects them with `QueueFull` immediately. `extra_client_config` takes precedence — pass a smaller `queue.buffering.max.messages` there if you want to force backpressure (e.g. to exercise the `QueueFull` retry path in tests).
+
+`QueueFull` retry semantics are unaffected by `batch_size`. Whenever librdkafka rejects an enqueue with `QueueFull`, the existing loop (`queue_full_backoff` / `queue_full_max_retries`) still applies; the in-flight cap simply makes those rejections less likely in the common case.
+
+**When to tune away from the default:**
+
+- **Throughput-bound, large records.** If `DEFAULT_BATCH_SIZE = 1000` is leaving the producer thread starved, raise `batch_size` (and consequently `max_in_flight`) to push more concurrent requests in flight. The librdkafka `queue.buffering.max.messages` rises with it automatically.
+- **Strict ordering.** Combine `batch_size = 1` with `max_in_flight = 1` and `idempotent: true` so at most one send is on the wire at a time. Lower throughput, but per-partition order is preserved.
+- **One-shot drain.** Use `batch_size = 0` for a small lookup-table source that emits a single page per run, so the entire write_batch fires in parallel up to `max_in_flight` without the extra cap.
 
 ---
 
