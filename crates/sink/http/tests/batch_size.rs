@@ -135,12 +135,6 @@ async fn array_mode_empty_records_makes_no_requests() {
 async fn individual_mode_ignores_batch_size_for_wire_framing() {
     // In Individual mode batch_size has no effect — the sink still issues
     // one request per record, regardless of batch_size.
-    //
-    // Note: `concurrency` is set >= record count to side-step a separate
-    // pre-existing deadlock in `write_batch` Individual mode tracked in
-    // #59 — the semaphore acquire happens in a sequential loop before any
-    // future runs, so `records.len() > concurrency` blocks forever waiting
-    // for a permit that never gets released.
     let server = mock_server_with_success().await;
     let config = HttpSinkConfig::new(url(&server))
         .batch_mode(HttpBatchMode::Individual)
@@ -156,4 +150,35 @@ async fn individual_mode_ignores_batch_size_for_wire_framing() {
         10,
         "Individual mode sends one request per record regardless of batch_size"
     );
+}
+
+/// Regression for #59 — the previous Individual-mode implementation used a
+/// `Semaphore` and collected futures in a `Vec`, but never started any
+/// future until after the for-loop finished. That deadlocked at the
+/// `(concurrency + 1)`th `acquire_owned().await` call because no permit had
+/// ever been released. The fix uses `buffer_unordered(concurrency)` instead,
+/// which actually polls in-flight futures concurrently.
+///
+/// Asserts: 100 records with `concurrency = 4` completes (would hang in the
+/// old impl). The mock returns instantly so completion is the test.
+#[tokio::test]
+async fn individual_mode_does_not_deadlock_when_records_exceed_concurrency() {
+    let server = mock_server_with_success().await;
+    let config = HttpSinkConfig::new(url(&server))
+        .batch_mode(HttpBatchMode::Individual)
+        .concurrency(4);
+    let sink = HttpSink::new(config);
+
+    // Wrap in a timeout so a regression here surfaces as a test failure
+    // rather than a hung test runner.
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        sink.write_batch(&make_records(100)),
+    )
+    .await
+    .expect("Individual mode write_batch deadlocked (regression of #59)");
+    result.expect("Individual mode write_batch returned an error");
+
+    let requests = server.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 100);
 }
