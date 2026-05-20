@@ -29,7 +29,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let sink = SqliteSink::new(
         SqliteSinkConfig::new("sqlite:./cache.db", "jobs")
             .column_mapping(SqliteColumnMapping::AutoMap)
-            .batch_size(500)
+            .with_batch_size(500)
             .max_connections(4),
     )
     .await?;

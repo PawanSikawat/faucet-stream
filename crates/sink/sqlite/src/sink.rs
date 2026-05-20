@@ -189,8 +189,23 @@ impl faucet_core::Sink for SqliteSink {
     }
 
     async fn write_batch(&self, records: &[Value]) -> Result<usize, FaucetError> {
+        if records.is_empty() {
+            return Ok(0);
+        }
+
+        // `batch_size = 0` is the "no batching" sentinel: write the entire
+        // upstream slice as a single multi-row INSERT inside one
+        // `BEGIN`/`COMMIT` transaction, preserving `StreamPage` framing.
+        // Otherwise re-chunk into `batch_size` slices so each transaction
+        // stays near SQLite's sweet spot (~1000 rows per multi-row INSERT).
+        let effective_chunk = if self.config.batch_size == 0 {
+            records.len()
+        } else {
+            self.config.batch_size
+        };
+
         let mut total = 0;
-        for chunk in records.chunks(self.config.batch_size) {
+        for chunk in records.chunks(effective_chunk) {
             total += match &self.config.column_mapping {
                 SqliteColumnMapping::Json { column } => self.insert_json(chunk, column).await?,
                 SqliteColumnMapping::AutoMap => self.insert_auto_map(chunk).await?,

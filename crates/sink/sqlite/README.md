@@ -7,6 +7,8 @@ SQLite sink connector for the [faucet-stream](https://github.com/PawanSikawat/fa
 
 Writes JSON records to a SQLite table using either JSON column mode (storing each record as a serialized JSON text value) or AutoMap mode (mapping top-level JSON keys directly to table columns). Uses connection pooling via `sqlx`, multi-row `INSERT` statements, and wraps each batch in a transaction (`BEGIN`/`COMMIT`) for maximum write throughput. Column discovery uses `PRAGMA table_info`.
 
+`write_batch` accepts whatever slice the pipeline hands it. When `batch_size > 0` and the slice is larger than `batch_size`, the sink re-chunks internally and issues one multi-row INSERT (in its own transaction) per chunk; when `batch_size = 0`, the entire slice is written in a single transaction — see [Streaming and batching](#streaming-and-batching) for the tradeoffs.
+
 ## Installation
 
 ```toml
@@ -52,8 +54,33 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 | `database_url` | `String` | *(required)* | SQLite database URL. Can be a file path (e.g. `/tmp/app.db`), a `sqlite:` URL, or `sqlite::memory:` for an in-memory database. |
 | `table_name` | `String` | *(required)* | Target table name |
 | `column_mapping` | `SqliteColumnMapping` | `Json { column: "data" }` | How to map JSON records to table columns (see below) |
-| `batch_size` | `usize` | `500` | Maximum number of rows per INSERT batch |
+| `batch_size` | `usize` | `1000` | Maximum number of rows per multi-row INSERT. See [Streaming and batching](#streaming-and-batching) below |
 | `max_connections` | `u32` | `5` | Maximum number of connections in the connection pool |
+
+### Streaming and batching
+
+The SQLite sink re-chunks each incoming `StreamPage` to keep individual
+multi-row INSERT statements within SQLite's per-statement parameter limits
+and to amortise per-transaction overhead.
+
+- **`batch_size > 0`** (default `1000`) — the sink slices the incoming
+  slice into `batch_size`-row chunks and issues one multi-row INSERT per
+  chunk, each wrapped in its own `BEGIN`/`COMMIT` transaction.
+  **Recommended value is `1000`**: large enough to amortise transaction
+  overhead, small enough to stay well under SQLite's default
+  `SQLITE_MAX_VARIABLE_NUMBER` (32766 since 3.32.0). Drop it if rows have
+  many columns; raise it if rows are narrow and you've tuned
+  `max_variable_number` accordingly.
+- **`batch_size = 0`** — the "no batching" sentinel. The entire upstream
+  `StreamPage` is written in a single multi-row INSERT inside one
+  transaction. Use this when the source already emits page sizes tuned for
+  SQLite — for example a Postgres source with `batch_size: 1000`. Pages
+  large enough to push the parameter count past SQLite's per-statement
+  limit will fail at the prepare step.
+
+`batch_size` is purely a chunk-size knob — transaction wrapping (one
+`BEGIN`/`COMMIT` per chunk), identifier quoting, and per-record error
+reporting are unchanged.
 
 ### Column Mapping (`SqliteColumnMapping`)
 
@@ -70,13 +97,13 @@ use faucet_sink_sqlite::{SqliteSinkConfig, SqliteColumnMapping};
 // JSON mode with custom column
 let config = SqliteSinkConfig::new("sqlite:///data/app.db", "events")
     .column_mapping(SqliteColumnMapping::Json { column: "payload".into() })
-    .batch_size(1000)
+    .with_batch_size(1000)
     .max_connections(3);
 
 // AutoMap mode
 let config = SqliteSinkConfig::new("sqlite:///data/app.db", "events")
     .column_mapping(SqliteColumnMapping::AutoMap)
-    .batch_size(250);
+    .with_batch_size(250);
 ```
 
 ## Config Loading
@@ -103,7 +130,7 @@ let config: SqliteSinkConfig = load_env_file(".env", "SQLITE_SINK")?;
       "column": "data"
     }
   },
-  "batch_size": 500,
+  "batch_size": 1000,
   "max_connections": 5
 }
 ```
@@ -115,7 +142,7 @@ let config: SqliteSinkConfig = load_env_file(".env", "SQLITE_SINK")?;
   "database_url": "/data/analytics.db",
   "table_name": "events",
   "column_mapping": "auto_map",
-  "batch_size": 500,
+  "batch_size": 1000,
   "max_connections": 3
 }
 ```
@@ -126,7 +153,7 @@ let config: SqliteSinkConfig = load_env_file(".env", "SQLITE_SINK")?;
 SQLITE_SINK_DATABASE_URL=/data/analytics.db
 SQLITE_SINK_TABLE_NAME=raw_events
 SQLITE_SINK_COLUMN_MAPPING='{"json":{"column":"data"}}'
-SQLITE_SINK_BATCH_SIZE=500
+SQLITE_SINK_BATCH_SIZE=1000
 SQLITE_SINK_MAX_CONNECTIONS=5
 ```
 
@@ -176,7 +203,7 @@ CREATE TABLE raw_events (
 ```rust
 let config = SqliteSinkConfig::new("/tmp/app.db", "raw_events")
     .column_mapping(SqliteColumnMapping::Json { column: "data".into() })
-    .batch_size(500);
+    .with_batch_size(1000);
 
 let sink = SqliteSink::new(config).await?;
 sink.write_batch(&records).await?;
@@ -197,7 +224,7 @@ CREATE TABLE events (
 ```rust
 let config = SqliteSinkConfig::new("/tmp/app.db", "events")
     .column_mapping(SqliteColumnMapping::AutoMap)
-    .batch_size(1000);
+    .with_batch_size(1000);
 
 let sink = SqliteSink::new(config).await?;
 
@@ -220,7 +247,7 @@ let sink = SqliteSink::new(config).await?;
 ## How It Works
 
 - A connection pool is created in `SqliteSink::new()` using `sqlx::SqlitePool` with the configured `max_connections`.
-- `write_batch()` splits records into chunks of `batch_size`. Each chunk is inserted using a single multi-row INSERT statement wrapped in a `BEGIN`/`COMMIT` transaction for write performance.
+- `write_batch()` slices the input into `batch_size`-row chunks (or forwards the whole slice when `batch_size = 0`). Each chunk is inserted using a single multi-row INSERT statement wrapped in a `BEGIN`/`COMMIT` transaction for write performance.
 - In JSON mode, each record is serialized to a JSON string and inserted as `INSERT INTO t (col) VALUES (?), (?), ...`.
 - In AutoMap mode, column names are discovered using `PRAGMA table_info(table_name)`. A multi-row INSERT is built dynamically. Column values are serialized as JSON strings. Missing keys are bound as `"null"`.
 - All identifiers (table names, column names) are quoted using `quote_ident()` (double-quote escaping) to prevent SQL injection.
