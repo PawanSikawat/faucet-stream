@@ -55,7 +55,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 |-------|------|---------|-------------|
 | `url` | `String` | *(required)* | Redis connection URL (e.g. `redis://127.0.0.1:6379`) |
 | `sink_type` | `RedisSinkType` | *(required)* | The type of Redis data structure to write to (see below) |
-| `batch_size` | `usize` | `500` | Number of commands to batch in a single Redis pipeline |
+| `batch_size` | `usize` | `DEFAULT_BATCH_SIZE` (1000) | Maximum number of commands packed into a single Redis pipeline. Pass `0` to opt out of re-chunking — see [Streaming and batching](#streaming-and-batching) below. |
 
 The `Debug` implementation masks the `url` with `***` to prevent credential leakage in logs.
 
@@ -86,8 +86,17 @@ let config = RedisSinkConfig::new(
     "redis://localhost:6379",
     RedisSinkType::Stream { key: "events".into() },
 )
-.batch_size(1000);
+.with_batch_size(1000);
 ```
+
+## Streaming and batching
+
+The sink fits the [streaming pipeline contract](https://github.com/PawanSikawat/faucet-stream/blob/main/CLAUDE.md#streaming-and-batching): `Pipeline::run` drives `Source::stream_pages` and writes each `StreamPage` via `Sink::write_batch` as it arrives. `batch_size` controls how those records get packed into Redis pipelines on the way out:
+
+| `batch_size` | Behaviour |
+|--------------|-----------|
+| `1`..`MAX_BATCH_SIZE` (default `1000`) | When `write_batch` receives a slice larger than `batch_size`, the sink re-chunks it into `batch_size` slices and issues one Redis pipeline per chunk. Recommended for high-throughput writes — Redis pipelined commands are cheap, and a 1000-command window comfortably amortises the round-trip without starving other clients. |
+| `0` | "No batching" sentinel — the entire records slice is packed into a single Redis pipeline regardless of size, preserving upstream `StreamPage` framing. Use this when the source has already chosen a sensible page size (e.g. `RedisSourceConfig::batch_size`, or any other source's per-page knob) and you want one pipeline per page. |
 
 ## Config Loading
 
@@ -111,7 +120,7 @@ let config: RedisSinkConfig = load_env_file(".env", "REDIS_SINK")?;
     "type": "List",
     "key": "event_queue"
   },
-  "batch_size": 500
+  "batch_size": 1000
 }
 ```
 
@@ -137,7 +146,7 @@ let config: RedisSinkConfig = load_env_file(".env", "REDIS_SINK")?;
     "type": "KeyValue",
     "key_field": "id"
   },
-  "batch_size": 500
+  "batch_size": 1000
 }
 ```
 
@@ -146,7 +155,7 @@ let config: RedisSinkConfig = load_env_file(".env", "REDIS_SINK")?;
 ```env
 REDIS_SINK_URL=redis://127.0.0.1:6379
 REDIS_SINK_SINK_TYPE='{"type":"List","key":"events"}'
-REDIS_SINK_BATCH_SIZE=500
+REDIS_SINK_BATCH_SIZE=1000
 ```
 
 ## Config Schema Introspection
@@ -188,7 +197,7 @@ let config = RedisSinkConfig::new(
     "redis://localhost:6379",
     RedisSinkType::List { key: "job_queue".into() },
 )
-.batch_size(500);
+.with_batch_size(500);
 
 let sink = RedisSink::new(config).await?;
 sink.write_batch(&records).await?;
@@ -236,7 +245,7 @@ sink.write_batch(&records).await?;
 ## How It Works
 
 - A multiplexed async connection is opened in `RedisSink::new()` and reused across all `write_batch()` calls. The multiplexed connection is cheaply cloneable.
-- `write_batch()` processes records in chunks of `batch_size`. Each chunk is sent as a Redis pipeline (multiple commands batched in a single round-trip) for maximum throughput.
+- `write_batch()` processes records in chunks of `batch_size`. Each chunk is sent as a Redis pipeline (multiple commands batched in a single round-trip) for maximum throughput. When `batch_size = 0`, the entire records slice is packed into a single pipeline — see [Streaming and batching](#streaming-and-batching).
 - For `List` mode: each record is serialized to JSON and appended with `RPUSH`.
 - For `Stream` mode: each record's top-level fields are flattened into stream entry fields for `XADD`. Auto-generated stream IDs (`*`) are used.
 - For `KeyValue` mode: the specified `key_field` is extracted from each record to use as the Redis key. The entire record (serialized as JSON) is the value for `SET`. Records missing the key field produce an error.

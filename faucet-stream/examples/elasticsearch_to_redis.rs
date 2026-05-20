@@ -37,7 +37,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 key_field: "id".into(),
             },
         )
-        .batch_size(2000),
+        .with_batch_size(2000),
     )
     .await?;
 
