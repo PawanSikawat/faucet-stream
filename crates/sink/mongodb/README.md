@@ -35,7 +35,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "analytics",
         "events",
     )
-    .batch_size(1000);
+    .with_batch_size(1000);
 
     let sink = MongoSink::new(config).await?;
 
@@ -58,9 +58,33 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 | `connection_uri` | `String` | *(required)* | MongoDB connection URI (e.g. `mongodb://user:pass@host:27017`) |
 | `database` | `String` | *(required)* | Database name |
 | `collection` | `String` | *(required)* | Collection name |
-| `batch_size` | `usize` | `500` | Number of documents per `insert_many` call |
+| `batch_size` | `usize` | `1000` | Maximum number of documents per `insert_many` call. See [Streaming and batching](#streaming-and-batching) below |
 
 The `Debug` implementation masks the `connection_uri` with `***` to prevent credential leakage in logs.
+
+### Streaming and batching
+
+`MongoSink::write_batch` re-chunks the incoming records slice into
+`batch_size` slices and issues one `insert_many` call per chunk. The
+default of `1000` matches MongoDB's documented sweet spot for
+`insert_many` — roughly 1000 documents per call balances round-trip
+overhead against the per-request BSON size budget (the server caps a
+single request at 48 MB). Tune up for narrow documents where round-trip
+latency dominates, and down for very wide documents that bump up against
+the BSON size cap.
+
+`batch_size = 0` is the **"no batching" sentinel** — `write_batch`
+forwards the entire records slice in a single `insert_many` call, no
+matter how large, so upstream `StreamPage` framing flows through
+untouched. Use it when the upstream source already emits pages sized for
+MongoDB's per-request limits. Values larger than `MAX_BATCH_SIZE`
+(1,000,000) are rejected by `faucet_core::validate_batch_size`.
+
+Note that this `batch_size` is a **write-side chunking knob** specific
+to the sink. It is unrelated to the MongoDB driver's internal
+`cursor_batch_size` (the wire-level read-side cursor tuning knob used by
+`faucet-source-mongodb`) — the two concerns don't share a value because
+`insert_many` and a query cursor are different operations.
 
 ### Builder Methods
 
@@ -72,7 +96,7 @@ let config = MongoSinkConfig::new(
     "my_database",
     "my_collection",
 )
-.batch_size(2000);
+.with_batch_size(2000);
 ```
 
 ## Config Loading
@@ -171,7 +195,7 @@ let config = MongoSinkConfig::new(
     "warehouse",
     "raw_events",
 )
-.batch_size(5000);
+.with_batch_size(5000);
 
 let sink = MongoSink::new(config).await?;
 sink.write_batch(&large_dataset).await?;
@@ -196,7 +220,7 @@ sink.write_batch(&records).await?;
 ## How It Works
 
 - The MongoDB client is created in `MongoSink::new()` using `Client::with_uri_str()`. The connection is established and validated at this point.
-- `write_batch()` splits records into chunks of `batch_size`. Each chunk is converted from `serde_json::Value` to `bson::Document` and inserted using `collection.insert_many()`.
+- `write_batch()` splits records into chunks of `batch_size`. Each chunk is converted from `serde_json::Value` to `bson::Document` and inserted using `collection.insert_many()`. When `batch_size = 0`, the entire slice is sent in a single `insert_many` call — see [Streaming and batching](#streaming-and-batching).
 - Every record must be a JSON object. Non-object values (arrays, strings, numbers, null) produce an error during BSON conversion.
 - Nested JSON objects, arrays, and all JSON types are correctly converted to their BSON equivalents.
 - The MongoDB driver handles connection pooling and automatic reconnection internally.

@@ -48,6 +48,14 @@ impl faucet_core::Sink for MongoSink {
             .expect("schema serialization")
     }
 
+    /// Write records to MongoDB.
+    ///
+    /// When `config.batch_size > 0` and the input slice is larger than
+    /// `batch_size`, the slice is split into chunks of `batch_size` documents
+    /// and each chunk is sent as a separate `insert_many` call. When
+    /// `config.batch_size == 0`, the entire slice is sent in a single
+    /// `insert_many` request — useful when upstream `StreamPage`s are already
+    /// sized for MongoDB's preferred per-request limits.
     async fn write_batch(&self, records: &[Value]) -> Result<usize, FaucetError> {
         if records.is_empty() {
             return Ok(0);
@@ -58,9 +66,18 @@ impl faucet_core::Sink for MongoSink {
             .database(&self.config.database)
             .collection::<Document>(&self.config.collection);
 
+        // `batch_size = 0` is the "no batching" sentinel: forward whatever
+        // upstream handed us as a single `insert_many`, preserving
+        // `StreamPage` framing. Otherwise re-chunk into `batch_size` slices.
+        let effective_chunk = if self.config.batch_size == 0 {
+            records.len()
+        } else {
+            self.config.batch_size
+        };
+
         let mut total_written = 0usize;
 
-        for chunk in records.chunks(self.config.batch_size) {
+        for chunk in records.chunks(effective_chunk) {
             let docs: Vec<Document> = chunk
                 .iter()
                 .map(Self::value_to_document)

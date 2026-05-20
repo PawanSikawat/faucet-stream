@@ -38,7 +38,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let sink = MongoSink::new(
         MongoSinkConfig::new("mongodb://localhost:27017", "warehouse", "catalog_items")
-            .batch_size(1000),
+            .with_batch_size(1000),
     )
     .await?;
 
