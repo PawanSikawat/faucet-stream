@@ -1,5 +1,6 @@
 //! XML source configuration.
 
+use faucet_core::DEFAULT_BATCH_SIZE;
 use reqwest::header::HeaderMap;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -65,6 +66,21 @@ pub struct XmlStreamConfig {
     pub max_pages: Option<usize>,
     /// Query parameters to include in every request.
     pub query_params: std::collections::HashMap<String, String>,
+    /// Records per emitted [`StreamPage`](faucet_core::StreamPage). The
+    /// event-driven XML parser accumulates matched subtrees into a buffer
+    /// and yields whenever the buffer reaches this size. Defaults to
+    /// [`DEFAULT_BATCH_SIZE`].
+    ///
+    /// `batch_size = 0` is the "no batching" sentinel: the document is
+    /// drained end-to-end and the entire result set is emitted in a single
+    /// page. Useful for small lookup payloads or for sinks (e.g. SQL `COPY`,
+    /// BigQuery load jobs) that prefer one large request to many small ones.
+    #[serde(default = "default_batch_size")]
+    pub batch_size: usize,
+}
+
+fn default_batch_size() -> usize {
+    DEFAULT_BATCH_SIZE
 }
 
 impl XmlStreamConfig {
@@ -81,6 +97,7 @@ impl XmlStreamConfig {
             pagination: None,
             max_pages: None,
             query_params: std::collections::HashMap::new(),
+            batch_size: DEFAULT_BATCH_SIZE,
         }
     }
 
@@ -131,6 +148,16 @@ impl XmlStreamConfig {
         self.query_params.insert(key.into(), value.into());
         self
     }
+
+    /// Set the per-page record count for
+    /// [`Source::stream_pages`](faucet_core::Source::stream_pages).
+    ///
+    /// Pass `0` to opt out of batching — the entire document is drained and
+    /// emitted in a single [`StreamPage`](faucet_core::StreamPage).
+    pub fn with_batch_size(mut self, batch_size: usize) -> Self {
+        self.batch_size = batch_size;
+        self
+    }
 }
 
 #[cfg(test)]
@@ -158,5 +185,69 @@ mod tests {
             config.records_element_path.unwrap(),
             "Envelope.Body.GetUsersResponse.Users.User"
         );
+    }
+
+    #[test]
+    fn batch_size_defaults_to_default_batch_size() {
+        let config = XmlStreamConfig::new("https://api.example.com", "/users");
+        assert_eq!(config.batch_size, faucet_core::DEFAULT_BATCH_SIZE);
+    }
+
+    #[test]
+    fn with_batch_size_overrides_default() {
+        let config = XmlStreamConfig::new("https://api.example.com", "/users").with_batch_size(500);
+        assert_eq!(config.batch_size, 500);
+    }
+
+    #[test]
+    fn batch_size_zero_is_accepted_as_no_batching_sentinel() {
+        let config = XmlStreamConfig::new("https://api.example.com", "/users").with_batch_size(0);
+        assert_eq!(config.batch_size, 0);
+        assert!(faucet_core::validate_batch_size(config.batch_size).is_ok());
+    }
+
+    #[test]
+    fn batch_size_above_max_is_rejected_by_validate_batch_size() {
+        let config = XmlStreamConfig::new("https://api.example.com", "/users")
+            .with_batch_size(faucet_core::MAX_BATCH_SIZE + 1);
+        assert!(faucet_core::validate_batch_size(config.batch_size).is_err());
+    }
+
+    #[test]
+    fn batch_size_deserializes_from_json() {
+        let json = r#"{
+            "base_url": "https://api.example.com",
+            "path": "/users.xml",
+            "method": "GET",
+            "auth": { "type": "None" },
+            "body": null,
+            "records_element_path": "root.user",
+            "pagination": null,
+            "max_pages": null,
+            "query_params": {},
+            "batch_size": 250
+        }"#;
+        let config: XmlStreamConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(config.batch_size, 250);
+    }
+
+    #[test]
+    fn batch_size_defaults_when_missing_from_json() {
+        // The `#[serde(default = "default_batch_size")]` attribute is the
+        // user-facing contract — older configs without `batch_size` must
+        // continue to deserialize and adopt the library default.
+        let json = r#"{
+            "base_url": "https://api.example.com",
+            "path": "/users.xml",
+            "method": "GET",
+            "auth": { "type": "None" },
+            "body": null,
+            "records_element_path": null,
+            "pagination": null,
+            "max_pages": null,
+            "query_params": {}
+        }"#;
+        let config: XmlStreamConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(config.batch_size, faucet_core::DEFAULT_BATCH_SIZE);
     }
 }

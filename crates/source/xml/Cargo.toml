@@ -13,12 +13,16 @@ schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 async-trait.workspace = true
+async-stream.workspace = true
+futures.workspace = true
 tracing.workspace = true
 tokio.workspace = true
 reqwest.workspace = true
 quick-xml.workspace = true
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["macros", "rt"] }
+tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread"] }
 serde_json.workspace = true
+futures.workspace = true
+tempfile = "3"
 wiremock = "0.6"
