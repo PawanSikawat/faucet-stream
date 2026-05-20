@@ -138,10 +138,28 @@ impl faucet_core::Sink for HttpSink {
                 Ok(records.len())
             }
             HttpBatchMode::Array => {
-                let array = Value::Array(records.to_vec());
-                self.send_with_retry(&array).await?;
-                tracing::debug!(records = records.len(), "HTTP array batch written");
-                Ok(records.len())
+                // `batch_size = 0` is the "no batching" sentinel: forward
+                // whatever upstream handed us as a single JSON-array POST,
+                // preserving `StreamPage` framing. Otherwise re-chunk into
+                // `batch_size` slices and issue one POST per chunk.
+                let effective_chunk = if self.config.batch_size == 0 {
+                    records.len()
+                } else {
+                    self.config.batch_size
+                };
+
+                let mut total = 0;
+                for chunk in records.chunks(effective_chunk) {
+                    let array = Value::Array(chunk.to_vec());
+                    self.send_with_retry(&array).await?;
+                    total += chunk.len();
+                }
+                tracing::debug!(
+                    records = total,
+                    batch_size = self.config.batch_size,
+                    "HTTP array batch written"
+                );
+                Ok(total)
             }
         }
     }
