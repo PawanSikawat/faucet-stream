@@ -65,6 +65,15 @@ The server responds with `200 OK` to valid requests and `400 Bad Request` for no
 | `path` | `String` | `"/webhook"` | Endpoint path for receiving webhooks |
 | `max_payloads` | `Option<usize>` | `None` | Stop after receiving this many payloads. `None` means collect until timeout |
 | `timeout_secs` | `u64` | `30` | How long to listen before returning, in seconds |
+| `batch_size` | `usize` | `1000` | Records per emitted `StreamPage`. `0` is the "no batching" sentinel — emit the full flush window in one page. See [Streaming and batching](#streaming-and-batching) |
+
+## Streaming and batching
+
+The webhook source collects POST requests into a per-flush in-memory buffer during its receive window (bounded by `timeout_secs` and, optionally, `max_payloads`). It has no native streaming primitive — `Source::stream_pages` falls back to the default trait implementation, which buffers the full flush window and then chunks it into pages of `batch_size` records.
+
+- `batch_size` is honoured for **chunking the flush** that is handed downstream, but does not change how POSTs are buffered server-side: the HTTP handler always pushes into the in-process `Vec` until the receive window closes.
+- `batch_size = 0` is functionally equivalent to any positive value larger than the received payload count for this source — both emit one page containing every collected record.
+- Flushes are bounded by the receive-window timer (`timeout_secs`) and `max_payloads`, configured separately on the source. Tune those if you need to bound memory at request-receive time; `batch_size` only shapes the downstream page size.
 
 ## Config Loading
 
@@ -83,7 +92,8 @@ let config: WebhookSourceConfig = load_env_file(".env", "WEBHOOK")?;
   "listen_addr": "0.0.0.0:9090",
   "path": "/hooks/incoming",
   "max_payloads": 100,
-  "timeout_secs": 120
+  "timeout_secs": 120,
+  "batch_size": 1000
 }
 ```
 
