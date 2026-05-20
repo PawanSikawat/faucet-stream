@@ -1,5 +1,6 @@
 //! Parquet sink configuration.
 
+use faucet_core::DEFAULT_BATCH_SIZE;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -38,10 +39,30 @@ pub struct ParquetSinkConfig {
     /// slightly exceed the limit by one batch worth of data.
     #[serde(default)]
     pub max_bytes_per_file: Option<usize>,
+
+    /// Re-chunk size for [`Sink::write_batch`](faucet_core::Sink::write_batch).
+    /// When `batch_size > 0` and an incoming page exceeds this many records,
+    /// the sink slices the page into `batch_size`-sized chunks and runs the
+    /// internal write path once per chunk. When `batch_size = 0` (the "no
+    /// batching" sentinel) the page is written through as-is. Defaults to
+    /// [`DEFAULT_BATCH_SIZE`].
+    ///
+    /// This is purely a knob for downstream callers that want tighter control
+    /// than the upstream source provides; for Parquet/S3 the source-defined
+    /// page size is usually optimal, so leaving this at the default (or even
+    /// at `0`) is recommended. The independent row/byte rollover thresholds
+    /// (`max_rows_per_file`, `max_bytes_per_file`) still apply regardless of
+    /// `batch_size`.
+    #[serde(default = "default_batch_size")]
+    pub batch_size: usize,
 }
 
 fn default_row_group_size() -> usize {
     DEFAULT_ROW_GROUP_SIZE
+}
+
+fn default_batch_size() -> usize {
+    DEFAULT_BATCH_SIZE
 }
 
 impl ParquetSinkConfig {
@@ -54,6 +75,7 @@ impl ParquetSinkConfig {
             row_group_size: DEFAULT_ROW_GROUP_SIZE,
             max_rows_per_file: None,
             max_bytes_per_file: None,
+            batch_size: DEFAULT_BATCH_SIZE,
         }
     }
 
@@ -92,6 +114,17 @@ impl ParquetSinkConfig {
         self
     }
 
+    /// Set the re-chunk size for [`Sink::write_batch`](faucet_core::Sink::write_batch).
+    ///
+    /// Pass `0` to opt out of batching — incoming pages are written through
+    /// to the underlying Arrow writer as-is. For Parquet/S3 the source-defined
+    /// page size is usually optimal, so leaving this at the default (or at
+    /// `0`) is recommended.
+    pub fn with_batch_size(mut self, batch_size: usize) -> Self {
+        self.batch_size = batch_size;
+        self
+    }
+
     /// Validate that the config makes sense; returns an error if not.
     pub fn validate(&self) -> Result<(), String> {
         if self.row_group_size == 0 {
@@ -108,6 +141,7 @@ impl ParquetSinkConfig {
         {
             return Err("schema.sample_size must be greater than 0 when set".to_string());
         }
+        faucet_core::validate_batch_size(self.batch_size).map_err(|e| e.to_string())?;
         match &self.destination {
             ParquetDestination::LocalPath { path } if path.is_empty() => {
                 Err("destination.path must not be empty".to_string())
@@ -302,5 +336,53 @@ mod tests {
         let parsed: ParquetSinkConfig = serde_json::from_value(json).unwrap();
         assert_eq!(parsed.compression, ParquetCompression::Gzip);
         assert_eq!(parsed.max_rows_per_file, Some(500));
+    }
+
+    #[test]
+    fn batch_size_defaults_to_default_batch_size() {
+        let cfg = ParquetSinkConfig::local("/tmp/out");
+        assert_eq!(cfg.batch_size, faucet_core::DEFAULT_BATCH_SIZE);
+    }
+
+    #[test]
+    fn with_batch_size_overrides_default() {
+        let cfg = ParquetSinkConfig::local("/tmp/out").with_batch_size(500);
+        assert_eq!(cfg.batch_size, 500);
+    }
+
+    #[test]
+    fn batch_size_zero_is_accepted_as_no_batching_sentinel() {
+        let cfg = ParquetSinkConfig::local("/tmp/out").with_batch_size(0);
+        assert_eq!(cfg.batch_size, 0);
+        assert!(faucet_core::validate_batch_size(cfg.batch_size).is_ok());
+        // Sentinel also passes the sink-level validate().
+        assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
+    fn batch_size_above_max_is_rejected_by_validate() {
+        let cfg =
+            ParquetSinkConfig::local("/tmp/out").with_batch_size(faucet_core::MAX_BATCH_SIZE + 1);
+        assert!(faucet_core::validate_batch_size(cfg.batch_size).is_err());
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn batch_size_deserializes_from_json() {
+        let json = r#"{
+            "destination": {"type": "local_path", "path": "/tmp/out"},
+            "batch_size": 250
+        }"#;
+        let cfg: ParquetSinkConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(cfg.batch_size, 250);
+    }
+
+    #[test]
+    fn batch_size_default_via_serde_when_omitted() {
+        let json = r#"{
+            "destination": {"type": "local_path", "path": "/tmp/out"}
+        }"#;
+        let cfg: ParquetSinkConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(cfg.batch_size, faucet_core::DEFAULT_BATCH_SIZE);
     }
 }
