@@ -34,7 +34,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 username: std::env::var("ES_USER")?,
                 password: std::env::var("ES_PASS")?,
             })
-            .batch_size(1000)
+            .with_batch_size(1000)
             .id_field("_id"),
     );
 

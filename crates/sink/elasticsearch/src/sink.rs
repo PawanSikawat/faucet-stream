@@ -84,6 +84,15 @@ impl faucet_core::Sink for ElasticsearchSink {
             .expect("schema serialization")
     }
 
+    /// Write records to Elasticsearch using the `_bulk` API.
+    ///
+    /// When `config.batch_size > 0` and the input slice is larger than
+    /// `batch_size`, the slice is split into chunks of `batch_size`
+    /// documents and each chunk is sent as a separate `POST /_bulk` HTTP
+    /// call. When `config.batch_size == 0`, the entire upstream
+    /// [`StreamPage`](faucet_core::StreamPage) is sent in a single bulk
+    /// request — useful when the source already sizes pages for
+    /// Elasticsearch's `_bulk` sweet spot (5–15 MB NDJSON per call).
     async fn write_batch(&self, records: &[Value]) -> Result<usize, FaucetError> {
         if records.is_empty() {
             return Ok(0);
@@ -91,7 +100,16 @@ impl faucet_core::Sink for ElasticsearchSink {
 
         let mut total_written = 0;
 
-        for chunk in records.chunks(self.config.batch_size) {
+        let chunks: Vec<&[Value]> = if self.config.batch_size == 0 {
+            // Sentinel: forward the entire upstream page as a single
+            // `_bulk` POST. Caller is responsible for staying under
+            // Elasticsearch's per-request limits.
+            vec![records]
+        } else {
+            records.chunks(self.config.batch_size).collect()
+        };
+
+        for chunk in chunks {
             let body = self.build_bulk_body(chunk)?;
 
             let url = format!("{}/_bulk", self.config.base_url);

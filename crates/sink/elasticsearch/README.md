@@ -7,6 +7,8 @@ Elasticsearch sink connector for the [faucet-stream](https://github.com/PawanSik
 
 Indexes JSON records into an Elasticsearch index using the bulk API (`_bulk` endpoint) with NDJSON format. Supports optional document ID extraction from record fields, multiple authentication methods, and configurable batch sizes for bulk requests.
 
+`write_batch` accepts whatever slice the pipeline hands it. When `batch_size > 0` and the slice is larger than `batch_size`, the sink re-chunks internally and issues one `_bulk` HTTP call per chunk; when `batch_size = 0`, the entire slice is sent in a single bulk request — see [Streaming and batching](#streaming-and-batching) for the tradeoffs.
+
 ## Installation
 
 ```toml
@@ -34,7 +36,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "http://localhost:9200",
         "events",
     )
-    .batch_size(500);
+    .with_batch_size(1000);
 
     let sink = ElasticsearchSink::new(config);
 
@@ -57,8 +59,44 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 | `base_url` | `String` | *(required)* | Base URL of the Elasticsearch cluster (e.g. `"http://localhost:9200"`). Trailing slashes are stripped automatically. |
 | `index` | `String` | *(required)* | Target index name |
 | `auth` | `ElasticsearchSinkAuth` | `None` | Authentication method (see below) |
-| `batch_size` | `usize` | `500` | Maximum number of documents per `_bulk` request |
+| `batch_size` | `usize` | `1000` | Maximum documents per `_bulk` request. See [Streaming and batching](#streaming-and-batching) below |
 | `id_field` | `Option<String>` | `None` | JSON field name to use as the document `_id`. If `None`, Elasticsearch auto-generates IDs. |
+
+### Streaming and batching
+
+The Elasticsearch sink re-chunks each incoming `StreamPage` to keep
+individual `POST /_bulk` calls under Elasticsearch's recommended payload
+size.
+
+- **`batch_size > 0`** (default `1000`) — the sink slices the incoming
+  slice into `batch_size`-document chunks and issues one `_bulk` HTTP
+  call per chunk. Elasticsearch's documented sweet spot for `_bulk`
+  payloads is **5–15 MB of NDJSON per request**, so the right document
+  count depends on the average document size:
+
+  | Avg doc size | Recommended `batch_size` |
+  |--------------|--------------------------|
+  | ~1 KB (log lines, simple events) | 5000 |
+  | ~5 KB (typical app events, denormalised rows) | 1000–2000 |
+  | ~25 KB (analytics aggregates, large nested objects) | 200–500 |
+  | ~100 KB+ (huge nested docs) | 50–100 |
+
+  Start with the default of `1000`, watch the [`_bulk` response size in
+  ES logs](https://www.elastic.co/docs/api/doc/elasticsearch/operation/operation-bulk),
+  and adjust until each call lands in the 5–15 MB band. Larger calls
+  risk HTTP-413, slow GC, or rejected-execution exceptions on the
+  Elasticsearch side; smaller calls amortise less per-request overhead.
+
+- **`batch_size = 0`** — the "no batching" sentinel. The entire upstream
+  `StreamPage` is forwarded in a single `_bulk` call. Use this when the
+  source already emits page sizes tuned for Elasticsearch — for example
+  a Postgres source configured with `batch_size: 2000`. Larger pages
+  risk HTTP-413 from Elasticsearch's `http.max_content_length` (default
+  100 MB but typically lowered to 10–20 MB in production).
+
+`batch_size` is purely a chunk-size knob — the sink's per-item error
+inspection of the `_bulk` response and the "first item that failed"
+error message are unchanged.
 
 ### Authentication (`ElasticsearchSinkAuth`)
 
@@ -89,7 +127,7 @@ let config = ElasticsearchSinkConfig::new("http://localhost:9200", "events")
         username: "elastic".into(),
         password: "changeme".into(),
     })
-    .batch_size(1000)
+    .with_batch_size(1000)
     .id_field("doc_id");
 ```
 
@@ -117,7 +155,7 @@ let config: ElasticsearchSinkConfig = load_env_file(".env", "ES_SINK")?;
     "username": "elastic",
     "password": "changeme"
   },
-  "batch_size": 500,
+  "batch_size": 1000,
   "id_field": "event_id"
 }
 ```
@@ -155,7 +193,7 @@ let config: ElasticsearchSinkConfig = load_env_file(".env", "ES_SINK")?;
 ES_SINK_BASE_URL=http://localhost:9200
 ES_SINK_INDEX=events
 ES_SINK_AUTH='{"type":"Basic","username":"elastic","password":"changeme"}'
-ES_SINK_BATCH_SIZE=500
+ES_SINK_BATCH_SIZE=1000
 ES_SINK_ID_FIELD=event_id
 ```
 
@@ -183,7 +221,7 @@ let source = RestStream::new(
 let sink = ElasticsearchSink::new(
     ElasticsearchSinkConfig::new("http://localhost:9200", "api_logs")
         .id_field("log_id")
-        .batch_size(1000)
+        .with_batch_size(1000)
 );
 
 let result = Pipeline::new(source, sink).run().await?;
@@ -233,7 +271,7 @@ let config = ElasticsearchSinkConfig::new(
 .auth(ElasticsearchSinkAuth::ApiKey {
     key: std::env::var("ES_API_KEY")?,
 })
-.batch_size(2000);
+.with_batch_size(2000);
 
 let sink = ElasticsearchSink::new(config);
 sink.write_batch(&records).await?;
@@ -242,7 +280,7 @@ sink.write_batch(&records).await?;
 ## How It Works
 
 - The HTTP client is created in `ElasticsearchSink::new()` and reused across all requests.
-- `write_batch()` splits records into chunks of `batch_size`. For each chunk, it builds an NDJSON body with alternating action/data lines:
+- `write_batch()` slices the input into `batch_size`-document chunks (or forwards the whole slice when `batch_size = 0`). For each chunk, it builds an NDJSON body with alternating action/data lines:
   ```
   {"index":{"_index":"events","_id":"optional-id"}}
   {"user_id":"u123","event":"page_view"}
