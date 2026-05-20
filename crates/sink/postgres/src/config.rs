@@ -1,5 +1,6 @@
 //! PostgreSQL sink configuration.
 
+use faucet_core::DEFAULT_BATCH_SIZE;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -32,10 +33,34 @@ pub struct PostgresSinkConfig {
     pub table_name: String,
     /// How to map JSON records to columns.
     pub column_mapping: PostgresColumnMapping,
-    /// Maximum number of rows per INSERT statement. Defaults to 500.
+    /// Maximum rows per multi-row `INSERT` statement. Defaults to
+    /// [`DEFAULT_BATCH_SIZE`].
+    ///
+    /// When the upstream `StreamPage` carries more records than `batch_size`,
+    /// the sink slices the page into `batch_size`-row chunks and issues one
+    /// multi-row `INSERT` per chunk. When `batch_size = 0`, the entire slice
+    /// is sent in a single `INSERT` — useful when the source already chunks
+    /// to a Postgres-friendly size.
+    ///
+    /// `batch_size = 0` is the "no batching" sentinel: the entire upstream
+    /// page is forwarded in one statement, subject to Postgres' natural
+    /// per-statement bind-parameter limit of 65 535. AutoMap mode binds one
+    /// parameter per column per row, so the safe ceiling is roughly
+    /// `65_535 / num_columns` rows per call; JSONB mode binds a single
+    /// array parameter and has no such ceiling. Keep the default unless the
+    /// upstream page size is already tuned for Postgres.
+    ///
+    /// **Recommended value: ~1000** — Postgres' multi-row `INSERT` sweet
+    /// spot. Larger chunks rarely add throughput and risk hitting the
+    /// 65 535-parameter ceiling in AutoMap mode.
+    #[serde(default = "default_batch_size")]
     pub batch_size: usize,
     /// Maximum number of connections in the pool. Defaults to 5.
     pub max_connections: u32,
+}
+
+fn default_batch_size() -> usize {
+    DEFAULT_BATCH_SIZE
 }
 
 impl std::fmt::Debug for PostgresSinkConfig {
@@ -57,7 +82,7 @@ impl PostgresSinkConfig {
             connection_url: connection_url.into(),
             table_name: table_name.into(),
             column_mapping: PostgresColumnMapping::default(),
-            batch_size: 500,
+            batch_size: DEFAULT_BATCH_SIZE,
             max_connections: 5,
         }
     }
@@ -68,9 +93,13 @@ impl PostgresSinkConfig {
         self
     }
 
-    /// Set the batch size for INSERT statements.
-    pub fn batch_size(mut self, n: usize) -> Self {
-        self.batch_size = n;
+    /// Set the per-statement row count for multi-row `INSERT`.
+    ///
+    /// Pass `0` to opt out of re-chunking — the sink forwards each upstream
+    /// [`StreamPage`](faucet_core::StreamPage) as a single `INSERT`
+    /// statement. Postgres' multi-row `INSERT` sweet spot is ~1000 rows.
+    pub fn with_batch_size(mut self, batch_size: usize) -> Self {
+        self.batch_size = batch_size;
         self
     }
 
@@ -89,7 +118,7 @@ mod tests {
     fn default_config() {
         let config = PostgresSinkConfig::new("postgres://localhost/test", "events");
         assert_eq!(config.table_name, "events");
-        assert_eq!(config.batch_size, 500);
+        assert_eq!(config.batch_size, DEFAULT_BATCH_SIZE);
         assert!(matches!(
             config.column_mapping,
             PostgresColumnMapping::Jsonb { ref column } if column == "data"
@@ -100,7 +129,7 @@ mod tests {
     fn builder_methods() {
         let config = PostgresSinkConfig::new("postgres://localhost/test", "events")
             .column_mapping(PostgresColumnMapping::AutoMap)
-            .batch_size(100);
+            .with_batch_size(100);
         assert_eq!(config.batch_size, 100);
         assert!(matches!(
             config.column_mapping,
@@ -119,5 +148,60 @@ mod tests {
             config.column_mapping,
             PostgresColumnMapping::Jsonb { ref column } if column == "payload"
         ));
+    }
+
+    #[test]
+    fn with_batch_size_overrides_default() {
+        let config =
+            PostgresSinkConfig::new("postgres://localhost/test", "events").with_batch_size(250);
+        assert_eq!(config.batch_size, 250);
+    }
+
+    #[test]
+    fn batch_size_zero_is_accepted_as_no_batching_sentinel() {
+        let config =
+            PostgresSinkConfig::new("postgres://localhost/test", "events").with_batch_size(0);
+        assert_eq!(config.batch_size, 0);
+        assert!(faucet_core::validate_batch_size(config.batch_size).is_ok());
+    }
+
+    #[test]
+    fn batch_size_above_max_is_rejected_by_validate_batch_size() {
+        let config = PostgresSinkConfig::new("postgres://localhost/test", "events")
+            .with_batch_size(faucet_core::MAX_BATCH_SIZE + 1);
+        assert!(faucet_core::validate_batch_size(config.batch_size).is_err());
+    }
+
+    #[test]
+    fn batch_size_deserializes_from_json() {
+        let json = r#"{
+            "connection_url": "postgres://localhost/test",
+            "table_name": "events",
+            "column_mapping": {"jsonb": {"column": "data"}},
+            "batch_size": 250,
+            "max_connections": 5
+        }"#;
+        let config: PostgresSinkConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(config.batch_size, 250);
+    }
+
+    #[test]
+    fn batch_size_defaults_when_absent_in_json() {
+        let json = r#"{
+            "connection_url": "postgres://localhost/test",
+            "table_name": "events",
+            "column_mapping": {"jsonb": {"column": "data"}},
+            "max_connections": 5
+        }"#;
+        let config: PostgresSinkConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(config.batch_size, DEFAULT_BATCH_SIZE);
+    }
+
+    #[test]
+    fn config_builder_chaining() {
+        let config = PostgresSinkConfig::new("postgres://localhost/test", "events")
+            .with_batch_size(100)
+            .with_batch_size(250);
+        assert_eq!(config.batch_size, 250);
     }
 }

@@ -168,9 +168,31 @@ impl faucet_core::Sink for PostgresSink {
             .expect("schema serialization")
     }
 
+    /// Write records to PostgreSQL.
+    ///
+    /// When `config.batch_size > 0` and the input slice is larger than
+    /// `batch_size`, the slice is split into chunks of `batch_size` rows and
+    /// each chunk is sent as a separate multi-row `INSERT`. When
+    /// `config.batch_size == 0`, the entire slice is sent in a single
+    /// `INSERT` — useful when upstream `StreamPage`s are already sized for
+    /// Postgres' per-statement bind-parameter limit (~65 535 / num_columns
+    /// in AutoMap mode).
     async fn write_batch(&self, records: &[Value]) -> Result<usize, FaucetError> {
+        if records.is_empty() {
+            return Ok(0);
+        }
+
+        let chunks: Vec<&[Value]> = if self.config.batch_size == 0 {
+            // Sentinel: pass the entire upstream page through in a single
+            // INSERT statement. Subject to Postgres' 65 535 bind-parameter
+            // limit in AutoMap mode; JSONB mode binds a single array.
+            vec![records]
+        } else {
+            records.chunks(self.config.batch_size).collect()
+        };
+
         let mut total = 0;
-        for chunk in records.chunks(self.config.batch_size) {
+        for chunk in chunks {
             total += match &self.config.column_mapping {
                 PostgresColumnMapping::Jsonb { column } => self.insert_jsonb(chunk, column).await?,
                 PostgresColumnMapping::AutoMap => self.insert_auto_map(chunk).await?,

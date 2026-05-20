@@ -52,7 +52,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let sink = PostgresSink::new(
         PostgresSinkConfig::new("postgres://user:pass@localhost/app", "users_imported")
             .column_mapping(PostgresColumnMapping::AutoMap)
-            .batch_size(1000)
+            .with_batch_size(1000)
             .max_connections(8),
     )
     .await?;
