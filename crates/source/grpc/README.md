@@ -72,6 +72,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 | `auth` | `GrpcAuth` | `GrpcAuth::None` | Authentication method |
 | `tls` | `Option<bool>` | `None` | Whether to use TLS. When `None`, auto-detected from `https://` in the endpoint URL |
 | `records_path` | `Option<String>` | `None` | JSONPath to extract records from the response. If not set, the entire response is returned as a single record |
+| `batch_size` | `usize` | `1000` | Records per emitted `StreamPage` for `Source::stream_pages`. `0` is the "no batching" sentinel — the entire result set is emitted in a single page. See [Streaming and batching](#streaming-and-batching) below — for unary RPCs `0` and any positive value behave identically |
 
 ### Authentication (GrpcAuth)
 
@@ -80,6 +81,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 | `None` | -- | No authentication |
 | `Bearer { token }` | `String` | Bearer token sent as `authorization` metadata |
 | `Metadata { entries }` | `Vec<MetadataEntry { key, value }>` | Custom metadata pairs attached to the gRPC request — `Vec` preserves order and allows duplicate keys (gRPC permits both) |
+
+## Streaming and batching
+
+Unary gRPC returns one response containing all records; `stream_pages` falls back to the default trait impl, which buffers the full response and then chunks it in memory into `batch_size` pages. This bounds **sink-side** memory only — source-side memory is still O(full response).
+
+`batch_size = 0` and any positive `batch_size` are observably identical for unary gRPC — both buffer the full result before yielding, since the unary RPC has no native paging primitive the source could honour. Treat the field as a sink-side chunk size, not a wire-protocol hint.
+
+Server-streaming gRPC is tracked as issue [#34](https://github.com/PawanSikawat/faucet-stream/issues/34) and will override `stream_pages` to stream per-response, at which point `batch_size` will gain its usual meaning for that mode.
 
 ## Config Loading
 
@@ -108,7 +117,8 @@ let config: GrpcStreamConfig = load_env_file(".env", "GRPC")?;
     "token": "your-api-token"
   },
   "tls": true,
-  "records_path": "$.products[*]"
+  "records_path": "$.products[*]",
+  "batch_size": 1000
 }
 ```
 

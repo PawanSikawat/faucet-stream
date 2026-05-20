@@ -1,0 +1,232 @@
+//! Integration tests for `S3Sink::write_batch` write-side re-chunking,
+//! exercised against a real S3-compatible endpoint (MinIO) via testcontainers.
+//!
+//! These tests require Docker. Each test boots its own container and seeds
+//! its own bucket so they are fully isolated and safe to run in parallel.
+
+use aws_config::BehaviorVersion;
+use aws_sdk_s3::config::Credentials;
+use aws_sdk_s3::{Client, Config as S3Config};
+use faucet_core::Sink;
+use faucet_sink_s3::{S3Sink, S3SinkConfig};
+use serde_json::{Value, json};
+use testcontainers::{ContainerAsync, runners::AsyncRunner};
+use testcontainers_modules::minio::MinIO;
+
+const ACCESS_KEY: &str = "minioadmin";
+const SECRET_KEY: &str = "minioadmin";
+const REGION: &str = "us-east-1";
+const TEST_BUCKET: &str = "faucet-sink-s3-tests";
+
+/// Start a MinIO container and return the container handle plus the
+/// `http://host:port` endpoint URL. The container is kept alive by the
+/// returned handle; drop it to stop the container.
+async fn start_minio() -> (ContainerAsync<MinIO>, String) {
+    let container: ContainerAsync<MinIO> = MinIO::default()
+        .start()
+        .await
+        .expect("minio container start");
+    let port = container
+        .get_host_port_ipv4(9000)
+        .await
+        .expect("minio port");
+    let endpoint = format!("http://127.0.0.1:{port}");
+    (container, endpoint)
+}
+
+/// Build a path-style aws-sdk-s3 admin client pointed at the MinIO endpoint.
+async fn build_admin_client(endpoint: &str) -> Client {
+    let creds = Credentials::new(ACCESS_KEY, SECRET_KEY, None, None, "test");
+    let sdk_config = aws_config::defaults(BehaviorVersion::latest())
+        .region(aws_config::Region::new(REGION))
+        .endpoint_url(endpoint)
+        .credentials_provider(creds)
+        .load()
+        .await;
+    let s3_config = S3Config::from(&sdk_config)
+        .to_builder()
+        .force_path_style(true)
+        .build();
+    Client::from_conf(s3_config)
+}
+
+/// Create the test bucket.
+async fn create_bucket(endpoint: &str) {
+    let client = build_admin_client(endpoint).await;
+    client
+        .create_bucket()
+        .bucket(TEST_BUCKET)
+        .send()
+        .await
+        .expect("create bucket");
+}
+
+/// Build an `S3Sink` configured against MinIO. Credentials are passed via env
+/// vars because the sink's `build_client` honours the standard AWS credential
+/// chain and has no field for inline credentials.
+async fn build_sink(endpoint: &str, config: S3SinkConfig) -> S3Sink {
+    // SAFETY: tests are serialised on these env vars only loosely — each test
+    // boots its own container with the same default MinIO credentials, so the
+    // value written is the same across overlapping tests.
+    unsafe {
+        std::env::set_var("AWS_ACCESS_KEY_ID", ACCESS_KEY);
+        std::env::set_var("AWS_SECRET_ACCESS_KEY", SECRET_KEY);
+        std::env::set_var("AWS_DEFAULT_REGION", REGION);
+    }
+    let config = config
+        .endpoint_url(endpoint.to_string())
+        .region(REGION.to_string());
+    S3Sink::new(config).await.expect("S3Sink::new")
+}
+
+/// Path-style admin client for assertions against the seeded bucket.
+async fn assertion_client(endpoint: &str) -> Client {
+    build_admin_client(endpoint).await
+}
+
+/// List every key under the given prefix in the test bucket.
+async fn list_keys(client: &Client, prefix: &str) -> Vec<String> {
+    let resp = client
+        .list_objects_v2()
+        .bucket(TEST_BUCKET)
+        .prefix(prefix)
+        .send()
+        .await
+        .expect("list objects");
+    resp.contents()
+        .iter()
+        .filter_map(|o| o.key().map(|k| k.to_string()))
+        .collect()
+}
+
+/// Fetch the body of a single object and parse it as a JSONL stream of
+/// `serde_json::Value`s.
+async fn fetch_jsonl(client: &Client, key: &str) -> Vec<Value> {
+    let resp = client
+        .get_object()
+        .bucket(TEST_BUCKET)
+        .key(key)
+        .send()
+        .await
+        .expect("get object");
+    let bytes = resp
+        .body
+        .collect()
+        .await
+        .expect("collect body")
+        .into_bytes();
+    let body = String::from_utf8(bytes.to_vec()).expect("utf-8");
+    body.lines()
+        .filter(|l| !l.is_empty())
+        .map(|l| serde_json::from_str(l).expect("valid json line"))
+        .collect()
+}
+
+/// Build `n` records of `{"id": i}` for `i = 1..=n`.
+fn records(n: usize) -> Vec<Value> {
+    (1..=n as i64).map(|i| json!({ "id": i })).collect()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn write_batch_rechunks_into_batch_size_objects() {
+    let (_container, endpoint) = start_minio().await;
+    create_bucket(&endpoint).await;
+
+    let prefix = "rechunk/";
+    let config = S3SinkConfig::new(TEST_BUCKET)
+        .prefix(prefix)
+        .with_batch_size(500);
+    let sink = build_sink(&endpoint, config).await;
+
+    let written = sink.write_batch(&records(1_500)).await.expect("write");
+    assert_eq!(written, 1_500, "all records reported written");
+
+    let admin = assertion_client(&endpoint).await;
+    let keys = list_keys(&admin, prefix).await;
+    assert_eq!(
+        keys.len(),
+        3,
+        "1500 records with batch_size 500 must produce 3 objects, got {:?}",
+        keys
+    );
+
+    let mut all_ids: Vec<i64> = Vec::new();
+    for key in &keys {
+        let recs = fetch_jsonl(&admin, key).await;
+        assert_eq!(
+            recs.len(),
+            500,
+            "each of the 3 objects must contain exactly 500 records; key={key}"
+        );
+        for r in recs {
+            all_ids.push(r["id"].as_i64().expect("id is integer"));
+        }
+    }
+    all_ids.sort_unstable();
+    let expected: Vec<i64> = (1..=1500).collect();
+    assert_eq!(
+        all_ids, expected,
+        "every record id round-trips through the 3 objects exactly once"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn write_batch_sentinel_writes_one_object_per_call() {
+    let (_container, endpoint) = start_minio().await;
+    create_bucket(&endpoint).await;
+
+    let prefix = "sentinel/";
+    let config = S3SinkConfig::new(TEST_BUCKET)
+        .prefix(prefix)
+        .with_batch_size(0);
+    let sink = build_sink(&endpoint, config).await;
+
+    let written = sink.write_batch(&records(1_500)).await.expect("write");
+    assert_eq!(written, 1_500);
+
+    let admin = assertion_client(&endpoint).await;
+    let keys = list_keys(&admin, prefix).await;
+    assert_eq!(
+        keys.len(),
+        1,
+        "batch_size = 0 must collapse the call into a single object, got {:?}",
+        keys
+    );
+
+    let recs = fetch_jsonl(&admin, &keys[0]).await;
+    assert_eq!(recs.len(), 1_500, "single object holds the full call");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn write_batch_partial_final_object() {
+    let (_container, endpoint) = start_minio().await;
+    create_bucket(&endpoint).await;
+
+    let prefix = "partial/";
+    let config = S3SinkConfig::new(TEST_BUCKET)
+        .prefix(prefix)
+        .with_batch_size(400);
+    let sink = build_sink(&endpoint, config).await;
+
+    let written = sink.write_batch(&records(1_000)).await.expect("write");
+    assert_eq!(written, 1_000);
+
+    let admin = assertion_client(&endpoint).await;
+    let keys = list_keys(&admin, prefix).await;
+    assert_eq!(
+        keys.len(),
+        3,
+        "1000 records with batch_size 400 must produce 3 objects (400, 400, 200)"
+    );
+
+    let mut sizes: Vec<usize> = Vec::new();
+    for key in &keys {
+        sizes.push(fetch_jsonl(&admin, key).await.len());
+    }
+    sizes.sort_unstable();
+    assert_eq!(
+        sizes,
+        vec![200, 400, 400],
+        "the final object holds the 200-record remainder"
+    );
+}

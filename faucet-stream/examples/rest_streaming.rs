@@ -15,7 +15,8 @@ use std::time::Duration;
 
 use faucet_stream::sink::jsonl::{JsonlSink, JsonlSinkConfig};
 use faucet_stream::{
-    Auth, PaginationStyle, RecordTransform, RestStream, RestStreamConfig, run_stream,
+    Auth, DEFAULT_BATCH_SIZE, PaginationStyle, RecordTransform, RestStream, RestStreamConfig,
+    Source, run_stream,
 };
 
 #[tokio::main]
@@ -47,8 +48,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .pretty(false),
     );
 
-    let pages = source.stream_pages();
-    let result = run_stream(pages, &sink).await?;
+    // Drive Source::stream_pages directly. Pipeline::run does this internally;
+    // we use run_stream here to show how to drive the streaming primitive by
+    // hand (e.g. when chaining custom logic between pages). The fully
+    // qualified `Source::stream_pages(...)` call disambiguates from the
+    // inherent `RestStream::stream_pages()` Vec<Value> back-compat wrapper.
+    let ctx = std::collections::HashMap::new();
+    let pages = Source::stream_pages(&source, &ctx, DEFAULT_BATCH_SIZE);
+    let result = run_stream(pages, &sink, None, None).await?;
     println!(
         "streamed {} comments to comments.jsonl",
         result.records_written

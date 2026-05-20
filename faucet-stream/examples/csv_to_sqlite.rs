@@ -27,7 +27,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .column_mapping(SqliteColumnMapping::Json {
                 column: "row".into(),
             })
-            .batch_size(500)
+            .with_batch_size(500)
             .max_connections(4),
     )
     .await?;

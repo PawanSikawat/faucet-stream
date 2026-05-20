@@ -53,6 +53,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 | `path` | `PathBuf` | *(required)* | Path to the output file |
 | `append` | `bool` | `false` | Whether to append to an existing file. When `false`, the file is truncated on open. |
 | `pretty` | `bool` | `false` | Whether to pretty-print each JSON record with indentation. Note: this breaks strict JSONL format since records span multiple lines. |
+| `batch_size` | `usize` | `1000` | Records per upstream `StreamPage`. **No behavioural impact** at this sink — present for symmetry. See [Streaming and batching](#streaming-and-batching). |
+
+## Streaming and batching
+
+This sink writes records to the output file one at a time via `tokio::io::BufWriter`. The per-page memory bound for the pipeline is set by the **source's** `batch_size` (the size of each `StreamPage` that `Pipeline::run` hands to `Sink::write_batch`); how that page is then iterated record-by-record on the sink side is what determines on-disk output, and that path does not depend on `batch_size` at all.
+
+`batch_size` is exposed on this config purely for symmetry across every sink in the workspace — sinks like `faucet-sink-postgres` or `faucet-sink-bigquery` use the field to size their multi-row inserts / streaming-insert requests, but a per-record file sink has nothing to tune. `batch_size = 0` (the "no batching" sentinel) and any positive value are observably identical for this sink: both produce byte-for-byte the same `.jsonl` file.
 
 ### Builder Methods
 
@@ -83,7 +90,8 @@ let config: JsonlSinkConfig = load_env_file(".env", "JSONL_SINK")?;
 {
   "path": "/data/exports/events.jsonl",
   "append": false,
-  "pretty": false
+  "pretty": false,
+  "batch_size": 1000
 }
 ```
 

@@ -342,6 +342,97 @@ async fn in_memory_object_store_path_round_trips() {
 }
 
 #[tokio::test]
+async fn batch_size_rechunks_single_large_page() {
+    // Writing 1_500 records in one `write_batch` call with `batch_size = 500`
+    // must invoke the underlying writer three times (500 + 500 + 500). We
+    // observe that by pairing `batch_size` with `max_rows_per_file = 500`:
+    // re-chunking calls `write_chunk` per slice, each chunk pushes the row
+    // counter to exactly 500, and rollover fires per chunk — producing three
+    // files of 500 rows each. Without re-chunking the writer would see one
+    // 1_500-row batch and roll over only once, producing a single file with
+    // all 1_500 rows.
+    let tmp = TempDir::new().unwrap();
+    let cfg = cfg_dir(tmp.path())
+        .with_batch_size(500)
+        .max_rows_per_file(500);
+    let sink = ParquetSink::new(cfg).await.unwrap();
+
+    let records: Vec<Value> = (0..1_500).map(|i| json!({"i": i as i64})).collect();
+    let n = sink.write_batch(&records).await.unwrap();
+    sink.flush().await.unwrap();
+    assert_eq!(n, 1_500);
+
+    let mut files: Vec<_> = std::fs::read_dir(tmp.path())
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| p.extension().and_then(|x| x.to_str()) == Some("parquet"))
+        .collect();
+    files.sort();
+    assert_eq!(
+        files.len(),
+        3,
+        "batch_size=500 should slice 1_500 records into 3 writer invocations, got {files:?}"
+    );
+
+    let batches = read_all_local(tmp.path()).await;
+    assert_eq!(rows_in(&batches), 1_500);
+}
+
+#[tokio::test]
+async fn batch_size_zero_passes_page_through_unchanged() {
+    // With `batch_size = 0` (the "no batching" sentinel), the sink must hand
+    // the entire incoming page to the writer in a single call. Pairing the
+    // sentinel with `max_rows_per_file = 500` while writing 1_500 records in
+    // one batch should therefore produce exactly one file (the single
+    // post-write rollover check fires once, but only after all 1_500 rows are
+    // already buffered into the active writer).
+    let tmp = TempDir::new().unwrap();
+    let cfg = cfg_dir(tmp.path())
+        .with_batch_size(0)
+        .max_rows_per_file(500);
+    let sink = ParquetSink::new(cfg).await.unwrap();
+
+    let records: Vec<Value> = (0..1_500).map(|i| json!({"i": i as i64})).collect();
+    let n = sink.write_batch(&records).await.unwrap();
+    sink.flush().await.unwrap();
+    assert_eq!(n, 1_500);
+
+    let files: Vec<_> = std::fs::read_dir(tmp.path())
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| p.extension().and_then(|x| x.to_str()) == Some("parquet"))
+        .collect();
+    assert_eq!(
+        files.len(),
+        1,
+        "batch_size=0 must pass the page through as-is, got {files:?}"
+    );
+
+    let batches = read_all_local(tmp.path()).await;
+    assert_eq!(rows_in(&batches), 1_500);
+}
+
+#[tokio::test]
+async fn batch_size_pages_smaller_than_threshold_are_not_split() {
+    // When the incoming page is already <= `batch_size`, the sink must not
+    // bother slicing — verified here by pairing `batch_size = 500` with a
+    // single 100-record write and observing one file with 100 rows.
+    let tmp = TempDir::new().unwrap();
+    let cfg = cfg_dir(tmp.path()).with_batch_size(500);
+    let sink = ParquetSink::new(cfg).await.unwrap();
+
+    let records: Vec<Value> = (0..100).map(|i| json!({"i": i as i64})).collect();
+    let n = sink.write_batch(&records).await.unwrap();
+    sink.flush().await.unwrap();
+    assert_eq!(n, 100);
+
+    let batches = read_all_local(tmp.path()).await;
+    assert_eq!(rows_in(&batches), 100);
+}
+
+#[tokio::test]
 async fn s3_destination_builds_without_credentials_for_endpoint_url() {
     // Quick smoke test that the S3 config branch doesn't blow up when given
     // a non-AWS endpoint; we don't actually hit the network because there's

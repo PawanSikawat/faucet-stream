@@ -54,6 +54,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 | `delimiter` | `u8` | `b','` (comma) | Field delimiter byte |
 | `write_headers` | `bool` | `true` | Whether to write a header row with column names |
 | `append` | `bool` | `false` | Whether to append to an existing file. When `false`, the file is truncated on open. |
+| `batch_size` | `usize` | `1000` | Records per upstream `StreamPage`. **No behavioural impact** at this sink — present for symmetry. See [Streaming and batching](#streaming-and-batching). |
+
+## Streaming and batching
+
+This sink writes rows to the output CSV file one at a time via a buffered `csv::Writer` running inside `tokio::task::spawn_blocking`. The per-page memory bound for the pipeline is set by the **source's** `batch_size` (the size of each `StreamPage` that `Pipeline::run` hands to `Sink::write_batch`); how that page is then iterated record-by-record on the sink side is what determines on-disk output, and that path does not depend on `batch_size` at all.
+
+`batch_size` is exposed on this config purely for symmetry across every sink in the workspace — sinks like `faucet-sink-postgres` or `faucet-sink-bigquery` use the field to size their multi-row inserts / streaming-insert requests, but a per-record file sink has nothing to tune. `batch_size = 0` (the "no batching" sentinel) and any positive value are observably identical for this sink: both produce byte-for-byte the same `.csv` file.
 
 ### Builder Methods
 
@@ -103,7 +110,8 @@ let config: CsvSinkConfig = load_env_file(".env", "CSV_SINK")?;
   "path": "/data/exports/users.csv",
   "delimiter": 44,
   "write_headers": true,
-  "append": false
+  "append": false,
+  "batch_size": 1000
 }
 ```
 
@@ -116,7 +124,8 @@ Note: The `delimiter` is a byte value (44 = comma, 9 = tab, 124 = pipe `|`).
   "path": "/data/exports/users.tsv",
   "delimiter": 9,
   "write_headers": true,
-  "append": false
+  "append": false,
+  "batch_size": 1000
 }
 ```
 

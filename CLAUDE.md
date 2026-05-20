@@ -110,6 +110,24 @@ Rules:
 - **Never delete `docs/` or anything under it.** The user keeps design docs and superpowers plans/specs there as reference, even when gitignored. Distinguish carefully between `doc/` (rustdoc output, deletable) and `docs/` (reference material, keep).
 - **Report what was deleted and what was kept**, so the user can correct course if you removed something they wanted.
 
+Concrete `target/` cleanup map (in order of safety, most-safe first — all gitignored and regenerable):
+
+- `target/doc/` — rustdoc HTML output (regenerates via `cargo doc`).
+- `target/package/` — old packaged builds from `cargo publish --dry-run` (e.g. `faucet-stream-0.1.x/`, `tmp-crate/`).
+- `target/tmp/` — scratch dir, often empty.
+- `target/flycheck0/` — rust-analyzer's separate check target; rebuilds on next analyzer session.
+- `target/debug/incremental/` and `target/release/incremental/` — compiler incremental cache. Deleting does **not** force a full rebuild — `*.rlib`s in `deps/` still link; cargo just recomputes incremental state on the next build.
+- `target/debug/examples/` and `target/release/examples/` — built example binaries; rebuild via `cargo build --examples`.
+- `target/**/.DS_Store` — macOS Finder metadata.
+- `cargo sweep --installed` — drops artifacts built against toolchains no longer installed by rustup (common after a `rust-toolchain.toml` bump). Use this before considering `cargo clean` — it's the safest way to reclaim multi-GB from `target/debug/deps/`.
+
+**Do not delete these without an explicit user instruction** — they'll trigger an expensive full workspace rebuild or break the incremental graph:
+
+- `target/debug/deps/` and `target/release/deps/` as a whole — the `.rlib`/`.rmeta` cargo links against. Cargo's mtime-on-use touches every file on every build, so `cargo sweep --time N` cannot identify per-hash duplicates as stale; only `cargo clean` (or per-crate `cargo clean -p`) clears them, which forces a full rebuild (~15–30 min on this workspace).
+- `target/debug/build/` and `target/release/build/` — build-script outputs (`bindgen`, protobuf, etc.). Deleting invalidates the incremental graph for any crate with a `build.rs`.
+- `target/debug/.fingerprint/` — cargo's per-artifact fingerprints; removing them desyncs cargo from the rlibs.
+- Top-level `target/debug/*.rlib` and binaries (e.g. `target/debug/faucet`) — the workspace's own outputs.
+
 ## Primary Goal
 
 **All sources and sinks must be as fast, efficient, and reliable as possible.** This is the number one priority for every decision — architecture, implementation, dependency choice, and API design. Performance and reliability are not afterthoughts; they are the reason this library exists. Every connector should be the fastest way to move data between its endpoints in Rust.
@@ -149,6 +167,22 @@ All connectors must be optimised for throughput by default. When modifying or ad
 - **Bulk APIs** — prefer bulk/batch APIs when available (Elasticsearch bulk NDJSON, BigQuery insertAll, MongoDB insert_many, Redis pipelines + MGET).
 - **Buffered I/O** — file sinks (JSONL, CSV) must use buffered writers. CSV uses `spawn_blocking` to avoid blocking the async runtime.
 - **Configurable concurrency** — expose `concurrency` or `max_connections` fields on configs with sensible defaults.
+
+### Streaming and batching
+
+Every `Pipeline::run` drives `Source::stream_pages(ctx, batch_size)` internally and writes each emitted `StreamPage` to the sink as it arrives. This bounds memory at O(batch_size) on both sides regardless of total record volume.
+
+Sources that override `stream_pages` to stream natively from their underlying primitive: `rest`, `graphql`, `postgres`, `postgres-cdc`, `mysql`, `sqlite`, `mongodb`, `s3` (JSONL/RawText modes), `parquet`, `csv`, `xml`, `elasticsearch` (scroll API), `kafka`, `redis` (all three modes). Sources that intentionally keep the default chunk-the-buffer impl (no native streaming primitive): `grpc` (unary RPC), `webhook` (buffer-shaped by nature). Server-streaming gRPC is tracked separately as #34.
+
+Sinks that expose a `batch_size` config field for write-side re-chunking: every sink — `parquet`, `s3`, `bigquery`, `snowflake`, `postgres`, `mysql`, `sqlite`, `mongodb`, `redis`, `elasticsearch`, `http`, `kafka` (re-chunking is internally the natural unit for each — multi-row INSERTs, `_bulk` bodies, `tabledata.insertAll` requests, `insert_many` calls, Redis pipelines, etc.). The file/append sinks (`jsonl`, `csv`, `stdout`) carry the field for config parity but write per-record, so `batch_size` is a no-op for them.
+
+**Contract:**
+- `Source::stream_pages` returns `Stream<Item = Result<StreamPage, FaucetError>>` where `StreamPage { records, bookmark }`.
+- The pipeline calls `Sink::write_batch` once per yielded page, then `Sink::flush` and `StateStore::put` whenever a page carries `Some(bookmark)`. Most sources emit `Some` only on the final page; CDC-style sources emit `Some` per committed transaction and get per-transaction durability automatically.
+- `DEFAULT_BATCH_SIZE` is 1000; `MAX_BATCH_SIZE` is 1,000,000. Validate via `validate_batch_size` at config load time.
+- **`batch_size = 0` is the "no batching" sentinel**: sources emit the entire result set in a single `StreamPage`, and sinks accept whatever upstream hands them without re-chunking. Use it for small lookup tables, or for sinks like SQL `COPY` / BigQuery load jobs that prefer one large request to many small ones.
+- Per-source / per-sink `batch_size` config fields map onto this hint — see each crate's README for its native paging primitive and recommended values.
+- On the source trait the `batch_size` argument to `stream_pages` is informational; every overriding source uses its config field as the authoritative knob (so a pipeline-supplied hint cannot silently override an explicit config value).
 
 ## Commands
 

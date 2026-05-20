@@ -39,11 +39,23 @@ impl KafkaSink {
         );
         client_config.set("compression.type", config.compression.as_str());
         client_config.set("linger.ms", config.linger.as_millis().to_string());
-        client_config.set("batch.size", config.batch_size.to_string());
         client_config.set(
             "message.timeout.ms",
             config.message_timeout.as_millis().to_string(),
         );
+        // Tie the librdkafka producer buffer cap to the streaming-pipeline
+        // batch_size so the broker-side buffer can hold one full
+        // FuturesUnordered send window. The `batch_size = 0` sentinel keeps
+        // librdkafka's default (100,000) so the "no batching" path stays
+        // identical to pre-streaming behaviour. `extra_client_config`
+        // overrides this so tests (and ops) can force a tighter cap to
+        // exercise QueueFull backpressure.
+        if config.batch_size > 0 {
+            client_config.set(
+                "queue.buffering.max.messages",
+                config.batch_size.to_string(),
+            );
+        }
 
         config.auth.apply(&mut client_config)?;
         for (k, v) in &config.extra_client_config {
@@ -184,9 +196,20 @@ impl Sink for KafkaSink {
         let mut produced = 0usize;
         let mut skipped = 0usize;
 
+        // Effective in-flight cap: when `batch_size > 0`, take the smaller of
+        // `max_in_flight` and `batch_size` so the FuturesUnordered window
+        // never exceeds the streaming-pipeline page size. The `batch_size = 0`
+        // sentinel keeps the historical behaviour — bounded only by
+        // `max_in_flight`.
+        let in_flight_cap = if self.config.batch_size > 0 {
+            self.config.max_in_flight.min(self.config.batch_size)
+        } else {
+            self.config.max_in_flight
+        };
+
         for record in records {
             // Drain one if we're at capacity.
-            if in_flight.len() >= self.config.max_in_flight
+            if in_flight.len() >= in_flight_cap
                 && let Some(res) = in_flight.next().await
             {
                 match res {

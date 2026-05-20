@@ -179,33 +179,21 @@ impl ParquetSink {
         Ok(batch)
     }
 
-    /// Close the current writer (writing the parquet footer) and clear state.
-    async fn close_current(&self, state: &mut WriterState) -> Result<(), FaucetError> {
-        if let Some(writer) = state.writer.take() {
-            writer
-                .close()
-                .await
-                .map_err(|e| FaucetError::Sink(format!("could not close parquet writer: {e}")))?;
-            state.files_written += 1;
-            state.rows_in_current_file = 0;
-        }
-        Ok(())
-    }
-}
-
-#[async_trait]
-impl faucet_core::Sink for ParquetSink {
-    fn config_schema(&self) -> Value {
-        serde_json::to_value(faucet_core::schema_for!(ParquetSinkConfig))
-            .expect("schema serialization")
-    }
-
-    async fn write_batch(&self, records: &[Value]) -> Result<usize, FaucetError> {
+    /// Encode + write a single chunk of records, applying row/byte rollover
+    /// after the write. Skips entirely on an empty chunk so callers do not
+    /// have to guard.
+    ///
+    /// Splitting this out of `write_batch` lets the public entry point chunk
+    /// large pages by `config.batch_size` while keeping the schema /
+    /// writer-init / rollover invariants in one place.
+    async fn write_chunk(
+        &self,
+        state: &mut WriterState,
+        records: &[Value],
+    ) -> Result<usize, FaucetError> {
         if records.is_empty() {
             return Ok(0);
         }
-
-        let mut state = self.state.lock().await;
 
         if state.schema.is_none() {
             let schema = match &self.config.schema {
@@ -242,16 +230,62 @@ impl faucet_core::Sink for ParquetSink {
         };
         state.rows_in_current_file += batch_rows;
 
-        if should_rollover(&self.config, &state, estimated_size) {
+        if should_rollover(&self.config, state, estimated_size) {
             tracing::debug!(
                 rows = state.rows_in_current_file,
                 bytes = estimated_size,
                 "Rolling over parquet file"
             );
-            self.close_current(&mut state).await?;
+            self.close_current(state).await?;
         }
 
         Ok(batch_rows)
+    }
+
+    /// Close the current writer (writing the parquet footer) and clear state.
+    async fn close_current(&self, state: &mut WriterState) -> Result<(), FaucetError> {
+        if let Some(writer) = state.writer.take() {
+            writer
+                .close()
+                .await
+                .map_err(|e| FaucetError::Sink(format!("could not close parquet writer: {e}")))?;
+            state.files_written += 1;
+            state.rows_in_current_file = 0;
+        }
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl faucet_core::Sink for ParquetSink {
+    fn config_schema(&self) -> Value {
+        serde_json::to_value(faucet_core::schema_for!(ParquetSinkConfig))
+            .expect("schema serialization")
+    }
+
+    async fn write_batch(&self, records: &[Value]) -> Result<usize, FaucetError> {
+        if records.is_empty() {
+            return Ok(0);
+        }
+
+        let mut state = self.state.lock().await;
+
+        // Re-chunk the incoming page when the config asks for it. `batch_size
+        // = 0` is the "no batching" sentinel: pass the page straight through.
+        // Otherwise we slice into `batch_size`-sized windows and run the
+        // existing write path once per chunk. Row/byte rollover logic is
+        // applied per chunk and remains independent of `batch_size`.
+        let chunk_size = self.config.batch_size;
+        let mut total_rows = 0;
+        if chunk_size == 0 || records.len() <= chunk_size {
+            total_rows += self.write_chunk(&mut state, records).await?;
+        } else {
+            for chunk in records.chunks(chunk_size) {
+                total_rows += self.write_chunk(&mut state, chunk).await?;
+            }
+        }
+
+        Ok(total_rows)
     }
 
     /// Closes the in-flight Parquet writer so the file footer is flushed to

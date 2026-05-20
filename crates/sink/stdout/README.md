@@ -45,6 +45,13 @@ sink.flush().await?;
 | `format` | `json_lines` \| `pretty_json` \| `tsv` | `json_lines` | Output format. |
 | `flush_per_record` | `bool` | `false` | Flush after every record (lower latency, slightly lower throughput). |
 | `max_records` | `usize?` | `None` | Stop after `n` records. Useful for `faucet preview --limit=N`. |
+| `batch_size` | `usize` | `1000` | Records per upstream `StreamPage`. **No behavioural impact** at this sink — present for symmetry. See [Streaming and batching](#streaming-and-batching). |
+
+## Streaming and batching
+
+This sink writes each record to the chosen standard stream one at a time via a buffered async writer. The per-page memory bound for the pipeline is set by the **source's** `batch_size` (the size of each `StreamPage` that `Pipeline::run` hands to `Sink::write_batch`); how that page is then iterated record-by-record on the sink side is what determines the bytes written to stdout/stderr, and that path does not depend on `batch_size` at all.
+
+`batch_size` is exposed on this config purely for symmetry across every sink in the workspace — sinks like `faucet-sink-postgres` or `faucet-sink-bigquery` use the field to size their multi-row inserts / streaming-insert requests, but a per-record stream sink has nothing to tune. `batch_size = 0` (the "no batching" sentinel) and any positive value are observably identical for this sink: both produce byte-for-byte the same output. To get per-record flushing for live preview, use `flush_per_record` — `batch_size` does not influence flush cadence.
 
 ### Formats
 

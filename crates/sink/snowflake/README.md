@@ -38,7 +38,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "events",
         SnowflakeAuth::OAuth { token: std::env::var("SNOWFLAKE_TOKEN")? },
     )
-    .batch_size(500);
+    .with_batch_size(1000);
 
     let sink = SnowflakeSink::new(config);
 
@@ -64,7 +64,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 | `schema` | `String` | *(required)* | Schema name |
 | `table` | `String` | *(required)* | Target table name |
 | `auth` | `SnowflakeAuth` | *(required)* | Authentication credentials (see below) |
-| `batch_size` | `usize` | `500` | Maximum number of rows per INSERT statement |
+| `batch_size` | `usize` | `1000` | Maximum number of records per Snowflake SQL REST API request. See [Streaming and batching](#streaming-and-batching) below |
+
+### Streaming and batching
+
+`SnowflakeSink::write_batch` re-chunks the incoming records slice into
+`batch_size` slices and issues one Snowflake SQL REST API request per
+chunk. The default of `1000` matches the documented sweet spot for the
+SQL REST API — Snowflake recommends roughly that many rows per request
+to balance round-trip overhead against request-body size and statement
+parse cost. Tune up for wide rows (lower per-row byte budget) or down
+for narrow rows where round-trip latency dominates.
+
+`batch_size = 0` is the **"no batching" sentinel** — `write_batch`
+forwards the entire records slice in a single INSERT request, no matter
+how large, so upstream `StreamPage` framing flows through untouched.
+Use it when the upstream source already emits pages sized for the
+ultimate target (e.g. a custom matrix that pairs Snowflake with a source
+configured for one large page per write). Values larger than
+`MAX_BATCH_SIZE` (1,000,000) are rejected by
+`faucet_core::validate_batch_size`.
 
 ### Authentication (`SnowflakeAuth`)
 
@@ -88,7 +107,7 @@ let config = SnowflakeSinkConfig::new(
     "events",
     SnowflakeAuth::OAuth { token: "my-oauth-token".into() },
 )
-.batch_size(1000);
+.with_batch_size(1000);
 ```
 
 ## Config Loading
@@ -117,7 +136,7 @@ let config: SnowflakeSinkConfig = load_env_file(".env", "SNOWFLAKE")?;
     "type": "OAuth",
     "token": "eyJhbGciOiJSUzI1NiIs..."
   },
-  "batch_size": 500
+  "batch_size": 1000
 }
 ```
 
@@ -148,7 +167,7 @@ SNOWFLAKE_DATABASE=ANALYTICS_DB
 SNOWFLAKE_SCHEMA=PUBLIC
 SNOWFLAKE_TABLE=events
 SNOWFLAKE_AUTH='{"type":"OAuth","token":"eyJhbGciOiJSUzI1NiIs..."}'
-SNOWFLAKE_BATCH_SIZE=500
+SNOWFLAKE_BATCH_SIZE=1000
 ```
 
 ## Config Schema Introspection
@@ -203,7 +222,7 @@ let config = SnowflakeSinkConfig::new(
         private_key_pem: private_key,
     },
 )
-.batch_size(500);
+.with_batch_size(500);
 
 let sink = SnowflakeSink::new(config);
 sink.write_batch(&records).await?;
@@ -238,7 +257,7 @@ let config = SnowflakeSinkConfig::new(
     "realtime_events",
     SnowflakeAuth::OAuth { token: "...".into() },
 )
-.batch_size(50);
+.with_batch_size(50);
 
 let sink = SnowflakeSink::new(config);
 ```
@@ -246,7 +265,7 @@ let sink = SnowflakeSink::new(config);
 ## How It Works
 
 - `SnowflakeSink::new()` creates an HTTP client (reused across all requests) but does not make any network calls.
-- `write_batch()` splits records into chunks of `batch_size`. For each chunk, it builds an INSERT statement using `PARSE_JSON` with `FLATTEN` to parse a JSON array and insert all rows in a single SQL statement.
+- `write_batch()` splits records into chunks of `batch_size` (or forwards the entire slice in one request when `batch_size = 0`). For each chunk, it builds an INSERT statement using `PARSE_JSON` with `FLATTEN` to parse a JSON array and insert all rows in a single SQL statement.
 - The SQL statement targets the fully qualified table name `"database"."schema"."table"` with quoted identifiers.
 - Authentication headers are generated per request: JWT tokens for KeyPair auth (with 1-hour expiry), or the `Snowflake Token="..."` header for OAuth.
 - The Snowflake SQL REST API endpoint is `https://{account}.snowflakecomputing.com/api/v2/statements`.

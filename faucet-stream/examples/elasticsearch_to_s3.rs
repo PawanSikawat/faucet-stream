@@ -22,7 +22,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         ElasticsearchSourceConfig::new("https://es.example.com:9200", "logs-2026-05")
             .query(json!({ "match": { "level": "error" } }))
             .scroll_timeout("2m")
-            .scroll_size(2000)
+            .with_batch_size(2000)
             .auth(ElasticsearchAuth::ApiKey {
                 key: std::env::var("ES_API_KEY")?,
             })

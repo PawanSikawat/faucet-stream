@@ -24,7 +24,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .projection(json!({ "_id": 1, "name": 1, "description": 1, "tags": 1 }))
             .sort(json!({ "updated_at": -1 }))
             .limit(100_000)
-            .batch_size(1000),
+            .cursor_batch_size(1000),
     )
     .await?;
 
@@ -34,7 +34,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 username: std::env::var("ES_USER")?,
                 password: std::env::var("ES_PASS")?,
             })
-            .batch_size(1000)
+            .with_batch_size(1000)
             .id_field("_id"),
     );
 

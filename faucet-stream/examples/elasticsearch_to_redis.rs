@@ -22,7 +22,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         ElasticsearchSourceConfig::new("https://es.example.com:9200", "products")
             .query(json!({ "term": { "available": true } }))
             .scroll_timeout("1m")
-            .scroll_size(1000)
+            .with_batch_size(1000)
             .auth(ElasticsearchAuth::Basic {
                 username: std::env::var("ES_USER")?,
                 password: std::env::var("ES_PASS")?,
@@ -37,7 +37,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 key_field: "id".into(),
             },
         )
-        .batch_size(2000),
+        .with_batch_size(2000),
     )
     .await?;
 

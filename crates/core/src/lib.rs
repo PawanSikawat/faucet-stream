@@ -24,7 +24,10 @@ pub mod util;
 
 pub use dag::{DagNode, DagNodeError, DagNodeResult, DagResult, SourceDAG};
 pub use error::FaucetError;
-pub use pipeline::{Pipeline, PipelineResult, run_stream};
+pub use pipeline::{
+    DEFAULT_BATCH_SIZE, MAX_BATCH_SIZE, Pipeline, PipelineResult, StreamPage, run_stream,
+    validate_batch_size,
+};
 pub use replication::ReplicationMethod;
 pub use state::{FileStateStore, MemoryStateStore, StateStore};
 pub use traits::{Sink, Source};
@@ -32,6 +35,8 @@ pub use transform::RecordTransform;
 
 // Re-export dependencies that connector authors need, so they only depend on
 // `faucet-core` instead of adding `async-trait` and `serde_json` themselves.
+pub use async_stream;
 pub use async_trait::async_trait;
+pub use futures_core::{self, Stream};
 pub use schemars::{self, JsonSchema, schema_for};
 pub use serde_json::{self, Value, json};

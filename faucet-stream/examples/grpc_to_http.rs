@@ -8,6 +8,8 @@
 //! - `.auth(...)` — Bearer / Basic / Custom (default None)
 //! - `.batch_mode(...)` — `Individual` (one POST per record) or `Array`
 //! - `.max_retries(...)` / `.concurrency(...)` — throughput tuning
+//! - `.with_batch_size(...)` — records per outbound POST in `Array` mode
+//!   (`0` = forward each upstream `StreamPage` as a single POST)
 //!
 //! Query params aren't a separate knob — bake them into the URL.
 //! The request body is always the source record(s).
@@ -53,7 +55,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .headers(headers)
             .batch_mode(HttpBatchMode::Array)
             .max_retries(3)
-            .concurrency(8),
+            .concurrency(8)
+            .with_batch_size(500),
     );
 
     let result = Pipeline::new(&source, &sink).run().await?;

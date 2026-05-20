@@ -1,5 +1,6 @@
 //! S3 source configuration.
 
+use faucet_core::DEFAULT_BATCH_SIZE;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -33,6 +34,25 @@ pub struct S3SourceConfig {
     pub max_objects: Option<usize>,
     /// Maximum number of concurrent object reads (default: 10).
     pub concurrency: usize,
+    /// Records per emitted [`StreamPage`](faucet_core::StreamPage). For
+    /// `JsonLines` and `RawText` formats, the object body is decoded
+    /// line-by-line via [`tokio::io::AsyncBufReadExt`] and a page is yielded
+    /// whenever the buffer reaches this size; multi-object scans flatten so
+    /// a single page may contain lines from any object. For `JsonArray`,
+    /// each object is buffered fully before its records are chunked into
+    /// pages of this size (see the README "Streaming and batching" section
+    /// for the caveat). Defaults to [`DEFAULT_BATCH_SIZE`].
+    ///
+    /// `batch_size = 0` is the "no batching" sentinel: every page is one
+    /// complete object — no within-object chunking. Useful for small
+    /// lookup files, or for sinks (e.g. SQL `COPY`, BigQuery load jobs)
+    /// that prefer one large request per file to many small ones.
+    #[serde(default = "default_batch_size")]
+    pub batch_size: usize,
+}
+
+fn default_batch_size() -> usize {
+    DEFAULT_BATCH_SIZE
 }
 
 impl S3SourceConfig {
@@ -46,6 +66,7 @@ impl S3SourceConfig {
             file_format: S3FileFormat::default(),
             max_objects: None,
             concurrency: 10,
+            batch_size: DEFAULT_BATCH_SIZE,
         }
     }
 
@@ -82,6 +103,16 @@ impl S3SourceConfig {
     /// Set the maximum number of concurrent object reads.
     pub fn concurrency(mut self, concurrency: usize) -> Self {
         self.concurrency = concurrency;
+        self
+    }
+
+    /// Set the per-page record count for [`Source::stream_pages`](faucet_core::Source::stream_pages).
+    ///
+    /// Pass `0` to opt out of within-object chunking — every emitted
+    /// [`StreamPage`](faucet_core::StreamPage) corresponds to exactly one
+    /// S3 object.
+    pub fn with_batch_size(mut self, batch_size: usize) -> Self {
+        self.batch_size = batch_size;
         self
     }
 }
@@ -125,5 +156,47 @@ mod tests {
     fn file_format_default_is_json_lines() {
         let format = S3FileFormat::default();
         assert!(matches!(format, S3FileFormat::JsonLines));
+    }
+
+    #[test]
+    fn batch_size_defaults_to_default_batch_size() {
+        let config = S3SourceConfig::new("my-bucket");
+        assert_eq!(config.batch_size, faucet_core::DEFAULT_BATCH_SIZE);
+    }
+
+    #[test]
+    fn with_batch_size_overrides_default() {
+        let config = S3SourceConfig::new("my-bucket").with_batch_size(500);
+        assert_eq!(config.batch_size, 500);
+    }
+
+    #[test]
+    fn batch_size_zero_is_accepted_as_no_batching_sentinel() {
+        let config = S3SourceConfig::new("my-bucket").with_batch_size(0);
+        assert_eq!(config.batch_size, 0);
+        assert!(faucet_core::validate_batch_size(config.batch_size).is_ok());
+    }
+
+    #[test]
+    fn batch_size_above_max_is_rejected_by_validate_batch_size() {
+        let config =
+            S3SourceConfig::new("my-bucket").with_batch_size(faucet_core::MAX_BATCH_SIZE + 1);
+        assert!(faucet_core::validate_batch_size(config.batch_size).is_err());
+    }
+
+    #[test]
+    fn batch_size_deserializes_from_json() {
+        let json = r#"{
+            "bucket": "my-bucket",
+            "prefix": null,
+            "region": null,
+            "endpoint_url": null,
+            "file_format": "json_lines",
+            "max_objects": null,
+            "concurrency": 10,
+            "batch_size": 250
+        }"#;
+        let config: S3SourceConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(config.batch_size, 250);
     }
 }

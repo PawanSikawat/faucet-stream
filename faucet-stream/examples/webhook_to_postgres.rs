@@ -29,7 +29,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .column_mapping(PostgresColumnMapping::Jsonb {
                 column: "body".into(),
             })
-            .batch_size(500)
+            .with_batch_size(500)
             .max_connections(8),
     )
     .await?;

@@ -2,11 +2,12 @@
 
 use crate::config::MongoSourceConfig;
 use async_trait::async_trait;
-use faucet_core::FaucetError;
+use faucet_core::{FaucetError, Stream, StreamPage};
 use mongodb::Client;
 use mongodb::bson::{self, Bson, Document};
 use mongodb::options::FindOptions;
 use serde_json::Value;
+use std::pin::Pin;
 
 /// A configured MongoDB source that connects to a collection and fetches documents.
 ///
@@ -53,8 +54,8 @@ impl MongoSource {
         if let Some(limit) = self.config.limit {
             find_options.limit = Some(limit);
         }
-        if let Some(batch_size) = self.config.batch_size {
-            find_options.batch_size = Some(batch_size);
+        if let Some(cursor_batch_size) = self.config.cursor_batch_size {
+            find_options.batch_size = Some(cursor_batch_size);
         }
 
         let mut cursor = collection
@@ -119,8 +120,8 @@ impl faucet_core::Source for MongoSource {
         if let Some(limit) = self.config.limit {
             find_options.limit = Some(limit);
         }
-        if let Some(batch_size) = self.config.batch_size {
-            find_options.batch_size = Some(batch_size);
+        if let Some(cursor_batch_size) = self.config.cursor_batch_size {
+            find_options.batch_size = Some(cursor_batch_size);
         }
 
         let mut cursor = collection
@@ -149,6 +150,107 @@ impl faucet_core::Source for MongoSource {
         );
 
         Ok(records)
+    }
+
+    /// Stream documents from the underlying MongoDB cursor without buffering
+    /// the full result set. Each emitted [`StreamPage`] holds up to
+    /// [`MongoSourceConfig::batch_size`] documents.
+    ///
+    /// The trait-level `batch_size` argument is ignored in favour of the
+    /// config field — the config is the user-facing knob the README
+    /// documents, and routing the pipeline-supplied hint through it would
+    /// silently override an explicit config value.
+    ///
+    /// `batch_size = 0` drains the entire cursor into a single page. The
+    /// MongoDB source has no incremental-replication mode today, so every
+    /// emitted page carries `bookmark: None`.
+    ///
+    /// Note: [`MongoSourceConfig::cursor_batch_size`] is independent — it
+    /// controls the driver's per-round-trip batch size, while `batch_size`
+    /// controls how many documents are buffered before a `StreamPage` is
+    /// yielded to the pipeline.
+    fn stream_pages<'a>(
+        &'a self,
+        context: &'a std::collections::HashMap<String, Value>,
+        _batch_size: usize,
+    ) -> Pin<Box<dyn Stream<Item = Result<StreamPage, FaucetError>> + Send + 'a>> {
+        let batch_size = self.config.batch_size;
+
+        Box::pin(async_stream::try_stream! {
+            // Substitute context placeholders into filter, projection, sort
+            // (matching fetch_with_context's behaviour).
+            let (filter, projection, sort) = if context.is_empty() {
+                (
+                    self.config.filter.clone(),
+                    self.config.projection.clone(),
+                    self.config.sort.clone(),
+                )
+            } else {
+                (
+                    substitute_optional_value(&self.config.filter, context, "filter")?,
+                    substitute_optional_value(&self.config.projection, context, "projection")?,
+                    substitute_optional_value(&self.config.sort, context, "sort")?,
+                )
+            };
+
+            let db = self.client.database(&self.config.database);
+            let collection = db.collection::<Document>(&self.config.collection);
+
+            let filter_doc = filter.as_ref().map(json_value_to_document).transpose()?;
+
+            let mut find_options = FindOptions::default();
+            if let Some(ref proj) = projection {
+                find_options.projection = Some(json_value_to_document(proj)?);
+            }
+            if let Some(ref s) = sort {
+                find_options.sort = Some(json_value_to_document(s)?);
+            }
+            if let Some(limit) = self.config.limit {
+                find_options.limit = Some(limit);
+            }
+            if let Some(cursor_batch_size) = self.config.cursor_batch_size {
+                find_options.batch_size = Some(cursor_batch_size);
+            }
+
+            let mut cursor = collection
+                .find(filter_doc.unwrap_or_default())
+                .with_options(find_options)
+                .await
+                .map_err(|e| FaucetError::Config(format!("MongoDB find failed: {e}")))?;
+
+            let chunk = if batch_size == 0 { usize::MAX } else { batch_size };
+            let initial_capacity = if batch_size == 0 { 1024 } else { batch_size };
+            let mut buffer: Vec<Value> = Vec::with_capacity(initial_capacity);
+            let mut total = 0usize;
+
+            while cursor
+                .advance()
+                .await
+                .map_err(|e| FaucetError::Config(format!("MongoDB cursor advance failed: {e}")))?
+            {
+                let doc = cursor
+                    .deserialize_current()
+                    .map_err(|e| FaucetError::Config(format!("MongoDB deserialization failed: {e}")))?;
+                buffer.push(bson_document_to_json_value(&doc)?);
+                if buffer.len() >= chunk {
+                    let page = std::mem::replace(&mut buffer, Vec::with_capacity(initial_capacity));
+                    total += page.len();
+                    yield StreamPage { records: page, bookmark: None };
+                }
+            }
+            if !buffer.is_empty() {
+                total += buffer.len();
+                yield StreamPage { records: buffer, bookmark: None };
+            }
+
+            tracing::info!(
+                records = total,
+                batch_size,
+                database = %self.config.database,
+                collection = %self.config.collection,
+                "MongoDB source stream complete",
+            );
+        })
     }
 
     fn config_schema(&self) -> serde_json::Value {

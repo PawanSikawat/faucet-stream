@@ -85,9 +85,22 @@ impl faucet_core::Sink for S3Sink {
             return Ok(0);
         }
 
-        let chunks: Vec<&[Value]> = match self.config.max_records_per_file {
-            Some(max) if max > 0 => records.chunks(max).collect(),
-            _ => vec![records],
+        // Effective per-object cap is the smaller of `batch_size` (when set)
+        // and `max_records_per_file` (when set). When neither caps the chunk,
+        // the whole slice is written as a single object.
+        let chunk_cap: Option<usize> =
+            match (self.config.batch_size, self.config.max_records_per_file) {
+                (0, None) => None,
+                (0, Some(0)) => None,
+                (0, Some(max)) => Some(max),
+                (bs, None) => Some(bs),
+                (bs, Some(0)) => Some(bs),
+                (bs, Some(max)) => Some(bs.min(max)),
+            };
+
+        let chunks: Vec<&[Value]> = match chunk_cap {
+            Some(cap) => records.chunks(cap).collect(),
+            None => vec![records],
         };
 
         let total_files = chunks.len();

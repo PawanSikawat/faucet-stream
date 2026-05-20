@@ -1,6 +1,6 @@
 //! Configuration for the Kafka sink.
 
-use faucet_core::FaucetError;
+use faucet_core::{DEFAULT_BATCH_SIZE, FaucetError};
 use faucet_kafka_common::{CompressionType, KafkaAuth, KafkaValueFormat, OnKeyError};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -37,6 +37,25 @@ pub struct KafkaSinkConfig {
     )]
     #[schemars(with = "u64")]
     pub linger: Duration,
+    /// Maximum number of in-flight `FuturesUnordered` send futures during a
+    /// single [`Sink::write_batch`](faucet_core::Sink::write_batch) call.
+    /// Defaults to [`DEFAULT_BATCH_SIZE`].
+    ///
+    /// When `batch_size > 0`, the producer's `queue.buffering.max.messages`
+    /// librdkafka property is also set to this value (so the broker-side
+    /// buffer matches the sink-side send window) unless the user has
+    /// already set it via `extra_client_config`. `QueueFull` errors still
+    /// flow through the existing retry path (`queue_full_backoff` /
+    /// `queue_full_max_retries`) — the only effect of the in-flight cap is
+    /// to apply backpressure earlier inside the sink loop instead of
+    /// queueing the request and waiting for librdkafka to push back.
+    ///
+    /// `batch_size = 0` is the "no batching" sentinel: every record in the
+    /// incoming slice is enqueued into the `FuturesUnordered` immediately
+    /// (bounded only by `max_in_flight`) and the librdkafka
+    /// `queue.buffering.max.messages` knob is left at its default. Use it
+    /// for sources that emit a single page per run (small lookup tables,
+    /// one-shot drains) where forcing additional backpressure adds latency.
     #[serde(default = "default_batch_size")]
     pub batch_size: usize,
     #[serde(
@@ -105,7 +124,7 @@ fn default_linger() -> Duration {
     Duration::from_millis(5)
 }
 fn default_batch_size() -> usize {
-    16_384
+    DEFAULT_BATCH_SIZE
 }
 fn default_message_timeout() -> Duration {
     Duration::from_secs(30)
@@ -150,7 +169,20 @@ impl KafkaSinkConfig {
                 "kafka sink: max_in_flight must be at least 1".into(),
             ));
         }
+        faucet_core::validate_batch_size(self.batch_size)?;
         Ok(())
+    }
+
+    /// Set the in-flight send-window cap for
+    /// [`Sink::write_batch`](faucet_core::Sink::write_batch).
+    ///
+    /// Pass `0` to opt out of the explicit cap — every record in the slice
+    /// is enqueued into the `FuturesUnordered` immediately (bounded only by
+    /// `max_in_flight`) and the librdkafka `queue.buffering.max.messages`
+    /// knob is left at its default.
+    pub fn with_batch_size(mut self, batch_size: usize) -> Self {
+        self.batch_size = batch_size;
+        self
     }
 }
 
@@ -173,7 +205,7 @@ mod tests {
             acks: Acks::All,
             idempotent: true,
             linger: Duration::from_millis(5),
-            batch_size: 16_384,
+            batch_size: DEFAULT_BATCH_SIZE,
             message_timeout: Duration::from_secs(30),
             max_in_flight: 100,
             queue_full_backoff: Duration::from_millis(100),
@@ -256,5 +288,45 @@ mod tests {
     #[test]
     fn schema_compiles() {
         let _ = schemars::schema_for!(KafkaSinkConfig);
+    }
+
+    #[test]
+    fn batch_size_defaults_to_default_batch_size() {
+        let raw = r#"{
+            "brokers": "b:9092",
+            "topic": { "type": "fixed", "name": "out" }
+        }"#;
+        let parsed: KafkaSinkConfig = serde_json::from_str(raw).unwrap();
+        assert_eq!(parsed.batch_size, DEFAULT_BATCH_SIZE);
+    }
+
+    #[test]
+    fn with_batch_size_overrides_default() {
+        let c = minimal().with_batch_size(500);
+        assert_eq!(c.batch_size, 500);
+    }
+
+    #[test]
+    fn batch_size_zero_is_accepted_as_no_batching_sentinel() {
+        let c = minimal().with_batch_size(0);
+        assert_eq!(c.batch_size, 0);
+        assert!(c.validate().is_ok());
+    }
+
+    #[test]
+    fn validate_rejects_batch_size_above_max() {
+        let c = minimal().with_batch_size(faucet_core::MAX_BATCH_SIZE + 1);
+        assert!(c.validate().is_err());
+    }
+
+    #[test]
+    fn batch_size_deserializes_from_json() {
+        let raw = r#"{
+            "brokers": "b:9092",
+            "topic": { "type": "fixed", "name": "out" },
+            "batch_size": 250
+        }"#;
+        let parsed: KafkaSinkConfig = serde_json::from_str(raw).unwrap();
+        assert_eq!(parsed.batch_size, 250);
     }
 }

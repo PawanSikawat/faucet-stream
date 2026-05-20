@@ -33,7 +33,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .auth(ElasticsearchSinkAuth::ApiKey {
                 key: std::env::var("ES_API_KEY")?,
             })
-            .batch_size(500)
+            .with_batch_size(500)
             .id_field("id"),
     );
 

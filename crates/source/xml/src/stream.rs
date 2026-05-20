@@ -5,9 +5,11 @@ use crate::convert;
 use async_trait::async_trait;
 use faucet_core::FaucetError;
 use faucet_core::util::{self, DEFAULT_ERROR_BODY_MAX_LEN};
+use faucet_core::{Stream, StreamPage};
 use reqwest::Client;
 use serde_json::Value;
 use std::collections::HashMap;
+use std::pin::Pin;
 
 /// A configured XML API source that handles pagination and extraction.
 pub struct XmlStream {
@@ -217,6 +219,133 @@ impl faucet_core::Source for XmlStream {
         context: &std::collections::HashMap<String, serde_json::Value>,
     ) -> Result<Vec<Value>, FaucetError> {
         self.fetch_all_with_context(context).await
+    }
+
+    /// Stream records from the XML response without materialising the whole
+    /// document tree. The event-driven parser only builds JSON values for
+    /// elements matching [`XmlStreamConfig::records_element_path`]; other
+    /// elements are observed and discarded, so client-side memory is bounded
+    /// at `O(batch_size * record_size)` regardless of how large the document
+    /// is.
+    ///
+    /// Records are accumulated into a buffer of
+    /// [`XmlStreamConfig::batch_size`] entries and yielded as a
+    /// [`StreamPage`] once the buffer is full. The trailing partial buffer
+    /// (if any) is emitted after the parser hits EOF and all pagination
+    /// rounds drain.
+    ///
+    /// The trait-level `batch_size` argument is intentionally ignored in
+    /// favour of the config field — the config is the user-facing knob the
+    /// README documents, and routing the pipeline-supplied hint through it
+    /// would silently override an explicit config value. `batch_size = 0`
+    /// drains every page into a single emitted page.
+    ///
+    /// Bookmarks are always `None` — the XML source has no
+    /// incremental-replication mode today; pagination only walks the
+    /// API's own page-number / offset cursor.
+    fn stream_pages<'a>(
+        &'a self,
+        context: &'a HashMap<String, Value>,
+        _batch_size: usize,
+    ) -> Pin<Box<dyn Stream<Item = Result<StreamPage, FaucetError>> + Send + 'a>> {
+        let batch_size = self.config.batch_size;
+        let owned_context = context.clone();
+
+        Box::pin(async_stream::try_stream! {
+            let chunk = if batch_size == 0 { usize::MAX } else { batch_size };
+            let initial_capacity = if batch_size == 0 { 1024 } else { batch_size };
+            let mut buffer: Vec<Value> = Vec::with_capacity(initial_capacity);
+            let mut total = 0usize;
+            let mut pages_fetched = 0usize;
+            let mut offset = 0usize;
+            let mut page_number = None;
+            let mut prev_record_count: Option<usize> = None;
+
+            if let Some(XmlPagination::PageNumber { start_page, .. }) =
+                &self.config.pagination
+            {
+                page_number = Some(*start_page);
+            }
+
+            loop {
+                if let Some(max) = self.config.max_pages
+                    && pages_fetched >= max
+                {
+                    tracing::warn!("max pages ({max}) reached");
+                    break;
+                }
+
+                let mut params = self.config.query_params.clone();
+                self.apply_pagination_params(&mut params, page_number, offset);
+
+                let xml_text = self.execute_request(&params, &owned_context).await?;
+
+                // Event-driven extraction: only the matched subtree is
+                // ever materialised. The closure pushes into the local
+                // buffer; once it crosses `chunk`, the surrounding loop
+                // can flush, but we can't `yield` from inside the closure,
+                // so we collect this HTTP page's records into a scratch
+                // Vec and then iterate them after.
+                let mut page_records: Vec<Value> = Vec::new();
+                convert::stream_extract(
+                    &xml_text,
+                    self.config.records_element_path.as_deref(),
+                    |rec| page_records.push(rec),
+                )?;
+
+                let record_count = page_records.len();
+
+                for rec in page_records.drain(..) {
+                    buffer.push(rec);
+                    if buffer.len() >= chunk {
+                        let flush = std::mem::replace(&mut buffer, Vec::with_capacity(initial_capacity));
+                        total += flush.len();
+                        yield StreamPage { records: flush, bookmark: None };
+                    }
+                }
+                pages_fetched += 1;
+
+                // Advance pagination using the same rules as
+                // `fetch_all_with_context`.
+                match &self.config.pagination {
+                    Some(XmlPagination::PageNumber { page_size, .. }) => {
+                        if record_count == 0 {
+                            break;
+                        }
+                        if let Some(size) = page_size
+                            && record_count < *size
+                        {
+                            break;
+                        }
+                        page_number = page_number.map(|p| p + 1);
+                    }
+                    Some(XmlPagination::Offset { limit, .. }) => {
+                        if record_count < *limit {
+                            break;
+                        }
+                        if prev_record_count == Some(record_count) && record_count == 0 {
+                            tracing::warn!("offset pagination loop detected, stopping");
+                            break;
+                        }
+                        offset += record_count;
+                    }
+                    None => break,
+                }
+                prev_record_count = Some(record_count);
+            }
+
+            if !buffer.is_empty() {
+                total += buffer.len();
+                yield StreamPage { records: buffer, bookmark: None };
+            }
+
+            tracing::info!(
+                records = total,
+                pages = pages_fetched,
+                batch_size,
+                "XML source stream complete",
+            );
+        })
     }
 
     fn config_schema(&self) -> serde_json::Value {

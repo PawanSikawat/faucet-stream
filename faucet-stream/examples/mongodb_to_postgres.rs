@@ -1,6 +1,6 @@
 //! MongoDB → PostgreSQL — full builder showcase for both connectors.
 //!
-//! MongoDB source uses a filter, projection, sort, and tuned batch size.
+//! MongoDB source uses a filter, projection, sort, and tuned cursor batch size.
 //! Postgres sink uses the JSONB column mapping with batch + pool tuning.
 //!
 //! Run:
@@ -21,7 +21,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .projection(json!({ "_id": 1, "customer_id": 1, "total": 1, "items": 1 }))
             .sort(json!({ "created_at": 1 }))
             .limit(500_000)
-            .batch_size(1000),
+            .cursor_batch_size(1000),
     )
     .await?;
 
@@ -30,7 +30,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .column_mapping(PostgresColumnMapping::Jsonb {
                 column: "payload".into(),
             })
-            .batch_size(1000)
+            .with_batch_size(1000)
             .max_connections(10),
     )
     .await?;

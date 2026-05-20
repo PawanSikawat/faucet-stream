@@ -12,9 +12,10 @@ use crate::replication::{
 };
 use crate::state::{Bookmark, format_lsn, parse_lsn, state_key};
 use async_trait::async_trait;
-use faucet_core::{FaucetError, Source};
+use faucet_core::{FaucetError, Source, Stream, StreamPage};
 use serde_json::{Map, Value, json};
 use std::collections::HashMap;
+use std::pin::Pin;
 use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
 
@@ -59,110 +60,63 @@ impl Source for PostgresCdcSource {
         Ok(records)
     }
 
+    /// Drain the replication stream into a single `Vec<Value>` plus the
+    /// bookmark of the most recent COMMIT.
+    ///
+    /// Implemented by collecting [`Source::stream_pages`] with the
+    /// `batch_size = 0` sentinel — that sentinel coalesces every transaction
+    /// in the run window into a single trailing page, which exactly matches
+    /// the historical `fetch_with_context_incremental` contract (one
+    /// aggregated buffer, one max-LSN bookmark). The streaming pipeline
+    /// (`Pipeline::run` / `run_stream`) drives `stream_pages` directly with
+    /// the per-source `batch_size` config field instead so it gets
+    /// per-transaction durability.
     async fn fetch_with_context_incremental(
         &self,
-        _ctx: &HashMap<String, Value>,
+        ctx: &HashMap<String, Value>,
     ) -> Result<(Vec<Value>, Option<Value>), FaucetError> {
-        // 1. Resolve start_lsn for THIS fetch cycle.
-        let bookmark = {
-            let mut g = self.pending_bookmark.lock().await;
-            g.take()
-        };
-        let start_lsn = if let Some(b) = bookmark.as_ref() {
-            let lsn = b.as_u64()?;
-            *self.confirmed_lsn.lock().await = lsn;
-            Some(lsn)
-        } else {
-            self.config
-                .start_lsn
-                .as_deref()
-                .map(parse_lsn)
-                .transpose()?
-        };
-
-        // 2. Open replication connection + ensure slot + START_REPLICATION.
-        let params = ReplicationParams {
-            connection_url: &self.config.connection_url,
-            slot_name: &self.config.slot_name,
-            publication_name: &self.config.publication_name,
-            proto_version: self.config.proto_version,
-            create_slot_if_missing: self.config.create_slot_if_missing,
-            start_lsn,
-            status_update_interval: self.config.status_update_interval,
-            tcp_keepalive: self.config.tcp_keepalive,
-        };
-        let client = replication::connect(&params).await?;
-        replication::ensure_slot(
-            &client,
-            &self.config.connection_url,
-            &self.config.slot_name,
-            self.config.create_slot_if_missing,
-        )
-        .await?;
-        let mut duplex = replication::start_replication(&client, &params).await?;
-
-        // 3. Advance the slot's confirmed_flush_lsn to the bookmarked LSN.
-        let initial_confirmed = *self.confirmed_lsn.lock().await;
-        send_status_update(&mut duplex, initial_confirmed, false).await?;
-
-        // 4. Drain the replication stream until idle_timeout or max_messages.
-        let mut records: Vec<Value> = Vec::new();
-        let mut registry = RelationRegistry::new();
-        let mut state = TxnState::default();
-        let max_messages = self.config.max_messages.unwrap_or(usize::MAX);
-        let idle_timeout = self.config.idle_timeout;
-        let mut last_message_at = Instant::now();
-
-        loop {
-            let idle_deadline = last_message_at + idle_timeout;
-            let budget = idle_deadline
-                .checked_duration_since(Instant::now())
-                .unwrap_or(Duration::ZERO);
-
-            tokio::select! {
-                biased;
-                _ = tokio::signal::ctrl_c() => {
-                    tracing::info!("postgres-cdc: ctrl_c received, stopping cleanly");
-                    break;
-                }
-                ev = tokio::time::timeout(budget, recv(&mut duplex)) => {
-                    match ev {
-                        Ok(Ok(Some(event))) => {
-                            // Reset on any server activity, not just committed output. This avoids
-                            // firing idle_timeout mid-transaction when the server is actively
-                            // streaming WAL we haven't yet COMMITTED. Compare with
-                            // `faucet-source-kafka`, which only resets on deliverable records.
-                            last_message_at = Instant::now();
-                            handle_event(event, &mut registry, &mut state, &mut records)?;
-                            if records.len() >= max_messages {
-                                break;
-                            }
-                        }
-                        Ok(Ok(None)) => {
-                            return Err(FaucetError::Source(
-                                "postgres-cdc: replication stream ended unexpectedly".into(),
-                            ));
-                        }
-                        Ok(Err(e)) => return Err(e),
-                        Err(_timeout) => {
-                            tracing::debug!("postgres-cdc: idle_timeout reached, stopping");
-                            break;
-                        }
-                    }
-                }
+        use futures::StreamExt;
+        let mut pages = self.stream_pages_with_batch_size(ctx, 0);
+        let mut all: Vec<Value> = Vec::new();
+        let mut bookmark: Option<Value> = None;
+        while let Some(page) = pages.next().await {
+            let page = page?;
+            all.extend(page.records);
+            if page.bookmark.is_some() {
+                bookmark = page.bookmark;
             }
         }
+        Ok((all, bookmark))
+    }
 
-        // 5. Compute the new bookmark. It's the commit_lsn of the LAST fully-
-        //    applied transaction. None means: this drain didn't see any COMMIT,
-        //    so nothing new to persist.
-        let bookmark_value = if let Some(lsn) = state.last_committed {
-            *self.confirmed_lsn.lock().await = lsn;
-            Some(Bookmark::from_u64(lsn).to_value()?)
-        } else {
-            None
-        };
-        Ok((records, bookmark_value))
+    /// Per-transaction streaming.
+    ///
+    /// Each committed transaction is emitted as its own
+    /// [`StreamPage`] with `bookmark = Some(commit_lsn)`. Because the
+    /// pipeline flushes the sink and persists the bookmark on every page
+    /// that carries one, a mid-stream crash recovers from the last fully-
+    /// committed transaction with no partial-transaction leakage.
+    ///
+    /// **Atomic transactions.** A transaction is never split across pages.
+    /// If a single transaction's record count exceeds
+    /// [`PostgresCdcSourceConfig::batch_size`] it is still emitted as one
+    /// page; `batch_size` is advisory.
+    ///
+    /// **`batch_size = 0`** is the "no batching" sentinel: every committed
+    /// transaction during the run window is accumulated into a single
+    /// trailing page with `bookmark = max(commit_lsn)`. This negates
+    /// per-transaction durability and is only useful for tests / initial
+    /// snapshot runs.
+    ///
+    /// The trait-level `batch_size` argument is intentionally ignored in
+    /// favour of the config field (matches the convention used by the
+    /// query-mode postgres source and the rest source).
+    fn stream_pages<'a>(
+        &'a self,
+        ctx: &'a HashMap<String, Value>,
+        _batch_size: usize,
+    ) -> Pin<Box<dyn Stream<Item = Result<StreamPage, FaucetError>> + Send + 'a>> {
+        self.stream_pages_with_batch_size(ctx, self.config.batch_size)
     }
 
     fn config_schema(&self) -> Value {
@@ -184,6 +138,202 @@ impl Source for PostgresCdcSource {
     }
 }
 
+impl PostgresCdcSource {
+    /// Shared streaming implementation used by both `stream_pages` (per-
+    /// transaction page emission when `batch_size > 0`) and the legacy
+    /// `fetch_with_context_incremental` (single-page aggregation when
+    /// `batch_size == 0`).
+    ///
+    /// The slot lifecycle (`connect` → `ensure_slot` → `start_replication`)
+    /// and Standby Status Update bootstrap are identical to the pre-Plan-15
+    /// behaviour. The only difference is when records cross the page
+    /// boundary: on every COMMIT (`batch_size > 0`) or once at the end of
+    /// the run window (`batch_size == 0`).
+    fn stream_pages_with_batch_size<'a>(
+        &'a self,
+        _ctx: &'a HashMap<String, Value>,
+        batch_size: usize,
+    ) -> Pin<Box<dyn Stream<Item = Result<StreamPage, FaucetError>> + Send + 'a>> {
+        let max_messages = self.config.max_messages.unwrap_or(usize::MAX);
+        let idle_timeout = self.config.idle_timeout;
+        let per_transaction = batch_size != 0;
+
+        Box::pin(async_stream::try_stream! {
+            // 1. Resolve start_lsn for THIS fetch cycle.
+            let pending = {
+                let mut g = self.pending_bookmark.lock().await;
+                g.take()
+            };
+            let start_lsn = if let Some(b) = pending.as_ref() {
+                let lsn = b.as_u64()?;
+                *self.confirmed_lsn.lock().await = lsn;
+                Some(lsn)
+            } else {
+                self.config
+                    .start_lsn
+                    .as_deref()
+                    .map(parse_lsn)
+                    .transpose()?
+            };
+
+            // 2. Open replication connection + ensure slot + START_REPLICATION.
+            let params = ReplicationParams {
+                connection_url: &self.config.connection_url,
+                slot_name: &self.config.slot_name,
+                publication_name: &self.config.publication_name,
+                proto_version: self.config.proto_version,
+                create_slot_if_missing: self.config.create_slot_if_missing,
+                start_lsn,
+                status_update_interval: self.config.status_update_interval,
+                tcp_keepalive: self.config.tcp_keepalive,
+            };
+            let client = replication::connect(&params).await?;
+            replication::ensure_slot(
+                &client,
+                &self.config.connection_url,
+                &self.config.slot_name,
+                self.config.create_slot_if_missing,
+            )
+            .await?;
+            let mut duplex = replication::start_replication(&client, &params).await?;
+
+            // 3. Advance the slot's confirmed_flush_lsn to the bookmarked LSN.
+            let initial_confirmed = *self.confirmed_lsn.lock().await;
+            send_status_update(&mut duplex, initial_confirmed, false).await?;
+
+            // 4. Drain the replication stream until idle_timeout, ctrl_c, or
+            //    max_messages. Per-transaction mode (`batch_size > 0`) emits
+            //    one page per COMMIT carrying `bookmark = Some(commit_lsn)`.
+            //    Aggregated mode (`batch_size == 0`) accumulates every
+            //    transaction's records into one buffer and emits a single
+            //    trailing page with `bookmark = max(commit_lsn)`.
+            let mut registry = RelationRegistry::new();
+            let mut state = TxnState::default();
+            let mut agg_records: Vec<Value> = Vec::new();
+            let mut total_records: usize = 0;
+            let mut last_message_at = Instant::now();
+
+            loop {
+                let idle_deadline = last_message_at + idle_timeout;
+                let budget = idle_deadline
+                    .checked_duration_since(Instant::now())
+                    .unwrap_or(Duration::ZERO);
+
+                // Tracks per-iteration outcomes that we cannot propagate
+                // directly from inside `tokio::select!` arms while remaining
+                // inside `try_stream!`.
+                let mut stop = false;
+                let mut just_committed: Option<(u64, Vec<Value>)> = None;
+                let mut fatal: Option<FaucetError> = None;
+                let mut unexpected_end = false;
+                tokio::select! {
+                    biased;
+                    _ = tokio::signal::ctrl_c() => {
+                        tracing::info!("postgres-cdc: ctrl_c received, stopping cleanly");
+                        stop = true;
+                    }
+                    ev = tokio::time::timeout(budget, recv(&mut duplex)) => {
+                        match ev {
+                            Ok(Ok(Some(event))) => {
+                                // Reset on any server activity, not just committed
+                                // output, so idle_timeout never fires mid-transaction
+                                // while WAL is still flowing.
+                                last_message_at = Instant::now();
+                                let was_in_txn = state.in_txn;
+                                let pre_commit_count = state.last_committed;
+                                let mut committed_records: Vec<Value> = Vec::new();
+                                if let Err(e) = handle_event(
+                                    event,
+                                    &mut registry,
+                                    &mut state,
+                                    &mut committed_records,
+                                ) {
+                                    fatal = Some(e);
+                                } else if was_in_txn
+                                    && !state.in_txn
+                                    && state.last_committed != pre_commit_count
+                                {
+                                    // A COMMIT was just processed and
+                                    // `committed_records` holds the drained
+                                    // staged records.
+                                    let lsn = state.last_committed
+                                        .expect("last_committed set on commit");
+                                    total_records += committed_records.len();
+                                    just_committed = Some((lsn, committed_records));
+                                }
+                            }
+                            Ok(Ok(None)) => {
+                                unexpected_end = true;
+                            }
+                            Ok(Err(e)) => {
+                                fatal = Some(e);
+                            }
+                            Err(_timeout) => {
+                                tracing::debug!(
+                                    "postgres-cdc: idle_timeout reached, stopping"
+                                );
+                                stop = true;
+                            }
+                        }
+                    }
+                }
+
+                if let Some(e) = fatal {
+                    Err(e)?;
+                }
+                if unexpected_end {
+                    Err(FaucetError::Source(
+                        "postgres-cdc: replication stream ended unexpectedly".into(),
+                    ))?;
+                }
+                if let Some((lsn, drained)) = just_committed {
+                    // Persist confirmed_lsn so the next fetch cycle's initial
+                    // status update advertises the right position even if the
+                    // consumer of this stream never reaches the end.
+                    *self.confirmed_lsn.lock().await = lsn;
+                    if per_transaction {
+                        let bookmark = Some(Bookmark::from_u64(lsn).to_value()?);
+                        yield StreamPage {
+                            records: drained,
+                            bookmark,
+                        };
+                    } else {
+                        agg_records.extend(drained);
+                    }
+                    if total_records >= max_messages {
+                        stop = true;
+                    }
+                }
+
+                if stop {
+                    break;
+                }
+            }
+
+            // 5. In aggregated mode emit the single trailing page (carrying
+            //    the max LSN seen). In per-transaction mode the trailing
+            //    `state.staged` is an *uncommitted* partial transaction and
+            //    must be dropped — Postgres will redeliver after the next
+            //    START_REPLICATION.
+            if !per_transaction
+                && let Some(lsn) = state.last_committed
+            {
+                let bookmark = Some(Bookmark::from_u64(lsn).to_value()?);
+                yield StreamPage {
+                    records: agg_records,
+                    bookmark,
+                };
+            }
+
+            tracing::info!(
+                records = total_records,
+                batch_size,
+                "postgres-cdc: stream complete",
+            );
+        })
+    }
+}
+
 /// One decoded tuple, split into its values and the names of any unchanged
 /// (large/TOAST) columns whose value the server didn't re-send.
 struct TupleRow {
@@ -196,6 +346,8 @@ struct TupleRow {
 struct TxnState {
     /// Records produced inside the current BEGIN..COMMIT, buffered until
     /// COMMIT is seen so partial transactions never leak into the output.
+    /// On COMMIT, `handle_event` drains this into the caller-supplied
+    /// `out: &mut Vec<Value>`.
     staged: Vec<Value>,
     /// commit_lsn of the most recently fully-applied transaction.
     last_committed: Option<u64>,
@@ -242,6 +394,9 @@ fn handle_event(
                     "postgres-cdc: COMMIT without BEGIN".into(),
                 ));
             }
+            // Drain staged records into the caller-supplied output buffer.
+            // The caller is responsible for emitting a StreamPage with these
+            // records and the commit_lsn bookmark.
             out.append(&mut state.staged);
             state.last_committed = Some(lsn.as_u64());
             state.in_txn = false;

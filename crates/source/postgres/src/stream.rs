@@ -2,10 +2,12 @@
 
 use crate::config::PostgresSourceConfig;
 use async_trait::async_trait;
-use faucet_core::FaucetError;
+use faucet_core::{FaucetError, Stream, StreamPage};
+use futures::TryStreamExt;
 use serde_json::Value;
 use sqlx::postgres::PgPoolOptions;
 use sqlx::{Column, PgPool, Row};
+use std::pin::Pin;
 
 /// A source that executes a SQL query against PostgreSQL and returns rows as JSON.
 pub struct PostgresSource {
@@ -66,56 +68,135 @@ fn pg_value_to_json(row: &sqlx::postgres::PgRow, col_name: &str) -> Value {
     Value::Null
 }
 
+/// Build the effective SQL query and ordered context-bind values for a given
+/// parent context. Returns the literal query when there is no context.
+fn resolve_query(
+    config: &PostgresSourceConfig,
+    context: &std::collections::HashMap<String, Value>,
+) -> (String, Vec<Value>) {
+    if context.is_empty() {
+        (config.query.clone(), Vec::new())
+    } else {
+        faucet_core::util::substitute_context_bind_params(
+            &config.query,
+            context,
+            config.params.len() + 1,
+            |i| format!("${i}"),
+        )
+    }
+}
+
+/// Apply configured params followed by context-derived bind values onto a
+/// sqlx query.
+fn bind_params<'q>(
+    mut query: sqlx::query::Query<'q, sqlx::Postgres, sqlx::postgres::PgArguments>,
+    config_params: &'q [Value],
+    bind_values: &'q [Value],
+) -> sqlx::query::Query<'q, sqlx::Postgres, sqlx::postgres::PgArguments> {
+    for param in config_params {
+        query = query.bind(param);
+    }
+    for value in bind_values {
+        query = match value {
+            Value::String(s) => query.bind(s.clone()),
+            Value::Number(n) if n.is_i64() => query.bind(n.as_i64().unwrap()),
+            Value::Number(n) => query.bind(n.as_f64().unwrap_or(0.0)),
+            Value::Bool(b) => query.bind(*b),
+            Value::Null => query.bind(None::<String>),
+            _ => query.bind(value.to_string()),
+        };
+    }
+    query
+}
+
+/// Convert a single `PgRow` into a JSON object whose keys are the row's
+/// column names.
+fn row_to_json(row: &sqlx::postgres::PgRow) -> Value {
+    let mut map = serde_json::Map::new();
+    for col in row.columns() {
+        let name = col.name().to_string();
+        let value = pg_value_to_json(row, &name);
+        map.insert(name, value);
+    }
+    Value::Object(map)
+}
+
 #[async_trait]
 impl faucet_core::Source for PostgresSource {
     async fn fetch_with_context(
         &self,
         context: &std::collections::HashMap<String, serde_json::Value>,
     ) -> Result<Vec<Value>, FaucetError> {
-        let (query_str, bind_values) = if context.is_empty() {
-            (self.config.query.clone(), Vec::new())
-        } else {
-            faucet_core::util::substitute_context_bind_params(
-                &self.config.query,
-                context,
-                self.config.params.len() + 1,
-                |i| format!("${i}"),
-            )
-        };
-        let mut query = sqlx::query(&query_str);
-
-        for param in &self.config.params {
-            query = query.bind(param);
-        }
-        for value in &bind_values {
-            query = match value {
-                Value::String(s) => query.bind(s.clone()),
-                Value::Number(n) if n.is_i64() => query.bind(n.as_i64().unwrap()),
-                Value::Number(n) => query.bind(n.as_f64().unwrap_or(0.0)),
-                Value::Bool(b) => query.bind(*b),
-                Value::Null => query.bind(None::<String>),
-                _ => query.bind(value.to_string()),
-            };
-        }
+        let (query_str, bind_values) = resolve_query(&self.config, context);
+        let query = bind_params(sqlx::query(&query_str), &self.config.params, &bind_values);
 
         let rows = query
             .fetch_all(&self.pool)
             .await
             .map_err(|e| FaucetError::Config(format!("PostgreSQL query failed: {e}")))?;
 
-        let mut records = Vec::with_capacity(rows.len());
-        for row in &rows {
-            let mut map = serde_json::Map::new();
-            for col in row.columns() {
-                let name = col.name().to_string();
-                let value = pg_value_to_json(row, &name);
-                map.insert(name, value);
-            }
-            records.push(Value::Object(map));
-        }
-
+        let records: Vec<Value> = rows.iter().map(row_to_json).collect();
         tracing::info!(rows = records.len(), query = %self.config.query, "PostgreSQL source fetch complete");
         Ok(records)
+    }
+
+    /// Stream rows from the underlying sqlx cursor without buffering the full
+    /// result set. Each emitted [`StreamPage`] holds up to
+    /// [`PostgresSourceConfig::batch_size`] rows.
+    ///
+    /// The trait-level `batch_size` argument is ignored in favour of the
+    /// config field — the config is the user-facing knob the README
+    /// documents, and routing the pipeline-supplied hint through it would
+    /// silently override an explicit config value.
+    ///
+    /// `batch_size = 0` drains the entire cursor into a single page. The
+    /// postgres query source has no incremental-replication mode today, so
+    /// every emitted page carries `bookmark: None`.
+    fn stream_pages<'a>(
+        &'a self,
+        context: &'a std::collections::HashMap<String, Value>,
+        _batch_size: usize,
+    ) -> Pin<Box<dyn Stream<Item = Result<StreamPage, FaucetError>> + Send + 'a>> {
+        let batch_size = self.config.batch_size;
+
+        Box::pin(async_stream::try_stream! {
+            let (query_str, bind_values) = resolve_query(&self.config, context);
+            let query = bind_params(
+                sqlx::query(&query_str),
+                &self.config.params,
+                &bind_values,
+            );
+
+            let mut rows = query.fetch(&self.pool);
+            let chunk = if batch_size == 0 { usize::MAX } else { batch_size };
+            let initial_capacity = if batch_size == 0 { 1024 } else { batch_size };
+            let mut buffer: Vec<Value> = Vec::with_capacity(initial_capacity);
+            let mut total = 0usize;
+
+            while let Some(row) = rows
+                .try_next()
+                .await
+                .map_err(|e| FaucetError::Config(format!("PostgreSQL query failed: {e}")))?
+            {
+                buffer.push(row_to_json(&row));
+                if buffer.len() >= chunk {
+                    let page = std::mem::replace(&mut buffer, Vec::with_capacity(initial_capacity));
+                    total += page.len();
+                    yield StreamPage { records: page, bookmark: None };
+                }
+            }
+            if !buffer.is_empty() {
+                total += buffer.len();
+                yield StreamPage { records: buffer, bookmark: None };
+            }
+
+            tracing::info!(
+                rows = total,
+                batch_size,
+                query = %self.config.query,
+                "PostgreSQL source stream complete",
+            );
+        })
     }
 
     fn config_schema(&self) -> serde_json::Value {

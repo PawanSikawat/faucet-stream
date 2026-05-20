@@ -37,6 +37,16 @@ pub fn max_replication_value<'a>(records: &'a [Value], key: &str) -> Option<&'a 
         .max_by(|a, b| json_compare(a, b))
 }
 
+/// Return the larger of two replication values using the same ordering as
+/// [`max_replication_value`] (string lexicographic, numeric for numbers,
+/// falling back to `a` on type mismatch).
+pub fn max_value(a: Value, b: Value) -> Value {
+    match json_compare(&a, &b) {
+        Ordering::Less => b,
+        _ => a,
+    }
+}
+
 pub(crate) fn json_compare(a: &Value, b: &Value) -> Ordering {
     match (a, b) {
         (Value::Number(an), Value::Number(bn)) => {
@@ -131,5 +141,24 @@ mod tests {
     fn test_max_replication_value_empty() {
         let records: Vec<Value> = vec![];
         assert!(max_replication_value(&records, "updated_at").is_none());
+    }
+
+    #[test]
+    fn test_max_value_picks_larger_string() {
+        assert_eq!(
+            max_value(json!("2024-01-01"), json!("2024-06-01")),
+            json!("2024-06-01")
+        );
+    }
+
+    #[test]
+    fn test_max_value_picks_larger_number() {
+        assert_eq!(max_value(json!(5), json!(10)), json!(10));
+    }
+
+    #[test]
+    fn test_max_value_returns_a_on_type_mismatch() {
+        // Type mismatch falls back to a (json_compare returns Ordering::Equal).
+        assert_eq!(max_value(json!("string"), json!(5)), json!("string"));
     }
 }

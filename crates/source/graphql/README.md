@@ -57,6 +57,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 | `records_path` | `Option<String>` | `None` | JSONPath expression to extract records from the response. When `None`, the `data` field of the response is returned as a single record |
 | `pagination` | `Option<GraphqlPagination>` | `None` | Pagination configuration. `None` for single-page queries |
 | `max_pages` | `Option<usize>` | `None` | Maximum number of pages to fetch |
+| `batch_size` | `usize` | `1000` (`DEFAULT_BATCH_SIZE`) | Records per emitted `StreamPage` **and** the value injected as the GraphQL `first:` cursor argument. See *Streaming and batching* below |
 
 ### Authentication (GraphqlAuth)
 
@@ -75,10 +76,17 @@ Cursor-based pagination following the Relay specification with `pageInfo { hasNe
 | `has_next_page_path` | `String` | `"$.data.*.pageInfo.hasNextPage"` | JSONPath to the `hasNextPage` boolean in the response |
 | `cursor_path` | `String` | `"$.data.*.pageInfo.endCursor"` | JSONPath to the `endCursor` string in the response |
 | `cursor_variable` | `String` | `"after"` | Name of the cursor variable in the GraphQL query |
-| `page_size` | `Option<usize>` | `None` | Optional page size, injected as a variable |
-| `page_size_variable` | `String` | `"first"` | Name of the page size variable |
+| `page_size_variable` | `String` | `"first"` | Name of the page-size variable that [`GraphqlStreamConfig::batch_size`](#graphqlstreamconfig) is injected into |
 
 Pagination includes loop detection -- if the same cursor is returned twice in a row, pagination stops.
+
+## Streaming and batching
+
+`GraphqlStream` implements `Source::stream_pages`: each upstream GraphQL response is emitted as one [`StreamPage`](https://docs.rs/faucet-core/latest/faucet_core/struct.StreamPage.html), so a pipeline writes to the sink as each page arrives instead of buffering the full result set client-side.
+
+- `batch_size` (default `1000`, max `1_000_000`) maps directly to the GraphQL `first:` cursor argument (or whatever variable [`page_size_variable`](#pagination-graphqlpagination) names). Each emitted `StreamPage` carries up to `batch_size` records — the upstream is what actually decides how many records to return per request, so a server that caps `first:` will produce smaller pages than requested.
+- **`batch_size = 0` is the "no batching" sentinel**: the page-size variable is omitted from the request entirely so the upstream uses its own default page size, and the whole response is emitted as a single page. Use it for tiny lookup queries, or when the upstream's default page size already matches what the sink wants. **If the upstream schema declares the page-size variable as non-null (`first: Int!`), the server will respond with a GraphQL validation error and the stream will surface a `FaucetError::Config` explaining the contract — pick a non-zero `batch_size` in that case.**
+- Bookmarks are always `None` today — the GraphQL source has no incremental-replication mode yet. The `max_pages` truncation guard is wired structurally so a future incremental mode inherits the same trailing-checkpoint behaviour the REST source uses.
 
 ## Config Loading
 
@@ -108,10 +116,10 @@ let config: GraphqlStreamConfig = load_env_file(".env", "GRAPHQL")?;
     "has_next_page_path": "$.data.organization.repositories.pageInfo.hasNextPage",
     "cursor_path": "$.data.organization.repositories.pageInfo.endCursor",
     "cursor_variable": "after",
-    "page_size": 50,
     "page_size_variable": "first"
   },
-  "max_pages": 10
+  "max_pages": 10,
+  "batch_size": 50
 }
 ```
 
@@ -183,9 +191,9 @@ let config = GraphqlStreamConfig::new(
     has_next_page_path: "$.data.users.pageInfo.hasNextPage".into(),
     cursor_path: "$.data.users.pageInfo.endCursor".into(),
     cursor_variable: "after".into(),
-    page_size: Some(100),
     page_size_variable: "first".into(),
 })
+.with_batch_size(100)
 .max_pages(20);
 
 let stream = GraphqlStream::new(config);

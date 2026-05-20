@@ -6,7 +6,7 @@ use crate::decode;
 use crate::state::{Bookmark, state_key};
 use async_trait::async_trait;
 use base64::Engine;
-use faucet_core::{FaucetError, Source};
+use faucet_core::{FaucetError, Source, Stream, StreamPage};
 use faucet_kafka_common::OnDecodeError;
 use rdkafka::ClientConfig;
 use rdkafka::Message;
@@ -15,6 +15,7 @@ use rdkafka::consumer::{Consumer, StreamConsumer};
 use rdkafka::message::Headers;
 use serde_json::{Map, Value, json};
 use std::collections::HashMap;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -76,6 +77,20 @@ impl KafkaSource {
             #[cfg(feature = "schema-registry")]
             sr_client,
         })
+    }
+
+    /// Drain the callback-error slot. Called once per poll iteration so
+    /// rebalance-callback failures surface before any further messages are
+    /// processed (matches the batch-mode invariant).
+    fn check_callback_error(&self) -> Result<(), FaucetError> {
+        let mut guard =
+            self.context.callback_error.lock().map_err(|e| {
+                FaucetError::State(format!("kafka callback_error mutex poisoned: {e}"))
+            })?;
+        if let Some(e) = guard.take() {
+            return Err(e);
+        }
+        Ok(())
     }
 
     async fn message_to_value(
@@ -179,14 +194,7 @@ impl Source for KafkaSource {
             // Surface any error raised by the rebalance callback (e.g. a
             // failed seek). Done before the next poll so we don't process
             // additional messages after a bookmark application failure.
-            {
-                let mut guard = self.context.callback_error.lock().map_err(|e| {
-                    FaucetError::State(format!("kafka callback_error mutex poisoned: {e}"))
-                })?;
-                if let Some(e) = guard.take() {
-                    return Err(e);
-                }
-            }
+            self.check_callback_error()?;
 
             let idle_deadline = idle_timeout.map(|t| last_message_at + t);
             let poll_budget = match idle_deadline {
@@ -247,6 +255,163 @@ impl Source for KafkaSource {
             Some(Bookmark::from_map(pending_offsets).to_value()?)
         };
         Ok((records, bookmark_value))
+    }
+
+    /// Stream Kafka messages page-by-page. Mirrors the
+    /// [`fetch_with_context_incremental`](Self::fetch_with_context_incremental)
+    /// poll loop but emits a [`StreamPage`] each time the in-memory buffer
+    /// reaches [`KafkaSourceConfig::batch_size`] (or whenever the idle window
+    /// flushes a partially-filled buffer), and continues polling until the
+    /// configured `max_messages` / `idle_timeout` termination conditions are
+    /// hit.
+    ///
+    /// The trait-level `batch_size` argument is intentionally ignored in
+    /// favour of the config field — the config is the user-facing knob the
+    /// README documents and routing the pipeline-supplied hint through it
+    /// would silently override an explicit config value.
+    ///
+    /// **Per-page bookmark:** each yielded page carries a snapshot of the
+    /// cumulative `(topic, partition) -> next_offset` map seen so far. The
+    /// streaming pipeline persists this via the configured `StateStore`
+    /// *after* the sink confirms the write, giving at-least-once delivery
+    /// with per-page durability — a crash between pages re-reads only the
+    /// uncommitted page on resume (the rebalance callback seeds the assigned
+    /// partitions with the bookmarked offsets before any fetch happens).
+    ///
+    /// **`batch_size = 0`:** drains the entire run window (until
+    /// `max_messages` or `idle_timeout` fires) into a single page. This
+    /// negates the streaming benefit; prefer a finite `batch_size` in
+    /// production so the state store advances with each successful sink
+    /// write.
+    fn stream_pages<'a>(
+        &'a self,
+        _context: &'a HashMap<String, Value>,
+        _batch_size: usize,
+    ) -> Pin<Box<dyn Stream<Item = Result<StreamPage, FaucetError>> + Send + 'a>> {
+        let batch_size = self.config.batch_size;
+        let max_messages = self.config.max_messages.unwrap_or(usize::MAX);
+        let idle_timeout = self.config.idle_timeout;
+        let poll_timeout = self.config.poll_timeout;
+        let on_decode_error = self.config.on_decode_error;
+
+        // batch_size == 0 means "drain entire run window into one page" —
+        // effectively no per-page flush boundary. Otherwise the page flushes
+        // as soon as it accumulates `batch_size` messages.
+        let page_chunk = if batch_size == 0 {
+            usize::MAX
+        } else {
+            batch_size
+        };
+        let initial_capacity = if batch_size == 0 { 1024 } else { batch_size };
+
+        Box::pin(async_stream::try_stream! {
+            let mut buffer: Vec<Value> = Vec::with_capacity(initial_capacity);
+            let mut pending_offsets: HashMap<(String, i32), i64> = HashMap::new();
+            let mut last_message_at = Instant::now();
+            let mut total: usize = 0;
+
+            loop {
+                // Surface any error raised by the rebalance callback (e.g. a
+                // failed seek) before processing the next poll batch.
+                self.check_callback_error()?;
+
+                let idle_deadline = idle_timeout.map(|t| last_message_at + t);
+                let poll_budget = match idle_deadline {
+                    Some(deadline) => deadline
+                        .checked_duration_since(Instant::now())
+                        .unwrap_or(Duration::ZERO),
+                    None => poll_timeout,
+                };
+
+                // Accumulators set by the select arm — `?` cannot cross the
+                // select's match boundary into the outer `try_stream!`, so we
+                // collect errors and termination flags here and act on them
+                // after the select returns.
+                let mut stop = false;
+                let mut fatal: Option<FaucetError> = None;
+                tokio::select! {
+                    biased;
+                    _ = tokio::signal::ctrl_c() => {
+                        tracing::info!("kafka source: ctrl_c received, stopping cleanly");
+                        stop = true;
+                    }
+                    recv = tokio::time::timeout(poll_budget, self.consumer.recv()) => {
+                        match recv {
+                            Ok(Ok(msg)) => {
+                                match self.message_to_value(&msg).await {
+                                    Ok(record) => {
+                                        pending_offsets.insert(
+                                            (msg.topic().to_string(), msg.partition()),
+                                            msg.offset() + 1,
+                                        );
+                                        buffer.push(record);
+                                        last_message_at = Instant::now();
+                                        total += 1;
+                                        if total >= max_messages {
+                                            stop = true;
+                                        }
+                                    }
+                                    Err(e) => match on_decode_error {
+                                        OnDecodeError::Skip => {
+                                            tracing::warn!(error = %e, "kafka source: decode failed, skipping message");
+                                        }
+                                        OnDecodeError::Fail => fatal = Some(e),
+                                    },
+                                }
+                            }
+                            Ok(Err(e)) => {
+                                fatal = Some(FaucetError::Source(format!("kafka recv: {e}")));
+                            }
+                            Err(_timeout) => {
+                                if let Some(deadline) = idle_deadline
+                                    && Instant::now() >= deadline
+                                {
+                                    tracing::debug!("kafka source: idle_timeout reached, stopping");
+                                    stop = true;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if let Some(e) = fatal {
+                    Err(e)?;
+                }
+
+                // Yield a full page as soon as the buffer hits `page_chunk`.
+                // Bookmark = cumulative snapshot of pending_offsets after this
+                // page's last message. Snapshot before flushing the buffer so
+                // a crash between yield and the next loop iteration re-reads
+                // only the uncommitted messages, not those already in this
+                // page.
+                if !buffer.is_empty() && buffer.len() >= page_chunk {
+                    let page_records = std::mem::replace(
+                        &mut buffer,
+                        Vec::with_capacity(initial_capacity),
+                    );
+                    let bookmark = Some(Bookmark::from_map(pending_offsets.clone()).to_value()?);
+                    yield StreamPage { records: page_records, bookmark };
+                }
+
+                if stop {
+                    break;
+                }
+            }
+
+            // Flush the trailing buffer (may be empty if the run terminated
+            // exactly on a page boundary). When non-empty, emit one final
+            // page carrying the cumulative bookmark.
+            if !buffer.is_empty() {
+                let bookmark = Some(Bookmark::from_map(pending_offsets.clone()).to_value()?);
+                yield StreamPage { records: buffer, bookmark };
+            }
+
+            tracing::info!(
+                messages = total,
+                batch_size,
+                "kafka source: stream complete",
+            );
+        })
     }
 
     fn config_schema(&self) -> Value {

@@ -48,8 +48,19 @@ impl faucet_core::Sink for RedisSink {
         let mut conn = self.conn.clone();
         let mut written = 0usize;
 
+        // `batch_size = 0` is the "no batching" sentinel: pack the entire
+        // upstream slice into a single Redis pipeline, preserving
+        // `StreamPage` framing. Otherwise re-chunk into `batch_size`-sized
+        // slices so each Redis pipeline stays near the recommended
+        // ~1000-command working set.
+        let effective_chunk = if self.config.batch_size == 0 {
+            records.len()
+        } else {
+            self.config.batch_size
+        };
+
         // Process in chunks of batch_size using redis pipelines.
-        for chunk in records.chunks(self.config.batch_size) {
+        for chunk in records.chunks(effective_chunk) {
             let mut pipe = redis::pipe();
 
             for record in chunk {
@@ -143,7 +154,7 @@ mod tests {
         );
         // RedisSink::new() is async and requires a live Redis connection,
         // so we only verify the config here.
-        assert_eq!(config.batch_size, 500);
+        assert_eq!(config.batch_size, faucet_core::DEFAULT_BATCH_SIZE);
     }
 
     #[test]

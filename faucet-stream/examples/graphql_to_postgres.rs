@@ -43,16 +43,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 has_next_page_path: "$.data.users.pageInfo.hasNextPage".into(),
                 cursor_path: "$.data.users.pageInfo.endCursor".into(),
                 cursor_variable: "after".into(),
-                page_size: Some(100),
                 page_size_variable: "first".into(),
             })
+            .with_batch_size(100)
             .max_pages(usize::MAX),
     );
 
     let sink = PostgresSink::new(
         PostgresSinkConfig::new("postgres://user:pass@localhost/app", "users_imported")
             .column_mapping(PostgresColumnMapping::AutoMap)
-            .batch_size(1000)
+            .with_batch_size(1000)
             .max_connections(8),
     )
     .await?;

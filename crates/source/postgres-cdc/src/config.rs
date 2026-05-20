@@ -1,6 +1,6 @@
 //! Configuration for `PostgresCdcSource`.
 
-use faucet_core::FaucetError;
+use faucet_core::{DEFAULT_BATCH_SIZE, FaucetError};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
@@ -19,6 +19,9 @@ fn default_status_update_interval() -> Duration {
 }
 fn default_tcp_keepalive() -> Duration {
     Duration::from_secs(60)
+}
+fn default_batch_size() -> usize {
+    DEFAULT_BATCH_SIZE
 }
 
 /// Configuration for [`PostgresCdcSource`](crate::PostgresCdcSource).
@@ -93,6 +96,23 @@ pub struct PostgresCdcSourceConfig {
     )]
     #[schemars(with = "u64")]
     pub tcp_keepalive: Duration,
+
+    /// Advisory page size for
+    /// [`Source::stream_pages`](faucet_core::Source::stream_pages). The CDC
+    /// source emits **one `StreamPage` per committed transaction** so the
+    /// pipeline gets per-transaction durability via its per-page bookmark
+    /// persist. Because transactions are atomic units they are never split
+    /// across pages — a single transaction whose record count exceeds
+    /// `batch_size` still emits as one page. Defaults to
+    /// [`DEFAULT_BATCH_SIZE`].
+    ///
+    /// `batch_size = 0` is the "no batching" sentinel: every committed
+    /// transaction during the run window is accumulated into a single page
+    /// that is emitted at the end with `bookmark = max(commit_lsn)`. This
+    /// negates per-transaction durability and is only useful for tests or
+    /// initial-snapshot style runs.
+    #[serde(default = "default_batch_size")]
+    pub batch_size: usize,
 }
 
 impl std::fmt::Debug for PostgresCdcSourceConfig {
@@ -108,11 +128,24 @@ impl std::fmt::Debug for PostgresCdcSourceConfig {
             .field("max_messages", &self.max_messages)
             .field("status_update_interval", &self.status_update_interval)
             .field("tcp_keepalive", &self.tcp_keepalive)
+            .field("batch_size", &self.batch_size)
             .finish()
     }
 }
 
 impl PostgresCdcSourceConfig {
+    /// Override the advisory per-page record count emitted by
+    /// [`Source::stream_pages`](faucet_core::Source::stream_pages).
+    ///
+    /// Pass `0` to disable per-transaction emission — every transaction in
+    /// the run window will be accumulated into a single trailing page with
+    /// `bookmark = max(commit_lsn)`. Transactions are never split regardless
+    /// of `batch_size`.
+    pub fn with_batch_size(mut self, batch_size: usize) -> Self {
+        self.batch_size = batch_size;
+        self
+    }
+
     /// Validate fail-fast invariants. Called from `PostgresCdcSource::new`.
     pub fn validate(&self) -> Result<(), FaucetError> {
         if self.connection_url.trim().is_empty() {
@@ -189,6 +222,7 @@ mod tests {
             max_messages: None,
             status_update_interval: std::time::Duration::from_secs(10),
             tcp_keepalive: std::time::Duration::from_secs(60),
+            batch_size: DEFAULT_BATCH_SIZE,
         }
     }
 
@@ -207,6 +241,44 @@ mod tests {
         assert_eq!(value.tcp_keepalive.as_secs(), 60);
         assert!(value.start_lsn.is_none());
         assert!(value.max_messages.is_none());
+        assert_eq!(value.batch_size, DEFAULT_BATCH_SIZE);
+    }
+
+    #[test]
+    fn batch_size_defaults_to_default_batch_size() {
+        let c = minimal();
+        assert_eq!(c.batch_size, DEFAULT_BATCH_SIZE);
+    }
+
+    #[test]
+    fn with_batch_size_overrides_default() {
+        let c = minimal().with_batch_size(64);
+        assert_eq!(c.batch_size, 64);
+    }
+
+    #[test]
+    fn batch_size_zero_is_accepted_as_no_batching_sentinel() {
+        let c = minimal().with_batch_size(0);
+        assert_eq!(c.batch_size, 0);
+        assert!(faucet_core::validate_batch_size(c.batch_size).is_ok());
+    }
+
+    #[test]
+    fn batch_size_above_max_is_rejected_by_validate_batch_size() {
+        let c = minimal().with_batch_size(faucet_core::MAX_BATCH_SIZE + 1);
+        assert!(faucet_core::validate_batch_size(c.batch_size).is_err());
+    }
+
+    #[test]
+    fn batch_size_deserializes_from_json() {
+        let v: PostgresCdcSourceConfig = serde_json::from_value(serde_json::json!({
+            "connection_url": "postgres://u:p@localhost/db",
+            "slot_name": "faucet_slot",
+            "publication_name": "faucet_pub",
+            "batch_size": 256,
+        }))
+        .unwrap();
+        assert_eq!(v.batch_size, 256);
     }
 
     #[test]

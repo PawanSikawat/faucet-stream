@@ -1,5 +1,6 @@
 //! MongoDB sink configuration.
 
+use faucet_core::DEFAULT_BATCH_SIZE;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -16,7 +17,7 @@ use std::fmt;
 ///     "my_database",
 ///     "my_collection",
 /// )
-/// .batch_size(1000);
+/// .with_batch_size(1000);
 /// ```
 #[derive(Clone, Serialize, Deserialize, JsonSchema)]
 pub struct MongoSinkConfig {
@@ -26,8 +27,22 @@ pub struct MongoSinkConfig {
     pub database: String,
     /// Collection name.
     pub collection: String,
-    /// Number of documents to insert per `insert_many` call (default: 500).
+    /// Maximum number of documents per `insert_many` call. Defaults to
+    /// [`DEFAULT_BATCH_SIZE`] (1000), which is a good balance for MongoDB's
+    /// per-request limits and round-trip cost.
+    ///
+    /// When `write_batch` is handed a slice larger than `batch_size`, the
+    /// sink re-chunks it into `batch_size` slices and issues one
+    /// `insert_many` per chunk. `batch_size = 0` is the **"no batching"
+    /// sentinel** — the records slice is forwarded as a single
+    /// `insert_many`, no matter how large, so upstream `StreamPage` framing
+    /// flows through untouched.
+    #[serde(default = "default_batch_size")]
     pub batch_size: usize,
+}
+
+fn default_batch_size() -> usize {
+    DEFAULT_BATCH_SIZE
 }
 
 impl MongoSinkConfig {
@@ -41,12 +56,16 @@ impl MongoSinkConfig {
             connection_uri: connection_uri.into(),
             database: database.into(),
             collection: collection.into(),
-            batch_size: 500,
+            batch_size: DEFAULT_BATCH_SIZE,
         }
     }
 
-    /// Set the number of documents per `insert_many` batch.
-    pub fn batch_size(mut self, batch_size: usize) -> Self {
+    /// Set the maximum number of documents per `insert_many` call.
+    ///
+    /// Pass `0` to opt out of re-chunking — the entire records slice handed
+    /// to `write_batch` is sent in a single `insert_many` call, preserving
+    /// upstream `StreamPage` framing.
+    pub fn with_batch_size(mut self, batch_size: usize) -> Self {
         self.batch_size = batch_size;
         self
     }
@@ -72,14 +91,20 @@ mod tests {
         let config = MongoSinkConfig::new("mongodb://localhost:27017", "testdb", "users");
         assert_eq!(config.database, "testdb");
         assert_eq!(config.collection, "users");
-        assert_eq!(config.batch_size, 500);
+        assert_eq!(config.batch_size, DEFAULT_BATCH_SIZE);
     }
 
     #[test]
-    fn builder_methods() {
-        let config =
-            MongoSinkConfig::new("mongodb://localhost:27017", "testdb", "users").batch_size(1000);
-        assert_eq!(config.batch_size, 1000);
+    fn batch_size_defaults_to_default_batch_size() {
+        let config = MongoSinkConfig::new("mongodb://localhost:27017", "testdb", "users");
+        assert_eq!(config.batch_size, faucet_core::DEFAULT_BATCH_SIZE);
+    }
+
+    #[test]
+    fn with_batch_size_overrides_default() {
+        let config = MongoSinkConfig::new("mongodb://localhost:27017", "testdb", "users")
+            .with_batch_size(2000);
+        assert_eq!(config.batch_size, 2000);
     }
 
     #[test]
@@ -88,5 +113,43 @@ mod tests {
         let debug = format!("{config:?}");
         assert!(debug.contains("***"));
         assert!(!debug.contains("secret"));
+    }
+
+    #[test]
+    fn batch_size_zero_is_accepted_as_no_batching_sentinel() {
+        let config =
+            MongoSinkConfig::new("mongodb://localhost:27017", "db", "c").with_batch_size(0);
+        assert_eq!(config.batch_size, 0);
+        assert!(faucet_core::validate_batch_size(config.batch_size).is_ok());
+    }
+
+    #[test]
+    fn batch_size_above_max_is_rejected_by_validate_batch_size() {
+        let config = MongoSinkConfig::new("mongodb://localhost:27017", "db", "c")
+            .with_batch_size(faucet_core::MAX_BATCH_SIZE + 1);
+        assert!(faucet_core::validate_batch_size(config.batch_size).is_err());
+    }
+
+    #[test]
+    fn batch_size_deserializes_from_json() {
+        let json = r#"{
+            "connection_uri": "mongodb://localhost:27017",
+            "database": "db",
+            "collection": "c",
+            "batch_size": 250
+        }"#;
+        let config: MongoSinkConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(config.batch_size, 250);
+    }
+
+    #[test]
+    fn batch_size_defaults_when_absent_in_json() {
+        let json = r#"{
+            "connection_uri": "mongodb://localhost:27017",
+            "database": "db",
+            "collection": "c"
+        }"#;
+        let config: MongoSinkConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(config.batch_size, faucet_core::DEFAULT_BATCH_SIZE);
     }
 }

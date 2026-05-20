@@ -26,8 +26,8 @@ pipeline:
         has_next_page_path: $.data.users.pageInfo.hasNextPage
         cursor_path: $.data.users.pageInfo.endCursor
         cursor_variable: after
-        page_size: 100
         page_size_variable: first
+      batch_size: 100
 
   sink:
     type: postgres

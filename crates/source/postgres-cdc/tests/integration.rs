@@ -75,6 +75,7 @@ fn cfg(url: &str, slot: &str, publication: &str) -> PostgresCdcSourceConfig {
         max_messages: None,
         status_update_interval: Duration::from_secs(1),
         tcp_keepalive: Duration::from_secs(60),
+        batch_size: faucet_core::DEFAULT_BATCH_SIZE,
     }
 }
 

@@ -43,7 +43,20 @@ impl BigQuerySink {
         Ok(Self { config, client })
     }
 
-    /// Insert a single batch of rows (up to `batch_size`).
+    /// Construct a sink from a pre-built BigQuery client.
+    ///
+    /// This is a low-level escape hatch for callers that build their own
+    /// [`gcp_bigquery_client::Client`] — for example to target the
+    /// [`bigquery-emulator`](https://github.com/goccy/bigquery-emulator) via
+    /// [`ClientBuilder::with_v2_base_url`](gcp_bigquery_client::client_builder::ClientBuilder::with_v2_base_url),
+    /// or to drive a wiremock-backed test fixture. Production code should
+    /// prefer [`BigQuerySink::new`], which handles credential loading.
+    #[doc(hidden)]
+    pub fn from_parts(config: BigQuerySinkConfig, client: Client) -> Self {
+        Self { config, client }
+    }
+
+    /// Insert a single chunk of rows in one `tabledata.insertAll` call.
     async fn insert_batch(&self, rows: &[Value]) -> Result<usize, FaucetError> {
         if rows.is_empty() {
             return Ok(0);
@@ -96,12 +109,32 @@ impl faucet_core::Sink for BigQuerySink {
             .expect("schema serialization")
     }
 
-    /// Write records to BigQuery, splitting into batches of `config.batch_size`.
+    /// Write records to BigQuery.
+    ///
+    /// When `config.batch_size > 0` and the input slice is larger than
+    /// `batch_size`, the slice is split into chunks of `batch_size` rows and
+    /// each chunk is sent as a separate `tabledata.insertAll` call. When
+    /// `config.batch_size == 0`, the entire slice is sent in a single
+    /// `insertAll` request — useful when upstream `StreamPage`s are already
+    /// sized for BigQuery's per-request limits.
     async fn write_batch(&self, records: &[Value]) -> Result<usize, FaucetError> {
+        if records.is_empty() {
+            return Ok(0);
+        }
+
+        let chunks: Vec<&[Value]> = if self.config.batch_size == 0 {
+            // Sentinel: pass the entire upstream page through in a single
+            // insertAll call. Subject to BigQuery's ~10MB request limit.
+            vec![records]
+        } else {
+            records.chunks(self.config.batch_size).collect()
+        };
+
         let mut total = 0;
-        for chunk in records.chunks(self.config.batch_size) {
+        for chunk in chunks {
             total += self.insert_batch(chunk).await?;
         }
+
         tracing::info!(
             table = %format!(
                 "{}.{}.{}",

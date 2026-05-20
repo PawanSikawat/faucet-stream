@@ -1,5 +1,6 @@
 //! HTTP sink configuration.
 
+use faucet_core::DEFAULT_BATCH_SIZE;
 use reqwest::header::HeaderMap;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -75,6 +76,33 @@ pub struct HttpSinkConfig {
     pub max_retries: usize,
     /// Maximum number of concurrent requests in Individual mode (default: 10).
     pub concurrency: usize,
+    /// Maximum number of records sent per outbound HTTP request. Defaults to
+    /// [`DEFAULT_BATCH_SIZE`] (1000).
+    ///
+    /// Interpretation depends on [`batch_mode`](Self::batch_mode):
+    ///
+    /// - In [`HttpBatchMode::Array`] mode, `write_batch` re-chunks the
+    ///   incoming slice into `batch_size`-row chunks and issues one POST
+    ///   request per chunk, with each request body a JSON array of up to
+    ///   `batch_size` records. `batch_size = 0` is the **"no batching"
+    ///   sentinel**: the entire upstream `StreamPage` is forwarded as a
+    ///   single JSON array — useful when the source already chunks to a
+    ///   size the destination endpoint accepts.
+    /// - In [`HttpBatchMode::Individual`] mode the sink already sends one
+    ///   request per record, so `batch_size` has no effect on wire framing;
+    ///   the field is accepted for config-shape parity with other sinks
+    ///   and validated via [`faucet_core::validate_batch_size`] at load
+    ///   time.
+    ///
+    /// Recommended value for HTTP POST endpoints that accept arrays:
+    /// match the destination's documented batch limit (commonly 100–1000
+    /// records per request).
+    #[serde(default = "default_batch_size")]
+    pub batch_size: usize,
+}
+
+fn default_batch_size() -> usize {
+    DEFAULT_BATCH_SIZE
 }
 
 impl std::fmt::Debug for HttpSinkConfig {
@@ -87,6 +115,7 @@ impl std::fmt::Debug for HttpSinkConfig {
             .field("batch_mode", &self.batch_mode)
             .field("max_retries", &self.max_retries)
             .field("concurrency", &self.concurrency)
+            .field("batch_size", &self.batch_size)
             .finish()
     }
 }
@@ -102,6 +131,7 @@ impl HttpSinkConfig {
             batch_mode: HttpBatchMode::Individual,
             max_retries: 0,
             concurrency: 10,
+            batch_size: DEFAULT_BATCH_SIZE,
         }
     }
 
@@ -140,6 +170,21 @@ impl HttpSinkConfig {
         self.concurrency = concurrency;
         self
     }
+
+    /// Set the maximum number of records sent per outbound HTTP request.
+    ///
+    /// In [`HttpBatchMode::Array`] mode this controls how many records are
+    /// packed into each POST body. In [`HttpBatchMode::Individual`] mode it
+    /// has no effect on wire framing (one request per record either way)
+    /// and is accepted only for parity.
+    ///
+    /// Pass `0` to opt out of re-chunking in Array mode — the entire
+    /// records slice handed to `write_batch` is sent as a single JSON
+    /// array, preserving upstream `StreamPage` framing.
+    pub fn with_batch_size(mut self, batch_size: usize) -> Self {
+        self.batch_size = batch_size;
+        self
+    }
 }
 
 #[cfg(test)]
@@ -168,6 +213,61 @@ mod tests {
         assert_eq!(config.method, reqwest::Method::PUT);
         assert_eq!(config.max_retries, 3);
         assert!(matches!(config.batch_mode, HttpBatchMode::Array));
+    }
+
+    #[test]
+    fn batch_size_defaults_to_default_batch_size() {
+        let config = HttpSinkConfig::new("https://api.example.com/ingest");
+        assert_eq!(config.batch_size, faucet_core::DEFAULT_BATCH_SIZE);
+    }
+
+    #[test]
+    fn with_batch_size_overrides_default() {
+        let config = HttpSinkConfig::new("https://api.example.com/ingest").with_batch_size(250);
+        assert_eq!(config.batch_size, 250);
+    }
+
+    #[test]
+    fn batch_size_zero_is_accepted_as_no_batching_sentinel() {
+        let config = HttpSinkConfig::new("https://api.example.com/ingest").with_batch_size(0);
+        assert_eq!(config.batch_size, 0);
+        assert!(faucet_core::validate_batch_size(config.batch_size).is_ok());
+    }
+
+    #[test]
+    fn batch_size_above_max_is_rejected_by_validate_batch_size() {
+        let config = HttpSinkConfig::new("https://api.example.com/ingest")
+            .with_batch_size(faucet_core::MAX_BATCH_SIZE + 1);
+        assert!(faucet_core::validate_batch_size(config.batch_size).is_err());
+    }
+
+    #[test]
+    fn batch_size_deserializes_from_json() {
+        let json = r#"{
+            "url": "https://api.example.com/ingest",
+            "method": "POST",
+            "auth": {"type": "None"},
+            "batch_mode": {"type": "Array"},
+            "max_retries": 0,
+            "concurrency": 10,
+            "batch_size": 250
+        }"#;
+        let config: HttpSinkConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(config.batch_size, 250);
+    }
+
+    #[test]
+    fn batch_size_defaults_when_absent_from_json() {
+        let json = r#"{
+            "url": "https://api.example.com/ingest",
+            "method": "POST",
+            "auth": {"type": "None"},
+            "batch_mode": {"type": "Array"},
+            "max_retries": 0,
+            "concurrency": 10
+        }"#;
+        let config: HttpSinkConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(config.batch_size, faucet_core::DEFAULT_BATCH_SIZE);
     }
 
     #[test]

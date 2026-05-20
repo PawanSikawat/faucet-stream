@@ -33,7 +33,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             "events",
             BigQueryCredentials::ServiceAccountKey(std::env::var("GCP_KEY_JSON")?),
         )
-        .batch_size(2000),
+        .with_batch_size(2000),
     )
     .await?;
 

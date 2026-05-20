@@ -13,7 +13,7 @@ pipeline:
         match:
           level: error
       scroll_timeout: 2m
-      scroll_size: 2000
+      batch_size: 2000
       auth:
         type: ApiKey
         key: ${env:ES_API_KEY}

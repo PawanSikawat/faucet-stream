@@ -53,6 +53,46 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 | `file_format` | `S3FileFormat` | `JsonLines` | Format of the files to read |
 | `max_objects` | `Option<usize>` | `None` | Maximum number of objects to read. `None` means read all matching objects |
 | `concurrency` | `usize` | `10` | Maximum number of concurrent object reads |
+| `batch_size` | `usize` | `1000` | Records per `StreamPage` emitted by `Source::stream_pages`. See [Streaming and batching](#streaming-and-batching) below |
+
+### Streaming and batching
+
+`S3Source::stream_pages` lists objects matching the configured prefix and
+streams their records into `StreamPage`s without buffering the full scan.
+The exact behaviour depends on `file_format`:
+
+- **`JsonLines`** — the object body is decoded line-by-line via
+  `tokio::io::AsyncBufReadExt::lines`, so client-side memory is bounded at
+  `O(batch_size)` lines regardless of file or scan size. Records flow
+  across object boundaries — a single page may carry lines drawn from
+  multiple objects.
+- **`RawText`** — each object contributes exactly one record
+  (`{"key": ..., "content": ...}`). The body is buffered fully (the
+  contract requires the file contents as a string), then accumulated into
+  the same `batch_size` buffer that JsonLines uses.
+- **`JsonArray`** — the array can only be validated once the closing `]`
+  is observed, so each object is buffered fully and then its records are
+  chunked into pages of `batch_size`. This bounds *page* size at
+  `batch_size` but not *peak per-object* memory — sources that must
+  stream arbitrarily large array files should be re-emitted as `JsonLines`
+  upstream. The default `batch_size = 1000` keeps allocation reasonable
+  for typical sizes.
+
+`batch_size = 0` is the **"no batching" sentinel**: every emitted
+`StreamPage` corresponds to exactly one S3 object — no within-object
+chunking and no cross-object accumulation. Use it for small lookup files,
+or for downstream sinks (SQL `COPY`, BigQuery load jobs, Snowflake stage
+uploads) that prefer one large request per file to many small ones.
+Values larger than `MAX_BATCH_SIZE` (1,000,000) are rejected by
+`faucet_core::validate_batch_size`.
+
+The S3 source has no incremental-replication mode today, so every emitted
+page carries `bookmark: None`.
+
+> **Note** — `JsonArray` streaming is bounded at one full object in memory
+> at a time. True incremental JSON-array parsing (e.g. via
+> `serde_json::StreamDeserializer` over an `AsyncRead`) is a separate
+> follow-up; today the parse happens after the body is fully buffered.
 
 ### File Formats (S3FileFormat)
 
@@ -81,7 +121,8 @@ let config: S3SourceConfig = load_env_file(".env", "S3_SOURCE")?;
   "region": "us-east-1",
   "file_format": "json_lines",
   "max_objects": 100,
-  "concurrency": 20
+  "concurrency": 20,
+  "batch_size": 5000
 }
 ```
 

@@ -11,7 +11,7 @@ Part of the [faucet-stream](https://github.com/PawanSikawat/faucet-stream) ecosy
 
 ```toml
 [dependencies]
-faucet-source-elasticsearch = "0.1"
+faucet-source-elasticsearch = "0.2"
 tokio = { version = "1", features = ["full"] }
 ```
 
@@ -45,7 +45,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 The source uses the Elasticsearch scroll API for efficient retrieval of large result sets:
 
-1. Sends an initial `POST /{index}/_search?scroll={timeout}&size={size}` with the query
+1. Sends an initial `POST /{index}/_search?scroll={timeout}&size={batch_size}` with the query
 2. Extracts `_source` from each hit in `hits.hits[*]._source`
 3. Continues scrolling with `POST /_search/scroll` using the `_scroll_id`
 4. Stops when a scroll page returns zero hits, or `max_pages` is reached
@@ -61,9 +61,9 @@ The source uses the Elasticsearch scroll API for efficient retrieval of large re
 | `index` | `String` | *(required)* | Index name to search |
 | `query` | `Value` | `{"match_all": {}}` | Elasticsearch query DSL |
 | `scroll_timeout` | `String` | `"1m"` | Scroll context timeout (e.g. `"1m"`, `"5m"`) |
-| `scroll_size` | `usize` | `1000` | Number of documents per scroll page |
 | `auth` | `ElasticsearchAuth` | `ElasticsearchAuth::None` | Authentication method |
 | `max_pages` | `Option<usize>` | `None` | Maximum number of scroll pages to fetch. `None` means no limit |
+| `batch_size` | `usize` | `DEFAULT_BATCH_SIZE` (1000) | Docs per emitted `StreamPage`; also the scroll API `size` parameter. `0` is the "no batching" sentinel — see below |
 
 ### Authentication (ElasticsearchAuth)
 
@@ -73,6 +73,16 @@ The source uses the Elasticsearch scroll API for efficient retrieval of large re
 | `Basic { username, password }` | `String`, `String` | HTTP Basic authentication. Password is masked in debug output |
 | `Bearer { token }` | `String` | Bearer token in the `Authorization` header. Masked in debug output |
 | `ApiKey { key }` | `String` | API key sent as `ApiKey <key>` in the `Authorization` header. Masked in debug output |
+
+## Streaming and batching
+
+The source overrides [`Source::stream_pages`](https://docs.rs/faucet-core/latest/faucet_core/trait.Source.html#method.stream_pages) so the pipeline writes documents to the sink as each scroll page lands instead of buffering the full result. Client-side memory stays O(batch_size) regardless of the index's total document count.
+
+- `batch_size` (default `1000`) is passed straight to the scroll API as the `size` parameter on the initial `POST /{index}/_search?scroll={timeout}&size={batch_size}`. Each scroll response — initial and follow-up — becomes exactly one `StreamPage`. The trailing empty scroll page is consumed but not emitted.
+- `batch_size = 0` is the **"no batching" sentinel**: the source skips scroll entirely and issues a single `POST /{index}/_search?size=10000`, then emits one `StreamPage`. Useful for small lookup indices, or for sinks like SQL `COPY` / BigQuery load jobs that prefer one large request to many small ones. The `10000` cap matches Elasticsearch's default `index.max_result_window`; indices with a larger `max_result_window` still receive only `10000` hits — switch back to scroll if you need more.
+- `max_pages`, when set, caps the total number of scroll responses emitted. The cap applies *after* the page is yielded.
+- The Elasticsearch search source has no incremental-replication mode today, so every emitted page carries `bookmark: None`.
+- **Scroll-context cleanup is unconditional.** On every exit path — clean drain, `max_pages` truncation, mid-stream HTTP error, or the consumer dropping the stream — the open `_scroll_id` is sent to `DELETE _search/scroll` so the cluster does not leak server-side state.
 
 ## Config Loading
 
@@ -99,7 +109,7 @@ let config: ElasticsearchSourceConfig = load_env_file(".env", "ES_SOURCE")?;
     }
   },
   "scroll_timeout": "2m",
-  "scroll_size": 5000,
+  "batch_size": 5000,
   "auth": {
     "type": "Basic",
     "username": "elastic",
@@ -115,7 +125,7 @@ let config: ElasticsearchSourceConfig = load_env_file(".env", "ES_SOURCE")?;
 ES_SOURCE_BASE_URL=http://localhost:9200
 ES_SOURCE_INDEX=my_index
 ES_SOURCE_SCROLL_TIMEOUT=1m
-ES_SOURCE_SCROLL_SIZE=1000
+ES_SOURCE_BATCH_SIZE=1000
 ES_SOURCE_MAX_PAGES=50
 ```
 
@@ -166,7 +176,7 @@ let config = ElasticsearchSourceConfig::new(
 .auth(ElasticsearchAuth::Bearer {
     token: "your-token".into(),
 })
-.scroll_size(2000)
+.with_batch_size(2000)
 .scroll_timeout("5m")
 .max_pages(50);
 
@@ -199,7 +209,7 @@ let config = ElasticsearchSourceConfig::new(
 .auth(ElasticsearchAuth::ApiKey {
     key: "base64-encoded-api-key".into(),
 })
-.scroll_size(5000);
+.with_batch_size(5000);
 
 let source = ElasticsearchSource::new(config);
 let metrics = source.fetch_all().await?;

@@ -21,3 +21,4 @@ tokio.workspace = true
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt"] }
 serde_json.workspace = true
+wiremock = "0.6"

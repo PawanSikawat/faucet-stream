@@ -31,7 +31,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             "customers_imported",
         )
         .column_mapping(PostgresColumnMapping::AutoMap)
-        .batch_size(1000)
+        .with_batch_size(1000)
         .max_connections(10),
     )
     .await?;

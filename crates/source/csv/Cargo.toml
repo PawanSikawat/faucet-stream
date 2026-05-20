@@ -15,9 +15,12 @@ serde_json.workspace = true
 async-trait.workspace = true
 tracing.workspace = true
 csv = { workspace = true }
-tokio.workspace = true
+tokio = { workspace = true, features = ["fs", "io-util"] }
+async-stream = { workspace = true }
+futures = { workspace = true }
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["macros", "rt"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 serde_json.workspace = true
 tempfile = "3"
+futures = { workspace = true }

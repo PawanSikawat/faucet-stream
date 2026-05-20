@@ -1,5 +1,6 @@
 //! MySQL sink configuration.
 
+use faucet_core::DEFAULT_BATCH_SIZE;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -32,10 +33,28 @@ pub struct MysqlSinkConfig {
     pub table_name: String,
     /// How to map JSON records to columns.
     pub column_mapping: MysqlColumnMapping,
-    /// Maximum number of rows per INSERT statement. Defaults to 500.
+    /// Maximum rows per multi-row `INSERT` statement. Defaults to
+    /// [`DEFAULT_BATCH_SIZE`].
+    ///
+    /// When the upstream `StreamPage` carries more records than `batch_size`,
+    /// the sink slices the page into `batch_size`-row chunks and issues one
+    /// multi-row `INSERT INTO ... VALUES (...), (...), ...` statement per
+    /// chunk. When `batch_size = 0`, the entire upstream page is forwarded
+    /// in a single multi-row `INSERT` — useful when the source already
+    /// chunks to a size tuned for MySQL.
+    ///
+    /// `batch_size = 0` is the "no batching" sentinel: the full upstream
+    /// page is forwarded as one `INSERT`, subject to MySQL's
+    /// `max_allowed_packet` limit (default 64MB). Keep the default unless
+    /// the upstream `StreamPage` size is already tuned for MySQL.
+    #[serde(default = "default_batch_size")]
     pub batch_size: usize,
     /// Maximum number of connections in the pool. Defaults to 5.
     pub max_connections: u32,
+}
+
+fn default_batch_size() -> usize {
+    DEFAULT_BATCH_SIZE
 }
 
 impl std::fmt::Debug for MysqlSinkConfig {
@@ -57,7 +76,7 @@ impl MysqlSinkConfig {
             connection_url: connection_url.into(),
             table_name: table_name.into(),
             column_mapping: MysqlColumnMapping::default(),
-            batch_size: 500,
+            batch_size: DEFAULT_BATCH_SIZE,
             max_connections: 5,
         }
     }
@@ -68,9 +87,13 @@ impl MysqlSinkConfig {
         self
     }
 
-    /// Set the batch size for INSERT statements.
-    pub fn batch_size(mut self, n: usize) -> Self {
-        self.batch_size = n;
+    /// Set the per-statement row count for the multi-row `INSERT`.
+    ///
+    /// Pass `0` to opt out of re-chunking — the sink forwards each upstream
+    /// [`StreamPage`](faucet_core::StreamPage) as a single multi-row
+    /// `INSERT`. MySQL's multi-row insert sweet spot is ~1000 rows.
+    pub fn with_batch_size(mut self, batch_size: usize) -> Self {
+        self.batch_size = batch_size;
         self
     }
 
@@ -89,7 +112,7 @@ mod tests {
     fn default_config() {
         let config = MysqlSinkConfig::new("mysql://localhost/test", "events");
         assert_eq!(config.table_name, "events");
-        assert_eq!(config.batch_size, 500);
+        assert_eq!(config.batch_size, DEFAULT_BATCH_SIZE);
         assert!(matches!(
             config.column_mapping,
             MysqlColumnMapping::Json { ref column } if column == "data"
@@ -100,9 +123,15 @@ mod tests {
     fn builder_methods() {
         let config = MysqlSinkConfig::new("mysql://localhost/test", "events")
             .column_mapping(MysqlColumnMapping::AutoMap)
-            .batch_size(100);
+            .with_batch_size(100);
         assert_eq!(config.batch_size, 100);
         assert!(matches!(config.column_mapping, MysqlColumnMapping::AutoMap));
+    }
+
+    #[test]
+    fn with_batch_size_overrides_default() {
+        let config = MysqlSinkConfig::new("mysql://localhost/test", "events").with_batch_size(250);
+        assert_eq!(config.batch_size, 250);
     }
 
     #[test]
@@ -125,5 +154,52 @@ mod tests {
         assert!(debug.contains("***"));
         assert!(!debug.contains("secret"));
         assert!(!debug.contains("pass"));
+    }
+
+    #[test]
+    fn batch_size_zero_is_accepted_as_no_batching_sentinel() {
+        let config = MysqlSinkConfig::new("mysql://localhost/test", "events").with_batch_size(0);
+        assert_eq!(config.batch_size, 0);
+        assert!(faucet_core::validate_batch_size(config.batch_size).is_ok());
+    }
+
+    #[test]
+    fn batch_size_above_max_is_rejected_by_validate_batch_size() {
+        let config = MysqlSinkConfig::new("mysql://localhost/test", "events")
+            .with_batch_size(faucet_core::MAX_BATCH_SIZE + 1);
+        assert!(faucet_core::validate_batch_size(config.batch_size).is_err());
+    }
+
+    #[test]
+    fn batch_size_deserializes_from_json() {
+        let json = r#"{
+            "connection_url": "mysql://localhost/test",
+            "table_name": "events",
+            "column_mapping": {"json": {"column": "data"}},
+            "batch_size": 250,
+            "max_connections": 5
+        }"#;
+        let config: MysqlSinkConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(config.batch_size, 250);
+    }
+
+    #[test]
+    fn batch_size_defaults_when_absent_in_json() {
+        let json = r#"{
+            "connection_url": "mysql://localhost/test",
+            "table_name": "events",
+            "column_mapping": {"json": {"column": "data"}},
+            "max_connections": 5
+        }"#;
+        let config: MysqlSinkConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(config.batch_size, DEFAULT_BATCH_SIZE);
+    }
+
+    #[test]
+    fn with_batch_size_chaining() {
+        let config = MysqlSinkConfig::new("mysql://localhost/test", "events")
+            .with_batch_size(100)
+            .with_batch_size(2_000);
+        assert_eq!(config.batch_size, 2_000);
     }
 }

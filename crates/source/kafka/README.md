@@ -65,6 +65,7 @@ All fields are top-level keys under `source.config` in the pipeline YAML.
 | `session_timeout` | `integer` | `30` | Kafka `session.timeout.ms` in **seconds**. Increase for slow brokers or long GC pauses. |
 | `on_decode_error` | `"fail" \| "skip"` | `"fail"` | What to do when a single message fails to decode. `fail` aborts the batch; `skip` drops the message and logs a warning. |
 | `extra_client_config` | `object` | `{}` | Raw librdkafka client properties passed directly to the consumer. These can override anything set by `auth` or the typed fields above — use with care. |
+| `batch_size` | `integer` | `1000` | Messages per emitted `StreamPage` when the source is driven through `Source::stream_pages` (i.e. `Pipeline::run` / `run_stream`). See [Streaming and batching](#streaming-and-batching) below. |
 
 ---
 
@@ -163,6 +164,22 @@ kafka:my-group:alpha.beta
 ```
 
 **Delivery semantics:** Offsets are persisted via faucet-stream's state store only after the sink confirms a batch, and on restart the consumer seeds the partition assignment with the bookmarked offset *before* any message is fetched. End-to-end this is at-least-once if the sink can fail mid-batch; pair with idempotent sinks if you need stricter guarantees.
+
+---
+
+## Streaming and batching
+
+When the source is driven through `Source::stream_pages` (which is what `Pipeline::run` and `run_stream` use internally), messages are accumulated into a `batch_size`-sized in-memory buffer and emitted as a `StreamPage` whenever:
+
+1. **The buffer reaches `batch_size`** — yield a full page, reset the buffer, and keep polling for more messages.
+2. **The `idle_timeout` window flushes a partial buffer** — when the idle deadline fires with a non-empty buffer, the buffer is emitted as a trailing page and the loop continues.
+3. **`max_messages` is reached or `Ctrl+C` is received** — emit the final partial page (if any) and exit.
+
+Each emitted page carries a snapshot of the cumulative `(topic, partition) -> next_offset` bookmark. The pipeline persists this via the configured `StateStore` **after** the sink confirms the write, giving at-least-once delivery with per-page durability — a crash between pages re-reads only the uncommitted page on resume.
+
+**Why this matters:** the batch-mode `fetch_all_incremental` waits for the entire run to complete before returning, which means the sink sees nothing until termination *and* the state store is only updated once. With streaming, the sink writes (and the state store advances) every `batch_size` messages.
+
+**`batch_size = 0` — drain entire run window.** Passes the special "no batching" sentinel: the source accumulates **every** message produced by the run (until `max_messages` or `idle_timeout` fires) into a single page before yielding. This negates the streaming benefit and is intended only for tests or one-shot drain scenarios. For production pipelines, prefer a finite `batch_size` so the state store advances with each successful sink write.
 
 ---
 

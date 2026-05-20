@@ -25,7 +25,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let sink = MysqlSink::new(
         MysqlSinkConfig::new("mysql://user:pass@localhost/crm", "customers_imported")
             .column_mapping(MysqlColumnMapping::AutoMap)
-            .batch_size(1000)
+            .with_batch_size(1000)
             .max_connections(10),
     )
     .await?;

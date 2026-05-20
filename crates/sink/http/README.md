@@ -59,6 +59,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 | `batch_mode` | `HttpBatchMode` | `Individual` | How to batch records in requests (see below) |
 | `max_retries` | `usize` | `0` | Number of retries on transient failures |
 | `concurrency` | `usize` | `10` | Maximum number of concurrent requests in Individual mode |
+| `batch_size` | `usize` | `1000` (`faucet_core::DEFAULT_BATCH_SIZE`) | Maximum records per outbound HTTP request. Re-chunks the upstream `StreamPage` in `Array` mode; no-op in `Individual` mode. `0` = "no batching" sentinel (one POST per `StreamPage`). |
 
 ### Authentication (`HttpSinkAuth`)
 
@@ -78,6 +79,15 @@ The `Debug` implementation masks tokens and passwords with `***` to prevent cred
 | `Individual` | Send one HTTP request per record. Requests are executed concurrently up to the `concurrency` limit using a semaphore. |
 | `Array` | Send all records as a JSON array in a single HTTP request. |
 
+### Streaming and batching
+
+The HTTP sink honours the workspace-wide `batch_size` contract documented in the root `CLAUDE.md`. The exact effect on the wire depends on the configured `batch_mode`:
+
+- **`Individual` mode** — one HTTP request per record, executed concurrently up to `concurrency` via a semaphore. `batch_size` has **no effect on wire framing** in this mode (each record is already its own request); the field is accepted only for config-shape parity with other sinks and validated via `faucet_core::validate_batch_size` at load time. Use `concurrency` to tune throughput.
+- **`Array` mode** — the sink re-chunks the upstream `StreamPage` into `batch_size`-row slices and issues one POST request per chunk, with each request body a JSON array of up to `batch_size` records. With the default `batch_size = 1000`, a 2 500-record `write_batch` produces 3 POSTs (1000 + 1000 + 500). When `batch_size = 0` (the **"no batching" sentinel**), the entire records slice is forwarded as a single JSON array — useful when the upstream source already chunks the stream to a size the destination endpoint accepts (e.g. a Postgres source with its own `batch_size`).
+
+Recommended value for HTTP POST endpoints that accept arrays: match the destination's documented batch limit (commonly 100–1000 records per request). For per-record send semantics, prefer `batch_mode: Individual` over `batch_size: 1` — the former is the more direct expression of intent and the only one that drives concurrent in-flight requests.
+
 ### Retry Behavior
 
 When `max_retries > 0`, the sink retries requests that fail with retriable errors (network errors, 5xx status codes, etc.). Each retry is immediate (no backoff). After exhausting all retries, the last error is returned.
@@ -92,7 +102,8 @@ let config = HttpSinkConfig::new("https://api.example.com/ingest")
     .auth(HttpSinkAuth::Bearer { token: "my-token".into() })
     .batch_mode(HttpBatchMode::Array)
     .max_retries(3)
-    .concurrency(20);
+    .concurrency(20)
+    .with_batch_size(500);
 ```
 
 ## Config Loading
@@ -143,7 +154,8 @@ Note: The `headers` field on `HttpSinkConfig` is `HeaderMap` and remains `#[serd
     "type": "Array"
   },
   "max_retries": 2,
-  "concurrency": 1
+  "concurrency": 1,
+  "batch_size": 500
 }
 ```
 

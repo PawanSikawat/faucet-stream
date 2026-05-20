@@ -29,7 +29,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             "transactions",
             BigQueryCredentials::ServiceAccountKeyPath("service-account.json".into()),
         )
-        .batch_size(1000),
+        .with_batch_size(1000),
     )
     .await?;
 

@@ -13,6 +13,10 @@ use serde_json::{Value, json};
 pub struct SnowflakeSink {
     config: SnowflakeSinkConfig,
     client: Client,
+    /// Optional explicit endpoint override. When `None`, the URL is derived
+    /// from `config.account`. Used by tests to point the sink at a mock
+    /// server, and useful for proxies / private-link deployments.
+    endpoint: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -28,11 +32,24 @@ impl SnowflakeSink {
         Self {
             config,
             client: Client::new(),
+            endpoint: None,
         }
+    }
+
+    /// Override the API endpoint URL (full URL including
+    /// `/api/v2/statements`). When set, this URL is used verbatim instead
+    /// of the account-derived `https://{account}.snowflakecomputing.com/...`
+    /// URL. Intended for tests (wiremock) and proxy / private-link setups.
+    pub fn with_endpoint(mut self, endpoint: impl Into<String>) -> Self {
+        self.endpoint = Some(endpoint.into());
+        self
     }
 
     /// Build the SQL REST API endpoint URL.
     fn api_url(&self) -> String {
+        if let Some(endpoint) = &self.endpoint {
+            return endpoint.clone();
+        }
         format!(
             "https://{}.snowflakecomputing.com/api/v2/statements",
             self.config.account
@@ -163,8 +180,19 @@ impl faucet_core::Sink for SnowflakeSink {
             return Ok(0);
         }
 
+        // `batch_size = 0` is the "no batching" sentinel: forward whatever
+        // upstream handed us as a single INSERT, preserving `StreamPage`
+        // framing. Otherwise re-chunk into `batch_size` slices so each
+        // outbound REST request stays near Snowflake's documented sweet
+        // spot (~1000 rows).
+        let effective_chunk = if self.config.batch_size == 0 {
+            records.len()
+        } else {
+            self.config.batch_size
+        };
+
         let mut total = 0;
-        for chunk in records.chunks(self.config.batch_size) {
+        for chunk in records.chunks(effective_chunk) {
             let sql = self.build_insert_sql(chunk)?;
             self.execute_sql(&sql).await?;
             total += chunk.len();
@@ -220,6 +248,21 @@ mod tests {
         let sink = SnowflakeSink::new(config);
         let header = sink.auth_header().unwrap();
         assert_eq!(header, "Snowflake Token=\"my-token\"");
+    }
+
+    #[test]
+    fn api_url_honours_endpoint_override() {
+        let config = SnowflakeSinkConfig::new(
+            "acct",
+            "wh",
+            "db",
+            "schema",
+            "tbl",
+            SnowflakeAuth::OAuth { token: "t".into() },
+        );
+        let sink =
+            SnowflakeSink::new(config).with_endpoint("http://127.0.0.1:1234/api/v2/statements");
+        assert_eq!(sink.api_url(), "http://127.0.0.1:1234/api/v2/statements");
     }
 
     #[test]

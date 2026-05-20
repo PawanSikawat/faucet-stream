@@ -7,6 +7,8 @@ MySQL sink connector for the [faucet-stream](https://github.com/PawanSikawat/fau
 
 Writes JSON records to a MySQL table using either JSON column mode (storing each record as a serialized JSON string) or AutoMap mode (mapping top-level JSON keys directly to table columns). Uses connection pooling via `sqlx` and efficient multi-row `INSERT` statements with backtick-quoted identifiers.
 
+`write_batch` accepts whatever slice the pipeline hands it. When `batch_size > 0` and the slice is larger than `batch_size`, the sink re-chunks internally and issues one multi-row `INSERT` per chunk; when `batch_size = 0`, the entire slice is sent in a single `INSERT` — see [Streaming and batching](#streaming-and-batching) for the tradeoffs.
+
 ## Installation
 
 ```toml
@@ -56,10 +58,32 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 | `connection_url` | `String` | *(required)* | MySQL connection URL (e.g. `mysql://user:pass@host:3306/db`) |
 | `table_name` | `String` | *(required)* | Target table name |
 | `column_mapping` | `MysqlColumnMapping` | `Json { column: "data" }` | How to map JSON records to table columns (see below) |
-| `batch_size` | `usize` | `500` | Maximum number of rows per INSERT statement |
+| `batch_size` | `usize` | `1000` | Maximum rows per multi-row `INSERT`. See [Streaming and batching](#streaming-and-batching) below |
 | `max_connections` | `u32` | `5` | Maximum number of connections in the connection pool |
 
 The `Debug` implementation masks the `connection_url` with `***` to prevent credential leakage in logs.
+
+### Streaming and batching
+
+The MySQL sink re-chunks each incoming `StreamPage` to keep individual
+multi-row `INSERT` statements under MySQL's `max_allowed_packet` limit.
+
+- **`batch_size > 0`** (default `1000`) — the sink slices the incoming slice
+  into `batch_size`-row chunks and issues one multi-row `INSERT INTO ...
+  VALUES (...), (...), ...` per chunk. **Recommended value is `1000`**:
+  that's the multi-row INSERT sweet spot for MySQL (small enough to stay
+  well under the default 64MB `max_allowed_packet` even for wide rows,
+  large enough to amortise per-statement overhead). Bump it higher when
+  rows are narrow; drop it when rows are wide enough to push individual
+  chunks past `max_allowed_packet`.
+- **`batch_size = 0`** — the "no batching" sentinel. The entire upstream
+  `StreamPage` is forwarded in a single multi-row `INSERT`. Use this when
+  the source already emits page sizes tuned for MySQL — for example a
+  Postgres source configured with `batch_size: 1000`. Larger pages risk a
+  `Packet too large` error from MySQL's `max_allowed_packet` limit.
+
+`batch_size` is purely a chunk-size knob — the SQL semantics, identifier
+quoting, and column-mapping behaviour are unchanged.
 
 ### Column Mapping (`MysqlColumnMapping`)
 
@@ -76,13 +100,13 @@ use faucet_sink_mysql::{MysqlSinkConfig, MysqlColumnMapping};
 // JSON mode with custom column name
 let config = MysqlSinkConfig::new("mysql://localhost/mydb", "events")
     .column_mapping(MysqlColumnMapping::Json { column: "payload".into() })
-    .batch_size(1000)
+    .with_batch_size(1000)
     .max_connections(10);
 
 // AutoMap mode
 let config = MysqlSinkConfig::new("mysql://localhost/mydb", "events")
     .column_mapping(MysqlColumnMapping::AutoMap)
-    .batch_size(250);
+    .with_batch_size(250);
 ```
 
 ## Config Loading
@@ -109,7 +133,7 @@ let config: MysqlSinkConfig = load_env_file(".env", "MYSQL_SINK")?;
       "column": "data"
     }
   },
-  "batch_size": 500,
+  "batch_size": 1000,
   "max_connections": 5
 }
 ```
@@ -121,7 +145,7 @@ let config: MysqlSinkConfig = load_env_file(".env", "MYSQL_SINK")?;
   "connection_url": "mysql://writer:s3cret@db.example.com:3306/analytics",
   "table_name": "events",
   "column_mapping": "auto_map",
-  "batch_size": 500,
+  "batch_size": 1000,
   "max_connections": 10
 }
 ```
@@ -132,7 +156,7 @@ let config: MysqlSinkConfig = load_env_file(".env", "MYSQL_SINK")?;
 MYSQL_SINK_CONNECTION_URL=mysql://writer:s3cret@db.example.com:3306/analytics
 MYSQL_SINK_TABLE_NAME=raw_events
 MYSQL_SINK_COLUMN_MAPPING='{"json":{"column":"data"}}'
-MYSQL_SINK_BATCH_SIZE=500
+MYSQL_SINK_BATCH_SIZE=1000
 MYSQL_SINK_MAX_CONNECTIONS=5
 ```
 
@@ -188,7 +212,7 @@ let config = MysqlSinkConfig::new(
     "raw_events",
 )
 .column_mapping(MysqlColumnMapping::Json { column: "data".into() })
-.batch_size(500);
+.with_batch_size(1000);
 
 let sink = MysqlSink::new(config).await?;
 sink.write_batch(&records).await?;
@@ -212,7 +236,7 @@ let config = MysqlSinkConfig::new(
     "events",
 )
 .column_mapping(MysqlColumnMapping::AutoMap)
-.batch_size(1000)
+.with_batch_size(1000)
 .max_connections(10);
 
 let sink = MysqlSink::new(config).await?;
@@ -232,7 +256,7 @@ let config = MysqlSinkConfig::new(
     "metrics",
 )
 .max_connections(20)
-.batch_size(1000);
+.with_batch_size(1000);
 
 let sink = MysqlSink::new(config).await?;
 ```
@@ -240,7 +264,7 @@ let sink = MysqlSink::new(config).await?;
 ## How It Works
 
 - A connection pool is created in `MysqlSink::new()` using `sqlx::MySqlPool` with the configured `max_connections`.
-- `write_batch()` splits records into chunks of `batch_size` and inserts each chunk using a single multi-row INSERT statement.
+- `write_batch()` slices the input into `batch_size`-row chunks (or forwards the whole slice when `batch_size = 0`) and inserts each chunk using a single multi-row INSERT statement.
 - In JSON mode, each record is serialized to a JSON string and inserted as `INSERT INTO t (col) VALUES (?), (?), ...`.
 - In AutoMap mode, column names are queried from `INFORMATION_SCHEMA.COLUMNS` for the current database. A multi-row INSERT is built dynamically with `?` placeholders. Column values are serialized as JSON strings. Missing keys are bound as `"null"`.
 - All identifiers (table names, column names) are quoted with backticks using MySQL-safe escaping (embedded backticks are doubled).

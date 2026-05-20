@@ -6,10 +6,11 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::pin::Pin;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use faucet_core::FaucetError;
+use faucet_core::{FaucetError, Stream, StreamPage};
 use futures::{StreamExt, TryStreamExt, stream};
 use object_store::ObjectStore;
 use object_store::aws::AmazonS3Builder;
@@ -36,11 +37,9 @@ impl ParquetSource {
     /// `key`/`prefix`) and pre-builds the S3 client when applicable so it can
     /// be reused across concurrent file reads.
     pub async fn new(config: ParquetSourceConfig) -> Result<Self, FaucetError> {
-        if config.batch_size == 0 {
-            return Err(FaucetError::Config(
-                "parquet source: batch_size must be > 0".into(),
-            ));
-        }
+        // `batch_size == 0` is the "no batching" sentinel — accepted, and
+        // means "let the file's native row-group size drive page cadence".
+        // See `ParquetSourceConfig::batch_size` for the full contract.
         if config.concurrency == 0 {
             return Err(FaucetError::Config(
                 "parquet source: concurrency must be > 0".into(),
@@ -128,33 +127,10 @@ impl ParquetSource {
     where
         R: parquet::arrow::async_reader::AsyncFileReader + Send + Unpin + 'static,
     {
-        let mut builder = ParquetRecordBatchStreamBuilder::new(reader)
-            .await
-            .map_err(|e| {
-                FaucetError::Source(format!(
-                    "failed to read parquet metadata for '{display}': {e}"
-                ))
-            })?;
-
-        builder = builder.with_batch_size(self.config.batch_size);
-
-        if let Some(cols) = self.config.columns.as_deref() {
-            let parquet_schema = builder.parquet_schema();
-            validate_projection(cols, parquet_schema, display)?;
-            let mask = ProjectionMask::columns(parquet_schema, cols.iter().map(String::as_str));
-            builder = builder.with_projection(mask);
-        }
-
-        let arrow_schema = builder.schema().clone();
-
-        let mut stream = builder.build().map_err(|e| {
-            FaucetError::Source(format!(
-                "failed to build parquet stream for '{display}': {e}"
-            ))
-        })?;
+        let (mut batches, arrow_schema) = self.build_batch_stream(reader, display).await?;
 
         let mut rows: Vec<Value> = Vec::new();
-        while let Some(batch) = stream.next().await {
+        while let Some(batch) = batches.next().await {
             let batch = batch.map_err(|e| {
                 FaucetError::Source(format!("parquet decode error in '{display}': {e}"))
             })?;
@@ -168,7 +144,90 @@ impl ParquetSource {
             arrow_schema,
         })
     }
+
+    /// Build a per-file Arrow `RecordBatch` stream from a low-level
+    /// `AsyncFileReader`. Applies the configured projection and `batch_size`
+    /// hint (skipped when `batch_size == 0`, so the file's native row-group
+    /// size governs page cadence).
+    ///
+    /// Used by both [`decode`](Self::decode) (which materialises all rows
+    /// into a `FileOutput`) and [`stream_pages`](
+    /// faucet_core::Source::stream_pages) (which yields one `StreamPage`
+    /// per `RecordBatch`).
+    async fn build_batch_stream<R>(
+        &self,
+        reader: R,
+        display: &str,
+    ) -> Result<(BatchStream, arrow::datatypes::SchemaRef), FaucetError>
+    where
+        R: parquet::arrow::async_reader::AsyncFileReader + Send + Unpin + 'static,
+    {
+        let mut builder = ParquetRecordBatchStreamBuilder::new(reader)
+            .await
+            .map_err(|e| {
+                FaucetError::Source(format!(
+                    "failed to read parquet metadata for '{display}': {e}"
+                ))
+            })?;
+
+        // `batch_size == 0` is the sentinel meaning "use the file's native
+        // row-group size as the batch cadence" — i.e. don't override the
+        // Arrow reader's default, which already yields one batch per
+        // row-group.
+        if self.config.batch_size > 0 {
+            builder = builder.with_batch_size(self.config.batch_size);
+        }
+
+        if let Some(cols) = self.config.columns.as_deref() {
+            let parquet_schema = builder.parquet_schema();
+            validate_projection(cols, parquet_schema, display)?;
+            let mask = ProjectionMask::columns(parquet_schema, cols.iter().map(String::as_str));
+            builder = builder.with_projection(mask);
+        }
+
+        let arrow_schema = builder.schema().clone();
+
+        let stream = builder.build().map_err(|e| {
+            FaucetError::Source(format!(
+                "failed to build parquet stream for '{display}': {e}"
+            ))
+        })?;
+
+        Ok((Box::pin(stream), arrow_schema))
+    }
+
+    /// Open a per-file Arrow `RecordBatch` stream for a resolved target
+    /// (local or S3), returning the boxed stream, the Arrow schema, and a
+    /// display string for error messages.
+    async fn open_target_stream(
+        &self,
+        target: &FileTarget,
+    ) -> Result<(BatchStream, arrow::datatypes::SchemaRef, String), FaucetError> {
+        let display = target.display();
+        match target {
+            FileTarget::Local(path) => {
+                let file = tokio::fs::File::open(path).await.map_err(|e| {
+                    FaucetError::Source(format!("failed to open parquet file '{display}': {e}"))
+                })?;
+                let (stream, schema) = self.build_batch_stream(file, &display).await?;
+                Ok((stream, schema, display))
+            }
+            FileTarget::S3(path) => {
+                let store = self.s3_store.as_ref().ok_or_else(|| {
+                    FaucetError::Source("parquet source: S3 store not initialised".into())
+                })?;
+                let reader = ParquetObjectReader::new(store.clone(), path.clone());
+                let (stream, schema) = self.build_batch_stream(reader, &display).await?;
+                Ok((stream, schema, display))
+            }
+        }
+    }
 }
+
+/// Boxed Arrow `RecordBatch` stream returned by
+/// [`ParquetSource::build_batch_stream`].
+type BatchStream =
+    Pin<Box<dyn futures::Stream<Item = parquet::errors::Result<arrow::array::RecordBatch>> + Send>>;
 
 #[async_trait]
 impl faucet_core::Source for ParquetSource {
@@ -213,6 +272,94 @@ impl faucet_core::Source for ParquetSource {
 
         tracing::info!(total_records = all.len(), "Parquet source fetch complete");
         Ok(all)
+    }
+
+    /// Stream RecordBatches from each resolved file, yielding one
+    /// [`StreamPage`] per Arrow `RecordBatch` so client-side memory is
+    /// bounded at `O(batch_size * row_width)` regardless of total file size.
+    ///
+    /// The trait-level `batch_size` argument is ignored in favour of
+    /// [`ParquetSourceConfig::batch_size`] — the config is the user-facing
+    /// knob the README documents, and routing the pipeline-supplied hint
+    /// through it would silently override an explicit config value.
+    ///
+    /// **Cadence:**
+    /// - `batch_size > 0` — passed to
+    ///   [`ParquetRecordBatchStreamBuilder::with_batch_size`]. Arrow may
+    ///   emit a *smaller* batch at row-group boundaries, so an emitted page
+    ///   can be smaller than `batch_size`.
+    /// - `batch_size == 0` — the sentinel skips `with_batch_size`, so the
+    ///   file's native row-group size drives the page cadence (one page per
+    ///   row-group).
+    ///
+    /// **Multi-file scans** (glob / S3 prefix) iterate sequentially in
+    /// sorted order. The first file's Arrow schema is the reference; any
+    /// subsequent file with a different schema surfaces as
+    /// [`FaucetError::Source`] naming both paths and the first diverging
+    /// field — matching the eager `fetch_with_context` behaviour.
+    ///
+    /// Every page carries `bookmark: None` — the Parquet source has no
+    /// incremental-replication mode.
+    fn stream_pages<'a>(
+        &'a self,
+        context: &'a HashMap<String, Value>,
+        _batch_size: usize,
+    ) -> Pin<Box<dyn Stream<Item = Result<StreamPage, FaucetError>> + Send + 'a>> {
+        Box::pin(async_stream::try_stream! {
+            let targets = self.resolve_files(context).await?;
+            tracing::info!(files = targets.len(), "Parquet source resolved files");
+
+            if targets.is_empty() {
+                return;
+            }
+
+            let mut total_records = 0usize;
+            let mut total_pages = 0usize;
+            // Reference schema captured from the first opened file. Used to
+            // detect cross-file divergence in glob / S3-prefix scans —
+            // preserves the eager `fetch_with_context` failure mode.
+            let mut reference: Option<(String, arrow::datatypes::SchemaRef)> = None;
+
+            for target in &targets {
+                let (mut batches, arrow_schema, display) =
+                    self.open_target_stream(target).await?;
+
+                if let Some((ref first_path, ref first_schema)) = reference {
+                    if first_schema != &arrow_schema {
+                        Err(FaucetError::Source(schema_mismatch_message_pair(
+                            first_path,
+                            first_schema,
+                            &display,
+                            &arrow_schema,
+                        )))?;
+                    }
+                } else {
+                    reference = Some((display.clone(), arrow_schema));
+                }
+
+                while let Some(batch) = batches.next().await {
+                    let batch = batch.map_err(|e| {
+                        FaucetError::Source(format!(
+                            "parquet decode error in '{display}': {e}"
+                        ))
+                    })?;
+                    let rows = record_batch_to_json(&batch)?;
+                    if rows.is_empty() {
+                        continue;
+                    }
+                    total_records += rows.len();
+                    total_pages += 1;
+                    yield StreamPage { records: rows, bookmark: None };
+                }
+            }
+
+            tracing::info!(
+                pages = total_pages,
+                total_records,
+                batch_size = self.config.batch_size,
+                "Parquet source stream complete",
+            );
+        })
     }
 
     fn config_schema(&self) -> Value {
@@ -351,14 +498,29 @@ fn validate_projection(
 
 /// Compose a descriptive cross-file schema mismatch error.
 fn schema_mismatch_message(first: &FileOutput, other: &FileOutput) -> String {
-    let first_fields: Vec<String> = first
-        .arrow_schema
+    schema_mismatch_message_pair(
+        &first.path,
+        &first.arrow_schema,
+        &other.path,
+        &other.arrow_schema,
+    )
+}
+
+/// Same as [`schema_mismatch_message`] but works on raw `(path, schema)`
+/// pairs so it can be called from the streaming path where no `FileOutput`
+/// exists.
+fn schema_mismatch_message_pair(
+    first_path: &str,
+    first_schema: &arrow::datatypes::SchemaRef,
+    other_path: &str,
+    other_schema: &arrow::datatypes::SchemaRef,
+) -> String {
+    let first_fields: Vec<String> = first_schema
         .fields()
         .iter()
         .map(|f| format!("{}:{}", f.name(), f.data_type()))
         .collect();
-    let other_fields: Vec<String> = other
-        .arrow_schema
+    let other_fields: Vec<String> = other_schema
         .fields()
         .iter()
         .map(|f| format!("{}:{}", f.name(), f.data_type()))
@@ -387,10 +549,7 @@ fn schema_mismatch_message(first: &FileOutput, other: &FileOutput) -> String {
         None => String::new(),
     };
 
-    format!(
-        "parquet source: schema mismatch between '{}' and '{}'{detail}",
-        first.path, other.path
-    )
+    format!("parquet source: schema mismatch between '{first_path}' and '{other_path}'{detail}")
 }
 
 #[cfg(test)]
@@ -415,12 +574,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn rejects_zero_batch_size() {
+    async fn accepts_zero_batch_size_as_sentinel() {
+        // `batch_size = 0` is the "no batching" sentinel — page cadence
+        // falls back to the file's native row-group size. The source
+        // constructor must accept it.
         let cfg = ParquetSourceConfig::local("/tmp/x.parquet").batch_size(0);
-        match ParquetSource::new(cfg).await {
-            Err(FaucetError::Config(msg)) => assert!(msg.contains("batch_size")),
-            other => panic!("expected Config error, got {:?}", other.err()),
-        }
+        let source = ParquetSource::new(cfg)
+            .await
+            .expect("batch_size=0 must be accepted as the no-batching sentinel");
+        assert_eq!(source.config.batch_size, 0);
     }
 
     #[tokio::test]

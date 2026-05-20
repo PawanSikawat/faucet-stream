@@ -95,6 +95,31 @@ slightly exceed the limit by one batch worth of data.
 
 Setting neither produces a single file per sink instance (until `flush()`).
 
+## Streaming and batching
+
+The sink accepts whatever the upstream pipeline hands it — the streaming
+runtime in `faucet-core` already caps per-call memory at the upstream
+source's `batch_size` (see the *Streaming and batching* section of the root
+CLAUDE.md). On top of that, the sink exposes its own `batch_size` knob that
+re-chunks every incoming page before it reaches the Arrow writer:
+
+| Config              | Default                          | Meaning                                              |
+|---------------------|----------------------------------|------------------------------------------------------|
+| `batch_size`        | `faucet_core::DEFAULT_BATCH_SIZE` | Re-chunk pages into this many records per write.    |
+| `batch_size = 0`    | n/a                              | "No batching" sentinel — pass pages through as-is.   |
+
+For Parquet (local or S3) the source-defined page size is usually optimal
+because the writer streams into the destination as one multipart upload and
+benefits from larger row groups. **Recommended: leave `batch_size` at `0` (or
+at its default) and let the upstream `batch_size` drive sizing.** Set a
+smaller value only if you have a specific reason to slice incoming pages
+finer than the upstream provides.
+
+The row/byte rollover thresholds (`max_rows_per_file`, `max_bytes_per_file`)
+are **independent of `batch_size`** and continue to work unchanged: when a
+chunk pushes the writer past either threshold, the current file is closed
+and the next chunk opens a fresh `<uuid>.parquet`.
+
 ## Compression
 
 | Codec          | Notes                                          |

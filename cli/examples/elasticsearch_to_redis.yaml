@@ -13,7 +13,7 @@ pipeline:
         term:
           available: true
       scroll_timeout: 1m
-      scroll_size: 1000
+      batch_size: 1000
       auth:
         type: Basic
         username: ${env:ES_USER}
