@@ -177,9 +177,30 @@ impl faucet_core::Sink for MysqlSink {
             .expect("schema serialization")
     }
 
+    /// Write records to MySQL.
+    ///
+    /// When `config.batch_size > 0` and the input slice is larger than
+    /// `batch_size`, the slice is split into chunks of `batch_size` rows and
+    /// each chunk is sent as a separate multi-row `INSERT`. When
+    /// `config.batch_size == 0`, the entire slice is sent in a single
+    /// multi-row `INSERT` — useful when upstream `StreamPage`s are already
+    /// sized for MySQL's `max_allowed_packet` limit.
     async fn write_batch(&self, records: &[Value]) -> Result<usize, FaucetError> {
+        if records.is_empty() {
+            return Ok(0);
+        }
+
+        let chunks: Vec<&[Value]> = if self.config.batch_size == 0 {
+            // Sentinel: pass the entire upstream page through in a single
+            // multi-row INSERT. Subject to MySQL's max_allowed_packet
+            // (default 64MB).
+            vec![records]
+        } else {
+            records.chunks(self.config.batch_size).collect()
+        };
+
         let mut total = 0;
-        for chunk in records.chunks(self.config.batch_size) {
+        for chunk in chunks {
             total += match &self.config.column_mapping {
                 MysqlColumnMapping::Json { column } => self.insert_json(chunk, column).await?,
                 MysqlColumnMapping::AutoMap => self.insert_auto_map(chunk).await?,
