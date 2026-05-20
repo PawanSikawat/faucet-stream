@@ -37,7 +37,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 private_key_pem: std::fs::read_to_string("snowflake_key.pem")?,
             },
         )
-        .batch_size(1000),
+        .with_batch_size(1000),
     );
 
     let result = Pipeline::new(&source, &sink).run().await?;

@@ -35,7 +35,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 token: std::env::var("SNOWFLAKE_OAUTH_TOKEN")?,
             },
         )
-        .batch_size(1000),
+        .with_batch_size(1000),
     );
 
     let result = Pipeline::new(&source, &sink).run().await?;
