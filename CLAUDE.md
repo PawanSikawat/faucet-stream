@@ -170,14 +170,19 @@ All connectors must be optimised for throughput by default. When modifying or ad
 
 ### Streaming and batching
 
-Every `Pipeline::run` drives `Source::stream_pages(ctx, batch_size)` internally and writes each emitted `StreamPage` to the sink as it arrives. This bounds **sink-side** memory at O(batch_size) regardless of total record volume. Source-side memory depends on the source: sources that override `stream_pages` (REST today, others rolling out per follow-up issue) stream natively; sources still using the default impl buffer the full result via `fetch_with_context_incremental` and then chunk.
+Every `Pipeline::run` drives `Source::stream_pages(ctx, batch_size)` internally and writes each emitted `StreamPage` to the sink as it arrives. This bounds memory at O(batch_size) on both sides regardless of total record volume.
+
+Sources that override `stream_pages` to stream natively from their underlying primitive: `rest`, `graphql`, `postgres`, `postgres-cdc`, `mysql`, `sqlite`, `mongodb`, `s3` (JSONL/RawText modes), `parquet`, `csv`, `xml`, `elasticsearch` (scroll API), `kafka`, `redis` (all three modes). Sources that intentionally keep the default chunk-the-buffer impl (no native streaming primitive): `grpc` (unary RPC), `webhook` (buffer-shaped by nature). Server-streaming gRPC is tracked separately as #34.
+
+Sinks that expose a `batch_size` config field for write-side re-chunking: every sink — `parquet`, `s3`, `bigquery`, `snowflake`, `postgres`, `mysql`, `sqlite`, `mongodb`, `redis`, `elasticsearch`, `http`, `kafka` (re-chunking is internally the natural unit for each — multi-row INSERTs, `_bulk` bodies, `tabledata.insertAll` requests, `insert_many` calls, Redis pipelines, etc.). The file/append sinks (`jsonl`, `csv`, `stdout`) carry the field for config parity but write per-record, so `batch_size` is a no-op for them.
 
 **Contract:**
 - `Source::stream_pages` returns `Stream<Item = Result<StreamPage, FaucetError>>` where `StreamPage { records, bookmark }`.
 - The pipeline calls `Sink::write_batch` once per yielded page, then `Sink::flush` and `StateStore::put` whenever a page carries `Some(bookmark)`. Most sources emit `Some` only on the final page; CDC-style sources emit `Some` per committed transaction and get per-transaction durability automatically.
 - `DEFAULT_BATCH_SIZE` is 1000; `MAX_BATCH_SIZE` is 1,000,000. Validate via `validate_batch_size` at config load time.
-- **`batch_size = 0` is the "no batching" sentinel**: sources emit the entire result set in a single `StreamPage`, and sinks (once they expose their own `batch_size` field) accept whatever upstream hands them without re-chunking. Use it for small lookup tables, or for sinks like SQL `COPY` / BigQuery load jobs that prefer one large request to many small ones.
-- Per-source `batch_size` config fields map onto this hint — see each source's README for its native paging primitive.
+- **`batch_size = 0` is the "no batching" sentinel**: sources emit the entire result set in a single `StreamPage`, and sinks accept whatever upstream hands them without re-chunking. Use it for small lookup tables, or for sinks like SQL `COPY` / BigQuery load jobs that prefer one large request to many small ones.
+- Per-source / per-sink `batch_size` config fields map onto this hint — see each crate's README for its native paging primitive and recommended values.
+- On the source trait the `batch_size` argument to `stream_pages` is informational; every overriding source uses its config field as the authoritative knob (so a pipeline-supplied hint cannot silently override an explicit config value).
 
 ## Commands
 
