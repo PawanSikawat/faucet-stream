@@ -59,6 +59,30 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 | `file_extension` | `String` | `".jsonl"` | File extension appended to each object key |
 | `max_records_per_file` | `Option<usize>` | `None` (all in one file) | Maximum records per file. When set, records are split across multiple files. |
 | `concurrency` | `usize` | `10` | Maximum number of concurrent file uploads |
+| `batch_size` | `usize` | `1000` ([`DEFAULT_BATCH_SIZE`]) | Records per S3 object written by a single `write_batch` call. `0` opts out of write-side re-chunking — see *Streaming and batching* below. |
+
+[`DEFAULT_BATCH_SIZE`]: https://docs.rs/faucet-core/latest/faucet_core/constant.DEFAULT_BATCH_SIZE.html
+
+### Streaming and batching
+
+`batch_size` controls write-side re-chunking inside a single `write_batch`
+call. When the pipeline hands the sink `N` records and `batch_size = M > 0`,
+the sink writes `ceil(N / M)` separate S3 objects (each containing at most
+`M` records, with the final object holding the remainder). When
+`batch_size = 0`, the sink writes whatever upstream hands it as a single
+object — no re-chunking.
+
+**Recommended value: `0`.** S3 is the canonical case where one large object
+beats many small ones — per-request overhead, slower downstream scans, and
+LIST/PUT cost all compound when a pipeline produces a flood of tiny objects.
+The source's `batch_size` already sizes each `write_batch` call, and most
+sources expose a `batch_size` field tuned to their native paging primitive
+(REST page, sqlx cursor chunk, Kafka poll, etc.). Leave this at `0` unless
+you explicitly want the sink to subdivide each upstream page further.
+
+When both `batch_size > 0` and `max_records_per_file` are set, the effective
+per-object cap is `min(batch_size, max_records_per_file)`. When both are `0`
+/ unset, the sink writes one object per `write_batch` call.
 
 ### Builder Methods
 

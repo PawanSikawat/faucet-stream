@@ -1,5 +1,6 @@
 //! S3 sink configuration.
 
+use faucet_core::DEFAULT_BATCH_SIZE;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -20,6 +21,28 @@ pub struct S3SinkConfig {
     pub max_records_per_file: Option<usize>,
     /// Maximum number of concurrent file uploads (default: 10).
     pub concurrency: usize,
+    /// Records per S3 object written by a single
+    /// [`Sink::write_batch`](faucet_core::Sink::write_batch) call. When a call
+    /// hands the sink `N` records with `batch_size = M > 0`, the sink writes
+    /// `ceil(N / M)` objects, each containing at most `M` records (the final
+    /// object holds the remainder). Defaults to [`DEFAULT_BATCH_SIZE`].
+    ///
+    /// `batch_size = 0` is the "no batching" sentinel: the sink writes
+    /// whatever upstream hands it without re-chunking (still honouring
+    /// `max_records_per_file` if set). Recommended for S3 — most callers
+    /// should leave this at `0` and let the source's `batch_size` drive
+    /// object sizing, because many tiny S3 objects are a well-known
+    /// anti-pattern (per-request overhead, slower downstream reads,
+    /// LIST/PUT cost).
+    ///
+    /// When both `batch_size > 0` and `max_records_per_file` are set, the
+    /// effective per-object cap is `min(batch_size, max_records_per_file)`.
+    #[serde(default = "default_batch_size")]
+    pub batch_size: usize,
+}
+
+fn default_batch_size() -> usize {
+    DEFAULT_BATCH_SIZE
 }
 
 impl S3SinkConfig {
@@ -33,6 +56,7 @@ impl S3SinkConfig {
             file_extension: ".jsonl".to_string(),
             max_records_per_file: None,
             concurrency: 10,
+            batch_size: DEFAULT_BATCH_SIZE,
         }
     }
 
@@ -71,6 +95,18 @@ impl S3SinkConfig {
         self.concurrency = concurrency;
         self
     }
+
+    /// Set the per-object record count for
+    /// [`Sink::write_batch`](faucet_core::Sink::write_batch).
+    ///
+    /// Pass `0` to opt out of write-side re-chunking — the sink writes
+    /// whatever upstream hands it as a single object (still honouring
+    /// `max_records_per_file` if set). `0` is the recommended value for S3
+    /// because writing many small objects is an anti-pattern.
+    pub fn with_batch_size(mut self, batch_size: usize) -> Self {
+        self.batch_size = batch_size;
+        self
+    }
 }
 
 #[cfg(test)]
@@ -106,5 +142,62 @@ mod tests {
         );
         assert_eq!(config.file_extension, ".json");
         assert_eq!(config.max_records_per_file, Some(1000));
+    }
+
+    #[test]
+    fn batch_size_defaults_to_default_batch_size() {
+        let config = S3SinkConfig::new("my-bucket");
+        assert_eq!(config.batch_size, faucet_core::DEFAULT_BATCH_SIZE);
+    }
+
+    #[test]
+    fn with_batch_size_overrides_default() {
+        let config = S3SinkConfig::new("my-bucket").with_batch_size(500);
+        assert_eq!(config.batch_size, 500);
+    }
+
+    #[test]
+    fn batch_size_zero_is_accepted_as_no_batching_sentinel() {
+        let config = S3SinkConfig::new("my-bucket").with_batch_size(0);
+        assert_eq!(config.batch_size, 0);
+        assert!(faucet_core::validate_batch_size(config.batch_size).is_ok());
+    }
+
+    #[test]
+    fn batch_size_above_max_is_rejected_by_validate_batch_size() {
+        let config =
+            S3SinkConfig::new("my-bucket").with_batch_size(faucet_core::MAX_BATCH_SIZE + 1);
+        assert!(faucet_core::validate_batch_size(config.batch_size).is_err());
+    }
+
+    #[test]
+    fn batch_size_deserializes_from_json() {
+        let json = r#"{
+            "bucket": "my-bucket",
+            "prefix": "",
+            "region": null,
+            "endpoint_url": null,
+            "file_extension": ".jsonl",
+            "max_records_per_file": null,
+            "concurrency": 10,
+            "batch_size": 250
+        }"#;
+        let config: S3SinkConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(config.batch_size, 250);
+    }
+
+    #[test]
+    fn batch_size_defaults_when_omitted_from_json() {
+        let json = r#"{
+            "bucket": "my-bucket",
+            "prefix": "",
+            "region": null,
+            "endpoint_url": null,
+            "file_extension": ".jsonl",
+            "max_records_per_file": null,
+            "concurrency": 10
+        }"#;
+        let config: S3SinkConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(config.batch_size, faucet_core::DEFAULT_BATCH_SIZE);
     }
 }
