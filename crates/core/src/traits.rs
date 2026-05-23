@@ -146,6 +146,17 @@ pub trait Source: Send + Sync {
     async fn apply_start_bookmark(&self, _bookmark: Value) -> Result<(), FaucetError> {
         Ok(())
     }
+
+    /// Stable identifier used as the `connector` label on metrics and the
+    /// `connector` attribute on spans. Defaults to the final segment of
+    /// `std::any::type_name::<Self>()`, e.g. `"RestSource"`. Built-in
+    /// connectors override with a short, friendly snake_case name (e.g.
+    /// `"rest"`). Must return a non-empty string; observability decorators
+    /// fall back to `"unknown"` in release builds if it is empty (and
+    /// `debug_assert!` in debug builds).
+    fn connector_name(&self) -> &'static str {
+        crate::observability::strip_type_name(std::any::type_name::<Self>())
+    }
 }
 
 /// A sink writes records to an external system.
@@ -173,6 +184,12 @@ pub trait Sink: Send + Sync {
     /// The default returns an empty object schema.
     fn config_schema(&self) -> Value {
         serde_json::json!({"type": "object", "properties": {}})
+    }
+
+    /// Stable identifier used as the `connector` label on metrics and the
+    /// `connector` attribute on spans. See `Source::connector_name`.
+    fn connector_name(&self) -> &'static str {
+        crate::observability::strip_type_name(std::any::type_name::<Self>())
     }
 }
 
@@ -492,5 +509,19 @@ mod tests {
         let mut pages = source.stream_pages(&ctx, DEFAULT_BATCH_SIZE);
         let first = pages.next().await.unwrap();
         assert!(matches!(first, Err(FaucetError::Auth(_))));
+    }
+
+    #[test]
+    fn source_default_connector_name_is_stripped_type_name() {
+        // MockSource lives at `faucet_core::traits::tests::MockSource`; the
+        // stripped type_name yields the trailing segment.
+        let source = MockSource { records: vec![] };
+        assert_eq!(source.connector_name(), "MockSource");
+    }
+
+    #[test]
+    fn sink_default_connector_name_is_stripped_type_name() {
+        let sink = MockSink::new();
+        assert_eq!(sink.connector_name(), "MockSink");
     }
 }
