@@ -52,29 +52,16 @@ impl Drop for DurationGuard {
 mod tests {
     use super::*;
     use metrics::SharedString;
-    use metrics_util::debugging::{DebugValue, DebuggingRecorder, Snapshotter};
-    use std::sync::{Mutex, OnceLock};
+    use metrics_util::debugging::DebugValue;
     use std::thread;
     use std::time::Duration;
 
-    // The metrics global recorder is process-wide; install it exactly once and
-    // re-use the same snapshotter. Serialize tests so snapshot windows don't
-    // overlap.
-    static LOCK: Mutex<()> = Mutex::new(());
-    static SNAPSHOTTER: OnceLock<Snapshotter> = OnceLock::new();
-
-    fn snapshotter() -> &'static Snapshotter {
-        SNAPSHOTTER.get_or_init(|| {
-            let recorder = DebuggingRecorder::new();
-            let snap = recorder.snapshotter();
-            // Ignore error: another test in the process may have already
-            // installed a recorder; we cannot observe those metrics here, but
-            // all tests in this file run under LOCK so only one recorder is
-            // ever installed.
-            let _ = metrics::set_global_recorder(recorder);
-            snap
-        })
-    }
+    // Delegate to the single process-global recorder installed by
+    // `decorator::source_tests`. All observability tests must share one
+    // `OnceLock<Snapshotter>` because `metrics::set_global_recorder` can only
+    // be called once per process; whoever calls it second gets an error and
+    // their snapshotter sees no metrics.
+    use crate::observability::decorator::source_tests::{LOCK, snapshotter};
 
     #[test]
     fn records_sample_on_drop() {
