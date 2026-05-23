@@ -13,6 +13,7 @@ transform-flatten = []
 transform-rename-keys = ["dep:regex"]
 transform-snake-case = ["dep:regex"]
 transforms = ["transform-flatten", "transform-rename-keys", "transform-snake-case"]
+observability-install = ["dep:metrics-exporter-prometheus", "dep:tracing-subscriber"]
 
 [dependencies]
 serde.workspace = true
@@ -32,6 +33,8 @@ envy = "0.4"
 metrics.workspace = true
 schemars.workspace = true
 uuid.workspace = true
+metrics-exporter-prometheus = { workspace = true, optional = true }
+tracing-subscriber = { workspace = true, optional = true }
 
 [dev-dependencies]
 serde_json.workspace = true

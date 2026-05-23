@@ -104,7 +104,11 @@ transforms = [
     "faucet-source-rest?/transforms",
 ]
 
-observability = ["dep:metrics-exporter-prometheus", "dep:tracing-subscriber"]
+observability = [
+    "faucet-core/observability-install",
+    "dep:metrics-exporter-prometheus",
+    "dep:tracing-subscriber",
+]
 
 [dependencies]
 faucet-core.workspace = true
