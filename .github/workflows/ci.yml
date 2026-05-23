@@ -175,6 +175,29 @@ jobs:
           restore-keys: ${{ runner.os }}-cli-
       - run: cargo build -p faucet-cli --no-default-features --features "${{ matrix.features }}"
 
+  observability-bench:
+    name: Observability bench (2% regression check)
+    runs-on: ubuntu-latest
+    needs: [test]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.94.0"
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-obs-bench-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-obs-bench-
+      - name: Run observability benchmark
+        run: cargo bench -p faucet-core --bench observability -- --warm-up-time 1 --measurement-time 3 --save-baseline ci
+      - name: Check regression threshold
+        run: python3 .github/scripts/check_obs_regression.py
+
   kafka-integration:
     name: Kafka integration tests (Docker)
     runs-on: ubuntu-latest
