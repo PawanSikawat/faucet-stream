@@ -27,8 +27,8 @@ pub use dag::{DagNode, DagNodeError, DagNodeResult, DagResult, SourceDAG};
 pub use error::FaucetError;
 pub use observability::{
     DurationGuard, InstallError, InstallReport, InstrumentedSink, InstrumentedSource,
-    InstrumentedStateStore, Labels, ObservabilityConfig, RunStreamOptions, install_observability,
-    instrumented_apply_all, update_bookmark_lag,
+    InstrumentedStateStore, Labels, ObservabilityConfig, PrometheusConfig, RunStreamOptions,
+    TracingConfig, install_observability, instrumented_apply_all, update_bookmark_lag,
 };
 pub use pipeline::{
     DEFAULT_BATCH_SIZE, MAX_BATCH_SIZE, Pipeline, PipelineResult, StreamPage, run_stream,

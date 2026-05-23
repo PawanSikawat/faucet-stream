@@ -15,7 +15,10 @@ mod transform;
 
 pub use bookmark::update_bookmark_lag;
 pub use decorator::{InstrumentedSink, InstrumentedSource};
-pub use install::{InstallError, InstallReport, ObservabilityConfig, install_observability};
+pub use install::{
+    InstallError, InstallReport, ObservabilityConfig, PrometheusConfig, TracingConfig,
+    install_observability,
+};
 pub use labels::Labels;
 pub use options::RunStreamOptions;
 pub use state::InstrumentedStateStore;
