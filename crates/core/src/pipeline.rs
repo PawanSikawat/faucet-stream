@@ -28,18 +28,19 @@
 //! via [`run_stream`].
 //!
 //! ```rust,no_run
-//! use faucet_core::{run_stream, Sink, StreamPage, FaucetError};
+//! use faucet_core::{run_stream, RunStreamOptions, Sink, StreamPage, FaucetError};
 //! use futures_core::Stream;
 //! # async fn example(
 //! #     pages: impl Stream<Item = Result<StreamPage, FaucetError>> + Unpin,
 //! #     sink: impl Sink,
 //! # ) -> Result<(), FaucetError> {
-//! let result = run_stream(pages, &sink, None, None).await?;
+//! let result = run_stream(pages, &sink, RunStreamOptions::new()).await?;
 //! # Ok(())
 //! # }
 //! ```
 
 use crate::error::FaucetError;
+use crate::observability::RunStreamOptions;
 use crate::state::{StateStore, validate_state_key};
 use crate::traits::{Sink, Source};
 use futures_core::Stream;
@@ -175,7 +176,11 @@ impl<'a, So: Source + ?Sized, Si: Sink + ?Sized> Pipeline<'a, So, Si> {
 
         let ctx = std::collections::HashMap::new();
         let pages = self.source.stream_pages(&ctx, DEFAULT_BATCH_SIZE);
-        run_stream(pages, self.sink, self.state_store.clone(), state_key).await
+        let mut opts = RunStreamOptions::new();
+        if let (Some(store), Some(key)) = (self.state_store.clone(), state_key) {
+            opts = opts.with_state(store, key);
+        }
+        run_stream(pages, self.sink, opts).await
     }
 }
 
@@ -199,13 +204,15 @@ impl<'a, So: Source + ?Sized, Si: Sink + ?Sized> Pipeline<'a, So, Si> {
 pub async fn run_stream<S, Si>(
     mut pages: S,
     sink: &Si,
-    state_store: Option<Arc<dyn StateStore>>,
-    state_key: Option<String>,
+    options: RunStreamOptions,
 ) -> Result<PipelineResult, FaucetError>
 where
     S: Stream<Item = Result<StreamPage, FaucetError>> + Unpin,
     Si: Sink + ?Sized,
 {
+    let state_store = options.state_store;
+    let state_key = options.state_key;
+
     if let Some(key) = state_key.as_ref() {
         validate_state_key(key)?;
     }
@@ -459,7 +466,9 @@ mod tests {
         let stream = futures::stream::iter(pages);
         let sink = MockSink::new();
 
-        let result = run_stream(stream, &sink, None, None).await.unwrap();
+        let result = run_stream(stream, &sink, RunStreamOptions::new())
+            .await
+            .unwrap();
 
         assert_eq!(result.records_written, 3);
         assert!(result.bookmark.is_none());
@@ -472,7 +481,9 @@ mod tests {
         let stream = futures::stream::iter(pages);
         let sink = MockSink::new();
 
-        let result = run_stream(stream, &sink, None, None).await.unwrap();
+        let result = run_stream(stream, &sink, RunStreamOptions::new())
+            .await
+            .unwrap();
 
         assert_eq!(result.records_written, 0);
     }
@@ -496,7 +507,9 @@ mod tests {
         let stream = futures::stream::iter(pages);
         let sink = MockSink::new();
 
-        let result = run_stream(stream, &sink, None, None).await.unwrap();
+        let result = run_stream(stream, &sink, RunStreamOptions::new())
+            .await
+            .unwrap();
 
         assert_eq!(result.records_written, 2);
     }
@@ -517,7 +530,7 @@ mod tests {
         let stream = futures::stream::iter(pages);
         let sink = MockSink::new();
 
-        let result = run_stream(stream, &sink, None, None).await;
+        let result = run_stream(stream, &sink, RunStreamOptions::new()).await;
         assert!(result.is_err());
         // First page was written before the error
         assert_eq!(sink.written().len(), 1);
@@ -532,7 +545,7 @@ mod tests {
         let stream = futures::stream::iter(pages);
         let sink = FailingSink;
 
-        let result = run_stream(stream, &sink, None, None).await;
+        let result = run_stream(stream, &sink, RunStreamOptions::new()).await;
         assert!(result.is_err());
     }
 
@@ -545,7 +558,9 @@ mod tests {
         let stream = futures::stream::iter(pages);
         let sink: Box<dyn Sink> = Box::new(MockSink::new());
 
-        let result = run_stream(stream, sink.as_ref(), None, None).await.unwrap();
+        let result = run_stream(stream, sink.as_ref(), RunStreamOptions::new())
+            .await
+            .unwrap();
         assert_eq!(result.records_written, 1);
     }
 
@@ -568,8 +583,7 @@ mod tests {
         let result = run_stream(
             stream,
             &sink,
-            Some(Arc::clone(&store)),
-            Some("k".to_string()),
+            RunStreamOptions::new().with_state(Arc::clone(&store), "k"),
         )
         .await
         .unwrap();
@@ -601,8 +615,7 @@ mod tests {
         run_stream(
             stream,
             &sink,
-            Some(Arc::clone(&store)),
-            Some("k".to_string()),
+            RunStreamOptions::new().with_state(Arc::clone(&store), "k"),
         )
         .await
         .unwrap();
