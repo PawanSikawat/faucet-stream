@@ -218,7 +218,7 @@ cargo install --path cli --no-default-features --features "source-rest,sink-json
 The only crate every connector depends on. Module layout:
 
 - `error.rs` — `FaucetError` enum: `Http`, `HttpStatus`, `Json`, `JsonPath`, `Auth`, `RateLimited`, `Url`, `Transform`, `Config`, `Source`, `Sink`, `State`, `Custom(Box<dyn Error>)`.
-- `traits.rs` — `Source` (primary: `fetch_with_context()`, convenience: `fetch_all()`, plus `state_key()` / `apply_start_bookmark()` for resumable runs) and `Sink` async traits. Both expose `config_schema(&self) -> Value`. Object-safe — no associated types, no generics on trait methods.
+- `traits.rs` — `Source` (primary: `fetch_with_context()`, convenience: `fetch_all()`, plus `state_key()` / `apply_start_bookmark()` for resumable runs) and `Sink` async traits. Both expose `config_schema(&self) -> Value` and `connector_name(&self) -> &'static str` (default returns stripped `type_name`; built-in connectors override with friendly labels like `"rest"`, `"jsonl"`). Object-safe — no associated types, no generics on trait methods.
 - `pipeline.rs` — `Pipeline` (batch) and `run_stream()` (streaming). `Pipeline::with_state_store(Arc<dyn StateStore>)` wires durable bookmarks (read before fetch, persist only after sink confirms the batch).
 - `config.rs` — config loading helpers (`load_json`, `load_env`, `load_env_file`) and `duration_secs` / `duration_secs_option` serde modules.
 - `util.rs` — `quote_ident` (SQL injection prevention), `extract_records` (JSONPath), `check_http_response`, `substitute_context` (placeholder substitution for URLs/paths — NOT safe for SQL or JSON), `substitute_context_bind_params` (SQL-safe via bind markers), `substitute_context_json` (JSON-safe), `extract_context`.
@@ -265,6 +265,28 @@ Top-level YAML/JSON shape: `version: 1`, optional `name:`, required `pipeline: {
 - `env_config.rs` — pure-env mode (`--from-env`): walks a `FAUCET_*` env-var snapshot and assembles a `PipelineConfig` with the matrix empty and the pipeline filled from `FAUCET_SOURCE_*` / `FAUCET_SINK_*` / `FAUCET_STATE_*` / `FAUCET_TRANSFORM_<N>_*`. `*_JSON` suffix handles nested/tagged-enum fields; scalar/json conflict errors name both vars; transform indices must be contiguous from 1.
 - `transforms.rs` — `compile_transforms`: only `flatten`, `rename_keys`, `snake_case` are exposed via config; custom-closure transforms remain Rust-only.
 - `commands/` — `run` calls `expand` + `run_expanded`; `validate` calls `expand` and reports one line per row; `preview` runs the first root only (children need parent records to resolve `${parent.path}`); `schema`, `list`, `init` are unchanged in shape. `init` scaffolds the new pipeline/matrix template.
+
+### Observability
+
+Pipelines emit `tracing` spans and `metrics` counters/histograms automatically — every source, sink, transform, and state-store operation is wrapped by the pipeline-internal decorators in `crates/core/src/observability/`. No per-connector code is required for the universal metric set; connectors only override `connector_name()` (default: stripped `type_name`) when they want a friendly label.
+
+**Common labels:** `pipeline`, `row` (matrix row id; `""` for non-matrix runs), `connector` (from `connector_name()`). `run_id` is a span attribute only (high cardinality; never a Prometheus label).
+
+**Common metrics** (counters and histograms; see the design spec for the full list):
+- `faucet_source_records_total{pipeline,row,connector}`, `faucet_source_errors_total{...,kind}`, `faucet_source_page_duration_seconds`, `faucet_source_in_flight`
+- `faucet_sink_records_total{...}`, `faucet_sink_writes_total`, `faucet_sink_errors_total`, `faucet_sink_write_duration_seconds`, `faucet_sink_flush_duration_seconds`, `faucet_sink_in_flight`
+- `faucet_transform_records_total{pipeline,row}`, `faucet_transform_duration_seconds`
+- `faucet_state_{get,put,delete}_total{...,outcome=hit|miss for get}`, `faucet_state_errors_total{...,op,kind}`, `faucet_state_{get,put,delete}_duration_seconds`
+- `faucet_pipeline_runs_total{pipeline,row,source,sink,status=ok|err}`, `faucet_pipeline_run_duration_seconds`, `faucet_pipeline_in_flight`, `faucet_pipeline_seconds_since_last_bookmark`, `faucet_pipeline_last_bookmark_unix_seconds`
+
+**Reliability guarantees:** drop-guard timers (sample on cancellation), panic isolation (`Panic` error kind via `AssertUnwindSafe.catch_unwind()`), idempotent `install_observability` (already-installed recorder/subscriber warn rather than panic), typed `CliError::Observability` for port-in-use / malformed listen.
+
+**Cardinality rules:**
+- Never use high-cardinality values (record IDs, URLs, query strings) as metric labels.
+- `parent_record_key` in a parent-child matrix is a *span attribute only*, never a metric label.
+- Connector authors must return a non-empty `&'static str` from `connector_name()`; empty strings fall back to `"unknown"` in release builds (and `debug_assert!` in debug).
+
+**Spec:** `docs/superpowers/specs/2026-05-23-observability-otel-prometheus-design.md`.
 
 ## Feature Flags (umbrella crate)
 
