@@ -616,6 +616,10 @@ impl faucet_core::Source for RestStream {
         Ok((records, bookmark))
     }
 
+    fn connector_name(&self) -> &'static str {
+        "rest"
+    }
+
     fn config_schema(&self) -> serde_json::Value {
         serde_json::to_value(faucet_core::schema_for!(RestStreamConfig))
             .expect("schema serialization")
@@ -790,5 +794,13 @@ mod tests {
         ctx.insert("flag".to_string(), json!(true));
         let result = faucet_core::util::substitute_context("/items/{flag}", &ctx);
         assert_eq!(result, "/items/true");
+    }
+
+    #[test]
+    fn rest_source_connector_name_is_rest() {
+        use faucet_core::Source;
+        let source = RestStream::new(RestStreamConfig::new("https://example.com", "/data"))
+            .expect("minimal RestStream construction");
+        assert_eq!(source.connector_name(), "rest");
     }
 }

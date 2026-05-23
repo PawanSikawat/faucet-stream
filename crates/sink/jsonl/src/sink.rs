@@ -57,6 +57,10 @@ impl JsonlSink {
 
 #[async_trait]
 impl faucet_core::Sink for JsonlSink {
+    fn connector_name(&self) -> &'static str {
+        "jsonl"
+    }
+
     fn config_schema(&self) -> serde_json::Value {
         serde_json::to_value(faucet_core::schema_for!(JsonlSinkConfig))
             .expect("schema serialization")
@@ -184,5 +188,13 @@ mod tests {
         let content = tokio::fs::read_to_string(&path).await.unwrap();
         let lines: Vec<&str> = content.trim().split('\n').collect();
         assert_eq!(lines.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn jsonl_sink_connector_name_is_jsonl() {
+        use faucet_core::Sink;
+        let tmp = NamedTempFile::new().unwrap();
+        let sink = JsonlSink::new(JsonlSinkConfig::new(tmp.path()));
+        assert_eq!(sink.connector_name(), "jsonl");
     }
 }
