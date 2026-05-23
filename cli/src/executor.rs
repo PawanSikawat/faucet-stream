@@ -720,6 +720,7 @@ mod tests {
             },
             matrix: Vec::new(),
             execution: None,
+            observability: None,
         }
     }
 
