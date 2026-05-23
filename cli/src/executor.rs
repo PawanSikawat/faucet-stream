@@ -30,7 +30,8 @@ use crate::registry::{build_sink, build_source};
 use crate::state::build_state_store;
 use crate::transforms::compile_transforms;
 use async_trait::async_trait;
-use faucet_core::transform::{CompiledTransform, apply_all, compile as compile_transform};
+use faucet_core::observability::{Labels, instrumented_apply_all};
+use faucet_core::transform::{CompiledTransform, compile as compile_transform};
 use faucet_core::{FaucetError, Pipeline, Sink, Source, StateStore};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
@@ -418,6 +419,12 @@ async fn run_one_invocation(
     needs_capture: bool,
     opts: &ExecuteOptions,
 ) -> CliResult<(Vec<Value>, usize)> {
+    // Observability identity for this invocation — built once, reused by both
+    // the Pipeline builder and the transform instrumentation.
+    let run_id = uuid::Uuid::now_v7().to_string();
+    let pipeline_name = opts.pipeline_name.clone();
+    let row_id = node.id.clone();
+    let obs_labels = Labels::new(pipeline_name.clone(), row_id.clone(), run_id.clone());
     // 1) Resolve `${parent.path}` in the per-row source + sink configs.
     let mut source_cfg = node.source.config.clone();
     let mut sink_cfg = node.sink.config.clone();
@@ -457,6 +464,7 @@ async fn run_one_invocation(
         Box::new(TransformingSource {
             inner: source,
             transforms: compiled,
+            obs_labels: obs_labels.clone(),
         })
     };
 
@@ -474,7 +482,10 @@ async fn run_one_invocation(
     };
 
     // 5) Run.
-    let pipeline = Pipeline::new(source.as_ref(), sink.as_ref());
+    let pipeline = Pipeline::new(source.as_ref(), sink.as_ref())
+        .with_name(pipeline_name)
+        .with_row(row_id)
+        .with_run_id(run_id);
     let pipeline = match state {
         Some(store) => pipeline.with_state_store(store),
         None => pipeline,
@@ -534,10 +545,13 @@ fn resolve_inplace(value: &mut Value, ctx: &HashMap<String, Value>) -> CliResult
 
 // ── Adapter sinks/sources ───────────────────────────────────────────────────
 
-/// Wraps an inner source, applying every compiled transform to each record.
+/// Wraps an inner source, applying every compiled transform to each record
+/// and emitting per-record observability spans/metrics via
+/// [`instrumented_apply_all`].
 struct TransformingSource {
     inner: Box<dyn Source>,
     transforms: Vec<CompiledTransform>,
+    obs_labels: Labels,
 }
 
 #[async_trait]
@@ -549,7 +563,7 @@ impl Source for TransformingSource {
         let records = self.inner.fetch_with_context(ctx).await?;
         Ok(records
             .into_iter()
-            .map(|r| apply_all(r, &self.transforms))
+            .map(|r| instrumented_apply_all(r, &self.transforms, &self.obs_labels))
             .collect())
     }
     async fn fetch_with_context_incremental(
@@ -559,7 +573,7 @@ impl Source for TransformingSource {
         let (records, bookmark) = self.inner.fetch_with_context_incremental(ctx).await?;
         let transformed = records
             .into_iter()
-            .map(|r| apply_all(r, &self.transforms))
+            .map(|r| instrumented_apply_all(r, &self.transforms, &self.obs_labels))
             .collect();
         Ok((transformed, bookmark))
     }
