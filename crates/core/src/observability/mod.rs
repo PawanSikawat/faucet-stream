@@ -4,7 +4,7 @@
 //! `docs/superpowers/specs/2026-05-23-observability-otel-prometheus-design.md`.
 
 mod bookmark;
-mod decorator;
+pub(crate) mod decorator;
 mod install;
 mod labels;
 mod options;

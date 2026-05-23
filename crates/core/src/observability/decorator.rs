@@ -339,7 +339,7 @@ impl<'a, S: Sink + ?Sized> Sink for InstrumentedSink<'a, S> {
 }
 
 #[cfg(test)]
-pub(super) mod source_tests {
+pub(crate) mod source_tests {
     use super::*;
     use async_trait::async_trait;
     use futures::StreamExt;
@@ -349,10 +349,10 @@ pub(super) mod source_tests {
 
     // Process-global recorder shared across all observability tests in this
     // crate. Task 5 established the same pattern.
-    pub(in crate::observability) static LOCK: Mutex<()> = Mutex::new(());
+    pub(crate) static LOCK: Mutex<()> = Mutex::new(());
     static SNAPSHOTTER: OnceLock<Snapshotter> = OnceLock::new();
 
-    pub(in crate::observability) fn snapshotter() -> &'static Snapshotter {
+    pub(crate) fn snapshotter() -> &'static Snapshotter {
         SNAPSHOTTER.get_or_init(|| {
             let recorder = DebuggingRecorder::new();
             let snap = recorder.snapshotter();
