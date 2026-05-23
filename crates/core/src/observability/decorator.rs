@@ -5,7 +5,7 @@ use crate::error::FaucetError;
 use crate::observability::labels::Labels;
 use crate::observability::timer::DurationGuard;
 use crate::pipeline::StreamPage;
-use crate::traits::Source;
+use crate::traits::{Sink, Source};
 use async_trait::async_trait;
 use futures::FutureExt;
 use futures_core::Stream;
@@ -194,8 +194,149 @@ pub(crate) fn error_kind(e: &FaucetError) -> &'static str {
     }
 }
 
-/// Placeholder for the sink decorator (Task 9).
-pub struct InstrumentedSink;
+/// Wraps a `&dyn Sink` (or any `&S: Sink`) and emits spans + metrics around
+/// `write_batch` and `flush`. Constructed by `Pipeline::run`.
+pub struct InstrumentedSink<'a, S: Sink + ?Sized> {
+    inner: &'a S,
+    labels: Labels,
+    connector: SharedString,
+}
+
+impl<'a, S: Sink + ?Sized> InstrumentedSink<'a, S> {
+    pub fn new(inner: &'a S, labels: Labels) -> Self {
+        let raw = inner.connector_name();
+        debug_assert!(
+            !raw.is_empty(),
+            "connector_name() must return a non-empty string"
+        );
+        let connector: SharedString =
+            SharedString::const_str(if raw.is_empty() { "unknown" } else { raw });
+        Self {
+            inner,
+            labels,
+            connector,
+        }
+    }
+
+    fn metric_labels(&self) -> Vec<Label> {
+        vec![
+            Label::new(
+                "pipeline",
+                SharedString::from(self.labels.pipeline.to_string()),
+            ),
+            Label::new("row", SharedString::from(self.labels.row.to_string())),
+            Label::new("connector", self.connector.clone()),
+        ]
+    }
+
+    fn error_labels(&self, kind: &'static str) -> Vec<Label> {
+        let mut l = self.metric_labels();
+        l.push(Label::new("kind", SharedString::const_str(kind)));
+        l
+    }
+}
+
+#[async_trait]
+impl<'a, S: Sink + ?Sized> Sink for InstrumentedSink<'a, S> {
+    fn connector_name(&self) -> &'static str {
+        self.inner.connector_name()
+    }
+
+    async fn write_batch(&self, records: &[Value]) -> Result<usize, FaucetError> {
+        let span = info_span!(
+            "faucet.sink.write",
+            pipeline = %self.labels.pipeline,
+            row = %self.labels.row,
+            run_id = %self.labels.run_id,
+            connector = %self.connector,
+            records = records.len(),
+        );
+        let metric_labels = self.metric_labels();
+        gauge!("faucet_sink_in_flight", metric_labels.clone()).increment(1.0);
+
+        // RAII guard ensures the gauge is decremented even if write_batch
+        // panics or the future is cancelled.
+        struct InFlightGuard(Vec<Label>);
+        impl Drop for InFlightGuard {
+            fn drop(&mut self) {
+                gauge!("faucet_sink_in_flight", self.0.clone()).decrement(1.0);
+            }
+        }
+        let _in_flight = InFlightGuard(metric_labels.clone());
+
+        let _timer =
+            DurationGuard::new("faucet_sink_write_duration_seconds", metric_labels.clone());
+
+        let result = AssertUnwindSafe(self.inner.write_batch(records))
+            .catch_unwind()
+            .instrument(span)
+            .await;
+
+        match result {
+            Ok(Ok(n)) => {
+                counter!("faucet_sink_writes_total", metric_labels.clone()).increment(1);
+                counter!("faucet_sink_records_total", metric_labels.clone()).increment(n as u64);
+                Ok(n)
+            }
+            Ok(Err(e)) => {
+                counter!(
+                    "faucet_sink_errors_total",
+                    self.error_labels(error_kind(&e))
+                )
+                .increment(1);
+                Err(e)
+            }
+            Err(panic) => {
+                counter!("faucet_sink_errors_total", self.error_labels("Panic")).increment(1);
+                let msg = panic
+                    .downcast_ref::<&'static str>()
+                    .map(|s| (*s).to_string())
+                    .or_else(|| panic.downcast_ref::<String>().cloned())
+                    .unwrap_or_else(|| "<non-string panic payload>".to_string());
+                Err(FaucetError::Custom(format!("panic in sink: {msg}").into()))
+            }
+        }
+    }
+
+    async fn flush(&self) -> Result<(), FaucetError> {
+        let span = info_span!(
+            "faucet.sink.flush",
+            pipeline = %self.labels.pipeline,
+            row = %self.labels.row,
+            run_id = %self.labels.run_id,
+            connector = %self.connector,
+        );
+        let metric_labels = self.metric_labels();
+        let _timer =
+            DurationGuard::new("faucet_sink_flush_duration_seconds", metric_labels.clone());
+
+        let result = AssertUnwindSafe(self.inner.flush())
+            .catch_unwind()
+            .instrument(span)
+            .await;
+
+        match result {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(e)) => {
+                counter!(
+                    "faucet_sink_errors_total",
+                    self.error_labels(error_kind(&e))
+                )
+                .increment(1);
+                Err(e)
+            }
+            Err(panic) => {
+                counter!("faucet_sink_errors_total", self.error_labels("Panic")).increment(1);
+                let msg = panic
+                    .downcast_ref::<&'static str>()
+                    .map(|s| (*s).to_string())
+                    .or_else(|| panic.downcast_ref::<String>().cloned())
+                    .unwrap_or_else(|| "<non-string panic payload>".to_string());
+                Err(FaucetError::Custom(format!("panic in flush: {msg}").into()))
+            }
+        }
+    }
+}
 
 #[cfg(test)]
 pub(super) mod source_tests {
@@ -303,5 +444,84 @@ pub(super) mod source_tests {
             .expect("stream yields at least one item before terminating");
         assert!(matches!(first, Err(FaucetError::Custom(_))));
         // Process did not abort — implicit by reaching this line.
+    }
+}
+
+#[cfg(test)]
+mod sink_tests {
+    use super::source_tests::{LOCK, labels, snapshotter};
+    use super::*;
+    use async_trait::async_trait;
+    use metrics_util::debugging::DebugValue;
+    use serde_json::json;
+
+    struct MockSink(std::sync::Mutex<Vec<Value>>);
+    #[async_trait]
+    impl Sink for MockSink {
+        async fn write_batch(&self, records: &[Value]) -> Result<usize, FaucetError> {
+            self.0.lock().unwrap().extend(records.iter().cloned());
+            Ok(records.len())
+        }
+        fn connector_name(&self) -> &'static str {
+            "mock-sink"
+        }
+    }
+
+    struct FailingSink;
+    #[async_trait]
+    impl Sink for FailingSink {
+        async fn write_batch(&self, _: &[Value]) -> Result<usize, FaucetError> {
+            Err(FaucetError::Sink("nope".into()))
+        }
+        fn connector_name(&self) -> &'static str {
+            "failing-sink"
+        }
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn records_writes_and_records_counters() {
+        let _g = LOCK.lock().unwrap();
+        let snap = snapshotter();
+        let inner = MockSink(std::sync::Mutex::new(Vec::new()));
+        let wrapped = InstrumentedSink::new(&inner, labels());
+        wrapped
+            .write_batch(&[json!({"a": 1}), json!({"a": 2})])
+            .await
+            .unwrap();
+        let snapshot = snap.snapshot();
+        let writes: u64 = snapshot
+            .into_vec()
+            .into_iter()
+            .filter_map(|(key, _u, _d, v)| {
+                if key.key().name() == "faucet_sink_writes_total"
+                    && let DebugValue::Counter(c) = v
+                {
+                    return Some(c);
+                }
+                None
+            })
+            .sum();
+        assert!(writes >= 1, "expected at least one write counted");
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn error_increments_errors_total_with_kind() {
+        let _g = LOCK.lock().unwrap();
+        let snap = snapshotter();
+        let inner = FailingSink;
+        let wrapped = InstrumentedSink::new(&inner, labels());
+        let _ = wrapped.write_batch(&[json!({})]).await;
+        let snapshot = snap.snapshot();
+        let found = snapshot.into_vec().into_iter().any(|(key, _u, _d, v)| {
+            key.key().name() == "faucet_sink_errors_total"
+                && key
+                    .key()
+                    .labels()
+                    .any(|l| l.key() == "kind" && l.value() == "Sink")
+                && matches!(v, DebugValue::Counter(c) if c >= 1)
+        });
+        assert!(found, "expected sink_errors_total with kind=Sink");
     }
 }
