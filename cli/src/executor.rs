@@ -32,7 +32,7 @@ use crate::transforms::compile_transforms;
 use async_trait::async_trait;
 use faucet_core::observability::{Labels, instrumented_apply_all};
 use faucet_core::transform::{CompiledTransform, compile as compile_transform};
-use faucet_core::{FaucetError, Pipeline, Sink, Source, StateStore};
+use faucet_core::{DlqConfig, FaucetError, OnBatchError, Pipeline, Sink, Source, StateStore};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -490,6 +490,12 @@ async fn run_one_invocation(
         Some(store) => pipeline.with_state_store(store),
         None => pipeline,
     };
+    let pipeline = if let Some(ref dlq_spec) = node.dlq {
+        let dlq_cfg = build_dlq_config(dlq_spec).await?;
+        pipeline.with_dlq(dlq_cfg)
+    } else {
+        pipeline
+    };
     let result = pipeline.run().await?;
     sink.flush().await?;
 
@@ -525,6 +531,22 @@ async fn build_state_for_node(
 
 fn state_from_override(path: &Path) -> Arc<dyn StateStore> {
     Arc::new(faucet_core::FileStateStore::new(path)) as Arc<dyn StateStore>
+}
+
+/// Translate a [`crate::config::DlqSpec`] from the YAML/JSON config into a
+/// runtime [`DlqConfig`] ready to attach to a [`Pipeline`].
+pub async fn build_dlq_config(spec: &crate::config::DlqSpec) -> CliResult<DlqConfig> {
+    let sink = build_sink(&spec.sink.kind, spec.sink.config.clone()).await?;
+    Ok(DlqConfig {
+        sink: Arc::from(sink),
+        on_batch_error: match spec.on_batch_error {
+            crate::config::OnBatchErrorSpec::Propagate => OnBatchError::Propagate,
+            crate::config::OnBatchErrorSpec::DlqAll => OnBatchError::DlqAll,
+        },
+        max_failures_per_page: spec.max_failures_per_page,
+        max_failures_total: spec.max_failures_total,
+        include_original_payload: spec.include_original_payload,
+    })
 }
 
 /// In-place runtime interpolation against a parent-record context. Walks every
