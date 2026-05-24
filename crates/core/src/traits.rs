@@ -159,6 +159,13 @@ pub trait Source: Send + Sync {
     }
 }
 
+/// Per-row outcome from [`Sink::write_batch_partial`].
+///
+/// `Ok(())` — the row was durably written to the sink.
+/// `Err(_)` — the row failed; the pipeline will route it to the DLQ when
+/// one is configured.
+pub type RowOutcome = Result<(), FaucetError>;
+
 /// A sink writes records to an external system.
 #[async_trait]
 pub trait Sink: Send + Sync {
@@ -173,6 +180,19 @@ pub trait Sink: Send + Sync {
     /// write immediately in `write_batch`).
     async fn flush(&self) -> Result<(), FaucetError> {
         Ok(())
+    }
+
+    /// Write a batch and report per-row outcomes.
+    ///
+    /// Sinks whose underlying API exposes per-row results (BigQuery
+    /// `insertAll`, Elasticsearch `_bulk`) override this. The default
+    /// implementation delegates to [`write_batch`] and maps a single success
+    /// onto a uniform all-`Ok(())` vector. An outer failure is bubbled up
+    /// unchanged so the pipeline's DLQ router can apply its `on_batch_error`
+    /// policy at a single decision point.
+    async fn write_batch_partial(&self, records: &[Value]) -> Result<Vec<RowOutcome>, FaucetError> {
+        self.write_batch(records).await?;
+        Ok(records.iter().map(|_| Ok(())).collect())
     }
 
     /// Return a JSON Schema describing the configuration this sink accepts.
@@ -523,5 +543,41 @@ mod tests {
     fn sink_default_connector_name_is_stripped_type_name() {
         let sink = MockSink::new();
         assert_eq!(sink.connector_name(), "MockSink");
+    }
+
+    // ── write_batch_partial tests ───────────────────────────────────────────
+
+    #[tokio::test]
+    async fn default_write_batch_partial_success_returns_all_ok() {
+        let sink = MockSink::new();
+        let records = vec![json!({"id": 1}), json!({"id": 2}), json!({"id": 3})];
+        let outcomes = sink.write_batch_partial(&records).await.unwrap();
+        assert_eq!(outcomes.len(), 3);
+        assert!(outcomes.iter().all(|o| o.is_ok()));
+        assert_eq!(sink.written.lock().unwrap().len(), 3);
+    }
+
+    #[tokio::test]
+    async fn default_write_batch_partial_bubbles_outer_err() {
+        let sink = FailingSink;
+        let records = vec![json!({"id": 1}), json!({"id": 2})];
+        let result = sink.write_batch_partial(&records).await;
+        assert!(matches!(result, Err(FaucetError::Sink(_))));
+    }
+
+    #[tokio::test]
+    async fn default_write_batch_partial_empty_returns_empty_vec() {
+        let sink = MockSink::new();
+        let outcomes = sink.write_batch_partial(&[]).await.unwrap();
+        assert!(outcomes.is_empty());
+    }
+
+    #[tokio::test]
+    async fn default_write_batch_partial_callable_through_trait_object() {
+        let sink: Box<dyn Sink> = Box::new(MockSink::new());
+        let records = vec![json!({"id": 1}), json!({"id": 2})];
+        let outcomes = sink.write_batch_partial(&records).await.unwrap();
+        assert_eq!(outcomes.len(), 2);
+        assert!(outcomes.iter().all(|o| o.is_ok()));
     }
 }

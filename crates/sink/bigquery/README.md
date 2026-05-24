@@ -252,6 +252,14 @@ let sink = BigQuerySink::new(config).await?;
 - Per-row errors in the BigQuery response are detected and reported. If any rows fail, the entire batch returns an error with details about the first failure.
 - The client is reused across all `write_batch()` calls -- no re-authentication per request.
 
+## Dead-letter queue support
+
+This sink overrides `Sink::write_batch_partial` to surface per-row
+failures from BigQuery `tabledata.insertAll`'s `insertErrors` response.
+Configure a DLQ at the pipeline level (see [cli/README.md — dlq:](../../../cli/README.md))
+and only the rows BigQuery actually rejected will be routed there —
+already-committed rows stay in the main sink with no duplicates.
+
 ## License
 
 Licensed under MIT or Apache-2.0.

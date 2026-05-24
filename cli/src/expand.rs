@@ -35,6 +35,8 @@ pub struct ExpandedNode {
     pub sink: ConnectorSpec,
     pub transforms: Vec<TransformSpec>,
     pub state: Option<StateStoreSpec>,
+    /// Resolved DLQ spec for this row, or `None` if no DLQ applies.
+    pub dlq: Option<crate::config::DlqSpec>,
     /// Every `${id.path}` placeholder that survived load-time interpolation.
     /// Populated by [`scan_deferred_refs`]; the executor uses this to know
     /// which parent record to feed which row.
@@ -73,6 +75,7 @@ pub fn expand(cfg: &PipelineConfig) -> CliResult<Vec<ExpandedNode>> {
             sink: None,
             transforms: None,
             state: None,
+            dlq: None,
         }];
         &synthetic_row
     } else {
@@ -161,6 +164,7 @@ pub fn expand(cfg: &PipelineConfig) -> CliResult<Vec<ExpandedNode>> {
     let mut out = Vec::with_capacity(rows.len());
     for &i in &order {
         let row = &rows[i];
+        let row_id = ids[i].as_str();
         let merged = merge_pipeline(&cfg.pipeline, row);
         let role = match &row.parent {
             None => NodeRole::Root,
@@ -172,6 +176,34 @@ pub fn expand(cfg: &PipelineConfig) -> CliResult<Vec<ExpandedNode>> {
         let mut deferred = Vec::new();
         collect_deferred(&merged.source.config, &mut deferred);
         collect_deferred(&merged.sink.config, &mut deferred);
+
+        // DLQ resolution: row override (Replace / Disable) takes precedence;
+        // otherwise inherit `pipeline.dlq` from the base spec.
+        let dlq = match row.dlq.clone() {
+            Some(None) => None,               // explicit disable
+            Some(Some(spec)) => Some(spec),   // explicit replace
+            None => cfg.pipeline.dlq.clone(), // inherit
+        };
+
+        if let Some(ref d) = dlq {
+            if matches!(d.max_failures_per_page, Some(0)) {
+                return Err(CliError::InvalidDlqBudget {
+                    field: "max_failures_per_page",
+                });
+            }
+            if matches!(d.max_failures_total, Some(0)) {
+                return Err(CliError::InvalidDlqBudget {
+                    field: "max_failures_total",
+                });
+            }
+            if !crate::registry::sink_exists(&d.sink.kind) {
+                return Err(CliError::UnknownDlqSinkKind {
+                    kind: d.sink.kind.clone(),
+                    context: format!("row `{row_id}`"),
+                });
+            }
+        }
+
         out.push(ExpandedNode {
             id: ids[i].clone(),
             row_index: i,
@@ -180,6 +212,7 @@ pub fn expand(cfg: &PipelineConfig) -> CliResult<Vec<ExpandedNode>> {
             sink: merged.sink,
             transforms: merged.transforms,
             state: merged.state,
+            dlq,
             deferred_refs: deferred,
         });
     }
@@ -194,11 +227,21 @@ fn merge_pipeline(base: &PipelineSpec, row: &MatrixRow) -> PipelineSpec {
         .clone()
         .unwrap_or_else(|| base.transforms.clone());
     let state = row.state.clone().or_else(|| base.state.clone());
+    // Three-state match matches the validated path inside `expand`: explicit
+    // `null` disables, explicit object replaces wholesale, absent inherits.
+    // (The naive `row.dlq.flatten().or_else(|| base.dlq.clone())` would treat
+    // `null` and absent identically, silently inheriting on disable.)
+    let dlq = match row.dlq.clone() {
+        Some(None) => None,
+        Some(Some(spec)) => Some(spec),
+        None => base.dlq.clone(),
+    };
     PipelineSpec {
         source,
         sink,
         transforms,
         state,
+        dlq,
     }
 }
 
@@ -328,7 +371,7 @@ fn iter_directives(s: &str) -> impl Iterator<Item = (&str, &str, &str)> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::parse_with_extension;
+    use crate::config::{OnBatchErrorSpec, parse_with_extension};
 
     fn cfg(yaml: &str) -> PipelineConfig {
         parse_with_extension(yaml, "yaml").unwrap()
@@ -539,5 +582,116 @@ matrix:
             }
             other => panic!("expected Child, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn expand_rejects_zero_per_page_budget() {
+        let yaml = r#"
+version: 1
+pipeline:
+  source: { type: rest, config: {} }
+  sink:   { type: jsonl, config: { path: ./o.jsonl } }
+  dlq:
+    sink: { type: jsonl, config: { path: ./dlq.jsonl } }
+    max_failures_per_page: 0
+"#;
+        let cfg = parse_with_extension(yaml, "yaml").unwrap();
+        let err = expand(&cfg).unwrap_err();
+        assert!(matches!(
+            err,
+            CliError::InvalidDlqBudget {
+                field: "max_failures_per_page"
+            }
+        ));
+    }
+
+    #[test]
+    fn expand_rejects_zero_total_budget() {
+        let yaml = r#"
+version: 1
+pipeline:
+  source: { type: rest, config: {} }
+  sink:   { type: jsonl, config: { path: ./o.jsonl } }
+  dlq:
+    sink: { type: jsonl, config: { path: ./dlq.jsonl } }
+    max_failures_total: 0
+"#;
+        let cfg = parse_with_extension(yaml, "yaml").unwrap();
+        let err = expand(&cfg).unwrap_err();
+        assert!(matches!(
+            err,
+            CliError::InvalidDlqBudget {
+                field: "max_failures_total"
+            }
+        ));
+    }
+
+    #[test]
+    fn expand_rejects_unknown_dlq_sink_kind() {
+        let yaml = r#"
+version: 1
+pipeline:
+  source: { type: rest, config: {} }
+  sink:   { type: jsonl, config: { path: ./o.jsonl } }
+  dlq:
+    sink: { type: not_a_sink, config: {} }
+"#;
+        let cfg = parse_with_extension(yaml, "yaml").unwrap();
+        let err = expand(&cfg).unwrap_err();
+        assert!(matches!(err, CliError::UnknownDlqSinkKind { .. }));
+    }
+
+    #[test]
+    fn expand_accepts_inherited_disabled_replaced_dlq_rows() {
+        let yaml = r#"
+version: 1
+pipeline:
+  source: { type: rest, config: {} }
+  sink:   { type: jsonl, config: { path: ./o.jsonl } }
+  dlq:
+    sink: { type: jsonl, config: { path: ./base.jsonl } }
+matrix:
+  - id: a
+  - id: b
+    dlq: null
+  - id: c
+    dlq:
+      sink: { type: jsonl, config: { path: ./c.jsonl } }
+      on_batch_error: dlq_all
+"#;
+        let cfg = parse_with_extension(yaml, "yaml").unwrap();
+        let nodes = expand(&cfg).unwrap();
+        assert_eq!(nodes.len(), 3);
+        // Row a inherits.
+        assert_eq!(nodes[0].dlq.as_ref().unwrap().sink.kind, "jsonl");
+        assert_eq!(
+            nodes[0]
+                .dlq
+                .as_ref()
+                .unwrap()
+                .sink
+                .config
+                .get("path")
+                .unwrap(),
+            "./base.jsonl"
+        );
+        // Row b is disabled.
+        assert!(nodes[1].dlq.is_none());
+        // Row c is replaced.
+        assert_eq!(
+            nodes[2].dlq.as_ref().unwrap().on_batch_error,
+            OnBatchErrorSpec::DlqAll
+        );
+        assert_eq!(
+            nodes[2]
+                .dlq
+                .as_ref()
+                .unwrap()
+                .sink
+                .config
+                .get("path")
+                .unwrap(),
+            "./c.jsonl"
+        );
     }
 }

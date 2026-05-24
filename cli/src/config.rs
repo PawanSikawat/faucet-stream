@@ -73,10 +73,12 @@ pub struct PipelineSpec {
     pub transforms: Vec<TransformSpec>,
     #[serde(default)]
     pub state: Option<StateStoreSpec>,
+    #[serde(default)]
+    pub dlq: Option<DlqSpec>,
 }
 
 /// A `{ type, config }` block, the universal shape for both sources and sinks.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 pub struct ConnectorSpec {
     /// Connector type — matches the suffix of the underlying crate
     /// (e.g. `rest` for `faucet-source-rest`).
@@ -158,6 +160,13 @@ pub struct MatrixRow {
     /// If `Some`, replaces `pipeline.state` wholesale.
     #[serde(default)]
     pub state: Option<StateStoreSpec>,
+
+    /// Matrix-row override semantics:
+    /// - field absent  → `None`     — inherit from `pipeline.dlq`
+    /// - `dlq: null`   → `Some(None)` — disable DLQ for this row
+    /// - `dlq: { ... }` → `Some(Some(spec))` — replace base DLQ wholesale
+    #[serde(default, deserialize_with = "deserialize_dlq_override")]
+    pub dlq: Option<Option<DlqSpec>>,
 }
 
 /// Execution-time controls.
@@ -218,6 +227,36 @@ pub struct TracingSpec {
     pub level: Option<String>,
 }
 
+/// Mirrors `faucet_core::OnBatchError` but with `JsonSchema` derived and
+/// `Deserialize` accepting the YAML/JSON shape. Converted to the core
+/// type during `executor::build_dlq_config`.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum OnBatchErrorSpec {
+    #[default]
+    Propagate,
+    DlqAll,
+}
+
+/// DLQ configuration block under `pipeline.dlq:`.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct DlqSpec {
+    pub sink: ConnectorSpec,
+    #[serde(default)]
+    pub on_batch_error: OnBatchErrorSpec,
+    #[serde(default)]
+    pub max_failures_per_page: Option<usize>,
+    #[serde(default)]
+    pub max_failures_total: Option<usize>,
+    #[serde(default = "default_true")]
+    pub include_original_payload: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
 fn default_version() -> u32 {
     1
 }
@@ -226,6 +265,13 @@ fn default_parent_key() -> String {
 }
 fn empty_object() -> Value {
     Value::Object(Default::default())
+}
+
+fn deserialize_dlq_override<'de, D>(deserializer: D) -> Result<Option<Option<DlqSpec>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Option::<DlqSpec>::deserialize(deserializer).map(Some)
 }
 
 impl PipelineConfig {
@@ -557,5 +603,86 @@ pipeline:
             cfg.pipeline.source.config["path"],
             "/v1/users/${users.id}/posts"
         );
+    }
+
+    #[test]
+    fn parses_dlq_block_with_defaults() {
+        let yaml = r#"
+version: 1
+pipeline:
+  source: { type: rest, config: {} }
+  sink:   { type: jsonl, config: { path: ./o.jsonl } }
+  dlq:
+    sink: { type: jsonl, config: { path: ./dlq.jsonl } }
+"#;
+        let cfg = parse_with_extension(yaml, "yaml").unwrap();
+        let dlq = cfg.pipeline.dlq.expect("dlq parsed");
+        assert_eq!(dlq.sink.kind, "jsonl");
+        assert_eq!(dlq.on_batch_error, OnBatchErrorSpec::Propagate);
+        assert!(dlq.max_failures_per_page.is_none());
+        assert!(dlq.max_failures_total.is_none());
+        assert!(dlq.include_original_payload);
+    }
+
+    #[test]
+    fn parses_dlq_block_with_dlq_all_and_budgets() {
+        let yaml = r#"
+version: 1
+pipeline:
+  source: { type: rest, config: {} }
+  sink:   { type: jsonl, config: { path: ./o.jsonl } }
+  dlq:
+    sink: { type: kafka, config: { brokers: ["b:9092"], topic: dlq } }
+    on_batch_error: dlq_all
+    max_failures_per_page: 100
+    max_failures_total: 10000
+"#;
+        let cfg = parse_with_extension(yaml, "yaml").unwrap();
+        let dlq = cfg.pipeline.dlq.unwrap();
+        assert_eq!(dlq.sink.kind, "kafka");
+        assert_eq!(dlq.on_batch_error, OnBatchErrorSpec::DlqAll);
+        assert_eq!(dlq.max_failures_per_page, Some(100));
+        assert_eq!(dlq.max_failures_total, Some(10000));
+    }
+
+    #[test]
+    fn matrix_row_dlq_null_disables_inherited_dlq() {
+        let yaml = r#"
+version: 1
+pipeline:
+  source: { type: rest, config: {} }
+  sink:   { type: jsonl, config: { path: ./o.jsonl } }
+  dlq:
+    sink: { type: jsonl, config: { path: ./dlq.jsonl } }
+matrix:
+  - id: a
+  - id: b
+    dlq: null
+"#;
+        let cfg = parse_with_extension(yaml, "yaml").unwrap();
+        assert!(cfg.matrix[0].dlq.is_none());
+        assert_eq!(cfg.matrix[1].dlq, Some(None));
+    }
+
+    #[test]
+    fn matrix_row_dlq_object_replaces_inherited_dlq() {
+        let yaml = r#"
+version: 1
+pipeline:
+  source: { type: rest, config: {} }
+  sink:   { type: jsonl, config: { path: ./o.jsonl } }
+  dlq:
+    sink: { type: jsonl, config: { path: ./base.jsonl } }
+matrix:
+  - id: a
+    dlq:
+      sink: { type: jsonl, config: { path: ./a.jsonl } }
+      on_batch_error: dlq_all
+"#;
+        let cfg = parse_with_extension(yaml, "yaml").unwrap();
+        let row_dlq = cfg.matrix[0].dlq.clone().unwrap().unwrap();
+        assert_eq!(row_dlq.on_batch_error, OnBatchErrorSpec::DlqAll);
+        let sink_path = row_dlq.sink.config.get("path").unwrap();
+        assert_eq!(sink_path, "./a.jsonl");
     }
 }

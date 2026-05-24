@@ -13,6 +13,7 @@
 
 pub mod config;
 pub mod dag;
+pub mod dlq;
 pub mod error;
 pub mod observability;
 pub mod pipeline;
@@ -24,6 +25,7 @@ pub mod transform;
 pub mod util;
 
 pub use dag::{DagNode, DagNodeError, DagNodeResult, DagResult, SourceDAG};
+pub use dlq::{DlqConfig, DlqReason, DlqStats, OnBatchError, build_envelope};
 pub use error::FaucetError;
 pub use observability::{
     DurationGuard, InstallError, InstallReport, InstrumentedSink, InstrumentedSource,
@@ -37,7 +39,7 @@ pub use pipeline::{
 };
 pub use replication::ReplicationMethod;
 pub use state::{FileStateStore, MemoryStateStore, StateStore};
-pub use traits::{Sink, Source};
+pub use traits::{RowOutcome, Sink, Source};
 pub use transform::RecordTransform;
 
 // Re-export dependencies that connector authors need, so they only depend on

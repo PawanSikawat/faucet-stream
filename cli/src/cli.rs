@@ -83,11 +83,25 @@ pub struct ValidateArgs {
 /// `faucet schema` arguments.
 #[derive(Debug, Parser)]
 pub struct SchemaArgs {
-    /// `source` or `sink`.
-    #[arg(value_parser = ["source", "sink"])]
-    pub kind: String,
-    /// Connector name (e.g. `rest`, `jsonl`, `bigquery`).
-    pub name: String,
+    #[command(subcommand)]
+    pub target: SchemaTarget,
+}
+
+/// Schema subcommand target — which connector or system component to describe.
+#[derive(Debug, Subcommand)]
+pub enum SchemaTarget {
+    /// JSON Schema for a source connector config.
+    Source {
+        /// Connector name (e.g. `rest`, `graphql`, `postgres`).
+        name: String,
+    },
+    /// JSON Schema for a sink connector config.
+    Sink {
+        /// Connector name (e.g. `jsonl`, `bigquery`, `postgres`).
+        name: String,
+    },
+    /// JSON Schema for the DLQ (Dead Letter Queue) specification.
+    Dlq,
 }
 
 /// `faucet preview` arguments.
