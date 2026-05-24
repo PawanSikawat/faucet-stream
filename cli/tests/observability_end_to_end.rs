@@ -173,6 +173,37 @@ matrix:
         rows_seen.contains("api-c"),
         "missing row=api-c in faucet_source_records_total; found: {rows_seen:?}"
     );
+
+    // Tighten — verify the connector and pipeline labels survive matrix expansion.
+    // Without this, Fix 1 (wrapper connector_name forwarding) would silently
+    // regress.
+    let snapshot2 = snap.snapshot();
+    let mut connectors_seen = std::collections::HashSet::new();
+    let mut pipelines_seen = std::collections::HashSet::new();
+    for (key, _u, _d, _v) in snapshot2.into_vec() {
+        if key.key().name() == "faucet_source_records_total" {
+            for label in key.key().labels() {
+                if label.key() == "connector" {
+                    connectors_seen.insert(label.value().to_string());
+                }
+                if label.key() == "pipeline" {
+                    pipelines_seen.insert(label.value().to_string());
+                }
+            }
+        }
+    }
+    assert!(
+        connectors_seen.contains("rest"),
+        "expected connector=\"rest\" label on faucet_source_records_total, saw: {connectors_seen:?}"
+    );
+    assert!(
+        pipelines_seen.len() == 1,
+        "expected exactly one pipeline value, saw: {pipelines_seen:?}"
+    );
+    assert!(
+        pipelines_seen.contains("e2e-obs-pipeline"),
+        "expected pipeline=\"e2e-obs-pipeline\", saw: {pipelines_seen:?}"
+    );
 }
 
 /// `install_observability` with an empty config must succeed and be safely

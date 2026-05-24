@@ -176,7 +176,7 @@ jobs:
       - run: cargo build -p faucet-cli --no-default-features --features "${{ matrix.features }}"
 
   observability-bench:
-    name: Observability bench (2% regression check)
+    name: Observability bench (5% regression budget)
     runs-on: ubuntu-latest
     needs: [test]
     steps:

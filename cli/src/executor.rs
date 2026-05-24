@@ -561,21 +561,22 @@ impl Source for TransformingSource {
         ctx: &HashMap<String, Value>,
     ) -> Result<Vec<Value>, FaucetError> {
         let records = self.inner.fetch_with_context(ctx).await?;
-        Ok(records
-            .into_iter()
-            .map(|r| instrumented_apply_all(r, &self.transforms, &self.obs_labels))
-            .collect())
+        Ok(instrumented_apply_all(
+            records,
+            &self.transforms,
+            &self.obs_labels,
+        ))
     }
     async fn fetch_with_context_incremental(
         &self,
         ctx: &HashMap<String, Value>,
     ) -> Result<(Vec<Value>, Option<Value>), FaucetError> {
         let (records, bookmark) = self.inner.fetch_with_context_incremental(ctx).await?;
-        let transformed = records
-            .into_iter()
-            .map(|r| instrumented_apply_all(r, &self.transforms, &self.obs_labels))
-            .collect();
+        let transformed = instrumented_apply_all(records, &self.transforms, &self.obs_labels);
         Ok((transformed, bookmark))
+    }
+    fn connector_name(&self) -> &'static str {
+        self.inner.connector_name()
     }
     fn state_key(&self) -> Option<String> {
         self.inner.state_key()
@@ -607,6 +608,9 @@ impl Source for StateKeyOverride {
     ) -> Result<(Vec<Value>, Option<Value>), FaucetError> {
         self.inner.fetch_with_context_incremental(ctx).await
     }
+    fn connector_name(&self) -> &'static str {
+        self.inner.connector_name()
+    }
     fn state_key(&self) -> Option<String> {
         Some(self.key.clone())
     }
@@ -630,6 +634,9 @@ impl CapturingSink {
 
 #[async_trait]
 impl Sink for CapturingSink {
+    fn connector_name(&self) -> &'static str {
+        self.inner.connector_name()
+    }
     async fn write_batch(&self, records: &[Value]) -> Result<usize, FaucetError> {
         let written = self.inner.write_batch(records).await?;
         // Capture only what actually landed (LimitedSink may have dropped some).
@@ -661,6 +668,9 @@ impl LimitedSink {
 
 #[async_trait]
 impl Sink for LimitedSink {
+    fn connector_name(&self) -> &'static str {
+        self.inner.connector_name()
+    }
     async fn write_batch(&self, records: &[Value]) -> Result<usize, FaucetError> {
         let remaining = self.remaining.load(Ordering::Relaxed);
         if remaining == 0 {
@@ -694,6 +704,9 @@ impl CountingSink {
 
 #[async_trait]
 impl Sink for CountingSink {
+    fn connector_name(&self) -> &'static str {
+        "dry-run"
+    }
     async fn write_batch(&self, records: &[Value]) -> Result<usize, FaucetError> {
         self.seen.fetch_add(records.len(), Ordering::Relaxed);
         Ok(records.len())
