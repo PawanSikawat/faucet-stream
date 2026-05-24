@@ -291,6 +291,14 @@ sink.write_batch(&records).await?;
 - The bulk response is inspected for per-item errors. If any items report errors, the sink returns a `FaucetError::Sink` with details about the first error.
 - Authentication headers are applied to every request based on the configured auth method.
 
+## Dead-letter queue support
+
+This sink overrides `Sink::write_batch_partial` to surface per-row
+failures from Elasticsearch's `_bulk` response items. Configure a DLQ
+at the pipeline level (see [cli/README.md — dlq:](../../../cli/README.md))
+and only the documents Elasticsearch actually rejected will be routed
+there — already-indexed items stay in the main sink with no duplicates.
+
 ## License
 
 Licensed under MIT or Apache-2.0.

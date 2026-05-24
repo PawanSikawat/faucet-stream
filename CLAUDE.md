@@ -184,6 +184,21 @@ Sinks that expose a `batch_size` config field for write-side re-chunking: every 
 - Per-source / per-sink `batch_size` config fields map onto this hint — see each crate's README for its native paging primitive and recommended values.
 - On the source trait the `batch_size` argument to `stream_pages` is informational; every overriding source uses its config field as the authoritative knob (so a pipeline-supplied hint cannot silently override an explicit config value).
 
+### Dead-letter queue (DLQ)
+
+`Pipeline::with_dlq(DlqConfig)` and `RunStreamOptions::with_dlq(...)`
+attach an optional DLQ sink. The streaming loop calls
+`Sink::write_batch_partial` per page; rows that come back as `Err` get
+wrapped in a fixed-shape envelope and dispatched to the DLQ sink before
+the page bookmark advances. Sinks that don't override
+`write_batch_partial` use the default impl (success → all-Ok; failure →
+outer Err), and the router applies the configured `on_batch_error`
+policy (`propagate` aborts the run like today; `dlq_all` routes every
+row in the failed page to the DLQ). BigQuery and Elasticsearch override
+`write_batch_partial` so their best-effort APIs don't duplicate rows in
+the DLQ. The full design lives in
+`docs/superpowers/specs/2026-05-24-dlq-design.md`.
+
 ## Commands
 
 ```bash
@@ -227,8 +242,9 @@ The only crate every connector depends on. Module layout:
 - `schema.rs` — `infer_schema` from record samples with type merging and nullable detection.
 - `dag.rs` — `SourceDAG` builder and executor: parent-child DAG of source-sink pairs with context passing, concurrent child execution, non-fatal error collection.
 - `state.rs` — `StateStore` async trait (`get` / `put` / `delete` over `Value`) + built-in `MemoryStateStore` and `FileStateStore` (one JSON file per key, atomic rename). Keys validated by `validate_state_key`. Heavier backends (Redis, Postgres) live in their own crates.
+- `dlq.rs` — DLQ data types: `OnBatchError`, `DlqConfig`, `DlqStats`, `DlqReason`, `build_envelope`. The router itself lives in `pipeline.rs::run_stream`.
 
-`lib.rs` re-exports the trait + types named above, plus third-party crates connector authors need: `async_trait`, `serde_json` (+ `Value`, `json!`), `schemars` (+ `JsonSchema`, `schema_for!`).
+`lib.rs` re-exports the trait + types named above, plus third-party crates connector authors need: `async_trait`, `serde_json` (+ `Value`, `json!`), `schemars` (+ `JsonSchema`, `schema_for!`). It also re-exports DLQ types (`DlqConfig`, `DlqStats`, `OnBatchError`, `DlqReason`, `build_envelope`, `RowOutcome`) for connector authors who want to override `write_batch_partial`.
 
 ### Connector crate conventions
 

@@ -171,6 +171,41 @@ state:
 
 The Redis and PostgreSQL backends ship behind the `state-redis` and `state-postgres` features.
 
+### `dlq:` (optional)
+
+Sibling of `source`, `sink`, `transforms`, `state` under `pipeline:`.
+
+| Field | Type | Default | Notes |
+|---|---|---|---|
+| `sink` | ConnectorSpec | required | Any sink — typically `jsonl`, `s3`, `kafka`, `http`. |
+| `on_batch_error` | `propagate` \| `dlq_all` | `propagate` | What to do when the main sink fails wholesale (no per-row info). |
+| `max_failures_per_page` | integer | unset (unlimited) | Abort if a single page produces more than this many DLQ records. |
+| `max_failures_total` | integer | unset (unlimited) | Abort if the run-wide DLQ count exceeds this. |
+| `include_original_payload` | bool | `true` | Reserved for a future headers-only mode. Always `true` in v1. |
+
+Matrix rows can override the inherited `dlq:` wholesale, or disable
+inherited DLQ for that row with `dlq: null`.
+
+Example:
+
+```yaml
+pipeline:
+  source: { type: rest, config: { base_url: "https://api.example.com", path: "/v1/users" } }
+  sink:
+    type: bigquery
+    config:
+      project_id: my-project
+      dataset_id: prod
+      table_id: users
+  dlq:
+    sink:
+      type: jsonl
+      config: { path: ./dlq/users.jsonl }
+    on_batch_error: propagate
+    max_failures_per_page: 100
+    max_failures_total: 10000
+```
+
 ### Transforms
 
 ```yaml
