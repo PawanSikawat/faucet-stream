@@ -744,6 +744,7 @@ mod tests {
                 },
                 transforms: Vec::new(),
                 state: None,
+                dlq: None,
             },
             matrix: Vec::new(),
             execution: None,

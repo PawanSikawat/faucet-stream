@@ -73,6 +73,7 @@ pub fn expand(cfg: &PipelineConfig) -> CliResult<Vec<ExpandedNode>> {
             sink: None,
             transforms: None,
             state: None,
+            dlq: None,
         }];
         &synthetic_row
     } else {
@@ -194,11 +195,13 @@ fn merge_pipeline(base: &PipelineSpec, row: &MatrixRow) -> PipelineSpec {
         .clone()
         .unwrap_or_else(|| base.transforms.clone());
     let state = row.state.clone().or_else(|| base.state.clone());
+    let dlq = row.dlq.clone().flatten().or_else(|| base.dlq.clone());
     PipelineSpec {
         source,
         sink,
         transforms,
         state,
+        dlq,
     }
 }
 
