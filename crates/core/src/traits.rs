@@ -571,4 +571,13 @@ mod tests {
         let outcomes = sink.write_batch_partial(&[]).await.unwrap();
         assert!(outcomes.is_empty());
     }
+
+    #[tokio::test]
+    async fn default_write_batch_partial_callable_through_trait_object() {
+        let sink: Box<dyn Sink> = Box::new(MockSink::new());
+        let records = vec![json!({"id": 1}), json!({"id": 2})];
+        let outcomes = sink.write_batch_partial(&records).await.unwrap();
+        assert_eq!(outcomes.len(), 2);
+        assert!(outcomes.iter().all(|o| o.is_ok()));
+    }
 }
