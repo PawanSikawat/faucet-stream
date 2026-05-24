@@ -45,6 +45,15 @@ pipeline:
     config:
       path: ./.faucet-state
 
+  # Optional. Dead Letter Queue (DLQ) to capture failed records.
+  # dlq:
+  #   sink:
+  #     type: jsonl
+  #     config: { path: ./dlq.jsonl }
+  #   on_batch_error: propagate           # or dlq_all
+  #   max_failures_per_page: 100
+  #   max_failures_total: 10000
+
 # Optional. Each row is deep-merged into `pipeline:` above. Use `parent:` to
 # fan one row out per record produced by another row, and `${row_id.field}`
 # in any string to interpolate parent fields at runtime.
