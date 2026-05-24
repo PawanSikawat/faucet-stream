@@ -1638,4 +1638,26 @@ mod tests {
             "got: {result:?}"
         );
     }
+
+    #[tokio::test]
+    async fn pipeline_run_with_dlq_routes_partial_failures_end_to_end() {
+        // Source: 3 records. Main sink: fails index 1. DLQ: in-memory.
+        let source = MockSource(vec![json!({"i": 0}), json!({"i": 1}), json!({"i": 2})]);
+        let main = PartialSink::new(vec![1]);
+        let dlq = std::sync::Arc::new(MockSink::new());
+
+        let result = Pipeline::new(&source, &main)
+            .with_dlq(DlqConfig::new(dlq.clone()))
+            .run()
+            .await
+            .unwrap();
+
+        assert_eq!(result.records_written, 2);
+        let stats = result.dlq.unwrap();
+        assert_eq!(stats.records_dlq, 1);
+        {
+            let dlq_records = dlq.0.lock().unwrap();
+            assert_eq!(dlq_records.len(), 1);
+        }
+    }
 }

@@ -298,6 +298,67 @@ impl<'a, S: Sink + ?Sized> Sink for InstrumentedSink<'a, S> {
         }
     }
 
+    async fn write_batch_partial(
+        &self,
+        records: &[Value],
+    ) -> Result<Vec<crate::traits::RowOutcome>, FaucetError> {
+        let span = info_span!(
+            "faucet.sink.write_partial",
+            pipeline = %self.labels.pipeline,
+            row = %self.labels.row,
+            run_id = %self.labels.run_id,
+            connector = %self.connector,
+            records = records.len(),
+        );
+        let metric_labels = self.metric_labels();
+        gauge!("faucet_sink_in_flight", metric_labels.clone()).increment(1.0);
+
+        // RAII guard ensures the gauge is decremented even if write_batch_partial
+        // panics or the future is cancelled.
+        struct InFlightGuard(Vec<Label>);
+        impl Drop for InFlightGuard {
+            fn drop(&mut self) {
+                gauge!("faucet_sink_in_flight", self.0.clone()).decrement(1.0);
+            }
+        }
+        let _in_flight = InFlightGuard(metric_labels.clone());
+
+        let _timer =
+            DurationGuard::new("faucet_sink_write_duration_seconds", metric_labels.clone());
+
+        let result = AssertUnwindSafe(self.inner.write_batch_partial(records))
+            .catch_unwind()
+            .instrument(span)
+            .await;
+
+        match result {
+            Ok(Ok(outcomes)) => {
+                let success_count = outcomes.iter().filter(|o| o.is_ok()).count();
+                counter!("faucet_sink_writes_total", metric_labels.clone()).increment(1);
+                counter!("faucet_sink_records_total", metric_labels.clone())
+                    .increment(success_count as u64);
+                Ok(outcomes)
+            }
+            Ok(Err(e)) => {
+                counter!(
+                    "faucet_sink_errors_total",
+                    self.error_labels(error_kind(&e))
+                )
+                .increment(1);
+                Err(e)
+            }
+            Err(panic) => {
+                counter!("faucet_sink_errors_total", self.error_labels("Panic")).increment(1);
+                let msg = panic
+                    .downcast_ref::<&'static str>()
+                    .map(|s| (*s).to_string())
+                    .or_else(|| panic.downcast_ref::<String>().cloned())
+                    .unwrap_or_else(|| "<non-string panic payload>".to_string());
+                Err(FaucetError::Custom(format!("panic in sink: {msg}").into()))
+            }
+        }
+    }
+
     async fn flush(&self) -> Result<(), FaucetError> {
         let span = info_span!(
             "faucet.sink.flush",
