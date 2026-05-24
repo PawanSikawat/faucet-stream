@@ -19,7 +19,7 @@ path = "src/main.rs"
 # yields a binary that can run any of the published example YAMLs out of the box.
 default = ["observability", "full"]
 
-full = ["source", "sink", "state", "transforms"]
+full = ["observability", "source", "sink", "state", "transforms"]
 
 source = [
     "source-rest",

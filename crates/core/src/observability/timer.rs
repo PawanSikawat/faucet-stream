@@ -65,7 +65,7 @@ mod tests {
 
     #[test]
     fn records_sample_on_drop() {
-        let _g = LOCK.lock().unwrap();
+        let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let snap = snapshotter();
         {
             let _guard = DurationGuard::with_connector(
@@ -95,7 +95,7 @@ mod tests {
     fn records_sample_when_dropped_early() {
         // Simulate cancellation: build the guard and drop it immediately
         // without doing any work. A sample is still recorded.
-        let _g = LOCK.lock().unwrap();
+        let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let snap = snapshotter();
         {
             let _guard = DurationGuard::with_connector(

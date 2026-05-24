@@ -17,7 +17,7 @@ pub use bookmark::update_bookmark_lag;
 pub use decorator::{InstrumentedSink, InstrumentedSource};
 pub use install::{
     InstallError, InstallReport, ObservabilityConfig, PrometheusConfig, TracingConfig,
-    install_observability,
+    install_observability, register_build_info,
 };
 pub use labels::Labels;
 pub use options::RunStreamOptions;

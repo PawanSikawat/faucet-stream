@@ -258,6 +258,18 @@ impl<'a, So: Source + ?Sized, Si: Sink + ?Sized> Pipeline<'a, So, Si> {
         gauge!("faucet_pipeline_in_flight", base_labels.clone()).increment(1.0);
         let _in_flight = InFlightGuard(base_labels.clone());
 
+        // Stamp the start time so dashboards can compute uptime for long-running
+        // (streaming / CDC) pipelines where `*_run_duration_seconds` never fires.
+        let start_unix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs_f64())
+            .unwrap_or(0.0);
+        gauge!(
+            "faucet_pipeline_start_time_unix_seconds",
+            base_labels.clone()
+        )
+        .set(start_unix);
+
         // Histogram timer for the whole run.
         let _run_timer =
             DurationGuard::new("faucet_pipeline_run_duration_seconds", run_labels.clone());
@@ -290,10 +302,18 @@ impl<'a, So: Source + ?Sized, Si: Sink + ?Sized> Pipeline<'a, So, Si> {
         .instrument(span)
         .await;
 
-        // Final run-counter increment (status label).
+        // Final run-counter increment. On error, also attach a `kind` label
+        // (matching the FaucetError variant) so dashboards can break out failed
+        // runs by error type without spelunking the *_errors_total surfaces.
         let status = if result.is_ok() { "ok" } else { "err" };
         let mut final_labels = run_labels;
         final_labels.push(Label::new("status", SharedString::const_str(status)));
+        if let Err(ref e) = result {
+            final_labels.push(Label::new(
+                "kind",
+                SharedString::const_str(crate::observability::decorator::error_kind(e)),
+            ));
+        }
         counter!("faucet_pipeline_runs_total", final_labels).increment(1);
 
         result
@@ -1006,7 +1026,7 @@ mod tests {
     async fn pipeline_run_increments_runs_total() {
         use crate::observability::decorator::source_tests::{LOCK, snapshotter};
         use metrics_util::debugging::DebugValue;
-        let _g = LOCK.lock().unwrap();
+        let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let snap = snapshotter();
 
         let source = MockSource(vec![json!({"i": 1})]);
@@ -1039,6 +1059,117 @@ mod tests {
         assert!(
             found,
             "expected faucet_pipeline_runs_total{{pipeline=test-pipeline, row=rowA, status=ok}}"
+        );
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn pipeline_failure_attaches_kind_label_to_runs_total() {
+        use crate::observability::decorator::source_tests::{LOCK, snapshotter};
+        use metrics_util::debugging::DebugValue;
+        let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let snap = snapshotter();
+
+        let source = FailingSource;
+        let sink = MockSink::new();
+        let _ = Pipeline::new(&source, &sink)
+            .with_name("err-pipeline")
+            .with_row("rowE")
+            .run()
+            .await;
+
+        let snapshot = snap.snapshot();
+        let found = snapshot.into_vec().into_iter().any(
+            |(key, _u, _d, v): (metrics_util::CompositeKey, _, _, _)| {
+                key.key().name() == "faucet_pipeline_runs_total"
+                    && key.key().labels().any(|l: &metrics::Label| {
+                        l.key() == "pipeline" && l.value() == "err-pipeline"
+                    })
+                    && key
+                        .key()
+                        .labels()
+                        .any(|l: &metrics::Label| l.key() == "status" && l.value() == "err")
+                    && key
+                        .key()
+                        .labels()
+                        .any(|l: &metrics::Label| l.key() == "kind" && l.value() == "Auth")
+                    && matches!(v, DebugValue::Counter(c) if c >= 1)
+            },
+        );
+        assert!(
+            found,
+            "expected faucet_pipeline_runs_total{{status=err, kind=Auth}} for failing source"
+        );
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn pipeline_run_emits_start_time_gauge() {
+        use crate::observability::decorator::source_tests::{LOCK, snapshotter};
+        use metrics_util::debugging::DebugValue;
+        let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let snap = snapshotter();
+
+        let source = MockSource(vec![json!({"i": 1})]);
+        let sink = MockSink::new();
+        let before = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs_f64())
+            .unwrap_or(0.0);
+        let _ = Pipeline::new(&source, &sink)
+            .with_name("start-time-pipeline")
+            .with_row("rowS")
+            .run()
+            .await
+            .unwrap();
+
+        let snapshot = snap.snapshot();
+        let found = snapshot.into_vec().into_iter().any(
+            |(key, _u, _d, v): (metrics_util::CompositeKey, _, _, _)| {
+                if key.key().name() != "faucet_pipeline_start_time_unix_seconds" {
+                    return false;
+                }
+                let labels_match = key.key().labels().any(|l: &metrics::Label| {
+                    l.key() == "pipeline" && l.value() == "start-time-pipeline"
+                }) && key
+                    .key()
+                    .labels()
+                    .any(|l: &metrics::Label| l.key() == "row" && l.value() == "rowS");
+                if !labels_match {
+                    return false;
+                }
+                matches!(v, DebugValue::Gauge(g) if g.into_inner() >= before)
+            },
+        );
+        assert!(
+            found,
+            "expected faucet_pipeline_start_time_unix_seconds gauge >= test-start timestamp"
+        );
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn register_build_info_sets_version_gauge() {
+        use crate::observability::decorator::source_tests::{LOCK, snapshotter};
+        use metrics_util::debugging::DebugValue;
+        let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let snap = snapshotter();
+
+        crate::observability::register_build_info();
+
+        let snapshot = snap.snapshot();
+        let found = snapshot.into_vec().into_iter().any(
+            |(key, _u, _d, v): (metrics_util::CompositeKey, _, _, _)| {
+                key.key().name() == "faucet_build_info"
+                    && key.key().labels().any(|l: &metrics::Label| {
+                        l.key() == "version" && l.value() == env!("CARGO_PKG_VERSION")
+                    })
+                    && matches!(v, DebugValue::Gauge(g) if (g.into_inner() - 1.0).abs() < f64::EPSILON)
+            },
+        );
+        assert!(
+            found,
+            "expected faucet_build_info{{version=CARGO_PKG_VERSION}} = 1.0 after register_build_info()"
         );
     }
 }

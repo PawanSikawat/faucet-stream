@@ -403,7 +403,7 @@ pub(crate) mod source_tests {
     #[tokio::test]
     #[allow(clippy::await_holding_lock)]
     async fn records_records_counter_per_page() {
-        let _g = LOCK.lock().unwrap();
+        let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let snap = snapshotter();
         let inner = MockSource((0..5).map(|i| json!({"i": i})).collect());
         let wrapped = InstrumentedSource::new(&inner, labels());
@@ -432,7 +432,7 @@ pub(crate) mod source_tests {
     #[tokio::test]
     #[allow(clippy::await_holding_lock)]
     async fn maps_panic_to_custom_error_with_kind_panic() {
-        let _g = LOCK.lock().unwrap();
+        let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let _snap = snapshotter();
         let inner = PanickingSource;
         let wrapped = InstrumentedSource::new(&inner, labels());
@@ -481,7 +481,7 @@ mod sink_tests {
     #[tokio::test]
     #[allow(clippy::await_holding_lock)]
     async fn records_writes_and_records_counters() {
-        let _g = LOCK.lock().unwrap();
+        let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let snap = snapshotter();
         let inner = MockSink(std::sync::Mutex::new(Vec::new()));
         let wrapped = InstrumentedSink::new(&inner, labels());
@@ -508,7 +508,7 @@ mod sink_tests {
     #[tokio::test]
     #[allow(clippy::await_holding_lock)]
     async fn error_increments_errors_total_with_kind() {
-        let _g = LOCK.lock().unwrap();
+        let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let snap = snapshotter();
         let inner = FailingSink;
         let wrapped = InstrumentedSink::new(&inner, labels());

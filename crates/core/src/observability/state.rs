@@ -142,7 +142,7 @@ mod tests {
     #[tokio::test]
     #[allow(clippy::await_holding_lock)]
     async fn get_records_hit_outcome() {
-        let _g = LOCK.lock().unwrap();
+        let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let snap = snapshotter();
         let inner: Arc<dyn StateStore> = Arc::new(MemoryStateStore::new());
         inner.put("k", &json!("v")).await.unwrap();
@@ -164,7 +164,7 @@ mod tests {
     #[tokio::test]
     #[allow(clippy::await_holding_lock)]
     async fn get_records_miss_outcome() {
-        let _g = LOCK.lock().unwrap();
+        let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let snap = snapshotter();
         let inner: Arc<dyn StateStore> = Arc::new(MemoryStateStore::new());
         let wrapped = InstrumentedStateStore::new(inner, labels());

@@ -123,13 +123,35 @@ pub fn install_observability(cfg: &ObservabilityConfig) -> Result<InstallReport,
         }
     }
 
+    // Register build_info after any Prometheus install attempt — set!() into
+    // a not-yet-installed recorder is a no-op, so we order it last.
+    register_build_info();
+
     Ok(report)
 }
 
 /// Non-`observability-install` stub. Returns an empty report, never panics.
 #[cfg(not(feature = "observability-install"))]
 pub fn install_observability(_cfg: &ObservabilityConfig) -> Result<InstallReport, InstallError> {
+    register_build_info();
     Ok(InstallReport::default())
+}
+
+/// Register the `faucet_build_info{version}` gauge (set to 1) under the
+/// currently-installed `metrics` recorder. Safe to call from any code path
+/// that wants to ensure the gauge is set; `install_observability` invokes
+/// this automatically. Gauges are naturally idempotent under the `metrics`
+/// model — repeat calls just re-set the same value.
+///
+/// The version label is `CARGO_PKG_VERSION` of `faucet-core` — matches the
+/// crate that owns the observability layer. Dashboards `group_left` the gauge
+/// onto every other metric to annotate panels with the running version.
+pub fn register_build_info() {
+    metrics::gauge!(
+        "faucet_build_info",
+        "version" => env!("CARGO_PKG_VERSION"),
+    )
+    .set(1.0);
 }
 
 #[cfg(all(test, feature = "observability-install"))]
@@ -141,7 +163,7 @@ mod tests {
 
     #[test]
     fn no_config_returns_empty_report() {
-        let _g = LOCK.lock().unwrap();
+        let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let r = install_observability(&ObservabilityConfig::default()).unwrap();
         assert!(r.prometheus_listen.is_none());
         assert!(!r.prometheus_already_installed);
@@ -150,7 +172,7 @@ mod tests {
 
     #[test]
     fn malformed_listen_returns_bind_error() {
-        let _g = LOCK.lock().unwrap();
+        let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let cfg = ObservabilityConfig {
             prometheus: Some(PrometheusConfig {
                 listen: "not-a-socket".into(),

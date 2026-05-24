@@ -277,7 +277,8 @@ Pipelines emit `tracing` spans and `metrics` counters/histograms automatically â
 - `faucet_sink_records_total{...}`, `faucet_sink_writes_total`, `faucet_sink_errors_total`, `faucet_sink_write_duration_seconds`, `faucet_sink_flush_duration_seconds`, `faucet_sink_in_flight`
 - `faucet_transform_records_total{pipeline,row}`, `faucet_transform_duration_seconds`
 - `faucet_state_{get,put,delete}_total{...,outcome=hit|miss for get}`, `faucet_state_errors_total{...,op,kind}`, `faucet_state_{get,put,delete}_duration_seconds`
-- `faucet_pipeline_runs_total{pipeline,row,source,sink,status=ok|err}`, `faucet_pipeline_run_duration_seconds`, `faucet_pipeline_in_flight`, `faucet_pipeline_seconds_since_last_bookmark`, `faucet_pipeline_last_bookmark_unix_seconds`
+- `faucet_pipeline_runs_total{pipeline,row,source,sink,status=ok|err,kind}` (`kind` present only on `status=err`), `faucet_pipeline_run_duration_seconds`, `faucet_pipeline_in_flight`, `faucet_pipeline_start_time_unix_seconds`, `faucet_pipeline_seconds_since_last_bookmark`, `faucet_pipeline_last_bookmark_unix_seconds`
+- `faucet_build_info{version}` â€” set to `1` by `register_build_info()` (called automatically from `install_observability`). Standard Prometheus convention: `group_left` this onto any other metric to annotate dashboards with the running version.
 
 **Reliability guarantees:** drop-guard timers (sample on cancellation), panic isolation (`Panic` error kind via `AssertUnwindSafe.catch_unwind()`), idempotent `install_observability` (already-installed recorder/subscriber warn rather than panic), typed `CliError::Observability` for port-in-use / malformed listen.
 

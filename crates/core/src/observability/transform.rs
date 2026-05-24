@@ -54,7 +54,7 @@ mod tests {
 
     #[test]
     fn increments_records_counter() {
-        let _g = LOCK.lock().unwrap();
+        let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let snap = snapshotter();
         let labels = Labels::new("p", "r", "rid");
         let t =
