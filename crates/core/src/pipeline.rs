@@ -1493,6 +1493,30 @@ mod tests {
         }
     }
 
+    /// DLQ sink that succeeds on write but fails on flush. Used to assert
+    /// the router wraps DLQ flush errors and bails without persisting the
+    /// bookmark.
+    struct FailingFlushDlqSink {
+        written: std::sync::Mutex<Vec<Value>>,
+    }
+    impl FailingFlushDlqSink {
+        fn new() -> Self {
+            Self {
+                written: std::sync::Mutex::new(Vec::new()),
+            }
+        }
+    }
+    #[async_trait]
+    impl Sink for FailingFlushDlqSink {
+        async fn write_batch(&self, records: &[Value]) -> Result<usize, FaucetError> {
+            self.written.lock().unwrap().extend(records.iter().cloned());
+            Ok(records.len())
+        }
+        async fn flush(&self) -> Result<(), FaucetError> {
+            Err(FaucetError::Sink("dlq flush failed".into()))
+        }
+    }
+
     #[tokio::test]
     async fn dlq_sink_failure_is_fatal_no_recursion() {
         let main = PartialSink::new(vec![0]);
@@ -1560,5 +1584,58 @@ mod tests {
             .unwrap();
         assert_eq!(result.records_written, 2);
         assert!(result.dlq.is_none());
+    }
+
+    #[tokio::test]
+    async fn dlq_per_page_flush_failure_is_fatal_and_blocks_bookmark() {
+        // Per-page flush path: page carries a bookmark, row 1 fails, the
+        // DLQ write succeeds but the DLQ flush at the bookmark gate errors.
+        // The pipeline must bail with "DLQ sink flush failed" and the
+        // bookmark must NOT be persisted.
+        let main = PartialSink::new(vec![1]);
+        let dlq: std::sync::Arc<dyn Sink> = std::sync::Arc::new(FailingFlushDlqSink::new());
+        let dlq_cfg = DlqConfig::new(dlq);
+
+        let store: std::sync::Arc<dyn StateStore> = std::sync::Arc::new(MemoryStateStore::new());
+        let pages: Vec<Result<StreamPage, FaucetError>> = vec![Ok(StreamPage {
+            records: vec![json!({"i": 0}), json!({"i": 1})],
+            bookmark: Some(json!("v1")),
+        })];
+        let stream = futures::stream::iter(pages);
+        let result = run_stream(
+            stream,
+            &main,
+            RunStreamOptions::new()
+                .with_dlq(dlq_cfg)
+                .with_state(std::sync::Arc::clone(&store), "k"),
+        )
+        .await;
+        assert!(
+            matches!(&result, Err(FaucetError::Sink(m)) if m.contains("DLQ sink flush failed")),
+            "got: {result:?}"
+        );
+        assert!(store.get("k").await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn dlq_end_of_stream_flush_failure_is_fatal() {
+        // End-of-stream flush path: no page carries a bookmark, but DLQ
+        // received envelopes during the run. The final post-loop flush of
+        // the DLQ sink errors. The pipeline must bail with "DLQ sink flush
+        // failed".
+        let main = PartialSink::new(vec![1]);
+        let dlq: std::sync::Arc<dyn Sink> = std::sync::Arc::new(FailingFlushDlqSink::new());
+        let dlq_cfg = DlqConfig::new(dlq);
+
+        let pages: Vec<Result<StreamPage, FaucetError>> = vec![Ok(StreamPage {
+            records: vec![json!({"i": 0}), json!({"i": 1})],
+            bookmark: None,
+        })];
+        let stream = futures::stream::iter(pages);
+        let result = run_stream(stream, &main, RunStreamOptions::new().with_dlq(dlq_cfg)).await;
+        assert!(
+            matches!(&result, Err(FaucetError::Sink(m)) if m.contains("DLQ sink flush failed")),
+            "got: {result:?}"
+        );
     }
 }
