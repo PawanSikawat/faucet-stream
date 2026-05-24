@@ -16,7 +16,7 @@ use std::time::Duration;
 use faucet_stream::sink::jsonl::{JsonlSink, JsonlSinkConfig};
 use faucet_stream::{
     Auth, DEFAULT_BATCH_SIZE, PaginationStyle, RecordTransform, RestStream, RestStreamConfig,
-    Source, run_stream,
+    RunStreamOptions, Source, run_stream,
 };
 
 #[tokio::main]
@@ -55,7 +55,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // inherent `RestStream::stream_pages()` Vec<Value> back-compat wrapper.
     let ctx = std::collections::HashMap::new();
     let pages = Source::stream_pages(&source, &ctx, DEFAULT_BATCH_SIZE);
-    let result = run_stream(pages, &sink, None, None).await?;
+    let result = run_stream(pages, &sink, RunStreamOptions::new()).await?;
     println!(
         "streamed {} comments to comments.jsonl",
         result.records_written

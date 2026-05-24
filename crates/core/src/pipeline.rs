@@ -28,18 +28,19 @@
 //! via [`run_stream`].
 //!
 //! ```rust,no_run
-//! use faucet_core::{run_stream, Sink, StreamPage, FaucetError};
+//! use faucet_core::{run_stream, RunStreamOptions, Sink, StreamPage, FaucetError};
 //! use futures_core::Stream;
 //! # async fn example(
 //! #     pages: impl Stream<Item = Result<StreamPage, FaucetError>> + Unpin,
 //! #     sink: impl Sink,
 //! # ) -> Result<(), FaucetError> {
-//! let result = run_stream(pages, &sink, None, None).await?;
+//! let result = run_stream(pages, &sink, RunStreamOptions::new()).await?;
 //! # Ok(())
 //! # }
 //! ```
 
 use crate::error::FaucetError;
+use crate::observability::RunStreamOptions;
 use crate::state::{StateStore, validate_state_key};
 use crate::traits::{Sink, Source};
 use futures_core::Stream;
@@ -121,6 +122,9 @@ pub struct Pipeline<'a, So: Source + ?Sized, Si: Sink + ?Sized> {
     source: &'a So,
     sink: &'a Si,
     state_store: Option<Arc<dyn StateStore>>,
+    name: Option<String>,
+    row: Option<String>,
+    run_id: Option<String>,
 }
 
 impl<'a, So: Source + ?Sized, Si: Sink + ?Sized> Pipeline<'a, So, Si> {
@@ -130,6 +134,9 @@ impl<'a, So: Source + ?Sized, Si: Sink + ?Sized> Pipeline<'a, So, Si> {
             source,
             sink,
             state_store: None,
+            name: None,
+            row: None,
+            run_id: None,
         }
     }
 
@@ -151,6 +158,28 @@ impl<'a, So: Source + ?Sized, Si: Sink + ?Sized> Pipeline<'a, So, Si> {
         self
     }
 
+    /// Set the pipeline name used in spans and metric labels.
+    /// Defaults to `"unnamed"` when unset.
+    pub fn with_name(mut self, name: impl Into<String>) -> Self {
+        self.name = Some(name.into());
+        self
+    }
+
+    /// Set the matrix row id used in spans and metric labels.
+    /// Defaults to `""` (Prometheus treats empty labels as absent).
+    pub fn with_row(mut self, row: impl Into<String>) -> Self {
+        self.row = Some(row.into());
+        self
+    }
+
+    /// Set an explicit run id (UUIDv7-shaped). When unset, `Pipeline::run`
+    /// generates one. Used only as a tracing span attribute — never a metric
+    /// label.
+    pub fn with_run_id(mut self, run_id: impl Into<String>) -> Self {
+        self.run_id = Some(run_id.into());
+        self
+    }
+
     /// Run the pipeline in streaming mode.
     ///
     /// 1. Loads the stored bookmark and pushes it to the source (if a state
@@ -165,17 +194,129 @@ impl<'a, So: Source + ?Sized, Si: Sink + ?Sized> Pipeline<'a, So, Si> {
     /// 5. Returns a [`PipelineResult`] with the total count and the last
     ///    bookmark observed.
     pub async fn run(&self) -> Result<PipelineResult, FaucetError> {
-        let state_key = self.source.state_key();
-        if let (Some(store), Some(key)) = (self.state_store.as_ref(), state_key.as_ref()) {
-            validate_state_key(key)?;
-            if let Some(prior) = store.get(key).await? {
-                self.source.apply_start_bookmark(prior).await?;
+        use crate::observability::{
+            DurationGuard, InstrumentedSink, InstrumentedSource, InstrumentedStateStore, Labels,
+        };
+        use metrics::{Label, SharedString, counter, gauge};
+        use tracing::Instrument;
+
+        // Resolve identity for this run.
+        let name = self.name.clone().unwrap_or_else(|| "unnamed".to_string());
+        let row = self.row.clone().unwrap_or_default();
+        let run_id = self
+            .run_id
+            .clone()
+            .unwrap_or_else(|| uuid::Uuid::now_v7().to_string());
+        let obs_labels = Labels::new(name.clone(), row.clone(), run_id.clone());
+
+        // Wrap source, sink, state-store.
+        let wrapped_source = InstrumentedSource::new(self.source, obs_labels.clone());
+        let wrapped_sink = InstrumentedSink::new(self.sink, obs_labels.clone());
+        let wrapped_state_store: Option<Arc<dyn StateStore>> = self.state_store.as_ref().map(|s| {
+            Arc::new(InstrumentedStateStore::new(
+                Arc::clone(s),
+                obs_labels.clone(),
+            )) as Arc<dyn StateStore>
+        });
+
+        // Pipeline-level span. Use .instrument(span) on the inner future so
+        // the span correctly enters/exits across awaits.
+        let span = tracing::info_span!(
+            "faucet.pipeline.run",
+            pipeline = %name,
+            row = %row,
+            run_id = %run_id,
+            source = %wrapped_source.connector_name(),
+            sink = %wrapped_sink.connector_name(),
+        );
+
+        // Per-pipeline metric labels (pipeline + row).
+        let base_labels: Vec<Label> = vec![
+            Label::new("pipeline", SharedString::from(name.clone())),
+            Label::new("row", SharedString::from(row.clone())),
+        ];
+        let run_labels: Vec<Label> = {
+            let mut v = base_labels.clone();
+            v.push(Label::new(
+                "source",
+                SharedString::from(wrapped_source.connector_name().to_string()),
+            ));
+            v.push(Label::new(
+                "sink",
+                SharedString::from(wrapped_sink.connector_name().to_string()),
+            ));
+            v
+        };
+
+        // RAII guard so the in-flight gauge stays consistent even on cancellation.
+        struct InFlightGuard(Vec<Label>);
+        impl Drop for InFlightGuard {
+            fn drop(&mut self) {
+                gauge!("faucet_pipeline_in_flight", self.0.clone()).decrement(1.0);
             }
         }
+        gauge!("faucet_pipeline_in_flight", base_labels.clone()).increment(1.0);
+        let _in_flight = InFlightGuard(base_labels.clone());
 
-        let ctx = std::collections::HashMap::new();
-        let pages = self.source.stream_pages(&ctx, DEFAULT_BATCH_SIZE);
-        run_stream(pages, self.sink, self.state_store.clone(), state_key).await
+        // Stamp the start time so dashboards can compute uptime for long-running
+        // (streaming / CDC) pipelines where `*_run_duration_seconds` never fires.
+        let start_unix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs_f64())
+            .unwrap_or(0.0);
+        gauge!(
+            "faucet_pipeline_start_time_unix_seconds",
+            base_labels.clone()
+        )
+        .set(start_unix);
+
+        // Histogram timer for the whole run.
+        let _run_timer =
+            DurationGuard::new("faucet_pipeline_run_duration_seconds", run_labels.clone());
+
+        // Run inside the span.
+        let result = async {
+            // Bookmark resume — goes through the wrapped state store so the
+            // get is instrumented too.
+            let state_key = self.source.state_key();
+            if let (Some(store), Some(key)) = (wrapped_state_store.as_ref(), state_key.as_ref()) {
+                validate_state_key(key)?;
+                if let Some(prior) = store.get(key).await? {
+                    wrapped_source.apply_start_bookmark(prior).await?;
+                }
+            }
+
+            let ctx = std::collections::HashMap::new();
+            let pages = wrapped_source.stream_pages(&ctx, DEFAULT_BATCH_SIZE);
+
+            let mut opts = RunStreamOptions::new()
+                .with_name(name.clone())
+                .with_row(row.clone())
+                .with_run_id(run_id.clone());
+            if let (Some(store), Some(key)) = (wrapped_state_store.clone(), state_key) {
+                opts = opts.with_state(store, key);
+            }
+
+            run_stream(pages, &wrapped_sink, opts).await
+        }
+        .instrument(span)
+        .await;
+
+        // Final run-counter increment. On error, also attach a `kind` label
+        // (matching the FaucetError variant) so dashboards can break out failed
+        // runs by error type without spelunking the *_errors_total surfaces.
+        let status = if result.is_ok() { "ok" } else { "err" };
+        let mut final_labels = run_labels;
+        final_labels.push(Label::new("status", SharedString::const_str(status)));
+        if let Err(ref e) = result {
+            final_labels.push(Label::new(
+                "kind",
+                SharedString::const_str(crate::observability::decorator::error_kind(e)),
+            ));
+        }
+        counter!("faucet_pipeline_runs_total", final_labels).increment(1);
+
+        result
     }
 }
 
@@ -199,13 +340,18 @@ impl<'a, So: Source + ?Sized, Si: Sink + ?Sized> Pipeline<'a, So, Si> {
 pub async fn run_stream<S, Si>(
     mut pages: S,
     sink: &Si,
-    state_store: Option<Arc<dyn StateStore>>,
-    state_key: Option<String>,
+    options: RunStreamOptions,
 ) -> Result<PipelineResult, FaucetError>
 where
     S: Stream<Item = Result<StreamPage, FaucetError>> + Unpin,
     Si: Sink + ?Sized,
 {
+    let state_store = options.state_store.clone();
+    let state_key = options.state_key.clone();
+    let pipeline_name = options.pipeline_name.unwrap_or_else(|| "unnamed".into());
+    let row = options.row.unwrap_or_default();
+    let run_id = options.run_id.unwrap_or_default();
+
     if let Some(key) = state_key.as_ref() {
         validate_state_key(key)?;
     }
@@ -222,6 +368,10 @@ where
                 }
                 if let Some(bookmark) = page.bookmark {
                     sink.flush().await?;
+                    // Best-effort bookmark-lag gauge.
+                    let bm_labels =
+                        crate::observability::Labels::new(&*pipeline_name, &*row, &*run_id);
+                    crate::observability::update_bookmark_lag(&bookmark, &bm_labels);
                     if let (Some(store), Some(key)) = (state_store.as_ref(), state_key.as_ref()) {
                         store.put(key, &bookmark).await?;
                     }
@@ -459,7 +609,9 @@ mod tests {
         let stream = futures::stream::iter(pages);
         let sink = MockSink::new();
 
-        let result = run_stream(stream, &sink, None, None).await.unwrap();
+        let result = run_stream(stream, &sink, RunStreamOptions::new())
+            .await
+            .unwrap();
 
         assert_eq!(result.records_written, 3);
         assert!(result.bookmark.is_none());
@@ -472,7 +624,9 @@ mod tests {
         let stream = futures::stream::iter(pages);
         let sink = MockSink::new();
 
-        let result = run_stream(stream, &sink, None, None).await.unwrap();
+        let result = run_stream(stream, &sink, RunStreamOptions::new())
+            .await
+            .unwrap();
 
         assert_eq!(result.records_written, 0);
     }
@@ -496,7 +650,9 @@ mod tests {
         let stream = futures::stream::iter(pages);
         let sink = MockSink::new();
 
-        let result = run_stream(stream, &sink, None, None).await.unwrap();
+        let result = run_stream(stream, &sink, RunStreamOptions::new())
+            .await
+            .unwrap();
 
         assert_eq!(result.records_written, 2);
     }
@@ -517,7 +673,7 @@ mod tests {
         let stream = futures::stream::iter(pages);
         let sink = MockSink::new();
 
-        let result = run_stream(stream, &sink, None, None).await;
+        let result = run_stream(stream, &sink, RunStreamOptions::new()).await;
         assert!(result.is_err());
         // First page was written before the error
         assert_eq!(sink.written().len(), 1);
@@ -532,7 +688,7 @@ mod tests {
         let stream = futures::stream::iter(pages);
         let sink = FailingSink;
 
-        let result = run_stream(stream, &sink, None, None).await;
+        let result = run_stream(stream, &sink, RunStreamOptions::new()).await;
         assert!(result.is_err());
     }
 
@@ -545,7 +701,9 @@ mod tests {
         let stream = futures::stream::iter(pages);
         let sink: Box<dyn Sink> = Box::new(MockSink::new());
 
-        let result = run_stream(stream, sink.as_ref(), None, None).await.unwrap();
+        let result = run_stream(stream, sink.as_ref(), RunStreamOptions::new())
+            .await
+            .unwrap();
         assert_eq!(result.records_written, 1);
     }
 
@@ -568,8 +726,7 @@ mod tests {
         let result = run_stream(
             stream,
             &sink,
-            Some(Arc::clone(&store)),
-            Some("k".to_string()),
+            RunStreamOptions::new().with_state(Arc::clone(&store), "k"),
         )
         .await
         .unwrap();
@@ -601,8 +758,7 @@ mod tests {
         run_stream(
             stream,
             &sink,
-            Some(Arc::clone(&store)),
-            Some("k".to_string()),
+            RunStreamOptions::new().with_state(Arc::clone(&store), "k"),
         )
         .await
         .unwrap();
@@ -863,5 +1019,157 @@ mod tests {
             .unwrap();
         assert_eq!(s2.observed_start(), Some(json!("v1")));
         assert_eq!(store.get("k").await.unwrap(), Some(json!("v2")));
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn pipeline_run_increments_runs_total() {
+        use crate::observability::decorator::source_tests::{LOCK, snapshotter};
+        use metrics_util::debugging::DebugValue;
+        let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let snap = snapshotter();
+
+        let source = MockSource(vec![json!({"i": 1})]);
+        let sink = MockSink::new();
+        let _ = Pipeline::new(&source, &sink)
+            .with_name("test-pipeline")
+            .with_row("rowA")
+            .run()
+            .await
+            .unwrap();
+
+        let snapshot = snap.snapshot();
+        let found = snapshot.into_vec().into_iter().any(
+            |(key, _u, _d, v): (metrics_util::CompositeKey, _, _, _)| {
+                key.key().name() == "faucet_pipeline_runs_total"
+                    && key.key().labels().any(|l: &metrics::Label| {
+                        l.key() == "pipeline" && l.value() == "test-pipeline"
+                    })
+                    && key
+                        .key()
+                        .labels()
+                        .any(|l: &metrics::Label| l.key() == "row" && l.value() == "rowA")
+                    && key
+                        .key()
+                        .labels()
+                        .any(|l: &metrics::Label| l.key() == "status" && l.value() == "ok")
+                    && matches!(v, DebugValue::Counter(c) if c >= 1)
+            },
+        );
+        assert!(
+            found,
+            "expected faucet_pipeline_runs_total{{pipeline=test-pipeline, row=rowA, status=ok}}"
+        );
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn pipeline_failure_attaches_kind_label_to_runs_total() {
+        use crate::observability::decorator::source_tests::{LOCK, snapshotter};
+        use metrics_util::debugging::DebugValue;
+        let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let snap = snapshotter();
+
+        let source = FailingSource;
+        let sink = MockSink::new();
+        let _ = Pipeline::new(&source, &sink)
+            .with_name("err-pipeline")
+            .with_row("rowE")
+            .run()
+            .await;
+
+        let snapshot = snap.snapshot();
+        let found = snapshot.into_vec().into_iter().any(
+            |(key, _u, _d, v): (metrics_util::CompositeKey, _, _, _)| {
+                key.key().name() == "faucet_pipeline_runs_total"
+                    && key.key().labels().any(|l: &metrics::Label| {
+                        l.key() == "pipeline" && l.value() == "err-pipeline"
+                    })
+                    && key
+                        .key()
+                        .labels()
+                        .any(|l: &metrics::Label| l.key() == "status" && l.value() == "err")
+                    && key
+                        .key()
+                        .labels()
+                        .any(|l: &metrics::Label| l.key() == "kind" && l.value() == "Auth")
+                    && matches!(v, DebugValue::Counter(c) if c >= 1)
+            },
+        );
+        assert!(
+            found,
+            "expected faucet_pipeline_runs_total{{status=err, kind=Auth}} for failing source"
+        );
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn pipeline_run_emits_start_time_gauge() {
+        use crate::observability::decorator::source_tests::{LOCK, snapshotter};
+        use metrics_util::debugging::DebugValue;
+        let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let snap = snapshotter();
+
+        let source = MockSource(vec![json!({"i": 1})]);
+        let sink = MockSink::new();
+        let before = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs_f64())
+            .unwrap_or(0.0);
+        let _ = Pipeline::new(&source, &sink)
+            .with_name("start-time-pipeline")
+            .with_row("rowS")
+            .run()
+            .await
+            .unwrap();
+
+        let snapshot = snap.snapshot();
+        let found = snapshot.into_vec().into_iter().any(
+            |(key, _u, _d, v): (metrics_util::CompositeKey, _, _, _)| {
+                if key.key().name() != "faucet_pipeline_start_time_unix_seconds" {
+                    return false;
+                }
+                let labels_match = key.key().labels().any(|l: &metrics::Label| {
+                    l.key() == "pipeline" && l.value() == "start-time-pipeline"
+                }) && key
+                    .key()
+                    .labels()
+                    .any(|l: &metrics::Label| l.key() == "row" && l.value() == "rowS");
+                if !labels_match {
+                    return false;
+                }
+                matches!(v, DebugValue::Gauge(g) if g.into_inner() >= before)
+            },
+        );
+        assert!(
+            found,
+            "expected faucet_pipeline_start_time_unix_seconds gauge >= test-start timestamp"
+        );
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn register_build_info_sets_version_gauge() {
+        use crate::observability::decorator::source_tests::{LOCK, snapshotter};
+        use metrics_util::debugging::DebugValue;
+        let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let snap = snapshotter();
+
+        crate::observability::register_build_info();
+
+        let snapshot = snap.snapshot();
+        let found = snapshot.into_vec().into_iter().any(
+            |(key, _u, _d, v): (metrics_util::CompositeKey, _, _, _)| {
+                key.key().name() == "faucet_build_info"
+                    && key.key().labels().any(|l: &metrics::Label| {
+                        l.key() == "version" && l.value() == env!("CARGO_PKG_VERSION")
+                    })
+                    && matches!(v, DebugValue::Gauge(g) if (g.into_inner() - 1.0).abs() < f64::EPSILON)
+            },
+        );
+        assert!(
+            found,
+            "expected faucet_build_info{{version=CARGO_PKG_VERSION}} = 1.0 after register_build_info()"
+        );
     }
 }

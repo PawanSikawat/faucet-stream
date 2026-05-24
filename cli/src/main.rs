@@ -3,6 +3,7 @@
 use clap::Parser;
 use faucet_cli::cli::{Cli, Command};
 use faucet_cli::commands;
+#[cfg(feature = "observability")]
 use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
@@ -25,6 +26,7 @@ async fn main() {
     }
 }
 
+#[cfg(feature = "observability")]
 fn install_tracing(level: &str) {
     let filter = EnvFilter::try_new(level).unwrap_or_else(|_| EnvFilter::new("info"));
     let _ = tracing_subscriber::fmt()
@@ -32,3 +34,8 @@ fn install_tracing(level: &str) {
         .with_writer(std::io::stderr)
         .try_init();
 }
+
+/// Stub used when the `observability` feature is disabled. Logging falls
+/// back to whatever the host environment has wired (or nothing).
+#[cfg(not(feature = "observability"))]
+fn install_tracing(_level: &str) {}

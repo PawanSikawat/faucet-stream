@@ -17,9 +17,9 @@ path = "src/main.rs"
 [features]
 # Default: every first-party source, sink, and state backend so `cargo install`
 # yields a binary that can run any of the published example YAMLs out of the box.
-default = ["full"]
+default = ["observability", "full"]
 
-full = ["source", "sink", "state", "transforms"]
+full = ["observability", "source", "sink", "state", "transforms"]
 
 source = [
     "source-rest",
@@ -104,6 +104,12 @@ transforms = [
     "faucet-source-rest?/transforms",
 ]
 
+observability = [
+    "faucet-core/observability-install",
+    "dep:metrics-exporter-prometheus",
+    "dep:tracing-subscriber",
+]
+
 [dependencies]
 faucet-core.workspace = true
 faucet-source-rest = { workspace = true, optional = true }
@@ -142,14 +148,18 @@ faucet-state-postgres = { workspace = true, optional = true }
 
 clap = { version = "4", features = ["derive", "env"] }
 dotenvy = "0.15"
+schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 serde_yaml = "0.9"
 thiserror.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "signal", "fs"] }
 tracing.workspace = true
-tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+tracing-subscriber = { workspace = true, optional = true }
 async-trait.workspace = true
+metrics.workspace = true
+metrics-exporter-prometheus = { workspace = true, optional = true }
+uuid.workspace = true
 
 [dev-dependencies]
 tempfile = "3"
@@ -157,3 +167,4 @@ assert_cmd = "2"
 predicates = "3"
 wiremock = "0.6"
 serial_test = "3"
+metrics-util.workspace = true

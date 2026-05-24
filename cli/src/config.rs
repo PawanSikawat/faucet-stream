@@ -30,6 +30,7 @@
 
 use crate::error::{CliError, CliResult};
 use crate::interpolate::interpolate;
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::path::{Path, PathBuf};
@@ -57,6 +58,10 @@ pub struct PipelineConfig {
     /// Optional execution controls (concurrency, on-error policy).
     #[serde(default)]
     pub execution: Option<ExecutionSpec>,
+
+    /// Optional observability configuration (Prometheus + tracing).
+    #[serde(default)]
+    pub observability: Option<ObservabilitySpec>,
 }
 
 /// The base pipeline definition that every matrix row is deep-merged into.
@@ -178,6 +183,39 @@ pub enum OnError {
     Continue,
     /// Cancel every pending and in-flight invocation on first failure.
     Stop,
+}
+
+/// Top-level observability block: Prometheus scrape endpoint and tracing level.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ObservabilitySpec {
+    /// Prometheus metrics scrape endpoint configuration.
+    #[serde(default)]
+    pub prometheus: Option<PrometheusSpec>,
+
+    /// Tracing / logging configuration.
+    #[serde(default)]
+    pub tracing: Option<TracingSpec>,
+}
+
+/// Configuration for the Prometheus metrics HTTP endpoint.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct PrometheusSpec {
+    /// Socket address to bind the scrape endpoint on (e.g. `"127.0.0.1:9464"`).
+    pub listen: String,
+
+    /// Custom histogram bucket boundaries. Falls back to the Prometheus default
+    /// buckets when `None`.
+    #[serde(default)]
+    pub buckets: Option<Vec<f64>>,
+}
+
+/// Tracing / log-level configuration.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct TracingSpec {
+    /// `tracing-subscriber` filter directive (e.g. `"info"`, `"debug"`,
+    /// `"faucet=trace"`). Defaults to the value of `RUST_LOG` when `None`.
+    #[serde(default)]
+    pub level: Option<String>,
 }
 
 fn default_version() -> u32 {
@@ -466,6 +504,36 @@ pipeline:
         let cfg = PipelineConfig::from_path(&path).unwrap();
         assert_eq!(cfg.pipeline.source.config["base_url"], "https://x.example");
         unsafe { std::env::remove_var("FAUCET_CFG_URL") };
+    }
+
+    #[test]
+    fn observability_block_parses() {
+        let y = r#"
+version: 1
+name: x
+observability:
+  prometheus:
+    listen: "127.0.0.1:9464"
+    buckets: [0.01, 0.1, 1.0]
+  tracing:
+    level: "info"
+pipeline:
+  source:
+    type: rest
+    config:
+      base_url: "https://example.com"
+      path: "/data"
+  sink:
+    type: jsonl
+    config:
+      path: "/tmp/faucet-test.jsonl"
+"#;
+        let cfg: PipelineConfig = serde_yaml::from_str(y).unwrap();
+        let obs = cfg.observability.expect("observability block parsed");
+        let p = obs.prometheus.expect("prometheus parsed");
+        assert_eq!(p.listen, "127.0.0.1:9464");
+        assert_eq!(p.buckets.unwrap().len(), 3);
+        assert_eq!(obs.tracing.unwrap().level.unwrap(), "info");
     }
 
     #[test]

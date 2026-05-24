@@ -262,6 +262,53 @@ Mirrors of the Rust examples (one `.yaml` per `.rs`):
 
 Every auth shape — Bearer, Basic, API key, OAuth2, custom headers, gRPC metadata — round-trips through YAML/JSON, so the YAML examples are 1:1 with the Rust ones.
 
+## Observability (Prometheus + tracing)
+
+Optional top-level block in `faucet.yaml`:
+
+```yaml
+version: 1
+name: github-issues-sync
+observability:
+  prometheus:
+    listen: "127.0.0.1:9464"        # recommended bind; 0.0.0.0 is opt-in
+    buckets: [0.001, 0.01, 0.1, 1.0, 10.0, 60.0]  # optional; sensible defaults if unset
+  tracing:
+    level: "info"                   # falls back to RUST_LOG / FAUCET_LOG / --log-level
+pipeline: { ... }
+```
+
+When `prometheus.listen` is set, `faucet run` exposes a `/metrics` HTTP endpoint at that address using `metrics-exporter-prometheus`. **The endpoint is unauthenticated** — bind to `127.0.0.1` (the default in examples) and put a reverse proxy or network ACL in front if you need to expose it to other hosts.
+
+**Default histogram buckets** (when `buckets` is unset): `0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0, 5.0, 10.0, 30.0, 60.0, 300.0` seconds. Covers sub-millisecond writes through five-minute batch loads.
+
+**Per-command behavior:**
+
+| Command | Installs Prometheus? | Installs `tracing-subscriber`? | Notes |
+|---------|----------------------|-------------------------------|-------|
+| `run` | Yes (when `prometheus.listen` set) | Yes | The only command that runs pipelines. |
+| `validate` | No | Yes (basic fmt layer) | Short-lived; metrics meaningless. |
+| `preview` | No | Yes | Short-lived. |
+| `schema`, `list`, `init` | No | Yes | Pure metadata commands. |
+
+**Tracing level precedence:** `--log-level` flag > `FAUCET_LOG` env > `RUST_LOG` env > YAML `observability.tracing.level` > default.
+
+### Bridging to OpenTelemetry
+
+`faucet-stream` emits stable `tracing` spans (`faucet.pipeline.run`, `faucet.source.page`, `faucet.sink.write`, `faucet.transform.apply`, `faucet.state.get|put|delete`). To export them to an OTel collector, install `tracing-opentelemetry` + `opentelemetry-otlp` in your own binary:
+
+```rust
+use tracing_subscriber::prelude::*;
+let tracer = opentelemetry_otlp::new_pipeline()
+    .tracing()
+    .install_batch(opentelemetry_sdk::runtime::Tokio)?;
+let otel_layer = tracing_opentelemetry::layer().with_tracer(tracer);
+tracing_subscriber::registry().with(otel_layer).init();
+// then call faucet_cli::run_main(...) (or run_from_yaml_str) as usual
+```
+
+Faucet does not bundle an OTel exporter — wire your own to keep dependencies minimal.
+
 ## License
 
 MIT OR Apache-2.0

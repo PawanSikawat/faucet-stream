@@ -160,6 +160,16 @@ pub enum CliError {
     /// Pass-through I/O error.
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
+
+    /// Observability stack (Prometheus / tracing) failed to install.
+    #[error("observability install failed: {0}")]
+    Observability(String),
+}
+
+impl From<faucet_core::InstallError> for CliError {
+    fn from(e: faucet_core::InstallError) -> Self {
+        CliError::Observability(e.to_string())
+    }
 }
 
 #[cfg(test)]

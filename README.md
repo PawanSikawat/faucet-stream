@@ -166,6 +166,10 @@ let config = RestStreamConfig::new("https://api.example.com")
     .partition_concurrency(Some(5));  // default: sequential
 ```
 
+## Observability
+
+Every pipeline emits OTel-compatible `tracing` spans and Prometheus metrics automatically — labelled by `pipeline`, `row` (matrix row id), and `connector`. The CLI exposes a `/metrics` endpoint via the optional `observability:` block in `faucet.yaml`. See [CLI README](cli/README.md#observability-prometheus--tracing) for the YAML grammar and the OpenTelemetry bridge snippet.
+
 ## Features
 
 ### Source: REST API (`faucet-source-rest`)

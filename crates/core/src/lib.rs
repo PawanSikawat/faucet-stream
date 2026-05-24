@@ -14,6 +14,7 @@
 pub mod config;
 pub mod dag;
 pub mod error;
+pub mod observability;
 pub mod pipeline;
 pub mod replication;
 pub mod schema;
@@ -24,6 +25,12 @@ pub mod util;
 
 pub use dag::{DagNode, DagNodeError, DagNodeResult, DagResult, SourceDAG};
 pub use error::FaucetError;
+pub use observability::{
+    DurationGuard, InstallError, InstallReport, InstrumentedSink, InstrumentedSource,
+    InstrumentedStateStore, Labels, ObservabilityConfig, PrometheusConfig, RunStreamOptions,
+    TracingConfig, install_observability, instrumented_apply_all, register_build_info,
+    update_bookmark_lag,
+};
 pub use pipeline::{
     DEFAULT_BATCH_SIZE, MAX_BATCH_SIZE, Pipeline, PipelineResult, StreamPage, run_stream,
     validate_batch_size,
