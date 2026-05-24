@@ -390,6 +390,27 @@ where
 
                 if let Some(ref dlq_cfg) = dlq {
                     // ── DLQ-enabled path ───────────────────────────────────
+                    use crate::dlq::DlqReason;
+                    use metrics::{Label, SharedString, counter};
+                    let metric_labels: Vec<Label> = vec![
+                        Label::new("pipeline", SharedString::from(pipeline_name.clone())),
+                        Label::new("row", SharedString::from(row.clone())),
+                        Label::new("connector", SharedString::from(sink_name.to_string())),
+                        Label::new(
+                            "dlq_connector",
+                            SharedString::from(dlq_sink_name.to_string()),
+                        ),
+                    ];
+                    let span = tracing::info_span!(
+                        "faucet.dlq.route",
+                        pipeline = %pipeline_name,
+                        row = %row,
+                        run_id = %run_id,
+                        connector = %sink_name,
+                        dlq_connector = %dlq_sink_name,
+                    );
+                    let _enter = span.enter();
+
                     let outcomes_result = if page.records.is_empty() {
                         Ok(Vec::new())
                     } else {
@@ -406,7 +427,7 @@ where
                                 // The flag distinguishes this from a sink
                                 // override that legitimately returned all
                                 // per-row Errs — that case keeps the
-                                // `partial` reason label in Task 6.
+                                // `partial` reason label.
                                 outer_err_recovered = true;
                                 let msg = e.to_string();
                                 (0..page.records.len())
@@ -434,10 +455,14 @@ where
                     }
                     let page_failures = envelopes.len();
 
-                    // Budget checks.
+                    // Budget checks — increment counter before returning.
                     if let Some(limit) = dlq_cfg.max_failures_per_page
                         && page_failures > limit
                     {
+                        let mut lbl = metric_labels.clone();
+                        lbl.retain(|l| l.key() != "dlq_connector");
+                        lbl.push(Label::new("scope", SharedString::const_str("per_page")));
+                        counter!("faucet_sink_dlq_budget_exceeded_total", lbl).increment(1);
                         return Err(FaucetError::Sink(format!(
                             "DLQ per-page budget exceeded: {page_failures} > {limit}"
                         )));
@@ -446,6 +471,10 @@ where
                     if let Some(limit) = dlq_cfg.max_failures_total
                         && new_total > limit
                     {
+                        let mut lbl = metric_labels.clone();
+                        lbl.retain(|l| l.key() != "dlq_connector");
+                        lbl.push(Label::new("scope", SharedString::const_str("total")));
+                        counter!("faucet_sink_dlq_budget_exceeded_total", lbl).increment(1);
                         return Err(FaucetError::Sink(format!(
                             "DLQ total budget exceeded: {new_total} > {limit}"
                         )));
@@ -453,22 +482,54 @@ where
 
                     // Write to DLQ sink. Errors here are fatal, no recursion.
                     if !envelopes.is_empty() {
+                        let _dlq_write_timer = crate::observability::DurationGuard::new(
+                            "faucet_sink_dlq_write_duration_seconds",
+                            metric_labels.clone(),
+                        );
                         dlq_cfg.sink.write_batch(&envelopes).await.map_err(|e| {
+                            let mut lbl = metric_labels.clone();
+                            lbl.push(Label::new(
+                                "kind",
+                                SharedString::const_str(
+                                    crate::observability::decorator::error_kind(&e),
+                                ),
+                            ));
+                            counter!("faucet_sink_dlq_errors_total", lbl).increment(1);
                             FaucetError::Sink(format!("DLQ sink write failed: {e}"))
                         })?;
                         dlq_stats.records_dlq += page_failures;
                         dlq_stats.pages_with_failures += 1;
-                        // `outer_err_recovered` and `dlq_sink_name` are
-                        // consumed by Task 6 (metric/span labels). Silence
-                        // unused-warnings for now without dead code.
-                        let _ = (outer_err_recovered, dlq_sink_name);
+
+                        let reason_label = if outer_err_recovered {
+                            DlqReason::DlqAll.as_str()
+                        } else {
+                            DlqReason::Partial.as_str()
+                        };
+                        counter!("faucet_sink_dlq_records_total", metric_labels.clone())
+                            .increment(page_failures as u64);
+                        let mut page_labels = metric_labels.clone();
+                        page_labels
+                            .push(Label::new("reason", SharedString::const_str(reason_label)));
+                        counter!("faucet_sink_dlq_pages_total", page_labels).increment(1);
                     }
 
                     records_written += page_success;
 
                     if let Some(bookmark) = page.bookmark {
                         sink.flush().await?;
+                        let _dlq_flush_timer = crate::observability::DurationGuard::new(
+                            "faucet_sink_dlq_flush_duration_seconds",
+                            metric_labels.clone(),
+                        );
                         dlq_cfg.sink.flush().await.map_err(|e| {
+                            let mut lbl = metric_labels.clone();
+                            lbl.push(Label::new(
+                                "kind",
+                                SharedString::const_str(
+                                    crate::observability::decorator::error_kind(&e),
+                                ),
+                            ));
+                            counter!("faucet_sink_dlq_errors_total", lbl).increment(1);
                             FaucetError::Sink(format!("DLQ sink flush failed: {e}"))
                         })?;
                         let bm_labels =
@@ -505,11 +566,34 @@ where
 
     sink.flush().await?;
     if let Some(ref dlq_cfg) = dlq {
-        dlq_cfg
-            .sink
-            .flush()
-            .await
-            .map_err(|e| FaucetError::Sink(format!("DLQ sink flush failed: {e}")))?;
+        let final_metric_labels: Vec<metrics::Label> = vec![
+            metrics::Label::new(
+                "pipeline",
+                metrics::SharedString::from(pipeline_name.clone()),
+            ),
+            metrics::Label::new("row", metrics::SharedString::from(row.clone())),
+            metrics::Label::new(
+                "connector",
+                metrics::SharedString::from(sink_name.to_string()),
+            ),
+            metrics::Label::new(
+                "dlq_connector",
+                metrics::SharedString::from(dlq_sink_name.to_string()),
+            ),
+        ];
+        let _final_dlq_flush_timer = crate::observability::DurationGuard::new(
+            "faucet_sink_dlq_flush_duration_seconds",
+            final_metric_labels.clone(),
+        );
+        dlq_cfg.sink.flush().await.map_err(|e| {
+            let mut lbl = final_metric_labels.clone();
+            lbl.push(metrics::Label::new(
+                "kind",
+                metrics::SharedString::const_str(crate::observability::decorator::error_kind(&e)),
+            ));
+            metrics::counter!("faucet_sink_dlq_errors_total", lbl).increment(1);
+            FaucetError::Sink(format!("DLQ sink flush failed: {e}"))
+        })?;
     }
 
     tracing::info!(
@@ -1637,6 +1721,82 @@ mod tests {
             matches!(&result, Err(FaucetError::Sink(m)) if m.contains("DLQ sink flush failed")),
             "got: {result:?}"
         );
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn dlq_emits_records_total_and_pages_total() {
+        use crate::observability::decorator::source_tests::{LOCK, snapshotter};
+        use metrics_util::debugging::DebugValue;
+
+        let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let snap = snapshotter();
+
+        let source = MockSource(vec![json!({"i": 0}), json!({"i": 1})]);
+        let main = PartialSink::new(vec![1]);
+        let dlq = std::sync::Arc::new(MockSink::new());
+        let _ = Pipeline::new(&source, &main)
+            .with_name("p_dlq_metrics")
+            .with_row("r1")
+            .with_dlq(DlqConfig::new(dlq.clone()))
+            .run()
+            .await
+            .unwrap();
+
+        let snapshot = snap.snapshot();
+        let mut saw_records = false;
+        let mut saw_pages = false;
+        for (k, _u, _d, v) in snapshot.into_vec() {
+            let key = k.key();
+            let labels = key.labels().collect::<Vec<_>>();
+            let has = |k: &str, v: &str| labels.iter().any(|l| l.key() == k && l.value() == v);
+            if key.name() == "faucet_sink_dlq_records_total"
+                && has("pipeline", "p_dlq_metrics")
+                && has("row", "r1")
+                && matches!(v, DebugValue::Counter(c) if c >= 1)
+            {
+                saw_records = true;
+            }
+            if key.name() == "faucet_sink_dlq_pages_total"
+                && has("pipeline", "p_dlq_metrics")
+                && matches!(v, DebugValue::Counter(c) if c >= 1)
+            {
+                saw_pages = true;
+            }
+        }
+        assert!(saw_records, "faucet_sink_dlq_records_total not emitted");
+        assert!(saw_pages, "faucet_sink_dlq_pages_total not emitted");
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn dlq_budget_exceeded_emits_counter() {
+        use crate::observability::decorator::source_tests::{LOCK, snapshotter};
+        use metrics_util::debugging::DebugValue;
+
+        let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let snap = snapshotter();
+
+        let source = MockSource((0..3).map(|i| json!({"i": i})).collect());
+        let main = PartialSink::new(vec![0, 1, 2]);
+        let dlq = std::sync::Arc::new(MockSink::new());
+        let mut cfg = DlqConfig::new(dlq);
+        cfg.max_failures_per_page = Some(1);
+        let _ = Pipeline::new(&source, &main)
+            .with_name("p_budget")
+            .with_dlq(cfg)
+            .run()
+            .await;
+
+        let snapshot = snap.snapshot();
+        let saw = snapshot.into_vec().into_iter().any(|(k, _, _, v)| {
+            k.key().name() == "faucet_sink_dlq_budget_exceeded_total"
+                && k.key()
+                    .labels()
+                    .any(|l| l.key() == "scope" && l.value() == "per_page")
+                && matches!(v, DebugValue::Counter(c) if c >= 1)
+        });
+        assert!(saw, "faucet_sink_dlq_budget_exceeded_total not emitted");
     }
 
     #[tokio::test]

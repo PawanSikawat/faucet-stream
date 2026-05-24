@@ -585,4 +585,58 @@ mod sink_tests {
         });
         assert!(found, "expected sink_errors_total with kind=Sink");
     }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn instrumented_sink_write_batch_partial_counts_successful_outcomes() {
+        use crate::traits::RowOutcome;
+        use metrics_util::debugging::DebugValue;
+
+        // Sink that returns 2 Ok + 1 Err.
+        struct MixedSink;
+        #[async_trait]
+        impl Sink for MixedSink {
+            async fn write_batch(&self, _r: &[Value]) -> Result<usize, FaucetError> {
+                unreachable!()
+            }
+            async fn write_batch_partial(
+                &self,
+                _r: &[Value],
+            ) -> Result<Vec<RowOutcome>, FaucetError> {
+                Ok(vec![
+                    Ok(()),
+                    Err(FaucetError::Sink("bad row".into())),
+                    Ok(()),
+                ])
+            }
+            fn connector_name(&self) -> &'static str {
+                "mixed"
+            }
+        }
+
+        let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let snap = snapshotter();
+
+        let inner = MixedSink;
+        let wrapped = InstrumentedSink::new(&inner, labels());
+        let _ = wrapped
+            .write_batch_partial(&[json!({}), json!({}), json!({})])
+            .await
+            .unwrap();
+
+        // faucet_sink_records_total should reflect 2 (Ok count), not 3.
+        let snapshot = snap.snapshot();
+        let v = snapshot
+            .into_vec()
+            .into_iter()
+            .find_map(|(k, _u, _d, v): (metrics_util::CompositeKey, _, _, _)| {
+                if k.key().name() == "faucet_sink_records_total" {
+                    Some(v)
+                } else {
+                    None
+                }
+            })
+            .expect("records_total recorded");
+        assert!(matches!(v, DebugValue::Counter(c) if c >= 2));
+    }
 }
