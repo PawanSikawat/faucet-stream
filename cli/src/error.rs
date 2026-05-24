@@ -153,6 +153,14 @@ pub enum CliError {
     #[error("{count} pipeline invocation(s) failed (see logs above for details)")]
     PipelineHadFailures { count: usize },
 
+    /// DLQ sink kind is not registered (not compiled in or feature disabled).
+    #[error("DLQ sink kind `{kind}` is not registered (in {context})")]
+    UnknownDlqSinkKind { kind: String, context: String },
+
+    /// DLQ budget field is set to zero (which is invalid; omit to mean 'unlimited').
+    #[error("DLQ {field} must be > 0 (got 0); omit the field to mean 'unlimited'")]
+    InvalidDlqBudget { field: &'static str },
+
     /// Pass-through for failures bubbling up from `faucet-core` or a connector.
     #[error(transparent)]
     Faucet(#[from] faucet_core::FaucetError),

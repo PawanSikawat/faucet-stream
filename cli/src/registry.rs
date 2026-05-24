@@ -260,6 +260,11 @@ pub fn source_schema(kind: &str) -> CliResult<Value> {
     }
 }
 
+/// Check if a sink kind is registered (not unknown or disabled by feature gate).
+pub fn sink_exists(kind: &str) -> bool {
+    sink_schema(kind).is_ok()
+}
+
 /// Return the JSON Schema for the named sink's config struct.
 pub fn sink_schema(kind: &str) -> CliResult<Value> {
     match kind {
