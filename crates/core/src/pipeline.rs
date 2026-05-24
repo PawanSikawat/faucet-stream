@@ -564,7 +564,11 @@ where
         }
     }
 
-    sink.flush().await?;
+    // Flush the DLQ sink BEFORE the main sink so quarantined records are made
+    // durable even if the main sink's final flush fails. The next run will
+    // re-read post-bookmark records from the source and re-route any that
+    // would have fallen out of the main sink's unflushed buffer; DLQ records,
+    // by contrast, are only ever written here and would otherwise be lost.
     if let Some(ref dlq_cfg) = dlq {
         let final_metric_labels: Vec<metrics::Label> = vec![
             metrics::Label::new(
@@ -595,6 +599,7 @@ where
             FaucetError::Sink(format!("DLQ sink flush failed: {e}"))
         })?;
     }
+    sink.flush().await?;
 
     tracing::info!(
         records_written,
