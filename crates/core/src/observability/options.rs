@@ -2,6 +2,7 @@
 //! argument list so future observability additions don't keep breaking the
 //! function signature.
 
+use crate::dlq::DlqConfig;
 use crate::state::StateStore;
 use std::sync::Arc;
 
@@ -12,6 +13,7 @@ pub struct RunStreamOptions {
     pub pipeline_name: Option<String>,
     pub row: Option<String>,
     pub run_id: Option<String>,
+    pub dlq: Option<DlqConfig>,
 }
 
 impl RunStreamOptions {
@@ -37,6 +39,11 @@ impl RunStreamOptions {
 
     pub fn with_run_id(mut self, id: impl Into<String>) -> Self {
         self.run_id = Some(id.into());
+        self
+    }
+
+    pub fn with_dlq(mut self, dlq: DlqConfig) -> Self {
+        self.dlq = Some(dlq);
         self
     }
 }

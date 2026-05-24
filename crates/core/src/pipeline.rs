@@ -39,6 +39,7 @@
 //! # }
 //! ```
 
+use crate::dlq::{DlqConfig, DlqStats};
 use crate::error::FaucetError;
 use crate::observability::RunStreamOptions;
 use crate::state::{StateStore, validate_state_key};
@@ -112,6 +113,8 @@ pub struct PipelineResult {
     /// handled automatically when a [`StateStore`] is attached via
     /// [`Pipeline::with_state_store`].
     pub bookmark: Option<Value>,
+    /// DLQ counters. `None` when no DLQ is configured.
+    pub dlq: Option<DlqStats>,
 }
 
 /// A pipeline that moves data from a [`Source`] to a [`Sink`].
@@ -125,6 +128,7 @@ pub struct Pipeline<'a, So: Source + ?Sized, Si: Sink + ?Sized> {
     name: Option<String>,
     row: Option<String>,
     run_id: Option<String>,
+    dlq: Option<DlqConfig>,
 }
 
 impl<'a, So: Source + ?Sized, Si: Sink + ?Sized> Pipeline<'a, So, Si> {
@@ -137,6 +141,7 @@ impl<'a, So: Source + ?Sized, Si: Sink + ?Sized> Pipeline<'a, So, Si> {
             name: None,
             row: None,
             run_id: None,
+            dlq: None,
         }
     }
 
@@ -177,6 +182,12 @@ impl<'a, So: Source + ?Sized, Si: Sink + ?Sized> Pipeline<'a, So, Si> {
     /// label.
     pub fn with_run_id(mut self, run_id: impl Into<String>) -> Self {
         self.run_id = Some(run_id.into());
+        self
+    }
+
+    /// Attach a DLQ for per-row failure routing.
+    pub fn with_dlq(mut self, dlq: DlqConfig) -> Self {
+        self.dlq = Some(dlq);
         self
     }
 
@@ -296,6 +307,9 @@ impl<'a, So: Source + ?Sized, Si: Sink + ?Sized> Pipeline<'a, So, Si> {
             if let (Some(store), Some(key)) = (wrapped_state_store.clone(), state_key) {
                 opts = opts.with_state(store, key);
             }
+            if let Some(dlq) = self.dlq.clone() {
+                opts = opts.with_dlq(dlq);
+            }
 
             run_stream(pages, &wrapped_sink, opts).await
         }
@@ -395,6 +409,7 @@ where
     Ok(PipelineResult {
         records_written,
         bookmark: last_bookmark,
+        dlq: None, // populated by the router in the DLQ branch; see Task 4
     })
 }
 
