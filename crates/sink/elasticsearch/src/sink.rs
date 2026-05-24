@@ -36,6 +36,27 @@ impl ElasticsearchSink {
         }
     }
 
+    /// Send a `POST /_bulk` request for a slice of records and return the raw
+    /// response body as a [`Value`].
+    ///
+    /// All HTTP-level errors (non-2xx status, network failures, JSON parse
+    /// errors) surface as `Err(FaucetError::…)`. Item-level errors inside the
+    /// response body are left to the caller to inspect.
+    async fn send_bulk_raw(&self, chunk: &[Value]) -> Result<Value, FaucetError> {
+        let body = self.build_bulk_body(chunk)?;
+        let url = format!("{}/_bulk", self.config.base_url);
+        let req = self
+            .client
+            .post(&url)
+            .header("Content-Type", "application/x-ndjson")
+            .body(body);
+        let req = self.apply_auth(req);
+        let resp = req.send().await?;
+        let resp = check_http_response(resp, DEFAULT_ERROR_BODY_MAX_LEN).await?;
+        let resp_body: Value = resp.json().await?;
+        Ok(resp_body)
+    }
+
     /// Build the NDJSON bulk request body for a slice of records.
     ///
     /// Each record is preceded by an `{"index": {...}}` action line.
@@ -110,19 +131,7 @@ impl faucet_core::Sink for ElasticsearchSink {
         };
 
         for chunk in chunks {
-            let body = self.build_bulk_body(chunk)?;
-
-            let url = format!("{}/_bulk", self.config.base_url);
-            let req = self
-                .client
-                .post(&url)
-                .header("Content-Type", "application/x-ndjson")
-                .body(body);
-            let req = self.apply_auth(req);
-
-            let resp = req.send().await?;
-            let resp = check_http_response(resp, DEFAULT_ERROR_BODY_MAX_LEN).await?;
-            let resp_body: Value = resp.json().await?;
+            let resp_body = self.send_bulk_raw(chunk).await?;
 
             // Check for item-level errors in the bulk response.
             if resp_body
@@ -160,6 +169,80 @@ impl faucet_core::Sink for ElasticsearchSink {
         }
 
         Ok(total_written)
+    }
+
+    /// Write records using the `_bulk` API, returning a per-row outcome.
+    ///
+    /// Unlike [`write_batch`](Self::write_batch), this method never collapses
+    /// item-level Elasticsearch errors into a single outer `Err`. Each
+    /// document maps to exactly one [`faucet_core::RowOutcome`]:
+    ///
+    /// - `Ok(())` — the item was accepted (no `"error"` key in the response
+    ///   action object).
+    /// - `Err(FaucetError::Sink(_))` — Elasticsearch rejected the document
+    ///   (the `"error"` object from the response is included in the message).
+    ///
+    /// HTTP-level failures (non-2xx status, network errors) still surface as
+    /// an outer `Err`, because the entire chunk could not be sent.
+    ///
+    /// When the server returns fewer items than records sent (a malformed
+    /// response), the missing tail positions are padded with
+    /// `Err(FaucetError::Sink("… truncated …"))` so the caller always
+    /// receives exactly `records.len()` outcomes.
+    async fn write_batch_partial(
+        &self,
+        records: &[Value],
+    ) -> Result<Vec<faucet_core::RowOutcome>, FaucetError> {
+        if records.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let chunks: Vec<&[Value]> = if self.config.batch_size == 0 {
+            vec![records]
+        } else {
+            records.chunks(self.config.batch_size).collect()
+        };
+
+        let mut outcomes: Vec<faucet_core::RowOutcome> = Vec::with_capacity(records.len());
+
+        for chunk in chunks {
+            let resp_body = self.send_bulk_raw(chunk).await?;
+
+            let items = resp_body
+                .get("items")
+                .and_then(|v| v.as_array())
+                .map(|v| v.as_slice())
+                .unwrap_or(&[]);
+
+            let mut chunk_outcomes: Vec<faucet_core::RowOutcome> = Vec::with_capacity(chunk.len());
+
+            for item in items.iter().take(chunk.len()) {
+                let action = item.get("index").or_else(|| item.get("create"));
+                let error = action.and_then(|a| a.get("error"));
+                if let Some(err) = error {
+                    chunk_outcomes.push(Err(FaucetError::Sink(format!(
+                        "Elasticsearch item rejected: {err}"
+                    ))));
+                } else {
+                    chunk_outcomes.push(Ok(()));
+                }
+            }
+
+            // Pad any missing tail positions defensively.
+            while chunk_outcomes.len() < chunk.len() {
+                chunk_outcomes.push(Err(FaucetError::Sink(
+                    "Elasticsearch bulk response truncated — row outcome missing".into(),
+                )));
+            }
+
+            outcomes.extend(chunk_outcomes);
+        }
+
+        Ok(outcomes)
+    }
+
+    fn connector_name(&self) -> &'static str {
+        "elasticsearch"
     }
 }
 
