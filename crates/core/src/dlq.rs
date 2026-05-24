@@ -11,6 +11,7 @@ use crate::traits::Sink;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use std::fmt;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -59,6 +60,18 @@ impl DlqConfig {
     }
 }
 
+impl fmt::Debug for DlqConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("DlqConfig")
+            .field("sink", &self.sink.connector_name())
+            .field("on_batch_error", &self.on_batch_error)
+            .field("max_failures_per_page", &self.max_failures_per_page)
+            .field("max_failures_total", &self.max_failures_total)
+            .field("include_original_payload", &self.include_original_payload)
+            .finish()
+    }
+}
+
 /// Counters returned alongside [`PipelineResult`](crate::PipelineResult)
 /// when a DLQ is wired.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -82,6 +95,8 @@ pub enum DlqReason {
 }
 
 impl DlqReason {
+    /// Returns the stable Prometheus label value for this reason.
+    /// Closed-set values: `"partial"` or `"dlq_all"`.
     pub fn as_str(self) -> &'static str {
         match self {
             DlqReason::Partial => "partial",
@@ -104,9 +119,14 @@ pub fn build_envelope(
 ) -> Value {
     let kind = crate::observability::decorator::error_kind(error);
     let message = error.to_string();
+    // `as_millis()` returns u128. Convert via TryFrom so we saturate at
+    // i64::MAX instead of silently wrapping to a negative number. The
+    // saturation ceiling (year ~292,000,000) is impossible in practice,
+    // so this only ever fires on a corrupt clock. `unwrap_or(0)` covers
+    // the (also impossible on modern systems) clock-before-epoch case.
     let ts_ms = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
+        .map(|d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
         .unwrap_or(0);
     json!({
         "error": { "kind": kind, "message": message },
@@ -172,6 +192,14 @@ mod tests {
         let all = serde_json::to_string(&OnBatchError::DlqAll).unwrap();
         assert_eq!(prop, "\"propagate\"");
         assert_eq!(all, "\"dlq_all\"");
+    }
+
+    #[test]
+    fn on_batch_error_deserializes_snake_case() {
+        let prop: OnBatchError = serde_json::from_str("\"propagate\"").unwrap();
+        let all: OnBatchError = serde_json::from_str("\"dlq_all\"").unwrap();
+        assert_eq!(prop, OnBatchError::Propagate);
+        assert_eq!(all, OnBatchError::DlqAll);
     }
 
     #[test]
