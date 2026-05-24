@@ -227,7 +227,15 @@ fn merge_pipeline(base: &PipelineSpec, row: &MatrixRow) -> PipelineSpec {
         .clone()
         .unwrap_or_else(|| base.transforms.clone());
     let state = row.state.clone().or_else(|| base.state.clone());
-    let dlq = row.dlq.clone().flatten().or_else(|| base.dlq.clone());
+    // Three-state match matches the validated path inside `expand`: explicit
+    // `null` disables, explicit object replaces wholesale, absent inherits.
+    // (The naive `row.dlq.flatten().or_else(|| base.dlq.clone())` would treat
+    // `null` and absent identically, silently inheriting on disable.)
+    let dlq = match row.dlq.clone() {
+        Some(None) => None,
+        Some(Some(spec)) => Some(spec),
+        None => base.dlq.clone(),
+    };
     PipelineSpec {
         source,
         sink,
