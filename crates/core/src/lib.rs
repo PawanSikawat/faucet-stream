@@ -37,7 +37,7 @@ pub use pipeline::{
 };
 pub use replication::ReplicationMethod;
 pub use state::{FileStateStore, MemoryStateStore, StateStore};
-pub use traits::{Sink, Source};
+pub use traits::{RowOutcome, Sink, Source};
 pub use transform::RecordTransform;
 
 // Re-export dependencies that connector authors need, so they only depend on
