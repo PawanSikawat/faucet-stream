@@ -26,9 +26,35 @@ cargo install faucet-cli --no-default-features \
 | `faucet schema source|sink <name>` | Print the JSON Schema for a specific connector's config. |
 | `faucet list` | List every compiled-in source, sink, transform, and state-store backend. |
 | `faucet preview <config> --limit N` | Run only the source side and emit the first N records to stdout as JSONL. |
-| `faucet init <name>` | Scaffold a starter `pipeline.yaml`. |
+| `faucet init [name] [--source X] [--sink Y]` | Scaffold a pipeline.yaml from each connector's JSON Schema. |
 
 Pass `--log-level debug` (or set `FAUCET_LOG=debug`) for verbose tracing. Logs are written to stderr; pipeline records and command output go to stdout.
+
+### `faucet init`
+
+`faucet init` writes a starter `pipeline.yaml` by walking each selected connector's JSON Schema. Required fields are surfaced with a `# REQUIRED` comment and a typed placeholder (`""`, `0`, `false`, `[]`, `{}`); optional fields are commented out so connector-level defaults stay in force. Enum-typed fields list valid values in the trailing comment. Tagged-enum blocks (the `#[serde(tag = "type")]` shape used by `auth:`, `pagination:`, BigQuery `credentials:`, etc.) inline the chosen variant and emit every other variant as a commented-out "Alternative variants" block right below it — so users can switch auth modes (or pagination, or credentials) without leaving the file to consult `faucet schema`. Run `faucet init --interactive` (requires `--features cli-interactive`) to be prompted for each variant up front.
+
+```bash
+faucet init                                              # rest → jsonl, name = my-pipeline
+faucet init my-job                                       # rest → jsonl, name = my-job
+faucet init my-job --source postgres --sink bigquery     # postgres → bigquery
+faucet init --source rest --sink jsonl -o config.yaml    # custom output path
+faucet init --force                                      # overwrite pipeline.yaml in cwd
+faucet init --interactive                                # TTY prompts (requires --features cli-interactive)
+```
+
+Flags:
+
+| Flag | Purpose |
+|------|---------|
+| `name` (positional) | Pipeline name written to the generated file's `name:`. Defaults to `my-pipeline`. |
+| `--source <kind>` | Source connector to scaffold (e.g. `rest`, `postgres`, `s3`). Defaults to `rest`. |
+| `--sink <kind>` | Sink connector to scaffold (e.g. `jsonl`, `bigquery`). Defaults to `jsonl`. |
+| `--output, -o <path>` | Output file path. Defaults to `pipeline.yaml`. |
+| `--force` | Overwrite an existing file at the output path. |
+| `--interactive` | Prompt for kinds via `inquire` on a TTY; falls back to `--source`/`--sink` otherwise. Requires the `cli-interactive` build feature. |
+
+Run `faucet list` to see every kind that's compiled into your build of `faucet`. Use `faucet schema source <kind>` (or `sink <kind>`) to see the full JSON Schema if a field's truncated description doesn't tell you enough.
 
 ### Config + `.env` auto-discovery
 

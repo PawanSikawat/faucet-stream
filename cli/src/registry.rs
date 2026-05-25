@@ -272,6 +272,11 @@ pub fn source_schema(kind: &str) -> CliResult<Value> {
     }
 }
 
+/// Check if a source kind is registered (not unknown or disabled by feature gate).
+pub fn source_exists(kind: &str) -> bool {
+    source_schema(kind).is_ok()
+}
+
 /// Check if a sink kind is registered (not unknown or disabled by feature gate).
 pub fn sink_exists(kind: &str) -> bool {
     sink_schema(kind).is_ok()

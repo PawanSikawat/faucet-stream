@@ -125,12 +125,26 @@ pub struct PreviewArgs {
 /// `faucet init` arguments.
 #[derive(Debug, Parser)]
 pub struct InitArgs {
-    /// Name of the pipeline (used in the generated file's `name:` field).
-    pub name: String,
+    /// Name written into the generated file's `name:` field. Defaults to
+    /// `my-pipeline` when omitted.
+    pub name: Option<String>,
+    /// Source connector kind to scaffold (e.g. `rest`, `postgres`, `s3`).
+    /// Defaults to `rest`. Run `faucet list` to see what is compiled in.
+    #[arg(long)]
+    pub source: Option<String>,
+    /// Sink connector kind to scaffold (e.g. `jsonl`, `bigquery`).
+    /// Defaults to `jsonl`. Run `faucet list` to see what is compiled in.
+    #[arg(long)]
+    pub sink: Option<String>,
     /// Output file path. Defaults to `pipeline.yaml`.
-    #[arg(long, default_value = "pipeline.yaml")]
+    #[arg(long, short = 'o', default_value = "pipeline.yaml")]
     pub output: PathBuf,
     /// Overwrite the output file if it already exists.
     #[arg(long)]
     pub force: bool,
+    /// Prompt for the source and sink kinds interactively instead of using
+    /// `--source` / `--sink`. Requires the `cli-interactive` build feature
+    /// and a TTY on stdin; falls back to the arg-driven path otherwise.
+    #[arg(long)]
+    pub interactive: bool,
 }

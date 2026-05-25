@@ -16,7 +16,7 @@ Inspired by [Meltano's RESTStream](https://sdk.meltano.com/en/latest/classes/sin
 
 ```bash
 cargo install faucet-cli
-faucet init my_pipeline      # scaffold pipeline.yaml
+faucet init my_pipeline --source postgres --sink bigquery   # scaffold pipeline.yaml from schemas
 faucet validate pipeline.yaml
 faucet run pipeline.yaml
 ```
@@ -968,6 +968,7 @@ cli/                          — faucet-cli: `faucet` binary, YAML/JSON pipelin
   src/
     main.rs, lib.rs, cli.rs, config.rs, interpolate.rs,
     registry.rs, state.rs, transforms.rs, error.rs,
+    init_template.rs,
     commands/{run, validate, schema, list, preview, init}.rs
   examples/                   — ready-to-run pipeline YAMLs
   tests/                      — assert_cmd + wiremock integration tests
