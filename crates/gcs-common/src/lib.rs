@@ -24,6 +24,11 @@ pub enum GcsCredentials {
     /// GCE/GKE metadata server, in that order.
     #[default]
     ApplicationDefault,
+    /// Anonymous credentials. Use this with emulators (e.g.
+    /// `fake-gcs-server`) that do not validate bearer tokens — the SDK
+    /// otherwise tries to fetch ADC tokens at request time and fails in
+    /// environments without GCP credentials.
+    Anonymous,
 }
 
 /// Build a `google_cloud_auth::credentials::Credentials` from a faucet
@@ -35,6 +40,9 @@ pub async fn build_credentials(
         GcsCredentials::ApplicationDefault => google_cloud_auth::credentials::Builder::default()
             .build()
             .map_err(|e| FaucetError::Auth(format!("GCS auth (ADC): {e}"))),
+        GcsCredentials::Anonymous => {
+            Ok(google_cloud_auth::credentials::anonymous::Builder::new().build())
+        }
         GcsCredentials::ServiceAccountJsonFile { path } => {
             let bytes = tokio::fs::read(path).await.map_err(|e| {
                 FaucetError::Auth(format!(
@@ -146,6 +154,25 @@ mod tests {
     fn credentials_default_is_application_default() {
         let creds = GcsCredentials::default();
         assert!(matches!(creds, GcsCredentials::ApplicationDefault));
+    }
+
+    #[test]
+    fn credentials_serde_anonymous() {
+        let creds = GcsCredentials::Anonymous;
+        let v = serde_json::to_value(&creds).unwrap();
+        assert_eq!(v, json!({"method": "anonymous"}));
+        let back: GcsCredentials = serde_json::from_value(v).unwrap();
+        assert!(matches!(back, GcsCredentials::Anonymous));
+    }
+
+    #[tokio::test]
+    async fn build_credentials_anonymous_succeeds() {
+        let creds = build_credentials(&GcsCredentials::Anonymous).await.unwrap();
+        // Smoke check: the call returns a real Credentials handle. We
+        // can't easily assert on its internal type, but the fact that
+        // it returned `Ok` (vs. needing GCP creds in the environment)
+        // is the point of the variant.
+        let _ = creds;
     }
 
     #[tokio::test]

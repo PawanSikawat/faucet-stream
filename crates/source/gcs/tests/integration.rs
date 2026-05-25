@@ -86,7 +86,7 @@ async fn source_reads_json_lines() {
 
     let config = GcsSourceConfig::new(&bucket)
         .prefix("data/")
-        .credentials(GcsCredentials::ApplicationDefault)
+        .credentials(GcsCredentials::Anonymous)
         .storage_host(&host);
     let source = GcsSource::new(config).await.unwrap();
     let records = source.fetch_with_context(&HashMap::new()).await.unwrap();
@@ -114,6 +114,7 @@ async fn source_reads_json_array() {
     let config = GcsSourceConfig::new(&bucket)
         .prefix("data/")
         .file_format(GcsFileFormat::JsonArray)
+        .credentials(GcsCredentials::Anonymous)
         .storage_host(&host);
     let source = GcsSource::new(config).await.unwrap();
     let records = source.fetch_with_context(&HashMap::new()).await.unwrap();
@@ -130,6 +131,7 @@ async fn source_reads_raw_text() {
     let config = GcsSourceConfig::new(&bucket)
         .prefix("raw/")
         .file_format(GcsFileFormat::RawText)
+        .credentials(GcsCredentials::Anonymous)
         .storage_host(&host);
     let source = GcsSource::new(config).await.unwrap();
     let records = source.fetch_with_context(&HashMap::new()).await.unwrap();
@@ -170,6 +172,7 @@ async fn source_object_keys_skips_listing() {
 
     let config = GcsSourceConfig::new(&bucket)
         .object_keys(vec!["a.jsonl".into(), "c.jsonl".into()])
+        .credentials(GcsCredentials::Anonymous)
         .storage_host(&host);
     let source = GcsSource::new(config).await.unwrap();
     let records = source.fetch_with_context(&HashMap::new()).await.unwrap();
@@ -204,6 +207,7 @@ async fn source_stream_pages_batch_size_zero_yields_one_page_per_object() {
     let config = GcsSourceConfig::new(&bucket)
         .prefix("p/")
         .with_batch_size(0)
+        .credentials(GcsCredentials::Anonymous)
         .storage_host(&host);
     let source = GcsSource::new(config).await.unwrap();
     let ctx = HashMap::new();

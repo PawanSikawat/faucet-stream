@@ -58,7 +58,7 @@ async fn sink_writes_and_source_reads_them_back() {
     let sink = GcsSink::new(
         GcsSinkConfig::new(&bucket)
             .prefix("rt/")
-            .credentials(GcsCredentials::ApplicationDefault)
+            .credentials(GcsCredentials::Anonymous)
             .storage_host(&host),
     )
     .await
@@ -71,6 +71,7 @@ async fn sink_writes_and_source_reads_them_back() {
     let source = GcsSource::new(
         GcsSourceConfig::new(&bucket)
             .prefix("rt/")
+            .credentials(faucet_source_gcs::GcsCredentials::Anonymous)
             .storage_host(&host),
     )
     .await
@@ -93,6 +94,7 @@ async fn sink_rolls_files_per_max_records_per_file() {
     let sink = GcsSink::new(
         GcsSinkConfig::new(&bucket)
             .prefix("roll/")
+            .credentials(GcsCredentials::Anonymous)
             .max_records_per_file(10)
             .with_batch_size(0)
             .storage_host(&host),
@@ -107,6 +109,7 @@ async fn sink_rolls_files_per_max_records_per_file() {
     let source = GcsSource::new(
         GcsSourceConfig::new(&bucket)
             .prefix("roll/")
+            .credentials(faucet_source_gcs::GcsCredentials::Anonymous)
             .with_batch_size(0)
             .storage_host(&host),
     )

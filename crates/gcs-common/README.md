@@ -17,10 +17,14 @@ The discriminator is `snake_case`.
 | `application_default` *(default)* | `{ method: application_default }` |
 | `service_account_json_file` | `{ method: service_account_json_file, path: /run/secrets/sa.json }` |
 | `service_account_json_inline` | `{ method: service_account_json_inline, json: "${env:GCP_SA_JSON}" }` |
+| `anonymous` | `{ method: anonymous }` |
 
 `application_default` (ADC) honours `GOOGLE_APPLICATION_CREDENTIALS`,
 `gcloud auth application-default login` creds, and the GCE/GKE metadata
 server in that order.
+
+`anonymous` is for emulators (e.g. `fake-gcs-server`) that don't validate
+bearer tokens. Production deployments should never use it.
 
 ## Client builders
 
