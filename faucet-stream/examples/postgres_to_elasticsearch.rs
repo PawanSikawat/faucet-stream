@@ -11,7 +11,7 @@
 //! ```
 
 use faucet_stream::sink::elasticsearch::{
-    ElasticsearchSink, ElasticsearchSinkAuth, ElasticsearchSinkConfig,
+    ElasticsearchAuth, ElasticsearchSink, ElasticsearchSinkConfig,
 };
 use faucet_stream::source::postgres::{PostgresSource, PostgresSourceConfig};
 use faucet_stream::{Pipeline, json};
@@ -30,7 +30,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let sink = ElasticsearchSink::new(
         ElasticsearchSinkConfig::new("https://es.example.com:9200", "articles")
-            .auth(ElasticsearchSinkAuth::ApiKey {
+            .auth(ElasticsearchAuth::ApiKey {
                 key: std::env::var("ES_API_KEY")?,
             })
             .with_batch_size(500)

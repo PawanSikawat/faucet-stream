@@ -52,8 +52,9 @@ Cargo workspace, 35 crates (34 libraries + the `faucet-cli` binary). All connect
 | `faucet-sink-stdout` | `crates/sink/stdout/` | Stdout/stderr sink — JSON Lines, pretty JSON, or TSV |
 | `faucet-sink-parquet` | `crates/sink/parquet/` | Parquet sink — local or S3; schema inference, compression, row/byte rollover |
 | `faucet-sink-kafka` | `crates/sink/kafka/` | Kafka producer — FuturesUnordered batched sends, QueueFull retry, multi-topic routing |
-| `faucet-kafka-common` | `crates/kafka-common/` | Shared types for Kafka source/sink — auth, value formats, Schema Registry client |
+| `faucet-elasticsearch-common` | `crates/elasticsearch-common/` | Shared `ElasticsearchAuth` enum for Elasticsearch source/sink |
 | `faucet-gcs-common` | `crates/gcs-common/` | Shared types for GCS source/sink — credentials enum, Storage/StorageControl client builders |
+| `faucet-kafka-common` | `crates/kafka-common/` | Shared types for Kafka source/sink — auth, value formats, Schema Registry client |
 | `faucet-state-redis` | `crates/state/redis/` | Redis-backed `StateStore` for replication bookmarks |
 | `faucet-state-postgres` | `crates/state/postgres/` | PostgreSQL-backed `StateStore` for replication bookmarks |
 | `faucet-stream` | `faucet-stream/` | Umbrella crate — feature-gated re-exports of all connectors and state backends |
@@ -342,7 +343,7 @@ When the user points out something fundamental about how code in this library sh
 
 When a connector ships both a `faucet-source-<name>` and a `faucet-sink-<name>` crate for the same external system, shared configuration types (auth, value formats, compression, TLS, etc.) live in a dedicated `faucet-<name>-common` crate. Both the source and sink crates depend on the common crate and re-export the shared types so end-user imports do not change. See `faucet-kafka-common` for the reference implementation.
 
-Existing pairs (`postgres`, `mysql`, `sqlite`, `redis`, `mongodb`, `s3`, `csv`, `elasticsearch`) predate this convention and currently duplicate their tiny shared config surface; backfilling them is tracked separately (#43). New pairs must follow the convention from the start.
+Existing pairs that predate this convention (`postgres`, `mysql`, `sqlite`, `redis`, `mongodb`, `s3`, `csv`) duplicate a tiny shared surface — typically just `connection_url` / `batch_size` / `max_connections`. The Elasticsearch pair tripped the backfill trigger in 2026-05 (a duplicated 4-variant auth enum) and was migrated to `faucet-elasticsearch-common`. The remaining seven pairs stay duplicated for now: backfill an existing pair only once it gains a second shared type (e.g. TLS settings, a credential enum, a compression enum), since the cost of a near-empty `-common` crate exceeds the benefit until then. New pairs must follow the convention from the start.
 
 ### Config loading
 

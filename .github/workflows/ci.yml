@@ -232,3 +232,5 @@ jobs:
         run: cargo test -p faucet-sink-kafka --test integration -- --test-threads=1
       - name: Run kafka schema-registry-enabled tests
         run: cargo test -p faucet-kafka-common --all-features
+      - name: Run elasticsearch-common tests
+        run: cargo test -p faucet-elasticsearch-common
