@@ -58,7 +58,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 |-------|------|---------|-------------|
 | `base_url` | `String` | *(required)* | Base URL of the Elasticsearch cluster (e.g. `"http://localhost:9200"`). Trailing slashes are stripped automatically. |
 | `index` | `String` | *(required)* | Target index name |
-| `auth` | `ElasticsearchSinkAuth` | `None` | Authentication method (see below) |
+| `auth` | `ElasticsearchAuth` | `None` | Authentication method (see below) |
 | `batch_size` | `usize` | `1000` | Maximum documents per `_bulk` request. See [Streaming and batching](#streaming-and-batching) below |
 | `id_field` | `Option<String>` | `None` | JSON field name to use as the document `_id`. If `None`, Elasticsearch auto-generates IDs. |
 
@@ -98,7 +98,7 @@ size.
 inspection of the `_bulk` response and the "first item that failed"
 error message are unchanged.
 
-### Authentication (`ElasticsearchSinkAuth`)
+### Authentication (`ElasticsearchAuth`)
 
 | Variant | Fields | Description |
 |---------|--------|-------------|
@@ -120,10 +120,10 @@ When `id_field` is set, the sink extracts the document `_id` from each record:
 ### Builder Methods
 
 ```rust
-use faucet_sink_elasticsearch::{ElasticsearchSinkConfig, ElasticsearchSinkAuth};
+use faucet_sink_elasticsearch::{ElasticsearchSinkConfig, ElasticsearchAuth};
 
 let config = ElasticsearchSinkConfig::new("http://localhost:9200", "events")
-    .auth(ElasticsearchSinkAuth::Basic {
+    .auth(ElasticsearchAuth::Basic {
         username: "elastic".into(),
         password: "changeme".into(),
     })
@@ -268,7 +268,7 @@ let config = ElasticsearchSinkConfig::new(
     "https://my-deployment.es.us-east-1.aws.found.io:9243",
     "application-events",
 )
-.auth(ElasticsearchSinkAuth::ApiKey {
+.auth(ElasticsearchAuth::ApiKey {
     key: std::env::var("ES_API_KEY")?,
 })
 .with_batch_size(2000);
@@ -298,6 +298,12 @@ failures from Elasticsearch's `_bulk` response items. Configure a DLQ
 at the pipeline level (see [cli/README.md — dlq:](../../../cli/README.md))
 and only the documents Elasticsearch actually rejected will be routed
 there — already-indexed items stay in the main sink with no duplicates.
+
+## Shared types
+
+`ElasticsearchAuth` lives in [`faucet-elasticsearch-common`](../../elasticsearch-common) and is shared with `faucet-source-elasticsearch`. The sink re-exports it as `faucet_sink_elasticsearch::ElasticsearchAuth`.
+
+> **Deprecation:** the previous name `ElasticsearchSinkAuth` is retained as a deprecated type alias in `0.3.x` and removed in `0.4.0`. Migrate imports to `ElasticsearchAuth` at your convenience.
 
 ## License
 
