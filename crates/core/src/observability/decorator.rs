@@ -625,18 +625,32 @@ mod sink_tests {
             .unwrap();
 
         // faucet_sink_records_total should reflect 2 (Ok count), not 3.
+        // Filter to this test's own labels (connector="mixed") — prior tests in
+        // the same `mod sink_tests` (e.g. records_writes_and_records_counters
+        // for connector="mock-sink") leave entries in the shared global
+        // recorder, and the HashMap-iteration order of `Snapshot::into_vec()`
+        // is non-deterministic, so a naïve `find_map` returns an arbitrary
+        // entry.
         let snapshot = snap.snapshot();
-        let v = snapshot
+        let records: u64 = snapshot
             .into_vec()
             .into_iter()
-            .find_map(|(k, _u, _d, v): (metrics_util::CompositeKey, _, _, _)| {
-                if k.key().name() == "faucet_sink_records_total" {
-                    Some(v)
+            .filter_map(|(k, _u, _d, v): (metrics_util::CompositeKey, _, _, _)| {
+                if k.key().name() == "faucet_sink_records_total"
+                    && k.key()
+                        .labels()
+                        .any(|l| l.key() == "connector" && l.value() == "mixed")
+                    && let DebugValue::Counter(c) = v
+                {
+                    Some(c)
                 } else {
                     None
                 }
             })
-            .expect("records_total recorded");
-        assert!(matches!(v, DebugValue::Counter(c) if c >= 2));
+            .sum();
+        assert!(
+            records >= 2,
+            "expected faucet_sink_records_total{{connector=mixed}} >= 2, got {records}"
+        );
     }
 }
