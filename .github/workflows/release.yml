@@ -96,6 +96,7 @@ jobs:
             faucet-core
             faucet-kafka-common
             faucet-elasticsearch-common
+            faucet-gcs-common
             faucet-source-rest faucet-source-graphql faucet-source-xml
             faucet-source-grpc faucet-source-postgres faucet-source-postgres-cdc
             faucet-source-mysql
@@ -112,6 +113,7 @@ jobs:
           connectors=(
             faucet-kafka-common
             faucet-elasticsearch-common
+            faucet-gcs-common
             faucet-source-rest faucet-source-graphql faucet-source-xml
             faucet-source-grpc faucet-source-postgres faucet-source-postgres-cdc
             faucet-source-mysql
@@ -161,6 +163,7 @@ jobs:
             faucet-core
             faucet-kafka-common
             faucet-elasticsearch-common
+            faucet-gcs-common
             faucet-source-rest faucet-source-graphql faucet-source-xml
             faucet-source-grpc faucet-source-postgres faucet-source-postgres-cdc
             faucet-source-mysql
@@ -177,6 +180,7 @@ jobs:
           connectors=(
             faucet-kafka-common
             faucet-elasticsearch-common
+            faucet-gcs-common
             faucet-source-rest faucet-source-graphql faucet-source-xml
             faucet-source-grpc faucet-source-postgres faucet-source-postgres-cdc
             faucet-source-mysql
