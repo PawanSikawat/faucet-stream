@@ -2,6 +2,7 @@
 resolver = "3"
 members = [
     "crates/core",
+    "crates/elasticsearch-common",
     "crates/gcs-common",
     "crates/kafka-common",
     "crates/source/rest",
@@ -54,6 +55,7 @@ repository = "https://github.com/PawanSikawat/faucet-stream"
 [workspace.dependencies]
 # Internal crates
 faucet-core = { path = "crates/core", version = "0.2.0" }
+faucet-elasticsearch-common = { path = "crates/elasticsearch-common", version = "0.1.0" }
 faucet-gcs-common = { path = "crates/gcs-common", version = "0.2.0" }
 faucet-kafka-common = { path = "crates/kafka-common", version = "0.2.0" }
 faucet-source-rest = { path = "crates/source/rest", version = "0.2.0" }

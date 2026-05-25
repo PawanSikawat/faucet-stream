@@ -1,0 +1,15 @@
+[package]
+name = "faucet-elasticsearch-common"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Shared configuration types for the faucet-stream Elasticsearch source and sink connectors"
+
+[dependencies]
+serde = { workspace = true, features = ["derive"] }
+schemars.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
