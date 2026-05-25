@@ -2,6 +2,7 @@
 resolver = "3"
 members = [
     "crates/core",
+    "crates/gcs-common",
     "crates/kafka-common",
     "crates/source/rest",
     "crates/source/graphql",
@@ -11,6 +12,7 @@ members = [
     "crates/source/postgres",
     "crates/source/mysql",
 
+    "crates/source/gcs",
     "crates/source/s3",
     "crates/source/mongodb",
     "crates/source/redis",
@@ -27,6 +29,7 @@ members = [
     "crates/sink/mysql",
     "crates/sink/sqlite",
 
+    "crates/sink/gcs",
     "crates/sink/s3",
     "crates/sink/mongodb",
     "crates/sink/redis",
@@ -51,6 +54,7 @@ repository = "https://github.com/PawanSikawat/faucet-stream"
 [workspace.dependencies]
 # Internal crates
 faucet-core = { path = "crates/core", version = "0.2.0" }
+faucet-gcs-common = { path = "crates/gcs-common", version = "0.2.0" }
 faucet-kafka-common = { path = "crates/kafka-common", version = "0.2.0" }
 faucet-source-rest = { path = "crates/source/rest", version = "0.2.0" }
 faucet-source-graphql = { path = "crates/source/graphql", version = "0.2.0" }
@@ -65,6 +69,7 @@ faucet-source-postgres = { path = "crates/source/postgres", version = "0.2.0" }
 faucet-source-postgres-cdc = { path = "crates/source/postgres-cdc", version = "0.2.0" }
 faucet-source-mysql = { path = "crates/source/mysql", version = "0.2.0" }
 
+faucet-source-gcs = { path = "crates/source/gcs", version = "0.2.0" }
 faucet-source-s3 = { path = "crates/source/s3", version = "0.2.0" }
 faucet-source-mongodb = { path = "crates/source/mongodb", version = "0.2.0" }
 faucet-source-redis = { path = "crates/source/redis", version = "0.2.0" }
@@ -76,6 +81,7 @@ faucet-source-parquet = { path = "crates/source/parquet", version = "0.2.0" }
 faucet-sink-mysql = { path = "crates/sink/mysql", version = "0.2.0" }
 faucet-sink-sqlite = { path = "crates/sink/sqlite", version = "0.2.0" }
 
+faucet-sink-gcs = { path = "crates/sink/gcs", version = "0.2.0" }
 faucet-sink-s3 = { path = "crates/sink/s3", version = "0.2.0" }
 faucet-sink-mongodb = { path = "crates/sink/mongodb", version = "0.2.0" }
 faucet-sink-redis = { path = "crates/sink/redis", version = "0.2.0" }
@@ -113,8 +119,11 @@ chrono = { version = "0.4", default-features = false, features = ["clock", "serd
 jsonwebtoken = "9"
 base64 = "0.22"
 uuid = { version = "1", features = ["v4", "v7"] }
+google-cloud-storage = "1.12"
+google-cloud-auth = "1.10"
 aws-sdk-s3 = "1"
 aws-config = { version = "1", features = ["behavior-version-latest"] }
+tokio-util = { version = "0.7", features = ["io"] }
 
 mongodb = "3"
 csv = "1.3"

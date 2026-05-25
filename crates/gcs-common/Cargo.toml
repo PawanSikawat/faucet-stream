@@ -1,0 +1,17 @@
+[package]
+name = "faucet-gcs-common"
+version = "0.2.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Shared GCS credential and client types for the faucet-stream ecosystem"
+
+[dependencies]
+faucet-core.workspace = true
+schemars.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+google-cloud-storage.workspace = true
+google-cloud-auth.workspace = true
+tokio.workspace = true

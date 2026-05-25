@@ -120,6 +120,11 @@ pub async fn build_source(kind: &str, config: Value) -> CliResult<Box<dyn Source
                 faucet_source_parquet::ParquetSource::new(cfg).await?,
             ))
         }
+        #[cfg(feature = "source-gcs")]
+        "gcs" => {
+            let cfg = decode::<faucet_source_gcs::GcsSourceConfig>("source", "gcs", config)?;
+            Ok(Box::new(faucet_source_gcs::GcsSource::new(cfg).await?))
+        }
         other => Err(unknown(other, "source", source_kinds())),
     }
 }
@@ -215,6 +220,11 @@ pub async fn build_sink(kind: &str, config: Value) -> CliResult<Box<dyn Sink>> {
             let cfg = decode::<faucet_sink_parquet::ParquetSinkConfig>("sink", "parquet", config)?;
             Ok(Box::new(faucet_sink_parquet::ParquetSink::new(cfg).await?))
         }
+        #[cfg(feature = "sink-gcs")]
+        "gcs" => {
+            let cfg = decode::<faucet_sink_gcs::GcsSinkConfig>("sink", "gcs", config)?;
+            Ok(Box::new(faucet_sink_gcs::GcsSink::new(cfg).await?))
+        }
         other => Err(unknown(other, "sink", sink_kinds())),
     }
 }
@@ -256,6 +266,8 @@ pub fn source_schema(kind: &str) -> CliResult<Value> {
         "kafka" => Ok(schema::<faucet_source_kafka::KafkaSourceConfig>()),
         #[cfg(feature = "source-parquet")]
         "parquet" => Ok(schema::<faucet_source_parquet::ParquetSourceConfig>()),
+        #[cfg(feature = "source-gcs")]
+        "gcs" => Ok(schema::<faucet_source_gcs::GcsSourceConfig>()),
         other => Err(unknown(other, "source", source_kinds())),
     }
 }
@@ -298,6 +310,8 @@ pub fn sink_schema(kind: &str) -> CliResult<Value> {
         "stdout" => Ok(schema::<faucet_sink_stdout::StdoutSinkConfig>()),
         #[cfg(feature = "sink-parquet")]
         "parquet" => Ok(schema::<faucet_sink_parquet::ParquetSinkConfig>()),
+        #[cfg(feature = "sink-gcs")]
+        "gcs" => Ok(schema::<faucet_sink_gcs::GcsSinkConfig>()),
         other => Err(unknown(other, "sink", sink_kinds())),
     }
 }
@@ -341,6 +355,11 @@ pub fn source_descriptions() -> Vec<(&'static str, &'static str)> {
     v.push(("kafka", "Apache Kafka consumer (rdkafka). Subscribes to topics and drains messages with idle/max-messages termination."));
     #[cfg(feature = "source-parquet")]
     v.push(("parquet", "Apache Parquet file source (local path, glob, or S3). Streams record batches via the Arrow async reader."));
+    #[cfg(feature = "source-gcs")]
+    v.push((
+        "gcs",
+        "Google Cloud Storage source — JSONL, JSON array, or raw text",
+    ));
     v
 }
 
@@ -378,6 +397,8 @@ pub fn sink_descriptions() -> Vec<(&'static str, &'static str)> {
     v.push(("stdout", "Stdout / stderr sink (JSON Lines, pretty, TSV)"));
     #[cfg(feature = "sink-parquet")]
     v.push(("parquet", "Apache Parquet file sink (local path or S3). Schema-inferred, configurable compression, row/byte rollover."));
+    #[cfg(feature = "sink-gcs")]
+    v.push(("gcs", "Google Cloud Storage sink — JSONL files"));
     v
 }
 

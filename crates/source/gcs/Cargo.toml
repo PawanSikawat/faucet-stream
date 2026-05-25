@@ -1,0 +1,32 @@
+[package]
+name = "faucet-source-gcs"
+version = "0.2.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Google Cloud Storage source connector for the faucet-stream ecosystem"
+
+[dependencies]
+faucet-core.workspace = true
+faucet-gcs-common.workspace = true
+schemars.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+async-trait.workspace = true
+tracing.workspace = true
+tokio.workspace = true
+google-cloud-storage = { workspace = true, features = ["unstable-stream"] }
+google-cloud-gax = "1.10"
+async-stream.workspace = true
+futures.workspace = true
+bytes.workspace = true
+tokio-util.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+serde_json.workspace = true
+futures.workspace = true
+testcontainers = "0.27"
+reqwest = { workspace = true }
+urlencoding.workspace = true

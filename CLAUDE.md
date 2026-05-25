@@ -28,6 +28,7 @@ Cargo workspace, 35 crates (34 libraries + the `faucet-cli` binary). All connect
 | `faucet-source-mysql` | `crates/source/mysql/` | MySQL query source |
 | `faucet-source-sqlite` | `crates/source/sqlite/` | SQLite query source |
 | `faucet-source-s3` | `crates/source/s3/` | AWS S3 source — JSONL, JSON array, or raw text |
+| `faucet-source-gcs` | `crates/source/gcs/` | Google Cloud Storage source — JSONL, JSON array, or raw text |
 | `faucet-source-mongodb` | `crates/source/mongodb/` | MongoDB source — find() with filter/projection/sort |
 | `faucet-source-redis` | `crates/source/redis/` | Redis source — streams, lists, key patterns |
 | `faucet-source-webhook` | `crates/source/webhook/` | Webhook source — temporary HTTP server collecting POSTs |
@@ -42,6 +43,7 @@ Cargo workspace, 35 crates (34 libraries + the `faucet-cli` binary). All connect
 | `faucet-sink-mysql` | `crates/sink/mysql/` | MySQL sink — JSON column or auto-mapped columns |
 | `faucet-sink-sqlite` | `crates/sink/sqlite/` | SQLite sink — JSON column or auto-mapped columns |
 | `faucet-sink-s3` | `crates/sink/s3/` | S3 sink — JSONL files |
+| `faucet-sink-gcs` | `crates/sink/gcs/` | Google Cloud Storage sink — JSONL files |
 | `faucet-sink-mongodb` | `crates/sink/mongodb/` | MongoDB sink — insert_many |
 | `faucet-sink-redis` | `crates/sink/redis/` | Redis sink — streams, lists, key-value |
 | `faucet-sink-csv` | `crates/sink/csv/` | CSV file sink |
@@ -51,6 +53,7 @@ Cargo workspace, 35 crates (34 libraries + the `faucet-cli` binary). All connect
 | `faucet-sink-parquet` | `crates/sink/parquet/` | Parquet sink — local or S3; schema inference, compression, row/byte rollover |
 | `faucet-sink-kafka` | `crates/sink/kafka/` | Kafka producer — FuturesUnordered batched sends, QueueFull retry, multi-topic routing |
 | `faucet-kafka-common` | `crates/kafka-common/` | Shared types for Kafka source/sink — auth, value formats, Schema Registry client |
+| `faucet-gcs-common` | `crates/gcs-common/` | Shared types for GCS source/sink — credentials enum, Storage/StorageControl client builders |
 | `faucet-state-redis` | `crates/state/redis/` | Redis-backed `StateStore` for replication bookmarks |
 | `faucet-state-postgres` | `crates/state/postgres/` | PostgreSQL-backed `StateStore` for replication bookmarks |
 | `faucet-stream` | `faucet-stream/` | Umbrella crate — feature-gated re-exports of all connectors and state backends |
@@ -172,9 +175,9 @@ All connectors must be optimised for throughput by default. When modifying or ad
 
 Every `Pipeline::run` drives `Source::stream_pages(ctx, batch_size)` internally and writes each emitted `StreamPage` to the sink as it arrives. This bounds memory at O(batch_size) on both sides regardless of total record volume.
 
-Sources that override `stream_pages` to stream natively from their underlying primitive: `rest`, `graphql`, `postgres`, `postgres-cdc`, `mysql`, `sqlite`, `mongodb`, `s3` (JSONL/RawText modes), `parquet`, `csv`, `xml`, `elasticsearch` (scroll API), `kafka`, `redis` (all three modes). Sources that intentionally keep the default chunk-the-buffer impl (no native streaming primitive): `grpc` (unary RPC), `webhook` (buffer-shaped by nature). Server-streaming gRPC is tracked separately as #34.
+Sources that override `stream_pages` to stream natively from their underlying primitive: `rest`, `graphql`, `postgres`, `postgres-cdc`, `mysql`, `sqlite`, `mongodb`, `s3` (JSONL/RawText modes), `gcs` (JSONL/RawText modes), `parquet`, `csv`, `xml`, `elasticsearch` (scroll API), `kafka`, `redis` (all three modes). Sources that intentionally keep the default chunk-the-buffer impl (no native streaming primitive): `grpc` (unary RPC), `webhook` (buffer-shaped by nature). Server-streaming gRPC is tracked separately as #34.
 
-Sinks that expose a `batch_size` config field for write-side re-chunking: every sink — `parquet`, `s3`, `bigquery`, `snowflake`, `postgres`, `mysql`, `sqlite`, `mongodb`, `redis`, `elasticsearch`, `http`, `kafka` (re-chunking is internally the natural unit for each — multi-row INSERTs, `_bulk` bodies, `tabledata.insertAll` requests, `insert_many` calls, Redis pipelines, etc.). The file/append sinks (`jsonl`, `csv`, `stdout`) carry the field for config parity but write per-record, so `batch_size` is a no-op for them.
+Sinks that expose a `batch_size` config field for write-side re-chunking: every sink — `parquet`, `s3`, `gcs`, `bigquery`, `snowflake`, `postgres`, `mysql`, `sqlite`, `mongodb`, `redis`, `elasticsearch`, `http`, `kafka` (re-chunking is internally the natural unit for each — multi-row INSERTs, `_bulk` bodies, `tabledata.insertAll` requests, `insert_many` calls, Redis pipelines, etc.). The file/append sinks (`jsonl`, `csv`, `stdout`) carry the field for config parity but write per-record, so `batch_size` is a no-op for them.
 
 **Contract:**
 - `Source::stream_pages` returns `Stream<Item = Result<StreamPage, FaucetError>>` where `StreamPage { records, bookmark }`.
