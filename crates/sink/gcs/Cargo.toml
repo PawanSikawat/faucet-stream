@@ -25,3 +25,7 @@ uuid.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 serde_json.workspace = true
 testcontainers = "0.27"
+faucet-source-gcs = { workspace = true }
+reqwest = { workspace = true }
+urlencoding.workspace = true
+futures.workspace = true
