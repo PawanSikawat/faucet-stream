@@ -1,6 +1,8 @@
 //! Shared GCS credential and client construction for faucet source and
 //! sink connectors.
 
+use faucet_core::FaucetError;
+use google_cloud_storage::client::{Storage, StorageControl};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -22,6 +24,77 @@ pub enum GcsCredentials {
     /// GCE/GKE metadata server, in that order.
     #[default]
     ApplicationDefault,
+}
+
+/// Build a `google_cloud_auth::credentials::Credentials` from a faucet
+/// credential spec. All failures map to `FaucetError::Auth`.
+pub async fn build_credentials(
+    creds: &GcsCredentials,
+) -> Result<google_cloud_auth::credentials::Credentials, FaucetError> {
+    match creds {
+        GcsCredentials::ApplicationDefault => google_cloud_auth::credentials::Builder::default()
+            .build()
+            .map_err(|e| FaucetError::Auth(format!("GCS auth (ADC): {e}"))),
+        GcsCredentials::ServiceAccountJsonFile { path } => {
+            let bytes = tokio::fs::read(path).await.map_err(|e| {
+                FaucetError::Auth(format!(
+                    "GCS auth: could not read service-account key from '{path}': {e}"
+                ))
+            })?;
+            let value: serde_json::Value = serde_json::from_slice(&bytes).map_err(|e| {
+                FaucetError::Auth(format!(
+                    "GCS auth: service-account key at '{path}' is not valid JSON: {e}"
+                ))
+            })?;
+            google_cloud_auth::credentials::service_account::Builder::new(value)
+                .build()
+                .map_err(|e| FaucetError::Auth(format!("GCS auth (service account): {e}")))
+        }
+        GcsCredentials::ServiceAccountJsonInline { json } => {
+            let value: serde_json::Value = serde_json::from_str(json).map_err(|e| {
+                FaucetError::Auth(format!(
+                    "GCS auth: inline service-account key is not valid JSON: {e}"
+                ))
+            })?;
+            google_cloud_auth::credentials::service_account::Builder::new(value)
+                .build()
+                .map_err(|e| FaucetError::Auth(format!("GCS auth (service account): {e}")))
+        }
+    }
+}
+
+/// Build a data-plane [`Storage`] client. Accepts an optional storage-host
+/// override for integration tests (e.g. fake-gcs-server at
+/// `http://localhost:4443`).
+pub async fn build_storage(
+    creds: &GcsCredentials,
+    storage_host: Option<&str>,
+) -> Result<Storage, FaucetError> {
+    let credentials = build_credentials(creds).await?;
+    let mut builder = Storage::builder().with_credentials(credentials);
+    if let Some(host) = storage_host {
+        builder = builder.with_endpoint(host.to_string());
+    }
+    builder
+        .build()
+        .await
+        .map_err(|e| FaucetError::Auth(format!("GCS client build failed: {e}")))
+}
+
+/// Build a control-plane [`StorageControl`] client.
+pub async fn build_storage_control(
+    creds: &GcsCredentials,
+    storage_host: Option<&str>,
+) -> Result<StorageControl, FaucetError> {
+    let credentials = build_credentials(creds).await?;
+    let mut builder = StorageControl::builder().with_credentials(credentials);
+    if let Some(host) = storage_host {
+        builder = builder.with_endpoint(host.to_string());
+    }
+    builder
+        .build()
+        .await
+        .map_err(|e| FaucetError::Auth(format!("GCS control client build failed: {e}")))
 }
 
 #[cfg(test)]
@@ -73,5 +146,28 @@ mod tests {
     fn credentials_default_is_application_default() {
         let creds = GcsCredentials::default();
         assert!(matches!(creds, GcsCredentials::ApplicationDefault));
+    }
+
+    #[tokio::test]
+    async fn build_credentials_rejects_missing_file() {
+        let creds = GcsCredentials::ServiceAccountJsonFile {
+            path: "/definitely/does/not/exist/sa.json".into(),
+        };
+        let err = build_credentials(&creds).await.unwrap_err();
+        assert!(matches!(err, FaucetError::Auth(_)));
+        let msg = err.to_string();
+        assert!(
+            msg.contains("could not read") || msg.contains("No such file"),
+            "unexpected error: {msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn build_credentials_rejects_invalid_inline_json() {
+        let creds = GcsCredentials::ServiceAccountJsonInline {
+            json: "not-json".into(),
+        };
+        let err = build_credentials(&creds).await.unwrap_err();
+        assert!(matches!(err, FaucetError::Auth(_)));
     }
 }

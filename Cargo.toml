@@ -120,6 +120,7 @@ jsonwebtoken = "9"
 base64 = "0.22"
 uuid = { version = "1", features = ["v4", "v7"] }
 google-cloud-storage = "1.12"
+google-cloud-auth = "1.10"
 aws-sdk-s3 = "1"
 aws-config = { version = "1", features = ["behavior-version-latest"] }
 tokio-util = { version = "0.7", features = ["io"] }
