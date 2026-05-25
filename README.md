@@ -94,6 +94,7 @@ faucet-stream is a Cargo workspace with 35 crates — 15 sources, 14 sinks, 1 sh
 | [`faucet-sink-kafka`](crates/sink/kafka) | Apache Kafka — producer with FuturesUnordered batching, multi-topic routing |
 | [`faucet-sink-parquet`](crates/sink/parquet) | Apache Parquet — local file or S3; schema inference, compression, row/byte rollover |
 | **Shared libraries** | |
+| [`faucet-elasticsearch-common`](crates/elasticsearch-common) | Shared `ElasticsearchAuth` enum for Elasticsearch source/sink |
 | [`faucet-kafka-common`](crates/kafka-common) | Shared Kafka types — auth, value formats, Schema Registry client |
 | **State stores** | |
 | [`faucet-state-redis`](crates/state/redis) | Redis-backed `StateStore` for persistent bookmarks |
@@ -959,6 +960,7 @@ crates/
     stdout/                   — Stdout / stderr (JSON Lines, pretty JSON, TSV)
     kafka/                    — Apache Kafka producer
     parquet/                  — Apache Parquet writer (local, S3)
+  elasticsearch-common/       — faucet-elasticsearch-common: shared ElasticsearchAuth enum
   kafka-common/               — faucet-kafka-common: shared Kafka auth, formats, Schema Registry
   state/
     redis/                    — Redis-backed StateStore
