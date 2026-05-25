@@ -16,7 +16,8 @@ serde_json.workspace = true
 async-trait.workspace = true
 tracing.workspace = true
 tokio.workspace = true
-google-cloud-storage.workspace = true
+google-cloud-storage = { workspace = true, features = ["unstable-stream"] }
+google-cloud-gax = "1.10"
 async-stream.workspace = true
 futures.workspace = true
 bytes.workspace = true
@@ -27,3 +28,5 @@ tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 serde_json.workspace = true
 futures.workspace = true
 testcontainers = "0.27"
+reqwest = { workspace = true }
+urlencoding.workspace = true
