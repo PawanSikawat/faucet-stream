@@ -103,6 +103,11 @@ kafka-schema-registry = [
 state-redis = ["dep:faucet-state-redis"]
 state-postgres = ["dep:faucet-state-postgres"]
 
+# Enables the `faucet init --interactive` prompt UI (`dialoguer`-driven Select
+# prompts for source / sink kind). Off by default so minimal builds don't pull
+# in the TTY-prompt dep tree.
+cli-interactive = ["dep:inquire"]
+
 transforms = [
     "faucet-core/transforms",
     "faucet-source-rest?/transforms",
@@ -166,6 +171,7 @@ async-trait.workspace = true
 metrics.workspace = true
 metrics-exporter-prometheus = { workspace = true, optional = true }
 uuid.workspace = true
+inquire = { version = "0.9", optional = true, default-features = false, features = ["crossterm"] }
 
 [dev-dependencies]
 tempfile = "3"
@@ -174,3 +180,4 @@ predicates = "3"
 wiremock = "0.6"
 serial_test = "3"
 metrics-util.workspace = true
+serde_yaml = "0.9"

@@ -92,6 +92,110 @@ fn init_refuses_to_overwrite_existing_file() {
 }
 
 #[test]
+fn init_no_args_uses_rest_jsonl_defaults() {
+    let dir = TempDir::new().unwrap();
+    let out = dir.path().join("pipeline.yaml");
+    Command::cargo_bin("faucet")
+        .unwrap()
+        .args(["init", "--output"])
+        .arg(&out)
+        .assert()
+        .success();
+    let body = fs::read_to_string(&out).unwrap();
+    assert!(body.contains("name: my-pipeline"));
+    assert!(body.contains("type: rest"));
+    assert!(body.contains("type: jsonl"));
+}
+
+#[test]
+fn init_with_source_sink_flags_uses_those_kinds() {
+    let dir = TempDir::new().unwrap();
+    let out = dir.path().join("pipeline.yaml");
+    Command::cargo_bin("faucet")
+        .unwrap()
+        .args([
+            "init", "my_pipe", "--source", "rest", "--sink", "bigquery", "-o",
+        ])
+        .arg(&out)
+        .assert()
+        .success();
+    let body = fs::read_to_string(&out).unwrap();
+    assert!(body.contains("name: my_pipe"));
+    assert!(body.contains("type: rest"));
+    assert!(body.contains("type: bigquery"));
+    // Required fields are surfaced with the REQUIRED marker so users know
+    // exactly what to fill in.
+    assert!(body.contains("# REQUIRED"));
+    assert!(body.contains("project_id"));
+    assert!(body.contains("dataset_id"));
+    // Optional fields are commented out so users don't accidentally override
+    // their connector-level defaults.
+    assert!(body.contains("# batch_size"));
+}
+
+#[test]
+fn init_unknown_source_kind_lists_available_kinds() {
+    let dir = TempDir::new().unwrap();
+    let out = dir.path().join("pipeline.yaml");
+    Command::cargo_bin("faucet")
+        .unwrap()
+        .args(["init", "--source", "nope", "--output"])
+        .arg(&out)
+        .assert()
+        .failure()
+        .stderr(contains("unknown source 'nope'"))
+        .stderr(contains("rest"));
+}
+
+#[test]
+fn init_unknown_sink_kind_lists_available_kinds() {
+    let dir = TempDir::new().unwrap();
+    let out = dir.path().join("pipeline.yaml");
+    Command::cargo_bin("faucet")
+        .unwrap()
+        .args(["init", "--sink", "nope", "--output"])
+        .arg(&out)
+        .assert()
+        .failure()
+        .stderr(contains("unknown sink 'nope'"))
+        .stderr(contains("jsonl"));
+}
+
+#[test]
+fn init_force_overwrites_existing_file() {
+    let dir = TempDir::new().unwrap();
+    let out = dir.path().join("pipeline.yaml");
+    fs::write(&out, "stale: contents\n").unwrap();
+    Command::cargo_bin("faucet")
+        .unwrap()
+        .args(["init", "--force", "--output"])
+        .arg(&out)
+        .assert()
+        .success();
+    let body = fs::read_to_string(&out).unwrap();
+    assert!(!body.contains("stale: contents"));
+    assert!(body.contains("type: rest"));
+}
+
+#[test]
+fn init_output_is_valid_yaml() {
+    let dir = TempDir::new().unwrap();
+    let out = dir.path().join("pipeline.yaml");
+    Command::cargo_bin("faucet")
+        .unwrap()
+        .args(["init", "--source", "rest", "--sink", "jsonl", "--output"])
+        .arg(&out)
+        .assert()
+        .success();
+    let body = fs::read_to_string(&out).unwrap();
+    // The scaffold itself parses as YAML even before the user fills in the
+    // REQUIRED fields — the placeholders are valid YAML values. (Semantic
+    // validation via `faucet validate` would still fail because of the empty
+    // `base_url`, but `serde_yaml` should consume the structure.)
+    serde_yaml::from_str::<serde_yaml::Value>(&body).expect("init output should parse as YAML");
+}
+
+#[test]
 fn validate_accepts_csv_to_jsonl_yaml() {
     let dir = TempDir::new().unwrap();
     let csv = dir.path().join("in.csv");

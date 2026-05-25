@@ -1,75 +1,17 @@
-//! `faucet init` — scaffold a starter `pipeline.yaml` in the new matrix-aware
-//! shape.
+//! `faucet init` — scaffold a starter `pipeline.yaml` from each connector's
+//! JSON Schema. Defaults to a `rest` → `jsonl` pipeline so `faucet init` with
+//! no flags continues to produce the same shape it did before this command
+//! grew schema-driven scaffolding.
 
 use crate::cli::InitArgs;
 use crate::error::{CliError, CliResult};
+use crate::init_template::schema_to_yaml_template;
+use crate::registry;
 
-const TEMPLATE: &str = r#"version: 1
-name: {NAME}
-
-# The base pipeline. Every matrix row (below) is deep-merged into this.
-# Even with no matrix block, this section runs once on its own.
-pipeline:
-  source:
-    type: rest
-    config:
-      base_url: https://api.example.com
-      path: /things
-      method: GET
-      auth:
-        type: ApiKey
-        header: Authorization
-        value: Bearer ${env:API_TOKEN}
-      query_params: {}
-      pagination:
-        type: None
-      max_retries: 3
-      retry_backoff: 1
-      tolerated_http_errors: []
-      replication_method:
-        type: FullTable
-      primary_keys: []
-      partitions: []
-      schema_sample_size: 100
-
-  transforms:
-    - type: snake_case
-
-  sink:
-    type: jsonl
-    config:
-      path: ./out.jsonl
-
-  state:
-    type: file
-    config:
-      path: ./.faucet-state
-
-  # Optional. Dead Letter Queue (DLQ) to capture failed records.
-  # dlq:
-  #   sink:
-  #     type: jsonl
-  #     config: { path: ./dlq.jsonl }
-  #   on_batch_error: propagate           # or dlq_all
-  #   max_failures_per_page: 100
-  #   max_failures_total: 10000
-
-# Optional. Each row is deep-merged into `pipeline:` above. Use `parent:` to
-# fan one row out per record produced by another row, and `${row_id.field}`
-# in any string to interpolate parent fields at runtime.
-#
-# matrix:
-#   - id: users
-#     source: { config: { path: /v1/users } }
-#   - id: posts
-#     parent: users
-#     source: { config: { path: "/v1/users/${users.id}/posts" } }
-
-# Optional execution controls.
-# execution:
-#   max_concurrent: 4
-#   on_error: continue   # or `stop`
-"#;
+const DEFAULT_SOURCE: &str = "rest";
+const DEFAULT_SINK: &str = "jsonl";
+const DEFAULT_NAME: &str = "my-pipeline";
+const CONFIG_INDENT: usize = 6;
 
 /// Execute the `init` subcommand.
 pub async fn run(args: InitArgs) -> CliResult<()> {
@@ -78,8 +20,149 @@ pub async fn run(args: InitArgs) -> CliResult<()> {
             path: args.output.clone(),
         });
     }
-    let body = TEMPLATE.replace("{NAME}", &args.name);
+
+    let (source_kind, sink_kind) = resolve_kinds(&args)?;
+    let name = args.name.as_deref().unwrap_or(DEFAULT_NAME);
+
+    let body = render_pipeline(name, &source_kind, &sink_kind)?;
     std::fs::write(&args.output, body)?;
     println!("wrote {}", args.output.display());
     Ok(())
+}
+
+fn resolve_kinds(args: &InitArgs) -> CliResult<(String, String)> {
+    let source = args.source.clone();
+    let sink = args.sink.clone();
+
+    let (source, sink) = if args.interactive {
+        interactive_prompt(source, sink)?
+    } else {
+        (
+            source.unwrap_or_else(|| DEFAULT_SOURCE.to_string()),
+            sink.unwrap_or_else(|| DEFAULT_SINK.to_string()),
+        )
+    };
+
+    if !registry::source_exists(&source) {
+        return Err(unknown_kind_err("source", &source));
+    }
+    if !registry::sink_exists(&sink) {
+        return Err(unknown_kind_err("sink", &sink));
+    }
+    Ok((source, sink))
+}
+
+#[cfg(feature = "cli-interactive")]
+fn interactive_prompt(source: Option<String>, sink: Option<String>) -> CliResult<(String, String)> {
+    use std::io::IsTerminal;
+    if !std::io::stdin().is_terminal() {
+        return fallback_kinds(source, sink, "stdin is not a TTY");
+    }
+    let sources = registry::source_kinds();
+    let sinks = registry::sink_kinds();
+    let s = if let Some(s) = source {
+        s
+    } else {
+        prompt_select("source", &sources)?
+    };
+    let k = if let Some(k) = sink {
+        k
+    } else {
+        prompt_select("sink", &sinks)?
+    };
+    Ok((s, k))
+}
+
+#[cfg(not(feature = "cli-interactive"))]
+fn interactive_prompt(source: Option<String>, sink: Option<String>) -> CliResult<(String, String)> {
+    fallback_kinds(
+        source,
+        sink,
+        "the `cli-interactive` build feature is not enabled",
+    )
+}
+
+fn fallback_kinds(
+    source: Option<String>,
+    sink: Option<String>,
+    reason: &str,
+) -> CliResult<(String, String)> {
+    match (source, sink) {
+        (Some(s), Some(k)) => Ok((s, k)),
+        (s, k) => {
+            tracing::warn!(
+                "ignoring --interactive: {reason}; falling back to --source/--sink (or defaults)"
+            );
+            Ok((
+                s.unwrap_or_else(|| DEFAULT_SOURCE.to_string()),
+                k.unwrap_or_else(|| DEFAULT_SINK.to_string()),
+            ))
+        }
+    }
+}
+
+#[cfg(feature = "cli-interactive")]
+fn prompt_select(kind: &str, options: &[&'static str]) -> CliResult<String> {
+    let choice = inquire::Select::new(&format!("Pick a {kind} connector"), options.to_vec())
+        .prompt()
+        .map_err(|e| CliError::Io(std::io::Error::other(e.to_string())))?;
+    Ok(choice.to_string())
+}
+
+fn unknown_kind_err(kind: &'static str, name: &str) -> CliError {
+    let available = if kind == "source" {
+        registry::source_kinds()
+    } else {
+        registry::sink_kinds()
+    };
+    CliError::UnknownConnector {
+        kind,
+        name: name.to_owned(),
+        available: if available.is_empty() {
+            "(none — rebuild faucet-cli with the relevant feature enabled)".to_owned()
+        } else {
+            available.join(", ")
+        },
+    }
+}
+
+fn render_pipeline(name: &str, source_kind: &str, sink_kind: &str) -> CliResult<String> {
+    let source_schema = registry::source_schema(source_kind)?;
+    let sink_schema = registry::sink_schema(sink_kind)?;
+    let source_yaml = schema_to_yaml_template(&source_schema, CONFIG_INDENT);
+    let sink_yaml = schema_to_yaml_template(&sink_schema, CONFIG_INDENT);
+
+    let mut body = String::new();
+    body.push_str("version: 1\n");
+    body.push_str(&format!("name: {name}\n\n"));
+    body.push_str("# The base pipeline. Every matrix row (below) is deep-merged into this.\n");
+    body.push_str("# Even with no matrix block, this section runs once on its own.\n");
+    body.push_str("pipeline:\n");
+    body.push_str("  source:\n");
+    body.push_str(&format!("    type: {source_kind}\n"));
+    body.push_str("    config:\n");
+    body.push_str(&source_yaml);
+    body.push('\n');
+    body.push_str("  # transforms:\n");
+    body.push_str("  #   - type: snake_case\n\n");
+    body.push_str("  sink:\n");
+    body.push_str(&format!("    type: {sink_kind}\n"));
+    body.push_str("    config:\n");
+    body.push_str(&sink_yaml);
+    body.push('\n');
+    body.push_str("  # Optional state store (required by CDC sources and resumable runs).\n");
+    body.push_str("  # state:\n");
+    body.push_str("  #   type: file\n");
+    body.push_str("  #   config: { path: ./.faucet-state }\n\n");
+    body.push_str("  # Optional Dead Letter Queue.\n");
+    body.push_str("  # dlq:\n");
+    body.push_str("  #   sink:\n");
+    body.push_str("  #     type: jsonl\n");
+    body.push_str("  #     config: { path: ./dlq.jsonl }\n");
+    body.push_str("  #   on_batch_error: propagate   # or dlq_all\n\n");
+    body.push_str("# Optional matrix block — each row is deep-merged into `pipeline:` above.\n");
+    body.push_str("# matrix:\n");
+    body.push_str("#   - id: users\n");
+    body.push_str("#     source: { config: { path: /v1/users } }\n");
+    Ok(body)
 }

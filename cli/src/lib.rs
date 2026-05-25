@@ -17,6 +17,7 @@ pub mod env_loader;
 pub mod error;
 pub mod executor;
 pub mod expand;
+pub mod init_template;
 pub mod interpolate;
 pub mod merge;
 pub mod registry;
