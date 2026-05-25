@@ -4,34 +4,12 @@ use faucet_core::DEFAULT_BATCH_SIZE;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-/// Authentication method for the Elasticsearch sink.
-#[derive(Clone, Serialize, Deserialize, JsonSchema)]
-#[serde(tag = "type")]
-pub enum ElasticsearchSinkAuth {
-    /// No authentication.
-    None,
-    /// HTTP Basic authentication.
-    Basic { username: String, password: String },
-    /// Bearer token authentication.
-    Bearer { token: String },
-    /// API key authentication (sent as `ApiKey` in the `Authorization` header).
-    ApiKey { key: String },
-}
+pub use faucet_elasticsearch_common::ElasticsearchAuth;
 
-impl std::fmt::Debug for ElasticsearchSinkAuth {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::None => write!(f, "None"),
-            Self::Basic { username, .. } => f
-                .debug_struct("Basic")
-                .field("username", username)
-                .field("password", &"***")
-                .finish(),
-            Self::Bearer { .. } => write!(f, "Bearer(***)"),
-            Self::ApiKey { .. } => write!(f, "ApiKey(***)"),
-        }
-    }
-}
+/// Deprecated alias retained for one minor release. Removed in `0.4.0`.
+#[allow(deprecated)]
+#[deprecated(since = "0.3.0", note = "renamed to `ElasticsearchAuth`")]
+pub type ElasticsearchSinkAuth = ElasticsearchAuth;
 
 /// Configuration for the Elasticsearch bulk index sink.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -41,7 +19,7 @@ pub struct ElasticsearchSinkConfig {
     /// Target index name.
     pub index: String,
     /// Authentication method.
-    pub auth: ElasticsearchSinkAuth,
+    pub auth: ElasticsearchAuth,
     /// Maximum documents per `_bulk` HTTP request. Defaults to
     /// [`DEFAULT_BATCH_SIZE`].
     ///
@@ -76,14 +54,14 @@ impl ElasticsearchSinkConfig {
         Self {
             base_url: base_url.into().trim_end_matches('/').to_string(),
             index: index.into(),
-            auth: ElasticsearchSinkAuth::None,
+            auth: ElasticsearchAuth::None,
             batch_size: DEFAULT_BATCH_SIZE,
             id_field: None,
         }
     }
 
     /// Set the authentication method.
-    pub fn auth(mut self, a: ElasticsearchSinkAuth) -> Self {
+    pub fn auth(mut self, a: ElasticsearchAuth) -> Self {
         self.auth = a;
         self
     }
@@ -125,41 +103,12 @@ mod tests {
         let config = ElasticsearchSinkConfig::new("http://es:9200/", "idx")
             .with_batch_size(100)
             .id_field("doc_id")
-            .auth(ElasticsearchSinkAuth::Bearer {
+            .auth(ElasticsearchAuth::Bearer {
                 token: "tok".into(),
             });
         assert_eq!(config.base_url, "http://es:9200");
         assert_eq!(config.batch_size, 100);
         assert_eq!(config.id_field.as_deref(), Some("doc_id"));
-    }
-
-    #[test]
-    fn auth_debug_masks_credentials() {
-        let none = ElasticsearchSinkAuth::None;
-        assert_eq!(format!("{none:?}"), "None");
-
-        let basic = ElasticsearchSinkAuth::Basic {
-            username: "user".into(),
-            password: "secret".into(),
-        };
-        let debug = format!("{basic:?}");
-        assert!(debug.contains("user"));
-        assert!(debug.contains("***"));
-        assert!(!debug.contains("secret"));
-
-        let bearer = ElasticsearchSinkAuth::Bearer {
-            token: "my-token".into(),
-        };
-        let debug = format!("{bearer:?}");
-        assert!(debug.contains("***"));
-        assert!(!debug.contains("my-token"));
-
-        let api_key = ElasticsearchSinkAuth::ApiKey {
-            key: "my-key".into(),
-        };
-        let debug = format!("{api_key:?}");
-        assert!(debug.contains("***"));
-        assert!(!debug.contains("my-key"));
     }
 
     #[test]
@@ -213,5 +162,14 @@ mod tests {
         }"#;
         let config: ElasticsearchSinkConfig = serde_json::from_str(json).unwrap();
         assert_eq!(config.batch_size, faucet_core::DEFAULT_BATCH_SIZE);
+    }
+
+    #[test]
+    #[allow(deprecated)]
+    fn deprecated_sink_auth_alias_is_canonical_type() {
+        // Compile-time check: assignment proves the alias resolves to the
+        // canonical `ElasticsearchAuth` type. Removed in 0.4.0 together with
+        // the alias itself.
+        let _: ElasticsearchSinkAuth = ElasticsearchAuth::None;
     }
 }

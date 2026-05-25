@@ -9,6 +9,7 @@ description = "Elasticsearch sink connector for the faucet-stream ecosystem"
 
 [dependencies]
 faucet-core.workspace = true
+faucet-elasticsearch-common.workspace = true
 schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true

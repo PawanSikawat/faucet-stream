@@ -1,6 +1,6 @@
 //! Elasticsearch bulk index sink.
 
-use crate::config::{ElasticsearchSinkAuth, ElasticsearchSinkConfig};
+use crate::config::{ElasticsearchAuth, ElasticsearchSinkConfig};
 use async_trait::async_trait;
 use faucet_core::FaucetError;
 use faucet_core::util::{DEFAULT_ERROR_BODY_MAX_LEN, check_http_response};
@@ -25,12 +25,12 @@ impl ElasticsearchSink {
     /// Apply the configured authentication to a request builder.
     fn apply_auth(&self, req: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
         match &self.config.auth {
-            ElasticsearchSinkAuth::None => req,
-            ElasticsearchSinkAuth::Basic { username, password } => {
+            ElasticsearchAuth::None => req,
+            ElasticsearchAuth::Basic { username, password } => {
                 req.basic_auth(username, Some(password))
             }
-            ElasticsearchSinkAuth::Bearer { token } => req.bearer_auth(token),
-            ElasticsearchSinkAuth::ApiKey { key } => {
+            ElasticsearchAuth::Bearer { token } => req.bearer_auth(token),
+            ElasticsearchAuth::ApiKey { key } => {
                 req.header("Authorization", format!("ApiKey {key}"))
             }
         }
