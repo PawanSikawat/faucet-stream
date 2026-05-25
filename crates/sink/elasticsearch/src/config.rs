@@ -7,7 +7,6 @@ use serde::{Deserialize, Serialize};
 pub use faucet_elasticsearch_common::ElasticsearchAuth;
 
 /// Deprecated alias retained for one minor release. Removed in `0.4.0`.
-#[allow(deprecated)]
 #[deprecated(since = "0.3.0", note = "renamed to `ElasticsearchAuth`")]
 pub type ElasticsearchSinkAuth = ElasticsearchAuth;
 

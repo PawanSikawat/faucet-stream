@@ -11,7 +11,7 @@
 //! ```
 
 use faucet_stream::sink::elasticsearch::{
-    ElasticsearchSink, ElasticsearchSinkAuth, ElasticsearchSinkConfig,
+    ElasticsearchAuth, ElasticsearchSink, ElasticsearchSinkConfig,
 };
 use faucet_stream::source::grpc::{GrpcAuth, GrpcStream, GrpcStreamConfig, MetadataEntry};
 use faucet_stream::{Pipeline, json};
@@ -44,7 +44,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let sink = ElasticsearchSink::new(
         ElasticsearchSinkConfig::new("https://es.example.com:9200", "events")
-            .auth(ElasticsearchSinkAuth::Basic {
+            .auth(ElasticsearchAuth::Basic {
                 username: std::env::var("ES_USER")?,
                 password: std::env::var("ES_PASS")?,
             })
