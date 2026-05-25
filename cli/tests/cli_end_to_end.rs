@@ -131,6 +131,26 @@ fn init_with_source_sink_flags_uses_those_kinds() {
     // Optional fields are commented out so users don't accidentally override
     // their connector-level defaults.
     assert!(body.contains("# batch_size"));
+    // Tagged-enum fields (here: BigQuery `credentials:` and REST `auth:`) emit
+    // every variant as a commented "alternative" block so users can switch
+    // without bouncing to `faucet schema`. Default variant is inline; the
+    // alternatives header announces the rest.
+    assert!(
+        body.contains("Alternative variants"),
+        "missing alternatives block:\n{body}"
+    );
+    assert!(
+        body.contains("# type: Bearer"),
+        "REST Bearer alternative missing:\n{body}"
+    );
+    assert!(
+        body.contains("# type: OAuth2"),
+        "REST OAuth2 alternative missing:\n{body}"
+    );
+    assert!(
+        body.contains("# type: ApplicationDefault"),
+        "BigQuery ApplicationDefault alternative missing:\n{body}"
+    );
 }
 
 #[test]

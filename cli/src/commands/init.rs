@@ -3,9 +3,13 @@
 //! no flags continues to produce the same shape it did before this command
 //! grew schema-driven scaffolding.
 
+use std::collections::HashMap;
+
 use crate::cli::InitArgs;
 use crate::error::{CliError, CliResult};
-use crate::init_template::schema_to_yaml_template;
+#[cfg(feature = "cli-interactive")]
+use crate::init_template::discover_tagged_enum_fields;
+use crate::init_template::schema_to_yaml_template_with_choices;
 use crate::registry;
 
 const DEFAULT_SOURCE: &str = "rest";
@@ -24,7 +28,23 @@ pub async fn run(args: InitArgs) -> CliResult<()> {
     let (source_kind, sink_kind) = resolve_kinds(&args)?;
     let name = args.name.as_deref().unwrap_or(DEFAULT_NAME);
 
-    let body = render_pipeline(name, &source_kind, &sink_kind)?;
+    let source_schema = registry::source_schema(&source_kind)?;
+    let sink_schema = registry::sink_schema(&sink_kind)?;
+    let (source_choices, sink_choices) = if args.interactive {
+        interactive_variant_choices(&source_schema, &sink_schema)?
+    } else {
+        (HashMap::new(), HashMap::new())
+    };
+
+    let body = render_pipeline(
+        name,
+        &source_kind,
+        &source_schema,
+        &source_choices,
+        &sink_kind,
+        &sink_schema,
+        &sink_choices,
+    );
     std::fs::write(&args.output, body)?;
     println!("wrote {}", args.output.display());
     Ok(())
@@ -109,6 +129,47 @@ fn prompt_select(kind: &str, options: &[&'static str]) -> CliResult<String> {
     Ok(choice.to_string())
 }
 
+#[cfg(feature = "cli-interactive")]
+fn interactive_variant_choices(
+    source_schema: &serde_json::Value,
+    sink_schema: &serde_json::Value,
+) -> CliResult<(HashMap<String, String>, HashMap<String, String>)> {
+    use std::io::IsTerminal;
+    if !std::io::stdin().is_terminal() {
+        return Ok((HashMap::new(), HashMap::new()));
+    }
+    let source = prompt_variants_for("source", source_schema)?;
+    let sink = prompt_variants_for("sink", sink_schema)?;
+    Ok((source, sink))
+}
+
+#[cfg(not(feature = "cli-interactive"))]
+fn interactive_variant_choices(
+    _source_schema: &serde_json::Value,
+    _sink_schema: &serde_json::Value,
+) -> CliResult<(HashMap<String, String>, HashMap<String, String>)> {
+    tracing::warn!("ignoring --interactive: the `cli-interactive` build feature is not enabled");
+    Ok((HashMap::new(), HashMap::new()))
+}
+
+#[cfg(feature = "cli-interactive")]
+fn prompt_variants_for(
+    side: &str,
+    schema: &serde_json::Value,
+) -> CliResult<HashMap<String, String>> {
+    let fields = discover_tagged_enum_fields(schema);
+    let mut choices = HashMap::new();
+    for field in fields {
+        let label = format!("Pick a variant for {side}.{}", field.path);
+        let opts: Vec<String> = field.variants.clone();
+        let chosen = inquire::Select::new(&label, opts)
+            .prompt()
+            .map_err(|e| CliError::Io(std::io::Error::other(e.to_string())))?;
+        choices.insert(field.path, chosen);
+    }
+    Ok(choices)
+}
+
 fn unknown_kind_err(kind: &'static str, name: &str) -> CliError {
     let available = if kind == "source" {
         registry::source_kinds()
@@ -126,11 +187,18 @@ fn unknown_kind_err(kind: &'static str, name: &str) -> CliError {
     }
 }
 
-fn render_pipeline(name: &str, source_kind: &str, sink_kind: &str) -> CliResult<String> {
-    let source_schema = registry::source_schema(source_kind)?;
-    let sink_schema = registry::sink_schema(sink_kind)?;
-    let source_yaml = schema_to_yaml_template(&source_schema, CONFIG_INDENT);
-    let sink_yaml = schema_to_yaml_template(&sink_schema, CONFIG_INDENT);
+fn render_pipeline(
+    name: &str,
+    source_kind: &str,
+    source_schema: &serde_json::Value,
+    source_choices: &HashMap<String, String>,
+    sink_kind: &str,
+    sink_schema: &serde_json::Value,
+    sink_choices: &HashMap<String, String>,
+) -> String {
+    let source_yaml =
+        schema_to_yaml_template_with_choices(source_schema, CONFIG_INDENT, source_choices);
+    let sink_yaml = schema_to_yaml_template_with_choices(sink_schema, CONFIG_INDENT, sink_choices);
 
     let mut body = String::new();
     body.push_str("version: 1\n");
@@ -164,5 +232,5 @@ fn render_pipeline(name: &str, source_kind: &str, sink_kind: &str) -> CliResult<
     body.push_str("# matrix:\n");
     body.push_str("#   - id: users\n");
     body.push_str("#     source: { config: { path: /v1/users } }\n");
-    Ok(body)
+    body
 }

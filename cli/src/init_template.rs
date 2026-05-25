@@ -11,17 +11,47 @@
 //! round-trip: comments and required/optional distinctions matter to the
 //! reader and would be lost by any round-trip through a generic YAML value.
 
+use std::collections::HashMap;
+
 use serde_json::Value;
+
+/// A top-level property whose schema is a tagged enum (`oneOf` with a `const`
+/// discriminator field). Returned by [`discover_tagged_enum_fields`] so the
+/// CLI's interactive mode can prompt the user for the variant before emitting
+/// the scaffold.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TaggedEnumField {
+    /// Property name on the root object — e.g. `"auth"`, `"pagination"`,
+    /// `"credentials"`.
+    pub path: String,
+    /// Variant tag values in the order they appear in `oneOf` — e.g.
+    /// `["None", "Bearer", "Basic", "ApiKey"]`.
+    pub variants: Vec<String>,
+}
 
 /// Render the `properties` of `schema` as a YAML block, indented by
 /// `indent_spaces` columns. Returns a string that always ends with `\n`.
 ///
-/// `schema` is the root config schema; `$ref`s are resolved against
-/// `schema["$defs"]` when present.
+/// Tagged-enum fields get their first variant inlined and the remaining
+/// variants emitted as commented-out "alternative" blocks the user can
+/// uncomment to switch. Use [`schema_to_yaml_template_with_choices`] to
+/// override which variant is inlined.
 pub fn schema_to_yaml_template(schema: &Value, indent_spaces: usize) -> String {
+    schema_to_yaml_template_with_choices(schema, indent_spaces, &HashMap::new())
+}
+
+/// Like [`schema_to_yaml_template`], but each entry in `choices` overrides
+/// the inlined variant for a tagged-enum field whose property name matches
+/// the key. (e.g. `choices.insert("auth", "Bearer")` makes the Bearer variant
+/// the inlined default.) Unknown variant tags fall back to the first variant.
+pub fn schema_to_yaml_template_with_choices(
+    schema: &Value,
+    indent_spaces: usize,
+    choices: &HashMap<String, String>,
+) -> String {
     let defs = schema.get("$defs");
     let mut out = String::new();
-    emit_object_properties(schema, defs, indent_spaces, &mut out);
+    emit_object_properties(schema, defs, indent_spaces, choices, &mut out);
     if out.is_empty() {
         let pad = " ".repeat(indent_spaces);
         out.push_str(&format!("{pad}{{}}\n"));
@@ -29,7 +59,34 @@ pub fn schema_to_yaml_template(schema: &Value, indent_spaces: usize) -> String {
     out
 }
 
-fn emit_object_properties(schema: &Value, defs: Option<&Value>, indent: usize, out: &mut String) {
+/// Walk the top-level properties of `schema` and return every property whose
+/// schema is a tagged enum. `$ref`s are resolved against `$defs`.
+pub fn discover_tagged_enum_fields(schema: &Value) -> Vec<TaggedEnumField> {
+    let defs = schema.get("$defs");
+    let resolved = resolve_ref_borrowed(schema, defs);
+    let Some(props) = resolved.get("properties").and_then(|v| v.as_object()) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for (key, prop_schema) in props {
+        let prop_resolved = resolve_ref_borrowed(prop_schema, defs);
+        if let Some(variants) = tagged_enum_variants(prop_resolved, defs) {
+            out.push(TaggedEnumField {
+                path: key.clone(),
+                variants: variants.iter().map(|v| v.tag.to_string()).collect(),
+            });
+        }
+    }
+    out
+}
+
+fn emit_object_properties(
+    schema: &Value,
+    defs: Option<&Value>,
+    indent: usize,
+    choices: &HashMap<String, String>,
+    out: &mut String,
+) {
     let schema = resolve_ref(schema, defs);
     let Some(props) = schema.get("properties").and_then(|v| v.as_object()) else {
         return;
@@ -42,16 +99,18 @@ fn emit_object_properties(schema: &Value, defs: Option<&Value>, indent: usize, o
 
     for (key, prop_schema) in props {
         let is_required = required.contains(&key.as_str());
-        emit_property(key, prop_schema, is_required, defs, indent, out);
+        emit_property(key, prop_schema, is_required, defs, indent, choices, out);
     }
 }
 
+#[allow(clippy::too_many_arguments)] // schema-walking helpers thread several context refs.
 fn emit_property(
     key: &str,
     schema: &Value,
     required: bool,
     defs: Option<&Value>,
     indent: usize,
+    choices: &HashMap<String, String>,
     out: &mut String,
 ) {
     let pad = " ".repeat(indent);
@@ -61,10 +120,20 @@ fn emit_property(
         .and_then(|v| v.as_str())
         .map(collapse_whitespace);
 
-    // Tagged-enum (oneOf with `type` discriminator) — pick the first variant
-    // and expand it inline when required, comment it flat when optional.
+    // Tagged-enum (oneOf with `type` discriminator) — emit the chosen variant
+    // inline and append the remaining variants as commented-out alternatives
+    // so users see every option without having to leave the file.
     if let Some(variants) = tagged_enum_variants(&resolved, defs) {
-        emit_tagged_enum(key, &variants, required, &description, defs, indent, out);
+        emit_tagged_enum(
+            key,
+            &variants,
+            required,
+            &description,
+            defs,
+            indent,
+            choices,
+            out,
+        );
         return;
     }
 
@@ -73,7 +142,7 @@ fn emit_property(
     if is_object_with_properties(&resolved) {
         if required {
             out.push_str(&format!("{pad}{key}:\n"));
-            emit_object_properties(&resolved, defs, indent + 2, out);
+            emit_object_properties(&resolved, defs, indent + 2, choices, out);
         } else {
             let line_comment = describe(&description, &resolved);
             let suffix = if line_comment.is_empty() {
@@ -117,6 +186,7 @@ fn emit_property(
     }
 }
 
+#[allow(clippy::too_many_arguments)] // schema-walking helpers thread several context refs.
 fn emit_tagged_enum(
     key: &str,
     variants: &[TaggedVariant<'_>],
@@ -124,23 +194,27 @@ fn emit_tagged_enum(
     _description: &Option<String>,
     defs: Option<&Value>,
     indent: usize,
+    choices: &HashMap<String, String>,
     out: &mut String,
 ) {
     let pad = " ".repeat(indent);
     let inner_pad = " ".repeat(indent + 2);
-    let first = &variants[0];
     let all_tags: Vec<&str> = variants.iter().map(|v| v.tag).collect();
+    let chosen_idx = choices
+        .get(key)
+        .and_then(|tag| variants.iter().position(|v| v.tag == tag))
+        .unwrap_or(0);
+    let chosen = &variants[chosen_idx];
 
     if required {
         out.push_str(&format!("{pad}{key}:\n"));
         out.push_str(&format!(
             "{inner_pad}type: {tag}    # one of: {tags}\n",
-            tag = first.tag,
+            tag = chosen.tag,
             tags = all_tags.join(", "),
         ));
-        // Emit first variant's required fields (besides the discriminator).
-        for (field_key, field_schema, field_required) in &first.fields {
-            if *field_key == first.discriminator {
+        for (field_key, field_schema, field_required) in &chosen.fields {
+            if *field_key == chosen.discriminator {
                 continue;
             }
             emit_property(
@@ -149,15 +223,74 @@ fn emit_tagged_enum(
                 *field_required,
                 defs,
                 indent + 2,
+                choices,
                 out,
             );
         }
+        emit_alternative_variants(variants, chosen_idx, defs, indent + 2, out);
     } else {
+        // Optional tagged enum: flatten the chosen variant to a single
+        // commented line. Also emit the alternatives block so the user can
+        // see every option.
         out.push_str(&format!(
             "{pad}# {key}: {{ type: {tag} }}    # one of: {tags}\n",
-            tag = first.tag,
+            tag = chosen.tag,
             tags = all_tags.join(", "),
         ));
+        emit_alternative_variants(variants, chosen_idx, defs, indent + 2, out);
+    }
+}
+
+/// Emit the non-chosen variants as a commented-out alternatives block.
+/// Lines are indented to the same column as the chosen variant's fields so
+/// removing the leading `# ` from a block produces valid YAML.
+fn emit_alternative_variants(
+    variants: &[TaggedVariant<'_>],
+    chosen_idx: usize,
+    defs: Option<&Value>,
+    indent: usize,
+    out: &mut String,
+) {
+    let alternatives: Vec<&TaggedVariant<'_>> = variants
+        .iter()
+        .enumerate()
+        .filter_map(|(i, v)| if i == chosen_idx { None } else { Some(v) })
+        .collect();
+    if alternatives.is_empty() {
+        return;
+    }
+    let pad = " ".repeat(indent);
+    out.push_str(&format!(
+        "{pad}# --- Alternative variants — replace the block above with one of these ---\n"
+    ));
+    for (i, alt) in alternatives.iter().enumerate() {
+        if i > 0 {
+            out.push_str(&format!("{pad}#\n"));
+        }
+        out.push_str(&format!("{pad}# type: {tag}\n", tag = alt.tag));
+        for (field_key, field_schema, field_required) in &alt.fields {
+            if *field_key == alt.discriminator {
+                continue;
+            }
+            let resolved = resolve_ref(field_schema, defs);
+            // Tagged-enum-within-tagged-enum is rare and gets flattened to a
+            // bare placeholder line; users can drill into the nested schema
+            // via `faucet schema` if they hit this case.
+            let placeholder = if is_object_with_properties(&resolved) {
+                "{ ... }".to_string()
+            } else {
+                resolved
+                    .get("default")
+                    .map(render_default)
+                    .unwrap_or_else(|| type_placeholder(&resolved))
+            };
+            let marker = if *field_required {
+                "    # REQUIRED"
+            } else {
+                ""
+            };
+            out.push_str(&format!("{pad}# {field_key}: {placeholder}{marker}\n"));
+        }
     }
 }
 
@@ -517,6 +650,172 @@ mod tests {
         let yaml = schema_to_yaml_template(&schema, 0);
         assert!(yaml.contains("creds:\n"), "yaml: {yaml}");
         assert!(yaml.contains("  token: \"\""), "yaml: {yaml}");
+    }
+
+    #[test]
+    fn tagged_enum_required_lists_other_variants_as_commented_alternatives() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "auth": {
+                    "oneOf": [
+                        {
+                            "type": "object",
+                            "properties": { "type": { "const": "none" } },
+                            "required": ["type"]
+                        },
+                        {
+                            "type": "object",
+                            "properties": {
+                                "type": { "const": "bearer" },
+                                "token": { "type": "string" }
+                            },
+                            "required": ["type", "token"]
+                        },
+                        {
+                            "type": "object",
+                            "properties": {
+                                "type": { "const": "basic" },
+                                "username": { "type": "string" },
+                                "password": { "type": "string" }
+                            },
+                            "required": ["type", "username", "password"]
+                        }
+                    ]
+                }
+            },
+            "required": ["auth"]
+        });
+        let yaml = schema_to_yaml_template(&schema, 0);
+        // The chosen variant (None by default) is inlined.
+        assert!(yaml.contains("type: none"), "yaml: {yaml}");
+        // Every other variant's tag appears in the alternatives block.
+        assert!(yaml.contains("type: bearer"), "yaml: {yaml}");
+        assert!(yaml.contains("type: basic"), "yaml: {yaml}");
+        // Other variants' fields appear too, commented out.
+        assert!(yaml.contains("# token: \"\""), "yaml: {yaml}");
+        assert!(yaml.contains("# username: \"\""), "yaml: {yaml}");
+        assert!(yaml.contains("# password: \"\""), "yaml: {yaml}");
+    }
+
+    #[test]
+    fn tagged_enum_with_explicit_choice_inlines_that_variant() {
+        use std::collections::HashMap;
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "auth": {
+                    "oneOf": [
+                        {
+                            "type": "object",
+                            "properties": { "type": { "const": "none" } },
+                            "required": ["type"]
+                        },
+                        {
+                            "type": "object",
+                            "properties": {
+                                "type": { "const": "bearer" },
+                                "token": { "type": "string" }
+                            },
+                            "required": ["type", "token"]
+                        }
+                    ]
+                }
+            },
+            "required": ["auth"]
+        });
+        let mut choices = HashMap::new();
+        choices.insert("auth".to_string(), "bearer".to_string());
+        let yaml = schema_to_yaml_template_with_choices(&schema, 0, &choices);
+
+        // Bearer is the chosen variant, so its `token` field is emitted
+        // uncommented with a REQUIRED marker.
+        let token_line = yaml
+            .lines()
+            .find(|l| l.contains("token:"))
+            .expect("token line missing");
+        assert!(
+            !token_line.trim_start().starts_with('#'),
+            "expected chosen variant's token to be uncommented; got: {token_line:?}"
+        );
+        assert!(
+            token_line.contains("REQUIRED"),
+            "chosen variant fields should carry REQUIRED marker; got: {token_line:?}"
+        );
+        // The `none` variant still appears in the alternatives block,
+        // commented out.
+        let none_line = yaml
+            .lines()
+            .find(|l| l.contains("type: none"))
+            .expect("none variant missing from alternatives");
+        assert!(
+            none_line.trim_start().starts_with('#'),
+            "non-chosen variant should be commented out; got: {none_line:?}"
+        );
+    }
+
+    #[test]
+    fn discover_tagged_enum_fields_finds_top_level_oneof_properties() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "auth": {
+                    "oneOf": [
+                        {
+                            "type": "object",
+                            "properties": { "type": { "const": "none" } },
+                            "required": ["type"]
+                        },
+                        {
+                            "type": "object",
+                            "properties": {
+                                "type": { "const": "bearer" },
+                                "token": { "type": "string" }
+                            },
+                            "required": ["type", "token"]
+                        }
+                    ]
+                },
+                "path": { "type": "string" }
+            }
+        });
+        let fields = discover_tagged_enum_fields(&schema);
+        assert_eq!(fields.len(), 1, "expected exactly one tagged-enum field");
+        assert_eq!(fields[0].path, "auth");
+        assert_eq!(fields[0].variants, vec!["none", "bearer"]);
+    }
+
+    #[test]
+    fn discover_tagged_enum_fields_resolves_refs() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "auth": { "$ref": "#/$defs/Auth" }
+            },
+            "$defs": {
+                "Auth": {
+                    "oneOf": [
+                        {
+                            "type": "object",
+                            "properties": { "type": { "const": "none" } },
+                            "required": ["type"]
+                        },
+                        {
+                            "type": "object",
+                            "properties": {
+                                "type": { "const": "bearer" },
+                                "token": { "type": "string" }
+                            },
+                            "required": ["type", "token"]
+                        }
+                    ]
+                }
+            }
+        });
+        let fields = discover_tagged_enum_fields(&schema);
+        assert_eq!(fields.len(), 1);
+        assert_eq!(fields[0].path, "auth");
+        assert_eq!(fields[0].variants, vec!["none", "bearer"]);
     }
 
     #[test]
