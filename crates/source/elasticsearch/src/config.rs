@@ -5,34 +5,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-/// Authentication method for Elasticsearch.
-#[derive(Clone, Serialize, Deserialize, JsonSchema)]
-#[serde(tag = "type")]
-pub enum ElasticsearchAuth {
-    /// No authentication.
-    None,
-    /// HTTP Basic authentication.
-    Basic { username: String, password: String },
-    /// Bearer token authentication.
-    Bearer { token: String },
-    /// API key authentication (sent as `ApiKey` in the `Authorization` header).
-    ApiKey { key: String },
-}
-
-impl std::fmt::Debug for ElasticsearchAuth {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::None => write!(f, "None"),
-            Self::Basic { username, .. } => f
-                .debug_struct("Basic")
-                .field("username", username)
-                .field("password", &"***")
-                .finish(),
-            Self::Bearer { .. } => write!(f, "Bearer(***)"),
-            Self::ApiKey { .. } => write!(f, "ApiKey(***)"),
-        }
-    }
-}
+pub use faucet_elasticsearch_common::ElasticsearchAuth;
 
 /// Configuration for the Elasticsearch search source.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -146,35 +119,6 @@ mod tests {
         assert_eq!(config.base_url, "http://es:9200");
         assert_eq!(config.scroll_timeout, "5m");
         assert_eq!(config.max_pages, Some(10));
-    }
-
-    #[test]
-    fn auth_debug_masks_credentials() {
-        let none = ElasticsearchAuth::None;
-        assert_eq!(format!("{none:?}"), "None");
-
-        let basic = ElasticsearchAuth::Basic {
-            username: "user".into(),
-            password: "secret".into(),
-        };
-        let debug = format!("{basic:?}");
-        assert!(debug.contains("user"));
-        assert!(debug.contains("***"));
-        assert!(!debug.contains("secret"));
-
-        let bearer = ElasticsearchAuth::Bearer {
-            token: "my-token".into(),
-        };
-        let debug = format!("{bearer:?}");
-        assert!(debug.contains("***"));
-        assert!(!debug.contains("my-token"));
-
-        let api_key = ElasticsearchAuth::ApiKey {
-            key: "my-key".into(),
-        };
-        let debug = format!("{api_key:?}");
-        assert!(debug.contains("***"));
-        assert!(!debug.contains("my-key"));
     }
 
     #[test]
