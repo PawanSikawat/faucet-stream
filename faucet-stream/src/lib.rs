@@ -129,6 +129,11 @@ pub mod source {
     pub mod parquet {
         pub use faucet_source_parquet::*;
     }
+
+    #[cfg(feature = "source-gcs")]
+    pub mod gcs {
+        pub use faucet_source_gcs::*;
+    }
 }
 
 // Source modules available without source-rest (when only other sources are enabled).
@@ -207,6 +212,11 @@ pub mod source {
     #[cfg(feature = "source-parquet")]
     pub mod parquet {
         pub use faucet_source_parquet::*;
+    }
+
+    #[cfg(feature = "source-gcs")]
+    pub mod gcs {
+        pub use faucet_source_gcs::*;
     }
 }
 
@@ -295,6 +305,18 @@ pub mod sink {
     pub mod parquet {
         pub use faucet_sink_parquet::*;
     }
+
+    #[cfg(feature = "sink-gcs")]
+    pub mod gcs {
+        pub use faucet_sink_gcs::*;
+    }
+}
+
+// ── GCS common types ─────────────────────────────────────────────────────────
+
+#[cfg(any(feature = "source-gcs", feature = "sink-gcs"))]
+pub mod gcs_common {
+    pub use faucet_gcs_common::*;
 }
 
 // ── Kafka common types ───────────────────────────────────────────────────────
