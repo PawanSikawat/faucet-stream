@@ -67,7 +67,9 @@ mod tests {
 
     #[test]
     fn debug_masks_bearer_token() {
-        let auth = ElasticsearchAuth::Bearer { token: "my-token".into() };
+        let auth = ElasticsearchAuth::Bearer {
+            token: "my-token".into(),
+        };
         let debug = format!("{auth:?}");
         assert!(debug.contains("***"));
         assert!(!debug.contains("my-token"));
@@ -75,7 +77,9 @@ mod tests {
 
     #[test]
     fn debug_masks_api_key() {
-        let auth = ElasticsearchAuth::ApiKey { key: "my-key".into() };
+        let auth = ElasticsearchAuth::ApiKey {
+            key: "my-key".into(),
+        };
         let debug = format!("{auth:?}");
         assert!(debug.contains("***"));
         assert!(!debug.contains("my-key"));
