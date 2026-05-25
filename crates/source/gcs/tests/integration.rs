@@ -71,6 +71,7 @@ async fn seed_object(host: &str, bucket: &str, name: &str, body: &str, content_t
 }
 
 #[tokio::test]
+#[ignore = "requires a real GCS-compatible gRPC backend; fake-gcs-server only speaks REST. Run with `cargo test -- --ignored` against a live backend."]
 async fn source_reads_json_lines() {
     let Some((host, bucket)) = spawn_fake_gcs().await else {
         return;
@@ -98,6 +99,7 @@ async fn source_reads_json_lines() {
 }
 
 #[tokio::test]
+#[ignore = "requires a real GCS-compatible gRPC backend; see source_reads_json_lines."]
 async fn source_reads_json_array() {
     let Some((host, bucket)) = spawn_fake_gcs().await else {
         return;
@@ -122,6 +124,7 @@ async fn source_reads_json_array() {
 }
 
 #[tokio::test]
+#[ignore = "requires a real GCS-compatible gRPC backend; see source_reads_json_lines."]
 async fn source_reads_raw_text() {
     let Some((host, bucket)) = spawn_fake_gcs().await else {
         return;
@@ -141,6 +144,7 @@ async fn source_reads_raw_text() {
 }
 
 #[tokio::test]
+#[ignore = "requires a real GCS-compatible gRPC backend; see source_reads_json_lines."]
 async fn source_object_keys_skips_listing() {
     let Some((host, bucket)) = spawn_fake_gcs().await else {
         return;
@@ -182,6 +186,7 @@ async fn source_object_keys_skips_listing() {
 }
 
 #[tokio::test]
+#[ignore = "requires a real GCS-compatible gRPC backend; see source_reads_json_lines."]
 async fn source_stream_pages_batch_size_zero_yields_one_page_per_object() {
     use futures::StreamExt;
     let Some((host, bucket)) = spawn_fake_gcs().await else {

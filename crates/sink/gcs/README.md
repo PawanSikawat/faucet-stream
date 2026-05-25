@@ -82,13 +82,16 @@ uploads.
 ## Running the tests
 
 ```bash
-cargo test -p faucet-sink-gcs            # unit tests (no network)
-cargo test -p faucet-sink-gcs --test integration   # requires Docker
+cargo test -p faucet-sink-gcs                # unit tests (no network)
+cargo test -p faucet-sink-gcs --test integration -- --ignored
 ```
 
-Integration tests spin up `fsouza/fake-gcs-server` via `testcontainers`
-and skip cleanly when Docker isn't available. The round-trip test reads
-records back via `faucet-source-gcs`.
+Integration tests are marked `#[ignore]` because they require a real
+GCS-compatible **gRPC** backend. The `google-cloud-storage` SDK's
+control-plane calls (used during round-trip readback) need gRPC, and
+`fake-gcs-server` only speaks REST — so the test fails with
+`h2 protocol error / GoAway`. Run with `--ignored` against a real GCS
+bucket or a gRPC-capable emulator when validating changes.
 
 ## Out of scope (v1)
 

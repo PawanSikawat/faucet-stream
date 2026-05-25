@@ -50,6 +50,7 @@ async fn spawn_fake_gcs() -> Option<(String, String)> {
 }
 
 #[tokio::test]
+#[ignore = "requires a real GCS-compatible gRPC backend; fake-gcs-server only speaks REST. Run with `cargo test -- --ignored` against a live backend."]
 async fn sink_writes_and_source_reads_them_back() {
     let Some((host, bucket)) = spawn_fake_gcs().await else {
         return;
@@ -85,6 +86,7 @@ async fn sink_writes_and_source_reads_them_back() {
 }
 
 #[tokio::test]
+#[ignore = "requires a real GCS-compatible gRPC backend; see sink_writes_and_source_reads_them_back."]
 async fn sink_rolls_files_per_max_records_per_file() {
     use futures::StreamExt;
     let Some((host, bucket)) = spawn_fake_gcs().await else {

@@ -109,12 +109,17 @@ is intentional.
 ## Running the tests
 
 ```bash
-cargo test -p faucet-source-gcs           # unit tests (no network)
-cargo test -p faucet-source-gcs --test integration   # requires Docker
+cargo test -p faucet-source-gcs              # unit tests (no network)
+cargo test -p faucet-source-gcs --test integration -- --ignored
 ```
 
-Integration tests spin up `fsouza/fake-gcs-server` via `testcontainers`
-and skip cleanly when Docker isn't available.
+Integration tests are marked `#[ignore]` because they require a real
+GCS-compatible **gRPC** backend. The `google-cloud-storage` SDK uses
+gRPC for control-plane operations (listing, metadata), and
+`fake-gcs-server` only speaks the REST API — so `cargo test` against
+the emulator fails with `h2 protocol error / GoAway`. Run the
+`--ignored` suite against a real GCS bucket or a gRPC-capable
+emulator when validating changes.
 
 ## Out of scope (v1)
 
