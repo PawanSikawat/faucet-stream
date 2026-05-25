@@ -14,6 +14,13 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 /// Authentication method for Elasticsearch.
+///
+/// **Wire-format note:** the `#[serde(tag = "type")]` discriminator uses
+/// PascalCase variant names (`"None"`, `"Basic"`, `"Bearer"`, `"ApiKey"`)
+/// for byte-compatibility with existing YAML configs that predate the
+/// extraction of this crate from `faucet-source-elasticsearch` and
+/// `faucet-sink-elasticsearch`. Do not add `#[serde(rename_all = "snake_case")]`
+/// here — it would silently break those configs.
 #[derive(Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "type")]
 pub enum ElasticsearchAuth {
@@ -98,5 +105,23 @@ mod tests {
         assert_eq!(json, r#"{"type":"None"}"#);
         let parsed: ElasticsearchAuth = serde_json::from_str(&json).unwrap();
         assert!(matches!(parsed, ElasticsearchAuth::None));
+    }
+
+    #[test]
+    fn serde_round_trip_bearer() {
+        let auth = ElasticsearchAuth::Bearer { token: "t".into() };
+        let json = serde_json::to_string(&auth).unwrap();
+        assert_eq!(json, r#"{"type":"Bearer","token":"t"}"#);
+        let parsed: ElasticsearchAuth = serde_json::from_str(&json).unwrap();
+        assert!(matches!(parsed, ElasticsearchAuth::Bearer { .. }));
+    }
+
+    #[test]
+    fn serde_round_trip_api_key() {
+        let auth = ElasticsearchAuth::ApiKey { key: "k".into() };
+        let json = serde_json::to_string(&auth).unwrap();
+        assert_eq!(json, r#"{"type":"ApiKey","key":"k"}"#);
+        let parsed: ElasticsearchAuth = serde_json::from_str(&json).unwrap();
+        assert!(matches!(parsed, ElasticsearchAuth::ApiKey { .. }));
     }
 }
