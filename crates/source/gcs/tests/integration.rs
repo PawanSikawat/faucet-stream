@@ -42,10 +42,7 @@ async fn spawn_fake_gcs() -> Option<(String, String)> {
         .await
         .ok()?;
     if !resp.status().is_success() && resp.status() != reqwest::StatusCode::CONFLICT {
-        eprintln!(
-            "Skipping: could not create bucket ({})",
-            resp.status()
-        );
+        eprintln!("Skipping: could not create bucket ({})", resp.status());
         return None;
     }
 
@@ -146,9 +143,30 @@ async fn source_object_keys_skips_listing() {
     let Some((host, bucket)) = spawn_fake_gcs().await else {
         return;
     };
-    seed_object(&host, &bucket, "a.jsonl", "{\"v\":1}\n", "application/x-ndjson").await;
-    seed_object(&host, &bucket, "b.jsonl", "{\"v\":2}\n", "application/x-ndjson").await;
-    seed_object(&host, &bucket, "c.jsonl", "{\"v\":3}\n", "application/x-ndjson").await;
+    seed_object(
+        &host,
+        &bucket,
+        "a.jsonl",
+        "{\"v\":1}\n",
+        "application/x-ndjson",
+    )
+    .await;
+    seed_object(
+        &host,
+        &bucket,
+        "b.jsonl",
+        "{\"v\":2}\n",
+        "application/x-ndjson",
+    )
+    .await;
+    seed_object(
+        &host,
+        &bucket,
+        "c.jsonl",
+        "{\"v\":3}\n",
+        "application/x-ndjson",
+    )
+    .await;
 
     let config = GcsSourceConfig::new(&bucket)
         .object_keys(vec!["a.jsonl".into(), "c.jsonl".into()])

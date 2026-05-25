@@ -184,7 +184,9 @@ impl faucet_core::Source for GcsSource {
             None
         };
 
-        let keys = self.list_object_names(substituted_prefix.as_deref()).await?;
+        let keys = self
+            .list_object_names(substituted_prefix.as_deref())
+            .await?;
         tracing::info!(
             bucket = %self.config.bucket,
             objects = keys.len(),
@@ -428,7 +430,12 @@ mod tests {
 
     #[test]
     fn parse_json_lines_skips_blanks() {
-        let r = parse(GcsFileFormat::JsonLines, "t", "{\"id\":1}\n\n{\"id\":2}\n\n").unwrap();
+        let r = parse(
+            GcsFileFormat::JsonLines,
+            "t",
+            "{\"id\":1}\n\n{\"id\":2}\n\n",
+        )
+        .unwrap();
         assert_eq!(r.len(), 2);
     }
 
@@ -441,7 +448,12 @@ mod tests {
 
     #[test]
     fn parse_json_array() {
-        let r = parse(GcsFileFormat::JsonArray, "t.json", "[{\"id\":1},{\"id\":2}]").unwrap();
+        let r = parse(
+            GcsFileFormat::JsonArray,
+            "t.json",
+            "[{\"id\":1},{\"id\":2}]",
+        )
+        .unwrap();
         assert_eq!(r.len(), 2);
     }
 

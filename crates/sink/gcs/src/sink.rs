@@ -50,9 +50,7 @@ impl GcsSink {
             .set_content_type("application/x-ndjson")
             .send_unbuffered()
             .await
-            .map_err(|e| {
-                FaucetError::Sink(format!("GCS put object error for key '{key}': {e}"))
-            })?;
+            .map_err(|e| FaucetError::Sink(format!("GCS put object error for key '{key}': {e}")))?;
         tracing::debug!(key = %key, "Uploaded GCS object");
         Ok(())
     }
@@ -94,8 +92,7 @@ impl faucet_core::Sink for GcsSink {
     }
 
     fn config_schema(&self) -> Value {
-        serde_json::to_value(faucet_core::schema_for!(GcsSinkConfig))
-            .expect("schema serialization")
+        serde_json::to_value(faucet_core::schema_for!(GcsSinkConfig)).expect("schema serialization")
     }
 
     fn connector_name(&self) -> &'static str {
@@ -130,7 +127,10 @@ mod tests {
     #[test]
     fn serialize_jsonl_two_records() {
         let body = GcsSink::serialize_jsonl(&[json!({"a": 1}), json!({"b": 2})]).unwrap();
-        assert_eq!(std::str::from_utf8(&body).unwrap(), "{\"a\":1}\n{\"b\":2}\n");
+        assert_eq!(
+            std::str::from_utf8(&body).unwrap(),
+            "{\"a\":1}\n{\"b\":2}\n"
+        );
     }
 
     #[test]
