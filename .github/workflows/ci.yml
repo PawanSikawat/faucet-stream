@@ -92,6 +92,8 @@ jobs:
           - source-kafka
           - source-parquet
           - source-gcs
+          - source-bigquery
+          - source-snowflake
           # Sinks
           - sink-bigquery
           - sink-postgres

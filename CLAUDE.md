@@ -14,7 +14,7 @@ This workspace produces both library crates (`faucet-core` + every connector and
 
 ## Workspace Structure
 
-Cargo workspace, 35 crates (34 libraries + the `faucet-cli` binary). All connector crates depend only on `faucet-core`; the umbrella `faucet-stream` and the `faucet-cli` binary depend on every connector + state crate via optional features.
+Cargo workspace, 39 crates (38 libraries + the `faucet-cli` binary). All connector crates depend only on `faucet-core`; the umbrella `faucet-stream` and the `faucet-cli` binary depend on every connector + state crate via optional features.
 
 | Crate | Path | Description |
 |-------|------|-------------|
@@ -36,6 +36,8 @@ Cargo workspace, 35 crates (34 libraries + the `faucet-cli` binary). All connect
 | `faucet-source-elasticsearch` | `crates/source/elasticsearch/` | Elasticsearch source — search/scroll API |
 | `faucet-source-parquet` | `crates/source/parquet/` | Parquet source — local, glob, or S3; vectorized Arrow async reader, projection |
 | `faucet-source-kafka` | `crates/source/kafka/` | Kafka consumer — subscribes to topics, drains with idle/max-messages termination |
+| `faucet-source-bigquery` | `crates/source/bigquery/` | BigQuery query source — `jobs.query` + `jobs.getQueryResults`, pageToken pagination, type-aware row decoding |
+| `faucet-source-snowflake` | `crates/source/snowflake/` | Snowflake query source — SQL REST API with server-side partition pagination, JWT / OAuth auth |
 | `faucet-sink-bigquery` | `crates/sink/bigquery/` | BigQuery streaming insert sink |
 | `faucet-sink-postgres` | `crates/sink/postgres/` | PostgreSQL sink — JSONB or auto-mapped columns |
 | `faucet-sink-jsonl` | `crates/sink/jsonl/` | JSON Lines file sink |
@@ -52,9 +54,11 @@ Cargo workspace, 35 crates (34 libraries + the `faucet-cli` binary). All connect
 | `faucet-sink-stdout` | `crates/sink/stdout/` | Stdout/stderr sink — JSON Lines, pretty JSON, or TSV |
 | `faucet-sink-parquet` | `crates/sink/parquet/` | Parquet sink — local or S3; schema inference, compression, row/byte rollover |
 | `faucet-sink-kafka` | `crates/sink/kafka/` | Kafka producer — FuturesUnordered batched sends, QueueFull retry, multi-topic routing |
+| `faucet-bigquery-common` | `crates/bigquery-common/` | Shared `BigQueryCredentials` enum and `build_client` for BigQuery source/sink |
 | `faucet-elasticsearch-common` | `crates/elasticsearch-common/` | Shared `ElasticsearchAuth` enum for Elasticsearch source/sink |
 | `faucet-gcs-common` | `crates/gcs-common/` | Shared types for GCS source/sink — credentials enum, Storage/StorageControl client builders |
 | `faucet-kafka-common` | `crates/kafka-common/` | Shared types for Kafka source/sink — auth, value formats, Schema Registry client |
+| `faucet-snowflake-common` | `crates/snowflake-common/` | Shared `SnowflakeAuth` enum + `authorization_header` / `snowflake_token_type` helpers for Snowflake source/sink |
 | `faucet-state-redis` | `crates/state/redis/` | Redis-backed `StateStore` for replication bookmarks |
 | `faucet-state-postgres` | `crates/state/postgres/` | PostgreSQL-backed `StateStore` for replication bookmarks |
 | `faucet-stream` | `faucet-stream/` | Umbrella crate — feature-gated re-exports of all connectors and state backends |
@@ -342,7 +346,7 @@ When the user points out something fundamental about how code in this library sh
 
 When a connector ships both a `faucet-source-<name>` and a `faucet-sink-<name>` crate for the same external system, shared configuration types (auth, value formats, compression, TLS, etc.) live in a dedicated `faucet-<name>-common` crate. Both the source and sink crates depend on the common crate and re-export the shared types so end-user imports do not change. See `faucet-kafka-common` for the reference implementation.
 
-Existing pairs that predate this convention (`postgres`, `mysql`, `sqlite`, `redis`, `mongodb`, `s3`, `csv`) duplicate a tiny shared surface — typically just `connection_url` / `batch_size` / `max_connections`. The Elasticsearch pair tripped the backfill trigger in 2026-05 (a duplicated 4-variant auth enum) and was migrated to `faucet-elasticsearch-common`. The remaining seven pairs stay duplicated for now: backfill an existing pair only once it gains a second shared type (e.g. TLS settings, a credential enum, a compression enum), since the cost of a near-empty `-common` crate exceeds the benefit until then. New pairs must follow the convention from the start.
+Existing pairs that predate this convention (`postgres`, `mysql`, `sqlite`, `redis`, `mongodb`, `s3`, `csv`) duplicate a tiny shared surface — typically just `connection_url` / `batch_size` / `max_connections`. The Elasticsearch pair tripped the backfill trigger in 2026-05 (a duplicated 4-variant auth enum) and was migrated to `faucet-elasticsearch-common`. The Snowflake and BigQuery pairs were extracted to `faucet-snowflake-common` and `faucet-bigquery-common` when their respective sources landed (closing #29 and #30) — the sink already shipped a multi-variant auth/credentials enum each, so the new source picked up the shared types from the start. The remaining seven pairs stay duplicated for now: backfill an existing pair only once it gains a second shared type (e.g. TLS settings, a credential enum, a compression enum), since the cost of a near-empty `-common` crate exceeds the benefit until then. New pairs must follow the convention from the start.
 
 ### Config loading
 

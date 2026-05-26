@@ -97,12 +97,14 @@ jobs:
             faucet-kafka-common
             faucet-elasticsearch-common
             faucet-gcs-common
+            faucet-bigquery-common
+            faucet-snowflake-common
             faucet-source-rest faucet-source-graphql faucet-source-xml
             faucet-source-grpc faucet-source-postgres faucet-source-postgres-cdc
             faucet-source-mysql
             faucet-source-sqlite faucet-source-s3 faucet-source-mongodb
             faucet-source-redis faucet-source-webhook faucet-source-csv
-            faucet-source-elasticsearch faucet-source-kafka
+            faucet-source-elasticsearch faucet-source-kafka faucet-source-bigquery faucet-source-snowflake
             faucet-sink-bigquery faucet-sink-postgres faucet-sink-jsonl
             faucet-sink-snowflake faucet-sink-mysql faucet-sink-sqlite
             faucet-sink-s3 faucet-sink-mongodb faucet-sink-redis
@@ -114,12 +116,14 @@ jobs:
             faucet-kafka-common
             faucet-elasticsearch-common
             faucet-gcs-common
+            faucet-bigquery-common
+            faucet-snowflake-common
             faucet-source-rest faucet-source-graphql faucet-source-xml
             faucet-source-grpc faucet-source-postgres faucet-source-postgres-cdc
             faucet-source-mysql
             faucet-source-sqlite faucet-source-s3 faucet-source-mongodb
             faucet-source-redis faucet-source-webhook faucet-source-csv
-            faucet-source-elasticsearch faucet-source-kafka
+            faucet-source-elasticsearch faucet-source-kafka faucet-source-bigquery faucet-source-snowflake
             faucet-sink-bigquery faucet-sink-postgres faucet-sink-jsonl
             faucet-sink-snowflake faucet-sink-mysql faucet-sink-sqlite
             faucet-sink-s3 faucet-sink-mongodb faucet-sink-redis
@@ -164,12 +168,14 @@ jobs:
             faucet-kafka-common
             faucet-elasticsearch-common
             faucet-gcs-common
+            faucet-bigquery-common
+            faucet-snowflake-common
             faucet-source-rest faucet-source-graphql faucet-source-xml
             faucet-source-grpc faucet-source-postgres faucet-source-postgres-cdc
             faucet-source-mysql
             faucet-source-sqlite faucet-source-s3 faucet-source-mongodb
             faucet-source-redis faucet-source-webhook faucet-source-csv
-            faucet-source-elasticsearch faucet-source-kafka
+            faucet-source-elasticsearch faucet-source-kafka faucet-source-bigquery faucet-source-snowflake
             faucet-sink-bigquery faucet-sink-postgres faucet-sink-jsonl
             faucet-sink-snowflake faucet-sink-mysql faucet-sink-sqlite
             faucet-sink-s3 faucet-sink-mongodb faucet-sink-redis
@@ -181,12 +187,14 @@ jobs:
             faucet-kafka-common
             faucet-elasticsearch-common
             faucet-gcs-common
+            faucet-bigquery-common
+            faucet-snowflake-common
             faucet-source-rest faucet-source-graphql faucet-source-xml
             faucet-source-grpc faucet-source-postgres faucet-source-postgres-cdc
             faucet-source-mysql
             faucet-source-sqlite faucet-source-s3 faucet-source-mongodb
             faucet-source-redis faucet-source-webhook faucet-source-csv
-            faucet-source-elasticsearch faucet-source-kafka
+            faucet-source-elasticsearch faucet-source-kafka faucet-source-bigquery faucet-source-snowflake
             faucet-sink-bigquery faucet-sink-postgres faucet-sink-jsonl
             faucet-sink-snowflake faucet-sink-mysql faucet-sink-sqlite
             faucet-sink-s3 faucet-sink-mongodb faucet-sink-redis

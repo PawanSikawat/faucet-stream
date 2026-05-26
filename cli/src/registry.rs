@@ -125,6 +125,24 @@ pub async fn build_source(kind: &str, config: Value) -> CliResult<Box<dyn Source
             let cfg = decode::<faucet_source_gcs::GcsSourceConfig>("source", "gcs", config)?;
             Ok(Box::new(faucet_source_gcs::GcsSource::new(cfg).await?))
         }
+        #[cfg(feature = "source-bigquery")]
+        "bigquery" => {
+            let cfg = decode::<faucet_source_bigquery::BigQuerySourceConfig>(
+                "source", "bigquery", config,
+            )?;
+            Ok(Box::new(
+                faucet_source_bigquery::BigQuerySource::new(cfg).await?,
+            ))
+        }
+        #[cfg(feature = "source-snowflake")]
+        "snowflake" => {
+            let cfg = decode::<faucet_source_snowflake::SnowflakeSourceConfig>(
+                "source",
+                "snowflake",
+                config,
+            )?;
+            Ok(Box::new(faucet_source_snowflake::SnowflakeSource::new(cfg)))
+        }
         other => Err(unknown(other, "source", source_kinds())),
     }
 }
@@ -268,6 +286,10 @@ pub fn source_schema(kind: &str) -> CliResult<Value> {
         "parquet" => Ok(schema::<faucet_source_parquet::ParquetSourceConfig>()),
         #[cfg(feature = "source-gcs")]
         "gcs" => Ok(schema::<faucet_source_gcs::GcsSourceConfig>()),
+        #[cfg(feature = "source-bigquery")]
+        "bigquery" => Ok(schema::<faucet_source_bigquery::BigQuerySourceConfig>()),
+        #[cfg(feature = "source-snowflake")]
+        "snowflake" => Ok(schema::<faucet_source_snowflake::SnowflakeSourceConfig>()),
         other => Err(unknown(other, "source", source_kinds())),
     }
 }
@@ -364,6 +386,16 @@ pub fn source_descriptions() -> Vec<(&'static str, &'static str)> {
     v.push((
         "gcs",
         "Google Cloud Storage source — JSONL, JSON array, or raw text",
+    ));
+    #[cfg(feature = "source-bigquery")]
+    v.push((
+        "bigquery",
+        "Google BigQuery query source (jobs.query + jobs.getQueryResults)",
+    ));
+    #[cfg(feature = "source-snowflake")]
+    v.push((
+        "snowflake",
+        "Snowflake query source (SQL REST API with partition paging)",
     ));
     v
 }

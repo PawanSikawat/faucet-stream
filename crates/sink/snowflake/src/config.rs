@@ -4,36 +4,9 @@ use faucet_core::DEFAULT_BATCH_SIZE;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-/// Authentication method for Snowflake.
-#[derive(Clone, Serialize, Deserialize, JsonSchema)]
-#[serde(tag = "type")]
-pub enum SnowflakeAuth {
-    /// JWT key-pair authentication.
-    ///
-    /// Uses an RSA private key (PEM-encoded) to generate JWT tokens
-    /// for the Snowflake SQL REST API.
-    KeyPair {
-        /// The Snowflake user account name.
-        user: String,
-        /// PEM-encoded RSA private key.
-        private_key_pem: String,
-    },
-    /// OAuth2 bearer token (e.g. from an external identity provider).
-    OAuth { token: String },
-}
-
-impl std::fmt::Debug for SnowflakeAuth {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::KeyPair { user, .. } => f
-                .debug_struct("KeyPair")
-                .field("user", user)
-                .field("private_key_pem", &"***")
-                .finish(),
-            Self::OAuth { .. } => f.debug_struct("OAuth").field("token", &"***").finish(),
-        }
-    }
-}
+// Re-export the shared auth type so end-user imports remain stable
+// (`use faucet_sink_snowflake::SnowflakeAuth;` keeps working).
+pub use faucet_snowflake_common::SnowflakeAuth;
 
 /// Configuration for the Snowflake sink.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
