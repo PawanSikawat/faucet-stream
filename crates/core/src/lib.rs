@@ -12,7 +12,6 @@
 //! - [`schema::infer_schema`] — JSON Schema inference from record samples
 
 pub mod config;
-pub mod dag;
 pub mod dlq;
 pub mod error;
 pub mod observability;
@@ -24,7 +23,6 @@ pub mod traits;
 pub mod transform;
 pub mod util;
 
-pub use dag::{DagNode, DagNodeError, DagNodeResult, DagResult, SourceDAG};
 pub use dlq::{DlqConfig, DlqReason, DlqStats, OnBatchError, build_envelope};
 pub use error::FaucetError;
 pub use observability::{

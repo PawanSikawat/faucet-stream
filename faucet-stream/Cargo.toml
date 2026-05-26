@@ -171,10 +171,6 @@ name = "rest_streaming"
 required-features = ["source-rest", "sink-jsonl"]
 
 [[example]]
-name = "dag_users_posts"
-required-features = ["source-rest", "sink-jsonl"]
-
-[[example]]
 name = "rest_to_bigquery"
 required-features = ["source-rest", "sink-bigquery"]
 
