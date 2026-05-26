@@ -23,7 +23,7 @@
 
 use crate::error::{CliError, CliResult};
 use serde_json::Value;
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::path::PathBuf;
 
 /// Resolve every load-time directive in `input`. Unknown prefixes (and
@@ -167,6 +167,380 @@ fn value_to_string(v: &Value) -> String {
         Value::String(s) => s.clone(),
         other => other.to_string(),
     }
+}
+
+// ── Post-parse load-time ref resolution ─────────────────────────────────────
+
+/// Resolve every `${vars.X}`, `${sources.X.PATH}`, `${sinks.X.PATH}` token
+/// found in a parsed [`PipelineConfig`].
+///
+/// Order:
+/// 1. Resolve `${vars.X}` references *inside the vars block itself* (with
+///    cycle detection), so vars-referencing-vars works.
+/// 2. Substitute `${vars.X}` inside `pipeline.sources.*` / `pipeline.sinks.*`
+///    template bodies, plus the legacy singular `pipeline.source` /
+///    `pipeline.sink` configs. This snapshot becomes the basis for
+///    `${sources.X.PATH}` / `${sinks.X.PATH}` lookups.
+/// 3. Walk every other string location in the config and resolve both
+///    `${vars.X}` and `${sources/sinks.X.PATH}`. `${row_id.path}` tokens
+///    are passed through verbatim for runtime resolution.
+pub fn resolve_config_refs(cfg: &mut crate::config::PipelineConfig) -> CliResult<()> {
+    // Phase 1: fully resolve the vars block (vars may reference other vars).
+    if let Some(vars) = cfg.vars.clone() {
+        let resolved = resolve_vars_block(&vars)?;
+        cfg.vars = Some(resolved);
+    }
+
+    let empty_vars: HashMap<String, Value> = HashMap::new();
+    let vars_ref: &HashMap<String, Value> = cfg.vars.as_ref().unwrap_or(&empty_vars);
+
+    // Phase 2: substitute vars inside template bodies so the snapshot taken
+    // next sees fully-resolved values.
+    for (name, spec) in cfg.pipeline.sources.iter_mut() {
+        resolve_value_with_vars(
+            &mut spec.config,
+            vars_ref,
+            &format!("pipeline.sources.{name}.config"),
+        )?;
+    }
+    for (name, spec) in cfg.pipeline.sinks.iter_mut() {
+        resolve_value_with_vars(
+            &mut spec.config,
+            vars_ref,
+            &format!("pipeline.sinks.{name}.config"),
+        )?;
+    }
+    if let Some(spec) = cfg.pipeline.source.as_mut() {
+        resolve_value_with_vars(&mut spec.config, vars_ref, "pipeline.source.config")?;
+    }
+    if let Some(spec) = cfg.pipeline.sink.as_mut() {
+        resolve_value_with_vars(&mut spec.config, vars_ref, "pipeline.sink.config")?;
+    }
+
+    // Snapshot the templates *after* vars substitution.
+    let snapshot = TemplateSnapshot::capture(&cfg.pipeline);
+
+    // Phase 3: walk everything — including the template bodies again for
+    // ${sources/sinks.X.PATH} refs (Phase 2 only resolved ${vars.X} there).
+    for (name, spec) in cfg.pipeline.sources.iter_mut() {
+        resolve_value_full(
+            &mut spec.config,
+            vars_ref,
+            &snapshot,
+            &format!("pipeline.sources.{name}.config"),
+        )?;
+    }
+    for (name, spec) in cfg.pipeline.sinks.iter_mut() {
+        resolve_value_full(
+            &mut spec.config,
+            vars_ref,
+            &snapshot,
+            &format!("pipeline.sinks.{name}.config"),
+        )?;
+    }
+    if let Some(spec) = cfg.pipeline.source.as_mut() {
+        resolve_value_full(
+            &mut spec.config,
+            vars_ref,
+            &snapshot,
+            "pipeline.source.config",
+        )?;
+    }
+    if let Some(spec) = cfg.pipeline.sink.as_mut() {
+        resolve_value_full(
+            &mut spec.config,
+            vars_ref,
+            &snapshot,
+            "pipeline.sink.config",
+        )?;
+    }
+    for t in cfg.pipeline.transforms.iter_mut() {
+        resolve_value_full(&mut t.config, vars_ref, &snapshot, "pipeline.transforms")?;
+    }
+    if let Some(s) = cfg.pipeline.state.as_mut() {
+        resolve_value_full(&mut s.config, vars_ref, &snapshot, "pipeline.state.config")?;
+    }
+    if let Some(d) = cfg.pipeline.dlq.as_mut() {
+        resolve_value_full(
+            &mut d.sink.config,
+            vars_ref,
+            &snapshot,
+            "pipeline.dlq.sink.config",
+        )?;
+    }
+    for (i, row) in cfg.matrix.iter_mut().enumerate() {
+        let row_owner = row.id.clone().unwrap_or_else(|| format!("row-{i}"));
+        if let Some(p) = row.source.as_mut() {
+            if let Some(c) = p.config.as_mut() {
+                resolve_value_full(
+                    c,
+                    vars_ref,
+                    &snapshot,
+                    &format!("matrix[{row_owner}].source.config"),
+                )?;
+            }
+        }
+        if let Some(p) = row.sink.as_mut() {
+            if let Some(c) = p.config.as_mut() {
+                resolve_value_full(
+                    c,
+                    vars_ref,
+                    &snapshot,
+                    &format!("matrix[{row_owner}].sink.config"),
+                )?;
+            }
+        }
+        if let Some(ts) = row.transforms.as_mut() {
+            for t in ts.iter_mut() {
+                resolve_value_full(
+                    &mut t.config,
+                    vars_ref,
+                    &snapshot,
+                    &format!("matrix[{row_owner}].transforms"),
+                )?;
+            }
+        }
+        if let Some(s) = row.state.as_mut() {
+            resolve_value_full(
+                &mut s.config,
+                vars_ref,
+                &snapshot,
+                &format!("matrix[{row_owner}].state.config"),
+            )?;
+        }
+        if let Some(Some(d)) = row.dlq.as_mut() {
+            resolve_value_full(
+                &mut d.sink.config,
+                vars_ref,
+                &snapshot,
+                &format!("matrix[{row_owner}].dlq.sink.config"),
+            )?;
+        }
+    }
+    Ok(())
+}
+
+/// Snapshot of the resolved templates (vars already substituted) so that
+/// `${sources.X.PATH}` lookups can find values without re-walking the live config.
+struct TemplateSnapshot {
+    sources: HashMap<String, Value>,
+    sinks: HashMap<String, Value>,
+}
+
+impl TemplateSnapshot {
+    fn capture(spec: &crate::config::PipelineSpec) -> Self {
+        let mut sources: HashMap<String, Value> = spec
+            .sources
+            .iter()
+            .map(|(k, v)| {
+                (
+                    k.clone(),
+                    serde_json::to_value(v)
+                        .expect("ConnectorSpec derives Serialize and cannot fail"),
+                )
+            })
+            .collect();
+        if let Some(s) = &spec.source {
+            sources.entry("default".into()).or_insert_with(|| {
+                serde_json::to_value(s).expect("ConnectorSpec derives Serialize and cannot fail")
+            });
+        }
+        let mut sinks: HashMap<String, Value> = spec
+            .sinks
+            .iter()
+            .map(|(k, v)| {
+                (
+                    k.clone(),
+                    serde_json::to_value(v)
+                        .expect("ConnectorSpec derives Serialize and cannot fail"),
+                )
+            })
+            .collect();
+        if let Some(s) = &spec.sink {
+            sinks.entry("default".into()).or_insert_with(|| {
+                serde_json::to_value(s).expect("ConnectorSpec derives Serialize and cannot fail")
+            });
+        }
+        Self { sources, sinks }
+    }
+}
+
+/// Resolve the vars block in topological order, returning the fully-substituted
+/// map. Cycles surface as [`CliError::InterpolationCycle`].
+fn resolve_vars_block(input: &HashMap<String, Value>) -> CliResult<HashMap<String, Value>> {
+    let mut resolved: HashMap<String, Value> = HashMap::new();
+    let mut visiting: BTreeSet<String> = BTreeSet::new();
+    for key in input.keys() {
+        resolve_one_var(key, input, &mut resolved, &mut visiting)?;
+    }
+    Ok(resolved)
+}
+
+fn resolve_one_var(
+    key: &str,
+    input: &HashMap<String, Value>,
+    resolved: &mut HashMap<String, Value>,
+    visiting: &mut BTreeSet<String>,
+) -> CliResult<()> {
+    if resolved.contains_key(key) {
+        return Ok(());
+    }
+    if !visiting.insert(key.to_string()) {
+        // Already on the visiting stack — cycle detected.
+        let chain: Vec<String> = visiting
+            .iter()
+            .map(|k| format!("vars.{k}"))
+            .chain(std::iter::once(format!("vars.{key}")))
+            .collect();
+        return Err(CliError::InterpolationCycle { chain });
+    }
+    let mut value = input.get(key).expect("key was taken from input map").clone();
+    resolve_value_with_vars_in_vars(&mut value, input, resolved, visiting, &format!("vars.{key}"))?;
+    visiting.remove(key);
+    resolved.insert(key.to_string(), value);
+    Ok(())
+}
+
+/// Like [`resolve_value_with_vars`] but also recurses into other vars entries
+/// for vars-referencing-vars resolution (used only during Phase 1).
+fn resolve_value_with_vars_in_vars(
+    v: &mut Value,
+    input: &HashMap<String, Value>,
+    resolved: &mut HashMap<String, Value>,
+    visiting: &mut BTreeSet<String>,
+    _owner: &str,
+) -> CliResult<()> {
+    match v {
+        Value::String(s) => {
+            let new_s = rewrite(s, |body| {
+                let Some(name) = body.strip_prefix("vars.") else {
+                    return Ok(None); // not a vars ref — leave verbatim
+                };
+                if !resolved.contains_key(name) {
+                    if !input.contains_key(name) {
+                        return Err(CliError::UnknownVarsRef {
+                            name: name.to_string(),
+                            token: format!("${{{body}}}"),
+                        });
+                    }
+                    resolve_one_var(name, input, resolved, visiting)?;
+                }
+                Ok(Some(value_to_string(&resolved[name])))
+            })?;
+            *s = new_s;
+        }
+        Value::Array(a) => {
+            for item in a.iter_mut() {
+                resolve_value_with_vars_in_vars(item, input, resolved, visiting, _owner)?;
+            }
+        }
+        Value::Object(m) => {
+            for item in m.values_mut() {
+                resolve_value_with_vars_in_vars(item, input, resolved, visiting, _owner)?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+/// Resolve only `${vars.X}` tokens in `v`. Used in Phase 2 to substitute
+/// vars into source/sink template bodies before snapshotting.
+fn resolve_value_with_vars(
+    v: &mut Value,
+    vars: &HashMap<String, Value>,
+    _owner: &str,
+) -> CliResult<()> {
+    match v {
+        Value::String(s) => {
+            let new_s = rewrite(s, |body| {
+                let Some(name) = body.strip_prefix("vars.") else {
+                    return Ok(None);
+                };
+                let val = vars.get(name).ok_or_else(|| CliError::UnknownVarsRef {
+                    name: name.to_string(),
+                    token: format!("${{{body}}}"),
+                })?;
+                Ok(Some(value_to_string(val)))
+            })?;
+            *s = new_s;
+        }
+        Value::Array(a) => {
+            for item in a.iter_mut() {
+                resolve_value_with_vars(item, vars, _owner)?;
+            }
+        }
+        Value::Object(m) => {
+            for item in m.values_mut() {
+                resolve_value_with_vars(item, vars, _owner)?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+/// Resolve both `${vars.X}` and `${sources/sinks.X.PATH}` tokens in `v`.
+/// Used in Phase 3 for all locations outside the template bodies themselves.
+fn resolve_value_full(
+    v: &mut Value,
+    vars: &HashMap<String, Value>,
+    templates: &TemplateSnapshot,
+    _owner: &str,
+) -> CliResult<()> {
+    match v {
+        Value::String(s) => {
+            let new_s = rewrite(s, |body| {
+                if let Some(name) = body.strip_prefix("vars.") {
+                    let val = vars.get(name).ok_or_else(|| CliError::UnknownVarsRef {
+                        name: name.to_string(),
+                        token: format!("${{{body}}}"),
+                    })?;
+                    return Ok(Some(value_to_string(val)));
+                }
+                if let Some(rest) = body.strip_prefix("sources.") {
+                    return Ok(Some(lookup_template_path(&templates.sources, "sources", rest)?));
+                }
+                if let Some(rest) = body.strip_prefix("sinks.") {
+                    return Ok(Some(lookup_template_path(&templates.sinks, "sinks", rest)?));
+                }
+                // Any other prefix (e.g. `${users.id}`) is a deferred row-id token —
+                // leave verbatim for runtime resolution.
+                Ok(None)
+            })?;
+            *s = new_s;
+        }
+        Value::Array(a) => {
+            for item in a.iter_mut() {
+                resolve_value_full(item, vars, templates, _owner)?;
+            }
+        }
+        Value::Object(m) => {
+            for item in m.values_mut() {
+                resolve_value_full(item, vars, templates, _owner)?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn lookup_template_path(
+    catalog: &HashMap<String, Value>,
+    kind: &str,
+    rest: &str,
+) -> CliResult<String> {
+    // `rest` is `<name>` or `<name>.<dotted.path>`
+    let (name, path) = rest.split_once('.').unwrap_or((rest, ""));
+    let template = catalog.get(name).ok_or_else(|| CliError::UnknownTemplateRef {
+        token: format!("${{{kind}.{rest}}}"),
+        reason: format!("no {kind} template named '{name}'"),
+    })?;
+    let resolved = resolve_dotted(template, path).ok_or_else(|| CliError::UnknownTemplateRef {
+        token: format!("${{{kind}.{rest}}}"),
+        reason: format!("path '{path}' does not resolve inside {kind} template '{name}'"),
+    })?;
+    Ok(value_to_string(&resolved))
 }
 
 #[cfg(test)]
@@ -321,5 +695,144 @@ mod tests {
         let ctx = HashMap::new();
         let out = interpolate_record("a=${env:NOPE} b=${file:./x}", &ctx).unwrap();
         assert_eq!(out, "a=${env:NOPE} b=${file:./x}");
+    }
+
+    // ── post-parse load-time tests ───────────────────────────────────────
+
+    use crate::config::{parse_with_extension, PipelineConfig};
+    use crate::interpolate::resolve_config_refs;
+
+    fn load(yaml: &str) -> PipelineConfig {
+        let mut cfg = parse_with_extension(yaml, "yaml").unwrap();
+        resolve_config_refs(&mut cfg).unwrap();
+        cfg
+    }
+
+    #[test]
+    fn resolves_vars_in_source_config() {
+        let cfg = load(r#"
+version: 1
+vars:
+  base: https://api.example.com
+pipeline:
+  source: { type: rest, config: { base_url: "${vars.base}" } }
+  sink:   { type: jsonl, config: { path: ./o.jsonl } }
+"#);
+        assert_eq!(
+            cfg.pipeline.source.as_ref().unwrap().config["base_url"],
+            "https://api.example.com"
+        );
+    }
+
+    #[test]
+    fn resolves_vars_referencing_other_vars() {
+        let cfg = load(r#"
+version: 1
+vars:
+  base: https://api.example.com
+  users_url: "${vars.base}/v1/users"
+pipeline:
+  source: { type: rest, config: { url: "${vars.users_url}" } }
+  sink:   { type: jsonl, config: { path: ./o.jsonl } }
+"#);
+        assert_eq!(
+            cfg.pipeline.source.as_ref().unwrap().config["url"],
+            "https://api.example.com/v1/users"
+        );
+    }
+
+    #[test]
+    fn resolves_template_ref_from_matrix_row() {
+        let cfg = load(r#"
+version: 1
+pipeline:
+  sources:
+    users_api:
+      type: rest
+      config: { base_url: https://api.example.com }
+  sinks:
+    archive: { type: jsonl, config: { path: ./out.jsonl } }
+matrix:
+  - id: load_users
+    source:
+      ref: users_api
+      config: { audit_url: "${sources.users_api.config.base_url}/audit" }
+"#);
+        let row_src = cfg.matrix[0].source.as_ref().unwrap();
+        assert_eq!(
+            row_src.config.as_ref().unwrap()["audit_url"],
+            "https://api.example.com/audit"
+        );
+    }
+
+    #[test]
+    fn detects_vars_cycle() {
+        let yaml = r#"
+version: 1
+vars:
+  a: "${vars.b}"
+  b: "${vars.a}"
+pipeline:
+  source: { type: rest, config: {} }
+  sink:   { type: jsonl, config: { path: ./o.jsonl } }
+"#;
+        let mut cfg = parse_with_extension(yaml, "yaml").unwrap();
+        let err = resolve_config_refs(&mut cfg).unwrap_err();
+        match err {
+            CliError::InterpolationCycle { chain } => {
+                assert!(chain.iter().any(|s| s.contains("vars.a")));
+                assert!(chain.iter().any(|s| s.contains("vars.b")));
+            }
+            other => panic!("expected InterpolationCycle, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn unknown_var_errors() {
+        let yaml = r#"
+version: 1
+pipeline:
+  source: { type: rest, config: { url: "${vars.nope}" } }
+  sink:   { type: jsonl, config: { path: ./o.jsonl } }
+"#;
+        let mut cfg = parse_with_extension(yaml, "yaml").unwrap();
+        let err = resolve_config_refs(&mut cfg).unwrap_err();
+        match err {
+            CliError::UnknownVarsRef { name, .. } => assert_eq!(name, "nope"),
+            other => panic!("expected UnknownVarsRef, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn unknown_template_ref_errors() {
+        let yaml = r#"
+version: 1
+pipeline:
+  source: { type: rest, config: { x: "${sources.nope.config.foo}" } }
+  sink:   { type: jsonl, config: { path: ./o.jsonl } }
+"#;
+        let mut cfg = parse_with_extension(yaml, "yaml").unwrap();
+        let err = resolve_config_refs(&mut cfg).unwrap_err();
+        match err {
+            CliError::UnknownTemplateRef { reason, .. } => {
+                assert!(reason.to_ascii_lowercase().contains("nope"));
+            }
+            other => panic!("expected UnknownTemplateRef, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn leaves_row_id_tokens_for_runtime() {
+        let cfg = load(r#"
+version: 1
+pipeline:
+  source: { type: rest, config: { path: "/v1/users/${users.id}/posts" } }
+  sink:   { type: jsonl, config: { path: ./o.jsonl } }
+"#);
+        // ${users.id} must survive — it's a deferred row-id reference.
+        assert_eq!(
+            cfg.pipeline.source.as_ref().unwrap().config["path"],
+            "/v1/users/${users.id}/posts"
+        );
     }
 }
