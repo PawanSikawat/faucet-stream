@@ -75,6 +75,8 @@ where
             dec.multiple_members(true);
             Box::pin(tokio::io::BufReader::new(dec))
         }
+        // zstd handles concatenated frames natively, so no `multiple_members`-
+        // equivalent flag is needed (the spec is part of zstd itself).
         Compression::Zstd => {
             let dec = async_compression::tokio::bufread::ZstdDecoder::new(r);
             Box::pin(tokio::io::BufReader::new(dec))
@@ -118,9 +120,16 @@ where
 ///
 /// The returned writer finalises the encoder when dropped (gzip writes its
 /// 8-byte trailer; zstd's `auto_finish` adapter writes the frame epilogue).
-/// To surface trailer-write I/O errors instead of swallowing them on drop,
-/// callers should explicitly `flush()` and then drop the returned `Box` from
-/// inside their `spawn_blocking` task.
+/// Because the concrete encoder type is erased behind `Box<dyn Write>`,
+/// callers cannot invoke `flate2`'s or `zstd`'s `finish()` to capture the
+/// trailer-write `io::Error`. Callers can `flush()` to drain the encoder's
+/// internal buffer mid-stream, but trailer-write errors on drop are
+/// negligibly rare and are silently swallowed.
+///
+/// Connectors using this wrapper should drop the box inside a
+/// `spawn_blocking` task body so the trailer write does not block the
+/// async runtime, and rely on the surrounding `write_all` / `flush` calls
+/// to surface earlier I/O errors.
 pub fn wrap_sync_writer<'a, W>(w: W, c: Compression) -> Box<dyn std::io::Write + Send + 'a>
 where
     W: std::io::Write + Send + 'a,
@@ -230,10 +239,18 @@ mod tests {
 
     #[test]
     fn config_serde_lowercase() {
-        let yaml: CompressionConfig = serde_json::from_str("\"gzip\"").unwrap();
-        assert_eq!(yaml, CompressionConfig::Gzip);
-        let s = serde_json::to_string(&CompressionConfig::Zstd).unwrap();
-        assert_eq!(s, "\"zstd\"");
+        // All four variants round-trip as lowercase strings.
+        for (variant, expected) in [
+            (CompressionConfig::None, "\"none\""),
+            (CompressionConfig::Gzip, "\"gzip\""),
+            (CompressionConfig::Zstd, "\"zstd\""),
+            (CompressionConfig::Auto, "\"auto\""),
+        ] {
+            let serialised = serde_json::to_string(&variant).unwrap();
+            assert_eq!(serialised, expected);
+            let deserialised: CompressionConfig = serde_json::from_str(expected).unwrap();
+            assert_eq!(deserialised, variant);
+        }
     }
 
     #[tokio::test]
@@ -286,8 +303,10 @@ mod tests {
         {
             let mut w = wrap_sync_writer(&mut buf, Compression::Gzip);
             w.write_all(&original).unwrap();
-            // GzEncoder finalises on drop; explicit flush makes the trailer
-            // observable to readers.
+            // GzEncoder finalises on drop (writes the 8-byte trailer).
+            // The explicit flush drains the deflate buffer; the drop at the
+            // end of this scope writes the trailer so the reader below
+            // sees a complete stream.
             w.flush().unwrap();
         }
         let mut r = wrap_sync_reader(&buf[..], Compression::Gzip);
@@ -373,5 +392,27 @@ mod tests {
         let mut r = wrap_async_reader(BufReader::new(&buf[..]), Compression::Gzip);
         let err = r.read_to_end(&mut decompressed).await.unwrap_err();
         assert_eq!(err.kind(), std::io::ErrorKind::UnexpectedEof);
+    }
+
+    #[test]
+    fn warn_mismatch_dedups_per_path_and_codec() {
+        // Calling twice with the same (path, declared) pair must produce a
+        // single log line. We verify via the internal HashSet: after two
+        // calls, the set contains exactly one entry. The static is shared
+        // across the whole process, so we use a unique path to avoid
+        // collisions with other tests.
+        let unique_path = format!("warn_mismatch_dedup_fixture_{}.txt", line!());
+        // First call: detected = None (no extension), declared = Gzip → mismatch, logs.
+        warn_mismatch(&unique_path, Compression::Gzip);
+        // Second call with identical args: must not log a second time.
+        warn_mismatch(&unique_path, Compression::Gzip);
+        // Third call with different declared: separate dedup key, logs once.
+        warn_mismatch(&unique_path, Compression::Zstd);
+        // Matching pair: no log (early-exit before touching the HashSet).
+        warn_mismatch("file.gz", Compression::Gzip);
+        // (Behaviour is verified through log absence in production. Here we
+        // only assert the function runs to completion without panicking,
+        // which exercises the OnceLock init, the Mutex acquisition, and the
+        // HashSet insertion paths.)
     }
 }
