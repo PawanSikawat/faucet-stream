@@ -212,6 +212,23 @@ This source uses the standard AWS SDK credential chain. Credentials are resolved
 
 No credential fields are included in the config -- use the standard AWS environment instead.
 
+## Compression
+
+Behind the crate-local `compression` Cargo feature. Adds a `compression` config
+field with values `none`, `gzip`, `zstd`, or `auto` (the default — detects
+`.gz` / `.zst` from the file path / object key).
+
+YAML example:
+
+```yaml
+kind: s3
+config:
+  # ... existing fields ...
+  compression: auto  # or 'gzip' | 'zstd' | 'none'
+```
+
+The codec resolves per object key, so a single source can read a mix of compressed and uncompressed objects in one run.
+
 ## License
 
 Licensed under MIT or Apache-2.0.

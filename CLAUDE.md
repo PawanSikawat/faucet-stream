@@ -323,6 +323,50 @@ State backends: `state-redis`, `state-postgres` (file + memory live in `faucet-c
 
 Aggregate features: `source` (all sources), `sink` (all sinks), `state` (all state backends), `full` (everything). Kafka-only: `kafka-schema-registry` enables Avro / Protobuf / JSON Schema via Confluent Schema Registry.
 
+## Compression
+
+`faucet-core` exposes a `compression` feature that pulls in `async-compression`
+(async streaming wrappers), `flate2` (sync gzip), and `zstd` (sync zstd). It
+surfaces a `faucet_core::compression` module with:
+
+- `CompressionConfig` — user-facing enum (`None | Gzip | Zstd | Auto`),
+  default `Auto`. Serializes as lowercase strings.
+- `Compression` — post-resolution enum (no `Auto`).
+- `CompressionConfig::resolve(path) -> Compression` — `Auto` consults the
+  filename suffix (`.gz` → Gzip, `.zst` → Zstd, anything else → None);
+  explicit variants pass through.
+- `wrap_async_reader` / `wrap_async_writer` — for streaming paths.
+- `wrap_sync_reader` / `wrap_sync_writer` — for `spawn_blocking` paths.
+- `compress_buf(data, codec)` — one-shot in-memory compression used by
+  S3/GCS sinks that upload a full `Vec<u8>` body.
+- `warn_mismatch(path, codec)` — logs once per `(path, codec)` pair when
+  the explicit codec disagrees with the filename suffix.
+
+Seven connectors gain a `compression` config field gated on a crate-local
+`compression` feature: `faucet-source-csv`, `faucet-source-s3`,
+`faucet-source-gcs`, `faucet-sink-jsonl`, `faucet-sink-csv`, `faucet-sink-s3`,
+`faucet-sink-gcs`. The `faucet-stream` umbrella exposes a `compression`
+aggregate feature that activates compression on whichever of those connectors
+the user has already opted into (it does **not** pull connectors itself —
+use the optional-dep `?` forwarding syntax). The `full` aggregate now
+includes compression. The `faucet-cli` binary mirrors the same shape, so
+`cargo install faucet-cli --features compression` enables it for every
+config-driven user.
+
+Auto resolution runs at I/O time (per-call, per-key) so matrix-row path
+interpolation works — the same source can read a mix of `.jsonl`,
+`.jsonl.gz`, and `.jsonl.zst` objects in one run.
+
+File sinks (`jsonl`, `csv`) finalise the encoder on `flush()`; subsequent
+writes reopen the file in append mode (independent of `config.append`),
+producing a multi-member compressed file that gzip / zstd decoders read
+back transparently. S3 and GCS sinks do **not** set the `Content-Encoding`
+header on uploads; consumers must decompress explicitly.
+
+Parquet, HTTP, stdout, Kafka, and the database sinks are intentionally out
+of scope (Parquet has internal columnar compression; the others have
+native protocol-level compression options).
+
 ## Pagination Styles (REST source)
 
 | Style | Stops When |

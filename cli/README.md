@@ -303,6 +303,31 @@ transforms:
     config: { separator: "__" }
 ```
 
+### Compression
+
+File-shaped connectors (JSONL/CSV/S3/GCS source and sink) accept a `compression` field. Default `auto` detects `.gz` and `.zst` from the file path or object key.
+
+```yaml
+version: 1
+pipeline:
+  source:
+    kind: csv
+    config:
+      path: data.csv.gz
+      compression: auto      # or 'gzip', 'zstd', 'none'
+  sink:
+    kind: jsonl
+    config:
+      path: out.jsonl.zst
+      compression: auto
+```
+
+Build the CLI with the feature enabled:
+
+```bash
+cargo install --path cli --features compression
+```
+
 ## Running from environment variables (`--from-env`)
 
 `faucet` can build and run a pipeline entirely from `FAUCET_*` environment variables — no YAML file required. This mode is designed for container / Kubernetes / Airflow deployments where every config value naturally flows through the orchestrator's env-var interface.

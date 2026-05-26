@@ -187,6 +187,23 @@ let source = CsvSource::new(config);
 let records = source.fetch_all().await?;
 ```
 
+## Compression
+
+Behind the crate-local `compression` Cargo feature. Adds a `compression` config
+field with values `none`, `gzip`, `zstd`, or `auto` (the default — detects
+`.gz` / `.zst` from the file path / object key).
+
+YAML example:
+
+```yaml
+kind: csv
+config:
+  # ... existing fields ...
+  compression: auto  # or 'gzip' | 'zstd' | 'none'
+```
+
+Compression is detected from the file path. Multi-line quoted fields (records with embedded newlines inside quotes) are not supported by the streaming path — applies regardless of compression.
+
 ## License
 
 Licensed under MIT or Apache-2.0.

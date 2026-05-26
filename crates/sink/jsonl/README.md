@@ -193,6 +193,23 @@ Output:
 - Call `flush()` to ensure all buffered data is written to disk. This is important before dropping the sink or reading the file.
 - In truncate mode (default), the file is emptied on first write. In append mode, new records are added after existing content.
 
+## Compression
+
+Behind the crate-local `compression` Cargo feature. Adds a `compression` config
+field with values `none`, `gzip`, `zstd`, or `auto` (the default — detects
+`.gz` / `.zst` from the file path / object key).
+
+YAML example:
+
+```yaml
+kind: jsonl
+config:
+  # ... existing fields ...
+  compression: auto  # or 'gzip' | 'zstd' | 'none'
+```
+
+`flush()` finalises the encoder; subsequent writes append a fresh gzip / zstd member (multi-member-decoder compatible).
+
 ## License
 
 Licensed under MIT or Apache-2.0.

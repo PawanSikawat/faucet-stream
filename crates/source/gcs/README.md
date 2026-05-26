@@ -121,13 +121,29 @@ the emulator fails with `h2 protocol error / GoAway`. Run the
 `--ignored` suite against a real GCS bucket or a gRPC-capable
 emulator when validating changes.
 
+## Compression
+
+Behind the crate-local `compression` Cargo feature. Adds a `compression` config
+field with values `none`, `gzip`, `zstd`, or `auto` (the default — detects
+`.gz` / `.zst` from the file path / object key).
+
+YAML example:
+
+```yaml
+kind: gcs
+config:
+  # ... existing fields ...
+  compression: auto  # or 'gzip' | 'zstd' | 'none'
+```
+
+The codec resolves per object key, so a single source can read a mix of compressed and uncompressed objects in one run.
+
 ## Out of scope (v1)
 
 - HMAC-key auth.
 - Signed URL generation.
 - Mid-scan resumable bookmarks (matches `faucet-source-s3` behaviour).
 - KMS CMEK encryption configuration.
-- Per-file gzip/zstd decompression (tracked separately as #33).
 - Server-streaming gRPC reads.
 
 ## License

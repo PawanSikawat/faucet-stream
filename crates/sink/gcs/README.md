@@ -93,12 +93,28 @@ control-plane calls (used during round-trip readback) need gRPC, and
 `h2 protocol error / GoAway`. Run with `--ignored` against a real GCS
 bucket or a gRPC-capable emulator when validating changes.
 
+## Compression
+
+Behind the crate-local `compression` Cargo feature. Adds a `compression` config
+field with values `none`, `gzip`, `zstd`, or `auto` (the default — detects
+`.gz` / `.zst` from the file path / object key).
+
+YAML example:
+
+```yaml
+kind: gcs
+config:
+  # ... existing fields ...
+  compression: auto  # or 'gzip' | 'zstd' | 'none'
+```
+
+Same as S3: codec resolves from `file_extension`, no `Content-Encoding` metadata set.
+
 ## Out of scope (v1)
 
 - Resumable uploads.
 - Signed URLs.
 - Custom object metadata or user headers.
-- Per-file gzip/zstd compression (tracked separately as #33).
 - KMS CMEK encryption configuration.
 
 ## License

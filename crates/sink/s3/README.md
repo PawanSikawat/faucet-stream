@@ -239,6 +239,23 @@ sink.write_batch(&records).await?;
 - Objects are uploaded with `Content-Type: application/x-ndjson`.
 - AWS credentials are resolved via the standard AWS SDK credential chain (environment variables, shared credentials file, instance profiles, etc.).
 
+## Compression
+
+Behind the crate-local `compression` Cargo feature. Adds a `compression` config
+field with values `none`, `gzip`, `zstd`, or `auto` (the default — detects
+`.gz` / `.zst` from the file path / object key).
+
+YAML example:
+
+```yaml
+kind: s3
+config:
+  # ... existing fields ...
+  compression: auto  # or 'gzip' | 'zstd' | 'none'
+```
+
+The codec resolves from `file_extension`. Append `.gz` / `.zst` to `file_extension` so consumers can detect the codec from the object key. The S3 `Content-Encoding` header is deliberately unset — consumers must decompress explicitly.
+
 ## License
 
 Licensed under MIT or Apache-2.0.

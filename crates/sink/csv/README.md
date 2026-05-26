@@ -239,6 +239,23 @@ sink.flush().await?;
 - Multiple `write_batch()` calls accumulate rows in the same file using the same column order.
 - Call `flush()` to ensure all buffered data is written to disk before dropping the sink or reading the file.
 
+## Compression
+
+Behind the crate-local `compression` Cargo feature. Adds a `compression` config
+field with values `none`, `gzip`, `zstd`, or `auto` (the default — detects
+`.gz` / `.zst` from the file path / object key).
+
+YAML example:
+
+```yaml
+kind: csv
+config:
+  # ... existing fields ...
+  compression: auto  # or 'gzip' | 'zstd' | 'none'
+```
+
+`flush()` finalises the encoder via a blocking task drop; subsequent writes append a fresh member. Headers are emitted only on the first open.
+
 ## License
 
 Licensed under MIT or Apache-2.0.
