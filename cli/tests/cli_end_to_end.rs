@@ -577,3 +577,38 @@ pipeline:
         .failure()
         .stderr(contains("missing environment variable"));
 }
+
+#[test]
+fn init_output_loads_and_expands() {
+    // Regression guard: ensure `faucet init` produces a YAML file that
+    // PipelineConfig::from_path + expand() accept without error. This catches
+    // indent / structural bugs (e.g. CONFIG_INDENT at the wrong depth) that
+    // substring assertions miss — a misplaced indent causes the connector config
+    // to parse as `null`, but the kinds still appear as sibling keys, so
+    // body.contains("base_url") would pass while the config is semantically wrong.
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("p.yaml");
+    Command::cargo_bin("faucet")
+        .unwrap()
+        .args(["init", "--source", "rest", "--sink", "jsonl", "--output"])
+        .arg(&path)
+        .assert()
+        .success();
+
+    let cfg = faucet_cli::config::PipelineConfig::from_path(&path)
+        .expect("init output must load via PipelineConfig::from_path");
+    let nodes = faucet_cli::expand::expand(&cfg)
+        .expect("init output must expand cleanly");
+    assert_eq!(nodes.len(), 1, "expected exactly one expanded node");
+    assert_eq!(nodes[0].source.kind, "rest");
+    assert_eq!(nodes[0].sink.kind, "jsonl");
+    // Crucially: the connector config must be properly nested under `config:`,
+    // not floated up as siblings. Verify the source config is a non-null object
+    // (an empty object would also signal structural breakage).
+    assert!(
+        nodes[0].source.config.is_object(),
+        "source config must be a JSON object (got {:?}); \
+         likely a CONFIG_INDENT bug causing fields to float above `config:`",
+        nodes[0].source.config
+    );
+}

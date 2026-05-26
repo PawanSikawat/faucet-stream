@@ -15,7 +15,7 @@ use crate::registry;
 const DEFAULT_SOURCE: &str = "rest";
 const DEFAULT_SINK: &str = "jsonl";
 const DEFAULT_NAME: &str = "my-pipeline";
-const CONFIG_INDENT: usize = 6;
+const CONFIG_INDENT: usize = 8;
 
 /// Execute the `init` subcommand.
 pub async fn run(args: InitArgs) -> CliResult<()> {
