@@ -212,6 +212,7 @@ Every pipeline emits OTel-compatible `tracing` spans and Prometheus metrics auto
 ### Source: gRPC (`faucet-source-grpc`)
 
 - **Dynamic protobuf** — call any gRPC method at runtime using a compiled `FileDescriptorSet` (no code generation)
+- **Unary + server-streaming RPCs** — `rpc_kind` selects between one-shot calls and long-lived server-driven streams; streaming mode flushes pages as messages arrive, with reconnect-on-transient-error and exponential backoff
 - **JSON request/response** — send requests as JSON, receive responses as JSON via `prost-reflect`
 - **TLS support** — automatic TLS detection from `https://` endpoint, or explicit override
 - **Authentication** — Bearer token or custom metadata key-value pairs

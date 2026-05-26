@@ -3,6 +3,11 @@
 //! A config-driven gRPC source that uses protobuf reflection to call
 //! any gRPC service dynamically and return records as JSON.
 //!
+//! Supports both [`RpcKind::Unary`] (one request → one response) and
+//! [`RpcKind::ServerStreaming`] (one request → server-driven stream of
+//! responses) — see the crate README for the differences in batching and
+//! reconnect behaviour.
+//!
 //! Requires a compiled `FileDescriptorSet` (produced by
 //! `protoc --descriptor_set_out=descriptor.bin`).
 
@@ -11,5 +16,5 @@ pub mod stream;
 
 pub use faucet_core::{FaucetError, Source};
 
-pub use config::{GrpcAuth, GrpcStreamConfig, MetadataEntry};
+pub use config::{GrpcAuth, GrpcStreamConfig, MetadataEntry, RpcKind};
 pub use stream::GrpcStream;

@@ -5,6 +5,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::path::PathBuf;
+use std::time::Duration;
 
 /// A single piece of gRPC request metadata.
 ///
@@ -26,6 +27,22 @@ pub enum GrpcAuth {
     Bearer { token: String },
     /// Custom metadata key-value pairs.
     Metadata { entries: Vec<MetadataEntry> },
+}
+
+/// Kind of gRPC RPC to invoke.
+///
+/// Selected via the `rpc_kind` config field; defaults to [`RpcKind::Unary`]
+/// so existing configs are backward-compatible.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum RpcKind {
+    /// One request, one response (default).
+    #[default]
+    Unary,
+    /// One request, a server-driven stream of responses. The source consumes
+    /// each streamed message and emits records as they arrive. Useful for
+    /// event feeds, change feeds, log tails, and any long-lived gRPC stream.
+    ServerStreaming,
 }
 
 /// Configuration for the gRPC source.
@@ -52,22 +69,69 @@ pub struct GrpcStreamConfig {
     /// Records per emitted [`StreamPage`](faucet_core::StreamPage). Defaults
     /// to [`DEFAULT_BATCH_SIZE`].
     ///
-    /// Unary gRPC returns one response containing all records, so the source
-    /// has no native paging primitive to honour this hint. The default
+    /// For unary RPCs the source has no native paging primitive to honour
+    /// this hint: the default
     /// [`Source::stream_pages`](faucet_core::Source::stream_pages) impl
-    /// buffers the full response via `fetch_with_context_incremental` and
-    /// then chunks it in memory into `batch_size` pages, which bounds
-    /// **sink-side** memory only. For unary RPCs, `batch_size = 0` (the
-    /// "no batching" sentinel) and any positive `batch_size` are observably
-    /// identical from a wire-protocol standpoint — both buffer the full
-    /// result before any page is yielded. Server-streaming gRPC is tracked
-    /// separately and will override `stream_pages` to stream per-response.
+    /// buffers the full response and then chunks it in memory, bounding
+    /// **sink-side** memory only.
+    ///
+    /// For server-streaming RPCs (`rpc_kind = "server_streaming"`) the source
+    /// overrides `stream_pages` and flushes a page each time `batch_size`
+    /// messages accumulate, bounding both source-side and sink-side memory.
+    /// `batch_size = 0` drains the entire stream into a single page.
     #[serde(default = "default_batch_size")]
     pub batch_size: usize,
+    /// Kind of RPC to invoke. Defaults to [`RpcKind::Unary`].
+    #[serde(default)]
+    pub rpc_kind: RpcKind,
+    /// For [`RpcKind::ServerStreaming`]: maximum number of messages to consume
+    /// before terminating the stream. `None` means consume until the server
+    /// closes the stream (or the run is cancelled).
+    #[serde(default)]
+    pub max_messages: Option<usize>,
+    /// For [`RpcKind::ServerStreaming`]: if `true`, transient stream errors
+    /// (server-side disconnects, transport errors, etc.) terminate the run
+    /// with [`FaucetError::Source`](faucet_core::FaucetError::Source). When
+    /// `false` (the default), the source reconnects with exponential backoff
+    /// up to [`reconnect_max_attempts`](Self::reconnect_max_attempts).
+    ///
+    /// Ignored for [`RpcKind::Unary`].
+    #[serde(default)]
+    pub terminate_on_error: bool,
+    /// For [`RpcKind::ServerStreaming`] reconnect: initial backoff delay
+    /// before the first retry. Doubles after each failure up to
+    /// [`reconnect_max_backoff`](Self::reconnect_max_backoff). Defaults to 1s.
+    #[serde(
+        default = "default_reconnect_initial_backoff",
+        with = "faucet_core::config::duration_secs"
+    )]
+    #[schemars(with = "u64")]
+    pub reconnect_initial_backoff: Duration,
+    /// For [`RpcKind::ServerStreaming`] reconnect: maximum backoff cap.
+    /// Defaults to 30s.
+    #[serde(
+        default = "default_reconnect_max_backoff",
+        with = "faucet_core::config::duration_secs"
+    )]
+    #[schemars(with = "u64")]
+    pub reconnect_max_backoff: Duration,
+    /// For [`RpcKind::ServerStreaming`] reconnect: maximum reconnect attempts
+    /// before surfacing the error. `None` (the default) means unlimited
+    /// retries.
+    #[serde(default)]
+    pub reconnect_max_attempts: Option<u32>,
 }
 
 fn default_batch_size() -> usize {
     DEFAULT_BATCH_SIZE
+}
+
+fn default_reconnect_initial_backoff() -> Duration {
+    Duration::from_secs(1)
+}
+
+fn default_reconnect_max_backoff() -> Duration {
+    Duration::from_secs(30)
 }
 
 impl GrpcStreamConfig {
@@ -88,6 +152,12 @@ impl GrpcStreamConfig {
             tls: None,
             records_path: None,
             batch_size: DEFAULT_BATCH_SIZE,
+            rpc_kind: RpcKind::Unary,
+            max_messages: None,
+            terminate_on_error: false,
+            reconnect_initial_backoff: default_reconnect_initial_backoff(),
+            reconnect_max_backoff: default_reconnect_max_backoff(),
+            reconnect_max_attempts: None,
         }
     }
 
@@ -119,11 +189,51 @@ impl GrpcStreamConfig {
     /// [`Source::stream_pages`](faucet_core::Source::stream_pages).
     ///
     /// Pass `0` to opt out of batching — the entire result set is emitted in
-    /// a single [`StreamPage`](faucet_core::StreamPage). For the unary gRPC
-    /// source this is observably identical to any positive `batch_size`,
-    /// since the full response is buffered before any page is yielded.
+    /// a single [`StreamPage`](faucet_core::StreamPage). For unary RPCs this
+    /// is observably identical to any positive `batch_size`, since the full
+    /// response is buffered before any page is yielded. For server-streaming
+    /// RPCs, `0` drains the entire stream before yielding.
     pub fn with_batch_size(mut self, batch_size: usize) -> Self {
         self.batch_size = batch_size;
+        self
+    }
+
+    /// Set the RPC kind (unary or server-streaming).
+    pub fn rpc_kind(mut self, rpc_kind: RpcKind) -> Self {
+        self.rpc_kind = rpc_kind;
+        self
+    }
+
+    /// Cap the number of messages to consume from a server-streaming RPC.
+    /// Ignored for unary RPCs.
+    pub fn max_messages(mut self, max_messages: usize) -> Self {
+        self.max_messages = Some(max_messages);
+        self
+    }
+
+    /// Whether transient server-streaming errors should terminate the run
+    /// (`true`) or trigger a reconnect with exponential backoff (`false`,
+    /// the default).
+    pub fn terminate_on_error(mut self, terminate_on_error: bool) -> Self {
+        self.terminate_on_error = terminate_on_error;
+        self
+    }
+
+    /// Set the initial reconnect backoff for server-streaming RPCs.
+    pub fn reconnect_initial_backoff(mut self, backoff: Duration) -> Self {
+        self.reconnect_initial_backoff = backoff;
+        self
+    }
+
+    /// Set the maximum reconnect backoff for server-streaming RPCs.
+    pub fn reconnect_max_backoff(mut self, backoff: Duration) -> Self {
+        self.reconnect_max_backoff = backoff;
+        self
+    }
+
+    /// Cap the number of reconnect attempts for server-streaming RPCs.
+    pub fn reconnect_max_attempts(mut self, attempts: u32) -> Self {
+        self.reconnect_max_attempts = Some(attempts);
         self
     }
 }
@@ -146,6 +256,12 @@ mod tests {
         assert_eq!(config.method_name, "ListUsers");
         assert!(config.records_path.is_none());
         assert!(matches!(config.auth, GrpcAuth::None));
+        assert_eq!(config.rpc_kind, RpcKind::Unary);
+        assert!(config.max_messages.is_none());
+        assert!(!config.terminate_on_error);
+        assert_eq!(config.reconnect_initial_backoff, Duration::from_secs(1));
+        assert_eq!(config.reconnect_max_backoff, Duration::from_secs(30));
+        assert!(config.reconnect_max_attempts.is_none());
     }
 
     #[test]
@@ -243,5 +359,75 @@ mod tests {
         }"#;
         let config: GrpcStreamConfig = serde_json::from_str(json).unwrap();
         assert_eq!(config.batch_size, faucet_core::DEFAULT_BATCH_SIZE);
+    }
+
+    #[test]
+    fn server_streaming_fields_deserialize_from_json() {
+        let json = r#"{
+            "endpoint": "http://localhost:50051",
+            "service_name": "events.EventService",
+            "method_name": "Tail",
+            "request": {},
+            "descriptor_set_path": "proto/descriptor.bin",
+            "auth": { "type": "None" },
+            "tls": null,
+            "records_path": null,
+            "rpc_kind": "server_streaming",
+            "max_messages": 100,
+            "terminate_on_error": true,
+            "reconnect_initial_backoff": 2,
+            "reconnect_max_backoff": 60,
+            "reconnect_max_attempts": 5
+        }"#;
+        let config: GrpcStreamConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(config.rpc_kind, RpcKind::ServerStreaming);
+        assert_eq!(config.max_messages, Some(100));
+        assert!(config.terminate_on_error);
+        assert_eq!(config.reconnect_initial_backoff, Duration::from_secs(2));
+        assert_eq!(config.reconnect_max_backoff, Duration::from_secs(60));
+        assert_eq!(config.reconnect_max_attempts, Some(5));
+    }
+
+    #[test]
+    fn server_streaming_fields_default_when_absent_from_json() {
+        let json = r#"{
+            "endpoint": "http://localhost:50051",
+            "service_name": "users.UserService",
+            "method_name": "ListUsers",
+            "request": {},
+            "descriptor_set_path": "proto/descriptor.bin",
+            "auth": { "type": "None" },
+            "tls": null,
+            "records_path": null
+        }"#;
+        let config: GrpcStreamConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(config.rpc_kind, RpcKind::Unary);
+        assert!(config.max_messages.is_none());
+        assert!(!config.terminate_on_error);
+        assert_eq!(config.reconnect_initial_backoff, Duration::from_secs(1));
+        assert_eq!(config.reconnect_max_backoff, Duration::from_secs(30));
+        assert!(config.reconnect_max_attempts.is_none());
+    }
+
+    #[test]
+    fn rpc_kind_builder() {
+        let config = GrpcStreamConfig::new(
+            "http://localhost:50051",
+            "events.EventService",
+            "Tail",
+            "proto/descriptor.bin",
+        )
+        .rpc_kind(RpcKind::ServerStreaming)
+        .max_messages(50)
+        .terminate_on_error(true)
+        .reconnect_initial_backoff(Duration::from_secs(5))
+        .reconnect_max_backoff(Duration::from_secs(120))
+        .reconnect_max_attempts(10);
+        assert_eq!(config.rpc_kind, RpcKind::ServerStreaming);
+        assert_eq!(config.max_messages, Some(50));
+        assert!(config.terminate_on_error);
+        assert_eq!(config.reconnect_initial_backoff, Duration::from_secs(5));
+        assert_eq!(config.reconnect_max_backoff, Duration::from_secs(120));
+        assert_eq!(config.reconnect_max_attempts, Some(10));
     }
 }
