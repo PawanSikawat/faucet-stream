@@ -14,6 +14,7 @@ transform-rename-keys = ["dep:regex"]
 transform-snake-case = ["dep:regex"]
 transforms = ["transform-flatten", "transform-rename-keys", "transform-snake-case"]
 observability-install = ["dep:metrics-exporter-prometheus", "dep:tracing-subscriber"]
+compression = ["dep:async-compression", "dep:flate2", "dep:zstd"]
 
 [dependencies]
 serde.workspace = true
@@ -35,6 +36,9 @@ schemars.workspace = true
 uuid.workspace = true
 metrics-exporter-prometheus = { workspace = true, optional = true }
 tracing-subscriber = { workspace = true, optional = true }
+async-compression = { workspace = true, optional = true }
+flate2 = { workspace = true, optional = true }
+zstd = { workspace = true, optional = true }
 
 [dev-dependencies]
 serde_json.workspace = true
