@@ -49,6 +49,14 @@ pub struct S3SourceConfig {
     /// that prefer one large request per file to many small ones.
     #[serde(default = "default_batch_size")]
     pub batch_size: usize,
+    /// Compression codec applied to each downloaded object. Defaults to
+    /// [`CompressionConfig::Auto`](faucet_core::CompressionConfig::Auto) —
+    /// the codec is resolved per-object-key, so a single source can read a
+    /// mix of compressed and uncompressed objects. Requires the
+    /// crate-local `compression` feature.
+    #[cfg(feature = "compression")]
+    #[serde(default)]
+    pub compression: faucet_core::CompressionConfig,
 }
 
 fn default_batch_size() -> usize {
@@ -67,6 +75,8 @@ impl S3SourceConfig {
             max_objects: None,
             concurrency: 10,
             batch_size: DEFAULT_BATCH_SIZE,
+            #[cfg(feature = "compression")]
+            compression: faucet_core::CompressionConfig::default(),
         }
     }
 
@@ -113,6 +123,13 @@ impl S3SourceConfig {
     /// S3 object.
     pub fn with_batch_size(mut self, batch_size: usize) -> Self {
         self.batch_size = batch_size;
+        self
+    }
+
+    /// Set the compression codec. Available only with the `compression` feature.
+    #[cfg(feature = "compression")]
+    pub fn compression(mut self, c: faucet_core::CompressionConfig) -> Self {
+        self.compression = c;
         self
     }
 }
@@ -198,5 +215,12 @@ mod tests {
         }"#;
         let config: S3SourceConfig = serde_json::from_str(json).unwrap();
         assert_eq!(config.batch_size, 250);
+    }
+
+    #[cfg(feature = "compression")]
+    #[test]
+    fn compression_default_is_auto() {
+        let cfg = S3SourceConfig::new("bucket");
+        assert_eq!(cfg.compression, faucet_core::CompressionConfig::Auto);
     }
 }

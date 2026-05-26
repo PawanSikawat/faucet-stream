@@ -163,4 +163,7 @@ criterion = { version = "0.8", default-features = false, features = ["cargo_benc
 arrow-json = "58"
 parquet = { version = "58", features = ["async", "object_store"] }
 object_store = "0.13"
+async-compression = { version = "0.4", features = ["tokio", "gzip", "zstd"] }
+flate2 = "1"
+zstd = "0.13"
 glob = "0.3"

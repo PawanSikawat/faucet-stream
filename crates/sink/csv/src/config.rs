@@ -31,6 +31,13 @@ pub struct CsvSinkConfig {
     /// the page.
     #[serde(default = "default_batch_size")]
     pub batch_size: usize,
+    /// Compression codec for the output file. Defaults to
+    /// [`CompressionConfig::Auto`](faucet_core::CompressionConfig::Auto) —
+    /// `.gz` / `.zst` suffix selects gzip / zstd. Requires the crate-local
+    /// `compression` feature.
+    #[cfg(feature = "compression")]
+    #[serde(default)]
+    pub compression: faucet_core::CompressionConfig,
 }
 
 fn default_delimiter() -> u8 {
@@ -54,6 +61,8 @@ impl CsvSinkConfig {
             write_headers: true,
             append: false,
             batch_size: DEFAULT_BATCH_SIZE,
+            #[cfg(feature = "compression")]
+            compression: faucet_core::CompressionConfig::Auto,
         }
     }
 
@@ -85,6 +94,13 @@ impl CsvSinkConfig {
     /// BigQuery streaming inserts).
     pub fn with_batch_size(mut self, batch_size: usize) -> Self {
         self.batch_size = batch_size;
+        self
+    }
+
+    /// Set the compression codec. Available only with the `compression` feature.
+    #[cfg(feature = "compression")]
+    pub fn compression(mut self, c: faucet_core::CompressionConfig) -> Self {
+        self.compression = c;
         self
     }
 }

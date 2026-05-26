@@ -806,8 +806,13 @@ All pagination styles include loop detection — if the same cursor or link is r
 | `transform-flatten` | yes | Flatten nested objects (forwarded to source-rest) |
 | `transform-rename-keys` | yes | Regex key renaming (forwarded to source-rest) |
 | `transform-snake-case` | yes | Snake_case normalisation (forwarded to source-rest) |
+| `compression` | no | gzip / zstd read+write on JSONL/CSV/S3/GCS source and sink connectors |
 
 `RecordTransform::Custom` is always available regardless of feature flags.
+
+## Compression
+
+**Compression**: read/write `.gz` and `.zst` directly on the file-shaped connectors (JSONL/CSV/S3/GCS source and sink) — enable with the `compression` feature.
 
 ## Building Custom Connectors
 

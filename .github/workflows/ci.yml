@@ -121,6 +121,7 @@ jobs:
           - sink
           - state
           - full
+          - compression
           # CLI build matrix — verify the binary builds with every default-on
           # feature plus a slim "only the bare minimum" combo.
     steps:

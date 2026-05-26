@@ -39,6 +39,15 @@ pub struct S3SinkConfig {
     /// effective per-object cap is `min(batch_size, max_records_per_file)`.
     #[serde(default = "default_batch_size")]
     pub batch_size: usize,
+    /// Compression codec applied to each uploaded object body. Defaults to
+    /// [`CompressionConfig::Auto`](faucet_core::CompressionConfig::Auto) —
+    /// resolves against `file_extension` (so `.jsonl.gz` triggers gzip).
+    /// Requires the crate-local `compression` feature. Note: this sink does
+    /// **not** set the S3 `Content-Encoding` header, so consumers must
+    /// decompress explicitly.
+    #[cfg(feature = "compression")]
+    #[serde(default)]
+    pub compression: faucet_core::CompressionConfig,
 }
 
 fn default_batch_size() -> usize {
@@ -57,6 +66,8 @@ impl S3SinkConfig {
             max_records_per_file: None,
             concurrency: 10,
             batch_size: DEFAULT_BATCH_SIZE,
+            #[cfg(feature = "compression")]
+            compression: faucet_core::CompressionConfig::Auto,
         }
     }
 
@@ -105,6 +116,13 @@ impl S3SinkConfig {
     /// because writing many small objects is an anti-pattern.
     pub fn with_batch_size(mut self, batch_size: usize) -> Self {
         self.batch_size = batch_size;
+        self
+    }
+
+    /// Set the compression codec. Available only with the `compression` feature.
+    #[cfg(feature = "compression")]
+    pub fn compression(mut self, c: faucet_core::CompressionConfig) -> Self {
+        self.compression = c;
         self
     }
 }
@@ -199,5 +217,30 @@ mod tests {
         }"#;
         let config: S3SinkConfig = serde_json::from_str(json).unwrap();
         assert_eq!(config.batch_size, faucet_core::DEFAULT_BATCH_SIZE);
+    }
+
+    #[cfg(feature = "compression")]
+    #[test]
+    fn compression_config_round_trips() {
+        let json = r#"{
+            "bucket": "b",
+            "prefix": "",
+            "region": null,
+            "endpoint_url": null,
+            "file_extension": ".jsonl.gz",
+            "max_records_per_file": null,
+            "concurrency": 1,
+            "batch_size": 0,
+            "compression": "gzip"
+        }"#;
+        let config: S3SinkConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(config.compression, faucet_core::CompressionConfig::Gzip);
+    }
+
+    #[cfg(feature = "compression")]
+    #[test]
+    fn compression_default_is_auto() {
+        let cfg = S3SinkConfig::new("bucket");
+        assert_eq!(cfg.compression, faucet_core::CompressionConfig::Auto);
     }
 }

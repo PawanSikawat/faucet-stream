@@ -29,17 +29,14 @@ impl faucet_core::Source for CsvSource {
         &self,
         context: &std::collections::HashMap<String, serde_json::Value>,
     ) -> Result<Vec<Value>, FaucetError> {
-        let mut config = self.config.clone();
-
-        if !context.is_empty() {
-            config.path = faucet_core::util::substitute_context(&config.path, context);
+        use futures::StreamExt;
+        let mut all = Vec::new();
+        let mut s = self.stream_pages(context, self.config.batch_size);
+        while let Some(page) = s.next().await {
+            let page = page?;
+            all.extend(page.records);
         }
-
-        // CSV reading is synchronous I/O — run on a blocking thread to avoid
-        // starving the async runtime.
-        tokio::task::spawn_blocking(move || read_csv(&config))
-            .await
-            .map_err(|e| FaucetError::Config(format!("CSV read task failed: {e}")))?
+        Ok(all)
     }
 
     /// Stream rows from the CSV file without buffering the full result set.
@@ -63,9 +60,9 @@ impl faucet_core::Source for CsvSource {
     /// ## Multi-line records
     ///
     /// `AsyncBufReadExt::lines` splits on raw `\n`, so quoted fields that
-    /// contain embedded newlines are **not** supported by the streaming path
-    /// — they will be parsed as broken individual lines. Use `fetch_all` /
-    /// `fetch_with_context` for files that need multi-line records.
+    /// contain embedded newlines are **not** supported — they will be parsed
+    /// as broken individual lines. CSV files with multi-line quoted fields are
+    /// out of scope for this connector.
     fn stream_pages<'a>(
         &'a self,
         context: &'a std::collections::HashMap<String, Value>,
@@ -86,6 +83,12 @@ impl faucet_core::Source for CsvSource {
                 ))
             })?;
             let reader = tokio::io::BufReader::new(file);
+            #[cfg(feature = "compression")]
+            let reader = {
+                let codec = config.compression.resolve(&config.path);
+                faucet_core::compression::warn_mismatch(&config.path, codec);
+                faucet_core::compression::wrap_async_reader(reader, codec)
+            };
             let mut lines = reader.lines();
 
             // Read the header line first if configured, so we can key records
@@ -194,8 +197,8 @@ fn parse_csv_line(line: &str, config: &CsvSourceConfig) -> Result<Vec<String>, F
         .delimiter(config.delimiter)
         .quote(config.quote)
         // A single line cannot contain a flexible-width record set, but
-        // tolerating uneven field counts matches the lenient behaviour of
-        // the spawn_blocking path.
+        // tolerating uneven field counts preserves the lenient behaviour
+        // the connector has always had (uneven rows do not abort the run).
         .flexible(true)
         .from_reader(line.as_bytes());
 
@@ -205,55 +208,6 @@ fn parse_csv_line(line: &str, config: &CsvSourceConfig) -> Result<Vec<String>, F
         Some(Err(e)) => Err(FaucetError::Config(format!("CSV parse error: {e}"))),
         None => Ok(Vec::new()),
     }
-}
-
-/// Synchronous CSV reading logic.
-fn read_csv(config: &CsvSourceConfig) -> Result<Vec<Value>, FaucetError> {
-    let mut reader = csv::ReaderBuilder::new()
-        .has_headers(config.has_headers)
-        .delimiter(config.delimiter)
-        .quote(config.quote)
-        .from_path(&config.path)
-        .map_err(|e| {
-            FaucetError::Config(format!("failed to open CSV file '{}': {e}", config.path))
-        })?;
-
-    // Determine column names.
-    let headers: Vec<String> = if config.has_headers {
-        reader
-            .headers()
-            .map_err(|e| FaucetError::Config(format!("failed to read CSV headers: {e}")))?
-            .iter()
-            .map(|h| h.to_string())
-            .collect()
-    } else {
-        Vec::new()
-    };
-
-    let mut records = Vec::new();
-
-    for (row_idx, result) in reader.records().enumerate() {
-        let record = result.map_err(|e| {
-            FaucetError::Config(format!("CSV parse error at row {}: {e}", row_idx + 1))
-        })?;
-
-        let mut obj = Map::new();
-
-        for (col_idx, field) in record.iter().enumerate() {
-            let key = if col_idx < headers.len() {
-                headers[col_idx].clone()
-            } else {
-                format!("column_{col_idx}")
-            };
-            obj.insert(key, Value::String(field.to_string()));
-        }
-
-        records.push(Value::Object(obj));
-    }
-
-    tracing::debug!(records = records.len(), path = %config.path, "CSV file read complete");
-
-    Ok(records)
 }
 
 #[cfg(test)]
@@ -334,5 +288,42 @@ mod tests {
         let result = source.fetch_all().await;
 
         assert!(result.is_err());
+    }
+
+    #[cfg(feature = "compression")]
+    #[tokio::test]
+    async fn roundtrip_gzip_via_stream_pages() {
+        use faucet_core::CompressionConfig;
+        let tmp = NamedTempFile::with_suffix(".csv.gz").unwrap();
+        let path = tmp.path().to_str().unwrap().to_string();
+        let plain = b"id,name\n1,Alice\n2,Bob\n";
+        let compressed =
+            faucet_core::compression::compress_buf(plain, faucet_core::Compression::Gzip).unwrap();
+        tokio::fs::write(&path, &compressed).await.unwrap();
+
+        let config = CsvSourceConfig::new(&path).compression(CompressionConfig::Auto);
+        let source = CsvSource::new(config);
+        let records = source.fetch_all().await.unwrap();
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0]["name"], "Alice");
+        assert_eq!(records[1]["name"], "Bob");
+    }
+
+    #[cfg(feature = "compression")]
+    #[tokio::test]
+    async fn roundtrip_zstd_via_stream_pages() {
+        use faucet_core::CompressionConfig;
+        let tmp = NamedTempFile::with_suffix(".csv.zst").unwrap();
+        let path = tmp.path().to_str().unwrap().to_string();
+        let plain = b"id,name\n1,Carol\n";
+        let compressed =
+            faucet_core::compression::compress_buf(plain, faucet_core::Compression::Zstd).unwrap();
+        tokio::fs::write(&path, &compressed).await.unwrap();
+
+        let config = CsvSourceConfig::new(&path).compression(CompressionConfig::Auto);
+        let source = CsvSource::new(config);
+        let records = source.fetch_all().await.unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0]["name"], "Carol");
     }
 }

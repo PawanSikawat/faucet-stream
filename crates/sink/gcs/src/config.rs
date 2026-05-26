@@ -32,6 +32,15 @@ pub struct GcsSinkConfig {
     pub batch_size: usize,
     /// Optional storage-host override (integration-test escape hatch).
     pub storage_host: Option<String>,
+    /// Compression codec applied to each uploaded object body. Defaults to
+    /// [`CompressionConfig::Auto`](faucet_core::CompressionConfig::Auto) —
+    /// resolves against `file_extension` (so `.jsonl.gz` triggers gzip).
+    /// Requires the crate-local `compression` feature. Note: this sink does
+    /// **not** set the GCS `Content-Encoding` metadata, so consumers must
+    /// decompress explicitly.
+    #[cfg(feature = "compression")]
+    #[serde(default)]
+    pub compression: faucet_core::CompressionConfig,
 }
 
 fn default_file_extension() -> String {
@@ -55,6 +64,8 @@ impl GcsSinkConfig {
             concurrency: default_concurrency(),
             batch_size: default_batch_size(),
             storage_host: None,
+            #[cfg(feature = "compression")]
+            compression: faucet_core::CompressionConfig::Auto,
         }
     }
 
@@ -84,6 +95,13 @@ impl GcsSinkConfig {
     }
     pub fn storage_host(mut self, h: impl Into<String>) -> Self {
         self.storage_host = Some(h.into());
+        self
+    }
+
+    /// Set the compression codec. Available only with the `compression` feature.
+    #[cfg(feature = "compression")]
+    pub fn compression(mut self, c: faucet_core::CompressionConfig) -> Self {
+        self.compression = c;
         self
     }
 }
@@ -139,5 +157,29 @@ mod tests {
         }"#;
         let c: GcsSinkConfig = serde_json::from_str(json).unwrap();
         assert_eq!(c.batch_size, faucet_core::DEFAULT_BATCH_SIZE);
+    }
+
+    #[cfg(feature = "compression")]
+    #[test]
+    fn compression_default_is_auto() {
+        let cfg = GcsSinkConfig::new("bucket");
+        assert_eq!(cfg.compression, faucet_core::CompressionConfig::Auto);
+    }
+
+    #[cfg(feature = "compression")]
+    #[test]
+    fn compression_config_round_trips() {
+        let json = r#"{
+            "bucket": "b",
+            "prefix": "",
+            "file_extension": ".jsonl.gz",
+            "max_records_per_file": null,
+            "concurrency": 1,
+            "batch_size": 0,
+            "storage_host": null,
+            "compression": "gzip"
+        }"#;
+        let cfg: GcsSinkConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(cfg.compression, faucet_core::CompressionConfig::Gzip);
     }
 }

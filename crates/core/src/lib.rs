@@ -23,6 +23,9 @@ pub mod traits;
 pub mod transform;
 pub mod util;
 
+#[cfg(feature = "compression")]
+pub mod compression;
+
 pub use dlq::{DlqConfig, DlqReason, DlqStats, OnBatchError, build_envelope};
 pub use error::FaucetError;
 pub use observability::{
@@ -47,3 +50,6 @@ pub use async_trait::async_trait;
 pub use futures_core::{self, Stream};
 pub use schemars::{self, JsonSchema, schema_for};
 pub use serde_json::{self, Value, json};
+
+#[cfg(feature = "compression")]
+pub use compression::{Compression, CompressionConfig, compress_buf, warn_mismatch};

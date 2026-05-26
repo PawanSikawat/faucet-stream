@@ -44,6 +44,13 @@ impl GcsSink {
 
     /// Upload a single JSONL file to GCS.
     async fn upload_file(&self, key: &str, body: Vec<u8>) -> Result<(), FaucetError> {
+        #[cfg(feature = "compression")]
+        let body = {
+            let codec = self.config.compression.resolve(&self.config.file_extension);
+            faucet_core::compression::warn_mismatch(&self.config.file_extension, codec);
+            faucet_core::compression::compress_buf(&body, codec)?
+        };
+
         let payload = bytes::Bytes::from(body);
         self.storage
             .write_object(self.bucket_path(), key.to_string(), payload)
@@ -176,5 +183,16 @@ mod tests {
         // UUIDv7 keys are lexically comparable by time within the same
         // process: the second key generated should compare greater.
         assert!(a < b, "expected UUIDv7 keys to sort by generation order");
+    }
+
+    #[cfg(feature = "compression")]
+    #[test]
+    fn compress_buf_used_for_zstd_extension() {
+        let cfg = GcsSinkConfig::new("bucket").file_extension(".jsonl.zst");
+        let codec = cfg.compression.resolve(&cfg.file_extension);
+        assert_eq!(codec, faucet_core::Compression::Zstd);
+        let compressed = faucet_core::compression::compress_buf(b"hello\n", codec).unwrap();
+        // zstd magic bytes: 0x28 B5 2F FD.
+        assert_eq!(&compressed[..4], b"\x28\xb5\x2f\xfd");
     }
 }
