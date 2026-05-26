@@ -12,10 +12,19 @@ use tokio::sync::Mutex;
 ///
 /// Each record is written as a single line of JSON followed by a newline.
 /// The file is opened lazily on the first `write_batch` call.
+///
+/// With the `compression` feature, the writer transparently wraps the file
+/// with a gzip / zstd encoder based on the `compression` config field.
+/// [`Sink::flush`] finalises the encoder (writes the trailer) and clears the
+/// writer slot — a subsequent `write_batch` reopens the file in append mode
+/// and starts a fresh encoder, producing a multi-member compressed file that
+/// decoders read back correctly. Pipelines call `flush` exactly once at
+/// end-of-run, so the multi-member case only arises for direct library users
+/// who interleave `flush` and `write_batch`.
 pub struct JsonlSink {
     config: JsonlSinkConfig,
     /// Mutex-protected writer for thread-safe concurrent writes.
-    writer: Mutex<Option<tokio::io::BufWriter<tokio::fs::File>>>,
+    writer: Mutex<Option<std::pin::Pin<Box<dyn tokio::io::AsyncWrite + Send + Unpin>>>>,
 }
 
 impl JsonlSink {
@@ -31,7 +40,10 @@ impl JsonlSink {
     async fn ensure_open(
         &self,
     ) -> Result<
-        tokio::sync::MutexGuard<'_, Option<tokio::io::BufWriter<tokio::fs::File>>>,
+        tokio::sync::MutexGuard<
+            '_,
+            Option<std::pin::Pin<Box<dyn tokio::io::AsyncWrite + Send + Unpin>>>,
+        >,
         FaucetError,
     > {
         let mut guard = self.writer.lock().await;
@@ -49,7 +61,18 @@ impl JsonlSink {
                         self.config.path.display()
                     ))
                 })?;
-            *guard = Some(tokio::io::BufWriter::new(file));
+            let buffered = tokio::io::BufWriter::new(file);
+            #[cfg(feature = "compression")]
+            let writer: std::pin::Pin<Box<dyn tokio::io::AsyncWrite + Send + Unpin>> = {
+                let path_str = self.config.path.to_string_lossy();
+                let codec = self.config.compression.resolve(&path_str);
+                faucet_core::compression::warn_mismatch(&path_str, codec);
+                faucet_core::compression::wrap_async_writer(buffered, codec)
+            };
+            #[cfg(not(feature = "compression"))]
+            let writer: std::pin::Pin<Box<dyn tokio::io::AsyncWrite + Send + Unpin>> =
+                Box::pin(buffered);
+            *guard = Some(writer);
         }
         Ok(guard)
     }
@@ -98,9 +121,10 @@ impl faucet_core::Sink for JsonlSink {
 
     async fn flush(&self) -> Result<(), FaucetError> {
         let mut guard = self.writer.lock().await;
-        if let Some(writer) = guard.as_mut() {
+        if let Some(mut writer) = guard.take() {
+            use tokio::io::AsyncWriteExt;
             writer
-                .flush()
+                .shutdown()
                 .await
                 .map_err(|e| FaucetError::Sink(format!("flush failed: {e}")))?;
         }
@@ -196,5 +220,63 @@ mod tests {
         let tmp = NamedTempFile::new().unwrap();
         let sink = JsonlSink::new(JsonlSinkConfig::new(tmp.path()));
         assert_eq!(sink.connector_name(), "jsonl");
+    }
+
+    #[cfg(feature = "compression")]
+    #[tokio::test]
+    async fn roundtrip_gzip() {
+        use faucet_core::CompressionConfig;
+        let tmp = NamedTempFile::with_suffix(".jsonl.gz").unwrap();
+        let path = tmp.path().to_path_buf();
+        let sink = JsonlSink::new(
+            JsonlSinkConfig::new(&path).compression(CompressionConfig::Auto),
+        );
+
+        let records = vec![
+            json!({"id": 1, "name": "Alice"}),
+            json!({"id": 2, "name": "Bob"}),
+        ];
+        sink.write_batch(&records).await.unwrap();
+        sink.flush().await.unwrap();
+
+        // Read raw bytes, decompress via faucet_core, parse JSONL.
+        let bytes = tokio::fs::read(&path).await.unwrap();
+        use tokio::io::AsyncReadExt;
+        let mut decoded = Vec::new();
+        let mut r = faucet_core::compression::wrap_async_reader(
+            tokio::io::BufReader::new(&bytes[..]),
+            faucet_core::Compression::Gzip,
+        );
+        r.read_to_end(&mut decoded).await.unwrap();
+        let text = String::from_utf8(decoded).unwrap();
+        let lines: Vec<&str> = text.trim().split('\n').collect();
+        assert_eq!(lines.len(), 2);
+        let first: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
+        assert_eq!(first["id"], 1);
+    }
+
+    #[cfg(feature = "compression")]
+    #[tokio::test]
+    async fn roundtrip_zstd() {
+        use faucet_core::CompressionConfig;
+        let tmp = NamedTempFile::with_suffix(".jsonl.zst").unwrap();
+        let path = tmp.path().to_path_buf();
+        let sink = JsonlSink::new(
+            JsonlSinkConfig::new(&path).compression(CompressionConfig::Auto),
+        );
+        sink.write_batch(&[json!({"x": 42})]).await.unwrap();
+        sink.flush().await.unwrap();
+
+        let bytes = tokio::fs::read(&path).await.unwrap();
+        use tokio::io::AsyncReadExt;
+        let mut decoded = Vec::new();
+        let mut r = faucet_core::compression::wrap_async_reader(
+            tokio::io::BufReader::new(&bytes[..]),
+            faucet_core::Compression::Zstd,
+        );
+        r.read_to_end(&mut decoded).await.unwrap();
+        let text = String::from_utf8(decoded).unwrap();
+        let v: serde_json::Value = serde_json::from_str(text.trim()).unwrap();
+        assert_eq!(v["x"], 42);
     }
 }

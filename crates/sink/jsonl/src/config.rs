@@ -29,6 +29,13 @@ pub struct JsonlSinkConfig {
     /// the page.
     #[serde(default = "default_batch_size")]
     pub batch_size: usize,
+    /// Compression codec for the output file. Defaults to
+    /// [`CompressionConfig::Auto`](faucet_core::CompressionConfig::Auto) —
+    /// `.gz` / `.zst` suffix selects gzip / zstd, anything else writes
+    /// uncompressed. Requires the crate-local `compression` feature.
+    #[cfg(feature = "compression")]
+    #[serde(default)]
+    pub compression: faucet_core::CompressionConfig,
 }
 
 fn default_batch_size() -> usize {
@@ -43,6 +50,8 @@ impl JsonlSinkConfig {
             append: false,
             pretty: false,
             batch_size: DEFAULT_BATCH_SIZE,
+            #[cfg(feature = "compression")]
+            compression: faucet_core::CompressionConfig::Auto,
         }
     }
 
@@ -56,6 +65,13 @@ impl JsonlSinkConfig {
     /// but with indentation). Note: this breaks strict JSONL format.
     pub fn pretty(mut self, pretty: bool) -> Self {
         self.pretty = pretty;
+        self
+    }
+
+    /// Set the compression codec. Available only with the `compression` feature.
+    #[cfg(feature = "compression")]
+    pub fn compression(mut self, c: faucet_core::CompressionConfig) -> Self {
+        self.compression = c;
         self
     }
 
