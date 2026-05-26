@@ -23,7 +23,7 @@
 
 use crate::error::{CliError, CliResult};
 use serde_json::Value;
-use std::collections::{BTreeSet, HashMap};
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 /// Resolve every load-time directive in `input`. Unknown prefixes (and
@@ -184,6 +184,10 @@ fn value_to_string(v: &Value) -> String {
 /// 3. Walk every other string location in the config and resolve both
 ///    `${vars.X}` and `${sources/sinks.X.PATH}`. `${row_id.path}` tokens
 ///    are passed through verbatim for runtime resolution.
+///
+/// The legacy singular `pipeline.source` / `pipeline.sink` are visible under
+/// the template name `default` for `${sources.default.config.X}` /
+/// `${sinks.default.config.X}` lookups.
 pub fn resolve_config_refs(cfg: &mut crate::config::PipelineConfig) -> CliResult<()> {
     // Phase 1: fully resolve the vars block (vars may reference other vars).
     if let Some(vars) = cfg.vars.clone() {
@@ -196,25 +200,17 @@ pub fn resolve_config_refs(cfg: &mut crate::config::PipelineConfig) -> CliResult
 
     // Phase 2: substitute vars inside template bodies so the snapshot taken
     // next sees fully-resolved values.
-    for (name, spec) in cfg.pipeline.sources.iter_mut() {
-        resolve_value_with_vars(
-            &mut spec.config,
-            vars_ref,
-            &format!("pipeline.sources.{name}.config"),
-        )?;
+    for (_name, spec) in cfg.pipeline.sources.iter_mut() {
+        resolve_vars_only(&mut spec.config, vars_ref)?;
     }
-    for (name, spec) in cfg.pipeline.sinks.iter_mut() {
-        resolve_value_with_vars(
-            &mut spec.config,
-            vars_ref,
-            &format!("pipeline.sinks.{name}.config"),
-        )?;
+    for (_name, spec) in cfg.pipeline.sinks.iter_mut() {
+        resolve_vars_only(&mut spec.config, vars_ref)?;
     }
     if let Some(spec) = cfg.pipeline.source.as_mut() {
-        resolve_value_with_vars(&mut spec.config, vars_ref, "pipeline.source.config")?;
+        resolve_vars_only(&mut spec.config, vars_ref)?;
     }
     if let Some(spec) = cfg.pipeline.sink.as_mut() {
-        resolve_value_with_vars(&mut spec.config, vars_ref, "pipeline.sink.config")?;
+        resolve_vars_only(&mut spec.config, vars_ref)?;
     }
 
     // Snapshot the templates *after* vars substitution.
@@ -222,99 +218,49 @@ pub fn resolve_config_refs(cfg: &mut crate::config::PipelineConfig) -> CliResult
 
     // Phase 3: walk everything — including the template bodies again for
     // ${sources/sinks.X.PATH} refs (Phase 2 only resolved ${vars.X} there).
-    for (name, spec) in cfg.pipeline.sources.iter_mut() {
-        resolve_value_full(
-            &mut spec.config,
-            vars_ref,
-            &snapshot,
-            &format!("pipeline.sources.{name}.config"),
-        )?;
+    for (_name, spec) in cfg.pipeline.sources.iter_mut() {
+        resolve_value_full(&mut spec.config, vars_ref, &snapshot)?;
     }
-    for (name, spec) in cfg.pipeline.sinks.iter_mut() {
-        resolve_value_full(
-            &mut spec.config,
-            vars_ref,
-            &snapshot,
-            &format!("pipeline.sinks.{name}.config"),
-        )?;
+    for (_name, spec) in cfg.pipeline.sinks.iter_mut() {
+        resolve_value_full(&mut spec.config, vars_ref, &snapshot)?;
     }
     if let Some(spec) = cfg.pipeline.source.as_mut() {
-        resolve_value_full(
-            &mut spec.config,
-            vars_ref,
-            &snapshot,
-            "pipeline.source.config",
-        )?;
+        resolve_value_full(&mut spec.config, vars_ref, &snapshot)?;
     }
     if let Some(spec) = cfg.pipeline.sink.as_mut() {
-        resolve_value_full(
-            &mut spec.config,
-            vars_ref,
-            &snapshot,
-            "pipeline.sink.config",
-        )?;
+        resolve_value_full(&mut spec.config, vars_ref, &snapshot)?;
     }
     for t in cfg.pipeline.transforms.iter_mut() {
-        resolve_value_full(&mut t.config, vars_ref, &snapshot, "pipeline.transforms")?;
+        resolve_value_full(&mut t.config, vars_ref, &snapshot)?;
     }
     if let Some(s) = cfg.pipeline.state.as_mut() {
-        resolve_value_full(&mut s.config, vars_ref, &snapshot, "pipeline.state.config")?;
+        resolve_value_full(&mut s.config, vars_ref, &snapshot)?;
     }
     if let Some(d) = cfg.pipeline.dlq.as_mut() {
-        resolve_value_full(
-            &mut d.sink.config,
-            vars_ref,
-            &snapshot,
-            "pipeline.dlq.sink.config",
-        )?;
+        resolve_value_full(&mut d.sink.config, vars_ref, &snapshot)?;
     }
     for (i, row) in cfg.matrix.iter_mut().enumerate() {
-        let row_owner = row.id.clone().unwrap_or_else(|| format!("row-{i}"));
+        let _row_owner = row.id.clone().unwrap_or_else(|| format!("row-{i}"));
         if let Some(p) = row.source.as_mut() {
             if let Some(c) = p.config.as_mut() {
-                resolve_value_full(
-                    c,
-                    vars_ref,
-                    &snapshot,
-                    &format!("matrix[{row_owner}].source.config"),
-                )?;
+                resolve_value_full(c, vars_ref, &snapshot)?;
             }
         }
         if let Some(p) = row.sink.as_mut() {
             if let Some(c) = p.config.as_mut() {
-                resolve_value_full(
-                    c,
-                    vars_ref,
-                    &snapshot,
-                    &format!("matrix[{row_owner}].sink.config"),
-                )?;
+                resolve_value_full(c, vars_ref, &snapshot)?;
             }
         }
         if let Some(ts) = row.transforms.as_mut() {
             for t in ts.iter_mut() {
-                resolve_value_full(
-                    &mut t.config,
-                    vars_ref,
-                    &snapshot,
-                    &format!("matrix[{row_owner}].transforms"),
-                )?;
+                resolve_value_full(&mut t.config, vars_ref, &snapshot)?;
             }
         }
         if let Some(s) = row.state.as_mut() {
-            resolve_value_full(
-                &mut s.config,
-                vars_ref,
-                &snapshot,
-                &format!("matrix[{row_owner}].state.config"),
-            )?;
+            resolve_value_full(&mut s.config, vars_ref, &snapshot)?;
         }
         if let Some(Some(d)) = row.dlq.as_mut() {
-            resolve_value_full(
-                &mut d.sink.config,
-                vars_ref,
-                &snapshot,
-                &format!("matrix[{row_owner}].dlq.sink.config"),
-            )?;
+            resolve_value_full(&mut d.sink.config, vars_ref, &snapshot)?;
         }
     }
     Ok(())
@@ -369,7 +315,7 @@ impl TemplateSnapshot {
 /// map. Cycles surface as [`CliError::InterpolationCycle`].
 fn resolve_vars_block(input: &HashMap<String, Value>) -> CliResult<HashMap<String, Value>> {
     let mut resolved: HashMap<String, Value> = HashMap::new();
-    let mut visiting: BTreeSet<String> = BTreeSet::new();
+    let mut visiting: Vec<String> = Vec::new();
     for key in input.keys() {
         resolve_one_var(key, input, &mut resolved, &mut visiting)?;
     }
@@ -380,35 +326,37 @@ fn resolve_one_var(
     key: &str,
     input: &HashMap<String, Value>,
     resolved: &mut HashMap<String, Value>,
-    visiting: &mut BTreeSet<String>,
+    visiting: &mut Vec<String>,
 ) -> CliResult<()> {
     if resolved.contains_key(key) {
         return Ok(());
     }
-    if !visiting.insert(key.to_string()) {
-        // Already on the visiting stack — cycle detected.
-        let chain: Vec<String> = visiting
+    if let Some(start) = visiting.iter().position(|k| k == key) {
+        // Already on the DFS stack — cycle detected. Build the chain in
+        // traversal order: the nodes from `start` to the end of the stack,
+        // plus the back-edge closing the cycle (key itself again).
+        let chain: Vec<String> = visiting[start..]
             .iter()
             .map(|k| format!("vars.{k}"))
             .chain(std::iter::once(format!("vars.{key}")))
             .collect();
         return Err(CliError::InterpolationCycle { chain });
     }
+    visiting.push(key.to_string());
     let mut value = input.get(key).expect("key was taken from input map").clone();
-    resolve_value_with_vars_in_vars(&mut value, input, resolved, visiting, &format!("vars.{key}"))?;
-    visiting.remove(key);
+    resolve_vars_recursive(&mut value, input, resolved, visiting)?;
+    visiting.pop();
     resolved.insert(key.to_string(), value);
     Ok(())
 }
 
-/// Like [`resolve_value_with_vars`] but also recurses into other vars entries
-/// for vars-referencing-vars resolution (used only during Phase 1).
-fn resolve_value_with_vars_in_vars(
+/// Phase 1 — vars may reference other vars. Resolves `${vars.X}` tokens in
+/// `v` and recursively resolves any vars that haven't been resolved yet.
+fn resolve_vars_recursive(
     v: &mut Value,
     input: &HashMap<String, Value>,
     resolved: &mut HashMap<String, Value>,
-    visiting: &mut BTreeSet<String>,
-    _owner: &str,
+    visiting: &mut Vec<String>,
 ) -> CliResult<()> {
     match v {
         Value::String(s) => {
@@ -431,12 +379,12 @@ fn resolve_value_with_vars_in_vars(
         }
         Value::Array(a) => {
             for item in a.iter_mut() {
-                resolve_value_with_vars_in_vars(item, input, resolved, visiting, _owner)?;
+                resolve_vars_recursive(item, input, resolved, visiting)?;
             }
         }
         Value::Object(m) => {
             for item in m.values_mut() {
-                resolve_value_with_vars_in_vars(item, input, resolved, visiting, _owner)?;
+                resolve_vars_recursive(item, input, resolved, visiting)?;
             }
         }
         _ => {}
@@ -444,13 +392,9 @@ fn resolve_value_with_vars_in_vars(
     Ok(())
 }
 
-/// Resolve only `${vars.X}` tokens in `v`. Used in Phase 2 to substitute
-/// vars into source/sink template bodies before snapshotting.
-fn resolve_value_with_vars(
-    v: &mut Value,
-    vars: &HashMap<String, Value>,
-    _owner: &str,
-) -> CliResult<()> {
+/// Phase 2 — vars map already fully resolved. Resolves only `${vars.X}`
+/// tokens in `v` against the pre-resolved vars map; errors if a var is unknown.
+fn resolve_vars_only(v: &mut Value, vars: &HashMap<String, Value>) -> CliResult<()> {
     match v {
         Value::String(s) => {
             let new_s = rewrite(s, |body| {
@@ -467,12 +411,12 @@ fn resolve_value_with_vars(
         }
         Value::Array(a) => {
             for item in a.iter_mut() {
-                resolve_value_with_vars(item, vars, _owner)?;
+                resolve_vars_only(item, vars)?;
             }
         }
         Value::Object(m) => {
             for item in m.values_mut() {
-                resolve_value_with_vars(item, vars, _owner)?;
+                resolve_vars_only(item, vars)?;
             }
         }
         _ => {}
@@ -480,13 +424,12 @@ fn resolve_value_with_vars(
     Ok(())
 }
 
-/// Resolve both `${vars.X}` and `${sources/sinks.X.PATH}` tokens in `v`.
-/// Used in Phase 3 for all locations outside the template bodies themselves.
+/// Phase 3 — vars and template refs. Resolves both `${vars.X}` and
+/// `${sources/sinks.X.PATH}` tokens in `v`; deferred row-id tokens pass through.
 fn resolve_value_full(
     v: &mut Value,
     vars: &HashMap<String, Value>,
     templates: &TemplateSnapshot,
-    _owner: &str,
 ) -> CliResult<()> {
     match v {
         Value::String(s) => {
@@ -512,12 +455,12 @@ fn resolve_value_full(
         }
         Value::Array(a) => {
             for item in a.iter_mut() {
-                resolve_value_full(item, vars, templates, _owner)?;
+                resolve_value_full(item, vars, templates)?;
             }
         }
         Value::Object(m) => {
             for item in m.values_mut() {
-                resolve_value_full(item, vars, templates, _owner)?;
+                resolve_value_full(item, vars, templates)?;
             }
         }
         _ => {}
@@ -771,7 +714,8 @@ matrix:
 version: 1
 vars:
   a: "${vars.b}"
-  b: "${vars.a}"
+  b: "${vars.c}"
+  c: "${vars.a}"
 pipeline:
   source: { type: rest, config: {} }
   sink:   { type: jsonl, config: { path: ./o.jsonl } }
@@ -780,10 +724,55 @@ pipeline:
         let err = resolve_config_refs(&mut cfg).unwrap_err();
         match err {
             CliError::InterpolationCycle { chain } => {
-                assert!(chain.iter().any(|s| s.contains("vars.a")));
-                assert!(chain.iter().any(|s| s.contains("vars.b")));
+                // 3-node cycle a → b → c → a: chain should have 4 entries with
+                // the first equal to the last (the closing back-edge).
+                assert_eq!(chain.len(), 4, "chain: {chain:?}");
+                assert_eq!(chain.first(), chain.last(), "chain: {chain:?}");
+                // Every node appears exactly once interior, plus the closing edge.
+                let mut sorted_interior: Vec<_> = chain[..3].to_vec();
+                sorted_interior.sort();
+                assert_eq!(sorted_interior, vec!["vars.a", "vars.b", "vars.c"]);
             }
             other => panic!("expected InterpolationCycle, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resolves_cross_template_reference() {
+        // sources.b references sources.a via ${sources.a.config.host}.
+        let cfg = load(r#"
+version: 1
+pipeline:
+  sources:
+    a: { type: rest, config: { host: api.example.com } }
+    b: { type: rest, config: { host: "${sources.a.config.host}" } }
+  sinks:
+    out: { type: jsonl, config: { path: ./o.jsonl } }
+"#);
+        assert_eq!(
+            cfg.pipeline.sources["b"].config["host"],
+            "api.example.com"
+        );
+    }
+
+    #[test]
+    fn unknown_template_path_errors() {
+        // sources.a exists, but its config has no `missing_field` path.
+        let yaml = r#"
+version: 1
+pipeline:
+  sources:
+    a: { type: rest, config: { host: x } }
+  source: { type: rest, config: { x: "${sources.a.config.missing_field}" } }
+  sink: { type: jsonl, config: { path: ./o.jsonl } }
+"#;
+        let mut cfg = parse_with_extension(yaml, "yaml").unwrap();
+        let err = resolve_config_refs(&mut cfg).unwrap_err();
+        match err {
+            CliError::UnknownTemplateRef { reason, .. } => {
+                assert!(reason.contains("missing_field"));
+            }
+            other => panic!("expected UnknownTemplateRef, got {other:?}"),
         }
     }
 
