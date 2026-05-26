@@ -131,7 +131,6 @@ Runnable examples live in [`examples/`](examples/). Each one declares its requir
 |---------|---------------|
 | `rest_to_jsonl` | Minimum-viable pipeline: REST source → JSONL sink |
 | `rest_streaming` | `run_stream` mode — write each page as it arrives, bounded memory |
-| `dag_users_posts` | `SourceDAG` — fetch users, then per-user posts with parent context injected |
 
 ### Connector matrix (compile-only without external infra)
 
@@ -188,7 +187,6 @@ This crate re-exports everything from `faucet-core` unconditionally:
 
 - `Source`, `Sink` traits
 - `Pipeline`, `PipelineResult`, `run_stream`
-- `SourceDAG`, `DagNode`, `DagResult`, `DagNodeResult`, `DagNodeError`
 - `FaucetError`
 - `RecordTransform`, `ReplicationMethod`
 - `config::load_json`, `config::load_env`, `config::load_env_file`

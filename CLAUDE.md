@@ -244,7 +244,6 @@ The only crate every connector depends on. Module layout:
 - `transform.rs` — `RecordTransform` / `CompiledTransform`: flatten, rename keys (regex), snake_case, custom closures. Built-in transforms are feature-gated.
 - `replication.rs` — `ReplicationMethod`, `filter_incremental`, `max_replication_value` for bookmark-based incremental replication.
 - `schema.rs` — `infer_schema` from record samples with type merging and nullable detection.
-- `dag.rs` — `SourceDAG` builder and executor: parent-child DAG of source-sink pairs with context passing, concurrent child execution, non-fatal error collection.
 - `state.rs` — `StateStore` async trait (`get` / `put` / `delete` over `Value`) + built-in `MemoryStateStore` and `FileStateStore` (one JSON file per key, atomic rename). Keys validated by `validate_state_key`. Heavier backends (Redis, Postgres) live in their own crates.
 - `dlq.rs` — DLQ data types: `OnBatchError`, `DlqConfig`, `DlqStats`, `DlqReason`, `build_envelope`. The router itself lives in `pipeline.rs::run_stream`.
 

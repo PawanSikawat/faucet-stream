@@ -16,11 +16,6 @@
 //!   failure.
 //! - State-key collisions among children of the same parent surface as a
 //!   `CliError::DuplicateStateKey`.
-//!
-//! Compared to `faucet_core::dag::SourceDAG`, this executor: (a) runs roots
-//! concurrently, (b) uses string interpolation rather than JSONPath context
-//! mapping, and (c) supports the `on_error: stop` policy. `SourceDAG` stays
-//! useful for callers embedding the library directly.
 
 use crate::config::{ExecutionSpec, OnError};
 use crate::error::{CliError, CliResult};
