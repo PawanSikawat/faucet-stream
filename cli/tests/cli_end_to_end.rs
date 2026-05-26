@@ -528,6 +528,27 @@ pipeline:
 }
 
 #[test]
+fn init_with_template_flag_names_the_template() {
+    let dir = TempDir::new().unwrap();
+    let out = dir.path().join("p.yaml");
+    Command::cargo_bin("faucet")
+        .unwrap()
+        .args(["init", "--template", "users_api", "--output"])
+        .arg(&out)
+        .assert()
+        .success();
+    let body = fs::read_to_string(&out).unwrap();
+    assert!(
+        body.contains("  sources:\n    users_api:"),
+        "expected `  sources:\\n    users_api:` in:\n{body}"
+    );
+    assert!(
+        body.contains("  sinks:\n    users_api:"),
+        "expected `  sinks:\\n    users_api:` in:\n{body}"
+    );
+}
+
+#[test]
 fn missing_env_var_in_config_is_reported() {
     let dir = TempDir::new().unwrap();
     let cfg = dir.path().join("pipeline.yaml");

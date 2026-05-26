@@ -27,6 +27,7 @@ pub async fn run(args: InitArgs) -> CliResult<()> {
 
     let (source_kind, sink_kind) = resolve_kinds(&args)?;
     let name = args.name.as_deref().unwrap_or(DEFAULT_NAME);
+    let template = &args.template;
 
     let source_schema = registry::source_schema(&source_kind)?;
     let sink_schema = registry::sink_schema(&sink_kind)?;
@@ -38,6 +39,7 @@ pub async fn run(args: InitArgs) -> CliResult<()> {
 
     let body = render_pipeline(
         name,
+        template,
         &source_kind,
         &source_schema,
         &source_choices,
@@ -189,6 +191,7 @@ fn unknown_kind_err(kind: &'static str, name: &str) -> CliError {
 
 fn render_pipeline(
     name: &str,
+    template: &str,
     source_kind: &str,
     source_schema: &serde_json::Value,
     source_choices: &HashMap<String, String>,
@@ -203,19 +206,25 @@ fn render_pipeline(
     let mut body = String::new();
     body.push_str("version: 1\n");
     body.push_str(&format!("name: {name}\n\n"));
-    body.push_str("# The base pipeline. Every matrix row (below) is deep-merged into this.\n");
-    body.push_str("# Even with no matrix block, this section runs once on its own.\n");
+    body.push_str("# Optional shared constants. Reference these anywhere via ${vars.KEY}.\n");
+    body.push_str("# vars:\n");
+    body.push_str("#   api_base: https://api.example.com\n\n");
+    body.push_str("# Named source/sink templates. Matrix rows pick from these via ref:.\n");
+    body.push_str("# A matrix row that omits ref: inherits the `default` template,\n");
+    body.push_str("# which keeps backwards-compat with the legacy singular shape.\n");
     body.push_str("pipeline:\n");
-    body.push_str("  source:\n");
-    body.push_str(&format!("    type: {source_kind}\n"));
-    body.push_str("    config:\n");
+    body.push_str("  sources:\n");
+    body.push_str(&format!("    {template}:\n"));
+    body.push_str(&format!("      type: {source_kind}\n"));
+    body.push_str("      config:\n");
     body.push_str(&source_yaml);
     body.push('\n');
     body.push_str("  # transforms:\n");
     body.push_str("  #   - type: snake_case\n\n");
-    body.push_str("  sink:\n");
-    body.push_str(&format!("    type: {sink_kind}\n"));
-    body.push_str("    config:\n");
+    body.push_str("  sinks:\n");
+    body.push_str(&format!("    {template}:\n"));
+    body.push_str(&format!("      type: {sink_kind}\n"));
+    body.push_str("      config:\n");
     body.push_str(&sink_yaml);
     body.push('\n');
     body.push_str("  # Optional state store (required by CDC sources and resumable runs).\n");
@@ -228,9 +237,13 @@ fn render_pipeline(
     body.push_str("  #     type: jsonl\n");
     body.push_str("  #     config: { path: ./dlq.jsonl }\n");
     body.push_str("  #   on_batch_error: propagate   # or dlq_all\n\n");
-    body.push_str("# Optional matrix block — each row is deep-merged into `pipeline:` above.\n");
+    body.push_str("# Optional matrix block. Each row picks a template via ref:\n");
+    body.push_str("# (omit ref: to inherit the `default` template above) and may\n");
+    body.push_str("# override `type:` / `config:` per row.\n");
     body.push_str("# matrix:\n");
-    body.push_str("#   - id: users\n");
-    body.push_str("#     source: { config: { path: /v1/users } }\n");
+    body.push_str(&format!("#   - id: users\n"));
+    body.push_str(&format!(
+        "#     source: {{ ref: {template}, config: {{ path: /v1/users }} }}\n"
+    ));
     body
 }
