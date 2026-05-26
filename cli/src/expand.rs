@@ -169,7 +169,7 @@ pub fn expand(cfg: &PipelineConfig) -> CliResult<Vec<ExpandedNode>> {
     for &i in &order {
         let row = &rows[i];
         let row_id = ids[i].as_str();
-        let merged = merge_pipeline(&cfg.pipeline, row);
+        let (merged_source, merged_sink, merged) = merge_pipeline(&cfg.pipeline, row)?;
         let role = match &row.parent {
             None => NodeRole::Root,
             Some(p) => NodeRole::Child {
@@ -177,19 +177,12 @@ pub fn expand(cfg: &PipelineConfig) -> CliResult<Vec<ExpandedNode>> {
                 parent_key: row.parent_key.clone(),
             },
         };
-        let merged_source = merged.source.expect("merge_pipeline always produces Some(source)");
-        let merged_sink = merged.sink.expect("merge_pipeline always produces Some(sink)");
         let mut deferred = Vec::new();
         collect_deferred(&merged_source.config, &mut deferred);
         collect_deferred(&merged_sink.config, &mut deferred);
 
-        // DLQ resolution: row override (Replace / Disable) takes precedence;
-        // otherwise inherit `pipeline.dlq` from the base spec.
-        let dlq = match row.dlq.clone() {
-            Some(None) => None,               // explicit disable
-            Some(Some(spec)) => Some(spec),   // explicit replace
-            None => cfg.pipeline.dlq.clone(), // inherit
-        };
+        // DLQ is already resolved by merge_pipeline (row override wins over base).
+        let dlq = merged.dlq.clone();
 
         if let Some(ref d) = dlq {
             if matches!(d.max_failures_per_page, Some(0)) {
@@ -225,28 +218,40 @@ pub fn expand(cfg: &PipelineConfig) -> CliResult<Vec<ExpandedNode>> {
     Ok(out)
 }
 
-fn merge_pipeline(base: &PipelineSpec, row: &MatrixRow) -> PipelineSpec {
+/// Merge a matrix row into the base pipeline spec, returning the resolved
+/// source, sink, and a `PipelineSpec` (for transforms / state / dlq).
+///
+/// Returns `CliError::ParseConfig` if neither the base nor the row provides a
+/// connector type for source or sink.
+fn merge_pipeline(
+    base: &PipelineSpec,
+    row: &MatrixRow,
+) -> CliResult<(ConnectorSpec, ConnectorSpec, PipelineSpec)> {
     let source = match (base.source.as_ref(), row.source.as_ref()) {
         (Some(b), overlay) => merge_connector(b, overlay),
-        (None, Some(overlay)) => ConnectorSpec {
-            kind: overlay.kind.clone().unwrap_or_default(),
+        (None, Some(overlay)) if overlay.kind.is_some() => ConnectorSpec {
+            kind: overlay.kind.clone().unwrap(),
             config: overlay.config.clone().unwrap_or_else(|| serde_json::json!({})),
         },
-        (None, None) => ConnectorSpec {
-            kind: String::new(),
-            config: serde_json::json!({}),
-        },
+        (None, Some(_)) | (None, None) => {
+            return Err(CliError::ParseConfig {
+                path: std::path::PathBuf::from("<config>"),
+                message: "matrix row has no source and pipeline.source is undefined".into(),
+            });
+        }
     };
     let sink = match (base.sink.as_ref(), row.sink.as_ref()) {
         (Some(b), overlay) => merge_connector(b, overlay),
-        (None, Some(overlay)) => ConnectorSpec {
-            kind: overlay.kind.clone().unwrap_or_default(),
+        (None, Some(overlay)) if overlay.kind.is_some() => ConnectorSpec {
+            kind: overlay.kind.clone().unwrap(),
             config: overlay.config.clone().unwrap_or_else(|| serde_json::json!({})),
         },
-        (None, None) => ConnectorSpec {
-            kind: String::new(),
-            config: serde_json::json!({}),
-        },
+        (None, Some(_)) | (None, None) => {
+            return Err(CliError::ParseConfig {
+                path: std::path::PathBuf::from("<config>"),
+                message: "matrix row has no sink and pipeline.sink is undefined".into(),
+            });
+        }
     };
     let transforms = row
         .transforms
@@ -262,15 +267,16 @@ fn merge_pipeline(base: &PipelineSpec, row: &MatrixRow) -> PipelineSpec {
         Some(Some(spec)) => Some(spec),
         None => base.dlq.clone(),
     };
-    PipelineSpec {
-        source: Some(source),
-        sink: Some(sink),
+    let spec = PipelineSpec {
+        source: Some(source.clone()),
+        sink: Some(sink.clone()),
         sources: base.sources.clone(),
         sinks: base.sinks.clone(),
         transforms,
         state,
         dlq,
-    }
+    };
+    Ok((source, sink, spec))
 }
 
 fn merge_connector(base: &ConnectorSpec, overlay: Option<&PartialConnector>) -> ConnectorSpec {
