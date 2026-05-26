@@ -241,15 +241,15 @@ pub fn resolve_config_refs(cfg: &mut crate::config::PipelineConfig) -> CliResult
     }
     for (i, row) in cfg.matrix.iter_mut().enumerate() {
         let _row_owner = row.id.clone().unwrap_or_else(|| format!("row-{i}"));
-        if let Some(p) = row.source.as_mut() {
-            if let Some(c) = p.config.as_mut() {
-                resolve_value_full(c, vars_ref, &snapshot)?;
-            }
+        if let Some(p) = row.source.as_mut()
+            && let Some(c) = p.config.as_mut()
+        {
+            resolve_value_full(c, vars_ref, &snapshot)?;
         }
-        if let Some(p) = row.sink.as_mut() {
-            if let Some(c) = p.config.as_mut() {
-                resolve_value_full(c, vars_ref, &snapshot)?;
-            }
+        if let Some(p) = row.sink.as_mut()
+            && let Some(c) = p.config.as_mut()
+        {
+            resolve_value_full(c, vars_ref, &snapshot)?;
         }
         if let Some(ts) = row.transforms.as_mut() {
             for t in ts.iter_mut() {

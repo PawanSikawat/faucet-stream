@@ -189,6 +189,7 @@ fn unknown_kind_err(kind: &'static str, name: &str) -> CliError {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn render_pipeline(
     name: &str,
     template: &str,
@@ -241,7 +242,7 @@ fn render_pipeline(
     body.push_str("# (omit ref: to inherit the `default` template above) and may\n");
     body.push_str("# override `type:` / `config:` per row.\n");
     body.push_str("# matrix:\n");
-    body.push_str(&format!("#   - id: users\n"));
+    body.push_str("#   - id: users\n");
     body.push_str(&format!(
         "#     source: {{ ref: {template}, config: {{ path: /v1/users }} }}\n"
     ));
