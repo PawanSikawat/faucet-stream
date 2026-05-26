@@ -326,7 +326,7 @@ impl PipelineConfig {
             .extension()
             .and_then(|e| e.to_str())
             .map(str::to_ascii_lowercase);
-        let cfg: PipelineConfig = match ext.as_deref() {
+        let mut cfg: PipelineConfig = match ext.as_deref() {
             Some("yaml" | "yml") => {
                 serde_yaml::from_str(text).map_err(|e| CliError::ParseConfig {
                     path: path.to_path_buf(),
@@ -352,6 +352,7 @@ impl PipelineConfig {
                 ),
             });
         }
+        crate::interpolate::resolve_config_refs(&mut cfg)?;
         Ok(cfg)
     }
 }
@@ -804,5 +805,28 @@ pipeline:
 "#;
         let cfg = parse_with_extension(yaml, "yaml").unwrap();
         assert!(cfg.vars.is_none());
+    }
+
+    #[test]
+    fn from_path_resolves_vars_at_load() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("pipeline.yaml");
+        std::fs::write(
+            &path,
+            r#"
+version: 1
+vars:
+  base: https://api.example.com
+pipeline:
+  source: { type: rest, config: { url: "${vars.base}/v1" } }
+  sink:   { type: jsonl, config: { path: ./o.jsonl } }
+"#,
+        )
+        .unwrap();
+        let cfg = PipelineConfig::from_path(&path).unwrap();
+        assert_eq!(
+            cfg.pipeline.source.as_ref().unwrap().config["url"],
+            "https://api.example.com/v1"
+        );
     }
 }

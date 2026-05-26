@@ -720,8 +720,8 @@ pipeline:
   source: { type: rest, config: {} }
   sink:   { type: jsonl, config: { path: ./o.jsonl } }
 "#;
-        let mut cfg = parse_with_extension(yaml, "yaml").unwrap();
-        let err = resolve_config_refs(&mut cfg).unwrap_err();
+        // resolve_config_refs now runs inside from_text; the error surfaces there.
+        let err = parse_with_extension(yaml, "yaml").unwrap_err();
         match err {
             CliError::InterpolationCycle { chain } => {
                 // 3-node cycle a → b → c → a: chain should have 4 entries with
@@ -766,8 +766,8 @@ pipeline:
   source: { type: rest, config: { x: "${sources.a.config.missing_field}" } }
   sink: { type: jsonl, config: { path: ./o.jsonl } }
 "#;
-        let mut cfg = parse_with_extension(yaml, "yaml").unwrap();
-        let err = resolve_config_refs(&mut cfg).unwrap_err();
+        // resolve_config_refs now runs inside from_text; the error surfaces there.
+        let err = parse_with_extension(yaml, "yaml").unwrap_err();
         match err {
             CliError::UnknownTemplateRef { reason, .. } => {
                 assert!(reason.contains("missing_field"));
@@ -784,8 +784,8 @@ pipeline:
   source: { type: rest, config: { url: "${vars.nope}" } }
   sink:   { type: jsonl, config: { path: ./o.jsonl } }
 "#;
-        let mut cfg = parse_with_extension(yaml, "yaml").unwrap();
-        let err = resolve_config_refs(&mut cfg).unwrap_err();
+        // resolve_config_refs now runs inside from_text; the error surfaces there.
+        let err = parse_with_extension(yaml, "yaml").unwrap_err();
         match err {
             CliError::UnknownVarsRef { name, .. } => assert_eq!(name, "nope"),
             other => panic!("expected UnknownVarsRef, got {other:?}"),
@@ -800,8 +800,8 @@ pipeline:
   source: { type: rest, config: { x: "${sources.nope.config.foo}" } }
   sink:   { type: jsonl, config: { path: ./o.jsonl } }
 "#;
-        let mut cfg = parse_with_extension(yaml, "yaml").unwrap();
-        let err = resolve_config_refs(&mut cfg).unwrap_err();
+        // resolve_config_refs now runs inside from_text; the error surfaces there.
+        let err = parse_with_extension(yaml, "yaml").unwrap_err();
         match err {
             CliError::UnknownTemplateRef { reason, .. } => {
                 assert!(reason.to_ascii_lowercase().contains("nope"));
