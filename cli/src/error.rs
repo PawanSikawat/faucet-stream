@@ -161,6 +161,49 @@ pub enum CliError {
     #[error("DLQ {field} must be > 0 (got 0); omit the field to mean 'unlimited'")]
     InvalidDlqBudget { field: &'static str },
 
+    /// A matrix row referenced a named template that doesn't exist in
+    /// `pipeline.sources` / `pipeline.sinks` (or the legacy `default`).
+    #[error(
+        "matrix row '{row_id}' references unknown {kind} template '{name}'. Known {kind} templates: {known}",
+        known = if known.is_empty() { String::from("(none defined)") } else { known.join(", ") }
+    )]
+    UnknownTemplate {
+        kind: &'static str,
+        name: String,
+        row_id: String,
+        known: Vec<String>,
+    },
+
+    /// A matrix row supplied no `ref:` and the legacy `default` template
+    /// doesn't exist either.
+    #[error(
+        "matrix row '{row_id}' has no {kind}: either set `{kind}: {{ ref: <name> }}` pointing at a `pipeline.{kind}s` template, or declare a legacy `pipeline.{kind}` block"
+    )]
+    MissingTemplate { kind: &'static str, row_id: String },
+
+    /// Both the legacy `pipeline.source` and `pipeline.sources.default` were
+    /// declared (same for sinks). The `default` slot can only be defined once.
+    #[error(
+        "{kind} template '{name}' is defined twice — declare it either via the singular `pipeline.{kind}` block or in `pipeline.{kind}s`, not both"
+    )]
+    DuplicateTemplate { kind: &'static str, name: String },
+
+    /// A cycle was detected resolving `${vars.X}` / `${sources.X.PATH}` /
+    /// `${sinks.X.PATH}` references at load time.
+    #[error("interpolation cycle: {}", chain.join(" -> "))]
+    InterpolationCycle { chain: Vec<String> },
+
+    /// A `${vars.X}` token referenced an undefined var.
+    #[error(
+        "interpolation '{token}' references unknown var '{name}' (define it under top-level `vars:`)"
+    )]
+    UnknownVarsRef { name: String, token: String },
+
+    /// A `${sources.X.PATH}` or `${sinks.X.PATH}` token referenced an
+    /// undefined template, or a dotted path that doesn't resolve inside it.
+    #[error("interpolation '{token}' could not be resolved: {reason}")]
+    UnknownTemplateRef { token: String, reason: String },
+
     /// Pass-through for failures bubbling up from `faucet-core` or a connector.
     #[error(transparent)]
     Faucet(#[from] faucet_core::FaucetError),
@@ -223,5 +266,40 @@ mod tests {
         let msg = e.to_string();
         assert!(msg.contains('2'));
         assert!(msg.to_ascii_lowercase().contains("transform"));
+    }
+
+    #[test]
+    fn unknown_template_lists_known_names() {
+        let e = CliError::UnknownTemplate {
+            kind: "source",
+            name: "users_api".into(),
+            row_id: "load_users".into(),
+            known: vec!["customers_api".into(), "orders_api".into()],
+        };
+        let msg = e.to_string();
+        assert!(msg.contains("users_api"));
+        assert!(msg.contains("load_users"));
+        assert!(msg.contains("customers_api"));
+    }
+
+    #[test]
+    fn duplicate_template_names_kind() {
+        let e = CliError::DuplicateTemplate {
+            kind: "sink",
+            name: "default".into(),
+        };
+        let msg = e.to_string();
+        assert!(msg.contains("sink"));
+        assert!(msg.contains("default"));
+    }
+
+    #[test]
+    fn interpolation_cycle_renders_chain() {
+        let e = CliError::InterpolationCycle {
+            chain: vec!["vars.a".into(), "vars.b".into(), "vars.a".into()],
+        };
+        let msg = e.to_string();
+        assert!(msg.contains("vars.a"));
+        assert!(msg.contains("vars.b"));
     }
 }

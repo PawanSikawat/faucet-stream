@@ -61,6 +61,109 @@ pub struct DeferredRef {
     pub token: String,
 }
 
+/// In-memory lookup of source / sink templates, built once per `expand()` call.
+/// Combines named entries from `pipeline.sources` / `pipeline.sinks` with the
+/// legacy singular `pipeline.source` / `pipeline.sink` (registered as `default`).
+struct Registry<'a> {
+    sources: HashMap<&'a str, &'a ConnectorSpec>,
+    sinks: HashMap<&'a str, &'a ConnectorSpec>,
+}
+
+impl<'a> Registry<'a> {
+    fn build(spec: &'a PipelineSpec) -> CliResult<Self> {
+        let mut sources: HashMap<&'a str, &'a ConnectorSpec> = HashMap::new();
+        if let Some(default) = spec.source.as_ref() {
+            sources.insert("default", default);
+        }
+        for (name, s) in spec.sources.iter() {
+            if sources.contains_key(name.as_str()) {
+                return Err(CliError::DuplicateTemplate {
+                    kind: "source",
+                    name: name.clone(),
+                });
+            }
+            sources.insert(name.as_str(), s);
+        }
+
+        let mut sinks: HashMap<&'a str, &'a ConnectorSpec> = HashMap::new();
+        if let Some(default) = spec.sink.as_ref() {
+            sinks.insert("default", default);
+        }
+        for (name, s) in spec.sinks.iter() {
+            if sinks.contains_key(name.as_str()) {
+                return Err(CliError::DuplicateTemplate {
+                    kind: "sink",
+                    name: name.clone(),
+                });
+            }
+            sinks.insert(name.as_str(), s);
+        }
+        Ok(Self { sources, sinks })
+    }
+
+    fn known(&self, kind: &'static str) -> Vec<String> {
+        debug_assert!(
+            matches!(kind, "source" | "sink"),
+            "Registry::known called with kind = {:?}",
+            kind
+        );
+        let map = if kind == "source" {
+            &self.sources
+        } else {
+            &self.sinks
+        };
+        let mut out: Vec<String> = map.keys().map(|s| (*s).to_string()).collect();
+        out.sort();
+        out
+    }
+
+    fn resolve(
+        &self,
+        kind: &'static str,
+        row_id: &str,
+        overlay: Option<&PartialConnector>,
+    ) -> CliResult<ConnectorSpec> {
+        debug_assert!(
+            matches!(kind, "source" | "sink"),
+            "Registry::resolve called with kind = {:?}",
+            kind
+        );
+        let map = if kind == "source" {
+            &self.sources
+        } else {
+            &self.sinks
+        };
+        let ref_name = overlay
+            .and_then(|p| p.r#ref.as_deref())
+            .unwrap_or("default");
+        let base = map.get(ref_name).ok_or_else(|| {
+            if ref_name == "default" {
+                CliError::MissingTemplate {
+                    kind,
+                    row_id: row_id.to_owned(),
+                }
+            } else {
+                CliError::UnknownTemplate {
+                    kind,
+                    name: ref_name.to_owned(),
+                    row_id: row_id.to_owned(),
+                    known: self.known(kind),
+                }
+            }
+        })?;
+        let mut out = (*base).clone();
+        if let Some(p) = overlay {
+            if let Some(k) = &p.kind {
+                out.kind = k.clone();
+            }
+            if let Some(c) = &p.config {
+                merge_value(&mut out.config, c.clone());
+            }
+        }
+        Ok(out)
+    }
+}
+
 /// Expand `cfg` into a topologically valid list of nodes. Roots come first,
 /// then children in BFS order.
 pub fn expand(cfg: &PipelineConfig) -> CliResult<Vec<ExpandedNode>> {
@@ -137,10 +240,23 @@ pub fn expand(cfg: &PipelineConfig) -> CliResult<Vec<ExpandedNode>> {
             check_refs(c, &id_set, id)?;
         }
     }
-    check_refs(&cfg.pipeline.source.config, &id_set, "pipeline.source")?;
-    check_refs(&cfg.pipeline.sink.config, &id_set, "pipeline.sink")?;
+    if let Some(s) = &cfg.pipeline.source {
+        check_refs(&s.config, &id_set, "pipeline.source")?;
+    }
+    if let Some(s) = &cfg.pipeline.sink {
+        check_refs(&s.config, &id_set, "pipeline.sink")?;
+    }
+    for (name, s) in &cfg.pipeline.sources {
+        check_refs(&s.config, &id_set, &format!("pipeline.sources.{name}"))?;
+    }
+    for (name, s) in &cfg.pipeline.sinks {
+        check_refs(&s.config, &id_set, &format!("pipeline.sinks.{name}"))?;
+    }
 
-    // 4) Build expanded nodes. Order: roots first (in declaration order),
+    // 4) Build template registry — validates duplicate default conflicts.
+    let registry = Registry::build(&cfg.pipeline)?;
+
+    // 5) Build expanded nodes. Order: roots first (in declaration order),
     // then BFS over children — guarantees a parent appears before its children.
     let mut by_parent: HashMap<&str, Vec<usize>> = HashMap::new();
     let mut roots: Vec<usize> = Vec::new();
@@ -165,7 +281,8 @@ pub fn expand(cfg: &PipelineConfig) -> CliResult<Vec<ExpandedNode>> {
     for &i in &order {
         let row = &rows[i];
         let row_id = ids[i].as_str();
-        let merged = merge_pipeline(&cfg.pipeline, row);
+        let merged_source = registry.resolve("source", row_id, row.source.as_ref())?;
+        let merged_sink = registry.resolve("sink", row_id, row.sink.as_ref())?;
         let role = match &row.parent {
             None => NodeRole::Root,
             Some(p) => NodeRole::Child {
@@ -174,15 +291,22 @@ pub fn expand(cfg: &PipelineConfig) -> CliResult<Vec<ExpandedNode>> {
             },
         };
         let mut deferred = Vec::new();
-        collect_deferred(&merged.source.config, &mut deferred);
-        collect_deferred(&merged.sink.config, &mut deferred);
+        collect_deferred(&merged_source.config, &mut deferred);
+        collect_deferred(&merged_sink.config, &mut deferred);
 
-        // DLQ resolution: row override (Replace / Disable) takes precedence;
-        // otherwise inherit `pipeline.dlq` from the base spec.
+        // Resolve transforms, state, and DLQ (row overrides win over base).
+        let transforms = row
+            .transforms
+            .clone()
+            .unwrap_or_else(|| cfg.pipeline.transforms.clone());
+        let state = row.state.clone().or_else(|| cfg.pipeline.state.clone());
+        // Three-state match: Some(None) = disable, Some(Some(spec)) = replace,
+        // None = inherit. The naive `.flatten().or_else()` would conflate
+        // disable and absent, silently inheriting on explicit null.
         let dlq = match row.dlq.clone() {
-            Some(None) => None,               // explicit disable
-            Some(Some(spec)) => Some(spec),   // explicit replace
-            None => cfg.pipeline.dlq.clone(), // inherit
+            Some(None) => None,
+            Some(Some(spec)) => Some(spec),
+            None => cfg.pipeline.dlq.clone(),
         };
 
         if let Some(ref d) = dlq {
@@ -208,54 +332,15 @@ pub fn expand(cfg: &PipelineConfig) -> CliResult<Vec<ExpandedNode>> {
             id: ids[i].clone(),
             row_index: i,
             role,
-            source: merged.source,
-            sink: merged.sink,
-            transforms: merged.transforms,
-            state: merged.state,
+            source: merged_source,
+            sink: merged_sink,
+            transforms,
+            state,
             dlq,
             deferred_refs: deferred,
         });
     }
     Ok(out)
-}
-
-fn merge_pipeline(base: &PipelineSpec, row: &MatrixRow) -> PipelineSpec {
-    let source = merge_connector(&base.source, row.source.as_ref());
-    let sink = merge_connector(&base.sink, row.sink.as_ref());
-    let transforms = row
-        .transforms
-        .clone()
-        .unwrap_or_else(|| base.transforms.clone());
-    let state = row.state.clone().or_else(|| base.state.clone());
-    // Three-state match matches the validated path inside `expand`: explicit
-    // `null` disables, explicit object replaces wholesale, absent inherits.
-    // (The naive `row.dlq.flatten().or_else(|| base.dlq.clone())` would treat
-    // `null` and absent identically, silently inheriting on disable.)
-    let dlq = match row.dlq.clone() {
-        Some(None) => None,
-        Some(Some(spec)) => Some(spec),
-        None => base.dlq.clone(),
-    };
-    PipelineSpec {
-        source,
-        sink,
-        transforms,
-        state,
-        dlq,
-    }
-}
-
-fn merge_connector(base: &ConnectorSpec, overlay: Option<&PartialConnector>) -> ConnectorSpec {
-    let mut out = base.clone();
-    if let Some(p) = overlay {
-        if let Some(k) = &p.kind {
-            out.kind = k.clone();
-        }
-        if let Some(c) = &p.config {
-            merge_value(&mut out.config, c.clone());
-        }
-    }
-    out
 }
 
 fn detect_cycle(parents: &HashMap<&str, &str>) -> CliResult<()> {
@@ -642,6 +727,157 @@ pipeline:
     }
 
     #[test]
+    fn legacy_singular_source_resolves_as_default_template() {
+        let c = cfg(r#"
+version: 1
+pipeline:
+  source: { type: rest, config: { base_url: https://x } }
+  sink:   { type: jsonl, config: { path: ./o } }
+"#);
+        let nodes = expand(&c).unwrap();
+        assert_eq!(nodes[0].source.kind, "rest");
+        assert_eq!(nodes[0].source.config["base_url"], "https://x");
+    }
+
+    #[test]
+    fn row_with_ref_picks_named_template() {
+        let c = cfg(r#"
+version: 1
+pipeline:
+  sources:
+    users_api: { type: rest, config: { base_url: https://x } }
+  sinks:
+    archive:   { type: jsonl, config: { path: ./out } }
+matrix:
+  - id: load_users
+    source:
+      ref: users_api
+      config: { path: /v1/users }
+    sink:
+      ref: archive
+      config: { path: ./users.jsonl }
+"#);
+        let nodes = expand(&c).unwrap();
+        assert_eq!(nodes[0].source.kind, "rest");
+        assert_eq!(nodes[0].source.config["base_url"], "https://x");
+        assert_eq!(nodes[0].source.config["path"], "/v1/users");
+        assert_eq!(nodes[0].sink.config["path"], "./users.jsonl");
+    }
+
+    #[test]
+    fn row_without_ref_falls_back_to_default_template() {
+        let c = cfg(r#"
+version: 1
+pipeline:
+  source: { type: rest, config: { base_url: https://x } }
+  sink:   { type: jsonl, config: { path: ./o } }
+matrix:
+  - id: users
+    source: { config: { path: /v1/users } }
+"#);
+        let nodes = expand(&c).unwrap();
+        assert_eq!(nodes[0].source.kind, "rest");
+        assert_eq!(nodes[0].source.config["path"], "/v1/users");
+    }
+
+    #[test]
+    fn unknown_template_ref_errors_with_known_list() {
+        let c = cfg(r#"
+version: 1
+pipeline:
+  sources:
+    a: { type: rest, config: {} }
+    b: { type: rest, config: {} }
+  sinks:
+    s: { type: jsonl, config: { path: ./o } }
+matrix:
+  - id: x
+    source: { ref: c }
+    sink: { ref: s }
+"#);
+        let err = expand(&c).unwrap_err();
+        match err {
+            CliError::UnknownTemplate {
+                kind,
+                name,
+                row_id,
+                known,
+            } => {
+                assert_eq!(kind, "source");
+                assert_eq!(name, "c");
+                assert_eq!(row_id, "x");
+                assert_eq!(known, vec!["a".to_string(), "b".to_string()]);
+            }
+            other => panic!("expected UnknownTemplate, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn missing_default_template_errors() {
+        // No singular `source:` and no `sources.default` — a row without a ref
+        // has nowhere to go.
+        let c = cfg(r#"
+version: 1
+pipeline:
+  sources:
+    users_api: { type: rest, config: {} }
+  sink: { type: jsonl, config: { path: ./o } }
+matrix:
+  - id: x
+    source: { config: { path: /v1 } }
+"#);
+        let err = expand(&c).unwrap_err();
+        match err {
+            CliError::MissingTemplate { kind, row_id } => {
+                assert_eq!(kind, "source");
+                assert_eq!(row_id, "x");
+            }
+            other => panic!("expected MissingTemplate, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn duplicate_default_template_errors() {
+        // Defining both legacy `source:` and `sources.default:` is a conflict.
+        let c = cfg(r#"
+version: 1
+pipeline:
+  source: { type: rest, config: {} }
+  sources:
+    default: { type: rest, config: {} }
+  sink: { type: jsonl, config: { path: ./o } }
+"#);
+        let err = expand(&c).unwrap_err();
+        match err {
+            CliError::DuplicateTemplate { kind, name } => {
+                assert_eq!(kind, "source");
+                assert_eq!(name, "default");
+            }
+            other => panic!("expected DuplicateTemplate, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn row_can_override_template_kind() {
+        let c = cfg(r#"
+version: 1
+pipeline:
+  sources:
+    api: { type: rest, config: { base_url: https://x } }
+  sinks:
+    out: { type: jsonl, config: { path: ./o } }
+matrix:
+  - id: x
+    source: { ref: api, type: graphql, config: { query: "{users{id}}" } }
+    sink: { ref: out }
+"#);
+        let nodes = expand(&c).unwrap();
+        assert_eq!(nodes[0].source.kind, "graphql");
+        assert_eq!(nodes[0].source.config["base_url"], "https://x");
+        assert_eq!(nodes[0].source.config["query"], "{users{id}}");
+    }
+
+    #[test]
     fn expand_accepts_inherited_disabled_replaced_dlq_rows() {
         let yaml = r#"
 version: 1
@@ -693,5 +929,36 @@ matrix:
                 .unwrap(),
             "./c.jsonl"
         );
+    }
+
+    #[test]
+    fn multiple_rows_pick_different_templates() {
+        let c = cfg(r#"
+version: 1
+pipeline:
+  sources:
+    users_api:  { type: rest, config: { base_url: https://users.example } }
+    orders_api: { type: rest, config: { base_url: https://orders.example } }
+  sinks:
+    archive: { type: jsonl, config: { path: ./out } }
+matrix:
+  - id: load_users
+    source: { ref: users_api, config: { path: /v1/users } }
+    sink:   { ref: archive,   config: { path: ./users.jsonl } }
+  - id: load_orders
+    source: { ref: orders_api, config: { path: /v1/orders } }
+    sink:   { ref: archive,    config: { path: ./orders.jsonl } }
+"#);
+        let nodes = expand(&c).unwrap();
+        assert_eq!(nodes.len(), 2);
+        let users = nodes.iter().find(|n| n.id == "load_users").unwrap();
+        let orders = nodes.iter().find(|n| n.id == "load_orders").unwrap();
+        assert_eq!(users.source.config["base_url"], "https://users.example");
+        assert_eq!(users.source.config["path"], "/v1/users");
+        assert_eq!(orders.source.config["base_url"], "https://orders.example");
+        assert_eq!(orders.source.config["path"], "/v1/orders");
+        // Both rows share the same sink template but pick different output paths.
+        assert_eq!(users.sink.config["path"], "./users.jsonl");
+        assert_eq!(orders.sink.config["path"], "./orders.jsonl");
     }
 }

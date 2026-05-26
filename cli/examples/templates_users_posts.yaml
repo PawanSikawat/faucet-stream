@@ -1,0 +1,84 @@
+# Parent-child DAG using named templates. The `users_api` template fetches
+# the user list; the `posts_api` template fetches per-user posts with
+# ${users.id} interpolated per parent record at runtime. ${sources.users_api.config.base_url}
+# is a load-time reference that pulls the base URL out of the named template
+# for use elsewhere (here, the audit_url field).
+version: 1
+name: templates_users_posts
+
+vars:
+  api_base: https://api.example.com
+  api_token: ${env:API_TOKEN}
+
+pipeline:
+  sources:
+    users_api:
+      type: rest
+      config:
+        base_url: ${vars.api_base}
+        method: GET
+        auth: { type: Bearer, token: "${vars.api_token}" }
+        records_path: $.data[*]
+        pagination:
+          type: PageNumber
+          param_name: page
+          start_page: 1
+          page_size: 100
+        max_pages: 10
+        timeout: 30
+        max_retries: 3
+        retry_backoff: 1
+        tolerated_http_errors: []
+        replication_method: { type: FullTable }
+        primary_keys: [id]
+        partitions: []
+        schema_sample_size: 100
+
+    posts_api:
+      type: rest
+      config:
+        base_url: ${vars.api_base}
+        method: GET
+        auth: { type: Bearer, token: "${vars.api_token}" }
+        records_path: $.data[*]
+        pagination:
+          type: PageNumber
+          param_name: page
+          start_page: 1
+          page_size: 100
+        max_pages: 20
+        timeout: 30
+        max_retries: 3
+        retry_backoff: 1
+        tolerated_http_errors: []
+        replication_method: { type: FullTable }
+        primary_keys: [id]
+        partitions: []
+        schema_sample_size: 100
+
+  sinks:
+    archive:
+      type: jsonl
+      config: { append: false, pretty: false }
+
+matrix:
+  # Root row — fetch the users list once.
+  - id: users
+    source:
+      ref: users_api
+      config: { path: /v1/users, name: users }
+    sink:
+      ref: archive
+      config: { path: users.jsonl }
+
+  # Child row — for each user record, fetch that user's posts. The
+  # ${users.id} token resolves at runtime against each parent record.
+  - id: posts
+    parent: users
+    parent_key: id
+    source:
+      ref: posts_api
+      config: { path: "/v1/users/${users.id}/posts", name: posts }
+    sink:
+      ref: archive
+      config: { path: "posts-${users.id}.jsonl" }

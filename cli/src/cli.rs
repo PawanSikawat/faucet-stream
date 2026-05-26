@@ -147,4 +147,10 @@ pub struct InitArgs {
     /// and a TTY on stdin; falls back to the arg-driven path otherwise.
     #[arg(long)]
     pub interactive: bool,
+    /// Name of the template under which to register the scaffolded source
+    /// and sink. The generated config uses `pipeline.sources.<TEMPLATE>` and
+    /// `pipeline.sinks.<TEMPLATE>`. Defaults to `default` so a matrix row
+    /// without a `ref:` field still resolves through the new schema.
+    #[arg(long, default_value = "default")]
+    pub template: String,
 }

@@ -1,0 +1,59 @@
+# Demonstrates the templates feature: one REST API, four endpoints, shared
+# auth and base_url defined once via a named template. Each matrix row
+# picks the same `api` template and overrides only the per-endpoint `path`.
+version: 1
+name: templates_dry_rest
+
+vars:
+  api_base: https://api.example.com
+  api_token: ${env:API_TOKEN}
+
+pipeline:
+  sources:
+    api:
+      type: rest
+      config:
+        base_url: ${vars.api_base}
+        method: GET
+        auth:
+          type: Bearer
+          token: ${vars.api_token}
+        records_path: $.data[*]
+        pagination:
+          type: PageNumber
+          param_name: page
+          start_page: 1
+          page_size: 100
+        max_pages: 50
+        timeout: 30
+        max_retries: 3
+        retry_backoff: 1
+        tolerated_http_errors: []
+        replication_method: { type: FullTable }
+        primary_keys: [id]
+        partitions: []
+        schema_sample_size: 100
+
+  sinks:
+    archive:
+      type: jsonl
+      config:
+        append: false
+        pretty: false
+
+matrix:
+  - id: users
+    source: { ref: api, config: { path: /v1/users, name: users } }
+    sink:   { ref: archive, config: { path: users.jsonl } }
+
+  - id: orders
+    source: { ref: api, config: { path: /v1/orders, name: orders } }
+    sink:   { ref: archive, config: { path: orders.jsonl } }
+
+  - id: customers
+    source: { ref: api, config: { path: /v1/customers, name: customers } }
+    sink:   { ref: archive, config: { path: customers.jsonl } }
+
+  - id: products
+    source: { ref: api, config: { path: /v1/products, name: products } }
+    sink:   { ref: archive, config: { path: products.jsonl } }

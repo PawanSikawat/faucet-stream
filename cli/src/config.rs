@@ -33,6 +33,7 @@ use crate::interpolate::interpolate;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 /// Top-level pipeline definition.
@@ -46,6 +47,12 @@ pub struct PipelineConfig {
     /// Optional human-readable name (used in logs and error messages).
     #[serde(default)]
     pub name: Option<String>,
+
+    /// Optional shared constants. Resolvable as `${vars.key}` anywhere in
+    /// the config (including inside named templates). Resolved at load time,
+    /// after env/file/secret substitution.
+    #[serde(default)]
+    pub vars: Option<HashMap<String, Value>>,
 
     /// Base pipeline — every matrix row is deep-merged into this.
     pub pipeline: PipelineSpec,
@@ -64,11 +71,28 @@ pub struct PipelineConfig {
     pub observability: Option<ObservabilitySpec>,
 }
 
-/// The base pipeline definition that every matrix row is deep-merged into.
+/// The base pipeline definition. Each matrix row is resolved against the
+/// template catalogs below; the singular `source` / `sink` fields are the
+/// legacy way to declare a single template (internally named `default`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PipelineSpec {
-    pub source: ConnectorSpec,
-    pub sink: ConnectorSpec,
+    /// Legacy singular source — registers as a template named `default`.
+    /// Defining both `source` and `sources.default` is an error at expand time.
+    #[serde(default)]
+    pub source: Option<ConnectorSpec>,
+
+    /// Legacy singular sink — registers as a template named `default`.
+    #[serde(default)]
+    pub sink: Option<ConnectorSpec>,
+
+    /// Named source templates. A matrix row picks one via `source.ref: NAME`.
+    #[serde(default)]
+    pub sources: HashMap<String, ConnectorSpec>,
+
+    /// Named sink templates. A matrix row picks one via `sink.ref: NAME`.
+    #[serde(default)]
+    pub sinks: HashMap<String, ConnectorSpec>,
+
     #[serde(default)]
     pub transforms: Vec<TransformSpec>,
     #[serde(default)]
@@ -93,13 +117,20 @@ pub struct ConnectorSpec {
 
 /// A partial connector override carried by a matrix row. Both `type` and
 /// `config` are optional so rows can swap the kind, override only the inner
-/// config, or both.
+/// config, or both. `ref:` (optional) picks which named template under
+/// `pipeline.sources` / `pipeline.sinks` this row instantiates; when absent,
+/// the row inherits the legacy singular `pipeline.source` / `pipeline.sink`
+/// (registered internally as a template named `default`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PartialConnector {
-    /// Override the connector kind (otherwise inherits from `pipeline.*`).
+    /// Name of the template under `pipeline.sources` / `pipeline.sinks` to
+    /// instantiate. `None` falls back to the `default` template.
+    #[serde(default)]
+    pub r#ref: Option<String>,
+    /// Override the connector kind (otherwise inherits from the template).
     #[serde(rename = "type", default)]
     pub kind: Option<String>,
-    /// Partial config object — deep-merged into the inherited base.
+    /// Partial config object — deep-merged into the resolved template's config.
     #[serde(default)]
     pub config: Option<Value>,
 }
@@ -295,7 +326,7 @@ impl PipelineConfig {
             .extension()
             .and_then(|e| e.to_str())
             .map(str::to_ascii_lowercase);
-        let cfg: PipelineConfig = match ext.as_deref() {
+        let mut cfg: PipelineConfig = match ext.as_deref() {
             Some("yaml" | "yml") => {
                 serde_yaml::from_str(text).map_err(|e| CliError::ParseConfig {
                     path: path.to_path_buf(),
@@ -321,6 +352,7 @@ impl PipelineConfig {
                 ),
             });
         }
+        crate::interpolate::resolve_config_refs(&mut cfg)?;
         Ok(cfg)
     }
 }
@@ -364,8 +396,8 @@ pipeline:
       path: ./out.jsonl
 "#;
         let cfg = parse_with_extension(yaml, "yaml").unwrap();
-        assert_eq!(cfg.pipeline.source.kind, "rest");
-        assert_eq!(cfg.pipeline.sink.kind, "jsonl");
+        assert_eq!(cfg.pipeline.source.as_ref().unwrap().kind, "rest");
+        assert_eq!(cfg.pipeline.sink.as_ref().unwrap().kind, "jsonl");
         assert!(cfg.matrix.is_empty());
         assert!(cfg.execution.is_none());
         assert!(cfg.pipeline.transforms.is_empty());
@@ -382,7 +414,7 @@ pipeline:
             }
         }"#;
         let cfg = parse_with_extension(raw, "json").unwrap();
-        assert_eq!(cfg.pipeline.source.kind, "rest");
+        assert_eq!(cfg.pipeline.source.as_ref().unwrap().kind, "rest");
     }
 
     #[test]
@@ -548,7 +580,10 @@ pipeline:
         )
         .unwrap();
         let cfg = PipelineConfig::from_path(&path).unwrap();
-        assert_eq!(cfg.pipeline.source.config["base_url"], "https://x.example");
+        assert_eq!(
+            cfg.pipeline.source.as_ref().unwrap().config["base_url"],
+            "https://x.example"
+        );
         unsafe { std::env::remove_var("FAUCET_CFG_URL") };
     }
 
@@ -600,7 +635,7 @@ pipeline:
         .unwrap();
         let cfg = PipelineConfig::from_path(&path).unwrap();
         assert_eq!(
-            cfg.pipeline.source.config["path"],
+            cfg.pipeline.source.as_ref().unwrap().config["path"],
             "/v1/users/${users.id}/posts"
         );
     }
@@ -684,5 +719,117 @@ matrix:
         assert_eq!(row_dlq.on_batch_error, OnBatchErrorSpec::DlqAll);
         let sink_path = row_dlq.sink.config.get("path").unwrap();
         assert_eq!(sink_path, "./a.jsonl");
+    }
+
+    #[test]
+    fn parses_named_sources_and_sinks() {
+        let yaml = r#"
+version: 1
+pipeline:
+  sources:
+    users_api:
+      type: rest
+      config: { base_url: https://api.example.com }
+    posts_api:
+      type: rest
+      config: { base_url: https://api.example.com }
+  sinks:
+    warehouse:
+      type: postgres
+      config: { connection_url: "postgres://x" }
+"#;
+        let cfg = parse_with_extension(yaml, "yaml").unwrap();
+        assert!(cfg.pipeline.source.is_none());
+        assert!(cfg.pipeline.sink.is_none());
+        assert_eq!(cfg.pipeline.sources.len(), 2);
+        assert_eq!(cfg.pipeline.sources["users_api"].kind, "rest");
+        assert_eq!(cfg.pipeline.sinks["warehouse"].kind, "postgres");
+    }
+
+    #[test]
+    fn legacy_singular_source_still_parses() {
+        let yaml = r#"
+version: 1
+pipeline:
+  source: { type: rest, config: {} }
+  sink:   { type: jsonl, config: { path: ./o.jsonl } }
+"#;
+        let cfg = parse_with_extension(yaml, "yaml").unwrap();
+        assert!(cfg.pipeline.source.is_some());
+        assert!(cfg.pipeline.sink.is_some());
+        assert!(cfg.pipeline.sources.is_empty());
+        assert!(cfg.pipeline.sinks.is_empty());
+    }
+
+    #[test]
+    fn parses_matrix_row_with_ref_field() {
+        let yaml = r#"
+version: 1
+pipeline:
+  source: { type: rest, config: {} }
+  sink:   { type: jsonl, config: { path: ./o.jsonl } }
+matrix:
+  - id: load_users
+    source:
+      ref: users_api
+      config: { path: /v1/users }
+"#;
+        let cfg = parse_with_extension(yaml, "yaml").unwrap();
+        let src = cfg.matrix[0].source.as_ref().unwrap();
+        assert_eq!(src.r#ref.as_deref(), Some("users_api"));
+        assert_eq!(src.kind, None);
+        assert_eq!(src.config.as_ref().unwrap()["path"], "/v1/users");
+    }
+
+    #[test]
+    fn parses_top_level_vars_block() {
+        let yaml = r#"
+version: 1
+vars:
+  api_base: https://api.example.com
+  api_token_env: API_TOKEN
+pipeline:
+  source: { type: rest, config: {} }
+  sink:   { type: jsonl, config: { path: ./o.jsonl } }
+"#;
+        let cfg = parse_with_extension(yaml, "yaml").unwrap();
+        let vars = cfg.vars.as_ref().unwrap();
+        assert_eq!(vars["api_base"], "https://api.example.com");
+        assert_eq!(vars["api_token_env"], "API_TOKEN");
+    }
+
+    #[test]
+    fn vars_block_is_optional() {
+        let yaml = r#"
+version: 1
+pipeline:
+  source: { type: rest, config: {} }
+  sink:   { type: jsonl, config: { path: ./o.jsonl } }
+"#;
+        let cfg = parse_with_extension(yaml, "yaml").unwrap();
+        assert!(cfg.vars.is_none());
+    }
+
+    #[test]
+    fn from_path_resolves_vars_at_load() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("pipeline.yaml");
+        std::fs::write(
+            &path,
+            r#"
+version: 1
+vars:
+  base: https://api.example.com
+pipeline:
+  source: { type: rest, config: { url: "${vars.base}/v1" } }
+  sink:   { type: jsonl, config: { path: ./o.jsonl } }
+"#,
+        )
+        .unwrap();
+        let cfg = PipelineConfig::from_path(&path).unwrap();
+        assert_eq!(
+            cfg.pipeline.source.as_ref().unwrap().config["url"],
+            "https://api.example.com/v1"
+        );
     }
 }
