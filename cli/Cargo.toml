@@ -19,7 +19,7 @@ path = "src/main.rs"
 # yields a binary that can run any of the published example YAMLs out of the box.
 default = ["observability", "full"]
 
-full = ["observability", "source", "sink", "state", "transforms"]
+full = ["observability", "source", "sink", "state", "transforms", "compression"]
 
 source = [
     "source-rest",
@@ -102,6 +102,20 @@ sink-gcs = ["dep:faucet-sink-gcs"]
 kafka-schema-registry = [
     "faucet-source-kafka?/schema-registry",
     "faucet-sink-kafka?/schema-registry",
+]
+
+## Enable gzip/zstd compression on every file-shaped connector that has been
+## opted in (via its per-connector feature). Forwards through to each
+## connector's `compression` feature using optional-dep syntax, so this
+## flag does not pull connectors the user has not requested.
+compression = [
+    "faucet-source-csv?/compression",
+    "faucet-source-s3?/compression",
+    "faucet-source-gcs?/compression",
+    "faucet-sink-jsonl?/compression",
+    "faucet-sink-csv?/compression",
+    "faucet-sink-s3?/compression",
+    "faucet-sink-gcs?/compression",
 ]
 
 state-redis = ["dep:faucet-state-redis"]
