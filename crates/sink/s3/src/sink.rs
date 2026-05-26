@@ -39,14 +39,14 @@ impl S3Sink {
         Ok(client)
     }
 
-    /// Serialize a slice of records as a JSON Lines string.
-    fn serialize_jsonl(records: &[Value]) -> Result<String, FaucetError> {
-        let mut buf = String::new();
+    /// Serialize a slice of records as JSON Lines bytes.
+    fn serialize_jsonl(records: &[Value]) -> Result<Vec<u8>, FaucetError> {
+        let mut buf: Vec<u8> = Vec::new();
         for record in records {
-            let line = serde_json::to_string(record)
+            let line = serde_json::to_vec(record)
                 .map_err(|e| FaucetError::Sink(format!("JSON serialization failed: {e}")))?;
-            buf.push_str(&line);
-            buf.push('\n');
+            buf.extend_from_slice(&line);
+            buf.push(b'\n');
         }
         Ok(buf)
     }
@@ -58,12 +58,19 @@ impl S3Sink {
     }
 
     /// Upload a single JSONL file to S3.
-    async fn upload_file(&self, key: &str, body: String) -> Result<(), FaucetError> {
+    async fn upload_file(&self, key: &str, body: Vec<u8>) -> Result<(), FaucetError> {
+        #[cfg(feature = "compression")]
+        let body = {
+            let codec = self.config.compression.resolve(&self.config.file_extension);
+            faucet_core::compression::warn_mismatch(&self.config.file_extension, codec);
+            faucet_core::compression::compress_buf(&body, codec)?
+        };
+
         self.client
             .put_object()
             .bucket(&self.config.bucket)
             .key(key)
-            .body(body.into_bytes().into())
+            .body(body.into())
             .content_type("application/x-ndjson")
             .send()
             .await
@@ -107,7 +114,7 @@ impl faucet_core::Sink for S3Sink {
         let concurrency = self.config.concurrency.max(1);
 
         // Pre-serialize each chunk and generate keys before uploading.
-        let prepared: Vec<(String, String)> = chunks
+        let prepared: Vec<(String, Vec<u8>)> = chunks
             .iter()
             .map(|chunk| {
                 let body = Self::serialize_jsonl(chunk)?;
@@ -153,7 +160,8 @@ mod tests {
             json!({"id": 2, "name": "Bob"}),
         ];
         let result = S3Sink::serialize_jsonl(&records).unwrap();
-        let lines: Vec<&str> = result.trim().split('\n').collect();
+        let text = String::from_utf8(result).unwrap();
+        let lines: Vec<&str> = text.trim().split('\n').collect();
         assert_eq!(lines.len(), 2);
 
         let first: Value = serde_json::from_str(lines[0]).unwrap();
@@ -163,7 +171,7 @@ mod tests {
     #[test]
     fn serialize_jsonl_empty() {
         let result = S3Sink::serialize_jsonl(&[]).unwrap();
-        assert_eq!(result, "");
+        assert!(result.is_empty());
     }
 
     #[test]
@@ -187,5 +195,18 @@ mod tests {
         assert!(key.ends_with(".jsonl"));
         // No prefix means key starts with UUID
         assert!(!key.starts_with('/'));
+    }
+
+    #[cfg(feature = "compression")]
+    #[test]
+    fn compress_buf_used_for_gzip_extension() {
+        // White-box: confirm the codec resolved from file_extension is Gzip
+        // and that compress_buf produces a gzip-magic-prefixed buffer.
+        let cfg = S3SinkConfig::new("bucket").file_extension(".jsonl.gz");
+        let codec = cfg.compression.resolve(&cfg.file_extension);
+        assert_eq!(codec, faucet_core::Compression::Gzip);
+        let compressed = faucet_core::compression::compress_buf(b"hello\n", codec).unwrap();
+        // gzip magic bytes.
+        assert_eq!(&compressed[..2], b"\x1f\x8b");
     }
 }
