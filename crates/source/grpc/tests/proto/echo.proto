@@ -1,0 +1,44 @@
+syntax = "proto3";
+
+package faucet.test.echo;
+
+// EchoService is a minimal test fixture exercising both unary and
+// server-streaming RPCs against the dynamic gRPC source. It is built into
+// the test binary by `build.rs` and is not part of the public API.
+service EchoService {
+  // Unary RPC: returns a single response containing N records.
+  rpc List(ListRequest) returns (ListResponse);
+
+  // Server-streaming RPC: emits `count` Events, optionally failing on
+  // a chosen index to exercise reconnect logic.
+  rpc Tail(TailRequest) returns (stream Event);
+}
+
+message ListRequest {
+  uint32 count = 1;
+}
+
+message ListResponse {
+  repeated Item items = 1;
+}
+
+message Item {
+  uint32 id = 1;
+  string name = 2;
+}
+
+message TailRequest {
+  // Number of events to emit before closing the stream.
+  uint32 count = 1;
+  // If > 0, the server emits `fail_after` events, then closes the stream
+  // with an UNAVAILABLE status to simulate a transient disconnect. The
+  // client driver reconnects and the server begins emitting from 0 again
+  // (the test fixture remembers nothing across reconnects). Set to 0 to
+  // disable the failure injection.
+  uint32 fail_after = 2;
+}
+
+message Event {
+  uint64 seq = 1;
+  string payload = 2;
+}

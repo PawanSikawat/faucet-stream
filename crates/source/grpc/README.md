@@ -73,6 +73,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 | `tls` | `Option<bool>` | `None` | Whether to use TLS. When `None`, auto-detected from `https://` in the endpoint URL |
 | `records_path` | `Option<String>` | `None` | JSONPath to extract records from the response. If not set, the entire response is returned as a single record |
 | `batch_size` | `usize` | `1000` | Records per emitted `StreamPage` for `Source::stream_pages`. `0` is the "no batching" sentinel — the entire result set is emitted in a single page. See [Streaming and batching](#streaming-and-batching) below — for unary RPCs `0` and any positive value behave identically |
+| `rpc_kind` | `RpcKind` | `Unary` | RPC kind: `Unary` (one request → one response) or `ServerStreaming` (one request → stream of responses). See [Server-streaming RPCs](#server-streaming-rpcs) below |
+| `max_messages` | `Option<usize>` | `None` | Server-streaming only. Cap on the number of streamed messages to consume before terminating. `None` means consume until the server closes the stream |
+| `terminate_on_error` | `bool` | `false` | Server-streaming only. If `true`, transient stream errors terminate the run. If `false`, the source reconnects with exponential backoff |
+| `reconnect_initial_backoff` | `Duration` (secs) | `1` | Server-streaming only. Initial backoff before the first reconnect attempt; doubles after each failure up to `reconnect_max_backoff` |
+| `reconnect_max_backoff` | `Duration` (secs) | `30` | Server-streaming only. Upper bound on reconnect backoff |
+| `reconnect_max_attempts` | `Option<u32>` | `None` | Server-streaming only. Maximum reconnect attempts before surfacing the error. `None` means unlimited |
 
 ### Authentication (GrpcAuth)
 
@@ -84,11 +90,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ## Streaming and batching
 
+### Unary RPCs
+
 Unary gRPC returns one response containing all records; `stream_pages` falls back to the default trait impl, which buffers the full response and then chunks it in memory into `batch_size` pages. This bounds **sink-side** memory only — source-side memory is still O(full response).
 
 `batch_size = 0` and any positive `batch_size` are observably identical for unary gRPC — both buffer the full result before yielding, since the unary RPC has no native paging primitive the source could honour. Treat the field as a sink-side chunk size, not a wire-protocol hint.
 
-Server-streaming gRPC is tracked as issue [#34](https://github.com/PawanSikawat/faucet-stream/issues/34) and will override `stream_pages` to stream per-response, at which point `batch_size` will gain its usual meaning for that mode.
+### Server-streaming RPCs
+
+When `rpc_kind = "server_streaming"`, the source calls `tonic::client::Grpc::server_streaming` and consumes the response stream message-by-message. Each streamed `DynamicMessage` is decoded via `prost-reflect` and converted to JSON; if `records_path` is set it is applied to each message individually (so `$.events[*]` flattens an array nested inside each message into the page record set).
+
+`stream_pages` flushes a page each time the buffer accumulates `batch_size` records, bounding both **source-side and sink-side** memory. `batch_size = 0` drains the entire stream into a single page (useful for short streams or sinks that prefer one large write). Pages carry `bookmark: None` — server-streaming has no native cursor, so resumption is driven by user-supplied request fields (e.g. an event id), not a faucet-managed bookmark.
+
+#### Reconnect on transient errors
+
+By default, transient stream errors (server disconnects, transport failures, etc.) trigger a reconnect with exponential backoff starting at `reconnect_initial_backoff`, doubling each attempt up to `reconnect_max_backoff`. After `reconnect_max_attempts` (when set), the error is surfaced. Set `terminate_on_error = true` to skip the reconnect path entirely and propagate the error on first failure.
+
+**Caveat:** reconnect re-sends the same request from scratch, so the server begins emitting from the start of the stream again unless the request includes a resume token (e.g. an `after_event_id` field) that the user maintains. Records received before the disconnect are still delivered downstream — they are not retracted.
 
 ## Config Loading
 
@@ -100,7 +118,7 @@ let config: GrpcStreamConfig = load_json("config.json")?;
 let config: GrpcStreamConfig = load_env_file(".env", "GRPC")?;
 ```
 
-### Example JSON config
+### Example JSON config (unary)
 
 ```json
 {
@@ -119,6 +137,28 @@ let config: GrpcStreamConfig = load_env_file(".env", "GRPC")?;
   "tls": true,
   "records_path": "$.products[*]",
   "batch_size": 1000
+}
+```
+
+### Example JSON config (server-streaming)
+
+```json
+{
+  "endpoint": "https://grpc.example.com:443",
+  "service_name": "events.EventService",
+  "method_name": "Tail",
+  "descriptor_set_path": "proto/descriptor.bin",
+  "request": { "topic": "audit-log" },
+  "auth": { "type": "Bearer", "token": "your-api-token" },
+  "tls": true,
+  "records_path": null,
+  "rpc_kind": "server_streaming",
+  "max_messages": 100000,
+  "terminate_on_error": false,
+  "reconnect_initial_backoff": 1,
+  "reconnect_max_backoff": 30,
+  "reconnect_max_attempts": null,
+  "batch_size": 500
 }
 ```
 
@@ -188,6 +228,38 @@ let config = GrpcStreamConfig::new(
 let stream = GrpcStream::new(config)?;
 let events = stream.fetch_all().await?;
 println!("Fetched {} events", events.len());
+```
+
+### Server-streaming RPC
+
+```rust
+use faucet_source_grpc::{GrpcStream, GrpcStreamConfig, RpcKind};
+use serde_json::json;
+
+let config = GrpcStreamConfig::new(
+    "http://localhost:50051",
+    "events.EventService",
+    "Tail",
+    "proto/descriptor.bin",
+)
+.request(json!({ "topic": "audit-log" }))
+.rpc_kind(RpcKind::ServerStreaming)
+.max_messages(10_000)
+.with_batch_size(500);
+
+let stream = GrpcStream::new(config)?;
+let events = stream.fetch_all().await?;
+println!("Collected {} events", events.len());
+```
+
+For long-lived streams, drive the pipeline directly so pages flush to the
+sink as they arrive instead of buffering everything in memory:
+
+```rust
+use faucet_core::Pipeline;
+
+let pipeline = Pipeline::new(&stream, &my_sink);
+pipeline.run().await?;
 ```
 
 ### Custom metadata authentication

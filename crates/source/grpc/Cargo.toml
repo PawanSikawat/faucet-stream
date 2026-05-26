@@ -19,7 +19,17 @@ tonic.workspace = true
 prost.workspace = true
 prost-reflect.workspace = true
 prost-types.workspace = true
+async-stream.workspace = true
+futures-core.workspace = true
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["macros", "rt"] }
+tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "net", "time", "sync"] }
 serde_json.workspace = true
+tonic = { workspace = true, features = ["transport", "server"] }
+tokio-stream = { version = "0.1", features = ["net"] }
+futures = { workspace = true }
+prost.workspace = true
+
+[build-dependencies]
+tonic-build = "0.13"
+protoc-bin-vendored = "3"

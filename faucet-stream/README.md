@@ -34,7 +34,7 @@ faucet-stream = { version = "0.2", features = ["source-rest", "source-s3", "sink
 | `source-rest` | yes | REST API — auth, pagination, extraction, transforms |
 | `source-graphql` | no | GraphQL API — cursor pagination, variable injection |
 | `source-xml` | no | XML/SOAP API — XML-to-JSON conversion |
-| `source-grpc` | no | gRPC — dynamic protobuf via prost-reflect |
+| `source-grpc` | no | gRPC — dynamic protobuf via prost-reflect (unary + server-streaming) |
 | `source-postgres` | no | PostgreSQL — SQL queries as JSON |
 | `source-mysql` | no | MySQL — SQL queries as JSON |
 | `source-sqlite` | no | SQLite — SQL queries as JSON |

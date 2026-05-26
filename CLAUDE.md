@@ -22,7 +22,7 @@ Cargo workspace, 39 crates (38 libraries + the `faucet-cli` binary). All connect
 | `faucet-source-rest` | `crates/source/rest/` | REST API source — auth, pagination, extraction, schema inference |
 | `faucet-source-graphql` | `crates/source/graphql/` | GraphQL API source — cursor pagination, variable injection |
 | `faucet-source-xml` | `crates/source/xml/` | XML/SOAP API source — XML-to-JSON conversion, dot-path extraction |
-| `faucet-source-grpc` | `crates/source/grpc/` | gRPC source — dynamic protobuf via `prost-reflect` |
+| `faucet-source-grpc` | `crates/source/grpc/` | gRPC source — dynamic protobuf via `prost-reflect`; unary and server-streaming RPCs |
 | `faucet-source-postgres` | `crates/source/postgres/` | PostgreSQL query source — run SQL, return rows as JSON |
 | `faucet-source-postgres-cdc` | `crates/source/postgres-cdc/` | PostgreSQL CDC (logical replication) source — pgoutput decoder, slot lifecycle, resumable via state store |
 | `faucet-source-mysql` | `crates/source/mysql/` | MySQL query source |
@@ -180,7 +180,7 @@ All connectors must be optimised for throughput by default. When modifying or ad
 
 Every `Pipeline::run` drives `Source::stream_pages(ctx, batch_size)` internally and writes each emitted `StreamPage` to the sink as it arrives. This bounds memory at O(batch_size) on both sides regardless of total record volume.
 
-Sources that override `stream_pages` to stream natively from their underlying primitive: `rest`, `graphql`, `postgres`, `postgres-cdc`, `mysql`, `sqlite`, `mongodb`, `s3` (JSONL/RawText modes), `gcs` (JSONL/RawText modes), `parquet`, `csv`, `xml`, `elasticsearch` (scroll API), `kafka`, `redis` (all three modes). Sources that intentionally keep the default chunk-the-buffer impl (no native streaming primitive): `grpc` (unary RPC), `webhook` (buffer-shaped by nature). Server-streaming gRPC is tracked separately as #34.
+Sources that override `stream_pages` to stream natively from their underlying primitive: `rest`, `graphql`, `postgres`, `postgres-cdc`, `mysql`, `sqlite`, `mongodb`, `s3` (JSONL/RawText modes), `gcs` (JSONL/RawText modes), `parquet`, `csv`, `xml`, `elasticsearch` (scroll API), `kafka`, `redis` (all three modes), `grpc` (server-streaming mode only). Sources that intentionally keep the default chunk-the-buffer impl: `grpc` (unary mode — no native paging primitive), `webhook` (buffer-shaped by nature). Client-streaming and bidirectional-streaming gRPC remain out of scope.
 
 Sinks that expose a `batch_size` config field for write-side re-chunking: every sink — `parquet`, `s3`, `gcs`, `bigquery`, `snowflake`, `postgres`, `mysql`, `sqlite`, `mongodb`, `redis`, `elasticsearch`, `http`, `kafka` (re-chunking is internally the natural unit for each — multi-row INSERTs, `_bulk` bodies, `tabledata.insertAll` requests, `insert_many` calls, Redis pipelines, etc.). The file/append sinks (`jsonl`, `csv`, `stdout`) carry the field for config parity but write per-record, so `batch_size` is a no-op for them.
 
