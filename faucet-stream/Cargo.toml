@@ -33,6 +33,8 @@ source = [
     "source-elasticsearch",
     "source-parquet",
     "source-gcs",
+    "source-bigquery",
+    "source-snowflake",
 ]
 ## All sink connectors.
 sink = [
@@ -79,6 +81,8 @@ source-elasticsearch = ["dep:faucet-source-elasticsearch"]
 source-kafka = ["dep:faucet-source-kafka", "dep:faucet-kafka-common"]
 source-parquet = ["dep:faucet-source-parquet"]
 source-gcs = ["dep:faucet-source-gcs", "dep:faucet-gcs-common"]
+source-bigquery = ["dep:faucet-source-bigquery", "dep:faucet-bigquery-common"]
+source-snowflake = ["dep:faucet-source-snowflake", "dep:faucet-snowflake-common"]
 
 ## Individual sink connectors.
 sink-bigquery = ["dep:faucet-sink-bigquery"]
@@ -118,8 +122,10 @@ transforms = ["faucet-source-rest?/transforms"]
 
 [dependencies]
 faucet-core.workspace = true
+faucet-bigquery-common = { workspace = true, optional = true }
 faucet-gcs-common = { workspace = true, optional = true }
 faucet-kafka-common = { workspace = true, optional = true }
+faucet-snowflake-common = { workspace = true, optional = true }
 faucet-source-rest = { workspace = true, optional = true }
 faucet-source-graphql = { workspace = true, optional = true }
 faucet-source-xml = { workspace = true, optional = true }
@@ -137,6 +143,8 @@ faucet-source-csv = { workspace = true, optional = true }
 faucet-source-elasticsearch = { workspace = true, optional = true }
 faucet-source-parquet = { workspace = true, optional = true }
 faucet-source-gcs = { workspace = true, optional = true }
+faucet-source-bigquery = { workspace = true, optional = true }
+faucet-source-snowflake = { workspace = true, optional = true }
 faucet-sink-bigquery = { workspace = true, optional = true }
 faucet-sink-postgres = { workspace = true, optional = true }
 faucet-sink-jsonl = { workspace = true, optional = true }

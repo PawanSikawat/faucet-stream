@@ -1,9 +1,10 @@
 //! Snowflake SQL REST API sink.
 
-use crate::config::{SnowflakeAuth, SnowflakeSinkConfig};
+use crate::config::SnowflakeSinkConfig;
 use async_trait::async_trait;
 use faucet_core::FaucetError;
 use faucet_core::util::quote_ident;
+use faucet_snowflake_common::{authorization_header, snowflake_token_type};
 use reqwest::Client;
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -58,43 +59,14 @@ impl SnowflakeSink {
 
     /// Get the authorization header value.
     fn auth_header(&self) -> Result<String, FaucetError> {
-        match &self.config.auth {
-            SnowflakeAuth::KeyPair {
-                user,
-                private_key_pem,
-            } => {
-                let account_upper = self.config.account.to_uppercase();
-                let user_upper = user.to_uppercase();
-                let qualified_user = format!("{account_upper}.{user_upper}");
-
-                let now = jsonwebtoken::get_current_timestamp();
-                let claims = serde_json::json!({
-                    "iss": qualified_user,
-                    "sub": qualified_user,
-                    "iat": now,
-                    "exp": now + 3600,
-                });
-
-                let key = jsonwebtoken::EncodingKey::from_rsa_pem(private_key_pem.as_bytes())
-                    .map_err(|e| FaucetError::Auth(format!("invalid RSA key: {e}")))?;
-
-                let token = jsonwebtoken::encode(
-                    &jsonwebtoken::Header::new(jsonwebtoken::Algorithm::RS256),
-                    &claims,
-                    &key,
-                )
-                .map_err(|e| FaucetError::Auth(format!("JWT generation failed: {e}")))?;
-
-                Ok(format!("Bearer {token}"))
-            }
-            SnowflakeAuth::OAuth { token } => Ok(format!("Snowflake Token=\"{token}\"")),
-        }
+        authorization_header(&self.config.auth, &self.config.account)
     }
 
     /// Execute a SQL statement via the REST API.
     async fn execute_sql(&self, sql: &str) -> Result<(), FaucetError> {
         let url = self.api_url();
         let auth = self.auth_header()?;
+        let token_type = snowflake_token_type(&self.config.auth);
 
         let body = json!({
             "statement": sql,
@@ -110,7 +82,7 @@ impl SnowflakeSink {
             .header("Authorization", &auth)
             .header("Content-Type", "application/json")
             .header("Accept", "application/json")
-            .header("X-Snowflake-Authorization-Token-Type", "KEYPAIR_JWT")
+            .header("X-Snowflake-Authorization-Token-Type", token_type)
             .json(&body)
             .send()
             .await
@@ -213,6 +185,7 @@ impl faucet_core::Sink for SnowflakeSink {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::SnowflakeAuth;
 
     #[test]
     fn api_url_format() {

@@ -39,6 +39,8 @@ source = [
     "source-kafka",
     "source-parquet",
     "source-gcs",
+    "source-bigquery",
+    "source-snowflake",
 ]
 sink = [
     "sink-bigquery",
@@ -77,6 +79,8 @@ source-elasticsearch = ["dep:faucet-source-elasticsearch"]
 source-kafka = ["dep:faucet-source-kafka"]
 source-parquet = ["dep:faucet-source-parquet"]
 source-gcs = ["dep:faucet-source-gcs"]
+source-bigquery = ["dep:faucet-source-bigquery"]
+source-snowflake = ["dep:faucet-source-snowflake"]
 
 sink-bigquery = ["dep:faucet-sink-bigquery"]
 sink-postgres = ["dep:faucet-sink-postgres"]
@@ -138,6 +142,8 @@ faucet-source-elasticsearch = { workspace = true, optional = true }
 faucet-source-kafka = { workspace = true, optional = true }
 faucet-source-parquet = { workspace = true, optional = true }
 faucet-source-gcs = { workspace = true, optional = true }
+faucet-source-bigquery = { workspace = true, optional = true }
+faucet-source-snowflake = { workspace = true, optional = true }
 faucet-sink-bigquery = { workspace = true, optional = true }
 faucet-sink-postgres = { workspace = true, optional = true }
 faucet-sink-jsonl = { workspace = true, optional = true }

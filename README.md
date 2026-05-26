@@ -76,6 +76,8 @@ faucet-stream is a Cargo workspace with 35 crates — 15 sources, 14 sinks, 1 sh
 | [`faucet-source-elasticsearch`](crates/source/elasticsearch) | Elasticsearch — search/scroll API |
 | [`faucet-source-kafka`](crates/source/kafka) | Apache Kafka — consumer with idle/max-messages termination |
 | [`faucet-source-parquet`](crates/source/parquet) | Apache Parquet — local file, glob, or S3; vectorized Arrow async reader, column projection |
+| [`faucet-source-bigquery`](crates/source/bigquery) | Google BigQuery — `jobs.query` + `jobs.getQueryResults`, type-aware row decoding |
+| [`faucet-source-snowflake`](crates/source/snowflake) | Snowflake — SQL REST API with server-side partition pagination, JWT / OAuth |
 | **Sinks** | |
 | [`faucet-sink-bigquery`](crates/sink/bigquery) | Google BigQuery — streaming inserts |
 | [`faucet-sink-postgres`](crates/sink/postgres) | PostgreSQL — JSONB or auto-mapped columns |
@@ -94,9 +96,11 @@ faucet-stream is a Cargo workspace with 35 crates — 15 sources, 14 sinks, 1 sh
 | [`faucet-sink-kafka`](crates/sink/kafka) | Apache Kafka — producer with FuturesUnordered batching, multi-topic routing |
 | [`faucet-sink-parquet`](crates/sink/parquet) | Apache Parquet — local file or S3; schema inference, compression, row/byte rollover |
 | **Shared libraries** | |
+| [`faucet-bigquery-common`](crates/bigquery-common) | Shared BigQuery types — `BigQueryCredentials` enum and `build_client` helper |
 | [`faucet-elasticsearch-common`](crates/elasticsearch-common) | Shared `ElasticsearchAuth` enum for Elasticsearch source/sink |
 | [`faucet-gcs-common`](crates/gcs-common) | Shared GCS types — credentials enum, Storage/StorageControl client builders |
 | [`faucet-kafka-common`](crates/kafka-common) | Shared Kafka types — auth, value formats, Schema Registry client |
+| [`faucet-snowflake-common`](crates/snowflake-common) | Shared Snowflake types — `SnowflakeAuth` enum + auth header helpers |
 | **State stores** | |
 | [`faucet-state-redis`](crates/state/redis) | Redis-backed `StateStore` for persistent bookmarks |
 | [`faucet-state-postgres`](crates/state/postgres) | PostgreSQL-backed `StateStore` for persistent bookmarks |
@@ -774,6 +778,8 @@ All pagination styles include loop detection — if the same cursor or link is r
 | `source-elasticsearch` | no | Elasticsearch source |
 | `source-kafka` | no | Apache Kafka consumer source |
 | `source-parquet` | no | Apache Parquet file source (local, glob, S3) |
+| `source-bigquery` | no | Google BigQuery query source |
+| `source-snowflake` | no | Snowflake query source |
 | `sink-bigquery` | no | Google BigQuery sink |
 | `sink-postgres` | no | PostgreSQL sink |
 | `sink-jsonl` | no | JSON Lines file sink |
@@ -944,6 +950,8 @@ crates/
     elasticsearch/            — Elasticsearch search/scroll
     kafka/                    — Apache Kafka consumer
     parquet/                  — Apache Parquet reader (local, glob, S3)
+    bigquery/                 — Google BigQuery query source
+    snowflake/                — Snowflake query source (SQL REST API)
   sink/
     bigquery/                 — Google BigQuery streaming inserts
     postgres/                 — PostgreSQL (JSONB or auto-map)
@@ -961,9 +969,11 @@ crates/
     stdout/                   — Stdout / stderr (JSON Lines, pretty JSON, TSV)
     kafka/                    — Apache Kafka producer
     parquet/                  — Apache Parquet writer (local, S3)
+  bigquery-common/            — faucet-bigquery-common: shared BigQueryCredentials + build_client
   elasticsearch-common/       — faucet-elasticsearch-common: shared ElasticsearchAuth enum
   gcs-common/                 — faucet-gcs-common: shared GCS credentials + client builders
   kafka-common/               — faucet-kafka-common: shared Kafka auth, formats, Schema Registry
+  snowflake-common/           — faucet-snowflake-common: shared SnowflakeAuth + JWT/OAuth header helpers
   state/
     redis/                    — Redis-backed StateStore
     postgres/                 — PostgreSQL-backed StateStore

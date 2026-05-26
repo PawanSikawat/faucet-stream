@@ -1,7 +1,8 @@
 //! BigQuery streaming insert sink.
 
-use crate::config::{BigQueryCredentials, BigQuerySinkConfig};
+use crate::config::BigQuerySinkConfig;
 use async_trait::async_trait;
+use faucet_bigquery_common::build_client;
 use faucet_core::FaucetError;
 use gcp_bigquery_client::Client;
 use gcp_bigquery_client::model::table_data_insert_all_request::TableDataInsertAllRequest;
@@ -19,28 +20,9 @@ impl BigQuerySink {
     /// Create a new BigQuery sink from the given configuration.
     ///
     /// This initialises the BigQuery client and authenticates with GCP.
-    /// Returns a [`FaucetError::Sink`] if authentication fails.
+    /// Returns a [`FaucetError::Auth`] if authentication fails.
     pub async fn new(config: BigQuerySinkConfig) -> Result<Self, FaucetError> {
-        let client = match &config.credentials {
-            BigQueryCredentials::ServiceAccountKeyPath(path) => {
-                Client::from_service_account_key_file(path)
-                    .await
-                    .map_err(|e| FaucetError::Sink(format!("BigQuery auth failed: {e}")))?
-            }
-            BigQueryCredentials::ServiceAccountKey(json) => {
-                let sa_key = serde_json::from_str(json)
-                    .map_err(|e| FaucetError::Sink(format!("invalid service account JSON: {e}")))?;
-                Client::from_service_account_key(sa_key, false)
-                    .await
-                    .map_err(|e| FaucetError::Sink(format!("BigQuery auth failed: {e}")))?
-            }
-            BigQueryCredentials::ApplicationDefault => {
-                Client::from_application_default_credentials()
-                    .await
-                    .map_err(|e| FaucetError::Sink(format!("BigQuery auth failed: {e}")))?
-            }
-        };
-
+        let client = build_client(&config.credentials).await?;
         Ok(Self { config, client })
     }
 
