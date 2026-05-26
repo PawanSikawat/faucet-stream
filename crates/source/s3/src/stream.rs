@@ -119,8 +119,31 @@ impl S3Source {
             response.body.collect().await.map_err(|e| {
                 FaucetError::Config(format!("S3 read body error for key '{key}': {e}"))
             })?;
+        let bytes = body.into_bytes();
 
-        String::from_utf8(body.into_bytes().to_vec())
+        #[cfg(feature = "compression")]
+        let bytes = {
+            let codec = self.config.compression.resolve(key);
+            faucet_core::compression::warn_mismatch(key, codec);
+            if codec == faucet_core::Compression::None {
+                bytes.to_vec()
+            } else {
+                use std::io::Read;
+                let mut r = faucet_core::compression::wrap_sync_reader(
+                    std::io::Cursor::new(bytes.to_vec()),
+                    codec,
+                );
+                let mut out = Vec::new();
+                r.read_to_end(&mut out).map_err(|e| {
+                    FaucetError::Source(format!("decompression failed for key '{key}': {e}"))
+                })?;
+                out
+            }
+        };
+        #[cfg(not(feature = "compression"))]
+        let bytes = bytes.to_vec();
+
+        String::from_utf8(bytes)
             .map_err(|e| FaucetError::Config(format!("S3 UTF-8 decode error for key '{key}': {e}")))
     }
 
@@ -131,7 +154,10 @@ impl S3Source {
     async fn open_object_reader(
         &self,
         key: &str,
-    ) -> Result<impl tokio::io::AsyncBufRead + Unpin, FaucetError> {
+    ) -> Result<
+        std::pin::Pin<Box<dyn tokio::io::AsyncBufRead + Send + Unpin>>,
+        FaucetError,
+    > {
         let response = self
             .client
             .get_object()
@@ -143,9 +169,19 @@ impl S3Source {
                 FaucetError::Config(format!("S3 get object error for key '{key}': {e}"))
             })?;
 
-        // `ByteStream::into_async_read` returns `impl AsyncBufRead`; wrap
-        // in a `BufReader` so `.lines()` is usable and ownership is `Unpin`.
-        Ok(tokio::io::BufReader::new(response.body.into_async_read()))
+        // `ByteStream::into_async_read` returns `impl AsyncRead`; wrap in a
+        // `BufReader` so `.lines()` is usable and ownership is `Unpin`.
+        let buffered = tokio::io::BufReader::new(response.body.into_async_read());
+        #[cfg(feature = "compression")]
+        {
+            let codec = self.config.compression.resolve(key);
+            faucet_core::compression::warn_mismatch(key, codec);
+            Ok(faucet_core::compression::wrap_async_reader(buffered, codec))
+        }
+        #[cfg(not(feature = "compression"))]
+        {
+            Ok(Box::pin(buffered))
+        }
     }
 
     /// Parse file content into records based on the configured file format.
@@ -516,5 +552,12 @@ mod tests {
             records[0],
             json!({"key": "data/file.txt", "content": "hello world\nline two"})
         );
+    }
+
+    #[cfg(feature = "compression")]
+    #[test]
+    fn compression_default_is_auto() {
+        let cfg = S3SourceConfig::new("bucket");
+        assert_eq!(cfg.compression, faucet_core::CompressionConfig::Auto);
     }
 }
