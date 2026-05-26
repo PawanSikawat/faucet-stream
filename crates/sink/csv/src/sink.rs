@@ -4,12 +4,12 @@ use crate::config::CsvSinkConfig;
 use async_trait::async_trait;
 use faucet_core::FaucetError;
 use serde_json::Value;
-use std::fs::{File, OpenOptions};
+use std::fs::OpenOptions;
 use std::sync::Mutex;
 
 /// State for the CSV writer, including the determined column order.
 struct WriterState {
-    writer: csv::Writer<File>,
+    writer: csv::Writer<Box<dyn std::io::Write + Send>>,
     columns: Vec<String>,
 }
 
@@ -90,15 +90,34 @@ impl faucet_core::Sink for CsvSink {
     }
 
     async fn flush(&self) -> Result<(), FaucetError> {
-        let mut guard = self
-            .state
-            .lock()
-            .map_err(|e| FaucetError::Sink(format!("CSV sink lock poisoned: {e}")))?;
-        if let Some(ref mut state) = *guard {
-            state
-                .writer
-                .flush()
-                .map_err(|e| FaucetError::Sink(format!("CSV flush failed: {e}")))?;
+        // Take the state out of the mutex so we can move it into a blocking
+        // task. Replacing it with None means the next write_batch reopens
+        // the file in append mode — for compressed output this starts a
+        // fresh gzip/zstd member, which decoders read back transparently.
+        let state = {
+            let mut guard = self
+                .state
+                .lock()
+                .map_err(|e| FaucetError::Sink(format!("CSV sink lock poisoned: {e}")))?;
+            guard.take()
+        };
+        if let Some(mut state) = state {
+            tokio::task::spawn_blocking(move || -> Result<(), FaucetError> {
+                state
+                    .writer
+                    .flush()
+                    .map_err(|e| FaucetError::Sink(format!("CSV flush failed: {e}")))?;
+                // Drop the csv::Writer (and the inner Box<dyn Write>) which
+                // finalises any compression encoder. flate2's GzEncoder writes
+                // the 8-byte trailer to the already-flushed inner Write on
+                // drop; zstd's auto_finish adapter does the same. Errors at
+                // trailer-write time are silently swallowed by the Box-erased
+                // encoder, which is documented in faucet_core::compression.
+                drop(state);
+                Ok(())
+            })
+            .await
+            .map_err(|e| FaucetError::Sink(format!("CSV flush task failed: {e}")))??;
         }
         Ok(())
     }
@@ -133,9 +152,18 @@ fn write_csv_blocking(
                     FaucetError::Sink(format!("failed to open CSV file '{}': {e}", config.path))
                 })?;
 
+            #[cfg(feature = "compression")]
+            let inner: Box<dyn std::io::Write + Send> = {
+                let codec = config.compression.resolve(&config.path);
+                faucet_core::compression::warn_mismatch(&config.path, codec);
+                faucet_core::compression::wrap_sync_writer(file, codec)
+            };
+            #[cfg(not(feature = "compression"))]
+            let inner: Box<dyn std::io::Write + Send> = Box::new(file);
+
             let mut writer = csv::WriterBuilder::new()
                 .delimiter(config.delimiter)
-                .from_writer(file);
+                .from_writer(inner);
 
             // Write header row if configured.
             if config.write_headers && !config.append {
@@ -277,5 +305,61 @@ mod tests {
         let path = tmp.path().to_str().unwrap().to_string();
         let sink = CsvSink::new(CsvSinkConfig::new(&path));
         assert!(sink.flush().await.is_ok());
+    }
+
+    #[cfg(feature = "compression")]
+    #[tokio::test]
+    async fn roundtrip_gzip() {
+        use faucet_core::CompressionConfig;
+        let tmp = NamedTempFile::with_suffix(".csv.gz").unwrap();
+        let path = tmp.path().to_str().unwrap().to_string();
+        let sink = CsvSink::new(
+            CsvSinkConfig::new(&path).compression(CompressionConfig::Auto),
+        );
+
+        let records = vec![
+            json!({"id": "1", "name": "Alice"}),
+            json!({"id": "2", "name": "Bob"}),
+        ];
+        sink.write_batch(&records).await.unwrap();
+        sink.flush().await.unwrap();
+
+        let bytes = tokio::fs::read(&path).await.unwrap();
+        use std::io::Read;
+        let mut r = faucet_core::compression::wrap_sync_reader(
+            &bytes[..],
+            faucet_core::Compression::Gzip,
+        );
+        let mut text = String::new();
+        r.read_to_string(&mut text).unwrap();
+        let lines: Vec<&str> = text.trim().split('\n').collect();
+        // Header + 2 rows.
+        assert_eq!(lines.len(), 3);
+    }
+
+    #[cfg(feature = "compression")]
+    #[tokio::test]
+    async fn roundtrip_zstd() {
+        use faucet_core::CompressionConfig;
+        let tmp = NamedTempFile::with_suffix(".csv.zst").unwrap();
+        let path = tmp.path().to_str().unwrap().to_string();
+        let sink = CsvSink::new(
+            CsvSinkConfig::new(&path).compression(CompressionConfig::Auto),
+        );
+
+        sink.write_batch(&[json!({"x": "42"})]).await.unwrap();
+        sink.flush().await.unwrap();
+
+        let bytes = tokio::fs::read(&path).await.unwrap();
+        use std::io::Read;
+        let mut r = faucet_core::compression::wrap_sync_reader(
+            &bytes[..],
+            faucet_core::Compression::Zstd,
+        );
+        let mut text = String::new();
+        r.read_to_string(&mut text).unwrap();
+        let lines: Vec<&str> = text.trim().split('\n').collect();
+        // Header + 1 row.
+        assert_eq!(lines.len(), 2);
     }
 }
