@@ -236,7 +236,7 @@ fn merge_pipeline(
         (None, Some(_)) | (None, None) => {
             return Err(CliError::ParseConfig {
                 path: std::path::PathBuf::from("<config>"),
-                message: "matrix row has no source and pipeline.source is undefined".into(),
+                message: "no connector type for source: neither pipeline.source nor a row 'type:' is defined".into(),
             });
         }
     };
@@ -249,7 +249,7 @@ fn merge_pipeline(
         (None, Some(_)) | (None, None) => {
             return Err(CliError::ParseConfig {
                 path: std::path::PathBuf::from("<config>"),
-                message: "matrix row has no sink and pipeline.sink is undefined".into(),
+                message: "no connector type for sink: neither pipeline.sink nor a row 'type:' is defined".into(),
             });
         }
     };
@@ -268,10 +268,10 @@ fn merge_pipeline(
         None => base.dlq.clone(),
     };
     let spec = PipelineSpec {
-        source: Some(source.clone()),
-        sink: Some(sink.clone()),
-        sources: base.sources.clone(),
-        sinks: base.sinks.clone(),
+        source: None,
+        sink: None,
+        sources: Default::default(),
+        sinks: Default::default(),
         transforms,
         state,
         dlq,
@@ -673,6 +673,29 @@ pipeline:
         let cfg = parse_with_extension(yaml, "yaml").unwrap();
         let err = expand(&cfg).unwrap_err();
         assert!(matches!(err, CliError::UnknownDlqSinkKind { .. }));
+    }
+
+    #[test]
+    fn errors_when_no_pipeline_source_and_no_row_type() {
+        // pipeline.source is omitted; matrix row has a source block but no type.
+        // This should fail at expand-time with ParseConfig, not silently.
+        // (Task 7 will replace this with a typed UnknownTemplate / MissingTemplate
+        // error; until then ParseConfig is the contract.)
+        let c = cfg(r#"
+version: 1
+pipeline:
+  sink: { type: jsonl, config: { path: ./o } }
+matrix:
+  - id: x
+    source: { config: { path: /v1/users } }
+"#);
+        let err = expand(&c).unwrap_err();
+        match err {
+            CliError::ParseConfig { message, .. } => {
+                assert!(message.contains("source"), "message: {message}");
+            }
+            other => panic!("expected ParseConfig, got {other:?}"),
+        }
     }
 
     #[test]

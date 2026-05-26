@@ -33,6 +33,7 @@ use crate::interpolate::interpolate;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 /// Top-level pipeline definition.
@@ -80,11 +81,11 @@ pub struct PipelineSpec {
 
     /// Named source templates. A matrix row picks one via `source.ref: NAME`.
     #[serde(default)]
-    pub sources: std::collections::HashMap<String, ConnectorSpec>,
+    pub sources: HashMap<String, ConnectorSpec>,
 
     /// Named sink templates. A matrix row picks one via `sink.ref: NAME`.
     #[serde(default)]
-    pub sinks: std::collections::HashMap<String, ConnectorSpec>,
+    pub sinks: HashMap<String, ConnectorSpec>,
 
     #[serde(default)]
     pub transforms: Vec<TransformSpec>,
