@@ -70,6 +70,66 @@ Run `faucet list` to see every kind that's compiled into your build of `faucet`.
 
 So `cd into-your-project && faucet run` is the short form for `faucet run --env-file .env faucet.yaml` whenever both files are present.
 
+## Named source and sink templates
+
+Declare reusable connector definitions under `pipeline.sources` and
+`pipeline.sinks`, then pick from them per matrix row via `ref: <name>`.
+Combined with the top-level `vars:` block, this is the recommended shape
+for any config with more than one matrix row.
+
+```yaml
+version: 1
+name: api_ingest
+
+vars:                                # optional shared constants
+  api_base: https://api.example.com
+  api_token: ${env:API_TOKEN}
+
+pipeline:
+  sources:                           # named source templates
+    api:
+      type: rest
+      config:
+        base_url: ${vars.api_base}
+        auth: { type: Bearer, token: ${vars.api_token} }
+        records_path: $.data[*]
+  sinks:                             # named sink templates
+    archive:
+      type: jsonl
+      config: { append: false }
+
+matrix:
+  - id: users
+    source: { ref: api, config: { path: /v1/users } }
+    sink:   { ref: archive, config: { path: users.jsonl } }
+  - id: orders
+    source: { ref: api, config: { path: /v1/orders } }
+    sink:   { ref: archive, config: { path: orders.jsonl } }
+```
+
+### Resolution order
+
+Load-time interpolation runs in this order:
+
+1. `${env:VAR}` / `${file:PATH}` / `${secret:VAR}` — resolved during the raw text pass.
+2. `${vars.X}` — resolved against the top-level `vars:` block. Vars may reference other vars; cycles surface as `InterpolationCycle`.
+3. `${sources.NAME.PATH}` and `${sinks.NAME.PATH}` — resolved against the post-vars-substitution template body. Useful for copying constants between templates without restating them.
+4. `${row_id.path}` — left literal; resolved at runtime against parent records (per-record fan-out).
+
+### Backwards compatibility
+
+The legacy singular `pipeline.source:` / `pipeline.sink:` continues to work
+unchanged. Internally they register as a template named `default`. A
+matrix row without a `ref:` field inherits the `default` template
+(matching the pre-templates merge semantics). You can mix the two
+styles — declare some templates via `pipeline.sources.*` and a
+fallback via `pipeline.source:` — but the `default` slot can only be
+defined once.
+
+See [`examples/templates_dry_rest.yaml`](examples/templates_dry_rest.yaml) and
+[`examples/templates_users_posts.yaml`](examples/templates_users_posts.yaml) for
+end-to-end examples of this pattern.
+
 ## Config shape
 
 ```yaml
@@ -320,6 +380,7 @@ Mirrors of the Rust examples (one `.yaml` per `.rs`):
 - CSV in: [`csv_to_bigquery`](examples/csv_to_bigquery.yaml), [`csv_to_mysql`](examples/csv_to_mysql.yaml), [`csv_to_sqlite`](examples/csv_to_sqlite.yaml)
 - Webhook receiver: [`webhook_to_csv`](examples/webhook_to_csv.yaml), [`webhook_to_http`](examples/webhook_to_http.yaml), [`webhook_to_postgres`](examples/webhook_to_postgres.yaml)
 - DAG parent leg: [`dag_users_posts`](examples/dag_users_posts.yaml) — parent only (multi-node DAGs require the library API today)
+- Named templates: [`templates_dry_rest`](examples/templates_dry_rest.yaml) — shared REST source template across multiple matrix rows; [`templates_users_posts`](examples/templates_users_posts.yaml) — templates with parent/child DAG fan-out
 
 Every auth shape — Bearer, Basic, API key, OAuth2, custom headers, gRPC metadata — round-trips through YAML/JSON, so the YAML examples are 1:1 with the Rust ones.
 
