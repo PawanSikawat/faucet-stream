@@ -98,6 +98,26 @@ impl GcsSource {
             buf.extend_from_slice(&bytes);
         }
 
+        #[cfg(feature = "compression")]
+        let buf = {
+            let codec = self.config.compression.resolve(key);
+            faucet_core::compression::warn_mismatch(key, codec);
+            if codec == faucet_core::Compression::None {
+                buf
+            } else {
+                use std::io::Read;
+                let mut r = faucet_core::compression::wrap_sync_reader(
+                    std::io::Cursor::new(buf),
+                    codec,
+                );
+                let mut out = Vec::new();
+                r.read_to_end(&mut out).map_err(|e| {
+                    FaucetError::Source(format!("decompression failed for key '{key}': {e}"))
+                })?;
+                out
+            }
+        };
+
         String::from_utf8(buf)
             .map_err(|e| FaucetError::Source(format!("GCS object '{key}' not valid UTF-8: {e}")))
     }
@@ -109,7 +129,10 @@ impl GcsSource {
     async fn open_object_reader(
         &self,
         key: &str,
-    ) -> Result<impl tokio::io::AsyncBufRead + Unpin, FaucetError> {
+    ) -> Result<
+        std::pin::Pin<Box<dyn tokio::io::AsyncBufRead + Send + Unpin>>,
+        FaucetError,
+    > {
         let resp = self
             .storage
             .read_object(self.bucket_path(), key.to_string())
@@ -124,9 +147,19 @@ impl GcsSource {
         let bytes_stream = resp
             .into_stream()
             .map_err(|e| std::io::Error::other(e.to_string()));
-        Ok(tokio::io::BufReader::new(
+        let buffered = tokio::io::BufReader::new(
             tokio_util::io::StreamReader::new(bytes_stream),
-        ))
+        );
+        #[cfg(feature = "compression")]
+        {
+            let codec = self.config.compression.resolve(key);
+            faucet_core::compression::warn_mismatch(key, codec);
+            Ok(faucet_core::compression::wrap_async_reader(buffered, codec))
+        }
+        #[cfg(not(feature = "compression"))]
+        {
+            Ok(Box::pin(buffered))
+        }
     }
 
     /// Parse file content into records based on the configured file format.
@@ -376,6 +409,13 @@ fn value_type_name(v: &Value) -> &'static str {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[cfg(feature = "compression")]
+    #[test]
+    fn compression_default_is_auto() {
+        let cfg = GcsSourceConfig::new("bucket");
+        assert_eq!(cfg.compression, faucet_core::CompressionConfig::Auto);
+    }
 
     /// Construct a parse-only test config — used by tests that don't touch
     /// the network. We can't easily construct a real `GcsSource` without

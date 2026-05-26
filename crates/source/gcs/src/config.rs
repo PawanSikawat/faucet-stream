@@ -47,6 +47,14 @@ pub struct GcsSourceConfig {
     /// Optional storage-host override (e.g. `http://localhost:4443` for
     /// fake-gcs-server). Production users should leave this unset.
     pub storage_host: Option<String>,
+    /// Compression codec applied to each downloaded object. Defaults to
+    /// [`CompressionConfig::Auto`](faucet_core::CompressionConfig::Auto) —
+    /// the codec is resolved per-object-key, so a single source can read a
+    /// mix of compressed and uncompressed objects. Requires the
+    /// crate-local `compression` feature.
+    #[cfg(feature = "compression")]
+    #[serde(default)]
+    pub compression: faucet_core::CompressionConfig,
 }
 
 fn default_batch_size() -> usize {
@@ -69,6 +77,8 @@ impl GcsSourceConfig {
             concurrency: default_concurrency(),
             batch_size: default_batch_size(),
             storage_host: None,
+            #[cfg(feature = "compression")]
+            compression: faucet_core::CompressionConfig::default(),
         }
     }
 
@@ -109,6 +119,13 @@ impl GcsSourceConfig {
 
     pub fn storage_host(mut self, host: impl Into<String>) -> Self {
         self.storage_host = Some(host.into());
+        self
+    }
+
+    /// Set the compression codec. Available only with the `compression` feature.
+    #[cfg(feature = "compression")]
+    pub fn compression(mut self, c: faucet_core::CompressionConfig) -> Self {
+        self.compression = c;
         self
     }
 }
@@ -172,6 +189,13 @@ mod tests {
     fn batch_size_above_max_is_rejected() {
         let config = GcsSourceConfig::new("b").with_batch_size(faucet_core::MAX_BATCH_SIZE + 1);
         assert!(faucet_core::validate_batch_size(config.batch_size).is_err());
+    }
+
+    #[cfg(feature = "compression")]
+    #[test]
+    fn compression_default_is_auto() {
+        let cfg = GcsSourceConfig::new("bucket");
+        assert_eq!(cfg.compression, faucet_core::CompressionConfig::Auto);
     }
 
     #[test]

@@ -23,6 +23,9 @@ futures.workspace = true
 bytes.workspace = true
 tokio-util.workspace = true
 
+[features]
+compression = ["faucet-core/compression"]
+
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 serde_json.workspace = true
