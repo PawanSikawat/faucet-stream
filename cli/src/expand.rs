@@ -102,6 +102,11 @@ impl<'a> Registry<'a> {
     }
 
     fn known(&self, kind: &'static str) -> Vec<String> {
+        debug_assert!(
+            matches!(kind, "source" | "sink"),
+            "Registry::known called with kind = {:?}",
+            kind
+        );
         let map = if kind == "source" {
             &self.sources
         } else {
@@ -118,6 +123,11 @@ impl<'a> Registry<'a> {
         row_id: &str,
         overlay: Option<&PartialConnector>,
     ) -> CliResult<ConnectorSpec> {
+        debug_assert!(
+            matches!(kind, "source" | "sink"),
+            "Registry::resolve called with kind = {:?}",
+            kind
+        );
         let map = if kind == "source" {
             &self.sources
         } else {
@@ -796,8 +806,7 @@ matrix:
                 assert_eq!(kind, "source");
                 assert_eq!(name, "c");
                 assert_eq!(row_id, "x");
-                assert!(known.contains(&"a".to_string()));
-                assert!(known.contains(&"b".to_string()));
+                assert_eq!(known, vec!["a".to_string(), "b".to_string()]);
             }
             other => panic!("expected UnknownTemplate, got {other:?}"),
         }
@@ -920,5 +929,36 @@ matrix:
                 .unwrap(),
             "./c.jsonl"
         );
+    }
+
+    #[test]
+    fn multiple_rows_pick_different_templates() {
+        let c = cfg(r#"
+version: 1
+pipeline:
+  sources:
+    users_api:  { type: rest, config: { base_url: https://users.example } }
+    orders_api: { type: rest, config: { base_url: https://orders.example } }
+  sinks:
+    archive: { type: jsonl, config: { path: ./out } }
+matrix:
+  - id: load_users
+    source: { ref: users_api, config: { path: /v1/users } }
+    sink:   { ref: archive,   config: { path: ./users.jsonl } }
+  - id: load_orders
+    source: { ref: orders_api, config: { path: /v1/orders } }
+    sink:   { ref: archive,    config: { path: ./orders.jsonl } }
+"#);
+        let nodes = expand(&c).unwrap();
+        assert_eq!(nodes.len(), 2);
+        let users = nodes.iter().find(|n| n.id == "load_users").unwrap();
+        let orders = nodes.iter().find(|n| n.id == "load_orders").unwrap();
+        assert_eq!(users.source.config["base_url"], "https://users.example");
+        assert_eq!(users.source.config["path"], "/v1/users");
+        assert_eq!(orders.source.config["base_url"], "https://orders.example");
+        assert_eq!(orders.source.config["path"], "/v1/orders");
+        // Both rows share the same sink template but pick different output paths.
+        assert_eq!(users.sink.config["path"], "./users.jsonl");
+        assert_eq!(orders.sink.config["path"], "./orders.jsonl");
     }
 }
