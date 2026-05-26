@@ -197,8 +197,8 @@ fn parse_csv_line(line: &str, config: &CsvSourceConfig) -> Result<Vec<String>, F
         .delimiter(config.delimiter)
         .quote(config.quote)
         // A single line cannot contain a flexible-width record set, but
-        // tolerating uneven field counts matches the lenient behaviour of
-        // the spawn_blocking path.
+        // tolerating uneven field counts preserves the lenient behaviour
+        // the connector has always had (uneven rows do not abort the run).
         .flexible(true)
         .from_reader(line.as_bytes());
 
