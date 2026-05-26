@@ -209,10 +209,7 @@ mod tests {
 
     #[test]
     fn resolve_auto_uses_path() {
-        assert_eq!(
-            CompressionConfig::Auto.resolve("foo.gz"),
-            Compression::Gzip
-        );
+        assert_eq!(CompressionConfig::Auto.resolve("foo.gz"), Compression::Gzip);
         assert_eq!(
             CompressionConfig::Auto.resolve("foo.zst"),
             Compression::Zstd
@@ -226,10 +223,7 @@ mod tests {
             CompressionConfig::Gzip.resolve("foo.txt"),
             Compression::Gzip
         );
-        assert_eq!(
-            CompressionConfig::None.resolve("foo.gz"),
-            Compression::None
-        );
+        assert_eq!(CompressionConfig::None.resolve("foo.gz"), Compression::None);
     }
 
     #[test]

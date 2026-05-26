@@ -210,7 +210,6 @@ fn parse_csv_line(line: &str, config: &CsvSourceConfig) -> Result<Vec<String>, F
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -298,11 +297,8 @@ mod tests {
         let tmp = NamedTempFile::with_suffix(".csv.gz").unwrap();
         let path = tmp.path().to_str().unwrap().to_string();
         let plain = b"id,name\n1,Alice\n2,Bob\n";
-        let compressed = faucet_core::compression::compress_buf(
-            plain,
-            faucet_core::Compression::Gzip,
-        )
-        .unwrap();
+        let compressed =
+            faucet_core::compression::compress_buf(plain, faucet_core::Compression::Gzip).unwrap();
         tokio::fs::write(&path, &compressed).await.unwrap();
 
         let config = CsvSourceConfig::new(&path).compression(CompressionConfig::Auto);
@@ -320,11 +316,8 @@ mod tests {
         let tmp = NamedTempFile::with_suffix(".csv.zst").unwrap();
         let path = tmp.path().to_str().unwrap().to_string();
         let plain = b"id,name\n1,Carol\n";
-        let compressed = faucet_core::compression::compress_buf(
-            plain,
-            faucet_core::Compression::Zstd,
-        )
-        .unwrap();
+        let compressed =
+            faucet_core::compression::compress_buf(plain, faucet_core::Compression::Zstd).unwrap();
         tokio::fs::write(&path, &compressed).await.unwrap();
 
         let config = CsvSourceConfig::new(&path).compression(CompressionConfig::Auto);

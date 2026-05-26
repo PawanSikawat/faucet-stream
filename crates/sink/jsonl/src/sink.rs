@@ -56,9 +56,7 @@ impl JsonlSink {
     > {
         let mut guard = self.writer.lock().await;
         if guard.is_none() {
-            let opened_before = self
-                .opened_once
-                .load(std::sync::atomic::Ordering::Relaxed);
+            let opened_before = self.opened_once.load(std::sync::atomic::Ordering::Relaxed);
             // First open obeys `config.append`. Re-opens (after flush()
             // cleared the writer) always append, so flush-then-write
             // sequences do not truncate previously-written data.
@@ -249,9 +247,7 @@ mod tests {
         use faucet_core::CompressionConfig;
         let tmp = NamedTempFile::with_suffix(".jsonl.gz").unwrap();
         let path = tmp.path().to_path_buf();
-        let sink = JsonlSink::new(
-            JsonlSinkConfig::new(&path).compression(CompressionConfig::Auto),
-        );
+        let sink = JsonlSink::new(JsonlSinkConfig::new(&path).compression(CompressionConfig::Auto));
 
         let records = vec![
             json!({"id": 1, "name": "Alice"}),
@@ -282,9 +278,7 @@ mod tests {
         use faucet_core::CompressionConfig;
         let tmp = NamedTempFile::with_suffix(".jsonl.zst").unwrap();
         let path = tmp.path().to_path_buf();
-        let sink = JsonlSink::new(
-            JsonlSinkConfig::new(&path).compression(CompressionConfig::Auto),
-        );
+        let sink = JsonlSink::new(JsonlSinkConfig::new(&path).compression(CompressionConfig::Auto));
         sink.write_batch(&[json!({"x": 42})]).await.unwrap();
         sink.flush().await.unwrap();
 
@@ -318,7 +312,11 @@ mod tests {
 
         let content = tokio::fs::read_to_string(&path).await.unwrap();
         let lines: Vec<&str> = content.trim().split('\n').collect();
-        assert_eq!(lines.len(), 2, "both batches must survive the mid-stream flush");
+        assert_eq!(
+            lines.len(),
+            2,
+            "both batches must survive the mid-stream flush"
+        );
         let first: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
         assert_eq!(first["first"], 1);
         let second: serde_json::Value = serde_json::from_str(lines[1]).unwrap();
@@ -334,9 +332,7 @@ mod tests {
         use faucet_core::CompressionConfig;
         let tmp = NamedTempFile::with_suffix(".jsonl.gz").unwrap();
         let path = tmp.path().to_path_buf();
-        let sink = JsonlSink::new(
-            JsonlSinkConfig::new(&path).compression(CompressionConfig::Auto),
-        );
+        let sink = JsonlSink::new(JsonlSinkConfig::new(&path).compression(CompressionConfig::Auto));
         sink.write_batch(&[json!({"first": 1})]).await.unwrap();
         sink.flush().await.unwrap();
         sink.write_batch(&[json!({"second": 2})]).await.unwrap();

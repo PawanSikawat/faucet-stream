@@ -154,10 +154,7 @@ impl S3Source {
     async fn open_object_reader(
         &self,
         key: &str,
-    ) -> Result<
-        std::pin::Pin<Box<dyn tokio::io::AsyncBufRead + Send + Unpin>>,
-        FaucetError,
-    > {
+    ) -> Result<std::pin::Pin<Box<dyn tokio::io::AsyncBufRead + Send + Unpin>>, FaucetError> {
         let response = self
             .client
             .get_object()

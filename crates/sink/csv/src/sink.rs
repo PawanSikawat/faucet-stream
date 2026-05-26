@@ -83,9 +83,7 @@ impl faucet_core::Sink for CsvSink {
             guard.take()
         };
 
-        let opened_before = self
-            .opened_once
-            .load(std::sync::atomic::Ordering::Relaxed);
+        let opened_before = self.opened_once.load(std::sync::atomic::Ordering::Relaxed);
 
         let result = tokio::task::spawn_blocking(move || {
             write_csv_blocking(config, current_state, &records, opened_before)
@@ -345,9 +343,7 @@ mod tests {
         use faucet_core::CompressionConfig;
         let tmp = NamedTempFile::with_suffix(".csv.gz").unwrap();
         let path = tmp.path().to_str().unwrap().to_string();
-        let sink = CsvSink::new(
-            CsvSinkConfig::new(&path).compression(CompressionConfig::Auto),
-        );
+        let sink = CsvSink::new(CsvSinkConfig::new(&path).compression(CompressionConfig::Auto));
 
         let records = vec![
             json!({"id": "1", "name": "Alice"}),
@@ -358,10 +354,8 @@ mod tests {
 
         let bytes = tokio::fs::read(&path).await.unwrap();
         use std::io::Read;
-        let mut r = faucet_core::compression::wrap_sync_reader(
-            &bytes[..],
-            faucet_core::Compression::Gzip,
-        );
+        let mut r =
+            faucet_core::compression::wrap_sync_reader(&bytes[..], faucet_core::Compression::Gzip);
         let mut text = String::new();
         r.read_to_string(&mut text).unwrap();
         let lines: Vec<&str> = text.trim().split('\n').collect();
@@ -375,19 +369,15 @@ mod tests {
         use faucet_core::CompressionConfig;
         let tmp = NamedTempFile::with_suffix(".csv.zst").unwrap();
         let path = tmp.path().to_str().unwrap().to_string();
-        let sink = CsvSink::new(
-            CsvSinkConfig::new(&path).compression(CompressionConfig::Auto),
-        );
+        let sink = CsvSink::new(CsvSinkConfig::new(&path).compression(CompressionConfig::Auto));
 
         sink.write_batch(&[json!({"x": "42"})]).await.unwrap();
         sink.flush().await.unwrap();
 
         let bytes = tokio::fs::read(&path).await.unwrap();
         use std::io::Read;
-        let mut r = faucet_core::compression::wrap_sync_reader(
-            &bytes[..],
-            faucet_core::Compression::Zstd,
-        );
+        let mut r =
+            faucet_core::compression::wrap_sync_reader(&bytes[..], faucet_core::Compression::Zstd);
         let mut text = String::new();
         r.read_to_string(&mut text).unwrap();
         let lines: Vec<&str> = text.trim().split('\n').collect();
@@ -413,7 +403,11 @@ mod tests {
         let content = tokio::fs::read_to_string(&path).await.unwrap();
         let lines: Vec<&str> = content.trim().split('\n').collect();
         // Header + 2 data rows (header is written only on the first open).
-        assert_eq!(lines.len(), 3, "both batches must survive the mid-stream flush");
+        assert_eq!(
+            lines.len(),
+            3,
+            "both batches must survive the mid-stream flush"
+        );
     }
 
     #[cfg(feature = "compression")]
@@ -425,9 +419,7 @@ mod tests {
         use faucet_core::CompressionConfig;
         let tmp = NamedTempFile::with_suffix(".csv.gz").unwrap();
         let path = tmp.path().to_str().unwrap().to_string();
-        let sink = CsvSink::new(
-            CsvSinkConfig::new(&path).compression(CompressionConfig::Auto),
-        );
+        let sink = CsvSink::new(CsvSinkConfig::new(&path).compression(CompressionConfig::Auto));
         sink.write_batch(&[json!({"id": "1"})]).await.unwrap();
         sink.flush().await.unwrap();
         sink.write_batch(&[json!({"id": "2"})]).await.unwrap();
@@ -435,10 +427,8 @@ mod tests {
 
         let bytes = tokio::fs::read(&path).await.unwrap();
         use std::io::Read;
-        let mut r = faucet_core::compression::wrap_sync_reader(
-            &bytes[..],
-            faucet_core::Compression::Gzip,
-        );
+        let mut r =
+            faucet_core::compression::wrap_sync_reader(&bytes[..], faucet_core::Compression::Gzip);
         let mut text = String::new();
         r.read_to_string(&mut text).unwrap();
         let lines: Vec<&str> = text.trim().split('\n').collect();

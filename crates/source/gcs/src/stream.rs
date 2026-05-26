@@ -106,10 +106,8 @@ impl GcsSource {
                 buf
             } else {
                 use std::io::Read;
-                let mut r = faucet_core::compression::wrap_sync_reader(
-                    std::io::Cursor::new(buf),
-                    codec,
-                );
+                let mut r =
+                    faucet_core::compression::wrap_sync_reader(std::io::Cursor::new(buf), codec);
                 let mut out = Vec::new();
                 r.read_to_end(&mut out).map_err(|e| {
                     FaucetError::Source(format!("decompression failed for key '{key}': {e}"))
@@ -129,10 +127,7 @@ impl GcsSource {
     async fn open_object_reader(
         &self,
         key: &str,
-    ) -> Result<
-        std::pin::Pin<Box<dyn tokio::io::AsyncBufRead + Send + Unpin>>,
-        FaucetError,
-    > {
+    ) -> Result<std::pin::Pin<Box<dyn tokio::io::AsyncBufRead + Send + Unpin>>, FaucetError> {
         let resp = self
             .storage
             .read_object(self.bucket_path(), key.to_string())
@@ -147,9 +142,7 @@ impl GcsSource {
         let bytes_stream = resp
             .into_stream()
             .map_err(|e| std::io::Error::other(e.to_string()));
-        let buffered = tokio::io::BufReader::new(
-            tokio_util::io::StreamReader::new(bytes_stream),
-        );
+        let buffered = tokio::io::BufReader::new(tokio_util::io::StreamReader::new(bytes_stream));
         #[cfg(feature = "compression")]
         {
             let codec = self.config.compression.resolve(key);
