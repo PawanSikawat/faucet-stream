@@ -93,13 +93,20 @@ pub struct ConnectorSpec {
 
 /// A partial connector override carried by a matrix row. Both `type` and
 /// `config` are optional so rows can swap the kind, override only the inner
-/// config, or both.
+/// config, or both. `ref:` (optional) picks which named template under
+/// `pipeline.sources` / `pipeline.sinks` this row instantiates; when absent,
+/// the row inherits the legacy singular `pipeline.source` / `pipeline.sink`
+/// (registered internally as a template named `default`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PartialConnector {
-    /// Override the connector kind (otherwise inherits from `pipeline.*`).
+    /// Name of the template under `pipeline.sources` / `pipeline.sinks` to
+    /// instantiate. `None` falls back to the `default` template.
+    #[serde(default)]
+    pub r#ref: Option<String>,
+    /// Override the connector kind (otherwise inherits from the template).
     #[serde(rename = "type", default)]
     pub kind: Option<String>,
-    /// Partial config object — deep-merged into the inherited base.
+    /// Partial config object — deep-merged into the resolved template's config.
     #[serde(default)]
     pub config: Option<Value>,
 }
@@ -684,5 +691,25 @@ matrix:
         assert_eq!(row_dlq.on_batch_error, OnBatchErrorSpec::DlqAll);
         let sink_path = row_dlq.sink.config.get("path").unwrap();
         assert_eq!(sink_path, "./a.jsonl");
+    }
+
+    #[test]
+    fn parses_matrix_row_with_ref_field() {
+        let yaml = r#"
+version: 1
+pipeline:
+  source: { type: rest, config: {} }
+  sink:   { type: jsonl, config: { path: ./o.jsonl } }
+matrix:
+  - id: load_users
+    source:
+      ref: users_api
+      config: { path: /v1/users }
+"#;
+        let cfg = parse_with_extension(yaml, "yaml").unwrap();
+        let src = cfg.matrix[0].source.as_ref().unwrap();
+        assert_eq!(src.r#ref.as_deref(), Some("users_api"));
+        assert_eq!(src.kind, None);
+        assert_eq!(src.config.as_ref().unwrap()["path"], "/v1/users");
     }
 }
