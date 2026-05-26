@@ -672,9 +672,15 @@ mod tests {
         let cfg = build_pipeline_config(&e).unwrap();
         assert_eq!(cfg.version, 1);
         assert_eq!(cfg.pipeline.source.as_ref().unwrap().kind, "csv");
-        assert_eq!(cfg.pipeline.source.as_ref().unwrap().config, json!({"path": "./in.csv"}));
+        assert_eq!(
+            cfg.pipeline.source.as_ref().unwrap().config,
+            json!({"path": "./in.csv"})
+        );
         assert_eq!(cfg.pipeline.sink.as_ref().unwrap().kind, "jsonl");
-        assert_eq!(cfg.pipeline.sink.as_ref().unwrap().config, json!({"path": "./out.jsonl"}));
+        assert_eq!(
+            cfg.pipeline.sink.as_ref().unwrap().config,
+            json!({"path": "./out.jsonl"})
+        );
         assert!(cfg.pipeline.transforms.is_empty());
         assert!(cfg.pipeline.state.is_none());
         assert!(cfg.name.is_none());

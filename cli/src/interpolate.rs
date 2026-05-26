@@ -343,7 +343,10 @@ fn resolve_one_var(
         return Err(CliError::InterpolationCycle { chain });
     }
     visiting.push(key.to_string());
-    let mut value = input.get(key).expect("key was taken from input map").clone();
+    let mut value = input
+        .get(key)
+        .expect("key was taken from input map")
+        .clone();
     resolve_vars_recursive(&mut value, input, resolved, visiting)?;
     visiting.pop();
     resolved.insert(key.to_string(), value);
@@ -442,7 +445,11 @@ fn resolve_value_full(
                     return Ok(Some(value_to_string(val)));
                 }
                 if let Some(rest) = body.strip_prefix("sources.") {
-                    return Ok(Some(lookup_template_path(&templates.sources, "sources", rest)?));
+                    return Ok(Some(lookup_template_path(
+                        &templates.sources,
+                        "sources",
+                        rest,
+                    )?));
                 }
                 if let Some(rest) = body.strip_prefix("sinks.") {
                     return Ok(Some(lookup_template_path(&templates.sinks, "sinks", rest)?));
@@ -475,10 +482,12 @@ fn lookup_template_path(
 ) -> CliResult<String> {
     // `rest` is `<name>` or `<name>.<dotted.path>`
     let (name, path) = rest.split_once('.').unwrap_or((rest, ""));
-    let template = catalog.get(name).ok_or_else(|| CliError::UnknownTemplateRef {
-        token: format!("${{{kind}.{rest}}}"),
-        reason: format!("no {kind} template named '{name}'"),
-    })?;
+    let template = catalog
+        .get(name)
+        .ok_or_else(|| CliError::UnknownTemplateRef {
+            token: format!("${{{kind}.{rest}}}"),
+            reason: format!("no {kind} template named '{name}'"),
+        })?;
     let resolved = resolve_dotted(template, path).ok_or_else(|| CliError::UnknownTemplateRef {
         token: format!("${{{kind}.{rest}}}"),
         reason: format!("path '{path}' does not resolve inside {kind} template '{name}'"),
@@ -642,7 +651,7 @@ mod tests {
 
     // ── post-parse load-time tests ───────────────────────────────────────
 
-    use crate::config::{parse_with_extension, PipelineConfig};
+    use crate::config::{PipelineConfig, parse_with_extension};
     use crate::interpolate::resolve_config_refs;
 
     fn load(yaml: &str) -> PipelineConfig {
@@ -653,14 +662,16 @@ mod tests {
 
     #[test]
     fn resolves_vars_in_source_config() {
-        let cfg = load(r#"
+        let cfg = load(
+            r#"
 version: 1
 vars:
   base: https://api.example.com
 pipeline:
   source: { type: rest, config: { base_url: "${vars.base}" } }
   sink:   { type: jsonl, config: { path: ./o.jsonl } }
-"#);
+"#,
+        );
         assert_eq!(
             cfg.pipeline.source.as_ref().unwrap().config["base_url"],
             "https://api.example.com"
@@ -669,7 +680,8 @@ pipeline:
 
     #[test]
     fn resolves_vars_referencing_other_vars() {
-        let cfg = load(r#"
+        let cfg = load(
+            r#"
 version: 1
 vars:
   base: https://api.example.com
@@ -677,7 +689,8 @@ vars:
 pipeline:
   source: { type: rest, config: { url: "${vars.users_url}" } }
   sink:   { type: jsonl, config: { path: ./o.jsonl } }
-"#);
+"#,
+        );
         assert_eq!(
             cfg.pipeline.source.as_ref().unwrap().config["url"],
             "https://api.example.com/v1/users"
@@ -686,7 +699,8 @@ pipeline:
 
     #[test]
     fn resolves_template_ref_from_matrix_row() {
-        let cfg = load(r#"
+        let cfg = load(
+            r#"
 version: 1
 pipeline:
   sources:
@@ -700,7 +714,8 @@ matrix:
     source:
       ref: users_api
       config: { audit_url: "${sources.users_api.config.base_url}/audit" }
-"#);
+"#,
+        );
         let row_src = cfg.matrix[0].source.as_ref().unwrap();
         assert_eq!(
             row_src.config.as_ref().unwrap()["audit_url"],
@@ -740,7 +755,8 @@ pipeline:
     #[test]
     fn resolves_cross_template_reference() {
         // sources.b references sources.a via ${sources.a.config.host}.
-        let cfg = load(r#"
+        let cfg = load(
+            r#"
 version: 1
 pipeline:
   sources:
@@ -748,11 +764,9 @@ pipeline:
     b: { type: rest, config: { host: "${sources.a.config.host}" } }
   sinks:
     out: { type: jsonl, config: { path: ./o.jsonl } }
-"#);
-        assert_eq!(
-            cfg.pipeline.sources["b"].config["host"],
-            "api.example.com"
+"#,
         );
+        assert_eq!(cfg.pipeline.sources["b"].config["host"], "api.example.com");
     }
 
     #[test]
@@ -812,12 +826,14 @@ pipeline:
 
     #[test]
     fn leaves_row_id_tokens_for_runtime() {
-        let cfg = load(r#"
+        let cfg = load(
+            r#"
 version: 1
 pipeline:
   source: { type: rest, config: { path: "/v1/users/${users.id}/posts" } }
   sink:   { type: jsonl, config: { path: ./o.jsonl } }
-"#);
+"#,
+        );
         // ${users.id} must survive — it's a deferred row-id reference.
         assert_eq!(
             cfg.pipeline.source.as_ref().unwrap().config["path"],

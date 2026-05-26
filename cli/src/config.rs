@@ -580,7 +580,10 @@ pipeline:
         )
         .unwrap();
         let cfg = PipelineConfig::from_path(&path).unwrap();
-        assert_eq!(cfg.pipeline.source.as_ref().unwrap().config["base_url"], "https://x.example");
+        assert_eq!(
+            cfg.pipeline.source.as_ref().unwrap().config["base_url"],
+            "https://x.example"
+        );
         unsafe { std::env::remove_var("FAUCET_CFG_URL") };
     }
 

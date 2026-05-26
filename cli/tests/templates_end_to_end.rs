@@ -3,7 +3,7 @@
 //! ${sources.X.PATH} reference.
 
 use faucet_cli::config::PipelineConfig;
-use faucet_cli::expand::{expand, NodeRole};
+use faucet_cli::expand::{NodeRole, expand};
 
 #[test]
 fn templated_config_resolves_end_to_end() {

@@ -60,7 +60,10 @@ fn every_example_loads_and_expands() {
         }
     }
     assert!(count > 10, "expected to find >10 examples, found {count}");
-    eprintln!("examples: {count} total, {skipped} skipped (missing credentials), {} checked", count - skipped);
+    eprintln!(
+        "examples: {count} total, {skipped} skipped (missing credentials), {} checked",
+        count - skipped
+    );
     assert!(
         failures.is_empty(),
         "{} example(s) failed:\n{}",

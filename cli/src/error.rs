@@ -179,20 +179,14 @@ pub enum CliError {
     #[error(
         "matrix row '{row_id}' has no {kind}: either set `{kind}: {{ ref: <name> }}` pointing at a `pipeline.{kind}s` template, or declare a legacy `pipeline.{kind}` block"
     )]
-    MissingTemplate {
-        kind: &'static str,
-        row_id: String,
-    },
+    MissingTemplate { kind: &'static str, row_id: String },
 
     /// Both the legacy `pipeline.source` and `pipeline.sources.default` were
     /// declared (same for sinks). The `default` slot can only be defined once.
     #[error(
         "{kind} template '{name}' is defined twice — declare it either via the singular `pipeline.{kind}` block or in `pipeline.{kind}s`, not both"
     )]
-    DuplicateTemplate {
-        kind: &'static str,
-        name: String,
-    },
+    DuplicateTemplate { kind: &'static str, name: String },
 
     /// A cycle was detected resolving `${vars.X}` / `${sources.X.PATH}` /
     /// `${sinks.X.PATH}` references at load time.
@@ -200,7 +194,9 @@ pub enum CliError {
     InterpolationCycle { chain: Vec<String> },
 
     /// A `${vars.X}` token referenced an undefined var.
-    #[error("interpolation '{token}' references unknown var '{name}' (define it under top-level `vars:`)")]
+    #[error(
+        "interpolation '{token}' references unknown var '{name}' (define it under top-level `vars:`)"
+    )]
     UnknownVarsRef { name: String, token: String },
 
     /// A `${sources.X.PATH}` or `${sinks.X.PATH}` token referenced an
