@@ -28,6 +28,13 @@ pub struct CsvSourceConfig {
     /// jobs) that prefer one large request to many small ones.
     #[serde(default = "default_batch_size")]
     pub batch_size: usize,
+    /// Compression codec for the input file. Defaults to
+    /// [`CompressionConfig::Auto`](faucet_core::CompressionConfig::Auto) —
+    /// `.gz` / `.zst` suffix selects gzip / zstd. Requires the crate-local
+    /// `compression` feature.
+    #[cfg(feature = "compression")]
+    #[serde(default)]
+    pub compression: faucet_core::CompressionConfig,
 }
 
 fn default_true() -> bool {
@@ -55,6 +62,8 @@ impl CsvSourceConfig {
             delimiter: b',',
             quote: b'"',
             batch_size: DEFAULT_BATCH_SIZE,
+            #[cfg(feature = "compression")]
+            compression: faucet_core::CompressionConfig::Auto,
         }
     }
 
@@ -82,6 +91,13 @@ impl CsvSourceConfig {
     /// single [`StreamPage`](faucet_core::StreamPage).
     pub fn with_batch_size(mut self, batch_size: usize) -> Self {
         self.batch_size = batch_size;
+        self
+    }
+
+    /// Set the compression codec. Available only with the `compression` feature.
+    #[cfg(feature = "compression")]
+    pub fn compression(mut self, c: faucet_core::CompressionConfig) -> Self {
+        self.compression = c;
         self
     }
 }

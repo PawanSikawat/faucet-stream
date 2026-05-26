@@ -7,6 +7,9 @@ license.workspace = true
 repository.workspace = true
 description = "CSV file source connector for the faucet-stream ecosystem"
 
+[features]
+compression = ["faucet-core/compression"]
+
 [dependencies]
 faucet-core.workspace = true
 schemars.workspace = true
