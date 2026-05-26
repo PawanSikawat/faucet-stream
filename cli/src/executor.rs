@@ -755,6 +755,7 @@ mod tests {
         PipelineConfig {
             version: 1,
             name: Some("test".into()),
+            vars: None,
             pipeline: PipelineSpec {
                 source: Some(ConnectorSpec {
                     kind: "csv".into(),

@@ -48,6 +48,12 @@ pub struct PipelineConfig {
     #[serde(default)]
     pub name: Option<String>,
 
+    /// Optional shared constants. Resolvable as `${vars.key}` anywhere in
+    /// the config (including inside named templates). Resolved at load time,
+    /// after env/file/secret substitution.
+    #[serde(default)]
+    pub vars: Option<HashMap<String, Value>>,
+
     /// Base pipeline — every matrix row is deep-merged into this.
     pub pipeline: PipelineSpec,
 
@@ -769,5 +775,34 @@ matrix:
         assert_eq!(src.r#ref.as_deref(), Some("users_api"));
         assert_eq!(src.kind, None);
         assert_eq!(src.config.as_ref().unwrap()["path"], "/v1/users");
+    }
+
+    #[test]
+    fn parses_top_level_vars_block() {
+        let yaml = r#"
+version: 1
+vars:
+  api_base: https://api.example.com
+  api_token_env: API_TOKEN
+pipeline:
+  source: { type: rest, config: {} }
+  sink:   { type: jsonl, config: { path: ./o.jsonl } }
+"#;
+        let cfg = parse_with_extension(yaml, "yaml").unwrap();
+        let vars = cfg.vars.as_ref().unwrap();
+        assert_eq!(vars["api_base"], "https://api.example.com");
+        assert_eq!(vars["api_token_env"], "API_TOKEN");
+    }
+
+    #[test]
+    fn vars_block_is_optional() {
+        let yaml = r#"
+version: 1
+pipeline:
+  source: { type: rest, config: {} }
+  sink:   { type: jsonl, config: { path: ./o.jsonl } }
+"#;
+        let cfg = parse_with_extension(yaml, "yaml").unwrap();
+        assert!(cfg.vars.is_none());
     }
 }

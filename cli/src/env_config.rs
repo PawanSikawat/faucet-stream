@@ -169,6 +169,7 @@ pub fn build_pipeline_config(env: &HashMap<String, String>) -> CliResult<Pipelin
     Ok(PipelineConfig {
         version: 1,
         name,
+        vars: None,
         pipeline: PipelineSpec {
             source: Some(source),
             sink: Some(sink),
