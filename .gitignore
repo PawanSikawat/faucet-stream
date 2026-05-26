@@ -26,6 +26,9 @@ CLAUDE.md
 .claude/
 docs/superpowers/
 
+# Local scripts (one-off helpers, not part of the project)
+/scripts/
+
 # Cargo
 Cargo.lock
 doc/
