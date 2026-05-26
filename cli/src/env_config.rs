@@ -159,22 +159,107 @@ pub fn build_transforms(env: &HashMap<String, String>) -> CliResult<Vec<Transfor
     Ok(out)
 }
 
+/// Harvest named source templates from `FAUCET_SOURCES_<NAME>_TYPE` selectors
+/// and `FAUCET_SOURCES_<NAME>_<FIELD>` config fields. `<NAME>` is lowercased.
+pub fn build_named_sources(
+    env: &HashMap<String, String>,
+) -> CliResult<HashMap<String, ConnectorSpec>> {
+    build_named_catalog(env, "FAUCET_SOURCES_")
+}
+
+/// Same as [`build_named_sources`] but for sinks via `FAUCET_SINKS_<NAME>_*`.
+pub fn build_named_sinks(
+    env: &HashMap<String, String>,
+) -> CliResult<HashMap<String, ConnectorSpec>> {
+    build_named_catalog(env, "FAUCET_SINKS_")
+}
+
+fn build_named_catalog(
+    env: &HashMap<String, String>,
+    prefix: &str,
+) -> CliResult<HashMap<String, ConnectorSpec>> {
+    // First sweep: find each template's `<NAME>` by spotting
+    // `<prefix><NAME>_TYPE`.
+    let mut kinds: HashMap<String, String> = HashMap::new();
+    for (key, value) in env {
+        let Some(suffix) = key.strip_prefix(prefix) else {
+            continue;
+        };
+        let Some(name_upper) = suffix.strip_suffix("_TYPE") else {
+            continue;
+        };
+        if name_upper.is_empty() {
+            continue;
+        }
+        kinds.insert(name_upper.to_ascii_lowercase(), value.clone());
+    }
+    // Second sweep: harvest each template's config block.
+    let mut out: HashMap<String, ConnectorSpec> = HashMap::new();
+    for (name, kind) in kinds {
+        let scope_prefix = format!("{prefix}{}_", name.to_ascii_uppercase());
+        let mut config = extract_scope(env, &scope_prefix)?;
+        // Remove the `type` field — it's the selector, not a config field.
+        if let Value::Object(m) = &mut config {
+            m.remove("type");
+        }
+        out.insert(name, ConnectorSpec { kind, config });
+    }
+    Ok(out)
+}
+
+/// Harvest `FAUCET_VARS_<KEY>` into the top-level vars map. Returns `None`
+/// when no `FAUCET_VARS_*` variables are set.
+pub fn build_vars(env: &HashMap<String, String>) -> Option<HashMap<String, Value>> {
+    let mut out: HashMap<String, Value> = HashMap::new();
+    for (key, value) in env {
+        let Some(name_upper) = key.strip_prefix("FAUCET_VARS_") else {
+            continue;
+        };
+        if name_upper.is_empty() {
+            continue;
+        }
+        out.insert(name_upper.to_ascii_lowercase(), coerce_scalar(value));
+    }
+    if out.is_empty() { None } else { Some(out) }
+}
+
 /// Construct a complete [`PipelineConfig`] from an env snapshot.
 pub fn build_pipeline_config(env: &HashMap<String, String>) -> CliResult<PipelineConfig> {
-    let source = build_source(env)?;
-    let sink = build_sink(env)?;
+    let source = match env.get("FAUCET_SOURCE").filter(|v| !v.is_empty()) {
+        Some(_) => Some(build_source(env)?),
+        None => None,
+    };
+    let sink = match env.get("FAUCET_SINK").filter(|v| !v.is_empty()) {
+        Some(_) => Some(build_sink(env)?),
+        None => None,
+    };
+    let sources = build_named_sources(env)?;
+    let sinks = build_named_sinks(env)?;
     let state = build_state(env)?;
     let transforms = build_transforms(env)?;
+    let vars = build_vars(env);
     let name = env.get("FAUCET_NAME").cloned().filter(|s| !s.is_empty());
+
+    // At least one source and one sink must be declared somewhere.
+    if source.is_none() && sources.is_empty() {
+        return Err(CliError::MissingEnvSelector {
+            var: "FAUCET_SOURCE (or FAUCET_SOURCES_<NAME>_TYPE)".to_owned(),
+        });
+    }
+    if sink.is_none() && sinks.is_empty() {
+        return Err(CliError::MissingEnvSelector {
+            var: "FAUCET_SINK (or FAUCET_SINKS_<NAME>_TYPE)".to_owned(),
+        });
+    }
     Ok(PipelineConfig {
         version: 1,
         name,
-        vars: None,
+        vars,
         pipeline: PipelineSpec {
-            source: Some(source),
-            sink: Some(sink),
-            sources: Default::default(),
-            sinks: Default::default(),
+            source,
+            sink,
+            sources,
+            sinks,
             transforms,
             state,
             dlq: None,
@@ -505,6 +590,78 @@ mod tests {
     }
 
     #[test]
+    fn picks_up_named_source_templates() {
+        let e = env(&[
+            // Legacy default
+            ("FAUCET_SOURCE", "rest"),
+            ("FAUCET_SOURCE_REST_BASE_URL", "https://default.example"),
+            ("FAUCET_SINK", "jsonl"),
+            ("FAUCET_SINK_JSONL_PATH", "./o.jsonl"),
+            // Named templates
+            ("FAUCET_SOURCES_USERS_API_TYPE", "rest"),
+            ("FAUCET_SOURCES_USERS_API_BASE_URL", "https://users.example"),
+            ("FAUCET_SOURCES_POSTS_API_TYPE", "rest"),
+            ("FAUCET_SOURCES_POSTS_API_BASE_URL", "https://posts.example"),
+            ("FAUCET_SINKS_ARCHIVE_TYPE", "jsonl"),
+            ("FAUCET_SINKS_ARCHIVE_PATH", "./archive.jsonl"),
+        ]);
+        let cfg = build_pipeline_config(&e).unwrap();
+        assert!(cfg.pipeline.source.is_some());
+        assert_eq!(cfg.pipeline.sources.len(), 2);
+        assert_eq!(cfg.pipeline.sources["users_api"].kind, "rest");
+        assert_eq!(
+            cfg.pipeline.sources["users_api"].config["base_url"],
+            "https://users.example"
+        );
+        assert_eq!(cfg.pipeline.sinks["archive"].kind, "jsonl");
+    }
+
+    #[test]
+    fn picks_up_vars_block() {
+        let e = env(&[
+            ("FAUCET_SOURCE", "rest"),
+            ("FAUCET_SOURCE_REST_BASE_URL", "https://x.example"),
+            ("FAUCET_SINK", "jsonl"),
+            ("FAUCET_SINK_JSONL_PATH", "./o.jsonl"),
+            ("FAUCET_VARS_API_BASE", "https://api.example.com"),
+            ("FAUCET_VARS_REGION", "us-east-1"),
+        ]);
+        let cfg = build_pipeline_config(&e).unwrap();
+        let vars = cfg.vars.unwrap();
+        assert_eq!(vars["api_base"], "https://api.example.com");
+        assert_eq!(vars["region"], "us-east-1");
+    }
+
+    #[test]
+    fn named_source_only_no_legacy_works() {
+        // Verifies: with no FAUCET_SOURCE / FAUCET_SINK but only named
+        // templates, the singular source/sink are None and the catalogs are
+        // populated. (No MissingEnvSelector.)
+        let e = env(&[
+            ("FAUCET_SOURCES_USERS_API_TYPE", "rest"),
+            ("FAUCET_SOURCES_USERS_API_BASE_URL", "https://x.example"),
+            ("FAUCET_SINKS_ARCHIVE_TYPE", "jsonl"),
+            ("FAUCET_SINKS_ARCHIVE_PATH", "./o.jsonl"),
+        ]);
+        let cfg = build_pipeline_config(&e).unwrap();
+        assert!(cfg.pipeline.source.is_none());
+        assert!(cfg.pipeline.sink.is_none());
+        assert_eq!(cfg.pipeline.sources["users_api"].kind, "rest");
+        assert_eq!(cfg.pipeline.sinks["archive"].kind, "jsonl");
+    }
+
+    #[test]
+    fn no_source_anywhere_errors() {
+        // Neither legacy nor named sources — still must error.
+        let e = env(&[
+            ("FAUCET_SINK", "jsonl"),
+            ("FAUCET_SINK_JSONL_PATH", "./o.jsonl"),
+        ]);
+        let err = build_pipeline_config(&e).unwrap_err();
+        assert!(matches!(err, CliError::MissingEnvSelector { .. }));
+    }
+
+    #[test]
     fn build_pipeline_config_minimal_csv_to_jsonl() {
         let e = env(&[
             ("FAUCET_SOURCE", "csv"),
@@ -574,10 +731,7 @@ mod tests {
             ("FAUCET_SINK_JSONL_PATH", "./out.jsonl"),
         ]);
         let err = build_pipeline_config(&e).unwrap_err();
-        match err {
-            CliError::MissingEnvSelector { var } => assert_eq!(var, "FAUCET_SOURCE"),
-            other => panic!("expected MissingEnvSelector, got {other:?}"),
-        }
+        assert!(matches!(err, CliError::MissingEnvSelector { .. }));
     }
 
     #[test]
@@ -587,9 +741,6 @@ mod tests {
             ("FAUCET_SOURCE_CSV_PATH", "./in.csv"),
         ]);
         let err = build_pipeline_config(&e).unwrap_err();
-        match err {
-            CliError::MissingEnvSelector { var } => assert_eq!(var, "FAUCET_SINK"),
-            other => panic!("expected MissingEnvSelector, got {other:?}"),
-        }
+        assert!(matches!(err, CliError::MissingEnvSelector { .. }));
     }
 }
