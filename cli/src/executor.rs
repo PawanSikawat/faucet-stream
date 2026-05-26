@@ -756,14 +756,16 @@ mod tests {
             version: 1,
             name: Some("test".into()),
             pipeline: PipelineSpec {
-                source: ConnectorSpec {
+                source: Some(ConnectorSpec {
                     kind: "csv".into(),
                     config: json!({"path": input.to_str().unwrap()}),
-                },
-                sink: ConnectorSpec {
+                }),
+                sink: Some(ConnectorSpec {
                     kind: "jsonl".into(),
                     config: json!({"path": output.to_str().unwrap()}),
-                },
+                }),
+                sources: Default::default(),
+                sinks: Default::default(),
                 transforms: Vec::new(),
                 state: None,
                 dlq: None,

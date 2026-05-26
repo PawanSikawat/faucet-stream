@@ -170,8 +170,10 @@ pub fn build_pipeline_config(env: &HashMap<String, String>) -> CliResult<Pipelin
         version: 1,
         name,
         pipeline: PipelineSpec {
-            source,
-            sink,
+            source: Some(source),
+            sink: Some(sink),
+            sources: Default::default(),
+            sinks: Default::default(),
             transforms,
             state,
             dlq: None,
@@ -511,10 +513,10 @@ mod tests {
         ]);
         let cfg = build_pipeline_config(&e).unwrap();
         assert_eq!(cfg.version, 1);
-        assert_eq!(cfg.pipeline.source.kind, "csv");
-        assert_eq!(cfg.pipeline.source.config, json!({"path": "./in.csv"}));
-        assert_eq!(cfg.pipeline.sink.kind, "jsonl");
-        assert_eq!(cfg.pipeline.sink.config, json!({"path": "./out.jsonl"}));
+        assert_eq!(cfg.pipeline.source.as_ref().unwrap().kind, "csv");
+        assert_eq!(cfg.pipeline.source.as_ref().unwrap().config, json!({"path": "./in.csv"}));
+        assert_eq!(cfg.pipeline.sink.as_ref().unwrap().kind, "jsonl");
+        assert_eq!(cfg.pipeline.sink.as_ref().unwrap().config, json!({"path": "./out.jsonl"}));
         assert!(cfg.pipeline.transforms.is_empty());
         assert!(cfg.pipeline.state.is_none());
         assert!(cfg.name.is_none());

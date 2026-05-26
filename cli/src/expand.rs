@@ -137,8 +137,12 @@ pub fn expand(cfg: &PipelineConfig) -> CliResult<Vec<ExpandedNode>> {
             check_refs(c, &id_set, id)?;
         }
     }
-    check_refs(&cfg.pipeline.source.config, &id_set, "pipeline.source")?;
-    check_refs(&cfg.pipeline.sink.config, &id_set, "pipeline.sink")?;
+    if let Some(s) = &cfg.pipeline.source {
+        check_refs(&s.config, &id_set, "pipeline.source")?;
+    }
+    if let Some(s) = &cfg.pipeline.sink {
+        check_refs(&s.config, &id_set, "pipeline.sink")?;
+    }
 
     // 4) Build expanded nodes. Order: roots first (in declaration order),
     // then BFS over children — guarantees a parent appears before its children.
@@ -173,9 +177,11 @@ pub fn expand(cfg: &PipelineConfig) -> CliResult<Vec<ExpandedNode>> {
                 parent_key: row.parent_key.clone(),
             },
         };
+        let merged_source = merged.source.expect("merge_pipeline always produces Some(source)");
+        let merged_sink = merged.sink.expect("merge_pipeline always produces Some(sink)");
         let mut deferred = Vec::new();
-        collect_deferred(&merged.source.config, &mut deferred);
-        collect_deferred(&merged.sink.config, &mut deferred);
+        collect_deferred(&merged_source.config, &mut deferred);
+        collect_deferred(&merged_sink.config, &mut deferred);
 
         // DLQ resolution: row override (Replace / Disable) takes precedence;
         // otherwise inherit `pipeline.dlq` from the base spec.
@@ -208,8 +214,8 @@ pub fn expand(cfg: &PipelineConfig) -> CliResult<Vec<ExpandedNode>> {
             id: ids[i].clone(),
             row_index: i,
             role,
-            source: merged.source,
-            sink: merged.sink,
+            source: merged_source,
+            sink: merged_sink,
             transforms: merged.transforms,
             state: merged.state,
             dlq,
@@ -220,8 +226,28 @@ pub fn expand(cfg: &PipelineConfig) -> CliResult<Vec<ExpandedNode>> {
 }
 
 fn merge_pipeline(base: &PipelineSpec, row: &MatrixRow) -> PipelineSpec {
-    let source = merge_connector(&base.source, row.source.as_ref());
-    let sink = merge_connector(&base.sink, row.sink.as_ref());
+    let source = match (base.source.as_ref(), row.source.as_ref()) {
+        (Some(b), overlay) => merge_connector(b, overlay),
+        (None, Some(overlay)) => ConnectorSpec {
+            kind: overlay.kind.clone().unwrap_or_default(),
+            config: overlay.config.clone().unwrap_or_else(|| serde_json::json!({})),
+        },
+        (None, None) => ConnectorSpec {
+            kind: String::new(),
+            config: serde_json::json!({}),
+        },
+    };
+    let sink = match (base.sink.as_ref(), row.sink.as_ref()) {
+        (Some(b), overlay) => merge_connector(b, overlay),
+        (None, Some(overlay)) => ConnectorSpec {
+            kind: overlay.kind.clone().unwrap_or_default(),
+            config: overlay.config.clone().unwrap_or_else(|| serde_json::json!({})),
+        },
+        (None, None) => ConnectorSpec {
+            kind: String::new(),
+            config: serde_json::json!({}),
+        },
+    };
     let transforms = row
         .transforms
         .clone()
@@ -237,8 +263,10 @@ fn merge_pipeline(base: &PipelineSpec, row: &MatrixRow) -> PipelineSpec {
         None => base.dlq.clone(),
     };
     PipelineSpec {
-        source,
-        sink,
+        source: Some(source),
+        sink: Some(sink),
+        sources: base.sources.clone(),
+        sinks: base.sinks.clone(),
         transforms,
         state,
         dlq,

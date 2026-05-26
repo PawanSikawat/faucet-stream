@@ -64,11 +64,28 @@ pub struct PipelineConfig {
     pub observability: Option<ObservabilitySpec>,
 }
 
-/// The base pipeline definition that every matrix row is deep-merged into.
+/// The base pipeline definition. Each matrix row is resolved against the
+/// template catalogs below; the singular `source` / `sink` fields are the
+/// legacy way to declare a single template (internally named `default`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PipelineSpec {
-    pub source: ConnectorSpec,
-    pub sink: ConnectorSpec,
+    /// Legacy singular source — registers as a template named `default`.
+    /// Defining both `source` and `sources.default` is an error at expand time.
+    #[serde(default)]
+    pub source: Option<ConnectorSpec>,
+
+    /// Legacy singular sink — registers as a template named `default`.
+    #[serde(default)]
+    pub sink: Option<ConnectorSpec>,
+
+    /// Named source templates. A matrix row picks one via `source.ref: NAME`.
+    #[serde(default)]
+    pub sources: std::collections::HashMap<String, ConnectorSpec>,
+
+    /// Named sink templates. A matrix row picks one via `sink.ref: NAME`.
+    #[serde(default)]
+    pub sinks: std::collections::HashMap<String, ConnectorSpec>,
+
     #[serde(default)]
     pub transforms: Vec<TransformSpec>,
     #[serde(default)]
@@ -371,8 +388,8 @@ pipeline:
       path: ./out.jsonl
 "#;
         let cfg = parse_with_extension(yaml, "yaml").unwrap();
-        assert_eq!(cfg.pipeline.source.kind, "rest");
-        assert_eq!(cfg.pipeline.sink.kind, "jsonl");
+        assert_eq!(cfg.pipeline.source.as_ref().unwrap().kind, "rest");
+        assert_eq!(cfg.pipeline.sink.as_ref().unwrap().kind, "jsonl");
         assert!(cfg.matrix.is_empty());
         assert!(cfg.execution.is_none());
         assert!(cfg.pipeline.transforms.is_empty());
@@ -389,7 +406,7 @@ pipeline:
             }
         }"#;
         let cfg = parse_with_extension(raw, "json").unwrap();
-        assert_eq!(cfg.pipeline.source.kind, "rest");
+        assert_eq!(cfg.pipeline.source.as_ref().unwrap().kind, "rest");
     }
 
     #[test]
@@ -555,7 +572,7 @@ pipeline:
         )
         .unwrap();
         let cfg = PipelineConfig::from_path(&path).unwrap();
-        assert_eq!(cfg.pipeline.source.config["base_url"], "https://x.example");
+        assert_eq!(cfg.pipeline.source.as_ref().unwrap().config["base_url"], "https://x.example");
         unsafe { std::env::remove_var("FAUCET_CFG_URL") };
     }
 
@@ -607,7 +624,7 @@ pipeline:
         .unwrap();
         let cfg = PipelineConfig::from_path(&path).unwrap();
         assert_eq!(
-            cfg.pipeline.source.config["path"],
+            cfg.pipeline.source.as_ref().unwrap().config["path"],
             "/v1/users/${users.id}/posts"
         );
     }
@@ -691,6 +708,46 @@ matrix:
         assert_eq!(row_dlq.on_batch_error, OnBatchErrorSpec::DlqAll);
         let sink_path = row_dlq.sink.config.get("path").unwrap();
         assert_eq!(sink_path, "./a.jsonl");
+    }
+
+    #[test]
+    fn parses_named_sources_and_sinks() {
+        let yaml = r#"
+version: 1
+pipeline:
+  sources:
+    users_api:
+      type: rest
+      config: { base_url: https://api.example.com }
+    posts_api:
+      type: rest
+      config: { base_url: https://api.example.com }
+  sinks:
+    warehouse:
+      type: postgres
+      config: { connection_url: "postgres://x" }
+"#;
+        let cfg = parse_with_extension(yaml, "yaml").unwrap();
+        assert!(cfg.pipeline.source.is_none());
+        assert!(cfg.pipeline.sink.is_none());
+        assert_eq!(cfg.pipeline.sources.len(), 2);
+        assert_eq!(cfg.pipeline.sources["users_api"].kind, "rest");
+        assert_eq!(cfg.pipeline.sinks["warehouse"].kind, "postgres");
+    }
+
+    #[test]
+    fn legacy_singular_source_still_parses() {
+        let yaml = r#"
+version: 1
+pipeline:
+  source: { type: rest, config: {} }
+  sink:   { type: jsonl, config: { path: ./o.jsonl } }
+"#;
+        let cfg = parse_with_extension(yaml, "yaml").unwrap();
+        assert!(cfg.pipeline.source.is_some());
+        assert!(cfg.pipeline.sink.is_some());
+        assert!(cfg.pipeline.sources.is_empty());
+        assert!(cfg.pipeline.sinks.is_empty());
     }
 
     #[test]
