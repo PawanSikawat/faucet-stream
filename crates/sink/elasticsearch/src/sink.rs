@@ -98,6 +98,30 @@ impl ElasticsearchSink {
     }
 }
 
+/// Extract per-item error messages from a `_bulk` response body.
+///
+/// Each `items` entry is `{ "<action>": { ..., "error": {...} } }` where
+/// `<action>` is `index` / `create` / `update` / `delete`. We read the error
+/// from whichever action key is present, so all bulk operation types are
+/// handled (not just `index`).
+fn extract_bulk_error_messages(resp_body: &Value) -> Vec<String> {
+    resp_body
+        .get("items")
+        .and_then(|v| v.as_array())
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| {
+                    item.as_object()
+                        .and_then(|m| m.values().next())
+                        .and_then(|action| action.get("error"))
+                        .map(|e| e.to_string())
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 #[async_trait]
 impl faucet_core::Sink for ElasticsearchSink {
     fn config_schema(&self) -> serde_json::Value {
@@ -139,29 +163,23 @@ impl faucet_core::Sink for ElasticsearchSink {
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false)
             {
-                // Collect individual error messages for logging.
-                let error_items: Vec<String> = resp_body
-                    .get("items")
-                    .and_then(|v| v.as_array())
-                    .map(|items| {
-                        items
-                            .iter()
-                            .filter_map(|item| {
-                                item.get("index")
-                                    .and_then(|idx| idx.get("error"))
-                                    .map(|e| e.to_string())
-                            })
-                            .collect()
-                    })
-                    .unwrap_or_default();
-
-                if !error_items.is_empty() {
+                let error_items = extract_bulk_error_messages(&resp_body);
+                if let Some(first) = error_items.first() {
                     return Err(FaucetError::Sink(format!(
-                        "Elasticsearch bulk request had {} errors: {}",
+                        "Elasticsearch bulk request had {} errors: {first}",
                         error_items.len(),
-                        error_items.first().unwrap_or(&String::new())
                     )));
                 }
+                // `errors: true` but no per-item error could be extracted (an
+                // items shape the parser doesn't recognise). Treat as a hard
+                // failure rather than counting the chunk as written — otherwise
+                // failed rows are silently dropped (#78/#32).
+                return Err(FaucetError::Sink(
+                    "Elasticsearch bulk request reported errors:true but no per-item error \
+                     could be extracted from the response — treating as a hard failure to \
+                     avoid silently dropping records"
+                        .into(),
+                ));
             }
 
             total_written += chunk.len();
@@ -250,6 +268,31 @@ impl faucet_core::Sink for ElasticsearchSink {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn extract_bulk_errors_reads_any_action_type() {
+        // index + create actions, one with an error each.
+        let body = json!({
+            "errors": true,
+            "items": [
+                {"index": {"status": 201}},
+                {"index": {"status": 400, "error": {"type": "mapper_parsing_exception"}}},
+                {"create": {"status": 409, "error": {"type": "version_conflict"}}},
+            ]
+        });
+        let errs = extract_bulk_error_messages(&body);
+        assert_eq!(errs.len(), 2, "{errs:?}");
+        assert!(errs.iter().any(|e| e.contains("mapper_parsing_exception")));
+        assert!(errs.iter().any(|e| e.contains("version_conflict")));
+    }
+
+    #[test]
+    fn extract_bulk_errors_empty_when_no_item_errors() {
+        // errors:true but the items shape carries no extractable error — the
+        // caller treats this empty result as a hard failure (#78/#32).
+        let body = json!({"errors": true, "items": [{"weird": {"status": 500}}]});
+        assert!(extract_bulk_error_messages(&body).is_empty());
+    }
 
     #[test]
     fn bulk_body_without_id_field() {
