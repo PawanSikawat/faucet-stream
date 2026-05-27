@@ -445,14 +445,24 @@ fn resolve_value_full(
                     return Ok(Some(value_to_string(val)));
                 }
                 if let Some(rest) = body.strip_prefix("sources.") {
+                    let mut visiting = Vec::new();
                     return Ok(Some(lookup_template_path(
                         &templates.sources,
+                        &templates.sinks,
                         "sources",
                         rest,
+                        &mut visiting,
                     )?));
                 }
                 if let Some(rest) = body.strip_prefix("sinks.") {
-                    return Ok(Some(lookup_template_path(&templates.sinks, "sinks", rest)?));
+                    let mut visiting = Vec::new();
+                    return Ok(Some(lookup_template_path(
+                        &templates.sources,
+                        &templates.sinks,
+                        "sinks",
+                        rest,
+                        &mut visiting,
+                    )?));
                 }
                 // Any other prefix (e.g. `${users.id}`) is a deferred row-id token —
                 // leave verbatim for runtime resolution.
@@ -475,13 +485,32 @@ fn resolve_value_full(
     Ok(())
 }
 
+/// Resolve a `${sources.X.PATH}` / `${sinks.X.PATH}` reference, following
+/// template-to-template chains to their terminal literal.
+///
+/// `visiting` is the DFS stack of `{kind}.{name}` keys currently being
+/// expanded; re-encountering a key on the stack is a cycle (e.g. `a → b → a`)
+/// and surfaces as [`CliError::InterpolationCycle`] rather than silently
+/// leaving each template holding the other's token text (#78/#10).
 fn lookup_template_path(
-    catalog: &HashMap<String, Value>,
+    sources: &HashMap<String, Value>,
+    sinks: &HashMap<String, Value>,
     kind: &str,
     rest: &str,
+    visiting: &mut Vec<String>,
 ) -> CliResult<String> {
     // `rest` is `<name>` or `<name>.<dotted.path>`
     let (name, path) = rest.split_once('.').unwrap_or((rest, ""));
+    let key = format!("{kind}.{name}");
+    if let Some(start) = visiting.iter().position(|k| *k == key) {
+        let chain: Vec<String> = visiting[start..]
+            .iter()
+            .cloned()
+            .chain(std::iter::once(key))
+            .collect();
+        return Err(CliError::InterpolationCycle { chain });
+    }
+    let catalog = if kind == "sources" { sources } else { sinks };
     let template = catalog
         .get(name)
         .ok_or_else(|| CliError::UnknownTemplateRef {
@@ -492,7 +521,28 @@ fn lookup_template_path(
         token: format!("${{{kind}.{rest}}}"),
         reason: format!("path '{path}' does not resolve inside {kind} template '{name}'"),
     })?;
-    Ok(value_to_string(&resolved))
+    // The looked-up value may itself contain `${sources/sinks.X}` tokens (a
+    // template referencing another template). Resolve them, following the
+    // chain, with `key` pushed so a cycle is detected. `${vars.X}` are already
+    // substituted (Phase 2); other prefixes are deferred row-id tokens and
+    // pass through verbatim.
+    let resolved_str = value_to_string(&resolved);
+    visiting.push(key);
+    let out = rewrite(&resolved_str, |body| {
+        if let Some(rest) = body.strip_prefix("sources.") {
+            return Ok(Some(lookup_template_path(
+                sources, sinks, "sources", rest, visiting,
+            )?));
+        }
+        if let Some(rest) = body.strip_prefix("sinks.") {
+            return Ok(Some(lookup_template_path(
+                sources, sinks, "sinks", rest, visiting,
+            )?));
+        }
+        Ok(None)
+    });
+    visiting.pop();
+    out
 }
 
 #[cfg(test)]
@@ -767,6 +817,77 @@ pipeline:
 "#,
         );
         assert_eq!(cfg.pipeline.sources["b"].config["host"], "api.example.com");
+    }
+
+    #[test]
+    fn resolves_chained_cross_template_reference() {
+        // a → b → c, where c holds the literal. A single resolution pass (as
+        // production runs via `from_text`) must follow the chain all the way
+        // to the literal, not stop at b's token text (#78/#10). NB: we use
+        // `parse_with_extension` directly (one pass) rather than the `load`
+        // helper, which resolves twice and would mask a single-pass gap.
+        let cfg = parse_with_extension(
+            r#"
+version: 1
+pipeline:
+  sources:
+    a: { type: rest, config: { host: "${sources.b.config.host}" } }
+    b: { type: rest, config: { host: "${sources.c.config.host}" } }
+    c: { type: rest, config: { host: db.example.com } }
+  sinks:
+    out: { type: jsonl, config: { path: ./o.jsonl } }
+"#,
+            "yaml",
+        )
+        .unwrap();
+        assert_eq!(cfg.pipeline.sources["a"].config["host"], "db.example.com");
+        assert_eq!(cfg.pipeline.sources["b"].config["host"], "db.example.com");
+    }
+
+    #[test]
+    fn resolves_cross_template_reference_across_kinds() {
+        // A sink template referencing a source template (cross-namespace).
+        let cfg = load(
+            r#"
+version: 1
+pipeline:
+  sources:
+    api: { type: rest, config: { host: api.example.com } }
+  sinks:
+    mirror: { type: http, config: { url: "${sources.api.config.host}" } }
+"#,
+        );
+        assert_eq!(
+            cfg.pipeline.sinks["mirror"].config["url"],
+            "api.example.com"
+        );
+    }
+
+    #[test]
+    fn detects_cross_template_cycle() {
+        // a → b → a is a mutual cycle and must error, not silently leave each
+        // template holding the other's literal token text (#78/#10).
+        let yaml = r#"
+version: 1
+pipeline:
+  sources:
+    a: { type: rest, config: { host: "${sources.b.config.host}" } }
+    b: { type: rest, config: { host: "${sources.a.config.host}" } }
+  sinks:
+    out: { type: jsonl, config: { path: ./o.jsonl } }
+"#;
+        let err = parse_with_extension(yaml, "yaml").unwrap_err();
+        match err {
+            CliError::InterpolationCycle { chain } => {
+                assert!(chain.first() == chain.last(), "chain: {chain:?}");
+                assert!(
+                    chain.iter().any(|c| c == "sources.a")
+                        && chain.iter().any(|c| c == "sources.b"),
+                    "chain must name both templates: {chain:?}"
+                );
+            }
+            other => panic!("expected InterpolationCycle, got {other:?}"),
+        }
     }
 
     #[test]

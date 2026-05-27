@@ -42,6 +42,38 @@ async fn serve_xml(body: String) -> MockServer {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn retries_transient_5xx_then_succeeds() {
+    // Regression for #78/#16: the XML source previously did a single send with
+    // no retry, so any transient 5xx failed the run. Two 503s then a 200 must
+    // now succeed.
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/feed.xml"))
+        .respond_with(ResponseTemplate::new(503))
+        .up_to_n_times(2)
+        .expect(2)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/feed.xml"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("Content-Type", "application/xml")
+                .set_body_string(build_doc(3)),
+        )
+        .mount(&server)
+        .await;
+
+    let config = XmlStreamConfig::new(server.uri(), "/feed.xml").records_element_path("root.item");
+    let source = XmlStream::new(config);
+    let records = source
+        .fetch_all()
+        .await
+        .expect("should succeed after retries");
+    assert_eq!(records.len(), 3);
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn stream_pages_chunks_records_into_batch_sized_pages() {
     let server = serve_xml(build_doc(10_000)).await;
     let config = XmlStreamConfig::new(server.uri(), "/feed.xml")

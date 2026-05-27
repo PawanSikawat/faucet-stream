@@ -108,6 +108,36 @@ fn relay_config(server: &MockServer, batch_size: usize) -> GraphqlStreamConfig {
     .with_batch_size(batch_size)
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn retries_transient_5xx_then_succeeds() {
+    // Regression for #78/#16: the GraphQL source previously did a single send
+    // with no retry, so any transient 5xx failed the run. Two 503s then a 200
+    // must now succeed.
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/"))
+        .respond_with(ResponseTemplate::new(503))
+        .up_to_n_times(2)
+        .expect(2)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(make_page(0, 3, None)))
+        .mount(&server)
+        .await;
+
+    let config =
+        GraphqlStreamConfig::new(server.uri(), "query { users { edges { node { id } } } }")
+            .records_path("$.data.users.edges[*].node");
+    let source = GraphqlStream::new(config);
+    let records = source
+        .fetch_all()
+        .await
+        .expect("should succeed after retries");
+    assert_eq!(records.len(), 3);
+}
+
 // ─── 1. Multi-page cursor pagination ─────────────────────────────────────────
 
 #[tokio::test(flavor = "multi_thread")]

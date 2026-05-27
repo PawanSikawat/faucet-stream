@@ -144,10 +144,10 @@ The `PaginationStyle` enum supports:
 | `Cursor { next_token_path, param_name }` | JSONPath to next token, query param name | Next token is null or absent, or loop detected |
 | `LinkHeader` | -- | No `rel="next"` in the `Link` response header |
 | `NextLinkInBody { next_link_path }` | JSONPath to next page URL | URL is absent, null, or empty |
-| `PageNumber { param_name, start_page, page_size, page_size_param }` | Query param name, starting page number, optional page size and its param name | Response returns zero records |
+| `PageNumber { param_name, start_page, page_size, page_size_param }` | Query param name, starting page number, optional page size and its param name | Response returns zero records, or the same page body is returned twice in a row |
 | `Offset { offset_param, limit_param, limit, total_path }` | Offset param, limit param, records per page, optional JSONPath to total count | A zero-record page, offset reaches total (via JSONPath), or fewer records than limit |
 
-`Cursor`, `LinkHeader`, and `NextLinkInBody` include loop detection -- if the same cursor/link is returned twice in a row, pagination stops. `Offset` stops on a zero-record page (so a stalled offset cannot loop forever), and `PageNumber` stops when a page returns zero records. For all styles, `max_pages` is a hard cap.
+`Cursor`, `LinkHeader`, and `NextLinkInBody` include loop detection -- if the same cursor/link is returned twice in a row, pagination stops. `Offset` stops on a zero-record page (so a stalled offset cannot loop forever). `PageNumber` stops when a page returns zero records, and additionally detects content stagnation -- if an API clamps an out-of-range page to the last page and re-returns the identical body, pagination stops rather than looping to `max_pages`. For all styles, `max_pages` is a hard cap.
 
 ## Config Loading
 

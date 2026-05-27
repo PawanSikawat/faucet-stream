@@ -3,7 +3,7 @@
 [![Crates.io](https://img.shields.io/crates/v/faucet-source-graphql.svg)](https://crates.io/crates/faucet-source-graphql)
 [![Docs.rs](https://docs.rs/faucet-source-graphql/badge.svg)](https://docs.rs/faucet-source-graphql)
 
-A config-driven GraphQL API source with cursor-based pagination, JSONPath record extraction, and pluggable authentication.
+A config-driven GraphQL API source with cursor-based pagination, JSONPath record extraction, and pluggable authentication. Transient HTTP failures (5xx / connection resets) are retried with exponential backoff.
 
 Part of the [faucet-stream](https://github.com/PawanSikawat/faucet-stream) ecosystem.
 

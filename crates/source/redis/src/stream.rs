@@ -10,23 +10,44 @@ use std::pin::Pin;
 /// A configured Redis source that reads records from Redis data structures.
 pub struct RedisSource {
     config: RedisSourceConfig,
+    /// Lazily-opened multiplexed connection, reused across every `fetch_all`
+    /// and `stream_pages` call instead of opening a fresh client + TCP/AUTH
+    /// handshake per call (#78/#22). `MultiplexedConnection` is cheap to clone
+    /// (it shares one underlying socket), so each call clones the cached one.
+    conn: tokio::sync::OnceCell<redis::aio::MultiplexedConnection>,
 }
 
 impl RedisSource {
-    /// Create a new Redis source from the given configuration.
+    /// Create a new Redis source from the given configuration. The connection
+    /// is opened lazily on first use (so construction stays infallible and
+    /// synchronous).
     pub fn new(config: RedisSourceConfig) -> Self {
-        Self { config }
+        Self {
+            config,
+            conn: tokio::sync::OnceCell::new(),
+        }
+    }
+
+    /// Return a clone of the shared multiplexed connection, opening it once on
+    /// first call.
+    async fn connection(&self) -> Result<redis::aio::MultiplexedConnection, FaucetError> {
+        let conn = self
+            .conn
+            .get_or_try_init(|| async {
+                let client = redis::Client::open(self.config.url.as_str())
+                    .map_err(|e| FaucetError::Config(format!("invalid Redis URL: {e}")))?;
+                client
+                    .get_multiplexed_async_connection()
+                    .await
+                    .map_err(|e| FaucetError::Config(format!("Redis connection failed: {e}")))
+            })
+            .await?;
+        Ok(conn.clone())
     }
 
     /// Fetch all records from the configured Redis source.
     pub async fn fetch_all(&self) -> Result<Vec<Value>, FaucetError> {
-        let client = redis::Client::open(self.config.url.as_str())
-            .map_err(|e| FaucetError::Config(format!("invalid Redis URL: {e}")))?;
-
-        let mut conn = client
-            .get_multiplexed_async_connection()
-            .await
-            .map_err(|e| FaucetError::Config(format!("Redis connection failed: {e}")))?;
+        let mut conn = self.connection().await?;
 
         let mut records = match &self.config.source_type {
             RedisSourceType::List { key } => self.fetch_list(&mut conn, key).await?,
@@ -210,13 +231,7 @@ impl faucet_core::Source for RedisSource {
             return RedisSource::fetch_all(self).await;
         }
 
-        let client = redis::Client::open(self.config.url.as_str())
-            .map_err(|e| FaucetError::Config(format!("invalid Redis URL: {e}")))?;
-
-        let mut conn = client
-            .get_multiplexed_async_connection()
-            .await
-            .map_err(|e| FaucetError::Config(format!("Redis connection failed: {e}")))?;
+        let mut conn = self.connection().await?;
 
         // Substitute context into the key/pattern of each source type variant.
         let mut records = match &self.config.source_type {
@@ -273,12 +288,7 @@ impl faucet_core::Source for RedisSource {
         let max_records = self.config.max_records;
 
         Box::pin(async_stream::try_stream! {
-            let client = redis::Client::open(self.config.url.as_str())
-                .map_err(|e| FaucetError::Config(format!("invalid Redis URL: {e}")))?;
-            let mut conn = client
-                .get_multiplexed_async_connection()
-                .await
-                .map_err(|e| FaucetError::Config(format!("Redis connection failed: {e}")))?;
+            let mut conn = self.connection().await?;
 
             let mut emitted: usize = 0;
 

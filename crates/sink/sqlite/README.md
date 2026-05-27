@@ -68,9 +68,10 @@ and to amortise per-transaction overhead.
   chunk, each wrapped in its own `BEGIN`/`COMMIT` transaction.
   **Recommended value is `1000`**: large enough to amortise transaction
   overhead, small enough to stay well under SQLite's default
-  `SQLITE_MAX_VARIABLE_NUMBER` (32766 since 3.32.0). Drop it if rows have
-  many columns; raise it if rows are narrow and you've tuned
-  `max_variable_number` accordingly.
+  `SQLITE_MAX_VARIABLE_NUMBER` (32766 since 3.32.0). In AutoMap mode the
+  sink also splits each chunk further so `rows × columns` never exceeds that
+  limit, so a wide table no longer fails with "too many SQL variables"
+  regardless of `batch_size`.
 - **`batch_size = 0`** — the "no batching" sentinel. The entire upstream
   `StreamPage` is written in a single multi-row INSERT inside one
   transaction. Use this when the source already emits page sizes tuned for

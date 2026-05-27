@@ -224,6 +224,42 @@ async fn auto_map_binds_native_types_not_json_strings() {
 }
 
 #[tokio::test]
+async fn auto_map_chunks_to_respect_sqlite_var_limit() {
+    // Regression for #78/#21: SQLite caps bind variables at 32766. A wide
+    // table at a large batch (100 cols × 1000 rows = 100_000 binds) in a
+    // single INSERT would fail with "too many SQL variables"; the sink must
+    // sub-chunk and still land every row.
+    let cols: Vec<String> = (0..100).map(|i| format!("c{i}")).collect();
+    let create = format!(
+        "CREATE TABLE wide ({})",
+        cols.iter()
+            .map(|c| format!("{c} INTEGER"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+    let (_dir, url) = fresh_db(&create).await;
+
+    let config = SqliteSinkConfig::new(&url, "wide")
+        .column_mapping(SqliteColumnMapping::AutoMap)
+        .with_batch_size(0); // one slice → exercises the inner var-limit chunking
+    let sink = SqliteSink::new(config).await.unwrap();
+
+    let records: Vec<Value> = (0..1_000)
+        .map(|r| {
+            let mut m = serde_json::Map::new();
+            for (i, c) in cols.iter().enumerate() {
+                m.insert(c.clone(), json!(r * 100 + i as i64));
+            }
+            Value::Object(m)
+        })
+        .collect();
+
+    let n = sink.write_batch(&records).await.unwrap();
+    assert_eq!(n, 1_000);
+    assert_eq!(count_rows(&url, "wide").await, 1_000);
+}
+
+#[tokio::test]
 async fn auto_map_mode_batch_size_zero_passes_page_through() {
     // batch_size=0 in AutoMap mode writes the entire slice as a single
     // transaction.

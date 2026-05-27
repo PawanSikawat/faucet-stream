@@ -62,6 +62,31 @@ async fn write_batch_rechunks_into_batch_size_inserts() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn unordered_insert_lands_valid_docs_despite_a_duplicate() {
+    // Regression for #78/#20: the default is now unordered, so a single bad
+    // document (here a duplicate `_id`) does not drop the rest of the batch.
+    // Ordered would have committed `_id` 1 and 2, aborted on the duplicate,
+    // and dropped `_id` 3 → 2 docs; unordered lands all 3 distinct ids.
+    let (_container, uri) = start_mongo().await;
+    let config = MongoSinkConfig::new(&uri, "testdb", "events"); // ordered = false (default)
+    let sink = MongoSink::new(config).await.expect("sink new");
+
+    let records = vec![
+        json!({"_id": 1, "v": "a"}),
+        json!({"_id": 2, "v": "b"}),
+        json!({"_id": 2, "v": "c"}), // duplicate _id — only this one should fail
+        json!({"_id": 3, "v": "d"}),
+    ];
+    // The batch surfaces the duplicate-key error, but the valid docs land.
+    let _ = sink.write_batch(&records).await;
+    assert_eq!(
+        count_docs(&uri, "testdb", "events").await,
+        3,
+        "unordered insert must land the 3 distinct docs despite the duplicate _id"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn write_batch_exact_multiple_of_batch_size() {
     // 1000 records with batch_size = 1000 → 1 insert_many call.
     let (_container, uri) = start_mongo().await;

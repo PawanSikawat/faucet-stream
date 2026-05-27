@@ -11,16 +11,14 @@ use tracing::info_span;
 /// Emits one `faucet.transform.apply` span and one
 /// `faucet_transform_records_total` counter increment per call (per page).
 ///
-/// `apply_all` is infallible (it returns the transformed `Value`); the
-/// `faucet_transform_errors_total` counter from the spec exists as a
-/// reserved name for future transform variants that may return `Result`.
-/// Today this function only emits the records counter and duration
-/// histogram.
+/// Returns [`FaucetError::Transform`](crate::FaucetError::Transform) if any
+/// record's transform would silently lose data (a `flatten` / `snake_case`
+/// key collision — #78/#28), incrementing `faucet_transform_errors_total`.
 pub fn instrumented_apply_all(
     records: Vec<Value>,
     transforms: &[CompiledTransform],
     labels: &Labels,
-) -> Vec<Value> {
+) -> Result<Vec<Value>, crate::FaucetError> {
     let n = records.len();
     let span = info_span!(
         "faucet.transform.apply",
@@ -36,12 +34,18 @@ pub fn instrumented_apply_all(
         Label::new("row", SharedString::from(labels.row.to_string())),
     ];
     let _timer = DurationGuard::new("faucet_transform_duration_seconds", metric_labels.clone());
-    let out: Vec<Value> = records
-        .into_iter()
-        .map(|r| apply_all(r, transforms))
-        .collect();
+    let mut out: Vec<Value> = Vec::with_capacity(n);
+    for r in records {
+        match apply_all(r, transforms) {
+            Ok(v) => out.push(v),
+            Err(e) => {
+                counter!("faucet_transform_errors_total", metric_labels.clone()).increment(1);
+                return Err(e);
+            }
+        }
+    }
     counter!("faucet_transform_records_total", metric_labels).increment(n as u64);
-    out
+    Ok(out)
 }
 
 #[cfg(test)]
@@ -63,7 +67,8 @@ mod tests {
             vec![json!({"FooBar": 1}), json!({"BazQux": 2})],
             &[t],
             &labels,
-        );
+        )
+        .expect("snake_case transform succeeds");
         assert_eq!(result.len(), 2, "all records returned");
         let snapshot = snap.snapshot();
         let found = snapshot.into_vec().into_iter().any(|(key, _u, _d, v)| {

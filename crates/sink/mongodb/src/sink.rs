@@ -83,8 +83,12 @@ impl faucet_core::Sink for MongoSink {
                 .map(Self::value_to_document)
                 .collect::<Result<Vec<_>, _>>()?;
 
+            let opts = mongodb::options::InsertManyOptions::builder()
+                .ordered(self.config.ordered)
+                .build();
             collection
                 .insert_many(&docs)
+                .with_options(opts)
                 .await
                 .map_err(|e| FaucetError::Sink(format!("MongoDB insert_many failed: {e}")))?;
 

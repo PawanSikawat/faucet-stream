@@ -96,12 +96,12 @@ impl KafkaSink {
         #[cfg(feature = "schema-registry")]
         let value_ctx = encode::SchemaContext {
             subject: format!("{topic}-value"),
-            schema_text: None,
+            schema_text: self.config.value_schema.clone(),
         };
         #[cfg(feature = "schema-registry")]
         let key_ctx = encode::SchemaContext {
             subject: format!("{topic}-key"),
-            schema_text: None,
+            schema_text: self.config.key_schema.clone(),
         };
 
         let value_bytes = encode::encode(

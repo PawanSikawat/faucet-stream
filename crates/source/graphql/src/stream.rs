@@ -8,6 +8,12 @@ use jsonpath_rust::JsonPath;
 use reqwest::Client;
 use serde_json::{Value, json};
 use std::pin::Pin;
+use std::time::Duration;
+
+/// Retries on transient (5xx / connection) failures before giving up.
+const RETRY_MAX_ATTEMPTS: u32 = 3;
+/// Base exponential-backoff delay between retries.
+const RETRY_BASE_BACKOFF: Duration = Duration::from_millis(500);
 
 /// A configured GraphQL source that handles pagination and extraction.
 pub struct GraphqlStream {
@@ -153,10 +159,23 @@ impl GraphqlStream {
             }
         }
 
-        let resp = req.send().await.map_err(FaucetError::Http)?;
-        let resp = util::check_http_response(resp, DEFAULT_ERROR_BODY_MAX_LEN).await?;
-
-        let body: Value = resp.json().await.map_err(FaucetError::Http)?;
+        // Retry transient failures (5xx / connection resets) with jittered
+        // backoff, matching the REST source's reliability layer (#78/#16).
+        // GraphQL-level `errors` in a 200 body are application errors and are
+        // handled below — they are not retried here.
+        let body: Value =
+            faucet_core::execute_with_retry(RETRY_MAX_ATTEMPTS, RETRY_BASE_BACKOFF, || {
+                let attempt = req.try_clone();
+                async move {
+                    let req = attempt.ok_or_else(|| {
+                        FaucetError::Source("graphql: request is not cloneable for retry".into())
+                    })?;
+                    let resp = req.send().await.map_err(FaucetError::Http)?;
+                    let resp = util::check_http_response(resp, DEFAULT_ERROR_BODY_MAX_LEN).await?;
+                    resp.json().await.map_err(FaucetError::Http)
+                }
+            })
+            .await?;
 
         // Check for GraphQL-level errors.
         if let Some(errors) = body.get("errors")

@@ -66,6 +66,47 @@ fn page_number_increments() {
 }
 
 #[test]
+fn page_number_stops_on_repeated_identical_page() {
+    // Regression for #78/#15: an API that clamps an out-of-range page to the
+    // last page and re-returns it (non-empty) must not loop forever.
+    let style = PaginationStyle::PageNumber {
+        param_name: "page".into(),
+        start_page: 1,
+        page_size: None,
+        page_size_param: None,
+    };
+    let mut state = PaginationState::default();
+    let body = json!({"items": [{"id": 1}, {"id": 2}]});
+
+    // First page is new content → continue.
+    assert!(style.advance(&body, &no_headers(), &mut state, 2).unwrap());
+    // Identical page returned again → stagnation detected → stop.
+    assert!(!style.advance(&body, &no_headers(), &mut state, 2).unwrap());
+}
+
+#[test]
+fn page_number_continues_on_distinct_pages() {
+    let style = PaginationStyle::PageNumber {
+        param_name: "page".into(),
+        start_page: 1,
+        page_size: None,
+        page_size_param: None,
+    };
+    let mut state = PaginationState::default();
+    assert!(
+        style
+            .advance(&json!({"items": [{"id": 1}]}), &no_headers(), &mut state, 1)
+            .unwrap()
+    );
+    // Different content → keep going.
+    assert!(
+        style
+            .advance(&json!({"items": [{"id": 2}]}), &no_headers(), &mut state, 1)
+            .unwrap()
+    );
+}
+
+#[test]
 fn page_number_stops_on_empty() {
     let style = PaginationStyle::PageNumber {
         param_name: "page".into(),

@@ -28,7 +28,7 @@ regex = { workspace = true, optional = true }
 futures-core.workspace = true
 futures.workspace = true
 async-stream = { workspace = true }
-tokio = { workspace = true, features = ["sync", "fs", "io-util"] }
+tokio = { workspace = true, features = ["sync", "fs", "io-util", "time"] }
 dotenvy = "0.15"
 envy = "0.4"
 metrics.workspace = true
