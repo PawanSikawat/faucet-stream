@@ -412,7 +412,9 @@ mod tests {
         // payload makes a partial/unflushed write detectable on read-back.
         let dir = TempDir::new().unwrap();
         let s = FileStateStore::new(dir.path());
-        let big: Vec<Value> = (0..1_000).map(|i| json!({"i": i, "s": "x".repeat(20)})).collect();
+        let big: Vec<Value> = (0..1_000)
+            .map(|i| json!({"i": i, "s": "x".repeat(20)}))
+            .collect();
         let value = json!({"cursor": "abc", "rows": big});
 
         s.put("github_issues", &value).await.unwrap();

@@ -207,10 +207,11 @@ async fn auto_map_binds_native_types_not_json_strings() {
     assert_eq!(bob.get::<f64, _>("score"), 1.5);
     assert_eq!(bob.get::<String, _>("note"), "hi");
 
-    let sue = sqlx::query("SELECT active, note, typeof(note) AS tnote FROM people WHERE name = 'Sue'")
-        .fetch_one(&pool)
-        .await
-        .expect("sue row");
+    let sue =
+        sqlx::query("SELECT active, note, typeof(note) AS tnote FROM people WHERE name = 'Sue'")
+            .fetch_one(&pool)
+            .await
+            .expect("sue row");
     assert_eq!(sue.get::<i64, _>("active"), 0, "false must bind integer 0");
     assert_eq!(
         sue.get::<String, _>("tnote"),

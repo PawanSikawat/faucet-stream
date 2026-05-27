@@ -282,7 +282,10 @@ mod tests {
 
         // SQL is a parameterised placeholder — no record data, no literal.
         assert!(sql.contains("PARSE_JSON(?)"), "sql: {sql}");
-        assert!(!sql.contains('\''), "sql must not embed a quoted literal: {sql}");
+        assert!(
+            !sql.contains('\''),
+            "sql must not embed a quoted literal: {sql}"
+        );
         assert!(!sql.contains("O'Brien"));
         assert!(!sql.contains("DROP TABLE"));
 
