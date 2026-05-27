@@ -207,3 +207,53 @@ async fn write_batch_auto_map_re_chunks_when_input_exceeds_batch_size() {
          observed {calls}"
     );
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn auto_map_chunks_to_respect_postgres_param_limit() {
+    // Regression for #78/#21: Postgres caps bind parameters at 65535. A wide
+    // table at a large batch (70 cols × 1000 rows = 70_000 binds) in a single
+    // INSERT would fail; the sink must sub-chunk and still land every row.
+    let (_container, url) = start_postgres().await;
+    let cols: Vec<String> = (0..70).map(|i| format!("c{i}")).collect();
+    let create = format!(
+        "CREATE TABLE wide ({})",
+        cols.iter()
+            .map(|c| format!("{c} JSONB"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+    {
+        let pool = sqlx::PgPool::connect(&url).await.expect("pool connect");
+        sqlx::query(&create)
+            .execute(&pool)
+            .await
+            .expect("create wide table");
+        pool.close().await;
+    }
+
+    let config = PostgresSinkConfig::new(&url, "wide")
+        .column_mapping(PostgresColumnMapping::AutoMap)
+        .with_batch_size(0); // one slice → exercises the inner param-limit chunking
+    let sink = PostgresSink::new(config).await.expect("sink new");
+
+    let recs: Vec<Value> = (0..1_000)
+        .map(|r| {
+            let mut m = serde_json::Map::new();
+            for (i, c) in cols.iter().enumerate() {
+                m.insert(c.clone(), json!(r * 100 + i as i64));
+            }
+            Value::Object(m)
+        })
+        .collect();
+
+    let written = sink.write_batch(&recs).await.expect("write");
+    assert_eq!(written, 1_000);
+
+    let pool = sqlx::PgPool::connect(&url).await.expect("pool connect");
+    let count: i64 = sqlx::query_scalar("SELECT COUNT(*)::BIGINT FROM wide")
+        .fetch_one(&pool)
+        .await
+        .expect("count");
+    pool.close().await;
+    assert_eq!(count, 1_000);
+}

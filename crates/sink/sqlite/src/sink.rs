@@ -138,16 +138,13 @@ impl SqliteSink {
         let num_rows = matched_rows.len();
         let col_names: Vec<String> = insert_columns.iter().map(|c| quote_ident(c)).collect();
 
-        // Build multi-row VALUES clause: (?, ?), (?, ?), ...
-        let row_placeholder = format!("({})", vec!["?"; num_cols].join(", "));
-        let value_tuples: Vec<&str> = (0..num_rows).map(|_| row_placeholder.as_str()).collect();
-
-        let query = format!(
-            "INSERT INTO {} ({}) VALUES {}",
-            quote_ident(&self.config.table_name),
-            col_names.join(", "),
-            value_tuples.join(", ")
-        );
+        // SQLite caps bind parameters per statement at SQLITE_MAX_VARIABLE_NUMBER
+        // (32766 since 3.32). A multi-row INSERT binds `rows × num_cols`
+        // parameters, so a wide table at a large batch_size can exceed it and
+        // fail at runtime with "too many SQL variables" (#78/#21). Split into
+        // sub-INSERTs of at most floor(MAX_VARS / num_cols) rows.
+        const MAX_SQLITE_VARS: usize = 32766;
+        let max_rows_per_insert = (MAX_SQLITE_VARS / num_cols).max(1);
 
         let mut tx = self
             .pool
@@ -155,39 +152,52 @@ impl SqliteSink {
             .await
             .map_err(|e| FaucetError::Sink(format!("SQLite transaction begin failed: {e}")))?;
 
-        let mut q = sqlx::query(&query);
-        for matched in &matched_rows {
-            for col in &insert_columns {
-                let val = matched.iter().find(|(c, _)| *c == col).map(|(_, v)| *v);
-                // Bind native SQLite types so column affinity and typed reads
-                // round-trip correctly. Binding every value as a JSON string
-                // (the old behaviour) stored `"Bob"` with embedded quotes,
-                // turned `true` into the text "true", and bound the literal
-                // text "null" for absent columns instead of SQL NULL (#78/#4).
-                q = match val {
-                    None | Some(Value::Null) => q.bind(None::<String>),
-                    Some(Value::Bool(b)) => q.bind(*b),
-                    Some(Value::Number(n)) => {
-                        if let Some(i) = n.as_i64() {
-                            q.bind(i)
-                        } else if let Some(f) = n.as_f64() {
-                            q.bind(f)
-                        } else {
-                            // u64 above i64::MAX — preserve exact text.
-                            q.bind(n.to_string())
-                        }
-                    }
-                    Some(Value::String(s)) => q.bind(s.clone()),
-                    // Arrays/objects have no scalar SQL representation — store
-                    // their JSON text (suitable for TEXT / JSON columns).
-                    Some(v) => q.bind(v.to_string()),
-                };
-            }
-        }
+        for sub in matched_rows.chunks(max_rows_per_insert) {
+            // Build multi-row VALUES clause: (?, ?), (?, ?), ...
+            let row_placeholder = format!("({})", vec!["?"; num_cols].join(", "));
+            let value_tuples: Vec<&str> =
+                (0..sub.len()).map(|_| row_placeholder.as_str()).collect();
+            let query = format!(
+                "INSERT INTO {} ({}) VALUES {}",
+                quote_ident(&self.config.table_name),
+                col_names.join(", "),
+                value_tuples.join(", ")
+            );
 
-        q.execute(&mut *tx)
-            .await
-            .map_err(|e| FaucetError::Sink(format!("SQLite insert failed: {e}")))?;
+            let mut q = sqlx::query(&query);
+            for matched in sub {
+                for col in &insert_columns {
+                    let val = matched.iter().find(|(c, _)| *c == col).map(|(_, v)| *v);
+                    // Bind native SQLite types so column affinity and typed reads
+                    // round-trip correctly. Binding every value as a JSON string
+                    // (the old behaviour) stored `"Bob"` with embedded quotes,
+                    // turned `true` into the text "true", and bound the literal
+                    // text "null" for absent columns instead of SQL NULL (#78/#4).
+                    q = match val {
+                        None | Some(Value::Null) => q.bind(None::<String>),
+                        Some(Value::Bool(b)) => q.bind(*b),
+                        Some(Value::Number(n)) => {
+                            if let Some(i) = n.as_i64() {
+                                q.bind(i)
+                            } else if let Some(f) = n.as_f64() {
+                                q.bind(f)
+                            } else {
+                                // u64 above i64::MAX — preserve exact text.
+                                q.bind(n.to_string())
+                            }
+                        }
+                        Some(Value::String(s)) => q.bind(s.clone()),
+                        // Arrays/objects have no scalar SQL representation — store
+                        // their JSON text (suitable for TEXT / JSON columns).
+                        Some(v) => q.bind(v.to_string()),
+                    };
+                }
+            }
+
+            q.execute(&mut *tx)
+                .await
+                .map_err(|e| FaucetError::Sink(format!("SQLite insert failed: {e}")))?;
+        }
 
         tx.commit()
             .await

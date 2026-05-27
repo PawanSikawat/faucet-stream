@@ -127,35 +127,44 @@ impl PostgresSink {
         let num_rows = matched_rows.len();
         let col_names: Vec<String> = insert_columns.iter().map(|c| quote_ident(c)).collect();
 
-        // Build multi-row VALUES clause: ($1, $2), ($3, $4), ...
-        let mut value_tuples: Vec<String> = Vec::with_capacity(num_rows);
-        for row_idx in 0..num_rows {
-            let start = row_idx * num_cols + 1;
-            let placeholders: Vec<String> =
-                (start..start + num_cols).map(|i| format!("${i}")).collect();
-            value_tuples.push(format!("({})", placeholders.join(", ")));
-        }
+        // PostgreSQL caps bind parameters per statement at 65535. A multi-row
+        // INSERT binds `rows × num_cols` parameters, so a wide table at a large
+        // batch_size can exceed it and fail at runtime (#78/#21). Split into
+        // sub-INSERTs of at most floor(MAX_PARAMS / num_cols) rows.
+        const MAX_PG_PARAMS: usize = 65535;
+        let max_rows_per_insert = (MAX_PG_PARAMS / num_cols).max(1);
 
-        let query = format!(
-            "INSERT INTO {} ({}) VALUES {}",
-            quote_ident(&self.config.table_name),
-            col_names.join(", "),
-            value_tuples.join(", ")
-        );
-
-        let mut q = sqlx::query(&query);
-        for matched in &matched_rows {
-            // Bind values in the fixed column order. If a record is missing
-            // a column that appeared in the first record, bind null.
-            for col in &insert_columns {
-                let val = matched.iter().find(|(c, _)| *c == col).map(|(_, v)| *v);
-                q = q.bind(val.cloned());
+        for sub in matched_rows.chunks(max_rows_per_insert) {
+            // Build multi-row VALUES clause: ($1, $2), ($3, $4), ...
+            let mut value_tuples: Vec<String> = Vec::with_capacity(sub.len());
+            for row_idx in 0..sub.len() {
+                let start = row_idx * num_cols + 1;
+                let placeholders: Vec<String> =
+                    (start..start + num_cols).map(|i| format!("${i}")).collect();
+                value_tuples.push(format!("({})", placeholders.join(", ")));
             }
-        }
 
-        q.execute(&self.pool)
-            .await
-            .map_err(|e| FaucetError::Sink(format!("PostgreSQL insert failed: {e}")))?;
+            let query = format!(
+                "INSERT INTO {} ({}) VALUES {}",
+                quote_ident(&self.config.table_name),
+                col_names.join(", "),
+                value_tuples.join(", ")
+            );
+
+            let mut q = sqlx::query(&query);
+            for matched in sub {
+                // Bind values in the fixed column order. If a record is missing
+                // a column that appeared in the first record, bind null.
+                for col in &insert_columns {
+                    let val = matched.iter().find(|(c, _)| *c == col).map(|(_, v)| *v);
+                    q = q.bind(val.cloned());
+                }
+            }
+
+            q.execute(&self.pool)
+                .await
+                .map_err(|e| FaucetError::Sink(format!("PostgreSQL insert failed: {e}")))?;
+        }
 
         Ok(num_rows)
     }

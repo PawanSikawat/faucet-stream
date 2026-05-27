@@ -72,16 +72,17 @@ bind-parameter limit.
 - **`batch_size > 0`** (default `1000`) — the sink slices the incoming
   slice into `batch_size`-row chunks and issues one multi-row `INSERT`
   per chunk. **Recommended value is `1000`**: Postgres' multi-row
-  `INSERT` sweet spot. Larger chunks rarely add throughput, and AutoMap
-  mode binds one parameter per column per row — exceeding the 65 535
-  bind-parameter ceiling (`batch_size * num_columns > 65_535`) causes
-  the server to reject the statement. JSONB mode is unaffected (it
-  binds a single `jsonb[]` array regardless of row count).
+  `INSERT` sweet spot. Larger chunks rarely add throughput. AutoMap mode
+  binds one parameter per column per row; the sink now splits each chunk
+  further so `rows × columns` never exceeds Postgres' 65 535 bind-parameter
+  ceiling, so a wide table no longer causes the server to reject the
+  statement regardless of `batch_size`. JSONB mode binds a single `jsonb[]`
+  array regardless of row count.
 - **`batch_size = 0`** — the "no batching" sentinel. The entire upstream
-  `StreamPage` is forwarded in a single `INSERT`. Use this when the
+  `StreamPage` is forwarded in a single logical write. Use this when the
   source already emits page sizes tuned for Postgres — for example a
-  REST source with `batch_size: 1000` feeding a JSONB table. Larger
-  pages risk hitting the 65 535-parameter ceiling in AutoMap mode.
+  REST source with `batch_size: 1000` feeding a JSONB table. AutoMap still
+  sub-splits internally to respect the 65 535-parameter ceiling.
 
 `batch_size` is purely a chunk-size knob — connection pooling, identifier
 quoting, and JSONB vs AutoMap behaviour are unchanged.
