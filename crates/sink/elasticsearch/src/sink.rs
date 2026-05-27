@@ -15,11 +15,15 @@ pub struct ElasticsearchSink {
 
 impl ElasticsearchSink {
     /// Create a new Elasticsearch sink from the given configuration.
-    pub fn new(config: ElasticsearchSinkConfig) -> Self {
-        Self {
+    ///
+    /// Returns [`FaucetError::Config`] if `batch_size` exceeds
+    /// `MAX_BATCH_SIZE` (#78/#44).
+    pub fn new(config: ElasticsearchSinkConfig) -> Result<Self, FaucetError> {
+        faucet_core::validate_batch_size(config.batch_size)?;
+        Ok(Self {
             config,
             client: Client::new(),
-        }
+        })
     }
 
     /// Apply the configured authentication to a request builder.
@@ -295,9 +299,17 @@ mod tests {
     }
 
     #[test]
+    fn new_rejects_oversized_batch_size() {
+        // Regression for #78/#44.
+        let config = ElasticsearchSinkConfig::new("http://localhost:9200", "idx")
+            .with_batch_size(faucet_core::MAX_BATCH_SIZE + 1);
+        assert!(ElasticsearchSink::new(config).is_err());
+    }
+
+    #[test]
     fn bulk_body_without_id_field() {
         let config = ElasticsearchSinkConfig::new("http://localhost:9200", "test_idx");
-        let sink = ElasticsearchSink::new(config);
+        let sink = ElasticsearchSink::new(config).unwrap();
 
         let records = vec![
             json!({"name": "Alice", "age": 30}),
@@ -324,7 +336,7 @@ mod tests {
     fn bulk_body_with_id_field() {
         let config =
             ElasticsearchSinkConfig::new("http://localhost:9200", "test_idx").id_field("doc_id");
-        let sink = ElasticsearchSink::new(config);
+        let sink = ElasticsearchSink::new(config).unwrap();
 
         let records = vec![
             json!({"doc_id": "abc-123", "name": "Alice"}),

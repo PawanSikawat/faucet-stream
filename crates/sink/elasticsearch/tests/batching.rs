@@ -49,7 +49,7 @@ async fn batch_size_chunks_into_multiple_bulk_calls() {
     mount_happy_bulk(&server).await;
 
     let config = ElasticsearchSinkConfig::new(server.uri(), INDEX).with_batch_size(500);
-    let sink = ElasticsearchSink::new(config);
+    let sink = ElasticsearchSink::new(config).unwrap();
 
     let records = make_records(1500);
     let written = sink.write_batch(&records).await.expect("write_batch");
@@ -65,7 +65,7 @@ async fn batch_size_handles_partial_final_chunk() {
     mount_happy_bulk(&server).await;
 
     let config = ElasticsearchSinkConfig::new(server.uri(), INDEX).with_batch_size(500);
-    let sink = ElasticsearchSink::new(config);
+    let sink = ElasticsearchSink::new(config).unwrap();
 
     // 1200 records / 500 batch_size = 2 full + 1 partial (200) = 3 POSTs.
     let records = make_records(1200);
@@ -81,7 +81,7 @@ async fn batch_size_single_chunk_when_under_threshold() {
     mount_happy_bulk(&server).await;
 
     let config = ElasticsearchSinkConfig::new(server.uri(), INDEX).with_batch_size(500);
-    let sink = ElasticsearchSink::new(config);
+    let sink = ElasticsearchSink::new(config).unwrap();
 
     // 100 records < 500 batch_size → single POST.
     let records = make_records(100);
@@ -97,7 +97,7 @@ async fn batch_size_zero_is_no_batching_sentinel() {
     mount_happy_bulk(&server).await;
 
     let config = ElasticsearchSinkConfig::new(server.uri(), INDEX).with_batch_size(0);
-    let sink = ElasticsearchSink::new(config);
+    let sink = ElasticsearchSink::new(config).unwrap();
 
     // 2500 records with batch_size=0 → single POST (entire slice forwarded).
     let records = make_records(2500);
@@ -113,7 +113,7 @@ async fn empty_input_makes_no_bulk_calls() {
     mount_happy_bulk(&server).await;
 
     let config = ElasticsearchSinkConfig::new(server.uri(), INDEX).with_batch_size(500);
-    let sink = ElasticsearchSink::new(config);
+    let sink = ElasticsearchSink::new(config).unwrap();
 
     let written = sink.write_batch(&[]).await.expect("write_batch");
 

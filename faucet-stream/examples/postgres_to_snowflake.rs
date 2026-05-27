@@ -38,7 +38,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             },
         )
         .with_batch_size(500),
-    );
+    )?;
 
     let result = Pipeline::new(&source, &sink).run().await?;
     println!("loaded {} users into Snowflake", result.records_written);

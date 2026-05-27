@@ -56,7 +56,9 @@ async fn async_202_is_polled_to_completion() {
         .mount(&server)
         .await;
 
-    let sink = SnowflakeSink::new(sample_config()).with_endpoint(endpoint(&server));
+    let sink = SnowflakeSink::new(sample_config())
+        .unwrap()
+        .with_endpoint(endpoint(&server));
     let written = sink.write_batch(&make_records(3)).await.unwrap();
     assert_eq!(written, 3);
 
@@ -78,7 +80,9 @@ async fn async_202_without_handle_is_an_error() {
         .mount(&server)
         .await;
 
-    let sink = SnowflakeSink::new(sample_config()).with_endpoint(endpoint(&server));
+    let sink = SnowflakeSink::new(sample_config())
+        .unwrap()
+        .with_endpoint(endpoint(&server));
     let err = sink.write_batch(&make_records(1)).await.unwrap_err();
     assert!(
         err.to_string().contains("without a statementHandle"),
@@ -106,6 +110,7 @@ async fn async_poll_gives_up_after_poll_timeout() {
         .await;
 
     let sink = SnowflakeSink::new(sample_config().with_poll_timeout(Duration::from_millis(1)))
+        .unwrap()
         .with_endpoint(endpoint(&server));
     let err = sink.write_batch(&make_records(1)).await.unwrap_err();
     assert!(

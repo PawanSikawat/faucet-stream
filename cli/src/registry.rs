@@ -175,7 +175,7 @@ pub async fn build_sink(kind: &str, config: Value) -> CliResult<Box<dyn Sink>> {
         "snowflake" => {
             let cfg =
                 decode::<faucet_sink_snowflake::SnowflakeSinkConfig>("sink", "snowflake", config)?;
-            Ok(Box::new(faucet_sink_snowflake::SnowflakeSink::new(cfg)))
+            Ok(Box::new(faucet_sink_snowflake::SnowflakeSink::new(cfg)?))
         }
         #[cfg(feature = "sink-mysql")]
         "mysql" => {
@@ -216,7 +216,7 @@ pub async fn build_sink(kind: &str, config: Value) -> CliResult<Box<dyn Sink>> {
             )?;
             Ok(Box::new(faucet_sink_elasticsearch::ElasticsearchSink::new(
                 cfg,
-            )))
+            )?))
         }
         #[cfg(feature = "sink-kafka")]
         "kafka" => {
