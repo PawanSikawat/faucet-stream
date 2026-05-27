@@ -39,6 +39,16 @@ pub struct MongoSinkConfig {
     /// flows through untouched.
     #[serde(default = "default_batch_size")]
     pub batch_size: usize,
+    /// Whether `insert_many` is **ordered**. Default `false` (unordered).
+    ///
+    /// With the MongoDB default of `ordered = true`, the first failing
+    /// document (a duplicate `_id`, a validation error, …) aborts the rest of
+    /// the batch — the documents before it commit, those after are silently
+    /// dropped. Unordered (`false`) instead attempts every document and only
+    /// the genuinely-bad ones fail, so a single poison record can't drop the
+    /// rest of the batch (#78/#20).
+    #[serde(default)]
+    pub ordered: bool,
 }
 
 fn default_batch_size() -> usize {
@@ -57,7 +67,14 @@ impl MongoSinkConfig {
             database: database.into(),
             collection: collection.into(),
             batch_size: DEFAULT_BATCH_SIZE,
+            ordered: false,
         }
+    }
+
+    /// Set whether `insert_many` is ordered (default `false`).
+    pub fn with_ordered(mut self, ordered: bool) -> Self {
+        self.ordered = ordered;
+        self
     }
 
     /// Set the maximum number of documents per `insert_many` call.
@@ -78,6 +95,7 @@ impl fmt::Debug for MongoSinkConfig {
             .field("database", &self.database)
             .field("collection", &self.collection)
             .field("batch_size", &self.batch_size)
+            .field("ordered", &self.ordered)
             .finish()
     }
 }

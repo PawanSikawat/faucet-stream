@@ -59,6 +59,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 | `database` | `String` | *(required)* | Database name |
 | `collection` | `String` | *(required)* | Collection name |
 | `batch_size` | `usize` | `1000` | Maximum number of documents per `insert_many` call. See [Streaming and batching](#streaming-and-batching) below |
+| `ordered` | `bool` | `false` | Whether `insert_many` is ordered. Default `false` (unordered) so one bad document — duplicate `_id`, validation error — doesn't drop the rest of the batch. Set `true` only if you require strict insertion order and want the batch to abort at the first failure. |
 
 The `Debug` implementation masks the `connection_uri` with `***` to prevent credential leakage in logs.
 
