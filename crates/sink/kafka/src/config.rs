@@ -17,6 +17,18 @@ pub struct KafkaSinkConfig {
     pub value_format: KafkaValueFormat,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub key_format: Option<KafkaValueFormat>,
+    /// Schema text (Avro `.avsc` JSON, Protobuf `.proto`, or JSON Schema) for
+    /// the **value** when `value_format` is a Confluent Schema Registry format
+    /// (`confluent_avro` / `confluent_protobuf` / `confluent_json_schema`).
+    /// Registered under the `{topic}-value` subject on first use. Required for
+    /// those formats; ignored otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub value_schema: Option<String>,
+    /// Schema text for the **key**, used when `key_format` is a Confluent
+    /// Schema Registry format. Registered under `{topic}-key`. Required for
+    /// those key formats; ignored otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key_schema: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub key_path: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -169,6 +181,28 @@ impl KafkaSinkConfig {
                 "kafka sink: max_in_flight must be at least 1".into(),
             ));
         }
+        // Confluent Schema Registry formats need a schema to encode against;
+        // without one the encoder fails on the first record (#78/#9). Catch it
+        // at config-load time with a clear message. (Both checks are no-ops
+        // when the schema-registry feature is off — `is_schema_registry`
+        // returns false.)
+        if self.value_format.is_schema_registry() && self.value_schema.is_none() {
+            return Err(FaucetError::Config(
+                "kafka sink: value_format is a Confluent Schema Registry format but \
+                 value_schema is not set"
+                    .into(),
+            ));
+        }
+        if let Some(kf) = &self.key_format
+            && kf.is_schema_registry()
+            && self.key_schema.is_none()
+        {
+            return Err(FaucetError::Config(
+                "kafka sink: key_format is a Confluent Schema Registry format but \
+                 key_schema is not set"
+                    .into(),
+            ));
+        }
         faucet_core::validate_batch_size(self.batch_size)?;
         Ok(())
     }
@@ -197,6 +231,8 @@ mod tests {
             auth: KafkaAuth::None,
             value_format: KafkaValueFormat::Json,
             key_format: None,
+            value_schema: None,
+            key_schema: None,
             key_path: None,
             partition_path: None,
             headers_path: None,
@@ -217,6 +253,25 @@ mod tests {
     #[test]
     fn validate_accepts_minimal() {
         assert!(minimal().validate().is_ok());
+    }
+
+    #[cfg(feature = "schema-registry")]
+    #[test]
+    fn validate_requires_schema_for_confluent_value_format() {
+        // Regression for #78/#9: a Confluent SR value_format with no
+        // value_schema must be rejected at config load, not fail per-record.
+        use faucet_kafka_common::SchemaRegistryConfig;
+        let mut c = minimal();
+        c.value_format = KafkaValueFormat::ConfluentAvro {
+            schema_registry: SchemaRegistryConfig::new("http://localhost:8081"),
+        };
+        c.value_schema = None;
+        let err = c.validate().unwrap_err();
+        assert!(format!("{err}").contains("value_schema"), "{err}");
+
+        // With a schema it validates.
+        c.value_schema = Some(r#"{"type":"record","name":"R","fields":[]}"#.into());
+        assert!(c.validate().is_ok());
     }
 
     #[test]

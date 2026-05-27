@@ -106,6 +106,20 @@ Configured via `value_format` (and optionally `key_format`). All formats use a `
 
 The three Confluent formats require the `schema-registry` feature flag. Each takes a `schema_registry` block — see the [`faucet-kafka-common` README](../kafka-common/README.md#value-formats) for `SchemaRegistryConfig` options.
 
+When a Confluent format is used on the **sink** side you must also supply the schema text to register and encode against: set `value_schema` (for `value_format`) and/or `key_schema` (for `key_format`) to the Avro `.avsc` JSON, `.proto`, or JSON Schema document. They are registered under the `{topic}-value` / `{topic}-key` subjects on first use. The config is rejected at load time if a Confluent format is selected without its schema.
+
+```yaml
+sink:
+  type: kafka
+  config:
+    brokers: localhost:9092
+    topic: { type: fixed, name: events }
+    value_format:
+      type: confluent_avro
+      schema_registry: { url: http://localhost:8081 }
+    value_schema: '{"type":"record","name":"Event","fields":[{"name":"id","type":"long"}]}'
+```
+
 ---
 
 ## Key / partition / headers

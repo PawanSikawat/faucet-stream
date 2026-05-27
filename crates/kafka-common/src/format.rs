@@ -39,6 +39,28 @@ pub enum KafkaValueFormat {
     },
 }
 
+impl KafkaValueFormat {
+    /// True for Confluent Schema Registry wire formats (`ConfluentAvro`,
+    /// `ConfluentProtobuf`, `ConfluentJsonSchema`), which require a schema to
+    /// encode on the sink side. Always `false` when the `schema-registry`
+    /// feature is disabled (those variants don't exist).
+    pub fn is_schema_registry(&self) -> bool {
+        #[cfg(feature = "schema-registry")]
+        {
+            matches!(
+                self,
+                KafkaValueFormat::ConfluentAvro { .. }
+                    | KafkaValueFormat::ConfluentProtobuf { .. }
+                    | KafkaValueFormat::ConfluentJsonSchema { .. }
+            )
+        }
+        #[cfg(not(feature = "schema-registry"))]
+        {
+            false
+        }
+    }
+}
+
 /// Producer-side compression for outbound batches.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq, Default)]
 #[serde(rename_all = "lowercase")]

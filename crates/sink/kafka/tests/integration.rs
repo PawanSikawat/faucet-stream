@@ -40,6 +40,8 @@ fn sink_config(brokers: &str, topic: KafkaSinkTopic) -> KafkaSinkConfig {
         auth: KafkaAuth::None,
         value_format: KafkaValueFormat::Json,
         key_format: None,
+        value_schema: None,
+        key_schema: None,
         key_path: None,
         partition_path: None,
         headers_path: None,
