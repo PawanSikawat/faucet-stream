@@ -113,7 +113,7 @@ Load-time interpolation runs in this order:
 
 1. `${env:VAR}` / `${file:PATH}` / `${secret:VAR}` — resolved during the raw text pass.
 2. `${vars.X}` — resolved against the top-level `vars:` block. Vars may reference other vars; cycles surface as `InterpolationCycle`.
-3. `${sources.NAME.PATH}` and `${sinks.NAME.PATH}` — resolved against the post-vars-substitution template body. Useful for copying constants between templates without restating them.
+3. `${sources.NAME.PATH}` and `${sinks.NAME.PATH}` — resolved against the post-vars-substitution template bodies. Useful for copying constants between templates without restating them. A template may reference another template (including across the source/sink namespaces), and such chains are followed to their terminal value; mutual or circular references surface as `InterpolationCycle` rather than resolving to literal token text.
 4. `${row_id.path}` — left literal; resolved at runtime against parent records (per-record fan-out).
 
 ### Backwards compatibility
