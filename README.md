@@ -2,8 +2,10 @@
 
 [![Crates.io](https://img.shields.io/crates/v/faucet-stream.svg)](https://crates.io/crates/faucet-stream)
 [![Docs.rs](https://docs.rs/faucet-stream/badge.svg)](https://docs.rs/faucet-stream)
-[![CI](https://github.com/PawanSikawat/faucet-stream/actions/workflows/ci.yml/badge.svg)](https://github.com/PawanSikawat/faucet-stream/actions)
-[![License](https://img.shields.io/crates/l/faucet-stream.svg)](LICENSE-MIT)
+[![CI](https://github.com/PawanSikawat/faucet-stream/actions/workflows/ci.yml/badge.svg)](https://github.com/PawanSikawat/faucet-stream/actions/workflows/ci.yml)
+[![Downloads](https://img.shields.io/crates/d/faucet-stream.svg)](https://crates.io/crates/faucet-stream)
+[![MSRV](https://img.shields.io/crates/msrv/faucet-stream.svg)](rust-toolchain.toml)
+[![License](https://img.shields.io/crates/l/faucet-stream.svg)](#license)
 
 **The fast, config-driven way to move data in Rust.**
 
@@ -110,6 +112,28 @@ is its most common runtime.
 - You need a **long-running streaming service or agent topology** — [Benthos / Redpanda Connect](https://www.redpanda.com/connect) and [Vector](https://vector.dev/) are purpose-built for that; faucet-stream runs pipelines to completion rather than as a daemon.
 
 ## Architecture
+
+A `Source` streams batches of records, optional `Transform`s reshape them, and the
+`Pipeline` writes each batch to a `Sink` — bounding memory at one batch on both
+sides regardless of total volume. The pipeline also drives the cross-cutting
+runtime (bookmarks, dead-letter routing, metrics) so connectors stay simple:
+
+```mermaid
+flowchart LR
+    S["<b>Source</b><br/>REST · DB · CDC<br/>Kafka · S3 · Parquet"]
+    T["<b>Transforms</b><br/>flatten · rename<br/>snake_case"]
+    P{{"<b>Pipeline</b>"}}
+    K["<b>Sink</b><br/>BigQuery · Postgres<br/>Parquet · Kafka · ..."]
+    ST[("State store<br/>file · Redis · Postgres")]
+    D[("Dead-letter<br/>queue")]
+    O(["Prometheus<br/>+ tracing"])
+
+    S -->|StreamPage batches| T --> P -->|write_batch| K
+    P -.->|bookmark per page| ST
+    ST -.->|resume from bookmark| S
+    P -.->|failed rows| D
+    P -.->|metrics + spans| O
+```
 
 faucet-stream is a Cargo workspace with 45 crates — 19 sources, 16 sinks, 5 shared connector libraries, 2 state-store backends, the shared core, the umbrella crate, and the CLI binary:
 
