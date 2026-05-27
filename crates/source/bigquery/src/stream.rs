@@ -101,12 +101,18 @@ fn build_query_request(
                 .map(|v| QueryParameter {
                     name: None,
                     parameter_type: Some(QueryParameterType {
-                        r#type: "STRING".to_string(),
+                        r#type: bq_param_type(v).to_string(),
                         array_type: None,
                         struct_types: None,
                     }),
                     parameter_value: Some(QueryParameterValue {
-                        value: Some(stringify_param(v)),
+                        // BigQuery REST always carries the value as a string;
+                        // the parameter_type tells the engine how to parse it.
+                        // A JSON null becomes a typed NULL (value omitted).
+                        value: match v {
+                            Value::Null => None,
+                            other => Some(stringify_param(other)),
+                        },
                         array_values: None,
                         struct_values: None,
                     }),
@@ -116,6 +122,24 @@ fn build_query_request(
     }
 
     req
+}
+
+/// Infer the BigQuery positional-parameter type from the JSON value, so a
+/// numeric or boolean bind compares correctly against a numeric/bool column
+/// instead of being forced to STRING (#78/#34). Arrays / objects / null fall
+/// back to STRING (stringified JSON).
+fn bq_param_type(v: &Value) -> &'static str {
+    match v {
+        Value::Bool(_) => "BOOL",
+        Value::Number(n) => {
+            if n.is_i64() || n.is_u64() {
+                "INT64"
+            } else {
+                "FLOAT64"
+            }
+        }
+        _ => "STRING",
+    }
 }
 
 fn stringify_param(v: &Value) -> String {

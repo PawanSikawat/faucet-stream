@@ -111,10 +111,19 @@ impl faucet_core::Source for ElasticsearchSource {
 
         let mut all_records = Vec::new();
 
+        // `batch_size = 0` is the "no batching" sentinel. Interpolating it
+        // directly as `size=0` would make Elasticsearch return zero hits, so
+        // map it to the same large page size the streaming path uses (#78/#33).
+        let page_size = if self.config.batch_size == 0 {
+            NO_BATCHING_SEARCH_SIZE
+        } else {
+            self.config.batch_size
+        };
+
         // Initial search request with scroll.
         let url = format!(
             "{}/{}/_search?scroll={}&size={}",
-            self.config.base_url, index, self.config.scroll_timeout, self.config.batch_size
+            self.config.base_url, index, self.config.scroll_timeout, page_size
         );
         let req = self.client.post(&url).json(&json!({"query": query}));
         let req = self.apply_auth(req);
