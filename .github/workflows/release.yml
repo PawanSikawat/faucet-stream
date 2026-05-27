@@ -114,7 +114,36 @@ jobs:
             } | tsort | grep -vx '__root__'
           )
           ordered_connectors=$(echo "$ordered_all" | grep -vxE 'faucet-core|faucet-stream|faucet-cli')
-          echo "Publishable crates in dependency order:"
+
+          # Fail fast if the derivation dropped or duplicated a crate (a tsort
+          # cycle, a jq-filter regression, a malformed dependency edge). The
+          # whole point of deriving the list from `cargo metadata` is that a
+          # `scope=all` publish covers *every* publishable member — never ship
+          # a silently-partial set the way the old hardcoded arrays did
+          # (#78/#11).
+          expected=$(echo "$set_json" | jq 'length')
+          actual=$(echo "$ordered_all" | grep -c .)
+          if [ "$actual" -ne "$expected" ]; then
+            echo "ERROR: dependency-ordered list has $actual crate(s) but cargo metadata reports $expected publishable member(s) — tsort dropped or duplicated a crate." >&2
+            echo "Derived order was:" >&2
+            echo "$ordered_all" | nl >&2
+            exit 1
+          fi
+          dupes=$(echo "$ordered_all" | sort | uniq -d)
+          if [ -n "$dupes" ]; then
+            echo "ERROR: duplicate crate(s) in the dependency-ordered publish list:" >&2
+            echo "$dupes" >&2
+            exit 1
+          fi
+          # The three structural anchors must always be present and publishable.
+          for anchor in faucet-core faucet-stream faucet-cli; do
+            if ! echo "$ordered_all" | grep -qx "$anchor"; then
+              echo "ERROR: expected publishable crate '$anchor' is missing from the derived list — check its 'publish' setting." >&2
+              exit 1
+            fi
+          done
+
+          echo "Publishable crates in dependency order ($actual total):"
           echo "$ordered_all" | nl
           echo "ordered_all=$(echo "$ordered_all" | tr '\n' ' ')" >> "$GITHUB_ENV"
           echo "ordered_connectors=$(echo "$ordered_connectors" | tr '\n' ' ')" >> "$GITHUB_ENV"
