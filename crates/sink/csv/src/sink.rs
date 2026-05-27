@@ -7,9 +7,18 @@ use serde_json::Value;
 use std::fs::OpenOptions;
 use std::sync::Mutex;
 
+/// The inner writer the CSV serializer writes into. With compression enabled
+/// it is a [`SyncCompressWriter`](faucet_core::compression::SyncCompressWriter)
+/// that retains the concrete encoder so `finish()` errors surface on flush
+/// (#78/#41); otherwise it is the raw file.
+#[cfg(feature = "compression")]
+type SinkWriter = faucet_core::compression::SyncCompressWriter<std::fs::File>;
+#[cfg(not(feature = "compression"))]
+type SinkWriter = std::fs::File;
+
 /// State for the CSV writer, including the determined column order.
 struct WriterState {
-    writer: csv::Writer<Box<dyn std::io::Write + Send>>,
+    writer: csv::Writer<SinkWriter>,
     columns: Vec<String>,
 }
 
@@ -121,19 +130,28 @@ impl faucet_core::Sink for CsvSink {
                 .map_err(|e| FaucetError::Sink(format!("CSV sink lock poisoned: {e}")))?;
             guard.take()
         };
-        if let Some(mut state) = state {
+        if let Some(state) = state {
             tokio::task::spawn_blocking(move || -> Result<(), FaucetError> {
-                state
-                    .writer
-                    .flush()
+                let WriterState { writer, .. } = state;
+                // Flush the csv serializer's buffer and recover the inner
+                // writer so the compression encoder can be finalised with its
+                // error captured, rather than swallowed on drop (#78/#41).
+                let inner = writer
+                    .into_inner()
                     .map_err(|e| FaucetError::Sink(format!("CSV flush failed: {e}")))?;
-                // Drop the csv::Writer (and the inner Box<dyn Write>) which
-                // finalises any compression encoder. flate2's GzEncoder writes
-                // the 8-byte trailer to the already-flushed inner Write on
-                // drop; zstd's auto_finish adapter does the same. Errors at
-                // trailer-write time are silently swallowed by the Box-erased
-                // encoder, which is documented in faucet_core::compression.
-                drop(state);
+                #[cfg(feature = "compression")]
+                {
+                    // Writes the gzip/zstd trailer and surfaces any I/O error.
+                    inner.finish().map_err(|e| {
+                        FaucetError::Sink(format!("CSV compression finalise failed: {e}"))
+                    })?;
+                }
+                #[cfg(not(feature = "compression"))]
+                {
+                    let mut f = inner;
+                    std::io::Write::flush(&mut f)
+                        .map_err(|e| FaucetError::Sink(format!("CSV flush failed: {e}")))?;
+                }
                 Ok(())
             })
             .await
@@ -183,13 +201,13 @@ fn write_csv_blocking(
                 })?;
 
             #[cfg(feature = "compression")]
-            let inner: Box<dyn std::io::Write + Send> = {
+            let inner: SinkWriter = {
                 let codec = config.compression.resolve(&config.path);
                 faucet_core::compression::warn_mismatch(&config.path, codec);
-                faucet_core::compression::wrap_sync_writer(file, codec)
+                faucet_core::compression::sync_compress_writer(file, codec)
             };
             #[cfg(not(feature = "compression"))]
-            let inner: Box<dyn std::io::Write + Send> = Box::new(file);
+            let inner: SinkWriter = file;
 
             let mut writer = csv::WriterBuilder::new()
                 .delimiter(config.delimiter)
