@@ -478,6 +478,12 @@ fn handle_event(
             // record; advancing only to commit_lsn leaves the commit record
             // unconfirmed and Postgres redelivers the whole transaction
             // (#78/#1). `end_lsn` is the position a standby reports as flushed.
+            //
+            // The exactly-once-across-resume boundary (a transaction whose
+            // commit lands exactly at the persisted bookmark is delivered once,
+            // not skipped or duplicated) is exercised by the Docker integration
+            // tests `resume_from_bookmark_skips_already_consumed` and
+            // `lsn_not_advanced_without_durable_bookmark_redelivers` (#78 LOW).
             out.append(&mut state.staged);
             state.last_committed = Some(end_lsn.as_u64());
             state.in_txn = false;
