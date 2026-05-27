@@ -200,9 +200,30 @@ impl PostgresCdcSource {
                 self.config.create_slot_if_missing,
             )
             .await?;
+
+            // Advance the slot's confirmed_flush_lsn to the durable resume
+            // point BEFORE opening the stream. For a logical slot,
+            // START_REPLICATION resumes decoding from confirmed_flush_lsn (the
+            // client-supplied start LSN does not skip already-committed
+            // transactions), so this is the only way to skip changes we have
+            // already consumed and durably persisted. `start_lsn` is set only
+            // from a durable bookmark (apply_start_bookmark) or the start_lsn
+            // config override; when it is `None` (no durable resume point) we
+            // do NOT advance, so an interrupted run with no persisted bookmark
+            // redelivers rather than loses data (#78/#1).
+            if let Some(lsn) = start_lsn {
+                replication::advance_slot(
+                    &self.config.connection_url,
+                    &self.config.slot_name,
+                    lsn,
+                )
+                .await?;
+            }
+
             let mut duplex = replication::start_replication(&client, &params).await?;
 
-            // 3. Advance the slot's confirmed_flush_lsn to the bookmarked LSN.
+            // Send an initial Standby Status Update advertising the same
+            // durable position so the server's bookkeeping is consistent.
             let initial_confirmed = *self.confirmed_lsn.lock().await;
             send_status_update(&mut duplex, initial_confirmed, false).await?;
 

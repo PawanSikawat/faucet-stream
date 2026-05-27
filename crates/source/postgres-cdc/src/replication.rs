@@ -209,6 +209,53 @@ pub async fn ensure_slot(
     Ok(())
 }
 
+/// Advance the slot's `confirmed_flush_lsn` to `lsn` via a control-plane SQL
+/// call (`pg_replication_slot_advance`), **before** the replication stream is
+/// opened.
+///
+/// This is how the connector resumes past already-consumed, durably-persisted
+/// changes without ever advancing the slot ahead of durability (#78/#1). For
+/// a logical slot, `START_REPLICATION` resumes decoding from the slot's
+/// `confirmed_flush_lsn` — the client-supplied start LSN does not filter
+/// transactions that committed below it — so the only way to skip consumed
+/// changes is to move `confirmed_flush_lsn` forward here, while the slot is
+/// inactive. `pg_replication_slot_advance` never moves a slot backwards or
+/// past the server's insert pointer, so a stale or zero `lsn` is a safe no-op.
+///
+/// The slot must be inactive, which it is between [`ensure_slot`] and
+/// [`start_replication`].
+pub async fn advance_slot(
+    connection_url: &str,
+    slot_name: &str,
+    lsn: u64,
+) -> Result<(), FaucetError> {
+    if lsn == 0 {
+        return Ok(());
+    }
+    let opts: PgConnectOptions = connection_url
+        .parse()
+        .map_err(|e| FaucetError::Config(format!("postgres-cdc: invalid connection URL: {e}")))?;
+
+    use sqlx::ConnectOptions as _;
+    let mut conn: PgConnection = opts
+        .connect()
+        .await
+        .map_err(|e| FaucetError::Source(format!("postgres-cdc advance_slot connect: {e}")))?;
+
+    // Bind the slot name and the LSN (as pg_lsn text) as parameters — no string
+    // interpolation into the SQL. `format_lsn` emits Postgres' canonical
+    // `X/X` text form.
+    sqlx::query("SELECT pg_replication_slot_advance($1, $2::pg_lsn)")
+        .bind(slot_name)
+        .bind(crate::state::format_lsn(lsn))
+        .execute(&mut conn)
+        .await
+        .map_err(|e| FaucetError::Source(format!("postgres-cdc advance_slot: {e}")))?;
+
+    debug!("postgres-cdc: advanced slot '{slot_name}' confirmed_flush_lsn to {lsn:#x}");
+    Ok(())
+}
+
 /// Open a logical replication stream and return a [`Duplex`] handle.
 ///
 /// Internally this calls `pgwire_replication::ReplicationClient::connect`
