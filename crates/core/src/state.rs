@@ -18,6 +18,7 @@ use async_trait::async_trait;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use tokio::io::AsyncWriteExt;
 use tokio::sync::Mutex;
 
 /// Persistent key/value store for replication bookmarks and pipeline checkpoints.
@@ -111,6 +112,11 @@ impl StateStore for MemoryStateStore {
 /// File-backed `StateStore`. Each key maps to a JSON file at
 /// `{root}/{key}.json`, written via atomic rename.
 ///
+/// Each `put` writes a temp file, fsyncs it, renames it over the final path,
+/// and (on Unix) fsyncs the parent directory — so once `put` returns the
+/// bookmark is durable across a crash or power loss, not merely sitting in the
+/// page cache.
+///
 /// The store creates its root directory on first use. All writes are
 /// serialized through a per-store mutex so two concurrent `put`s for the
 /// same key cannot race on the temp filename. Different processes pointing
@@ -184,12 +190,33 @@ impl StateStore for FileStateStore {
         })?;
         let final_path = self.entry_path(key);
         let tmp_path = self.temp_path(key);
-        tokio::fs::write(&tmp_path, &bytes).await.map_err(|e| {
-            FaucetError::State(format!(
-                "failed to write temp state file {}: {e}",
-                tmp_path.display()
-            ))
-        })?;
+
+        // Write the temp file and fsync it BEFORE the rename. `fs::write`
+        // alone leaves the bytes in the page cache: a crash after `put`
+        // returns could surface a zero-length or stale file, breaking the
+        // durability guarantee this store documents (#78/#8). `sync_all`
+        // flushes the file's data and metadata to disk.
+        {
+            let mut file = tokio::fs::File::create(&tmp_path).await.map_err(|e| {
+                FaucetError::State(format!(
+                    "failed to create temp state file {}: {e}",
+                    tmp_path.display()
+                ))
+            })?;
+            file.write_all(&bytes).await.map_err(|e| {
+                FaucetError::State(format!(
+                    "failed to write temp state file {}: {e}",
+                    tmp_path.display()
+                ))
+            })?;
+            file.sync_all().await.map_err(|e| {
+                FaucetError::State(format!(
+                    "failed to fsync temp state file {}: {e}",
+                    tmp_path.display()
+                ))
+            })?;
+        }
+
         tokio::fs::rename(&tmp_path, &final_path)
             .await
             .map_err(|e| {
@@ -198,6 +225,28 @@ impl StateStore for FileStateStore {
                     final_path.display()
                 ))
             })?;
+
+        // fsync the parent directory so the rename itself is durable — an
+        // atomic rename can still be lost on crash if the directory entry was
+        // never flushed. Directory fsync is a POSIX concept; on platforms that
+        // don't allow opening a directory as a file (e.g. Windows) it is
+        // skipped.
+        #[cfg(unix)]
+        {
+            let dir = tokio::fs::File::open(&self.root).await.map_err(|e| {
+                FaucetError::State(format!(
+                    "failed to open state dir {} for fsync: {e}",
+                    self.root.display()
+                ))
+            })?;
+            dir.sync_all().await.map_err(|e| {
+                FaucetError::State(format!(
+                    "failed to fsync state dir {}: {e}",
+                    self.root.display()
+                ))
+            })?;
+        }
+
         tracing::debug!(
             key,
             path = %final_path.display(),
@@ -351,6 +400,33 @@ mod tests {
         // The temp path must not be left behind.
         let leftover = dir.path().join("k.json.tmp");
         assert!(!leftover.exists());
+    }
+
+    #[tokio::test]
+    async fn file_put_writes_complete_durable_file_with_no_temp_residue() {
+        // Regression for #78/#8. `put` must produce a fully-written, parseable
+        // file and leave no temp file behind. (The fsync that makes this
+        // durable across a power loss can't be observed on a healthy
+        // filesystem, but a regression in the write/rename path — truncation,
+        // a leftover .tmp, or an unwritten file — is caught here.) A large
+        // payload makes a partial/unflushed write detectable on read-back.
+        let dir = TempDir::new().unwrap();
+        let s = FileStateStore::new(dir.path());
+        let big: Vec<Value> = (0..1_000).map(|i| json!({"i": i, "s": "x".repeat(20)})).collect();
+        let value = json!({"cursor": "abc", "rows": big});
+
+        s.put("github_issues", &value).await.unwrap();
+
+        // Read the raw file directly (bypassing get) to confirm it is complete.
+        let raw = tokio::fs::read(dir.path().join("github_issues.json"))
+            .await
+            .expect("state file must exist after put");
+        assert!(!raw.is_empty(), "state file must not be zero-length");
+        let parsed: Value = serde_json::from_slice(&raw).expect("state file must be valid JSON");
+        assert_eq!(parsed, value);
+
+        // No temp file left behind.
+        assert!(!dir.path().join("github_issues.json.tmp").exists());
     }
 
     #[tokio::test]
