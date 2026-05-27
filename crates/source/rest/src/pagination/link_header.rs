@@ -2,18 +2,71 @@
 
 use reqwest::header::HeaderMap;
 
-/// Extract the rel="next" URL from a Link header.
+/// Extract the `rel="next"` URL from a `Link` header (RFC 8288).
+///
+/// Parses each link-value into its `<URI-Reference>` and parameters, splitting
+/// on commas only *outside* the angle brackets (so a comma inside a URL does
+/// not split a link), and matches the `rel` parameter case-insensitively
+/// whether it is quoted (`rel="next"`) or unquoted (`rel=next`) and even when
+/// it carries multiple space-separated relations (`rel="prev next"`) (#78 LOW).
 pub fn extract_next_link(headers: &HeaderMap) -> Option<String> {
     let link = headers.get("link")?.to_str().ok()?;
-    for part in link.split(',') {
-        let part = part.trim();
-        if part.contains("rel=\"next\"") {
-            let start = part.find('<')? + 1;
-            let end = part.find('>')?;
-            return Some(part[start..end].to_string());
+    for (uri, rel) in parse_link_header(link) {
+        if rel
+            .split_whitespace()
+            .any(|tok| tok.eq_ignore_ascii_case("next"))
+        {
+            return Some(uri);
         }
     }
     None
+}
+
+/// Split a `Link` header into `(uri, rel)` pairs. Splits link-values on commas
+/// that are not inside an angle-bracketed URI, then extracts the `<...>` URI
+/// and the value of any `rel=` parameter (quoted or unquoted).
+fn parse_link_header(header: &str) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    let mut depth = 0i32; // inside <...>
+    let mut start = 0usize;
+    let bytes = header.as_bytes();
+    let mut segments: Vec<&str> = Vec::new();
+    for (i, &b) in bytes.iter().enumerate() {
+        match b {
+            b'<' => depth += 1,
+            b'>' => depth -= 1,
+            b',' if depth <= 0 => {
+                segments.push(&header[start..i]);
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    segments.push(&header[start..]);
+
+    for seg in segments {
+        let seg = seg.trim();
+        let Some(lt) = seg.find('<') else { continue };
+        let Some(gt) = seg[lt + 1..].find('>') else {
+            continue;
+        };
+        let uri = seg[lt + 1..lt + 1 + gt].trim().to_string();
+        // Parameters follow the `>`; find `rel=...`.
+        let params = &seg[lt + 1 + gt + 1..];
+        let mut rel = String::new();
+        for param in params.split(';') {
+            let param = param.trim();
+            if let Some(v) = param
+                .strip_prefix("rel=")
+                .or_else(|| param.strip_prefix("rel ="))
+            {
+                rel = v.trim().trim_matches('"').to_string();
+                break;
+            }
+        }
+        out.push((uri, rel));
+    }
+    out
 }
 
 #[cfg(test)]
@@ -50,5 +103,60 @@ mod tests {
     fn test_empty_headers() {
         let headers = HeaderMap::new();
         assert_eq!(extract_next_link(&headers), None);
+    }
+
+    #[test]
+    fn unquoted_rel_is_supported() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "link",
+            HeaderValue::from_static("<https://api.example.com/items?page=2>; rel=next"),
+        );
+        assert_eq!(
+            extract_next_link(&headers),
+            Some("https://api.example.com/items?page=2".to_string())
+        );
+    }
+
+    #[test]
+    fn multi_relation_rel_token_matches_next() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "link",
+            HeaderValue::from_static(r#"<https://api.example.com/p3>; rel="prev next""#),
+        );
+        assert_eq!(
+            extract_next_link(&headers),
+            Some("https://api.example.com/p3".to_string())
+        );
+    }
+
+    #[test]
+    fn comma_inside_url_does_not_split_link() {
+        // A query string containing a comma must not break link-value splitting.
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "link",
+            HeaderValue::from_static(
+                r#"<https://api.example.com/items?ids=1,2,3&page=2>; rel="next""#,
+            ),
+        );
+        assert_eq!(
+            extract_next_link(&headers),
+            Some("https://api.example.com/items?ids=1,2,3&page=2".to_string())
+        );
+    }
+
+    #[test]
+    fn rel_next_is_case_insensitive() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "link",
+            HeaderValue::from_static(r#"<https://api.example.com/x>; rel="NEXT""#),
+        );
+        assert_eq!(
+            extract_next_link(&headers),
+            Some("https://api.example.com/x".to_string())
+        );
     }
 }
