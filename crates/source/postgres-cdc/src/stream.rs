@@ -443,9 +443,9 @@ fn handle_event(
             state.staged.clear();
         }
         ReplicationEvent::Commit {
-            lsn,
+            lsn: _,
             commit_time_micros: _,
-            end_lsn: _,
+            end_lsn,
         } => {
             if !state.in_txn {
                 return Err(FaucetError::Source(
@@ -454,9 +454,17 @@ fn handle_event(
             }
             // Drain staged records into the caller-supplied output buffer.
             // The caller is responsible for emitting a StreamPage with these
-            // records and the commit_lsn bookmark.
+            // records and the bookmark.
+            //
+            // The bookmark is the commit's `end_lsn` — the WAL position
+            // immediately AFTER the commit record — not the commit_lsn. To
+            // resume *past* a consumed transaction the slot's
+            // confirmed_flush_lsn must be set to a position beyond the commit
+            // record; advancing only to commit_lsn leaves the commit record
+            // unconfirmed and Postgres redelivers the whole transaction
+            // (#78/#1). `end_lsn` is the position a standby reports as flushed.
             out.append(&mut state.staged);
-            state.last_committed = Some(lsn.as_u64());
+            state.last_committed = Some(end_lsn.as_u64());
             state.in_txn = false;
         }
         ReplicationEvent::XLogData { data, .. } => {
@@ -767,7 +775,11 @@ mod tests {
         assert_eq!(out[0]["after"]["name"], "alice");
         assert_eq!(out[0]["before"], Value::Null);
 
-        assert_eq!(state.last_committed, Some(0x16A_4F88));
+        // The bookmark is the commit's `end_lsn` (the resume position just
+        // past the commit record), not the commit_lsn. `commit_event` sets
+        // end_lsn = commit_lsn + 0x10. The record's own "lsn" field above is
+        // still the commit_lsn (display/identity), which is intentional.
+        assert_eq!(state.last_committed, Some(0x16A_4F88 + 0x10));
     }
 
     #[test]
