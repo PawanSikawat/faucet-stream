@@ -21,6 +21,10 @@ fn default_statement_timeout() -> Duration {
     Duration::from_secs(60)
 }
 
+fn default_poll_timeout() -> Duration {
+    Duration::from_secs(300)
+}
+
 fn default_batch_size() -> usize {
     DEFAULT_BATCH_SIZE
 }
@@ -69,6 +73,19 @@ pub struct BigQuerySourceConfig {
     )]
     #[schemars(with = "u64")]
     pub statement_timeout: Duration,
+    /// Maximum wall-clock time the source will spend polling
+    /// `jobs.getQueryResults` for a job that keeps reporting
+    /// `jobComplete=false`, before giving up with [`FaucetError::Source`].
+    /// Without this cap a job that never completes would loop forever.
+    /// Defaults to 300 seconds. Set to `0` to disable the cap and poll
+    /// indefinitely. Only the *completion* wait is bounded; once the job is
+    /// complete, ordinary `pageToken` paging is unaffected.
+    #[serde(
+        default = "default_poll_timeout",
+        with = "faucet_core::config::duration_secs"
+    )]
+    #[schemars(with = "u64")]
+    pub poll_timeout: Duration,
     /// Records per emitted [`StreamPage`](faucet_core::StreamPage). Rows
     /// returned by BigQuery are re-framed into pages of this size — every
     /// time the buffer reaches `batch_size`, a page is yielded. Defaults to
@@ -93,6 +110,7 @@ impl std::fmt::Debug for BigQuerySourceConfig {
             .field("max_results_per_page", &self.max_results_per_page)
             .field("params", &self.params)
             .field("statement_timeout", &self.statement_timeout)
+            .field("poll_timeout", &self.poll_timeout)
             .field("batch_size", &self.batch_size)
             .finish()
     }
@@ -114,6 +132,7 @@ impl BigQuerySourceConfig {
             max_results_per_page: default_max_results_per_page(),
             params: Vec::new(),
             statement_timeout: default_statement_timeout(),
+            poll_timeout: default_poll_timeout(),
             batch_size: DEFAULT_BATCH_SIZE,
         }
     }
@@ -145,6 +164,13 @@ impl BigQuerySourceConfig {
     /// Set the per-statement server-side timeout.
     pub fn with_statement_timeout(mut self, timeout: Duration) -> Self {
         self.statement_timeout = timeout;
+        self
+    }
+
+    /// Set the maximum wall-clock time spent polling for job completion
+    /// before giving up. Pass `Duration::ZERO` to poll forever.
+    pub fn with_poll_timeout(mut self, timeout: Duration) -> Self {
+        self.poll_timeout = timeout;
         self
     }
 
@@ -180,6 +206,7 @@ mod tests {
         assert_eq!(c.max_results_per_page, 1000);
         assert!(c.params.is_empty());
         assert_eq!(c.statement_timeout, Duration::from_secs(60));
+        assert_eq!(c.poll_timeout, Duration::from_secs(300));
         assert_eq!(c.batch_size, faucet_core::DEFAULT_BATCH_SIZE);
     }
 

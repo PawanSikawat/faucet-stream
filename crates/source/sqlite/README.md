@@ -90,6 +90,7 @@ SQLite has dynamic typing -- values are stored as INTEGER, REAL, TEXT, BLOB, or 
 | INTEGER (i32) | `number` |
 | REAL (f64) | `number` |
 | BOOLEAN | `boolean` |
+| BLOB | `string` (base64) |
 | NULL / unsupported | `null` |
 
 ## Config Loading

@@ -15,6 +15,7 @@ serde_json.workspace = true
 async-trait.workspace = true
 tracing.workspace = true
 sqlx = { workspace = true, features = ["runtime-tokio", "sqlite", "json"] }
+base64.workspace = true
 async-stream = { workspace = true }
 futures.workspace = true
 

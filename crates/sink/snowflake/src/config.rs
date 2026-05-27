@@ -3,6 +3,7 @@
 use faucet_core::DEFAULT_BATCH_SIZE;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use std::time::Duration;
 
 // Re-export the shared auth type so end-user imports remain stable
 // (`use faucet_sink_snowflake::SnowflakeAuth;` keeps working).
@@ -34,10 +35,28 @@ pub struct SnowflakeSinkConfig {
     /// so upstream `StreamPage` framing flows through untouched.
     #[serde(default = "default_batch_size")]
     pub batch_size: usize,
+    /// Maximum wall-clock time to wait for an asynchronously-executed
+    /// INSERT to finish. Snowflake's SQL REST API answers an accepted but
+    /// not-yet-finished statement with HTTP 202 and a `statementHandle`;
+    /// the sink polls `GET /api/v2/statements/{handle}` until the statement
+    /// reports success before counting the rows as written. Without this
+    /// the sink would report success the moment Snowflake *accepted* the
+    /// statement, losing durability. Defaults to 300 seconds. Set to `0`
+    /// to poll indefinitely.
+    #[serde(
+        default = "default_poll_timeout",
+        with = "faucet_core::config::duration_secs"
+    )]
+    #[schemars(with = "u64")]
+    pub poll_timeout: Duration,
 }
 
 fn default_batch_size() -> usize {
     DEFAULT_BATCH_SIZE
+}
+
+fn default_poll_timeout() -> Duration {
+    Duration::from_secs(300)
 }
 
 impl SnowflakeSinkConfig {
@@ -58,7 +77,15 @@ impl SnowflakeSinkConfig {
             table: table.into(),
             auth,
             batch_size: DEFAULT_BATCH_SIZE,
+            poll_timeout: default_poll_timeout(),
         }
+    }
+
+    /// Set the maximum wall-clock time spent polling an asynchronously
+    /// executed INSERT for completion. Pass `Duration::ZERO` to poll forever.
+    pub fn with_poll_timeout(mut self, timeout: Duration) -> Self {
+        self.poll_timeout = timeout;
+        self
     }
 
     /// Set the maximum number of records per Snowflake SQL REST API request.
@@ -101,6 +128,7 @@ mod tests {
         assert_eq!(config.database, "MY_DB");
         assert_eq!(config.schema, "PUBLIC");
         assert_eq!(config.table, "events");
+        assert_eq!(config.poll_timeout, Duration::from_secs(300));
     }
 
     #[test]

@@ -240,6 +240,8 @@ impl SnowflakeSource {
         token_type: &'static str,
     ) -> Result<StatementResponse, FaucetError> {
         let url = format!("{}/api/v2/statements/{}", self.base_url(), handle);
+        let poll_timeout = self.config.poll_timeout;
+        let started = std::time::Instant::now();
         loop {
             let resp = self
                 .client
@@ -253,6 +255,13 @@ impl SnowflakeSource {
 
             let status = resp.status();
             if status.as_u16() == 202 {
+                // `poll_timeout == 0` disables the cap (poll forever).
+                if !poll_timeout.is_zero() && started.elapsed() >= poll_timeout {
+                    return Err(FaucetError::Source(format!(
+                        "Snowflake statement '{handle}' did not finish within poll_timeout ({}s); still HTTP 202",
+                        poll_timeout.as_secs()
+                    )));
+                }
                 tokio::time::sleep(Duration::from_millis(500)).await;
                 continue;
             }

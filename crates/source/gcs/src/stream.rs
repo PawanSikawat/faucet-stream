@@ -78,46 +78,20 @@ impl GcsSource {
 
     /// Read the full body of a single GCS object into a UTF-8 `String`.
     async fn read_object_text(&self, key: &str) -> Result<String, FaucetError> {
-        let mut resp = self
-            .storage
-            .read_object(self.bucket_path(), key.to_string())
-            .send()
-            .await
-            .map_err(|e| {
-                FaucetError::Source(format!(
-                    "GCS get error for bucket '{}' key '{key}': {e}",
-                    self.config.bucket
-                ))
-            })?;
-
-        let mut buf: Vec<u8> = Vec::new();
-        while let Some(chunk) = resp.next().await {
-            let bytes = chunk.map_err(|e| {
-                FaucetError::Source(format!("GCS read body error for key '{key}': {e}"))
-            })?;
-            buf.extend_from_slice(&bytes);
-        }
-
-        #[cfg(feature = "compression")]
-        let buf = {
-            let codec = self.config.compression.resolve(key);
-            faucet_core::compression::warn_mismatch(key, codec);
-            if codec == faucet_core::Compression::None {
-                buf
-            } else {
-                use std::io::Read;
-                let mut r =
-                    faucet_core::compression::wrap_sync_reader(std::io::Cursor::new(buf), codec);
-                let mut out = Vec::new();
-                r.read_to_end(&mut out).map_err(|e| {
-                    FaucetError::Source(format!("decompression failed for key '{key}': {e}"))
-                })?;
-                out
-            }
-        };
-
-        String::from_utf8(buf)
-            .map_err(|e| FaucetError::Source(format!("GCS object '{key}' not valid UTF-8: {e}")))
+        // Stream the (optionally decompressed) body straight into one String
+        // via the same reader the line-streaming path uses, instead of holding
+        // the raw bytes AND the decompressed bytes AND the String at once
+        // (#78/#25). For JsonArray / RawText the whole object is still one
+        // unit, but peak memory is now ~1× the decoded size rather than ~3×.
+        use tokio::io::AsyncReadExt as _;
+        let mut reader = self.open_object_reader(key).await?;
+        let mut text = String::new();
+        reader.read_to_string(&mut text).await.map_err(|e| {
+            FaucetError::Source(format!(
+                "GCS read/decode error for key '{key}' (not valid UTF-8?): {e}"
+            ))
+        })?;
+        Ok(text)
     }
 
     /// Open a GCS object as an `AsyncBufRead` over its body so callers can

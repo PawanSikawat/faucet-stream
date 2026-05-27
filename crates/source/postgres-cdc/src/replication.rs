@@ -48,12 +48,14 @@ pub const POSTGRES_EPOCH_MICROS: i64 = 946_684_800_000_000;
 
 // ── Public type aliases ────────────────────────────────────────────────────
 
-/// Pre-stream handle.  Holds the validated `ReplicationParams` needed to open
-/// a replication slot or start streaming.  Obtained from [`connect`].
+/// Pre-stream handle returned by [`connect`] once the connection URL has been
+/// validated. The actual connection is opened by [`ensure_slot`] /
+/// [`start_replication`] from the borrowed [`ReplicationParams`], so this is a
+/// lightweight marker — it deliberately holds no owned copy of the connection
+/// string, which previously sat in leaked (`Box::leak`) heap for the process
+/// lifetime, including the password (#78/#13).
 pub struct Client {
-    // Will be read by `stream.rs` in a later task.
-    #[allow(dead_code)]
-    pub(crate) params: ReplicationParams<'static>,
+    _private: (),
 }
 
 /// Live replication stream.  Wraps [`pgwire_replication::ReplicationClient`].
@@ -88,6 +90,10 @@ pub struct ReplicationParams<'a> {
     /// TCP-level keepalive interval. Larger than `status_update_interval`
     /// in normal operation.
     pub tcp_keepalive: Duration,
+    /// Whether a newly-created slot is permanent or temporary.
+    pub slot_type: crate::config::SlotType,
+    /// TLS settings for the replication connection.
+    pub tls: &'a crate::config::CdcTls,
 }
 
 // ── Helper: parse a postgres URL into (host, port, user, password, dbname) ─
@@ -134,21 +140,10 @@ fn parse_url(url: &str) -> Result<PgCoords, FaucetError> {
 /// It does **not** open a TCP connection; actual connectivity is verified
 /// lazily when [`ensure_slot`] or [`start_replication`] is called.
 pub async fn connect(params: &ReplicationParams<'_>) -> Result<Client, FaucetError> {
-    // Eagerly validate the URL so bad configs fail fast.
+    // Eagerly validate the URL so bad configs fail fast. No part of the
+    // connection string is retained past this call.
     let _ = parse_url(params.connection_url)?;
-    Ok(Client {
-        params: ReplicationParams {
-            connection_url: params.connection_url.to_owned().leak(),
-            slot_name: params.slot_name.to_owned().leak(),
-            publication_name: params.publication_name.to_owned().leak(),
-            proto_version: params.proto_version,
-            create_slot_if_missing: params.create_slot_if_missing,
-            start_lsn: params.start_lsn,
-            // Duration is Copy — no leak needed.
-            status_update_interval: params.status_update_interval,
-            tcp_keepalive: params.tcp_keepalive,
-        },
-    })
+    Ok(Client { _private: () })
 }
 
 /// Ensure the replication slot exists.
@@ -162,7 +157,9 @@ pub async fn ensure_slot(
     connection_url: &str,
     slot_name: &str,
     create_if_missing: bool,
+    slot_type: crate::config::SlotType,
 ) -> Result<(), FaucetError> {
+    use crate::config::SlotType;
     // Use sqlx for the control-plane query (not a replication connection).
     let opts: PgConnectOptions = connection_url
         .parse()
@@ -194,19 +191,82 @@ pub async fn ensure_slot(
         )));
     }
 
-    // Create the slot using the pgoutput plugin.
+    // Create the slot using the pgoutput plugin. The third arg to
+    // pg_create_logical_replication_slot is `temporary`: a temporary slot is
+    // dropped when this session disconnects; a permanent slot persists (and
+    // pins WAL) until explicitly dropped.
     // `escape_simple` prevents injection via the slot name (already validated
     // to [a-z0-9_] by config, but defence-in-depth doesn't hurt).
+    let temporary = matches!(slot_type, SlotType::Temporary);
     let sql = format!(
-        "SELECT pg_create_logical_replication_slot({}, 'pgoutput')",
-        quote_literal(slot_name)
+        "SELECT pg_create_logical_replication_slot({}, 'pgoutput', {})",
+        quote_literal(slot_name),
+        temporary
     );
     conn.execute(sql.as_str())
         .await
         .map_err(|e| FaucetError::Source(format!("postgres-cdc create slot: {e}")))?;
 
-    debug!("postgres-cdc: created replication slot '{slot_name}'");
+    if temporary {
+        debug!("postgres-cdc: created temporary replication slot '{slot_name}'");
+    } else {
+        // A permanent slot retains WAL until consumed or dropped — surface it
+        // loudly so an abandoned slot doesn't silently fill pg_wal (#78/#12).
+        tracing::warn!(
+            "postgres-cdc: created PERMANENT replication slot '{slot_name}' — it will retain \
+             WAL on the server until consumed or explicitly dropped (drop_slot). Use \
+             slot_type=temporary for ephemeral runs."
+        );
+    }
     Ok(())
+}
+
+/// Drop a logical replication slot via a control-plane SQL call
+/// (`pg_drop_replication_slot`). A missing slot is treated as success (no-op);
+/// an active slot (currently in use by another connection) surfaces an error.
+pub async fn drop_slot(connection_url: &str, slot_name: &str) -> Result<(), FaucetError> {
+    let opts: PgConnectOptions = connection_url
+        .parse()
+        .map_err(|e| FaucetError::Config(format!("postgres-cdc: invalid connection URL: {e}")))?;
+    use sqlx::ConnectOptions as _;
+    let mut conn: PgConnection = opts
+        .connect()
+        .await
+        .map_err(|e| FaucetError::Source(format!("postgres-cdc drop_slot connect: {e}")))?;
+
+    let exists: Option<(String,)> =
+        sqlx::query_as("SELECT slot_name::text FROM pg_replication_slots WHERE slot_name = $1")
+            .bind(slot_name)
+            .fetch_optional(&mut conn)
+            .await
+            .map_err(|e| FaucetError::Source(format!("postgres-cdc slot lookup: {e}")))?;
+    if exists.is_none() {
+        debug!("postgres-cdc: replication slot '{slot_name}' already absent; drop is a no-op");
+        return Ok(());
+    }
+
+    sqlx::query("SELECT pg_drop_replication_slot($1)")
+        .bind(slot_name)
+        .execute(&mut conn)
+        .await
+        .map_err(|e| FaucetError::Source(format!("postgres-cdc drop slot: {e}")))?;
+    debug!("postgres-cdc: dropped replication slot '{slot_name}'");
+    Ok(())
+}
+
+/// Map the user-facing [`CdcTls`](crate::config::CdcTls) config onto
+/// pgwire-replication's [`TlsConfig`].
+fn tls_config(tls: &crate::config::CdcTls) -> TlsConfig {
+    use crate::config::CdcTls;
+    use std::path::PathBuf;
+    match tls {
+        CdcTls::Disable => TlsConfig::disabled(),
+        CdcTls::Require => TlsConfig::require(),
+        CdcTls::VerifyCa { ca_path } => TlsConfig::verify_ca(ca_path.clone().map(PathBuf::from)),
+        CdcTls::VerifyFull { ca_path } => {
+            TlsConfig::verify_full(ca_path.clone().map(PathBuf::from))
+        }
+    }
 }
 
 /// Advance the slot's `confirmed_flush_lsn` to `lsn` via a control-plane SQL
@@ -283,7 +343,7 @@ pub async fn start_replication(
         user: coords.user,
         password: coords.password,
         database: coords.dbname,
-        tls: TlsConfig::disabled(),
+        tls: tls_config(params.tls),
         slot: params.slot_name.to_owned(),
         publication: params.publication_name.to_owned(),
         start_lsn,
@@ -420,7 +480,26 @@ fn quote_literal(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::CdcTls;
     use chrono::{TimeZone, Utc};
+    use pgwire_replication::SslMode;
+
+    #[test]
+    fn tls_config_maps_each_mode() {
+        assert_eq!(tls_config(&CdcTls::Disable).mode, SslMode::Disable);
+        assert_eq!(tls_config(&CdcTls::Require).mode, SslMode::Require);
+        assert_eq!(
+            tls_config(&CdcTls::VerifyCa { ca_path: None }).mode,
+            SslMode::VerifyCa
+        );
+        assert_eq!(
+            tls_config(&CdcTls::VerifyFull {
+                ca_path: Some("/ca.pem".into())
+            })
+            .mode,
+            SslMode::VerifyFull
+        );
+    }
 
     /// Convenience: turn `postgres_clock_to_unix_ms`-compatible math into a
     /// `DateTime<Utc>`.  Used by tests only.

@@ -67,9 +67,12 @@ The exact behaviour depends on `file_format`:
   across object boundaries — a single page may carry lines drawn from
   multiple objects.
 - **`RawText`** — each object contributes exactly one record
-  (`{"key": ..., "content": ...}`). The body is buffered fully (the
-  contract requires the file contents as a string), then accumulated into
-  the same `batch_size` buffer that JsonLines uses.
+  (`{"key": ..., "content": ...}`). The contract requires the whole file
+  as a single string, so the object is necessarily held in memory once,
+  but it is streamed straight into that one `String` via the same
+  decoding reader `JsonLines` uses (no separate raw + decompressed copies
+  for compressed objects). Records are then accumulated into the same
+  `batch_size` buffer JsonLines uses.
 - **`JsonArray`** — the array can only be validated once the closing `]`
   is observed, so each object is buffered fully and then its records are
   chunked into pages of `batch_size`. This bounds *page* size at
@@ -77,6 +80,15 @@ The exact behaviour depends on `file_format`:
   stream arbitrarily large array files should be re-emitted as `JsonLines`
   upstream. The default `batch_size = 1000` keeps allocation reasonable
   for typical sizes.
+
+> **Memory ceiling — `RawText` / `JsonArray`.** Both formats hold one
+> whole decoded object in memory at a time (this is inherent: `RawText`'s
+> record *is* the whole file, and a JSON array isn't valid until its
+> closing `]`). Because objects are fetched concurrently, peak memory is
+> bounded by roughly **`concurrency` × (largest object's decoded size)**,
+> not by `batch_size`. If you read large `RawText` / `JsonArray` objects,
+> lower `concurrency` to cap peak memory, or re-emit the data as
+> `JsonLines` upstream so it streams line-by-line at `O(batch_size)`.
 
 `batch_size = 0` is the **"no batching" sentinel**: every emitted
 `StreamPage` corresponds to exactly one S3 object — no within-object

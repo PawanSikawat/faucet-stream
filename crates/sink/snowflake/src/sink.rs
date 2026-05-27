@@ -25,6 +25,26 @@ struct SnowflakeResponse {
     message: Option<String>,
     #[serde(default)]
     code: Option<String>,
+    /// Present on an HTTP 202 (asynchronous execution) response — the
+    /// opaque handle used to poll the statement to completion.
+    #[serde(rename = "statementHandle", default)]
+    statement_handle: Option<String>,
+}
+
+/// Map a parsed statement response onto a success/error result. Code
+/// `090001` is "Statement executed successfully"; any other non-null code
+/// is a Snowflake-side error.
+fn check_statement_code(sf_resp: &SnowflakeResponse) -> Result<(), FaucetError> {
+    if let Some(code) = &sf_resp.code
+        && code != "090001"
+    {
+        return Err(FaucetError::Sink(format!(
+            "Snowflake error {}: {}",
+            code,
+            sf_resp.message.clone().unwrap_or_default()
+        )));
+    }
+    Ok(())
 }
 
 impl SnowflakeSink {
@@ -100,23 +120,74 @@ impl SnowflakeSink {
             )));
         }
 
+        // HTTP 202 means Snowflake *accepted* the statement but has not yet
+        // executed it. Treating that as success would report rows as written
+        // before they are actually committed. Poll the returned handle until
+        // the statement completes (#78/#17).
+        let is_async = status.as_u16() == 202;
+
         let sf_resp: SnowflakeResponse = resp
             .json()
             .await
             .map_err(|e| FaucetError::Sink(format!("failed to parse Snowflake response: {e}")))?;
 
-        if let Some(code) = &sf_resp.code
-            && code != "090001"
-        {
-            // 090001 = "Statement executed successfully"
-            return Err(FaucetError::Sink(format!(
-                "Snowflake error {}: {}",
-                code,
-                sf_resp.message.unwrap_or_default()
-            )));
+        if is_async {
+            let handle = sf_resp.statement_handle.ok_or_else(|| {
+                FaucetError::Sink(
+                    "Snowflake returned HTTP 202 without a statementHandle to poll".into(),
+                )
+            })?;
+            return self.poll_until_complete(&handle, &auth, token_type).await;
         }
 
-        Ok(())
+        check_statement_code(&sf_resp)
+    }
+
+    /// Poll `GET /api/v2/statements/{handle}` until the statement finishes
+    /// executing (HTTP 200 + code `090001`), bounded by `poll_timeout`.
+    async fn poll_until_complete(
+        &self,
+        handle: &str,
+        auth: &str,
+        token_type: &'static str,
+    ) -> Result<(), FaucetError> {
+        let url = format!("{}/{}", self.api_url(), handle);
+        let poll_timeout = self.config.poll_timeout;
+        let started = std::time::Instant::now();
+        loop {
+            let resp = self
+                .client
+                .get(&url)
+                .header("Authorization", auth)
+                .header("Accept", "application/json")
+                .header("X-Snowflake-Authorization-Token-Type", token_type)
+                .send()
+                .await
+                .map_err(|e| FaucetError::Sink(format!("Snowflake poll request failed: {e}")))?;
+
+            let status = resp.status();
+            if status.as_u16() == 202 {
+                // `poll_timeout == 0` disables the cap (poll forever).
+                if !poll_timeout.is_zero() && started.elapsed() >= poll_timeout {
+                    return Err(FaucetError::Sink(format!(
+                        "Snowflake statement '{handle}' did not finish within poll_timeout ({}s); still HTTP 202",
+                        poll_timeout.as_secs()
+                    )));
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                continue;
+            }
+            if !status.is_success() {
+                let body_text = resp.text().await.unwrap_or_default();
+                return Err(FaucetError::Sink(format!(
+                    "Snowflake poll returned HTTP {status}: {body_text}"
+                )));
+            }
+            let sf_resp: SnowflakeResponse = resp.json().await.map_err(|e| {
+                FaucetError::Sink(format!("failed to parse Snowflake poll response: {e}"))
+            })?;
+            return check_statement_code(&sf_resp);
+        }
     }
 
     /// Build an INSERT statement plus the JSON payload to bind to its single

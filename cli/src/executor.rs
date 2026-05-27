@@ -105,15 +105,16 @@ pub async fn run_expanded(nodes: Vec<ExpandedNode>, opts: ExecuteOptions) -> Cli
     let semaphore = Arc::new(Semaphore::new(max_concurrent));
 
     // Index nodes by id for parent → children lookups.
-    let by_id: HashMap<String, usize> = nodes
-        .iter()
-        .enumerate()
-        .map(|(i, n)| (n.id.clone(), i))
-        .collect();
-    let mut children_of: HashMap<String, Vec<usize>> = HashMap::new();
-    for (i, n) in nodes.iter().enumerate() {
+    // parent id → child node ids. Keyed and valued by id (not Vec index) so the
+    // failure cascade can look children up directly instead of indexing into a
+    // HashMap's nondeterministic iteration order (#78/#24).
+    let mut children_of: HashMap<String, Vec<String>> = HashMap::new();
+    for n in nodes.iter() {
         if let NodeRole::Child { parent_id, .. } = &n.role {
-            children_of.entry(parent_id.clone()).or_default().push(i);
+            children_of
+                .entry(parent_id.clone())
+                .or_default()
+                .push(n.id.clone());
         }
     }
 
@@ -163,8 +164,17 @@ pub async fn run_expanded(nodes: Vec<ExpandedNode>, opts: ExecuteOptions) -> Cli
             .collect();
 
         if ready.is_empty() {
-            // Should not happen given expand.rs's invariants, but be defensive.
-            break;
+            // No node is ready but some remain — an expand.rs invariant was
+            // violated (e.g. an orphaned parent reference). Surface it instead
+            // of silently dropping the remaining work and reporting success
+            // (#78/#24).
+            let mut stuck: Vec<String> = remaining.iter().cloned().collect();
+            stuck.sort();
+            return Err(CliError::Internal(format!(
+                "executor deadlock: {} node(s) never became ready (no completed/skipped parent): {}",
+                stuck.len(),
+                stuck.join(", ")
+            )));
         }
 
         // Build the work units for this level. Each unit is one invocation —
@@ -220,7 +230,6 @@ pub async fn run_expanded(nodes: Vec<ExpandedNode>, opts: ExecuteOptions) -> Cli
                         if !seen_keys.insert(state_key.clone()) {
                             return Err(CliError::DuplicateStateKey {
                                 id: node.id.clone(),
-                                other_id: node.id.clone(),
                                 state_key,
                             });
                         }
@@ -248,50 +257,68 @@ pub async fn run_expanded(nodes: Vec<ExpandedNode>, opts: ExecuteOptions) -> Cli
         // `stop`). Under `on_error: continue` every spawned task runs to
         // completion regardless of sibling failures.
         let mut joinset = tokio::task::JoinSet::new();
+        // Map each spawned task's id back to its row id + parent key so that a
+        // panic (surfaced as a JoinError, which doesn't carry the unit) can be
+        // attributed to the right invocation.
+        let mut task_meta: HashMap<tokio::task::Id, (String, Option<String>)> = HashMap::new();
         for unit in units {
             let sem = Arc::clone(&semaphore);
             let opts2 = Arc::clone(&opts);
             let captured = Arc::clone(&captured);
             let needs_capture = nodes_with_descendants.contains(&unit.node.id);
-            joinset.spawn(async move {
+            let meta = (unit.node.id.clone(), unit.parent_record_key.clone());
+            let handle = joinset.spawn(async move {
                 let _permit = sem.acquire().await.expect("semaphore not closed");
                 run_unit(&unit, needs_capture, &captured, &opts2).await
             });
+            task_meta.insert(handle.id(), meta);
         }
 
         let mut stop_triggered = false;
-        while let Some(joined) = joinset.join_next().await {
-            match joined {
-                Ok(outcome) => {
-                    if let Some(err) = &outcome.error {
-                        tracing::error!(
-                            row = %outcome.row_id, error = %err,
-                            "pipeline invocation failed"
-                        );
-                        had_level_failure = true;
-                        nodes_with_any_failure.insert(outcome.row_id.clone());
-                        if matches!(on_error, OnError::Stop) && !stop_triggered {
-                            stop_triggered = true;
-                            tracing::error!(
-                                "on_error: stop — aborting every in-flight and pending invocation"
-                            );
-                            joinset.abort_all();
-                        }
-                    } else {
-                        tracing::info!(
-                            row = %outcome.row_id,
-                            records_written = outcome.records_written,
-                            "pipeline invocation completed"
-                        );
-                    }
-                    outcomes.push(outcome);
-                }
+        while let Some(joined) = joinset.join_next_with_id().await {
+            // A failure (an `Err` outcome or a panicked task) marks the level
+            // failed and, under `on_error: stop`, aborts the rest. A panicking
+            // connector must NOT take down the whole process (#78/#24).
+            let outcome = match joined {
+                Ok((_id, outcome)) => outcome,
                 Err(e) if e.is_cancelled() => {
-                    // Expected after abort_all() — task was cancelled before
-                    // (or during) real work. Not counted as failure or success.
+                    // Expected after abort_all() — cancelled before/at an await.
+                    // Not counted as a failure or a success.
+                    continue;
                 }
-                Err(e) => panic!("pipeline invocation task panicked: {e}"),
+                Err(e) => {
+                    let (row_id, parent_record_key) = task_meta
+                        .get(&e.id())
+                        .cloned()
+                        .unwrap_or_else(|| ("<unknown>".to_string(), None));
+                    InvocationOutcome {
+                        row_id,
+                        parent_record_key,
+                        records_written: 0,
+                        error: Some(format!("pipeline invocation task panicked: {e}")),
+                    }
+                }
+            };
+
+            if let Some(err) = &outcome.error {
+                tracing::error!(row = %outcome.row_id, error = %err, "pipeline invocation failed");
+                had_level_failure = true;
+                nodes_with_any_failure.insert(outcome.row_id.clone());
+                if matches!(on_error, OnError::Stop) && !stop_triggered {
+                    stop_triggered = true;
+                    tracing::error!(
+                        "on_error: stop — aborting every in-flight and pending invocation"
+                    );
+                    joinset.abort_all();
+                }
+            } else {
+                tracing::info!(
+                    row = %outcome.row_id,
+                    records_written = outcome.records_written,
+                    "pipeline invocation completed"
+                );
             }
+            outcomes.push(outcome);
         }
 
         // Mark ready nodes done (some may have produced both successes and
@@ -303,15 +330,8 @@ pub async fn run_expanded(nodes: Vec<ExpandedNode>, opts: ExecuteOptions) -> Cli
                 skipped_subtrees.insert(id.clone());
                 // Cascade to descendants in case we have multi-level chains.
                 if let Some(children) = children_of.get(&id) {
-                    for &ci in children {
-                        let cid = nodes_by_id
-                            .values()
-                            .nth(ci)
-                            .map(|n| n.id.clone())
-                            .unwrap_or_default();
-                        if !cid.is_empty() {
-                            skipped_subtrees.insert(cid);
-                        }
+                    for cid in children {
+                        skipped_subtrees.insert(cid.clone());
                     }
                 }
             } else {
@@ -325,9 +345,6 @@ pub async fn run_expanded(nodes: Vec<ExpandedNode>, opts: ExecuteOptions) -> Cli
             break;
         }
     }
-
-    // Reference fields we may not have read explicitly so dead-code-warnings stay quiet.
-    let _ = (&by_id, &children_of);
 
     Ok(RunSummary {
         invocations: outcomes,

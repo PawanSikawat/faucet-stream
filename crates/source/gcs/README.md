@@ -81,11 +81,14 @@ parse errors include the object key. Non-UTF-8 bodies surface as
 
 ## Streaming and batching
 
-`Source::stream_pages` is overridden for `JsonLines` and `RawText` so that
-client-side memory stays bounded at O(`batch_size`) per object. `JsonArray`
-buffers each object fully (the closing `]` is required to parse the
-structure) and then chunks; very large arrays hold the full object in
-memory once.
+`Source::stream_pages` decodes `JsonLines` line-by-line so client-side
+memory stays bounded at O(`batch_size`) regardless of file size.
+`RawText` emits one record per object (`{"key": ..., "content": ...}`):
+the whole file is inherently its record, but it is streamed straight into
+one `String` via the same decoding reader `JsonLines` uses — no separate
+raw + decompressed copies for compressed objects. `JsonArray` buffers
+each object fully (the closing `]` is required to parse the structure)
+and then chunks; very large arrays hold the full object in memory once.
 
 `batch_size = 0` is the **no-batching sentinel**: every page contains one
 complete object, with no within-object chunking and no cross-object
@@ -95,6 +98,15 @@ For non-zero `batch_size`, lines from multiple objects can share a page
 (cross-object flattening). The S3 source documents the same caveat — this
 is intentional.
 
+> **Memory ceiling — `RawText` / `JsonArray`.** Both hold one whole
+> decoded object in memory at a time (inherent: `RawText`'s record *is*
+> the whole file, and a JSON array isn't valid until its closing `]`).
+> Objects are fetched concurrently, so peak memory is bounded by roughly
+> **`concurrency` × (largest object's decoded size)**, not by
+> `batch_size`. For large `RawText` / `JsonArray` objects, lower
+> `concurrency` to cap peak memory, or re-emit the data as `JsonLines`
+> upstream so it streams at `O(batch_size)`.
+
 ## Errors
 
 | Failure | `FaucetError` variant | Message shape |
@@ -103,7 +115,7 @@ is intentional.
 | List API error | `Source` | `"GCS list error for bucket '{bucket}': {e}"` |
 | Get object API error | `Source` | `"GCS get error for bucket '{bucket}' key '{key}': {e}"` |
 | Body read error | `Source` | `"GCS read body error for key '{key}': {e}"` |
-| Non-UTF-8 body | `Source` | `"GCS object '{key}' not valid UTF-8: {e}"` |
+| Read / decode / non-UTF-8 body (`RawText` / `JsonArray`) | `Source` | `"GCS read/decode error for key '{key}' (not valid UTF-8?): {e}"` |
 | JSON parse error | `Source` | `"GCS JSON parse error in '{key}' at line N: ..."` |
 
 ## Running the tests

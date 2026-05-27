@@ -79,6 +79,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 | `reconnect_initial_backoff` | `Duration` (secs) | `1` | Server-streaming only. Initial backoff before the first reconnect attempt; doubles after each failure up to `reconnect_max_backoff` |
 | `reconnect_max_backoff` | `Duration` (secs) | `30` | Server-streaming only. Upper bound on reconnect backoff |
 | `reconnect_max_attempts` | `Option<u32>` | `None` | Server-streaming only. Maximum reconnect attempts before surfacing the error. `None` means unlimited |
+| `reconnect_replay_from_start` | `bool` | `true` | Server-streaming only. Whether the server replays the stream from message 0 when the same request is re-issued on reconnect. `true` (default) skips already-emitted messages so each is delivered once; `false` emits every received message (at-least-once). See [Reconnect on transient errors](#reconnect-on-transient-errors) |
+| `max_decoding_message_size` | `Option<usize>` | `None` | Maximum size in bytes of a single inbound (decoded) message. `None` keeps tonic's built-in 4 MiB limit. Raise for sources that return large messages |
+| `max_encoding_message_size` | `Option<usize>` | `None` | Maximum size in bytes of a single outbound (encoded) request message. `None` keeps tonic's built-in limit |
 
 ### Authentication (GrpcAuth)
 
@@ -106,7 +109,9 @@ When `rpc_kind = "server_streaming"`, the source calls `tonic::client::Grpc::ser
 
 By default, transient stream errors (server disconnects, transport failures, etc.) trigger a reconnect with exponential backoff starting at `reconnect_initial_backoff`, doubling each attempt up to `reconnect_max_backoff`. After `reconnect_max_attempts` (when set), the error is surfaced. Set `terminate_on_error = true` to skip the reconnect path entirely and propagate the error on first failure.
 
-**Caveat:** reconnect re-sends the same request from scratch, so the server begins emitting from the start of the stream again unless the request includes a resume token (e.g. an `after_event_id` field) that the user maintains. Records received before the disconnect are still delivered downstream — they are not retracted.
+Reconnect re-sends the *same* request from scratch (the request is resolved once per run), so a stateless server begins emitting from the start of the stream again. By default (`reconnect_replay_from_start = true`) the source tracks how many messages it has already emitted and **skips that replayed prefix** on the reconnected attempt, so each message is delivered downstream exactly once.
+
+Set `reconnect_replay_from_start = false` only for servers that resume mid-stream on an identical request (rare — most resumable feeds require a resume token *in the request*, e.g. an `after_event_id` field the user maintains). With it `false`, every received message is emitted (at-least-once), so a replayed prefix produces duplicates downstream; conversely, leaving it `true` against a genuinely-resuming server would skip legitimate new messages. Match the setting to the server's replay semantics.
 
 ## Config Loading
 
@@ -158,6 +163,8 @@ let config: GrpcStreamConfig = load_env_file(".env", "GRPC")?;
   "reconnect_initial_backoff": 1,
   "reconnect_max_backoff": 30,
   "reconnect_max_attempts": null,
+  "reconnect_replay_from_start": true,
+  "max_decoding_message_size": 16777216,
   "batch_size": 500
 }
 ```

@@ -61,7 +61,7 @@ impl GrpcStream {
         match self.config.rpc_kind {
             RpcKind::Unary => {
                 let channel = self.connect_channel(endpoint).await?;
-                let mut grpc_client = tonic::client::Grpc::new(channel);
+                let mut grpc_client = self.configure_client(tonic::client::Grpc::new(channel));
                 grpc_client
                     .ready()
                     .await
@@ -197,7 +197,7 @@ impl GrpcStream {
             }
         };
 
-        let mut grpc_client = tonic::client::Grpc::new(channel);
+        let mut grpc_client = self.configure_client(tonic::client::Grpc::new(channel));
         if let Err(e) = grpc_client.ready().await {
             return Err(StreamOutcome::Transient {
                 consumed: 0,
@@ -231,31 +231,52 @@ impl GrpcStream {
 
         let mut streaming = response.into_inner();
         let records_path = self.config.records_path.as_deref();
-        let mut consumed: usize = 0;
+        // On a reconnect a stateless server replays the stream from message 0.
+        // Skip the messages we already emitted before the disconnect so each
+        // is delivered to the consumer exactly once. Disabled (skip = 0) when
+        // the server is known to resume mid-stream on the same request.
+        let skip = if self.config.reconnect_replay_from_start {
+            already_seen
+        } else {
+            0
+        };
+        let mut position: usize = 0; // messages read from this attempt's stream
+        let mut emitted: usize = 0; // messages newly emitted this attempt
 
         loop {
-            if already_seen + consumed >= max_messages {
-                return Err(StreamOutcome::Done(consumed));
+            if already_seen + emitted >= max_messages {
+                return Err(StreamOutcome::Done(emitted));
             }
             match streaming.message().await {
                 Ok(Some(msg)) => {
+                    position += 1;
+                    if position <= skip {
+                        // Replayed message we already emitted — discard it.
+                        continue;
+                    }
                     let records = match serialize_and_extract(&msg, records_path) {
                         Ok(r) => r,
                         Err(e) => {
-                            return Err(StreamOutcome::Transient { consumed, error: e });
+                            return Err(StreamOutcome::Transient {
+                                consumed: emitted,
+                                error: e,
+                            });
                         }
                     };
                     if let Err(e) = on_records(records) {
-                        return Err(StreamOutcome::Transient { consumed, error: e });
+                        return Err(StreamOutcome::Transient {
+                            consumed: emitted,
+                            error: e,
+                        });
                     }
-                    consumed += 1;
+                    emitted += 1;
                 }
                 Ok(None) => {
-                    return Ok(consumed);
+                    return Ok(emitted);
                 }
                 Err(status) => {
                     return Err(StreamOutcome::Transient {
-                        consumed,
+                        consumed: emitted,
                         error: FaucetError::Source(format!(
                             "gRPC server-streaming recv failed: {status}"
                         )),
@@ -320,6 +341,21 @@ impl GrpcStream {
         };
 
         Ok(channel)
+    }
+
+    /// Apply the configured inbound/outbound message-size limits to a tonic
+    /// client. `None` leaves tonic's built-in defaults (4 MiB decode) in place.
+    fn configure_client(
+        &self,
+        mut client: tonic::client::Grpc<Channel>,
+    ) -> tonic::client::Grpc<Channel> {
+        if let Some(n) = self.config.max_decoding_message_size {
+            client = client.max_decoding_message_size(n);
+        }
+        if let Some(n) = self.config.max_encoding_message_size {
+            client = client.max_encoding_message_size(n);
+        }
+        client
     }
 
     /// Wrap raw request bytes in a `tonic::Request` and attach auth metadata.

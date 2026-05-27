@@ -69,6 +69,8 @@ fn cfg(url: &str, slot: &str, publication: &str) -> PostgresCdcSourceConfig {
         slot_name: slot.into(),
         publication_name: publication.into(),
         create_slot_if_missing: true,
+        slot_type: faucet_source_postgres_cdc::SlotType::Permanent,
+        tls: faucet_source_postgres_cdc::CdcTls::Disable,
         start_lsn: None,
         proto_version: 1,
         idle_timeout: Duration::from_secs(5),
@@ -196,6 +198,56 @@ async fn missing_slot_with_create_if_missing_creates_it() {
         .await
         .expect("slot exists");
     assert_eq!(row.get::<_, i32>(0), 1);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn drop_slot_removes_the_slot() {
+    // #78/#12: drop_slot must remove a permanent slot (freeing its WAL).
+    let (_pg, url) = start_postgres().await;
+    ddl(
+        &url,
+        "CREATE TABLE public.t (id int PRIMARY KEY); \
+         CREATE PUBLICATION faucet_pub FOR TABLE public.t;",
+    )
+    .await;
+
+    let source = PostgresCdcSource::new(cfg(&url, "drop_me", "faucet_pub"))
+        .await
+        .expect("source");
+    let _ = source
+        .fetch_all_incremental()
+        .await
+        .expect("warm-up creates slot");
+
+    // Slot exists now.
+    let (client, conn) = tokio_postgres::connect(&url, NoTls).await.unwrap();
+    tokio::spawn(async move {
+        let _ = conn.await;
+    });
+    let before: i64 = client
+        .query_one(
+            "SELECT count(*)::int8 FROM pg_replication_slots WHERE slot_name = $1",
+            &[&"drop_me"],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(before, 1, "slot should exist after warm-up");
+
+    source.drop_slot().await.expect("drop_slot");
+
+    let after: i64 = client
+        .query_one(
+            "SELECT count(*)::int8 FROM pg_replication_slots WHERE slot_name = $1",
+            &[&"drop_me"],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(after, 0, "slot must be gone after drop_slot");
+
+    // Dropping again is a no-op (not an error).
+    source.drop_slot().await.expect("drop_slot is idempotent");
 }
 
 #[tokio::test(flavor = "multi_thread")]

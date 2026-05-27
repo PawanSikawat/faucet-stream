@@ -12,7 +12,7 @@ pub mod replication;
 pub mod state;
 pub mod stream;
 
-pub use config::PostgresCdcSourceConfig;
+pub use config::{CdcTls, PostgresCdcSourceConfig, SlotType};
 pub use faucet_core::{FaucetError, Source};
 pub use state::Bookmark;
 pub use stream::PostgresCdcSource;

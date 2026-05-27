@@ -103,48 +103,22 @@ impl S3Source {
     }
 
     /// Read the full body of a single S3 object into a UTF-8 `String`.
+    ///
+    /// Streams the (optionally decompressed) body straight into one `String`
+    /// via [`open_object_reader`](Self::open_object_reader) rather than
+    /// buffering the raw bytes AND the decompressed bytes AND the `String`
+    /// at once (#78/#25). The whole object is still one unit for
+    /// `JsonArray` / `RawText`, but peak memory is now ~1× the decoded size.
     async fn read_object_text(&self, key: &str) -> Result<String, FaucetError> {
-        let response = self
-            .client
-            .get_object()
-            .bucket(&self.config.bucket)
-            .key(key)
-            .send()
-            .await
-            .map_err(|e| {
-                FaucetError::Config(format!("S3 get object error for key '{key}': {e}"))
-            })?;
-
-        let body =
-            response.body.collect().await.map_err(|e| {
-                FaucetError::Config(format!("S3 read body error for key '{key}': {e}"))
-            })?;
-        let bytes = body.into_bytes();
-
-        #[cfg(feature = "compression")]
-        let bytes = {
-            let codec = self.config.compression.resolve(key);
-            faucet_core::compression::warn_mismatch(key, codec);
-            if codec == faucet_core::Compression::None {
-                bytes.to_vec()
-            } else {
-                use std::io::Read;
-                let mut r = faucet_core::compression::wrap_sync_reader(
-                    std::io::Cursor::new(bytes.to_vec()),
-                    codec,
-                );
-                let mut out = Vec::new();
-                r.read_to_end(&mut out).map_err(|e| {
-                    FaucetError::Source(format!("decompression failed for key '{key}': {e}"))
-                })?;
-                out
-            }
-        };
-        #[cfg(not(feature = "compression"))]
-        let bytes = bytes.to_vec();
-
-        String::from_utf8(bytes)
-            .map_err(|e| FaucetError::Config(format!("S3 UTF-8 decode error for key '{key}': {e}")))
+        use tokio::io::AsyncReadExt as _;
+        let mut reader = self.open_object_reader(key).await?;
+        let mut text = String::new();
+        reader.read_to_string(&mut text).await.map_err(|e| {
+            FaucetError::Config(format!(
+                "S3 read/decode error for key '{key}' (not valid UTF-8?): {e}"
+            ))
+        })?;
+        Ok(text)
     }
 
     /// Open an S3 object as an [`AsyncBufRead`](tokio::io::AsyncBufRead) over

@@ -8,7 +8,12 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(default)]
 pub struct WebhookSourceConfig {
-    /// Address to bind the HTTP server to (default: `"0.0.0.0:8080"`).
+    /// Address to bind the HTTP server to (default: `"127.0.0.1:8080"`).
+    ///
+    /// **Security:** the default binds to loopback only. Binding to
+    /// `0.0.0.0` exposes the receiver to the whole network — only do so
+    /// behind a trusted gateway, and set `auth_token` to require a shared
+    /// secret on every request.
     pub listen_addr: String,
     /// Endpoint path for receiving webhooks (default: `"/webhook"`).
     pub path: String,
@@ -16,6 +21,15 @@ pub struct WebhookSourceConfig {
     pub max_payloads: Option<usize>,
     /// How long to listen before returning, in seconds (default: 30).
     pub timeout_secs: u64,
+    /// Maximum accepted request body size in bytes (default: 1 MiB). Larger
+    /// POSTs are rejected with `413 Payload Too Large` so a single huge
+    /// request can't exhaust memory.
+    pub max_body_bytes: usize,
+    /// Optional shared secret. When set, every request must carry it in the
+    /// `Authorization` header (either the raw token or `Bearer <token>`);
+    /// requests without it are rejected with `401 Unauthorized`. When `None`
+    /// (default) the endpoint is unauthenticated.
+    pub auth_token: Option<String>,
     /// Records per emitted [`StreamPage`](faucet_core::StreamPage). The webhook
     /// source has no native streaming primitive — it accumulates incoming POSTs
     /// into an in-memory buffer during the receive window, then the default
@@ -37,10 +51,12 @@ fn default_batch_size() -> usize {
 impl Default for WebhookSourceConfig {
     fn default() -> Self {
         Self {
-            listen_addr: "0.0.0.0:8080".into(),
+            listen_addr: "127.0.0.1:8080".into(),
             path: "/webhook".into(),
             max_payloads: None,
             timeout_secs: 30,
+            max_body_bytes: 1024 * 1024,
+            auth_token: None,
             batch_size: DEFAULT_BATCH_SIZE,
         }
     }
@@ -76,6 +92,18 @@ impl WebhookSourceConfig {
         self
     }
 
+    /// Set the maximum accepted request body size in bytes.
+    pub fn max_body_bytes(mut self, bytes: usize) -> Self {
+        self.max_body_bytes = bytes;
+        self
+    }
+
+    /// Require a shared-secret token in the `Authorization` header.
+    pub fn auth_token(mut self, token: impl Into<String>) -> Self {
+        self.auth_token = Some(token.into());
+        self
+    }
+
     /// Set the per-page record count for
     /// [`Source::stream_pages`](faucet_core::Source::stream_pages).
     ///
@@ -96,10 +124,15 @@ mod tests {
     #[test]
     fn default_config() {
         let config = WebhookSourceConfig::new();
-        assert_eq!(config.listen_addr, "0.0.0.0:8080");
+        assert_eq!(
+            config.listen_addr, "127.0.0.1:8080",
+            "default must bind loopback only, not 0.0.0.0"
+        );
         assert_eq!(config.path, "/webhook");
         assert!(config.max_payloads.is_none());
         assert_eq!(config.timeout_secs, 30);
+        assert_eq!(config.max_body_bytes, 1024 * 1024);
+        assert!(config.auth_token.is_none());
     }
 
     #[test]

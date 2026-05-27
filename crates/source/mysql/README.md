@@ -92,6 +92,9 @@ Columns are automatically converted to JSON values:
 | `double` | `number` (f64) |
 | `float` | `number` (f32) |
 | `tinyint(1)`, `boolean` | `boolean` |
+| `datetime`, `timestamp`, `date`, `time` | `string` (RFC 3339 / ISO-8601) |
+| `decimal`, `numeric` | `string` (exact precision preserved) |
+| `blob`, `binary`, `varbinary` | `string` (base64) |
 | Other / `NULL` | `null` |
 
 ## Config Loading

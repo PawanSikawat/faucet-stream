@@ -96,6 +96,8 @@ Every change event is one JSON object:
 | `slot_name`                 | string   | —       | Logical replication slot. Must match `[a-z0-9_]{1,63}`. |
 | `publication_name`          | string   | —       | Publication that selects which tables are replicated. |
 | `create_slot_if_missing`    | bool     | `true`  | Create the slot on first run if it does not exist. |
+| `slot_type`                 | enum     | `permanent` | `permanent` (survives disconnect, pins WAL until consumed/dropped) or `temporary` (auto-dropped on disconnect; resets resume position, so not for cross-run bookmark resume). Permanent-slot creation logs a loud warning. Drop an unused permanent slot via `PostgresCdcSource::drop_slot()`. |
+| `tls`                       | object   | `{mode: disable}` | Replication-connection TLS: `{mode: disable}` (plaintext, default), `{mode: require}`, `{mode: verify_ca, ca_path?}`, or `{mode: verify_full, ca_path?}`. Use `require`/`verify_*` in production — `disable` sends credentials and WAL in plaintext. |
 | `start_lsn`                 | string?  | `null`  | One-time override (e.g. `"0/16A4F88"`); ignored if a state-store bookmark exists. |
 | `proto_version`             | u32      | `1`     | pgoutput protocol version. Only `1` is supported in this release. |
 | `idle_timeout`              | seconds  | `30`    | Stop the current fetch cycle after this long without a new replication message. |
@@ -153,7 +155,14 @@ source transactions fit comfortably in memory.
   resumes from the persisted bookmark. Without a state store it never
   advances at all and WAL is retained indefinitely. Always configure a state
   store in production, and run frequently enough (or keep fetch cycles short
-  enough) that WAL retention stays within your disk budget.
+  enough) that WAL retention stays within your disk budget. A **permanent**
+  slot (the default) keeps pinning WAL even when no consumer is connected, so
+  decommission an unused pipeline by calling `PostgresCdcSource::drop_slot()`
+  (or set `slot_type: temporary` for ephemeral runs that should self-clean on
+  disconnect).
+- **Encryption:** the replication connection is plaintext unless you set
+  `tls` to `require` / `verify_ca` / `verify_full` — credentials and WAL data
+  travel unencrypted under the default `disable`.
 - **Heartbeats:** if the network is silent for longer than the server's
   `wal_sender_timeout` (default 60 s), Postgres kills the replication
   connection. The default `status_update_interval` of 10 s leaves ample

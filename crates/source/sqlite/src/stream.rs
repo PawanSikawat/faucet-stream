@@ -55,6 +55,13 @@ fn sqlite_value_to_json(row: &sqlx::sqlite::SqliteRow, col_name: &str) -> Value 
     if let Ok(v) = row.try_get::<bool, _>(col_name) {
         return Value::Bool(v);
     }
+    // BLOB → base64 so binary survives the JSON round-trip instead of decoding
+    // to Null (#78/#43). SQLite has no native datetime/uuid/decimal types —
+    // those are stored as TEXT/INTEGER/REAL and handled by the arms above.
+    if let Ok(v) = row.try_get::<Vec<u8>, _>(col_name) {
+        use base64::Engine as _;
+        return Value::String(base64::engine::general_purpose::STANDARD.encode(v));
+    }
 
     Value::Null
 }
@@ -236,6 +243,28 @@ mod tests {
         let row0 = &rows[0];
         assert_eq!(row0.try_get::<i64, _>("id").unwrap(), 1);
         assert_eq!(row0.try_get::<String, _>("name").unwrap(), "Alice");
+    }
+
+    #[tokio::test]
+    async fn blob_column_decodes_to_base64() {
+        // Regression for #78/#43: a BLOB column must become base64, not Null.
+        let config = SqliteSourceConfig::new("sqlite::memory:", "SELECT 1");
+        let source = SqliteSource::new(config).await.unwrap();
+        sqlx::query("CREATE TABLE b (id INTEGER, data BLOB)")
+            .execute(&source.pool)
+            .await
+            .unwrap();
+        // X'00FF' = bytes [0x00, 0xFF] — non-UTF8 so it can't be read as text.
+        sqlx::query("INSERT INTO b (id, data) VALUES (1, X'00FF')")
+            .execute(&source.pool)
+            .await
+            .unwrap();
+        let rows = sqlx::query("SELECT data FROM b")
+            .fetch_all(&source.pool)
+            .await
+            .unwrap();
+        let v = sqlite_value_to_json(&rows[0], "data");
+        assert_eq!(v, Value::String("AP8=".to_string()), "BLOB must be base64");
     }
 
     #[tokio::test]

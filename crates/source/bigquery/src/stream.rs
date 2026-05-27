@@ -183,6 +183,8 @@ impl faucet_core::Source for BigQuerySource {
         let mut job_complete = initial.job_complete.unwrap_or(false);
         let (job_id, job_location) = job_reference(&initial)?;
         let mut fields = fields;
+        let poll_timeout = self.config.poll_timeout;
+        let poll_started = std::time::Instant::now();
 
         // Either keep polling until jobComplete, or keep paging until
         // pageToken vanishes. The two reasons we'd loop again share one
@@ -206,6 +208,13 @@ impl faucet_core::Source for BigQuerySource {
 
             job_complete = resp.job_complete.unwrap_or(false);
             if !job_complete {
+                // `poll_timeout == 0` disables the cap (poll forever).
+                if !poll_timeout.is_zero() && poll_started.elapsed() >= poll_timeout {
+                    return Err(FaucetError::Source(format!(
+                        "BigQuery job '{job_id}' did not complete within poll_timeout ({}s)",
+                        poll_timeout.as_secs()
+                    )));
+                }
                 tokio::time::sleep(Duration::from_millis(200)).await;
                 continue;
             }
@@ -290,6 +299,8 @@ impl faucet_core::Source for BigQuerySource {
             // to keep polling. If it was complete but had no further token,
             // we're done after emitting the first batch.
             let (job_id, job_location) = job_reference(&initial)?;
+            let poll_timeout = self.config.poll_timeout;
+            let poll_started = std::time::Instant::now();
 
             while !job_complete || page_token.is_some() {
                 let params = GetQueryResultsParameters {
@@ -310,6 +321,13 @@ impl faucet_core::Source for BigQuerySource {
 
                 job_complete = resp.job_complete.unwrap_or(false);
                 if !job_complete {
+                    // `poll_timeout == 0` disables the cap (poll forever).
+                    if !poll_timeout.is_zero() && poll_started.elapsed() >= poll_timeout {
+                        Err(FaucetError::Source(format!(
+                            "BigQuery job '{job_id}' did not complete within poll_timeout ({}s)",
+                            poll_timeout.as_secs()
+                        )))?;
+                    }
                     tokio::time::sleep(Duration::from_millis(200)).await;
                     continue;
                 }
