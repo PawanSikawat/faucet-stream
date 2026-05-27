@@ -2,15 +2,32 @@
 
 [![Crates.io](https://img.shields.io/crates/v/faucet-stream.svg)](https://crates.io/crates/faucet-stream)
 [![Docs.rs](https://docs.rs/faucet-stream/badge.svg)](https://docs.rs/faucet-stream)
-[![CI](https://github.com/PawanSikawat/faucet-stream/actions/workflows/ci.yml/badge.svg)](https://github.com/PawanSikawat/faucet-stream/actions)
-[![License](https://img.shields.io/crates/l/faucet-stream.svg)](LICENSE-MIT)
+[![CI](https://github.com/PawanSikawat/faucet-stream/actions/workflows/ci.yml/badge.svg)](https://github.com/PawanSikawat/faucet-stream/actions/workflows/ci.yml)
+[![Downloads](https://img.shields.io/crates/d/faucet-stream.svg)](https://crates.io/crates/faucet-stream)
+[![MSRV](https://img.shields.io/crates/msrv/faucet-stream.svg)](rust-toolchain.toml)
+[![License](https://img.shields.io/crates/l/faucet-stream.svg)](#license)
 
-A modular, config-driven data pipeline toolkit for Rust with pluggable
-**source** and **sink** connectors — plus the `faucet` CLI binary that runs
-pipelines declaratively from a YAML/JSON file. No Rust code required.
+**The fast, config-driven way to move data in Rust.**
 
-Inspired by [Meltano's RESTStream](https://sdk.meltano.com/en/latest/classes/singer_sdk.RESTStream.html)
-— but for Rust, both as a reusable library and as a standalone CLI.
+faucet-stream wires **19 source** and **16 sink** connectors together with a single
+`faucet` binary that runs pipelines declaratively from a YAML/JSON file — no Rust
+code required. Or skip the binary and embed the same engine in your own service
+through the typed `Source` / `Sink` traits. One toolkit, whether you want a CLI you
+can drop on any box or a library you compile in.
+
+- **Fast and reliable by default** — native streaming with bounded memory,
+  connection pooling, multi-row inserts, bulk APIs, and parallel I/O. Every
+  connector is built to be the fastest way to move its data in Rust.
+- **Config-driven _or_ embeddable** — run `faucet run pipeline.yaml`, or call
+  `Pipeline::new(&source, &sink).run().await?` from Rust. Same orchestration either way.
+- **A runtime, not just connectors** — incremental + resumable replication,
+  PostgreSQL change-data-capture, dead-letter queues, automatic retries, and
+  built-in Prometheus metrics + `tracing` spans, all with zero per-connector code.
+- **Pay only for what you use** — every connector is a Cargo feature, so a slim
+  build can be just REST + JSONL, or pull in all 35 connectors with `--features full`.
+
+Inspired by [Meltano's Singer SDK](https://sdk.meltano.com/) — reimagined for Rust
+as both a reusable library and a standalone CLI.
 
 ## Run a pipeline from a YAML file (no Rust required)
 
@@ -51,9 +68,74 @@ pipeline:
 
 Add a `matrix:` block to run many invocations from one config (independent fan-out or parent/child DAG), and `execution:` to bound concurrency. See [`cli/README.md`](cli/README.md) for the full grammar, [`cli/examples/rest_to_bigquery_matrix.yaml`](cli/examples/rest_to_bigquery_matrix.yaml) for independent matrix fan-out, and [`cli/examples/rest_users_posts_dag.yaml`](cli/examples/rest_users_posts_dag.yaml) for the DAG pattern.
 
+## How it compares
+
+There are many great data-movement tools. faucet-stream's niche is being **a single
+fast native binary _and_ an embeddable Rust library** — config-driven like Meltano or
+Benthos, but with no Python runtime, no platform to operate, and a typed library API
+when you want to compile pipelines into your own service.
+
+| | **faucet-stream** | Meltano (Singer) | Airbyte | Benthos / Redpanda Connect | Vector | Fivetran |
+|---|---|---|---|---|---|---|
+| Runtime | Rust, native binary | Python | Java/Python on Docker | Go, native binary | Rust, native binary | Hosted SaaS |
+| Single static binary | ✓ | ✗ | ✗ | ✓ | ✓ | n/a |
+| Config-driven (YAML/JSON) | ✓ | ✓ | via UI/API | ✓ | ✓ | via UI |
+| Embeddable as a library | ✓ (Rust) | ✗ | ✗ | ✓ (Go) | ✗ | ✗ |
+| Connector count | 35, growing | 600+ taps | 350+ | dozens | dozens | 500+ |
+| Change data capture | ✓ PostgreSQL | partial¹ | ✓ | partial | ✗ | ✓ |
+| Incremental + resumable state | ✓ | ✓ | ✓ | partial | n/a | ✓ |
+| Built-in metrics + tracing | ✓ Prometheus + `tracing` | partial | ✓ (platform) | ✓ | ✓ | ✓ (hosted) |
+| Self-hosted, no daemon | ✓ run-to-completion | ✓ | ✗ needs platform | usually a service | agent | ✗ SaaS |
+| License | MIT / Apache-2.0 | MIT | ELv2 + MIT | Apache-2.0 / source-available² | MPL-2.0 | Proprietary |
+
+¹ Singer CDC depends on the individual tap. ² The original Benthos is Apache-2.0; Redpanda Connect's maintained build is source-available. *Comparison reflects the general shape of each tool as of 2026-05 — check each project for current details.*
+
+**[dbt](https://www.getdbt.com/) is complementary, not a competitor:** it transforms
+data already in your warehouse (the "T" in ELT); faucet-stream handles the "EL" of
+getting data in and out. **[Singer](https://www.singer.io/) is a spec**, and Meltano
+is its most common runtime.
+
+## When to use faucet-stream
+
+**Reach for it when:**
+
+- You want **one fast static binary** (or a Rust library) to move data between APIs, databases, object stores, and warehouses — without standing up a platform, scheduler, or Python environment.
+- You want **version-controlled, config-driven pipelines** you can run anywhere: locally, in CI, behind cron, or inside another service.
+- You need **streaming with bounded memory, incremental/resumable replication, CDC, retries, dead-letter queues, and metrics** without hand-writing that plumbing.
+- You're **already in Rust** and want typed `Source`/`Sink` traits you can embed and extend.
+
+**Look elsewhere (for now) when:**
+
+- You need a connector faucet-stream **doesn't ship yet and can't write** — [Meltano](https://meltano.com/) (600+ Singer taps) and [Airbyte](https://airbyte.com/) (350+) have far broader catalogs today.
+- You want a **fully-managed, hosted service** with a UI and a team operating it — Fivetran or Airbyte Cloud.
+- Your job is **in-warehouse transformation** — use dbt, and pair it with faucet-stream for the extract/load.
+- You need a **long-running streaming service or agent topology** — [Benthos / Redpanda Connect](https://www.redpanda.com/connect) and [Vector](https://vector.dev/) are purpose-built for that; faucet-stream runs pipelines to completion rather than as a daemon.
+
 ## Architecture
 
-faucet-stream is a Cargo workspace with 35 crates — 15 sources, 14 sinks, 1 shared connector library, 2 state-store backends, the shared core, the umbrella crate, and the CLI binary:
+A `Source` streams batches of records, optional `Transform`s reshape them, and the
+`Pipeline` writes each batch to a `Sink` — bounding memory at one batch on both
+sides regardless of total volume. The pipeline also drives the cross-cutting
+runtime (bookmarks, dead-letter routing, metrics) so connectors stay simple:
+
+```mermaid
+flowchart LR
+    S["<b>Source</b><br/>REST · DB · CDC<br/>Kafka · S3 · Parquet"]
+    T["<b>Transforms</b><br/>flatten · rename<br/>snake_case"]
+    P{{"<b>Pipeline</b>"}}
+    K["<b>Sink</b><br/>BigQuery · Postgres<br/>Parquet · Kafka · ..."]
+    ST[("State store<br/>file · Redis · Postgres")]
+    D[("Dead-letter<br/>queue")]
+    O(["Prometheus<br/>+ tracing"])
+
+    S -->|StreamPage batches| T --> P -->|write_batch| K
+    P -.->|bookmark per page| ST
+    ST -.->|resume from bookmark| S
+    P -.->|failed rows| D
+    P -.->|metrics + spans| O
+```
+
+faucet-stream is a Cargo workspace with 45 crates — 19 sources, 16 sinks, 5 shared connector libraries, 2 state-store backends, the shared core, the umbrella crate, and the CLI binary:
 
 | Crate | Description |
 |-------|-------------|
