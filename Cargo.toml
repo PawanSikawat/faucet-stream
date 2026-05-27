@@ -128,6 +128,8 @@ byteorder = "1"
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
 jsonwebtoken = "9"
 base64 = "0.22"
+rsa = "0.9"
+sha2 = "0.10"
 uuid = { version = "1", features = ["v4", "v7"] }
 google-cloud-storage = "1.12"
 google-cloud-auth = "1.10"
