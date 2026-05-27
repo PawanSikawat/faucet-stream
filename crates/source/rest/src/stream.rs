@@ -270,10 +270,18 @@ impl RestStream {
 
                 let params_clone = params.clone();
                 let ctx_ref = owned_context.as_ref();
+                let is_first_page = pages_fetched == 0;
                 let (body, resp_headers) = retry::execute_with_retry(
                     self.config.max_retries,
                     self.config.retry_backoff,
-                    || self.execute_request(&params_clone, url_override.as_deref(), ctx_ref),
+                    || {
+                        self.execute_request(
+                            &params_clone,
+                            url_override.as_deref(),
+                            ctx_ref,
+                            is_first_page,
+                        )
+                    },
                 )
                 .await?;
 
@@ -416,6 +424,7 @@ impl RestStream {
         params: &HashMap<String, String>,
         url_override: Option<&str>,
         path_context: Option<&HashMap<String, Value>>,
+        is_first_page: bool,
     ) -> Result<(Value, HeaderMap), FaucetError> {
         let use_override = url_override.is_some();
         let url = match url_override {
@@ -531,13 +540,26 @@ impl RestStream {
             return Err(FaucetError::RateLimited(wait));
         }
 
-        // Tolerated errors: treat as empty page.
-        if self.config.tolerated_http_errors.contains(&status.as_u16()) {
+        // Tolerated errors: treat as an empty page ONLY on the first request,
+        // where they legitimately mean "this resource is absent/empty". Mid-
+        // pagination, an empty page makes every pagination style read "last
+        // page" and stop, silently dropping every remaining page as a
+        // "successful" run (#78/#7). There we fall through to the real error
+        // path: the retry executor retries 5xx, and a persistent error fails
+        // loudly instead of truncating the stream.
+        if is_first_page && self.config.tolerated_http_errors.contains(&status.as_u16()) {
             tracing::debug!(
                 status = status.as_u16(),
-                "tolerated HTTP error; treating as empty page"
+                "tolerated HTTP error on first request; treating as empty page"
             );
             return Ok((Value::Array(vec![]), HeaderMap::new()));
+        }
+        if !is_first_page && self.config.tolerated_http_errors.contains(&status.as_u16()) {
+            tracing::warn!(
+                status = status.as_u16(),
+                "tolerated HTTP error mid-pagination; surfacing as an error to avoid \
+                 silently truncating the stream"
+            );
         }
 
         // For non-success responses, capture the body for debugging before

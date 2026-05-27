@@ -5,7 +5,7 @@
 
 Snowflake sink connector for the [faucet-stream](https://github.com/PawanSikawat/faucet-stream) ecosystem.
 
-Writes JSON records to a Snowflake table using the Snowflake SQL REST API. Supports JWT key-pair authentication and OAuth. Records are inserted using `PARSE_JSON` with `FLATTEN` for efficient batch loading. All table and schema identifiers are quoted to prevent SQL injection.
+Writes JSON records to a Snowflake table using the Snowflake SQL REST API. Supports JWT key-pair authentication and OAuth. Records are inserted using `PARSE_JSON` with `FLATTEN` for efficient batch loading; the JSON array is passed as a bound `TEXT` parameter (`PARSE_JSON(?)`) rather than interpolated into the SQL, so apostrophes and other quote characters in the data are safe and cannot inject SQL. All table and schema identifiers are quoted as well.
 
 ## Installation
 
@@ -265,7 +265,7 @@ let sink = SnowflakeSink::new(config);
 ## How It Works
 
 - `SnowflakeSink::new()` creates an HTTP client (reused across all requests) but does not make any network calls.
-- `write_batch()` splits records into chunks of `batch_size` (or forwards the entire slice in one request when `batch_size = 0`). For each chunk, it builds an INSERT statement using `PARSE_JSON` with `FLATTEN` to parse a JSON array and insert all rows in a single SQL statement.
+- `write_batch()` splits records into chunks of `batch_size` (or forwards the entire slice in one request when `batch_size = 0`). For each chunk, it builds an INSERT statement using `PARSE_JSON(?)` with `FLATTEN` and sends the chunk's JSON array as a bound `TEXT` parameter, parsing and inserting all rows in a single SQL statement without interpolating data into the SQL text.
 - The SQL statement targets the fully qualified table name `"database"."schema"."table"` with quoted identifiers.
 - Authentication headers are generated per request: JWT tokens for KeyPair auth (with 1-hour expiry), or the `Snowflake Token="..."` header for OAuth.
 - The Snowflake SQL REST API endpoint is `https://{account}.snowflakecomputing.com/api/v2/statements`.

@@ -249,7 +249,7 @@ let sink = SqliteSink::new(config).await?;
 - A connection pool is created in `SqliteSink::new()` using `sqlx::SqlitePool` with the configured `max_connections`.
 - `write_batch()` slices the input into `batch_size`-row chunks (or forwards the whole slice when `batch_size = 0`). Each chunk is inserted using a single multi-row INSERT statement wrapped in a `BEGIN`/`COMMIT` transaction for write performance.
 - In JSON mode, each record is serialized to a JSON string and inserted as `INSERT INTO t (col) VALUES (?), (?), ...`.
-- In AutoMap mode, column names are discovered using `PRAGMA table_info(table_name)`. A multi-row INSERT is built dynamically. Column values are serialized as JSON strings. Missing keys are bound as `"null"`.
+- In AutoMap mode, column names are discovered using `PRAGMA table_info(table_name)`. A multi-row INSERT is built dynamically. Column values are bound as **native SQLite types** — strings as `TEXT`, JSON numbers as `INTEGER`/`REAL`, booleans as `INTEGER` 0/1 — so column affinity and typed reads round-trip correctly. Arrays and objects (which have no scalar SQL representation) are bound as their JSON text. A key present in the first record but missing from a later one is bound as SQL `NULL`.
 - All identifiers (table names, column names) are quoted using `quote_ident()` (double-quote escaping) to prevent SQL injection.
 - Transaction wrapping ensures that either all rows in a batch are committed or none are, providing atomicity per batch.
 

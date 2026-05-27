@@ -70,7 +70,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 | `timeout` | `Option<Duration>` | `Some(30s)` | HTTP request timeout per individual request |
 | `max_retries` | `u32` | `3` | Maximum number of retries on transient failures |
 | `retry_backoff` | `Duration` | `1s` | Base duration for exponential backoff between retries |
-| `tolerated_http_errors` | `Vec<u16>` | `[]` | HTTP status codes that should not cause an error; responses with these codes are treated as empty pages |
+| `tolerated_http_errors` | `Vec<u16>` | `[]` | HTTP status codes treated as an empty page **on the first request only** (i.e. a legitimately absent/empty resource). Mid-pagination a tolerated status is surfaced as an error instead of silently ending the stream — otherwise a transient failure on page _N_ would drop every later page as a "successful" run. Only safe for genuinely-empty resources. |
 
 ### Replication Fields
 
@@ -145,9 +145,9 @@ The `PaginationStyle` enum supports:
 | `LinkHeader` | -- | No `rel="next"` in the `Link` response header |
 | `NextLinkInBody { next_link_path }` | JSONPath to next page URL | URL is absent, null, or empty |
 | `PageNumber { param_name, start_page, page_size, page_size_param }` | Query param name, starting page number, optional page size and its param name | Response returns zero records |
-| `Offset { offset_param, limit_param, limit, total_path }` | Offset param, limit param, records per page, optional JSONPath to total count | Offset reaches total (via JSONPath) or fewer records than limit |
+| `Offset { offset_param, limit_param, limit, total_path }` | Offset param, limit param, records per page, optional JSONPath to total count | A zero-record page, offset reaches total (via JSONPath), or fewer records than limit |
 
-All styles include loop detection -- if the same cursor/link is returned twice in a row, pagination stops.
+`Cursor`, `LinkHeader`, and `NextLinkInBody` include loop detection -- if the same cursor/link is returned twice in a row, pagination stops. `Offset` stops on a zero-record page (so a stalled offset cannot loop forever), and `PageNumber` stops when a page returns zero records. For all styles, `max_pages` is a hard cap.
 
 ## Config Loading
 

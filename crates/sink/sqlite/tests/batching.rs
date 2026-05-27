@@ -167,6 +167,62 @@ async fn auto_map_mode_rechunks_large_page() {
 }
 
 #[tokio::test]
+async fn auto_map_binds_native_types_not_json_strings() {
+    // Regression for #78/#4. AutoMap used to bind every value as
+    // serde_json::to_string(v), so "Bob" was stored as the 5-char string
+    // "Bob" (embedded quotes), `true` became the text "true", and a column
+    // present in an earlier record but missing from a later one was bound as
+    // the literal text "null" instead of SQL NULL.
+    let (_dir, url) =
+        fresh_db("CREATE TABLE people (name TEXT, active INTEGER, score REAL, note TEXT)").await;
+
+    let config = SqliteSinkConfig::new(&url, "people").column_mapping(SqliteColumnMapping::AutoMap);
+    let sink = SqliteSink::new(config).await.unwrap();
+
+    // First record defines `note`; second omits it so AutoMap must bind a real
+    // SQL NULL for the absent column (insert_columns is fixed from row 1).
+    let records = vec![
+        json!({"name": "Bob", "active": true, "score": 1.5, "note": "hi"}),
+        json!({"name": "Sue", "active": false, "score": 2.5}),
+    ];
+    sink.write_batch(&records).await.unwrap();
+
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect(&url)
+        .await
+        .expect("connect");
+
+    let bob = sqlx::query(
+        "SELECT name, active, score, note, typeof(name) AS tn, typeof(active) AS ta \
+         FROM people WHERE name = 'Bob'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("bob row (name must be stored unquoted)");
+    assert_eq!(bob.get::<String, _>("tn"), "text");
+    assert_eq!(bob.get::<String, _>("name"), "Bob");
+    assert_eq!(bob.get::<String, _>("ta"), "integer");
+    assert_eq!(bob.get::<i64, _>("active"), 1);
+    assert_eq!(bob.get::<f64, _>("score"), 1.5);
+    assert_eq!(bob.get::<String, _>("note"), "hi");
+
+    let sue = sqlx::query("SELECT active, note, typeof(note) AS tnote FROM people WHERE name = 'Sue'")
+        .fetch_one(&pool)
+        .await
+        .expect("sue row");
+    assert_eq!(sue.get::<i64, _>("active"), 0, "false must bind integer 0");
+    assert_eq!(
+        sue.get::<String, _>("tnote"),
+        "null",
+        "missing column must bind SQL NULL, not the text 'null'"
+    );
+    assert_eq!(sue.get::<Option<String>, _>("note"), None);
+
+    pool.close().await;
+}
+
+#[tokio::test]
 async fn auto_map_mode_batch_size_zero_passes_page_through() {
     // batch_size=0 in AutoMap mode writes the entire slice as a single
     // transaction.
