@@ -1,0 +1,14 @@
+# Self-contained no-infrastructure demo: CSV -> JSON Lines.
+# Run from the repo root with `make demo`, or directly:
+#   faucet run examples/demo/pipeline.yaml
+version: 1
+name: demo
+pipeline:
+  source:
+    type: csv
+    config:
+      path: examples/demo/input.csv
+  sink:
+    type: jsonl
+    config:
+      path: target/demo/out.jsonl

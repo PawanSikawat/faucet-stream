@@ -18,8 +18,8 @@ every style has a loop/termination guard so a misbehaving API can't loop forever
 ```yaml
 pagination:
   type: Cursor
-  cursor_path: $.meta.next_cursor      # JSONPath to the next-page token
-  cursor_param: cursor                 # query param to send it back as
+  next_token_path: $.meta.next_cursor  # JSONPath to the next-page token
+  param_name: starting_after           # query param to send it back as
 ```
 
 ## Page number
