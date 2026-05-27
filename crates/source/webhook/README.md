@@ -61,10 +61,12 @@ The server responds with `200 OK` to valid requests and `400 Bad Request` for no
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `listen_addr` | `String` | `"0.0.0.0:8080"` | Address to bind the HTTP server to |
+| `listen_addr` | `String` | `"127.0.0.1:8080"` | Address to bind the HTTP server to. Defaults to loopback; bind `0.0.0.0` only behind a trusted gateway. |
 | `path` | `String` | `"/webhook"` | Endpoint path for receiving webhooks |
 | `max_payloads` | `Option<usize>` | `None` | Stop after receiving this many payloads. `None` means collect until timeout |
 | `timeout_secs` | `u64` | `30` | How long to listen before returning, in seconds |
+| `max_body_bytes` | `usize` | `1048576` | Max accepted request body size (1 MiB). Larger POSTs are rejected with `413` so one huge request can't exhaust memory. |
+| `auth_token` | `Option<String>` | `None` | Optional shared secret. When set, requests must send it in the `Authorization` header (raw or `Bearer <token>`); others get `401`. Strongly recommended whenever `listen_addr` isn't loopback. |
 | `batch_size` | `usize` | `1000` | Records per emitted `StreamPage`. `0` is the "no batching" sentinel — emit the full flush window in one page. See [Streaming and batching](#streaming-and-batching) |
 
 ## Streaming and batching

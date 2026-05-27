@@ -13,6 +13,30 @@ struct AppState {
     records: Mutex<Vec<Value>>,
     max_payloads: Option<usize>,
     done: Notify,
+    /// Optional shared secret required in the `Authorization` header.
+    auth_token: Option<String>,
+}
+
+impl WebhookSource {
+    fn new_state(&self) -> Arc<AppState> {
+        Arc::new(AppState {
+            records: Mutex::new(Vec::new()),
+            max_payloads: self.config.max_payloads,
+            done: Notify::new(),
+            auth_token: self.config.auth_token.clone(),
+        })
+    }
+
+    fn build_router(&self, path: &str, state: Arc<AppState>) -> Router {
+        Router::new()
+            .route(path, post(webhook_handler))
+            // Bound request body size so a single huge POST can't exhaust
+            // memory (#78/#26).
+            .layer(axum::extract::DefaultBodyLimit::max(
+                self.config.max_body_bytes,
+            ))
+            .with_state(state)
+    }
 }
 
 /// A webhook receiver source that starts a temporary HTTP server and
@@ -29,15 +53,8 @@ impl WebhookSource {
 
     /// Start the webhook server, collect payloads, and return them.
     pub async fn fetch_all(&self) -> Result<Vec<Value>, FaucetError> {
-        let state = Arc::new(AppState {
-            records: Mutex::new(Vec::new()),
-            max_payloads: self.config.max_payloads,
-            done: Notify::new(),
-        });
-
-        let app = Router::new()
-            .route(&self.config.path, post(webhook_handler))
-            .with_state(Arc::clone(&state));
+        let state = self.new_state();
+        let app = self.build_router(&self.config.path, Arc::clone(&state));
 
         let listener = tokio::net::TcpListener::bind(&self.config.listen_addr)
             .await
@@ -80,8 +97,22 @@ impl WebhookSource {
 /// Axum handler for incoming webhook POST requests.
 async fn webhook_handler(
     State(state): State<Arc<AppState>>,
+    headers: axum::http::HeaderMap,
     body: axum::body::Bytes,
 ) -> StatusCode {
+    // Optional shared-secret check: accept either the raw token or
+    // `Bearer <token>` in the Authorization header (#78/#26).
+    if let Some(expected) = &state.auth_token {
+        let provided = headers
+            .get(axum::http::header::AUTHORIZATION)
+            .and_then(|v| v.to_str().ok());
+        let authorized = provided
+            .is_some_and(|p| p == expected || p.strip_prefix("Bearer ") == Some(expected.as_str()));
+        if !authorized {
+            return StatusCode::UNAUTHORIZED;
+        }
+    }
+
     let value = match serde_json::from_slice::<Value>(&body) {
         Ok(v) => v,
         Err(_) => {
@@ -118,15 +149,8 @@ impl faucet_core::Source for WebhookSource {
         // Substitute context into the webhook path.
         let resolved_path = faucet_core::util::substitute_context(&self.config.path, context);
 
-        let state = Arc::new(AppState {
-            records: Mutex::new(Vec::new()),
-            max_payloads: self.config.max_payloads,
-            done: Notify::new(),
-        });
-
-        let app = Router::new()
-            .route(&resolved_path, post(webhook_handler))
-            .with_state(Arc::clone(&state));
+        let state = self.new_state();
+        let app = self.build_router(&resolved_path, Arc::clone(&state));
 
         let listener = tokio::net::TcpListener::bind(&self.config.listen_addr)
             .await
@@ -191,6 +215,7 @@ mod tests {
             records: Mutex::new(Vec::new()),
             max_payloads: config.max_payloads,
             done: Notify::new(),
+            auth_token: config.auth_token.clone(),
         });
 
         let server_state = Arc::clone(&state);
@@ -251,6 +276,7 @@ mod tests {
             records: Mutex::new(Vec::new()),
             max_payloads: Some(1),
             done: Notify::new(),
+            auth_token: None,
         });
 
         let server_state = Arc::clone(&state);
