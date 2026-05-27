@@ -897,10 +897,18 @@ matrix:
     }
 
     #[tokio::test]
-    async fn on_error_stop_aborts_pending_invocations() {
-        // First root writes to an invalid sink path. The second root would
-        // succeed but `on_error: stop` must abort it before its output file
-        // appears on disk.
+    async fn on_error_stop_reports_failure_and_runs_no_extra_work() {
+        // First root writes to an invalid sink path and fails. The second
+        // ("good") root would succeed. Under `on_error: stop` the executor
+        // calls `abort_all()` on the first failure, which cancels pending /
+        // in-flight tasks at their next await point — but that is
+        // best-effort: with `max_concurrent: 1` the two roots race for the
+        // single permit, so "good" may already have completed before "bad"
+        // fails. We therefore assert the guarantees that hold under *any*
+        // scheduling rather than an exact invocation count (which was racy,
+        // see issue #78 finding #24). The deterministic "stop actually
+        // cancels in-flight work" path is covered by
+        // `on_error_stop_under_parallelism_aborts_other_in_flight`.
         let dir = tempfile::tempdir().unwrap();
         let good_csv = dir.path().join("good.csv");
         std::fs::write(&good_csv, "x\n1\n").unwrap();
@@ -939,15 +947,36 @@ execution:
         .await
         .unwrap();
 
-        // bad spawned first, acquires the only permit, fails → abort_all()
-        // cancels good before it gets to write anything. Only bad shows up
-        // in the summary, and good's output file was never opened.
-        assert_eq!(summary.invocations.len(), 1);
-        assert_eq!(summary.invocations[0].row_id, "bad");
-        assert!(summary.had_failures());
+        // Invariants that hold regardless of which root won the permit race:
+        assert!(summary.had_failures(), "the failing root must be reported");
+
+        // "bad" ran exactly once and is recorded as a failure.
+        let bad: Vec<_> = summary
+            .invocations
+            .iter()
+            .filter(|o| o.row_id == "bad")
+            .collect();
+        assert_eq!(bad.len(), 1, "bad must run exactly once");
+        assert!(bad[0].error.is_some(), "bad must be recorded as a failure");
+
+        // No duplicate / extra invocations beyond the two work units.
         assert!(
-            !good_out.exists(),
-            "good's sink should never have been opened under on_error=stop"
+            summary.invocations.len() <= 2,
+            "at most the two roots may run, got {:?}",
+            summary.invocations
+        );
+
+        // "good" only appears in the summary if it actually completed (aborted
+        // tasks are dropped, not recorded). Its output file must exist exactly
+        // when it completed — never a partial/extra write.
+        let good_completed = summary
+            .invocations
+            .iter()
+            .any(|o| o.row_id == "good" && o.error.is_none());
+        assert_eq!(
+            good_out.exists(),
+            good_completed,
+            "good's output file must exist iff good completed"
         );
     }
 
