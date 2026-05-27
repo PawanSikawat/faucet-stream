@@ -95,6 +95,19 @@ slightly exceed the limit by one batch worth of data.
 
 Setting neither produces a single file per sink instance (until `flush()`).
 
+> **`max_bytes_per_file` is approximate.** The threshold compares against an
+> estimate of the *in-memory Arrow* size of what's been written, not the
+> on-disk Parquet size. Column encoding + compression (see [Compression](#compression))
+> usually make the actual file substantially smaller, and rollover happens at
+> batch granularity. Treat it as a soft target, not a hard byte cap.
+
+> **A fixed `*.parquet` local path + a rollover threshold can't coexist.**
+> Single-file mode (a `foo.parquet` destination) requires *no* rollover
+> thresholds. If you set `max_rows_per_file` / `max_bytes_per_file` alongside
+> a fixed `.parquet` path, the sink logs a warning and falls back to writing
+> UUID-named files into the parent directory (the fixed filename is ignored).
+> Use a directory destination when you want rollover.
+
 ## Streaming and batching
 
 The sink accepts whatever the upstream pipeline hands it — the streaming
