@@ -65,6 +65,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 | `table` | `String` | *(required)* | Target table name |
 | `auth` | `SnowflakeAuth` | *(required)* | Authentication credentials (see below) |
 | `batch_size` | `usize` | `1000` | Maximum number of records per Snowflake SQL REST API request. See [Streaming and batching](#streaming-and-batching) below |
+| `poll_timeout` | `Duration` (seconds) | `300` | Maximum wall-clock time to wait for an asynchronously-executed INSERT to finish. See [Asynchronous execution](#asynchronous-execution) below. `0` = poll forever |
 
 ### Streaming and batching
 
@@ -84,6 +85,18 @@ ultimate target (e.g. a custom matrix that pairs Snowflake with a source
 configured for one large page per write). Values larger than
 `MAX_BATCH_SIZE` (1,000,000) are rejected by
 `faucet_core::validate_batch_size`.
+
+### Asynchronous execution
+
+Snowflake's SQL REST API may answer a submitted INSERT with **HTTP 202
+Accepted** — the statement was queued but has not yet executed. The sink
+does **not** count those rows as written at that point; doing so would
+report success before the data is durable. Instead it polls
+`GET /api/v2/statements/{handle}` until the statement reports success
+(`code 090001`), then returns. The poll loop is bounded by `poll_timeout`
+(default 300 s): if the statement is still running after that budget, the
+write fails with a `FaucetError::Sink` rather than hanging forever. Set
+`poll_timeout = 0` to poll indefinitely.
 
 ### Authentication (`SnowflakeAuth`)
 

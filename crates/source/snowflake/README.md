@@ -7,7 +7,7 @@ Snowflake query source connector for the [`faucet-stream`](https://crates.io/cra
 - **JWT key-pair and OAuth bearer authentication** — `SnowflakeAuth` re-exported from [`faucet-snowflake-common`](https://crates.io/crates/faucet-snowflake-common); credentials are masked in `Debug` output.
 - **Server-side partitioning** — large result sets are paged via `GET /api/v2/statements/{handle}?partition=N`; one HTTP round-trip per partition, no client-side buffering of unrelated partitions.
 - **Configurable batching** — `batch_size` re-frames partitions into pages for `Source::stream_pages`; `batch_size = 0` opts out of re-chunking and emits the full result set as one page.
-- **Async / sync handling** — if Snowflake returns `202 Accepted` (statement still running), the source polls the handle until the result is ready.
+- **Async / sync handling** — if Snowflake returns `202 Accepted` (statement still running), the source polls the handle until the result is ready, bounded by `poll_timeout` (default 300 s; `0` = poll forever) so a stuck statement fails instead of hanging.
 - **Bind parameters** — positional `params` from config are merged with `${parent.path}` tokens resolved from the matrix-row context. All bind values are sent as Snowflake `TEXT` binds; the server casts as needed.
 - **Type-aware row conversion** — `FIXED`, `REAL`, `BOOLEAN`, and `VARIANT`/`OBJECT`/`ARRAY` columns are parsed into native JSON shapes; everything else (timestamps, dates, binary) passes through as strings.
 
@@ -31,6 +31,7 @@ config:
   params:
     - "2026-01-01"
   statement_timeout: 60             # seconds, defaults to 60
+  poll_timeout: 300                 # seconds, defaults to 300; 0 = poll forever
   batch_size: 1000                  # default, or 0 to disable re-chunking
 ```
 

@@ -13,6 +13,10 @@ fn default_statement_timeout() -> Duration {
     Duration::from_secs(60)
 }
 
+fn default_poll_timeout() -> Duration {
+    Duration::from_secs(300)
+}
+
 fn default_batch_size() -> usize {
     DEFAULT_BATCH_SIZE
 }
@@ -54,6 +58,18 @@ pub struct SnowflakeSourceConfig {
     )]
     #[schemars(with = "u64")]
     pub statement_timeout: Duration,
+    /// Maximum wall-clock time the source will spend polling an asynchronous
+    /// statement (one for which the initial `POST /api/v2/statements`
+    /// returns HTTP 202) before giving up with [`FaucetError::Source`].
+    /// Without this cap a statement that never finishes would loop forever.
+    /// Defaults to 300 seconds. Set to `0` to disable the cap and poll
+    /// indefinitely.
+    #[serde(
+        default = "default_poll_timeout",
+        with = "faucet_core::config::duration_secs"
+    )]
+    #[schemars(with = "u64")]
+    pub poll_timeout: Duration,
     /// Records per emitted [`StreamPage`](faucet_core::StreamPage).
     ///
     /// Snowflake's SQL REST API splits large result sets into *partitions* (one
@@ -82,6 +98,7 @@ impl std::fmt::Debug for SnowflakeSourceConfig {
             .field("query", &self.query)
             .field("params", &self.params)
             .field("statement_timeout", &self.statement_timeout)
+            .field("poll_timeout", &self.poll_timeout)
             .field("batch_size", &self.batch_size)
             .finish()
     }
@@ -107,6 +124,7 @@ impl SnowflakeSourceConfig {
             query: query.into(),
             params: Vec::new(),
             statement_timeout: default_statement_timeout(),
+            poll_timeout: default_poll_timeout(),
             batch_size: DEFAULT_BATCH_SIZE,
         }
     }
@@ -126,6 +144,13 @@ impl SnowflakeSourceConfig {
     /// Set the per-statement server-side timeout.
     pub fn with_statement_timeout(mut self, timeout: Duration) -> Self {
         self.statement_timeout = timeout;
+        self
+    }
+
+    /// Set the maximum wall-clock time spent polling an asynchronous
+    /// statement before giving up. Pass `Duration::ZERO` to poll forever.
+    pub fn with_poll_timeout(mut self, timeout: Duration) -> Self {
+        self.poll_timeout = timeout;
         self
     }
 
@@ -165,6 +190,7 @@ mod tests {
         assert!(cfg.role.is_none());
         assert!(cfg.params.is_empty());
         assert_eq!(cfg.statement_timeout, Duration::from_secs(60));
+        assert_eq!(cfg.poll_timeout, Duration::from_secs(300));
         assert_eq!(cfg.batch_size, faucet_core::DEFAULT_BATCH_SIZE);
     }
 
