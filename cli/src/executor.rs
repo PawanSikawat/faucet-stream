@@ -80,12 +80,21 @@ impl RunSummary {
     }
 }
 
-/// Default concurrency when neither config nor flag specify one.
+/// Default number of matrix invocations to run in parallel when neither the
+/// config's `execution.max_concurrent` nor a flag specifies one.
+///
+/// Scales with the core count but is capped at 8. The cap is deliberate: each
+/// invocation is a *full pipeline* with its own connection pools / HTTP
+/// clients, and matrix rows often target the same external system (one API,
+/// one database), so an unbounded fan-out across, say, a 64-core box would
+/// blow through that system's connection or rate limits rather than going
+/// faster. Workloads that genuinely benefit from more parallelism set
+/// `execution.max_concurrent` explicitly to opt out of the cap (#78 LOW).
 fn default_concurrency() -> usize {
     std::thread::available_parallelism()
         .map(|n| n.get())
         .unwrap_or(4)
-        .clamp(1, 4)
+        .clamp(1, 8)
 }
 
 /// Execute every node in `nodes`. `nodes` must be in BFS order (roots first

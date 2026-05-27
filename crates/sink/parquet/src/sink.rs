@@ -65,6 +65,24 @@ impl ParquetSink {
             .validate()
             .map_err(|e| FaucetError::Config(format!("invalid parquet sink config: {e}")))?;
 
+        // A fixed `foo.parquet` local path combined with a rollover threshold
+        // is contradictory: rollover needs multiple files, so the sink falls
+        // back to UUID-named files in the *parent* directory and the fixed
+        // filename is silently ignored. Warn so the surprise is visible
+        // (#78 LOW).
+        if let ParquetDestination::LocalPath { path } = &config.destination
+            && FsPath::new(path).extension().and_then(|s| s.to_str()) == Some("parquet")
+            && (config.max_rows_per_file.is_some() || config.max_bytes_per_file.is_some())
+        {
+            tracing::warn!(
+                path = %path,
+                "parquet sink: a fixed '.parquet' path with max_rows_per_file / \
+                 max_bytes_per_file set cannot be honoured — rollover writes UUID-named \
+                 files into the parent directory and the fixed filename is ignored. Use a \
+                 directory destination, or drop the rollover thresholds for a single file."
+            );
+        }
+
         let (store, local_root) = build_store(&config.destination).await?;
 
         Ok(Self {
@@ -298,6 +316,14 @@ impl faucet_core::Sink for ParquetSink {
     }
 }
 
+/// Decide whether to start a new file before the current chunk.
+///
+/// **`max_bytes_per_file` is approximate.** `bytes_written` is an estimate of
+/// the *in-memory Arrow* size, checked after a chunk is appended; the actual
+/// on-disk Parquet file is typically much smaller (and varies) once column
+/// encoding + compression (`compression = Zstd/Snappy/…`) are applied, and
+/// rollover happens at chunk granularity rather than mid-chunk. Treat the
+/// threshold as a soft target, not a hard byte cap (#78 LOW).
 fn should_rollover(cfg: &ParquetSinkConfig, state: &WriterState, bytes_written: usize) -> bool {
     if let Some(max_rows) = cfg.max_rows_per_file
         && state.rows_in_current_file >= max_rows

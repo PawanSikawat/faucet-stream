@@ -303,13 +303,10 @@ impl faucet_core::Source for GcsSource {
                         })?;
                         let array = match value {
                             Value::Array(arr) => arr,
-                            other => {
-                                Err(FaucetError::Source(format!(
-                                    "GCS expected JSON array in '{key}', got {}",
-                                    value_type_name(&other)
-                                )))?;
-                                unreachable!()
-                            }
+                            other => Err(FaucetError::Source(format!(
+                                "GCS expected JSON array in '{key}', got {}",
+                                value_type_name(&other)
+                            )))?,
                         };
                         if batch_size == 0 {
                             if !buffer.is_empty() {

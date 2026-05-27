@@ -436,6 +436,8 @@ Always use the **highest available stable version** for every crate, the Rust to
 
 Key workspace deps: `serde` 1, `serde_json` 1, `schemars` 1.2, `async-trait` 0.1, `thiserror` 2, `reqwest` 0.13, `tokio` 1, `tracing` 0.1, `sqlx` 0.8, `dotenvy` 0.15, `envy` 0.4.
 
+> **`sqlx` is pinned at 0.8 by `pgwire-replication =0.3.2`** (the postgres-cdc replication glue), which depends on `sqlx 0.8`. Bumping `sqlx` to 0.9 requires `pgwire-replication` to support it first (or dropping/replacing that dependency) — otherwise the CDC crate fails to resolve. Verify `pgwire-replication` compatibility before bumping `sqlx`.
+
 ## Publishing
 
 Crates publish in dependency order, topologically sorted then pushed to crates.io in **waves of 5 with a 15-minute wait between waves** (so each wave's crates have propagated through the crates.io index before the next wave depends on them). `.github/workflows/release.yml` handles this; it is **`workflow_dispatch`-triggered** (manual run with `scope` = `all` / `custom`, a version-bump input, and a `dry_run` toggle), not tag-triggered.

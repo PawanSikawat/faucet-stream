@@ -7,8 +7,11 @@ use reqwest::header::{HeaderMap, HeaderValue};
 pub fn apply(headers: &mut HeaderMap, username: &str, password: &str) -> Result<(), FaucetError> {
     let encoded =
         base64::engine::general_purpose::STANDARD.encode(format!("{username}:{password}"));
-    let val = HeaderValue::from_str(&format!("Basic {encoded}"))
+    let mut val = HeaderValue::from_str(&format!("Basic {encoded}"))
         .map_err(|e| FaucetError::Auth(format!("invalid basic auth value: {e}")))?;
+    // Mark the credential sensitive so reqwest/hyper redact it from trace/debug
+    // logging (#78 LOW).
+    val.set_sensitive(true);
     headers.insert("Authorization", val);
     Ok(())
 }

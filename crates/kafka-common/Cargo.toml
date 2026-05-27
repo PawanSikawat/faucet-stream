@@ -6,6 +6,9 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "Shared configuration types for the faucet-stream Kafka source and sink connectors"
+readme = "README.md"
+keywords.workspace = true
+categories.workspace = true
 
 [dependencies]
 faucet-core.workspace = true

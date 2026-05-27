@@ -6,6 +6,9 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "Shared types, traits, and utilities for the faucet-stream ecosystem"
+readme = "README.md"
+keywords.workspace = true
+categories.workspace = true
 
 [features]
 default = ["transform-flatten", "transform-rename-keys", "transform-snake-case"]

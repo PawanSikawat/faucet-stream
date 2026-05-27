@@ -68,6 +68,14 @@ pub fn extract_scope(env: &HashMap<String, String>, prefix: &str) -> CliResult<V
 /// matches YAML's auto-typing so `30` becomes a number and `true` becomes a
 /// bool — the connector's `Deserialize` impl gets exactly what it would have
 /// gotten via YAML.
+///
+/// **Caveat:** a value that *looks* like JSON is auto-typed, so the literal
+/// strings `"true"` / `"false"` / `"null"` / `"123"` / `"1.5"` become a bool /
+/// null / number, not a string. When a connector field must stay a string with
+/// one of those values (e.g. an API key that is all digits, or a literal
+/// `"null"` token), set it via the `*_JSON` variant with the value quoted —
+/// e.g. `FAUCET_SOURCE_REST_TOKEN_JSON='"0123"'` — which bypasses this
+/// coercion (#78 LOW).
 fn coerce_scalar(s: &str) -> Value {
     serde_json::from_str::<Value>(s).unwrap_or_else(|_| Value::String(s.to_owned()))
 }

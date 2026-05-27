@@ -44,7 +44,6 @@ impl GraphqlStream {
         let mut all_records = Vec::new();
         let mut cursor: Option<String> = None;
         let mut pages_fetched = 0usize;
-        let mut prev_cursor: Option<String> = None;
 
         loop {
             if let Some(max) = self.config.max_pages
@@ -70,12 +69,15 @@ impl GraphqlStream {
                     if next_cursor.is_none() {
                         break;
                     }
-                    // Loop detection: stop if cursor hasn't changed.
-                    if next_cursor == prev_cursor {
+                    // Loop detection: if the server returns the same cursor we
+                    // just used, advancing would re-fetch the identical page —
+                    // stop now (compare against the just-used cursor, not a
+                    // lagged one, so no extra duplicate page is fetched first;
+                    // #78 LOW).
+                    if next_cursor == cursor {
                         tracing::warn!("cursor loop detected, stopping pagination");
                         break;
                     }
-                    prev_cursor = cursor;
                     cursor = next_cursor;
                 }
                 None => break,
@@ -256,7 +258,6 @@ impl GraphqlStream {
 
         Box::pin(async_stream::try_stream! {
             let mut cursor: Option<String> = None;
-            let mut prev_cursor: Option<String> = None;
             let mut pages_fetched = 0usize;
             // No incremental replication today — `running_max` stays `None`.
             // The structure mirrors the REST source so a future replication
@@ -287,12 +288,16 @@ impl GraphqlStream {
                             match next_cursor {
                                 None => false,
                                 Some(next_cursor) => {
-                                    // Loop detection: stop if cursor hasn't changed.
-                                    if Some(&next_cursor) == prev_cursor.as_ref() {
+                                    // Loop detection: if the server returns the
+                                    // same cursor we just used, advancing would
+                                    // re-fetch the identical page — stop now
+                                    // (comparing against the just-used cursor,
+                                    // not a lagged one, so we don't fetch an
+                                    // extra duplicate page first; #78 LOW).
+                                    if Some(&next_cursor) == cursor.as_ref() {
                                         tracing::warn!("cursor loop detected, stopping pagination");
                                         false
                                     } else {
-                                        prev_cursor = cursor.clone();
                                         cursor = Some(next_cursor);
                                         true
                                     }

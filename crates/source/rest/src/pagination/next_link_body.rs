@@ -23,20 +23,27 @@ pub fn advance(
         .query(next_link_path)
         .map_err(|e| FaucetError::JsonPath(format!("{e}")))?;
     match results.first() {
-        Some(v) if !v.is_null() => {
-            let url = v.as_str().unwrap_or(&v.to_string()).to_string();
-            if url.is_empty() {
-                *next_link = None;
-                Ok(false)
-            } else {
-                *next_link = Some(url);
-                Ok(true)
-            }
-        }
-        _ => {
+        // Absent or null → last page.
+        None | Some(Value::Null) => {
             *next_link = None;
             Ok(false)
         }
+        Some(Value::String(s)) => {
+            if s.is_empty() {
+                *next_link = None;
+                Ok(false)
+            } else {
+                *next_link = Some(s.clone());
+                Ok(true)
+            }
+        }
+        // A next-page link must be a URL string; a number/bool/array/object at
+        // the path means a misconfigured `next_link_path`. Fail loudly rather
+        // than send a stringified JSON value as the next request URL (#78 LOW).
+        Some(_) => Err(FaucetError::JsonPath(format!(
+            "next-link path '{next_link_path}' resolved to a non-string value; the \
+             next-page link must be a URL string"
+        ))),
     }
 }
 
@@ -82,5 +89,21 @@ mod tests {
         let has_next = advance(&body, "$.next_link", &mut next_link).unwrap();
         assert!(!has_next);
         assert!(next_link.is_none());
+    }
+
+    #[test]
+    fn non_string_next_link_errors() {
+        // A numeric / object next_link is a misconfiguration — must error, not
+        // stringify and send as the next URL (#78 LOW).
+        let mut next_link = None;
+        assert!(advance(&json!({"next_link": 5}), "$.next_link", &mut next_link).is_err());
+        assert!(
+            advance(
+                &json!({"next_link": {"u": "x"}}),
+                "$.next_link",
+                &mut next_link
+            )
+            .is_err()
+        );
     }
 }

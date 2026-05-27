@@ -359,6 +359,13 @@ impl faucet_core::Source for RedisSource {
 /// Stream a Redis list via `LRANGE start stop`, sliding the window by
 /// `batch_size`. With `batch_size == 0`, drains the list in a single
 /// `LRANGE 0 -1` round-trip.
+///
+/// **Consistency caveat (#78 LOW):** index-based `LRANGE` paging is only
+/// stable if the list is not mutated mid-scan. A concurrent `LPUSH` / `LPOP`
+/// shifts every element's index, so a writer pushing/popping while this drains
+/// can make the source skip or duplicate elements across page boundaries. For
+/// a queue-style workload where the list is being consumed concurrently,
+/// prefer a Redis Stream (`XRANGE`/consumer groups) over a list.
 fn stream_list<'a>(
     conn: &'a mut redis::aio::MultiplexedConnection,
     key: &'a str,
@@ -501,74 +508,71 @@ fn stream_keys<'a>(
 ) -> impl Stream<Item = Result<StreamPage, FaucetError>> + 'a {
     use faucet_core::DEFAULT_BATCH_SIZE;
     async_stream::try_stream! {
-        // SCAN COUNT is a per-round-trip hint to the server, not a per-page
-        // record cap. Use batch_size as the hint when non-zero; default
-        // otherwise. SCAN may return more or fewer keys per call than COUNT,
-        // so we buffer client-side until batch_size keys are accumulated
-        // before issuing MGET.
+        // Drive the SCAN cursor manually (one `SCAN cursor MATCH .. COUNT ..`
+        // round-trip at a time) rather than via the buffering `AsyncIter`, so
+        // we can MGET + yield a page as soon as `batch_size` keys accumulate
+        // instead of materialising the entire matched keyset first (#78 LOW).
+        // SCAN COUNT is only a per-round-trip hint; a call may return more or
+        // fewer keys than the hint, so we still buffer until a full page.
         let scan_hint = if batch_size == 0 { DEFAULT_BATCH_SIZE } else { batch_size };
-        let opts = redis::ScanOptions::default()
-            .with_pattern(pattern)
-            .with_count(scan_hint);
+        // `batch_size == 0` is the "no batching" sentinel — accumulate the
+        // whole scan and emit one page (still one MGET).
+        let chunk_size = if batch_size == 0 { usize::MAX } else { batch_size };
+        let cap = max_records.unwrap_or(usize::MAX);
 
-        // We need to MGET in a separate scope so the iterator (which holds
-        // &mut conn) is dropped before we re-borrow conn for MGET.
-        let all_keys: Vec<String> = {
-            let mut iter: redis::AsyncIter<String> = conn
-                .scan_options(opts)
+        let mut cursor: u64 = 0;
+        let mut buffer: Vec<String> = Vec::new();
+        let mut emitted: usize = 0;
+
+        'scan: loop {
+            let (next_cursor, keys): (u64, Vec<String>) = redis::cmd("SCAN")
+                .arg(cursor)
+                .arg("MATCH")
+                .arg(pattern)
+                .arg("COUNT")
+                .arg(scan_hint)
+                .query_async(conn)
                 .await
                 .map_err(|e| FaucetError::Config(format!("SCAN failed with pattern '{pattern}': {e}")))?;
-            let mut collected = Vec::new();
-            while let Some(key) = iter.next_item().await {
-                collected.push(key);
-                if batch_size != 0
-                    && let Some(max) = max_records
-                    && collected.len() >= max
-                {
-                    break;
-                }
-            }
-            collected
-        };
+            cursor = next_cursor;
+            buffer.extend(keys);
 
-        if all_keys.is_empty() {
-            return;
+            // Flush as many full pages as the buffer now holds.
+            while emitted < cap && buffer.len() >= chunk_size {
+                let take = chunk_size.min(cap - emitted);
+                let page_keys: Vec<String> = buffer.drain(..take).collect();
+                let records = mget_records(conn, &page_keys).await?;
+                emitted += records.len();
+                yield StreamPage { records, bookmark: None };
+            }
+
+            if cursor == 0 || emitted >= cap {
+                break 'scan;
+            }
         }
 
-        if batch_size == 0 {
-            // Drain in one MGET.
-            let mut keys = all_keys;
-            if let Some(max) = max_records {
-                keys.truncate(max);
-            }
-            let values: Vec<Option<String>> = redis::cmd("MGET")
-                .arg(&keys)
-                .query_async(conn)
-                .await
-                .map_err(|e| FaucetError::Config(format!("MGET failed: {e}")))?;
-            let records = collect_kv_records(&keys, values);
-            yield StreamPage { records, bookmark: None };
-            return;
-        }
-
-        let mut emitted: usize = 0;
-        let cap = max_records.unwrap_or(usize::MAX);
-        for chunk in all_keys.chunks(batch_size) {
-            if emitted >= cap {
-                break;
-            }
-            let take = (cap - emitted).min(chunk.len());
-            let chunk = &chunk[..take];
-            let values: Vec<Option<String>> = redis::cmd("MGET")
-                .arg(chunk)
-                .query_async(conn)
-                .await
-                .map_err(|e| FaucetError::Config(format!("MGET failed: {e}")))?;
-            let records = collect_kv_records(chunk, values);
-            emitted += records.len();
+        // Trailing partial page (and the single page in the batch_size==0 case).
+        if emitted < cap && !buffer.is_empty() {
+            let take = (cap - emitted).min(buffer.len());
+            let page_keys: Vec<String> = buffer.drain(..take).collect();
+            let records = mget_records(conn, &page_keys).await?;
             yield StreamPage { records, bookmark: None };
         }
     }
+}
+
+/// `MGET` a slice of keys and pair them with their values via
+/// [`collect_kv_records`].
+async fn mget_records(
+    conn: &mut redis::aio::MultiplexedConnection,
+    keys: &[String],
+) -> Result<Vec<Value>, FaucetError> {
+    let values: Vec<Option<String>> = redis::cmd("MGET")
+        .arg(keys)
+        .query_async(conn)
+        .await
+        .map_err(|e| FaucetError::Config(format!("MGET failed: {e}")))?;
+    Ok(collect_kv_records(keys, values))
 }
 
 /// Pair `keys` with their `MGET`-returned values into `{ "key", "value" }`

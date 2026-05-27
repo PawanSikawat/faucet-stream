@@ -608,8 +608,13 @@ impl GrpcStream {
                     Err(StreamOutcome::Transient { consumed, error }) => {
                         messages_seen += consumed;
                         if terminate_on_error {
+                            // `?` yields the error and ends the stream; the
+                            // trailing `return` both makes that explicit and
+                            // lets the borrow checker see this branch diverges
+                            // (so `error` is still available below). Replaces a
+                            // fragile `unreachable!()` (#78 LOW).
                             Err(error)?;
-                            unreachable!();
+                            return;
                         }
                         if let Some(max_attempts) = reconnect_max_attempts
                             && attempt >= max_attempts
@@ -618,7 +623,7 @@ impl GrpcStream {
                                 "gRPC server-streaming exceeded reconnect_max_attempts={max_attempts}: {error}"
                             ));
                             Err(final_err)?;
-                            unreachable!();
+                            return;
                         }
                         attempt += 1;
                         tracing::warn!(
