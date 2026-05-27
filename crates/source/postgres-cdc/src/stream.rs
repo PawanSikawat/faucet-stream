@@ -442,11 +442,15 @@ fn handle_event(
             xid: _,
         } => {
             if state.in_txn {
-                tracing::warn!(
-                    "postgres-cdc: BEGIN received while previous transaction was \
-                     still in progress — discarding {} staged records",
+                // A second BEGIN without an intervening COMMIT is a protocol
+                // desync: silently discarding the staged records would drop
+                // committed-but-unemitted changes. Fail fast so the run
+                // restarts cleanly from the durable bookmark (#78/#46).
+                return Err(FaucetError::Source(format!(
+                    "postgres-cdc: BEGIN received while a previous transaction was still \
+                     in progress ({} records staged) — replication stream desync",
                     state.staged.len()
-                );
+                )));
             }
             state.in_txn = true;
             state.in_progress_lsn = final_lsn.as_u64();
@@ -483,12 +487,17 @@ fn handle_event(
             handle_pgoutput(msg, registry, state)?;
         }
         ReplicationEvent::Message { .. } => {
-            // pg_logical_emit_message — ignore for v1.
+            // pg_logical_emit_message — a user-emitted logical message, never a
+            // table change. Intentionally ignored by this row-oriented source.
         }
-        // KeepAlive and StoppedAt are filtered inside recv(); if they appear
-        // here it's a bug in the lib upgrade — surface explicitly.
+        // KeepAlive and StoppedAt are filtered inside recv(). Any other variant
+        // is one this decoder doesn't understand — it may carry table data, so
+        // dropping it silently risks data loss. Fail fast instead (#78/#46).
         other => {
-            tracing::warn!(?other, "postgres-cdc: unexpected ReplicationEvent variant");
+            return Err(FaucetError::Source(format!(
+                "postgres-cdc: unhandled ReplicationEvent variant {other:?} — refusing to \
+                 continue rather than risk silently dropping change data"
+            )));
         }
     }
     Ok(())
@@ -882,6 +891,29 @@ mod tests {
         )
         .unwrap_err();
         assert!(format!("{err}").contains("COMMIT without BEGIN"));
+    }
+
+    #[test]
+    fn double_begin_errors() {
+        // Regression for #78/#46: a second BEGIN without an intervening COMMIT
+        // is a stream desync and must abort, not silently discard staged rows.
+        let mut registry = RelationRegistry::new();
+        registry.insert(rel_users());
+        let mut state = TxnState::default();
+        let mut out = vec![];
+
+        handle_event(begin_event(0x100), &mut registry, &mut state, &mut out).unwrap();
+        handle_event(
+            xlogdata(insert_payload(16384, &[("id", "1"), ("name", "alice")])),
+            &mut registry,
+            &mut state,
+            &mut out,
+        )
+        .unwrap();
+
+        let err =
+            handle_event(begin_event(0x200), &mut registry, &mut state, &mut out).unwrap_err();
+        assert!(format!("{err}").contains("desync"), "{err}");
     }
 
     #[test]
