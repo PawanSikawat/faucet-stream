@@ -48,12 +48,14 @@ pub const POSTGRES_EPOCH_MICROS: i64 = 946_684_800_000_000;
 
 // ── Public type aliases ────────────────────────────────────────────────────
 
-/// Pre-stream handle.  Holds the validated `ReplicationParams` needed to open
-/// a replication slot or start streaming.  Obtained from [`connect`].
+/// Pre-stream handle returned by [`connect`] once the connection URL has been
+/// validated. The actual connection is opened by [`ensure_slot`] /
+/// [`start_replication`] from the borrowed [`ReplicationParams`], so this is a
+/// lightweight marker — it deliberately holds no owned copy of the connection
+/// string, which previously sat in leaked (`Box::leak`) heap for the process
+/// lifetime, including the password (#78/#13).
 pub struct Client {
-    // Will be read by `stream.rs` in a later task.
-    #[allow(dead_code)]
-    pub(crate) params: ReplicationParams<'static>,
+    _private: (),
 }
 
 /// Live replication stream.  Wraps [`pgwire_replication::ReplicationClient`].
@@ -134,21 +136,10 @@ fn parse_url(url: &str) -> Result<PgCoords, FaucetError> {
 /// It does **not** open a TCP connection; actual connectivity is verified
 /// lazily when [`ensure_slot`] or [`start_replication`] is called.
 pub async fn connect(params: &ReplicationParams<'_>) -> Result<Client, FaucetError> {
-    // Eagerly validate the URL so bad configs fail fast.
+    // Eagerly validate the URL so bad configs fail fast. No part of the
+    // connection string is retained past this call.
     let _ = parse_url(params.connection_url)?;
-    Ok(Client {
-        params: ReplicationParams {
-            connection_url: params.connection_url.to_owned().leak(),
-            slot_name: params.slot_name.to_owned().leak(),
-            publication_name: params.publication_name.to_owned().leak(),
-            proto_version: params.proto_version,
-            create_slot_if_missing: params.create_slot_if_missing,
-            start_lsn: params.start_lsn,
-            // Duration is Copy — no leak needed.
-            status_update_interval: params.status_update_interval,
-            tcp_keepalive: params.tcp_keepalive,
-        },
-    })
+    Ok(Client { _private: () })
 }
 
 /// Ensure the replication slot exists.
