@@ -296,6 +296,43 @@ async fn flush_makes_file_readable() {
 }
 
 #[tokio::test]
+async fn pipeline_flushes_parquet_on_mid_stream_source_error() {
+    // Regression for #78/#3. A Parquet file is only readable once its footer
+    // is written, which happens on flush(). If a source errors mid-stream and
+    // the pipeline returns without flushing, the multipart upload aborts and
+    // the *entire* file is lost (see `dropping_without_flush_*`). The pipeline
+    // now best-effort flushes the sink on the error path, so the rows written
+    // before the error survive and the file is readable.
+    use faucet_core::{FaucetError, RunStreamOptions, StreamPage, run_stream};
+
+    let tmp = TempDir::new().unwrap();
+    let sink = ParquetSink::new(cfg_dir(tmp.path())).await.unwrap();
+
+    let pages: Vec<Result<StreamPage, FaucetError>> = vec![
+        Ok(StreamPage {
+            records: vec![
+                json!({"id": 1, "name": "alice"}),
+                json!({"id": 2, "name": "bob"}),
+            ],
+            bookmark: None,
+        }),
+        Err(FaucetError::Source("transient blip mid-stream".into())),
+    ];
+    let stream = futures::stream::iter(pages);
+
+    let result = run_stream(stream, &sink, RunStreamOptions::new()).await;
+    assert!(
+        matches!(result, Err(FaucetError::Source(_))),
+        "the original source error must propagate, got {result:?}"
+    );
+
+    // Despite the error, the footer was written: the file is readable and
+    // holds the two rows from the good page.
+    let batches = read_all_local(tmp.path()).await;
+    assert_eq!(rows_in(&batches), 2);
+}
+
+#[tokio::test]
 async fn in_memory_object_store_path_round_trips() {
     // We can't easily run end-to-end through `ParquetSink::new` with an
     // arbitrary `Arc<dyn ObjectStore>` (it builds its own from config), but we
