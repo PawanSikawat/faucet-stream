@@ -8,9 +8,9 @@ on:
         required: true
         type: choice
         options:
-          - all         # bump + publish every crate (in rate-limited waves)
+          - all         # bump + publish every publishable crate (in rate-limited waves)
           - core        # faucet-core only
-          - connectors  # all sources + sinks (not core, not umbrella)
+          - connectors  # every publishable crate except faucet-core, the umbrella, and faucet-cli
           - umbrella    # faucet-stream umbrella only
           - custom      # specify crates in custom_crates input
       bump:
@@ -84,6 +84,41 @@ jobs:
       - name: Test
         run: cargo test --workspace --all-features
 
+      # ── Derive publishable crate lists from cargo metadata ────────────
+      #
+      # Single source of truth — never hand-maintain the list. The previous
+      # hardcoded arrays silently drifted and omitted 8 crates (parquet,
+      # gcs, sink-stdout, both state backends, faucet-cli), so `scope=all`
+      # would have shipped a broken release (#78/#11).
+      #
+      # `ordered_all` is every publishable workspace member (publish != false)
+      # in dependency order, computed with `tsort` over the intra-workspace
+      # normal/build deps so the wave-publish step never tries to publish a
+      # crate before its dependencies. `ordered_connectors` drops faucet-core,
+      # the umbrella, and the CLI binary.
+      - name: Compute publishable crate lists
+        run: |
+          metadata=$(cargo metadata --no-deps --format-version 1)
+          set_json=$(echo "$metadata" | jq '[.packages[] | select(.publish==null) | .name]')
+          ordered_all=$(
+            {
+              # Anchor every member to a synthetic root so isolated crates are
+              # still emitted, then add a "dep pkg" edge per intra-workspace
+              # (non-dev) dependency so tsort orders dependencies first.
+              echo "$set_json" | jq -r '.[] | "__root__ \(.)"'
+              echo "$metadata" | jq -r --argjson set "$set_json" '
+                .packages[] | select(.publish==null) as $p
+                | $p.dependencies[]? | select(.kind != "dev")
+                | select(.name as $n | $set | index($n))
+                | "\(.name) \($p.name)"'
+            } | tsort | grep -vx '__root__'
+          )
+          ordered_connectors=$(echo "$ordered_all" | grep -vxE 'faucet-core|faucet-stream|faucet-cli')
+          echo "Publishable crates in dependency order:"
+          echo "$ordered_all" | nl
+          echo "ordered_all=$(echo "$ordered_all" | tr '\n' ' ')" >> "$GITHUB_ENV"
+          echo "ordered_connectors=$(echo "$ordered_connectors" | tr '\n' ' ')" >> "$GITHUB_ENV"
+
       # ── Dry run ───────────────────────────────────────────────────────
       - name: Release (dry run)
         if: ${{ inputs.dry_run }}
@@ -91,51 +126,14 @@ jobs:
           SCOPE="${{ inputs.scope }}"
           BUMP="${{ inputs.bump }}"
 
-          # Dry run: bump versions locally, no publish, no git changes
-          all_crates=(
-            faucet-core
-            faucet-kafka-common
-            faucet-elasticsearch-common
-            faucet-gcs-common
-            faucet-bigquery-common
-            faucet-snowflake-common
-            faucet-source-rest faucet-source-graphql faucet-source-xml
-            faucet-source-grpc faucet-source-postgres faucet-source-postgres-cdc
-            faucet-source-mysql
-            faucet-source-sqlite faucet-source-s3 faucet-source-mongodb
-            faucet-source-redis faucet-source-webhook faucet-source-csv
-            faucet-source-elasticsearch faucet-source-kafka faucet-source-bigquery faucet-source-snowflake
-            faucet-sink-bigquery faucet-sink-postgres faucet-sink-jsonl
-            faucet-sink-snowflake faucet-sink-mysql faucet-sink-sqlite
-            faucet-sink-s3 faucet-sink-mongodb faucet-sink-redis
-            faucet-sink-csv faucet-sink-elasticsearch faucet-sink-http
-            faucet-sink-kafka
-            faucet-stream
-          )
-          connectors=(
-            faucet-kafka-common
-            faucet-elasticsearch-common
-            faucet-gcs-common
-            faucet-bigquery-common
-            faucet-snowflake-common
-            faucet-source-rest faucet-source-graphql faucet-source-xml
-            faucet-source-grpc faucet-source-postgres faucet-source-postgres-cdc
-            faucet-source-mysql
-            faucet-source-sqlite faucet-source-s3 faucet-source-mongodb
-            faucet-source-redis faucet-source-webhook faucet-source-csv
-            faucet-source-elasticsearch faucet-source-kafka faucet-source-bigquery faucet-source-snowflake
-            faucet-sink-bigquery faucet-sink-postgres faucet-sink-jsonl
-            faucet-sink-snowflake faucet-sink-mysql faucet-sink-sqlite
-            faucet-sink-s3 faucet-sink-mongodb faucet-sink-redis
-            faucet-sink-csv faucet-sink-elasticsearch faucet-sink-http
-            faucet-sink-kafka
-          )
+          read -ra all_crates <<< "$ordered_all"
+          read -ra connectors <<< "$ordered_connectors"
 
           case "$SCOPE" in
-            all)      selected=("${all_crates[@]}") ;;
-            core)     selected=(faucet-core) ;;
+            all)        selected=("${all_crates[@]}") ;;
+            core)       selected=(faucet-core) ;;
             connectors) selected=("${connectors[@]}") ;;
-            umbrella) selected=(faucet-stream) ;;
+            umbrella)   selected=(faucet-stream) ;;
             custom)
               IFS=',' read -ra selected <<< "${{ inputs.custom_crates }}"
               selected=("${selected[@]// /}")  # trim whitespace
@@ -163,44 +161,8 @@ jobs:
           SCOPE="${{ inputs.scope }}"
           BUMP="${{ inputs.bump }}"
 
-          all_crates=(
-            faucet-core
-            faucet-kafka-common
-            faucet-elasticsearch-common
-            faucet-gcs-common
-            faucet-bigquery-common
-            faucet-snowflake-common
-            faucet-source-rest faucet-source-graphql faucet-source-xml
-            faucet-source-grpc faucet-source-postgres faucet-source-postgres-cdc
-            faucet-source-mysql
-            faucet-source-sqlite faucet-source-s3 faucet-source-mongodb
-            faucet-source-redis faucet-source-webhook faucet-source-csv
-            faucet-source-elasticsearch faucet-source-kafka faucet-source-bigquery faucet-source-snowflake
-            faucet-sink-bigquery faucet-sink-postgres faucet-sink-jsonl
-            faucet-sink-snowflake faucet-sink-mysql faucet-sink-sqlite
-            faucet-sink-s3 faucet-sink-mongodb faucet-sink-redis
-            faucet-sink-csv faucet-sink-elasticsearch faucet-sink-http
-            faucet-sink-kafka
-            faucet-stream
-          )
-          connectors=(
-            faucet-kafka-common
-            faucet-elasticsearch-common
-            faucet-gcs-common
-            faucet-bigquery-common
-            faucet-snowflake-common
-            faucet-source-rest faucet-source-graphql faucet-source-xml
-            faucet-source-grpc faucet-source-postgres faucet-source-postgres-cdc
-            faucet-source-mysql
-            faucet-source-sqlite faucet-source-s3 faucet-source-mongodb
-            faucet-source-redis faucet-source-webhook faucet-source-csv
-            faucet-source-elasticsearch faucet-source-kafka faucet-source-bigquery faucet-source-snowflake
-            faucet-sink-bigquery faucet-sink-postgres faucet-sink-jsonl
-            faucet-sink-snowflake faucet-sink-mysql faucet-sink-sqlite
-            faucet-sink-s3 faucet-sink-mongodb faucet-sink-redis
-            faucet-sink-csv faucet-sink-elasticsearch faucet-sink-http
-            faucet-sink-kafka
-          )
+          read -ra all_crates <<< "$ordered_all"
+          read -ra connectors <<< "$ordered_connectors"
 
           case "$SCOPE" in
             all)        selected=("${all_crates[@]}") ;;
