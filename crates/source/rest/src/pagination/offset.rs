@@ -23,6 +23,12 @@ pub fn advance(
     limit: usize,
     total_path: Option<&str>,
 ) -> Result<bool, FaucetError> {
+    // A zero-record page is always the end: the offset would not advance, so
+    // honouring `total` here would re-issue the identical request forever
+    // (#78/#6). Stop regardless of what `total_path` reports.
+    if record_count == 0 {
+        return Ok(false);
+    }
     *offset += record_count;
     if let Some(tp) = total_path {
         let results = body
@@ -43,4 +49,46 @@ pub fn advance(
         }
     }
     Ok(record_count >= limit)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn zero_record_page_stops_even_when_offset_below_total() {
+        // Regression for #78/#6: a mid-stream empty page with `total_path` set
+        // and offset < total used to leave the offset unchanged and re-issue
+        // the identical request forever. It must stop instead.
+        let body = json!({ "total": 100 });
+        let mut offset = 50usize;
+        let has_next = advance(&body, &mut offset, 0, 20, Some("$.total")).unwrap();
+        assert!(!has_next, "a zero-record page must stop pagination");
+    }
+
+    #[test]
+    fn nonempty_page_below_total_continues() {
+        let body = json!({ "total": 100 });
+        let mut offset = 20usize;
+        let has_next = advance(&body, &mut offset, 20, 20, Some("$.total")).unwrap();
+        assert!(has_next, "more records remain below total");
+        assert_eq!(offset, 40);
+    }
+
+    #[test]
+    fn reaching_total_stops() {
+        let body = json!({ "total": 40 });
+        let mut offset = 20usize;
+        let has_next = advance(&body, &mut offset, 20, 20, Some("$.total")).unwrap();
+        assert!(!has_next, "offset reached total");
+    }
+
+    #[test]
+    fn heuristic_short_page_stops_without_total_path() {
+        let body = json!([]);
+        let mut offset = 20usize;
+        let has_next = advance(&body, &mut offset, 5, 20, None).unwrap();
+        assert!(!has_next, "fewer records than the limit means last page");
+    }
 }

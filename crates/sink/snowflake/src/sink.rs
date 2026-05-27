@@ -62,19 +62,23 @@ impl SnowflakeSink {
         authorization_header(&self.config.auth, &self.config.account)
     }
 
-    /// Execute a SQL statement via the REST API.
-    async fn execute_sql(&self, sql: &str) -> Result<(), FaucetError> {
+    /// Execute a SQL statement via the REST API, optionally with positional
+    /// bindings (`{"1": {"type": "TEXT", "value": ...}}`).
+    async fn execute_sql(&self, sql: &str, bindings: Option<Value>) -> Result<(), FaucetError> {
         let url = self.api_url();
         let auth = self.auth_header()?;
         let token_type = snowflake_token_type(&self.config.auth);
 
-        let body = json!({
+        let mut body = json!({
             "statement": sql,
             "timeout": 60,
             "database": self.config.database,
             "schema": self.config.schema,
             "warehouse": self.config.warehouse,
         });
+        if let Some(bindings) = bindings {
+            body["bindings"] = bindings;
+        }
 
         let resp = self
             .client
@@ -115,28 +119,28 @@ impl SnowflakeSink {
         Ok(())
     }
 
-    /// Build an INSERT statement for a batch of records using PARSE_JSON
-    /// with parameterised identifiers.
-    fn build_insert_sql(&self, records: &[Value]) -> Result<String, FaucetError> {
+    /// Build an INSERT statement plus the JSON payload to bind to its single
+    /// `PARSE_JSON(?)` parameter.
+    ///
+    /// The record array is passed as a bound `TEXT` parameter, never
+    /// interpolated into a SQL string literal: interpolation was a
+    /// SQL-injection vector and corrupted any value containing an apostrophe
+    /// (#78/#5). Returns `(sql, json_payload)`.
+    fn build_insert(&self, records: &[Value]) -> Result<(String, String), FaucetError> {
         for record in records {
             record.as_object().ok_or_else(|| {
                 FaucetError::Sink("Snowflake sink requires JSON object records".into())
             })?;
         }
 
-        // Serialize all records into a JSON array, then use FLATTEN to insert.
-        let json_array: Vec<String> = records
-            .iter()
-            .map(|r| serde_json::to_string(r).unwrap_or_default())
-            .collect();
-
-        Ok(format!(
-            "INSERT INTO {}.{}.{} (SELECT * FROM TABLE(FLATTEN(input => PARSE_JSON('[{}]'))))",
+        let payload = Value::Array(records.to_vec()).to_string();
+        let sql = format!(
+            "INSERT INTO {}.{}.{} (SELECT * FROM TABLE(FLATTEN(input => PARSE_JSON(?))))",
             quote_ident(&self.config.database),
             quote_ident(&self.config.schema),
             quote_ident(&self.config.table),
-            json_array.join(",")
-        ))
+        );
+        Ok((sql, payload))
     }
 }
 
@@ -165,8 +169,9 @@ impl faucet_core::Sink for SnowflakeSink {
 
         let mut total = 0;
         for chunk in records.chunks(effective_chunk) {
-            let sql = self.build_insert_sql(chunk)?;
-            self.execute_sql(&sql).await?;
+            let (sql, payload) = self.build_insert(chunk)?;
+            let bindings = json!({ "1": { "type": "TEXT", "value": payload } });
+            self.execute_sql(&sql, Some(bindings)).await?;
             total += chunk.len();
         }
 
@@ -239,7 +244,7 @@ mod tests {
     }
 
     #[test]
-    fn build_insert_sql_uses_quoted_identifiers() {
+    fn build_insert_uses_quoted_identifiers() {
         let config = SnowflakeSinkConfig::new(
             "acct",
             "wh",
@@ -250,7 +255,43 @@ mod tests {
         );
         let sink = SnowflakeSink::new(config);
         let records = vec![serde_json::json!({"id": 1})];
-        let sql = sink.build_insert_sql(&records).unwrap();
+        let (sql, _payload) = sink.build_insert(&records).unwrap();
         assert!(sql.contains("\"MY_DB\".\"PUBLIC\".\"events\""));
+    }
+
+    #[test]
+    fn build_insert_binds_payload_instead_of_interpolating() {
+        // Regression for #78/#5. The record JSON must travel as a bound TEXT
+        // parameter to PARSE_JSON(?), never interpolated into a SQL string
+        // literal — interpolation is a SQL-injection vector and breaks on any
+        // value containing an apostrophe.
+        let config = SnowflakeSinkConfig::new(
+            "acct",
+            "wh",
+            "db",
+            "schema",
+            "tbl",
+            SnowflakeAuth::OAuth { token: "t".into() },
+        );
+        let sink = SnowflakeSink::new(config);
+        let records = vec![
+            serde_json::json!({"name": "O'Brien"}),
+            serde_json::json!({"note": "'); DROP TABLE events;--"}),
+        ];
+        let (sql, payload) = sink.build_insert(&records).unwrap();
+
+        // SQL is a parameterised placeholder — no record data, no literal.
+        assert!(sql.contains("PARSE_JSON(?)"), "sql: {sql}");
+        assert!(
+            !sql.contains('\''),
+            "sql must not embed a quoted literal: {sql}"
+        );
+        assert!(!sql.contains("O'Brien"));
+        assert!(!sql.contains("DROP TABLE"));
+
+        // The payload is the JSON array, carrying the apostrophe data intact.
+        let parsed: Value = serde_json::from_str(&payload).unwrap();
+        assert_eq!(parsed[0]["name"], "O'Brien");
+        assert_eq!(parsed[1]["note"], "'); DROP TABLE events;--");
     }
 }

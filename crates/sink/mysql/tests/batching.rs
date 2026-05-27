@@ -195,6 +195,64 @@ async fn write_batch_sentinel_zero_emits_single_insert() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn auto_map_binds_native_types_not_json_strings() {
+    // Regression for #78/#4 (MySQL). AutoMap used to bind every value as
+    // serde_json::to_string(v): "Bob" became the quoted text "Bob", booleans
+    // became the text "true", and a column present in an earlier record but
+    // missing from a later one was bound as the literal text "null" instead of
+    // SQL NULL (insert_columns is fixed from the first matching record).
+    let (_container, url) = start_mysql().await;
+    {
+        let pool = sqlx::MySqlPool::connect(&url).await.expect("pool connect");
+        sqlx::query(
+            "CREATE TABLE people (\
+                 name VARCHAR(64),\
+                 active TINYINT,\
+                 score DOUBLE,\
+                 note VARCHAR(64)\
+             )",
+        )
+        .execute(&pool)
+        .await
+        .expect("create people table");
+        pool.close().await;
+    }
+
+    let config = MysqlSinkConfig::new(&url, "people").column_mapping(MysqlColumnMapping::AutoMap);
+    let sink = MysqlSink::new(config).await.unwrap();
+
+    let records = vec![
+        json!({"name": "Bob", "active": true, "score": 1.5, "note": "hi"}),
+        json!({"name": "Sue", "active": false, "score": 2.5}),
+    ];
+    sink.write_batch(&records).await.unwrap();
+
+    let pool = sqlx::MySqlPool::connect(&url).await.expect("verify pool");
+
+    // `name = 'Bob'` matches only if the string was stored unquoted.
+    let bob = sqlx::query("SELECT name, active, score, note FROM people WHERE name = 'Bob'")
+        .fetch_one(&pool)
+        .await
+        .expect("bob row — name must be stored without embedded JSON quotes");
+    assert_eq!(bob.get::<String, _>("name"), "Bob");
+    assert_eq!(bob.get::<i64, _>("active"), 1, "true must bind native 1");
+    assert_eq!(bob.get::<f64, _>("score"), 1.5);
+    assert_eq!(bob.get::<String, _>("note"), "hi");
+
+    let sue = sqlx::query("SELECT active, note FROM people WHERE name = 'Sue'")
+        .fetch_one(&pool)
+        .await
+        .expect("sue row");
+    assert_eq!(sue.get::<i64, _>("active"), 0, "false must bind native 0");
+    assert_eq!(
+        sue.get::<Option<String>, _>("note"),
+        None,
+        "missing column must bind SQL NULL, not the text 'null'"
+    );
+    pool.close().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn write_batch_empty_records_makes_no_inserts() {
     let (_container, url) = start_mysql().await;
     create_json_table(&url).await;

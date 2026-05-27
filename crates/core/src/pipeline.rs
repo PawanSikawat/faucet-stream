@@ -380,188 +380,224 @@ where
     let sink_name = sink.connector_name();
     let dlq_sink_name = dlq.as_ref().map(|d| d.sink.connector_name()).unwrap_or("");
 
-    loop {
-        let page = std::future::poll_fn(|cx| Pin::new(&mut pages).poll_next(cx)).await;
-        match page {
-            Some(Ok(page)) => {
-                if page.records.is_empty() && page.bookmark.is_none() {
-                    continue;
-                }
-
-                if let Some(ref dlq_cfg) = dlq {
-                    // ── DLQ-enabled path ───────────────────────────────────
-                    use crate::dlq::DlqReason;
-                    use metrics::{Label, SharedString, counter};
-                    let metric_labels: Vec<Label> = vec![
-                        Label::new("pipeline", SharedString::from(pipeline_name.clone())),
-                        Label::new("row", SharedString::from(row.clone())),
-                        Label::new("connector", SharedString::from(sink_name.to_string())),
-                        Label::new(
-                            "dlq_connector",
-                            SharedString::from(dlq_sink_name.to_string()),
-                        ),
-                    ];
-                    let span = tracing::info_span!(
-                        "faucet.dlq.route",
-                        pipeline = %pipeline_name,
-                        row = %row,
-                        run_id = %run_id,
-                        connector = %sink_name,
-                        dlq_connector = %dlq_sink_name,
-                    );
-                    let _enter = span.enter();
-
-                    let outcomes_result = if page.records.is_empty() {
-                        Ok(Vec::new())
-                    } else {
-                        sink.write_batch_partial(&page.records).await
-                    };
-                    let mut outer_err_recovered = false;
-                    let outcomes = match outcomes_result {
-                        Ok(o) => o,
-                        Err(e) => match dlq_cfg.on_batch_error {
-                            OnBatchError::Propagate => return Err(e),
-                            OnBatchError::DlqAll => {
-                                // Synthesize per-row failures echoing the
-                                // underlying message so envelopes carry it.
-                                // The flag distinguishes this from a sink
-                                // override that legitimately returned all
-                                // per-row Errs — that case keeps the
-                                // `partial` reason label.
-                                outer_err_recovered = true;
-                                let msg = e.to_string();
-                                (0..page.records.len())
-                                    .map(|_| Err(FaucetError::Sink(msg.clone())))
-                                    .collect()
-                            }
-                        },
-                    };
-
-                    // Partition into success count + failure envelopes.
-                    let mut envelopes: Vec<Value> = Vec::new();
-                    let mut page_success = 0usize;
-                    for (i, outcome) in outcomes.iter().enumerate() {
-                        match outcome {
-                            Ok(()) => page_success += 1,
-                            Err(err) => envelopes.push(build_envelope(
-                                &page.records[i],
-                                err,
-                                sink_name,
-                                &pipeline_name,
-                                &row,
-                                i,
-                            )),
-                        }
-                    }
-                    let page_failures = envelopes.len();
-
-                    // Budget checks — increment counter before returning.
-                    if let Some(limit) = dlq_cfg.max_failures_per_page
-                        && page_failures > limit
-                    {
-                        let mut lbl = metric_labels.clone();
-                        lbl.retain(|l| l.key() != "dlq_connector");
-                        lbl.push(Label::new("scope", SharedString::const_str("per_page")));
-                        counter!("faucet_sink_dlq_budget_exceeded_total", lbl).increment(1);
-                        return Err(FaucetError::Sink(format!(
-                            "DLQ per-page budget exceeded: {page_failures} > {limit}"
-                        )));
-                    }
-                    let new_total = dlq_stats.records_dlq + page_failures;
-                    if let Some(limit) = dlq_cfg.max_failures_total
-                        && new_total > limit
-                    {
-                        let mut lbl = metric_labels.clone();
-                        lbl.retain(|l| l.key() != "dlq_connector");
-                        lbl.push(Label::new("scope", SharedString::const_str("total")));
-                        counter!("faucet_sink_dlq_budget_exceeded_total", lbl).increment(1);
-                        return Err(FaucetError::Sink(format!(
-                            "DLQ total budget exceeded: {new_total} > {limit}"
-                        )));
+    // Drive the streaming loop inside an inner future so that EVERY early exit
+    // (a source error, a `?`-propagated write/flush/state failure, or a DLQ
+    // budget overflow) funnels through one place. On any error we best-effort
+    // flush the sinks before propagating, so a buffered sink that only commits
+    // on flush — Parquet writes its footer there; without it the whole file is
+    // unreadable — does not lose everything written so far (#78/#3).
+    let loop_result: Result<(), FaucetError> = async {
+        loop {
+            let page = std::future::poll_fn(|cx| Pin::new(&mut pages).poll_next(cx)).await;
+            match page {
+                Some(Ok(page)) => {
+                    if page.records.is_empty() && page.bookmark.is_none() {
+                        continue;
                     }
 
-                    // Write to DLQ sink. Errors here are fatal, no recursion.
-                    if !envelopes.is_empty() {
-                        let _dlq_write_timer = crate::observability::DurationGuard::new(
-                            "faucet_sink_dlq_write_duration_seconds",
-                            metric_labels.clone(),
+                    if let Some(ref dlq_cfg) = dlq {
+                        // ── DLQ-enabled path ───────────────────────────────────
+                        use crate::dlq::DlqReason;
+                        use metrics::{Label, SharedString, counter};
+                        let metric_labels: Vec<Label> = vec![
+                            Label::new("pipeline", SharedString::from(pipeline_name.clone())),
+                            Label::new("row", SharedString::from(row.clone())),
+                            Label::new("connector", SharedString::from(sink_name.to_string())),
+                            Label::new(
+                                "dlq_connector",
+                                SharedString::from(dlq_sink_name.to_string()),
+                            ),
+                        ];
+                        let span = tracing::info_span!(
+                            "faucet.dlq.route",
+                            pipeline = %pipeline_name,
+                            row = %row,
+                            run_id = %run_id,
+                            connector = %sink_name,
+                            dlq_connector = %dlq_sink_name,
                         );
-                        dlq_cfg.sink.write_batch(&envelopes).await.map_err(|e| {
-                            let mut lbl = metric_labels.clone();
-                            lbl.push(Label::new(
-                                "kind",
-                                SharedString::const_str(
-                                    crate::observability::decorator::error_kind(&e),
-                                ),
-                            ));
-                            counter!("faucet_sink_dlq_errors_total", lbl).increment(1);
-                            FaucetError::Sink(format!("DLQ sink write failed: {e}"))
-                        })?;
-                        dlq_stats.records_dlq += page_failures;
-                        dlq_stats.pages_with_failures += 1;
+                        let _enter = span.enter();
 
-                        let reason_label = if outer_err_recovered {
-                            DlqReason::DlqAll.as_str()
+                        let outcomes_result = if page.records.is_empty() {
+                            Ok(Vec::new())
                         } else {
-                            DlqReason::Partial.as_str()
+                            sink.write_batch_partial(&page.records).await
                         };
-                        counter!("faucet_sink_dlq_records_total", metric_labels.clone())
-                            .increment(page_failures as u64);
-                        let mut page_labels = metric_labels.clone();
-                        page_labels
-                            .push(Label::new("reason", SharedString::const_str(reason_label)));
-                        counter!("faucet_sink_dlq_pages_total", page_labels).increment(1);
-                    }
+                        let mut outer_err_recovered = false;
+                        let outcomes = match outcomes_result {
+                            Ok(o) => o,
+                            Err(e) => match dlq_cfg.on_batch_error {
+                                OnBatchError::Propagate => return Err(e),
+                                OnBatchError::DlqAll => {
+                                    // Synthesize per-row failures echoing the
+                                    // underlying message so envelopes carry it.
+                                    // The flag distinguishes this from a sink
+                                    // override that legitimately returned all
+                                    // per-row Errs — that case keeps the
+                                    // `partial` reason label.
+                                    outer_err_recovered = true;
+                                    let msg = e.to_string();
+                                    (0..page.records.len())
+                                        .map(|_| Err(FaucetError::Sink(msg.clone())))
+                                        .collect()
+                                }
+                            },
+                        };
 
-                    records_written += page_success;
+                        // Partition into success count + failure envelopes.
+                        let mut envelopes: Vec<Value> = Vec::new();
+                        let mut page_success = 0usize;
+                        for (i, outcome) in outcomes.iter().enumerate() {
+                            match outcome {
+                                Ok(()) => page_success += 1,
+                                Err(err) => envelopes.push(build_envelope(
+                                    &page.records[i],
+                                    err,
+                                    sink_name,
+                                    &pipeline_name,
+                                    &row,
+                                    i,
+                                )),
+                            }
+                        }
+                        let page_failures = envelopes.len();
 
-                    if let Some(bookmark) = page.bookmark {
-                        sink.flush().await?;
-                        let _dlq_flush_timer = crate::observability::DurationGuard::new(
-                            "faucet_sink_dlq_flush_duration_seconds",
-                            metric_labels.clone(),
-                        );
-                        dlq_cfg.sink.flush().await.map_err(|e| {
+                        // Budget checks — increment counter before returning.
+                        if let Some(limit) = dlq_cfg.max_failures_per_page
+                            && page_failures > limit
+                        {
                             let mut lbl = metric_labels.clone();
-                            lbl.push(Label::new(
-                                "kind",
-                                SharedString::const_str(
-                                    crate::observability::decorator::error_kind(&e),
-                                ),
-                            ));
-                            counter!("faucet_sink_dlq_errors_total", lbl).increment(1);
-                            FaucetError::Sink(format!("DLQ sink flush failed: {e}"))
-                        })?;
-                        let bm_labels =
-                            crate::observability::Labels::new(&*pipeline_name, &*row, &*run_id);
-                        crate::observability::update_bookmark_lag(&bookmark, &bm_labels);
-                        if let (Some(store), Some(key)) = (state_store.as_ref(), state_key.as_ref())
-                        {
-                            store.put(key, &bookmark).await?;
+                            lbl.retain(|l| l.key() != "dlq_connector");
+                            lbl.push(Label::new("scope", SharedString::const_str("per_page")));
+                            counter!("faucet_sink_dlq_budget_exceeded_total", lbl).increment(1);
+                            return Err(FaucetError::Sink(format!(
+                                "DLQ per-page budget exceeded: {page_failures} > {limit}"
+                            )));
                         }
-                        last_bookmark = Some(bookmark);
-                    }
-                } else {
-                    // ── DLQ-disabled path (today's behaviour) ──────────────
-                    if !page.records.is_empty() {
-                        records_written += sink.write_batch(&page.records).await?;
-                    }
-                    if let Some(bookmark) = page.bookmark {
-                        sink.flush().await?;
-                        let bm_labels =
-                            crate::observability::Labels::new(&*pipeline_name, &*row, &*run_id);
-                        crate::observability::update_bookmark_lag(&bookmark, &bm_labels);
-                        if let (Some(store), Some(key)) = (state_store.as_ref(), state_key.as_ref())
+                        let new_total = dlq_stats.records_dlq + page_failures;
+                        if let Some(limit) = dlq_cfg.max_failures_total
+                            && new_total > limit
                         {
-                            store.put(key, &bookmark).await?;
+                            let mut lbl = metric_labels.clone();
+                            lbl.retain(|l| l.key() != "dlq_connector");
+                            lbl.push(Label::new("scope", SharedString::const_str("total")));
+                            counter!("faucet_sink_dlq_budget_exceeded_total", lbl).increment(1);
+                            return Err(FaucetError::Sink(format!(
+                                "DLQ total budget exceeded: {new_total} > {limit}"
+                            )));
                         }
-                        last_bookmark = Some(bookmark);
+
+                        // Write to DLQ sink. Errors here are fatal, no recursion.
+                        if !envelopes.is_empty() {
+                            let _dlq_write_timer = crate::observability::DurationGuard::new(
+                                "faucet_sink_dlq_write_duration_seconds",
+                                metric_labels.clone(),
+                            );
+                            dlq_cfg.sink.write_batch(&envelopes).await.map_err(|e| {
+                                let mut lbl = metric_labels.clone();
+                                lbl.push(Label::new(
+                                    "kind",
+                                    SharedString::const_str(
+                                        crate::observability::decorator::error_kind(&e),
+                                    ),
+                                ));
+                                counter!("faucet_sink_dlq_errors_total", lbl).increment(1);
+                                FaucetError::Sink(format!("DLQ sink write failed: {e}"))
+                            })?;
+                            dlq_stats.records_dlq += page_failures;
+                            dlq_stats.pages_with_failures += 1;
+
+                            let reason_label = if outer_err_recovered {
+                                DlqReason::DlqAll.as_str()
+                            } else {
+                                DlqReason::Partial.as_str()
+                            };
+                            counter!("faucet_sink_dlq_records_total", metric_labels.clone())
+                                .increment(page_failures as u64);
+                            let mut page_labels = metric_labels.clone();
+                            page_labels
+                                .push(Label::new("reason", SharedString::const_str(reason_label)));
+                            counter!("faucet_sink_dlq_pages_total", page_labels).increment(1);
+                        }
+
+                        records_written += page_success;
+
+                        if let Some(bookmark) = page.bookmark {
+                            sink.flush().await?;
+                            let _dlq_flush_timer = crate::observability::DurationGuard::new(
+                                "faucet_sink_dlq_flush_duration_seconds",
+                                metric_labels.clone(),
+                            );
+                            dlq_cfg.sink.flush().await.map_err(|e| {
+                                let mut lbl = metric_labels.clone();
+                                lbl.push(Label::new(
+                                    "kind",
+                                    SharedString::const_str(
+                                        crate::observability::decorator::error_kind(&e),
+                                    ),
+                                ));
+                                counter!("faucet_sink_dlq_errors_total", lbl).increment(1);
+                                FaucetError::Sink(format!("DLQ sink flush failed: {e}"))
+                            })?;
+                            let bm_labels =
+                                crate::observability::Labels::new(&*pipeline_name, &*row, &*run_id);
+                            crate::observability::update_bookmark_lag(&bookmark, &bm_labels);
+                            if let (Some(store), Some(key)) =
+                                (state_store.as_ref(), state_key.as_ref())
+                            {
+                                store.put(key, &bookmark).await?;
+                            }
+                            last_bookmark = Some(bookmark);
+                        }
+                    } else {
+                        // ── DLQ-disabled path (today's behaviour) ──────────────
+                        if !page.records.is_empty() {
+                            records_written += sink.write_batch(&page.records).await?;
+                        }
+                        if let Some(bookmark) = page.bookmark {
+                            sink.flush().await?;
+                            let bm_labels =
+                                crate::observability::Labels::new(&*pipeline_name, &*row, &*run_id);
+                            crate::observability::update_bookmark_lag(&bookmark, &bm_labels);
+                            if let (Some(store), Some(key)) =
+                                (state_store.as_ref(), state_key.as_ref())
+                            {
+                                store.put(key, &bookmark).await?;
+                            }
+                            last_bookmark = Some(bookmark);
+                        }
                     }
                 }
+                Some(Err(e)) => return Err(e),
+                None => break,
             }
-            Some(Err(e)) => return Err(e),
-            None => break,
         }
+        Ok(())
+    }
+    .await;
+
+    // Error/early-return unwind: best-effort flush so any buffered output is
+    // made durable, then propagate the ORIGINAL error. Flush errors here are
+    // logged and swallowed — the source/sink error that triggered the unwind
+    // is the meaningful one to surface. DLQ is flushed first (mirroring the
+    // success path below): its records are only ever written here, whereas the
+    // next run re-reads post-bookmark records from the source.
+    if let Err(e) = loop_result {
+        if let Some(ref dlq_cfg) = dlq
+            && let Err(flush_err) = dlq_cfg.sink.flush().await
+        {
+            tracing::warn!(
+                error = %flush_err,
+                "DLQ sink flush failed during error unwind; original error preserved"
+            );
+        }
+        if let Err(flush_err) = sink.flush().await {
+            tracing::warn!(
+                error = %flush_err,
+                "sink flush failed during error unwind; original error preserved"
+            );
+        }
+        return Err(e);
     }
 
     // Flush the DLQ sink BEFORE the main sink so quarantined records are made
@@ -696,6 +732,43 @@ mod tests {
     impl Sink for FailingSink {
         async fn write_batch(&self, _records: &[Value]) -> Result<usize, FaucetError> {
             Err(FaucetError::Sink("write failed".into()))
+        }
+    }
+
+    /// Records writes and how many times `flush` was called. Used to assert the
+    /// pipeline flushes the sink on the error/early-return path so partial
+    /// output (e.g. a Parquet footer) is made durable before the error
+    /// propagates.
+    struct FlushTrackingSink {
+        written: std::sync::Mutex<Vec<Value>>,
+        flush_count: std::sync::atomic::AtomicUsize,
+    }
+
+    impl FlushTrackingSink {
+        fn new() -> Self {
+            Self {
+                written: std::sync::Mutex::new(Vec::new()),
+                flush_count: std::sync::atomic::AtomicUsize::new(0),
+            }
+        }
+        fn written(&self) -> Vec<Value> {
+            self.written.lock().unwrap().clone()
+        }
+        fn flush_count(&self) -> usize {
+            self.flush_count.load(std::sync::atomic::Ordering::SeqCst)
+        }
+    }
+
+    #[async_trait]
+    impl Sink for FlushTrackingSink {
+        async fn write_batch(&self, records: &[Value]) -> Result<usize, FaucetError> {
+            self.written.lock().unwrap().extend(records.iter().cloned());
+            Ok(records.len())
+        }
+        async fn flush(&self) -> Result<(), FaucetError> {
+            self.flush_count
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(())
         }
     }
 
@@ -834,6 +907,34 @@ mod tests {
         assert_eq!(result.records_written, 3);
         assert!(result.bookmark.is_none());
         assert_eq!(sink.written().len(), 3);
+    }
+
+    #[tokio::test]
+    async fn stream_pipeline_flushes_sink_on_source_error() {
+        // Regression for #78/#3: a mid-stream source error must not skip the
+        // sink flush. Without flushing, a buffered sink (e.g. Parquet, whose
+        // footer is only written on flush) loses everything written so far.
+        let pages: Vec<Result<StreamPage, FaucetError>> = vec![
+            Ok(StreamPage {
+                records: vec![json!({"id": 1}), json!({"id": 2})],
+                bookmark: None,
+            }),
+            Err(FaucetError::Source("transient blip mid-stream".into())),
+        ];
+        let stream = futures::stream::iter(pages);
+        let sink = FlushTrackingSink::new();
+
+        let result = run_stream(stream, &sink, RunStreamOptions::new()).await;
+
+        // The original source error must still propagate.
+        assert!(matches!(result, Err(FaucetError::Source(_))));
+        // The good page must have been written before the error.
+        assert_eq!(sink.written().len(), 2);
+        // Crucially, the sink must have been flushed on the error path.
+        assert!(
+            sink.flush_count() >= 1,
+            "sink must be flushed on the error path so partial output is durable"
+        );
     }
 
     #[tokio::test]

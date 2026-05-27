@@ -522,6 +522,53 @@ async fn test_untolerated_http_error_propagates() {
     assert!(stream.fetch_all().await.is_err());
 }
 
+#[tokio::test]
+async fn test_tolerated_error_midpagination_does_not_silently_truncate() {
+    // Regression for #78/#7. A tolerated error is legitimate on the FIRST
+    // request (an absent/empty resource). Mid-pagination, swallowing it as an
+    // empty page makes every pagination style read "last page" and stop — so a
+    // transient 500 on page 2 of N silently drops pages 2..N and reports
+    // success. That must surface as an error instead.
+    let server = MockServer::start().await;
+
+    // Page 1 succeeds and points to page 2.
+    Mock::given(method("GET"))
+        .and(path("/api/items"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "items": [{"id": 1}],
+            "next_cursor": "page2"
+        })))
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+
+    // Page 2 returns a tolerated 500 mid-pagination.
+    Mock::given(method("GET"))
+        .and(path("/api/items"))
+        .and(query_param("cursor", "page2"))
+        .respond_with(ResponseTemplate::new(500))
+        .mount(&server)
+        .await;
+
+    let stream = RestStream::new(
+        RestStreamConfig::new(&server.uri(), "/api/items")
+            .records_path("$.items[*]")
+            .pagination(PaginationStyle::Cursor {
+                next_token_path: "$.next_cursor".into(),
+                param_name: "cursor".into(),
+            })
+            .tolerate_http_error(500)
+            .max_retries(0),
+    )
+    .unwrap();
+
+    let result = stream.fetch_all().await;
+    assert!(
+        result.is_err(),
+        "a tolerated error mid-pagination must not silently truncate; got {result:?}"
+    );
+}
+
 // ── Metadata fields (compile-time / builder checks) ───────────────────────────
 
 #[test]

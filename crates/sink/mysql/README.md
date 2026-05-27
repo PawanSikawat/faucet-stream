@@ -90,7 +90,7 @@ quoting, and column-mapping behaviour are unchanged.
 | Variant | Description |
 |---------|-------------|
 | `Json { column }` | Insert each record as a serialized JSON string in a single column. The column name defaults to `"data"` but can be overridden. Uses a multi-row `INSERT INTO t (col) VALUES (?), (?), ...` for efficiency. |
-| `AutoMap` | Map top-level JSON keys directly to table columns. Column names are discovered from `INFORMATION_SCHEMA.COLUMNS`. Only keys that match existing columns are inserted; extra keys are silently ignored. Records with no matching keys are skipped with a warning. |
+| `AutoMap` | Map top-level JSON keys directly to table columns. Column names are discovered from `INFORMATION_SCHEMA.COLUMNS`. Values are bound as **native MySQL types** (strings as text, JSON numbers as integer/double, booleans as `TINYINT` 0/1, arrays/objects as JSON text), and a key present in the first record but missing from a later one is bound as SQL `NULL`. Only keys that match existing columns are inserted; extra keys are silently ignored. Records with no matching keys are skipped with a warning. |
 
 ### Builder Methods
 
