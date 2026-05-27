@@ -578,18 +578,14 @@ impl Source for TransformingSource {
         ctx: &HashMap<String, Value>,
     ) -> Result<Vec<Value>, FaucetError> {
         let records = self.inner.fetch_with_context(ctx).await?;
-        Ok(instrumented_apply_all(
-            records,
-            &self.transforms,
-            &self.obs_labels,
-        ))
+        instrumented_apply_all(records, &self.transforms, &self.obs_labels)
     }
     async fn fetch_with_context_incremental(
         &self,
         ctx: &HashMap<String, Value>,
     ) -> Result<(Vec<Value>, Option<Value>), FaucetError> {
         let (records, bookmark) = self.inner.fetch_with_context_incremental(ctx).await?;
-        let transformed = instrumented_apply_all(records, &self.transforms, &self.obs_labels);
+        let transformed = instrumented_apply_all(records, &self.transforms, &self.obs_labels)?;
         Ok((transformed, bookmark))
     }
     fn connector_name(&self) -> &'static str {

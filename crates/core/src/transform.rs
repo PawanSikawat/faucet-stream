@@ -242,38 +242,53 @@ pub fn compile(t: &RecordTransform) -> Result<CompiledTransform, FaucetError> {
 }
 
 /// Apply a slice of pre-compiled transforms to a record, in order.
-pub fn apply_all(record: Value, transforms: &[CompiledTransform]) -> Value {
-    transforms.iter().fold(record, apply_one)
+///
+/// Returns [`FaucetError::Transform`] if a transform would silently lose data
+/// — currently when `flatten` or `snake_case` collapse two distinct fields to
+/// the same key (#78/#28).
+pub fn apply_all(record: Value, transforms: &[CompiledTransform]) -> Result<Value, FaucetError> {
+    let mut acc = record;
+    for t in transforms {
+        acc = apply_one(acc, t)?;
+    }
+    Ok(acc)
 }
 
-fn apply_one(value: Value, t: &CompiledTransform) -> Value {
+fn apply_one(value: Value, t: &CompiledTransform) -> Result<Value, FaucetError> {
     match t {
         #[cfg(feature = "transform-flatten")]
         CompiledTransform::Flatten { separator } => flatten(value, separator),
         #[cfg(feature = "transform-rename-keys")]
-        CompiledTransform::RenameKeys { re, replacement } => rename_keys(value, re, replacement),
+        CompiledTransform::RenameKeys { re, replacement } => {
+            Ok(rename_keys(value, re, replacement))
+        }
         #[cfg(feature = "transform-snake-case")]
         CompiledTransform::KeysToSnakeCase => keys_to_snake_case(value),
-        CompiledTransform::Custom(f) => f(value),
+        CompiledTransform::Custom(f) => Ok(f(value)),
     }
 }
 
 // ── Flatten ───────────────────────────────────────────────────────────────────
 
 #[cfg(feature = "transform-flatten")]
-fn flatten(value: Value, separator: &str) -> Value {
+fn flatten(value: Value, separator: &str) -> Result<Value, FaucetError> {
     match value {
         Value::Object(_) => {
             let mut out = Map::new();
-            flatten_into(value, "", separator, &mut out);
-            Value::Object(out)
+            flatten_into(value, "", separator, &mut out)?;
+            Ok(Value::Object(out))
         }
-        other => other,
+        other => Ok(other),
     }
 }
 
 #[cfg(feature = "transform-flatten")]
-fn flatten_into(value: Value, prefix: &str, separator: &str, out: &mut Map<String, Value>) {
+fn flatten_into(
+    value: Value,
+    prefix: &str,
+    separator: &str,
+    out: &mut Map<String, Value>,
+) -> Result<(), FaucetError> {
     match value {
         Value::Object(map) => {
             for (k, v) in map {
@@ -282,13 +297,23 @@ fn flatten_into(value: Value, prefix: &str, separator: &str, out: &mut Map<Strin
                 } else {
                     format!("{prefix}{separator}{k}")
                 };
-                flatten_into(v, &key, separator, out);
+                flatten_into(v, &key, separator, out)?;
             }
         }
         other => {
+            // Erroring (rather than last-wins) avoids silently dropping a value
+            // when a nested path and a literal key collide, e.g.
+            // `{"a__b":1,"a":{"b":2}}` both map to `a__b` (#78/#28).
+            if out.contains_key(prefix) {
+                return Err(FaucetError::Transform(format!(
+                    "flatten produced a duplicate key '{prefix}'; two distinct fields collapse \
+                     to the same flattened key (separator '{separator}')"
+                )));
+            }
             out.insert(prefix.to_string(), other);
         }
     }
+    Ok(())
 }
 
 // ── Rename keys ───────────────────────────────────────────────────────────────
@@ -338,17 +363,37 @@ pub fn to_snake_case(key: &str) -> String {
 }
 
 #[cfg(feature = "transform-snake-case")]
-fn keys_to_snake_case(value: Value) -> Value {
+fn keys_to_snake_case(value: Value) -> Result<Value, FaucetError> {
     match value {
         Value::Object(map) => {
-            let new_map: Map<String, Value> = map
-                .into_iter()
-                .map(|(k, v)| (to_snake_case(&k), keys_to_snake_case(v)))
-                .collect();
-            Value::Object(new_map)
+            let mut new_map = Map::with_capacity(map.len());
+            for (k, v) in map {
+                // An all-special key like "!@#" snake_cases to "" — keep the
+                // original key instead of producing an empty/blank key.
+                let snaked = to_snake_case(&k);
+                let new_k = if snaked.is_empty() { k } else { snaked };
+                let new_v = keys_to_snake_case(v)?;
+                // Erroring (rather than last-wins) avoids silently dropping a
+                // value when two distinct keys snake_case to the same name,
+                // e.g. "last-name" and "lastName" both → "last_name" (#78/#28).
+                if new_map.contains_key(&new_k) {
+                    return Err(FaucetError::Transform(format!(
+                        "snake_case produced a duplicate key '{new_k}'; two distinct keys \
+                         normalise to the same name"
+                    )));
+                }
+                new_map.insert(new_k, new_v);
+            }
+            Ok(Value::Object(new_map))
         }
-        Value::Array(arr) => Value::Array(arr.into_iter().map(keys_to_snake_case).collect()),
-        other => other,
+        Value::Array(arr) => {
+            let mut out = Vec::with_capacity(arr.len());
+            for v in arr {
+                out.push(keys_to_snake_case(v)?);
+            }
+            Ok(Value::Array(out))
+        }
+        other => Ok(other),
     }
 }
 
@@ -358,6 +403,14 @@ fn keys_to_snake_case(value: Value) -> Value {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// Test-only wrapper that shadows [`super::apply_all`] and unwraps, so the
+    /// many existing success-path tests need no changes now that `apply_all`
+    /// returns `Result`. Collision tests call `super::apply_all` for the
+    /// `Result` directly.
+    fn apply_all(record: Value, transforms: &[CompiledTransform]) -> Value {
+        super::apply_all(record, transforms).expect("transform should succeed in this test")
+    }
 
     fn compiled(transforms: &[RecordTransform]) -> Vec<CompiledTransform> {
         transforms.iter().map(|t| compile(t).unwrap()).collect()
@@ -665,5 +718,48 @@ mod tests {
         assert_eq!(result["id"], 1);
         assert_eq!(result["value"], 200);
         assert!(result.get("raw_value").is_none());
+    }
+
+    // ── #78/#28: collisions must error, not silently drop ──────────────────
+
+    #[cfg(feature = "transform-flatten")]
+    #[test]
+    fn flatten_key_collision_errors() {
+        // `a__b` (literal) and `a.b` (nested) both flatten to `a__b`.
+        let record = json!({"a__b": 1, "a": {"b": 2}});
+        let err = super::apply_all(
+            record,
+            &compiled(&[RecordTransform::Flatten {
+                separator: "__".into(),
+            }]),
+        )
+        .expect_err("colliding flattened keys must error, not drop a value");
+        assert!(matches!(err, FaucetError::Transform(_)));
+        assert!(format!("{err}").contains("a__b"), "{err}");
+    }
+
+    #[cfg(feature = "transform-snake-case")]
+    #[test]
+    fn snake_case_key_collision_errors() {
+        // "last-name" (dash stripped) and "lastname" both snake_case to "lastname".
+        let record = json!({"last-name": "a", "lastname": "b"});
+        let err = super::apply_all(record, &compiled(&[RecordTransform::KeysToSnakeCase]))
+            .expect_err("colliding snake_case keys must error, not drop a value");
+        assert!(matches!(err, FaucetError::Transform(_)));
+        assert!(format!("{err}").contains("lastname"), "{err}");
+    }
+
+    #[cfg(feature = "transform-snake-case")]
+    #[test]
+    fn snake_case_empty_output_keeps_original_key() {
+        // A key that strips to "" must not become a blank key — keep it as-is.
+        let record = json!({"!@#": 1, "id": 2});
+        let result = super::apply_all(record, &compiled(&[RecordTransform::KeysToSnakeCase]))
+            .expect("no collision here");
+        assert_eq!(
+            result["!@#"], 1,
+            "original key retained when snake_case is empty"
+        );
+        assert_eq!(result["id"], 2);
     }
 }

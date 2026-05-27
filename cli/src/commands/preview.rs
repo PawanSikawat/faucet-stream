@@ -52,7 +52,7 @@ pub async fn run(args: PreviewArgs) -> CliResult<()> {
         records
             .into_iter()
             .map(|r| apply_all(r, &compiled))
-            .collect()
+            .collect::<Result<Vec<_>, _>>()?
     };
 
     let limited: Vec<_> = records.into_iter().take(args.limit).collect();

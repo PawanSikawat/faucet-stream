@@ -305,7 +305,7 @@ impl RestStream {
                 let records: Vec<Value> = records
                     .into_iter()
                     .map(|rec| transform::apply_all(rec, &self.compiled_transforms))
-                    .collect();
+                    .collect::<Result<Vec<Value>, _>>()?;
 
                 // Track the running max replication value across pages so the
                 // final page can carry the consolidated bookmark.
