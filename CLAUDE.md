@@ -14,7 +14,7 @@ This workspace produces both library crates (`faucet-core` + every connector and
 
 ## Workspace Structure
 
-Cargo workspace, 39 crates (38 libraries + the `faucet-cli` binary). All connector crates depend only on `faucet-core`; the umbrella `faucet-stream` and the `faucet-cli` binary depend on every connector + state crate via optional features.
+Cargo workspace, 45 crates (44 libraries + the `faucet-cli` binary). All connector crates depend only on `faucet-core`; the umbrella `faucet-stream` and the `faucet-cli` binary depend on every connector + state crate via optional features.
 
 | Crate | Path | Description |
 |-------|------|-------------|
@@ -379,7 +379,7 @@ native protocol-level compression options).
 | `LinkHeader` | No `rel="next"` in the `Link` response header |
 | `NextLinkInBody` | Next-page URL in response body is absent, null, or empty |
 
-`max_pages` acts as a hard cap across all styles. All styles include loop detection — if the same cursor/link is returned twice in a row, pagination stops.
+`max_pages` acts as a hard cap across all styles. Every style also has a termination/loop guard, though the mechanism varies: `Cursor`, `LinkHeader`, and `NextLinkInBody` stop when the same token/link repeats; `PageNumber` stops on a zero-record page or when an identical page body is returned twice (content-fingerprint detection); `Offset` stops when the offset reaches `total` (via `total_path`) or a page returns fewer records than the limit.
 
 ## Coding Principles
 
@@ -438,7 +438,7 @@ Key workspace deps: `serde` 1, `serde_json` 1, `schemars` 1.2, `async-trait` 0.1
 
 ## Publishing
 
-Crates publish in dependency order with delays for crates.io index propagation: (1) `faucet-core`; (2) all connector + state crates (after 30s); (3) `faucet-stream` umbrella + `faucet-cli` (after another 30s). `.github/workflows/publish.yml` handles this automatically on version tags (`v*.*.*`).
+Crates publish in dependency order, topologically sorted then pushed to crates.io in **waves of 5 with a 15-minute wait between waves** (so each wave's crates have propagated through the crates.io index before the next wave depends on them). `.github/workflows/release.yml` handles this; it is **`workflow_dispatch`-triggered** (manual run with `scope` = `all` / `custom`, a version-bump input, and a `dry_run` toggle), not tag-triggered.
 
 ## Project Structure Sync
 
