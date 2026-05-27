@@ -110,7 +110,7 @@ async fn server_streaming_max_messages_caps_consumption() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn server_streaming_reconnects_on_transient_error() {
+async fn server_streaming_reconnect_dedupes_replayed_prefix() {
     let server = common::start_server().await;
     let config = GrpcStreamConfig::new(
         &server.endpoint,
@@ -127,13 +127,47 @@ async fn server_streaming_reconnects_on_transient_error() {
     let stream = GrpcStream::new(config).unwrap();
     let records = stream.fetch_all().await.unwrap();
 
-    // First attempt yields 2 events (events 0,1) then disconnects.
-    // Reconnect produces all 5 events (0..4) since the fixture restarts
-    // counting per connection. We collect everything seen across attempts.
+    // First attempt yields events 0,1 then disconnects. The fixture replays
+    // from message 0 on reconnect (count = 5 → events 0..4). With the default
+    // `reconnect_replay_from_start = true`, the source skips the 2 already-
+    // emitted messages on the reconnect, so each event is delivered exactly
+    // once: 0,1,2,3,4 — no duplicates (#78/#23).
+    assert_eq!(records.len(), 5);
+    let payloads: Vec<&str> = records
+        .iter()
+        .map(|r| r["payload"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        payloads,
+        vec!["event-0", "event-1", "event-2", "event-3", "event-4"]
+    );
+    assert_eq!(server.tail_attempts.load(Ordering::SeqCst), 2);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn server_streaming_reconnect_at_least_once_when_replay_disabled() {
+    let server = common::start_server().await;
+    let config = GrpcStreamConfig::new(
+        &server.endpoint,
+        "faucet.test.echo.EchoService",
+        "Tail",
+        common::descriptor_set_path(),
+    )
+    .request(json!({ "count": 5, "fail_after": 2 }))
+    .rpc_kind(RpcKind::ServerStreaming)
+    .reconnect_initial_backoff(std::time::Duration::from_millis(10))
+    .reconnect_max_backoff(std::time::Duration::from_millis(20))
+    .reconnect_max_attempts(3)
+    // Opt out of dedup: emit every received message (at-least-once).
+    .reconnect_replay_from_start(false);
+
+    let stream = GrpcStream::new(config).unwrap();
+    let records = stream.fetch_all().await.unwrap();
+
+    // events 0,1 (attempt 1) + events 0,1,2,3,4 (replayed in full) = 7.
     assert_eq!(records.len(), 7);
     assert_eq!(records[0]["payload"], "event-0");
     assert_eq!(records[1]["payload"], "event-1");
-    // After reconnect, events 0..4 stream again.
     assert_eq!(records[2]["payload"], "event-0");
     assert_eq!(records[6]["payload"], "event-4");
     assert_eq!(server.tail_attempts.load(Ordering::SeqCst), 2);

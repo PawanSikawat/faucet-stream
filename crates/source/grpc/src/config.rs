@@ -120,10 +120,39 @@ pub struct GrpcStreamConfig {
     /// retries.
     #[serde(default)]
     pub reconnect_max_attempts: Option<u32>,
+    /// For [`RpcKind::ServerStreaming`] reconnect: whether the server replays
+    /// the response stream from the beginning when the identical request is
+    /// re-issued after a disconnect. Defaults to `true`.
+    ///
+    /// Because the request is resolved once per run, a reconnect sends the
+    /// *same* request — a stateless server therefore re-streams from message
+    /// 0. When `true` the source skips the messages it already emitted before
+    /// the disconnect, so consumers see each message once. Set to `false`
+    /// only for servers that resume mid-stream on the same request (rare):
+    /// there, skipping would drop genuinely-new messages, so every received
+    /// message is emitted (at-least-once; duplicates possible).
+    #[serde(default = "default_reconnect_replay_from_start")]
+    pub reconnect_replay_from_start: bool,
+    /// Maximum size, in bytes, of a single inbound (decoded) gRPC message.
+    /// `None` (the default) keeps tonic's built-in 4 MiB limit. Raise this
+    /// for sources that legitimately return large messages; a too-low limit
+    /// surfaces as a decode error and aborts the call. Applies to both unary
+    /// and server-streaming RPCs.
+    #[serde(default)]
+    pub max_decoding_message_size: Option<usize>,
+    /// Maximum size, in bytes, of a single outbound (encoded) gRPC request
+    /// message. `None` (the default) keeps tonic's built-in limit. Rarely
+    /// needs tuning for a data source, since requests are typically small.
+    #[serde(default)]
+    pub max_encoding_message_size: Option<usize>,
 }
 
 fn default_batch_size() -> usize {
     DEFAULT_BATCH_SIZE
+}
+
+fn default_reconnect_replay_from_start() -> bool {
+    true
 }
 
 fn default_reconnect_initial_backoff() -> Duration {
@@ -158,6 +187,9 @@ impl GrpcStreamConfig {
             reconnect_initial_backoff: default_reconnect_initial_backoff(),
             reconnect_max_backoff: default_reconnect_max_backoff(),
             reconnect_max_attempts: None,
+            reconnect_replay_from_start: default_reconnect_replay_from_start(),
+            max_decoding_message_size: None,
+            max_encoding_message_size: None,
         }
     }
 
@@ -236,6 +268,26 @@ impl GrpcStreamConfig {
         self.reconnect_max_attempts = Some(attempts);
         self
     }
+
+    /// Set whether the server replays the stream from the start on reconnect
+    /// (default `true`). See
+    /// [`reconnect_replay_from_start`](Self::reconnect_replay_from_start).
+    pub fn reconnect_replay_from_start(mut self, replay: bool) -> Self {
+        self.reconnect_replay_from_start = replay;
+        self
+    }
+
+    /// Set the maximum inbound (decoded) gRPC message size in bytes.
+    pub fn max_decoding_message_size(mut self, bytes: usize) -> Self {
+        self.max_decoding_message_size = Some(bytes);
+        self
+    }
+
+    /// Set the maximum outbound (encoded) gRPC message size in bytes.
+    pub fn max_encoding_message_size(mut self, bytes: usize) -> Self {
+        self.max_encoding_message_size = Some(bytes);
+        self
+    }
 }
 
 #[cfg(test)]
@@ -262,6 +314,25 @@ mod tests {
         assert_eq!(config.reconnect_initial_backoff, Duration::from_secs(1));
         assert_eq!(config.reconnect_max_backoff, Duration::from_secs(30));
         assert!(config.reconnect_max_attempts.is_none());
+        assert!(config.reconnect_replay_from_start);
+        assert!(config.max_decoding_message_size.is_none());
+        assert!(config.max_encoding_message_size.is_none());
+    }
+
+    #[test]
+    fn message_size_and_replay_builders() {
+        let config = GrpcStreamConfig::new(
+            "http://localhost:50051",
+            "svc.Svc",
+            "Tail",
+            "proto/descriptor.bin",
+        )
+        .reconnect_replay_from_start(false)
+        .max_decoding_message_size(16 * 1024 * 1024)
+        .max_encoding_message_size(1024);
+        assert!(!config.reconnect_replay_from_start);
+        assert_eq!(config.max_decoding_message_size, Some(16 * 1024 * 1024));
+        assert_eq!(config.max_encoding_message_size, Some(1024));
     }
 
     #[test]
@@ -407,6 +478,8 @@ mod tests {
         assert_eq!(config.reconnect_initial_backoff, Duration::from_secs(1));
         assert_eq!(config.reconnect_max_backoff, Duration::from_secs(30));
         assert!(config.reconnect_max_attempts.is_none());
+        assert!(config.reconnect_replay_from_start);
+        assert!(config.max_decoding_message_size.is_none());
     }
 
     #[test]
