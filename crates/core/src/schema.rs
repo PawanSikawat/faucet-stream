@@ -101,26 +101,55 @@ fn merge_schemas(a: Value, b: Value) -> Value {
     types.sort();
     types.dedup();
 
-    // Merge object properties when both schemas are (or include) objects.
-    if types.contains(&"object".to_string()) {
+    // Build the merged schema, preserving *both* `properties` (when the union
+    // includes `object`) and `items` (when it includes `array`). The previous
+    // implementation returned early on `object` and dropped any array `items`,
+    // so a field that was an array in some records and an object in others
+    // lost its element shape (#78/#35).
+    // Two untyped fragments carry no information — return the unknown schema
+    // `{}` rather than a malformed `{"type": []}` (#78/#35).
+    if types.is_empty() {
+        return json!({});
+    }
+
+    let has_object = types.iter().any(|t| t == "object");
+    let has_array = types.iter().any(|t| t == "array");
+
+    let mut result = Map::new();
+    result.insert("type".to_string(), make_type_value(types));
+
+    if has_object {
         let props = merge_properties(extract_properties(&a), extract_properties(&b));
-        return json!({
-            "type": make_type_value(types),
-            "properties": Value::Object(props)
-        });
+        result.insert("properties".to_string(), Value::Object(props));
     }
 
-    // Merge array item schemas.
-    if types == ["array"] {
-        let items_a = a.get("items").cloned().unwrap_or_else(|| json!({}));
-        let items_b = b.get("items").cloned().unwrap_or_else(|| json!({}));
-        return json!({
-            "type": "array",
-            "items": merge_schemas(items_a, items_b)
-        });
+    if has_array {
+        // Merge the element schemas from whichever side(s) carried `items`.
+        // Omit `items` entirely when the element type is genuinely unknown
+        // (e.g. only empty arrays were seen) rather than emitting `items: {}`.
+        let items = match (a.get("items").cloned(), b.get("items").cloned()) {
+            (Some(x), Some(y)) => Some(merge_schemas(x, y)),
+            (Some(x), None) | (None, Some(x)) => Some(x),
+            (None, None) => None,
+        };
+        if let Some(items) = items
+            && !is_unknown_schema(&items)
+        {
+            result.insert("items".to_string(), items);
+        }
     }
 
-    json!({"type": make_type_value(types)})
+    Value::Object(result)
+}
+
+/// A schema carrying no information — `{}` or `null`. Used to decide whether
+/// an array's `items` is worth emitting.
+fn is_unknown_schema(schema: &Value) -> bool {
+    match schema {
+        Value::Object(m) => m.is_empty(),
+        Value::Null => true,
+        _ => false,
+    }
 }
 
 fn merge_properties(a: Map<String, Value>, b: Map<String, Value>) -> Map<String, Value> {
@@ -321,5 +350,38 @@ mod tests {
                 || items_type == &json!(["string", "integer"]),
             "got {items_type}"
         );
+    }
+
+    #[test]
+    fn test_merge_schemas_array_object_union_preserves_items_and_properties() {
+        // Regression for #78/#35: a field that is an array in some records and
+        // an object in others must keep *both* the array `items` and the
+        // object `properties`, not silently drop the array shape.
+        let arr = json!({"type": "array", "items": {"type": "integer"}});
+        let obj = json!({"type": "object", "properties": {"k": {"type": "string"}}});
+        let merged = merge_schemas(arr, obj);
+        let types = &merged["type"];
+        assert!(
+            types == &json!(["array", "object"]) || types == &json!(["object", "array"]),
+            "got {types}"
+        );
+        assert_eq!(merged["items"]["type"], "integer", "array items dropped");
+        // `k` is present only on the object variant → nullable in the union.
+        let k_type = &merged["properties"]["k"]["type"];
+        assert!(
+            k_type == &json!(["null", "string"]) || k_type == &json!(["string", "null"]),
+            "got {k_type}"
+        );
+    }
+
+    #[test]
+    fn test_merge_schemas_unknown_array_items_omitted() {
+        // Two empty arrays carry no element info → omit `items` rather than
+        // emitting a meaningless `items: {}` (#78/#35).
+        let a = json!({"type": "array", "items": {}});
+        let b = json!({"type": "array", "items": {}});
+        let merged = merge_schemas(a, b);
+        assert_eq!(merged["type"], "array");
+        assert!(merged.get("items").is_none(), "got {merged}");
     }
 }
