@@ -1,0 +1,20 @@
+[book]
+title = "faucet-stream"
+description = "The fast, config-driven way to move data in Rust."
+authors = ["faucet-stream contributors"]
+language = "en"
+src = "src"
+
+[output.html]
+default-theme = "rust"
+preferred-dark-theme = "ayu"
+git-repository-url = "https://github.com/PawanSikawat/faucet-stream"
+edit-url-template = "https://github.com/PawanSikawat/faucet-stream/edit/main/docs/book/{path}"
+no-section-label = false
+
+[output.html.fold]
+enable = true
+level = 1
+
+[output.html.search]
+enable = true

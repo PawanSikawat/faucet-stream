@@ -464,6 +464,14 @@ Every publishable crate is configured so docs.rs renders its **complete** API �
 
 Verify locally with: `RUSTDOCFLAGS="--cfg docsrs" rustup run nightly cargo doc --workspace --all-features --no-deps` (must be clean — broken intra-doc links surface here). New crates must add both pieces or they will be documented incompletely on docs.rs.
 
+## Documentation Site (mdBook)
+
+The user-facing documentation site lives in **`docs/book/`** (an mdBook). Source pages are under `docs/book/src/` with the TOC in `SUMMARY.md`; config is `docs/book/book.toml`. **This is distinct from `docs/superpowers/`** (internal design specs — never user-facing). The rendered output (`docs/book/book/`) is gitignored.
+
+- Build locally with `mdbook build docs/book` (install via `cargo install mdbook`; the workspace was built with mdBook 0.5.x). The book uses **no preprocessors** (no mdbook-mermaid etc.) so a bare `mdbook` builds it.
+- `.github/workflows/docs.yml` builds the book on every PR (verify) and deploys it to **GitHub Pages** on push to `main`. Pages must be enabled in repo Settings with source = "GitHub Actions"; the published URL is `https://pawansikawat.github.io/faucet-stream/`.
+- **Keep the book in sync** when you change connector config, CLI commands, the config grammar, or add/remove connectors — update the relevant page under `docs/book/src/` alongside the crate README and this file. Content should stay grounded in real configs (reuse the `cli/examples/` YAMLs) rather than invented field names.
+
 ## Project Structure Sync
 
 **When adding, removing, or moving files or directories, update the Project Structure section in README.md to reflect the change.**
