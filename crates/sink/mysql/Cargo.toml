@@ -6,6 +6,9 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "MySQL sink connector for the faucet-stream ecosystem"
+readme = "README.md"
+keywords.workspace = true
+categories.workspace = true
 
 [dependencies]
 faucet-core.workspace = true
