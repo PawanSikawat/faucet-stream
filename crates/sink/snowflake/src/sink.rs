@@ -49,12 +49,16 @@ fn check_statement_code(sf_resp: &SnowflakeResponse) -> Result<(), FaucetError> 
 
 impl SnowflakeSink {
     /// Create a new Snowflake sink.
-    pub fn new(config: SnowflakeSinkConfig) -> Self {
-        Self {
+    ///
+    /// Returns [`FaucetError::Config`] if `batch_size` exceeds
+    /// `MAX_BATCH_SIZE` (#78/#44).
+    pub fn new(config: SnowflakeSinkConfig) -> Result<Self, FaucetError> {
+        faucet_core::validate_batch_size(config.batch_size)?;
+        Ok(Self {
             config,
             client: Client::new(),
             endpoint: None,
-        }
+        })
     }
 
     /// Override the API endpoint URL (full URL including
@@ -264,6 +268,21 @@ mod tests {
     use crate::config::SnowflakeAuth;
 
     #[test]
+    fn new_rejects_oversized_batch_size() {
+        // Regression for #78/#44.
+        let config = SnowflakeSinkConfig::new(
+            "acct",
+            "wh",
+            "db",
+            "schema",
+            "tbl",
+            SnowflakeAuth::OAuth { token: "t".into() },
+        )
+        .with_batch_size(faucet_core::MAX_BATCH_SIZE + 1);
+        assert!(SnowflakeSink::new(config).is_err());
+    }
+
+    #[test]
     fn api_url_format() {
         let config = SnowflakeSinkConfig::new(
             "xy12345.us-east-1",
@@ -275,7 +294,7 @@ mod tests {
                 token: "tok".into(),
             },
         );
-        let sink = SnowflakeSink::new(config);
+        let sink = SnowflakeSink::new(config).unwrap();
         assert_eq!(
             sink.api_url(),
             "https://xy12345.us-east-1.snowflakecomputing.com/api/v2/statements"
@@ -294,7 +313,7 @@ mod tests {
                 token: "my-token".into(),
             },
         );
-        let sink = SnowflakeSink::new(config);
+        let sink = SnowflakeSink::new(config).unwrap();
         let header = sink.auth_header().unwrap();
         assert_eq!(header, "Snowflake Token=\"my-token\"");
     }
@@ -309,8 +328,9 @@ mod tests {
             "tbl",
             SnowflakeAuth::OAuth { token: "t".into() },
         );
-        let sink =
-            SnowflakeSink::new(config).with_endpoint("http://127.0.0.1:1234/api/v2/statements");
+        let sink = SnowflakeSink::new(config)
+            .unwrap()
+            .with_endpoint("http://127.0.0.1:1234/api/v2/statements");
         assert_eq!(sink.api_url(), "http://127.0.0.1:1234/api/v2/statements");
     }
 
@@ -324,7 +344,7 @@ mod tests {
             "events",
             SnowflakeAuth::OAuth { token: "t".into() },
         );
-        let sink = SnowflakeSink::new(config);
+        let sink = SnowflakeSink::new(config).unwrap();
         let records = vec![serde_json::json!({"id": 1})];
         let (sql, _payload) = sink.build_insert(&records).unwrap();
         assert!(sql.contains("\"MY_DB\".\"PUBLIC\".\"events\""));
@@ -344,7 +364,7 @@ mod tests {
             "tbl",
             SnowflakeAuth::OAuth { token: "t".into() },
         );
-        let sink = SnowflakeSink::new(config);
+        let sink = SnowflakeSink::new(config).unwrap();
         let records = vec![
             serde_json::json!({"name": "O'Brien"}),
             serde_json::json!({"note": "'); DROP TABLE events;--"}),

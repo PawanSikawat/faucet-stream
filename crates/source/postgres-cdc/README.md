@@ -86,6 +86,28 @@ Every change event is one JSON object:
 
 `truncate` emits one record per truncated relation with `before = after = null`.
 
+### Column type mapping
+
+Values arrive in Postgres text form and are decoded by column type OID:
+
+| Postgres type | JSON |
+|---|---|
+| `bool` | `true` / `false` |
+| `int2` / `int4` / `int8` | number |
+| `float4` / `float8` (finite) | number |
+| `float4` / `float8` `NaN` / `±Infinity` | `"NaN"` / `"Infinity"` / `"-Infinity"` (string, to stay distinct from a SQL `NULL` → `null`) |
+| `numeric` | string (exact precision) |
+| `bytea` | base64 string |
+| `json` / `jsonb` | parsed JSON value |
+| one-dimensional arrays of the above scalar types (`int4[]`, `text[]`, `uuid[]`, …) | JSON array, decoded element-by-element (`NULL` elements → `null`) |
+| `uuid`, `date`, `time`, `timestamp`, `timestamptz`, and anything else | string (raw Postgres text — stable under the default `DateStyle ISO`) |
+
+Multi-dimensional arrays, ranges, composites, and enums fall back to the raw Postgres array/text string.
+
+### Stream robustness
+
+The decoder fails fast (`FaucetError::Source`, which the pipeline restarts from the durable bookmark) rather than silently dropping data on a protocol desync: a `COMMIT` without a `BEGIN`, a second `BEGIN` while a transaction is still staged, or a `ReplicationEvent` variant the decoder doesn't recognise. A relation whose column set changes mid-stream (an `ALTER TABLE`) is logged at `warn` — subsequent rows decode against the new descriptor.
+
 ---
 
 ## Configuration

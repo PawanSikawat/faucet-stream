@@ -47,8 +47,9 @@ fn endpoint(server: &MockServer) -> String {
 async fn write_batch_rechunks_into_batch_size_requests() {
     // 2500 records with batch_size = 1000 → 3 REST requests (1000, 1000, 500).
     let server = mock_server_with_success().await;
-    let sink =
-        SnowflakeSink::new(sample_config().with_batch_size(1000)).with_endpoint(endpoint(&server));
+    let sink = SnowflakeSink::new(sample_config().with_batch_size(1000))
+        .unwrap()
+        .with_endpoint(endpoint(&server));
 
     let written = sink.write_batch(&make_records(2_500)).await.unwrap();
     assert_eq!(written, 2_500);
@@ -64,8 +65,9 @@ async fn write_batch_rechunks_into_batch_size_requests() {
 #[tokio::test]
 async fn write_batch_emits_single_request_for_exact_multiple() {
     let server = mock_server_with_success().await;
-    let sink =
-        SnowflakeSink::new(sample_config().with_batch_size(1000)).with_endpoint(endpoint(&server));
+    let sink = SnowflakeSink::new(sample_config().with_batch_size(1000))
+        .unwrap()
+        .with_endpoint(endpoint(&server));
 
     sink.write_batch(&make_records(1_000)).await.unwrap();
 
@@ -77,8 +79,9 @@ async fn write_batch_emits_single_request_for_exact_multiple() {
 async fn write_batch_with_sentinel_zero_sends_single_request() {
     // batch_size = 0 → pass-through, no matter how many records.
     let server = mock_server_with_success().await;
-    let sink =
-        SnowflakeSink::new(sample_config().with_batch_size(0)).with_endpoint(endpoint(&server));
+    let sink = SnowflakeSink::new(sample_config().with_batch_size(0))
+        .unwrap()
+        .with_endpoint(endpoint(&server));
 
     sink.write_batch(&make_records(5_000)).await.unwrap();
 
@@ -93,8 +96,9 @@ async fn write_batch_with_sentinel_zero_sends_single_request() {
 #[tokio::test]
 async fn write_batch_empty_records_makes_no_requests() {
     let server = mock_server_with_success().await;
-    let sink =
-        SnowflakeSink::new(sample_config().with_batch_size(1000)).with_endpoint(endpoint(&server));
+    let sink = SnowflakeSink::new(sample_config().with_batch_size(1000))
+        .unwrap()
+        .with_endpoint(endpoint(&server));
 
     let written = sink.write_batch(&[]).await.unwrap();
     assert_eq!(written, 0);
@@ -106,8 +110,9 @@ async fn write_batch_empty_records_makes_no_requests() {
 #[tokio::test]
 async fn write_batch_smaller_than_batch_size_makes_one_request() {
     let server = mock_server_with_success().await;
-    let sink =
-        SnowflakeSink::new(sample_config().with_batch_size(1000)).with_endpoint(endpoint(&server));
+    let sink = SnowflakeSink::new(sample_config().with_batch_size(1000))
+        .unwrap()
+        .with_endpoint(endpoint(&server));
 
     sink.write_batch(&make_records(42)).await.unwrap();
 

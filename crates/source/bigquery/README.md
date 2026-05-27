@@ -8,7 +8,7 @@ BigQuery query source connector for the [`faucet-stream`](https://crates.io/crat
 - **Sync + async result handling** — when BigQuery returns `jobComplete=false` (statement timeout exceeded), the source polls `getQueryResults` until the job finishes, bounded by `poll_timeout` (default 300 s; `0` = poll forever) so a job that never completes fails instead of hanging.
 - **Server-side pagination** — pages via `pageToken` for arbitrarily-large result sets; rows are re-framed into pages of `batch_size` for `Source::stream_pages`.
 - **Type-aware row decoding** — `INTEGER`/`INT64` → JSON number, `FLOAT`/`FLOAT64` → number, `BOOLEAN`/`BOOL` → bool, `NUMERIC`/`BIGNUMERIC` → string (full precision), `RECORD`/`STRUCT` → nested object, `REPEATED` → array, `JSON` → parsed value, everything else → string.
-- **Positional bind parameters** — `params` from config and `${parent.path}` matrix-context values are sent as `POSITIONAL` `STRING` parameters; BigQuery casts at execution time.
+- **Positional bind parameters** — `params` from config and `${parent.path}` matrix-context values are sent as `POSITIONAL` parameters whose type is inferred from the JSON value (`INT64` / `FLOAT64` / `BOOL` / `STRING`), so a numeric or boolean bind compares correctly against a typed column.
 - **Standard or legacy SQL** — `use_legacy_sql` toggle; defaults to Standard SQL.
 
 ## Configuration

@@ -8,7 +8,7 @@ Snowflake query source connector for the [`faucet-stream`](https://crates.io/cra
 - **Server-side partitioning** — large result sets are paged via `GET /api/v2/statements/{handle}?partition=N`; one HTTP round-trip per partition, no client-side buffering of unrelated partitions.
 - **Configurable batching** — `batch_size` re-frames partitions into pages for `Source::stream_pages`; `batch_size = 0` opts out of re-chunking and emits the full result set as one page.
 - **Async / sync handling** — if Snowflake returns `202 Accepted` (statement still running), the source polls the handle until the result is ready, bounded by `poll_timeout` (default 300 s; `0` = poll forever) so a stuck statement fails instead of hanging.
-- **Bind parameters** — positional `params` from config are merged with `${parent.path}` tokens resolved from the matrix-row context. All bind values are sent as Snowflake `TEXT` binds; the server casts as needed.
+- **Bind parameters** — positional `params` from config are merged with `${parent.path}` tokens resolved from the matrix-row context. Each bind's Snowflake type is inferred from the JSON value (`FIXED` for integers, `REAL` for floats, `BOOLEAN` for bools, `TEXT` otherwise), so numeric/boolean binds compare against typed columns instead of being forced to `TEXT`.
 - **Type-aware row conversion** — `FIXED`, `REAL`, `BOOLEAN`, and `VARIANT`/`OBJECT`/`ARRAY` columns are parsed into native JSON shapes; everything else (timestamps, dates, binary) passes through as strings.
 
 ## Configuration

@@ -254,7 +254,7 @@ config:
   compression: auto  # or 'gzip' | 'zstd' | 'none'
 ```
 
-`flush()` finalises the encoder via a blocking task drop; subsequent writes append a fresh member. Headers are emitted only on the first open.
+`flush()` explicitly finalises the compression encoder (writing the gzip/zstd trailer) and propagates any trailer-write I/O error, rather than swallowing it on drop — so a bookmark never advances over a truncated/corrupt file. Subsequent writes append a fresh member. Headers are emitted only on the first open.
 
 ## License
 

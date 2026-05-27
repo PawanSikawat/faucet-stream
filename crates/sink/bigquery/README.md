@@ -63,6 +63,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 | `table_id` | `String` | *(required)* | BigQuery table ID |
 | `credentials` | `BigQueryCredentials` | *(required)* | Authentication credentials (see below) |
 | `batch_size` | `usize` | `1000` | Maximum rows per `insertAll` request. See [Streaming and batching](#streaming-and-batching) below |
+| `insert_id_field` | `Option<String>` | `None` | Record field whose value is sent as the per-row streaming `insertId`. See [Retry de-duplication](#retry-de-duplication) below |
+
+### Retry de-duplication
+
+BigQuery streaming inserts are **at-least-once** — a transport retry can
+insert the same row twice. Setting `insert_id_field` to a stable per-row
+key (e.g. a primary key or event id) makes the sink send that value as the
+row's `insertId`, which BigQuery uses for best-effort de-duplication over a
+short window. When `insert_id_field` is unset, or a given row lacks the
+field, that row is inserted without an `insertId` (no dedup for it).
 
 ### Streaming and batching
 

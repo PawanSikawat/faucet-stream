@@ -17,6 +17,7 @@ use crate::config::{
     TransformSpec,
 };
 use crate::error::{CliError, CliResult};
+use crate::interpolate::{Directive, iter_directives};
 use crate::merge::merge_value;
 use serde_json::Value;
 use std::collections::{BTreeSet, HashMap, HashSet};
@@ -370,14 +371,15 @@ fn detect_cycle(parents: &HashMap<&str, &str>) -> CliResult<()> {
 /// ignored here.
 fn check_refs(value: &Value, id_set: &HashSet<&str>, owner: &str) -> CliResult<()> {
     walk_strings(value, &mut |s| {
-        for (token, prefix, _body) in iter_directives(s) {
-            // Load-time prefixes already resolved by `interpolate::interpolate`.
-            if matches!(prefix, "env" | "file" | "secret") {
-                continue;
-            }
-            if !id_set.contains(prefix) {
+        for (token, dir) in iter_directives(s) {
+            // Load-time / template directives (`${env:..}`, `${vars.X}`, …) are
+            // resolved before expansion; only deferred `${id.path}` references
+            // are validated here, against the known row ids.
+            if let Directive::Deferred { id, .. } = dir
+                && !id_set.contains(id)
+            {
                 return Err(CliError::UnknownInterpolationId {
-                    id: prefix.to_owned(),
+                    id: id.to_owned(),
                     token: format!("{token} (in {owner})"),
                 });
             }
@@ -388,15 +390,14 @@ fn check_refs(value: &Value, id_set: &HashSet<&str>, owner: &str) -> CliResult<(
 
 fn collect_deferred(value: &Value, out: &mut Vec<DeferredRef>) {
     let _ = walk_strings(value, &mut |s| {
-        for (token, prefix, body) in iter_directives(s) {
-            if matches!(prefix, "env" | "file" | "secret") {
-                continue;
+        for (token, dir) in iter_directives(s) {
+            if let Directive::Deferred { id, path } = dir {
+                out.push(DeferredRef {
+                    referenced_id: id.to_owned(),
+                    dotted_path: path.to_owned(),
+                    token: token.to_owned(),
+                });
             }
-            out.push(DeferredRef {
-                referenced_id: prefix.to_owned(),
-                dotted_path: body.to_owned(),
-                token: token.to_owned(),
-            });
         }
         Ok(())
     });
@@ -412,45 +413,6 @@ where
         Value::Object(m) => m.values().try_for_each(|v| walk_strings(v, f)),
         _ => Ok(()),
     }
-}
-
-/// Iterate `${prefix:body}` and `${id.dotted.path}` tokens, returning
-/// `(full_token_including_dollar_brace, prefix, body)`. The prefix is the
-/// text before the first `:` (load-time) or `.` (deferred); body is the rest.
-/// `${name}` alone (no `:` and no `.`) yields `(token, "name", "")`.
-fn iter_directives(s: &str) -> impl Iterator<Item = (&str, &str, &str)> {
-    let mut i = 0;
-    let bytes = s.as_bytes();
-    std::iter::from_fn(move || {
-        while i + 1 < bytes.len() {
-            // Skip `$${` escape — does not produce a directive.
-            if bytes[i] == b'$'
-                && bytes.get(i + 1) == Some(&b'$')
-                && bytes.get(i + 2) == Some(&b'{')
-            {
-                i += 3;
-                continue;
-            }
-            if bytes[i] == b'$' && bytes.get(i + 1) == Some(&b'{') {
-                let start = i;
-                let body_start = i + 2;
-                let rel_end = s[body_start..].find('}')?;
-                let end = body_start + rel_end;
-                i = end + 1;
-                let inner = &s[body_start..end];
-                let (prefix, body) = if let Some(idx) = inner.find(':') {
-                    (&inner[..idx], &inner[idx + 1..])
-                } else if let Some(idx) = inner.find('.') {
-                    (&inner[..idx], &inner[idx + 1..])
-                } else {
-                    (inner, "")
-                };
-                return Some((&s[start..i], prefix, body));
-            }
-            i += 1;
-        }
-        None
-    })
 }
 
 #[cfg(test)]
@@ -584,6 +546,24 @@ pipeline:
             expand(&c).unwrap_err(),
             CliError::UnknownInterpolationId { .. }
         ));
+    }
+
+    #[test]
+    fn dot_form_reserved_prefix_is_validated_as_deferred_id() {
+        // Regression for #78/#39: `${env.foo}` has no colon, so it is a
+        // deferred reference to id `env`, not a load-time `env:` directive.
+        // The validator must reject it (as the runtime would), rather than
+        // silently skipping it and letting `run` fail later.
+        let c = cfg(r#"
+version: 1
+pipeline:
+  source: { type: rest, config: { url: "https://x/${env.foo}" } }
+  sink:   { type: jsonl, config: { path: ./o } }
+"#);
+        match expand(&c).unwrap_err() {
+            CliError::UnknownInterpolationId { id, .. } => assert_eq!(id, "env"),
+            other => panic!("expected UnknownInterpolationId for `env`, got {other:?}"),
+        }
     }
 
     #[test]

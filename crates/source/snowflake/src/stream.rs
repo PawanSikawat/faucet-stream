@@ -121,10 +121,13 @@ impl SnowflakeSource {
     /// Build the JSON body for `POST /api/v2/statements`.
     ///
     /// Bindings are sent as 1-based positional values under the documented
-    /// `bindings: {"1": {"type": "TEXT", "value": "..."}}` shape. Non-null
-    /// values are stringified and tagged `TEXT` (Snowflake casts implicitly);
-    /// a JSON `null` is bound as an explicit `{"type":"TEXT","value":null}` so
-    /// it keeps its positional slot rather than shifting later parameters.
+    /// `bindings: {"1": {"type": "<TYPE>", "value": "..."}}` shape. The value
+    /// is always a string; the `type` is inferred from the JSON value
+    /// (`FIXED` for integers, `REAL` for floats, `BOOLEAN` for bools, `TEXT`
+    /// for strings/arrays/objects) so a numeric/boolean bind compares against
+    /// a typed column rather than being forced to TEXT (#78/#34). A JSON
+    /// `null` is bound as an explicit `{"type":"TEXT","value":null}` so it
+    /// keeps its positional slot rather than shifting later parameters.
     fn build_request_body(&self, bindings: &[Value]) -> Value {
         let mut body = json!({
             "statement": self.config.query,
@@ -146,12 +149,26 @@ impl SnowflakeSource {
                 // than skipped — skipping leaves a gap that shifts every later
                 // parameter onto the wrong marker and corrupts the query
                 // (#78/#18).
-                let value = match v {
-                    Value::String(s) => Value::String(s.clone()),
-                    Value::Null => Value::Null,
-                    other => Value::String(other.to_string()),
+                //
+                // The Snowflake type is inferred from the JSON value so a
+                // numeric or boolean bind compares correctly against a
+                // NUMBER/BOOLEAN column instead of being forced to TEXT
+                // (#78/#34). The value is always sent as a string (or null).
+                let (ty, value) = match v {
+                    Value::Null => ("TEXT", Value::Null),
+                    Value::Bool(b) => ("BOOLEAN", Value::String(b.to_string())),
+                    Value::Number(n) => {
+                        let ty = if n.is_i64() || n.is_u64() {
+                            "FIXED"
+                        } else {
+                            "REAL"
+                        };
+                        (ty, Value::String(n.to_string()))
+                    }
+                    Value::String(s) => ("TEXT", Value::String(s.clone())),
+                    other => ("TEXT", Value::String(other.to_string())),
                 };
-                map.insert((i + 1).to_string(), json!({"type": "TEXT", "value": value}));
+                map.insert((i + 1).to_string(), json!({"type": ty, "value": value}));
             }
             body["bindings"] = Value::Object(map);
         }
@@ -577,14 +594,25 @@ mod tests {
     }
 
     #[test]
-    fn build_request_body_serialises_bindings_as_text() {
+    fn build_request_body_infers_binding_types() {
+        // #78/#34: types are inferred from the JSON value (value still a
+        // string), so numeric/boolean binds compare against typed columns.
         let src = SnowflakeSource::new(cfg());
-        let body = src.build_request_body(&[Value::String("alice".into()), json!(42), json!(true)]);
+        let body = src.build_request_body(&[
+            Value::String("alice".into()),
+            json!(42),
+            json!(true),
+            json!(3.5),
+        ]);
         let b = &body["bindings"];
         assert_eq!(b["1"]["type"], "TEXT");
         assert_eq!(b["1"]["value"], "alice");
+        assert_eq!(b["2"]["type"], "FIXED");
         assert_eq!(b["2"]["value"], "42");
+        assert_eq!(b["3"]["type"], "BOOLEAN");
         assert_eq!(b["3"]["value"], "true");
+        assert_eq!(b["4"]["type"], "REAL");
+        assert_eq!(b["4"]["value"], "3.5");
     }
 
     #[test]

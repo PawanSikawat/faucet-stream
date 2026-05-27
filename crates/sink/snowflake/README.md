@@ -40,7 +40,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     )
     .with_batch_size(1000);
 
-    let sink = SnowflakeSink::new(config);
+    let sink = SnowflakeSink::new(config)?;
 
     let records = vec![
         json!({"user_id": "u123", "event": "page_view", "ts": "2026-04-02T10:00:00Z"}),
@@ -188,7 +188,7 @@ SNOWFLAKE_BATCH_SIZE=1000
 ```rust
 use faucet_core::Sink;
 
-let sink = SnowflakeSink::new(config);
+let sink = SnowflakeSink::new(config)?;
 let schema = sink.config_schema();
 println!("{}", serde_json::to_string_pretty(&schema)?);
 ```
@@ -211,7 +211,7 @@ let sink = SnowflakeSink::new(SnowflakeSinkConfig::new(
     "PUBLIC",
     "events",
     SnowflakeAuth::OAuth { token: "my-token".into() },
-));
+))?;
 
 let result = Pipeline::new(source, sink).run().await?;
 println!("Transferred {} records", result.records_written);
@@ -237,7 +237,7 @@ let config = SnowflakeSinkConfig::new(
 )
 .with_batch_size(500);
 
-let sink = SnowflakeSink::new(config);
+let sink = SnowflakeSink::new(config)?;
 sink.write_batch(&records).await?;
 ```
 
@@ -255,7 +255,7 @@ let config = SnowflakeSinkConfig::new(
     SnowflakeAuth::OAuth { token },
 );
 
-let sink = SnowflakeSink::new(config);
+let sink = SnowflakeSink::new(config)?;
 sink.write_batch(&records).await?;
 ```
 
@@ -272,7 +272,7 @@ let config = SnowflakeSinkConfig::new(
 )
 .with_batch_size(50);
 
-let sink = SnowflakeSink::new(config);
+let sink = SnowflakeSink::new(config)?;
 ```
 
 ## How It Works

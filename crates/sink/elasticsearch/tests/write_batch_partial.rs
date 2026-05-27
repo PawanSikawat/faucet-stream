@@ -26,7 +26,7 @@ async fn errors_false_returns_all_ok() {
         .await;
 
     let cfg = ElasticsearchSinkConfig::new(server.uri(), "idx");
-    let sink = ElasticsearchSink::new(cfg);
+    let sink = ElasticsearchSink::new(cfg).unwrap();
     let outcomes = sink
         .write_batch_partial(&[json!({"a": 1}), json!({"a": 2})])
         .await
@@ -53,7 +53,7 @@ async fn item_level_errors_route_by_index() {
         .await;
 
     let cfg = ElasticsearchSinkConfig::new(server.uri(), "idx");
-    let sink = ElasticsearchSink::new(cfg);
+    let sink = ElasticsearchSink::new(cfg).unwrap();
     let outcomes = sink
         .write_batch_partial(&[json!({"a": 1}), json!({"a": 2}), json!({"a": 3})])
         .await
@@ -73,7 +73,7 @@ async fn http_failure_bubbles_outer_err() {
         .mount(&server)
         .await;
     let cfg = ElasticsearchSinkConfig::new(server.uri(), "idx");
-    let sink = ElasticsearchSink::new(cfg);
+    let sink = ElasticsearchSink::new(cfg).unwrap();
     let result = sink.write_batch_partial(&[json!({"a": 1})]).await;
     assert!(matches!(result, Err(FaucetError::HttpStatus { .. })));
 }
@@ -91,7 +91,7 @@ async fn truncated_response_pads_with_failures() {
         .mount(&server)
         .await;
     let cfg = ElasticsearchSinkConfig::new(server.uri(), "idx");
-    let sink = ElasticsearchSink::new(cfg);
+    let sink = ElasticsearchSink::new(cfg).unwrap();
     let outcomes = sink
         .write_batch_partial(&[json!({"a": 1}), json!({"a": 2})])
         .await

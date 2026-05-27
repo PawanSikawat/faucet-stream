@@ -22,6 +22,7 @@ impl BigQuerySink {
     /// This initialises the BigQuery client and authenticates with GCP.
     /// Returns a [`FaucetError::Auth`] if authentication fails.
     pub async fn new(config: BigQuerySinkConfig) -> Result<Self, FaucetError> {
+        faucet_core::validate_batch_size(config.batch_size)?;
         let client = build_client(&config.credentials).await?;
         Ok(Self { config, client })
     }
@@ -50,7 +51,16 @@ impl BigQuerySink {
     ) -> Result<TableDataInsertAllResponse, FaucetError> {
         let mut insert_request = TableDataInsertAllRequest::new();
         for row in rows {
-            insert_request.add_row(None, row).map_err(|e| {
+            // When `insert_id_field` is configured, send that field's value as
+            // the streaming `insertId` so BigQuery can de-duplicate retries
+            // (#78/#31). A row lacking the field is inserted without one.
+            let insert_id = self.config.insert_id_field.as_ref().and_then(|field| {
+                row.get(field).map(|v| match v {
+                    Value::String(s) => s.clone(),
+                    other => other.to_string(),
+                })
+            });
+            insert_request.add_row(insert_id, row).map_err(|e| {
                 FaucetError::Sink(format!("failed to serialize row for BigQuery: {e}"))
             })?;
         }

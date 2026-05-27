@@ -84,6 +84,17 @@ When both `batch_size > 0` and `max_records_per_file` are set, the effective
 per-object cap is `min(batch_size, max_records_per_file)`. When both are `0`
 / unset, the sink writes one object per `write_batch` call.
 
+> **Memory ceiling.** Each object's body is buffered fully in memory (and,
+> with compression enabled, briefly held as both the raw and compressed
+> body) before a single-shot `PutObject`. Up to `concurrency` objects
+> upload at once, so peak memory is roughly **`concurrency` × (object
+> size) × ~2**. A `batch_size = 0` / `max_records_per_file = None` fed by
+> a `fetch_all`-style source produces one potentially huge object per
+> `write_batch` — pair `batch_size = 0` with a streaming source that
+> already sizes its pages, or set `max_records_per_file` / lower
+> `concurrency` to cap peak memory. Streaming multipart upload for very
+> large objects is a future enhancement.
+
 ### Builder Methods
 
 ```rust

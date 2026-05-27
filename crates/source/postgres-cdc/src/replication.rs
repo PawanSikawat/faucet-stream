@@ -98,6 +98,7 @@ pub struct ReplicationParams<'a> {
 
 // ── Helper: parse a postgres URL into (host, port, user, password, dbname) ─
 
+#[cfg_attr(test, derive(Debug))]
 struct PgCoords {
     host: String,
     port: u16,
@@ -112,9 +113,31 @@ fn parse_url(url: &str) -> Result<PgCoords, FaucetError> {
     let parsed = url::Url::parse(url)
         .map_err(|e| FaucetError::Config(format!("postgres-cdc: invalid connection URL: {e}")))?;
 
-    let host = parsed.host_str().unwrap_or("localhost").to_owned();
+    // Fail fast on a missing host or user rather than silently defaulting to
+    // `localhost` / empty — a malformed URL otherwise connects to an
+    // unintended local instance or produces a confusing late auth failure
+    // (#78/#47). Port (5432) and dbname (the user's DB) keep their standard
+    // libpq-style defaults since omitting them is conventional.
+    let host = parsed
+        .host_str()
+        .filter(|h| !h.is_empty())
+        .ok_or_else(|| {
+            FaucetError::Config(
+                "postgres-cdc: connection URL is missing a host (expected \
+                 postgres://user@host[:port]/dbname)"
+                    .to_owned(),
+            )
+        })?
+        .to_owned();
     let port = parsed.port().unwrap_or(5432);
     let user = parsed.username().to_owned();
+    if user.is_empty() {
+        return Err(FaucetError::Config(
+            "postgres-cdc: connection URL is missing a user (expected \
+             postgres://user@host[:port]/dbname)"
+                .to_owned(),
+        ));
+    }
     let password = parsed.password().unwrap_or("").to_owned();
     let dbname = parsed.path().trim_start_matches('/').to_owned();
     let dbname = if dbname.is_empty() {
@@ -532,5 +555,36 @@ mod tests {
     #[test]
     fn escape_simple_doubles_quotes() {
         assert_eq!(escape_simple("foo'bar"), "foo''bar");
+    }
+
+    #[test]
+    fn parse_url_extracts_all_components() {
+        let c = parse_url("postgres://alice:secret@db.example.com:5544/analytics").unwrap();
+        assert_eq!(c.host, "db.example.com");
+        assert_eq!(c.port, 5544);
+        assert_eq!(c.user, "alice");
+        assert_eq!(c.password, "secret");
+        assert_eq!(c.dbname, "analytics");
+    }
+
+    #[test]
+    fn parse_url_defaults_port_and_dbname() {
+        let c = parse_url("postgres://alice@db.example.com").unwrap();
+        assert_eq!(c.port, 5432);
+        assert_eq!(c.dbname, "postgres");
+        assert_eq!(c.password, "");
+    }
+
+    #[test]
+    fn parse_url_rejects_missing_host() {
+        // `postgres:///db` parses with an empty host — must fail fast (#78/#47).
+        let err = parse_url("postgres:///analytics").unwrap_err();
+        assert!(format!("{err}").contains("missing a host"), "{err}");
+    }
+
+    #[test]
+    fn parse_url_rejects_missing_user() {
+        let err = parse_url("postgres://db.example.com/analytics").unwrap_err();
+        assert!(format!("{err}").contains("missing a user"), "{err}");
     }
 }

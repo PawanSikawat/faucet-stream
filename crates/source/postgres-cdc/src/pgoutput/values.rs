@@ -19,9 +19,39 @@ const OID_FLOAT8: u32 = 701;
 const OID_NUMERIC: u32 = 1700;
 const OID_JSON: u32 = 114;
 const OID_JSONB: u32 = 3802;
-// date/time/timestamp/timestamptz fall through to string — Postgres'
-// canonical text form is already ISO-8601-ish and downstream consumers
-// don't agree on a single binary encoding.
+// Types passed through as their Postgres ISO text form (stable under the
+// default `DateStyle ISO` / `IntervalStyle`): date/time/timestamp/
+// timestamptz/uuid/interval. Downstream consumers don't agree on a single
+// binary encoding, and the text form is already ISO-8601-ish, so we keep
+// the string verbatim rather than risk a lossy reformat.
+
+/// Map a built-in Postgres *array* type OID to its element type OID, so a
+/// `{...}` array literal can be decoded element-by-element instead of being
+/// emitted as one opaque string (e.g. `int4[]` → `"{1,2,3}"`) (#78/#45).
+/// Returns `None` for non-array OIDs.
+fn array_element_oid(array_oid: u32) -> Option<u32> {
+    Some(match array_oid {
+        1000 => OID_BOOL,    // _bool
+        1001 => OID_BYTEA,   // _bytea
+        1005 => OID_INT2,    // _int2
+        1007 => OID_INT4,    // _int4
+        1016 => OID_INT8,    // _int8
+        1021 => OID_FLOAT4,  // _float4
+        1022 => OID_FLOAT8,  // _float8
+        1231 => OID_NUMERIC, // _numeric
+        199 => OID_JSON,     // _json
+        3807 => OID_JSONB,   // _jsonb
+        1009 => 25,          // _text → text
+        1015 => 1043,        // _varchar → varchar
+        1014 => 1042,        // _bpchar → bpchar
+        2951 => 2950,        // _uuid → uuid
+        1115 => 1114,        // _timestamp
+        1185 => 1184,        // _timestamptz
+        1182 => 1082,        // _date
+        1183 => 1083,        // _time
+        _ => return None,
+    })
+}
 
 /// Decode a text-encoded value with the given column type OID into JSON.
 ///
@@ -50,7 +80,12 @@ pub fn text_to_json(type_oid: u32, text: &str) -> Result<Value, FaucetError> {
             Value::from(n)
         }
         OID_FLOAT4 | OID_FLOAT8 => match text {
-            "NaN" | "Infinity" | "-Infinity" => Value::Null,
+            // JSON has no NaN/Inf. Preserve them as strings so the
+            // non-finite value is distinguishable from a SQL NULL, which
+            // also maps to `Value::Null` (#78/#45).
+            "NaN" => Value::String("NaN".into()),
+            "Infinity" => Value::String("Infinity".into()),
+            "-Infinity" => Value::String("-Infinity".into()),
             other => {
                 let n: f64 = other.parse().map_err(|e| {
                     FaucetError::Source(format!("pgoutput: float parse {text:?}: {e}"))
@@ -73,8 +108,94 @@ pub fn text_to_json(type_oid: u32, text: &str) -> Result<Value, FaucetError> {
         OID_JSON | OID_JSONB => serde_json::from_str(text).map_err(|e| {
             FaucetError::Source(format!("pgoutput: json/jsonb parse {text:?}: {e}"))
         })?,
-        _ => Value::String(text.into()),
+        other => {
+            // One-dimensional arrays of a known scalar element type decode
+            // into a JSON array; everything else (incl. multi-dimensional
+            // arrays, ranges, composites, enums, and unmapped scalars) falls
+            // back to the raw Postgres text string (#78/#45).
+            if let Some(elem_oid) = array_element_oid(other)
+                && let Some(elements) = parse_pg_array(text)
+            {
+                let mut out = Vec::with_capacity(elements.len());
+                for elem in elements {
+                    match elem {
+                        Some(s) => out.push(text_to_json(elem_oid, &s)?),
+                        None => out.push(Value::Null),
+                    }
+                }
+                Value::Array(out)
+            } else {
+                Value::String(text.into())
+            }
+        }
     })
+}
+
+/// Parse a one-dimensional Postgres array literal (`{a,b,"c,d",NULL}`) into a
+/// vector of element texts, where `None` marks an unquoted `NULL`. Returns
+/// `None` (caller falls back to the raw string) for anything this simple
+/// parser doesn't handle: a non-`{...}`-delimited input or a nested
+/// (multi-dimensional) array.
+fn parse_pg_array(text: &str) -> Option<Vec<Option<String>>> {
+    let bytes = text.as_bytes();
+    if bytes.first() != Some(&b'{') || bytes.last() != Some(&b'}') {
+        return None;
+    }
+    let inner = &text[1..text.len() - 1];
+    if inner.is_empty() {
+        return Some(Vec::new());
+    }
+
+    let mut out: Vec<Option<String>> = Vec::new();
+    let mut cur = String::new();
+    let mut in_quotes = false;
+    let mut quoted = false; // current element was quoted (so "NULL" != NULL)
+    let mut chars = inner.chars().peekable();
+
+    while let Some(c) = chars.next() {
+        if in_quotes {
+            match c {
+                '\\' => {
+                    // Escaped next char (\" or \\) is taken literally.
+                    if let Some(next) = chars.next() {
+                        cur.push(next);
+                    }
+                }
+                '"' => in_quotes = false,
+                _ => cur.push(c),
+            }
+            continue;
+        }
+        match c {
+            '"' => {
+                in_quotes = true;
+                quoted = true;
+            }
+            // A nested array — bail out, let the caller keep the raw string.
+            '{' => return None,
+            ',' => {
+                out.push(finish_array_element(&cur, quoted));
+                cur.clear();
+                quoted = false;
+            }
+            _ => cur.push(c),
+        }
+    }
+    if in_quotes {
+        return None; // unterminated quote — malformed, fall back to string
+    }
+    out.push(finish_array_element(&cur, quoted));
+    Some(out)
+}
+
+/// An unquoted `NULL` token is a SQL NULL; anything else (incl. a quoted
+/// `"NULL"`) is the literal text.
+fn finish_array_element(raw: &str, quoted: bool) -> Option<String> {
+    if !quoted && raw == "NULL" {
+        None
+    } else {
+        Some(raw.to_owned())
+    }
 }
 
 fn hex_decode(s: &str) -> Result<Vec<u8>, FaucetError> {
@@ -119,8 +240,52 @@ mod tests {
     #[test]
     fn floats() {
         assert_eq!(text_to_json(OID_FLOAT8, "3.5").unwrap(), json!(3.5));
-        assert_eq!(text_to_json(OID_FLOAT8, "NaN").unwrap(), Value::Null);
-        assert_eq!(text_to_json(OID_FLOAT4, "Infinity").unwrap(), Value::Null);
+        // NaN/Inf are preserved as strings (distinct from a NULL → Value::Null).
+        assert_eq!(text_to_json(OID_FLOAT8, "NaN").unwrap(), json!("NaN"));
+        assert_eq!(
+            text_to_json(OID_FLOAT4, "Infinity").unwrap(),
+            json!("Infinity")
+        );
+        assert_eq!(
+            text_to_json(OID_FLOAT8, "-Infinity").unwrap(),
+            json!("-Infinity")
+        );
+    }
+
+    #[test]
+    fn int_array_decodes_to_json_array() {
+        assert_eq!(text_to_json(1007, "{1,2,3}").unwrap(), json!([1, 2, 3]));
+        assert_eq!(text_to_json(1007, "{}").unwrap(), json!([]));
+        assert_eq!(text_to_json(1016, "{-9,0,9}").unwrap(), json!([-9, 0, 9]));
+    }
+
+    #[test]
+    fn text_array_handles_quotes_nulls_and_commas() {
+        assert_eq!(
+            text_to_json(1009, r#"{a,"b,c",NULL,"NULL"}"#).unwrap(),
+            json!(["a", "b,c", null, "NULL"])
+        );
+        // Escaped quote inside a quoted element.
+        assert_eq!(
+            text_to_json(1009, r#"{"he said \"hi\""}"#).unwrap(),
+            json!(["he said \"hi\""])
+        );
+    }
+
+    #[test]
+    fn bool_array_decodes() {
+        assert_eq!(
+            text_to_json(1000, "{t,f,t}").unwrap(),
+            json!([true, false, true])
+        );
+    }
+
+    #[test]
+    fn multidimensional_array_falls_back_to_string() {
+        assert_eq!(
+            text_to_json(1007, "{{1,2},{3,4}}").unwrap(),
+            json!("{{1,2},{3,4}}")
+        );
     }
 
     #[test]

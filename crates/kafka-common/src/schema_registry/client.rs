@@ -38,6 +38,10 @@ pub struct SchemaRegistryClient {
     base_url: String,
     auth: Option<crate::BasicAuth>,
     cache: Arc<Mutex<LruCache<u32, RegistrySchema>>>,
+    /// Caches `register_schema` results so the same `(subject, schema)` does
+    /// not POST to the registry on every produced record (#78/#30). Keyed by
+    /// subject + schema type + schema text.
+    register_cache: Arc<Mutex<LruCache<String, u32>>>,
 }
 
 impl SchemaRegistryClient {
@@ -47,13 +51,13 @@ impl SchemaRegistryClient {
             .timeout(config.request_timeout)
             .build()
             .map_err(|e| FaucetError::Config(format!("schema-registry HTTP client: {e}")))?;
+        let capacity = NonZeroUsize::new(config.cache_capacity).unwrap();
         Ok(Self {
             http,
             base_url: config.url.trim_end_matches('/').to_string(),
             auth: config.auth.clone(),
-            cache: Arc::new(Mutex::new(LruCache::new(
-                NonZeroUsize::new(config.cache_capacity).unwrap(),
-            ))),
+            cache: Arc::new(Mutex::new(LruCache::new(capacity))),
+            register_cache: Arc::new(Mutex::new(LruCache::new(capacity))),
         })
     }
 
@@ -102,6 +106,17 @@ impl SchemaRegistryClient {
         schema_type: &str,
         schema_text: &str,
     ) -> Result<u32, FaucetError> {
+        // The registry's register endpoint is idempotent, but POSTing on every
+        // record is a severe throughput ceiling — cache the assigned id keyed
+        // by the full (subject, type, schema) tuple (#78/#30).
+        let cache_key = format!("{subject}\u{0}{schema_type}\u{0}{schema_text}");
+        {
+            let mut cache = self.register_cache.lock().await;
+            if let Some(&id) = cache.get(&cache_key) {
+                return Ok(id);
+            }
+        }
+
         let url = format!(
             "{}/subjects/{}/versions",
             self.base_url,
@@ -136,6 +151,7 @@ impl SchemaRegistryClient {
             .json()
             .await
             .map_err(|e| FaucetError::Sink(format!("schema registry register JSON decode: {e}")))?;
+        self.register_cache.lock().await.put(cache_key, parsed.id);
         Ok(parsed.id)
     }
 }
@@ -192,6 +208,29 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(id, 7);
+    }
+
+    #[tokio::test]
+    async fn register_schema_caches_after_first_post() {
+        // Regression for #78/#30: registering the same (subject, schema) must
+        // hit the registry only once, not once per produced record.
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/subjects/test-value/versions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"id": 7})))
+            .expect(1) // exactly one network call across repeated registrations
+            .mount(&server)
+            .await;
+        let client = SchemaRegistryClient::new(&SchemaRegistryConfig::new(server.uri())).unwrap();
+        for _ in 0..5 {
+            let id = client
+                .register_schema("test-value", "AVRO", "\"string\"")
+                .await
+                .unwrap();
+            assert_eq!(id, 7);
+        }
+        // wiremock asserts expect(1) on drop.
+        drop(server);
     }
 
     #[test]

@@ -756,7 +756,7 @@ impl Sink for MyCustomSink {
 | `LinkHeader` | API returns pagination in `Link` HTTP header (GitHub-style) |
 | `NextLinkInBody` | API returns the full next-page URL in the response body |
 
-All pagination styles include loop detection — if the same cursor or link is returned twice in a row, pagination stops automatically.
+Every pagination style has a termination/loop guard. `Cursor`, `LinkHeader`, and `NextLinkInBody` stop when the same token/link repeats; `PageNumber` stops on a zero-record page or when an identical page body is returned twice (content-fingerprint detection); `Offset` stops when the offset reaches `total` or a page returns fewer records than the limit. `max_pages` is a hard cap across all styles.
 
 ## Feature Flags (umbrella crate)
 

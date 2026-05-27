@@ -16,6 +16,31 @@ impl RelationRegistry {
     }
 
     pub fn insert(&mut self, rel: Relation) {
+        // A re-sent Relation with a different column set means the table's
+        // schema changed mid-stream (ALTER TABLE). Subsequent tuples decode
+        // against the *new* descriptor, but a same-arity rename/type change
+        // can silently bind values to the wrong column names — surface it so
+        // an operator can correlate any downstream surprise (#78/#46).
+        if let Some(prev) = self.by_oid.get(&rel.oid) {
+            let prev_cols: Vec<(&str, u32)> = prev
+                .columns
+                .iter()
+                .map(|c| (c.name.as_str(), c.type_oid))
+                .collect();
+            let new_cols: Vec<(&str, u32)> = rel
+                .columns
+                .iter()
+                .map(|c| (c.name.as_str(), c.type_oid))
+                .collect();
+            if prev_cols != new_cols {
+                tracing::warn!(
+                    relation = %rel.name,
+                    oid = rel.oid,
+                    "postgres-cdc: relation column set changed mid-stream (schema change); \
+                     subsequent rows decode against the new descriptor"
+                );
+            }
+        }
         self.by_oid.insert(rel.oid, rel);
     }
 

@@ -95,20 +95,53 @@ pub const DEFAULT_ERROR_BODY_MAX_LEN: usize = 2048;
 /// Use [`substitute_context_bind_params`] for SQL and [`substitute_context_json`]
 /// for serialized JSON.
 pub fn substitute_context(template: &str, context: &HashMap<String, Value>) -> String {
-    let mut result = template.to_string();
-    for (key, value) in context {
-        let placeholder = format!("{{{key}}}");
-        if result.contains(&placeholder) {
-            let replacement = match value {
-                Value::String(s) => s.clone(),
-                Value::Number(n) => n.to_string(),
-                Value::Bool(b) => b.to_string(),
-                Value::Null => "null".to_string(),
-                other => other.to_string(),
-            };
-            result = result.replace(&placeholder, &replacement);
+    substitute_single_pass(template, context, |value| match value {
+        Value::String(s) => s.clone(),
+        Value::Number(n) => n.to_string(),
+        Value::Bool(b) => b.to_string(),
+        Value::Null => "null".to_string(),
+        other => other.to_string(),
+    })
+}
+
+/// Single left-to-right scan that replaces each recognised `{key}` placeholder
+/// with `render(value)`. Unmatched placeholders are left verbatim; replacement
+/// text is never re-scanned. Shared by [`substitute_context`] and
+/// [`substitute_context_json`] so neither is O(template × context) (#78/#36).
+fn substitute_single_pass(
+    template: &str,
+    context: &HashMap<String, Value>,
+    render: impl Fn(&Value) -> String,
+) -> String {
+    if context.is_empty() {
+        return template.to_string();
+    }
+    let mut result = String::with_capacity(template.len());
+    let mut last_copied = 0;
+    let mut search_from = 0;
+
+    while search_from < template.len() {
+        let Some(open_offset) = template[search_from..].find('{') else {
+            break;
+        };
+        let open = search_from + open_offset;
+        let Some(close_offset) = template[open + 1..].find('}') else {
+            break;
+        };
+        let close = open + 1 + close_offset;
+        let key = &template[open + 1..close];
+
+        if let Some(value) = context.get(key) {
+            result.push_str(&template[last_copied..open]);
+            result.push_str(&render(value));
+            last_copied = close + 1;
+            search_from = close + 1;
+        } else {
+            search_from = open + 1;
         }
     }
+
+    result.push_str(&template[last_copied..]);
     result
 }
 
@@ -180,21 +213,13 @@ pub fn substitute_context_bind_params(
 /// substitution.  String values are JSON-escaped (double-quotes, backslashes,
 /// and control characters).  Numbers, bools, and null are substituted as-is.
 pub fn substitute_context_json(template: &str, context: &HashMap<String, Value>) -> String {
-    let mut result = template.to_string();
-    for (key, value) in context {
-        let placeholder = format!("{{{key}}}");
-        if result.contains(&placeholder) {
-            let replacement = match value {
-                Value::String(s) => json_escape_string(s),
-                Value::Number(n) => n.to_string(),
-                Value::Bool(b) => b.to_string(),
-                Value::Null => "null".to_string(),
-                other => other.to_string(),
-            };
-            result = result.replace(&placeholder, &replacement);
-        }
-    }
-    result
+    substitute_single_pass(template, context, |value| match value {
+        Value::String(s) => json_escape_string(s),
+        Value::Number(n) => n.to_string(),
+        Value::Bool(b) => b.to_string(),
+        Value::Null => "null".to_string(),
+        other => other.to_string(),
+    })
 }
 
 /// Escape a string for safe embedding inside a JSON string value.
@@ -367,6 +392,25 @@ mod tests {
         let ctx = HashMap::new();
         let result = substitute_context("", &ctx);
         assert_eq!(result, "");
+    }
+
+    #[test]
+    fn substitute_context_replaces_all_occurrences() {
+        let mut ctx = HashMap::new();
+        ctx.insert("id".to_string(), Value::String("42".to_string()));
+        let result = substitute_context("/a/{id}/b/{id}", &ctx);
+        assert_eq!(result, "/a/42/b/42");
+    }
+
+    #[test]
+    fn substitute_context_does_not_rescan_replacement() {
+        // Single-pass: a replacement value that itself looks like a placeholder
+        // is emitted verbatim, never re-substituted (#78/#36).
+        let mut ctx = HashMap::new();
+        ctx.insert("a".to_string(), Value::String("{b}".to_string()));
+        ctx.insert("b".to_string(), Value::String("SECRET".to_string()));
+        let result = substitute_context("{a}", &ctx);
+        assert_eq!(result, "{b}");
     }
 
     // ── extract_context ─────────────────────────────────────────────────

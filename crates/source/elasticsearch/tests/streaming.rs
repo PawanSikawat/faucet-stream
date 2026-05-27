@@ -14,7 +14,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
-use wiremock::matchers::{method, path};
+use wiremock::matchers::{method, path, query_param};
 use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
 
 /// One scroll page in the fake. Each page returns its slice of docs and an
@@ -274,6 +274,52 @@ async fn stream_pages_batch_size_zero_uses_single_search_no_scroll() {
 
     // wiremock asserts the expect(1)/expect(0) counts on Drop.
     drop(server);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn fetch_all_with_batch_size_zero_returns_all_records() {
+    // Regression for #78/#33: the batch (`fetch_all`) path used to interpolate
+    // `size={batch_size}` → `size=0`, which makes Elasticsearch return zero
+    // hits. The initial search must instead use the large no-batching page
+    // size. The search matcher *requires* `size=10000`, so before the fix the
+    // request (size=0) would not match and `fetch_all` would error/return
+    // nothing.
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/test/_search"))
+        .and(query_param("size", "10000"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "_scroll_id": "scroll-1",
+            "hits": {
+                "total": {"value": 3, "relation": "eq"},
+                "hits": make_docs(0, 3)
+                    .into_iter()
+                    .enumerate()
+                    .map(|(i, doc)| json!({"_index": "test", "_id": format!("{i}"), "_source": doc}))
+                    .collect::<Vec<_>>(),
+            }
+        })))
+        .mount(&server)
+        .await;
+    // Scroll continuation returns empty to terminate the loop.
+    Mock::given(method("POST"))
+        .and(path("/_search/scroll"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "_scroll_id": "scroll-1",
+            "hits": {"total": {"value": 0, "relation": "eq"}, "hits": []}
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("DELETE"))
+        .and(path("/_search/scroll"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"succeeded": true})))
+        .mount(&server)
+        .await;
+
+    let config = ElasticsearchSourceConfig::new(server.uri(), "test").with_batch_size(0);
+    let source = ElasticsearchSource::new(config);
+    let records = source.fetch_all().await.unwrap();
+    assert_eq!(records.len(), 3, "batch_size=0 must not send size=0");
 }
 
 #[tokio::test(flavor = "multi_thread")]

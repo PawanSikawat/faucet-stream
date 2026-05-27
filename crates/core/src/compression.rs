@@ -148,6 +148,68 @@ where
     }
 }
 
+/// A sync compressing writer that **retains the concrete encoder** so its
+/// finalisation error can be captured, unlike the `Box<dyn Write>` returned by
+/// [`wrap_sync_writer`] (#78/#41).
+///
+/// Call [`finish`](Self::finish) when done: it writes the codec's trailer
+/// (gzip's 8-byte CRC/length footer, zstd's frame epilogue) and returns the
+/// inner writer, surfacing any I/O error instead of swallowing it on drop.
+/// If the value is dropped without `finish`, the zstd variant does **not**
+/// emit its epilogue — always `finish` for a valid stream.
+pub enum SyncCompressWriter<W: std::io::Write> {
+    Plain(W),
+    Gzip(flate2::write::GzEncoder<W>),
+    Zstd(zstd::stream::write::Encoder<'static, W>),
+}
+
+impl<W: std::io::Write> SyncCompressWriter<W> {
+    /// Finalise the stream and return the inner writer, propagating any
+    /// trailer-write error.
+    pub fn finish(self) -> std::io::Result<W> {
+        match self {
+            SyncCompressWriter::Plain(w) => Ok(w),
+            SyncCompressWriter::Gzip(e) => e.finish(),
+            SyncCompressWriter::Zstd(e) => e.finish(),
+        }
+    }
+}
+
+impl<W: std::io::Write> std::io::Write for SyncCompressWriter<W> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        match self {
+            SyncCompressWriter::Plain(w) => w.write(buf),
+            SyncCompressWriter::Gzip(e) => e.write(buf),
+            SyncCompressWriter::Zstd(e) => e.write(buf),
+        }
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        match self {
+            SyncCompressWriter::Plain(w) => w.flush(),
+            SyncCompressWriter::Gzip(e) => e.flush(),
+            SyncCompressWriter::Zstd(e) => e.flush(),
+        }
+    }
+}
+
+/// Wrap a sync writer in a [`SyncCompressWriter`] for the given codec. Prefer
+/// this over [`wrap_sync_writer`] when you need to detect a finalisation
+/// error: call [`SyncCompressWriter::finish`] before dropping.
+pub fn sync_compress_writer<W: std::io::Write>(w: W, c: Compression) -> SyncCompressWriter<W> {
+    match c {
+        Compression::None => SyncCompressWriter::Plain(w),
+        Compression::Gzip => SyncCompressWriter::Gzip(flate2::write::GzEncoder::new(
+            w,
+            flate2::Compression::default(),
+        )),
+        Compression::Zstd => SyncCompressWriter::Zstd(
+            zstd::stream::write::Encoder::new(w, 0)
+                .expect("zstd encoder construction is infallible"),
+        ),
+    }
+}
+
 /// One-shot in-memory compression. Used by S3 and GCS sinks that build a full
 /// `Vec<u8>` body before upload.
 pub fn compress_buf(data: &[u8], c: Compression) -> Result<Vec<u8>, FaucetError> {

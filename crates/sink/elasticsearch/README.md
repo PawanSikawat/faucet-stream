@@ -38,7 +38,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     )
     .with_batch_size(1000);
 
-    let sink = ElasticsearchSink::new(config);
+    let sink = ElasticsearchSink::new(config)?;
 
     let records = vec![
         json!({"user_id": "u123", "event": "page_view", "url": "/home"}),
@@ -202,7 +202,7 @@ ES_SINK_ID_FIELD=event_id
 ```rust
 use faucet_core::Sink;
 
-let sink = ElasticsearchSink::new(config);
+let sink = ElasticsearchSink::new(config)?;
 let schema = sink.config_schema();
 println!("{}", serde_json::to_string_pretty(&schema)?);
 ```
@@ -222,7 +222,7 @@ let sink = ElasticsearchSink::new(
     ElasticsearchSinkConfig::new("http://localhost:9200", "api_logs")
         .id_field("log_id")
         .with_batch_size(1000)
-);
+)?;
 
 let result = Pipeline::new(source, sink).run().await?;
 println!("Indexed {} documents", result.records_written);
@@ -234,7 +234,7 @@ println!("Indexed {} documents", result.records_written);
 
 ```rust
 let config = ElasticsearchSinkConfig::new("http://localhost:9200", "logs");
-let sink = ElasticsearchSink::new(config);
+let sink = ElasticsearchSink::new(config)?;
 
 let records = vec![
     json!({"level": "info", "message": "Server started", "timestamp": "2026-04-02T10:00:00Z"}),
@@ -250,7 +250,7 @@ sink.write_batch(&records).await?;
 let config = ElasticsearchSinkConfig::new("http://localhost:9200", "products")
     .id_field("product_id");
 
-let sink = ElasticsearchSink::new(config);
+let sink = ElasticsearchSink::new(config)?;
 
 let records = vec![
     json!({"product_id": "SKU-001", "name": "Widget", "price": 9.99}),
@@ -273,7 +273,7 @@ let config = ElasticsearchSinkConfig::new(
 })
 .with_batch_size(2000);
 
-let sink = ElasticsearchSink::new(config);
+let sink = ElasticsearchSink::new(config)?;
 sink.write_batch(&records).await?;
 ```
 

@@ -78,11 +78,11 @@ ones.
 
 #### Multi-line quoted records
 
-`AsyncBufReadExt::lines` splits on raw `\n`, so quoted fields containing
-embedded newlines are **not** supported on the streaming path — they will be
-mis-split into multiple broken records. Use `fetch_all` /
-`fetch_with_context` (the blocking-I/O path) for files that need multi-line
-records; the underlying `csv::Reader` handles them correctly there.
+Parsing uses `csv-async`, a streaming RFC-4180 reader that tracks quote
+state across physical lines. Quoted fields containing embedded newlines
+(and embedded delimiters) are parsed correctly as a single record, so a
+file produced by `faucet-sink-csv` round-trips back losslessly through
+both `fetch_all` and the `stream_pages` streaming path.
 
 ## Config Loading
 
@@ -202,7 +202,7 @@ config:
   compression: auto  # or 'gzip' | 'zstd' | 'none'
 ```
 
-Compression is detected from the file path. Multi-line quoted fields (records with embedded newlines inside quotes) are not supported by the streaming path — applies regardless of compression.
+Compression is detected from the file path. Multi-line quoted fields (records with embedded newlines inside quotes) are parsed correctly on both the streaming and `fetch_all` paths, regardless of compression.
 
 ## License
 

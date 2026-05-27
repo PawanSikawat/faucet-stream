@@ -35,6 +35,15 @@ pub struct BigQuerySinkConfig {
     /// upstream `StreamPage` size is already tuned for BigQuery.
     #[serde(default = "default_batch_size")]
     pub batch_size: usize,
+    /// Optional record field whose value is sent as the BigQuery streaming
+    /// `insertId` for each row. BigQuery uses `insertId` for best-effort
+    /// de-duplication over a short window, so a stable per-row key here makes
+    /// streaming inserts resilient to transport retries (which are otherwise
+    /// at-least-once and can produce duplicate rows) (#78/#31). When `None`
+    /// (the default) no `insertId` is sent. A row missing the field is
+    /// inserted without an `insertId` (no dedup for that row).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub insert_id_field: Option<String>,
 }
 
 fn default_batch_size() -> usize {
@@ -55,7 +64,15 @@ impl BigQuerySinkConfig {
             table_id: table_id.into(),
             credentials,
             batch_size: DEFAULT_BATCH_SIZE,
+            insert_id_field: None,
         }
+    }
+
+    /// Set the record field used as the per-row BigQuery streaming `insertId`
+    /// for best-effort de-duplication on retry.
+    pub fn with_insert_id_field(mut self, field: impl Into<String>) -> Self {
+        self.insert_id_field = Some(field.into());
+        self
     }
 
     /// Set the per-request row count for `tabledata.insertAll`.
@@ -158,6 +175,28 @@ mod tests {
             BigQuerySinkConfig::new("p", "d", "t", BigQueryCredentials::ApplicationDefault)
                 .with_batch_size(faucet_core::MAX_BATCH_SIZE + 1);
         assert!(faucet_core::validate_batch_size(config.batch_size).is_err());
+    }
+
+    #[test]
+    fn insert_id_field_defaults_none_and_builder_sets_it() {
+        let config =
+            BigQuerySinkConfig::new("p", "d", "t", BigQueryCredentials::ApplicationDefault);
+        assert!(config.insert_id_field.is_none());
+        let config = config.with_insert_id_field("event_id");
+        assert_eq!(config.insert_id_field.as_deref(), Some("event_id"));
+    }
+
+    #[test]
+    fn insert_id_field_deserializes_from_json() {
+        let json = r#"{
+            "project_id": "p",
+            "dataset_id": "d",
+            "table_id": "t",
+            "credentials": {"type": "ApplicationDefault"},
+            "insert_id_field": "id"
+        }"#;
+        let config: BigQuerySinkConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(config.insert_id_field.as_deref(), Some("id"));
     }
 
     #[test]

@@ -71,6 +71,17 @@ batch that errors mid-flight may leave already-uploaded chunks in the
 bucket. Same semantics as `faucet-sink-s3`. v1 does not use resumable
 uploads.
 
+> **Memory ceiling.** Each chunk is buffered fully in memory (and, with
+> compression enabled, briefly held as both the raw and compressed body)
+> before a single-shot upload. Because up to `concurrency` chunks upload
+> at once, peak memory is roughly **`concurrency` × (chunk size) × ~2**.
+> A `batch_size = 0` (or `max_records_per_file = None`) fed by a
+> `fetch_all`-style source produces one chunk per `write_batch` call that
+> can be very large — pair `batch_size = 0` with a streaming source that
+> already sizes its pages, or set `max_records_per_file` / lower
+> `concurrency` to cap peak memory. Streaming multipart upload for very
+> large chunks is a future enhancement.
+
 ## Errors
 
 | Failure | `FaucetError` variant | Message shape |
