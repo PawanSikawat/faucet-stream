@@ -109,8 +109,19 @@ impl StateStore for MemoryStateStore {
 
 // ── FileStateStore ──────────────────────────────────────────────────────────
 
+/// Map a logical state key to a filesystem-safe filename stem. The key
+/// grammar allows `:` (used by the documented `pipeline:rest:issues`
+/// convention), but `:` is illegal in a filename on Windows/NTFS, so it is
+/// percent-encoded as `%3A`. This is collision-free because `%` can never
+/// appear in a valid key (see [`validate_state_key`]) (#78 LOW).
+fn safe_filename(key: &str) -> String {
+    key.replace(':', "%3A")
+}
+
 /// File-backed `StateStore`. Each key maps to a JSON file at
-/// `{root}/{key}.json`, written via atomic rename.
+/// `{root}/{safe_filename(key)}.json`, written via atomic rename. The
+/// filename stem percent-encodes `:` as `%3A` so keys using the
+/// `pipeline:rest:issues` convention are valid on Windows.
 ///
 /// Each `put` writes a temp file, fsyncs it, renames it over the final path,
 /// and (on Unix) fsyncs the parent directory — so once `put` returns the
@@ -136,11 +147,11 @@ impl FileStateStore {
     }
 
     fn entry_path(&self, key: &str) -> PathBuf {
-        self.root.join(format!("{key}.json"))
+        self.root.join(format!("{}.json", safe_filename(key)))
     }
 
     fn temp_path(&self, key: &str) -> PathBuf {
-        self.root.join(format!("{key}.json.tmp"))
+        self.root.join(format!("{}.json.tmp", safe_filename(key)))
     }
 
     async fn ensure_root(&self) -> Result<(), FaucetError> {
@@ -388,6 +399,36 @@ mod tests {
         s.put("github_issues", &value).await.unwrap();
         let got = s.get("github_issues").await.unwrap().unwrap();
         assert_eq!(got, value);
+    }
+
+    #[test]
+    fn safe_filename_percent_encodes_colon() {
+        assert_eq!(
+            safe_filename("pipeline:rest:issues"),
+            "pipeline%3Arest%3Aissues"
+        );
+        assert_eq!(safe_filename("plain_key-1.v2"), "plain_key-1.v2");
+    }
+
+    #[tokio::test]
+    async fn file_round_trips_colon_keys_with_safe_filename() {
+        // Regression for #78 LOW: the documented `pipeline:rest:issues` key
+        // convention must round-trip and produce a Windows-legal filename
+        // (no `:` on disk).
+        let dir = TempDir::new().unwrap();
+        let s = FileStateStore::new(dir.path());
+        let value = json!({"cursor": "z"});
+        s.put("pipeline:rest:issues", &value).await.unwrap();
+        assert_eq!(s.get("pipeline:rest:issues").await.unwrap().unwrap(), value);
+        // On-disk filename must not contain a colon.
+        assert!(dir.path().join("pipeline%3Arest%3Aissues.json").exists());
+        let mut has_colon = false;
+        for entry in std::fs::read_dir(dir.path()).unwrap() {
+            if entry.unwrap().file_name().to_string_lossy().contains(':') {
+                has_colon = true;
+            }
+        }
+        assert!(!has_colon, "no state filename may contain ':'");
     }
 
     #[tokio::test]
