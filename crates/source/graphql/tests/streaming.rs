@@ -439,3 +439,33 @@ async fn stream_pages_default_batch_size_drives_first_variable() {
     assert_eq!(page.records.len(), 1);
     assert!(pages.next().await.is_none(), "single-page response ends");
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn stuck_cursor_stops_without_extra_duplicate_page() {
+    // Regression for #78 LOW: a server that keeps returning the same cursor
+    // with hasNextPage=true must be detected as a loop after exactly two
+    // requests (initial + the one that re-returns the same cursor), not three.
+    // The off-by-one previously fetched one extra duplicate page first.
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let server = MockServer::start().await;
+    let hits = Arc::new(AtomicUsize::new(0));
+    let hits_resp = hits.clone();
+    Mock::given(method("POST"))
+        .and(path("/"))
+        .respond_with(move |_req: &Request| {
+            hits_resp.fetch_add(1, Ordering::SeqCst);
+            // Always claim there's a next page, always the same cursor.
+            ResponseTemplate::new(200).set_body_json(make_page(0, 1, Some("stuck")))
+        })
+        .mount(&server)
+        .await;
+
+    let source = GraphqlStream::new(relay_config(&server, 10));
+    let records = source.fetch_all().await.unwrap();
+
+    // Two requests: page 1 (cursor None→"stuck"), page 2 ("stuck"→"stuck" =
+    // loop). Each returns one record → 2 records, not an infinite/extra run.
+    assert_eq!(hits.load(Ordering::SeqCst), 2, "must stop after 2 requests");
+    assert_eq!(records.len(), 2);
+}
