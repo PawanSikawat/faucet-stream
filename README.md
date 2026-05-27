@@ -29,6 +29,10 @@ can drop on any box or a library you compile in.
 Inspired by [Meltano's Singer SDK](https://sdk.meltano.com/) — reimagined for Rust
 as both a reusable library and a standalone CLI.
 
+**Documentation:** the [faucet-stream guide](https://pawansikawat.github.io/faucet-stream/)
+(getting started, tutorials, cookbook, operations) · API reference on
+[docs.rs](https://docs.rs/faucet-stream) · [`cli/README.md`](cli/README.md) for the full config grammar.
+
 ## Run a pipeline from a YAML file (no Rust required)
 
 ```bash
@@ -1074,6 +1078,10 @@ cli/                          — faucet-cli: `faucet` binary, YAML/JSON pipelin
     commands/{run, validate, schema, list, preview, init}.rs
   examples/                   — ready-to-run pipeline YAMLs
   tests/                      — assert_cmd + wiremock integration tests
+examples/                     — repo-level examples: docker-compose infra stack + run index
+docs/
+  book/                       — mdBook documentation site (source under docs/book/src)
+.github/workflows/            — ci.yml, release.yml, docs.yml (mdBook → GitHub Pages)
 ```
 
 ## License

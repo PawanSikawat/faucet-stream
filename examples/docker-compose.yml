@@ -1,0 +1,129 @@
+# Local infrastructure for running the faucet-stream examples.
+#
+#   docker compose -f examples/docker-compose.yml up -d
+#   faucet run cli/examples/postgres_cdc_to_jsonl.yaml
+#   docker compose -f examples/docker-compose.yml down -v   # stop + wipe
+#
+# Every service binds to localhost on its default port and uses the
+# credentials baked into the example configs (user/pass: faucet/faucet where
+# applicable). This stack is for local development only — never production.
+#
+# See examples/README.md for which example needs which service.
+
+version: "3.8"
+
+name: faucet-examples
+
+services:
+  # PostgreSQL configured for logical replication so the postgres-cdc source
+  # works out of the box. The init script seeds a `users` table + publication.
+  postgres:
+    image: postgres:17
+    command:
+      - "postgres"
+      - "-c"
+      - "wal_level=logical"
+      - "-c"
+      - "max_replication_slots=10"
+      - "-c"
+      - "max_wal_senders=10"
+    environment:
+      POSTGRES_USER: faucet
+      POSTGRES_PASSWORD: faucet
+      POSTGRES_DB: appdb
+    ports:
+      - "5432:5432"
+    volumes:
+      - ./infra/postgres-init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U faucet -d appdb"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  mysql:
+    image: mysql:8
+    environment:
+      MYSQL_ROOT_PASSWORD: faucet
+      MYSQL_DATABASE: appdb
+      MYSQL_USER: faucet
+      MYSQL_PASSWORD: faucet
+    ports:
+      - "3306:3306"
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-pfaucet"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # Redpanda speaks the Kafka API — lighter than Kafka + ZooKeeper for local use.
+  redpanda:
+    image: redpandadata/redpanda:latest
+    command:
+      - redpanda
+      - start
+      - --smp
+      - "1"
+      - --overprovisioned
+      - --kafka-addr
+      - PLAINTEXT://0.0.0.0:9092
+      - --advertise-kafka-addr
+      - PLAINTEXT://localhost:9092
+    ports:
+      - "9092:9092"
+    healthcheck:
+      test: ["CMD-SHELL", "rpk cluster health | grep -q 'Healthy:.*true'"]
+      interval: 5s
+      timeout: 5s
+      retries: 15
+
+  redis:
+    image: redis:7
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  mongodb:
+    image: mongo:7
+    ports:
+      - "27017:27017"
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping')"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.15.0
+    environment:
+      discovery.type: single-node
+      xpack.security.enabled: "false"
+      ES_JAVA_OPTS: "-Xms512m -Xmx512m"
+    ports:
+      - "9200:9200"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:9200/_cluster/health || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  # MinIO is S3-compatible — point the S3 source/sink at http://localhost:9000
+  # with an endpoint override and the credentials below.
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: faucet
+      MINIO_ROOT_PASSWORD: faucetfaucet
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    healthcheck:
+      test: ["CMD-SHELL", "mc ready local || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 15

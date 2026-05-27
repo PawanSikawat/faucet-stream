@@ -1,0 +1,88 @@
+# Your first pipeline
+
+This walkthrough moves a local CSV file to JSON Lines — no external services
+required, so it works immediately after `cargo install faucet-cli`.
+
+## 1. Create some input
+
+```bash
+mkdir -p data out
+cat > data/input.csv <<'CSV'
+id,name,city
+1,Ada,London
+2,Grace,New York
+3,Linus,Helsinki
+CSV
+```
+
+## 2. Write a config
+
+Create `pipeline.yaml`:
+
+```yaml
+version: 1
+name: csv_to_jsonl
+
+pipeline:
+  source:
+    type: csv
+    config:
+      path: ./data/input.csv
+  sink:
+    type: jsonl
+    config:
+      path: ./out/records.jsonl
+```
+
+`faucet run` auto-discovers a `faucet.yaml` / `faucet.yml` / `faucet.json` in the
+current directory (and a sibling `.env`), so you can also name the file
+`faucet.yaml` and just run `faucet run`.
+
+## 3. Validate, then run
+
+```bash
+faucet validate pipeline.yaml
+faucet run pipeline.yaml
+```
+
+```bash
+$ cat out/records.jsonl
+{"id":"1","name":"Ada","city":"London"}
+{"id":"2","name":"Grace","city":"New York"}
+{"id":"3","name":"Linus","city":"Helsinki"}
+```
+
+## 4. Preview without writing
+
+To see what a source emits without touching a sink, use `preview` — it runs the
+source and prints records to stdout:
+
+```bash
+faucet preview pipeline.yaml --limit 5
+```
+
+## 5. Scaffold from a connector's schema
+
+`faucet init` generates a commented config skeleton from any connector's JSON
+schema, marking required fields and commenting out optional ones:
+
+```bash
+faucet init my_pipeline --source rest --sink postgres
+```
+
+## Add a transform
+
+Insert a `transforms:` list between source and sink to reshape records. For
+example, normalize keys to `snake_case`:
+
+```yaml
+pipeline:
+  source: { type: csv, config: { path: ./data/input.csv } }
+  transforms:
+    - type: snake_case
+  sink: { type: jsonl, config: { path: ./out/records.jsonl } }
+```
+
+Built-in config transforms are `flatten`, `rename_keys`, and `snake_case`.
+
+Next: [core concepts](./concepts.md).
