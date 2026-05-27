@@ -989,17 +989,23 @@ execution:
         );
 
         // "good" only appears in the summary if it actually completed (aborted
-        // tasks are dropped, not recorded). Its output file must exist exactly
-        // when it completed — never a partial/extra write.
+        // tasks are dropped, not recorded). If it completed, its output file
+        // must exist. The converse does NOT hold: under `on_error: stop`,
+        // abort_all() can cancel an in-flight "good" after its sink has already
+        // created/partially written the file. That partial sink state is an
+        // accepted, documented consequence of stop mode (see CLAUDE.md), so a
+        // present file does not imply completion — asserting the biconditional
+        // made this test race-dependent on which root won the permit.
         let good_completed = summary
             .invocations
             .iter()
             .any(|o| o.row_id == "good" && o.error.is_none());
-        assert_eq!(
-            good_out.exists(),
-            good_completed,
-            "good's output file must exist iff good completed"
-        );
+        if good_completed {
+            assert!(
+                good_out.exists(),
+                "a completed good must have written its output file"
+            );
+        }
     }
 
     #[tokio::test]
