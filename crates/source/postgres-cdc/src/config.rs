@@ -46,6 +46,26 @@ pub struct PostgresCdcSourceConfig {
     #[serde(default = "default_true")]
     pub create_slot_if_missing: bool,
 
+    /// Whether a newly-created slot is `permanent` (survives disconnect) or
+    /// `temporary` (auto-dropped when the replication connection closes).
+    ///
+    /// Default `permanent` (back-compatible). **A permanent slot pins WAL on
+    /// the server until it is consumed or dropped** — an abandoned permanent
+    /// slot fills `pg_wal` and can take the whole instance down. Use
+    /// `temporary` for ephemeral / test runs (note: a temporary slot resets on
+    /// reconnect, so bookmark-based resume across runs requires a permanent
+    /// slot). Drop an unused permanent slot explicitly with
+    /// [`PostgresCdcSource::drop_slot`](crate::PostgresCdcSource::drop_slot).
+    #[serde(default)]
+    pub slot_type: SlotType,
+
+    /// TLS settings for the replication connection. Default `disable`
+    /// (plaintext) for back-compatibility, but credentials and all WAL data
+    /// then travel unencrypted — set `require`/`verify_ca`/`verify_full` in
+    /// production.
+    #[serde(default)]
+    pub tls: CdcTls,
+
     /// Optional starting LSN override (e.g. `"0/16A4F88"`). Ignored when a
     /// state-store-managed bookmark is present (that bookmark wins).
     /// When neither is set, replication starts from the slot's
@@ -136,6 +156,39 @@ pub struct PostgresCdcSourceConfig {
     pub batch_size: usize,
 }
 
+/// Lifetime of a newly-created replication slot.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SlotType {
+    /// Survives disconnect; pins WAL until consumed or dropped. Default.
+    #[default]
+    Permanent,
+    /// Auto-dropped by the server when the replication connection closes.
+    Temporary,
+}
+
+/// TLS configuration for the CDC replication connection.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "mode", rename_all = "snake_case")]
+pub enum CdcTls {
+    /// No TLS — plaintext (default, back-compatible).
+    #[default]
+    Disable,
+    /// Require TLS but do not verify the server certificate.
+    Require,
+    /// Require TLS and verify the certificate chain against `ca_path` (or the
+    /// system roots when `None`).
+    VerifyCa {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ca_path: Option<String>,
+    },
+    /// Require TLS and verify both the certificate chain and the hostname.
+    VerifyFull {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ca_path: Option<String>,
+    },
+}
+
 impl std::fmt::Debug for PostgresCdcSourceConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PostgresCdcSourceConfig")
@@ -143,6 +196,8 @@ impl std::fmt::Debug for PostgresCdcSourceConfig {
             .field("slot_name", &self.slot_name)
             .field("publication_name", &self.publication_name)
             .field("create_slot_if_missing", &self.create_slot_if_missing)
+            .field("slot_type", &self.slot_type)
+            .field("tls", &self.tls)
             .field("start_lsn", &self.start_lsn)
             .field("proto_version", &self.proto_version)
             .field("idle_timeout", &self.idle_timeout)
@@ -238,6 +293,8 @@ mod tests {
             slot_name: "faucet_slot".into(),
             publication_name: "faucet_pub".into(),
             create_slot_if_missing: true,
+            slot_type: SlotType::Permanent,
+            tls: CdcTls::Disable,
             start_lsn: None,
             proto_version: 1,
             idle_timeout: std::time::Duration::from_secs(30),

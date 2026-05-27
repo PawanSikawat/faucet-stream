@@ -53,6 +53,14 @@ impl PostgresCdcSource {
             confirmed_lsn: Mutex::new(initial_lsn),
         })
     }
+
+    /// Drop this source's replication slot on the server, freeing the WAL it
+    /// pins. A no-op if the slot doesn't exist; errors if the slot is still
+    /// active (in use by a live replication connection). Call this when
+    /// decommissioning a `permanent` slot so it doesn't leak WAL (#78/#12).
+    pub async fn drop_slot(&self) -> Result<(), FaucetError> {
+        replication::drop_slot(&self.config.connection_url, &self.config.slot_name).await
+    }
 }
 
 #[async_trait]
@@ -191,6 +199,8 @@ impl PostgresCdcSource {
                 start_lsn,
                 status_update_interval: self.config.status_update_interval,
                 tcp_keepalive: self.config.tcp_keepalive,
+                slot_type: self.config.slot_type,
+                tls: &self.config.tls,
             };
             let client = replication::connect(&params).await?;
             replication::ensure_slot(
@@ -198,6 +208,7 @@ impl PostgresCdcSource {
                 &self.config.connection_url,
                 &self.config.slot_name,
                 self.config.create_slot_if_missing,
+                self.config.slot_type,
             )
             .await?;
 
