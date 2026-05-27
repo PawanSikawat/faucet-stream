@@ -40,6 +40,13 @@ pub enum CliError {
         source: std::io::Error,
     },
 
+    #[error(
+        "interpolated file '{}' exceeds the {max_bytes}-byte limit for `${{file:...}}` — \
+         this directive is for small token/secret files, not bulk data",
+        path.display()
+    )]
+    InterpolatedFileTooLarge { path: PathBuf, max_bytes: u64 },
+
     /// A `${row_id.path}` token referenced an unknown matrix row id at
     /// expand-time (or a typo'd load-time prefix that survived to record-time).
     #[error(

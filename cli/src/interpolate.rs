@@ -30,7 +30,7 @@ use std::path::PathBuf;
 /// tokens with no `:` at all — i.e. `${row_id.field}` references) survive
 /// verbatim for record-time resolution.
 pub fn interpolate(input: &str) -> CliResult<String> {
-    rewrite(input, |body| match split_directive(body) {
+    rewrite(input, |body| match classify_directive(body) {
         Directive::LoadTime { prefix, body } => match prefix {
             "env" | "secret" => Ok(Some(std::env::var(body).map_err(|_| {
                 CliError::MissingEnvVar {
@@ -43,7 +43,7 @@ pub fn interpolate(input: &str) -> CliResult<String> {
             // literal so a downstream validator can flag truly bogus prefixes.
             _ => Ok(None),
         },
-        Directive::Deferred => Ok(None),
+        Directive::Deferred { .. } => Ok(None),
     })
 }
 
@@ -53,14 +53,9 @@ pub fn interpolate(input: &str) -> CliResult<String> {
 ///
 /// Errors when an `id` is unknown or a dotted path does not resolve.
 pub fn interpolate_record(input: &str, ctx: &HashMap<String, Value>) -> CliResult<String> {
-    rewrite(input, |body| match split_directive(body) {
+    rewrite(input, |body| match classify_directive(body) {
         Directive::LoadTime { .. } => Ok(None),
-        Directive::Deferred => {
-            // `body` looks like `<id>.<dotted.path>`; split on first '.'.
-            let (id, path) = match body.split_once('.') {
-                Some((i, p)) => (i, p),
-                None => (body, ""), // `${id}` with no path → whole record stringified
-            };
+        Directive::Deferred { id, path } => {
             let record = ctx
                 .get(id)
                 .ok_or_else(|| CliError::UnknownInterpolationId {
@@ -116,27 +111,98 @@ where
     Ok(out)
 }
 
-enum Directive<'a> {
+/// Classification of a `${...}` directive body. This is the **single** rule
+/// shared by load-time interpolation, record-time interpolation, and matrix
+/// validation (`expand.rs`) so they can never disagree about what a token
+/// means (#78/#39).
+///
+/// A load-time directive uses a colon (`${env:VAR}`, `${file:./p}`); a
+/// deferred reference uses a dot or nothing (`${users.id}`, `${row}`). The
+/// colon is checked first, so `${env.foo}` (no colon) is a *deferred*
+/// reference to id `env`, not a malformed load-time `env` directive — both
+/// the validator and the runtime now treat it identically.
+pub enum Directive<'a> {
     /// Prefixed directive like `${env:VAR}` or `${file:./p}` — split on `:`.
     LoadTime { prefix: &'a str, body: &'a str },
-    /// No `:` in the body — must be `${id.dotted.path}`, deferred to runtime.
-    Deferred,
+    /// No `:` — a `${id.dotted.path}` reference deferred to runtime. `id` is
+    /// the text before the first `.`; `path` is the (possibly empty) rest.
+    Deferred { id: &'a str, path: &'a str },
 }
 
-fn split_directive(body: &str) -> Directive<'_> {
+pub fn classify_directive(body: &str) -> Directive<'_> {
     match body.split_once(':') {
         Some((prefix, rest)) => Directive::LoadTime { prefix, body: rest },
-        None => Directive::Deferred,
+        None => {
+            let (id, path) = body.split_once('.').unwrap_or((body, ""));
+            Directive::Deferred { id, path }
+        }
     }
 }
 
+/// Iterate every `${...}` directive in `s`, yielding the full token text
+/// (including `${` and `}`) and its [`Directive`] classification. `$${` is an
+/// escape and yields nothing; an unterminated `${` ends iteration. This is
+/// the shared tokenizer used by `expand.rs` validation so it scans and
+/// classifies tokens exactly as [`rewrite`] does during substitution.
+pub fn iter_directives(s: &str) -> impl Iterator<Item = (&str, Directive<'_>)> {
+    let bytes = s.as_bytes();
+    let mut i = 0;
+    std::iter::from_fn(move || {
+        while i < bytes.len() {
+            // `$${` escape — consume the `$$` (mirrors `rewrite`) and continue.
+            if bytes[i] == b'$'
+                && i + 2 < bytes.len()
+                && bytes[i + 1] == b'$'
+                && bytes[i + 2] == b'{'
+            {
+                i += 2;
+                continue;
+            }
+            if bytes[i] == b'$' && i + 1 < bytes.len() && bytes[i + 1] == b'{' {
+                let start = i;
+                let body_start = i + 2;
+                let rel_end = s[body_start..].find('}')?;
+                let end = body_start + rel_end;
+                i = end + 1;
+                let body = &s[body_start..end];
+                return Some((&s[start..=end], classify_directive(body)));
+            }
+            i += 1;
+        }
+        None
+    })
+}
+
+/// Upper bound on a `${file:...}` read. The directive injects small token /
+/// secret / cert files into a config field; anything larger is almost
+/// certainly a misconfiguration (a data file, or `/dev/zero`, which would
+/// OOM an unbounded `fs::read`). Configs are trusted input, but a stray
+/// path shouldn't be able to exhaust memory (#78/#37).
+const MAX_INTERPOLATED_FILE_BYTES: u64 = 1024 * 1024; // 1 MiB
+
 fn read_file_trimmed(path_str: &str) -> CliResult<String> {
+    use std::io::Read as _;
     let path = PathBuf::from(path_str);
-    let bytes = std::fs::read(&path).map_err(|source| CliError::ReadInterpolatedFile {
+    let file = std::fs::File::open(&path).map_err(|source| CliError::ReadInterpolatedFile {
         path: path.clone(),
         source,
     })?;
-    Ok(String::from_utf8_lossy(&bytes).trim_end().to_owned())
+    // Read at most MAX+1 bytes so we can detect (rather than truncate) an
+    // oversized file without ever allocating more than the cap.
+    let mut buf = Vec::new();
+    file.take(MAX_INTERPOLATED_FILE_BYTES + 1)
+        .read_to_end(&mut buf)
+        .map_err(|source| CliError::ReadInterpolatedFile {
+            path: path.clone(),
+            source,
+        })?;
+    if buf.len() as u64 > MAX_INTERPOLATED_FILE_BYTES {
+        return Err(CliError::InterpolatedFileTooLarge {
+            path,
+            max_bytes: MAX_INTERPOLATED_FILE_BYTES,
+        });
+    }
+    Ok(String::from_utf8_lossy(&buf).trim_end().to_owned())
 }
 
 /// Walk a dotted path through a JSON value. Returns `None` if any segment
@@ -594,6 +660,33 @@ mod tests {
     }
 
     #[test]
+    fn file_directive_rejects_oversized_file() {
+        // Regression for #78/#37: a file larger than the cap errors instead of
+        // being read unboundedly into memory.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("big.bin");
+        let big = vec![b'x'; (MAX_INTERPOLATED_FILE_BYTES + 10) as usize];
+        std::fs::write(&path, &big).unwrap();
+        let raw = format!("${{file:{}}}", path.display());
+        match interpolate(&raw).unwrap_err() {
+            CliError::InterpolatedFileTooLarge { max_bytes, .. } => {
+                assert_eq!(max_bytes, MAX_INTERPOLATED_FILE_BYTES);
+            }
+            other => panic!("expected InterpolatedFileTooLarge, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn file_directive_reads_file_at_the_limit() {
+        // Exactly at the cap is allowed.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ok.bin");
+        std::fs::write(&path, vec![b'a'; MAX_INTERPOLATED_FILE_BYTES as usize]).unwrap();
+        let raw = format!("${{file:{}}}", path.display());
+        assert!(interpolate(&raw).is_ok());
+    }
+
+    #[test]
     fn load_time_leaves_id_path_tokens_alone() {
         unsafe { std::env::set_var("FAUCET_T", "v") };
         let out = interpolate("a=${env:FAUCET_T} b=${users.id}").unwrap();
@@ -608,6 +701,54 @@ mod tests {
         // here; that responsibility moves to expand.rs.)
         let out = interpolate("${weird:thing}").unwrap();
         assert_eq!(out, "${weird:thing}");
+    }
+
+    #[test]
+    fn classify_colon_is_load_time_dot_is_deferred() {
+        // The single classification rule shared by interpolate + expand (#78/#39).
+        assert!(matches!(
+            classify_directive("env:VAR"),
+            Directive::LoadTime {
+                prefix: "env",
+                body: "VAR"
+            }
+        ));
+        // No colon → deferred, even for a reserved-looking prefix like `env`.
+        assert!(matches!(
+            classify_directive("env.foo"),
+            Directive::Deferred {
+                id: "env",
+                path: "foo"
+            }
+        ));
+        assert!(matches!(
+            classify_directive("users.addr.city"),
+            Directive::Deferred {
+                id: "users",
+                path: "addr.city"
+            }
+        ));
+        assert!(matches!(
+            classify_directive("row"),
+            Directive::Deferred {
+                id: "row",
+                path: ""
+            }
+        ));
+    }
+
+    #[test]
+    fn iter_directives_finds_tokens_and_skips_escapes() {
+        let toks: Vec<_> = iter_directives("a=${env:V} b=${users.id} c=$${lit}").collect();
+        // The escaped $${lit} is not a token.
+        assert_eq!(toks.len(), 2);
+        assert_eq!(toks[0].0, "${env:V}");
+        assert!(matches!(
+            toks[0].1,
+            Directive::LoadTime { prefix: "env", .. }
+        ));
+        assert_eq!(toks[1].0, "${users.id}");
+        assert!(matches!(toks[1].1, Directive::Deferred { id: "users", .. }));
     }
 
     #[test]

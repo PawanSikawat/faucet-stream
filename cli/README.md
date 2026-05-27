@@ -225,11 +225,15 @@ Tokens are resolved in two passes:
 | Token | When |
 |-------|------|
 | `${env:VAR}` | Load-time, before YAML parsing. |
-| `${file:./path}` | Load-time. File contents trimmed of trailing whitespace. |
-| `${secret:VAR}` | Load-time. Alias for `${env:VAR}` today. |
+| `${file:./path}` | Load-time. File contents trimmed of trailing whitespace. Capped at 1 MiB — this is for small token/secret/cert files, not bulk data. |
+| `${secret:VAR}` | Load-time. Alias for `${env:VAR}` today (no at-rest redaction). |
 | `${row_id.dotted.path}` | Run-time, per parent record. The `row_id` must be the id of another matrix row. |
 
+A token's form decides its meaning: a **colon** marks a load-time directive (`${env:VAR}`), while a **dot or nothing** marks a deferred row-id reference (`${users.id}`). The same rule is used by both `faucet validate` and `faucet run`, so a token like `${env.foo}` (a dot, not a colon) is consistently treated as a reference to row id `env` and rejected at validate-time rather than failing only at run-time.
+
 `$${` escapes a literal `${`. Reserved row ids that can never appear in `matrix.id`: `env`, `file`, `secret`, `matrix`, `pipeline`.
+
+**Security note.** Pipeline configs are trusted input: `${file:...}` reads any path the process can access (capped at 1 MiB), and `${env:}`/`${secret:}` inject process environment values. Connector-config deserialization errors are scrubbed (double-quoted values redacted, length-capped) before they reach logs so an injected secret can't leak through an error message, but treat configs and their resolved values as sensitive.
 
 #### Execution
 

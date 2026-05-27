@@ -453,8 +453,40 @@ fn decode<T: DeserializeOwned>(kind: &'static str, name: &str, config: Value) ->
     serde_json::from_value(config).map_err(|e| CliError::InvalidConnectorConfig {
         kind,
         name: name.to_owned(),
-        message: e.to_string(),
+        message: scrub_config_error(&e.to_string()),
     })
+}
+
+/// Sanitise a serde deserialization error before it reaches stderr/logs.
+///
+/// serde_json's `invalid type:` errors echo the offending value as a
+/// double-quoted literal — which can be a secret injected via
+/// `${secret:...}` / `${env:...}`. Replace every double-quoted run with a
+/// placeholder (field/type names use backticks and are preserved for
+/// diagnostics) and cap the length so a huge value can't flood the log
+/// (#78/#38). Note: `${secret:}` is currently an `${env:}` alias with no
+/// at-rest redaction — this only scrubs error *output*.
+fn scrub_config_error(msg: &str) -> String {
+    const MAX_CHARS: usize = 200;
+    let mut out = String::with_capacity(msg.len());
+    let mut in_quote = false;
+    for c in msg.chars() {
+        if c == '"' {
+            if !in_quote {
+                out.push_str("\"<redacted>\"");
+            }
+            in_quote = !in_quote;
+            continue;
+        }
+        if !in_quote {
+            out.push(c);
+        }
+    }
+    if out.chars().count() > MAX_CHARS {
+        let truncated: String = out.chars().take(MAX_CHARS).collect();
+        return format!("{truncated}…");
+    }
+    out
 }
 
 fn schema<T: faucet_core::JsonSchema>() -> Value {
@@ -529,5 +561,31 @@ mod tests {
     fn jsonl_schema_is_object() {
         let s = sink_schema("jsonl").unwrap();
         assert!(s.is_object());
+    }
+
+    #[test]
+    fn scrub_config_error_redacts_quoted_values() {
+        // A serde "invalid type" error echoes the offending value in double
+        // quotes — must be redacted so a secret can't reach the log (#78/#38).
+        let msg =
+            r#"invalid type: string "sk-super-secret-123", expected a sequence at line 1 column 9"#;
+        let scrubbed = scrub_config_error(msg);
+        assert!(!scrubbed.contains("sk-super-secret-123"), "{scrubbed}");
+        assert!(scrubbed.contains("<redacted>"), "{scrubbed}");
+        // Structural context outside the quotes is preserved.
+        assert!(scrubbed.contains("invalid type"), "{scrubbed}");
+        assert!(scrubbed.contains("expected a sequence"), "{scrubbed}");
+    }
+
+    #[test]
+    fn scrub_config_error_truncates_long_messages() {
+        let msg = "x".repeat(500);
+        let scrubbed = scrub_config_error(&msg);
+        assert!(
+            scrubbed.chars().count() <= 201,
+            "len {}",
+            scrubbed.chars().count()
+        );
+        assert!(scrubbed.ends_with('…'));
     }
 }
