@@ -217,10 +217,12 @@ header to a serialized payload.
 **Client** (`crates/kafka-common/src/schema_registry/client.rs`):
 
 `SchemaRegistryClient` is `Arc`-cloneable and safe to share across tasks. Schema
-fetches are cached in an LRU bounded by `cache_capacity` (default 1024). The cache key
-is the integer schema ID. Cache misses hit `GET /schemas/ids/{id}` on the registry.
-Registry auth is `BasicAuth` (optional). `request_timeout` applies per HTTP call
-(default 10 s).
+fetches are cached in an LRU bounded by `cache_capacity` (default 1024), keyed by
+the integer schema ID; misses hit `GET /schemas/ids/{id}`. Schema *registrations*
+are cached in a second LRU of the same capacity, keyed by `(subject, schema_type,
+schema_text)` — so encoding a stream of records that share one schema issues a
+single `POST /subjects/{subject}/versions` instead of one per record. Registry auth
+is `BasicAuth` (optional); `request_timeout` applies per HTTP call (default 10 s).
 
 **Subject naming on the sink side**: `{topic}-value` (Confluent TopicNameStrategy).
 The sink registers or looks up the schema under this subject before the first produce call.
