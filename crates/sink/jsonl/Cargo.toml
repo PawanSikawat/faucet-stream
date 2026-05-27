@@ -26,3 +26,7 @@ tempfile = "3"
 
 [features]
 compression = ["faucet-core/compression"]
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

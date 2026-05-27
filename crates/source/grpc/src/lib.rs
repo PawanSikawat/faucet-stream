@@ -1,3 +1,5 @@
+#![cfg_attr(docsrs, feature(doc_cfg))]
+
 //! # faucet-source-grpc
 //!
 //! A config-driven gRPC source that uses protobuf reflection to call

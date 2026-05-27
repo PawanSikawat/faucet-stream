@@ -1,3 +1,5 @@
+#![cfg_attr(docsrs, feature(doc_cfg))]
+
 //! Shared GCS credential and client construction for faucet source and
 //! sink connectors.
 

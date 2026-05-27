@@ -1,3 +1,5 @@
+#![cfg_attr(docsrs, feature(doc_cfg))]
+
 //! # faucet-source-sqlite
 //!
 //! SQLite query source connector for the faucet-stream ecosystem.

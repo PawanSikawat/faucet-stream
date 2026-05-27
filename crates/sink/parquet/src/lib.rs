@@ -1,3 +1,5 @@
+#![cfg_attr(docsrs, feature(doc_cfg))]
+
 //! Apache Parquet sink connector for the faucet-stream ecosystem.
 //!
 //! Writes JSON records as Apache Parquet files to a local filesystem path or

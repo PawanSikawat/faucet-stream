@@ -143,7 +143,7 @@ pub fn classify_directive(body: &str) -> Directive<'_> {
 /// (including `${` and `}`) and its [`Directive`] classification. `$${` is an
 /// escape and yields nothing; an unterminated `${` ends iteration. This is
 /// the shared tokenizer used by `expand.rs` validation so it scans and
-/// classifies tokens exactly as [`rewrite`] does during substitution.
+/// classifies tokens exactly as `rewrite` does during substitution.
 pub fn iter_directives(s: &str) -> impl Iterator<Item = (&str, Directive<'_>)> {
     let bytes = s.as_bytes();
     let mut i = 0;
@@ -238,7 +238,7 @@ fn value_to_string(v: &Value) -> String {
 // ── Post-parse load-time ref resolution ─────────────────────────────────────
 
 /// Resolve every `${vars.X}`, `${sources.X.PATH}`, `${sinks.X.PATH}` token
-/// found in a parsed [`PipelineConfig`].
+/// found in a parsed [`PipelineConfig`](crate::config::PipelineConfig).
 ///
 /// Order:
 /// 1. Resolve `${vars.X}` references *inside the vars block itself* (with

@@ -1,3 +1,5 @@
+#![cfg_attr(docsrs, feature(doc_cfg))]
+
 //! # faucet-sink-jsonl
 //!
 //! JSON Lines file sink connector for the faucet-stream ecosystem.

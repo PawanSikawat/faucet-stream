@@ -31,3 +31,7 @@ bytes.workspace = true
 tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "fs", "io-util"] }
 serde_json.workspace = true
 tempfile = "3"
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

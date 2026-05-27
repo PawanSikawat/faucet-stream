@@ -1,3 +1,5 @@
+#![cfg_attr(docsrs, feature(doc_cfg))]
+
 //! Apache Parquet source connector for the faucet-stream ecosystem.
 //!
 //! Reads Parquet files from local paths, glob patterns, or S3 and yields

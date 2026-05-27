@@ -15,7 +15,7 @@ const MAX_CONSECUTIVE_RATE_LIMITS: u32 = 10;
 ///
 /// - **`RateLimited`** errors sleep for the server-specified `Retry-After`
 ///   duration and do **not** consume a `max_retries` slot, but are bounded by
-///   [`MAX_CONSECUTIVE_RATE_LIMITS`] consecutive occurrences so a permanently
+///   `MAX_CONSECUTIVE_RATE_LIMITS` consecutive occurrences so a permanently
 ///   throttled endpoint surfaces the `RateLimited` error instead of hanging.
 /// - **Retriable** errors (5xx, connection/timeout) use exponential backoff
 ///   with random jitter and count toward `max_retries`.

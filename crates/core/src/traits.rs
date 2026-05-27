@@ -186,7 +186,7 @@ pub trait Sink: Send + Sync {
     ///
     /// Sinks whose underlying API exposes per-row results (BigQuery
     /// `insertAll`, Elasticsearch `_bulk`) override this. The default
-    /// implementation delegates to [`write_batch`] and maps a single success
+    /// implementation delegates to [`Self::write_batch`] and maps a single success
     /// onto a uniform all-`Ok(())` vector. An outer failure is bubbled up
     /// unchanged so the pipeline's DLQ router can apply its `on_batch_error`
     /// policy at a single decision point.

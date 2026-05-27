@@ -137,7 +137,7 @@ pub fn xml_to_json(xml: &str) -> Result<Value, FaucetError> {
 /// are observed via the event stream but never accumulated, which bounds
 /// memory to one matched element + the path stack regardless of total
 /// document size. Combined with batched yielding in
-/// [`crate::stream::XmlStream::stream_pages`], this keeps client-side
+/// [`crate::stream::XmlStream`]'s `stream_pages`, this keeps client-side
 /// memory at `O(batch_size * record_size)` even for multi-gigabyte
 /// payloads.
 pub fn stream_extract<F: FnMut(Value)>(

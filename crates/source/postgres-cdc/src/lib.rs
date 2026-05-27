@@ -1,3 +1,5 @@
+#![cfg_attr(docsrs, feature(doc_cfg))]
+
 //! PostgreSQL logical replication (CDC) source for `faucet-stream`.
 //!
 //! Subscribes to a Postgres logical replication slot using the `pgoutput`

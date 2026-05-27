@@ -1,3 +1,5 @@
+#![cfg_attr(docsrs, feature(doc_cfg))]
+
 //! # faucet-sink-sqlite
 //!
 //! SQLite sink connector for the faucet-stream ecosystem.

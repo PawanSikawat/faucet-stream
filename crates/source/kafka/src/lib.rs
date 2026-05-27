@@ -1,3 +1,5 @@
+#![cfg_attr(docsrs, feature(doc_cfg))]
+
 //! # faucet-source-kafka
 //!
 //! Apache Kafka consumer source for `faucet-stream`. Subscribes to one or

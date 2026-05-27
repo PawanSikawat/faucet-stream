@@ -161,7 +161,7 @@ impl faucet_core::Sink for BigQuerySink {
 
     /// Write records to BigQuery, returning a per-row outcome vector.
     ///
-    /// Unlike [`write_batch`](Self::write_batch), which collapses all
+    /// Unlike [`write_batch`](faucet_core::Sink::write_batch), which collapses all
     /// `insertErrors` into a single `FaucetError`, this method maps each row
     /// to `Ok(())` if BigQuery accepted it or `Err(FaucetError::Sink(...))` if
     /// BigQuery reported a per-row error for it. This allows the pipeline's DLQ

@@ -8,7 +8,7 @@ use sqlx::postgres::PgPoolOptions;
 use sqlx::{PgPool, Row};
 
 /// Default name for the state-store table. Override via
-/// [`PostgresStateStore::with_table`].
+/// [`PostgresStateStore::connect_with`].
 pub const DEFAULT_TABLE: &str = "faucet_state";
 
 /// A `StateStore` that persists each entry as a row in a single Postgres

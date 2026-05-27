@@ -1,3 +1,5 @@
+#![cfg_attr(docsrs, feature(doc_cfg))]
+
 //! # faucet-state-redis
 //!
 //! Redis-backed [`StateStore`](faucet_core::state::StateStore) for faucet-stream

@@ -1,3 +1,5 @@
+#![cfg_attr(docsrs, feature(doc_cfg))]
+
 //! # faucet-source-rest
 //!
 //! A declarative, config-driven REST API client with pluggable authentication,

@@ -258,7 +258,7 @@ The only crate every connector depends on. Module layout:
 
 Every source/sink crate follows the same module layout. Stick to this when adding a new connector:
 
-- `lib.rs` — re-exports config + the `Source`/`Sink` type.
+- `lib.rs` — re-exports config + the `Source`/`Sink` type. **First line must be `#![cfg_attr(docsrs, feature(doc_cfg))]`** so docs.rs renders per-item feature badges (see [docs.rs build setup](#docsrs-build-setup)).
 - `config.rs` — config struct + auth/format/pagination sub-enums. Derives `Serialize + Deserialize + JsonSchema`. **No I/O or protocol logic here.**
 - `stream.rs` (source) / `sink.rs` (sink) — the one place that performs I/O. Holds reusable clients/pools created in `new()`. Implements `faucet_core::Source` / `Sink` including `config_schema()` via `schemars::schema_for!`.
 - Optional helper modules — `auth/`, `pagination/`, `extract/`, `retry/`, `convert.rs`, `schema.rs`, `decode.rs` / `encode.rs`, `state.rs` for bookmarks, `serde_helpers.rs` for non-serializable types (`reqwest::Method` etc.).
@@ -441,6 +441,28 @@ Key workspace deps: `serde` 1, `serde_json` 1, `schemars` 1.2, `async-trait` 0.1
 ## Publishing
 
 Crates publish in dependency order, topologically sorted then pushed to crates.io in **waves of 5 with a 15-minute wait between waves** (so each wave's crates have propagated through the crates.io index before the next wave depends on them). `.github/workflows/release.yml` handles this; it is **`workflow_dispatch`-triggered** (manual run with `scope` = `all` / `custom`, a version-bump input, and a `dry_run` toggle), not tag-triggered.
+
+### docs.rs build setup
+
+Every publishable crate is configured so docs.rs renders its **complete** API — including every optional connector — with a per-item "Available on crate feature X" badge. Two pieces, required on **every** crate:
+
+1. **Manifest** — a `[package.metadata.docs.rs]` block:
+   ```toml
+   [package.metadata.docs.rs]
+   all-features = true
+   rustdoc-args = ["--cfg", "docsrs"]
+   ```
+   `all-features = true` makes docs.rs document feature-gated code (without it, docs.rs builds default-features-only and hides optional connectors). `rustdoc-args` sets the `docsrs` cfg that gates the feature attribute below.
+
+2. **Crate root** — the first line of `lib.rs` (before the `//!` header):
+   ```rust
+   #![cfg_attr(docsrs, feature(doc_cfg))]
+   ```
+   On nightly (which docs.rs uses) this auto-applies feature badges to every `#[cfg(feature = "...")]` item. It is inert on stable because the `docsrs` cfg is never set outside docs.rs, so `cargo build` / CI on stable are unaffected.
+
+   **Use `doc_cfg`, not `doc_auto_cfg`.** The `doc_auto_cfg` feature was removed in Rust 1.92 and merged into `doc_cfg`; on a current nightly `feature(doc_auto_cfg)` is a hard compile error that fails the whole docs.rs build.
+
+Verify locally with: `RUSTDOCFLAGS="--cfg docsrs" rustup run nightly cargo doc --workspace --all-features --no-deps` (must be clean — broken intra-doc links surface here). New crates must add both pieces or they will be documented incompletely on docs.rs.
 
 ## Project Structure Sync
 

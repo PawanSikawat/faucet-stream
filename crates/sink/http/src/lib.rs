@@ -1,3 +1,5 @@
+#![cfg_attr(docsrs, feature(doc_cfg))]
+
 //! # faucet-sink-http
 //!
 //! An HTTP POST sink connector that sends records to an HTTP endpoint,

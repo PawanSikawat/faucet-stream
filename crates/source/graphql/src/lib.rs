@@ -1,3 +1,5 @@
+#![cfg_attr(docsrs, feature(doc_cfg))]
+
 //! # faucet-source-graphql
 //!
 //! A config-driven GraphQL API source with cursor-based pagination,

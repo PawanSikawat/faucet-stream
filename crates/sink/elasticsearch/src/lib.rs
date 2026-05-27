@@ -1,3 +1,5 @@
+#![cfg_attr(docsrs, feature(doc_cfg))]
+
 //! # faucet-sink-elasticsearch
 //!
 //! Elasticsearch bulk index sink connector for the faucet-stream ecosystem.

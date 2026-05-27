@@ -54,3 +54,7 @@ criterion = { workspace = true, features = ["async_tokio"] }
 [[bench]]
 name = "observability"
 harness = false
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

@@ -36,3 +36,7 @@ prost.workspace = true
 [build-dependencies]
 tonic-build = "0.13"
 protoc-bin-vendored = "3"
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

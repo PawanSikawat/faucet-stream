@@ -1,3 +1,5 @@
+#![cfg_attr(docsrs, feature(doc_cfg))]
+
 //! # faucet-sink-csv
 //!
 //! CSV file sink connector for the faucet-stream ecosystem.

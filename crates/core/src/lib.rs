@@ -1,3 +1,5 @@
+#![cfg_attr(docsrs, feature(doc_cfg))]
+
 //! # faucet-core
 //!
 //! Shared types, traits, and utilities for the faucet-stream ecosystem.

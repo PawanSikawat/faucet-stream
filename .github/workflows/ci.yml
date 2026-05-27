@@ -44,6 +44,34 @@ jobs:
           restore-keys: ${{ runner.os }}-clippy-
       - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
 
+  docs:
+    name: Docs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.94.0"
+      - name: Install librdkafka prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libsasl2-dev libssl-dev libcurl4-openssl-dev cmake build-essential
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-docs-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-docs-
+      # Fail on any rustdoc warning (broken intra-doc links, etc.) so the
+      # docs.rs render stays clean. The `doc_cfg` feature-badge path itself is
+      # nightly-only and exercised by docs.rs, not here.
+      - name: Build docs
+        env:
+          RUSTDOCFLAGS: "-D warnings"
+        run: cargo doc --workspace --all-features --no-deps
+
   test:
     name: Test
     runs-on: ubuntu-latest

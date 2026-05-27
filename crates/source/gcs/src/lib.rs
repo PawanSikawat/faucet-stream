@@ -1,3 +1,5 @@
+#![cfg_attr(docsrs, feature(doc_cfg))]
+
 //! Google Cloud Storage source connector.
 //!
 //! See the crate-level README for usage and config-field reference.

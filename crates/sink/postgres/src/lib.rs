@@ -1,3 +1,5 @@
+#![cfg_attr(docsrs, feature(doc_cfg))]
+
 //! # faucet-sink-postgres
 //!
 //! PostgreSQL sink connector for the faucet-stream ecosystem.

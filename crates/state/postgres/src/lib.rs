@@ -1,3 +1,5 @@
+#![cfg_attr(docsrs, feature(doc_cfg))]
+
 //! # faucet-state-postgres
 //!
 //! PostgreSQL-backed [`StateStore`](faucet_core::state::StateStore) for

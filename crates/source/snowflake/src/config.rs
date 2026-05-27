@@ -60,7 +60,8 @@ pub struct SnowflakeSourceConfig {
     pub statement_timeout: Duration,
     /// Maximum wall-clock time the source will spend polling an asynchronous
     /// statement (one for which the initial `POST /api/v2/statements`
-    /// returns HTTP 202) before giving up with [`FaucetError::Source`].
+    /// returns HTTP 202) before giving up with
+    /// [`FaucetError::Source`](faucet_core::FaucetError::Source).
     /// Without this cap a statement that never finishes would loop forever.
     /// Defaults to 300 seconds. Set to `0` to disable the cap and poll
     /// indefinitely.
