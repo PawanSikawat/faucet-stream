@@ -65,6 +65,31 @@ fn mysql_value_to_json(row: &sqlx::mysql::MySqlRow, col_name: &str) -> Value {
         return Value::Bool(v);
     }
 
+    // Richer types that would otherwise silently decode to Null (#78/#43).
+    if let Ok(v) =
+        row.try_get::<sqlx::types::chrono::DateTime<sqlx::types::chrono::Utc>, _>(col_name)
+    {
+        return Value::String(v.to_rfc3339());
+    }
+    if let Ok(v) = row.try_get::<sqlx::types::chrono::NaiveDateTime, _>(col_name) {
+        return Value::String(v.to_string());
+    }
+    if let Ok(v) = row.try_get::<sqlx::types::chrono::NaiveDate, _>(col_name) {
+        return Value::String(v.to_string());
+    }
+    if let Ok(v) = row.try_get::<sqlx::types::chrono::NaiveTime, _>(col_name) {
+        return Value::String(v.to_string());
+    }
+    // DECIMAL → string, preserving exact precision.
+    if let Ok(v) = row.try_get::<sqlx::types::BigDecimal, _>(col_name) {
+        return Value::String(v.to_string());
+    }
+    // BLOB / BINARY → base64.
+    if let Ok(v) = row.try_get::<Vec<u8>, _>(col_name) {
+        use base64::Engine as _;
+        return Value::String(base64::engine::general_purpose::STANDARD.encode(v));
+    }
+
     Value::Null
 }
 

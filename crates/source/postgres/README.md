@@ -93,6 +93,11 @@ Columns are automatically converted to JSON values:
 | `float8`, `double precision` | `number` (f64) |
 | `float4`, `real` | `number` (f32) |
 | `bool`, `boolean` | `boolean` |
+| `timestamptz` | `string` (RFC 3339) |
+| `timestamp`, `date`, `time` | `string` (ISO-8601) |
+| `uuid` | `string` |
+| `numeric`, `decimal` | `string` (exact precision preserved) |
+| `bytea` | `string` (base64) |
 | Other / `NULL` | `null` |
 
 ## Config Loading
