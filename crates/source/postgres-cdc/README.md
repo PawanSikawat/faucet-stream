@@ -100,6 +100,7 @@ Every change event is one JSON object:
 | `proto_version`             | u32      | `1`     | pgoutput protocol version. Only `1` is supported in this release. |
 | `idle_timeout`              | seconds  | `30`    | Stop the current fetch cycle after this long without a new replication message. |
 | `max_messages`              | usize?   | `null`  | Optional cap on change events per fetch call. The cap is checked **after each COMMIT**; a transaction larger than `max_messages` still emits atomically. |
+| `max_staged_records`        | usize?   | `null`  | Max change records buffered for a **single in-progress transaction** before the run aborts with a typed error. `null` = unbounded. A safety valve against OOM on huge bulk transactions — see [Transactional consistency](#transactional-consistency). |
 | `status_update_interval`    | seconds  | `10`    | Standby Status Update cadence. Must be `< idle_timeout` and well under the server's `wal_sender_timeout`. |
 | `tcp_keepalive`             | seconds  | `60`    | TCP keepalive on the replication connection. |
 
@@ -112,8 +113,14 @@ to the sink on `COMMIT`. Partial transactions (BEGIN seen, no COMMIT yet
 within `idle_timeout` / `max_messages`) are dropped and redelivered after the
 next `START_REPLICATION`. This makes the output transactionally consistent —
 sinks never see half a transaction — at the cost of needing each
-transaction to fit within one fetch cycle. Size `max_messages` accordingly
-or leave it unset for unbounded buffering.
+transaction to fit within one fetch cycle.
+
+Because a transaction is buffered in full until its `COMMIT`, a single bulk
+`UPDATE`/`DELETE`/`COPY` of millions of rows holds every decoded row in
+memory at once. Set `max_staged_records` to bound that: when an in-progress
+transaction exceeds it the run aborts with a typed `FaucetError::Source`
+instead of risking an OOM-kill. Leave it `null` only if you are sure your
+source transactions fit comfortably in memory.
 
 ---
 
@@ -125,6 +132,12 @@ or leave it unset for unbounded buffering.
   **after the sink confirms** the batch was flushed.
 - On the next run, `apply_start_bookmark` is called with that bookmark and
   the connector advances `confirmed_flush_lsn` accordingly.
+- **The advertised `confirmed_flush_lsn` is advanced _only_ from a durable
+  bookmark** (via `apply_start_bookmark`) — never from decoded WAL at
+  commit-decode time, and never from a keepalive's `wal_end`. This guarantees
+  Postgres is never told to recycle WAL for changes the consumer has not
+  durably persisted, so a crash can never lose committed data (it replays
+  instead).
 - If the process crashes between sink flush and state-store write, the next
   run will replay the most recent transaction. Sinks should be idempotent or
   accept duplicates at transaction boundaries.
@@ -133,9 +146,14 @@ or leave it unset for unbounded buffering.
 
 ## Operational caveats
 
-- **Slot bloat:** without a state store the connector never advances
-  `confirmed_flush_lsn`, so Postgres retains WAL indefinitely. Always
-  configure a state store in production.
+- **Slot bloat / WAL retention:** the connector advances
+  `confirmed_flush_lsn` only at the *start* of a run, from the durable
+  bookmark. Within a single long-running fetch cycle it does not advance it,
+  so Postgres retains all WAL produced during that cycle until the next run
+  resumes from the persisted bookmark. Without a state store it never
+  advances at all and WAL is retained indefinitely. Always configure a state
+  store in production, and run frequently enough (or keep fetch cycles short
+  enough) that WAL retention stays within your disk budget.
 - **Heartbeats:** if the network is silent for longer than the server's
   `wal_sender_timeout` (default 60 s), Postgres kills the replication
   connection. The default `status_update_interval` of 10 s leaves ample

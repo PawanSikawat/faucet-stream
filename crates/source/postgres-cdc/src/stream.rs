@@ -26,10 +26,15 @@ pub struct PostgresCdcSource {
     /// the next fetch cycle. Becomes the new "confirmed_flush_lsn" we
     /// advertise to Postgres.
     pending_bookmark: Mutex<Option<Bookmark>>,
-    /// Last LSN we have told Postgres is durable. Advanced by
-    /// `apply_start_bookmark` (after the state store persists a bookmark)
-    /// and by the end of `fetch_with_context_incremental` if any txn
-    /// committed during the drain.
+    /// Last LSN we have told Postgres is durable (advertised as the slot's
+    /// `confirmed_flush_lsn`, which authorises WAL recycling up to it).
+    ///
+    /// Advanced **only** by `apply_start_bookmark` — i.e. after the pipeline
+    /// has durably persisted a bookmark — or seeded from `start_lsn` config.
+    /// It is never advanced from decoded WAL (commit-decode time) or from
+    /// keepalive `wal_end`, because those positions are not yet durable
+    /// downstream; doing so would let Postgres discard WAL for unwritten
+    /// changes and lose data on a crash (#78/#1).
     confirmed_lsn: Mutex<u64>,
 }
 
@@ -208,7 +213,10 @@ impl PostgresCdcSource {
             //    transaction's records into one buffer and emits a single
             //    trailing page with `bookmark = max(commit_lsn)`.
             let mut registry = RelationRegistry::new();
-            let mut state = TxnState::default();
+            let mut state = TxnState {
+                max_staged_records: self.config.max_staged_records,
+                ..TxnState::default()
+            };
             let mut agg_records: Vec<Value> = Vec::new();
             let mut total_records: usize = 0;
             let mut last_message_at = Instant::now();
@@ -287,10 +295,16 @@ impl PostgresCdcSource {
                     ))?;
                 }
                 if let Some((lsn, drained)) = just_committed {
-                    // Persist confirmed_lsn so the next fetch cycle's initial
-                    // status update advertises the right position even if the
-                    // consumer of this stream never reaches the end.
-                    *self.confirmed_lsn.lock().await = lsn;
+                    // NOTE: we deliberately do NOT advance `confirmed_lsn` here.
+                    // `confirmed_lsn` is the position advertised to Postgres as
+                    // `confirmed_flush_lsn` (which lets the server recycle WAL),
+                    // and it must only ever reflect data the consumer has
+                    // *durably* persisted. The only durable signal is the
+                    // bookmark the pipeline persists after the sink flush, which
+                    // arrives back via `apply_start_bookmark` at the start of the
+                    // next run. Advancing here at commit-decode time would tell
+                    // Postgres to discard WAL for changes that were never written
+                    // downstream — a crash in that window loses data (#78/#1).
                     if per_transaction {
                         let bookmark = Some(Bookmark::from_u64(lsn).to_value()?);
                         yield StreamPage {
@@ -358,6 +372,29 @@ struct TxnState {
     in_progress_lsn: u64,
     /// Whether we are currently inside a BEGIN..COMMIT pair.
     in_txn: bool,
+    /// Optional cap on `staged.len()` for a single transaction. `None` means
+    /// unbounded. Exceeding it aborts the run with a typed error instead of
+    /// risking an OOM-kill on a huge bulk transaction (see
+    /// [`PostgresCdcSourceConfig::max_staged_records`]).
+    max_staged_records: Option<usize>,
+}
+
+impl TxnState {
+    /// Stage one decoded change record, enforcing
+    /// [`max_staged_records`](Self::max_staged_records).
+    fn push_staged(&mut self, record: Value) -> Result<(), FaucetError> {
+        if let Some(max) = self.max_staged_records
+            && self.staged.len() >= max
+        {
+            return Err(FaucetError::Source(format!(
+                "postgres-cdc: in-progress transaction exceeded max_staged_records ({max}); \
+                 aborting to avoid unbounded memory growth. Raise max_staged_records or \
+                 reduce the size of the source transaction."
+            )));
+        }
+        self.staged.push(record);
+        Ok(())
+    }
 }
 
 fn handle_event(
@@ -451,8 +488,7 @@ fn stage_insert(
     let rel = registry.get(i.relation_oid)?;
     let after = tuple_to_object(rel, &i.new)?;
     let r = record(rel, "insert", state, None, Some(after));
-    state.staged.push(r);
-    Ok(())
+    state.push_staged(r)
 }
 
 fn stage_update(
@@ -467,8 +503,7 @@ fn stage_update(
     };
     let after = tuple_to_object(rel, &u.new)?;
     let r = record(rel, "update", state, before, Some(after));
-    state.staged.push(r);
-    Ok(())
+    state.push_staged(r)
 }
 
 fn stage_delete(
@@ -479,8 +514,7 @@ fn stage_delete(
     let rel = registry.get(d.relation_oid)?;
     let before = Some(tuple_to_object(rel, &d.old)?);
     let r = record(rel, "delete", state, before, None);
-    state.staged.push(r);
-    Ok(())
+    state.push_staged(r)
 }
 
 fn stage_truncate(
@@ -491,7 +525,7 @@ fn stage_truncate(
     for oid in &t.relation_oids {
         let rel = registry.get(*oid)?;
         let r = record(rel, "truncate", state, None, None);
-        state.staged.push(r);
+        state.push_staged(r)?;
     }
     Ok(())
 }
@@ -713,6 +747,77 @@ mod tests {
         assert_eq!(out[0]["before"], Value::Null);
 
         assert_eq!(state.last_committed, Some(0x16A_4F88));
+    }
+
+    #[test]
+    fn staging_beyond_max_staged_records_aborts() {
+        // Regression for #78/#2: a single transaction that stages more records
+        // than `max_staged_records` must abort with a typed error rather than
+        // buffering unboundedly (OOM risk).
+        let mut registry = RelationRegistry::new();
+        registry.insert(rel_users());
+        let mut state = TxnState {
+            max_staged_records: Some(2),
+            ..TxnState::default()
+        };
+        let mut out = vec![];
+
+        handle_event(begin_event(0x16A_4F88), &mut registry, &mut state, &mut out).unwrap();
+        // First two inserts stage fine.
+        for id in ["1", "2"] {
+            handle_event(
+                xlogdata(insert_payload(16384, &[("id", id), ("name", "x")])),
+                &mut registry,
+                &mut state,
+                &mut out,
+            )
+            .unwrap();
+        }
+        // The third exceeds the cap and must error.
+        let err = handle_event(
+            xlogdata(insert_payload(16384, &[("id", "3"), ("name", "x")])),
+            &mut registry,
+            &mut state,
+            &mut out,
+        )
+        .unwrap_err();
+        assert!(
+            format!("{err}").contains("max_staged_records"),
+            "error must name the cap: {err}"
+        );
+        assert!(matches!(err, FaucetError::Source(_)));
+    }
+
+    #[test]
+    fn no_cap_allows_large_transactions() {
+        // With max_staged_records = None (default) an arbitrarily large
+        // transaction stages without error.
+        let mut registry = RelationRegistry::new();
+        registry.insert(rel_users());
+        let mut state = TxnState::default();
+        let mut out = vec![];
+
+        handle_event(begin_event(0x16A_4F88), &mut registry, &mut state, &mut out).unwrap();
+        for id in 0..50 {
+            handle_event(
+                xlogdata(insert_payload(
+                    16384,
+                    &[("id", &id.to_string()), ("name", "x")],
+                )),
+                &mut registry,
+                &mut state,
+                &mut out,
+            )
+            .unwrap();
+        }
+        handle_event(
+            commit_event(0x16A_4F88),
+            &mut registry,
+            &mut state,
+            &mut out,
+        )
+        .unwrap();
+        assert_eq!(out.len(), 50);
     }
 
     #[test]

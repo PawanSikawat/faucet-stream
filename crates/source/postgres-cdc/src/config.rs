@@ -75,9 +75,30 @@ pub struct PostgresCdcSourceConfig {
     /// transaction. A single transaction larger than `max_messages` will
     /// still be emitted atomically (the fetch returns only after that
     /// transaction's COMMIT and may produce more records than `max_messages`).
-    /// Set `max_messages = None` (the default) for unbounded buffering.
+    /// To bound the memory a *single* in-progress transaction can consume,
+    /// use [`max_staged_records`](Self::max_staged_records) instead.
     #[serde(default)]
     pub max_messages: Option<usize>,
+
+    /// Maximum number of change records buffered in memory for a *single*
+    /// in-progress transaction before it is aborted.
+    ///
+    /// Logical replication requires a transaction to be buffered until its
+    /// COMMIT so it can be emitted atomically (partial transactions must
+    /// never leak downstream). A single bulk `UPDATE`/`DELETE`/`COPY` of
+    /// millions of rows therefore buffers every decoded row as a
+    /// `serde_json::Value` in RAM, which can OOM the process. This bound is a
+    /// safety valve: when an in-progress transaction's staged record count
+    /// exceeds it, the source aborts with a typed
+    /// [`FaucetError::Source`](faucet_core::FaucetError::Source) rather than
+    /// being OOM-killed.
+    ///
+    /// `None` (the default) means unbounded — atomic delivery of arbitrarily
+    /// large transactions at the cost of unbounded memory. Set a value sized
+    /// to your available memory if you replicate tables subject to large
+    /// bulk writes.
+    #[serde(default)]
+    pub max_staged_records: Option<usize>,
 
     /// Interval at which Standby Status Update keepalives are sent to the
     /// server. Must be shorter than `idle_timeout` and well under the
@@ -126,6 +147,7 @@ impl std::fmt::Debug for PostgresCdcSourceConfig {
             .field("proto_version", &self.proto_version)
             .field("idle_timeout", &self.idle_timeout)
             .field("max_messages", &self.max_messages)
+            .field("max_staged_records", &self.max_staged_records)
             .field("status_update_interval", &self.status_update_interval)
             .field("tcp_keepalive", &self.tcp_keepalive)
             .field("batch_size", &self.batch_size)
@@ -220,6 +242,7 @@ mod tests {
             proto_version: 1,
             idle_timeout: std::time::Duration::from_secs(30),
             max_messages: None,
+            max_staged_records: None,
             status_update_interval: std::time::Duration::from_secs(10),
             tcp_keepalive: std::time::Duration::from_secs(60),
             batch_size: DEFAULT_BATCH_SIZE,

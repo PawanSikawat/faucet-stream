@@ -73,6 +73,7 @@ fn cfg(url: &str, slot: &str, publication: &str) -> PostgresCdcSourceConfig {
         proto_version: 1,
         idle_timeout: Duration::from_secs(5),
         max_messages: None,
+        max_staged_records: None,
         status_update_interval: Duration::from_secs(1),
         tcp_keepalive: Duration::from_secs(60),
         batch_size: faucet_core::DEFAULT_BATCH_SIZE,
@@ -214,6 +215,63 @@ async fn missing_slot_without_create_if_missing_errors() {
     assert!(
         format!("{err}").contains("no_slot_here"),
         "error must mention the slot name: {err}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn lsn_not_advanced_without_durable_bookmark_redelivers() {
+    // #78/#1: the slot's `confirmed_flush_lsn` must not advance past changes
+    // the consumer has not durably persisted. We drain a transaction in run 1
+    // but never carry its bookmark into run 2 — simulating a crash before the
+    // sink flush + bookmark persist. Run 2 (a fresh source with no
+    // `apply_start_bookmark`) must REDELIVER the change rather than skip it
+    // (at-least-once: no data loss).
+    //
+    // Pre-fix, the keepalive handler advanced the applied-LSN to the server's
+    // `wal_end`, so `confirmed_flush_lsn` moved past the change during run 1
+    // and run 2 started after it — losing the row. The fix advances the
+    // advertised LSN only from a durable bookmark, so run 2 redelivers.
+    let (_pg, url) = start_postgres().await;
+    ddl(
+        &url,
+        "CREATE TABLE public.users (id int4 PRIMARY KEY, name text); \
+         CREATE PUBLICATION faucet_pub FOR TABLE public.users;",
+    )
+    .await;
+
+    // Run 1: create the slot, then drain one inserted transaction.
+    let s1 = PostgresCdcSource::new(cfg(&url, "faucet_slot", "faucet_pub"))
+        .await
+        .expect("source 1");
+    let _ = s1.fetch_all_incremental().await.expect("warm-up"); // materialise slot
+    ddl(&url, "INSERT INTO public.users VALUES (1, 'alice');").await;
+    let (first, bookmark) = s1.fetch_all_incremental().await.expect("first fetch");
+    let first_ids: Vec<_> = first
+        .iter()
+        .filter(|r| r["op"] == "insert")
+        .map(|r| r["after"]["id"].as_i64().unwrap())
+        .collect();
+    assert_eq!(first_ids, vec![1], "run 1 must drain the insert");
+    assert!(bookmark.is_some(), "run 1 must produce a bookmark");
+    // Drop s1 WITHOUT applying/persisting its bookmark — simulates a crash
+    // before durability was confirmed.
+    drop(s1);
+
+    // Run 2: fresh source, NO apply_start_bookmark → resumes from the slot's
+    // confirmed_flush_lsn. It must still see row 1.
+    let s2 = PostgresCdcSource::new(cfg(&url, "faucet_slot", "faucet_pub"))
+        .await
+        .expect("source 2");
+    let (second, _bm) = s2.fetch_all_incremental().await.expect("second fetch");
+    let second_ids: Vec<_> = second
+        .iter()
+        .filter(|r| r["op"] == "insert")
+        .map(|r| r["after"]["id"].as_i64().unwrap())
+        .collect();
+    assert!(
+        second_ids.contains(&1),
+        "run 2 must redeliver row 1 (no data loss without a persisted bookmark); \
+         got {second_ids:?} from records {second:?}"
     );
 }
 

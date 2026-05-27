@@ -60,10 +60,6 @@ pub struct Client {
 /// Obtained from [`start_replication`].
 pub struct Duplex {
     inner: ReplicationClient,
-    /// Latest server WAL end seen on this stream. Read by `recv()` to
-    /// de-duplicate `update_applied_lsn` calls across repeated KeepAlives
-    /// with the same position. Not consulted by `send_status_update`.
-    last_wal_end: Lsn,
 }
 
 // ── Parameters ────────────────────────────────────────────────────────────
@@ -257,10 +253,7 @@ pub async fn start_replication(
         .await
         .map_err(|e| FaucetError::Source(format!("postgres-cdc start_replication: {e}")))?;
 
-    Ok(Duplex {
-        inner,
-        last_wal_end: start_lsn,
-    })
+    Ok(Duplex { inner })
 }
 
 /// Report progress to the server (Standby Status Update).
@@ -295,10 +288,16 @@ pub async fn send_status_update(
 ///   `Duplex` was shut down).
 /// - `Err(_)` — network / protocol error.
 ///
-/// [`ReplicationEvent::KeepAlive`] events are absorbed here and used to
-/// advance the applied-LSN watermark so the library's internal feedback loop
-/// stays current.  [`ReplicationEvent::StoppedAt`] is converted to
-/// `Ok(None)`.
+/// [`ReplicationEvent::KeepAlive`] events are absorbed here.  We deliberately
+/// do **not** advance the applied-LSN to the server's `wal_end` on a keepalive
+/// (the previous behaviour): that position is not yet durable downstream, and
+/// advertising it as `confirmed_flush_lsn` would authorise Postgres to recycle
+/// WAL for changes the consumer never persisted — a crash in that window loses
+/// data (#78/#1).  The applied-LSN is advanced only from the durable bookmark,
+/// via [`send_status_update`] at the start of each run; the library keeps
+/// sending its periodic Standby Status Updates (carrying that durable
+/// position) to hold the connection open.  [`ReplicationEvent::StoppedAt`] is
+/// converted to `Ok(None)`.
 pub async fn recv(duplex: &mut Duplex) -> Result<Option<ReplicationEvent>, FaucetError> {
     loop {
         match duplex
@@ -313,25 +312,16 @@ pub async fn recv(duplex: &mut Duplex) -> Result<Option<ReplicationEvent>, Fauce
                 return Ok(None);
             }
 
-            Some(ReplicationEvent::KeepAlive { wal_end, .. }) => {
-                // Advance watermark so the library's periodic feedback is
-                // current even when we have nothing to ack ourselves.
-                if wal_end > duplex.last_wal_end {
-                    duplex.last_wal_end = wal_end;
-                    duplex.inner.update_applied_lsn(wal_end);
-                }
-                // Continue the loop — do not surface keepalives to the caller.
+            Some(ReplicationEvent::KeepAlive { .. }) => {
+                // Absorb keepalives without touching the applied-LSN — see the
+                // function doc. Continue the loop; do not surface to the caller.
             }
 
             Some(ev) => {
                 // Surface Begin, Commit, XLogData, Message (and any future
-                // variants) to the caller.  For XLogData, also advance the
-                // last_wal_end watermark so bookmarking stays accurate.
-                if let ReplicationEvent::XLogData { wal_end, .. } = &ev
-                    && *wal_end > duplex.last_wal_end
-                {
-                    duplex.last_wal_end = *wal_end;
-                }
+                // variants) to the caller. The commit_lsn carried by Commit is
+                // what becomes the durable bookmark once the pipeline persists
+                // it — that, not wal_end, is the only position fed back to PG.
                 return Ok(Some(ev));
             }
         }
