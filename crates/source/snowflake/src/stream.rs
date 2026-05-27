@@ -120,12 +120,11 @@ impl SnowflakeSource {
 
     /// Build the JSON body for `POST /api/v2/statements`.
     ///
-    /// Bindings are sent as 1-based positional strings under the documented
-    /// `bindings: {"1": {"type": "TEXT", "value": "..."}}` shape. Every
-    /// value is stringified and tagged `TEXT`; Snowflake casts implicitly on
-    /// the server side. Non-string values (numbers, bools) are converted
-    /// with `Value::to_string`, which renders JSON syntax — sufficient for
-    /// the typical numeric / boolean cases used in matrix interpolation.
+    /// Bindings are sent as 1-based positional values under the documented
+    /// `bindings: {"1": {"type": "TEXT", "value": "..."}}` shape. Non-null
+    /// values are stringified and tagged `TEXT` (Snowflake casts implicitly);
+    /// a JSON `null` is bound as an explicit `{"type":"TEXT","value":null}` so
+    /// it keeps its positional slot rather than shifting later parameters.
     fn build_request_body(&self, bindings: &[Value]) -> Value {
         let mut body = json!({
             "statement": self.config.query,
@@ -142,15 +141,17 @@ impl SnowflakeSource {
         if !bindings.is_empty() {
             let mut map = Map::with_capacity(bindings.len());
             for (i, v) in bindings.iter().enumerate() {
-                let stringified = match v {
-                    Value::String(s) => s.clone(),
-                    Value::Null => continue, // Snowflake binds NULL via SQL literal; skip.
-                    other => other.to_string(),
+                // Bindings are 1-based positional (`?` markers). A NULL must be
+                // bound as an explicit `{"type":"TEXT","value":null}` rather
+                // than skipped — skipping leaves a gap that shifts every later
+                // parameter onto the wrong marker and corrupts the query
+                // (#78/#18).
+                let value = match v {
+                    Value::String(s) => Value::String(s.clone()),
+                    Value::Null => Value::Null,
+                    other => Value::String(other.to_string()),
                 };
-                map.insert(
-                    (i + 1).to_string(),
-                    json!({"type": "TEXT", "value": stringified}),
-                );
+                map.insert((i + 1).to_string(), json!({"type": "TEXT", "value": value}));
             }
             body["bindings"] = Value::Object(map);
         }
@@ -575,6 +576,23 @@ mod tests {
         assert_eq!(b["1"]["value"], "alice");
         assert_eq!(b["2"]["value"], "42");
         assert_eq!(b["3"]["value"], "true");
+    }
+
+    #[test]
+    fn build_request_body_null_binding_preserves_positional_alignment() {
+        // Regression for #78/#18: a NULL must occupy its positional slot as an
+        // explicit null-valued binding, not be skipped (which would shift "42"
+        // onto marker 1 and leave marker 2 unbound).
+        let src = SnowflakeSource::new(cfg());
+        let body = src.build_request_body(&[Value::Null, json!(42)]);
+        let b = &body["bindings"];
+        assert_eq!(b["1"]["type"], "TEXT");
+        assert_eq!(
+            b["1"]["value"],
+            Value::Null,
+            "position 1 must be a NULL binding"
+        );
+        assert_eq!(b["2"]["value"], "42", "position 2 must still be 42");
     }
 
     #[test]
