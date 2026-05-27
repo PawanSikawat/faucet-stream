@@ -56,6 +56,20 @@ pub struct PaginationState {
     /// is stuck and we stop rather than looping forever.
     #[doc(hidden)]
     pub previous_token: Option<String>,
+    /// Fingerprint of the previous page's body, used by `PageNumber` loop
+    /// detection: APIs that clamp an out-of-range page to the last page and
+    /// re-return it (non-empty) would otherwise loop until `max_pages`.
+    #[doc(hidden)]
+    pub previous_page_fingerprint: Option<u64>,
+}
+
+/// Cheap, stable fingerprint of a response body for content-stagnation
+/// loop detection.
+fn body_fingerprint(body: &Value) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    body.to_string().hash(&mut h);
+    h.finish()
 }
 
 impl PaginationStyle {
@@ -158,7 +172,22 @@ impl PaginationStyle {
             }
             PaginationStyle::PageNumber { .. } => {
                 state.page += 1;
-                Ok(record_count > 0)
+                if record_count == 0 {
+                    return Ok(false);
+                }
+                // Content-stagnation guard: some APIs clamp an out-of-range
+                // page to the last page and return it again (non-empty), which
+                // would loop until `max_pages` and duplicate records. Stop if
+                // this page's body is identical to the previous one (#78/#15).
+                let fp = body_fingerprint(body);
+                if state.previous_page_fingerprint == Some(fp) {
+                    tracing::warn!(
+                        "pagination loop detected: PageNumber returned an identical page — stopping"
+                    );
+                    return Ok(false);
+                }
+                state.previous_page_fingerprint = Some(fp);
+                Ok(true)
             }
             PaginationStyle::Offset {
                 limit, total_path, ..
