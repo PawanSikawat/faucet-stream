@@ -247,6 +247,7 @@ The only crate every connector depends on. Module layout:
 - `util.rs` — `quote_ident` (SQL injection prevention), `extract_records` (JSONPath), `check_http_response`, `substitute_context` (placeholder substitution for URLs/paths — NOT safe for SQL or JSON), `substitute_context_bind_params` (SQL-safe via bind markers), `substitute_context_json` (JSON-safe), `extract_context`.
 - `transform.rs` — `RecordTransform` / `CompiledTransform`: flatten, rename keys (regex), snake_case, custom closures. Built-in transforms are feature-gated.
 - `replication.rs` — `ReplicationMethod`, `filter_incremental`, `max_replication_value` for bookmark-based incremental replication.
+- `retry.rs` — shared `execute_with_retry` (exponential backoff + jitter, gated on `FaucetError::is_retriable`) used by HTTP sources (XML, GraphQL). The REST source keeps its own retry module with extra 429/`Retry-After` handling.
 - `schema.rs` — `infer_schema` from record samples with type merging and nullable detection.
 - `state.rs` — `StateStore` async trait (`get` / `put` / `delete` over `Value`) + built-in `MemoryStateStore` and `FileStateStore` (one JSON file per key, atomic rename). Keys validated by `validate_state_key`. Heavier backends (Redis, Postgres) live in their own crates.
 - `dlq.rs` — DLQ data types: `OnBatchError`, `DlqConfig`, `DlqStats`, `DlqReason`, `build_envelope`. The router itself lives in `pipeline.rs::run_stream`.

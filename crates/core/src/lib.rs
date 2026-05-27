@@ -17,6 +17,7 @@ pub mod error;
 pub mod observability;
 pub mod pipeline;
 pub mod replication;
+pub mod retry;
 pub mod schema;
 pub mod state;
 pub mod traits;
@@ -39,6 +40,7 @@ pub use pipeline::{
     validate_batch_size,
 };
 pub use replication::ReplicationMethod;
+pub use retry::execute_with_retry;
 pub use state::{FileStateStore, MemoryStateStore, StateStore};
 pub use traits::{RowOutcome, Sink, Source};
 pub use transform::RecordTransform;

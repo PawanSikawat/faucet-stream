@@ -3,7 +3,7 @@
 [![Crates.io](https://img.shields.io/crates/v/faucet-source-xml.svg)](https://crates.io/crates/faucet-source-xml)
 [![Docs.rs](https://docs.rs/faucet-source-xml/badge.svg)](https://docs.rs/faucet-source-xml)
 
-A config-driven XML/SOAP API source with automatic XML-to-JSON conversion, dot-path record extraction, and pluggable authentication.
+A config-driven XML/SOAP API source with automatic XML-to-JSON conversion, dot-path record extraction, and pluggable authentication. Transient HTTP failures (5xx / connection resets) are retried with exponential backoff.
 
 Part of the [faucet-stream](https://github.com/PawanSikawat/faucet-stream) ecosystem.
 

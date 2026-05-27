@@ -10,6 +10,12 @@ use reqwest::Client;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::pin::Pin;
+use std::time::Duration;
+
+/// Retries on transient (5xx / connection) failures before giving up.
+const RETRY_MAX_ATTEMPTS: u32 = 3;
+/// Base exponential-backoff delay between retries.
+const RETRY_BASE_BACKOFF: Duration = Duration::from_millis(500);
 
 /// A configured XML API source that handles pagination and extraction.
 pub struct XmlStream {
@@ -206,9 +212,21 @@ impl XmlStream {
                 .body(resolved_body);
         }
 
-        let resp = req.send().await.map_err(FaucetError::Http)?;
-        let resp = util::check_http_response(resp, DEFAULT_ERROR_BODY_MAX_LEN).await?;
-        resp.text().await.map_err(FaucetError::Http)
+        // Retry transient failures (5xx / connection resets) with jittered
+        // backoff, matching the REST source's reliability layer (#78/#16).
+        // The request body is a String, so `try_clone` always succeeds.
+        faucet_core::execute_with_retry(RETRY_MAX_ATTEMPTS, RETRY_BASE_BACKOFF, || {
+            let attempt = req.try_clone();
+            async move {
+                let req = attempt.ok_or_else(|| {
+                    FaucetError::Source("xml: request is not cloneable for retry".into())
+                })?;
+                let resp = req.send().await.map_err(FaucetError::Http)?;
+                let resp = util::check_http_response(resp, DEFAULT_ERROR_BODY_MAX_LEN).await?;
+                resp.text().await.map_err(FaucetError::Http)
+            }
+        })
+        .await
     }
 }
 
