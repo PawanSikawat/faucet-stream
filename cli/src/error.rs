@@ -138,16 +138,12 @@ pub enum CliError {
     #[error("matrix has a parent cycle through: {}", ids.join(" -> "))]
     ParentCycle { ids: Vec<String> },
 
-    /// Two child invocations sharing a parent produced the same state-key
-    /// suffix (i.e. the same value at `parent_key`).
+    /// Two parent records of the same matrix row resolved to the same
+    /// `parent_key` value, producing a colliding state-key suffix.
     #[error(
-        "duplicate state key '{state_key}' for matrix row '{id}' — another invocation of '{other_id}' already wrote to it; choose a more unique `parent_key`"
+        "duplicate state key '{state_key}' for matrix row '{id}': two parent records resolve to the same `parent_key` value — choose a `parent_key` that is unique per record"
     )]
-    DuplicateStateKey {
-        id: String,
-        other_id: String,
-        state_key: String,
-    },
+    DuplicateStateKey { id: String, state_key: String },
 
     /// One or more matrix invocations failed under `on_error: continue`.
     #[error("{count} pipeline invocation(s) failed (see logs above for details)")]
@@ -215,6 +211,11 @@ pub enum CliError {
     /// Observability stack (Prometheus / tracing) failed to install.
     #[error("observability install failed: {0}")]
     Observability(String),
+
+    /// An internal invariant was violated (a bug). Surfaced instead of
+    /// silently producing a partial result.
+    #[error("internal error: {0}")]
+    Internal(String),
 }
 
 impl From<faucet_core::InstallError> for CliError {
