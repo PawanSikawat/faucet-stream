@@ -1,3 +1,5 @@
+#![cfg_attr(docsrs, feature(doc_cfg))]
+
 //! # faucet-sink-stdout
 //!
 //! Stdout/stderr sink connector for the faucet-stream ecosystem.

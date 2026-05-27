@@ -1,3 +1,5 @@
+#![cfg_attr(docsrs, feature(doc_cfg))]
+
 //! # faucet-kafka-common
 //!
 //! Shared configuration types for the [`faucet-stream`](https://crates.io/crates/faucet-stream)

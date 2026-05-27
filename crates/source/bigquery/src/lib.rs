@@ -1,3 +1,5 @@
+#![cfg_attr(docsrs, feature(doc_cfg))]
+
 //! # faucet-source-bigquery
 //!
 //! BigQuery query source connector for the faucet-stream ecosystem.

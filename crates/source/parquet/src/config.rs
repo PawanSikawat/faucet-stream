@@ -29,7 +29,7 @@ pub struct ParquetSourceConfig {
     /// Arrow `RecordBatch` size used as the per-page hint when streaming.
     ///
     /// Passed verbatim to
-    /// [`ParquetRecordBatchStreamBuilder::with_batch_size`], which is itself
+    /// `ParquetRecordBatchStreamBuilder::with_batch_size`, which is itself
     /// only a hint — Arrow may emit smaller batches at row-group boundaries,
     /// so a single emitted [`faucet_core::StreamPage`] can hold fewer rows
     /// than this number. Larger values improve throughput at the cost of

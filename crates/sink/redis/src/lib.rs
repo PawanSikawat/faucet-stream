@@ -1,3 +1,5 @@
+#![cfg_attr(docsrs, feature(doc_cfg))]
+
 //! # faucet-sink-redis
 //!
 //! A config-driven Redis sink connector that writes to Redis streams,

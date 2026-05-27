@@ -39,7 +39,7 @@ pub struct ExpandedNode {
     /// Resolved DLQ spec for this row, or `None` if no DLQ applies.
     pub dlq: Option<crate::config::DlqSpec>,
     /// Every `${id.path}` placeholder that survived load-time interpolation.
-    /// Populated by [`scan_deferred_refs`]; the executor uses this to know
+    /// Populated by `collect_deferred`; the executor uses this to know
     /// which parent record to feed which row.
     pub deferred_refs: Vec<DeferredRef>,
 }

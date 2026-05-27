@@ -3,7 +3,7 @@
 //! Semantics:
 //!
 //! - Roots run concurrently under `Semaphore(max_concurrent)`.
-//! - Each root captures its written records (via a [`CapturingSink`] wrapper)
+//! - Each root captures its written records (via a `CapturingSink` wrapper)
 //!   so descendants can fan out per parent record.
 //! - For each child whose parent has finished successfully, one pipeline
 //!   invocation runs per parent record. `${parent.dotted.path}` tokens in the

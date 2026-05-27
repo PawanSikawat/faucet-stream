@@ -15,7 +15,7 @@ use tokio::sync::Mutex;
 ///
 /// With the `compression` feature, the writer transparently wraps the file
 /// with a gzip / zstd encoder based on the `compression` config field.
-/// [`Sink::flush`] finalises the encoder (writes the trailer) and clears the
+/// [`Sink::flush`](faucet_core::Sink::flush) finalises the encoder (writes the trailer) and clears the
 /// writer slot — a subsequent `write_batch` reopens the file in append mode
 /// (independent of `config.append`) and starts a fresh encoder, producing a
 /// multi-member compressed file that decoders read back correctly. This makes

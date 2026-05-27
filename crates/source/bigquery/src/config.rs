@@ -75,7 +75,8 @@ pub struct BigQuerySourceConfig {
     pub statement_timeout: Duration,
     /// Maximum wall-clock time the source will spend polling
     /// `jobs.getQueryResults` for a job that keeps reporting
-    /// `jobComplete=false`, before giving up with [`FaucetError::Source`].
+    /// `jobComplete=false`, before giving up with
+    /// [`FaucetError::Source`](faucet_core::FaucetError::Source).
     /// Without this cap a job that never completes would loop forever.
     /// Defaults to 300 seconds. Set to `0` to disable the cap and poll
     /// indefinitely. Only the *completion* wait is bounded; once the job is

@@ -24,3 +24,7 @@ axum = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt", "time", "net", "sync"] }
 serde_json.workspace = true
 reqwest.workspace = true
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

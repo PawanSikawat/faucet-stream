@@ -22,3 +22,7 @@ tokio = { workspace = true, features = ["io-util", "io-std", "sync"] }
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt", "io-util", "sync"] }
 serde_json.workspace = true
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

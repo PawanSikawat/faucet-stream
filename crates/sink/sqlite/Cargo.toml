@@ -23,3 +23,7 @@ sqlx = { workspace = true, features = ["runtime-tokio", "sqlite", "json"] }
 tokio = { workspace = true, features = ["macros", "rt"] }
 serde_json.workspace = true
 tempfile = "3"
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

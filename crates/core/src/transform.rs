@@ -40,10 +40,11 @@ use std::sync::LazyLock;
 
 // ── Public config-facing type ─────────────────────────────────────────────────
 
-/// A transformation applied to every record fetched by a [`crate::stream::RestStream`].
+/// A transformation applied to every record fetched by a source (e.g. the REST
+/// source's `RestStream`).
 ///
-/// Transforms are applied in the order they are added via
-/// [`crate::config::RestStreamConfig::add_transform`].
+/// Transforms are applied in the order they are added via the owning source's
+/// configuration (e.g. `RestStreamConfig::add_transform`).
 ///
 /// The three built-in variants are each guarded by a Cargo feature flag
 /// (all enabled by default — see module-level docs).
@@ -196,9 +197,9 @@ impl RecordTransform {
 
 /// Pre-compiled form of a [`RecordTransform`].
 ///
-/// Stored inside [`crate::stream::RestStream`] so that regex patterns are
-/// compiled exactly once (at [`crate::stream::RestStream::new`] time) rather
-/// than once per record.
+/// Stored inside a source (e.g. the REST source's `RestStream`) so that regex
+/// patterns are compiled exactly once (at construction time) rather than once
+/// per record.
 pub enum CompiledTransform {
     #[cfg(feature = "transform-flatten")]
     Flatten {

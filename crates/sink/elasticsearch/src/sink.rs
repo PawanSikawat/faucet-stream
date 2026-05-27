@@ -195,7 +195,7 @@ impl faucet_core::Sink for ElasticsearchSink {
 
     /// Write records using the `_bulk` API, returning a per-row outcome.
     ///
-    /// Unlike [`write_batch`](Self::write_batch), this method never collapses
+    /// Unlike [`write_batch`](faucet_core::Sink::write_batch), this method never collapses
     /// item-level Elasticsearch errors into a single outer `Err`. Each
     /// document maps to exactly one [`faucet_core::RowOutcome`]:
     ///

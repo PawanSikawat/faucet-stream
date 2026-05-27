@@ -1,3 +1,5 @@
+#![cfg_attr(docsrs, feature(doc_cfg))]
+
 //! # faucet-stream
 //!
 //! A declarative, config-driven data pipeline with pluggable source and sink

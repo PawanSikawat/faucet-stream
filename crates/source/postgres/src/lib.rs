@@ -1,3 +1,5 @@
+#![cfg_attr(docsrs, feature(doc_cfg))]
+
 //! # faucet-source-postgres
 //!
 //! PostgreSQL query source connector for the faucet-stream ecosystem.

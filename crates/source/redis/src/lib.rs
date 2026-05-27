@@ -1,3 +1,5 @@
+#![cfg_attr(docsrs, feature(doc_cfg))]
+
 //! # faucet-source-redis
 //!
 //! A config-driven Redis source connector that reads from Redis streams,

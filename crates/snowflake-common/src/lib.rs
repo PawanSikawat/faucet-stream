@@ -1,3 +1,5 @@
+#![cfg_attr(docsrs, feature(doc_cfg))]
+
 //! # faucet-snowflake-common
 //!
 //! Shared configuration types and helpers for the

@@ -1,7 +1,7 @@
 //! Source-to-sink pipeline orchestration.
 //!
-//! The [`Pipeline`] struct connects any [`Source`](crate::Source) to any
-//! [`Sink`](crate::Sink) and handles moving data between them.
+//! The [`Pipeline`] struct connects any [`Source`] to any
+//! [`Sink`] and handles moving data between them.
 //!
 //! # Batch mode
 //!
@@ -52,7 +52,7 @@ use std::sync::Arc;
 /// Default page size used when a caller does not specify one.
 ///
 /// Sources are free to override this from their own config when implementing
-/// [`Source::stream_pages`](crate::Source::stream_pages); the value passed
+/// [`Source::stream_pages`]; the value passed
 /// from the pipeline acts as a hint when no source-side preference exists.
 pub const DEFAULT_BATCH_SIZE: usize = 1000;
 
@@ -83,7 +83,7 @@ pub fn validate_batch_size(batch_size: usize) -> Result<usize, FaucetError> {
     Ok(batch_size)
 }
 
-/// One page emitted by [`Source::stream_pages`](crate::Source::stream_pages).
+/// One page emitted by [`Source::stream_pages`].
 ///
 /// `records` is the chunk of records for this page. `bookmark` is `Some` only
 /// when the source has a durable checkpoint to advance — most sources emit

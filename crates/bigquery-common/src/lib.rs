@@ -1,3 +1,5 @@
+#![cfg_attr(docsrs, feature(doc_cfg))]
+
 //! # faucet-bigquery-common
 //!
 //! Shared credential configuration and client construction for the

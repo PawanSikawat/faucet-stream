@@ -1,3 +1,5 @@
+#![cfg_attr(docsrs, feature(doc_cfg))]
+
 //! # faucet-source-xml
 //!
 //! A config-driven XML/SOAP API source with automatic XML-to-JSON conversion,

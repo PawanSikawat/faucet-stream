@@ -33,3 +33,7 @@ testcontainers-modules = { version = "0.15", features = ["kafka"] }
 [features]
 default = []
 schema-registry = ["faucet-kafka-common/schema-registry"]
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

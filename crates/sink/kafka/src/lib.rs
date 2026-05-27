@@ -1,3 +1,5 @@
+#![cfg_attr(docsrs, feature(doc_cfg))]
+
 //! # faucet-sink-kafka
 //!
 //! Apache Kafka producer sink for `faucet-stream`. Publishes records to one

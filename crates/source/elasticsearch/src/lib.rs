@@ -1,3 +1,5 @@
+#![cfg_attr(docsrs, feature(doc_cfg))]
+
 //! # faucet-source-elasticsearch
 //!
 //! Elasticsearch search source connector for the faucet-stream ecosystem.

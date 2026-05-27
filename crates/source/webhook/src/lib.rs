@@ -1,3 +1,5 @@
+#![cfg_attr(docsrs, feature(doc_cfg))]
+
 //! # faucet-source-webhook
 //!
 //! A webhook receiver source connector that starts a temporary HTTP server,

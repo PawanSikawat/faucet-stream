@@ -1,3 +1,5 @@
+#![cfg_attr(docsrs, feature(doc_cfg))]
+
 //! # faucet-sink-snowflake
 //!
 //! Snowflake sink connector for the faucet-stream ecosystem.

@@ -330,3 +330,7 @@ required-features = ["source-mongodb", "sink-postgres"]
 [[example]]
 name = "csv_to_bigquery"
 required-features = ["source-csv", "sink-bigquery"]
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

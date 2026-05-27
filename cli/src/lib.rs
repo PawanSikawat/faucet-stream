@@ -1,3 +1,5 @@
+#![cfg_attr(docsrs, feature(doc_cfg))]
+
 //! # faucet-cli
 //!
 //! A config-driven runner for [`faucet-stream`](https://docs.rs/faucet-stream)

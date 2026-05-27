@@ -1,3 +1,5 @@
+#![cfg_attr(docsrs, feature(doc_cfg))]
+
 //! Google Cloud Storage sink connector.
 
 mod config;

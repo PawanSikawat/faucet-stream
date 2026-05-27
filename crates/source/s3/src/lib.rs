@@ -1,3 +1,5 @@
+#![cfg_attr(docsrs, feature(doc_cfg))]
+
 //! # faucet-source-s3
 //!
 //! AWS S3 source connector for the faucet-stream ecosystem.

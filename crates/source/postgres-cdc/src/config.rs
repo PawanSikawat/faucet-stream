@@ -110,7 +110,7 @@ pub struct PostgresCdcSourceConfig {
     /// `serde_json::Value` in RAM, which can OOM the process. This bound is a
     /// safety valve: when an in-progress transaction's staged record count
     /// exceeds it, the source aborts with a typed
-    /// [`FaucetError::Source`](faucet_core::FaucetError::Source) rather than
+    /// [`FaucetError::Source`] rather than
     /// being OOM-killed.
     ///
     /// `None` (the default) means unbounded — atomic delivery of arbitrarily

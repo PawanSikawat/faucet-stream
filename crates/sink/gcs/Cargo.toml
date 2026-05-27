@@ -35,3 +35,7 @@ faucet-source-gcs = { workspace = true }
 reqwest = { workspace = true }
 urlencoding.workspace = true
 futures.workspace = true
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

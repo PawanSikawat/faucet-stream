@@ -28,3 +28,7 @@ tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 serde_json.workspace = true
 futures.workspace = true
 wiremock = "0.6"
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

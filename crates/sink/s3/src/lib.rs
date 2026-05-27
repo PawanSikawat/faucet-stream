@@ -1,3 +1,5 @@
+#![cfg_attr(docsrs, feature(doc_cfg))]
+
 //! # faucet-sink-s3
 //!
 //! AWS S3 sink connector for the faucet-stream ecosystem.
