@@ -317,6 +317,19 @@ pub enum FilterOp {
     NotIn,
 }
 
+#[cfg(feature = "transform-filter")]
+impl std::fmt::Display for FilterOp {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            FilterOp::Eq => "eq",
+            FilterOp::Ne => "ne",
+            FilterOp::Exists => "exists",
+            FilterOp::In => "in",
+            FilterOp::NotIn => "not_in",
+        })
+    }
+}
+
 /// Pre-compiled filter: path parsed once, value cloned once.
 ///
 /// `pub` (rather than the spec's `pub(crate)`) so it can sit inside the
@@ -346,26 +359,19 @@ impl CompiledFilter {
             FilterOp::Eq | FilterOp::Ne => {
                 if spec.value.is_none() {
                     return Err(FaucetError::Transform(format!(
-                        "filter: op '{:?}' requires a `value`",
+                        "filter: op '{}' requires a `value`",
                         spec.op
                     )));
                 }
             }
-            FilterOp::In | FilterOp::NotIn => match &spec.value {
-                Some(Value::Array(_)) => {}
-                Some(_) => {
+            FilterOp::In | FilterOp::NotIn => {
+                if !matches!(spec.value, Some(Value::Array(_))) {
                     return Err(FaucetError::Transform(format!(
-                        "filter: op '{:?}' requires an array `value`",
+                        "filter: op '{}' requires an array `value`",
                         spec.op
                     )));
                 }
-                None => {
-                    return Err(FaucetError::Transform(format!(
-                        "filter: op '{:?}' requires an array `value`",
-                        spec.op
-                    )));
-                }
-            },
+            }
         }
         let path = CompiledPath::compile(&spec.path).map_err(|e| match e {
             FaucetError::Transform(msg) => FaucetError::Transform(format!("filter: {msg}")),
