@@ -7,7 +7,7 @@ license.workspace = true
 repository.workspace = true
 description = "Elasticsearch sink connector for the faucet-stream ecosystem"
 readme = "README.md"
-keywords = ["elasticsearch", "search", "sink", "pipeline"]
+keywords = ["elasticsearch", "search", "sink", "pipeline", "connector"]
 categories.workspace = true
 
 [dependencies]
