@@ -2,7 +2,6 @@
 
 use crate::auth::Auth;
 use crate::pagination::PaginationStyle;
-use faucet_core::RecordTransform;
 use faucet_core::ReplicationMethod;
 use reqwest::{
     Method,
@@ -86,12 +85,6 @@ pub struct RestStreamConfig {
     /// Maximum number of partitions to fetch concurrently.
     /// `None` means sequential processing (backward compatible default).
     pub partition_concurrency: Option<usize>,
-
-    // ── Record transforms ─────────────────────────────────────────────────────
-    /// Transformations applied to every record in order.
-    /// See [`RecordTransform`] for available options.
-    #[serde(skip, default)]
-    pub transforms: Vec<RecordTransform>,
 }
 
 impl Default for RestStreamConfig {
@@ -122,7 +115,6 @@ impl Default for RestStreamConfig {
             schema_sample_size: 100,
             partitions: Vec::new(),
             partition_concurrency: None,
-            transforms: Vec::new(),
         }
     }
 }
@@ -279,16 +271,6 @@ impl RestStreamConfig {
     /// `None` (default) means sequential processing.
     pub fn partition_concurrency(mut self, concurrency: Option<usize>) -> Self {
         self.partition_concurrency = concurrency;
-        self
-    }
-
-    // ── Record transforms ─────────────────────────────────────────────────────
-
-    /// Append a [`RecordTransform`] to the pipeline.
-    ///
-    /// Transforms are applied in the order they are added.
-    pub fn add_transform(mut self, t: RecordTransform) -> Self {
-        self.transforms.push(t);
         self
     }
 }

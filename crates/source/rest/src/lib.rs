@@ -3,7 +3,7 @@
 //! # faucet-source-rest
 //!
 //! A declarative, config-driven REST API client with pluggable authentication,
-//! pagination, record transforms, schema inference, and incremental replication.
+//! pagination, schema inference, and incremental replication.
 
 pub mod auth;
 pub mod config;
