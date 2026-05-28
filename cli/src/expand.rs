@@ -326,10 +326,8 @@ pub fn expand(cfg: &PipelineConfig) -> CliResult<Vec<ExpandedNode>> {
         if src_inherit && row_inherit {
             transforms.extend(cfg.pipeline.transforms.iter().cloned());
         }
-        if row_inherit {
-            if let Some(src_ts) = merged_source.transforms.as_ref() {
-                transforms.extend(src_ts.iter().cloned());
-            }
+        if row_inherit && let Some(src_ts) = merged_source.transforms.as_ref() {
+            transforms.extend(src_ts.iter().cloned());
         }
         if let Some(row_ts) = row.transforms.as_ref() {
             transforms.extend(row_ts.iter().cloned());
