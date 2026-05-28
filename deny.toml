@@ -22,6 +22,7 @@ version = 2
 # add a license only after confirming the dependency that needs it.
 allow = [
     "MIT",
+    "MIT-0",
     "Apache-2.0",
     "Apache-2.0 WITH LLVM-exception",
     "BSD-2-Clause",
