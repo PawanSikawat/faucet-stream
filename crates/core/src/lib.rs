@@ -21,6 +21,7 @@ pub mod pipeline;
 pub mod replication;
 pub mod retry;
 pub mod schema;
+pub mod stage;
 pub mod state;
 pub mod traits;
 pub mod transform;

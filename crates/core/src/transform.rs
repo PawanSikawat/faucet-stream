@@ -479,6 +479,7 @@ impl RecordTransform {
 /// Stored inside a source (e.g. the REST source's `RestStream`) so that regex
 /// patterns are compiled exactly once (at construction time) rather than once
 /// per record.
+#[derive(Clone)]
 pub enum CompiledTransform {
     #[cfg(feature = "transform-flatten")]
     Flatten {
