@@ -27,6 +27,11 @@ pub enum TransformStage {
     /// evaluates true.
     #[cfg(feature = "transform-filter")]
     Filter(FilterSpec),
+    /// Array-expansion 1→0..N stage. Fans the record out once per element
+    /// of the targeted array; object elements are merged into the parent
+    /// container with a prefix, scalars/arrays replace the leaf in place.
+    #[cfg(feature = "transform-explode")]
+    Explode(ExplodeSpec),
     /// Arbitrary 0..N closure for library callers (not addressable from YAML).
     Custom(Arc<dyn Fn(Value) -> Vec<Value> + Send + Sync>),
 }
@@ -37,6 +42,8 @@ impl std::fmt::Debug for TransformStage {
             Self::Map(t) => f.debug_tuple("Map").field(t).finish(),
             #[cfg(feature = "transform-filter")]
             Self::Filter(s) => f.debug_tuple("Filter").field(s).finish(),
+            #[cfg(feature = "transform-explode")]
+            Self::Explode(s) => f.debug_tuple("Explode").field(s).finish(),
             Self::Custom(_) => write!(f, "Custom(<fn>)"),
         }
     }
@@ -48,6 +55,8 @@ impl Clone for TransformStage {
             Self::Map(t) => Self::Map(t.clone()),
             #[cfg(feature = "transform-filter")]
             Self::Filter(s) => Self::Filter(s.clone()),
+            #[cfg(feature = "transform-explode")]
+            Self::Explode(s) => Self::Explode(s.clone()),
             Self::Custom(f) => Self::Custom(Arc::clone(f)),
         }
     }
@@ -58,6 +67,8 @@ pub enum CompiledStage {
     Map(CompiledTransform),
     #[cfg(feature = "transform-filter")]
     Filter(CompiledFilter),
+    #[cfg(feature = "transform-explode")]
+    Explode(CompiledExplode),
     Custom(Arc<dyn Fn(Value) -> Vec<Value> + Send + Sync>),
 }
 
@@ -67,6 +78,8 @@ impl std::fmt::Debug for CompiledStage {
             Self::Map(_) => write!(f, "Map(<compiled>)"),
             #[cfg(feature = "transform-filter")]
             Self::Filter(cf) => f.debug_tuple("Filter").field(cf).finish(),
+            #[cfg(feature = "transform-explode")]
+            Self::Explode(e) => f.debug_tuple("Explode").field(e).finish(),
             Self::Custom(_) => write!(f, "Custom(<fn>)"),
         }
     }
@@ -81,6 +94,13 @@ impl Clone for CompiledStage {
                 path: f.path.clone(),
                 op: f.op,
                 value: f.value.clone(),
+            }),
+            #[cfg(feature = "transform-explode")]
+            Self::Explode(e) => Self::Explode(CompiledExplode {
+                path: e.path.clone(),
+                prefix: e.prefix.clone(),
+                separator: e.separator.clone(),
+                on_missing: e.on_missing,
             }),
             Self::Custom(f) => Self::Custom(Arc::clone(f)),
         }
@@ -422,6 +442,163 @@ impl CompiledFilter {
     }
 }
 
+// ── Explode spec ──
+
+/// Spec for [`TransformStage::Explode`]. Fans one record out into N records
+/// based on the array at `path`. Compiled into a [`CompiledExplode`] at
+/// pipeline-build time; per-record work is one path resolve + N clones +
+/// N merges.
+#[cfg(feature = "transform-explode")]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+pub struct ExplodeSpec {
+    /// JSONPath subset (bare key, dot path, bracketed string key).
+    pub path: String,
+    /// Prefix prepended to each element field when the element is an object.
+    /// Defaults (when `None`) to the last segment of `path`. Empty string =
+    /// no prefix (pure LATERAL FLATTEN).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prefix: Option<String>,
+    /// Separator between prefix and each element field. Default `"_"`.
+    #[serde(default = "default_explode_separator")]
+    pub separator: String,
+    /// What to do when `path` doesn't yield a non-empty array.
+    #[serde(default)]
+    pub on_missing: OnMissing,
+}
+
+/// Behaviour when an [`ExplodeSpec`]'s `path` doesn't yield a non-empty
+/// array. The default is `Passthrough` because silently dropping records
+/// is the worst failure mode for ETL pipelines — surfacing the record
+/// unchanged lets downstream stages decide.
+#[cfg(feature = "transform-explode")]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Default,
+    serde::Serialize, serde::Deserialize, schemars::JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum OnMissing {
+    /// Emit the original record unchanged.
+    #[default]
+    Passthrough,
+    /// Emit zero records.
+    Drop,
+    /// Return [`FaucetError::Transform`].
+    Error,
+}
+
+#[cfg(feature = "transform-explode")]
+fn default_explode_separator() -> String {
+    "_".to_owned()
+}
+
+/// Pre-compiled explode: path parsed once, prefix resolved once.
+///
+/// `pub` (rather than the spec's `pub(crate)`) so it can sit inside the
+/// `pub` [`CompiledStage::Explode`] variant without tripping the
+/// `private_interfaces` lint — same shape as the already-`pub`
+/// [`CompiledFilter`] sibling that backs [`CompiledStage::Filter`].
+#[cfg(feature = "transform-explode")]
+#[derive(Debug)]
+pub struct CompiledExplode {
+    pub path: CompiledPath,
+    pub prefix: String,
+    pub separator: String,
+    pub on_missing: OnMissing,
+}
+
+#[cfg(feature = "transform-explode")]
+impl CompiledExplode {
+    fn compile(spec: &ExplodeSpec) -> Result<Self, FaucetError> {
+        let path = CompiledPath::compile(&spec.path).map_err(|e| match e {
+            FaucetError::Transform(msg) => FaucetError::Transform(format!("explode: {msg}")),
+            other => other,
+        })?;
+        let prefix = match &spec.prefix {
+            Some(p) => p.clone(),
+            None => path.last_segment().to_owned(),
+        };
+        Ok(Self {
+            path,
+            prefix,
+            separator: spec.separator.clone(),
+            on_missing: spec.on_missing,
+        })
+    }
+
+    fn apply(&self, rec: Value) -> Result<Vec<Value>, FaucetError> {
+        // Resolve the value at `path`. If it's a non-empty array, fan out.
+        // Otherwise, route through `on_missing`.
+        let target = self.path.resolve(&rec)?;
+        let Some(Value::Array(elements)) = target.cloned() else {
+            return self.handle_missing(rec);
+        };
+        if elements.is_empty() {
+            return self.handle_missing(rec);
+        }
+        let (parent_segments, leaf) = self.path.parent_and_leaf();
+        let parent_segments = parent_segments.to_vec();
+        let leaf = leaf.to_owned();
+        let mut out: Vec<Value> = Vec::with_capacity(elements.len());
+        for element in elements {
+            let mut child = rec.clone();
+            self.merge_one(&mut child, &parent_segments, &leaf, element)?;
+            out.push(child);
+        }
+        Ok(out)
+    }
+
+    fn handle_missing(&self, rec: Value) -> Result<Vec<Value>, FaucetError> {
+        match self.on_missing {
+            OnMissing::Passthrough => Ok(vec![rec]),
+            OnMissing::Drop => Ok(vec![]),
+            OnMissing::Error => Err(FaucetError::Transform(format!(
+                "explode: path '{}' did not yield a non-empty array",
+                self.path.normalised
+            ))),
+        }
+    }
+
+    fn merge_one(
+        &self,
+        record: &mut Value,
+        parent_segments: &[PathSegment],
+        leaf: &str,
+        element: Value,
+    ) -> Result<(), FaucetError> {
+        let Some(parent_map) =
+            CompiledPath::resolve_segments_mut(record, parent_segments)?
+        else {
+            return Err(FaucetError::Transform(format!(
+                "explode: parent container at '{}' unexpectedly missing during merge",
+                self.path.normalised
+            )));
+        };
+        match element {
+            Value::Object(elem_map) => {
+                parent_map.remove(leaf);
+                for (k, v) in elem_map {
+                    let new_key = if self.prefix.is_empty() {
+                        k
+                    } else {
+                        format!("{}{}{}", self.prefix, self.separator, k)
+                    };
+                    if parent_map.contains_key(&new_key) {
+                        return Err(FaucetError::Transform(format!(
+                            "explode produced duplicate key '{new_key}'"
+                        )));
+                    }
+                    parent_map.insert(new_key, v);
+                }
+            }
+            other => {
+                // Scalar / null / array — replace in place.
+                parent_map.insert(leaf.to_owned(), other);
+            }
+        }
+        Ok(())
+    }
+}
+
 /// Compile a [`TransformStage`] into its [`CompiledStage`] form.
 pub fn compile_stage(s: &TransformStage) -> Result<CompiledStage, FaucetError> {
     match s {
@@ -429,6 +606,10 @@ pub fn compile_stage(s: &TransformStage) -> Result<CompiledStage, FaucetError> {
         #[cfg(feature = "transform-filter")]
         TransformStage::Filter(spec) => {
             Ok(CompiledStage::Filter(CompiledFilter::compile(spec)?))
+        }
+        #[cfg(feature = "transform-explode")]
+        TransformStage::Explode(spec) => {
+            Ok(CompiledStage::Explode(CompiledExplode::compile(spec)?))
         }
         TransformStage::Custom(f) => Ok(CompiledStage::Custom(Arc::clone(f))),
     }
@@ -461,6 +642,8 @@ fn apply_one_stage(rec: Value, stage: &CompiledStage) -> Result<Vec<Value>, Fauc
                 Ok(vec![])
             }
         }
+        #[cfg(feature = "transform-explode")]
+        CompiledStage::Explode(e) => e.apply(rec),
         CompiledStage::Custom(f) => Ok(f(rec)),
     }
 }
@@ -798,5 +981,198 @@ mod tests {
         let err = compile_stage(&filter("$..nope", FilterOp::Exists, None))
             .expect_err("bad path");
         assert!(matches!(err, FaucetError::Transform(_)));
+    }
+
+    // ── Explode ──
+
+    #[cfg(feature = "transform-explode")]
+    fn explode(path: &str) -> TransformStage {
+        TransformStage::Explode(ExplodeSpec {
+            path: path.to_owned(),
+            prefix: None,
+            separator: "_".to_owned(),
+            on_missing: OnMissing::Passthrough,
+        })
+    }
+
+    #[cfg(feature = "transform-explode")]
+    #[test]
+    fn explode_object_default_prefix() {
+        let stages = compile(&[explode("items")]);
+        let out = apply_stages(
+            json!({"id": 1, "items": [{"sku": "A", "qty": 2}]}),
+            &stages,
+        )
+        .unwrap();
+        assert_eq!(out, vec![json!({"id": 1, "items_sku": "A", "items_qty": 2})]);
+    }
+
+    #[cfg(feature = "transform-explode")]
+    #[test]
+    fn explode_object_custom_prefix_and_separator() {
+        let stages = compile(&[TransformStage::Explode(ExplodeSpec {
+            path: "items".to_owned(),
+            prefix: Some("item".to_owned()),
+            separator: "_".to_owned(),
+            on_missing: OnMissing::Passthrough,
+        })]);
+        let out = apply_stages(
+            json!({"id": 1, "items": [{"sku": "A"}, {"sku": "B"}]}),
+            &stages,
+        )
+        .unwrap();
+        assert_eq!(
+            out,
+            vec![
+                json!({"id": 1, "item_sku": "A"}),
+                json!({"id": 1, "item_sku": "B"}),
+            ]
+        );
+    }
+
+    #[cfg(feature = "transform-explode")]
+    #[test]
+    fn explode_object_empty_prefix_is_lateral_flatten() {
+        let stages = compile(&[TransformStage::Explode(ExplodeSpec {
+            path: "items".to_owned(),
+            prefix: Some(String::new()),
+            separator: "_".to_owned(),
+            on_missing: OnMissing::Passthrough,
+        })]);
+        let out = apply_stages(json!({"id": 1, "items": [{"sku": "A"}]}), &stages).unwrap();
+        assert_eq!(out, vec![json!({"id": 1, "sku": "A"})]);
+    }
+
+    #[cfg(feature = "transform-explode")]
+    #[test]
+    fn explode_scalar_replaces_in_place() {
+        let stages = compile(&[explode("tags")]);
+        let out = apply_stages(json!({"id": 1, "tags": ["rust", "etl"]}), &stages).unwrap();
+        assert_eq!(
+            out,
+            vec![
+                json!({"id": 1, "tags": "rust"}),
+                json!({"id": 1, "tags": "etl"}),
+            ]
+        );
+    }
+
+    #[cfg(feature = "transform-explode")]
+    #[test]
+    fn explode_nested_object_path() {
+        let stages = compile(&[explode("$.user.items")]);
+        let out = apply_stages(
+            json!({"id": 1, "user": {"name": "A", "items": [{"x": 1}]}}),
+            &stages,
+        )
+        .unwrap();
+        // items field at $.user is removed; items_x added as a sibling of name
+        assert_eq!(
+            out,
+            vec![json!({"id": 1, "user": {"name": "A", "items_x": 1}})]
+        );
+    }
+
+    #[cfg(feature = "transform-explode")]
+    #[test]
+    fn explode_collision_errors() {
+        let stages = compile(&[explode("items")]);
+        let err = apply_stages(
+            json!({"id": 1, "items_sku": "X", "items": [{"sku": "A"}]}),
+            &stages,
+        )
+        .expect_err("collision on items_sku");
+        assert!(format!("{err}").contains("items_sku"));
+    }
+
+    #[cfg(feature = "transform-explode")]
+    #[test]
+    fn explode_on_missing_passthrough_default() {
+        let stages = compile(&[explode("items")]);
+        // missing
+        assert_eq!(
+            apply_stages(json!({"id": 1}), &stages).unwrap(),
+            vec![json!({"id": 1})]
+        );
+        // null
+        assert_eq!(
+            apply_stages(json!({"id": 1, "items": null}), &stages).unwrap(),
+            vec![json!({"id": 1, "items": null})]
+        );
+        // non-array
+        assert_eq!(
+            apply_stages(json!({"id": 1, "items": "scalar"}), &stages).unwrap(),
+            vec![json!({"id": 1, "items": "scalar"})]
+        );
+        // empty array
+        assert_eq!(
+            apply_stages(json!({"id": 1, "items": []}), &stages).unwrap(),
+            vec![json!({"id": 1, "items": []})]
+        );
+    }
+
+    #[cfg(feature = "transform-explode")]
+    #[test]
+    fn explode_on_missing_drop() {
+        let stages = compile(&[TransformStage::Explode(ExplodeSpec {
+            path: "items".to_owned(),
+            prefix: None,
+            separator: "_".to_owned(),
+            on_missing: OnMissing::Drop,
+        })]);
+        assert_eq!(
+            apply_stages(json!({"id": 1}), &stages).unwrap(),
+            Vec::<Value>::new()
+        );
+        assert_eq!(
+            apply_stages(json!({"id": 1, "items": []}), &stages).unwrap(),
+            Vec::<Value>::new()
+        );
+        assert_eq!(
+            apply_stages(json!({"id": 1, "items": null}), &stages).unwrap(),
+            Vec::<Value>::new()
+        );
+        assert_eq!(
+            apply_stages(json!({"id": 1, "items": "scalar"}), &stages).unwrap(),
+            Vec::<Value>::new()
+        );
+    }
+
+    #[cfg(feature = "transform-explode")]
+    #[test]
+    fn explode_on_missing_error() {
+        let stages = compile(&[TransformStage::Explode(ExplodeSpec {
+            path: "items".to_owned(),
+            prefix: None,
+            separator: "_".to_owned(),
+            on_missing: OnMissing::Error,
+        })]);
+        let err = apply_stages(json!({"id": 1}), &stages).expect_err("missing → error");
+        assert!(format!("{err}").contains("items"));
+    }
+
+    #[cfg(feature = "transform-explode")]
+    #[test]
+    fn explode_compile_rejects_bad_path() {
+        let err = compile_stage(&TransformStage::Explode(ExplodeSpec {
+            path: "$..items".to_owned(),
+            prefix: None,
+            separator: "_".to_owned(),
+            on_missing: OnMissing::Passthrough,
+        }))
+        .expect_err("recursive descent");
+        assert!(matches!(err, FaucetError::Transform(_)));
+    }
+
+    #[cfg(feature = "transform-explode")]
+    #[test]
+    fn explode_default_prefix_for_nested_path_is_last_segment() {
+        let stages = compile(&[explode("$.user.items")]);
+        let out = apply_stages(
+            json!({"user": {"items": [{"id": 1}]}}),
+            &stages,
+        )
+        .unwrap();
+        assert_eq!(out, vec![json!({"user": {"items_id": 1}})]);
     }
 }
