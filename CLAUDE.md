@@ -486,6 +486,7 @@ The adoption work in issue **#91** added many user-facing surfaces (docs.rs conf
 | **Change `Source` / `Sink` / `Pipeline` / transform / `FaucetError` APIs** | the Architecture section here; docs-site `getting-started/concepts.md` + `tutorials/library.md`; affected crate READMEs |
 | **Add a dependency that introduces a new license** | `deny.toml` `allow` list (the `supply-chain` CI job enforces this; license rules differ by platform, so a Linux-only dep can fail CI even if local passes) |
 | **Add / move / remove files or directories** | README "Project Structure" (see below) |
+| **Change brand (logo / colors / wordmark)** | `.github/assets/` (logo.svg tile, logo-mark.svg transparent, logo-mono.svg single-color, wordmark.svg, favicon.svg/png, social-banner.png); re-render `social-banner.png` (1280×640) from its SVG source via headless Chrome; **re-upload to repo Settings → Social preview**; refresh the README header logo and the mdBook favicon when its override path is restored in mdBook 0.5+ |
 | **File a feature / enhancement issue** | cross-link it to the roadmap epic (the open `epic`-labelled issue, currently #38) |
 
 Key automation to rely on (don't hand-maintain):

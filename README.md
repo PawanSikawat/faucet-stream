@@ -1,3 +1,7 @@
+<p align="center">
+  <img src=".github/assets/logo.svg" alt="faucet-stream logo" width="96" height="96">
+</p>
+
 # faucet-stream
 
 [![Crates.io](https://img.shields.io/crates/v/faucet-stream.svg)](https://crates.io/crates/faucet-stream)
@@ -1091,6 +1095,7 @@ docs/
   book/                       — mdBook documentation site (source under docs/book/src)
   launch/                     — launch kit: blog draft + checklist/ready-to-post copy
 .github/workflows/            — ci.yml, release.yml, docs.yml (mdBook → GitHub Pages)
+.github/assets/               — brand assets: logo tile, transparent mark, mono mark, wordmark, social-preview banner, favicon
 ```
 
 ## Contributing
