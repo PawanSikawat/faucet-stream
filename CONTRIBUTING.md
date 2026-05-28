@@ -104,16 +104,67 @@ are tracked in the roadmap epic (search the `epic` label).
   default in a way that alters behavior — not just Rust API changes.
 - **Independent crate versions.** Connector crates version independently on
   crates.io, so `faucet-source-rest` and `faucet-sink-bigquery` may sit at
-  different versions. The repo-level `vX.Y.Z` tags track the overall release line.
-- **Changelog.** Notable changes are recorded in [CHANGELOG.md](./CHANGELOG.md),
-  generated from Conventional Commit messages via
-  [git-cliff](https://git-cliff.org) (`cliff.toml`). Write commit subjects as
-  `type(scope): summary` (`feat`, `fix`, `perf`, `refactor`, `docs`, `test`,
-  `ci`, `chore`) so they're grouped correctly.
+  different versions. Per-crate tags use the form `<crate>-v<X.Y.Z>` (e.g.
+  `faucet-source-rest-v0.2.0`); the repo-level `vX.Y.Z` tags track the overall
+  release line.
+- **Changelog.** Notable changes are recorded in [CHANGELOG.md](./CHANGELOG.md).
+  release-plz appends a per-crate section every time it opens a release PR,
+  reading the commit log via git-cliff internals; `cliff.toml` is retained for
+  manual `git cliff` invocations on demand but is no longer the auto-generation
+  path. Write commit subjects as `type(scope): summary` (`feat`, `fix`, `perf`,
+  `refactor`, `docs`, `test`, `ci`, `chore`) so they're grouped correctly.
 - **MSRV.** The minimum supported Rust version is pinned in
   `rust-toolchain.toml` and enforced by CI (fmt/clippy/test/docs all run on it).
   Bumping the MSRV is itself a notable change — raise it only when needed and
   note it in the changelog.
+
+## Release process
+
+The default release path is automated by [release-plz](https://release-plz.dev/)
+(`release-plz.toml` + `.github/workflows/release-plz.yml`).
+
+1. **Push to `main`** (typically via merging a feature PR). release-plz scans
+   for `feat` / `fix` / `perf` commits since each crate's last `<crate>-v<X.Y.Z>`
+   tag and opens (or updates) a `chore: release` PR that:
+   - bumps the version of every crate with qualifying commits,
+   - prepends a per-crate section to `CHANGELOG.md`,
+   - leaves the other 44 crates untouched.
+2. **Review the release PR** like any other change. Edit the changelog text if
+   you want different wording; the version bumps follow SemVer from the commit
+   prefixes (`feat` → minor, `fix` / `perf` → patch, anything tagged
+   `BREAKING CHANGE` → major).
+3. **Merge the release PR.** release-plz then publishes the bumped crates to
+   crates.io in dependency order (`faucet-core` and the `*-common` crates
+   before connectors before `faucet-stream` and `faucet-cli`), waits for the
+   sparse index to propagate between dependents, creates per-crate GitHub
+   releases, and pushes the `<crate>-v<X.Y.Z>` tags.
+
+**Commits that don't bump versions.** `docs`, `chore`, `refactor`, `test`, `ci`,
+and `build` commits are included in the changelog body for completeness but do
+not trigger a version bump (`release_commits` filter in `release-plz.toml`). A
+README-only edit never causes a spurious publish.
+
+**Manual fallback.** `.github/workflows/release.yml` (`Release (manual fallback)`)
+is kept as a `workflow_dispatch` workflow for ad-hoc / bulk re-publishes (e.g.
+after a registry incident, or to re-publish all 45 crates from a known-good
+revision). Day-to-day releases should go through release-plz.
+
+**Dry-run locally.** Before relying on a release PR, you can preview what
+release-plz would do:
+
+```bash
+cargo install release-plz --locked
+release-plz release-pr --dry-run     # prints the diff it would commit
+release-plz release    --dry-run     # prints what it would publish, in order
+```
+
+**Tokens required (configured in repo Settings → Secrets).**
+- `CARGO_REGISTRY_TOKEN` — crates.io API token with publish scope for every
+  `faucet-*` crate.
+- `RELEASE_PLZ_TOKEN` (optional but recommended) — a PAT or GitHub App token
+  with `contents: write` + `pull-requests: write`. Without it the release PR
+  is opened by the default `GITHUB_TOKEN`, which by GitHub policy does **not**
+  trigger downstream workflow runs — CI won't run on the release PR.
 
 ## License
 

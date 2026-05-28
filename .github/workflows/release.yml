@@ -1,4 +1,13 @@
-name: Release
+name: Release (manual fallback)
+
+# Manual release workflow — retained as a fallback for ad-hoc / partial
+# releases. The default release path is now `release-plz.yml`, which runs
+# automatically on every push to `main` (opens a release PR; publishes on
+# merge). Use this workflow only when:
+#   - release-plz is unavailable, or
+#   - you need a one-off bulk re-publish (e.g. scope=all after a registry
+#     incident or a CI regression that broke the automatic flow).
+# See CONTRIBUTING.md (#release-process) for the recommended flow.
 
 on:
   workflow_dispatch:

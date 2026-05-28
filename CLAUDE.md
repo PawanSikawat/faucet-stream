@@ -441,7 +441,9 @@ Key workspace deps: `serde` 1, `serde_json` 1, `schemars` 1.2, `async-trait` 0.1
 
 ## Publishing
 
-Crates publish in dependency order, topologically sorted then pushed to crates.io in **waves of 5 with a 15-minute wait between waves** (so each wave's crates have propagated through the crates.io index before the next wave depends on them). `.github/workflows/release.yml` handles this; it is **`workflow_dispatch`-triggered** (manual run with `scope` = `all` / `custom`, a version-bump input, and a `dry_run` toggle), not tag-triggered.
+The default release path is **[release-plz](https://release-plz.dev/)** (`release-plz.toml` + `.github/workflows/release-plz.yml`). On every push to `main` release-plz scans for `feat` / `fix` / `perf` commits since each crate's last `<crate>-v<X.Y.Z>` tag and opens (or updates) a `chore: release` PR that bumps the affected crates, prepends per-crate sections to `CHANGELOG.md`, and leaves untouched crates alone. Merging that PR publishes to crates.io in dependency order (release-plz waits for sparse-index propagation between dependents) and pushes per-crate tags. Independent per-crate versions are the release-plz default; `docs`/`chore`/`refactor`/`test`/`ci`/`build` commits are filtered out of version bumps via `release_commits = "^(feat|fix|perf)"` so README-only edits don't trigger a publish. Tokens: `CARGO_REGISTRY_TOKEN` is required; `RELEASE_PLZ_TOKEN` (PAT or GitHub App) is recommended so the release PR triggers CI — the default `GITHUB_TOKEN` is forbidden by GitHub from triggering downstream workflows.
+
+`.github/workflows/release.yml` (`Release (manual fallback)`) is retained as a `workflow_dispatch` workflow for ad-hoc / bulk re-publishes (registry incidents, re-publish all 45 crates from a known-good revision). It still bumps with `cargo-release` and publishes in **waves of 5 with a 15-minute wait between waves**. Use it only as a fallback; day-to-day releases go through release-plz. Both workflows share the same per-crate tag format (`<crate>-v<X.Y.Z>`) so they don't fight each other.
 
 ### docs.rs build setup
 
