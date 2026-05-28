@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/logo.svg" alt="faucet-stream logo" width="112" height="112">
+  <img src="assets/logo-mark.svg" alt="faucet-stream logo" width="112" height="112">
 </p>
 
 # faucet-stream
