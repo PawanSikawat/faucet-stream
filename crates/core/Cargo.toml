@@ -23,6 +23,8 @@ transform-redact = []
 transform-value-case = []
 transform-spell-symbols = []
 transform-keys-case = []
+transform-filter = []
+transform-explode = []
 transforms = [
     "transform-flatten",
     "transform-rename-keys",
@@ -35,6 +37,8 @@ transforms = [
     "transform-value-case",
     "transform-spell-symbols",
     "transform-keys-case",
+    "transform-filter",
+    "transform-explode",
 ]
 observability-install = ["dep:metrics-exporter-prometheus", "dep:tracing-subscriber"]
 compression = ["dep:async-compression", "dep:flate2", "dep:zstd"]
