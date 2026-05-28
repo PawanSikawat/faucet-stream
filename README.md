@@ -674,30 +674,40 @@ let users: Vec<User> = stream.fetch_all_as::<User>().await?;
 
 ### Record transforms
 
-Transform every record as it's extracted. Built-in transforms are feature-gated (all enabled by default):
+Transform every record as it's extracted by wrapping any `Source` with
+`TransformingSource`. Built-in transforms are feature-gated (all enabled by
+default):
 
 ```rust
-use faucet_stream::{RestStream, RestStreamConfig, RecordTransform};
+use faucet_stream::{
+    KeyCaseMode, Labels, RecordTransform, RestStream, RestStreamConfig, Source,
+    TransformingSource,
+};
 
-let stream = RestStream::new(
-    RestStreamConfig::new("https://api.example.com", "/data")
-        .records_path("$.results[*]")
+let inner = RestStream::new(
+    RestStreamConfig::new("https://api.example.com", "/data").records_path("$.results[*]"),
+)?;
+let stream = TransformingSource::new(
+    Box::new(inner) as Box<dyn Source>,
+    vec![
         // Flatten nested objects: {"user": {"id": 1}} -> {"user__id": 1}
-        .add_transform(RecordTransform::Flatten { separator: "__".into() })
+        RecordTransform::Flatten { separator: "__".into() },
         // Re-case every key — snake / camel / pascal / kebab / screaming_snake
-        .add_transform(RecordTransform::KeysCase { mode: KeyCaseMode::Snake })
+        RecordTransform::KeysCase { mode: KeyCaseMode::Snake },
         // Regex-based key renaming
-        .add_transform(RecordTransform::RenameKeys {
+        RecordTransform::RenameKeys {
             pattern: r"^_sdc_".into(),
             replacement: "".into(),
-        })
+        },
         // Custom closure
-        .add_transform(RecordTransform::custom(|mut record| {
+        RecordTransform::custom(|mut record| {
             if let serde_json::Value::Object(ref mut map) = record {
                 map.insert("_source".to_string(), serde_json::json!("my-api"));
             }
             record
-        })),
+        }),
+    ],
+    Labels::for_named("rest"),
 )?;
 ```
 
