@@ -25,8 +25,7 @@ use crate::registry::{build_sink, build_source};
 use crate::state::build_state_store;
 use crate::transforms::compile_transforms;
 use async_trait::async_trait;
-use faucet_core::observability::{Labels, instrumented_apply_all};
-use faucet_core::transform::{CompiledTransform, compile as compile_transform};
+use faucet_core::observability::Labels;
 use faucet_core::{DlqConfig, FaucetError, OnBatchError, Pipeline, Sink, Source, StateStore};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
@@ -478,15 +477,11 @@ async fn run_one_invocation(
     let source: Box<dyn Source> = if transforms.is_empty() {
         source
     } else {
-        let compiled = transforms
-            .iter()
-            .map(compile_transform)
-            .collect::<Result<Vec<_>, _>>()?;
-        Box::new(TransformingSource {
-            inner: source,
-            transforms: compiled,
-            obs_labels: obs_labels.clone(),
-        })
+        Box::new(faucet_core::TransformingSource::new(
+            source,
+            transforms,
+            obs_labels.clone(),
+        )?)
     };
 
     // 4) Build state store. If the source opts into state, wrap it so the
@@ -587,43 +582,6 @@ fn resolve_inplace(value: &mut Value, ctx: &HashMap<String, Value>) -> CliResult
 }
 
 // ── Adapter sinks/sources ───────────────────────────────────────────────────
-
-/// Wraps an inner source, applying every compiled transform to each record
-/// and emitting per-record observability spans/metrics via
-/// [`instrumented_apply_all`].
-struct TransformingSource {
-    inner: Box<dyn Source>,
-    transforms: Vec<CompiledTransform>,
-    obs_labels: Labels,
-}
-
-#[async_trait]
-impl Source for TransformingSource {
-    async fn fetch_with_context(
-        &self,
-        ctx: &HashMap<String, Value>,
-    ) -> Result<Vec<Value>, FaucetError> {
-        let records = self.inner.fetch_with_context(ctx).await?;
-        instrumented_apply_all(records, &self.transforms, &self.obs_labels)
-    }
-    async fn fetch_with_context_incremental(
-        &self,
-        ctx: &HashMap<String, Value>,
-    ) -> Result<(Vec<Value>, Option<Value>), FaucetError> {
-        let (records, bookmark) = self.inner.fetch_with_context_incremental(ctx).await?;
-        let transformed = instrumented_apply_all(records, &self.transforms, &self.obs_labels)?;
-        Ok((transformed, bookmark))
-    }
-    fn connector_name(&self) -> &'static str {
-        self.inner.connector_name()
-    }
-    fn state_key(&self) -> Option<String> {
-        self.inner.state_key()
-    }
-    async fn apply_start_bookmark(&self, bookmark: Value) -> Result<(), FaucetError> {
-        self.inner.apply_start_bookmark(bookmark).await
-    }
-}
 
 /// Wraps a source so its `state_key()` returns the executor-provided value
 /// instead of the source's natural one. Lets every matrix invocation use a
