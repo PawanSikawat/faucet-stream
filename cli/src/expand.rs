@@ -178,6 +178,7 @@ pub fn expand(cfg: &PipelineConfig) -> CliResult<Vec<ExpandedNode>> {
             source: None,
             sink: None,
             transforms: None,
+            inherit_transforms: true,
             state: None,
             dlq: None,
         }];

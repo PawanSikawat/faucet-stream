@@ -777,10 +777,14 @@ mod tests {
                 source: Some(ConnectorSpec {
                     kind: "csv".into(),
                     config: json!({"path": input.to_str().unwrap()}),
+                    transforms: None,
+                    inherit_transforms: true,
                 }),
                 sink: Some(ConnectorSpec {
                     kind: "jsonl".into(),
                     config: json!({"path": output.to_str().unwrap()}),
+                    transforms: None,
+                    inherit_transforms: true,
                 }),
                 sources: Default::default(),
                 sinks: Default::default(),

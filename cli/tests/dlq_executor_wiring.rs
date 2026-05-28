@@ -14,6 +14,8 @@ async fn build_dlq_config_constructs_runtime_config_from_spec() {
         sink: ConnectorSpec {
             kind: "jsonl".into(),
             config: json!({ "path": dlq_path }),
+            transforms: None,
+            inherit_transforms: true,
         },
         on_batch_error: OnBatchErrorSpec::DlqAll,
         max_failures_per_page: Some(100),
@@ -39,6 +41,8 @@ async fn build_dlq_config_defaults_propagate_policy() {
         sink: ConnectorSpec {
             kind: "jsonl".into(),
             config: json!({ "path": dlq_path }),
+            transforms: None,
+            inherit_transforms: true,
         },
         on_batch_error: OnBatchErrorSpec::Propagate,
         max_failures_per_page: None,

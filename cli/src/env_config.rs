@@ -94,7 +94,12 @@ pub fn build_source(env: &HashMap<String, String>) -> CliResult<ConnectorSpec> {
         kind.to_ascii_uppercase().replace('-', "_")
     );
     let config = extract_scope(env, &prefix)?;
-    Ok(ConnectorSpec { kind, config })
+    Ok(ConnectorSpec {
+        kind,
+        config,
+        transforms: None,
+        inherit_transforms: true,
+    })
 }
 
 /// Construct the sink [`ConnectorSpec`] from `FAUCET_SINK` + `FAUCET_SINK_<KIND>_*`.
@@ -111,7 +116,12 @@ pub fn build_sink(env: &HashMap<String, String>) -> CliResult<ConnectorSpec> {
         kind.to_ascii_uppercase().replace('-', "_")
     );
     let config = extract_scope(env, &prefix)?;
-    Ok(ConnectorSpec { kind, config })
+    Ok(ConnectorSpec {
+        kind,
+        config,
+        transforms: None,
+        inherit_transforms: true,
+    })
 }
 
 /// Construct an optional [`StateStoreSpec`] from `FAUCET_STATE` + `FAUCET_STATE_<KIND>_*`.
@@ -210,7 +220,15 @@ fn build_named_catalog(
         if let Value::Object(m) = &mut config {
             m.remove("type");
         }
-        out.insert(name, ConnectorSpec { kind, config });
+        out.insert(
+            name,
+            ConnectorSpec {
+                kind,
+                config,
+                transforms: None,
+                inherit_transforms: true,
+            },
+        );
     }
     Ok(out)
 }
