@@ -41,6 +41,60 @@ fn list_lists_compiled_in_connectors() {
         .stdout(contains("jsonl "));
 }
 
+#[cfg(feature = "transforms")]
+#[test]
+fn list_lists_compiled_in_transforms() {
+    Command::cargo_bin("faucet")
+        .unwrap()
+        .arg("list")
+        .assert()
+        .success()
+        .stdout(contains("Transforms:"))
+        // Two-column rendering: name + one-line description.
+        .stdout(contains("flatten "))
+        .stdout(contains("keys_case "))
+        .stdout(contains("Re-case every key"));
+}
+
+#[cfg(feature = "transforms")]
+#[test]
+fn schema_prints_transform_schema() {
+    // `flatten` has a single optional field — the schema must surface it
+    // (with the default `__` separator).
+    Command::cargo_bin("faucet")
+        .unwrap()
+        .args(["schema", "transform", "flatten"])
+        .assert()
+        .success()
+        .stdout(contains("\"separator\""))
+        .stdout(contains("\"__\""));
+}
+
+#[cfg(feature = "transforms")]
+#[test]
+fn schema_transform_keys_case_lists_modes() {
+    // The KeyCaseMode enum must round-trip through JsonSchema so users
+    // discover valid values without reading the source.
+    Command::cargo_bin("faucet")
+        .unwrap()
+        .args(["schema", "transform", "keys_case"])
+        .assert()
+        .success()
+        .stdout(contains("snake"))
+        .stdout(contains("camel"))
+        .stdout(contains("screaming_snake"));
+}
+
+#[test]
+fn schema_rejects_unknown_transform() {
+    Command::cargo_bin("faucet")
+        .unwrap()
+        .args(["schema", "transform", "make_uppercase"])
+        .assert()
+        .failure()
+        .stderr(contains("unknown transform 'make_uppercase'"));
+}
+
 #[test]
 fn schema_prints_jsonl_sink_schema() {
     Command::cargo_bin("faucet")

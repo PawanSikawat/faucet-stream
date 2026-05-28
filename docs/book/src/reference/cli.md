@@ -8,8 +8,8 @@ The `faucet` binary exposes these commands. Pass `--log-level <level>` (or set
 | `faucet run [config]` | Run the pipeline(s) in a config file. |
 | `faucet validate [config]` | Parse, expand, and validate a config without running it. |
 | `faucet preview [config]` | Run only the source side and print records to stdout. |
-| `faucet schema <target>` | Print the JSON Schema for a connector or the DLQ. |
-| `faucet list` | List every compiled-in source and sink with a one-line description. |
+| `faucet schema <target>` | Print the JSON Schema for a connector, transform, or the DLQ. |
+| `faucet list` | List every compiled-in source, sink, and transform with a one-line description. |
 | `faucet init [name]` | Scaffold a commented config skeleton from connector schemas. |
 
 `[config]` is optional for `run` / `validate` / `preview`: if omitted, faucet
@@ -49,8 +49,13 @@ faucet preview pipeline.yaml --limit 10
 ```bash
 faucet schema source rest
 faucet schema sink bigquery
+faucet schema transform keys_case
 faucet schema dlq
 ```
+
+`faucet schema transform <name>` prints the inline config schema for a
+transform (e.g. `keys_case` lists the valid `mode:` values). Run
+`faucet list` to see which transforms are compiled into your binary.
 
 ## `init`
 

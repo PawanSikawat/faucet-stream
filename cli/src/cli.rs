@@ -24,7 +24,7 @@ pub enum Command {
     Validate(ValidateArgs),
     /// Print the JSON Schema for a specific connector.
     Schema(SchemaArgs),
-    /// List every compiled-in source and sink with a one-line description.
+    /// List every compiled-in source, sink, and transform with a one-line description.
     List,
     /// Run only the source side and print records to stdout (uses the stdout sink).
     Preview(PreviewArgs),
@@ -98,6 +98,12 @@ pub enum SchemaTarget {
     /// JSON Schema for a sink connector config.
     Sink {
         /// Connector name (e.g. `jsonl`, `bigquery`, `postgres`).
+        name: String,
+    },
+    /// JSON Schema for a transform's inline config.
+    Transform {
+        /// Transform name (e.g. `flatten`, `keys_case`, `cast`).
+        /// Run `faucet list` to see what is compiled in.
         name: String,
     },
     /// JSON Schema for the DLQ (Dead Letter Queue) specification.

@@ -63,7 +63,9 @@ use regex::Regex;
 /// `"2026-05-28T00:00:00Z"` round-trips unchanged but `"2026-05-28T00:00:00+00:00"`
 /// becomes the canonical form).
 #[cfg(feature = "transform-cast")]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize, serde::Serialize, schemars::JsonSchema,
+)]
 #[serde(rename_all = "lowercase")]
 pub enum CastType {
     /// 64-bit signed integer (`i64`).
@@ -81,7 +83,17 @@ pub enum CastType {
 
 /// Failure policy for [`RecordTransform::Cast`].  Default: `Error`.
 #[cfg(feature = "transform-cast")]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize, serde::Serialize, Default)]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    serde::Deserialize,
+    serde::Serialize,
+    schemars::JsonSchema,
+    Default,
+)]
 #[serde(rename_all = "lowercase")]
 pub enum CastOnError {
     /// Return [`FaucetError::Transform`] when a value cannot be cast.
@@ -99,7 +111,9 @@ pub enum CastOnError {
 /// punctuation, and lower→upper transitions, then re-joins the tokens in
 /// the requested style.
 #[cfg(feature = "transform-keys-case")]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize, serde::Serialize, schemars::JsonSchema,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum KeyCaseMode {
     /// `snake_case` — words separated by `_`, all lowercase.
@@ -117,7 +131,9 @@ pub enum KeyCaseMode {
 
 /// String-value casing mode for [`RecordTransform::ValueCase`].
 #[cfg(feature = "transform-value-case")]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize, serde::Serialize, schemars::JsonSchema,
+)]
 #[serde(rename_all = "lowercase")]
 pub enum ValueCaseMode {
     /// Lowercase the value.
