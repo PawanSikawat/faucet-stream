@@ -1,6 +1,7 @@
 //! Wrap any [`Source`] with a fixed list of [`TransformStage`]s applied to
 //! every emitted record. The canonical way for library callers to attach
-//! transforms; the CLI uses this same type internally.
+//! stages (transforms wrapped via [`TransformStage::Map`], plus `Filter` /
+//! `Explode` / `Custom`); the CLI uses this same type internally.
 
 use crate::error::FaucetError;
 use crate::observability::{Labels, instrumented_apply_stages};

@@ -14,6 +14,7 @@
 use std::time::Duration;
 
 use faucet_stream::sink::jsonl::{JsonlSink, JsonlSinkConfig};
+use faucet_stream::stage::TransformStage;
 use faucet_stream::{
     Auth, DEFAULT_BATCH_SIZE, Labels, PaginationStyle, RecordTransform, RestStream,
     RestStreamConfig, RunStreamOptions, Source, TransformingSource, run_stream,
@@ -40,9 +41,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     let source = TransformingSource::new(
         Box::new(inner) as Box<dyn Source>,
-        vec![RecordTransform::Flatten {
+        vec![TransformStage::Map(RecordTransform::Flatten {
             separator: "__".into(),
-        }],
+        })],
         Labels::for_named("rest"),
     )?;
 

@@ -26,6 +26,7 @@ use crate::state::build_state_store;
 use crate::transforms::compile_transforms;
 use async_trait::async_trait;
 use faucet_core::observability::Labels;
+use faucet_core::stage::TransformStage;
 use faucet_core::{DlqConfig, FaucetError, OnBatchError, Pipeline, Sink, Source, StateStore};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
@@ -477,9 +478,14 @@ async fn run_one_invocation(
     let source: Box<dyn Source> = if transforms.is_empty() {
         source
     } else {
+        // Temporary: wrap each compiled RecordTransform as a Map stage.
+        // Task 11 will change `compile_transforms` to return
+        // `Vec<TransformStage>` directly, at which point this collect can go
+        // away.
+        let stages: Vec<TransformStage> = transforms.into_iter().map(TransformStage::Map).collect();
         Box::new(faucet_core::TransformingSource::new(
             source,
-            transforms,
+            stages,
             obs_labels.clone(),
         )?)
     };
