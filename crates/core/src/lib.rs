@@ -46,6 +46,7 @@ pub use replication::ReplicationMethod;
 pub use retry::execute_with_retry;
 pub use state::{FileStateStore, MemoryStateStore, StateStore};
 pub use traits::{RowOutcome, Sink, Source};
+pub use transforming_source::TransformingSource;
 #[cfg(feature = "transform-keys-case")]
 pub use transform::KeyCaseMode;
 pub use transform::RecordTransform;

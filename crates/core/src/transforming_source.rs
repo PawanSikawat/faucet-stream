@@ -17,6 +17,22 @@ use std::pin::Pin;
 /// Source decorator that applies a fixed list of compiled transforms to every
 /// record. Emits `faucet_transform_*` metrics per page via
 /// [`instrumented_apply_all`].
+///
+/// # Example
+///
+/// ```no_run
+/// use faucet_core::{RecordTransform, Source, TransformingSource};
+/// use faucet_core::observability::Labels;
+/// use faucet_core::transform::KeyCaseMode;
+///
+/// # fn build_inner() -> Box<dyn Source> { unimplemented!() }
+/// let inner: Box<dyn Source> = build_inner();
+/// let wrapped = TransformingSource::new(
+///     inner,
+///     vec![RecordTransform::KeysCase { mode: KeyCaseMode::Snake }],
+///     Labels::for_named("rest"),
+/// ).unwrap();
+/// ```
 pub struct TransformingSource {
     inner: Box<dyn Source>,
     transforms: Vec<CompiledTransform>,
