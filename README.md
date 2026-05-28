@@ -1089,6 +1089,16 @@ docs/
 .github/workflows/            — ci.yml, release.yml, docs.yml (mdBook → GitHub Pages)
 ```
 
+## Contributing
+
+Contributions — core changes and third-party connectors alike — are welcome. See
+[CONTRIBUTING.md](CONTRIBUTING.md) for setup, the checks CI runs, and the
+add-a-connector checklist, and the
+[authoring guide](https://pawansikawat.github.io/faucet-stream/extending/authoring-connectors.html)
+for building your own `faucet-source-*` / `faucet-sink-*` crate. Please review our
+[Code of Conduct](CODE_OF_CONDUCT.md). To report a vulnerability, see
+[SECURITY.md](SECURITY.md).
+
 ## License
 
 Licensed under either of
