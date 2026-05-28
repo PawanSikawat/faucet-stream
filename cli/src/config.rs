@@ -138,7 +138,10 @@ pub struct PartialConnector {
 /// A single transform declaration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TransformSpec {
-    /// Built-in transform identifier: `flatten`, `rename_keys`, `snake_case`.
+    /// Built-in transform identifier. One of: `flatten`, `rename_keys`,
+    /// `snake_case`, `select`, `drop`, `set`, `rename_field`, `cast`, `redact`,
+    /// `value_case`. See the docs-site cookbook page on transforms for
+    /// per-transform config schemas.
     #[serde(rename = "type")]
     pub kind: String,
 

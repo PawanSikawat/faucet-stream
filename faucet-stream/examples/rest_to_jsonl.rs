@@ -14,7 +14,7 @@ use std::time::Duration;
 
 use faucet_stream::sink::jsonl::{JsonlSink, JsonlSinkConfig};
 use faucet_stream::{
-    Auth, PaginationStyle, Pipeline, RecordTransform, ReplicationMethod, RestStream,
+    Auth, KeyCaseMode, PaginationStyle, Pipeline, RecordTransform, ReplicationMethod, RestStream,
     RestStreamConfig, json,
 };
 
@@ -45,7 +45,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .start_replication_value(json!("2026-01-01T00:00:00Z"))
             .primary_keys(vec!["id".into()])
             .schema_sample_size(50)
-            .add_transform(RecordTransform::KeysToSnakeCase),
+            .add_transform(RecordTransform::KeysCase {
+                mode: KeyCaseMode::Snake,
+            }),
     )?;
 
     let sink = JsonlSink::new(

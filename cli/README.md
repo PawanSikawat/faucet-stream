@@ -158,7 +158,8 @@ pipeline:
       partitions: []
       schema_sample_size: 100
   transforms:
-    - type: snake_case
+    - type: keys_case
+      config: { mode: snake }
   sink:
     type: jsonl
     config:
@@ -298,13 +299,32 @@ pipeline:
 
 ### Transforms
 
+Eleven built-in transforms are exposed as `type:` values: `flatten`,
+`rename_keys`, `keys_case`, `spell_symbols`, `select`, `drop`, `set`,
+`rename_field`, `cast`, `redact`, `value_case`. They run in declared
+order. The
+[record transforms cookbook page](../docs/book/src/cookbook/transforms.md)
+has the full reference.
+
 ```yaml
 transforms:
-  - type: snake_case
-  - type: rename_keys
-    config: { pattern: "^_sdc_", replacement: "" }
   - type: flatten
     config: { separator: "__" }
+  - type: select
+    config:
+      fields: [id, name, email]
+  - type: cast
+    config:
+      fields: { id: string }
+      on_error: error
+  - type: redact
+    config:
+      fields: [email]
+      mask: "***"
+  - type: set
+    config:
+      values:
+        _source: my-api
 ```
 
 ### Compression
@@ -352,7 +372,7 @@ faucet run --from-env
 | `FAUCET_SINK_<KIND>_<FIELD>` | Scalar sink-config fields. |
 | `FAUCET_STATE` | Optional. State store kind (`file`, `memory`, `redis`, `postgres`). |
 | `FAUCET_STATE_<KIND>_<FIELD>` | State-store config. |
-| `FAUCET_TRANSFORM_<N>` | Optional. Indexed transforms — `FAUCET_TRANSFORM_1=snake_case`, `FAUCET_TRANSFORM_2=flatten`. Indices must be contiguous starting at 1. |
+| `FAUCET_TRANSFORM_<N>` | Optional. Indexed transforms — `FAUCET_TRANSFORM_1=keys_case`, `FAUCET_TRANSFORM_2=flatten`. Indices must be contiguous starting at 1. |
 | `FAUCET_TRANSFORM_<N>_<FIELD>` | Per-transform config (e.g. `FAUCET_TRANSFORM_2_SEPARATOR=__`). |
 | `FAUCET_NAME` | Optional pipeline name (used in log messages). |
 

@@ -12,7 +12,7 @@ use tracing::info_span;
 /// `faucet_transform_records_total` counter increment per call (per page).
 ///
 /// Returns [`FaucetError::Transform`](crate::FaucetError::Transform) if any
-/// record's transform would silently lose data (a `flatten` / `snake_case`
+/// record's transform would silently lose data (a `flatten` / `keys_case`
 /// key collision — #78/#28), incrementing `faucet_transform_errors_total`.
 pub fn instrumented_apply_all(
     records: Vec<Value>,
@@ -61,14 +61,16 @@ mod tests {
         let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let snap = snapshotter();
         let labels = Labels::new("p", "r", "rid");
-        let t =
-            compile(&RecordTransform::KeysToSnakeCase).expect("KeysToSnakeCase transform compiles");
+        let t = compile(&RecordTransform::KeysCase {
+            mode: crate::transform::KeyCaseMode::Snake,
+        })
+        .expect("KeysCase transform compiles");
         let result = instrumented_apply_all(
             vec![json!({"FooBar": 1}), json!({"BazQux": 2})],
             &[t],
             &labels,
         )
-        .expect("snake_case transform succeeds");
+        .expect("keys_case transform succeeds");
         assert_eq!(result.len(), 2, "all records returned");
         let snapshot = snap.snapshot();
         let found = snapshot.into_vec().into_iter().any(|(key, _u, _d, v)| {

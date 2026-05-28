@@ -132,7 +132,7 @@ runtime (bookmarks, dead-letter routing, metrics) so connectors stay simple:
 ```mermaid
 flowchart LR
     S["<b>Source</b><br/>REST · DB · CDC<br/>Kafka · S3 · Parquet"]
-    T["<b>Transforms</b><br/>flatten · rename<br/>snake_case"]
+    T["<b>Transforms</b><br/>flatten · rename · keys_case<br/>select · drop · set · cast<br/>redact · value_case · spell_symbols"]
     P{{"<b>Pipeline</b>"}}
     K["<b>Sink</b><br/>BigQuery · Postgres<br/>Parquet · Kafka · ..."]
     ST[("State store<br/>file · Redis · Postgres")]
@@ -283,7 +283,7 @@ Every pipeline emits OTel-compatible `tracing` spans and Prometheus metrics auto
 - **Authentication** — Bearer, Basic, API Key (header or query param), OAuth2 (client credentials), Token Endpoint (fetch from any API), or custom headers
 - **Pagination** — cursor/token (JSONPath), page number, offset/limit, Link header, next-link-in-body
 - **JSONPath extraction** — point at where records live in any JSON response
-- **Record transforms** — flatten nested objects, rename keys (regex), snake_case normalisation, or custom closures
+- **Record transforms** — flatten, rename keys (regex), `keys_case` (snake / camel / pascal / kebab / screaming_snake), plus config-exposed `select` / `drop` / `set` / `rename_field` / `cast` / `redact` / `value_case` / `spell_symbols`, or custom closures
 - **Schema inference** — automatically derive a JSON Schema from sampled records
 - **Incremental replication** — bookmark-based filtering so you only fetch new records
 - **Partitions** — run the same stream across multiple contexts (e.g. per-org, per-repo)
@@ -684,8 +684,8 @@ let stream = RestStream::new(
         .records_path("$.results[*]")
         // Flatten nested objects: {"user": {"id": 1}} -> {"user__id": 1}
         .add_transform(RecordTransform::Flatten { separator: "__".into() })
-        // Convert all keys to snake_case
-        .add_transform(RecordTransform::KeysToSnakeCase)
+        // Re-case every key — snake / camel / pascal / kebab / screaming_snake
+        .add_transform(RecordTransform::KeysCase { mode: KeyCaseMode::Snake })
         // Regex-based key renaming
         .add_transform(RecordTransform::RenameKeys {
             pattern: r"^_sdc_".into(),
@@ -904,7 +904,16 @@ Every pagination style has a termination/loop guard. `Cursor`, `LinkHeader`, and
 | `full` | no | Every connector and state backend |
 | `transform-flatten` | yes | Flatten nested objects (forwarded to source-rest) |
 | `transform-rename-keys` | yes | Regex key renaming (forwarded to source-rest) |
-| `transform-snake-case` | yes | Snake_case normalisation (forwarded to source-rest) |
+| `transform-keys-case` | yes | Re-case every key — snake / camel / pascal / kebab / screaming_snake (forwarded to source-rest) |
+| `transform-select` | no | Keep only listed top-level fields |
+| `transform-drop` | no | Remove listed top-level fields |
+| `transform-set` | no | Add/overwrite top-level fields with constants |
+| `transform-rename-field` | no | Exact-name field rename (single or batch) |
+| `transform-cast` | no | Per-field type coercion (`int`/`float`/`bool`/`string`/`timestamp`) with `on_error` policy |
+| `transform-redact` | no | Replace listed field values with a mask |
+| `transform-value-case` | no | Lowercase / uppercase / trim string field values |
+| `transform-spell-symbols` | no | Spell out symbols in keys (`%` → `percent`, `#` → `number`, …) |
+| `transforms` | no | All built-in transforms above |
 | `compression` | no | gzip / zstd read+write on JSONL/CSV/S3/GCS source and sink connectors |
 
 `RecordTransform::Custom` is always available regardless of feature flags.

@@ -100,7 +100,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `transforms` | `Vec<RecordTransform>` | `[]` | Transformations applied to every record in order. Available: `Flatten`, `RenameKeys { pattern, replacement }`, `SnakeCase`, `Custom(fn)` |
+| `transforms` | `Vec<RecordTransform>` | `[]` | Transformations applied to every record in order. Available: `Flatten`, `RenameKeys`, `KeysCase { mode }`, `Select`, `Drop`, `Set`, `RenameField`, `Cast`, `Redact`, `ValueCase`, `SpellSymbols`, `Custom(fn)` (see `faucet-core` for each variant's fields). |
 
 ### Authentication
 
@@ -307,8 +307,16 @@ let all_members = stream.fetch_all().await?;
 |---------|---------|-------------|
 | `transform-flatten` | yes | Enable the `Flatten` record transform |
 | `transform-rename-keys` | yes | Enable the `RenameKeys` regex-based transform |
-| `transform-snake-case` | yes | Enable the `SnakeCase` key normalization transform |
-| `transforms` | no | Enable all transform features |
+| `transform-keys-case` | yes | Enable the `KeysCase` transform (snake / camel / pascal / kebab / screaming_snake) |
+| `transform-select` | no | Enable the `Select` transform (keep listed top-level fields) |
+| `transform-drop` | no | Enable the `Drop` transform (remove listed top-level fields) |
+| `transform-set` | no | Enable the `Set` transform (insert/overwrite constants) |
+| `transform-rename-field` | no | Enable the `RenameField` transform (exact-name rename) |
+| `transform-cast` | no | Enable the `Cast` transform (per-field type coercion with `on_error` policy) |
+| `transform-redact` | no | Enable the `Redact` transform (mask listed field values) |
+| `transform-value-case` | no | Enable the `ValueCase` transform (lower / upper / trim string values) |
+| `transform-spell-symbols` | no | Enable the `SpellSymbols` transform (spell out `%`, `#`, `$`, … in keys) |
+| `transforms` | no | Enable every transform feature |
 
 ## License
 

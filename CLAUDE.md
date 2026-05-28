@@ -245,7 +245,7 @@ The only crate every connector depends on. Module layout:
 - `pipeline.rs` — `Pipeline` (batch) and `run_stream()` (streaming). `Pipeline::with_state_store(Arc<dyn StateStore>)` wires durable bookmarks (read before fetch, persist only after sink confirms the batch).
 - `config.rs` — config loading helpers (`load_json`, `load_env`, `load_env_file`) and `duration_secs` / `duration_secs_option` serde modules.
 - `util.rs` — `quote_ident` (SQL injection prevention), `extract_records` (JSONPath), `check_http_response`, `substitute_context` (placeholder substitution for URLs/paths — NOT safe for SQL or JSON), `substitute_context_bind_params` (SQL-safe via bind markers), `substitute_context_json` (JSON-safe), `extract_context`.
-- `transform.rs` — `RecordTransform` / `CompiledTransform`: flatten, rename keys (regex), snake_case, custom closures. Built-in transforms are feature-gated.
+- `transform.rs` — `RecordTransform` / `CompiledTransform`: built-ins — `flatten`, `rename_keys` (regex), `keys_case` (with `KeyCaseMode` — snake/camel/pascal/kebab/screaming_snake), `select`, `drop`, `set`, `rename_field`, `cast` (with `CastType` + `CastOnError`), `redact`, `value_case` (with `ValueCaseMode`), `spell_symbols` (with a built-in symbol → word map + optional `extra` overrides) — plus `Custom` closures. Built-in transforms are feature-gated (`transform-<name>`); the `transforms` aggregate enables all of them. The legacy `KeysToSnakeCase` / `transform-snake-case` was removed in favour of `KeysCase` — it was never relied on by external configs.
 - `replication.rs` — `ReplicationMethod`, `filter_incremental`, `max_replication_value` for bookmark-based incremental replication.
 - `retry.rs` — shared `execute_with_retry` (exponential backoff + jitter, gated on `FaucetError::is_retriable`) used by HTTP sources (XML, GraphQL). The REST source keeps its own retry module with extra 429/`Retry-After` handling.
 - `schema.rs` — `infer_schema` from record samples with type merging and nullable detection.
@@ -288,7 +288,7 @@ Top-level YAML/JSON shape: `version: 1`, optional `name:`, required `pipeline: {
 - `state.rs` — `build_state_store(&StateStoreSpec) -> Arc<dyn StateStore>`. Built-in `memory` / `file` always available; `redis` / `postgres` feature-gated.
 - `env_loader.rs` — `resolve_env_file` (explicit / cwd `.env` / disabled) and `discover_config_path` (`faucet.yaml` → `.yml` → `.json` in cwd). Both honour `--env-file` / `--no-env-file`.
 - `env_config.rs` — pure-env mode (`--from-env`): walks a `FAUCET_*` env-var snapshot and assembles a `PipelineConfig` with the matrix empty and the pipeline filled from `FAUCET_SOURCE_*` / `FAUCET_SINK_*` / `FAUCET_STATE_*` / `FAUCET_TRANSFORM_<N>_*`. `*_JSON` suffix handles nested/tagged-enum fields; scalar/json conflict errors name both vars; transform indices must be contiguous from 1.
-- `transforms.rs` — `compile_transforms`: only `flatten`, `rename_keys`, `snake_case` are exposed via config; custom-closure transforms remain Rust-only.
+- `transforms.rs` — `compile_transforms`: every transform exposed via config (`flatten`, `rename_keys`, `keys_case`, `select`, `drop`, `set`, `rename_field`, `cast`, `redact`, `value_case`, `spell_symbols`); custom-closure transforms remain Rust-only. Per-transform decode structs live in this module; the support enums (`CastType`, `CastOnError`, `KeyCaseMode`, `ValueCaseMode`) are re-exported from `faucet_core`.
 - `commands/` — `run` calls `expand` + `run_expanded`; `validate` calls `expand` and reports one line per row; `preview` runs the first root only (children need parent records to resolve `${parent.path}`); `schema` / `list` are unchanged in shape. `init` is schema-driven: it accepts `--source` / `--sink` (and an optional positional `name`), pulls each kind's JSON Schema via `registry::source_schema` / `sink_schema`, and renders a comment-annotated YAML through `init_template::schema_to_yaml_template` — required fields are surfaced with `# REQUIRED` and a typed placeholder; optional fields are commented out so connector-level defaults stand. The `--interactive` mode is gated behind the `cli-interactive` Cargo feature and uses `inquire` for the TTY Select prompt.
 - `init_template.rs` — pure JSON-Schema → YAML emitter behind `faucet init`. Walks `properties` (resolving `$ref`s against `$defs`), recurses into required nested objects, expands tagged-enum (`oneOf` with a `const`-discriminator) blocks inline, and truncates long descriptions to the first sentence (or 120 chars) so output stays readable when rustdoc comments contain paragraphs of context. Pure function, no I/O.
 
@@ -317,7 +317,7 @@ Pipelines emit `tracing` spans and `metrics` counters/histograms automatically �
 
 ## Feature Flags (umbrella crate)
 
-Default features: `source-rest`, `transform-flatten`, `transform-rename-keys`, `transform-snake-case`.
+Default features: `source-rest`, `transform-flatten`, `transform-rename-keys`, `transform-keys-case`.
 
 Each connector has its own feature: `source-<name>` / `sink-<name>` (`rest`, `graphql`, `xml`, `grpc`, `postgres`, `postgres-cdc`, `mysql`, `sqlite`, `s3`, `mongodb`, `redis`, `webhook`, `csv`, `elasticsearch`, `parquet`, `kafka` for sources; `bigquery`, `postgres`, `jsonl`, `snowflake`, `mysql`, `sqlite`, `s3`, `mongodb`, `redis`, `csv`, `elasticsearch`, `http`, `stdout`, `parquet`, `kafka` for sinks).
 

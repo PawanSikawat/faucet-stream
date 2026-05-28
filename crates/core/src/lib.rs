@@ -45,7 +45,13 @@ pub use replication::ReplicationMethod;
 pub use retry::execute_with_retry;
 pub use state::{FileStateStore, MemoryStateStore, StateStore};
 pub use traits::{RowOutcome, Sink, Source};
+#[cfg(feature = "transform-keys-case")]
+pub use transform::KeyCaseMode;
 pub use transform::RecordTransform;
+#[cfg(feature = "transform-value-case")]
+pub use transform::ValueCaseMode;
+#[cfg(feature = "transform-cast")]
+pub use transform::{CastOnError, CastType};
 
 // Re-export dependencies that connector authors need, so they only depend on
 // `faucet-core` instead of adding `async-trait` and `serde_json` themselves.

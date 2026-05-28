@@ -11,11 +11,31 @@ keywords.workspace = true
 categories.workspace = true
 
 [features]
-default = ["transform-flatten", "transform-rename-keys", "transform-snake-case"]
+default = ["transform-flatten", "transform-rename-keys", "transform-keys-case"]
 transform-flatten = []
 transform-rename-keys = ["dep:regex"]
-transform-snake-case = ["dep:regex"]
-transforms = ["transform-flatten", "transform-rename-keys", "transform-snake-case"]
+transform-select = []
+transform-drop = []
+transform-set = []
+transform-rename-field = []
+transform-cast = ["dep:chrono"]
+transform-redact = []
+transform-value-case = []
+transform-spell-symbols = []
+transform-keys-case = []
+transforms = [
+    "transform-flatten",
+    "transform-rename-keys",
+    "transform-select",
+    "transform-drop",
+    "transform-set",
+    "transform-rename-field",
+    "transform-cast",
+    "transform-redact",
+    "transform-value-case",
+    "transform-spell-symbols",
+    "transform-keys-case",
+]
 observability-install = ["dep:metrics-exporter-prometheus", "dep:tracing-subscriber"]
 compression = ["dep:async-compression", "dep:flate2", "dep:zstd"]
 
@@ -42,6 +62,7 @@ tracing-subscriber = { workspace = true, optional = true }
 async-compression = { workspace = true, optional = true }
 flate2 = { workspace = true, optional = true }
 zstd = { workspace = true, optional = true }
+chrono = { workspace = true, optional = true }
 
 [dev-dependencies]
 serde_json.workspace = true

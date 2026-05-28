@@ -730,15 +730,16 @@ async fn test_flatten_transform_applied_to_records() {
     );
 }
 
-#[cfg(feature = "transform-snake-case")]
+#[cfg(feature = "transform-keys-case")]
 #[tokio::test]
-async fn test_keys_to_snake_case_transform() {
+async fn test_keys_case_snake_transform() {
+    use faucet_core::KeyCaseMode;
     let server = MockServer::start().await;
 
     Mock::given(method("GET"))
         .and(path("/api/users"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "data": [{"First Name": "Alice", "Last Name": "Smith", "price ($)": 9.99}]
+            "data": [{"First Name": "Alice", "Last Name": "Smith", "Price USD": 9.99}]
         })))
         .mount(&server)
         .await;
@@ -746,14 +747,16 @@ async fn test_keys_to_snake_case_transform() {
     let stream = RestStream::new(
         RestStreamConfig::new(&server.uri(), "/api/users")
             .records_path("$.data[*]")
-            .add_transform(RecordTransform::KeysToSnakeCase),
+            .add_transform(RecordTransform::KeysCase {
+                mode: KeyCaseMode::Snake,
+            }),
     )
     .unwrap();
 
     let records = stream.fetch_all().await.unwrap();
     assert_eq!(records[0]["first_name"], "Alice");
     assert_eq!(records[0]["last_name"], "Smith");
-    assert_eq!(records[0]["price"], 9.99);
+    assert_eq!(records[0]["price_usd"], 9.99);
 }
 
 #[cfg(feature = "transform-rename-keys")]
@@ -784,9 +787,10 @@ async fn test_rename_keys_transform() {
     assert_eq!(records[0]["name"], "event_one");
 }
 
-#[cfg(all(feature = "transform-snake-case", feature = "transform-flatten"))]
+#[cfg(all(feature = "transform-keys-case", feature = "transform-flatten"))]
 #[tokio::test]
-async fn test_chained_transforms_snake_case_then_flatten() {
+async fn test_chained_transforms_keys_case_then_flatten() {
+    use faucet_core::KeyCaseMode;
     let server = MockServer::start().await;
 
     Mock::given(method("GET"))
@@ -800,7 +804,9 @@ async fn test_chained_transforms_snake_case_then_flatten() {
     let stream = RestStream::new(
         RestStreamConfig::new(&server.uri(), "/api/data")
             .records_path("$.data[*]")
-            .add_transform(RecordTransform::KeysToSnakeCase)
+            .add_transform(RecordTransform::KeysCase {
+                mode: KeyCaseMode::Snake,
+            })
             .add_transform(RecordTransform::Flatten {
                 separator: "_".into(),
             }),
@@ -808,7 +814,7 @@ async fn test_chained_transforms_snake_case_then_flatten() {
     .unwrap();
 
     let records = stream.fetch_all().await.unwrap();
-    // snake_case: {"user_info": {"first_name": "Alice"}}
+    // keys_case(snake): {"user_info": {"first_name": "Alice"}}
     // flatten with "_": {"user_info_first_name": "Alice"}
     assert_eq!(records[0]["user_info_first_name"], "Alice");
 }
