@@ -260,6 +260,7 @@ Every source/sink crate follows the same module layout. Stick to this when addin
 
 - `lib.rs` — re-exports config + the `Source`/`Sink` type. **First line must be `#![cfg_attr(docsrs, feature(doc_cfg))]`** so docs.rs renders per-item feature badges (see [docs.rs build setup](#docsrs-build-setup)).
 - `config.rs` — config struct + auth/format/pagination sub-enums. Derives `Serialize + Deserialize + JsonSchema`. **No I/O or protocol logic here.**
+- `Cargo.toml` — set **per-crate `keywords`** with the connector's system name first (e.g. `keywords = ["kafka", "streaming", "etl", "pipeline", "connector"]`) so it ranks on crates.io for that system; don't inherit the generic `keywords.workspace`. Keep `categories.workspace = true` (the workspace defaults are valid crates.io slugs — invalid category slugs aren't caught by `cargo publish --dry-run` and break the real publish). Rules: ≤5 keywords, each ≤20 chars, `^[a-z][a-z0-9_-]*$`.
 - `stream.rs` (source) / `sink.rs` (sink) — the one place that performs I/O. Holds reusable clients/pools created in `new()`. Implements `faucet_core::Source` / `Sink` including `config_schema()` via `schemars::schema_for!`.
 - Optional helper modules — `auth/`, `pagination/`, `extract/`, `retry/`, `convert.rs`, `schema.rs`, `decode.rs` / `encode.rs`, `state.rs` for bookmarks, `serde_helpers.rs` for non-serializable types (`reqwest::Method` etc.).
 

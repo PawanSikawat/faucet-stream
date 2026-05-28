@@ -7,7 +7,7 @@ license.workspace = true
 repository.workspace = true
 description = "JSON Lines file sink connector for the faucet-stream ecosystem"
 readme = "README.md"
-keywords.workspace = true
+keywords = ["jsonl", "json", "etl", "sink", "pipeline"]
 categories.workspace = true
 
 [dependencies]

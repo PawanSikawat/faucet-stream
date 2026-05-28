@@ -7,7 +7,7 @@ license.workspace = true
 repository.workspace = true
 description = "Snowflake sink connector for the faucet-stream ecosystem"
 readme = "README.md"
-keywords.workspace = true
+keywords = ["snowflake", "sql", "etl", "sink", "pipeline"]
 categories.workspace = true
 
 [dependencies]

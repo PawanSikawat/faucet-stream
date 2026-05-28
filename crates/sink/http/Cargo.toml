@@ -7,7 +7,7 @@ license.workspace = true
 repository.workspace = true
 description = "HTTP POST sink connector for the faucet-stream ecosystem"
 readme = "README.md"
-keywords.workspace = true
+keywords = ["http", "rest", "api", "sink", "pipeline"]
 categories.workspace = true
 
 [dependencies]

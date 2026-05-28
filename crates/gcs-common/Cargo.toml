@@ -7,7 +7,7 @@ license.workspace = true
 repository.workspace = true
 description = "Shared GCS credential and client types for the faucet-stream ecosystem"
 readme = "README.md"
-keywords.workspace = true
+keywords = ["gcs", "gcp", "storage", "etl", "faucet"]
 categories.workspace = true
 
 [dependencies]

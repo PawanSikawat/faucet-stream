@@ -7,7 +7,7 @@ license.workspace = true
 repository.workspace = true
 description = "MySQL query source connector for the faucet-stream ecosystem"
 readme = "README.md"
-keywords.workspace = true
+keywords = ["mysql", "sql", "database", "etl", "pipeline"]
 categories.workspace = true
 
 [dependencies]

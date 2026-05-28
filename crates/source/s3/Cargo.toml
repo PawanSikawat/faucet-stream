@@ -7,7 +7,7 @@ license.workspace = true
 repository.workspace = true
 description = "AWS S3 source connector for the faucet-stream ecosystem"
 readme = "README.md"
-keywords.workspace = true
+keywords = ["s3", "aws", "storage", "etl", "pipeline"]
 categories.workspace = true
 
 [dependencies]

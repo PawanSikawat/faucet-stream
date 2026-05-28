@@ -7,7 +7,7 @@ license.workspace = true
 repository.workspace = true
 description = "GraphQL API source connector for the faucet-stream ecosystem"
 readme = "README.md"
-keywords.workspace = true
+keywords = ["graphql", "api", "etl", "pipeline", "connector"]
 categories.workspace = true
 
 [dependencies]

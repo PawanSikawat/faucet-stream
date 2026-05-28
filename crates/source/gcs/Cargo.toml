@@ -7,7 +7,7 @@ license.workspace = true
 repository.workspace = true
 description = "Google Cloud Storage source connector for the faucet-stream ecosystem"
 readme = "README.md"
-keywords.workspace = true
+keywords = ["gcs", "gcp", "storage", "etl", "pipeline"]
 categories.workspace = true
 
 [dependencies]

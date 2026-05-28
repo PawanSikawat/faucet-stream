@@ -7,7 +7,7 @@ license.workspace = true
 repository.workspace = true
 description = "Redis source connector for the faucet-stream ecosystem"
 readme = "README.md"
-keywords.workspace = true
+keywords = ["redis", "streaming", "etl", "pipeline", "connector"]
 categories.workspace = true
 
 [dependencies]

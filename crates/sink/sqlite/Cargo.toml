@@ -7,7 +7,7 @@ license.workspace = true
 repository.workspace = true
 description = "SQLite sink connector for the faucet-stream ecosystem"
 readme = "README.md"
-keywords.workspace = true
+keywords = ["sqlite", "sql", "database", "sink", "pipeline"]
 categories.workspace = true
 
 [dependencies]
