@@ -49,6 +49,15 @@ impl Source for TransformingSource {
         let records = self.inner.fetch_with_context(ctx).await?;
         instrumented_apply_all(records, &self.transforms, &self.labels)
     }
+
+    async fn fetch_with_context_incremental(
+        &self,
+        ctx: &HashMap<String, Value>,
+    ) -> Result<(Vec<Value>, Option<Value>), FaucetError> {
+        let (records, bookmark) = self.inner.fetch_with_context_incremental(ctx).await?;
+        let transformed = instrumented_apply_all(records, &self.transforms, &self.labels)?;
+        Ok((transformed, bookmark))
+    }
 }
 
 #[cfg(test)]
@@ -82,5 +91,49 @@ mod tests {
         .expect("compile succeeds");
         let out = wrapped.fetch_with_context(&HashMap::new()).await.unwrap();
         assert_eq!(out, vec![json!({"foo_bar": 1})]);
+    }
+
+    struct IncrementalSource {
+        records: Vec<Value>,
+        bookmark: Value,
+    }
+
+    #[async_trait]
+    impl Source for IncrementalSource {
+        async fn fetch_with_context(
+            &self,
+            _ctx: &HashMap<String, Value>,
+        ) -> Result<Vec<Value>, FaucetError> {
+            Ok(self.records.clone())
+        }
+
+        async fn fetch_with_context_incremental(
+            &self,
+            _ctx: &HashMap<String, Value>,
+        ) -> Result<(Vec<Value>, Option<Value>), FaucetError> {
+            Ok((self.records.clone(), Some(self.bookmark.clone())))
+        }
+    }
+
+    #[tokio::test]
+    async fn fetch_with_context_incremental_transforms_and_preserves_bookmark() {
+        let inner: Box<dyn Source> = Box::new(IncrementalSource {
+            records: vec![json!({"FooBar": 1})],
+            bookmark: json!("2026-05-28T00:00:00Z"),
+        });
+        let wrapped = TransformingSource::new(
+            inner,
+            vec![RecordTransform::KeysCase {
+                mode: KeyCaseMode::Snake,
+            }],
+            Labels::for_named("test"),
+        )
+        .unwrap();
+        let (records, bookmark) = wrapped
+            .fetch_with_context_incremental(&HashMap::new())
+            .await
+            .unwrap();
+        assert_eq!(records, vec![json!({"foo_bar": 1})]);
+        assert_eq!(bookmark, Some(json!("2026-05-28T00:00:00Z")));
     }
 }
