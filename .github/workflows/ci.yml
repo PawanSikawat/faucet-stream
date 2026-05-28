@@ -265,3 +265,58 @@ jobs:
         run: cargo test -p faucet-kafka-common --all-features
       - name: Run elasticsearch-common tests
         run: cargo test -p faucet-elasticsearch-common
+
+  supply-chain:
+    name: Supply chain (cargo-deny)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Hard gate: licenses, banned crates, and dependency sources are
+      # deterministic and in our control.
+      - name: Licenses / bans / sources
+        uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check bans licenses sources
+      # Informational: RustSec advisories. Non-blocking because nearly all live
+      # in transitive deps we don't control and the advisory DB updates daily;
+      # see the note in deny.toml.
+      - name: Advisories (informational)
+        continue-on-error: true
+        uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check advisories
+
+  coverage:
+    name: Coverage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.94.0"
+          components: llvm-tools-preview
+      - name: Install librdkafka prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libsasl2-dev libssl-dev libcurl4-openssl-dev cmake build-essential
+      - uses: taiki-e/install-action@cargo-llvm-cov
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-coverage-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-coverage-
+      # Cover library unit tests only (`--lib`). The integration tests in
+      # `tests/` spin up Docker testcontainers (Kafka, etc.) whose image pulls
+      # are flaky and are already exercised by the `test` and `kafka-integration`
+      # jobs — running them here too made coverage non-deterministic.
+      - name: Generate coverage (lcov)
+        run: cargo llvm-cov --workspace --all-features --lib --lcov --output-path lcov.info
+      - name: Upload to Codecov
+        continue-on-error: true
+        uses: codecov/codecov-action@v4
+        with:
+          files: lcov.info
+          fail_ci_if_error: false

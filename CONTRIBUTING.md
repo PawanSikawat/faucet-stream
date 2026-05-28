@@ -95,6 +95,26 @@ are tracked in the roadmap epic (search the `epic` label).
   you change config fields, defaults, or behavior.
 - Don't skip hooks (`--no-verify`) or CI; if a check fails, fix the root cause.
 
+## Versioning & MSRV
+
+- **Semantic Versioning.** The project follows [SemVer](https://semver.org/).
+  While pre-1.0, breaking changes may land in minor (`0.x`) releases, but we call
+  them out in the changelog. For a connector, a **breaking change** includes
+  renaming/removing a config field, changing a field's type, or changing a
+  default in a way that alters behavior — not just Rust API changes.
+- **Independent crate versions.** Connector crates version independently on
+  crates.io, so `faucet-source-rest` and `faucet-sink-bigquery` may sit at
+  different versions. The repo-level `vX.Y.Z` tags track the overall release line.
+- **Changelog.** Notable changes are recorded in [CHANGELOG.md](./CHANGELOG.md),
+  generated from Conventional Commit messages via
+  [git-cliff](https://git-cliff.org) (`cliff.toml`). Write commit subjects as
+  `type(scope): summary` (`feat`, `fix`, `perf`, `refactor`, `docs`, `test`,
+  `ci`, `chore`) so they're grouped correctly.
+- **MSRV.** The minimum supported Rust version is pinned in
+  `rust-toolchain.toml` and enforced by CI (fmt/clippy/test/docs all run on it).
+  Bumping the MSRV is itself a notable change — raise it only when needed and
+  note it in the changelog.
+
 ## License
 
 By contributing, you agree that your contributions are licensed under both the

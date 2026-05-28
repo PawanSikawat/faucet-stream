@@ -51,3 +51,16 @@ the REST source additionally honors `429` / `Retry-After`. Tune `max_retries` an
 
 Measure with the [metrics](./observability.md) — `faucet_sink_write_duration_seconds`
 and `faucet_source_page_duration_seconds` tell you where time goes.
+
+## Benchmarks
+
+`faucet-core` ships a [criterion](https://github.com/bheisler/criterion.rs)
+benchmark of the observability hot path, and CI guards it against a 5% regression
+on every PR. Run it locally with:
+
+```bash
+cargo bench -p faucet-core --bench observability
+```
+
+Numbers are hardware-dependent, so run the benchmark on your target machine
+rather than relying on published figures.

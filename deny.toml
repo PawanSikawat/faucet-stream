@@ -1,0 +1,54 @@
+# cargo-deny configuration — supply-chain checks run in CI.
+#   cargo deny check
+# See https://embarkstudios.github.io/cargo-deny/
+
+[advisories]
+version = 2
+# Security advisories from the RustSec database. Yanked crates are denied by
+# default. "unmaintained" is a warning, not an error — those advisories are
+# noisy (e.g. proc-macro helpers) and rarely actionable for transitive deps.
+#
+# NOTE: in CI the `advisories` check runs as an *informational* step
+# (non-blocking) because nearly every advisory here lives in a transitive
+# dependency we don't control (the AWS SDK's pinned rustls, a DNS library,
+# `paste`), and the RustSec database updates daily — gating hard on it would
+# break CI on days nothing changed. License / bans / sources ARE hard-gated.
+unmaintained = "workspace"
+ignore = []
+
+[licenses]
+version = 2
+# Permissive licenses we accept across the dependency tree. Keep this list tight;
+# add a license only after confirming the dependency that needs it.
+allow = [
+    "MIT",
+    "MIT-0",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "Unicode-DFS-2016",
+    "Zlib",
+    "MPL-2.0",
+    "CC0-1.0",
+    "BSL-1.0",
+    "CDLA-Permissive-2.0",
+]
+confidence-threshold = 0.8
+# Per-crate license clarifications go here if a crate's license can't be detected.
+exceptions = []
+
+[bans]
+# Duplicate dependency versions and wildcard version requirements are warnings,
+# not errors — a large connector tree legitimately pulls multiple versions.
+multiple-versions = "warn"
+wildcards = "warn"
+allow = []
+deny = []
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
