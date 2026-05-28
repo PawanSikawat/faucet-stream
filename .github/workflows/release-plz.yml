@@ -1,0 +1,105 @@
+name: release-plz
+
+# Automates per-crate version bumps, changelog entries, and crates.io
+# publishing for the 45-crate workspace.
+#
+# - `release-plz-pr` (every push to main): opens or updates a "chore: release"
+#   PR that bumps versions and prepends changelog entries for every crate with
+#   feat/fix/perf commits since its last per-crate tag. Review the PR like any
+#   other change; merging it triggers the publish job.
+# - `release-plz-release` (every push to main): after a release PR merges and
+#   the new commits are on `main`, publishes the bumped crates to crates.io
+#   in dependency order, creates per-crate GitHub releases, and pushes
+#   per-crate `<crate>-v<X.Y.Z>` tags.
+#
+# Config lives in /release-plz.toml. The legacy manual `release.yml`
+# (`workflow_dispatch` waves-of-5) is retained as a fallback only — see
+# CONTRIBUTING.md for when to use it.
+
+on:
+  push:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  release-plz-pr:
+    name: Open / update release PR
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    # Only one release-PR job at a time so concurrent merges to main don't race
+    # on the same release branch.
+    concurrency:
+      group: release-plz-pr-${{ github.ref }}
+      cancel-in-progress: false
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      # Required by `rdkafka` (faucet-source-kafka / faucet-sink-kafka) and the
+      # OpenSSL-backed reqwest variants. release-plz runs `cargo publish` for
+      # each bumped crate, which compiles the crate; the build fails without
+      # these system libraries.
+      - name: Install librdkafka prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libsasl2-dev libssl-dev libcurl4-openssl-dev cmake build-essential
+
+      - name: Run release-plz
+        uses: release-plz/action@v0.5
+        with:
+          command: release-pr
+          config: release-plz.toml
+        env:
+          # Use `RELEASE_PLZ_TOKEN` (a PAT or GitHub App token with
+          # `contents: write` + `pull-requests: write`) when set, falling back
+          # to the default `GITHUB_TOKEN`. Note: PRs opened by the default
+          # `GITHUB_TOKEN` do NOT trigger downstream workflow runs (i.e. CI
+          # won't run on the release PR) — set `RELEASE_PLZ_TOKEN` to a PAT or
+          # App token to get CI on the release PR.
+          GITHUB_TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN || secrets.GITHUB_TOKEN }}
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+  release-plz-release:
+    name: Publish to crates.io
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: read
+    # Serialize publishes against each other — release-plz handles dependency
+    # ordering internally, but two concurrent runs would race on the registry.
+    concurrency:
+      group: release-plz-release-${{ github.ref }}
+      cancel-in-progress: false
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install librdkafka prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libsasl2-dev libssl-dev libcurl4-openssl-dev cmake build-essential
+
+      - name: Run release-plz
+        uses: release-plz/action@v0.5
+        with:
+          command: release
+          config: release-plz.toml
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}

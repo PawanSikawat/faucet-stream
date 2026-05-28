@@ -1,0 +1,94 @@
+# release-plz configuration — automates per-crate version bumps, per-crate
+# changelog entries, and crates.io publishing for the 45-crate workspace.
+#
+# Docs: https://release-plz.dev/docs/config
+#
+# Companion workflow: .github/workflows/release-plz.yml runs `release-pr` on
+# every push to main (opens/updates a "chore: release" PR with the bumped
+# versions + changelog entries) and `release` on PR merge (publishes the
+# bumped crates to crates.io and creates per-crate GitHub releases).
+#
+# The legacy manual `.github/workflows/release.yml` (`workflow_dispatch` with
+# waves-of-5 publishing) is retained as a fallback for ad-hoc / partial
+# releases; release-plz is the default path. See CONTRIBUTING.md.
+
+[workspace]
+# Independent per-crate versioning is release-plz's default — no opt-in
+# needed. Each crate bumps only when there are conventional commits touching
+# its directory since its last per-crate tag.
+
+# Match the existing tag format produced by the legacy `cargo-release` flow
+# (`<crate>-v<X.Y.Z>`, e.g. `faucet-source-rest-v0.2.0`) so release-plz reads
+# the correct "last release" state for every crate without retagging history.
+# This is also the default for workspaces with multiple publishable packages,
+# but we pin it explicitly to future-proof against default changes.
+git_tag_name = "{{ package }}-v{{ version }}"
+
+# Create a per-crate GitHub release for each crate that bumps. The release
+# notes use the changelog body template below.
+git_release_enable = true
+
+# Aggregate every bumped crate's changelog entries into the single root
+# CHANGELOG.md (already managed by the project today). Per-crate
+# CHANGELOG.md files in 45 separate locations would be noisy for a
+# marketplace-style workspace; one repo-level file matches the existing
+# layout and CHANGELOG.md badge in the README.
+changelog_path = "./CHANGELOG.md"
+
+# Crates.io sparse-index propagation: release-plz publishes in dependency
+# order and polls between dependent publishes until each new version is
+# visible in the index. 30 minutes is the action's default and is more than
+# enough for the deepest dependency chain in the workspace (faucet-core →
+# common → connector → umbrella → cli). Pinning makes the expectation
+# explicit; with this in place the manual workflow's waves-of-5/15-minute
+# pacing is no longer required.
+publish_timeout = "30m"
+
+# Only feat / fix / perf commits trigger a version bump. docs / chore /
+# refactor / test / ci / build commits still appear in the changelog body
+# (so the rendered diff is complete) but won't cause a spurious bump on a
+# README-only edit. Aligns with the "version reflects user-visible
+# behaviour" stance in CONTRIBUTING.md.
+release_commits = "^(feat|fix|perf)"
+
+# Changelog body template — mirrors cliff.toml so rendered output looks the
+# same as past entries. release-plz uses git-cliff internally but no longer
+# honours the deprecated `changelog_config = "cliff.toml"` pointer, so the
+# template is inlined here. `cliff.toml` is retained for manual `git cliff`
+# invocations on demand.
+[changelog]
+header = """# Changelog
+
+All notable changes to this project are documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
+and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
+(see the versioning policy in CONTRIBUTING.md — connector crates version
+independently).
+"""
+
+body = """
+## `{{ package }}` — [{{ version }}]{%- if release_link %}({{ release_link }}){% endif %} - {{ timestamp | date(format="%Y-%m-%d") }}
+{% for group, commits in commits | group_by(attribute="group") %}
+### {{ group | upper_first }}
+{% for commit in commits %}
+- {% if commit.scope %}*({{ commit.scope }})* {% endif %}{% if commit.breaking %}[**breaking**] {% endif %}{{ commit.message | split(pat="\n") | first | trim | upper_first }}
+{%- endfor %}
+{% endfor %}
+"""
+
+commit_parsers = [
+    { message = "^Merge (pull request|branch|remote)", skip = true },
+    { message = "^feat", group = "Features" },
+    { message = "^fix", group = "Bug Fixes" },
+    { message = "^perf", group = "Performance" },
+    { message = "^refactor", group = "Refactor" },
+    { message = "^docs", group = "Documentation" },
+    { message = "^test", group = "Testing" },
+    { message = "^ci", group = "CI & Build" },
+    { message = "^build", group = "CI & Build" },
+    { message = "^chore\\(release\\)", skip = true },
+    { message = "^chore\\(deps\\)", skip = true },
+    { message = "^chore", group = "Miscellaneous" },
+    { message = ".*", group = "Other" },
+]
