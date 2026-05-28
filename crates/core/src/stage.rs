@@ -1175,4 +1175,58 @@ mod tests {
         .unwrap();
         assert_eq!(out, vec![json!({"user": {"items_id": 1}})]);
     }
+
+    #[cfg(all(feature = "transform-filter", feature = "transform-explode"))]
+    #[test]
+    fn filter_then_explode_filters_parents() {
+        // filter drops the deleted parent before explosion happens.
+        let stages = compile(&[
+            filter("deleted", FilterOp::Ne, Some(json!(true))),
+            explode("items"),
+        ]);
+        let parent = json!({"id": 1, "deleted": true, "items": [{"sku": "A"}]});
+        assert_eq!(apply_stages(parent, &stages).unwrap(), Vec::<Value>::new());
+
+        let kept = json!({"id": 2, "deleted": false, "items": [{"sku": "B"}]});
+        let out = apply_stages(kept, &stages).unwrap();
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0]["items_sku"], json!("B"));
+    }
+
+    #[cfg(all(feature = "transform-filter", feature = "transform-explode"))]
+    #[test]
+    fn explode_then_filter_filters_children() {
+        // explode first, then filter dropping certain children.
+        let stages = compile(&[
+            explode("items"),
+            filter("items_status", FilterOp::Eq, Some(json!("active"))),
+        ]);
+        let rec = json!({
+            "id": 1,
+            "items": [
+                {"id": 10, "status": "active"},
+                {"id": 11, "status": "archived"},
+                {"id": 12, "status": "active"},
+            ]
+        });
+        let out = apply_stages(rec, &stages).unwrap();
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0]["items_id"], json!(10));
+        assert_eq!(out[1]["items_id"], json!(12));
+    }
+
+    #[cfg(feature = "transform-explode")]
+    #[test]
+    fn nested_explodes_multiply() {
+        let stages = compile(&[explode("orders"), explode("orders_items")]);
+        let rec = json!({
+            "customer": "A",
+            "orders": [
+                {"id": 1, "items": [{"sku": "X"}, {"sku": "Y"}]},
+                {"id": 2, "items": [{"sku": "Z"}]},
+            ]
+        });
+        let out = apply_stages(rec, &stages).unwrap();
+        assert_eq!(out.len(), 3);
+    }
 }
