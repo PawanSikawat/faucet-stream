@@ -90,23 +90,30 @@ impl CompiledPath {
         } else {
             format!("$.{raw}")
         };
-        // Cheap rejection scan for v1-disallowed syntax. We check on the raw
-        // input so that `$..foo` and `[*]` are caught before tokenising.
-        if normalised.contains("[*]")
-            || normalised.contains("..")
-            || normalised.contains("[?")
-        {
-            return Err(FaucetError::Transform(format!(
+        // Helper: the canonical "v1 doesn't support this syntax" error.
+        // Wildcards (`[*]`), recursive descent (`..`), and filters (`[?...]`)
+        // are rejected at the *syntax* level — but those substrings can
+        // legitimately appear *inside* a quoted bracket key (e.g.
+        // `$['a..b']`, `$['x[*]y']`), which is the documented escape hatch
+        // for unusual keys. So we only reject them when they appear as
+        // structural syntax during tokenisation, not as content.
+        let v1_syntax_err = || {
+            FaucetError::Transform(format!(
                 "invalid path '{raw}': only single-node paths are supported \
                  ('[*]', '..', '[?]' not allowed in this layer)"
-            )));
-        }
+            ))
+        };
         let mut segments: Vec<PathSegment> = Vec::new();
         // Strip the leading `$`. The remainder is a series of `.<ident>` or
         // `['key']` chunks.
         let mut rest = &normalised[1..];
         while !rest.is_empty() {
             if let Some(after_dot) = rest.strip_prefix('.') {
+                // Recursive descent `..` shows up here as an empty identifier
+                // (the next char is another `.`). Reject with the v1 message.
+                if after_dot.starts_with('.') {
+                    return Err(v1_syntax_err());
+                }
                 // Read an identifier up to the next `.` or `[`.
                 let end = after_dot
                     .find(['.', '['])
@@ -120,17 +127,24 @@ impl CompiledPath {
                 segments.push(PathSegment::Key(key.to_owned()));
                 rest = &after_dot[end..];
             } else if let Some(after_open) = rest.strip_prefix('[') {
-                // Expect ['key'] or ["key"].
-                let quote = after_open.chars().next().ok_or_else(|| {
+                // Expect ['key'] or ["key"]. A wildcard (`[*]`) or filter
+                // (`[?...]`) shows up here as an unquoted next-char — catch
+                // those with the v1 message before the generic "needs a
+                // quoted key" error.
+                let next = after_open.chars().next().ok_or_else(|| {
                     FaucetError::Transform(format!(
                         "invalid path '{raw}': unterminated bracket"
                     ))
                 })?;
-                if quote != '\'' && quote != '"' {
+                if next == '*' || next == '?' {
+                    return Err(v1_syntax_err());
+                }
+                if next != '\'' && next != '"' {
                     return Err(FaucetError::Transform(format!(
                         "invalid path '{raw}': bracket form requires a quoted key"
                     )));
                 }
+                let quote = next;
                 let after_quote = &after_open[quote.len_utf8()..];
                 let close = after_quote.find(quote).ok_or_else(|| {
                     FaucetError::Transform(format!(
@@ -344,6 +358,22 @@ mod tests {
             assert!(
                 msg.contains("only single-node paths") || msg.contains("not allowed"),
                 "expected v1-syntax error for {p}, got: {msg}"
+            );
+        }
+    }
+
+    #[test]
+    fn path_bracketed_key_may_contain_jsonpath_metacharacters() {
+        // These substrings would be syntax errors at the top level, but inside
+        // a quoted bracket they're just content — the bracket form is the
+        // documented escape hatch for unusual keys.
+        for p in &["$['a..b']", "$['x[*]y']", "$['q[?z']", "$['weird key']"] {
+            let parsed = CompiledPath::compile(p)
+                .unwrap_or_else(|e| panic!("bracket key with metachars should compile: {p} → {e}"));
+            assert_eq!(
+                parsed.segments().len(),
+                1,
+                "bracket form should produce exactly one segment: {p}"
             );
         }
     }
