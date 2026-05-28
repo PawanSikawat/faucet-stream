@@ -141,8 +141,8 @@ use faucet_core::RecordTransform;
 // Flatten nested objects: {"user": {"id": 1}} -> {"user__id": 1}
 RecordTransform::Flatten { separator: "__".into() }
 
-// Convert keys to snake_case
-RecordTransform::KeysToSnakeCase
+// Convert keys to snake_case (or camel / pascal / kebab / screaming_snake)
+RecordTransform::KeysCase { mode: KeyCaseMode::Snake }
 
 // Regex key renaming
 RecordTransform::RenameKeys {
@@ -219,7 +219,7 @@ let json = serde_json::to_value(schema)?;
 | `error` | `FaucetError` enum |
 | `pipeline` | `Pipeline`, `PipelineResult`, `run_stream` |
 | `config` | `load_json`, `load_env`, `load_env_file`, duration serde helpers |
-| `transform` | `RecordTransform`, `CompiledTransform` |
+| `transform` | `RecordTransform`, `CompiledTransform`, plus support enums (`CastType`, `CastOnError`, `ValueCaseMode`) |
 | `replication` | `ReplicationMethod`, `filter_incremental`, `max_replication_value` |
 | `schema` | `infer_schema` |
 | `util` | `quote_ident`, `extract_records`, `check_http_response` |

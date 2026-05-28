@@ -32,7 +32,8 @@ pipeline:
       schema_sample_size: 100
 
   transforms:
-    - type: snake_case
+    - type: keys_case
+      config: { mode: snake }
 
   sink:
     type: jsonl

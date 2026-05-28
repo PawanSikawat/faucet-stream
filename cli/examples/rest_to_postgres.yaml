@@ -35,7 +35,8 @@ pipeline:
       state_key: stripe:charges
 
   transforms:
-    - type: snake_case
+    - type: keys_case
+      config: { mode: snake }
 
   sink:
     type: postgres

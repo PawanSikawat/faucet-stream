@@ -76,8 +76,16 @@ faucet-stream = { version = "0.2", features = ["source-rest", "source-s3", "sink
 |---------|---------|-------------|
 | `transform-flatten` | yes (via source-rest) | Flatten nested objects |
 | `transform-rename-keys` | yes (via source-rest) | Regex key renaming |
-| `transform-snake-case` | yes (via source-rest) | snake_case normalisation |
-| `transforms` | no | All transforms |
+| `transform-keys-case` | yes (via source-rest) | Re-case every key (snake / camel / pascal / kebab / screaming_snake) |
+| `transform-select` | no | Keep only listed top-level fields |
+| `transform-drop` | no | Remove listed top-level fields |
+| `transform-set` | no | Add/overwrite top-level fields with constants |
+| `transform-rename-field` | no | Exact-name field rename (single or batch) |
+| `transform-cast` | no | Per-field type coercion with configurable `on_error` |
+| `transform-redact` | no | Replace listed field values with a mask |
+| `transform-value-case` | no | Lowercase / uppercase / trim string field values |
+| `transform-spell-symbols` | no | Spell out symbols in keys (`%` → `percent`, `#` → `number`, …) |
+| `transforms` | no | All built-in transforms |
 
 ## Quick Start
 

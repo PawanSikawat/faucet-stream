@@ -22,6 +22,7 @@
 - [Incremental replication & state](./cookbook/state.md)
 - [Dead-letter queues](./cookbook/dlq.md)
 - [Compression](./cookbook/compression.md)
+- [Record transforms](./cookbook/transforms.md)
 
 # Reference
 
