@@ -23,7 +23,8 @@ cargo install faucet-cli --no-default-features \
 |---------|--------------|
 | `faucet run <config>` | Execute the pipeline end-to-end. Supports `--dry-run`, `--limit N`, `--state-path PATH`. |
 | `faucet validate <config>` | Parse + validate without running. Exits non-zero on error. |
-| `faucet schema source|sink <name>` | Print the JSON Schema for a specific connector's config. |
+| `faucet schema source|sink|transform <name>` | Print the JSON Schema for a connector's or transform's config. |
+| `faucet schema dlq` | Print the JSON Schema for the dead-letter-queue spec. |
 | `faucet list` | List every compiled-in source, sink, transform, and state-store backend. |
 | `faucet preview <config> --limit N` | Run only the source side and emit the first N records to stdout as JSONL. |
 | `faucet init [name] [--source X] [--sink Y]` | Scaffold a pipeline.yaml from each connector's JSON Schema. |
@@ -54,7 +55,7 @@ Flags:
 | `--force` | Overwrite an existing file at the output path. |
 | `--interactive` | Prompt for kinds via `inquire` on a TTY; falls back to `--source`/`--sink` otherwise. Requires the `cli-interactive` build feature. |
 
-Run `faucet list` to see every kind that's compiled into your build of `faucet`. Use `faucet schema source <kind>` (or `sink <kind>`) to see the full JSON Schema if a field's truncated description doesn't tell you enough.
+Run `faucet list` to see every kind that's compiled into your build of `faucet`. Use `faucet schema source <kind>` (or `sink <kind>`, or `transform <name>`) to see the full JSON Schema if a field's truncated description doesn't tell you enough.
 
 ### Config + `.env` auto-discovery
 

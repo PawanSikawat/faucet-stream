@@ -7,60 +7,74 @@ use crate::config::TransformSpec;
 use crate::error::{CliError, CliResult};
 use faucet_core::RecordTransform;
 #[cfg(feature = "transforms")]
-use faucet_core::{CastOnError, CastType, KeyCaseMode, ValueCaseMode};
+use faucet_core::{CastOnError, CastType, JsonSchema, KeyCaseMode, ValueCaseMode, schema_for};
+#[cfg(feature = "transforms")]
 use serde::Deserialize;
 use serde_json::Value;
 #[cfg(feature = "transforms")]
 use std::collections::HashMap;
 
 /// Inline-config schema for the `flatten` transform.
-#[derive(Debug, Deserialize)]
+#[cfg(feature = "transforms")]
+#[derive(Debug, Deserialize, JsonSchema)]
 struct FlattenConfig {
+    /// Separator joining nested keys (default: `"__"`).
     #[serde(default = "default_separator")]
     separator: String,
 }
 
+#[cfg(feature = "transforms")]
 fn default_separator() -> String {
     "__".to_owned()
 }
 
 /// Inline-config schema for the `rename_keys` transform.
-#[derive(Debug, Deserialize)]
+#[cfg(feature = "transforms")]
+#[derive(Debug, Deserialize, JsonSchema)]
 struct RenameKeysConfig {
+    /// Rust regex matched against every key.
     pattern: String,
+    /// Replacement string. May reference capture groups (`$1`, `${name}`).
     replacement: String,
 }
 
 #[cfg(feature = "transforms")]
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, JsonSchema)]
 struct FieldsConfig {
+    /// Top-level field names to act on.
     fields: Vec<String>,
 }
 
 #[cfg(feature = "transforms")]
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, JsonSchema)]
 struct SetConfig {
+    /// Map of field name → constant value to set on every record.
     values: serde_json::Map<String, Value>,
 }
 
 #[cfg(feature = "transforms")]
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, JsonSchema)]
 struct RenameFieldConfig {
+    /// Map of old field name → new field name.
     fields: HashMap<String, String>,
 }
 
 #[cfg(feature = "transforms")]
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, JsonSchema)]
 struct CastConfig {
+    /// Map of field name → target type.
     fields: HashMap<String, CastType>,
+    /// What to do when a value cannot be cast. Default: `error`.
     #[serde(default)]
     on_error: CastOnError,
 }
 
 #[cfg(feature = "transforms")]
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, JsonSchema)]
 struct RedactConfig {
+    /// Top-level field names to overwrite with `mask`.
     fields: Vec<String>,
+    /// Replacement value. Default: the string `"***"`.
     #[serde(default = "default_mask")]
     mask: Value,
 }
@@ -71,17 +85,21 @@ fn default_mask() -> Value {
 }
 
 #[cfg(feature = "transforms")]
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, JsonSchema)]
 struct ValueCaseConfig {
+    /// String-valued fields to re-case.
     fields: Vec<String>,
+    /// Casing convention to apply to each listed field.
     mode: ValueCaseMode,
 }
 
 #[cfg(feature = "transforms")]
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, JsonSchema)]
 struct SpellSymbolsConfig {
+    /// Extra symbol → word overrides layered on top of the built-in map.
     #[serde(default)]
     extra: HashMap<String, String>,
+    /// String inserted between expanded words. Default: a single space.
     #[serde(default = "default_spell_separator")]
     separator: String,
 }
@@ -92,9 +110,156 @@ fn default_spell_separator() -> String {
 }
 
 #[cfg(feature = "transforms")]
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, JsonSchema)]
 struct KeysCaseConfig {
+    /// Output convention for every key in the record.
     mode: KeyCaseMode,
+}
+
+/// One row in the transform registry — the single source of truth for every
+/// built-in transform's kind, one-line description, JSON Schema, and
+/// `TransformSpec → RecordTransform` decoder. `compile_one`,
+/// `transform_descriptions`, and `transform_schema` all read from this list
+/// so adding a new transform means appending one entry (no parallel match
+/// arms to keep in sync).
+struct TransformDef {
+    kind: &'static str,
+    description: &'static str,
+    schema_fn: fn() -> Value,
+    compile_fn: fn(&str, Value) -> CliResult<RecordTransform>,
+}
+
+/// Every transform compiled into this build, in display order.
+///
+/// Non-capturing closures coerce to the `fn` pointers held by `TransformDef`,
+/// so each row stays a single self-contained record next to its sibling
+/// entries.
+fn registry() -> Vec<TransformDef> {
+    #[cfg(feature = "transforms")]
+    {
+        vec![
+            TransformDef {
+                kind: "flatten",
+                description: "Flatten nested objects into a single level (configurable separator).",
+                schema_fn: || schema::<FlattenConfig>(),
+                compile_fn: |kind, config| {
+                    let cfg = decode::<FlattenConfig>(kind, config)?;
+                    Ok(RecordTransform::Flatten {
+                        separator: cfg.separator,
+                    })
+                },
+            },
+            TransformDef {
+                kind: "rename_keys",
+                description: "Rewrite every key via a regex pattern + replacement.",
+                schema_fn: || schema::<RenameKeysConfig>(),
+                compile_fn: |kind, config| {
+                    let cfg = decode::<RenameKeysConfig>(kind, config)?;
+                    Ok(RecordTransform::RenameKeys {
+                        pattern: cfg.pattern,
+                        replacement: cfg.replacement,
+                    })
+                },
+            },
+            TransformDef {
+                kind: "keys_case",
+                description: "Re-case every key (snake / camel / pascal / kebab / screaming_snake).",
+                schema_fn: || schema::<KeysCaseConfig>(),
+                compile_fn: |kind, config| {
+                    let cfg = decode::<KeysCaseConfig>(kind, config)?;
+                    Ok(RecordTransform::KeysCase { mode: cfg.mode })
+                },
+            },
+            TransformDef {
+                kind: "select",
+                description: "Keep only the listed top-level fields; drop the rest.",
+                schema_fn: || schema::<FieldsConfig>(),
+                compile_fn: |kind, config| {
+                    let cfg = decode::<FieldsConfig>(kind, config)?;
+                    Ok(RecordTransform::Select { fields: cfg.fields })
+                },
+            },
+            TransformDef {
+                kind: "drop",
+                description: "Remove the listed top-level fields.",
+                schema_fn: || schema::<FieldsConfig>(),
+                compile_fn: |kind, config| {
+                    let cfg = decode::<FieldsConfig>(kind, config)?;
+                    Ok(RecordTransform::Drop { fields: cfg.fields })
+                },
+            },
+            TransformDef {
+                kind: "set",
+                description: "Set named fields to constant values on every record.",
+                schema_fn: || schema::<SetConfig>(),
+                compile_fn: |kind, config| {
+                    let cfg = decode::<SetConfig>(kind, config)?;
+                    Ok(RecordTransform::Set { values: cfg.values })
+                },
+            },
+            TransformDef {
+                kind: "rename_field",
+                description: "Rename specific top-level fields by name.",
+                schema_fn: || schema::<RenameFieldConfig>(),
+                compile_fn: |kind, config| {
+                    let cfg = decode::<RenameFieldConfig>(kind, config)?;
+                    Ok(RecordTransform::RenameField { fields: cfg.fields })
+                },
+            },
+            TransformDef {
+                kind: "cast",
+                description: "Coerce named fields to int / float / bool / string / timestamp.",
+                schema_fn: || schema::<CastConfig>(),
+                compile_fn: |kind, config| {
+                    let cfg = decode::<CastConfig>(kind, config)?;
+                    Ok(RecordTransform::Cast {
+                        fields: cfg.fields,
+                        on_error: cfg.on_error,
+                    })
+                },
+            },
+            TransformDef {
+                kind: "redact",
+                description: "Overwrite the listed fields with a mask value (default `***`).",
+                schema_fn: || schema::<RedactConfig>(),
+                compile_fn: |kind, config| {
+                    let cfg = decode::<RedactConfig>(kind, config)?;
+                    Ok(RecordTransform::Redact {
+                        fields: cfg.fields,
+                        mask: cfg.mask,
+                    })
+                },
+            },
+            TransformDef {
+                kind: "value_case",
+                description: "Lowercase, uppercase, or trim the value of named string fields.",
+                schema_fn: || schema::<ValueCaseConfig>(),
+                compile_fn: |kind, config| {
+                    let cfg = decode::<ValueCaseConfig>(kind, config)?;
+                    Ok(RecordTransform::ValueCase {
+                        fields: cfg.fields,
+                        mode: cfg.mode,
+                    })
+                },
+            },
+            TransformDef {
+                kind: "spell_symbols",
+                description: "Replace punctuation/symbols in string values with their spelled-out words.",
+                schema_fn: || schema::<SpellSymbolsConfig>(),
+                compile_fn: |kind, config| {
+                    let cfg = decode::<SpellSymbolsConfig>(kind, config)?;
+                    Ok(RecordTransform::SpellSymbols {
+                        extra: cfg.extra,
+                        separator: cfg.separator,
+                    })
+                },
+            },
+        ]
+    }
+    #[cfg(not(feature = "transforms"))]
+    {
+        Vec::new()
+    }
 }
 
 /// Compile a list of [`TransformSpec`]s into [`RecordTransform`]s in the
@@ -108,110 +273,55 @@ pub fn compile_transforms(specs: &[TransformSpec]) -> CliResult<Vec<RecordTransf
 }
 
 fn compile_one(spec: &TransformSpec) -> CliResult<RecordTransform> {
-    match spec.kind.as_str() {
-        #[cfg(feature = "transforms")]
-        "flatten" => {
-            let cfg = decode::<FlattenConfig>(&spec.kind, spec.config.clone())?;
-            Ok(RecordTransform::Flatten {
-                separator: cfg.separator,
-            })
-        }
-        #[cfg(feature = "transforms")]
-        "rename_keys" => {
-            let cfg = decode::<RenameKeysConfig>(&spec.kind, spec.config.clone())?;
-            Ok(RecordTransform::RenameKeys {
-                pattern: cfg.pattern,
-                replacement: cfg.replacement,
-            })
-        }
-        #[cfg(feature = "transforms")]
-        "keys_case" => {
-            let cfg = decode::<KeysCaseConfig>(&spec.kind, spec.config.clone())?;
-            Ok(RecordTransform::KeysCase { mode: cfg.mode })
-        }
-        #[cfg(feature = "transforms")]
-        "select" => {
-            let cfg = decode::<FieldsConfig>(&spec.kind, spec.config.clone())?;
-            Ok(RecordTransform::Select { fields: cfg.fields })
-        }
-        #[cfg(feature = "transforms")]
-        "drop" => {
-            let cfg = decode::<FieldsConfig>(&spec.kind, spec.config.clone())?;
-            Ok(RecordTransform::Drop { fields: cfg.fields })
-        }
-        #[cfg(feature = "transforms")]
-        "set" => {
-            let cfg = decode::<SetConfig>(&spec.kind, spec.config.clone())?;
-            Ok(RecordTransform::Set { values: cfg.values })
-        }
-        #[cfg(feature = "transforms")]
-        "rename_field" => {
-            let cfg = decode::<RenameFieldConfig>(&spec.kind, spec.config.clone())?;
-            Ok(RecordTransform::RenameField { fields: cfg.fields })
-        }
-        #[cfg(feature = "transforms")]
-        "cast" => {
-            let cfg = decode::<CastConfig>(&spec.kind, spec.config.clone())?;
-            Ok(RecordTransform::Cast {
-                fields: cfg.fields,
-                on_error: cfg.on_error,
-            })
-        }
-        #[cfg(feature = "transforms")]
-        "redact" => {
-            let cfg = decode::<RedactConfig>(&spec.kind, spec.config.clone())?;
-            Ok(RecordTransform::Redact {
-                fields: cfg.fields,
-                mask: cfg.mask,
-            })
-        }
-        #[cfg(feature = "transforms")]
-        "value_case" => {
-            let cfg = decode::<ValueCaseConfig>(&spec.kind, spec.config.clone())?;
-            Ok(RecordTransform::ValueCase {
-                fields: cfg.fields,
-                mode: cfg.mode,
-            })
-        }
-        #[cfg(feature = "transforms")]
-        "spell_symbols" => {
-            let cfg = decode::<SpellSymbolsConfig>(&spec.kind, spec.config.clone())?;
-            Ok(RecordTransform::SpellSymbols {
-                extra: cfg.extra,
-                separator: cfg.separator,
-            })
-        }
-        other => Err(CliError::UnknownTransform {
-            name: other.to_owned(),
-            available: available_transforms().join(", "),
-        }),
+    match registry().into_iter().find(|t| t.kind == spec.kind) {
+        Some(def) => (def.compile_fn)(&spec.kind, spec.config.clone()),
+        None => Err(unknown_transform(&spec.kind)),
     }
+}
+
+/// One-line summary of every transform compiled into this build. Used by
+/// `faucet list`.
+pub fn transform_descriptions() -> Vec<(&'static str, &'static str)> {
+    registry()
+        .into_iter()
+        .map(|t| (t.kind, t.description))
+        .collect()
 }
 
 /// Names of every transform compiled into this build.
 pub fn available_transforms() -> Vec<&'static str> {
-    #[cfg(feature = "transforms")]
-    {
-        vec![
-            "flatten",
-            "rename_keys",
-            "keys_case",
-            "select",
-            "drop",
-            "set",
-            "rename_field",
-            "cast",
-            "redact",
-            "value_case",
-            "spell_symbols",
-        ]
-    }
-    #[cfg(not(feature = "transforms"))]
-    {
-        Vec::new()
+    registry().into_iter().map(|t| t.kind).collect()
+}
+
+/// Return the JSON Schema for the named transform's config. Mirrors
+/// `registry::source_schema` / `sink_schema` so `faucet schema transform <name>`
+/// reads symmetrically with the connector variants.
+pub fn transform_schema(name: &str) -> CliResult<Value> {
+    registry()
+        .into_iter()
+        .find(|t| t.kind == name)
+        .map(|t| (t.schema_fn)())
+        .ok_or_else(|| unknown_transform(name))
+}
+
+fn unknown_transform(name: &str) -> CliError {
+    let available = available_transforms();
+    CliError::UnknownTransform {
+        name: name.to_owned(),
+        available: if available.is_empty() {
+            "(none — rebuild faucet-cli with the `transforms` feature enabled)".to_owned()
+        } else {
+            available.join(", ")
+        },
     }
 }
 
+#[cfg(feature = "transforms")]
+fn schema<T: JsonSchema>() -> Value {
+    serde_json::to_value(schema_for!(T)).unwrap_or_else(|_| serde_json::json!({"type": "object"}))
+}
+
+#[cfg(feature = "transforms")]
 fn decode<T: serde::de::DeserializeOwned>(name: &str, config: Value) -> CliResult<T> {
     serde_json::from_value(config).map_err(|e| CliError::InvalidTransform {
         name: name.to_owned(),
@@ -443,5 +553,57 @@ mod tests {
             !names.contains(&"snake_case"),
             "snake_case must be removed in favour of keys_case"
         );
+    }
+
+    #[cfg(feature = "transforms")]
+    #[test]
+    fn transform_descriptions_covers_every_compiled_kind() {
+        // descriptions and available_transforms must never drift — `faucet list`
+        // and the `UnknownTransform` "Available:" line both read from this.
+        let names = available_transforms();
+        let desc_names: Vec<&'static str> = transform_descriptions()
+            .into_iter()
+            .map(|(n, _)| n)
+            .collect();
+        assert_eq!(names, desc_names);
+        for (_, desc) in transform_descriptions() {
+            assert!(!desc.is_empty(), "every transform needs a description");
+        }
+    }
+
+    #[cfg(feature = "transforms")]
+    #[test]
+    fn transform_schema_returns_object_for_every_kind() {
+        for name in available_transforms() {
+            let schema = transform_schema(name).unwrap_or_else(|e| {
+                panic!("schema lookup failed for {name}: {e}");
+            });
+            assert!(schema.is_object(), "schema for {name} must be an object");
+        }
+    }
+
+    #[cfg(feature = "transforms")]
+    #[test]
+    fn transform_schema_select_and_drop_share_shape() {
+        // Both accept `{ fields: Vec<String> }` — the schema is the same object,
+        // just titled `FieldsConfig`.
+        let select = transform_schema("select").unwrap();
+        let drop = transform_schema("drop").unwrap();
+        assert_eq!(select, drop);
+    }
+
+    #[test]
+    fn transform_schema_unknown_errors_with_available_list() {
+        let err = transform_schema("make_uppercase").unwrap_err();
+        match err {
+            CliError::UnknownTransform { name, available } => {
+                assert_eq!(name, "make_uppercase");
+                #[cfg(feature = "transforms")]
+                assert!(available.contains("flatten"), "{available}");
+                #[cfg(not(feature = "transforms"))]
+                assert!(available.contains("rebuild"), "{available}");
+            }
+            other => panic!("expected UnknownTransform, got {other:?}"),
+        }
     }
 }
