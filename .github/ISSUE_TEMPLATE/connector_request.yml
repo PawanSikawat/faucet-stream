@@ -1,0 +1,40 @@
+name: Connector request
+description: Request a new source or sink connector.
+labels: ["feature"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Want to build it yourself? See the [authoring guide](https://pawansikawat.github.io/faucet-stream/extending/authoring-connectors.html) — third-party `faucet-source-*` / `faucet-sink-*` crates are welcome.
+  - type: input
+    id: system
+    attributes:
+      label: System
+      description: What external system should this connect to?
+      placeholder: "ClickHouse, NATS, DynamoDB, …"
+    validations:
+      required: true
+  - type: dropdown
+    id: direction
+    attributes:
+      label: Direction
+      options:
+        - "Source (read from it)"
+        - "Sink (write to it)"
+        - "Both"
+    validations:
+      required: true
+  - type: textarea
+    id: usecase
+    attributes:
+      label: Use case
+      description: What pipeline would you build with it? What does it unlock?
+    validations:
+      required: true
+  - type: textarea
+    id: details
+    attributes:
+      label: Protocol / API details
+      description: API style (REST, gRPC, native driver), auth methods, pagination/streaming model, official client crate if one exists.
+    validations:
+      required: false

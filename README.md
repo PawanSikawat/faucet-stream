@@ -194,6 +194,11 @@ faucet-stream is a Cargo workspace with 45 crates — 19 sources, 16 sinks, 5 sh
 | **CLI** | |
 | [`faucet-cli`](cli) | `faucet` binary — YAML/JSON config-driven pipeline runner (`run`, `validate`, `schema`, `list`, `preview`, `init`) |
 
+See the [connector capability matrix](https://pawansikawat.github.io/faucet-stream/reference/connectors.html)
+(streaming, resumable state, compression, auth per connector) and the
+[choosing-a-connector guide](https://pawansikawat.github.io/faucet-stream/reference/choosing.html)
+for help picking between overlapping connectors (Postgres query vs CDC, S3 vs Parquet, Redis vs Kafka, …).
+
 Install only what you need:
 
 ```toml
@@ -1083,6 +1088,16 @@ docs/
   book/                       — mdBook documentation site (source under docs/book/src)
 .github/workflows/            — ci.yml, release.yml, docs.yml (mdBook → GitHub Pages)
 ```
+
+## Contributing
+
+Contributions — core changes and third-party connectors alike — are welcome. See
+[CONTRIBUTING.md](CONTRIBUTING.md) for setup, the checks CI runs, and the
+add-a-connector checklist, and the
+[authoring guide](https://pawansikawat.github.io/faucet-stream/extending/authoring-connectors.html)
+for building your own `faucet-source-*` / `faucet-sink-*` crate. Please review our
+[Code of Conduct](CODE_OF_CONDUCT.md). To report a vulnerability, see
+[SECURITY.md](SECURITY.md).
 
 ## License
 

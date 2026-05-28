@@ -1,0 +1,49 @@
+name: Feature or enhancement
+description: Propose a new capability or an improvement to an existing one.
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        For a brand-new connector, please use the **Connector request** template instead.
+        Search [existing issues](https://github.com/PawanSikawat/faucet-stream/issues) and the roadmap epic (the `epic` label) first.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem / motivation
+      description: What are you trying to do, and why is it hard or impossible today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: Concrete API / config shape if you have one. Example usage helps.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+    validations:
+      required: false
+  - type: dropdown
+    id: kind
+    attributes:
+      label: Type
+      options:
+        - "feature (brand-new capability)"
+        - "enhancement (improve an existing capability)"
+    validations:
+      required: true
+  - type: dropdown
+    id: tier
+    attributes:
+      label: Suggested priority tier
+      description: A rough sense of importance — maintainers may re-tier.
+      options:
+        - "tier-1 (critical / blocks a core use case)"
+        - "tier-2 (important / frequently useful)"
+        - "tier-3 (nice-to-have)"
+    validations:
+      required: false

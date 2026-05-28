@@ -1,0 +1,55 @@
+name: Bug report
+description: Report incorrect behavior in an existing connector or the CLI.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report! Please search [existing issues](https://github.com/PawanSikawat/faucet-stream/issues) first to avoid duplicates.
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: faucet-stream / faucet-cli version (or git commit).
+      placeholder: "0.2.0"
+    validations:
+      required: true
+  - type: input
+    id: connectors
+    attributes:
+      label: Affected connector(s)
+      description: Which source / sink / state backend is involved?
+      placeholder: "source-rest → sink-bigquery"
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What did you observe, and what did you expect instead?
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: A minimal config and the commands you ran. Redact secrets.
+      render: yaml
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs / error output
+      description: Run with `--log-level debug` (or `FAUCET_LOG=debug`) if useful. Redact secrets.
+      render: shell
+    validations:
+      required: false
+  - type: input
+    id: env
+    attributes:
+      label: Environment
+      description: OS, architecture, Rust toolchain.
+      placeholder: "macOS 14 arm64, rustc 1.94"
+    validations:
+      required: false
