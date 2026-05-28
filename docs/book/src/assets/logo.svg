@@ -1,17 +1,14 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128" role="img" aria-label="faucet-stream logo">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="6 11 112 112" width="128" height="128" role="img" aria-label="faucet-stream">
   <title>faucet-stream</title>
-  <!-- Tile background: solid teal -->
-  <rect x="6" y="6" width="116" height="116" rx="28" fill="#14B8A6"/>
-  <!-- Faucet spout + valve handle, white on teal -->
-  <g fill="none" stroke="#ffffff" stroke-width="11" stroke-linecap="round" stroke-linejoin="round" transform="translate(-2,2)">
-    <path d="M55 40 V26"/>
-    <path d="M44 26 H66"/>
-    <path d="M34 40 H76 a14 14 0 0 1 14 14 V64"/>
+  <!-- Transparent mark: solid brand teal, no tile. Use this inline (READMEs, docs, slides). -->
+  <g fill="none" stroke="#14B8A6" stroke-width="13" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M55 40 V24"/>
+    <path d="M43 24 H67"/>
+    <path d="M32 40 H78 a15 15 0 0 1 15 15 V66"/>
   </g>
-  <!-- Data stream: white droplets fading as they fall -->
-  <g fill="#ffffff" transform="translate(-2,2)">
-    <circle cx="90" cy="79" r="5.5"/>
-    <circle cx="90" cy="95" r="4.6" opacity="0.85"/>
-    <circle cx="90" cy="108" r="3.6" opacity="0.6"/>
+  <g fill="#14B8A6">
+    <circle cx="93" cy="82" r="6"/>
+    <circle cx="93" cy="99" r="5" opacity="0.7"/>
+    <circle cx="93" cy="112" r="4" opacity="0.45"/>
   </g>
 </svg>
