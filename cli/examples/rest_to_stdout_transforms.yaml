@@ -1,91 +1,68 @@
-# Demonstrates the config-driven record transforms shipped in faucet-core.
-# Run it against the public jsonplaceholder API and watch the records get
-# reshaped before they reach stdout:
+# Demonstrates the three-layer transforms model: a source template carries
+# its own input-shape cleanup, the pipeline-level block stamps every row
+# with provenance metadata, and matrix rows can append further shaping.
 #
 #   faucet run cli/examples/rest_to_stdout_transforms.yaml | jq .
 #
-# Each transform runs in declared order, so think of this as a small pipeline
-# of pure functions over the JSON record.
 version: 1
 name: rest_transforms_demo
 
 pipeline:
-  source:
-    type: rest
-    config:
-      base_url: https://jsonplaceholder.typicode.com
-      path: /users
-      method: GET
-      auth:
-        type: None
-      query_params: {}
-      pagination:
-        type: None
-      max_retries: 3
-      retry_backoff: 1
-      tolerated_http_errors: []
-      replication_method:
-        type: FullTable
-      primary_keys: ["id"]
-      partitions: []
-      schema_sample_size: 0
+  sources:
+    users:
+      type: rest
+      config:
+        base_url: https://jsonplaceholder.typicode.com
+        path: /users
+        method: GET
+        auth: { type: None }
+        query_params: {}
+        pagination: { type: None }
+        max_retries: 3
+        retry_backoff: 1
+        tolerated_http_errors: []
+        replication_method: { type: FullTable }
+        primary_keys: ["id"]
+        partitions: []
+        schema_sample_size: 0
+      transforms:
+        # Source-shape cleanup: REST's nested address/company objects flatten
+        # first, then column names normalise to snake_case.
+        - type: flatten
+          config: { separator: "__" }
+        - type: keys_case
+          config: { mode: snake }
+
+  sinks:
+    out:
+      type: stdout
+      config:
+        destination: stdout
+        format: json_lines
+        flush_per_record: true
+        max_records: 10
 
   transforms:
-    # 1. Flatten the nested address/company objects so downstream sinks see a
-    #    rectangular shape.
-    - type: flatten
-      config:
-        separator: "__"
-
-    # 2. Keep only the fields the consumer cares about.
-    - type: select
-      config:
-        fields:
-          - id
-          - name
-          - username
-          - email
-          - phone
-          - address__city
-          - company__name
-
-    # 3. Rename the flattened paths to friendlier names.
-    - type: rename_field
-      config:
-        fields:
-          address__city: city
-          company__name: company
-
-    # 4. Normalise the email column (lowercase + trim).
-    - type: value_case
-      config:
-        fields: [email]
-        mode: lower
-
-    # 5. Coerce the user id to a string so the sink table can use it as a key.
-    - type: cast
-      config:
-        fields:
-          id: string
-        on_error: error
-
-    # 6. Mask phone numbers — PII we don't want stamped to disk.
-    - type: redact
-      config:
-        fields: [phone]
-        mask: "[redacted]"
-
-    # 7. Stamp every record with provenance metadata.
+    # Pipeline-wide policy: stamp provenance on every record from every row.
     - type: set
       config:
         values:
           _source: jsonplaceholder
           _ingested_at: "2026-01-01T00:00:00Z"
 
-  sink:
-    type: stdout
-    config:
-      destination: stdout
-      format: json_lines
-      flush_per_record: true
-      max_records: 10
+matrix:
+  - id: clean
+    source: { ref: users }
+    sink: { ref: out }
+    # Final transforms = [set, flatten, keys_case]
+    # (pipeline first, then source-template)
+
+  - id: clean_pii_redacted
+    source: { ref: users }
+    sink: { ref: out }
+    transforms:
+      - type: redact
+        config:
+          fields: [phone]
+          mask: "[redacted]"
+    # Final transforms = [set, flatten, keys_case, redact]
