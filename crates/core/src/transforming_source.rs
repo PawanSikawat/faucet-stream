@@ -82,16 +82,16 @@ impl Source for TransformingSource {
         })
     }
 
-    fn connector_name(&self) -> &'static str {
-        self.inner.connector_name()
-    }
-
     fn state_key(&self) -> Option<String> {
         self.inner.state_key()
     }
 
     async fn apply_start_bookmark(&self, bookmark: Value) -> Result<(), FaucetError> {
         self.inner.apply_start_bookmark(bookmark).await
+    }
+
+    fn connector_name(&self) -> &'static str {
+        self.inner.connector_name()
     }
 }
 
@@ -100,6 +100,8 @@ mod tests {
     use super::*;
     use crate::transform::KeyCaseMode;
     use serde_json::json;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
 
     struct MockSource(Vec<Value>);
 
@@ -258,8 +260,9 @@ mod tests {
                 &'a self,
                 _ctx: &'a HashMap<String, Value>,
                 _batch_size: usize,
-            ) -> Pin<Box<dyn futures_core::Stream<Item = Result<StreamPage, FaucetError>> + Send + 'a>>
-            {
+            ) -> Pin<
+                Box<dyn futures_core::Stream<Item = Result<StreamPage, FaucetError>> + Send + 'a>,
+            > {
                 Box::pin(async_stream::try_stream! {
                     yield StreamPage { records: Vec::new(), bookmark: Some(json!("v1")) };
                 })
@@ -280,9 +283,6 @@ mod tests {
         assert_eq!(page.bookmark, Some(json!("v1")));
         assert!(stream.next().await.is_none());
     }
-
-    use std::sync::atomic::{AtomicBool, Ordering};
-    use std::sync::Arc;
 
     struct InstrumentedSource {
         started: Arc<AtomicBool>,
@@ -323,10 +323,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(wrapped.connector_name(), "instrumented");
-        assert_eq!(
-            wrapped.state_key(),
-            Some("instrumented::key".to_string())
-        );
+        assert_eq!(wrapped.state_key(), Some("instrumented::key".to_string()));
         wrapped.apply_start_bookmark(json!("bm")).await.unwrap();
         assert!(started.load(Ordering::Relaxed));
     }
