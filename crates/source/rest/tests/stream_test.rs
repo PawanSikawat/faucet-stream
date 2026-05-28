@@ -1,4 +1,5 @@
-use faucet_core::Source;
+use faucet_core::observability::Labels;
+use faucet_core::{Source, TransformingSource};
 use faucet_source_rest::{
     Auth, DEFAULT_TOKEN_ENDPOINT_EXPIRY_RATIO, FaucetError, PaginationStyle, RecordTransform,
     ReplicationMethod, ResponseValidator, RestStream, RestStreamConfig,
@@ -710,12 +711,18 @@ async fn test_flatten_transform_applied_to_records() {
         .mount(&server)
         .await;
 
-    let stream = RestStream::new(
-        RestStreamConfig::new(&server.uri(), "/api/users")
-            .records_path("$.data[*]")
-            .add_transform(RecordTransform::Flatten {
-                separator: "__".into(),
-            }),
+    let inner: Box<dyn Source> = Box::new(
+        RestStream::new(
+            RestStreamConfig::new(&server.uri(), "/api/users").records_path("$.data[*]"),
+        )
+        .unwrap(),
+    );
+    let stream = TransformingSource::new(
+        inner,
+        vec![RecordTransform::Flatten {
+            separator: "__".into(),
+        }],
+        Labels::for_named("rest"),
     )
     .unwrap();
 
@@ -744,12 +751,18 @@ async fn test_keys_case_snake_transform() {
         .mount(&server)
         .await;
 
-    let stream = RestStream::new(
-        RestStreamConfig::new(&server.uri(), "/api/users")
-            .records_path("$.data[*]")
-            .add_transform(RecordTransform::KeysCase {
-                mode: KeyCaseMode::Snake,
-            }),
+    let inner: Box<dyn Source> = Box::new(
+        RestStream::new(
+            RestStreamConfig::new(&server.uri(), "/api/users").records_path("$.data[*]"),
+        )
+        .unwrap(),
+    );
+    let stream = TransformingSource::new(
+        inner,
+        vec![RecordTransform::KeysCase {
+            mode: KeyCaseMode::Snake,
+        }],
+        Labels::for_named("rest"),
     )
     .unwrap();
 
@@ -772,13 +785,19 @@ async fn test_rename_keys_transform() {
         .mount(&server)
         .await;
 
-    let stream = RestStream::new(
-        RestStreamConfig::new(&server.uri(), "/api/events")
-            .records_path("$.data[*]")
-            .add_transform(RecordTransform::RenameKeys {
-                pattern: r"^_sdc_".into(),
-                replacement: "".into(),
-            }),
+    let inner: Box<dyn Source> = Box::new(
+        RestStream::new(
+            RestStreamConfig::new(&server.uri(), "/api/events").records_path("$.data[*]"),
+        )
+        .unwrap(),
+    );
+    let stream = TransformingSource::new(
+        inner,
+        vec![RecordTransform::RenameKeys {
+            pattern: r"^_sdc_".into(),
+            replacement: "".into(),
+        }],
+        Labels::for_named("rest"),
     )
     .unwrap();
 
@@ -801,15 +820,23 @@ async fn test_chained_transforms_keys_case_then_flatten() {
         .mount(&server)
         .await;
 
-    let stream = RestStream::new(
-        RestStreamConfig::new(&server.uri(), "/api/data")
-            .records_path("$.data[*]")
-            .add_transform(RecordTransform::KeysCase {
+    let inner: Box<dyn Source> = Box::new(
+        RestStream::new(
+            RestStreamConfig::new(&server.uri(), "/api/data").records_path("$.data[*]"),
+        )
+        .unwrap(),
+    );
+    let stream = TransformingSource::new(
+        inner,
+        vec![
+            RecordTransform::KeysCase {
                 mode: KeyCaseMode::Snake,
-            })
-            .add_transform(RecordTransform::Flatten {
+            },
+            RecordTransform::Flatten {
                 separator: "_".into(),
-            }),
+            },
+        ],
+        Labels::for_named("rest"),
     )
     .unwrap();
 
@@ -822,13 +849,15 @@ async fn test_chained_transforms_keys_case_then_flatten() {
 #[cfg(feature = "transform-rename-keys")]
 #[test]
 fn test_invalid_regex_errors_at_construction() {
-    let result = RestStream::new(
-        RestStreamConfig::new("http://localhost", "/api").add_transform(
-            RecordTransform::RenameKeys {
-                pattern: "[invalid".into(),
-                replacement: "".into(),
-            },
-        ),
+    let inner: Box<dyn Source> =
+        Box::new(RestStream::new(RestStreamConfig::new("http://localhost", "/api")).unwrap());
+    let result = TransformingSource::new(
+        inner,
+        vec![RecordTransform::RenameKeys {
+            pattern: "[invalid".into(),
+            replacement: "".into(),
+        }],
+        Labels::for_named("rest"),
     );
     assert!(result.is_err());
     assert!(matches!(
@@ -849,19 +878,25 @@ async fn test_custom_transform_applied_to_records() {
         .mount(&server)
         .await;
 
-    let stream = RestStream::new(
-        RestStreamConfig::new(&server.uri(), "/api/items")
-            .records_path("$.data[*]")
-            // Double the "value" field and inject a "_source" tag.
-            .add_transform(RecordTransform::custom(|mut record| {
-                if let serde_json::Value::Object(ref mut m) = record {
-                    if let Some(v) = m.get("value").and_then(|v| v.as_i64()) {
-                        m.insert("value".to_string(), json!(v * 2));
-                    }
-                    m.insert("_source".to_string(), json!("test-api"));
+    let inner: Box<dyn Source> = Box::new(
+        RestStream::new(
+            RestStreamConfig::new(&server.uri(), "/api/items").records_path("$.data[*]"),
+        )
+        .unwrap(),
+    );
+    let stream = TransformingSource::new(
+        inner,
+        // Double the "value" field and inject a "_source" tag.
+        vec![RecordTransform::custom(|mut record| {
+            if let serde_json::Value::Object(ref mut m) = record {
+                if let Some(v) = m.get("value").and_then(|v| v.as_i64()) {
+                    m.insert("value".to_string(), json!(v * 2));
                 }
-                record
-            })),
+                m.insert("_source".to_string(), json!("test-api"));
+            }
+            record
+        })],
+        Labels::for_named("rest"),
     )
     .unwrap();
 

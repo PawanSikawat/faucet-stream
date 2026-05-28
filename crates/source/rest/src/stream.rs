@@ -13,7 +13,6 @@ use faucet_core::replication::{
     ReplicationMethod, filter_incremental, max_replication_value, max_value,
 };
 use faucet_core::schema;
-use faucet_core::transform::{self, CompiledTransform};
 use futures_core::Stream;
 use reqwest::Client;
 use reqwest::header::HeaderMap;
@@ -29,8 +28,6 @@ use tokio::sync::Mutex as AsyncMutex;
 pub struct RestStream {
     config: RestStreamConfig,
     client: Client,
-    /// Pre-compiled transforms (regex patterns compiled once at construction time).
-    compiled_transforms: Vec<CompiledTransform>,
     /// Shared OAuth2 token cache (only used when `config.auth` is `Auth::OAuth2`).
     token_cache: TokenCache,
     /// Shared token endpoint cache (only used when `config.auth` is `Auth::TokenEndpoint`).
@@ -43,10 +40,6 @@ pub struct RestStream {
 
 impl RestStream {
     /// Create a new stream from the given configuration.
-    ///
-    /// Returns [`FaucetError::Transform`] immediately if any `RenameKeys`
-    /// transform contains an invalid regex pattern — fail-fast before any
-    /// HTTP requests are made.
     pub fn new(config: RestStreamConfig) -> Result<Self, FaucetError> {
         // Validate expiry_ratio at construction time.
         let expiry_ratio_to_validate = match &config.auth {
@@ -63,12 +56,6 @@ impl RestStream {
             )));
         }
 
-        let compiled_transforms = config
-            .transforms
-            .iter()
-            .map(transform::compile)
-            .collect::<Result<Vec<_>, _>>()?;
-
         let mut builder = Client::builder();
         if let Some(t) = config.timeout {
             builder = builder.timeout(t);
@@ -76,7 +63,6 @@ impl RestStream {
         Ok(Self {
             config,
             client: builder.build()?,
-            compiled_transforms,
             token_cache: TokenCache::new(),
             token_endpoint_cache: TokenEndpointCache::new(),
             runtime_start: Arc::new(AsyncMutex::new(None)),
@@ -301,11 +287,6 @@ impl RestStream {
                     } else {
                         raw_records
                     };
-
-                let records: Vec<Value> = records
-                    .into_iter()
-                    .map(|rec| transform::apply_all(rec, &self.compiled_transforms))
-                    .collect::<Result<Vec<Value>, _>>()?;
 
                 // Track the running max replication value across pages so the
                 // final page can carry the consolidated bookmark.
@@ -774,19 +755,6 @@ mod tests {
             expiry_ratio: 1.0,
         });
         assert!(RestStream::new(config).is_ok());
-    }
-
-    #[test]
-    fn test_new_rejects_invalid_transform_regex() {
-        let config = RestStreamConfig::new("https://example.com", "/data").add_transform(
-            faucet_core::RecordTransform::RenameKeys {
-                pattern: "[invalid".into(),
-                replacement: "".into(),
-            },
-        );
-        let result = RestStream::new(config);
-        assert!(result.is_err());
-        assert!(matches!(result, Err(FaucetError::Transform(_))));
     }
 
     #[test]

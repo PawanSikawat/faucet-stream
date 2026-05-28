@@ -89,6 +89,91 @@ The order matters: `flatten` runs first so that `select` can reference
 rename keys that survived; `cast` runs before `set` so the stamped
 `_source` field is left untouched.
 
+## Declaration layers
+
+Transforms can be declared at three layers in a config. The executor
+resolves them per matrix row by concatenating contributions in
+*lifecycle order* — pipeline first, then source template, then row:
+
+```
+final = T_pipeline ++ T_source ++ T_row
+```
+
+| Layer | Lives at | Intent |
+|---|---|---|
+| Pipeline | `pipeline.transforms` | cross-cutting policy (PII redaction, provenance stamp) |
+| Source template | `pipeline.sources.<name>.transforms` | cleanup tied to the source's natural emission shape |
+| Matrix row | `matrix[i].transforms` | row-specific extras or one-off shaping |
+
+Each layer is optional. Empty layers contribute nothing.
+
+```yaml
+pipeline:
+  transforms:                                  # T_pipeline (runs first)
+    - { type: set, config: { values: { _ingested_at: "${env:NOW}" } } }
+  sources:
+    users_api:
+      type: rest
+      transforms:                              # T_source
+        - { type: flatten, config: { separator: "__" } }
+        - { type: keys_case, config: { mode: snake } }
+matrix:
+  - id: users_pii
+    source: { ref: users_api }
+    transforms:                                # T_row (runs last)
+      - { type: redact, config: { fields: [email], mask: "[pii]" } }
+    # final = [set, flatten, keys_case, redact]
+```
+
+## Opting out: `inherit_transforms: false`
+
+Each layer that *introduces* transforms (source template, matrix row) carries
+a sibling boolean field `inherit_transforms`, default `true`. Set to `false`,
+it drops every layer declared above it.
+
+| `source.inherit_transforms` | `row.inherit_transforms` | Final list |
+|---|---|---|
+| `true` (default) | `true` (default) | `T_pipeline ++ T_source ++ T_row` |
+| `false` | `true` | `T_source ++ T_row` |
+| `true` | `false` | `T_row` |
+| `false` | `false` | `T_row` |
+
+Use this for debug rows that need raw records, or for a source whose natural
+shape is already canonical and shouldn't be touched by global policy:
+
+```yaml
+matrix:
+  - id: forensic_row
+    source: { ref: users_api }
+    inherit_transforms: false              # ← drops T_pipeline AND T_source
+    transforms:
+      - { type: select, config: { fields: [id, raw_payload] } }
+    # final = [select]
+```
+
+Sinks reject both `transforms:` and `inherit_transforms:`. Destination shaping
+belongs at the pipeline or row layer.
+
+## Reusing transform lists across sources
+
+Use YAML anchors:
+
+```yaml
+pipeline:
+  sources:
+    users_api:
+      type: rest
+      transforms: &user_cleanup
+        - { type: flatten, config: { separator: "__" } }
+        - { type: keys_case, config: { mode: snake } }
+    archived_users_api:
+      type: rest
+      transforms: *user_cleanup
+```
+
+No grammar extension needed — the YAML parser expands anchors before the
+config reaches `faucet`.
+
 ## `keys_case` — pick the output convention
 
 ```yaml

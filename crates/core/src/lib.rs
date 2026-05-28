@@ -24,6 +24,7 @@ pub mod schema;
 pub mod state;
 pub mod traits;
 pub mod transform;
+pub mod transforming_source;
 pub mod util;
 
 #[cfg(feature = "compression")]
@@ -52,6 +53,7 @@ pub use transform::RecordTransform;
 pub use transform::ValueCaseMode;
 #[cfg(feature = "transform-cast")]
 pub use transform::{CastOnError, CastType};
+pub use transforming_source::TransformingSource;
 
 // Re-export dependencies that connector authors need, so they only depend on
 // `faucet-core` instead of adding `async-trait` and `serde_json` themselves.

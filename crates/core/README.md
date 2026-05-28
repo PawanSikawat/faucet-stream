@@ -24,6 +24,10 @@ tokio = { version = "1", features = ["rt"] }
 
 Both traits include a `config_schema()` method that returns a JSON Schema describing the connector's configuration.
 
+### Decorators
+
+- **`TransformingSource`** — wraps any `Source` with a fixed `Vec<RecordTransform>` applied per page via `instrumented_apply_all`. The canonical way library callers attach transforms to any source. See [`docs.rs`](https://docs.rs/faucet-core/latest/faucet_core/struct.TransformingSource.html).
+
 ### `Source::stream_pages` (recommended for large sources)
 
 `stream_pages(ctx, batch_size)` returns a `Stream<Item = Result<StreamPage, FaucetError>>` where each `StreamPage` contains a chunk of records plus an optional bookmark. The default implementation wraps `fetch_with_context_incremental` and chunks the result in memory; sources that can stream natively (REST, CDC, query DBs with cursor pagination) override this method directly to bound source-side memory at O(batch_size). `Pipeline::run` drives this stream internally; library users do not normally call it themselves.

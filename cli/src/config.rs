@@ -16,7 +16,7 @@
 //!     parent_key: <jsonpath>   # default "id"
 //!     source: { ... }     # partial override, deep-merged into pipeline.source
 //!     sink:   { ... }
-//!     transforms: [...]   # if Some, replaces pipeline.transforms wholesale
+//!     transforms: [...]   # row-level transforms, appended after pipeline + source layers
 //!     state:  { ... }     # if Some, replaces pipeline.state wholesale
 //! execution:              # optional
 //!   max_concurrent: <usize>
@@ -102,6 +102,9 @@ pub struct PipelineSpec {
 }
 
 /// A `{ type, config }` block, the universal shape for both sources and sinks.
+///
+/// Source templates may additionally carry `transforms:` and
+/// `inherit_transforms:`. Both are rejected on sink templates at expand time.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 pub struct ConnectorSpec {
     /// Connector type — matches the suffix of the underlying crate
@@ -113,6 +116,18 @@ pub struct ConnectorSpec {
     /// connector's `serde::Deserialize` impl.
     #[serde(default = "empty_object")]
     pub config: Value,
+
+    /// Transforms bound to this source template. Applied after `T_pipeline`
+    /// and before `T_row` for every matrix row that resolves to this template.
+    /// Rejected at expand time when this `ConnectorSpec` is used as a sink.
+    #[serde(default)]
+    pub transforms: Option<Vec<TransformSpec>>,
+
+    /// When `false`, drops upstream `T_pipeline` transforms for every matrix
+    /// row that resolves to this source template. Default `true`. Rejected
+    /// at expand time on sinks.
+    #[serde(default = "default_true")]
+    pub inherit_transforms: bool,
 }
 
 /// A partial connector override carried by a matrix row. Both `type` and
@@ -136,7 +151,7 @@ pub struct PartialConnector {
 }
 
 /// A single transform declaration.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 pub struct TransformSpec {
     /// Built-in transform identifier. One of: `flatten`, `rename_keys`,
     /// `snake_case`, `select`, `drop`, `set`, `rename_field`, `cast`, `redact`,
@@ -187,9 +202,17 @@ pub struct MatrixRow {
     #[serde(default)]
     pub sink: Option<PartialConnector>,
 
-    /// If `Some`, replaces `pipeline.transforms` wholesale (arrays don't merge).
+    /// Row-level transforms. Appended after `T_pipeline` and `T_source`
+    /// (unless `inherit_transforms` is `false` here, in which case both
+    /// upstream layers are dropped). `None` or empty list contributes
+    /// nothing.
     #[serde(default)]
     pub transforms: Option<Vec<TransformSpec>>,
+
+    /// When `false`, drops upstream `T_pipeline` and `T_source` transforms
+    /// for this row. Default `true`.
+    #[serde(default = "default_true")]
+    pub inherit_transforms: bool,
 
     /// If `Some`, replaces `pipeline.state` wholesale.
     #[serde(default)]

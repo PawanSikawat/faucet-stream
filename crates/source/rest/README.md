@@ -3,7 +3,7 @@
 [![Crates.io](https://img.shields.io/crates/v/faucet-source-rest.svg)](https://crates.io/crates/faucet-source-rest)
 [![Docs.rs](https://docs.rs/faucet-source-rest/badge.svg)](https://docs.rs/faucet-source-rest)
 
-A declarative, config-driven REST API client with pluggable authentication, pagination, record transforms, schema inference, and incremental replication.
+A declarative, config-driven REST API client with pluggable authentication, pagination, schema inference, and incremental replication. Attach transforms by wrapping the source with [`faucet_core::TransformingSource`](https://docs.rs/faucet-core/latest/faucet_core/struct.TransformingSource.html).
 
 Part of the [faucet-stream](https://github.com/PawanSikawat/faucet-stream) ecosystem.
 
@@ -95,12 +95,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 |-------|------|---------|-------------|
 | `partitions` | `Vec<HashMap<String, Value>>` | `[]` | Each entry is a context map substituted into `path` placeholders. The stream executes once per partition and concatenates results. Empty means run once with no substitution |
 | `partition_concurrency` | `Option<usize>` | `None` | Maximum number of partitions to fetch concurrently. `None` means sequential processing |
-
-### Transform Fields
-
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `transforms` | `Vec<RecordTransform>` | `[]` | Transformations applied to every record in order. Available: `Flatten`, `RenameKeys`, `KeysCase { mode }`, `Select`, `Drop`, `Set`, `RenameField`, `Cast`, `Redact`, `ValueCase`, `SpellSymbols`, `Custom(fn)` (see `faucet-core` for each variant's fields). |
 
 ### Authentication
 
@@ -219,7 +213,7 @@ println!("{}", serde_json::to_string_pretty(&schema)?);
 
 | Method | Return Type | Description |
 |--------|------------|-------------|
-| `RestStream::new(config)` | `Result<Self, FaucetError>` | Create a new stream. Validates auth and compiles transforms at construction time |
+| `RestStream::new(config)` | `Result<Self, FaucetError>` | Create a new stream. Validates auth at construction time |
 | `fetch_all()` | `Result<Vec<Value>, FaucetError>` | Fetch all records across all pages and partitions |
 | `fetch_all_as::<T>()` | `Result<Vec<T>, FaucetError>` | Fetch all records and deserialize into typed structs |
 | `fetch_all_incremental()` | `Result<(Vec<Value>, Option<Value>), FaucetError>` | Fetch records with incremental replication, returning records and bookmark |

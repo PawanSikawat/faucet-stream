@@ -26,6 +26,29 @@ object whose fields are that connector's schema — see `faucet schema source
 attaches a [state store](../cookbook/state.md); `dlq` attaches a
 [dead-letter queue](../cookbook/dlq.md).
 
+### Transforms layering
+
+Transforms can be declared at three layers and are resolved additively per
+matrix row in lifecycle order:
+
+```
+final = T_pipeline ++ T_source ++ T_row
+```
+
+- `pipeline.transforms` — cross-cutting policy, runs first on every row.
+- `pipeline.sources.<name>.transforms` — bound to a source template; runs for
+  every row that resolves to this source.
+- `matrix[i].transforms` — row-specific extras, runs last.
+
+Each declaring layer (source template, matrix row) carries an
+`inherit_transforms: bool` (default `true`); setting it `false` drops every
+upstream layer for that scope.
+
+Sinks reject both `transforms:` and `inherit_transforms:` at expand time —
+destination shaping belongs at the pipeline or row layer. See the
+[transforms cookbook](../cookbook/transforms.md) for the full model and
+worked examples.
+
 ## Interpolation
 
 Three stages resolve placeholders:
