@@ -7,7 +7,7 @@ license.workspace = true
 repository.workspace = true
 description = "XML API source connector for the faucet-stream ecosystem"
 readme = "README.md"
-keywords.workspace = true
+keywords = ["xml", "soap", "etl", "pipeline", "connector"]
 categories.workspace = true
 
 [dependencies]

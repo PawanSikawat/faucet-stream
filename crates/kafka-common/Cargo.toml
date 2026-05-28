@@ -7,7 +7,7 @@ license.workspace = true
 repository.workspace = true
 description = "Shared configuration types for the faucet-stream Kafka source and sink connectors"
 readme = "README.md"
-keywords.workspace = true
+keywords = ["kafka", "streaming", "etl", "pipeline", "faucet"]
 categories.workspace = true
 
 [dependencies]

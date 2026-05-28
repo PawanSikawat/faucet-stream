@@ -7,7 +7,7 @@ license.workspace = true
 repository.workspace = true
 description = "PostgreSQL sink connector for the faucet-stream ecosystem"
 readme = "README.md"
-keywords.workspace = true
+keywords = ["postgres", "postgresql", "sql", "sink", "pipeline"]
 categories.workspace = true
 
 [dependencies]

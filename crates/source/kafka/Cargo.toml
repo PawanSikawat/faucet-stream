@@ -7,7 +7,7 @@ license.workspace = true
 repository.workspace = true
 description = "Apache Kafka consumer source for the faucet-stream ecosystem"
 readme = "README.md"
-keywords.workspace = true
+keywords = ["kafka", "streaming", "etl", "pipeline", "connector"]
 categories.workspace = true
 
 [dependencies]

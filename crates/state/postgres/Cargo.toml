@@ -7,7 +7,7 @@ license.workspace = true
 repository.workspace = true
 description = "PostgreSQL-backed StateStore for faucet-stream incremental replication"
 readme = "README.md"
-keywords.workspace = true
+keywords = ["postgres", "state", "bookmark", "etl", "faucet"]
 categories.workspace = true
 
 [dependencies]

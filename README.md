@@ -1089,6 +1089,7 @@ cli/                          — faucet-cli: `faucet` binary, YAML/JSON pipelin
 examples/                     — repo-level examples: docker-compose infra stack + run index
 docs/
   book/                       — mdBook documentation site (source under docs/book/src)
+  launch/                     — launch kit: blog draft + checklist/ready-to-post copy
 .github/workflows/            — ci.yml, release.yml, docs.yml (mdBook → GitHub Pages)
 ```
 

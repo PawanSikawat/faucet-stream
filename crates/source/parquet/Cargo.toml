@@ -7,7 +7,7 @@ license.workspace = true
 repository.workspace = true
 description = "Apache Parquet file source connector for the faucet-stream ecosystem"
 readme = "README.md"
-keywords.workspace = true
+keywords = ["parquet", "arrow", "etl", "pipeline", "connector"]
 categories.workspace = true
 
 [dependencies]

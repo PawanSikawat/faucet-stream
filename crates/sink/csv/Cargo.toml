@@ -7,7 +7,7 @@ license.workspace = true
 repository.workspace = true
 description = "CSV file sink connector for the faucet-stream ecosystem"
 readme = "README.md"
-keywords.workspace = true
+keywords = ["csv", "etl", "sink", "pipeline", "data"]
 categories.workspace = true
 
 [dependencies]

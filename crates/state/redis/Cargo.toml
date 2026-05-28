@@ -7,7 +7,7 @@ license.workspace = true
 repository.workspace = true
 description = "Redis-backed StateStore for faucet-stream incremental replication"
 readme = "README.md"
-keywords.workspace = true
+keywords = ["redis", "state", "bookmark", "etl", "faucet"]
 categories.workspace = true
 
 [dependencies]

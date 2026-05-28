@@ -260,6 +260,7 @@ Every source/sink crate follows the same module layout. Stick to this when addin
 
 - `lib.rs` — re-exports config + the `Source`/`Sink` type. **First line must be `#![cfg_attr(docsrs, feature(doc_cfg))]`** so docs.rs renders per-item feature badges (see [docs.rs build setup](#docsrs-build-setup)).
 - `config.rs` — config struct + auth/format/pagination sub-enums. Derives `Serialize + Deserialize + JsonSchema`. **No I/O or protocol logic here.**
+- `Cargo.toml` — set **per-crate `keywords`** with the connector's system name first (e.g. `keywords = ["kafka", "streaming", "etl", "pipeline", "connector"]`) so it ranks on crates.io for that system; don't inherit the generic `keywords.workspace`. Keep `categories.workspace = true` (the workspace defaults are valid crates.io slugs — invalid category slugs aren't caught by `cargo publish --dry-run` and break the real publish). Rules: ≤5 keywords, each ≤20 chars, `^[a-z][a-z0-9_-]*$`.
 - `stream.rs` (source) / `sink.rs` (sink) — the one place that performs I/O. Holds reusable clients/pools created in `new()`. Implements `faucet_core::Source` / `Sink` including `config_schema()` via `schemars::schema_for!`.
 - Optional helper modules — `auth/`, `pagination/`, `extract/`, `retry/`, `convert.rs`, `schema.rs`, `decode.rs` / `encode.rs`, `state.rs` for bookmarks, `serde_helpers.rs` for non-serializable types (`reqwest::Method` etc.).
 
@@ -471,6 +472,28 @@ The user-facing documentation site lives in **`docs/book/`** (an mdBook). Source
 - Build locally with `mdbook build docs/book` (install via `cargo install mdbook`; the workspace was built with mdBook 0.5.x). The book uses **no preprocessors** (no mdbook-mermaid etc.) so a bare `mdbook` builds it.
 - `.github/workflows/docs.yml` builds the book on every PR (verify) and deploys it to **GitHub Pages** on push to `main`. Pages must be enabled in repo Settings with source = "GitHub Actions"; the published URL is `https://pawansikawat.github.io/faucet-stream/`.
 - **Keep the book in sync** when you change connector config, CLI commands, the config grammar, or add/remove connectors — update the relevant page under `docs/book/src/` alongside the crate README and this file. Content should stay grounded in real configs (reuse the `cli/examples/` YAMLs) rather than invented field names.
+
+## Keeping Docs & Artifacts in Sync
+
+The adoption work in issue **#91** added many user-facing surfaces (docs.rs config, the mdBook docs site on GitHub Pages, the connector capability matrix, runnable examples + Docker stack, the CHANGELOG, supply-chain config, crates.io keywords, README hero/comparison). **These rot the moment the code changes unless updated alongside it.** On any change, work through this trigger → update table and update everything that applies, in the same PR.
+
+| If you change… | Also update (same PR) |
+|---|---|
+| **Add / remove / rename a connector** | umbrella + CLI features; CI `feature-check` matrix (`.github/workflows/ci.yml`); root README connector table **and the counts** (hero "19 sources / 16 sinks", architecture "45 crates — …"); docs-site catalog `docs/book/src/reference/connectors.md` (capability matrix) + `reference/choosing.md`; a `cli/examples/<src>_to_<sink>.yaml`; `examples/README.md` mapping (+ `examples/docker-compose.yml` and `examples/infra/` if it needs new local infra); per-crate crates.io `keywords` + `[package.metadata.docs.rs]` + `#![cfg_attr(docsrs, feature(doc_cfg))]`; the crate table in this file; README "Project Structure" |
+| **Change a connector's config fields / defaults / auth / pagination / behavior** | that crate's `README.md`; root README tables if user-facing; any docs-site page that mentions it (cookbook `auth`/`pagination`/`state`/`compression`, `reference/*`); affected `cli/examples/*.yaml`. (`faucet schema`/`init` are schema-driven — no manual update.) |
+| **Change a connector's streaming / resumable / compression support** | the capability-matrix columns in `docs/book/src/reference/connectors.md` (verify against the code — these were wrong once) |
+| **Change CLI commands or the config-file grammar** | `docs/book/src/reference/cli.md` + `reference/config.md`; `cli/README.md`; root README quickstart |
+| **Change `Source` / `Sink` / `Pipeline` / transform / `FaucetError` APIs** | the Architecture section here; docs-site `getting-started/concepts.md` + `tutorials/library.md`; affected crate READMEs |
+| **Add a dependency that introduces a new license** | `deny.toml` `allow` list (the `supply-chain` CI job enforces this; license rules differ by platform, so a Linux-only dep can fail CI even if local passes) |
+| **Add / move / remove files or directories** | README "Project Structure" (see below) |
+| **File a feature / enhancement issue** | cross-link it to the roadmap epic (the open `epic`-labelled issue, currently #38) |
+
+Key automation to rely on (don't hand-maintain):
+- **CHANGELOG.md is generated** from Conventional Commit messages via `git cliff` (`cliff.toml`) — never hand-edit it; just write `type(scope): summary` commit subjects so it groups correctly.
+- **The docs site auto-deploys** to GitHub Pages on push to `main` that touches `docs/book/**` (`.github/workflows/docs.yml`) — editing `docs/book/src/**` is all that's needed; no manual deploy.
+- **`faucet list` / `schema` / `init`** reflect compiled connectors and config schemas automatically.
+
+Docs-site content must stay **grounded in real configs** — reuse the `cli/examples/` YAMLs and verify field names against the source rather than inventing them.
 
 ## Project Structure Sync
 
