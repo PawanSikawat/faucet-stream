@@ -12,15 +12,17 @@
 
 use std::time::Duration;
 
+use faucet_core::TransformingSource;
+use faucet_core::observability::Labels;
 use faucet_stream::sink::jsonl::{JsonlSink, JsonlSinkConfig};
 use faucet_stream::{
     Auth, KeyCaseMode, PaginationStyle, Pipeline, RecordTransform, ReplicationMethod, RestStream,
-    RestStreamConfig, json,
+    RestStreamConfig, Source, json,
 };
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let source = RestStream::new(
+    let inner = RestStream::new(
         RestStreamConfig::new("https://api.example.com", "/v1/orders")
             .name("orders")
             .method(reqwest::Method::GET)
@@ -44,10 +46,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .replication_key("updated_at")
             .start_replication_value(json!("2026-01-01T00:00:00Z"))
             .primary_keys(vec!["id".into()])
-            .schema_sample_size(50)
-            .add_transform(RecordTransform::KeysCase {
-                mode: KeyCaseMode::Snake,
-            }),
+            .schema_sample_size(50),
+    )?;
+    let source = TransformingSource::new(
+        Box::new(inner) as Box<dyn Source>,
+        vec![RecordTransform::KeysCase {
+            mode: KeyCaseMode::Snake,
+        }],
+        Labels::for_named("rest"),
     )?;
 
     let sink = JsonlSink::new(

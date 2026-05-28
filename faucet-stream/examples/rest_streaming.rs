@@ -13,6 +13,8 @@
 
 use std::time::Duration;
 
+use faucet_core::TransformingSource;
+use faucet_core::observability::Labels;
 use faucet_stream::sink::jsonl::{JsonlSink, JsonlSinkConfig};
 use faucet_stream::{
     Auth, DEFAULT_BATCH_SIZE, PaginationStyle, RecordTransform, RestStream, RestStreamConfig,
@@ -21,7 +23,7 @@ use faucet_stream::{
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let source = RestStream::new(
+    let inner = RestStream::new(
         RestStreamConfig::new("https://api.example.com", "/v1/comments")
             .name("comments")
             .auth(Auth::ApiKey {
@@ -36,10 +38,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .max_retries(5)
             .retry_backoff(Duration::from_secs(2))
             .tolerate_http_error(429)
-            .request_delay(Duration::from_millis(100))
-            .add_transform(RecordTransform::Flatten {
-                separator: "__".into(),
-            }),
+            .request_delay(Duration::from_millis(100)),
+    )?;
+    let source = TransformingSource::new(
+        Box::new(inner) as Box<dyn Source>,
+        vec![RecordTransform::Flatten {
+            separator: "__".into(),
+        }],
+        Labels::for_named("rest"),
     )?;
 
     let sink = JsonlSink::new(
