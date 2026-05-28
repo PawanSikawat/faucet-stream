@@ -308,8 +308,12 @@ jobs:
             target
           key: ${{ runner.os }}-coverage-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-coverage-
+      # Cover library unit tests only (`--lib`). The integration tests in
+      # `tests/` spin up Docker testcontainers (Kafka, etc.) whose image pulls
+      # are flaky and are already exercised by the `test` and `kafka-integration`
+      # jobs — running them here too made coverage non-deterministic.
       - name: Generate coverage (lcov)
-        run: cargo llvm-cov --workspace --all-features --lcov --output-path lcov.info
+        run: cargo llvm-cov --workspace --all-features --lib --lcov --output-path lcov.info
       - name: Upload to Codecov
         continue-on-error: true
         uses: codecov/codecov-action@v4
