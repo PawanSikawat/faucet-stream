@@ -81,6 +81,18 @@ impl Source for TransformingSource {
             }
         })
     }
+
+    fn connector_name(&self) -> &'static str {
+        self.inner.connector_name()
+    }
+
+    fn state_key(&self) -> Option<String> {
+        self.inner.state_key()
+    }
+
+    async fn apply_start_bookmark(&self, bookmark: Value) -> Result<(), FaucetError> {
+        self.inner.apply_start_bookmark(bookmark).await
+    }
 }
 
 #[cfg(test)]
@@ -159,10 +171,6 @@ mod tests {
         assert_eq!(records, vec![json!({"foo_bar": 1})]);
         assert_eq!(bookmark, Some(json!("2026-05-28T00:00:00Z")));
     }
-
-    use crate::pipeline::StreamPage;
-    use futures::StreamExt;
-    use std::pin::Pin;
 
     /// Emits records as N predetermined pages with the bookmark only on the last.
     /// Overrides `stream_pages` directly so the test catches whether the wrapper
@@ -271,5 +279,108 @@ mod tests {
         assert!(page.records.is_empty());
         assert_eq!(page.bookmark, Some(json!("v1")));
         assert!(stream.next().await.is_none());
+    }
+
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+
+    struct InstrumentedSource {
+        started: Arc<AtomicBool>,
+    }
+
+    #[async_trait]
+    impl Source for InstrumentedSource {
+        async fn fetch_with_context(
+            &self,
+            _ctx: &HashMap<String, Value>,
+        ) -> Result<Vec<Value>, FaucetError> {
+            Ok(vec![])
+        }
+        fn connector_name(&self) -> &'static str {
+            "instrumented"
+        }
+        fn state_key(&self) -> Option<String> {
+            Some("instrumented::key".to_string())
+        }
+        async fn apply_start_bookmark(&self, _bookmark: Value) -> Result<(), FaucetError> {
+            self.started.store(true, Ordering::Relaxed);
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn connector_name_state_key_and_start_bookmark_delegate_to_inner() {
+        let started = Arc::new(AtomicBool::new(false));
+        let inner = InstrumentedSource {
+            started: started.clone(),
+        };
+        let wrapped = TransformingSource::new(
+            Box::new(inner),
+            vec![RecordTransform::KeysCase {
+                mode: KeyCaseMode::Snake,
+            }],
+            Labels::for_named("test"),
+        )
+        .unwrap();
+        assert_eq!(wrapped.connector_name(), "instrumented");
+        assert_eq!(
+            wrapped.state_key(),
+            Some("instrumented::key".to_string())
+        );
+        wrapped.apply_start_bookmark(json!("bm")).await.unwrap();
+        assert!(started.load(Ordering::Relaxed));
+    }
+
+    #[tokio::test]
+    async fn new_fails_fast_on_invalid_regex() {
+        let inner: Box<dyn Source> = Box::new(MockSource(vec![]));
+        let result = TransformingSource::new(
+            inner,
+            vec![RecordTransform::RenameKeys {
+                pattern: "[invalid".to_string(),
+                replacement: "x".to_string(),
+            }],
+            Labels::for_named("test"),
+        );
+        let err = match result {
+            Ok(_) => panic!("invalid regex must fail at new()"),
+            Err(e) => e,
+        };
+        assert!(matches!(err, FaucetError::Transform(_)));
+    }
+
+    #[tokio::test]
+    async fn custom_closure_transform_runs() {
+        let inner: Box<dyn Source> = Box::new(MockSource(vec![json!({"x": 1})]));
+        let wrapped = TransformingSource::new(
+            inner,
+            vec![RecordTransform::custom(|mut record| {
+                if let Some(obj) = record.as_object_mut() {
+                    obj.insert("added".to_string(), json!(true));
+                }
+                record
+            })],
+            Labels::for_named("test"),
+        )
+        .unwrap();
+        let out = wrapped.fetch_with_context(&HashMap::new()).await.unwrap();
+        assert_eq!(out, vec![json!({"x": 1, "added": true})]);
+    }
+
+    #[tokio::test]
+    async fn usable_as_boxed_dyn_source() {
+        let inner: Box<dyn Source> = Box::new(MockSource(vec![json!({"FooBar": 1})]));
+        let wrapped: Box<dyn Source> = Box::new(
+            TransformingSource::new(
+                inner,
+                vec![RecordTransform::KeysCase {
+                    mode: KeyCaseMode::Snake,
+                }],
+                Labels::for_named("test"),
+            )
+            .unwrap(),
+        );
+        let out = wrapped.fetch_with_context(&HashMap::new()).await.unwrap();
+        assert_eq!(out, vec![json!({"foo_bar": 1})]);
     }
 }
