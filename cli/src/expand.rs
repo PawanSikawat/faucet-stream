@@ -88,12 +88,32 @@ impl<'a> Registry<'a> {
 
         let mut sinks: HashMap<&'a str, &'a ConnectorSpec> = HashMap::new();
         if let Some(default) = spec.sink.as_ref() {
+            if default.transforms.is_some() {
+                return Err(CliError::TransformsOnSink {
+                    name: "default".to_string(),
+                });
+            }
+            if !default.inherit_transforms {
+                return Err(CliError::InheritTransformsOnSink {
+                    name: "default".to_string(),
+                });
+            }
             sinks.insert("default", default);
         }
         for (name, s) in spec.sinks.iter() {
             if sinks.contains_key(name.as_str()) {
                 return Err(CliError::DuplicateTemplate {
                     kind: "sink",
+                    name: name.clone(),
+                });
+            }
+            if s.transforms.is_some() {
+                return Err(CliError::TransformsOnSink {
+                    name: name.clone(),
+                });
+            }
+            if !s.inherit_transforms {
+                return Err(CliError::InheritTransformsOnSink {
                     name: name.clone(),
                 });
             }
@@ -941,5 +961,60 @@ matrix:
         // Both rows share the same sink template but pick different output paths.
         assert_eq!(users.sink.config["path"], "./users.jsonl");
         assert_eq!(orders.sink.config["path"], "./orders.jsonl");
+    }
+
+    #[test]
+    fn sink_template_with_transforms_errors_at_expand() {
+        let yaml = r#"
+version: 1
+pipeline:
+  source:
+    type: rest
+    config: {}
+  sinks:
+    bad:
+      type: jsonl
+      config: { destination: /tmp/x.jsonl }
+      transforms:
+        - { type: flatten, config: { separator: "_" } }
+matrix:
+  - id: row
+    sink: { ref: bad }
+"#;
+        let cfg =
+            crate::config::PipelineConfig::from_text(yaml, std::path::Path::new("test.yaml"))
+                .unwrap();
+        let err = crate::expand::expand(&cfg).expect_err("expected TransformsOnSink");
+        match err {
+            crate::error::CliError::TransformsOnSink { name } => assert_eq!(name, "bad"),
+            other => panic!("expected TransformsOnSink, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn sink_template_with_inherit_transforms_false_errors_at_expand() {
+        let yaml = r#"
+version: 1
+pipeline:
+  source:
+    type: rest
+    config: {}
+  sinks:
+    bad:
+      type: jsonl
+      config: { destination: /tmp/x.jsonl }
+      inherit_transforms: false
+matrix:
+  - id: row
+    sink: { ref: bad }
+"#;
+        let cfg =
+            crate::config::PipelineConfig::from_text(yaml, std::path::Path::new("test.yaml"))
+                .unwrap();
+        let err = crate::expand::expand(&cfg).expect_err("expected InheritTransformsOnSink");
+        match err {
+            crate::error::CliError::InheritTransformsOnSink { name } => assert_eq!(name, "bad"),
+            other => panic!("expected InheritTransformsOnSink, got {other:?}"),
+        }
     }
 }
