@@ -23,6 +23,10 @@ use std::sync::Arc;
 pub enum TransformStage {
     /// Existing 1→1 record transform. Wraps unchanged.
     Map(RecordTransform),
+    /// Predicate-based 1→0|1 stage. Keeps the record iff the predicate
+    /// evaluates true.
+    #[cfg(feature = "transform-filter")]
+    Filter(FilterSpec),
     /// Arbitrary 0..N closure for library callers (not addressable from YAML).
     Custom(Arc<dyn Fn(Value) -> Vec<Value> + Send + Sync>),
 }
@@ -31,6 +35,8 @@ impl std::fmt::Debug for TransformStage {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Map(t) => f.debug_tuple("Map").field(t).finish(),
+            #[cfg(feature = "transform-filter")]
+            Self::Filter(s) => f.debug_tuple("Filter").field(s).finish(),
             Self::Custom(_) => write!(f, "Custom(<fn>)"),
         }
     }
@@ -40,6 +46,8 @@ impl Clone for TransformStage {
     fn clone(&self) -> Self {
         match self {
             Self::Map(t) => Self::Map(t.clone()),
+            #[cfg(feature = "transform-filter")]
+            Self::Filter(s) => Self::Filter(s.clone()),
             Self::Custom(f) => Self::Custom(Arc::clone(f)),
         }
     }
@@ -48,13 +56,32 @@ impl Clone for TransformStage {
 /// Pre-compiled stage. Per-record work is just lookup + comparison + flat-map.
 pub enum CompiledStage {
     Map(CompiledTransform),
+    #[cfg(feature = "transform-filter")]
+    Filter(CompiledFilter),
     Custom(Arc<dyn Fn(Value) -> Vec<Value> + Send + Sync>),
+}
+
+impl std::fmt::Debug for CompiledStage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Map(_) => write!(f, "Map(<compiled>)"),
+            #[cfg(feature = "transform-filter")]
+            Self::Filter(cf) => f.debug_tuple("Filter").field(cf).finish(),
+            Self::Custom(_) => write!(f, "Custom(<fn>)"),
+        }
+    }
 }
 
 impl Clone for CompiledStage {
     fn clone(&self) -> Self {
         match self {
             Self::Map(t) => Self::Map(t.clone()),
+            #[cfg(feature = "transform-filter")]
+            Self::Filter(f) => Self::Filter(CompiledFilter {
+                path: f.path.clone(),
+                op: f.op,
+                value: f.value.clone(),
+            }),
             Self::Custom(f) => Self::Custom(Arc::clone(f)),
         }
     }
@@ -250,10 +277,153 @@ impl CompiledPath {
     }
 }
 
+// ── Filter spec ──
+
+/// Predicate spec for [`TransformStage::Filter`]. Compiled into a
+/// [`CompiledFilter`] at pipeline-build time; per-record work is a single
+/// path resolve + comparison.
+#[cfg(feature = "transform-filter")]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+pub struct FilterSpec {
+    /// JSONPath subset (bare key, dot path, bracketed string key).
+    pub path: String,
+    /// Comparison operator.
+    pub op: FilterOp,
+    /// Required for `eq`, `ne`, `in`, `not_in`. Forbidden for `exists`.
+    /// For `in` / `not_in`, must be a JSON array.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub value: Option<Value>,
+}
+
+/// Comparison operator for [`FilterSpec`].
+#[cfg(feature = "transform-filter")]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq,
+    serde::Serialize, serde::Deserialize, schemars::JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum FilterOp {
+    /// `path == value` (JSON equality; missing path → false).
+    Eq,
+    /// `path != value` (JSON inequality; missing path → true).
+    Ne,
+    /// `path` is present and non-null.
+    Exists,
+    /// `path`'s value is a member of `value` (must be an array).
+    /// Missing path → false.
+    In,
+    /// `path`'s value is NOT a member of `value` (must be an array).
+    /// Missing path → true.
+    NotIn,
+}
+
+/// Pre-compiled filter: path parsed once, value cloned once.
+///
+/// `pub` (rather than the spec's `pub(crate)`) so it can sit inside the
+/// `pub` [`CompiledStage::Filter`] variant without tripping the
+/// `private_interfaces` lint — same shape as the already-`pub`
+/// [`CompiledTransform`] sibling that backs [`CompiledStage::Map`].
+#[cfg(feature = "transform-filter")]
+#[derive(Debug)]
+pub struct CompiledFilter {
+    pub path: CompiledPath,
+    pub op: FilterOp,
+    pub value: Option<Value>,
+}
+
+#[cfg(feature = "transform-filter")]
+impl CompiledFilter {
+    fn compile(spec: &FilterSpec) -> Result<Self, FaucetError> {
+        // Validate op/value combo at compile time so bad configs fail fast.
+        match spec.op {
+            FilterOp::Exists => {
+                if spec.value.is_some() {
+                    return Err(FaucetError::Transform(
+                        "filter: op 'exists' must not have a `value`".to_owned(),
+                    ));
+                }
+            }
+            FilterOp::Eq | FilterOp::Ne => {
+                if spec.value.is_none() {
+                    return Err(FaucetError::Transform(format!(
+                        "filter: op '{:?}' requires a `value`",
+                        spec.op
+                    )));
+                }
+            }
+            FilterOp::In | FilterOp::NotIn => match &spec.value {
+                Some(Value::Array(_)) => {}
+                Some(_) => {
+                    return Err(FaucetError::Transform(format!(
+                        "filter: op '{:?}' requires an array `value`",
+                        spec.op
+                    )));
+                }
+                None => {
+                    return Err(FaucetError::Transform(format!(
+                        "filter: op '{:?}' requires an array `value`",
+                        spec.op
+                    )));
+                }
+            },
+        }
+        let path = CompiledPath::compile(&spec.path).map_err(|e| match e {
+            FaucetError::Transform(msg) => FaucetError::Transform(format!("filter: {msg}")),
+            other => other,
+        })?;
+        Ok(Self {
+            path,
+            op: spec.op,
+            value: spec.value.clone(),
+        })
+    }
+
+    fn evaluate(&self, rec: &Value) -> Result<bool, FaucetError> {
+        let resolved = self.path.resolve(rec)?;
+        Ok(match self.op {
+            FilterOp::Eq => resolved
+                .map(|v| v == self.value.as_ref().unwrap())
+                .unwrap_or(false),
+            FilterOp::Ne => resolved
+                .map(|v| v != self.value.as_ref().unwrap())
+                .unwrap_or(true), // missing → keep
+            FilterOp::Exists => matches!(resolved, Some(v) if !v.is_null()),
+            FilterOp::In => match resolved {
+                Some(v) => {
+                    let arr = self
+                        .value
+                        .as_ref()
+                        .unwrap()
+                        .as_array()
+                        .expect("compile validated");
+                    arr.contains(v)
+                }
+                None => false,
+            },
+            FilterOp::NotIn => match resolved {
+                Some(v) => {
+                    let arr = self
+                        .value
+                        .as_ref()
+                        .unwrap()
+                        .as_array()
+                        .expect("compile validated");
+                    !arr.contains(v)
+                }
+                None => true, // missing → keep
+            },
+        })
+    }
+}
+
 /// Compile a [`TransformStage`] into its [`CompiledStage`] form.
 pub fn compile_stage(s: &TransformStage) -> Result<CompiledStage, FaucetError> {
     match s {
         TransformStage::Map(t) => Ok(CompiledStage::Map(compile_record(t)?)),
+        #[cfg(feature = "transform-filter")]
+        TransformStage::Filter(spec) => {
+            Ok(CompiledStage::Filter(CompiledFilter::compile(spec)?))
+        }
         TransformStage::Custom(f) => Ok(CompiledStage::Custom(Arc::clone(f))),
     }
 }
@@ -277,6 +447,14 @@ pub fn apply_stages(
 fn apply_one_stage(rec: Value, stage: &CompiledStage) -> Result<Vec<Value>, FaucetError> {
     match stage {
         CompiledStage::Map(t) => Ok(vec![crate::transform::apply_all(rec, std::slice::from_ref(t))?]),
+        #[cfg(feature = "transform-filter")]
+        CompiledStage::Filter(f) => {
+            if f.evaluate(&rec)? {
+                Ok(vec![rec])
+            } else {
+                Ok(vec![])
+            }
+        }
         CompiledStage::Custom(f) => Ok(f(rec)),
     }
 }
@@ -445,5 +623,174 @@ mod tests {
             CompiledPath::compile("$['order-lines']").unwrap().last_segment(),
             "order-lines"
         );
+    }
+
+    // ── Filter ──
+
+    #[cfg(feature = "transform-filter")]
+    fn filter(path: &str, op: FilterOp, value: Option<Value>) -> TransformStage {
+        TransformStage::Filter(FilterSpec {
+            path: path.to_owned(),
+            op,
+            value,
+        })
+    }
+
+    #[cfg(feature = "transform-filter")]
+    #[test]
+    fn filter_eq_keeps_matching_drops_non_matching() {
+        let stages = compile(&[filter("status", FilterOp::Eq, Some(json!("active")))]);
+        assert_eq!(
+            apply_stages(json!({"status": "active"}), &stages).unwrap(),
+            vec![json!({"status": "active"})]
+        );
+        assert_eq!(
+            apply_stages(json!({"status": "deleted"}), &stages).unwrap(),
+            Vec::<Value>::new()
+        );
+    }
+
+    #[cfg(feature = "transform-filter")]
+    #[test]
+    fn filter_eq_missing_path_drops() {
+        let stages = compile(&[filter("status", FilterOp::Eq, Some(json!("active")))]);
+        assert_eq!(
+            apply_stages(json!({"other": 1}), &stages).unwrap(),
+            Vec::<Value>::new()
+        );
+    }
+
+    #[cfg(feature = "transform-filter")]
+    #[test]
+    fn filter_ne_keeps_missing_path() {
+        let stages = compile(&[filter("deleted", FilterOp::Ne, Some(json!(true)))]);
+        // "not equal to true" — record without the key is "satisfied by absence"
+        assert_eq!(
+            apply_stages(json!({"id": 1}), &stages).unwrap(),
+            vec![json!({"id": 1})]
+        );
+        // explicit deleted=true → drop
+        assert_eq!(
+            apply_stages(json!({"id": 1, "deleted": true}), &stages).unwrap(),
+            Vec::<Value>::new()
+        );
+        // explicit deleted=false → keep
+        assert_eq!(
+            apply_stages(json!({"id": 1, "deleted": false}), &stages).unwrap(),
+            vec![json!({"id": 1, "deleted": false})]
+        );
+    }
+
+    #[cfg(feature = "transform-filter")]
+    #[test]
+    fn filter_exists_requires_non_null_value() {
+        let stages = compile(&[filter("status", FilterOp::Exists, None)]);
+        assert_eq!(
+            apply_stages(json!({"status": "active"}), &stages).unwrap(),
+            vec![json!({"status": "active"})]
+        );
+        assert_eq!(
+            apply_stages(json!({"status": null}), &stages).unwrap(),
+            Vec::<Value>::new()
+        );
+        assert_eq!(
+            apply_stages(json!({}), &stages).unwrap(),
+            Vec::<Value>::new()
+        );
+    }
+
+    #[cfg(feature = "transform-filter")]
+    #[test]
+    fn filter_in_keeps_when_member() {
+        let stages = compile(&[filter(
+            "status",
+            FilterOp::In,
+            Some(json!(["active", "pending"])),
+        )]);
+        assert_eq!(
+            apply_stages(json!({"status": "active"}), &stages).unwrap(),
+            vec![json!({"status": "active"})]
+        );
+        assert_eq!(
+            apply_stages(json!({"status": "closed"}), &stages).unwrap(),
+            Vec::<Value>::new()
+        );
+        assert_eq!(
+            apply_stages(json!({}), &stages).unwrap(),
+            Vec::<Value>::new()
+        );
+    }
+
+    #[cfg(feature = "transform-filter")]
+    #[test]
+    fn filter_not_in_keeps_when_not_member_or_missing() {
+        let stages = compile(&[filter(
+            "status",
+            FilterOp::NotIn,
+            Some(json!(["banned", "deleted"])),
+        )]);
+        assert_eq!(
+            apply_stages(json!({"status": "active"}), &stages).unwrap(),
+            vec![json!({"status": "active"})]
+        );
+        assert_eq!(
+            apply_stages(json!({"status": "banned"}), &stages).unwrap(),
+            Vec::<Value>::new()
+        );
+        // missing path → keep
+        assert_eq!(
+            apply_stages(json!({}), &stages).unwrap(),
+            vec![json!({})]
+        );
+    }
+
+    #[cfg(feature = "transform-filter")]
+    #[test]
+    fn filter_type_strict_no_coercion() {
+        // string "5" eq number 5 → false
+        let stages = compile(&[filter("v", FilterOp::Eq, Some(json!(5)))]);
+        assert_eq!(
+            apply_stages(json!({"v": "5"}), &stages).unwrap(),
+            Vec::<Value>::new()
+        );
+        assert_eq!(
+            apply_stages(json!({"v": 5}), &stages).unwrap(),
+            vec![json!({"v": 5})]
+        );
+    }
+
+    #[cfg(feature = "transform-filter")]
+    #[test]
+    fn filter_compile_rejects_in_with_non_array_value() {
+        let err = compile_stage(&filter("v", FilterOp::In, Some(json!("notarray"))))
+            .expect_err("non-array value");
+        assert!(matches!(err, FaucetError::Transform(_)));
+        assert!(format!("{err}").contains("requires an array"));
+    }
+
+    #[cfg(feature = "transform-filter")]
+    #[test]
+    fn filter_compile_rejects_exists_with_value() {
+        let err = compile_stage(&filter("v", FilterOp::Exists, Some(json!("x"))))
+            .expect_err("exists with value");
+        assert!(matches!(err, FaucetError::Transform(_)));
+        assert!(format!("{err}").contains("'exists'"));
+    }
+
+    #[cfg(feature = "transform-filter")]
+    #[test]
+    fn filter_compile_rejects_eq_with_missing_value() {
+        let err = compile_stage(&filter("v", FilterOp::Eq, None))
+            .expect_err("eq requires value");
+        assert!(matches!(err, FaucetError::Transform(_)));
+        assert!(format!("{err}").contains("requires a"));
+    }
+
+    #[cfg(feature = "transform-filter")]
+    #[test]
+    fn filter_compile_rejects_bad_path() {
+        let err = compile_stage(&filter("$..nope", FilterOp::Exists, None))
+            .expect_err("bad path");
+        assert!(matches!(err, FaucetError::Transform(_)));
     }
 }
