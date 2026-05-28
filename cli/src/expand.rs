@@ -317,10 +317,23 @@ pub fn expand(cfg: &PipelineConfig) -> CliResult<Vec<ExpandedNode>> {
         collect_deferred(&merged_sink.config, &mut deferred);
 
         // Resolve transforms, state, and DLQ (row overrides win over base).
-        let transforms = row
-            .transforms
-            .clone()
-            .unwrap_or_else(|| cfg.pipeline.transforms.clone());
+        // Three-layer additive resolution:
+        //   T_pipeline ++ T_source ++ T_row
+        // gated on each layer's `inherit_transforms` flag.
+        let src_inherit = merged_source.inherit_transforms;
+        let row_inherit = row.inherit_transforms;
+        let mut transforms: Vec<TransformSpec> = Vec::new();
+        if src_inherit && row_inherit {
+            transforms.extend(cfg.pipeline.transforms.iter().cloned());
+        }
+        if row_inherit {
+            if let Some(src_ts) = merged_source.transforms.as_ref() {
+                transforms.extend(src_ts.iter().cloned());
+            }
+        }
+        if let Some(row_ts) = row.transforms.as_ref() {
+            transforms.extend(row_ts.iter().cloned());
+        }
         let state = row.state.clone().or_else(|| cfg.pipeline.state.clone());
         // Three-state match: Some(None) = disable, Some(Some(spec)) = replace,
         // None = inherit. The naive `.flatten().or_else()` would conflate
@@ -1016,5 +1029,154 @@ matrix:
             crate::error::CliError::InheritTransformsOnSink { name } => assert_eq!(name, "bad"),
             other => panic!("expected InheritTransformsOnSink, got {other:?}"),
         }
+    }
+
+    fn kinds(transforms: &[crate::config::TransformSpec]) -> Vec<String> {
+        transforms.iter().map(|t| t.kind.clone()).collect()
+    }
+
+    #[test]
+    fn three_layer_concat_default_inherit() {
+        let yaml = r#"
+version: 1
+pipeline:
+  transforms:
+    - { type: flatten, config: { separator: "_" } }
+  sources:
+    s:
+      type: rest
+      config: {}
+      transforms:
+        - { type: keys_case, config: { mode: snake } }
+  sink:
+    type: jsonl
+    config: { destination: /tmp/x.jsonl }
+matrix:
+  - id: row
+    source: { ref: s }
+    transforms:
+      - { type: select, config: { fields: [id] } }
+"#;
+        let cfg =
+            crate::config::PipelineConfig::from_text(yaml, std::path::Path::new("test.yaml"))
+                .unwrap();
+        let nodes = crate::expand::expand(&cfg).unwrap();
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(
+            kinds(&nodes[0].transforms),
+            vec!["flatten", "keys_case", "select"]
+        );
+    }
+
+    #[test]
+    fn source_inherit_false_drops_pipeline_layer() {
+        let yaml = r#"
+version: 1
+pipeline:
+  transforms:
+    - { type: flatten, config: { separator: "_" } }
+  sources:
+    s:
+      type: rest
+      config: {}
+      inherit_transforms: false
+      transforms:
+        - { type: keys_case, config: { mode: snake } }
+  sink:
+    type: jsonl
+    config: { destination: /tmp/x.jsonl }
+matrix:
+  - id: row
+    source: { ref: s }
+    transforms:
+      - { type: select, config: { fields: [id] } }
+"#;
+        let cfg =
+            crate::config::PipelineConfig::from_text(yaml, std::path::Path::new("test.yaml"))
+                .unwrap();
+        let nodes = crate::expand::expand(&cfg).unwrap();
+        assert_eq!(kinds(&nodes[0].transforms), vec!["keys_case", "select"]);
+    }
+
+    #[test]
+    fn row_inherit_false_drops_pipeline_and_source_layers() {
+        let yaml = r#"
+version: 1
+pipeline:
+  transforms:
+    - { type: flatten, config: { separator: "_" } }
+  sources:
+    s:
+      type: rest
+      config: {}
+      transforms:
+        - { type: keys_case, config: { mode: snake } }
+  sink:
+    type: jsonl
+    config: { destination: /tmp/x.jsonl }
+matrix:
+  - id: row
+    source: { ref: s }
+    inherit_transforms: false
+    transforms:
+      - { type: select, config: { fields: [id] } }
+"#;
+        let cfg =
+            crate::config::PipelineConfig::from_text(yaml, std::path::Path::new("test.yaml"))
+                .unwrap();
+        let nodes = crate::expand::expand(&cfg).unwrap();
+        assert_eq!(kinds(&nodes[0].transforms), vec!["select"]);
+    }
+
+    #[test]
+    fn both_inherit_false_yields_row_only() {
+        let yaml = r#"
+version: 1
+pipeline:
+  transforms:
+    - { type: flatten, config: { separator: "_" } }
+  sources:
+    s:
+      type: rest
+      config: {}
+      inherit_transforms: false
+      transforms:
+        - { type: keys_case, config: { mode: snake } }
+  sink:
+    type: jsonl
+    config: { destination: /tmp/x.jsonl }
+matrix:
+  - id: row
+    source: { ref: s }
+    inherit_transforms: false
+    transforms:
+      - { type: select, config: { fields: [id] } }
+"#;
+        let cfg =
+            crate::config::PipelineConfig::from_text(yaml, std::path::Path::new("test.yaml"))
+                .unwrap();
+        let nodes = crate::expand::expand(&cfg).unwrap();
+        assert_eq!(kinds(&nodes[0].transforms), vec!["select"]);
+    }
+
+    #[test]
+    fn all_layers_omitted_yields_empty_transforms() {
+        let yaml = r#"
+version: 1
+pipeline:
+  source:
+    type: rest
+    config: {}
+  sink:
+    type: jsonl
+    config: { destination: /tmp/x.jsonl }
+matrix:
+  - id: row
+"#;
+        let cfg =
+            crate::config::PipelineConfig::from_text(yaml, std::path::Path::new("test.yaml"))
+                .unwrap();
+        let nodes = crate::expand::expand(&cfg).unwrap();
+        assert!(nodes[0].transforms.is_empty());
     }
 }

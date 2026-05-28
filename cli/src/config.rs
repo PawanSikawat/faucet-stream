@@ -16,7 +16,7 @@
 //!     parent_key: <jsonpath>   # default "id"
 //!     source: { ... }     # partial override, deep-merged into pipeline.source
 //!     sink:   { ... }
-//!     transforms: [...]   # if Some, replaces pipeline.transforms wholesale
+//!     transforms: [...]   # row-level transforms, appended after pipeline + source layers
 //!     state:  { ... }     # if Some, replaces pipeline.state wholesale
 //! execution:              # optional
 //!   max_concurrent: <usize>
