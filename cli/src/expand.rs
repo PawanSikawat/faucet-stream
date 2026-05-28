@@ -108,14 +108,10 @@ impl<'a> Registry<'a> {
                 });
             }
             if s.transforms.is_some() {
-                return Err(CliError::TransformsOnSink {
-                    name: name.clone(),
-                });
+                return Err(CliError::TransformsOnSink { name: name.clone() });
             }
             if !s.inherit_transforms {
-                return Err(CliError::InheritTransformsOnSink {
-                    name: name.clone(),
-                });
+                return Err(CliError::InheritTransformsOnSink { name: name.clone() });
             }
             sinks.insert(name.as_str(), s);
         }
@@ -992,9 +988,8 @@ matrix:
   - id: row
     sink: { ref: bad }
 "#;
-        let cfg =
-            crate::config::PipelineConfig::from_text(yaml, std::path::Path::new("test.yaml"))
-                .unwrap();
+        let cfg = crate::config::PipelineConfig::from_text(yaml, std::path::Path::new("test.yaml"))
+            .unwrap();
         let err = crate::expand::expand(&cfg).expect_err("expected TransformsOnSink");
         match err {
             crate::error::CliError::TransformsOnSink { name } => assert_eq!(name, "bad"),
@@ -1019,9 +1014,8 @@ matrix:
   - id: row
     sink: { ref: bad }
 "#;
-        let cfg =
-            crate::config::PipelineConfig::from_text(yaml, std::path::Path::new("test.yaml"))
-                .unwrap();
+        let cfg = crate::config::PipelineConfig::from_text(yaml, std::path::Path::new("test.yaml"))
+            .unwrap();
         let err = crate::expand::expand(&cfg).expect_err("expected InheritTransformsOnSink");
         match err {
             crate::error::CliError::InheritTransformsOnSink { name } => assert_eq!(name, "bad"),
@@ -1055,9 +1049,8 @@ matrix:
     transforms:
       - { type: select, config: { fields: [id] } }
 "#;
-        let cfg =
-            crate::config::PipelineConfig::from_text(yaml, std::path::Path::new("test.yaml"))
-                .unwrap();
+        let cfg = crate::config::PipelineConfig::from_text(yaml, std::path::Path::new("test.yaml"))
+            .unwrap();
         let nodes = crate::expand::expand(&cfg).unwrap();
         assert_eq!(nodes.len(), 1);
         assert_eq!(
@@ -1089,9 +1082,8 @@ matrix:
     transforms:
       - { type: select, config: { fields: [id] } }
 "#;
-        let cfg =
-            crate::config::PipelineConfig::from_text(yaml, std::path::Path::new("test.yaml"))
-                .unwrap();
+        let cfg = crate::config::PipelineConfig::from_text(yaml, std::path::Path::new("test.yaml"))
+            .unwrap();
         let nodes = crate::expand::expand(&cfg).unwrap();
         assert_eq!(kinds(&nodes[0].transforms), vec!["keys_case", "select"]);
     }
@@ -1119,9 +1111,8 @@ matrix:
     transforms:
       - { type: select, config: { fields: [id] } }
 "#;
-        let cfg =
-            crate::config::PipelineConfig::from_text(yaml, std::path::Path::new("test.yaml"))
-                .unwrap();
+        let cfg = crate::config::PipelineConfig::from_text(yaml, std::path::Path::new("test.yaml"))
+            .unwrap();
         let nodes = crate::expand::expand(&cfg).unwrap();
         assert_eq!(kinds(&nodes[0].transforms), vec!["select"]);
     }
@@ -1150,9 +1141,8 @@ matrix:
     transforms:
       - { type: select, config: { fields: [id] } }
 "#;
-        let cfg =
-            crate::config::PipelineConfig::from_text(yaml, std::path::Path::new("test.yaml"))
-                .unwrap();
+        let cfg = crate::config::PipelineConfig::from_text(yaml, std::path::Path::new("test.yaml"))
+            .unwrap();
         let nodes = crate::expand::expand(&cfg).unwrap();
         assert_eq!(kinds(&nodes[0].transforms), vec!["select"]);
     }
@@ -1171,9 +1161,8 @@ pipeline:
 matrix:
   - id: row
 "#;
-        let cfg =
-            crate::config::PipelineConfig::from_text(yaml, std::path::Path::new("test.yaml"))
-                .unwrap();
+        let cfg = crate::config::PipelineConfig::from_text(yaml, std::path::Path::new("test.yaml"))
+            .unwrap();
         let nodes = crate::expand::expand(&cfg).unwrap();
         assert!(nodes[0].transforms.is_empty());
     }
