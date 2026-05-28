@@ -12,12 +12,10 @@
 
 use std::time::Duration;
 
-use faucet_core::TransformingSource;
-use faucet_core::observability::Labels;
 use faucet_stream::sink::jsonl::{JsonlSink, JsonlSinkConfig};
 use faucet_stream::{
-    Auth, KeyCaseMode, PaginationStyle, Pipeline, RecordTransform, ReplicationMethod, RestStream,
-    RestStreamConfig, Source, json,
+    Auth, KeyCaseMode, Labels, PaginationStyle, Pipeline, RecordTransform, ReplicationMethod,
+    RestStream, RestStreamConfig, Source, TransformingSource, json,
 };
 
 #[tokio::main]

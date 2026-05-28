@@ -49,6 +49,11 @@
 // Always re-export core types and traits.
 pub use faucet_core::*;
 
+// Explicit re-exports for the library-side transforms wrapper and observability
+// labels so users can import them via the umbrella path.
+pub use faucet_core::TransformingSource;
+pub use faucet_core::observability::Labels;
+
 // ── Source connectors ────────────────────────────────────────────────────────
 
 #[cfg(feature = "source-rest")]
