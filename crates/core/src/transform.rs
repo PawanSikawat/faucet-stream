@@ -440,6 +440,66 @@ impl Clone for RecordTransform {
     }
 }
 
+// Arc<dyn Fn> is Clone (bumps refcount) but #[derive(Clone)] can't see that,
+// so we implement Clone manually.
+impl Clone for CompiledTransform {
+    fn clone(&self) -> Self {
+        match self {
+            #[cfg(feature = "transform-flatten")]
+            Self::Flatten { separator } => Self::Flatten {
+                separator: separator.clone(),
+            },
+            #[cfg(feature = "transform-rename-keys")]
+            Self::RenameKeys { re, replacement } => Self::RenameKeys {
+                re: re.clone(),
+                replacement: replacement.clone(),
+            },
+            #[cfg(feature = "transform-keys-case")]
+            Self::KeysCase { mode } => Self::KeysCase { mode: *mode },
+            #[cfg(feature = "transform-select")]
+            Self::Select { fields } => Self::Select {
+                fields: fields.clone(),
+            },
+            #[cfg(feature = "transform-drop")]
+            Self::Drop { fields } => Self::Drop {
+                fields: fields.clone(),
+            },
+            #[cfg(feature = "transform-set")]
+            Self::Set { values } => Self::Set {
+                values: values.clone(),
+            },
+            #[cfg(feature = "transform-rename-field")]
+            Self::RenameField { fields } => Self::RenameField {
+                fields: fields.clone(),
+            },
+            #[cfg(feature = "transform-cast")]
+            Self::Cast { fields, on_error } => Self::Cast {
+                fields: fields.clone(),
+                on_error: *on_error,
+            },
+            #[cfg(feature = "transform-redact")]
+            Self::Redact { fields, mask } => Self::Redact {
+                fields: fields.clone(),
+                mask: mask.clone(),
+            },
+            #[cfg(feature = "transform-value-case")]
+            Self::ValueCase { fields, mode } => Self::ValueCase {
+                fields: fields.clone(),
+                mode: *mode,
+            },
+            #[cfg(feature = "transform-spell-symbols")]
+            Self::SpellSymbols {
+                replacements,
+                separator,
+            } => Self::SpellSymbols {
+                replacements: replacements.clone(),
+                separator: separator.clone(),
+            },
+            Self::Custom(f) => Self::Custom(Arc::clone(f)),
+        }
+    }
+}
+
 impl RecordTransform {
     /// Create a custom transform from any function or closure.
     ///
@@ -479,7 +539,6 @@ impl RecordTransform {
 /// Stored inside a source (e.g. the REST source's `RestStream`) so that regex
 /// patterns are compiled exactly once (at construction time) rather than once
 /// per record.
-#[derive(Clone)]
 pub enum CompiledTransform {
     #[cfg(feature = "transform-flatten")]
     Flatten {

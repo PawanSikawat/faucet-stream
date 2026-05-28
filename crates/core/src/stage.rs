@@ -7,7 +7,7 @@
 //! - [`TransformStage::Explode`] expands an array field into 1→0..N output
 //!   records (added in Task 5).
 //! - [`TransformStage::Custom`] is an `Fn(Value) -> Vec<Value>` closure
-//!   escape hatch for library callers (added in Task 6).
+//!   escape hatch for library callers.
 //!
 //! [`apply_stages`] is the per-record runner: it flat-maps stages left to
 //! right, so order matters (a `Filter` after an `Explode` filters children).
