@@ -1,12 +1,12 @@
-//! Wrap any [`Source`] with a fixed list of [`RecordTransform`]s applied to
+//! Wrap any [`Source`] with a fixed list of [`TransformStage`]s applied to
 //! every emitted record. The canonical way for library callers to attach
 //! transforms; the CLI uses this same type internally.
 
 use crate::error::FaucetError;
-use crate::observability::{Labels, instrumented_apply_all};
+use crate::observability::{Labels, instrumented_apply_stages};
 use crate::pipeline::StreamPage;
+use crate::stage::{CompiledStage, TransformStage, compile_stage};
 use crate::traits::Source;
-use crate::transform::{CompiledTransform, RecordTransform, compile};
 use async_trait::async_trait;
 use futures::StreamExt;
 use futures_core::Stream;
@@ -14,47 +14,48 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::pin::Pin;
 
-/// Source decorator that applies a fixed list of compiled transforms to every
+/// Source decorator that applies a fixed list of compiled stages to every
 /// record. Emits `faucet_transform_*` metrics per page via
-/// [`instrumented_apply_all`].
+/// [`instrumented_apply_stages`].
 ///
 /// # Example
 ///
 /// ```no_run
 /// use faucet_core::{RecordTransform, Source, TransformingSource};
 /// use faucet_core::observability::Labels;
+/// use faucet_core::stage::TransformStage;
 /// use faucet_core::transform::KeyCaseMode;
 ///
 /// # fn build_inner() -> Box<dyn Source> { unimplemented!() }
 /// let inner: Box<dyn Source> = build_inner();
 /// let wrapped = TransformingSource::new(
 ///     inner,
-///     vec![RecordTransform::KeysCase { mode: KeyCaseMode::Snake }],
+///     vec![TransformStage::Map(RecordTransform::KeysCase { mode: KeyCaseMode::Snake })],
 ///     Labels::for_named("rest"),
 /// ).unwrap();
 /// ```
 pub struct TransformingSource {
     inner: Box<dyn Source>,
-    transforms: Vec<CompiledTransform>,
+    stages: Vec<CompiledStage>,
     labels: Labels,
 }
 
 impl TransformingSource {
-    /// Compile `transforms` and wrap `inner`. Returns
-    /// [`FaucetError::Transform`] if any transform's compilation fails (e.g.
+    /// Compile `stages` and wrap `inner`. Returns
+    /// [`FaucetError::Transform`] if any stage's compilation fails (e.g.
     /// invalid regex in `RenameKeys`).
     pub fn new(
         inner: Box<dyn Source>,
-        transforms: Vec<RecordTransform>,
+        stages: Vec<TransformStage>,
         labels: Labels,
     ) -> Result<Self, FaucetError> {
-        let compiled = transforms
+        let compiled = stages
             .iter()
-            .map(compile)
+            .map(compile_stage)
             .collect::<Result<Vec<_>, _>>()?;
         Ok(Self {
             inner,
-            transforms: compiled,
+            stages: compiled,
             labels,
         })
     }
@@ -67,7 +68,7 @@ impl Source for TransformingSource {
         ctx: &HashMap<String, Value>,
     ) -> Result<Vec<Value>, FaucetError> {
         let records = self.inner.fetch_with_context(ctx).await?;
-        instrumented_apply_all(records, &self.transforms, &self.labels)
+        instrumented_apply_stages(records, &self.stages, &self.labels)
     }
 
     async fn fetch_with_context_incremental(
@@ -75,7 +76,7 @@ impl Source for TransformingSource {
         ctx: &HashMap<String, Value>,
     ) -> Result<(Vec<Value>, Option<Value>), FaucetError> {
         let (records, bookmark) = self.inner.fetch_with_context_incremental(ctx).await?;
-        let transformed = instrumented_apply_all(records, &self.transforms, &self.labels)?;
+        let transformed = instrumented_apply_stages(records, &self.stages, &self.labels)?;
         Ok((transformed, bookmark))
     }
 
@@ -88,9 +89,9 @@ impl Source for TransformingSource {
             let mut inner_stream = self.inner.stream_pages(ctx, batch_size);
             while let Some(page) = inner_stream.next().await {
                 let page = page?;
-                let transformed = instrumented_apply_all(
+                let transformed = instrumented_apply_stages(
                     page.records,
-                    &self.transforms,
+                    &self.stages,
                     &self.labels,
                 )?;
                 yield StreamPage { records: transformed, bookmark: page.bookmark };
@@ -114,7 +115,8 @@ impl Source for TransformingSource {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::transform::KeyCaseMode;
+    use crate::stage::TransformStage;
+    use crate::transform::{KeyCaseMode, RecordTransform};
     use serde_json::json;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -136,9 +138,9 @@ mod tests {
         let inner: Box<dyn Source> = Box::new(MockSource(vec![json!({"FooBar": 1})]));
         let wrapped = TransformingSource::new(
             inner,
-            vec![RecordTransform::KeysCase {
+            vec![TransformStage::Map(RecordTransform::KeysCase {
                 mode: KeyCaseMode::Snake,
-            }],
+            })],
             Labels::for_named("test"),
         )
         .expect("compile succeeds");
@@ -176,9 +178,9 @@ mod tests {
         });
         let wrapped = TransformingSource::new(
             inner,
-            vec![RecordTransform::KeysCase {
+            vec![TransformStage::Map(RecordTransform::KeysCase {
                 mode: KeyCaseMode::Snake,
-            }],
+            })],
             Labels::for_named("test"),
         )
         .unwrap();
@@ -238,9 +240,9 @@ mod tests {
         });
         let wrapped = TransformingSource::new(
             inner,
-            vec![RecordTransform::KeysCase {
+            vec![TransformStage::Map(RecordTransform::KeysCase {
                 mode: KeyCaseMode::Snake,
-            }],
+            })],
             Labels::for_named("test"),
         )
         .unwrap();
@@ -286,9 +288,9 @@ mod tests {
         }
         let wrapped = TransformingSource::new(
             Box::new(EmptyWithBookmark),
-            vec![RecordTransform::KeysCase {
+            vec![TransformStage::Map(RecordTransform::KeysCase {
                 mode: KeyCaseMode::Snake,
-            }],
+            })],
             Labels::for_named("test"),
         )
         .unwrap();
@@ -332,9 +334,9 @@ mod tests {
         };
         let wrapped = TransformingSource::new(
             Box::new(inner),
-            vec![RecordTransform::KeysCase {
+            vec![TransformStage::Map(RecordTransform::KeysCase {
                 mode: KeyCaseMode::Snake,
-            }],
+            })],
             Labels::for_named("test"),
         )
         .unwrap();
@@ -349,10 +351,10 @@ mod tests {
         let inner: Box<dyn Source> = Box::new(MockSource(vec![]));
         let result = TransformingSource::new(
             inner,
-            vec![RecordTransform::RenameKeys {
+            vec![TransformStage::Map(RecordTransform::RenameKeys {
                 pattern: "[invalid".to_string(),
                 replacement: "x".to_string(),
-            }],
+            })],
             Labels::for_named("test"),
         );
         let err = match result {
@@ -367,12 +369,12 @@ mod tests {
         let inner: Box<dyn Source> = Box::new(MockSource(vec![json!({"x": 1})]));
         let wrapped = TransformingSource::new(
             inner,
-            vec![RecordTransform::custom(|mut record| {
+            vec![TransformStage::Map(RecordTransform::custom(|mut record| {
                 if let Some(obj) = record.as_object_mut() {
                     obj.insert("added".to_string(), json!(true));
                 }
                 record
-            })],
+            }))],
             Labels::for_named("test"),
         )
         .unwrap();
@@ -386,9 +388,9 @@ mod tests {
         let wrapped: Box<dyn Source> = Box::new(
             TransformingSource::new(
                 inner,
-                vec![RecordTransform::KeysCase {
+                vec![TransformStage::Map(RecordTransform::KeysCase {
                     mode: KeyCaseMode::Snake,
-                }],
+                })],
                 Labels::for_named("test"),
             )
             .unwrap(),
