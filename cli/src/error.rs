@@ -191,6 +191,20 @@ pub enum CliError {
     )]
     DuplicateTemplate { kind: &'static str, name: String },
 
+    /// A sink template carries a `transforms:` field, which only sources support.
+    #[error(
+        "sink template '{name}' has `transforms:` — sinks cannot carry transforms; \
+         declare transforms on the source template, pipeline, or matrix row instead"
+    )]
+    TransformsOnSink { name: String },
+
+    /// A sink template carries `inherit_transforms:`, which only sources support.
+    #[error(
+        "sink template '{name}' has `inherit_transforms:` — sinks cannot carry the \
+         transform-inheritance flag; remove it"
+    )]
+    InheritTransformsOnSink { name: String },
+
     /// A cycle was detected resolving `${vars.X}` / `${sources.X.PATH}` /
     /// `${sinks.X.PATH}` references at load time.
     #[error("interpolation cycle: {}", chain.join(" -> "))]
