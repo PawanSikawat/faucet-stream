@@ -24,6 +24,7 @@ pub mod schema;
 pub mod state;
 pub mod traits;
 pub mod transform;
+pub mod transforming_source;
 pub mod util;
 
 #[cfg(feature = "compression")]
