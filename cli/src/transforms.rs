@@ -128,6 +128,29 @@ struct FilterConfig {
     value: Option<Value>,
 }
 
+#[cfg(feature = "transform-explode")]
+#[derive(Debug, Deserialize, JsonSchema)]
+struct ExplodeConfig {
+    /// JSONPath subset: bare key, dot path, or bracketed string key.
+    path: String,
+    /// Prefix prepended to object-element fields. Defaults to the last
+    /// segment of `path`. Empty string = pure LATERAL FLATTEN (no prefix).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    prefix: Option<String>,
+    /// Separator between prefix and element field key. Default `"_"`.
+    #[serde(default = "default_explode_separator_cli")]
+    separator: String,
+    /// `passthrough` (default), `drop`, or `error` when path doesn't yield a
+    /// non-empty array.
+    #[serde(default)]
+    on_missing: faucet_core::OnMissing,
+}
+
+#[cfg(feature = "transform-explode")]
+fn default_explode_separator_cli() -> String {
+    "_".to_owned()
+}
+
 /// One row in the transform registry — the single source of truth for every
 /// built-in transform's kind, one-line description, JSON Schema, and
 /// `TransformSpec → TransformStage` decoder. `compile_one`,
@@ -288,6 +311,32 @@ fn registry() -> Vec<TransformDef> {
                         path: cfg.path,
                         op: cfg.op,
                         value: cfg.value,
+                    });
+                    faucet_core::compile_stage(&stage).map_err(|e| match e {
+                        faucet_core::FaucetError::Transform(msg) => CliError::InvalidTransform {
+                            name: kind.to_owned(),
+                            message: msg,
+                        },
+                        other => CliError::InvalidTransform {
+                            name: kind.to_owned(),
+                            message: format!("{other}"),
+                        },
+                    })?;
+                    Ok(stage)
+                },
+            },
+            #[cfg(feature = "transform-explode")]
+            TransformDef {
+                kind: "explode",
+                description: "Expand an array field into one record per element.",
+                schema_fn: || schema::<ExplodeConfig>(),
+                compile_fn: |kind, config| {
+                    let cfg = decode::<ExplodeConfig>(kind, config)?;
+                    let stage = TransformStage::Explode(faucet_core::ExplodeSpec {
+                        path: cfg.path,
+                        prefix: cfg.prefix,
+                        separator: cfg.separator,
+                        on_missing: cfg.on_missing,
                     });
                     faucet_core::compile_stage(&stage).map_err(|e| match e {
                         faucet_core::FaucetError::Transform(msg) => CliError::InvalidTransform {
@@ -596,6 +645,8 @@ mod tests {
             "redact",
             "value_case",
             "spell_symbols",
+            "filter",
+            "explode",
         ] {
             assert!(names.contains(&expected), "missing {expected}");
         }
@@ -710,6 +761,62 @@ mod tests {
         let err = compile_transforms(&specs).unwrap_err();
         match err {
             CliError::InvalidTransform { name, .. } => assert_eq!(name, "filter"),
+            other => panic!("expected InvalidTransform, got {other:?}"),
+        }
+    }
+
+    #[cfg(feature = "transform-explode")]
+    #[test]
+    fn compiles_explode_with_defaults() {
+        let specs = vec![TransformSpec {
+            kind: "explode".into(),
+            config: json!({"path": "items"}),
+        }];
+        let out = compile_transforms(&specs).unwrap();
+        assert_eq!(out.len(), 1);
+        assert!(matches!(out[0], TransformStage::Explode(_)));
+    }
+
+    #[cfg(feature = "transform-explode")]
+    #[test]
+    fn compiles_explode_with_custom_prefix_and_on_missing() {
+        let specs = vec![TransformSpec {
+            kind: "explode".into(),
+            config: json!({
+                "path": "items",
+                "prefix": "item",
+                "separator": "_",
+                "on_missing": "drop"
+            }),
+        }];
+        let out = compile_transforms(&specs).unwrap();
+        assert_eq!(out.len(), 1);
+    }
+
+    #[cfg(feature = "transform-explode")]
+    #[test]
+    fn explode_rejects_bad_path() {
+        let specs = vec![TransformSpec {
+            kind: "explode".into(),
+            config: json!({"path": "$..items"}),
+        }];
+        let err = compile_transforms(&specs).unwrap_err();
+        match err {
+            CliError::InvalidTransform { name, .. } => assert_eq!(name, "explode"),
+            other => panic!("expected InvalidTransform, got {other:?}"),
+        }
+    }
+
+    #[cfg(feature = "transform-explode")]
+    #[test]
+    fn explode_rejects_invalid_on_missing() {
+        let specs = vec![TransformSpec {
+            kind: "explode".into(),
+            config: json!({"path": "items", "on_missing": "explode_harder"}),
+        }];
+        let err = compile_transforms(&specs).unwrap_err();
+        match err {
+            CliError::InvalidTransform { name, .. } => assert_eq!(name, "explode"),
             other => panic!("expected InvalidTransform, got {other:?}"),
         }
     }
