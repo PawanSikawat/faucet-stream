@@ -23,14 +23,13 @@ use serde::{Deserialize, Serialize};
 
 /// Authentication method for Snowflake.
 ///
-/// **Wire-format note:** the `#[serde(tag = "type")]` discriminator uses
-/// PascalCase variant names (`"KeyPair"`, `"OAuth"`) for byte-compatibility
-/// with existing YAML configs that predate the extraction of this crate
-/// from `faucet-sink-snowflake`. Do not add
-/// `#[serde(rename_all = "snake_case")]` here — it would silently break those
-/// configs.
+/// Serializes as `{ type: <method>, config: { … } }` (adjacent tagging,
+/// snake_case discriminators) — the consistent auth wire shape shared by
+/// every faucet connector. `key_pair` is stateless (JWT minted locally);
+/// `o_auth` carries a bearer token (and can be supplied via a shared
+/// `auth: { ref }` provider).
 #[derive(Clone, Serialize, Deserialize, JsonSchema)]
-#[serde(tag = "type")]
+#[serde(tag = "type", content = "config", rename_all = "snake_case")]
 pub enum SnowflakeAuth {
     /// JWT key-pair authentication.
     ///
@@ -43,6 +42,7 @@ pub enum SnowflakeAuth {
         private_key_pem: String,
     },
     /// OAuth2 bearer token (e.g. from an external identity provider).
+    #[serde(rename = "oauth")]
     OAuth { token: String },
 }
 
@@ -181,14 +181,14 @@ mod tests {
     fn serde_round_trip_oauth() {
         let auth = SnowflakeAuth::OAuth { token: "t".into() };
         let json = serde_json::to_string(&auth).unwrap();
-        assert_eq!(json, r#"{"type":"OAuth","token":"t"}"#);
+        assert_eq!(json, r#"{"type":"oauth","config":{"token":"t"}}"#);
         let parsed: SnowflakeAuth = serde_json::from_str(&json).unwrap();
         assert!(matches!(parsed, SnowflakeAuth::OAuth { .. }));
     }
 
     #[test]
     fn serde_round_trip_key_pair() {
-        let json = r#"{"type":"KeyPair","user":"u","private_key_pem":"k"}"#;
+        let json = r#"{"type":"key_pair","config":{"user":"u","private_key_pem":"k"}}"#;
         let parsed: SnowflakeAuth = serde_json::from_str(json).unwrap();
         match parsed {
             SnowflakeAuth::KeyPair {

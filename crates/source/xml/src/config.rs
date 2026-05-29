@@ -8,7 +8,7 @@ use std::collections::HashMap;
 
 /// Authentication for XML API endpoints.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-#[serde(tag = "type")]
+#[serde(tag = "type", content = "config", rename_all = "snake_case")]
 pub enum XmlAuth {
     /// No authentication.
     None,
@@ -219,7 +219,7 @@ mod tests {
             "base_url": "https://api.example.com",
             "path": "/users.xml",
             "method": "GET",
-            "auth": { "type": "None" },
+            "auth": { "type": "none" },
             "body": null,
             "records_element_path": "root.user",
             "pagination": null,
@@ -240,7 +240,7 @@ mod tests {
             "base_url": "https://api.example.com",
             "path": "/users.xml",
             "method": "GET",
-            "auth": { "type": "None" },
+            "auth": { "type": "none" },
             "body": null,
             "records_element_path": null,
             "pagination": null,

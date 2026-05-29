@@ -95,7 +95,7 @@ pipeline:
       path: "/a"
       method: GET
       auth:
-        type: None
+        type: none
       query_params: {{}}
       pagination:
         type: None

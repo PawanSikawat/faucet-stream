@@ -39,9 +39,10 @@ pipeline:
       path: /things
       method: GET
       auth:
-        type: ApiKey
-        header: X-Api-Key
-        value: ${{env:FAUCET_TEST_API_KEY}}
+        type: api_key
+        config:
+          header: X-Api-Key
+          value: ${{env:FAUCET_TEST_API_KEY}}
       query_params: {{}}
       pagination:
         type: None

@@ -156,7 +156,7 @@ mod tests {
             "index": "idx",
             "query": {"match_all": {}},
             "scroll_timeout": "1m",
-            "auth": {"type": "None"},
+            "auth": {"type": "none"},
             "batch_size": 250
         }"#;
         let config: ElasticsearchSourceConfig = serde_json::from_str(json).unwrap();
@@ -170,7 +170,7 @@ mod tests {
             "index": "idx",
             "query": {"match_all": {}},
             "scroll_timeout": "1m",
-            "auth": {"type": "None"}
+            "auth": {"type": "none"}
         }"#;
         let config: ElasticsearchSourceConfig = serde_json::from_str(json).unwrap();
         assert_eq!(config.batch_size, faucet_core::DEFAULT_BATCH_SIZE);

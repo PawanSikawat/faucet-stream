@@ -101,7 +101,7 @@ fn default_batch_size() -> usize {
 
 /// Authentication for the WebSocket upgrade request.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
-#[serde(tag = "type", rename_all = "snake_case")]
+#[serde(tag = "type", content = "config", rename_all = "snake_case")]
 pub enum WebsocketAuth {
     /// No authentication (default).
     #[default]

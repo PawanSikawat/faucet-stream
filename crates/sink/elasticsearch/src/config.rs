@@ -143,7 +143,7 @@ mod tests {
         let json = r#"{
             "base_url": "http://localhost:9200",
             "index": "idx",
-            "auth": {"type": "None"},
+            "auth": {"type": "none"},
             "batch_size": 2500,
             "id_field": null
         }"#;
@@ -156,7 +156,7 @@ mod tests {
         let json = r#"{
             "base_url": "http://localhost:9200",
             "index": "idx",
-            "auth": {"type": "None"},
+            "auth": {"type": "none"},
             "id_field": null
         }"#;
         let config: ElasticsearchSinkConfig = serde_json::from_str(json).unwrap();

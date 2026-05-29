@@ -228,7 +228,7 @@ mod tests {
             "warehouse": "WH",
             "database": "DB",
             "schema": "PUBLIC",
-            "auth": {"type": "OAuth", "token": "t"},
+            "auth": {"type": "oauth", "config": {"token": "t"}},
             "query": "SELECT 1"
         }"#;
         let cfg: SnowflakeSourceConfig = serde_json::from_str(json).unwrap();
@@ -246,7 +246,7 @@ mod tests {
             "database": "DB",
             "schema": "PUBLIC",
             "role": "ANALYST",
-            "auth": {"type": "OAuth", "token": "t"},
+            "auth": {"type": "oauth", "config": {"token": "t"}},
             "query": "SELECT $1",
             "params": [42],
             "statement_timeout": 15,

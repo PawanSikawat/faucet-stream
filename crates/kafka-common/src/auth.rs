@@ -24,7 +24,7 @@ pub struct BasicAuth {
 
 /// Kafka broker authentication configuration.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
-#[serde(tag = "type", rename_all = "snake_case")]
+#[serde(tag = "type", content = "config", rename_all = "snake_case")]
 pub enum KafkaAuth {
     /// No authentication — plaintext brokers only.
     #[default]

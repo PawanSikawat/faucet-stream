@@ -115,14 +115,16 @@ mod tests {
             "my-project",
             "my_dataset",
             "my_table",
-            BigQueryCredentials::ServiceAccountKeyPath("/path/to/key.json".into()),
+            BigQueryCredentials::ServiceAccountKeyPath {
+                path: "/path/to/key.json".into(),
+            },
         );
         assert_eq!(config.project_id, "my-project");
         assert_eq!(config.dataset_id, "my_dataset");
         assert_eq!(config.table_id, "my_table");
         assert!(matches!(
             config.credentials,
-            BigQueryCredentials::ServiceAccountKeyPath(_)
+            BigQueryCredentials::ServiceAccountKeyPath { .. }
         ));
     }
 
@@ -132,9 +134,11 @@ mod tests {
             "proj",
             "ds",
             "tbl",
-            BigQueryCredentials::ServiceAccountKey(r#"{"type":"service_account"}"#.into()),
+            BigQueryCredentials::ServiceAccountKey {
+                json: r#"{"type":"service_account"}"#.into(),
+            },
         );
-        if let BigQueryCredentials::ServiceAccountKey(json) = &config.credentials {
+        if let BigQueryCredentials::ServiceAccountKey { json } = &config.credentials {
             assert!(json.contains("service_account"));
         } else {
             panic!("expected ServiceAccountKey");
@@ -192,7 +196,7 @@ mod tests {
             "project_id": "p",
             "dataset_id": "d",
             "table_id": "t",
-            "credentials": {"type": "ApplicationDefault"},
+            "credentials": {"type": "application_default"},
             "insert_id_field": "id"
         }"#;
         let config: BigQuerySinkConfig = serde_json::from_str(json).unwrap();
@@ -205,7 +209,7 @@ mod tests {
             "project_id": "p",
             "dataset_id": "d",
             "table_id": "t",
-            "credentials": {"type": "ApplicationDefault"},
+            "credentials": {"type": "application_default"},
             "batch_size": 250
         }"#;
         let config: BigQuerySinkConfig = serde_json::from_str(json).unwrap();
@@ -218,7 +222,7 @@ mod tests {
             "project_id": "p",
             "dataset_id": "d",
             "table_id": "t",
-            "credentials": {"type": "ApplicationDefault"}
+            "credentials": {"type": "application_default"}
         }"#;
         let config: BigQuerySinkConfig = serde_json::from_str(json).unwrap();
         assert_eq!(config.batch_size, faucet_core::DEFAULT_BATCH_SIZE);

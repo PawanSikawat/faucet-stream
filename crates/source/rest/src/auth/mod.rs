@@ -16,7 +16,7 @@ pub use token_endpoint::ResponseValidator;
 
 /// Supported authentication methods.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-#[serde(tag = "type")]
+#[serde(tag = "type", content = "config", rename_all = "snake_case")]
 pub enum Auth {
     None,
     /// Bearer token in the `Authorization` header.
@@ -40,6 +40,7 @@ pub enum Auth {
         param: String,
         value: String,
     },
+    #[serde(rename = "oauth2")]
     OAuth2 {
         token_url: String,
         client_id: String,
@@ -129,6 +130,37 @@ pub use token_endpoint::fetch_token_from_endpoint;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn auth_serializes_as_type_config() {
+        let a = Auth::Bearer {
+            token: "t".into(),
+        };
+        let v = serde_json::to_value(&a).unwrap();
+        assert_eq!(
+            v,
+            serde_json::json!({"type": "bearer", "config": {"token": "t"}})
+        );
+        let back: Auth = serde_json::from_value(v).unwrap();
+        assert!(matches!(back, Auth::Bearer { token } if token == "t"));
+    }
+
+    #[test]
+    fn auth_unit_variant_has_no_config() {
+        let v = serde_json::to_value(Auth::None).unwrap();
+        assert_eq!(v, serde_json::json!({"type": "none"}));
+    }
+
+    #[test]
+    fn auth_snake_case_discriminators() {
+        let a = Auth::ApiKey {
+            header: "X-Key".into(),
+            value: "v".into(),
+        };
+        let v = serde_json::to_value(&a).unwrap();
+        assert_eq!(v["type"], "api_key");
+        assert_eq!(v["config"]["header"], "X-Key");
+    }
 
     #[test]
     fn auth_none_is_noop() {

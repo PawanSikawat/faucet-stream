@@ -194,16 +194,16 @@ fn init_with_source_sink_flags_uses_those_kinds() {
         "missing alternatives block:\n{body}"
     );
     assert!(
-        body.contains("# type: Bearer"),
-        "REST Bearer alternative missing:\n{body}"
+        body.contains("# type: bearer"),
+        "REST bearer alternative missing:\n{body}"
     );
     assert!(
-        body.contains("# type: OAuth2"),
-        "REST OAuth2 alternative missing:\n{body}"
+        body.contains("# type: oauth2"),
+        "REST oauth2 alternative missing:\n{body}"
     );
     assert!(
-        body.contains("# type: ApplicationDefault"),
-        "BigQuery ApplicationDefault alternative missing:\n{body}"
+        body.contains("# type: application_default"),
+        "BigQuery application_default alternative missing:\n{body}"
     );
 }
 

@@ -9,7 +9,7 @@ use std::collections::HashMap;
 
 /// Authentication for GraphQL endpoints.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-#[serde(tag = "type")]
+#[serde(tag = "type", content = "config", rename_all = "snake_case")]
 pub enum GraphqlAuth {
     /// No authentication.
     None,
@@ -227,7 +227,7 @@ mod tests {
             "endpoint": "https://api.example.com/graphql",
             "query": "query { x }",
             "variables": {},
-            "auth": {"type": "None"},
+            "auth": {"type": "none"},
             "records_path": null,
             "pagination": null,
             "max_pages": null,

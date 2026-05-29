@@ -19,7 +19,7 @@ pub struct MetadataEntry {
 
 /// Authentication for gRPC endpoints.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-#[serde(tag = "type")]
+#[serde(tag = "type", content = "config", rename_all = "snake_case")]
 pub enum GrpcAuth {
     /// No authentication.
     None,
@@ -407,7 +407,7 @@ mod tests {
             "method_name": "ListUsers",
             "request": {},
             "descriptor_set_path": "proto/descriptor.bin",
-            "auth": { "type": "None" },
+            "auth": { "type": "none" },
             "tls": null,
             "records_path": null,
             "batch_size": 250
@@ -424,7 +424,7 @@ mod tests {
             "method_name": "ListUsers",
             "request": {},
             "descriptor_set_path": "proto/descriptor.bin",
-            "auth": { "type": "None" },
+            "auth": { "type": "none" },
             "tls": null,
             "records_path": null
         }"#;
@@ -440,7 +440,7 @@ mod tests {
             "method_name": "Tail",
             "request": {},
             "descriptor_set_path": "proto/descriptor.bin",
-            "auth": { "type": "None" },
+            "auth": { "type": "none" },
             "tls": null,
             "records_path": null,
             "rpc_kind": "server_streaming",
@@ -467,7 +467,7 @@ mod tests {
             "method_name": "ListUsers",
             "request": {},
             "descriptor_set_path": "proto/descriptor.bin",
-            "auth": { "type": "None" },
+            "auth": { "type": "none" },
             "tls": null,
             "records_path": null
         }"#;

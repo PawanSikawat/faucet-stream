@@ -10,10 +10,12 @@ use serde::{Deserialize, Serialize};
 
 /// Credential source for a GCS client.
 ///
-/// Tagged enum so YAML/JSON configs read naturally:
-/// `{ method: "service_account_json_file", path: "/run/secrets/sa.json" }`.
+/// Serializes as `{ type: <method>, config: { … } }` (adjacent tagging,
+/// snake_case discriminators) — the consistent auth wire shape shared by
+/// every faucet connector:
+/// `{ type: service_account_json_file, config: { path: "/run/secrets/sa.json" } }`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
-#[serde(tag = "method", rename_all = "snake_case")]
+#[serde(tag = "type", content = "config", rename_all = "snake_case")]
 pub enum GcsCredentials {
     /// Path to a service-account JSON key file on disk.
     ServiceAccountJsonFile { path: String },
@@ -116,7 +118,7 @@ mod tests {
     fn credentials_serde_application_default() {
         let creds = GcsCredentials::ApplicationDefault;
         let v = serde_json::to_value(&creds).unwrap();
-        assert_eq!(v, json!({"method": "application_default"}));
+        assert_eq!(v, json!({"type": "application_default"}));
         let back: GcsCredentials = serde_json::from_value(v).unwrap();
         assert!(matches!(back, GcsCredentials::ApplicationDefault));
     }
@@ -129,7 +131,7 @@ mod tests {
         let v = serde_json::to_value(&creds).unwrap();
         assert_eq!(
             v,
-            json!({"method": "service_account_json_file", "path": "/run/secrets/sa.json"})
+            json!({"type": "service_account_json_file", "config": {"path": "/run/secrets/sa.json"}})
         );
         let back: GcsCredentials = serde_json::from_value(v).unwrap();
         assert!(
@@ -143,8 +145,8 @@ mod tests {
             json: "{\"client_email\":\"x@y\"}".into(),
         };
         let v = serde_json::to_value(&creds).unwrap();
-        assert_eq!(v["method"], "service_account_json_inline");
-        assert!(v["json"].as_str().unwrap().contains("client_email"));
+        assert_eq!(v["type"], "service_account_json_inline");
+        assert!(v["config"]["json"].as_str().unwrap().contains("client_email"));
         let back: GcsCredentials = serde_json::from_value(v).unwrap();
         assert!(matches!(
             back,
@@ -162,7 +164,7 @@ mod tests {
     fn credentials_serde_anonymous() {
         let creds = GcsCredentials::Anonymous;
         let v = serde_json::to_value(&creds).unwrap();
-        assert_eq!(v, json!({"method": "anonymous"}));
+        assert_eq!(v, json!({"type": "anonymous"}));
         let back: GcsCredentials = serde_json::from_value(v).unwrap();
         assert!(matches!(back, GcsCredentials::Anonymous));
     }

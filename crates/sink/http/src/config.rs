@@ -8,7 +8,7 @@ use std::collections::HashMap;
 
 /// Authentication method for the HTTP sink.
 #[derive(Clone, Serialize, Deserialize, JsonSchema)]
-#[serde(tag = "type")]
+#[serde(tag = "type", content = "config", rename_all = "snake_case")]
 pub enum HttpSinkAuth {
     /// No authentication.
     None,
@@ -246,7 +246,7 @@ mod tests {
         let json = r#"{
             "url": "https://api.example.com/ingest",
             "method": "POST",
-            "auth": {"type": "None"},
+            "auth": {"type": "none"},
             "batch_mode": {"type": "Array"},
             "max_retries": 0,
             "concurrency": 10,
@@ -261,7 +261,7 @@ mod tests {
         let json = r#"{
             "url": "https://api.example.com/ingest",
             "method": "POST",
-            "auth": {"type": "None"},
+            "auth": {"type": "none"},
             "batch_mode": {"type": "Array"},
             "max_retries": 0,
             "concurrency": 10

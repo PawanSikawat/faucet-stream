@@ -232,7 +232,7 @@ mod tests {
     fn deserializes_minimal_json() {
         let json = r#"{
             "project_id": "my-project",
-            "credentials": {"type": "ApplicationDefault"},
+            "credentials": {"type": "application_default"},
             "query": "SELECT 1"
         }"#;
         let c: BigQuerySourceConfig = serde_json::from_str(json).unwrap();
@@ -246,7 +246,7 @@ mod tests {
     fn deserializes_all_fields() {
         let json = r#"{
             "project_id": "p",
-            "credentials": {"type": "ApplicationDefault"},
+            "credentials": {"type": "application_default"},
             "query": "SELECT 1",
             "use_legacy_sql": true,
             "location": "EU",
@@ -279,7 +279,9 @@ mod tests {
     fn debug_masks_inline_credentials() {
         let c = BigQuerySourceConfig::new(
             "p",
-            BigQueryCredentials::ServiceAccountKey("secret".into()),
+            BigQueryCredentials::ServiceAccountKey {
+                json: "secret".into(),
+            },
             "SELECT 1",
         );
         let dbg = format!("{c:?}");

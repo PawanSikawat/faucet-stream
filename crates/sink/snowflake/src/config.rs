@@ -164,7 +164,7 @@ mod tests {
             "database": "MY_DB",
             "schema": "PUBLIC",
             "table": "events",
-            "auth": {"type": "OAuth", "token": "tok"},
+            "auth": {"type": "oauth", "config": {"token": "tok"}},
             "batch_size": 250
         }"#;
         let config: SnowflakeSinkConfig = serde_json::from_str(json).unwrap();
@@ -179,7 +179,7 @@ mod tests {
             "database": "MY_DB",
             "schema": "PUBLIC",
             "table": "events",
-            "auth": {"type": "OAuth", "token": "tok"}
+            "auth": {"type": "oauth", "config": {"token": "tok"}}
         }"#;
         let config: SnowflakeSinkConfig = serde_json::from_str(json).unwrap();
         assert_eq!(config.batch_size, faucet_core::DEFAULT_BATCH_SIZE);
