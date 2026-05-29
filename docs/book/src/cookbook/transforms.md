@@ -372,15 +372,13 @@ transforms:
 
 ## Out of scope
 
-- **Filter (1→0)** and **explode/unnest (1→N)** — these don't fit the
-  `Fn(Value) -> Value` shape and need a richer transform model. Tracked
-  in [#99].
-- **Dotted-path field selection** — keep things simple: run `flatten`
-  first, then operate on the flattened key.
+- **Dotted-path field selection on the field-list transforms** (`select`,
+  `drop`, `cast`, `redact`, `value_case`, `rename_field`) — they still
+  operate on bare top-level keys. Run `flatten` first if you need nested
+  access. `filter` and `explode` are the exceptions and support the
+  JSONPath subset documented in their sections.
 - **A general expression / scripting transform (jq, CEL, …)** —
   separate, larger discussion.
-
-[#99]: https://github.com/PawanSikawat/faucet-stream/issues/99
 
 ## Filter and explode
 
