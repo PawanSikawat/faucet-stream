@@ -98,7 +98,9 @@ pub async fn build_source(kind: &str, config: Value) -> CliResult<Box<dyn Source
                 "websocket",
                 config,
             )?;
-            Ok(Box::new(faucet_source_websocket::WebsocketSource::new(cfg)?))
+            Ok(Box::new(faucet_source_websocket::WebsocketSource::new(
+                cfg,
+            )?))
         }
         #[cfg(feature = "source-csv")]
         "csv" => {
