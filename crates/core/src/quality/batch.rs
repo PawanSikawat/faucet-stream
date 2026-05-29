@@ -34,7 +34,8 @@ pub fn evaluate_aggregate_check(c: &CompiledBatchCheck, survivors: &[Value]) -> 
                 .iter()
                 .filter(|r| matches!(path.resolve(r).ok().flatten(), None | Some(Value::Null)))
                 .count();
-            #[allow(clippy::cast_precision_loss)] // survivors.len() is far below 2^53 in any realistic batch
+            #[allow(clippy::cast_precision_loss)]
+            // survivors.len() is far below 2^53 in any realistic batch
             let rate = nulls as f64 / n as f64;
             if rate <= *max {
                 Ok(())
@@ -111,7 +112,11 @@ mod tests {
             record: vec![],
             batch: vec![check],
         };
-        CompiledQuality::compile(&spec).unwrap().batch.pop().unwrap()
+        CompiledQuality::compile(&spec)
+            .unwrap()
+            .batch
+            .pop()
+            .unwrap()
     }
 
     #[test]
@@ -137,7 +142,11 @@ mod tests {
         let rows = vec![json!({"name": "a"}), json!({"name": null}), json!({})];
         // 2 null-or-missing of 3 = 0.67 > 0.5 -> fail
         assert!(evaluate_aggregate_check(&c, &rows).is_err());
-        let rows_ok = vec![json!({"name": "a"}), json!({"name": "b"}), json!({"name": null})];
+        let rows_ok = vec![
+            json!({"name": "a"}),
+            json!({"name": "b"}),
+            json!({"name": null}),
+        ];
         // 1/3 = 0.33 <= 0.5 -> pass
         assert!(evaluate_aggregate_check(&c, &rows_ok).is_ok());
     }

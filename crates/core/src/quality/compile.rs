@@ -143,7 +143,10 @@ impl CompiledQuality {
             .iter()
             .any(|c| matches!(c.on_failure, OnFailure::Quarantine))
             || self.batch.iter().any(|c| {
-                matches!(c.on_failure, OnFailure::Quarantine | OnFailure::QuarantineBatch)
+                matches!(
+                    c.on_failure,
+                    OnFailure::Quarantine | OnFailure::QuarantineBatch
+                )
             })
     }
 }
@@ -183,8 +186,9 @@ fn compile_record_check(c: &RecordCheck) -> Result<CompiledRecordCheck, FaucetEr
             on_failure,
         } => {
             check_record_policy("regex_match", *on_failure)?;
-            let re = regex::Regex::new(pattern)
-                .map_err(|e| config_err(format!("regex_match: invalid pattern '{pattern}': {e}")))?;
+            let re = regex::Regex::new(pattern).map_err(|e| {
+                config_err(format!("regex_match: invalid pattern '{pattern}': {e}"))
+            })?;
             CompiledRecordCheck {
                 kind: CompiledRecordKind::RegexMatch {
                     path: compile_path(field)?,
@@ -241,8 +245,10 @@ fn compile_record_check(c: &RecordCheck) -> Result<CompiledRecordCheck, FaucetEr
         } => {
             check_record_policy("compare", *on_failure)?;
             // Ordering ops require a numeric configured value.
-            if matches!(op, CompareOp::Gt | CompareOp::Gte | CompareOp::Lt | CompareOp::Lte)
-                && !value.is_number()
+            if matches!(
+                op,
+                CompareOp::Gt | CompareOp::Gte | CompareOp::Lt | CompareOp::Lte
+            ) && !value.is_number()
             {
                 return Err(config_err(format!(
                     "compare: op '{op}' requires a numeric `value`"
@@ -283,7 +289,9 @@ fn compile_record_check(c: &RecordCheck) -> Result<CompiledRecordCheck, FaucetEr
         } => {
             check_record_policy("string_length", *on_failure)?;
             if min.is_none() && max.is_none() {
-                return Err(config_err("string_length: at least one of `min`/`max` is required"));
+                return Err(config_err(
+                    "string_length: at least one of `min`/`max` is required",
+                ));
             }
             if let (Some(lo), Some(hi)) = (min, max)
                 && lo > hi
@@ -336,7 +344,9 @@ fn compile_batch_check(c: &BatchCheck) -> Result<CompiledBatchCheck, FaucetError
         } => {
             check_aggregate_policy("row_count", *on_failure)?;
             if min.is_none() && max.is_none() {
-                return Err(config_err("row_count: at least one of `min`/`max` is required"));
+                return Err(config_err(
+                    "row_count: at least one of `min`/`max` is required",
+                ));
             }
             if let (Some(lo), Some(hi)) = (min, max)
                 && lo > hi
@@ -397,7 +407,9 @@ fn compile_batch_check(c: &BatchCheck) -> Result<CompiledBatchCheck, FaucetError
         } => {
             check_aggregate_policy("distinct_count", *on_failure)?;
             if min.is_none() && max.is_none() {
-                return Err(config_err("distinct_count: at least one of `min`/`max` is required"));
+                return Err(config_err(
+                    "distinct_count: at least one of `min`/`max` is required",
+                ));
             }
             if let (Some(lo), Some(hi)) = (min, max)
                 && lo > hi

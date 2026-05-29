@@ -257,7 +257,9 @@ mod tests {
         });
         let page = vec![json!({"id": 1}), json!({"id": null})];
         let err = apply_quality(page, &q).unwrap_err();
-        assert!(matches!(err, crate::FaucetError::QualityFailure { check, .. } if check == "row_count"));
+        assert!(
+            matches!(err, crate::FaucetError::QualityFailure { check, .. } if check == "row_count")
+        );
     }
 
     #[test]

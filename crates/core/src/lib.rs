@@ -37,14 +37,14 @@ pub mod compression;
 pub use auth::{AuthProvider, AuthReference, AuthSpec, Credential, SharedAuthProvider};
 pub use dlq::{DlqConfig, DlqReason, DlqStats, OnBatchError, build_envelope};
 pub use error::FaucetError;
+#[cfg(feature = "quality")]
+pub use observability::instrumented_apply_quality;
 pub use observability::{
     DurationGuard, InstallError, InstallReport, InstrumentedSink, InstrumentedSource,
     InstrumentedStateStore, Labels, ObservabilityConfig, PrometheusConfig, RunStreamOptions,
     TracingConfig, install_observability, instrumented_apply_stages, register_build_info,
     update_bookmark_lag,
 };
-#[cfg(feature = "quality")]
-pub use observability::instrumented_apply_quality;
 pub use pipeline::{
     DEFAULT_BATCH_SIZE, MAX_BATCH_SIZE, Pipeline, PipelineResult, StreamPage, run_stream,
     validate_batch_size,

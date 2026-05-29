@@ -411,7 +411,10 @@ pub fn quality_descriptions() -> Vec<(&'static str, &'static str)> {
         ("row_count", "batch row count within [min,max]"),
         ("null_rate", "batch null rate of a field <= max"),
         ("unique", "composite key unique within the batch"),
-        ("distinct_count", "distinct values of a field within [min,max]"),
+        (
+            "distinct_count",
+            "distinct values of a field within [min,max]",
+        ),
     ]
 }
 

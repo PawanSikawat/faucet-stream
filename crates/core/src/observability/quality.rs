@@ -4,7 +4,7 @@
 
 use crate::error::FaucetError;
 use crate::observability::Labels;
-use crate::quality::{apply_quality, CompiledQuality, QualityOutcome};
+use crate::quality::{CompiledQuality, QualityOutcome, apply_quality};
 use metrics::{Label, SharedString, counter, histogram};
 use serde_json::Value;
 
@@ -138,8 +138,14 @@ mod tests {
                     .any(|l| l.key() == "outcome" && l.value() == "fail")
                 && matches!(v, DebugValue::Counter(c) if *c >= 1)
         });
-        assert!(pass_found, "expected faucet_quality_checks_total{{outcome=pass}} >= 2");
-        assert!(fail_found, "expected faucet_quality_checks_total{{outcome=fail}} >= 1");
+        assert!(
+            pass_found,
+            "expected faucet_quality_checks_total{{outcome=pass}} >= 2"
+        );
+        assert!(
+            fail_found,
+            "expected faucet_quality_checks_total{{outcome=fail}} >= 1"
+        );
     }
 
     #[test]
@@ -170,7 +176,10 @@ mod tests {
                     .any(|l| l.key() == "field" && l.value() == "user_id")
                 && matches!(v, DebugValue::Counter(c) if *c >= 1)
         });
-        assert!(found, "expected faucet_quality_records_quarantined_total with field=user_id");
+        assert!(
+            found,
+            "expected faucet_quality_records_quarantined_total with field=user_id"
+        );
     }
 
     #[test]
@@ -202,6 +211,9 @@ mod tests {
                     .any(|l| l.key() == "check" && l.value() == "not_null")
                 && matches!(v, DebugValue::Counter(c) if *c >= 1)
         });
-        assert!(found, "expected faucet_quality_aborts_total with check=not_null");
+        assert!(
+            found,
+            "expected faucet_quality_aborts_total with check=not_null"
+        );
     }
 }

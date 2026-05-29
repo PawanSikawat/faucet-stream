@@ -797,7 +797,10 @@ pipeline:
         let cfg = parse_with_extension(yaml, "yaml").unwrap();
         let nodes = expand(&cfg).unwrap();
         assert_eq!(nodes.len(), 1);
-        let q = nodes[0].quality.as_ref().expect("quality threaded onto node");
+        let q = nodes[0]
+            .quality
+            .as_ref()
+            .expect("quality threaded onto node");
         assert_eq!(q.record.len(), 1);
     }
 

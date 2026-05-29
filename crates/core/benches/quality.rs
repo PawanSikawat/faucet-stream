@@ -13,8 +13,17 @@ fn bench_quality(c: &mut Criterion) {
 
     let granular = CompiledQuality::compile(&QualitySpec {
         record: vec![
-            RecordCheck::NotNull { field: "id".into(), treat_missing_as_null: true, on_failure: OnFailure::Abort },
-            RecordCheck::Compare { field: "age".into(), op: faucet_core::CompareOp::Gte, value: json!(0), on_failure: OnFailure::Abort },
+            RecordCheck::NotNull {
+                field: "id".into(),
+                treat_missing_as_null: true,
+                on_failure: OnFailure::Abort,
+            },
+            RecordCheck::Compare {
+                field: "age".into(),
+                op: faucet_core::CompareOp::Gte,
+                value: json!(0),
+                on_failure: OnFailure::Abort,
+            },
         ],
         batch: vec![],
     })

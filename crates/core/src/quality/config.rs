@@ -113,7 +113,10 @@ pub enum RecordCheck {
         on_failure: OnFailure,
     },
     /// Field is a string, non-empty after `trim()`.
-    NotEmpty { field: String, on_failure: OnFailure },
+    NotEmpty {
+        field: String,
+        on_failure: OnFailure,
+    },
     /// Field is a string matching `pattern`.
     RegexMatch {
         field: String,
@@ -156,7 +159,10 @@ pub enum RecordCheck {
     },
     /// The whole record validates against a JSON Schema document.
     #[cfg(feature = "quality-jsonschema")]
-    JsonSchema { schema: Value, on_failure: OnFailure },
+    JsonSchema {
+        schema: Value,
+        on_failure: OnFailure,
+    },
 }
 
 /// A per-batch check, evaluated per page over the survivors of the per-record
@@ -237,8 +243,15 @@ mod tests {
         assert_eq!(spec.batch.len(), 2);
         assert!(matches!(spec.record[0], RecordCheck::NotNull { .. }));
         assert!(matches!(spec.batch[1], BatchCheck::Unique { .. }));
-        if let RecordCheck::NotNull { treat_missing_as_null, .. } = &spec.record[0] {
-            assert!(*treat_missing_as_null, "treat_missing_as_null defaults to true");
+        if let RecordCheck::NotNull {
+            treat_missing_as_null,
+            ..
+        } = &spec.record[0]
+        {
+            assert!(
+                *treat_missing_as_null,
+                "treat_missing_as_null defaults to true"
+            );
         } else {
             panic!("expected first record check to be NotNull");
         }

@@ -13,19 +13,17 @@ pub fn evaluate_record_check(c: &CompiledRecordCheck, rec: &Value) -> Result<(),
         CompiledRecordKind::NotNull {
             path,
             treat_missing_as_null,
-        } => {
-            match path.resolve(rec).ok().flatten() {
-                Some(Value::Null) => Err("value was null".into()),
-                Some(_) => Ok(()),
-                None => {
-                    if *treat_missing_as_null {
-                        Err("field was missing".into())
-                    } else {
-                        Ok(())
-                    }
+        } => match path.resolve(rec).ok().flatten() {
+            Some(Value::Null) => Err("value was null".into()),
+            Some(_) => Ok(()),
+            None => {
+                if *treat_missing_as_null {
+                    Err("field was missing".into())
+                } else {
+                    Ok(())
                 }
             }
-        }
+        },
         CompiledRecordKind::NotEmpty { path } => match path.resolve(rec).ok().flatten() {
             Some(Value::String(s)) if !s.trim().is_empty() => Ok(()),
             Some(Value::String(_)) => Err("string was empty/whitespace".into()),
@@ -39,13 +37,11 @@ pub fn evaluate_record_check(c: &CompiledRecordCheck, rec: &Value) -> Result<(),
             Some(_) => Err("value was not a string".into()),
             None => Err("field was missing".into()),
         },
-        CompiledRecordKind::ValueInSet { path, values } => {
-            match path.resolve(rec).ok().flatten() {
-                Some(v) if values.contains(v) => Ok(()),
-                Some(_) => Err("value not in allowed set".into()),
-                None => Err("field was missing".into()),
-            }
-        }
+        CompiledRecordKind::ValueInSet { path, values } => match path.resolve(rec).ok().flatten() {
+            Some(v) if values.contains(v) => Ok(()),
+            Some(_) => Err("value not in allowed set".into()),
+            None => Err("field was missing".into()),
+        },
         CompiledRecordKind::NotInSet { path, values } => match path.resolve(rec).ok().flatten() {
             Some(v) if values.contains(v) => Err("value is in the forbidden set".into()),
             // present-and-not-in-set OR missing -> pass
@@ -58,13 +54,11 @@ pub fn evaluate_record_check(c: &CompiledRecordCheck, rec: &Value) -> Result<(),
             };
             evaluate_compare(*op, actual, value)
         }
-        CompiledRecordKind::TypeIs { path, expected } => {
-            match path.resolve(rec).ok().flatten() {
-                Some(v) if json_type_matches(v, *expected) => Ok(()),
-                Some(_) => Err(format!("value was not of type {expected}")),
-                None => Err("field was missing".into()),
-            }
-        }
+        CompiledRecordKind::TypeIs { path, expected } => match path.resolve(rec).ok().flatten() {
+            Some(v) if json_type_matches(v, *expected) => Ok(()),
+            Some(_) => Err(format!("value was not of type {expected}")),
+            None => Err("field was missing".into()),
+        },
         CompiledRecordKind::StringLength { path, min, max } => {
             match path.resolve(rec).ok().flatten() {
                 Some(Value::String(s)) => {
@@ -164,7 +158,11 @@ mod tests {
             record: vec![check],
             batch: vec![],
         };
-        CompiledQuality::compile(&spec).unwrap().record.pop().unwrap()
+        CompiledQuality::compile(&spec)
+            .unwrap()
+            .record
+            .pop()
+            .unwrap()
     }
 
     #[test]

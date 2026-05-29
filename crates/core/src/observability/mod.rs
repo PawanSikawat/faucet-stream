@@ -23,9 +23,9 @@ pub use install::{
 };
 pub use labels::Labels;
 pub use options::RunStreamOptions;
+#[cfg(feature = "quality")]
+pub use quality::instrumented_apply_quality;
 pub use state::InstrumentedStateStore;
 pub use strip::strip_type_name;
 pub use timer::DurationGuard;
 pub use transform::instrumented_apply_stages;
-#[cfg(feature = "quality")]
-pub use quality::instrumented_apply_quality;
