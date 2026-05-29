@@ -972,9 +972,9 @@ execution:
         // must exist. The converse does NOT hold: under `on_error: stop`,
         // abort_all() can cancel an in-flight "good" after its sink has already
         // created/partially written the file. That partial sink state is an
-        // accepted, documented consequence of stop mode (see CLAUDE.md), so a
-        // present file does not imply completion — asserting the biconditional
-        // made this test race-dependent on which root won the permit.
+        // accepted, documented consequence of stop mode, so a present file
+        // does not imply completion — asserting the biconditional made this
+        // test race-dependent on which root won the permit.
         let good_completed = summary
             .invocations
             .iter()

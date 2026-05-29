@@ -112,9 +112,8 @@ Setting neither produces a single file per sink instance (until `flush()`).
 
 The sink accepts whatever the upstream pipeline hands it — the streaming
 runtime in `faucet-core` already caps per-call memory at the upstream
-source's `batch_size` (see the *Streaming and batching* section of the root
-CLAUDE.md). On top of that, the sink exposes its own `batch_size` knob that
-re-chunks every incoming page before it reaches the Arrow writer:
+source's `batch_size`. On top of that, the sink exposes its own `batch_size`
+knob that re-chunks every incoming page before it reaches the Arrow writer:
 
 | Config              | Default                          | Meaning                                              |
 |---------------------|----------------------------------|------------------------------------------------------|

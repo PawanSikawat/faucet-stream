@@ -81,7 +81,7 @@ The `Debug` implementation masks tokens and passwords with `***` to prevent cred
 
 ### Streaming and batching
 
-The HTTP sink honours the workspace-wide `batch_size` contract documented in the root `CLAUDE.md`. The exact effect on the wire depends on the configured `batch_mode`:
+The HTTP sink honours the workspace-wide `batch_size` contract. The exact effect on the wire depends on the configured `batch_mode`:
 
 - **`Individual` mode** — one HTTP request per record, executed concurrently up to `concurrency` via a semaphore. `batch_size` has **no effect on wire framing** in this mode (each record is already its own request); the field is accepted only for config-shape parity with other sinks and validated via `faucet_core::validate_batch_size` at load time. Use `concurrency` to tune throughput.
 - **`Array` mode** — the sink re-chunks the upstream `StreamPage` into `batch_size`-row slices and issues one POST request per chunk, with each request body a JSON array of up to `batch_size` records. With the default `batch_size = 1000`, a 2 500-record `write_batch` produces 3 POSTs (1000 + 1000 + 500). When `batch_size = 0` (the **"no batching" sentinel**), the entire records slice is forwarded as a single JSON array — useful when the upstream source already chunks the stream to a size the destination endpoint accepts (e.g. a Postgres source with its own `batch_size`).

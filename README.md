@@ -250,7 +250,7 @@ Every connector is optimised for throughput out of the box:
 
 ## Streaming by default
 
-`Pipeline::run` drives sources via `stream_pages` and writes each page to the sink as it arrives, keeping sink-side memory bounded at the configured `batch_size`. See the "Performance" section in CLAUDE.md for the full contract.
+`Pipeline::run` drives sources via `stream_pages` and writes each page to the sink as it arrives, keeping sink-side memory bounded at the configured `batch_size`.
 
 ### Tuning
 
