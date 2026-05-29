@@ -20,6 +20,7 @@ members = [
     "crates/source/mongodb",
     "crates/source/redis",
     "crates/source/webhook",
+    "crates/source/websocket",
     "crates/source/sqlite",
     "crates/source/csv",
     "crates/source/elasticsearch",
@@ -87,6 +88,7 @@ faucet-source-s3 = { path = "crates/source/s3", version = "0.2.0" }
 faucet-source-mongodb = { path = "crates/source/mongodb", version = "0.2.0" }
 faucet-source-redis = { path = "crates/source/redis", version = "0.2.0" }
 faucet-source-webhook = { path = "crates/source/webhook", version = "0.2.0" }
+faucet-source-websocket = { path = "crates/source/websocket", version = "0.1.0" }
 faucet-source-sqlite = { path = "crates/source/sqlite", version = "0.2.0" }
 faucet-source-csv = { path = "crates/source/csv", version = "0.2.0" }
 faucet-source-elasticsearch = { path = "crates/source/elasticsearch", version = "0.3.0" }
@@ -147,6 +149,7 @@ csv = "1.3"
 csv-async = { version = "1.3", features = ["tokio"] }
 redis = { version = "0.29", features = ["tokio-comp", "aio"] }
 axum = "0.8"
+tokio-tungstenite = { version = "0.29", default-features = false, features = ["connect", "rustls-tls-webpki-roots"] }
 schemars = "1.2.1"
 futures = "0.3"
 async-stream = "0.3"
