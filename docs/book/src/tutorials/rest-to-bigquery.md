@@ -19,9 +19,10 @@ pipeline:
       method: GET
       name: events
       auth:
-        type: Basic
-        username: ${env:API_USER}
-        password: ${env:API_PASS}
+        type: basic
+        config:
+          username: ${env:API_USER}
+          password: ${env:API_PASS}
       records_path: $.events[*]
       pagination:
         type: PageNumber
@@ -46,8 +47,9 @@ pipeline:
       dataset_id: analytics
       table_id: events
       credentials:
-        type: ServiceAccountKeyPath
-        value: service-account.json
+        type: service_account_key_path
+        config:
+          path: service-account.json
       batch_size: 1000
 ```
 

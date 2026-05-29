@@ -18,8 +18,9 @@ type: bigquery
 config:
   project_id: my-project
   credentials:
-    type: ServiceAccountKeyPath
-    value: /etc/secrets/bigquery-sa.json
+    type: service_account_key_path
+    config:
+      path: /etc/secrets/bigquery-sa.json
   query: |
     SELECT user_id, event_name, occurred_at
     FROM `my-project.analytics.events`
@@ -39,14 +40,15 @@ config:
 ```yaml
 # Application Default Credentials (workload identity, gcloud auth).
 credentials:
-  type: ApplicationDefault
+  type: application_default
 ```
 
 ```yaml
 # Inline service-account JSON — handy with env-var indirection.
 credentials:
-  type: ServiceAccountKey
-  value: ${env:GCP_SERVICE_ACCOUNT_JSON}
+  type: service_account_key
+  config:
+    json: ${env:GCP_SERVICE_ACCOUNT_JSON}
 ```
 
 ## Library use

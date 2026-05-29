@@ -19,10 +19,11 @@ pipeline:
       variables:
         first: 200
       auth:
-        type: Custom
-        headers:
-          X-Api-Key: ${env:API_KEY}
-          X-Tenant: acme
+        type: custom
+        config:
+          headers:
+            X-Api-Key: ${env:API_KEY}
+            X-Tenant: acme
       records_path: $.data.orders.edges[*].node
       pagination:
         has_next_page_path: $.data.orders.pageInfo.hasNextPage
@@ -39,5 +40,5 @@ pipeline:
       dataset_id: raw
       table_id: orders
       credentials:
-        type: ApplicationDefault
+        type: application_default
       batch_size: 1000

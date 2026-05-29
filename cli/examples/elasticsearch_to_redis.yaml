@@ -15,9 +15,10 @@ pipeline:
       scroll_timeout: 1m
       batch_size: 1000
       auth:
-        type: Basic
-        username: ${env:ES_USER}
-        password: ${env:ES_PASS}
+        type: basic
+        config:
+          username: ${env:ES_USER}
+          password: ${env:ES_PASS}
       max_pages: 500
 
   sink:

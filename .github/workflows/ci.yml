@@ -149,6 +149,7 @@ jobs:
           - source
           - sink
           - state
+          - auth
           - full
           - compression
           # CLI build matrix — verify the binary builds with every default-on

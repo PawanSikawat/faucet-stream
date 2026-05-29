@@ -15,7 +15,7 @@ pipeline:
         base_url: https://jsonplaceholder.typicode.com
         path: /users
         method: GET
-        auth: { type: None }
+        auth: { type: none }
         query_params: {}
         pagination: { type: None }
         max_retries: 3

@@ -164,8 +164,10 @@ let config: RestStreamConfig = load_env_file(".env", "REST")?;
   "path": "/repos/PawanSikawat/faucet-stream/issues",
   "method": "GET",
   "auth": {
-    "type": "Bearer",
-    "token": "ghp_xxxxxxxxxxxx"
+    "type": "bearer",
+    "config": {
+      "token": "ghp_xxxxxxxxxxxx"
+    }
   },
   "query_params": {
     "state": "open",

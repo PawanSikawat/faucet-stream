@@ -14,8 +14,9 @@ pipeline:
       request:
         window: 1h
       auth:
-        type: Bearer
-        token: ${env:GRPC_TOKEN}
+        type: bearer
+        config:
+          token: ${env:GRPC_TOKEN}
       tls: true
       records_path: $.metrics[*]
 
@@ -25,8 +26,9 @@ pipeline:
       url: https://ingest.example.com/v1/events?tenant=acme
       method: POST
       auth:
-        type: Bearer
-        token: ${env:INGEST_TOKEN}
+        type: bearer
+        config:
+          token: ${env:INGEST_TOKEN}
       batch_mode:
         type: Array
       max_retries: 3

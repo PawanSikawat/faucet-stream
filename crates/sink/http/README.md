@@ -128,8 +128,10 @@ Note: The `headers` field on `HttpSinkConfig` is `HeaderMap` and remains `#[serd
   "url": "https://api.example.com/ingest",
   "method": "POST",
   "auth": {
-    "type": "Bearer",
-    "token": "my-api-token"
+    "type": "bearer",
+    "config": {
+      "token": "my-api-token"
+    }
   },
   "batch_mode": {
     "type": "Individual"
@@ -146,9 +148,11 @@ Note: The `headers` field on `HttpSinkConfig` is `HeaderMap` and remains `#[serd
   "url": "https://api.example.com/bulk",
   "method": "POST",
   "auth": {
-    "type": "Basic",
-    "username": "ingest-user",
-    "password": "s3cret"
+    "type": "basic",
+    "config": {
+      "username": "ingest-user",
+      "password": "s3cret"
+    }
   },
   "batch_mode": {
     "type": "Array"
@@ -164,7 +168,7 @@ Note: The `headers` field on `HttpSinkConfig` is `HeaderMap` and remains `#[serd
 ```env
 HTTP_SINK_URL=https://api.example.com/ingest
 HTTP_SINK_METHOD=POST
-HTTP_SINK_AUTH='{"type":"Bearer","token":"my-api-token"}'
+HTTP_SINK_AUTH='{"type":"bearer","config":{"token":"my-api-token"}}'
 HTTP_SINK_BATCH_MODE='{"type":"Individual"}'
 HTTP_SINK_MAX_RETRIES=3
 HTTP_SINK_CONCURRENCY=10

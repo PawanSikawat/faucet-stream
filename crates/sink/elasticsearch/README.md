@@ -151,9 +151,11 @@ let config: ElasticsearchSinkConfig = load_env_file(".env", "ES_SINK")?;
   "base_url": "http://localhost:9200",
   "index": "events",
   "auth": {
-    "type": "Basic",
-    "username": "elastic",
-    "password": "changeme"
+    "type": "basic",
+    "config": {
+      "username": "elastic",
+      "password": "changeme"
+    }
   },
   "batch_size": 1000,
   "id_field": "event_id"
@@ -167,7 +169,7 @@ let config: ElasticsearchSinkConfig = load_env_file(".env", "ES_SINK")?;
   "base_url": "http://localhost:9200",
   "index": "logs",
   "auth": {
-    "type": "None"
+    "type": "none"
   },
   "batch_size": 1000
 }
@@ -180,8 +182,10 @@ let config: ElasticsearchSinkConfig = load_env_file(".env", "ES_SINK")?;
   "base_url": "https://my-cluster.es.cloud:9243",
   "index": "metrics",
   "auth": {
-    "type": "ApiKey",
-    "key": "VnVhQ2ZHY0JDZGJrU..."
+    "type": "api_key",
+    "config": {
+      "key": "VnVhQ2ZHY0JDZGJrU..."
+    }
   },
   "batch_size": 500
 }
@@ -192,7 +196,7 @@ let config: ElasticsearchSinkConfig = load_env_file(".env", "ES_SINK")?;
 ```env
 ES_SINK_BASE_URL=http://localhost:9200
 ES_SINK_INDEX=events
-ES_SINK_AUTH='{"type":"Basic","username":"elastic","password":"changeme"}'
+ES_SINK_AUTH='{"type":"basic","config":{"username":"elastic","password":"changeme"}}'
 ES_SINK_BATCH_SIZE=1000
 ES_SINK_ID_FIELD=event_id
 ```

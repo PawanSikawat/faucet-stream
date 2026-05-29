@@ -15,12 +15,13 @@ pipeline:
         since: "2026-01-01T00:00:00Z"
         page_size: 1000
       auth:
-        type: Metadata
-        entries:
-          - key: x-api-key
-            value: ${env:GRPC_API_KEY}
-          - key: x-tenant
-            value: acme
+        type: metadata
+        config:
+          entries:
+            - key: x-api-key
+              value: ${env:GRPC_API_KEY}
+            - key: x-tenant
+              value: acme
       tls: true
       records_path: $.events[*]
 
@@ -30,8 +31,9 @@ pipeline:
       base_url: https://es.example.com:9200
       index: events
       auth:
-        type: Basic
-        username: ${env:ES_USER}
-        password: ${env:ES_PASS}
+        type: basic
+        config:
+          username: ${env:ES_USER}
+          password: ${env:ES_PASS}
       batch_size: 1000
       id_field: event_id

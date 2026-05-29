@@ -22,8 +22,9 @@ config:
   schema: PUBLIC
   role: ANALYST                     # optional
   auth:
-    type: OAuth
-    token: ${env:SNOWFLAKE_OAUTH_TOKEN}
+    type: oauth
+    config:
+      token: ${env:SNOWFLAKE_OAUTH_TOKEN}
   query: |
     SELECT id, name, created_at
     FROM events
@@ -39,9 +40,10 @@ config:
 
 ```yaml
 auth:
-  type: KeyPair
-  user: SVC_LOAD
-  private_key_pem: ${file:/etc/secrets/snowflake.pem}
+  type: key_pair
+  config:
+    user: SVC_LOAD
+    private_key_pem: ${file:/etc/secrets/snowflake.pem}
 ```
 
 The source generates an RS256 JWT per request (1-hour expiry) signed with the configured PEM key and sends it in the `Authorization: Bearer ...` header along with `X-Snowflake-Authorization-Token-Type: KEYPAIR_JWT`.

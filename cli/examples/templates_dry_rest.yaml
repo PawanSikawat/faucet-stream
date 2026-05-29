@@ -16,8 +16,9 @@ pipeline:
         base_url: ${vars.api_base}
         method: GET
         auth:
-          type: Bearer
-          token: ${vars.api_token}
+          type: bearer
+          config:
+            token: ${vars.api_token}
         records_path: $.data[*]
         pagination:
           type: PageNumber

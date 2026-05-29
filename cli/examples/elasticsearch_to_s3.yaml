@@ -15,8 +15,9 @@ pipeline:
       scroll_timeout: 2m
       batch_size: 2000
       auth:
-        type: ApiKey
-        key: ${env:ES_API_KEY}
+        type: api_key
+        config:
+          key: ${env:ES_API_KEY}
 
   sink:
     type: s3

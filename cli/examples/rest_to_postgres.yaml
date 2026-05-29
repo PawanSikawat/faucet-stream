@@ -15,8 +15,9 @@ pipeline:
       path: /charges
       method: GET
       auth:
-        type: Bearer
-        token: ${env:STRIPE_TOKEN}
+        type: bearer
+        config:
+          token: ${env:STRIPE_TOKEN}
       query_params:
         limit: "100"
       pagination:

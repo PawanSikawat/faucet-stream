@@ -450,6 +450,11 @@ fn shipped_example_yamls_pass_validate() {
         ("SOAP_PASS", "x"),
         ("STRIPE_TOKEN", "x"),
         ("FEED_TOKEN", "x"),
+        // shared_auth_rest.yaml (top-level `auth:` catalog provider).
+        ("API_BASE_URL", "https://api.example.com"),
+        ("API_TOKEN_URL", "https://auth.example.com/oauth/token"),
+        ("API_CLIENT_ID", "x"),
+        ("API_CLIENT_SECRET", "x"),
         (
             "GOOGLE_APPLICATION_CREDENTIALS",
             "/tmp/service-account.json",

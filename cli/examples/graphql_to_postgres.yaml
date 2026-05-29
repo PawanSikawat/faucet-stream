@@ -19,8 +19,9 @@ pipeline:
       variables:
         first: 100
       auth:
-        type: Bearer
-        token: ${env:API_TOKEN}
+        type: bearer
+        config:
+          token: ${env:API_TOKEN}
       records_path: $.data.users.edges[*].node
       pagination:
         has_next_page_path: $.data.users.pageInfo.hasNextPage

@@ -20,6 +20,7 @@ pipeline:
       dataset_id: warehouse
       table_id: orders
       credentials:
-        type: ServiceAccountKey
-        value: ${env:GCP_KEY_JSON}
+        type: service_account_key
+        config:
+          json: ${env:GCP_KEY_JSON}
       batch_size: 1000

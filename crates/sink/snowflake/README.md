@@ -146,8 +146,8 @@ let config: SnowflakeSinkConfig = load_env_file(".env", "SNOWFLAKE")?;
   "schema": "PUBLIC",
   "table": "events",
   "auth": {
-    "type": "OAuth",
-    "token": "eyJhbGciOiJSUzI1NiIs..."
+    "type": "oauth",
+    "config": { "token": "eyJhbGciOiJSUzI1NiIs..." }
   },
   "batch_size": 1000
 }
@@ -163,9 +163,8 @@ let config: SnowflakeSinkConfig = load_env_file(".env", "SNOWFLAKE")?;
   "schema": "RAW",
   "table": "ingest_events",
   "auth": {
-    "type": "KeyPair",
-    "user": "DATA_LOADER",
-    "private_key_pem": "-----BEGIN PRIVATE KEY-----\nMIIEvQIBAD..."
+    "type": "key_pair",
+    "config": { "user": "DATA_LOADER", "private_key_pem": "-----BEGIN PRIVATE KEY-----\nMIIEvQIBAD..." }
   },
   "batch_size": 250
 }
@@ -179,7 +178,7 @@ SNOWFLAKE_WAREHOUSE=COMPUTE_WH
 SNOWFLAKE_DATABASE=ANALYTICS_DB
 SNOWFLAKE_SCHEMA=PUBLIC
 SNOWFLAKE_TABLE=events
-SNOWFLAKE_AUTH='{"type":"OAuth","token":"eyJhbGciOiJSUzI1NiIs..."}'
+SNOWFLAKE_AUTH='{"type":"oauth","config":{"token":"eyJhbGciOiJSUzI1NiIs..."}}'
 SNOWFLAKE_BATCH_SIZE=1000
 ```
 

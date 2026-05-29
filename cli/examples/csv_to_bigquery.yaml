@@ -19,6 +19,7 @@ pipeline:
       dataset_id: warehouse
       table_id: transactions
       credentials:
-        type: ServiceAccountKeyPath
-        value: service-account.json
+        type: service_account_key_path
+        config:
+          path: service-account.json
       batch_size: 1000

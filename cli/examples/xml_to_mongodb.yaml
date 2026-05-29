@@ -11,8 +11,9 @@ pipeline:
       path: /catalog
       method: GET
       auth:
-        type: Bearer
-        token: ${env:FEED_TOKEN}
+        type: bearer
+        config:
+          token: ${env:FEED_TOKEN}
       query_params:
         format: xml
       records_element_path: catalog.products.product

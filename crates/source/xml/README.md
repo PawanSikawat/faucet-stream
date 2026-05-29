@@ -91,9 +91,11 @@ let config: XmlStreamConfig = load_env_file(".env", "XML")?;
   "path": "/soap/service",
   "method": "POST",
   "auth": {
-    "type": "Basic",
-    "username": "admin",
-    "password": "secret"
+    "type": "basic",
+    "config": {
+      "username": "admin",
+      "password": "secret"
+    }
   },
   "body": "<soapenv:Envelope xmlns:soapenv=\"http://schemas.xmlsoap.org/soap/envelope/\" xmlns:web=\"http://example.com/webservice\"><soapenv:Body><web:GetUsers/></soapenv:Body></soapenv:Envelope>",
   "records_element_path": "Envelope.Body.GetUsersResponse.Users.User",
