@@ -233,6 +233,12 @@ pub enum CliError {
     #[error("failed to build auth provider '{name}': {message}")]
     AuthProviderBuild { name: String, message: String },
 
+    /// A config-level validation failure that isn't covered by a more specific
+    /// variant (e.g. an invalid `quality:` block, or a quality check that
+    /// requires a DLQ when none is configured).
+    #[error("config error: {0}")]
+    Config(String),
+
     /// Pass-through for failures bubbling up from `faucet-core` or a connector.
     #[error(transparent)]
     Faucet(#[from] faucet_core::FaucetError),

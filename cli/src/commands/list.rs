@@ -4,7 +4,7 @@
 use crate::error::CliResult;
 use crate::registry::{sink_descriptions, source_descriptions};
 use crate::state::available_state_kinds;
-use crate::transforms::transform_descriptions;
+use crate::transforms::{quality_descriptions, transform_descriptions};
 
 /// Execute the `list` subcommand.
 pub async fn run() -> CliResult<()> {
@@ -16,6 +16,9 @@ pub async fn run() -> CliResult<()> {
     println!();
     println!("Transforms:");
     print_two_column(&transform_descriptions());
+    println!();
+    println!("Quality checks:");
+    print_two_column(&quality_descriptions());
     println!();
     println!("State stores: {}", available_state_kinds().join(", "));
     Ok(())

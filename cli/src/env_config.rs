@@ -292,6 +292,7 @@ pub fn build_pipeline_config(env: &HashMap<String, String>) -> CliResult<Pipelin
             transforms,
             state,
             dlq: None,
+            quality: None,
         },
         matrix: Vec::new(),
         execution: None,

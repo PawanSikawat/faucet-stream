@@ -392,6 +392,29 @@ pub fn available_transforms() -> Vec<&'static str> {
     registry().into_iter().map(|t| t.kind).collect()
 }
 
+// Keep in sync with faucet_core::{RecordCheck, BatchCheck} — one entry per check variant.
+/// One-line descriptions of the available quality checks, for `faucet list`.
+pub fn quality_descriptions() -> Vec<(&'static str, &'static str)> {
+    vec![
+        ("not_null", "field present and non-null"),
+        ("not_empty", "string non-empty after trim"),
+        ("regex_match", "string matches a regex"),
+        ("value_in_set", "value is in an allowed set"),
+        ("not_in_set", "value is not in a forbidden set"),
+        ("compare", "numeric/scalar comparison (gt/gte/lt/lte/eq/ne)"),
+        ("type_is", "value is of an expected JSON type"),
+        ("string_length", "string length within [min,max]"),
+        (
+            "json_schema",
+            "record validates against a JSON Schema (feature-gated)",
+        ),
+        ("row_count", "batch row count within [min,max]"),
+        ("null_rate", "batch null rate of a field <= max"),
+        ("unique", "composite key unique within the batch"),
+        ("distinct_count", "distinct values of a field within [min,max]"),
+    ]
+}
+
 /// Return the JSON Schema for the named transform's config. Mirrors
 /// `registry::source_schema` / `sink_schema` so `faucet schema transform <name>`
 /// reads symmetrically with the connector variants.
@@ -819,5 +842,13 @@ mod tests {
             CliError::InvalidTransform { name, .. } => assert_eq!(name, "explode"),
             other => panic!("expected InvalidTransform, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn quality_descriptions_has_one_entry_per_check() {
+        // 9 per-record checks (incl. json_schema) + 4 per-batch checks = 13.
+        // If you add a RecordCheck/BatchCheck variant in faucet-core, add its
+        // description here too.
+        assert_eq!(quality_descriptions().len(), 13);
     }
 }

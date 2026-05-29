@@ -38,6 +38,9 @@ pub struct ExpandedNode {
     pub state: Option<StateStoreSpec>,
     /// Resolved DLQ spec for this row, or `None` if no DLQ applies.
     pub dlq: Option<crate::config::DlqSpec>,
+    /// Pipeline-level quality spec, shared by every node. `quality:` has no
+    /// matrix-row override in v1, so this is `cfg.pipeline.quality` verbatim.
+    pub quality: Option<faucet_core::QualitySpec>,
     /// Every `${id.path}` placeholder that survived load-time interpolation.
     /// Populated by `collect_deferred`; the executor uses this to know
     /// which parent record to feed which row.
@@ -357,6 +360,25 @@ pub fn expand(cfg: &PipelineConfig) -> CliResult<Vec<ExpandedNode>> {
             }
         }
 
+        // `quality:` is pipeline-level only in v1 (no matrix-row override), so
+        // every node carries the same spec. Compile it once per node to (a)
+        // surface invalid paths/regexes/bounds at expand time, and (b) fail
+        // fast when a quarantine check has no DLQ to route to — the core guards
+        // this at run start too, but catching it here makes `faucet validate`
+        // a friendly, fast failure.
+        let quality = cfg.pipeline.quality.clone();
+        if let Some(ref spec) = quality {
+            let compiled = faucet_core::CompiledQuality::compile(spec)
+                .map_err(|e| CliError::Config(format!("quality (row `{row_id}`): {e}")))?;
+            if compiled.requires_dlq() && dlq.is_none() {
+                return Err(CliError::Config(format!(
+                    "row `{row_id}`: a quality check uses `on_failure: quarantine` \
+                     but no DLQ is configured — add a `dlq:` block (or change the \
+                     check's `on_failure` to `abort`)"
+                )));
+            }
+        }
+
         out.push(ExpandedNode {
             id: ids[i].clone(),
             row_index: i,
@@ -366,6 +388,7 @@ pub fn expand(cfg: &PipelineConfig) -> CliResult<Vec<ExpandedNode>> {
             transforms,
             state,
             dlq,
+            quality,
             deferred_refs: deferred,
         });
     }
@@ -732,6 +755,67 @@ pipeline:
         let cfg = parse_with_extension(yaml, "yaml").unwrap();
         let err = expand(&cfg).unwrap_err();
         assert!(matches!(err, CliError::UnknownDlqSinkKind { .. }));
+    }
+
+    #[test]
+    fn expand_rejects_quarantine_without_dlq() {
+        // A quality check with `on_failure: quarantine` needs a DLQ to route to.
+        // `expand` must reject the config so `faucet validate` fails fast.
+        let yaml = r#"
+version: 1
+pipeline:
+  source: { type: rest, config: {} }
+  sink:   { type: jsonl, config: { path: ./o.jsonl } }
+  quality:
+    record:
+      - { type: not_null, field: id, on_failure: quarantine }
+"#;
+        let cfg = parse_with_extension(yaml, "yaml").unwrap();
+        let err = expand(&cfg).unwrap_err();
+        match err {
+            CliError::Config(msg) => {
+                assert!(msg.contains("quarantine"), "{msg}");
+                assert!(msg.contains("DLQ") || msg.contains("dlq"), "{msg}");
+            }
+            other => panic!("expected Config error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn expand_accepts_quarantine_with_dlq() {
+        let yaml = r#"
+version: 1
+pipeline:
+  source: { type: rest, config: {} }
+  sink:   { type: jsonl, config: { path: ./o.jsonl } }
+  dlq:
+    sink: { type: jsonl, config: { path: ./dlq.jsonl } }
+  quality:
+    record:
+      - { type: not_null, field: id, on_failure: quarantine }
+"#;
+        let cfg = parse_with_extension(yaml, "yaml").unwrap();
+        let nodes = expand(&cfg).unwrap();
+        assert_eq!(nodes.len(), 1);
+        let q = nodes[0].quality.as_ref().expect("quality threaded onto node");
+        assert_eq!(q.record.len(), 1);
+    }
+
+    #[test]
+    fn expand_accepts_abort_quality_without_dlq() {
+        // `on_failure: abort` does not route to a DLQ, so no DLQ is required.
+        let yaml = r#"
+version: 1
+pipeline:
+  source: { type: rest, config: {} }
+  sink:   { type: jsonl, config: { path: ./o.jsonl } }
+  quality:
+    record:
+      - { type: not_null, field: id, on_failure: abort }
+"#;
+        let cfg = parse_with_extension(yaml, "yaml").unwrap();
+        let nodes = expand(&cfg).unwrap();
+        assert!(nodes[0].quality.is_some());
     }
 
     #[test]

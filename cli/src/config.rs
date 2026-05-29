@@ -106,6 +106,10 @@ pub struct PipelineSpec {
     pub state: Option<StateStoreSpec>,
     #[serde(default)]
     pub dlq: Option<DlqSpec>,
+
+    /// Data-quality checks (pipeline-level; no matrix-row override in v1).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quality: Option<faucet_core::QualitySpec>,
 }
 
 /// A `{ type, config }` block, the universal shape for both sources and sinks.
@@ -671,6 +675,22 @@ pipeline:
             cfg.pipeline.source.as_ref().unwrap().config["path"],
             "/v1/users/${users.id}/posts"
         );
+    }
+
+    #[test]
+    fn parses_quality_block() {
+        let yaml = r#"
+version: 1
+pipeline:
+  source: { type: rest, config: { url: "https://x" } }
+  quality:
+    record:
+      - { type: not_null, field: id, on_failure: abort }
+  sink: { type: stdout, config: {} }
+"#;
+        let cfg = parse_with_extension(yaml, "yaml").unwrap();
+        let q = cfg.pipeline.quality.expect("quality parsed");
+        assert_eq!(q.record.len(), 1);
     }
 
     #[test]
