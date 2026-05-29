@@ -1,11 +1,11 @@
-//! Compile YAML/JSON transform declarations into `RecordTransform` values.
+//! Compile YAML/JSON transform declarations into `TransformStage` values.
 //!
 //! The built-in transforms are exposed via config — custom closure
 //! transforms require Rust code and are reserved for the library API.
 
 use crate::config::TransformSpec;
 use crate::error::{CliError, CliResult};
-use faucet_core::RecordTransform;
+use faucet_core::{RecordTransform, TransformStage};
 #[cfg(feature = "transforms")]
 use faucet_core::{CastOnError, CastType, JsonSchema, KeyCaseMode, ValueCaseMode, schema_for};
 #[cfg(feature = "transforms")]
@@ -118,7 +118,7 @@ struct KeysCaseConfig {
 
 /// One row in the transform registry — the single source of truth for every
 /// built-in transform's kind, one-line description, JSON Schema, and
-/// `TransformSpec → RecordTransform` decoder. `compile_one`,
+/// `TransformSpec → TransformStage` decoder. `compile_one`,
 /// `transform_descriptions`, and `transform_schema` all read from this list
 /// so adding a new transform means appending one entry (no parallel match
 /// arms to keep in sync).
@@ -126,7 +126,7 @@ struct TransformDef {
     kind: &'static str,
     description: &'static str,
     schema_fn: fn() -> Value,
-    compile_fn: fn(&str, Value) -> CliResult<RecordTransform>,
+    compile_fn: fn(&str, Value) -> CliResult<TransformStage>,
 }
 
 /// Every transform compiled into this build, in display order.
@@ -144,9 +144,9 @@ fn registry() -> Vec<TransformDef> {
                 schema_fn: || schema::<FlattenConfig>(),
                 compile_fn: |kind, config| {
                     let cfg = decode::<FlattenConfig>(kind, config)?;
-                    Ok(RecordTransform::Flatten {
+                    Ok(TransformStage::Map(RecordTransform::Flatten {
                         separator: cfg.separator,
-                    })
+                    }))
                 },
             },
             TransformDef {
@@ -155,10 +155,10 @@ fn registry() -> Vec<TransformDef> {
                 schema_fn: || schema::<RenameKeysConfig>(),
                 compile_fn: |kind, config| {
                     let cfg = decode::<RenameKeysConfig>(kind, config)?;
-                    Ok(RecordTransform::RenameKeys {
+                    Ok(TransformStage::Map(RecordTransform::RenameKeys {
                         pattern: cfg.pattern,
                         replacement: cfg.replacement,
-                    })
+                    }))
                 },
             },
             TransformDef {
@@ -167,7 +167,9 @@ fn registry() -> Vec<TransformDef> {
                 schema_fn: || schema::<KeysCaseConfig>(),
                 compile_fn: |kind, config| {
                     let cfg = decode::<KeysCaseConfig>(kind, config)?;
-                    Ok(RecordTransform::KeysCase { mode: cfg.mode })
+                    Ok(TransformStage::Map(RecordTransform::KeysCase {
+                        mode: cfg.mode,
+                    }))
                 },
             },
             TransformDef {
@@ -176,7 +178,9 @@ fn registry() -> Vec<TransformDef> {
                 schema_fn: || schema::<FieldsConfig>(),
                 compile_fn: |kind, config| {
                     let cfg = decode::<FieldsConfig>(kind, config)?;
-                    Ok(RecordTransform::Select { fields: cfg.fields })
+                    Ok(TransformStage::Map(RecordTransform::Select {
+                        fields: cfg.fields,
+                    }))
                 },
             },
             TransformDef {
@@ -185,7 +189,9 @@ fn registry() -> Vec<TransformDef> {
                 schema_fn: || schema::<FieldsConfig>(),
                 compile_fn: |kind, config| {
                     let cfg = decode::<FieldsConfig>(kind, config)?;
-                    Ok(RecordTransform::Drop { fields: cfg.fields })
+                    Ok(TransformStage::Map(RecordTransform::Drop {
+                        fields: cfg.fields,
+                    }))
                 },
             },
             TransformDef {
@@ -194,7 +200,9 @@ fn registry() -> Vec<TransformDef> {
                 schema_fn: || schema::<SetConfig>(),
                 compile_fn: |kind, config| {
                     let cfg = decode::<SetConfig>(kind, config)?;
-                    Ok(RecordTransform::Set { values: cfg.values })
+                    Ok(TransformStage::Map(RecordTransform::Set {
+                        values: cfg.values,
+                    }))
                 },
             },
             TransformDef {
@@ -203,7 +211,9 @@ fn registry() -> Vec<TransformDef> {
                 schema_fn: || schema::<RenameFieldConfig>(),
                 compile_fn: |kind, config| {
                     let cfg = decode::<RenameFieldConfig>(kind, config)?;
-                    Ok(RecordTransform::RenameField { fields: cfg.fields })
+                    Ok(TransformStage::Map(RecordTransform::RenameField {
+                        fields: cfg.fields,
+                    }))
                 },
             },
             TransformDef {
@@ -212,10 +222,10 @@ fn registry() -> Vec<TransformDef> {
                 schema_fn: || schema::<CastConfig>(),
                 compile_fn: |kind, config| {
                     let cfg = decode::<CastConfig>(kind, config)?;
-                    Ok(RecordTransform::Cast {
+                    Ok(TransformStage::Map(RecordTransform::Cast {
                         fields: cfg.fields,
                         on_error: cfg.on_error,
-                    })
+                    }))
                 },
             },
             TransformDef {
@@ -224,10 +234,10 @@ fn registry() -> Vec<TransformDef> {
                 schema_fn: || schema::<RedactConfig>(),
                 compile_fn: |kind, config| {
                     let cfg = decode::<RedactConfig>(kind, config)?;
-                    Ok(RecordTransform::Redact {
+                    Ok(TransformStage::Map(RecordTransform::Redact {
                         fields: cfg.fields,
                         mask: cfg.mask,
-                    })
+                    }))
                 },
             },
             TransformDef {
@@ -236,10 +246,10 @@ fn registry() -> Vec<TransformDef> {
                 schema_fn: || schema::<ValueCaseConfig>(),
                 compile_fn: |kind, config| {
                     let cfg = decode::<ValueCaseConfig>(kind, config)?;
-                    Ok(RecordTransform::ValueCase {
+                    Ok(TransformStage::Map(RecordTransform::ValueCase {
                         fields: cfg.fields,
                         mode: cfg.mode,
-                    })
+                    }))
                 },
             },
             TransformDef {
@@ -248,10 +258,10 @@ fn registry() -> Vec<TransformDef> {
                 schema_fn: || schema::<SpellSymbolsConfig>(),
                 compile_fn: |kind, config| {
                     let cfg = decode::<SpellSymbolsConfig>(kind, config)?;
-                    Ok(RecordTransform::SpellSymbols {
+                    Ok(TransformStage::Map(RecordTransform::SpellSymbols {
                         extra: cfg.extra,
                         separator: cfg.separator,
-                    })
+                    }))
                 },
             },
         ]
@@ -262,9 +272,11 @@ fn registry() -> Vec<TransformDef> {
     }
 }
 
-/// Compile a list of [`TransformSpec`]s into [`RecordTransform`]s in the
-/// declared order. Unknown or malformed entries surface as a `CliError`.
-pub fn compile_transforms(specs: &[TransformSpec]) -> CliResult<Vec<RecordTransform>> {
+/// Compile a list of [`TransformSpec`]s into [`TransformStage`]s in the
+/// declared order. Every built-in transform compiles to a
+/// [`TransformStage::Map`]; future fan-out / filter stages will wrap other
+/// variants. Unknown or malformed entries surface as a `CliError`.
+pub fn compile_transforms(specs: &[TransformSpec]) -> CliResult<Vec<TransformStage>> {
     let mut out = Vec::with_capacity(specs.len());
     for s in specs {
         out.push(compile_one(s)?);
@@ -272,7 +284,7 @@ pub fn compile_transforms(specs: &[TransformSpec]) -> CliResult<Vec<RecordTransf
     Ok(out)
 }
 
-fn compile_one(spec: &TransformSpec) -> CliResult<RecordTransform> {
+fn compile_one(spec: &TransformSpec) -> CliResult<TransformStage> {
     match registry().into_iter().find(|t| t.kind == spec.kind) {
         Some(def) => (def.compile_fn)(&spec.kind, spec.config.clone()),
         None => Err(unknown_transform(&spec.kind)),
