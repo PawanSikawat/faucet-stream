@@ -64,6 +64,15 @@ release_commits = "^(feat|fix|perf)"
 # published yet — the release PR is what bumps the dependency first.
 release_always = false
 
+# Disable cargo-semver-checks for all packages. Semver-checks compiles each
+# crate's local and registry sources to compare API surface — for a 47-crate
+# workspace where most packages have either no registry presence yet OR
+# inter-crate dependencies that haven't propagated, this either hangs or
+# wastes 10+ minutes per run. The release PR's manual review is the source
+# of truth for semver decisions instead. Re-enable per-package later if
+# desired once the registry is stable.
+semver_check = false
+
 # Exclude the umbrella `faucet-stream` crate from release-plz processing.
 # It re-exports 30+ optional connector crates, and computing the local-vs-
 # registry diff for it requires materializing the full dependency tree
