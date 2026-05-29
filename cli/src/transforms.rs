@@ -311,8 +311,8 @@ fn registry() -> Vec<TransformDef> {
 }
 
 /// Compile a list of [`TransformSpec`]s into [`TransformStage`]s in the
-/// declared order. Every built-in transform compiles to a
-/// [`TransformStage::Map`]; future fan-out / filter stages will wrap other
+/// declared order. Most built-ins compile to a [`TransformStage::Map`];
+/// richer stages (e.g. `filter`, future fan-outs) compile to other
 /// variants. Unknown or malformed entries surface as a `CliError`.
 pub fn compile_transforms(specs: &[TransformSpec]) -> CliResult<Vec<TransformStage>> {
     let mut out = Vec::with_capacity(specs.len());
@@ -666,7 +666,7 @@ mod tests {
         }];
         let out = compile_transforms(&specs).unwrap();
         assert_eq!(out.len(), 1);
-        matches!(out[0], TransformStage::Filter(_));
+        assert!(matches!(out[0], TransformStage::Filter(_)));
     }
 
     #[cfg(feature = "transform-filter")]
