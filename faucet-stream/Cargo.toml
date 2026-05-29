@@ -77,8 +77,13 @@ compression = [
 ## Shared, single-flight auth providers (OAuth2 client-credentials / refresh,
 ## token-endpoint) usable across connectors via `auth: { ref }`.
 auth = ["dep:faucet-auth"]
+## Data-quality checks (`quality:` config block). `quality-jsonschema` adds the
+## `json_schema` record check via a JSON Schema validator. Forwarded to
+## `faucet-core`.
+quality = ["faucet-core/quality"]
+quality-jsonschema = ["quality", "faucet-core/quality-jsonschema"]
 ## Every connector and state backend.
-full = ["source", "sink", "state", "auth", "kafka-schema-registry", "compression"]
+full = ["source", "sink", "state", "auth", "kafka-schema-registry", "compression", "quality", "quality-jsonschema"]
 
 ## Individual source connectors.
 source-rest = ["dep:faucet-source-rest"]
