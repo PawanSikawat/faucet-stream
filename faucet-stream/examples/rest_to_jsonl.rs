@@ -13,10 +13,9 @@
 use std::time::Duration;
 
 use faucet_stream::sink::jsonl::{JsonlSink, JsonlSinkConfig};
-use faucet_stream::stage::TransformStage;
 use faucet_stream::{
     Auth, KeyCaseMode, Labels, PaginationStyle, Pipeline, RecordTransform, ReplicationMethod,
-    RestStream, RestStreamConfig, Source, TransformingSource, json,
+    RestStream, RestStreamConfig, Source, TransformStage, TransformingSource, json,
 };
 
 #[tokio::main]

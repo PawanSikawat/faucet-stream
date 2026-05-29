@@ -221,7 +221,7 @@ fn render_pipeline(
     body.push_str(&source_yaml);
     body.push('\n');
     body.push_str("  # transforms:\n");
-    body.push_str("  #   - type: snake_case\n\n");
+    body.push_str("  #   - { type: keys_case, config: { mode: snake } }\n\n");
     body.push_str("  sinks:\n");
     body.push_str(&format!("    {template}:\n"));
     body.push_str(&format!("      type: {sink_kind}\n"));

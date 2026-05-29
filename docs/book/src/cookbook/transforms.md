@@ -391,7 +391,7 @@ transforms:
 
 Operators: `eq`, `ne`, `exists`, `in`, `not_in`.
 
-- `path:` — JSONPath subset: bare key (`status`), dot path (`$.user.status`), or bracketed string key (`$['order-id']`). Bare keys are auto-prefixed with `$.`. Keys that literally contain `.` require bracket form (`"['foo.bar']"`).
+- `path:` — JSONPath subset: bare key (`status`), dot path (`$.user.status`), or bracketed string key (`$['order-id']`). Bare keys are auto-prefixed with `$.`. Keys that literally contain `.` require the `$`-rooted bracket form (`"$['foo.bar']"`).
 - `value:` — required for `eq` / `ne` / `in` / `not_in`. For `in` / `not_in`, must be an array. Forbidden for `exists`.
 - Type semantics: strict JSON equality. `"5" eq 5` is false. Chain `cast` upstream to coerce.
 - `ne` and `not_in` **keep records with a missing path** (the predicate is satisfied by absence). All other operators drop missing-path records.

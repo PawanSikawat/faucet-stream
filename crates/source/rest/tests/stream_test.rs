@@ -1,6 +1,5 @@
 use faucet_core::observability::Labels;
-use faucet_core::stage::TransformStage;
-use faucet_core::{Source, TransformingSource};
+use faucet_core::{Source, TransformStage, TransformingSource};
 use faucet_source_rest::{
     Auth, DEFAULT_TOKEN_ENDPOINT_EXPIRY_RATIO, FaucetError, PaginationStyle, RecordTransform,
     ReplicationMethod, ResponseValidator, RestStream, RestStreamConfig,
