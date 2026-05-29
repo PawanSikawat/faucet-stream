@@ -1,0 +1,77 @@
+# Demonstrates the new `filter` + `explode` transforms alongside `keys_case`
+# in a single end-to-end pipeline. Runs against the public DummyJSON test
+# API (no auth, no local infra) and prints the result to stdout.
+#
+# The pipeline:
+#   1. Fetches 5 products from https://dummyjson.com/products
+#      (each record has a `reviews` array of objects + camelCase keys).
+#   2. `filter` drops any product whose `availabilityStatus` equals
+#      "Out of Stock".
+#   3. `explode` fans each remaining product out into N child records —
+#      one per element of the `reviews` array — with each review's fields
+#      flattened in under a `review_` prefix.
+#   4. `keys_case` re-cases every key to snake_case so the final shape is
+#      pipeline-friendly (`discountPercentage` -> `discount_percentage`,
+#      `review_reviewerName` -> `review_reviewer_name`, etc.).
+#
+# Order matters: transforms run top-to-bottom, so a `filter` placed after
+# `explode` would filter children rather than parents.
+#
+# Run with:
+#   cargo run -p faucet-cli --features transforms -- \
+#     run cli/examples/rest_filter_explode_to_stdout.yaml
+#
+# Or pipe through `jq` for pretty output:
+#   cargo run -p faucet-cli --features transforms -- \
+#     run cli/examples/rest_filter_explode_to_stdout.yaml | jq .
+version: 1
+name: rest_filter_explode_demo
+
+pipeline:
+  source:
+    type: rest
+    config:
+      base_url: https://dummyjson.com
+      path: /products
+      method: GET
+      auth: { type: None }
+      query_params:
+        limit: "5"
+      pagination: { type: None }
+      records_path: $.products[*]
+      max_retries: 3
+      retry_backoff: 1
+      tolerated_http_errors: []
+      replication_method: { type: FullTable }
+      primary_keys: ["id"]
+      partitions: []
+      schema_sample_size: 0
+
+  sink:
+    type: stdout
+    config:
+      destination: stdout
+      format: json_lines
+      flush_per_record: true
+
+  transforms:
+    # 1. Drop products that are currently unavailable.
+    - type: filter
+      config:
+        path: availabilityStatus
+        op: ne
+        value: "Out of Stock"
+
+    # 2. Fan each product out into one record per review. Each review is an
+    #    object — its fields land on the parent record prefixed with
+    #    `review_` (the default prefix is the last path segment, here
+    #    `reviews`; we override it for readability).
+    - type: explode
+      config:
+        path: reviews
+        prefix: review
+
+    # 3. Re-case every key to snake_case for downstream consumers.
+    - type: keys_case
+      config:
+        mode: snake
