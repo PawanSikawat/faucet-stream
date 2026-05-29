@@ -8,6 +8,8 @@ pub(crate) mod decorator;
 mod install;
 mod labels;
 mod options;
+#[cfg(feature = "quality")]
+mod quality;
 mod state;
 mod strip;
 mod timer;
@@ -25,3 +27,5 @@ pub use state::InstrumentedStateStore;
 pub use strip::strip_type_name;
 pub use timer::DurationGuard;
 pub use transform::instrumented_apply_stages;
+#[cfg(feature = "quality")]
+pub use quality::instrumented_apply_quality;
