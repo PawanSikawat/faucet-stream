@@ -109,7 +109,11 @@ impl Source for WebsocketSource {
     ) -> Pin<Box<dyn Stream<Item = Result<StreamPage, FaucetError>> + Send + 'a>> {
         let resolved_url = faucet_core::util::substitute_context(&self.config.url, context);
         let batch_size = self.config.batch_size;
-        let page_chunk = if batch_size == 0 { usize::MAX } else { batch_size };
+        let page_chunk = if batch_size == 0 {
+            usize::MAX
+        } else {
+            batch_size
+        };
         let max_messages = self.config.max_messages.unwrap_or(usize::MAX);
         let idle_timeout = self.config.idle_timeout;
         let reconnect = self.config.reconnect;

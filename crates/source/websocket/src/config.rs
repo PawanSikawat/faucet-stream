@@ -182,7 +182,9 @@ pub(crate) fn decode_frame(
         WsMessageFormat::Json => match serde_json::from_slice::<Value>(payload) {
             Ok(v) => Ok(Some(v)),
             Err(e) => match on_parse_error {
-                OnParseError::Fail => Err(FaucetError::Source(format!("websocket json parse: {e}"))),
+                OnParseError::Fail => {
+                    Err(FaucetError::Source(format!("websocket json parse: {e}")))
+                }
                 OnParseError::Skip => {
                     tracing::warn!(error = %e, "websocket source: dropping non-JSON frame");
                     Ok(None)
@@ -280,7 +282,12 @@ mod config_tests {
     fn auth_bearer_round_trips_as_internally_tagged() {
         let json = serde_json::json!({"type": "bearer", "token": "abc"});
         let auth: WebsocketAuth = serde_json::from_value(json).unwrap();
-        assert_eq!(auth, WebsocketAuth::Bearer { token: "abc".into() });
+        assert_eq!(
+            auth,
+            WebsocketAuth::Bearer {
+                token: "abc".into()
+            }
+        );
     }
 }
 
