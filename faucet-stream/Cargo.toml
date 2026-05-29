@@ -139,6 +139,8 @@ transform-redact = ["faucet-source-rest?/transform-redact"]
 transform-value-case = ["faucet-source-rest?/transform-value-case"]
 transform-spell-symbols = ["faucet-source-rest?/transform-spell-symbols"]
 transform-keys-case = ["faucet-source-rest?/transform-keys-case"]
+transform-filter = ["faucet-source-rest?/transform-filter"]
+transform-explode = ["faucet-source-rest?/transform-explode"]
 transforms = ["faucet-source-rest?/transforms"]
 
 [dependencies]

@@ -23,6 +23,8 @@ transform-redact = ["faucet-core/transform-redact"]
 transform-value-case = ["faucet-core/transform-value-case"]
 transform-spell-symbols = ["faucet-core/transform-spell-symbols"]
 transform-keys-case = ["faucet-core/transform-keys-case"]
+transform-filter = ["faucet-core/transform-filter"]
+transform-explode = ["faucet-core/transform-explode"]
 transforms = ["faucet-core/transforms"]
 
 [dependencies]
