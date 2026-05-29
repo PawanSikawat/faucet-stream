@@ -1,6 +1,6 @@
 # Connector catalog
 
-faucet-stream ships **19 sources** and **16 sinks**. Each is a Cargo feature
+faucet-stream ships **20 sources** and **16 sinks**. Each is a Cargo feature
 (`source-<name>` / `sink-<name>`) and an independently published crate. Full API
 docs are on [docs.rs](https://docs.rs/faucet-stream).
 
@@ -28,6 +28,7 @@ Legend: ✓ supported · ✗ not applicable.
 | MongoDB | `source-mongodb` | ✓ | ✗ | ✗ | `find()` with filter/projection/sort |
 | Redis | `source-redis` | ✓ | ✗ | ✗ | streams, lists, key patterns |
 | Webhook | `source-webhook` | ✗⁵ | ✗ | ✗ | temporary HTTP server collecting POSTs |
+| WebSocket | `source-websocket` | ✓ | ✗ | ✗ | live push feed; subscribe frames, reconnect, ping keepalive |
 | CSV | `source-csv` | ✓ | ✗ | ✓ | CSV files as JSON |
 | Elasticsearch | `source-elasticsearch` | ✓ | ✗ | ✗ | search/scroll API |
 | Apache Kafka | `source-kafka` | ✓ | ✓ | ✗ | consumer; idle/max-messages termination, offset bookmarks |
@@ -78,6 +79,7 @@ feature doesn't apply.
 | BigQuery | service-account key (path or inline JSON), application-default credentials |
 | Snowflake | JWT key-pair, OAuth |
 | Kafka | SASL (PLAIN/SCRAM) + TLS |
+| WebSocket | none, Bearer token, Custom headers |
 | Elasticsearch | basic, API key, bearer, none |
 | S3 / GCS | cloud SDK credential chains (env, profile, metadata) |
 | SQL databases | connection URL (with embedded credentials / TLS params) |

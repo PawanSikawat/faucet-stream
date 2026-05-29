@@ -115,6 +115,7 @@ jobs:
           - source-mongodb
           - source-redis
           - source-webhook
+          - source-websocket
           - source-csv
           - source-elasticsearch
           - source-kafka

@@ -36,6 +36,7 @@ These run immediately after installing the CLI — great for a first smoke test:
 | `sqlite_to_jsonl.yaml`, `sqlite_to_csv.yaml` | local SQLite → file |
 | `rest_to_jsonl.yaml`, `rest_streaming.yaml`, `rest_to_stdout_preview.yaml` | point `base_url` at any HTTP API; preview needs no sink setup |
 | `rest_filter_explode_to_stdout.yaml` | `filter` + `explode` + `keys_case` against DummyJSON; demonstrates the v1 JSONPath subset and the merge rule |
+| `websocket_to_jsonl.yaml` | none (live public WS endpoint — Binance BTC/USDT trade stream, no auth) |
 
 > REST / GraphQL / XML / gRPC / webhook source examples hit an external endpoint
 > (the configs use a placeholder `base_url`). Edit it to a real API — there's no

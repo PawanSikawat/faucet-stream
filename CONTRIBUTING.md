@@ -146,7 +146,7 @@ README-only edit never causes a spurious publish.
 
 **Manual fallback.** `.github/workflows/release.yml` (`Release (manual fallback)`)
 is kept as a `workflow_dispatch` workflow for ad-hoc / bulk re-publishes (e.g.
-after a registry incident, or to re-publish all 45 crates from a known-good
+after a registry incident, or to re-publish all 46 crates from a known-good
 revision). Day-to-day releases should go through release-plz.
 
 **Dry-run locally.** Before relying on a release PR, you can preview what

@@ -14,7 +14,7 @@ This workspace produces both library crates (`faucet-core` + every connector and
 
 ## Workspace Structure
 
-Cargo workspace, 45 crates (44 libraries + the `faucet-cli` binary). All connector crates depend only on `faucet-core`; the umbrella `faucet-stream` and the `faucet-cli` binary depend on every connector + state crate via optional features.
+Cargo workspace, 46 crates (45 libraries + the `faucet-cli` binary). All connector crates depend only on `faucet-core`; the umbrella `faucet-stream` and the `faucet-cli` binary depend on every connector + state crate via optional features.
 
 | Crate | Path | Description |
 |-------|------|-------------|
@@ -32,6 +32,7 @@ Cargo workspace, 45 crates (44 libraries + the `faucet-cli` binary). All connect
 | `faucet-source-mongodb` | `crates/source/mongodb/` | MongoDB source — find() with filter/projection/sort |
 | `faucet-source-redis` | `crates/source/redis/` | Redis source — streams, lists, key patterns |
 | `faucet-source-webhook` | `crates/source/webhook/` | Webhook source — temporary HTTP server collecting POSTs |
+| `faucet-source-websocket` | `crates/source/websocket/` | WebSocket source — live streaming, subscription frames, reconnect |
 | `faucet-source-csv` | `crates/source/csv/` | CSV file source |
 | `faucet-source-elasticsearch` | `crates/source/elasticsearch/` | Elasticsearch source — search/scroll API |
 | `faucet-source-parquet` | `crates/source/parquet/` | Parquet source — local, glob, or S3; vectorized Arrow async reader, projection |
@@ -180,7 +181,7 @@ All connectors must be optimised for throughput by default. When modifying or ad
 
 Every `Pipeline::run` drives `Source::stream_pages(ctx, batch_size)` internally and writes each emitted `StreamPage` to the sink as it arrives. This bounds memory at O(batch_size) on both sides regardless of total record volume.
 
-Sources that override `stream_pages` to stream natively from their underlying primitive: `rest`, `graphql`, `postgres`, `postgres-cdc`, `mysql`, `sqlite`, `mongodb`, `s3` (JSONL/RawText modes), `gcs` (JSONL/RawText modes), `parquet`, `csv`, `xml`, `elasticsearch` (scroll API), `kafka`, `redis` (all three modes), `grpc` (server-streaming mode only). Sources that intentionally keep the default chunk-the-buffer impl: `grpc` (unary mode — no native paging primitive), `webhook` (buffer-shaped by nature). Client-streaming and bidirectional-streaming gRPC remain out of scope.
+Sources that override `stream_pages` to stream natively from their underlying primitive: `rest`, `graphql`, `postgres`, `postgres-cdc`, `mysql`, `sqlite`, `mongodb`, `s3` (JSONL/RawText modes), `gcs` (JSONL/RawText modes), `parquet`, `csv`, `xml`, `elasticsearch` (scroll API), `kafka`, `websocket`, `redis` (all three modes), `grpc` (server-streaming mode only). Sources that intentionally keep the default chunk-the-buffer impl: `grpc` (unary mode — no native paging primitive), `webhook` (buffer-shaped by nature). Client-streaming and bidirectional-streaming gRPC remain out of scope.
 
 Sinks that expose a `batch_size` config field for write-side re-chunking: every sink — `parquet`, `s3`, `gcs`, `bigquery`, `snowflake`, `postgres`, `mysql`, `sqlite`, `mongodb`, `redis`, `elasticsearch`, `http`, `kafka` (re-chunking is internally the natural unit for each — multi-row INSERTs, `_bulk` bodies, `tabledata.insertAll` requests, `insert_many` calls, Redis pipelines, etc.). The file/append sinks (`jsonl`, `csv`, `stdout`) carry the field for config parity but write per-record, so `batch_size` is a no-op for them.
 
@@ -323,7 +324,7 @@ Pipelines emit `tracing` spans and `metrics` counters/histograms automatically �
 
 Default features: `source-rest`, `transform-flatten`, `transform-rename-keys`, `transform-keys-case`.
 
-Each connector has its own feature: `source-<name>` / `sink-<name>` (`rest`, `graphql`, `xml`, `grpc`, `postgres`, `postgres-cdc`, `mysql`, `sqlite`, `s3`, `mongodb`, `redis`, `webhook`, `csv`, `elasticsearch`, `parquet`, `kafka` for sources; `bigquery`, `postgres`, `jsonl`, `snowflake`, `mysql`, `sqlite`, `s3`, `mongodb`, `redis`, `csv`, `elasticsearch`, `http`, `stdout`, `parquet`, `kafka` for sinks).
+Each connector has its own feature: `source-<name>` / `sink-<name>` (`rest`, `graphql`, `xml`, `grpc`, `postgres`, `postgres-cdc`, `mysql`, `sqlite`, `s3`, `mongodb`, `redis`, `webhook`, `websocket`, `csv`, `elasticsearch`, `parquet`, `kafka` for sources; `bigquery`, `postgres`, `jsonl`, `snowflake`, `mysql`, `sqlite`, `s3`, `mongodb`, `redis`, `csv`, `elasticsearch`, `http`, `stdout`, `parquet`, `kafka` for sinks).
 
 State backends: `state-redis`, `state-postgres` (file + memory live in `faucet-core`).
 
@@ -447,7 +448,7 @@ Key workspace deps: `serde` 1, `serde_json` 1, `schemars` 1.2, `async-trait` 0.1
 
 The default release path is **[release-plz](https://release-plz.dev/)** (`release-plz.toml` + `.github/workflows/release-plz.yml`). On every push to `main` release-plz scans for `feat` / `fix` / `perf` commits since each crate's last `<crate>-v<X.Y.Z>` tag and opens (or updates) a `chore: release` PR that bumps the affected crates, prepends per-crate sections to `CHANGELOG.md`, and leaves untouched crates alone. Merging that PR publishes to crates.io in dependency order (release-plz waits for sparse-index propagation between dependents) and pushes per-crate tags. Independent per-crate versions are the release-plz default; `docs`/`chore`/`refactor`/`test`/`ci`/`build` commits are filtered out of version bumps via `release_commits = "^(feat|fix|perf)"` so README-only edits don't trigger a publish. Tokens: `CARGO_REGISTRY_TOKEN` is required; `RELEASE_PLZ_TOKEN` (PAT or GitHub App) is recommended so the release PR triggers CI — the default `GITHUB_TOKEN` is forbidden by GitHub from triggering downstream workflows.
 
-`.github/workflows/release.yml` (`Release (manual fallback)`) is retained as a `workflow_dispatch` workflow for ad-hoc / bulk re-publishes (registry incidents, re-publish all 45 crates from a known-good revision). It still bumps with `cargo-release` and publishes in **waves of 5 with a 15-minute wait between waves**. Use it only as a fallback; day-to-day releases go through release-plz. Both workflows share the same per-crate tag format (`<crate>-v<X.Y.Z>`) so they don't fight each other.
+`.github/workflows/release.yml` (`Release (manual fallback)`) is retained as a `workflow_dispatch` workflow for ad-hoc / bulk re-publishes (registry incidents, re-publish all 46 crates from a known-good revision). It still bumps with `cargo-release` and publishes in **waves of 5 with a 15-minute wait between waves**. Use it only as a fallback; day-to-day releases go through release-plz. Both workflows share the same per-crate tag format (`<crate>-v<X.Y.Z>`) so they don't fight each other.
 
 ### docs.rs build setup
 
@@ -485,7 +486,7 @@ The adoption work in issue **#91** added many user-facing surfaces (docs.rs conf
 
 | If you change… | Also update (same PR) |
 |---|---|
-| **Add / remove / rename a connector** | umbrella + CLI features; CI `feature-check` matrix (`.github/workflows/ci.yml`); root README connector table **and the counts** (hero "19 sources / 16 sinks", architecture "45 crates — …"); docs-site catalog `docs/book/src/reference/connectors.md` (capability matrix) + `reference/choosing.md`; a `cli/examples/<src>_to_<sink>.yaml`; `examples/README.md` mapping (+ `examples/docker-compose.yml` and `examples/infra/` if it needs new local infra); per-crate crates.io `keywords` + `[package.metadata.docs.rs]` + `#![cfg_attr(docsrs, feature(doc_cfg))]`; the crate table in this file; README "Project Structure" |
+| **Add / remove / rename a connector** | umbrella + CLI features; CI `feature-check` matrix (`.github/workflows/ci.yml`); root README connector table **and the counts** (hero "20 sources / 16 sinks", architecture "46 crates — …"); docs-site catalog `docs/book/src/reference/connectors.md` (capability matrix) + `reference/choosing.md`; a `cli/examples/<src>_to_<sink>.yaml`; `examples/README.md` mapping (+ `examples/docker-compose.yml` and `examples/infra/` if it needs new local infra); per-crate crates.io `keywords` + `[package.metadata.docs.rs]` + `#![cfg_attr(docsrs, feature(doc_cfg))]`; the crate table in this file; README "Project Structure" |
 | **Change a connector's config fields / defaults / auth / pagination / behavior** | that crate's `README.md`; root README tables if user-facing; any docs-site page that mentions it (cookbook `auth`/`pagination`/`state`/`compression`, `reference/*`); affected `cli/examples/*.yaml`. (`faucet schema`/`init` are schema-driven — no manual update.) |
 | **Change a connector's streaming / resumable / compression support** | the capability-matrix columns in `docs/book/src/reference/connectors.md` (verify against the code — these were wrong once) |
 | **Change CLI commands or the config-file grammar** | `docs/book/src/reference/cli.md` + `reference/config.md`; `cli/README.md`; root README quickstart |
