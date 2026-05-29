@@ -116,6 +116,18 @@ struct KeysCaseConfig {
     mode: KeyCaseMode,
 }
 
+#[cfg(feature = "transform-filter")]
+#[derive(Debug, Deserialize, JsonSchema)]
+struct FilterConfig {
+    /// JSONPath subset: bare key, dot path, or bracketed string key.
+    path: String,
+    /// One of `eq`, `ne`, `exists`, `in`, `not_in`.
+    op: faucet_core::FilterOp,
+    /// Required for `eq`/`ne`/`in`/`not_in`. For `in`/`not_in`, must be an array.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    value: Option<Value>,
+}
+
 /// One row in the transform registry — the single source of truth for every
 /// built-in transform's kind, one-line description, JSON Schema, and
 /// `TransformSpec → TransformStage` decoder. `compile_one`,
@@ -262,6 +274,32 @@ fn registry() -> Vec<TransformDef> {
                         extra: cfg.extra,
                         separator: cfg.separator,
                     }))
+                },
+            },
+            #[cfg(feature = "transform-filter")]
+            TransformDef {
+                kind: "filter",
+                description: "Keep records where a JSONPath predicate is true.",
+                schema_fn: || schema::<FilterConfig>(),
+                compile_fn: |kind, config| {
+                    let cfg = decode::<FilterConfig>(kind, config)?;
+                    // Re-use stage's compile-time validation so error messages match.
+                    let stage = TransformStage::Filter(faucet_core::FilterSpec {
+                        path: cfg.path,
+                        op: cfg.op,
+                        value: cfg.value,
+                    });
+                    faucet_core::compile_stage(&stage).map_err(|e| match e {
+                        faucet_core::FaucetError::Transform(msg) => CliError::InvalidTransform {
+                            name: kind.to_owned(),
+                            message: msg,
+                        },
+                        other => CliError::InvalidTransform {
+                            name: kind.to_owned(),
+                            message: format!("{other}"),
+                        },
+                    })?;
+                    Ok(stage)
                 },
             },
         ]
@@ -616,6 +654,63 @@ mod tests {
                 assert!(available.contains("rebuild"), "{available}");
             }
             other => panic!("expected UnknownTransform, got {other:?}"),
+        }
+    }
+
+    #[cfg(feature = "transform-filter")]
+    #[test]
+    fn compiles_filter_eq() {
+        let specs = vec![TransformSpec {
+            kind: "filter".into(),
+            config: json!({"path": "status", "op": "eq", "value": "active"}),
+        }];
+        let out = compile_transforms(&specs).unwrap();
+        assert_eq!(out.len(), 1);
+        matches!(out[0], TransformStage::Filter(_));
+    }
+
+    #[cfg(feature = "transform-filter")]
+    #[test]
+    fn filter_rejects_in_with_non_array_value() {
+        let specs = vec![TransformSpec {
+            kind: "filter".into(),
+            config: json!({"path": "v", "op": "in", "value": "scalar"}),
+        }];
+        let err = compile_transforms(&specs).unwrap_err();
+        match err {
+            CliError::InvalidTransform { name, message } => {
+                assert_eq!(name, "filter");
+                assert!(message.contains("requires an array"), "{message}");
+            }
+            other => panic!("expected InvalidTransform, got {other:?}"),
+        }
+    }
+
+    #[cfg(feature = "transform-filter")]
+    #[test]
+    fn filter_rejects_exists_with_value() {
+        let specs = vec![TransformSpec {
+            kind: "filter".into(),
+            config: json!({"path": "v", "op": "exists", "value": "x"}),
+        }];
+        let err = compile_transforms(&specs).unwrap_err();
+        match err {
+            CliError::InvalidTransform { name, .. } => assert_eq!(name, "filter"),
+            other => panic!("expected InvalidTransform, got {other:?}"),
+        }
+    }
+
+    #[cfg(feature = "transform-filter")]
+    #[test]
+    fn filter_rejects_bad_path() {
+        let specs = vec![TransformSpec {
+            kind: "filter".into(),
+            config: json!({"path": "$..items", "op": "exists"}),
+        }];
+        let err = compile_transforms(&specs).unwrap_err();
+        match err {
+            CliError::InvalidTransform { name, .. } => assert_eq!(name, "filter"),
+            other => panic!("expected InvalidTransform, got {other:?}"),
         }
     }
 }
