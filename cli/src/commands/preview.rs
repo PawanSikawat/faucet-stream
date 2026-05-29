@@ -11,7 +11,7 @@ use crate::error::{CliError, CliResult};
 use crate::expand::{NodeRole, expand};
 use crate::registry::build_source;
 use crate::transforms::compile_transforms;
-use faucet_core::transform::{apply_all, compile as compile_transform};
+use faucet_core::stage::{apply_stages, compile_stage};
 
 #[cfg(feature = "sink-stdout")]
 use faucet_core::{Pipeline, Sink};
@@ -40,19 +40,20 @@ pub async fn run(args: PreviewArgs) -> CliResult<()> {
     tracing::info!(row = %first_root.id, "previewing first root row");
 
     let source = build_source(&first_root.source.kind, first_root.source.config.clone()).await?;
-    let transforms = compile_transforms(&first_root.transforms)?;
+    let stages = compile_transforms(&first_root.transforms)?;
     let records = source.fetch_all().await?;
-    let records: Vec<_> = if transforms.is_empty() {
+    let records: Vec<_> = if stages.is_empty() {
         records
     } else {
-        let compiled = transforms
+        let compiled = stages
             .iter()
-            .map(compile_transform)
+            .map(compile_stage)
             .collect::<Result<Vec<_>, _>>()?;
-        records
-            .into_iter()
-            .map(|r| apply_all(r, &compiled))
-            .collect::<Result<Vec<_>, _>>()?
+        let mut out = Vec::with_capacity(records.len());
+        for r in records {
+            out.extend(apply_stages(r, &compiled)?);
+        }
+        out
     };
 
     let limited: Vec<_> = records.into_iter().take(args.limit).collect();

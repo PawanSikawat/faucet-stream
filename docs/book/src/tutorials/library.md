@@ -78,9 +78,11 @@ surfaces immediately as `FaucetError::Transform`, not at first record.
 
 `Labels::for_named(name)` is the convenient constructor for library callers
 (the CLI uses its own `Labels` carrying the pipeline / row / run-id triple).
-The wrapper emits `faucet_transform_records_total`,
-`faucet_transform_duration_seconds`, and `faucet_transform_errors_total`
-per page through the standard observability stack.
+The wrapper emits `faucet_transform_records_in_total` /
+`faucet_transform_records_out_total` (use the `out/in` ratio for filter drop
+rate or explode fan-out), `faucet_transform_duration_seconds`, and
+`faucet_transform_errors_total` per page through the standard observability
+stack.
 
 For configuration-driven users (the `faucet` binary), transforms are declared
 in YAML — see the [transforms cookbook](../cookbook/transforms.md) for the

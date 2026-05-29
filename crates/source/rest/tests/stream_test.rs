@@ -1,5 +1,5 @@
 use faucet_core::observability::Labels;
-use faucet_core::{Source, TransformingSource};
+use faucet_core::{Source, TransformStage, TransformingSource};
 use faucet_source_rest::{
     Auth, DEFAULT_TOKEN_ENDPOINT_EXPIRY_RATIO, FaucetError, PaginationStyle, RecordTransform,
     ReplicationMethod, ResponseValidator, RestStream, RestStreamConfig,
@@ -719,9 +719,9 @@ async fn test_flatten_transform_applied_to_records() {
     );
     let stream = TransformingSource::new(
         inner,
-        vec![RecordTransform::Flatten {
+        vec![TransformStage::Map(RecordTransform::Flatten {
             separator: "__".into(),
-        }],
+        })],
         Labels::for_named("rest"),
     )
     .unwrap();
@@ -759,9 +759,9 @@ async fn test_keys_case_snake_transform() {
     );
     let stream = TransformingSource::new(
         inner,
-        vec![RecordTransform::KeysCase {
+        vec![TransformStage::Map(RecordTransform::KeysCase {
             mode: KeyCaseMode::Snake,
-        }],
+        })],
         Labels::for_named("rest"),
     )
     .unwrap();
@@ -793,10 +793,10 @@ async fn test_rename_keys_transform() {
     );
     let stream = TransformingSource::new(
         inner,
-        vec![RecordTransform::RenameKeys {
+        vec![TransformStage::Map(RecordTransform::RenameKeys {
             pattern: r"^_sdc_".into(),
             replacement: "".into(),
-        }],
+        })],
         Labels::for_named("rest"),
     )
     .unwrap();
@@ -829,12 +829,12 @@ async fn test_chained_transforms_keys_case_then_flatten() {
     let stream = TransformingSource::new(
         inner,
         vec![
-            RecordTransform::KeysCase {
+            TransformStage::Map(RecordTransform::KeysCase {
                 mode: KeyCaseMode::Snake,
-            },
-            RecordTransform::Flatten {
+            }),
+            TransformStage::Map(RecordTransform::Flatten {
                 separator: "_".into(),
-            },
+            }),
         ],
         Labels::for_named("rest"),
     )
@@ -853,10 +853,10 @@ fn test_invalid_regex_errors_at_construction() {
         Box::new(RestStream::new(RestStreamConfig::new("http://localhost", "/api")).unwrap());
     let result = TransformingSource::new(
         inner,
-        vec![RecordTransform::RenameKeys {
+        vec![TransformStage::Map(RecordTransform::RenameKeys {
             pattern: "[invalid".into(),
             replacement: "".into(),
-        }],
+        })],
         Labels::for_named("rest"),
     );
     assert!(result.is_err());
@@ -887,15 +887,17 @@ async fn test_custom_transform_applied_to_records() {
     let stream = TransformingSource::new(
         inner,
         // Double the "value" field and inject a "_source" tag.
-        vec![RecordTransform::custom(|mut record| {
-            if let serde_json::Value::Object(ref mut m) = record {
-                if let Some(v) = m.get("value").and_then(|v| v.as_i64()) {
-                    m.insert("value".to_string(), json!(v * 2));
+        vec![TransformStage::Map(RecordTransform::custom(
+            |mut record| {
+                if let serde_json::Value::Object(ref mut m) = record {
+                    if let Some(v) = m.get("value").and_then(|v| v.as_i64()) {
+                        m.insert("value".to_string(), json!(v * 2));
+                    }
+                    m.insert("_source".to_string(), json!("test-api"));
                 }
-                m.insert("_source".to_string(), json!("test-api"));
-            }
-            record
-        })],
+                record
+            },
+        ))],
         Labels::for_named("rest"),
     )
     .unwrap();

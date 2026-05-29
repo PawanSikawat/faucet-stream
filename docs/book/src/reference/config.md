@@ -49,6 +49,16 @@ destination shaping belongs at the pipeline or row layer. See the
 [transforms cookbook](../cookbook/transforms.md) for the full model and
 worked examples.
 
+### Available transforms
+
+The full catalogue (with shapes and worked examples) lives in the
+[transforms cookbook](../cookbook/transforms.md); `faucet list` prints the
+same set, and `faucet schema transform <name>` returns the JSON schema for
+each. Highlights:
+
+- `filter` — keep records where a JSONPath predicate is true. See the cookbook for the operator set and path syntax.
+- `explode` — expand an array field into one record per element. See the cookbook for the merge rule and `on_missing` semantics.
+
 ## Interpolation
 
 Three stages resolve placeholders:

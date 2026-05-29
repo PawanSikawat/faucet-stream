@@ -24,4 +24,4 @@ pub use options::RunStreamOptions;
 pub use state::InstrumentedStateStore;
 pub use strip::strip_type_name;
 pub use timer::DurationGuard;
-pub use transform::instrumented_apply_all;
+pub use transform::instrumented_apply_stages;

@@ -129,7 +129,15 @@ cli-interactive = ["dep:inquire"]
 transforms = [
     "faucet-core/transforms",
     "faucet-source-rest?/transforms",
+    "transform-filter",
+    "transform-explode",
 ]
+
+# Per-transform feature flags forwarded to faucet-core. Lets the CLI's
+# `#[cfg(feature = "transform-X")]` gates compile in just the rows the user
+# asked for. The `transforms` aggregate above enables every transform at once.
+transform-filter = ["faucet-core/transform-filter"]
+transform-explode = ["faucet-core/transform-explode"]
 
 observability = [
     "faucet-core/observability-install",
@@ -201,6 +209,9 @@ wiremock = "0.6"
 serial_test = "3"
 metrics-util.workspace = true
 serde_yaml = "0.9"
+futures.workspace = true
+async-stream.workspace = true
+futures-core.workspace = true
 
 [package.metadata.docs.rs]
 all-features = true

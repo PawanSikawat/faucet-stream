@@ -134,3 +134,32 @@ fn cli_example_yaml_validates() {
         }
     }
 }
+
+#[test]
+fn cli_example_filter_explode_yaml_validates() {
+    // Sanity: the filter+explode demo YAML parses, expands, and produces a
+    // transform list that includes the new filter / explode kinds plus
+    // keys_case from the row-level transforms.
+    let yaml = include_str!("../examples/rest_filter_explode_to_stdout.yaml");
+    let cfg = PipelineConfig::from_text(yaml, Path::new("rest_filter_explode_to_stdout.yaml"))
+        .expect("example parses");
+    let nodes = expand(&cfg).expect("example expands");
+    assert!(!nodes.is_empty(), "example must expand to at least one row");
+    let kinds: Vec<&str> = nodes[0]
+        .transforms
+        .iter()
+        .map(|t| t.kind.as_str())
+        .collect();
+    assert!(
+        kinds.contains(&"filter"),
+        "expected filter in row stages, got {kinds:?}"
+    );
+    assert!(
+        kinds.contains(&"explode"),
+        "expected explode in row stages, got {kinds:?}"
+    );
+    assert!(
+        kinds.contains(&"keys_case"),
+        "expected keys_case in row stages, got {kinds:?}"
+    );
+}

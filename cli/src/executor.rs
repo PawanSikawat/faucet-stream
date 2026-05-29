@@ -473,13 +473,13 @@ async fn run_one_invocation(
     };
 
     // 3) Compile transforms.
-    let transforms = compile_transforms(&node.transforms)?;
-    let source: Box<dyn Source> = if transforms.is_empty() {
+    let stages = compile_transforms(&node.transforms)?;
+    let source: Box<dyn Source> = if stages.is_empty() {
         source
     } else {
         Box::new(faucet_core::TransformingSource::new(
             source,
-            transforms,
+            stages,
             obs_labels.clone(),
         )?)
     };

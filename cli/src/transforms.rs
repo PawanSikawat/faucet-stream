@@ -1,13 +1,13 @@
-//! Compile YAML/JSON transform declarations into `RecordTransform` values.
+//! Compile YAML/JSON transform declarations into `TransformStage` values.
 //!
 //! The built-in transforms are exposed via config — custom closure
 //! transforms require Rust code and are reserved for the library API.
 
 use crate::config::TransformSpec;
 use crate::error::{CliError, CliResult};
-use faucet_core::RecordTransform;
 #[cfg(feature = "transforms")]
 use faucet_core::{CastOnError, CastType, JsonSchema, KeyCaseMode, ValueCaseMode, schema_for};
+use faucet_core::{RecordTransform, TransformStage};
 #[cfg(feature = "transforms")]
 use serde::Deserialize;
 use serde_json::Value;
@@ -116,9 +116,44 @@ struct KeysCaseConfig {
     mode: KeyCaseMode,
 }
 
+#[cfg(feature = "transform-filter")]
+#[derive(Debug, Deserialize, JsonSchema)]
+struct FilterConfig {
+    /// JSONPath subset: bare key, dot path, or bracketed string key.
+    path: String,
+    /// One of `eq`, `ne`, `exists`, `in`, `not_in`.
+    op: faucet_core::FilterOp,
+    /// Required for `eq`/`ne`/`in`/`not_in`. For `in`/`not_in`, must be an array.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    value: Option<Value>,
+}
+
+#[cfg(feature = "transform-explode")]
+#[derive(Debug, Deserialize, JsonSchema)]
+struct ExplodeConfig {
+    /// JSONPath subset: bare key, dot path, or bracketed string key.
+    path: String,
+    /// Prefix prepended to object-element fields. Defaults to the last
+    /// segment of `path`. Empty string = pure LATERAL FLATTEN (no prefix).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    prefix: Option<String>,
+    /// Separator between prefix and element field key. Default `"_"`.
+    #[serde(default = "default_explode_separator_cli")]
+    separator: String,
+    /// `passthrough` (default), `drop`, or `error` when path doesn't yield a
+    /// non-empty array.
+    #[serde(default)]
+    on_missing: faucet_core::OnMissing,
+}
+
+#[cfg(feature = "transform-explode")]
+fn default_explode_separator_cli() -> String {
+    "_".to_owned()
+}
+
 /// One row in the transform registry — the single source of truth for every
 /// built-in transform's kind, one-line description, JSON Schema, and
-/// `TransformSpec → RecordTransform` decoder. `compile_one`,
+/// `TransformSpec → TransformStage` decoder. `compile_one`,
 /// `transform_descriptions`, and `transform_schema` all read from this list
 /// so adding a new transform means appending one entry (no parallel match
 /// arms to keep in sync).
@@ -126,7 +161,7 @@ struct TransformDef {
     kind: &'static str,
     description: &'static str,
     schema_fn: fn() -> Value,
-    compile_fn: fn(&str, Value) -> CliResult<RecordTransform>,
+    compile_fn: fn(&str, Value) -> CliResult<TransformStage>,
 }
 
 /// Every transform compiled into this build, in display order.
@@ -144,9 +179,9 @@ fn registry() -> Vec<TransformDef> {
                 schema_fn: || schema::<FlattenConfig>(),
                 compile_fn: |kind, config| {
                     let cfg = decode::<FlattenConfig>(kind, config)?;
-                    Ok(RecordTransform::Flatten {
+                    Ok(TransformStage::Map(RecordTransform::Flatten {
                         separator: cfg.separator,
-                    })
+                    }))
                 },
             },
             TransformDef {
@@ -155,10 +190,10 @@ fn registry() -> Vec<TransformDef> {
                 schema_fn: || schema::<RenameKeysConfig>(),
                 compile_fn: |kind, config| {
                     let cfg = decode::<RenameKeysConfig>(kind, config)?;
-                    Ok(RecordTransform::RenameKeys {
+                    Ok(TransformStage::Map(RecordTransform::RenameKeys {
                         pattern: cfg.pattern,
                         replacement: cfg.replacement,
-                    })
+                    }))
                 },
             },
             TransformDef {
@@ -167,7 +202,9 @@ fn registry() -> Vec<TransformDef> {
                 schema_fn: || schema::<KeysCaseConfig>(),
                 compile_fn: |kind, config| {
                     let cfg = decode::<KeysCaseConfig>(kind, config)?;
-                    Ok(RecordTransform::KeysCase { mode: cfg.mode })
+                    Ok(TransformStage::Map(RecordTransform::KeysCase {
+                        mode: cfg.mode,
+                    }))
                 },
             },
             TransformDef {
@@ -176,7 +213,9 @@ fn registry() -> Vec<TransformDef> {
                 schema_fn: || schema::<FieldsConfig>(),
                 compile_fn: |kind, config| {
                     let cfg = decode::<FieldsConfig>(kind, config)?;
-                    Ok(RecordTransform::Select { fields: cfg.fields })
+                    Ok(TransformStage::Map(RecordTransform::Select {
+                        fields: cfg.fields,
+                    }))
                 },
             },
             TransformDef {
@@ -185,7 +224,9 @@ fn registry() -> Vec<TransformDef> {
                 schema_fn: || schema::<FieldsConfig>(),
                 compile_fn: |kind, config| {
                     let cfg = decode::<FieldsConfig>(kind, config)?;
-                    Ok(RecordTransform::Drop { fields: cfg.fields })
+                    Ok(TransformStage::Map(RecordTransform::Drop {
+                        fields: cfg.fields,
+                    }))
                 },
             },
             TransformDef {
@@ -194,7 +235,9 @@ fn registry() -> Vec<TransformDef> {
                 schema_fn: || schema::<SetConfig>(),
                 compile_fn: |kind, config| {
                     let cfg = decode::<SetConfig>(kind, config)?;
-                    Ok(RecordTransform::Set { values: cfg.values })
+                    Ok(TransformStage::Map(RecordTransform::Set {
+                        values: cfg.values,
+                    }))
                 },
             },
             TransformDef {
@@ -203,7 +246,9 @@ fn registry() -> Vec<TransformDef> {
                 schema_fn: || schema::<RenameFieldConfig>(),
                 compile_fn: |kind, config| {
                     let cfg = decode::<RenameFieldConfig>(kind, config)?;
-                    Ok(RecordTransform::RenameField { fields: cfg.fields })
+                    Ok(TransformStage::Map(RecordTransform::RenameField {
+                        fields: cfg.fields,
+                    }))
                 },
             },
             TransformDef {
@@ -212,10 +257,10 @@ fn registry() -> Vec<TransformDef> {
                 schema_fn: || schema::<CastConfig>(),
                 compile_fn: |kind, config| {
                     let cfg = decode::<CastConfig>(kind, config)?;
-                    Ok(RecordTransform::Cast {
+                    Ok(TransformStage::Map(RecordTransform::Cast {
                         fields: cfg.fields,
                         on_error: cfg.on_error,
-                    })
+                    }))
                 },
             },
             TransformDef {
@@ -224,10 +269,10 @@ fn registry() -> Vec<TransformDef> {
                 schema_fn: || schema::<RedactConfig>(),
                 compile_fn: |kind, config| {
                     let cfg = decode::<RedactConfig>(kind, config)?;
-                    Ok(RecordTransform::Redact {
+                    Ok(TransformStage::Map(RecordTransform::Redact {
                         fields: cfg.fields,
                         mask: cfg.mask,
-                    })
+                    }))
                 },
             },
             TransformDef {
@@ -236,10 +281,10 @@ fn registry() -> Vec<TransformDef> {
                 schema_fn: || schema::<ValueCaseConfig>(),
                 compile_fn: |kind, config| {
                     let cfg = decode::<ValueCaseConfig>(kind, config)?;
-                    Ok(RecordTransform::ValueCase {
+                    Ok(TransformStage::Map(RecordTransform::ValueCase {
                         fields: cfg.fields,
                         mode: cfg.mode,
-                    })
+                    }))
                 },
             },
             TransformDef {
@@ -248,10 +293,62 @@ fn registry() -> Vec<TransformDef> {
                 schema_fn: || schema::<SpellSymbolsConfig>(),
                 compile_fn: |kind, config| {
                     let cfg = decode::<SpellSymbolsConfig>(kind, config)?;
-                    Ok(RecordTransform::SpellSymbols {
+                    Ok(TransformStage::Map(RecordTransform::SpellSymbols {
                         extra: cfg.extra,
                         separator: cfg.separator,
-                    })
+                    }))
+                },
+            },
+            #[cfg(feature = "transform-filter")]
+            TransformDef {
+                kind: "filter",
+                description: "Keep records where a JSONPath predicate is true.",
+                schema_fn: || schema::<FilterConfig>(),
+                compile_fn: |kind, config| {
+                    let cfg = decode::<FilterConfig>(kind, config)?;
+                    // Re-use stage's compile-time validation so error messages match.
+                    let stage = TransformStage::Filter(faucet_core::FilterSpec {
+                        path: cfg.path,
+                        op: cfg.op,
+                        value: cfg.value,
+                    });
+                    faucet_core::compile_stage(&stage).map_err(|e| match e {
+                        faucet_core::FaucetError::Transform(msg) => CliError::InvalidTransform {
+                            name: kind.to_owned(),
+                            message: msg,
+                        },
+                        other => CliError::InvalidTransform {
+                            name: kind.to_owned(),
+                            message: format!("{other}"),
+                        },
+                    })?;
+                    Ok(stage)
+                },
+            },
+            #[cfg(feature = "transform-explode")]
+            TransformDef {
+                kind: "explode",
+                description: "Expand an array field into one record per element.",
+                schema_fn: || schema::<ExplodeConfig>(),
+                compile_fn: |kind, config| {
+                    let cfg = decode::<ExplodeConfig>(kind, config)?;
+                    let stage = TransformStage::Explode(faucet_core::ExplodeSpec {
+                        path: cfg.path,
+                        prefix: cfg.prefix,
+                        separator: cfg.separator,
+                        on_missing: cfg.on_missing,
+                    });
+                    faucet_core::compile_stage(&stage).map_err(|e| match e {
+                        faucet_core::FaucetError::Transform(msg) => CliError::InvalidTransform {
+                            name: kind.to_owned(),
+                            message: msg,
+                        },
+                        other => CliError::InvalidTransform {
+                            name: kind.to_owned(),
+                            message: format!("{other}"),
+                        },
+                    })?;
+                    Ok(stage)
                 },
             },
         ]
@@ -262,9 +359,11 @@ fn registry() -> Vec<TransformDef> {
     }
 }
 
-/// Compile a list of [`TransformSpec`]s into [`RecordTransform`]s in the
-/// declared order. Unknown or malformed entries surface as a `CliError`.
-pub fn compile_transforms(specs: &[TransformSpec]) -> CliResult<Vec<RecordTransform>> {
+/// Compile a list of [`TransformSpec`]s into [`TransformStage`]s in the
+/// declared order. Most built-ins compile to a [`TransformStage::Map`];
+/// richer stages (e.g. `filter`, future fan-outs) compile to other
+/// variants. Unknown or malformed entries surface as a `CliError`.
+pub fn compile_transforms(specs: &[TransformSpec]) -> CliResult<Vec<TransformStage>> {
     let mut out = Vec::with_capacity(specs.len());
     for s in specs {
         out.push(compile_one(s)?);
@@ -272,7 +371,7 @@ pub fn compile_transforms(specs: &[TransformSpec]) -> CliResult<Vec<RecordTransf
     Ok(out)
 }
 
-fn compile_one(spec: &TransformSpec) -> CliResult<RecordTransform> {
+fn compile_one(spec: &TransformSpec) -> CliResult<TransformStage> {
     match registry().into_iter().find(|t| t.kind == spec.kind) {
         Some(def) => (def.compile_fn)(&spec.kind, spec.config.clone()),
         None => Err(unknown_transform(&spec.kind)),
@@ -546,6 +645,8 @@ mod tests {
             "redact",
             "value_case",
             "spell_symbols",
+            "filter",
+            "explode",
         ] {
             assert!(names.contains(&expected), "missing {expected}");
         }
@@ -604,6 +705,119 @@ mod tests {
                 assert!(available.contains("rebuild"), "{available}");
             }
             other => panic!("expected UnknownTransform, got {other:?}"),
+        }
+    }
+
+    #[cfg(feature = "transform-filter")]
+    #[test]
+    fn compiles_filter_eq() {
+        let specs = vec![TransformSpec {
+            kind: "filter".into(),
+            config: json!({"path": "status", "op": "eq", "value": "active"}),
+        }];
+        let out = compile_transforms(&specs).unwrap();
+        assert_eq!(out.len(), 1);
+        assert!(matches!(out[0], TransformStage::Filter(_)));
+    }
+
+    #[cfg(feature = "transform-filter")]
+    #[test]
+    fn filter_rejects_in_with_non_array_value() {
+        let specs = vec![TransformSpec {
+            kind: "filter".into(),
+            config: json!({"path": "v", "op": "in", "value": "scalar"}),
+        }];
+        let err = compile_transforms(&specs).unwrap_err();
+        match err {
+            CliError::InvalidTransform { name, message } => {
+                assert_eq!(name, "filter");
+                assert!(message.contains("requires an array"), "{message}");
+            }
+            other => panic!("expected InvalidTransform, got {other:?}"),
+        }
+    }
+
+    #[cfg(feature = "transform-filter")]
+    #[test]
+    fn filter_rejects_exists_with_value() {
+        let specs = vec![TransformSpec {
+            kind: "filter".into(),
+            config: json!({"path": "v", "op": "exists", "value": "x"}),
+        }];
+        let err = compile_transforms(&specs).unwrap_err();
+        match err {
+            CliError::InvalidTransform { name, .. } => assert_eq!(name, "filter"),
+            other => panic!("expected InvalidTransform, got {other:?}"),
+        }
+    }
+
+    #[cfg(feature = "transform-filter")]
+    #[test]
+    fn filter_rejects_bad_path() {
+        let specs = vec![TransformSpec {
+            kind: "filter".into(),
+            config: json!({"path": "$..items", "op": "exists"}),
+        }];
+        let err = compile_transforms(&specs).unwrap_err();
+        match err {
+            CliError::InvalidTransform { name, .. } => assert_eq!(name, "filter"),
+            other => panic!("expected InvalidTransform, got {other:?}"),
+        }
+    }
+
+    #[cfg(feature = "transform-explode")]
+    #[test]
+    fn compiles_explode_with_defaults() {
+        let specs = vec![TransformSpec {
+            kind: "explode".into(),
+            config: json!({"path": "items"}),
+        }];
+        let out = compile_transforms(&specs).unwrap();
+        assert_eq!(out.len(), 1);
+        assert!(matches!(out[0], TransformStage::Explode(_)));
+    }
+
+    #[cfg(feature = "transform-explode")]
+    #[test]
+    fn compiles_explode_with_custom_prefix_and_on_missing() {
+        let specs = vec![TransformSpec {
+            kind: "explode".into(),
+            config: json!({
+                "path": "items",
+                "prefix": "item",
+                "separator": "_",
+                "on_missing": "drop"
+            }),
+        }];
+        let out = compile_transforms(&specs).unwrap();
+        assert_eq!(out.len(), 1);
+    }
+
+    #[cfg(feature = "transform-explode")]
+    #[test]
+    fn explode_rejects_bad_path() {
+        let specs = vec![TransformSpec {
+            kind: "explode".into(),
+            config: json!({"path": "$..items"}),
+        }];
+        let err = compile_transforms(&specs).unwrap_err();
+        match err {
+            CliError::InvalidTransform { name, .. } => assert_eq!(name, "explode"),
+            other => panic!("expected InvalidTransform, got {other:?}"),
+        }
+    }
+
+    #[cfg(feature = "transform-explode")]
+    #[test]
+    fn explode_rejects_invalid_on_missing() {
+        let specs = vec![TransformSpec {
+            kind: "explode".into(),
+            config: json!({"path": "items", "on_missing": "explode_harder"}),
+        }];
+        let err = compile_transforms(&specs).unwrap_err();
+        match err {
+            CliError::InvalidTransform { name, .. } => assert_eq!(name, "explode"),
+            other => panic!("expected InvalidTransform, got {other:?}"),
         }
     }
 }

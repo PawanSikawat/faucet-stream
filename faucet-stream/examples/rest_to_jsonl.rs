@@ -15,7 +15,7 @@ use std::time::Duration;
 use faucet_stream::sink::jsonl::{JsonlSink, JsonlSinkConfig};
 use faucet_stream::{
     Auth, KeyCaseMode, Labels, PaginationStyle, Pipeline, RecordTransform, ReplicationMethod,
-    RestStream, RestStreamConfig, Source, TransformingSource, json,
+    RestStream, RestStreamConfig, Source, TransformStage, TransformingSource, json,
 };
 
 #[tokio::main]
@@ -48,9 +48,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     let source = TransformingSource::new(
         Box::new(inner) as Box<dyn Source>,
-        vec![RecordTransform::KeysCase {
+        vec![TransformStage::Map(RecordTransform::KeysCase {
             mode: KeyCaseMode::Snake,
-        }],
+        })],
         Labels::for_named("rest"),
     )?;
 

@@ -24,7 +24,9 @@ cardinality and never a Prometheus label.
 - **Sink:** `faucet_sink_records_total`, `faucet_sink_writes_total`,
   `faucet_sink_errors_total`, `faucet_sink_write_duration_seconds`,
   `faucet_sink_flush_duration_seconds`, `faucet_sink_in_flight`.
-- **Transform:** `faucet_transform_records_total`,
+- **Transform:** `faucet_transform_records_in_total`,
+  `faucet_transform_records_out_total` (use the `out/in` ratio for
+  filter drop rate or explode fan-out), `faucet_transform_errors_total{kind}`,
   `faucet_transform_duration_seconds`.
 - **State:** `faucet_state_{get,put,delete}_total` (get carries
   `outcome=hit|miss`), `faucet_state_errors_total{op,kind}`, plus duration

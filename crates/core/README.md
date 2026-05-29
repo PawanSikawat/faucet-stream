@@ -26,7 +26,7 @@ Both traits include a `config_schema()` method that returns a JSON Schema descri
 
 ### Decorators
 
-- **`TransformingSource`** — wraps any `Source` with a fixed `Vec<RecordTransform>` applied per page via `instrumented_apply_all`. The canonical way library callers attach transforms to any source. See [`docs.rs`](https://docs.rs/faucet-core/latest/faucet_core/struct.TransformingSource.html).
+- **`TransformingSource`** — wraps any `Source` with a fixed `Vec<TransformStage>` (covering 1→1 `Map(RecordTransform)`, 1→0|1 `Filter`, 1→0..N `Explode`, and arbitrary `Custom` closures) applied per page via `instrumented_apply_stages`. The canonical way library callers attach transforms — including filter and explode — to any source. See [`docs.rs`](https://docs.rs/faucet-core/latest/faucet_core/struct.TransformingSource.html).
 
 ### `Source::stream_pages` (recommended for large sources)
 
@@ -226,6 +226,7 @@ let json = serde_json::to_value(schema)?;
 | `transform` | `RecordTransform`, `CompiledTransform`, plus support enums (`CastType`, `CastOnError`, `ValueCaseMode`) |
 | `replication` | `ReplicationMethod`, `filter_incremental`, `max_replication_value` |
 | `schema` | `infer_schema` |
+| `stage` | `TransformStage`, `FilterSpec`, `ExplodeSpec`, `OnMissing`. The pipeline-level stage type that wraps `RecordTransform` (1→1) and adds filter (1→0\|1) and explode (1→0..N). See `docs/book/src/cookbook/transforms.md` for the merge rule and JSONPath subset. |
 | `util` | `quote_ident`, `extract_records`, `check_http_response` |
 
 ## License

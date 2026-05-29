@@ -21,6 +21,7 @@ pub mod pipeline;
 pub mod replication;
 pub mod retry;
 pub mod schema;
+pub mod stage;
 pub mod state;
 pub mod traits;
 pub mod transform;
@@ -35,7 +36,7 @@ pub use error::FaucetError;
 pub use observability::{
     DurationGuard, InstallError, InstallReport, InstrumentedSink, InstrumentedSource,
     InstrumentedStateStore, Labels, ObservabilityConfig, PrometheusConfig, RunStreamOptions,
-    TracingConfig, install_observability, instrumented_apply_all, register_build_info,
+    TracingConfig, install_observability, instrumented_apply_stages, register_build_info,
     update_bookmark_lag,
 };
 pub use pipeline::{
@@ -44,6 +45,11 @@ pub use pipeline::{
 };
 pub use replication::ReplicationMethod;
 pub use retry::execute_with_retry;
+#[cfg(feature = "transform-explode")]
+pub use stage::{ExplodeSpec, OnMissing};
+#[cfg(feature = "transform-filter")]
+pub use stage::{FilterOp, FilterSpec};
+pub use stage::{TransformStage, compile_stage};
 pub use state::{FileStateStore, MemoryStateStore, StateStore};
 pub use traits::{RowOutcome, Sink, Source};
 #[cfg(feature = "transform-keys-case")]
