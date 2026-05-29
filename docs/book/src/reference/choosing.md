@@ -28,6 +28,23 @@ For the full feature grid see the [connector catalog](./connectors.md).
 S3/GCS source. (The Parquet source reads from S3 directly, so you don't need the
 S3 source in front of it.)
 
+## Live feeds: WebSocket vs. Webhook vs. Kafka/Redis
+
+- **`source-websocket`** — connects *out* to a live push endpoint (`ws://`/`wss://`),
+  optionally sends subscription frames, and streams each incoming message as a record.
+  Use it for market data, chat feeds, telemetry, or any server that pushes over WebSocket.
+  Live-only — no replay, no durable offset.
+- **`source-webhook`** — opens a temporary HTTP server and *receives* inbound HTTP
+  POSTs from external systems over a time window. Use it when the remote system pushes
+  to you over HTTP rather than WebSocket.
+- **`source-kafka`** / **`source-redis`** — broker-backed streaming with durable,
+  replayable offsets and resumable bookmarks. Use these when you need guaranteed delivery
+  and the ability to continue from where a previous run left off.
+
+**Rule of thumb:** connecting out to a live WebSocket feed → `source-websocket`; receiving
+inbound HTTP POST payloads → `source-webhook`; durable, replayable event stream →
+`source-kafka` or `source-redis`.
+
 ## Streaming: Redis vs. Kafka
 
 - **`source-redis`** reads streams, lists, or key patterns. Great when Redis is

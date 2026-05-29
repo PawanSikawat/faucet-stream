@@ -16,7 +16,7 @@
 
 **The fast, config-driven way to move data in Rust.**
 
-faucet-stream wires **19 source** and **16 sink** connectors together with a single
+faucet-stream wires **20 source** and **16 sink** connectors together with a single
 `faucet` binary that runs pipelines declaratively from a YAML/JSON file — no Rust
 code required. Or skip the binary and embed the same engine in your own service
 through the typed `Source` / `Sink` traits. One toolkit, whether you want a CLI you
@@ -146,7 +146,7 @@ flowchart LR
     P -.->|metrics + spans| O
 ```
 
-faucet-stream is a Cargo workspace with 45 crates — 19 sources, 16 sinks, 5 shared connector libraries, 2 state-store backends, the shared core, the umbrella crate, and the CLI binary:
+faucet-stream is a Cargo workspace with 46 crates — 20 sources, 16 sinks, 5 shared connector libraries, 2 state-store backends, the shared core, the umbrella crate, and the CLI binary:
 
 | Crate | Description |
 |-------|-------------|
@@ -165,6 +165,7 @@ faucet-stream is a Cargo workspace with 45 crates — 19 sources, 16 sinks, 5 sh
 | [`faucet-source-mongodb`](crates/source/mongodb) | MongoDB — find() with filter, projection, sort |
 | [`faucet-source-redis`](crates/source/redis) | Redis — read from streams, lists, or key patterns |
 | [`faucet-source-webhook`](crates/source/webhook) | Webhook — temporary HTTP server collecting POST payloads |
+| [`faucet-source-websocket`](crates/source/websocket) | WebSocket — live streaming feed; subscribe frames, reconnect, ping keepalive |
 | [`faucet-source-csv`](crates/source/csv) | CSV — read CSV files as JSON objects |
 | [`faucet-source-elasticsearch`](crates/source/elasticsearch) | Elasticsearch — search/scroll API |
 | [`faucet-source-kafka`](crates/source/kafka) | Apache Kafka — consumer with idle/max-messages termination |
@@ -883,6 +884,7 @@ Every pagination style has a termination/loop guard. `Cursor`, `LinkHeader`, and
 | `source-mongodb` | no | MongoDB query source |
 | `source-redis` | no | Redis source |
 | `source-webhook` | no | Webhook HTTP receiver |
+| `source-websocket` | no | WebSocket live streaming source |
 | `source-csv` | no | CSV file source |
 | `source-elasticsearch` | no | Elasticsearch source |
 | `source-kafka` | no | Apache Kafka consumer source |
@@ -1069,6 +1071,7 @@ crates/
     mongodb/                  — MongoDB find()
     redis/                    — Redis streams/lists/keys
     webhook/                  — HTTP webhook receiver
+    websocket/                — WebSocket live streaming source
     csv/                      — CSV file reader
     elasticsearch/            — Elasticsearch search/scroll
     kafka/                    — Apache Kafka consumer
