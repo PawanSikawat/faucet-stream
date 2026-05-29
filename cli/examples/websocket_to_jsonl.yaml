@@ -1,0 +1,30 @@
+version: 1
+# Stream messages from a WebSocket endpoint and write each as one JSON line.
+#
+# Run:
+#   faucet run cli/examples/websocket_to_jsonl.yaml
+#
+# Prereqs:
+#   - A reachable WebSocket endpoint. The default targets Binance's public
+#     BTC/USDT trade stream (no auth, no infra needed). Replace `url` with your
+#     own feed as needed.
+
+pipeline:
+  source:
+    type: websocket
+    config:
+      url: "wss://stream.binance.com:9443/ws/btcusdt@trade"
+      message_format: json
+      # Stop when either condition fires.
+      max_messages: 100
+      idle_timeout: 30
+      # Keep the connection alive through proxies.
+      ping_interval: 20
+      batch_size: 50
+
+  sink:
+    type: jsonl
+    config:
+      path: ./out/trades.jsonl
+      append: false
+      pretty: false
