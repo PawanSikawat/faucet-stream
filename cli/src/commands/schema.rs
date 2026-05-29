@@ -16,6 +16,7 @@ pub async fn run(args: SchemaArgs) -> CliResult<()> {
             serde_json::to_value(dlq_schema)
                 .unwrap_or_else(|_| serde_json::json!({"type": "object"}))
         }
+        #[cfg(feature = "quality")]
         SchemaTarget::Quality => {
             let quality_schema = faucet_core::schema_for!(faucet_core::QualitySpec);
             serde_json::to_value(quality_schema)

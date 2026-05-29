@@ -394,8 +394,11 @@ pub fn available_transforms() -> Vec<&'static str> {
 
 // Keep in sync with faucet_core::{RecordCheck, BatchCheck} — one entry per check variant.
 /// One-line descriptions of the available quality checks, for `faucet list`.
+/// The `json_schema` entry only appears when the `quality-jsonschema` feature
+/// is enabled, mirroring `faucet schema quality` so `list` and `schema` agree.
+#[cfg(feature = "quality")]
 pub fn quality_descriptions() -> Vec<(&'static str, &'static str)> {
-    vec![
+    let mut checks = vec![
         ("not_null", "field present and non-null"),
         ("not_empty", "string non-empty after trim"),
         ("regex_match", "string matches a regex"),
@@ -404,10 +407,13 @@ pub fn quality_descriptions() -> Vec<(&'static str, &'static str)> {
         ("compare", "numeric/scalar comparison (gt/gte/lt/lte/eq/ne)"),
         ("type_is", "value is of an expected JSON type"),
         ("string_length", "string length within [min,max]"),
-        (
-            "json_schema",
-            "record validates against a JSON Schema (feature-gated)",
-        ),
+    ];
+    #[cfg(feature = "quality-jsonschema")]
+    checks.push((
+        "json_schema",
+        "record validates against a JSON Schema (feature-gated)",
+    ));
+    checks.extend([
         ("row_count", "batch row count within [min,max]"),
         ("null_rate", "batch null rate of a field <= max"),
         ("unique", "composite key unique within the batch"),
@@ -415,7 +421,8 @@ pub fn quality_descriptions() -> Vec<(&'static str, &'static str)> {
             "distinct_count",
             "distinct values of a field within [min,max]",
         ),
-    ]
+    ]);
+    checks
 }
 
 /// Return the JSON Schema for the named transform's config. Mirrors
@@ -847,11 +854,17 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "quality")]
     #[test]
     fn quality_descriptions_has_one_entry_per_check() {
-        // 9 per-record checks (incl. json_schema) + 4 per-batch checks = 13.
-        // If you add a RecordCheck/BatchCheck variant in faucet-core, add its
-        // description here too.
+        // 8 always-on per-record checks + 4 per-batch checks = 12; the
+        // `json_schema` per-record check is only present (→ 13) when the
+        // `quality-jsonschema` feature is enabled, matching `faucet schema
+        // quality`. If you add a RecordCheck/BatchCheck variant in faucet-core,
+        // add its description here too.
+        #[cfg(feature = "quality-jsonschema")]
         assert_eq!(quality_descriptions().len(), 13);
+        #[cfg(not(feature = "quality-jsonschema"))]
+        assert_eq!(quality_descriptions().len(), 12);
     }
 }

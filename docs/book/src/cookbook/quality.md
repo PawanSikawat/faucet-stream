@@ -168,11 +168,9 @@ write nothing this page) or `abort`. `unique` is row-attributable and accepts
 ## DLQ requirement
 
 Any check that uses `quarantine` or `quarantine_batch` requires a `dlq:` block.
-Omitting it is rejected at config-load time:
-
-```
-error: quality: on_failure 'quarantine' requires a DLQ sink
-```
+Omitting it fails validation with an error explaining that a `dlq:` block is
+required (`faucet validate` catches this before the run starts; the core
+guards it again at run start).
 
 See the [Dead-letter queues](./dlq.md) cookbook page for `dlq:` options.
 

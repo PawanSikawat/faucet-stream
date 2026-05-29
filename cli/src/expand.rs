@@ -40,6 +40,7 @@ pub struct ExpandedNode {
     pub dlq: Option<crate::config::DlqSpec>,
     /// Pipeline-level quality spec, shared by every node. `quality:` has no
     /// matrix-row override in v1, so this is `cfg.pipeline.quality` verbatim.
+    #[cfg(feature = "quality")]
     pub quality: Option<faucet_core::QualitySpec>,
     /// Every `${id.path}` placeholder that survived load-time interpolation.
     /// Populated by `collect_deferred`; the executor uses this to know
@@ -366,7 +367,9 @@ pub fn expand(cfg: &PipelineConfig) -> CliResult<Vec<ExpandedNode>> {
         // fast when a quarantine check has no DLQ to route to — the core guards
         // this at run start too, but catching it here makes `faucet validate`
         // a friendly, fast failure.
+        #[cfg(feature = "quality")]
         let quality = cfg.pipeline.quality.clone();
+        #[cfg(feature = "quality")]
         if let Some(ref spec) = quality {
             let compiled = faucet_core::CompiledQuality::compile(spec)
                 .map_err(|e| CliError::Config(format!("quality (row `{row_id}`): {e}")))?;
@@ -388,6 +391,7 @@ pub fn expand(cfg: &PipelineConfig) -> CliResult<Vec<ExpandedNode>> {
             transforms,
             state,
             dlq,
+            #[cfg(feature = "quality")]
             quality,
             deferred_refs: deferred,
         });
@@ -757,6 +761,7 @@ pipeline:
         assert!(matches!(err, CliError::UnknownDlqSinkKind { .. }));
     }
 
+    #[cfg(feature = "quality")]
     #[test]
     fn expand_rejects_quarantine_without_dlq() {
         // A quality check with `on_failure: quarantine` needs a DLQ to route to.
@@ -781,6 +786,7 @@ pipeline:
         }
     }
 
+    #[cfg(feature = "quality")]
     #[test]
     fn expand_accepts_quarantine_with_dlq() {
         let yaml = r#"
@@ -804,6 +810,7 @@ pipeline:
         assert_eq!(q.record.len(), 1);
     }
 
+    #[cfg(feature = "quality")]
     #[test]
     fn expand_accepts_abort_quality_without_dlq() {
         // `on_failure: abort` does not route to a DLQ, so no DLQ is required.

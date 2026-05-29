@@ -528,6 +528,13 @@ where
                             }
                         }
                         // Quality-quarantined records share the DLQ budget/write.
+                        // Capture the quality count BEFORE the splice — the splice
+                        // moves `quality_envelopes`, so its length is unavailable
+                        // afterward. Used below to pick the page `reason` label.
+                        #[cfg(feature = "quality")]
+                        let quality_count = quality_envelopes.len();
+                        #[cfg(not(feature = "quality"))]
+                        let quality_count = 0usize;
                         envelopes.splice(0..0, quality_envelopes);
                         let page_failures = envelopes.len();
 
@@ -576,10 +583,24 @@ where
                             dlq_stats.records_dlq += page_failures;
                             dlq_stats.pages_with_failures += 1;
 
+                            // Page `reason` label, 3-way:
+                            //  - `dlq_all`  — the whole page was synthesized from a
+                            //    single outer sink error (OnBatchError::DlqAll).
+                            //  - `partial`  — at least one row failed on the SINK
+                            //    side (`page_failures > quality_count`). A mixed
+                            //    page carrying both sink failures and quality
+                            //    quarantines is labeled `partial`: the sink failure
+                            //    dominates.
+                            //  - `quality`  — every envelope is quality-sourced
+                            //    (no sink-side failures on this page).
+                            // The per-row quality volume is separately exposed via
+                            // `faucet_quality_records_quarantined_total`.
                             let reason_label = if outer_err_recovered {
                                 DlqReason::DlqAll.as_str()
-                            } else {
+                            } else if page_failures > quality_count {
                                 DlqReason::Partial.as_str()
+                            } else {
+                                DlqReason::Quality.as_str()
                             };
                             counter!("faucet_sink_dlq_records_total", metric_labels.clone())
                                 .increment(page_failures as u64);
@@ -2037,6 +2058,63 @@ mod tests {
         assert_eq!(dlq.len(), 1);
         assert_eq!(dlq[0]["error"]["kind"], "QualityFailure");
         assert_eq!(result.dlq.unwrap().records_dlq, 1);
+    }
+
+    #[cfg(feature = "quality")]
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn quality_only_page_emits_quality_reason() {
+        // A page whose DLQ traffic is entirely quality-sourced (the main sink
+        // accepts every survivor) must label `faucet_sink_dlq_pages_total`
+        // with `reason="quality"`, not `partial`.
+        use crate::dlq::DlqConfig;
+        use crate::observability::decorator::source_tests::{LOCK, snapshotter};
+        use crate::quality::{CompiledQuality, OnFailure, QualitySpec, RecordCheck};
+        use metrics_util::debugging::DebugValue;
+
+        let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let snap = snapshotter();
+
+        // MockSink accepts everything → no sink-side failures, so the only DLQ
+        // traffic comes from the quality quarantine.
+        let main = Arc::new(MockSink::new());
+        let dlq_sink = Arc::new(MockSink::new());
+        let spec = QualitySpec {
+            record: vec![RecordCheck::NotNull {
+                field: "id".into(),
+                treat_missing_as_null: true,
+                on_failure: OnFailure::Quarantine,
+            }],
+            batch: vec![],
+        };
+        let quality = Arc::new(CompiledQuality::compile(&spec).unwrap());
+        let pages: Vec<Result<StreamPage, FaucetError>> = vec![Ok(StreamPage {
+            records: vec![json!({"id": 1}), json!({"id": null}), json!({"id": 3})],
+            bookmark: None,
+        })];
+        let opts = RunStreamOptions::new()
+            .with_name("p_quality_reason")
+            .with_dlq(DlqConfig::new(dlq_sink.clone()))
+            .with_quality(quality);
+        let _ = run_stream(futures::stream::iter(pages), main.as_ref(), opts)
+            .await
+            .unwrap();
+
+        let snapshot = snap.snapshot();
+        let saw_quality_reason = snapshot.into_vec().into_iter().any(|(k, _, _, v)| {
+            k.key().name() == "faucet_sink_dlq_pages_total"
+                && k.key()
+                    .labels()
+                    .any(|l| l.key() == "pipeline" && l.value() == "p_quality_reason")
+                && k.key()
+                    .labels()
+                    .any(|l| l.key() == "reason" && l.value() == "quality")
+                && matches!(v, DebugValue::Counter(c) if c >= 1)
+        });
+        assert!(
+            saw_quality_reason,
+            "expected faucet_sink_dlq_pages_total with reason=\"quality\""
+        );
     }
 
     #[cfg(feature = "quality")]

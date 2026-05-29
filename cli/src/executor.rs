@@ -520,6 +520,7 @@ async fn run_one_invocation(
     // Pipeline-level quality checks (v1: no matrix-row override). `expand`
     // already validated this spec, but compile again here to obtain the
     // runtime `CompiledQuality`; map any error to a config-level failure.
+    #[cfg(feature = "quality")]
     let pipeline = if let Some(ref quality_spec) = node.quality {
         let compiled = Arc::new(
             faucet_core::CompiledQuality::compile(quality_spec)
@@ -774,6 +775,7 @@ mod tests {
                 transforms: Vec::new(),
                 state: None,
                 dlq: None,
+                #[cfg(feature = "quality")]
                 quality: None,
             },
             matrix: Vec::new(),

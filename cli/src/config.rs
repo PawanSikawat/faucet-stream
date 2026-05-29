@@ -108,6 +108,7 @@ pub struct PipelineSpec {
     pub dlq: Option<DlqSpec>,
 
     /// Data-quality checks (pipeline-level; no matrix-row override in v1).
+    #[cfg(feature = "quality")]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub quality: Option<faucet_core::QualitySpec>,
 }
@@ -677,6 +678,7 @@ pipeline:
         );
     }
 
+    #[cfg(feature = "quality")]
     #[test]
     fn parses_quality_block() {
         let yaml = r#"
