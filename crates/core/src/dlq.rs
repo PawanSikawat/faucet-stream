@@ -39,8 +39,17 @@ pub struct DlqConfig {
     /// What to do when the main sink fails wholesale.
     pub on_batch_error: OnBatchError,
     /// Per-page failure budget. `None` = unlimited.
+    ///
+    /// This budget is **shared across both sink-side row failures and
+    /// quality-check quarantines**: a record routed to the DLQ by a
+    /// `quarantine` quality check counts against it just as a sink-side
+    /// row failure does.
     pub max_failures_per_page: Option<usize>,
     /// Cumulative failure budget across the run. `None` = unlimited.
+    ///
+    /// This budget is **shared across both sink-side row failures and
+    /// quality-check quarantines**: records quarantined by the quality pass
+    /// accumulate in this counter alongside sink-side failures.
     pub max_failures_total: Option<usize>,
     /// Always `true` in v1. Reserved for a future "headers-only" mode.
     pub include_original_payload: bool,

@@ -215,6 +215,142 @@ let json = serde_json::to_value(schema)?;
 | `serde_json`, `Value`, `json!` | `serde_json` |
 | `schemars`, `JsonSchema`, `schema_for!` | `schemars` |
 
+### Quality checks
+
+Add a `quality:` block (sibling of `transforms:` and `dlq:` under `pipeline:`) to
+assert invariants on every page of records before they reach the sink. The quality
+pass runs **after** transforms and **before** `write_batch`; per-record checks
+partition the page into survivors and quarantined rows, then per-batch checks run
+over the survivors. Quarantined rows are routed to the DLQ sink.
+
+Enable with the `quality` Cargo feature (base) or `quality-jsonschema` to add the
+`json_schema` record check.
+
+#### Check catalog
+
+**Per-record checks** — each record is evaluated in declared order; first failure
+wins. `on_failure` may be `quarantine` (route the row to the DLQ) or `abort` (fail
+the run immediately with `FaucetError::QualityFailure`).
+
+| Check | Key config fields | Passes when | Missing field |
+|---|---|---|---|
+| `not_null` | `field`, `treat_missing_as_null` (default `true`) | value present and non-null | fail (pass iff `treat_missing_as_null: false`) |
+| `not_empty` | `field` | value is a non-empty string after `trim()` | fail |
+| `regex_match` | `field`, `pattern` | value is a string matching `pattern` | fail |
+| `value_in_set` | `field`, `values: [...]` | value is in `values` (exact JSON equality) | fail |
+| `not_in_set` | `field`, `values: [...]` | value is NOT in `values` | pass (trivially not in set) |
+| `compare` | `field`, `op` (`gt`/`gte`/`lt`/`lte`/`eq`/`ne`), `value` | ordering or equality holds | fail |
+| `type_is` | `field`, `expected` (`boolean`/`number`/`string`/`array`/`object`/`null`) | JSON type matches | fail |
+| `string_length` | `field`, `min?`, `max?` (at least one required) | char count in `[min, max]` | fail |
+| `json_schema` *(quality-jsonschema feature)* | `schema` (JSON Schema doc) | record validates against `schema` | (whole-record check; always evaluated) |
+
+`json_schema` is the most expressive check; its cost scales with schema
+complexity — for very large or deeply nested schemas on hot paths, prefer the
+granular checks above and benchmark your case.
+
+**Per-batch checks** — evaluated per page over the survivors (records that passed
+the per-record pass). `on_failure` for aggregate checks (`row_count`, `null_rate`,
+`distinct_count`) may be `abort` or `quarantine_batch` (route all current survivors
+to the DLQ, write nothing this page). `unique` is row-attributable and accepts
+`quarantine` (route the duplicate rows) or `abort`.
+
+| Check | Key config fields | Passes when |
+|---|---|---|
+| `row_count` | `min?`, `max?` (at least one required) | survivor count in `[min, max]` |
+| `null_rate` | `field`, `max: f64` (0.0–1.0) | null-or-missing rate ≤ `max`; zero survivors → 0.0 → pass |
+| `unique` | `fields: [...]` (composite key, ≥1) | every survivor's key is unique within the page |
+| `distinct_count` | `field`, `min?`, `max?` | distinct values of `field` in `[min, max]` |
+
+#### `on_failure` policies
+
+| Policy | Meaning | Allowed on |
+|---|---|---|
+| `quarantine` | Route the specific offending row(s) to the DLQ; keep the rest | per-record checks; `unique` |
+| `quarantine_batch` | Route all survivors of the page to the DLQ; write nothing this page | aggregate batch checks |
+| `abort` | Surface `FaucetError::QualityFailure` and fail the run | every check |
+
+**`quarantine` and `quarantine_batch` require a DLQ sink.** Configuring either
+without a `dlq:` block is rejected at config-load time with `FaucetError::Config`.
+
+#### Example
+
+```yaml
+pipeline:
+  source:
+    type: rest
+    config:
+      base_url: https://api.example.com/v1
+      path: /users
+      method: GET
+      auth: { type: bearer, config: { token: "${env:API_TOKEN}" } }
+      pagination: { type: Cursor, next_token_path: $.meta.next_cursor, param_name: cursor }
+      max_retries: 3
+      retry_backoff: 2
+      tolerated_http_errors: []
+      replication_method: { type: Incremental }
+      replication_key: updated_at
+      primary_keys: ["id"]
+      partitions: []
+      schema_sample_size: 100
+
+  transforms:
+    - type: keys_case
+      config: { mode: snake }
+
+  quality:
+    record:
+      - type: not_null
+        field: id
+        on_failure: abort
+      - type: not_null
+        field: email
+        on_failure: quarantine
+      - type: regex_match
+        field: email
+        pattern: '^[^@\s]+@[^@\s]+\.[^@\s]+$'
+        on_failure: quarantine
+      - type: value_in_set
+        field: status
+        values: ["active", "inactive", "pending", "suspended"]
+        on_failure: quarantine
+    batch:
+      - type: row_count
+        min: 1
+        on_failure: abort
+      - type: unique
+        fields: [id]
+        on_failure: quarantine
+
+  dlq:
+    sink:
+      type: jsonl
+      config: { path: ./dlq/quality_failures.jsonl }
+    max_failures_per_page: 50
+    max_failures_total: 500
+
+  sink:
+    type: postgres
+    config:
+      connection_url: "${env:PG_URL}"
+      table_name: users
+      column_mapping: { type: jsonb, column: data }
+      batch_size: 500
+```
+
+#### Rust API
+
+```rust
+use faucet_core::{Pipeline, CompiledQuality, QualitySpec};
+
+let quality_spec: QualitySpec = serde_json::from_value(/* ... */)?;
+let compiled = CompiledQuality::compile(&quality_spec)?;
+let result = Pipeline::new(&source, &sink)
+    .with_dlq(dlq_config)   // required when any check uses quarantine
+    .with_quality(compiled)
+    .run()
+    .await?;
+```
+
 ## Modules
 
 | Module | Contents |
@@ -227,6 +363,7 @@ let json = serde_json::to_value(schema)?;
 | `replication` | `ReplicationMethod`, `filter_incremental`, `max_replication_value` |
 | `schema` | `infer_schema` |
 | `stage` | `TransformStage`, `FilterSpec`, `ExplodeSpec`, `OnMissing`. The pipeline-level stage type that wraps `RecordTransform` (1→1) and adds filter (1→0\|1) and explode (1→0..N). See `docs/book/src/cookbook/transforms.md` for the merge rule and JSONPath subset. |
+| `quality` | Per-record and per-batch data-quality checks: `QualitySpec` config, `CompiledQuality`, `apply_quality`, `QualityOutcome`. Gated on the `quality` / `quality-jsonschema` features. |
 | `util` | `quote_ident`, `extract_records`, `check_http_response` |
 
 ## License
