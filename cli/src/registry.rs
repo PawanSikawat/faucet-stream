@@ -91,6 +91,15 @@ pub async fn build_source(kind: &str, config: Value) -> CliResult<Box<dyn Source
                 decode::<faucet_source_webhook::WebhookSourceConfig>("source", "webhook", config)?;
             Ok(Box::new(faucet_source_webhook::WebhookSource::new(cfg)))
         }
+        #[cfg(feature = "source-websocket")]
+        "websocket" => {
+            let cfg = decode::<faucet_source_websocket::WebsocketSourceConfig>(
+                "source",
+                "websocket",
+                config,
+            )?;
+            Ok(Box::new(faucet_source_websocket::WebsocketSource::new(cfg)?))
+        }
         #[cfg(feature = "source-csv")]
         "csv" => {
             let cfg = decode::<faucet_source_csv::CsvSourceConfig>("source", "csv", config)?;
@@ -274,6 +283,8 @@ pub fn source_schema(kind: &str) -> CliResult<Value> {
         "redis" => Ok(schema::<faucet_source_redis::RedisSourceConfig>()),
         #[cfg(feature = "source-webhook")]
         "webhook" => Ok(schema::<faucet_source_webhook::WebhookSourceConfig>()),
+        #[cfg(feature = "source-websocket")]
+        "websocket" => Ok(schema::<faucet_source_websocket::WebsocketSourceConfig>()),
         #[cfg(feature = "source-csv")]
         "csv" => Ok(schema::<faucet_source_csv::CsvSourceConfig>()),
         #[cfg(feature = "source-elasticsearch")]
@@ -374,6 +385,11 @@ pub fn source_descriptions() -> Vec<(&'static str, &'static str)> {
     v.push(("redis", "Redis (streams, lists, keys) source"));
     #[cfg(feature = "source-webhook")]
     v.push(("webhook", "Webhook HTTP receiver source"));
+    #[cfg(feature = "source-websocket")]
+    v.push((
+        "websocket",
+        "WebSocket streaming source — connects, subscribes, streams each message as a record",
+    ));
     #[cfg(feature = "source-csv")]
     v.push(("csv", "CSV file source"));
     #[cfg(feature = "source-elasticsearch")]
