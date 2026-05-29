@@ -77,4 +77,6 @@ pub use serde_json::{self, Value, json};
 pub use compression::{Compression, CompressionConfig, compress_buf, warn_mismatch};
 
 #[cfg(feature = "quality")]
-pub use quality::{BatchCheck, CompareOp, JsonType, OnFailure, QualitySpec, RecordCheck};
+pub use quality::{
+    BatchCheck, CompareOp, CompiledQuality, JsonType, OnFailure, QualitySpec, RecordCheck,
+};

@@ -37,6 +37,19 @@ pub enum CompareOp {
     Ne,
 }
 
+impl std::fmt::Display for CompareOp {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            CompareOp::Gt => "gt",
+            CompareOp::Gte => "gte",
+            CompareOp::Lt => "lt",
+            CompareOp::Lte => "lte",
+            CompareOp::Eq => "eq",
+            CompareOp::Ne => "ne",
+        })
+    }
+}
+
 /// Expected JSON type for the `type_is` check.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]

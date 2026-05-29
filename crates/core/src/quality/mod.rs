@@ -9,4 +9,5 @@ pub mod compile;
 pub mod config;
 pub mod record;
 
+pub use compile::CompiledQuality;
 pub use config::{BatchCheck, CompareOp, JsonType, OnFailure, QualitySpec, RecordCheck};
