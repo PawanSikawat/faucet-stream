@@ -129,6 +129,8 @@ pub struct Pipeline<'a, So: Source + ?Sized, Si: Sink + ?Sized> {
     row: Option<String>,
     run_id: Option<String>,
     dlq: Option<DlqConfig>,
+    #[cfg(feature = "quality")]
+    quality: Option<Arc<crate::quality::CompiledQuality>>,
 }
 
 impl<'a, So: Source + ?Sized, Si: Sink + ?Sized> Pipeline<'a, So, Si> {
@@ -142,6 +144,8 @@ impl<'a, So: Source + ?Sized, Si: Sink + ?Sized> Pipeline<'a, So, Si> {
             row: None,
             run_id: None,
             dlq: None,
+            #[cfg(feature = "quality")]
+            quality: None,
         }
     }
 
@@ -188,6 +192,14 @@ impl<'a, So: Source + ?Sized, Si: Sink + ?Sized> Pipeline<'a, So, Si> {
     /// Attach a DLQ for per-row failure routing.
     pub fn with_dlq(mut self, dlq: DlqConfig) -> Self {
         self.dlq = Some(dlq);
+        self
+    }
+
+    /// Attach a compiled quality spec. Checks run after transforms, before the
+    /// sink, per page.
+    #[cfg(feature = "quality")]
+    pub fn with_quality(mut self, quality: Arc<crate::quality::CompiledQuality>) -> Self {
+        self.quality = Some(quality);
         self
     }
 
@@ -310,6 +322,10 @@ impl<'a, So: Source + ?Sized, Si: Sink + ?Sized> Pipeline<'a, So, Si> {
             if let Some(dlq) = self.dlq.clone() {
                 opts = opts.with_dlq(dlq);
             }
+            #[cfg(feature = "quality")]
+            if let Some(q) = self.quality.clone() {
+                opts = opts.with_quality(q);
+            }
 
             run_stream(pages, &wrapped_sink, opts).await
         }
@@ -369,6 +385,20 @@ where
     let run_id = options.run_id.unwrap_or_default();
     let dlq = options.dlq.clone();
 
+    #[cfg(feature = "quality")]
+    let quality = options.quality.clone();
+
+    // Fail fast: quarantine requires a DLQ sink.
+    #[cfg(feature = "quality")]
+    if let Some(q) = quality.as_ref()
+        && q.requires_dlq()
+        && dlq.is_none()
+    {
+        return Err(FaucetError::Config(
+            "quality: on_failure 'quarantine'/'quarantine_batch' requires a DLQ sink".into(),
+        ));
+    }
+
     if let Some(key) = state_key.as_ref() {
         validate_state_key(key)?;
     }
@@ -394,6 +424,43 @@ where
                     if page.records.is_empty() && page.bookmark.is_none() {
                         continue;
                     }
+
+                    // ── Quality pass (after transforms, before sink) ─────────
+                    #[cfg(feature = "quality")]
+                    let (records, quality_envelopes): (Vec<Value>, Vec<Value>) = if let Some(q) =
+                        quality.as_ref()
+                    {
+                        let labels =
+                            crate::observability::Labels::new(&*pipeline_name, &*row, &*run_id);
+                        let outcome = crate::observability::instrumented_apply_quality(
+                            page.records,
+                            q,
+                            &labels,
+                        )?;
+                        let envelopes: Vec<Value> = outcome
+                            .quarantined
+                            .iter()
+                            .enumerate()
+                            .map(|(i, qr)| {
+                                let err = FaucetError::QualityFailure {
+                                    check: qr.check.to_string(),
+                                    message: qr.message.clone(),
+                                };
+                                build_envelope(&qr.record, &err, sink_name, &pipeline_name, &row, i)
+                            })
+                            .collect();
+                        (outcome.survivors, envelopes)
+                    } else {
+                        (page.records, Vec::new())
+                    };
+                    #[cfg(not(feature = "quality"))]
+                    let (records, quality_envelopes): (Vec<Value>, Vec<Value>) =
+                        (page.records, Vec::new());
+
+                    let page = StreamPage {
+                        records,
+                        bookmark: page.bookmark,
+                    };
 
                     if let Some(ref dlq_cfg) = dlq {
                         // ── DLQ-enabled path ───────────────────────────────────
@@ -460,6 +527,8 @@ where
                                 )),
                             }
                         }
+                        // Quality-quarantined records share the DLQ budget/write.
+                        envelopes.splice(0..0, quality_envelopes);
                         let page_failures = envelopes.len();
 
                         // Budget checks — increment counter before returning.
@@ -551,6 +620,10 @@ where
                         }
                     } else {
                         // ── DLQ-disabled path (today's behaviour) ──────────────
+                        debug_assert!(
+                            quality_envelopes.is_empty(),
+                            "quality quarantine without DLQ should have been rejected at run start"
+                        );
                         if !page.records.is_empty() {
                             records_written += sink.write_batch(&page.records).await?;
                         }
@@ -1925,5 +1998,91 @@ mod tests {
             let dlq_records = dlq.0.lock().unwrap();
             assert_eq!(dlq_records.len(), 1);
         }
+    }
+
+    // ── Quality routing tests ──────────────────────────────────────────────
+
+    #[cfg(feature = "quality")]
+    #[tokio::test]
+    async fn quality_quarantines_to_dlq_and_writes_survivors() {
+        use crate::dlq::DlqConfig;
+        use crate::quality::{CompiledQuality, OnFailure, QualitySpec, RecordCheck};
+
+        let main = Arc::new(MockSink::new());
+        let dlq_sink = Arc::new(MockSink::new());
+        let spec = QualitySpec {
+            record: vec![RecordCheck::NotNull {
+                field: "id".into(),
+                treat_missing_as_null: true,
+                on_failure: OnFailure::Quarantine,
+            }],
+            batch: vec![],
+        };
+        let quality = Arc::new(CompiledQuality::compile(&spec).unwrap());
+        let pages: Vec<Result<StreamPage, FaucetError>> = vec![Ok(StreamPage {
+            records: vec![json!({"id": 1}), json!({"id": null}), json!({"id": 3})],
+            bookmark: None,
+        })];
+        let opts = RunStreamOptions::new()
+            .with_dlq(DlqConfig::new(dlq_sink.clone()))
+            .with_quality(quality);
+        let result = run_stream(futures::stream::iter(pages), main.as_ref(), opts)
+            .await
+            .unwrap();
+
+        assert_eq!(result.records_written, 2); // survivors
+        assert_eq!(main.written(), vec![json!({"id": 1}), json!({"id": 3})]);
+        // one quarantined record reached the DLQ with a QualityFailure envelope
+        let dlq = dlq_sink.written();
+        assert_eq!(dlq.len(), 1);
+        assert_eq!(dlq[0]["error"]["kind"], "QualityFailure");
+        assert_eq!(result.dlq.unwrap().records_dlq, 1);
+    }
+
+    #[cfg(feature = "quality")]
+    #[tokio::test]
+    async fn quality_abort_fails_run() {
+        use crate::quality::{BatchCheck, CompiledQuality, OnFailure, QualitySpec};
+        let main = MockSink::new();
+        let spec = QualitySpec {
+            record: vec![],
+            batch: vec![BatchCheck::RowCount {
+                min: Some(5),
+                max: None,
+                on_failure: OnFailure::Abort,
+            }],
+        };
+        let quality = Arc::new(CompiledQuality::compile(&spec).unwrap());
+        let pages: Vec<Result<StreamPage, FaucetError>> = vec![Ok(StreamPage {
+            records: vec![json!({"id": 1})],
+            bookmark: None,
+        })];
+        let opts = RunStreamOptions::new().with_quality(quality);
+        let result = run_stream(futures::stream::iter(pages), &main, opts).await;
+        assert!(matches!(result, Err(FaucetError::QualityFailure { .. })));
+    }
+
+    #[cfg(feature = "quality")]
+    #[tokio::test]
+    async fn quality_quarantine_without_dlq_is_rejected() {
+        use crate::quality::{CompiledQuality, OnFailure, QualitySpec, RecordCheck};
+        let main = MockSink::new();
+        let spec = QualitySpec {
+            record: vec![RecordCheck::NotNull {
+                field: "id".into(),
+                treat_missing_as_null: true,
+                on_failure: OnFailure::Quarantine,
+            }],
+            batch: vec![],
+        };
+        let quality = Arc::new(CompiledQuality::compile(&spec).unwrap());
+        let pages: Vec<Result<StreamPage, FaucetError>> = vec![Ok(StreamPage {
+            records: vec![json!({"id": null})],
+            bookmark: None,
+        })];
+        // No .with_dlq(...) — must be rejected up front.
+        let opts = RunStreamOptions::new().with_quality(quality);
+        let result = run_stream(futures::stream::iter(pages), &main, opts).await;
+        assert!(matches!(result, Err(FaucetError::Config(_))));
     }
 }
