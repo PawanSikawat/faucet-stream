@@ -90,6 +90,10 @@ impl WebsocketSource {
 
 #[async_trait]
 impl Source for WebsocketSource {
+    /// Drain the entire run window into memory. This buffers every record the
+    /// run produces (bounded only by `max_messages` / `idle_timeout`); prefer
+    /// [`Source::stream_pages`] for large or long-running feeds so memory stays
+    /// bounded at `batch_size`.
     async fn fetch_with_context(
         &self,
         context: &HashMap<String, Value>,
@@ -160,7 +164,12 @@ impl Source for WebsocketSource {
                 };
 
                 let (mut write, mut read) = ws.split();
-                let mut ping_timer = ping_interval.map(tokio::time::interval);
+                // Start one interval out so the first `tick()` does not fire
+                // immediately (which would send a Ping before any read on every
+                // (re)connect). `tokio::time::interval` ticks at t=0.
+                let mut ping_timer = ping_interval.map(|interval| {
+                    tokio::time::interval_at(tokio::time::Instant::now() + interval, interval)
+                });
 
                 loop {
                     let idle_deadline = idle_timeout.map(|t| last_message_at + t);
@@ -174,6 +183,27 @@ impl Source for WebsocketSource {
                     let mut stop = false;
                     let mut fatal: Option<FaucetError> = None;
                     let mut reconnect_now = false;
+
+                    // Decode a data-frame payload (Text or Binary), shape it,
+                    // push it, and update the run-window counters. The only
+                    // per-arm difference is `t.as_bytes()` vs `&b`, so both
+                    // arms funnel through this single closure.
+                    let mut handle_payload = |payload: &[u8]| {
+                        match decode_frame(format, on_parse_error, payload) {
+                            Ok(Some(v)) => {
+                                let now = if envelope { now_unix_ms() } else { 0 };
+                                buffer.push(shape_record(v, envelope, &resolved_url, now));
+                                last_message_at = Instant::now();
+                                reconnect_attempts = 0;
+                                total += 1;
+                                if total >= max_messages {
+                                    stop = true;
+                                }
+                            }
+                            Ok(None) => {}
+                            Err(e) => fatal = Some(e),
+                        }
+                    };
 
                     tokio::select! {
                         biased;
@@ -191,34 +221,8 @@ impl Source for WebsocketSource {
                             match recv {
                                 Ok(Some(Ok(msg))) => {
                                     match msg {
-                                        Message::Text(t) => {
-                                            match decode_frame(format, on_parse_error, t.as_bytes()) {
-                                                Ok(Some(v)) => {
-                                                    let now = if envelope { now_unix_ms() } else { 0 };
-                                                    buffer.push(shape_record(v, envelope, &resolved_url, now));
-                                                    last_message_at = Instant::now();
-                                                    reconnect_attempts = 0;
-                                                    total += 1;
-                                                    if total >= max_messages { stop = true; }
-                                                }
-                                                Ok(None) => {}
-                                                Err(e) => fatal = Some(e),
-                                            }
-                                        }
-                                        Message::Binary(b) => {
-                                            match decode_frame(format, on_parse_error, &b) {
-                                                Ok(Some(v)) => {
-                                                    let now = if envelope { now_unix_ms() } else { 0 };
-                                                    buffer.push(shape_record(v, envelope, &resolved_url, now));
-                                                    last_message_at = Instant::now();
-                                                    reconnect_attempts = 0;
-                                                    total += 1;
-                                                    if total >= max_messages { stop = true; }
-                                                }
-                                                Ok(None) => {}
-                                                Err(e) => fatal = Some(e),
-                                            }
-                                        }
+                                        Message::Text(t) => handle_payload(t.as_bytes()),
+                                        Message::Binary(b) => handle_payload(&b),
                                         Message::Ping(payload) => {
                                             if let Err(e) = write.send(Message::Pong(payload)).await {
                                                 tracing::warn!(error = %e, "websocket source: pong failed");
