@@ -133,9 +133,7 @@ mod tests {
 
     #[test]
     fn auth_serializes_as_type_config() {
-        let a = Auth::Bearer {
-            token: "t".into(),
-        };
+        let a = Auth::Bearer { token: "t".into() };
         let v = serde_json::to_value(&a).unwrap();
         assert_eq!(
             v,

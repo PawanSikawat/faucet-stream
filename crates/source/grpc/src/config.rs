@@ -348,7 +348,10 @@ mod tests {
                 .tls(true)
                 .records_path("$.users[*]");
         assert_eq!(config.request["page_size"], 100);
-        assert!(matches!(config.auth, AuthSpec::Inline(GrpcAuth::Bearer { .. })));
+        assert!(matches!(
+            config.auth,
+            AuthSpec::Inline(GrpcAuth::Bearer { .. })
+        ));
         assert_eq!(config.tls, Some(true));
         assert_eq!(config.records_path.unwrap(), "$.users[*]");
     }

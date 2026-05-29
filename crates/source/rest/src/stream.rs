@@ -8,11 +8,11 @@ use crate::extract;
 use crate::pagination::{PaginationState, PaginationStyle};
 use crate::retry;
 use async_trait::async_trait;
-use faucet_core::{AuthSpec, Credential, FaucetError, SharedAuthProvider};
 use faucet_core::replication::{
     ReplicationMethod, filter_incremental, max_replication_value, max_value,
 };
 use faucet_core::schema;
+use faucet_core::{AuthSpec, Credential, FaucetError, SharedAuthProvider};
 use futures_core::Stream;
 use reqwest::Client;
 use reqwest::header::HeaderMap;

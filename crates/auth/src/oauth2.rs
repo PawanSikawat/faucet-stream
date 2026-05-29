@@ -290,12 +290,15 @@ mod tests {
         }))
         .unwrap();
 
-        let results =
-            futures::future::join_all((0..4).map(|_| provider.credential())).await;
+        let results = futures::future::join_all((0..4).map(|_| provider.credential())).await;
         for r in &results {
             assert_eq!(r.as_ref().unwrap(), &Credential::Bearer("A1".into()));
         }
-        assert_eq!(hits.load(Ordering::SeqCst), 1, "expected exactly one token fetch");
+        assert_eq!(
+            hits.load(Ordering::SeqCst),
+            1,
+            "expected exactly one token fetch"
+        );
     }
 
     #[tokio::test]
@@ -347,8 +350,7 @@ mod tests {
             "scopes": ["read"],
         }))
         .unwrap();
-        let results =
-            futures::future::join_all((0..4).map(|_| provider.credential())).await;
+        let results = futures::future::join_all((0..4).map(|_| provider.credential())).await;
         for r in &results {
             assert_eq!(r.as_ref().unwrap(), &Credential::Bearer("C1".into()));
         }

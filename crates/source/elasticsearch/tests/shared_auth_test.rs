@@ -57,10 +57,10 @@ async fn injected_provider_supplies_bearer_token() {
     Mock::given(method("POST"))
         .and(path("/my_index/_search"))
         .and(header("authorization", "Bearer INJECTED"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(scroll_response(
-            json!([{"_source": {"id": 1}}]),
-            "scroll1",
-        )))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(scroll_response(json!([{"_source": {"id": 1}}]), "scroll1")),
+        )
         .mount(&server)
         .await;
 

@@ -73,7 +73,10 @@ mod tests {
     #[tokio::test]
     async fn bearer_round_trips() {
         let p = StaticProvider::bearer("t");
-        assert_eq!(p.credential().await.unwrap(), Credential::Bearer("t".into()));
+        assert_eq!(
+            p.credential().await.unwrap(),
+            Credential::Bearer("t".into())
+        );
     }
 
     #[tokio::test]
@@ -87,8 +90,9 @@ mod tests {
 
     #[tokio::test]
     async fn from_config_header() {
-        let p = StaticProvider::from_config(&serde_json::json!({"header": "X-Api-Key", "value": "k"}))
-            .unwrap();
+        let p =
+            StaticProvider::from_config(&serde_json::json!({"header": "X-Api-Key", "value": "k"}))
+                .unwrap();
         assert_eq!(
             p.credential().await.unwrap(),
             Credential::Header {

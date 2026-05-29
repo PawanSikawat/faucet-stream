@@ -1,8 +1,8 @@
 //! Stream configuration and builder.
 
 use crate::auth::Auth;
-use faucet_core::AuthSpec;
 use crate::pagination::PaginationStyle;
+use faucet_core::AuthSpec;
 use faucet_core::ReplicationMethod;
 use reqwest::{
     Method,

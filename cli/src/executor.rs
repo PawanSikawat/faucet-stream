@@ -17,11 +17,11 @@
 //! - State-key collisions among children of the same parent surface as a
 //!   `CliError::DuplicateStateKey`.
 
+use crate::auth_catalog::AuthCatalog;
 use crate::config::{ExecutionSpec, OnError};
 use crate::error::{CliError, CliResult};
 use crate::expand::{ExpandedNode, NodeRole};
 use crate::interpolate::interpolate_record;
-use crate::auth_catalog::AuthCatalog;
 use crate::registry::{build_sink, build_source};
 use crate::state::build_state_store;
 use crate::transforms::compile_transforms;
@@ -559,7 +559,12 @@ fn state_from_override(path: &Path) -> Arc<dyn StateStore> {
 pub async fn build_dlq_config(spec: &crate::config::DlqSpec) -> CliResult<DlqConfig> {
     // DLQ sinks resolve against an empty catalog — shared `auth: { ref }` on a
     // DLQ sink is out of scope (DLQ targets are typically local jsonl/stdout).
-    let sink = build_sink(&spec.sink.kind, spec.sink.config.clone(), &AuthCatalog::new()).await?;
+    let sink = build_sink(
+        &spec.sink.kind,
+        spec.sink.config.clone(),
+        &AuthCatalog::new(),
+    )
+    .await?;
     Ok(DlqConfig {
         sink: Arc::from(sink),
         on_batch_error: match spec.on_batch_error {

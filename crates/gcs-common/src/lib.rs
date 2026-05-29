@@ -146,7 +146,12 @@ mod tests {
         };
         let v = serde_json::to_value(&creds).unwrap();
         assert_eq!(v["type"], "service_account_json_inline");
-        assert!(v["config"]["json"].as_str().unwrap().contains("client_email"));
+        assert!(
+            v["config"]["json"]
+                .as_str()
+                .unwrap()
+                .contains("client_email")
+        );
         let back: GcsCredentials = serde_json::from_value(v).unwrap();
         assert!(matches!(
             back,

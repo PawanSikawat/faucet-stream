@@ -25,10 +25,11 @@ pub fn build_auth_catalog(specs: Option<&HashMap<String, Value>>) -> CliResult<A
         return Ok(catalog);
     };
     for (name, spec) in specs {
-        let provider = faucet_auth::build_provider(spec).map_err(|e| CliError::AuthProviderBuild {
-            name: name.clone(),
-            message: e.to_string(),
-        })?;
+        let provider =
+            faucet_auth::build_provider(spec).map_err(|e| CliError::AuthProviderBuild {
+                name: name.clone(),
+                message: e.to_string(),
+            })?;
         catalog.insert(name.clone(), provider);
     }
     Ok(catalog)

@@ -2,8 +2,8 @@
 
 use crate::config::{HttpBatchMode, HttpSinkAuth, HttpSinkConfig};
 use async_trait::async_trait;
-use faucet_core::{AuthSpec, Credential, FaucetError, SharedAuthProvider};
 use faucet_core::util::{DEFAULT_ERROR_BODY_MAX_LEN, check_http_response};
+use faucet_core::{AuthSpec, Credential, FaucetError, SharedAuthProvider};
 use futures::stream::{FuturesUnordered, StreamExt};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -118,11 +118,7 @@ impl HttpSink {
     }
 
     /// Send a single request with retry logic, using the pre-resolved `auth`.
-    async fn send_with_retry(
-        &self,
-        body: &Value,
-        auth: &HttpSinkAuth,
-    ) -> Result<(), FaucetError> {
+    async fn send_with_retry(&self, body: &Value, auth: &HttpSinkAuth) -> Result<(), FaucetError> {
         let mut last_error = None;
 
         for attempt in 0..=self.config.max_retries {

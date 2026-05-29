@@ -12,7 +12,9 @@ use crate::convert::{ColumnMeta, row_to_json};
 use async_trait::async_trait;
 use faucet_core::util::substitute_context_bind_params;
 use faucet_core::{AuthSpec, FaucetError, SharedAuthProvider, Stream, StreamPage};
-use faucet_snowflake_common::{SnowflakeAuth, authorization_header, credential_to_auth, snowflake_token_type};
+use faucet_snowflake_common::{
+    SnowflakeAuth, authorization_header, credential_to_auth, snowflake_token_type,
+};
 use reqwest::Client;
 use serde::Deserialize;
 use serde_json::{Map, Value, json};

@@ -2,7 +2,9 @@
 
 use std::sync::Arc;
 
-use faucet_core::{AuthProvider, AuthReference, AuthSpec, Credential, FaucetError, SharedAuthProvider};
+use faucet_core::{
+    AuthProvider, AuthReference, AuthSpec, Credential, FaucetError, SharedAuthProvider,
+};
 use faucet_source_rest::{PaginationStyle, RestStream, RestStreamConfig};
 use serde_json::json;
 use wiremock::matchers::{header, method, path};
@@ -78,7 +80,8 @@ async fn one_provider_shared_across_two_streams() {
 #[tokio::test]
 async fn unresolved_auth_reference_errors() {
     let server = MockServer::start().await;
-    let mut config = RestStreamConfig::new(&server.uri(), "/data").pagination(PaginationStyle::None);
+    let mut config =
+        RestStreamConfig::new(&server.uri(), "/data").pagination(PaginationStyle::None);
     // A reference with no provider supplied must error at request time.
     config.auth = AuthSpec::Reference(AuthReference {
         name: "missing".into(),

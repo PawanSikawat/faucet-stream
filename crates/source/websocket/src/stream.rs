@@ -3,7 +3,9 @@
 use crate::config::{WebsocketAuth, WebsocketSourceConfig, decode_frame, shape_record};
 use async_trait::async_trait;
 use base64::Engine;
-use faucet_core::{AuthSpec, Credential, FaucetError, SharedAuthProvider, Source, Stream, StreamPage};
+use faucet_core::{
+    AuthSpec, Credential, FaucetError, SharedAuthProvider, Source, Stream, StreamPage,
+};
 use futures::{SinkExt, StreamExt};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -42,8 +44,8 @@ fn credential_to_auth(cred: Credential) -> WebsocketAuth {
             headers: BTreeMap::from([(name, value)]),
         },
         Credential::Basic { username, password } => {
-            let encoded = base64::engine::general_purpose::STANDARD
-                .encode(format!("{username}:{password}"));
+            let encoded =
+                base64::engine::general_purpose::STANDARD.encode(format!("{username}:{password}"));
             WebsocketAuth::Custom {
                 headers: BTreeMap::from([(
                     "Authorization".to_string(),
@@ -388,7 +390,12 @@ mod tests {
     #[test]
     fn credential_bearer_maps_to_bearer() {
         let auth = credential_to_auth(Credential::Bearer("tok".into()));
-        assert_eq!(auth, WebsocketAuth::Bearer { token: "tok".into() });
+        assert_eq!(
+            auth,
+            WebsocketAuth::Bearer {
+                token: "tok".into()
+            }
+        );
     }
 
     #[test]
@@ -426,10 +433,7 @@ mod tests {
         assert_eq!(
             auth,
             WebsocketAuth::Custom {
-                headers: BTreeMap::from([(
-                    "Authorization".into(),
-                    "Basic dXNlcjpwYXNz".into()
-                )])
+                headers: BTreeMap::from([("Authorization".into(), "Basic dXNlcjpwYXNz".into())])
             }
         );
     }

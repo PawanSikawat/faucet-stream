@@ -29,7 +29,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             "my-gcp-project",
             "warehouse",
             "orders",
-            BigQueryCredentials::ServiceAccountKeyPath("service-account.json".into()),
+            BigQueryCredentials::ServiceAccountKeyPath {
+                path: "service-account.json".into(),
+            },
         )
         .with_batch_size(1000),
     )

@@ -1,6 +1,8 @@
 //! Integration tests against an in-process tokio-tungstenite server.
 
-use faucet_core::{AuthProvider, AuthReference, AuthSpec, Credential, FaucetError, SharedAuthProvider, Source};
+use faucet_core::{
+    AuthProvider, AuthReference, AuthSpec, Credential, FaucetError, SharedAuthProvider, Source,
+};
 use faucet_source_websocket::{
     OnParseError, WebsocketAuth, WebsocketSource, WebsocketSourceConfig, WsMessageFormat,
 };
@@ -348,7 +350,11 @@ async fn injected_provider_supplies_bearer_token() {
             let mut ws = tokio_tungstenite::accept_hdr_async(stream, callback)
                 .await
                 .unwrap();
-            let _ = ws.send(tokio_tungstenite::tungstenite::Message::Text(r#"{"id":1}"#.into())).await;
+            let _ = ws
+                .send(tokio_tungstenite::tungstenite::Message::Text(
+                    r#"{"id":1}"#.into(),
+                ))
+                .await;
             loop {
                 if ws.next().await.is_none() {
                     break;
@@ -361,7 +367,9 @@ async fn injected_provider_supplies_bearer_token() {
     let mut cfg = base_config(&format!("ws://{addr}"));
     cfg.max_messages = Some(1);
     cfg.idle_timeout = Some(Duration::from_secs(5));
-    let src = WebsocketSource::new(cfg).unwrap().with_auth_provider(provider);
+    let src = WebsocketSource::new(cfg)
+        .unwrap()
+        .with_auth_provider(provider);
     let records = src.fetch_all().await.unwrap();
     assert_eq!(records.len(), 1);
     assert_eq!(
@@ -379,12 +387,17 @@ async fn unresolved_auth_reference_errors() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let mut cfg = base_config(&format!("ws://{addr}"));
-    cfg.auth = AuthSpec::Reference(AuthReference { name: "missing".into() });
+    cfg.auth = AuthSpec::Reference(AuthReference {
+        name: "missing".into(),
+    });
     cfg.max_messages = Some(1);
     cfg.idle_timeout = Some(Duration::from_millis(500));
     let src = WebsocketSource::new(cfg).unwrap();
     let err = src.fetch_all().await.unwrap_err();
-    assert!(matches!(err, FaucetError::Auth(_)), "expected Auth error, got {err:?}");
+    assert!(
+        matches!(err, FaucetError::Auth(_)),
+        "expected Auth error, got {err:?}"
+    );
 }
 
 #[tokio::test]

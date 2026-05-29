@@ -40,8 +40,12 @@ pub async fn run(args: PreviewArgs) -> CliResult<()> {
         })?;
     tracing::info!(row = %first_root.id, "previewing first root row");
 
-    let source =
-        build_source(&first_root.source.kind, first_root.source.config.clone(), &auth).await?;
+    let source = build_source(
+        &first_root.source.kind,
+        first_root.source.config.clone(),
+        &auth,
+    )
+    .await?;
     let stages = compile_transforms(&first_root.transforms)?;
     let records = source.fetch_all().await?;
     let records: Vec<_> = if stages.is_empty() {

@@ -708,10 +708,11 @@ fn apply_grpc_auth(
                     .value
                     .parse()
                     .map_err(|e| FaucetError::Auth(format!("invalid metadata value: {e}")))?;
-                let key: tonic::metadata::MetadataKey<tonic::metadata::Ascii> = entry
-                    .key
-                    .parse()
-                    .map_err(|e| FaucetError::Auth(format!("invalid metadata key: {e}")))?;
+                let key: tonic::metadata::MetadataKey<tonic::metadata::Ascii> =
+                    entry
+                        .key
+                        .parse()
+                        .map_err(|e| FaucetError::Auth(format!("invalid metadata key: {e}")))?;
                 request.metadata_mut().insert(key, val);
             }
         }
@@ -965,7 +966,10 @@ mod tests {
         let provider: SharedAuthProvider = Arc::new(FixedBearer("MYTOKEN"));
         let stream = make_dummy_stream().with_auth_provider(provider);
         // config.auth is Inline(None) but the provider should inject Bearer.
-        let req = stream.build_grpc_request(vec![]).await.expect("build request");
+        let req = stream
+            .build_grpc_request(vec![])
+            .await
+            .expect("build request");
         let auth_header = req
             .metadata()
             .get("authorization")

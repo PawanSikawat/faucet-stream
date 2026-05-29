@@ -3,8 +3,8 @@
 use crate::config::{XmlAuth, XmlPagination, XmlStreamConfig};
 use crate::convert;
 use async_trait::async_trait;
-use faucet_core::{AuthSpec, Credential, FaucetError, SharedAuthProvider};
 use faucet_core::util::{self, DEFAULT_ERROR_BODY_MAX_LEN};
+use faucet_core::{AuthSpec, Credential, FaucetError, SharedAuthProvider};
 use faucet_core::{Stream, StreamPage};
 use reqwest::Client;
 use serde_json::Value;

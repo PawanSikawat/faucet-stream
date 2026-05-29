@@ -29,8 +29,7 @@ async fn injected_provider_supplies_bearer_token() {
         .and(path("/graphql"))
         .and(header("authorization", "Bearer INJECTED"))
         .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_json(json!({"data": {"items": [{"id": 1}]}})),
+            ResponseTemplate::new(200).set_body_json(json!({"data": {"items": [{"id": 1}]}})),
         )
         .mount(&server)
         .await;
@@ -56,27 +55,20 @@ async fn one_provider_shared_across_two_streams() {
     Mock::given(method("POST"))
         .and(header("authorization", "Bearer SHARED"))
         .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_json(json!({"data": {"items": [{"id": 1}]}})),
+            ResponseTemplate::new(200).set_body_json(json!({"data": {"items": [{"id": 1}]}})),
         )
         .mount(&server)
         .await;
 
     let provider: Arc<dyn AuthProvider> = Arc::new(FixedBearer("SHARED"));
     let a = GraphqlStream::new(
-        GraphqlStreamConfig::new(
-            format!("{}/a", server.uri()),
-            "query { items { id } }",
-        )
-        .records_path("$.data.items[*]"),
+        GraphqlStreamConfig::new(format!("{}/a", server.uri()), "query { items { id } }")
+            .records_path("$.data.items[*]"),
     )
     .with_auth_provider(provider.clone());
     let b = GraphqlStream::new(
-        GraphqlStreamConfig::new(
-            format!("{}/b", server.uri()),
-            "query { items { id } }",
-        )
-        .records_path("$.data.items[*]"),
+        GraphqlStreamConfig::new(format!("{}/b", server.uri()), "query { items { id } }")
+            .records_path("$.data.items[*]"),
     )
     .with_auth_provider(provider.clone());
 

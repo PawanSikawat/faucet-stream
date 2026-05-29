@@ -48,8 +48,7 @@ async fn injected_provider_supplies_bearer_token() {
 
     let provider = Arc::new(FixedBearer("INJECTED"));
     let stream = XmlStream::new(
-        XmlStreamConfig::new(server.uri(), "/feed.xml")
-            .records_element_path("root.item"),
+        XmlStreamConfig::new(server.uri(), "/feed.xml").records_element_path("root.item"),
     )
     .with_auth_provider(provider);
 
@@ -72,13 +71,11 @@ async fn one_provider_shared_across_two_streams() {
 
     let provider = Arc::new(FixedBearer("SHARED"));
     let a = XmlStream::new(
-        XmlStreamConfig::new(server.uri(), "/a.xml")
-            .records_element_path("root.item"),
+        XmlStreamConfig::new(server.uri(), "/a.xml").records_element_path("root.item"),
     )
     .with_auth_provider(provider.clone());
     let b = XmlStream::new(
-        XmlStreamConfig::new(server.uri(), "/b.xml")
-            .records_element_path("root.item"),
+        XmlStreamConfig::new(server.uri(), "/b.xml").records_element_path("root.item"),
     )
     .with_auth_provider(provider.clone());
 

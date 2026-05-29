@@ -54,7 +54,9 @@ pub fn build_provider(spec: &Value) -> Result<SharedAuthProvider, FaucetError> {
 
     match kind {
         "static" => Ok(Arc::new(StaticProvider::from_config(&config)?)),
-        "oauth2" => Ok(Arc::new(OAuth2ClientCredentialsProvider::from_config(&config)?)),
+        "oauth2" => Ok(Arc::new(OAuth2ClientCredentialsProvider::from_config(
+            &config,
+        )?)),
         "oauth2_refresh" => Ok(Arc::new(OAuth2RefreshProvider::from_config(&config)?)),
         "token_endpoint" => Ok(Arc::new(TokenEndpointProvider::from_config(&config)?)),
         other => Err(FaucetError::Config(format!(

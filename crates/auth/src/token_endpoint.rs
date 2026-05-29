@@ -40,7 +40,9 @@ impl TokenEndpointProvider {
         let url = config
             .get("url")
             .and_then(Value::as_str)
-            .ok_or_else(|| FaucetError::Config("token_endpoint auth provider: missing `url`".into()))?
+            .ok_or_else(|| {
+                FaucetError::Config("token_endpoint auth provider: missing `url`".into())
+            })?
             .to_string();
         let method = config
             .get("method")
@@ -180,6 +182,8 @@ mod tests {
 
     #[test]
     fn missing_url_errors() {
-        assert!(TokenEndpointProvider::from_config(&serde_json::json!({"token_path": "$.t"})).is_err());
+        assert!(
+            TokenEndpointProvider::from_config(&serde_json::json!({"token_path": "$.t"})).is_err()
+        );
     }
 }

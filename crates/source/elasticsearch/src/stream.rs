@@ -63,7 +63,10 @@ impl ElasticsearchSource {
     }
 
     /// Apply an [`ElasticsearchAuth`] to a request builder.
-    fn apply_auth_value(req: reqwest::RequestBuilder, auth: &ElasticsearchAuth) -> reqwest::RequestBuilder {
+    fn apply_auth_value(
+        req: reqwest::RequestBuilder,
+        auth: &ElasticsearchAuth,
+    ) -> reqwest::RequestBuilder {
         match auth {
             ElasticsearchAuth::None => req,
             ElasticsearchAuth::Basic { username, password } => {

@@ -116,14 +116,9 @@ async fn unresolved_auth_reference_errors() {
     config.auth = AuthSpec::Reference(AuthReference {
         name: "missing-provider".into(),
     });
-    let sink = SnowflakeSink::new(config)
-        .unwrap()
-        .with_endpoint(endpoint);
+    let sink = SnowflakeSink::new(config).unwrap().with_endpoint(endpoint);
 
-    let err = sink
-        .write_batch(&[json!({"id": 1})])
-        .await
-        .unwrap_err();
+    let err = sink.write_batch(&[json!({"id": 1})]).await.unwrap_err();
     assert!(
         matches!(err, FaucetError::Auth(_)),
         "expected Auth error, got {err:?}"

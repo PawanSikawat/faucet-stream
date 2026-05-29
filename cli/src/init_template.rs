@@ -284,7 +284,11 @@ fn emit_alternative_variants(
                     .get("default")
                     .map(render_default)
                     .unwrap_or_else(|| type_placeholder(&resolved));
-                let marker = if *field_required { "    # REQUIRED" } else { "" };
+                let marker = if *field_required {
+                    "    # REQUIRED"
+                } else {
+                    ""
+                };
                 out.push_str(&format!("{pad}# {field_key}: {placeholder}{marker}\n"));
             }
         }
@@ -294,7 +298,12 @@ fn emit_alternative_variants(
 /// Emit every property of an object schema as commented-out YAML lines at
 /// `indent`, recursing into nested objects. Used for the commented "alternative
 /// variant" blocks where the whole block is already prefixed with `# `.
-fn emit_commented_object_props(schema: &Value, defs: Option<&Value>, indent: usize, out: &mut String) {
+fn emit_commented_object_props(
+    schema: &Value,
+    defs: Option<&Value>,
+    indent: usize,
+    out: &mut String,
+) {
     let pad = " ".repeat(indent);
     let Some(props) = schema.get("properties").and_then(|v| v.as_object()) else {
         return;

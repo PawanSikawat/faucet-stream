@@ -271,7 +271,9 @@ mod tests {
         );
         // Default invalidate just returns the current credential.
         assert_eq!(
-            p.invalidate(&Credential::Bearer("old".into())).await.unwrap(),
+            p.invalidate(&Credential::Bearer("old".into()))
+                .await
+                .unwrap(),
             Credential::Bearer("x".into())
         );
     }
