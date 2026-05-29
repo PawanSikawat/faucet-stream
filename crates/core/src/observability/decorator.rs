@@ -189,6 +189,7 @@ pub(crate) fn error_kind(e: &FaucetError) -> &'static str {
         FaucetError::Config(_) => "Config",
         FaucetError::Source(_) => "Source",
         FaucetError::Sink(_) => "Sink",
+        FaucetError::QualityFailure { .. } => "QualityFailure",
         FaucetError::State(_) => "State",
         FaucetError::Custom(_) => "Custom",
     }

@@ -19,6 +19,8 @@ pub mod dlq;
 pub mod error;
 pub mod observability;
 pub mod pipeline;
+#[cfg(feature = "quality")]
+pub mod quality;
 pub mod replication;
 pub mod retry;
 pub mod schema;
@@ -73,3 +75,6 @@ pub use serde_json::{self, Value, json};
 
 #[cfg(feature = "compression")]
 pub use compression::{Compression, CompressionConfig, compress_buf, warn_mismatch};
+
+#[cfg(feature = "quality")]
+pub use quality::{CompareOp, JsonType, OnFailure};

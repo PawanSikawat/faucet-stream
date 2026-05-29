@@ -42,6 +42,8 @@ transforms = [
 ]
 observability-install = ["dep:metrics-exporter-prometheus", "dep:tracing-subscriber"]
 compression = ["dep:async-compression", "dep:flate2", "dep:zstd"]
+quality = ["dep:regex"]
+quality-jsonschema = ["quality", "dep:jsonschema"]
 
 [dependencies]
 serde.workspace = true
@@ -67,6 +69,7 @@ async-compression = { workspace = true, optional = true }
 flate2 = { workspace = true, optional = true }
 zstd = { workspace = true, optional = true }
 chrono = { workspace = true, optional = true }
+jsonschema = { workspace = true, optional = true }
 
 [dev-dependencies]
 serde_json.workspace = true
@@ -79,6 +82,11 @@ criterion = { workspace = true, features = ["async_tokio"] }
 [[bench]]
 name = "observability"
 harness = false
+
+[[bench]]
+name = "quality"
+harness = false
+required-features = ["quality", "quality-jsonschema"]
 
 [package.metadata.docs.rs]
 all-features = true

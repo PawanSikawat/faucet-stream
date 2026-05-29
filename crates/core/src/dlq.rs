@@ -92,15 +92,18 @@ pub enum DlqReason {
     /// The whole batch failed and the configured policy was
     /// [`OnBatchError::DlqAll`].
     DlqAll,
+    /// A record was quarantined (or batch-quarantined) by a data-quality check.
+    Quality,
 }
 
 impl DlqReason {
     /// Returns the stable Prometheus label value for this reason.
-    /// Closed-set values: `"partial"` or `"dlq_all"`.
+    /// Closed-set values: `"partial"`, `"dlq_all"`, or `"quality"`.
     pub fn as_str(self) -> &'static str {
         match self {
             DlqReason::Partial => "partial",
             DlqReason::DlqAll => "dlq_all",
+            DlqReason::Quality => "quality",
         }
     }
 }
@@ -206,5 +209,10 @@ mod tests {
     fn dlq_reason_strings() {
         assert_eq!(DlqReason::Partial.as_str(), "partial");
         assert_eq!(DlqReason::DlqAll.as_str(), "dlq_all");
+    }
+
+    #[test]
+    fn dlq_reason_quality_string() {
+        assert_eq!(DlqReason::Quality.as_str(), "quality");
     }
 }
