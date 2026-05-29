@@ -17,9 +17,15 @@ path = "src/main.rs"
 [features]
 # Default: every first-party source, sink, and state backend so `cargo install`
 # yields a binary that can run any of the published example YAMLs out of the box.
-default = ["observability", "full"]
+default = ["observability", "full", "quality"]
 
-full = ["observability", "source", "sink", "state", "transforms", "compression"]
+full = ["observability", "source", "sink", "state", "transforms", "compression", "quality"]
+
+# Data-quality checks (`quality:` config block). `quality-jsonschema` adds the
+# `json_schema` record check via a JSON Schema validator. Forwarded to
+# `faucet-core`.
+quality = ["faucet-core/quality"]
+quality-jsonschema = ["quality", "faucet-core/quality-jsonschema"]
 
 source = [
     "source-rest",

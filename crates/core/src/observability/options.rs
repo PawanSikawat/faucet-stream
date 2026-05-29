@@ -14,6 +14,8 @@ pub struct RunStreamOptions {
     pub row: Option<String>,
     pub run_id: Option<String>,
     pub dlq: Option<DlqConfig>,
+    #[cfg(feature = "quality")]
+    pub quality: Option<std::sync::Arc<crate::quality::CompiledQuality>>,
 }
 
 impl RunStreamOptions {
@@ -44,6 +46,15 @@ impl RunStreamOptions {
 
     pub fn with_dlq(mut self, dlq: DlqConfig) -> Self {
         self.dlq = Some(dlq);
+        self
+    }
+
+    #[cfg(feature = "quality")]
+    pub fn with_quality(
+        mut self,
+        quality: std::sync::Arc<crate::quality::CompiledQuality>,
+    ) -> Self {
+        self.quality = Some(quality);
         self
     }
 }

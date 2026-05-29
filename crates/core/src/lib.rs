@@ -19,6 +19,8 @@ pub mod dlq;
 pub mod error;
 pub mod observability;
 pub mod pipeline;
+#[cfg(feature = "quality")]
+pub mod quality;
 pub mod replication;
 pub mod retry;
 pub mod schema;
@@ -35,6 +37,8 @@ pub mod compression;
 pub use auth::{AuthProvider, AuthReference, AuthSpec, Credential, SharedAuthProvider};
 pub use dlq::{DlqConfig, DlqReason, DlqStats, OnBatchError, build_envelope};
 pub use error::FaucetError;
+#[cfg(feature = "quality")]
+pub use observability::instrumented_apply_quality;
 pub use observability::{
     DurationGuard, InstallError, InstallReport, InstrumentedSink, InstrumentedSource,
     InstrumentedStateStore, Labels, ObservabilityConfig, PrometheusConfig, RunStreamOptions,
@@ -73,3 +77,9 @@ pub use serde_json::{self, Value, json};
 
 #[cfg(feature = "compression")]
 pub use compression::{Compression, CompressionConfig, compress_buf, warn_mismatch};
+
+#[cfg(feature = "quality")]
+pub use quality::{
+    BatchCheck, CheckTally, CompareOp, CompiledQuality, JsonType, OnFailure, QualityOutcome,
+    QualitySpec, QuarantinedRecord, RecordCheck, apply_quality,
+};

@@ -1,0 +1,115 @@
+# REST API → PostgreSQL with built-in data-quality checks and a dead-letter queue.
+#
+# The `quality:` block asserts invariants on every page of records — per-record
+# checks run first (partitioning the page into survivors and quarantined rows),
+# then per-batch checks run over the survivors. Quarantined rows are routed to
+# the DLQ sink before the page bookmark advances.
+#
+# Required env vars:
+#   PG_URL            — connection URL, e.g. postgres://user:pass@localhost/app
+#   API_TOKEN         — bearer token for the source REST API
+#   PG_DLQ_URL        — connection URL for the DLQ Postgres table (may be the
+#                       same PG_URL if you want quarantined rows in the same DB)
+version: 1
+name: users_api_to_postgres_with_quality
+
+pipeline:
+  source:
+    type: rest
+    config:
+      base_url: https://api.example.com/v1
+      path: /users
+      method: GET
+      auth:
+        type: bearer
+        config:
+          token: ${env:API_TOKEN}
+      query_params:
+        per_page: "100"
+      pagination:
+        type: Cursor
+        next_token_path: $.meta.next_cursor
+        param_name: cursor
+      max_retries: 3
+      retry_backoff: 2
+      tolerated_http_errors: []
+      replication_method:
+        type: Incremental
+      replication_key: updated_at
+      primary_keys: ["id"]
+      partitions: []
+      schema_sample_size: 100
+      state_key: users_api:users
+
+  transforms:
+    - type: keys_case
+      config: { mode: snake }
+
+  quality:
+    record:
+      # Every user must have an id — abort the run if we ever see a null id
+      # (that indicates a serious upstream data issue, not a bad single row).
+      - type: not_null
+        field: id
+        on_failure: abort
+
+      # email must be present and non-null; route bad rows to the DLQ.
+      - type: not_null
+        field: email
+        on_failure: quarantine
+
+      # email must look like an email address.
+      - type: regex_match
+        field: email
+        pattern: '^[^@\s]+@[^@\s]+\.[^@\s]+$'
+        on_failure: quarantine
+
+      # status must be one of the known lifecycle values.
+      - type: value_in_set
+        field: status
+        values: ["active", "inactive", "pending", "suspended"]
+        on_failure: quarantine
+
+      # age, when present, must be a non-negative number.
+      - type: compare
+        field: age
+        op: gte
+        value: 0
+        on_failure: quarantine
+
+    batch:
+      # Each page must carry at least one survivor (empty pages likely mean
+      # the source is misconfigured or the API returned an unexpected shape).
+      - type: row_count
+        min: 1
+        on_failure: abort
+
+      # id must be unique within each page.
+      - type: unique
+        fields: [id]
+        on_failure: quarantine
+
+  dlq:
+    sink:
+      type: jsonl
+      config:
+        path: ./dlq/users_quality_failures.jsonl
+    on_batch_error: propagate
+    max_failures_per_page: 50
+    max_failures_total: 500
+
+  sink:
+    type: postgres
+    config:
+      connection_url: ${env:PG_URL}
+      table_name: users
+      column_mapping:
+        type: jsonb
+        column: data
+      batch_size: 500
+      max_connections: 5
+
+  state:
+    type: file
+    config:
+      path: ./.faucet-state

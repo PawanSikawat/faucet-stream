@@ -56,6 +56,10 @@ pub enum FaucetError {
     #[error("Sink error: {0}")]
     Sink(String),
 
+    /// A data-quality check failed under an `abort` policy.
+    #[error("Quality check '{check}' failed: {message}")]
+    QualityFailure { check: String, message: String },
+
     /// A state-store operation failed (read/write/delete of a replication
     /// bookmark, checkpoint, or other persisted pipeline state).
     #[error("State error: {0}")]
@@ -247,5 +251,17 @@ mod tests {
     fn sink_error_display() {
         let err = FaucetError::Sink("connection refused".into());
         assert_eq!(err.to_string(), "Sink error: connection refused");
+    }
+
+    #[test]
+    fn quality_failure_is_not_retriable_and_displays() {
+        let err = FaucetError::QualityFailure {
+            check: "not_null".into(),
+            message: "field 'user_id' was null".into(),
+        };
+        assert!(!err.is_retriable());
+        let s = err.to_string();
+        assert!(s.contains("not_null"));
+        assert!(s.contains("user_id"));
     }
 }

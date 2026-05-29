@@ -28,8 +28,10 @@ can drop on any box or a library you compile in.
 - **Config-driven _or_ embeddable** — run `faucet run pipeline.yaml`, or call
   `Pipeline::new(&source, &sink).run().await?` from Rust. Same orchestration either way.
 - **A runtime, not just connectors** — incremental + resumable replication,
-  PostgreSQL change-data-capture, dead-letter queues, automatic retries, and
-  built-in Prometheus metrics + `tracing` spans, all with zero per-connector code.
+  PostgreSQL change-data-capture, built-in data-quality checks (13 per-record and
+  per-batch assertions with quarantine routing and abort policies), dead-letter
+  queues, automatic retries, and built-in Prometheus metrics + `tracing` spans,
+  all with zero per-connector code.
 - **Pay only for what you use** — every connector is a Cargo feature, so a slim
   build can be just REST + JSONL, or pull in all 35 connectors with `--features full`.
 
@@ -95,6 +97,7 @@ when you want to compile pipelines into your own service.
 | Connector count | 35, growing | 600+ taps | 350+ | dozens | dozens | 500+ |
 | Change data capture | ✓ PostgreSQL | partial¹ | ✓ | partial | ✗ | ✓ |
 | Incremental + resumable state | ✓ | ✓ | ✓ | partial | n/a | ✓ |
+| Built-in data-quality checks | ✓ native | ✗ | paywalled add-on | ✗ | ✗ | paywalled add-on |
 | Built-in metrics + tracing | ✓ Prometheus + `tracing` | partial | ✓ (platform) | ✓ | ✓ | ✓ (hosted) |
 | Self-hosted, no daemon | ✓ run-to-completion | ✓ | ✗ needs platform | usually a service | agent | ✗ SaaS |
 | License | MIT / Apache-2.0 | MIT | ELv2 + MIT | Apache-2.0 / source-available² | MPL-2.0 | Proprietary |
@@ -112,7 +115,7 @@ is its most common runtime.
 
 - You want **one fast static binary** (or a Rust library) to move data between APIs, databases, object stores, and warehouses — without standing up a platform, scheduler, or Python environment.
 - You want **version-controlled, config-driven pipelines** you can run anywhere: locally, in CI, behind cron, or inside another service.
-- You need **streaming with bounded memory, incremental/resumable replication, CDC, retries, dead-letter queues, and metrics** without hand-writing that plumbing.
+- You need **streaming with bounded memory, incremental/resumable replication, CDC, data-quality assertions, retries, dead-letter queues, and metrics** without hand-writing that plumbing.
 - You're **already in Rust** and want typed `Source`/`Sink` traits you can embed and extend.
 
 **Look elsewhere (for now) when:**

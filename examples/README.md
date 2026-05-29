@@ -52,7 +52,7 @@ The service column lists what each example touches; all are provided by
 | Example | Services |
 |---------|----------|
 | `postgres_cdc_to_jsonl.yaml` | postgres (logical replication preconfigured) |
-| `rest_to_postgres.yaml`, `mongodb_to_postgres.yaml`, `graphql_to_postgres.yaml`, `webhook_to_postgres.yaml` | postgres (+ source) |
+| `rest_to_postgres.yaml`, `rest_to_postgres_with_quality.yaml`, `mongodb_to_postgres.yaml`, `graphql_to_postgres.yaml`, `webhook_to_postgres.yaml` | postgres (+ source) |
 | `mysql_to_postgres.yaml` | mysql, postgres |
 | `csv_to_mysql.yaml`, `redis_to_mysql.yaml` | mysql (+ source) |
 | `redis_to_sqlite.yaml`, `mongodb_to_redis.yaml`, `elasticsearch_to_redis.yaml` | redis (+ source) |
