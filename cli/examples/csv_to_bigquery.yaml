@@ -18,7 +18,7 @@ pipeline:
       project_id: my-gcp-project
       dataset_id: warehouse
       table_id: transactions
-      credentials:
+      auth:
         type: service_account_key_path
         config:
           path: service-account.json

@@ -47,7 +47,7 @@ source:
   type: gcs
   bucket: my-bucket
   prefix: events/2026/
-  credentials:
+  auth:
     type: service_account_json_file
     config:
       path: /run/secrets/gcp.json

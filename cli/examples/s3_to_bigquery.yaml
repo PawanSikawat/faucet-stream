@@ -22,7 +22,7 @@ pipeline:
       project_id: my-gcp-project
       dataset_id: analytics
       table_id: events
-      credentials:
+      auth:
         type: service_account_key_path
         config:
           path: ${env:GOOGLE_APPLICATION_CREDENTIALS}

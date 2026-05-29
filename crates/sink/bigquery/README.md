@@ -143,7 +143,7 @@ let config: BigQuerySinkConfig = load_env_file(".env", "BIGQUERY")?;
   "project_id": "my-gcp-project",
   "dataset_id": "analytics",
   "table_id": "events",
-  "credentials": {
+  "auth": {
     "type": "service_account_key_path",
     "config": { "path": "/etc/secrets/bigquery-sa.json" }
   },
@@ -158,7 +158,7 @@ Using application default credentials:
   "project_id": "my-gcp-project",
   "dataset_id": "analytics",
   "table_id": "events",
-  "credentials": {
+  "auth": {
     "type": "application_default"
   },
   "batch_size": 1000

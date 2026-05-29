@@ -40,7 +40,7 @@ pipeline:
     type: bigquery
     config:
       project_id: my-gcp-project
-      credentials:
+      auth:
         type: service_account_key
         config:
           json: ${env:GCP_KEY_JSON}

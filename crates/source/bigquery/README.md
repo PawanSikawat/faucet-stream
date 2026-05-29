@@ -17,7 +17,7 @@ BigQuery query source connector for the [`faucet-stream`](https://crates.io/crat
 type: bigquery
 config:
   project_id: my-project
-  credentials:
+  auth:
     type: service_account_key_path
     config:
       path: /etc/secrets/bigquery-sa.json
@@ -39,13 +39,13 @@ config:
 
 ```yaml
 # Application Default Credentials (workload identity, gcloud auth).
-credentials:
+auth:
   type: application_default
 ```
 
 ```yaml
 # Inline service-account JSON — handy with env-var indirection.
-credentials:
+auth:
   type: service_account_key
   config:
     json: ${env:GCP_SERVICE_ACCOUNT_JSON}

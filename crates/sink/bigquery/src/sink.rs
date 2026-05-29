@@ -23,7 +23,7 @@ impl BigQuerySink {
     /// Returns a [`FaucetError::Auth`] if authentication fails.
     pub async fn new(config: BigQuerySinkConfig) -> Result<Self, FaucetError> {
         faucet_core::validate_batch_size(config.batch_size)?;
-        let client = build_client(&config.credentials).await?;
+        let client = build_client(&config.auth).await?;
         Ok(Self { config, client })
     }
 

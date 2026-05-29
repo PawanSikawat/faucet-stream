@@ -19,7 +19,7 @@ pipeline:
       project_id: my-gcp-project
       dataset_id: warehouse
       table_id: orders
-      credentials:
+      auth:
         type: service_account_key
         config:
           json: ${env:GCP_KEY_JSON}

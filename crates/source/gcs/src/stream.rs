@@ -22,9 +22,8 @@ impl GcsSource {
     /// Construct the source. Builds both clients eagerly so they are
     /// reused across calls.
     pub async fn new(config: GcsSourceConfig) -> Result<Self, FaucetError> {
-        let storage = build_storage(&config.credentials, config.storage_host.as_deref()).await?;
-        let control =
-            build_storage_control(&config.credentials, config.storage_host.as_deref()).await?;
+        let storage = build_storage(&config.auth, config.storage_host.as_deref()).await?;
+        let control = build_storage_control(&config.auth, config.storage_host.as_deref()).await?;
         Ok(Self {
             config,
             storage,

@@ -39,6 +39,6 @@ pipeline:
       project_id: my-gcp-project
       dataset_id: raw
       table_id: orders
-      credentials:
+      auth:
         type: application_default
       batch_size: 1000
