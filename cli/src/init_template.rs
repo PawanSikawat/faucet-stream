@@ -331,7 +331,21 @@ fn tagged_enum_variants<'a>(
     schema: &'a Value,
     defs: Option<&'a Value>,
 ) -> Option<Vec<TaggedVariant<'a>>> {
-    let arr = schema.get("oneOf")?.as_array()?;
+    // A directly tagged enum exposes `oneOf`. An `AuthSpec`-style wrapper
+    // (`#[serde(untagged)]` over the inline auth enum plus a `{ ref }` struct)
+    // exposes `anyOf`; unwrap to the inline member that is itself a tagged enum
+    // so `auth: { ref }` fields still render their inline-auth variants.
+    let arr = match schema.get("oneOf").and_then(|v| v.as_array()) {
+        Some(a) => a,
+        None => {
+            let any = schema.get("anyOf")?.as_array()?;
+            let inner = any
+                .iter()
+                .map(|m| resolve_ref_borrowed(m, defs))
+                .find(|r| r.get("oneOf").is_some())?;
+            inner.get("oneOf")?.as_array()?
+        }
+    };
     if arr.is_empty() {
         return None;
     }

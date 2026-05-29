@@ -1,6 +1,6 @@
 //! XML source configuration.
 
-use faucet_core::DEFAULT_BATCH_SIZE;
+use faucet_core::{AuthSpec, DEFAULT_BATCH_SIZE};
 use reqwest::header::HeaderMap;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -50,8 +50,9 @@ pub struct XmlStreamConfig {
     #[serde(with = "crate::serde_helpers::http_method")]
     #[schemars(with = "String")]
     pub method: reqwest::Method,
-    /// Authentication method.
-    pub auth: XmlAuth,
+    /// Authentication: either inline (`{ type, config }`) or a `{ ref: <name> }`
+    /// pointer to a shared provider in the CLI's top-level `auth:` catalog.
+    pub auth: AuthSpec<XmlAuth>,
     /// Additional request headers.
     #[serde(skip, default)]
     pub headers: HeaderMap,
@@ -90,7 +91,7 @@ impl XmlStreamConfig {
             base_url: base_url.into(),
             path: path.into(),
             method: reqwest::Method::GET,
-            auth: XmlAuth::None,
+            auth: AuthSpec::Inline(XmlAuth::None),
             headers: HeaderMap::new(),
             body: None,
             records_element_path: None,
@@ -109,7 +110,7 @@ impl XmlStreamConfig {
 
     /// Set the authentication method.
     pub fn auth(mut self, auth: XmlAuth) -> Self {
-        self.auth = auth;
+        self.auth = AuthSpec::Inline(auth);
         self
     }
 

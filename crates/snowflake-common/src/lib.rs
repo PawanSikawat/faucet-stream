@@ -151,6 +151,30 @@ pub fn snowflake_token_type(auth: &SnowflakeAuth) -> &'static str {
     }
 }
 
+/// Map a [`faucet_core::Credential`] yielded by a shared [`faucet_core::AuthProvider`]
+/// onto [`SnowflakeAuth`].
+///
+/// Snowflake supports OAuth bearer tokens via shared providers. Key-pair JWT
+/// auth is stateless (the JWT is minted locally from the RSA key) and therefore
+/// cannot be supplied by a provider; attempting to do so returns
+/// [`FaucetError::Auth`].
+///
+/// | Credential | Mapping |
+/// |---|---|
+/// | `Bearer(token)` | `SnowflakeAuth::OAuth { token }` |
+/// | `Token(token)` | `SnowflakeAuth::OAuth { token }` |
+/// | `Basic` / `Header` | `FaucetError::Auth` |
+pub fn credential_to_auth(cred: faucet_core::Credential) -> Result<SnowflakeAuth, FaucetError> {
+    match cred {
+        faucet_core::Credential::Bearer(token) | faucet_core::Credential::Token(token) => {
+            Ok(SnowflakeAuth::OAuth { token })
+        }
+        other => Err(FaucetError::Auth(format!(
+            "Snowflake auth provider must yield a bearer/token credential, got {other:?}"
+        ))),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

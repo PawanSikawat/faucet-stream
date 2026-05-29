@@ -1,7 +1,7 @@
 //! Configuration types for the WebSocket source.
 
 use base64::Engine;
-use faucet_core::{DEFAULT_BATCH_SIZE, FaucetError};
+use faucet_core::{AuthSpec, DEFAULT_BATCH_SIZE, FaucetError};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -15,9 +15,11 @@ pub struct WebsocketSourceConfig {
     /// parent-matrix context substitution.
     pub url: String,
 
-    /// Authentication applied to the HTTP upgrade request.
+    /// Authentication applied to the HTTP upgrade request. Either inline
+    /// (`{ type, config }`) or a `{ ref: <name> }` pointer to a shared
+    /// provider in the CLI's top-level `auth:` catalog.
     #[serde(default)]
-    pub auth: WebsocketAuth,
+    pub auth: AuthSpec<WebsocketAuth>,
 
     /// Subscription frames sent (in order) immediately after every
     /// (re)connect. Empty = send nothing.
@@ -220,7 +222,7 @@ mod config_tests {
     fn minimal() -> WebsocketSourceConfig {
         WebsocketSourceConfig {
             url: "wss://example.com/ws".into(),
-            auth: WebsocketAuth::None,
+            auth: AuthSpec::Inline(WebsocketAuth::None),
             subscribe_messages: vec![],
             message_format: WsMessageFormat::Json,
             on_parse_error: OnParseError::Fail,
@@ -279,8 +281,9 @@ mod config_tests {
     }
 
     #[test]
-    fn auth_bearer_round_trips_as_internally_tagged() {
-        let json = serde_json::json!({"type": "bearer", "token": "abc"});
+    fn auth_bearer_round_trips_as_adjacently_tagged() {
+        // WebsocketAuth uses tag="type", content="config" (adjacent tagging).
+        let json = serde_json::json!({"type": "bearer", "config": {"token": "abc"}});
         let auth: WebsocketAuth = serde_json::from_value(json).unwrap();
         assert_eq!(
             auth,
@@ -288,6 +291,24 @@ mod config_tests {
                 token: "abc".into()
             }
         );
+    }
+
+    #[test]
+    fn auth_spec_inline_round_trips() {
+        // AuthSpec wraps WebsocketAuth; the inline shape uses the adjacent-tagged format.
+        let json = serde_json::json!({"type": "bearer", "config": {"token": "tok"}});
+        let spec: AuthSpec<WebsocketAuth> = serde_json::from_value(json).unwrap();
+        assert!(matches!(
+            spec,
+            AuthSpec::Inline(WebsocketAuth::Bearer { .. })
+        ));
+    }
+
+    #[test]
+    fn auth_spec_ref_round_trips() {
+        let json = serde_json::json!({"ref": "my-provider"});
+        let spec: AuthSpec<WebsocketAuth> = serde_json::from_value(json).unwrap();
+        assert_eq!(spec.reference_name(), Some("my-provider"));
     }
 }
 

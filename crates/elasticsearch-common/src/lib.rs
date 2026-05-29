@@ -12,6 +12,7 @@
 //! credentials (`password`, `token`, `key`) as `"***"` so accidental logging of a
 //! config value never leaks secrets.
 
+use faucet_core::{Credential, FaucetError};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -31,6 +32,24 @@ pub enum ElasticsearchAuth {
     Bearer { token: String },
     /// API key authentication (sent as `ApiKey` in the `Authorization` header).
     ApiKey { key: String },
+}
+
+/// Map a [`Credential`] from a shared [`faucet_core::AuthProvider`] onto an
+/// [`ElasticsearchAuth`] variant.
+///
+/// Elasticsearch supports `Bearer` and `Basic` credentials. The `Header` and
+/// `Token` credential variants have no equivalent Elasticsearch auth mode, so
+/// they return [`FaucetError::Auth`].
+pub fn credential_to_auth(cred: Credential) -> Result<ElasticsearchAuth, FaucetError> {
+    match cred {
+        Credential::Bearer(token) => Ok(ElasticsearchAuth::Bearer { token }),
+        Credential::Basic { username, password } => {
+            Ok(ElasticsearchAuth::Basic { username, password })
+        }
+        other => Err(FaucetError::Auth(format!(
+            "Elasticsearch auth provider must yield a bearer or basic credential, got {other:?}"
+        ))),
+    }
 }
 
 impl std::fmt::Debug for ElasticsearchAuth {

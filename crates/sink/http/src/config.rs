@@ -1,6 +1,6 @@
 //! HTTP sink configuration.
 
-use faucet_core::DEFAULT_BATCH_SIZE;
+use faucet_core::{AuthSpec, DEFAULT_BATCH_SIZE};
 use reqwest::header::HeaderMap;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -68,8 +68,9 @@ pub struct HttpSinkConfig {
     /// Additional request headers.
     #[serde(skip, default)]
     pub headers: HeaderMap,
-    /// Authentication method.
-    pub auth: HttpSinkAuth,
+    /// Authentication: either inline (`{ type, config }`) or a `{ ref: <name> }`
+    /// pointer to a shared provider in the CLI's top-level `auth:` catalog.
+    pub auth: AuthSpec<HttpSinkAuth>,
     /// How to batch records in requests.
     pub batch_mode: HttpBatchMode,
     /// Number of retries on transient failures (default: 0).
@@ -127,7 +128,7 @@ impl HttpSinkConfig {
             url: url.into(),
             method: reqwest::Method::POST,
             headers: HeaderMap::new(),
-            auth: HttpSinkAuth::None,
+            auth: AuthSpec::Inline(HttpSinkAuth::None),
             batch_mode: HttpBatchMode::Individual,
             max_retries: 0,
             concurrency: 10,
@@ -147,9 +148,9 @@ impl HttpSinkConfig {
         self
     }
 
-    /// Set the authentication method.
+    /// Set the authentication method (inline).
     pub fn auth(mut self, auth: HttpSinkAuth) -> Self {
-        self.auth = auth;
+        self.auth = AuthSpec::Inline(auth);
         self
     }
 
@@ -197,7 +198,7 @@ mod tests {
         assert_eq!(config.url, "https://api.example.com/ingest");
         assert_eq!(config.method, reqwest::Method::POST);
         assert_eq!(config.max_retries, 0);
-        assert!(matches!(config.auth, HttpSinkAuth::None));
+        assert!(matches!(config.auth, AuthSpec::Inline(HttpSinkAuth::None)));
         assert!(matches!(config.batch_mode, HttpBatchMode::Individual));
     }
 

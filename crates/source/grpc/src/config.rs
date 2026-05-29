@@ -1,6 +1,6 @@
 //! gRPC source configuration.
 
-use faucet_core::DEFAULT_BATCH_SIZE;
+use faucet_core::{AuthSpec, DEFAULT_BATCH_SIZE};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -18,10 +18,11 @@ pub struct MetadataEntry {
 }
 
 /// Authentication for gRPC endpoints.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "type", content = "config", rename_all = "snake_case")]
 pub enum GrpcAuth {
     /// No authentication.
+    #[default]
     None,
     /// Bearer token sent as `authorization` metadata.
     Bearer { token: String },
@@ -59,8 +60,9 @@ pub struct GrpcStreamConfig {
     pub request: Value,
     /// Path to the compiled `FileDescriptorSet` file.
     pub descriptor_set_path: PathBuf,
-    /// Authentication method.
-    pub auth: GrpcAuth,
+    /// Authentication: either inline (`{ type, config }`) or a `{ ref: <name> }`
+    /// pointer to a shared provider in the CLI's top-level `auth:` catalog.
+    pub auth: AuthSpec<GrpcAuth>,
     /// Whether to use TLS (detected from `https://` in endpoint by default).
     pub tls: Option<bool>,
     /// JSONPath to extract records from the response.
@@ -177,7 +179,7 @@ impl GrpcStreamConfig {
             method_name: method_name.into(),
             request: Value::Object(Default::default()),
             descriptor_set_path: descriptor_set_path.into(),
-            auth: GrpcAuth::None,
+            auth: AuthSpec::Inline(GrpcAuth::None),
             tls: None,
             records_path: None,
             batch_size: DEFAULT_BATCH_SIZE,
@@ -199,9 +201,9 @@ impl GrpcStreamConfig {
         self
     }
 
-    /// Set the authentication method.
+    /// Set the authentication method (inline).
     pub fn auth(mut self, auth: GrpcAuth) -> Self {
-        self.auth = auth;
+        self.auth = AuthSpec::Inline(auth);
         self
     }
 
@@ -307,7 +309,7 @@ mod tests {
         assert_eq!(config.service_name, "users.UserService");
         assert_eq!(config.method_name, "ListUsers");
         assert!(config.records_path.is_none());
-        assert!(matches!(config.auth, GrpcAuth::None));
+        assert!(matches!(config.auth, AuthSpec::Inline(GrpcAuth::None)));
         assert_eq!(config.rpc_kind, RpcKind::Unary);
         assert!(config.max_messages.is_none());
         assert!(!config.terminate_on_error);
@@ -346,7 +348,7 @@ mod tests {
                 .tls(true)
                 .records_path("$.users[*]");
         assert_eq!(config.request["page_size"], 100);
-        assert!(matches!(config.auth, GrpcAuth::Bearer { .. }));
+        assert!(matches!(config.auth, AuthSpec::Inline(GrpcAuth::Bearer { .. })));
         assert_eq!(config.tls, Some(true));
         assert_eq!(config.records_path.unwrap(), "$.users[*]");
     }

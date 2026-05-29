@@ -11,6 +11,7 @@ keywords = ["elasticsearch", "search", "etl", "pipeline", "faucet"]
 categories.workspace = true
 
 [dependencies]
+faucet-core.workspace = true
 serde = { workspace = true, features = ["derive"] }
 schemars.workspace = true
 

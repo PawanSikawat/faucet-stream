@@ -2,15 +2,34 @@
 
 use crate::config::{HttpBatchMode, HttpSinkAuth, HttpSinkConfig};
 use async_trait::async_trait;
-use faucet_core::FaucetError;
+use faucet_core::{AuthSpec, Credential, FaucetError, SharedAuthProvider};
 use faucet_core::util::{DEFAULT_ERROR_BODY_MAX_LEN, check_http_response};
 use futures::stream::{FuturesUnordered, StreamExt};
 use serde_json::Value;
+use std::collections::HashMap;
+
+/// Map a [`Credential`] from a shared provider onto the [`HttpSinkAuth`]
+/// representation so the existing header-application path can be reused.
+fn credential_to_auth(cred: Credential) -> HttpSinkAuth {
+    match cred {
+        Credential::Bearer(token) => HttpSinkAuth::Bearer { token },
+        Credential::Token(token) => HttpSinkAuth::Custom {
+            headers: HashMap::from([("Authorization".to_string(), token)]),
+        },
+        Credential::Basic { username, password } => HttpSinkAuth::Basic { username, password },
+        Credential::Header { name, value } => HttpSinkAuth::Custom {
+            headers: HashMap::from([(name, value)]),
+        },
+    }
+}
 
 /// An HTTP sink that sends records to an HTTP endpoint.
 pub struct HttpSink {
     config: HttpSinkConfig,
     client: reqwest::Client,
+    /// Optional shared auth provider. When set, it takes precedence over inline
+    /// auth. Set via [`HttpSink::with_auth_provider`].
+    auth_provider: Option<SharedAuthProvider>,
 }
 
 impl HttpSink {
@@ -19,18 +38,46 @@ impl HttpSink {
         Self {
             config,
             client: reqwest::Client::new(),
+            auth_provider: None,
+        }
+    }
+
+    /// Attach a shared [`AuthProvider`](faucet_core::AuthProvider). When set,
+    /// the provider supplies the credential for every request (taking
+    /// precedence over inline auth), so several sinks can share one token with
+    /// single-flight refresh. Used by the CLI to resolve `auth: { ref }`, and
+    /// by library callers who construct one provider and inject it into many
+    /// sinks.
+    pub fn with_auth_provider(mut self, provider: SharedAuthProvider) -> Self {
+        self.auth_provider = Some(provider);
+        self
+    }
+
+    /// Resolve the effective auth for the current batch. The provider (if any)
+    /// takes precedence; otherwise inline auth is used. A bare
+    /// `AuthSpec::Reference` with no provider is an error.
+    async fn resolve_auth(&self) -> Result<HttpSinkAuth, FaucetError> {
+        if let Some(provider) = &self.auth_provider {
+            Ok(credential_to_auth(provider.credential().await?))
+        } else {
+            match &self.config.auth {
+                AuthSpec::Inline(a) => Ok(a.clone()),
+                AuthSpec::Reference(r) => Err(FaucetError::Auth(format!(
+                    "auth references provider '{}' but no provider was supplied; \
+                     set one via the CLI `auth:` catalog or `with_auth_provider`",
+                    r.name
+                ))),
+            }
         }
     }
 
     /// Build an HTTP request with auth and headers applied.
-    fn build_request(&self, body: &Value) -> Result<reqwest::RequestBuilder, FaucetError> {
-        let mut req = self
-            .client
-            .request(self.config.method.clone(), &self.config.url)
-            .headers(self.config.headers.clone())
-            .json(body);
-
-        match &self.config.auth {
+    fn apply_auth(
+        &self,
+        mut req: reqwest::RequestBuilder,
+        auth: &HttpSinkAuth,
+    ) -> Result<reqwest::RequestBuilder, FaucetError> {
+        match auth {
             HttpSinkAuth::None => {}
             HttpSinkAuth::Bearer { token } => {
                 req = req.bearer_auth(token);
@@ -53,16 +100,33 @@ impl HttpSink {
                 req = req.headers(hm);
             }
         }
-
         Ok(req)
     }
 
-    /// Send a single request with retry logic.
-    async fn send_with_retry(&self, body: &Value) -> Result<(), FaucetError> {
+    /// Build an HTTP request with the given pre-resolved auth and body.
+    fn build_request_with_auth(
+        &self,
+        body: &Value,
+        auth: &HttpSinkAuth,
+    ) -> Result<reqwest::RequestBuilder, FaucetError> {
+        let req = self
+            .client
+            .request(self.config.method.clone(), &self.config.url)
+            .headers(self.config.headers.clone())
+            .json(body);
+        self.apply_auth(req, auth)
+    }
+
+    /// Send a single request with retry logic, using the pre-resolved `auth`.
+    async fn send_with_retry(
+        &self,
+        body: &Value,
+        auth: &HttpSinkAuth,
+    ) -> Result<(), FaucetError> {
         let mut last_error = None;
 
         for attempt in 0..=self.config.max_retries {
-            let req = self.build_request(body)?;
+            let req = self.build_request_with_auth(body, auth)?;
 
             match req.send().await {
                 Ok(resp) => match check_http_response(resp, DEFAULT_ERROR_BODY_MAX_LEN).await {
@@ -114,6 +178,9 @@ impl faucet_core::Sink for HttpSink {
             return Ok(0);
         }
 
+        // Resolve auth once per batch (provider-first, then inline).
+        let auth = self.resolve_auth().await?;
+
         match &self.config.batch_mode {
             HttpBatchMode::Individual => {
                 // Run `send_with_retry` for every record with at most
@@ -129,12 +196,12 @@ impl faucet_core::Sink for HttpSink {
                 let mut in_flight = FuturesUnordered::new();
                 let mut iter = records.iter();
                 for record in iter.by_ref().take(concurrency) {
-                    in_flight.push(self.send_with_retry(record));
+                    in_flight.push(self.send_with_retry(record, &auth));
                 }
                 while let Some(result) = in_flight.next().await {
                     result?;
                     if let Some(record) = iter.next() {
-                        in_flight.push(self.send_with_retry(record));
+                        in_flight.push(self.send_with_retry(record, &auth));
                     }
                 }
 
@@ -155,7 +222,7 @@ impl faucet_core::Sink for HttpSink {
                 let mut total = 0;
                 for chunk in records.chunks(effective_chunk) {
                     let array = Value::Array(chunk.to_vec());
-                    self.send_with_retry(&array).await?;
+                    self.send_with_retry(&array, &auth).await?;
                     total += chunk.len();
                 }
                 tracing::debug!(
@@ -182,14 +249,14 @@ mod tests {
 
     #[test]
     fn build_request_applies_bearer_auth() {
-        let config =
-            HttpSinkConfig::new("https://api.example.com/ingest").auth(HttpSinkAuth::Bearer {
-                token: "my-token".into(),
-            });
+        let auth = HttpSinkAuth::Bearer {
+            token: "my-token".into(),
+        };
+        let config = HttpSinkConfig::new("https://api.example.com/ingest").auth(auth.clone());
         let sink = HttpSink::new(config);
 
         let req = sink
-            .build_request(&serde_json::json!({"test": true}))
+            .build_request_with_auth(&serde_json::json!({"test": true}), &auth)
             .unwrap()
             .build()
             .unwrap();
@@ -206,15 +273,15 @@ mod tests {
 
     #[test]
     fn build_request_applies_basic_auth() {
-        let config =
-            HttpSinkConfig::new("https://api.example.com/ingest").auth(HttpSinkAuth::Basic {
-                username: "user".into(),
-                password: "pass".into(),
-            });
+        let auth = HttpSinkAuth::Basic {
+            username: "user".into(),
+            password: "pass".into(),
+        };
+        let config = HttpSinkConfig::new("https://api.example.com/ingest").auth(auth.clone());
         let sink = HttpSink::new(config);
 
         let req = sink
-            .build_request(&serde_json::json!({"test": true}))
+            .build_request_with_auth(&serde_json::json!({"test": true}), &auth)
             .unwrap()
             .build()
             .unwrap();
@@ -235,7 +302,7 @@ mod tests {
         let sink = HttpSink::new(config);
 
         let req = sink
-            .build_request(&serde_json::json!({"test": true}))
+            .build_request_with_auth(&serde_json::json!({"test": true}), &HttpSinkAuth::None)
             .unwrap()
             .build()
             .unwrap();

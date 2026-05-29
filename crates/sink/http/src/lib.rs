@@ -9,7 +9,7 @@ pub mod config;
 pub mod serde_helpers;
 pub mod sink;
 
-pub use faucet_core::{FaucetError, Sink};
+pub use faucet_core::{AuthSpec, FaucetError, SharedAuthProvider, Sink};
 
 pub use config::{HttpBatchMode, HttpSinkAuth, HttpSinkConfig};
 pub use sink::HttpSink;

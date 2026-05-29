@@ -2,8 +2,8 @@
 
 use crate::config::{ElasticsearchAuth, ElasticsearchSinkConfig};
 use async_trait::async_trait;
-use faucet_core::FaucetError;
 use faucet_core::util::{DEFAULT_ERROR_BODY_MAX_LEN, check_http_response};
+use faucet_core::{AuthSpec, FaucetError, SharedAuthProvider};
 use reqwest::Client;
 use serde_json::Value;
 
@@ -11,6 +11,10 @@ use serde_json::Value;
 pub struct ElasticsearchSink {
     config: ElasticsearchSinkConfig,
     client: Client,
+    /// Optional shared auth provider. When set it takes precedence over inline
+    /// auth. Injected by the CLI (to resolve `auth: { ref }`) or directly by
+    /// library callers who want to share one token across multiple sinks.
+    auth_provider: Option<SharedAuthProvider>,
 }
 
 impl ElasticsearchSink {
@@ -23,12 +27,44 @@ impl ElasticsearchSink {
         Ok(Self {
             config,
             client: Client::new(),
+            auth_provider: None,
         })
     }
 
-    /// Apply the configured authentication to a request builder.
-    fn apply_auth(&self, req: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+    /// Attach a shared [`AuthProvider`](faucet_core::AuthProvider). When set,
+    /// the provider supplies the credential for every request (taking precedence
+    /// over inline auth). Used by the CLI to resolve `auth: { ref }`, and by
+    /// library callers who inject one provider into many sinks.
+    pub fn with_auth_provider(mut self, provider: SharedAuthProvider) -> Self {
+        self.auth_provider = Some(provider);
+        self
+    }
+
+    /// Resolve the effective [`ElasticsearchAuth`] for the current batch.
+    ///
+    /// Resolution order:
+    /// 1. If a shared provider is attached, call it and map the credential.
+    /// 2. Otherwise use the inline auth from config.
+    /// 3. If the config is a `Reference` with no provider, return an error.
+    async fn resolve_auth(&self) -> Result<ElasticsearchAuth, FaucetError> {
+        if let Some(p) = &self.auth_provider {
+            return faucet_elasticsearch_common::credential_to_auth(p.credential().await?);
+        }
         match &self.config.auth {
+            AuthSpec::Inline(a) => Ok(a.clone()),
+            AuthSpec::Reference(r) => Err(FaucetError::Auth(format!(
+                "auth references provider '{}' but no provider was supplied",
+                r.name
+            ))),
+        }
+    }
+
+    /// Apply an [`ElasticsearchAuth`] to a request builder.
+    fn apply_auth_value(
+        req: reqwest::RequestBuilder,
+        auth: &ElasticsearchAuth,
+    ) -> reqwest::RequestBuilder {
+        match auth {
             ElasticsearchAuth::None => req,
             ElasticsearchAuth::Basic { username, password } => {
                 req.basic_auth(username, Some(password))
@@ -46,7 +82,14 @@ impl ElasticsearchSink {
     /// All HTTP-level errors (non-2xx status, network failures, JSON parse
     /// errors) surface as `Err(FaucetError::…)`. Item-level errors inside the
     /// response body are left to the caller to inspect.
-    async fn send_bulk_raw(&self, chunk: &[Value]) -> Result<Value, FaucetError> {
+    ///
+    /// `auth` must be pre-resolved by the caller (once per `write_batch`) so
+    /// the provider is not called on every chunk.
+    async fn send_bulk_raw(
+        &self,
+        chunk: &[Value],
+        auth: &ElasticsearchAuth,
+    ) -> Result<Value, FaucetError> {
         let body = self.build_bulk_body(chunk)?;
         let url = format!("{}/_bulk", self.config.base_url);
         let req = self
@@ -54,7 +97,7 @@ impl ElasticsearchSink {
             .post(&url)
             .header("Content-Type", "application/x-ndjson")
             .body(body);
-        let req = self.apply_auth(req);
+        let req = Self::apply_auth_value(req, auth);
         let resp = req.send().await?;
         let resp = check_http_response(resp, DEFAULT_ERROR_BODY_MAX_LEN).await?;
         let resp_body: Value = resp.json().await?;
@@ -147,6 +190,8 @@ impl faucet_core::Sink for ElasticsearchSink {
             return Ok(0);
         }
 
+        // Resolve auth once per write_batch call; reuse across chunks.
+        let auth = self.resolve_auth().await?;
         let mut total_written = 0;
 
         let chunks: Vec<&[Value]> = if self.config.batch_size == 0 {
@@ -159,7 +204,7 @@ impl faucet_core::Sink for ElasticsearchSink {
         };
 
         for chunk in chunks {
-            let resp_body = self.send_bulk_raw(chunk).await?;
+            let resp_body = self.send_bulk_raw(chunk, &auth).await?;
 
             // Check for item-level errors in the bulk response.
             if resp_body
@@ -219,6 +264,9 @@ impl faucet_core::Sink for ElasticsearchSink {
             return Ok(Vec::new());
         }
 
+        // Resolve auth once per write_batch_partial call; reuse across chunks.
+        let auth = self.resolve_auth().await?;
+
         let chunks: Vec<&[Value]> = if self.config.batch_size == 0 {
             vec![records]
         } else {
@@ -228,7 +276,7 @@ impl faucet_core::Sink for ElasticsearchSink {
         let mut outcomes: Vec<faucet_core::RowOutcome> = Vec::with_capacity(records.len());
 
         for chunk in chunks {
-            let resp_body = self.send_bulk_raw(chunk).await?;
+            let resp_body = self.send_bulk_raw(chunk, &auth).await?;
 
             let items = resp_body
                 .get("items")

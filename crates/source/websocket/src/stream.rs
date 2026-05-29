@@ -2,7 +2,8 @@
 
 use crate::config::{WebsocketAuth, WebsocketSourceConfig, decode_frame, shape_record};
 use async_trait::async_trait;
-use faucet_core::{FaucetError, Source, Stream, StreamPage};
+use base64::Engine;
+use faucet_core::{AuthSpec, Credential, FaucetError, SharedAuthProvider, Source, Stream, StreamPage};
 use futures::{SinkExt, StreamExt};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -23,6 +24,34 @@ fn now_unix_ms() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0)
+}
+
+/// Map a [`Credential`] from a shared provider onto [`WebsocketAuth`] so the
+/// existing header-application path can be reused.
+///
+/// This mapping is infallible: every credential kind can be expressed as either
+/// `Bearer` or `Custom` headers.
+fn credential_to_auth(cred: Credential) -> WebsocketAuth {
+    use std::collections::BTreeMap;
+    match cred {
+        Credential::Bearer(token) => WebsocketAuth::Bearer { token },
+        Credential::Token(t) => WebsocketAuth::Custom {
+            headers: BTreeMap::from([("Authorization".to_string(), t)]),
+        },
+        Credential::Header { name, value } => WebsocketAuth::Custom {
+            headers: BTreeMap::from([(name, value)]),
+        },
+        Credential::Basic { username, password } => {
+            let encoded = base64::engine::general_purpose::STANDARD
+                .encode(format!("{username}:{password}"));
+            WebsocketAuth::Custom {
+                headers: BTreeMap::from([(
+                    "Authorization".to_string(),
+                    format!("Basic {encoded}"),
+                )]),
+            }
+        }
+    }
 }
 
 /// Apply `auth` to the HTTP upgrade `request`.
@@ -51,6 +80,10 @@ pub(crate) fn apply_auth(request: &mut Request, auth: &WebsocketAuth) -> Result<
 /// A WebSocket streaming source.
 pub struct WebsocketSource {
     config: WebsocketSourceConfig,
+    /// Optional shared auth provider. When present, its [`Credential`] is
+    /// resolved on every (re)connect so a freshly-rotated token is used after
+    /// reconnect. Takes precedence over inline auth.
+    auth_provider: Option<SharedAuthProvider>,
 }
 
 impl WebsocketSource {
@@ -59,15 +92,46 @@ impl WebsocketSource {
     /// it mid-run).
     pub fn new(config: WebsocketSourceConfig) -> Result<Self, FaucetError> {
         config.validate()?;
-        Ok(Self { config })
+        Ok(Self {
+            config,
+            auth_provider: None,
+        })
+    }
+
+    /// Attach a shared [`AuthProvider`](faucet_core::AuthProvider). When set,
+    /// the provider's credential is resolved on every (re)connect — so a
+    /// refreshed token is used automatically after reconnect. Takes precedence
+    /// over inline auth.
+    pub fn with_auth_provider(mut self, provider: SharedAuthProvider) -> Self {
+        self.auth_provider = Some(provider);
+        self
     }
 
     /// Connect, apply auth + size limits, and send the subscribe frames.
+    ///
+    /// Auth is resolved here (not once at construction) so that reconnects
+    /// always pick up a freshly-rotated token from a shared provider.
     async fn connect(&self, url: &str) -> Result<WsStream, FaucetError> {
         let mut request = url
             .into_client_request()
             .map_err(|e| FaucetError::Config(format!("websocket url {url}: {e}")))?;
-        apply_auth(&mut request, &self.config.auth)?;
+
+        // Resolve effective auth: provider-first, then inline, or error on Reference.
+        let effective_auth = if let Some(p) = &self.auth_provider {
+            credential_to_auth(p.credential().await?)
+        } else {
+            match &self.config.auth {
+                AuthSpec::Inline(a) => a.clone(),
+                AuthSpec::Reference(r) => {
+                    return Err(FaucetError::Auth(format!(
+                        "auth references provider '{}' but no provider was supplied; \
+                         set one via the CLI `auth:` catalog or `with_auth_provider`",
+                        r.name
+                    )));
+                }
+            }
+        };
+        apply_auth(&mut request, &effective_auth)?;
 
         let ws_config = self.config.max_message_bytes.map(|n| {
             WebSocketConfig::default()
@@ -313,5 +377,60 @@ impl Source for WebsocketSource {
 
     fn connector_name(&self) -> &'static str {
         "websocket"
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::BTreeMap;
+
+    #[test]
+    fn credential_bearer_maps_to_bearer() {
+        let auth = credential_to_auth(Credential::Bearer("tok".into()));
+        assert_eq!(auth, WebsocketAuth::Bearer { token: "tok".into() });
+    }
+
+    #[test]
+    fn credential_token_maps_to_custom_authorization() {
+        let auth = credential_to_auth(Credential::Token("Custom xyz".into()));
+        assert_eq!(
+            auth,
+            WebsocketAuth::Custom {
+                headers: BTreeMap::from([("Authorization".into(), "Custom xyz".into())])
+            }
+        );
+    }
+
+    #[test]
+    fn credential_header_maps_to_custom() {
+        let auth = credential_to_auth(Credential::Header {
+            name: "X-Api-Key".into(),
+            value: "k123".into(),
+        });
+        assert_eq!(
+            auth,
+            WebsocketAuth::Custom {
+                headers: BTreeMap::from([("X-Api-Key".into(), "k123".into())])
+            }
+        );
+    }
+
+    #[test]
+    fn credential_basic_maps_to_base64_authorization() {
+        let auth = credential_to_auth(Credential::Basic {
+            username: "user".into(),
+            password: "pass".into(),
+        });
+        // base64("user:pass") == "dXNlcjpwYXNz"
+        assert_eq!(
+            auth,
+            WebsocketAuth::Custom {
+                headers: BTreeMap::from([(
+                    "Authorization".into(),
+                    "Basic dXNlcjpwYXNz".into()
+                )])
+            }
+        );
     }
 }

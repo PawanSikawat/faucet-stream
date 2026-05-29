@@ -9,7 +9,7 @@
 pub mod config;
 pub mod sink;
 
-pub use faucet_core::{FaucetError, Sink};
+pub use faucet_core::{AuthSpec, FaucetError, SharedAuthProvider, Sink};
 
 #[allow(deprecated)]
 pub use config::ElasticsearchSinkAuth;

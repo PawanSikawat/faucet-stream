@@ -11,8 +11,8 @@ use crate::config::SnowflakeSourceConfig;
 use crate::convert::{ColumnMeta, row_to_json};
 use async_trait::async_trait;
 use faucet_core::util::substitute_context_bind_params;
-use faucet_core::{FaucetError, Stream, StreamPage};
-use faucet_snowflake_common::{authorization_header, snowflake_token_type};
+use faucet_core::{AuthSpec, FaucetError, SharedAuthProvider, Stream, StreamPage};
+use faucet_snowflake_common::{SnowflakeAuth, authorization_header, credential_to_auth, snowflake_token_type};
 use reqwest::Client;
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
@@ -74,6 +74,10 @@ pub struct SnowflakeSource {
     /// `config.account`. Intended for wiremock tests and private-link
     /// deployments.
     endpoint_base: Option<String>,
+    /// Optional shared auth provider. When set, takes precedence over inline
+    /// auth; the provider yields a `Bearer` or `Token` credential mapped onto
+    /// [`SnowflakeAuth::OAuth`]. Set via [`Self::with_auth_provider`].
+    auth_provider: Option<SharedAuthProvider>,
 }
 
 impl SnowflakeSource {
@@ -84,7 +88,22 @@ impl SnowflakeSource {
             config,
             client: Client::new(),
             endpoint_base: None,
+            auth_provider: None,
         }
+    }
+
+    /// Attach a shared [`AuthProvider`](faucet_core::AuthProvider). When set,
+    /// the provider supplies the credential for every request (taking
+    /// precedence over inline auth), so several sources can share one OAuth
+    /// token with single-flight refresh. Used by the CLI to resolve
+    /// `auth: { ref }`, and by library callers who inject a provider directly.
+    ///
+    /// The provider must yield a `Bearer` or `Token` credential, which maps
+    /// onto [`SnowflakeAuth::OAuth`]. Key-pair JWT cannot be supplied via a
+    /// provider (JWT is minted locally from the RSA key).
+    pub fn with_auth_provider(mut self, provider: SharedAuthProvider) -> Self {
+        self.auth_provider = Some(provider);
+        self
     }
 
     /// Override the base URL used to reach the SQL REST API.
@@ -116,6 +135,26 @@ impl SnowflakeSource {
             handle,
             partition
         )
+    }
+
+    /// Resolve the effective [`SnowflakeAuth`] for this request.
+    ///
+    /// Resolution order:
+    /// 1. If a shared provider is attached, call it and map the credential.
+    /// 2. Otherwise, use the inline auth from the config.
+    /// 3. If the config holds an unresolved `Reference` with no provider,
+    ///    return [`FaucetError::Auth`].
+    async fn resolve_auth(&self) -> Result<SnowflakeAuth, FaucetError> {
+        if let Some(p) = &self.auth_provider {
+            return credential_to_auth(p.credential().await?);
+        }
+        match &self.config.auth {
+            AuthSpec::Inline(a) => Ok(a.clone()),
+            AuthSpec::Reference(r) => Err(FaucetError::Auth(format!(
+                "auth references provider '{}' but no provider was supplied",
+                r.name
+            ))),
+        }
     }
 
     /// Build the JSON body for `POST /api/v2/statements`.
@@ -205,8 +244,9 @@ impl SnowflakeSource {
         body["statement"] = Value::String(query);
 
         let url = self.statements_url();
-        let auth = authorization_header(&self.config.auth, &self.config.account)?;
-        let token_type = snowflake_token_type(&self.config.auth);
+        let effective = self.resolve_auth().await?;
+        let auth = authorization_header(&effective, &self.config.account)?;
+        let token_type = snowflake_token_type(&effective);
 
         let resp = self
             .client
@@ -403,8 +443,9 @@ impl faucet_core::Source for SnowflakeSource {
                         .into(),
                 )
             })?;
-            let auth = authorization_header(&self.config.auth, &self.config.account)?;
-            let token_type = snowflake_token_type(&self.config.auth);
+            let effective = self.resolve_auth().await?;
+            let auth = authorization_header(&effective, &self.config.account)?;
+            let token_type = snowflake_token_type(&effective);
 
             for i in 1..partition_count {
                 let raw = self.fetch_partition(&handle, i, &auth, token_type).await?;
@@ -494,8 +535,9 @@ impl faucet_core::Source for SnowflakeSource {
                         "Snowflake reported >1 partition without a statementHandle".into(),
                     )
                 })?;
-                let auth = authorization_header(&self.config.auth, &self.config.account)?;
-                let token_type = snowflake_token_type(&self.config.auth);
+                let effective = self.resolve_auth().await?;
+                let auth = authorization_header(&effective, &self.config.account)?;
+                let token_type = snowflake_token_type(&effective);
 
                 for i in 1..partition_count {
                     let raw = self.fetch_partition(&handle, i, &auth, token_type).await?;

@@ -1,6 +1,6 @@
 //! Elasticsearch source configuration.
 
-use faucet_core::DEFAULT_BATCH_SIZE;
+use faucet_core::{AuthSpec, DEFAULT_BATCH_SIZE};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -18,8 +18,9 @@ pub struct ElasticsearchSourceConfig {
     pub query: Value,
     /// Scroll context timeout (e.g. `"1m"`). Defaults to `"1m"`.
     pub scroll_timeout: String,
-    /// Authentication method.
-    pub auth: ElasticsearchAuth,
+    /// Authentication: either inline (`{ type, config }`) or a `{ ref: <name> }`
+    /// pointer to a shared provider in the CLI's top-level `auth:` catalog.
+    pub auth: AuthSpec<ElasticsearchAuth>,
     /// Maximum number of scroll pages to fetch. `None` means no limit.
     pub max_pages: Option<usize>,
     /// Records per emitted [`StreamPage`](faucet_core::StreamPage), which is
@@ -51,7 +52,7 @@ impl ElasticsearchSourceConfig {
             index: index.into(),
             query: json!({"match_all": {}}),
             scroll_timeout: "1m".to_string(),
-            auth: ElasticsearchAuth::None,
+            auth: AuthSpec::Inline(ElasticsearchAuth::None),
             max_pages: None,
             batch_size: DEFAULT_BATCH_SIZE,
         }
@@ -71,7 +72,7 @@ impl ElasticsearchSourceConfig {
 
     /// Set the authentication method.
     pub fn auth(mut self, a: ElasticsearchAuth) -> Self {
-        self.auth = a;
+        self.auth = AuthSpec::Inline(a);
         self
     }
 
@@ -161,6 +162,7 @@ mod tests {
         }"#;
         let config: ElasticsearchSourceConfig = serde_json::from_str(json).unwrap();
         assert_eq!(config.batch_size, 250);
+        assert!(matches!(config.auth, faucet_core::AuthSpec::Inline(_)));
     }
 
     #[test]

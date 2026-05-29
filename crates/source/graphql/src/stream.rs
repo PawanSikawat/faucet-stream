@@ -2,11 +2,13 @@
 
 use crate::config::{GraphqlAuth, GraphqlStreamConfig};
 use async_trait::async_trait;
+use base64::Engine as _;
 use faucet_core::util::{self, DEFAULT_ERROR_BODY_MAX_LEN};
-use faucet_core::{FaucetError, Stream, StreamPage};
+use faucet_core::{AuthSpec, Credential, FaucetError, SharedAuthProvider, Stream, StreamPage};
 use jsonpath_rust::JsonPath;
 use reqwest::Client;
 use serde_json::{Value, json};
+use std::collections::HashMap;
 use std::pin::Pin;
 use std::time::Duration;
 
@@ -19,6 +21,34 @@ const RETRY_BASE_BACKOFF: Duration = Duration::from_millis(500);
 pub struct GraphqlStream {
     config: GraphqlStreamConfig,
     client: Client,
+    /// Optional shared auth provider. When set, it takes precedence over inline
+    /// auth. Used by the CLI to resolve `auth: { ref }`, and by library callers
+    /// who construct one provider and inject it into many sources.
+    auth_provider: Option<SharedAuthProvider>,
+}
+
+/// Map a [`Credential`] from a shared provider onto the GraphQL [`GraphqlAuth`]
+/// representation so the existing header-application path can be reused.
+fn credential_to_auth(cred: Credential) -> GraphqlAuth {
+    match cred {
+        Credential::Bearer(token) => GraphqlAuth::Bearer { token },
+        Credential::Token(token) => GraphqlAuth::Custom {
+            headers: HashMap::from([("Authorization".into(), token)]),
+        },
+        Credential::Header { name, value } => GraphqlAuth::Custom {
+            headers: HashMap::from([(name, value)]),
+        },
+        Credential::Basic { username, password } => GraphqlAuth::Custom {
+            headers: HashMap::from([(
+                "Authorization".into(),
+                format!(
+                    "Basic {}",
+                    base64::engine::general_purpose::STANDARD
+                        .encode(format!("{username}:{password}"))
+                ),
+            )]),
+        },
+    }
 }
 
 impl GraphqlStream {
@@ -27,7 +57,18 @@ impl GraphqlStream {
         Self {
             config,
             client: Client::new(),
+            auth_provider: None,
         }
+    }
+
+    /// Attach a shared [`AuthProvider`](faucet_core::AuthProvider). When set, the
+    /// provider supplies the credential for every request (taking precedence
+    /// over inline auth), so several sources can share one token with
+    /// single-flight refresh. Used by the CLI to resolve `auth: { ref }`, and by
+    /// library callers who construct one provider and inject it into many sources.
+    pub fn with_auth_provider(mut self, provider: SharedAuthProvider) -> Self {
+        self.auth_provider = Some(provider);
+        self
     }
 
     /// Fetch all records across all pages.
@@ -139,15 +180,33 @@ impl GraphqlStream {
             .headers(self.config.headers.clone())
             .json(&payload);
 
-        // Apply auth.
-        match &self.config.auth {
+        // Resolve credentials to concrete auth. A shared auth provider (from
+        // `auth: { ref }` or injected by a library caller) takes precedence;
+        // otherwise the inline auth config is used directly.
+        let effective_auth: GraphqlAuth = if let Some(provider) = &self.auth_provider {
+            credential_to_auth(provider.credential().await?)
+        } else {
+            match &self.config.auth {
+                AuthSpec::Inline(a) => a.clone(),
+                AuthSpec::Reference(r) => {
+                    return Err(FaucetError::Auth(format!(
+                        "auth references provider '{}' but no provider was supplied; \
+                         set one via the CLI `auth:` catalog or `with_auth_provider`",
+                        r.name
+                    )));
+                }
+            }
+        };
+
+        // Apply resolved auth to the request.
+        match effective_auth {
             GraphqlAuth::None => {}
             GraphqlAuth::Bearer { token } => {
                 req = req.bearer_auth(token);
             }
             GraphqlAuth::Custom { headers } => {
                 let mut hm = reqwest::header::HeaderMap::new();
-                for (name, value) in headers {
+                for (name, value) in &headers {
                     let n =
                         reqwest::header::HeaderName::from_bytes(name.as_bytes()).map_err(|e| {
                             FaucetError::Auth(format!("invalid custom header name {name:?}: {e}"))

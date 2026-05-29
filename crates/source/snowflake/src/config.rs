@@ -1,12 +1,12 @@
 //! Snowflake source configuration.
 
-use faucet_core::DEFAULT_BATCH_SIZE;
+use faucet_core::{AuthSpec, DEFAULT_BATCH_SIZE};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::time::Duration;
 
-// Re-export the shared auth type so end-user imports remain stable.
+// Re-export the shared auth types so end-user imports remain stable.
 pub use faucet_snowflake_common::SnowflakeAuth;
 
 fn default_statement_timeout() -> Duration {
@@ -35,8 +35,11 @@ pub struct SnowflakeSourceConfig {
     /// Optional role to assume for the session.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub role: Option<String>,
-    /// Authentication credentials.
-    pub auth: SnowflakeAuth,
+    /// Authentication: either inline (`{ type, config }`) or a `{ ref: <name> }`
+    /// pointer to a shared provider in the CLI's top-level `auth:` catalog.
+    /// A shared provider must yield a `Bearer` or `Token` credential, which
+    /// maps onto [`SnowflakeAuth::OAuth`]; key-pair JWT is always inline.
+    pub auth: AuthSpec<SnowflakeAuth>,
     /// SQL statement to execute. May contain `${field.path}` placeholders that
     /// are resolved against the parent-record context at runtime; resolved
     /// values are sent as positional bind parameters appended after
@@ -121,7 +124,7 @@ impl SnowflakeSourceConfig {
             database: database.into(),
             schema: schema.into(),
             role: None,
-            auth,
+            auth: AuthSpec::Inline(auth),
             query: query.into(),
             params: Vec::new(),
             statement_timeout: default_statement_timeout(),
