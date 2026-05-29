@@ -1,6 +1,7 @@
 //! Stream configuration and builder.
 
 use crate::auth::Auth;
+use faucet_core::AuthSpec;
 use crate::pagination::PaginationStyle;
 use faucet_core::ReplicationMethod;
 use reqwest::{
@@ -24,7 +25,9 @@ pub struct RestStreamConfig {
     #[serde(with = "crate::serde_helpers::http_method")]
     #[schemars(with = "String")]
     pub method: Method,
-    pub auth: Auth,
+    /// Authentication: either inline (`{ type, config }`) or a `{ ref: <name> }`
+    /// pointer to a shared provider in the CLI's top-level `auth:` catalog.
+    pub auth: AuthSpec<Auth>,
     #[serde(skip, default)]
     pub headers: HeaderMap,
     pub query_params: HashMap<String, String>,
@@ -93,7 +96,7 @@ impl Default for RestStreamConfig {
             base_url: String::new(),
             path: String::new(),
             method: Method::GET,
-            auth: Auth::None,
+            auth: AuthSpec::Inline(Auth::None),
             headers: HeaderMap::new(),
             query_params: HashMap::new(),
             body: None,
@@ -136,7 +139,7 @@ impl RestStreamConfig {
     }
 
     pub fn auth(mut self, a: Auth) -> Self {
-        self.auth = a;
+        self.auth = AuthSpec::Inline(a);
         self
     }
 

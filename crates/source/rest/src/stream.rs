@@ -8,7 +8,7 @@ use crate::extract;
 use crate::pagination::{PaginationState, PaginationStyle};
 use crate::retry;
 use async_trait::async_trait;
-use faucet_core::FaucetError;
+use faucet_core::{AuthSpec, Credential, FaucetError, SharedAuthProvider};
 use faucet_core::replication::{
     ReplicationMethod, filter_incremental, max_replication_value, max_value,
 };
@@ -32,10 +32,31 @@ pub struct RestStream {
     token_cache: TokenCache,
     /// Shared token endpoint cache (only used when `config.auth` is `Auth::TokenEndpoint`).
     token_endpoint_cache: TokenEndpointCache,
+    /// Optional shared auth provider. Set when `config.auth` is an
+    /// `AuthSpec::Reference` resolved by the caller (e.g. the CLI `auth:`
+    /// catalog), or injected directly by a library caller to share one token
+    /// across multiple sources. When present it takes precedence over inline
+    /// auth.
+    auth_provider: Option<SharedAuthProvider>,
     /// Bookmark applied at runtime via
     /// [`Source::apply_start_bookmark`](faucet_core::Source::apply_start_bookmark).
     /// Takes precedence over `config.start_replication_value` when set.
     runtime_start: Arc<AsyncMutex<Option<Value>>>,
+}
+
+/// Map a [`Credential`] from a shared provider onto the REST [`Auth`]
+/// representation so the existing header-application path can be reused.
+fn credential_to_auth(cred: Credential) -> Auth {
+    match cred {
+        Credential::Bearer(token) => Auth::Bearer { token },
+        Credential::Token(token) => Auth::Custom {
+            headers: std::iter::once(("Authorization".to_string(), token)).collect(),
+        },
+        Credential::Basic { username, password } => Auth::Basic { username, password },
+        Credential::Header { name, value } => Auth::Custom {
+            headers: std::iter::once((name, value)).collect(),
+        },
+    }
 }
 
 impl RestStream {
@@ -43,9 +64,8 @@ impl RestStream {
     pub fn new(config: RestStreamConfig) -> Result<Self, FaucetError> {
         // Validate expiry_ratio at construction time.
         let expiry_ratio_to_validate = match &config.auth {
-            Auth::OAuth2 { expiry_ratio, .. } | Auth::TokenEndpoint { expiry_ratio, .. } => {
-                Some(*expiry_ratio)
-            }
+            AuthSpec::Inline(Auth::OAuth2 { expiry_ratio, .. })
+            | AuthSpec::Inline(Auth::TokenEndpoint { expiry_ratio, .. }) => Some(*expiry_ratio),
             _ => None,
         };
         if let Some(ratio) = expiry_ratio_to_validate
@@ -65,8 +85,20 @@ impl RestStream {
             client: builder.build()?,
             token_cache: TokenCache::new(),
             token_endpoint_cache: TokenEndpointCache::new(),
+            auth_provider: None,
             runtime_start: Arc::new(AsyncMutex::new(None)),
         })
+    }
+
+    /// Attach a shared [`AuthProvider`](faucet_core::AuthProvider). When set, the
+    /// provider supplies the credential for every request (taking precedence
+    /// over inline auth), so several sources can share one token with
+    /// single-flight refresh. Used by the CLI to resolve `auth: { ref }`, and by
+    /// library callers who construct one provider and inject it into many
+    /// sources.
+    pub fn with_auth_provider(mut self, provider: SharedAuthProvider) -> Self {
+        self.auth_provider = Some(provider);
+        self
     }
 
     /// Fetch all records across all pages as raw JSON values.
@@ -419,57 +451,70 @@ impl RestStream {
             }
         };
 
-        // Resolve OAuth2 / TokenEndpoint credentials to a Bearer token before
-        // applying auth headers. Tokens are cached and reused until they expire,
-        // avoiding a token fetch on every HTTP request.
-        let resolved_auth = match &self.config.auth {
-            Auth::OAuth2 {
-                token_url,
-                client_id,
-                client_secret,
-                scopes,
-                expiry_ratio,
-            } => {
-                let token = self
-                    .token_cache
-                    .get_or_refresh(
-                        &self.client,
-                        token_url,
-                        client_id,
-                        client_secret,
-                        scopes,
-                        *expiry_ratio,
-                    )
-                    .await?;
-                Auth::Bearer { token }
+        // Resolve credentials to concrete auth headers. A shared auth provider
+        // (from `auth: { ref }` or injected by a library caller) takes
+        // precedence; otherwise inline OAuth2 / TokenEndpoint are resolved to a
+        // Bearer token via the per-source cache (cached until expiry, avoiding a
+        // token fetch on every request).
+        let resolved_auth = if let Some(provider) = &self.auth_provider {
+            credential_to_auth(provider.credential().await?)
+        } else {
+            match &self.config.auth {
+                AuthSpec::Inline(Auth::OAuth2 {
+                    token_url,
+                    client_id,
+                    client_secret,
+                    scopes,
+                    expiry_ratio,
+                }) => {
+                    let token = self
+                        .token_cache
+                        .get_or_refresh(
+                            &self.client,
+                            token_url,
+                            client_id,
+                            client_secret,
+                            scopes,
+                            *expiry_ratio,
+                        )
+                        .await?;
+                    Auth::Bearer { token }
+                }
+                AuthSpec::Inline(Auth::TokenEndpoint {
+                    url: token_url,
+                    method: token_method,
+                    headers: token_headers,
+                    body: token_body,
+                    token_path,
+                    expiry_path,
+                    expiry_ratio,
+                    response_validator,
+                }) => {
+                    let token = self
+                        .token_endpoint_cache
+                        .get_or_refresh(
+                            &self.client,
+                            token_url,
+                            token_method,
+                            token_headers,
+                            token_body.as_ref(),
+                            token_path,
+                            expiry_path.as_deref(),
+                            *expiry_ratio,
+                            response_validator.as_ref(),
+                        )
+                        .await?;
+                    Auth::Bearer { token }
+                }
+                AuthSpec::Inline(other) => other.clone(),
+                AuthSpec::Reference(r) => {
+                    return Err(FaucetError::Auth(format!(
+                        "auth references provider '{}' but no provider was supplied; \
+                         set one via the CLI `auth:` catalog or `with_auth_provider`",
+                        r.name
+                    )));
+                }
             }
-            Auth::TokenEndpoint {
-                url: token_url,
-                method: token_method,
-                headers: token_headers,
-                body: token_body,
-                token_path,
-                expiry_path,
-                expiry_ratio,
-                response_validator,
-            } => {
-                let token = self
-                    .token_endpoint_cache
-                    .get_or_refresh(
-                        &self.client,
-                        token_url,
-                        token_method,
-                        token_headers,
-                        token_body.as_ref(),
-                        token_path,
-                        expiry_path.as_deref(),
-                        *expiry_ratio,
-                        response_validator.as_ref(),
-                    )
-                    .await?;
-                Auth::Bearer { token }
-            }
-            other => other.clone(),
         };
 
         let mut headers = self.config.headers.clone();
@@ -495,7 +540,7 @@ impl RestStream {
         }
 
         // ApiKeyQuery: inject the API key as a query parameter.
-        if let Auth::ApiKeyQuery { param, value } = &self.config.auth {
+        if let AuthSpec::Inline(Auth::ApiKeyQuery { param, value }) = &self.config.auth {
             req = req.query(&[(param.as_str(), value.as_str())]);
         }
 

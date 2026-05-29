@@ -26,8 +26,11 @@ use std::sync::Arc;
 /// A resolved credential produced by an [`AuthProvider`] or built from inline
 /// auth config. Connectors map this onto their wire protocol (HTTP header, gRPC
 /// metadata, …).
+///
+/// Intentionally **not** `#[non_exhaustive]`: connectors must map every variant,
+/// so adding one should be a compile error that forces correct handling rather
+/// than a silently-ignored fallback.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[non_exhaustive]
 pub enum Credential {
     /// `Authorization: Bearer <token>`.
     Bearer(String),
