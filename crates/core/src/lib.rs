@@ -78,5 +78,6 @@ pub use compression::{Compression, CompressionConfig, compress_buf, warn_mismatc
 
 #[cfg(feature = "quality")]
 pub use quality::{
-    BatchCheck, CompareOp, CompiledQuality, JsonType, OnFailure, QualitySpec, RecordCheck,
+    BatchCheck, CheckTally, CompareOp, CompiledQuality, JsonType, OnFailure, QualityOutcome,
+    QualitySpec, QuarantinedRecord, RecordCheck, apply_quality,
 };
