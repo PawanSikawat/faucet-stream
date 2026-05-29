@@ -209,6 +209,9 @@ wiremock = "0.6"
 serial_test = "3"
 metrics-util.workspace = true
 serde_yaml = "0.9"
+futures.workspace = true
+async-stream.workspace = true
+futures-core.workspace = true
 
 [package.metadata.docs.rs]
 all-features = true
