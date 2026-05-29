@@ -107,10 +107,10 @@ it to each source/sink with `.with_auth_provider(provider.clone())`.
 
 ## Connector-specific inline auth
 
-Each connector also has its own inline auth methods (all in `{ type, config }`
-form):
+Each connector also has its own inline auth methods, all under the `auth:` key
+and all in `{ type, config }` form:
 
-- **BigQuery** — `credentials`: `service_account_key_path`, `service_account_key`
+- **BigQuery** — `service_account_key_path`, `service_account_key`
   (inline JSON), or `application_default`.
 - **Snowflake** — `key_pair` (JWT) or `oauth`.
 - **Kafka** — `sasl_plain` / `sasl_scram` / `ssl` / `sasl_ssl`.

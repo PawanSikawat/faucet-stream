@@ -17,7 +17,9 @@ pub struct BigQuerySinkConfig {
     pub dataset_id: String,
     /// BigQuery table ID.
     pub table_id: String,
-    /// Authentication credentials.
+    /// Authentication credentials. YAML/JSON key is `auth` for consistency with
+    /// every other connector's auth block.
+    #[serde(rename = "auth")]
     pub credentials: BigQueryCredentials,
     /// Maximum rows per `tabledata.insertAll` request. Defaults to
     /// [`DEFAULT_BATCH_SIZE`].

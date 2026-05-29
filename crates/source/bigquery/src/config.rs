@@ -34,8 +34,8 @@ fn default_batch_size() -> usize {
 pub struct BigQuerySourceConfig {
     /// GCP project ID against which the query is billed and run.
     pub project_id: String,
-    /// Authentication credentials.
-    pub credentials: BigQueryCredentials,
+    /// Authentication — the `auth` field, consistent with every other connector.
+    pub auth: BigQueryCredentials,
     /// SQL statement to execute. May contain `${field.path}` placeholders that
     /// are resolved against the parent-record context at runtime as
     /// positional `?` markers; matched values are appended to
@@ -104,7 +104,7 @@ impl std::fmt::Debug for BigQuerySourceConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("BigQuerySourceConfig")
             .field("project_id", &self.project_id)
-            .field("credentials", &self.credentials)
+            .field("auth", &self.auth)
             .field("query", &self.query)
             .field("use_legacy_sql", &self.use_legacy_sql)
             .field("location", &self.location)
@@ -126,7 +126,7 @@ impl BigQuerySourceConfig {
     ) -> Self {
         Self {
             project_id: project_id.into(),
-            credentials,
+            auth: credentials,
             query: query.into(),
             use_legacy_sql: default_use_legacy_sql(),
             location: None,
@@ -232,7 +232,7 @@ mod tests {
     fn deserializes_minimal_json() {
         let json = r#"{
             "project_id": "my-project",
-            "credentials": {"type": "application_default"},
+            "auth": {"type": "application_default"},
             "query": "SELECT 1"
         }"#;
         let c: BigQuerySourceConfig = serde_json::from_str(json).unwrap();
@@ -246,7 +246,7 @@ mod tests {
     fn deserializes_all_fields() {
         let json = r#"{
             "project_id": "p",
-            "credentials": {"type": "application_default"},
+            "auth": {"type": "application_default"},
             "query": "SELECT 1",
             "use_legacy_sql": true,
             "location": "EU",
