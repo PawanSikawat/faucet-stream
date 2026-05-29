@@ -68,6 +68,19 @@ pub enum JsonType {
     Null,
 }
 
+impl std::fmt::Display for JsonType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            JsonType::Boolean => "boolean",
+            JsonType::Number => "number",
+            JsonType::String => "string",
+            JsonType::Array => "array",
+            JsonType::Object => "object",
+            JsonType::Null => "null",
+        })
+    }
+}
+
 fn default_true() -> bool {
     true
 }
