@@ -22,6 +22,7 @@
 //! | `source-mongodb` | MongoDB query source |
 //! | `source-redis` | Redis source (streams, lists, keys) |
 //! | `source-webhook` | Webhook HTTP receiver source |
+//! | `source-websocket` | WebSocket streaming source |
 //! | `source-csv` | CSV file source |
 //! | `source-elasticsearch` | Elasticsearch search/scroll source |
 //! | `source-kafka` | Apache Kafka consumer source |
@@ -117,6 +118,11 @@ pub mod source {
         pub use faucet_source_webhook::*;
     }
 
+    #[cfg(feature = "source-websocket")]
+    pub mod websocket {
+        pub use faucet_source_websocket::*;
+    }
+
     #[cfg(feature = "source-csv")]
     pub mod csv {
         pub use faucet_source_csv::*;
@@ -199,6 +205,11 @@ pub mod source {
     #[cfg(feature = "source-webhook")]
     pub mod webhook {
         pub use faucet_source_webhook::*;
+    }
+
+    #[cfg(feature = "source-websocket")]
+    pub mod websocket {
+        pub use faucet_source_websocket::*;
     }
 
     #[cfg(feature = "source-csv")]
