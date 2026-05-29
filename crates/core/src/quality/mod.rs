@@ -9,4 +9,4 @@ pub mod compile;
 pub mod config;
 pub mod record;
 
-pub use config::{CompareOp, JsonType, OnFailure};
+pub use config::{BatchCheck, CompareOp, JsonType, OnFailure, QualitySpec, RecordCheck};
