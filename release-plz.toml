@@ -51,6 +51,19 @@ publish_timeout = "30m"
 # behaviour" stance in CONTRIBUTING.md.
 release_commits = "^(feat|fix|perf)"
 
+# Gate `release-plz release` (the publish-to-crates.io job) to only run when
+# the release PR opened by release-plz itself is merged — not on every push
+# to main. This is the explicit two-step model:
+#   1. Any push to main with a feat/fix/perf commit → release-plz updates the
+#      open "chore: release" PR with cumulative version bumps + changelog.
+#   2. That PR gets merged → release-plz publishes the bumped crates in
+#      dependency order on that single push.
+# With this off (the upstream default), the publish job tries to publish on
+# every push, which fails whenever a workspace-local crate (e.g. faucet-auth)
+# uses APIs added to a dependency (e.g. faucet-core) that haven't been
+# published yet — the release PR is what bumps the dependency first.
+release_always = false
+
 # Changelog body template — mirrors cliff.toml so rendered output looks the
 # same as past entries. release-plz uses git-cliff internally but no longer
 # honours the deprecated `changelog_config = "cliff.toml"` pointer, so the
