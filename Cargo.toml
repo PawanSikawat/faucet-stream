@@ -2,6 +2,7 @@
 resolver = "3"
 members = [
     "crates/core",
+    "crates/auth",
     "crates/bigquery-common",
     "crates/elasticsearch-common",
     "crates/gcs-common",
@@ -65,6 +66,7 @@ categories = ["database", "asynchronous"]
 [workspace.dependencies]
 # Internal crates
 faucet-core = { path = "crates/core", version = "0.2.0" }
+faucet-auth = { path = "crates/auth", version = "0.1.0" }
 faucet-bigquery-common = { path = "crates/bigquery-common", version = "0.1.0" }
 faucet-elasticsearch-common = { path = "crates/elasticsearch-common", version = "0.1.0" }
 faucet-gcs-common = { path = "crates/gcs-common", version = "0.2.0" }

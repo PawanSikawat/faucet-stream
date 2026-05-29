@@ -23,14 +23,13 @@ use serde::{Deserialize, Serialize};
 
 /// Authentication method for Snowflake.
 ///
-/// **Wire-format note:** the `#[serde(tag = "type")]` discriminator uses
-/// PascalCase variant names (`"KeyPair"`, `"OAuth"`) for byte-compatibility
-/// with existing YAML configs that predate the extraction of this crate
-/// from `faucet-sink-snowflake`. Do not add
-/// `#[serde(rename_all = "snake_case")]` here — it would silently break those
-/// configs.
+/// Serializes as `{ type: <method>, config: { … } }` (adjacent tagging,
+/// snake_case discriminators) — the consistent auth wire shape shared by
+/// every faucet connector. `key_pair` is stateless (JWT minted locally);
+/// `o_auth` carries a bearer token (and can be supplied via a shared
+/// `auth: { ref }` provider).
 #[derive(Clone, Serialize, Deserialize, JsonSchema)]
-#[serde(tag = "type")]
+#[serde(tag = "type", content = "config", rename_all = "snake_case")]
 pub enum SnowflakeAuth {
     /// JWT key-pair authentication.
     ///
@@ -43,6 +42,7 @@ pub enum SnowflakeAuth {
         private_key_pem: String,
     },
     /// OAuth2 bearer token (e.g. from an external identity provider).
+    #[serde(rename = "oauth")]
     OAuth { token: String },
 }
 
@@ -151,6 +151,30 @@ pub fn snowflake_token_type(auth: &SnowflakeAuth) -> &'static str {
     }
 }
 
+/// Map a [`faucet_core::Credential`] yielded by a shared [`faucet_core::AuthProvider`]
+/// onto [`SnowflakeAuth`].
+///
+/// Snowflake supports OAuth bearer tokens via shared providers. Key-pair JWT
+/// auth is stateless (the JWT is minted locally from the RSA key) and therefore
+/// cannot be supplied by a provider; attempting to do so returns
+/// [`FaucetError::Auth`].
+///
+/// | Credential | Mapping |
+/// |---|---|
+/// | `Bearer(token)` | `SnowflakeAuth::OAuth { token }` |
+/// | `Token(token)` | `SnowflakeAuth::OAuth { token }` |
+/// | `Basic` / `Header` | `FaucetError::Auth` |
+pub fn credential_to_auth(cred: faucet_core::Credential) -> Result<SnowflakeAuth, FaucetError> {
+    match cred {
+        faucet_core::Credential::Bearer(token) | faucet_core::Credential::Token(token) => {
+            Ok(SnowflakeAuth::OAuth { token })
+        }
+        other => Err(FaucetError::Auth(format!(
+            "Snowflake auth provider must yield a bearer/token credential, got {other:?}"
+        ))),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -181,14 +205,14 @@ mod tests {
     fn serde_round_trip_oauth() {
         let auth = SnowflakeAuth::OAuth { token: "t".into() };
         let json = serde_json::to_string(&auth).unwrap();
-        assert_eq!(json, r#"{"type":"OAuth","token":"t"}"#);
+        assert_eq!(json, r#"{"type":"oauth","config":{"token":"t"}}"#);
         let parsed: SnowflakeAuth = serde_json::from_str(&json).unwrap();
         assert!(matches!(parsed, SnowflakeAuth::OAuth { .. }));
     }
 
     #[test]
     fn serde_round_trip_key_pair() {
-        let json = r#"{"type":"KeyPair","user":"u","private_key_pem":"k"}"#;
+        let json = r#"{"type":"key_pair","config":{"user":"u","private_key_pem":"k"}}"#;
         let parsed: SnowflakeAuth = serde_json::from_str(json).unwrap();
         match parsed {
             SnowflakeAuth::KeyPair {

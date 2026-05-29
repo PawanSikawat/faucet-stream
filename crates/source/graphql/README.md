@@ -108,8 +108,10 @@ let config: GraphqlStreamConfig = load_env_file(".env", "GRAPHQL")?;
     "org": "PawanSikawat"
   },
   "auth": {
-    "type": "Bearer",
-    "token": "ghp_xxxxxxxxxxxx"
+    "type": "bearer",
+    "config": {
+      "token": "ghp_xxxxxxxxxxxx"
+    }
   },
   "records_path": "$.data.organization.repositories.edges[*].node",
   "pagination": {

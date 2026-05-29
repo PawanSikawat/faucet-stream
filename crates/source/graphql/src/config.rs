@@ -1,6 +1,6 @@
 //! GraphQL source configuration.
 
-use faucet_core::DEFAULT_BATCH_SIZE;
+use faucet_core::{AuthSpec, DEFAULT_BATCH_SIZE};
 use reqwest::header::HeaderMap;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -9,7 +9,7 @@ use std::collections::HashMap;
 
 /// Authentication for GraphQL endpoints.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-#[serde(tag = "type")]
+#[serde(tag = "type", content = "config", rename_all = "snake_case")]
 pub enum GraphqlAuth {
     /// No authentication.
     None,
@@ -61,8 +61,9 @@ pub struct GraphqlStreamConfig {
     pub query: String,
     /// Variables to pass with the query.
     pub variables: Value,
-    /// Authentication method.
-    pub auth: GraphqlAuth,
+    /// Authentication: either inline (`{ type, config }`) or a `{ ref: <name> }`
+    /// pointer to a shared provider in the CLI's top-level `auth:` catalog.
+    pub auth: AuthSpec<GraphqlAuth>,
     /// Additional request headers.
     #[serde(skip, default)]
     pub headers: HeaderMap,
@@ -97,7 +98,7 @@ impl GraphqlStreamConfig {
             endpoint: endpoint.into(),
             query: query.into(),
             variables: Value::Object(Default::default()),
-            auth: GraphqlAuth::None,
+            auth: AuthSpec::Inline(GraphqlAuth::None),
             headers: HeaderMap::new(),
             records_path: None,
             pagination: None,
@@ -114,7 +115,7 @@ impl GraphqlStreamConfig {
 
     /// Set the authentication method.
     pub fn auth(mut self, auth: GraphqlAuth) -> Self {
-        self.auth = auth;
+        self.auth = AuthSpec::Inline(auth);
         self
     }
 
@@ -227,7 +228,7 @@ mod tests {
             "endpoint": "https://api.example.com/graphql",
             "query": "query { x }",
             "variables": {},
-            "auth": {"type": "None"},
+            "auth": {"type": "none"},
             "records_path": null,
             "pagination": null,
             "max_pages": null,

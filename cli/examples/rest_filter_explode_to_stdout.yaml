@@ -34,7 +34,7 @@ pipeline:
       base_url: https://dummyjson.com
       path: /products
       method: GET
-      auth: { type: None }
+      auth: { type: none }
       query_params:
         limit: "5"
       pagination: { type: None }

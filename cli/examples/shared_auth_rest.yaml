@@ -1,0 +1,54 @@
+# Shared auth provider across matrix rows.
+#
+# Four REST endpoints of the same API all authenticate against one OAuth2
+# identity provider. Defining the credential once under the top-level `auth:`
+# block and referencing it with `auth: { ref: api }` means faucet builds a
+# SINGLE token provider and shares it across every row — one token fetch, one
+# refresh cycle, single-flight. Without this, each row would run its own token
+# lifecycle and (against an IdP that keeps one active / rotating token) race.
+#
+# Run: faucet run cli/examples/shared_auth_rest.yaml
+# Needs: a reachable REST API + OAuth2 token endpoint (set the env vars below).
+version: 1
+name: shared_auth_rest
+
+# Shared, single-flight auth providers. Built once, referenced by `auth: { ref }`.
+auth:
+  api:
+    type: oauth2 # client-credentials; use `oauth2_refresh` for a rotating refresh token
+    config:
+      token_url: ${env:API_TOKEN_URL}
+      client_id: ${secret:API_CLIENT_ID}
+      client_secret: ${secret:API_CLIENT_SECRET}
+      scopes: [read]
+
+pipeline:
+  sources:
+    ep:
+      type: rest
+      config:
+        base_url: ${env:API_BASE_URL}
+        path: /placeholder # overridden per row
+        method: GET
+        auth: { ref: api } # ← every row sharing this template shares ONE token
+        records_path: "$.data[*]"
+        pagination: { type: None }
+  sinks:
+    out:
+      type: jsonl
+      config:
+        path: /tmp/placeholder.jsonl # overridden per row
+
+matrix:
+  - id: customers
+    source: { ref: ep, config: { path: /customers } }
+    sink: { ref: out, config: { path: /tmp/customers.jsonl } }
+  - id: orders
+    source: { ref: ep, config: { path: /orders } }
+    sink: { ref: out, config: { path: /tmp/orders.jsonl } }
+  - id: products
+    source: { ref: ep, config: { path: /products } }
+    sink: { ref: out, config: { path: /tmp/products.jsonl } }
+  - id: invoices
+    source: { ref: ep, config: { path: /invoices } }
+    sink: { ref: out, config: { path: /tmp/invoices.jsonl } }

@@ -136,8 +136,10 @@ let config: GrpcStreamConfig = load_env_file(".env", "GRPC")?;
     "page_size": 100
   },
   "auth": {
-    "type": "Bearer",
-    "token": "your-api-token"
+    "type": "bearer",
+    "config": {
+      "token": "your-api-token"
+    }
   },
   "tls": true,
   "records_path": "$.products[*]",
@@ -154,7 +156,7 @@ let config: GrpcStreamConfig = load_env_file(".env", "GRPC")?;
   "method_name": "Tail",
   "descriptor_set_path": "proto/descriptor.bin",
   "request": { "topic": "audit-log" },
-  "auth": { "type": "Bearer", "token": "your-api-token" },
+  "auth": { "type": "bearer", "config": { "token": "your-api-token" } },
   "tls": true,
   "records_path": null,
   "rpc_kind": "server_streaming",

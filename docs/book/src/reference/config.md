@@ -6,6 +6,7 @@ A faucet config is a YAML or JSON document with this top-level shape:
 version: 1                 # required, must be 1
 name: my_pipeline          # optional; used in state keys and metrics
 vars: {}                   # optional; reusable values referenced as ${vars.X}
+auth: {}                   # optional; named shared auth providers (see below)
 pipeline:                  # required
   source: { type: …, config: { … } }
   transforms: []           # optional list
@@ -78,6 +79,25 @@ replace). A row with `parent:` runs once per parent record. See the
 [matrix DAG tutorial](../tutorials/matrix-dag.md). For DRY configs with many
 rows, define named templates under `pipeline.sources` / `pipeline.sinks` and
 select them per row with `ref:`.
+
+## `auth`
+
+A map of named auth providers, each `{ type, config }` (`type` ∈ `static` /
+`oauth2` / `oauth2_refresh` / `token_endpoint`). A connector references one with
+`auth: { ref: <name> }` instead of inline auth; faucet builds each provider once
+and shares it across every connector that references it (one token, single-flight
+refresh). See the [authentication cookbook](../cookbook/auth.md).
+
+```yaml
+auth:
+  api:
+    type: oauth2_refresh
+    config:
+      token_url: ${env:API_TOKEN_URL}
+      client_id: ${secret:API_CLIENT_ID}
+      client_secret: ${secret:API_CLIENT_SECRET}
+      refresh_token: ${secret:API_REFRESH_TOKEN}
+```
 
 ## `execution`
 

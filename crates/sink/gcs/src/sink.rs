@@ -16,7 +16,7 @@ pub struct GcsSink {
 
 impl GcsSink {
     pub async fn new(config: GcsSinkConfig) -> Result<Self, FaucetError> {
-        let storage = build_storage(&config.credentials, config.storage_host.as_deref()).await?;
+        let storage = build_storage(&config.auth, config.storage_host.as_deref()).await?;
         Ok(Self { config, storage })
     }
 

@@ -17,6 +17,7 @@
 //! - State-key collisions among children of the same parent surface as a
 //!   `CliError::DuplicateStateKey`.
 
+use crate::auth_catalog::AuthCatalog;
 use crate::config::{ExecutionSpec, OnError};
 use crate::error::{CliError, CliResult};
 use crate::expand::{ExpandedNode, NodeRole};
@@ -48,6 +49,10 @@ pub struct ExecuteOptions {
     pub limit: Option<usize>,
     /// `--state-path PATH` — overrides the `file` state-store path.
     pub state_path_override: Option<PathBuf>,
+    /// Shared auth providers built from the top-level `auth:` block. Connectors
+    /// that reference one via `auth: { ref }` resolve against this catalog;
+    /// every row sharing a provider gets the same `Arc` (one token, shared).
+    pub auth: AuthCatalog,
 }
 
 /// One pipeline invocation's outcome.
@@ -455,11 +460,11 @@ async fn run_one_invocation(
     }
 
     // 2) Build source + sink.
-    let source = build_source(&node.source.kind, source_cfg).await?;
+    let source = build_source(&node.source.kind, source_cfg, &opts.auth).await?;
     let raw_sink: Box<dyn Sink> = if opts.dry_run {
         Box::new(CountingSink::new())
     } else {
-        build_sink(&node.sink.kind, sink_cfg).await?
+        build_sink(&node.sink.kind, sink_cfg, &opts.auth).await?
     };
     let raw_sink: Box<dyn Sink> = match opts.limit {
         Some(n) => Box::new(LimitedSink::wrap(raw_sink, n)),
@@ -552,7 +557,14 @@ fn state_from_override(path: &Path) -> Arc<dyn StateStore> {
 /// Translate a [`crate::config::DlqSpec`] from the YAML/JSON config into a
 /// runtime [`DlqConfig`] ready to attach to a [`Pipeline`].
 pub async fn build_dlq_config(spec: &crate::config::DlqSpec) -> CliResult<DlqConfig> {
-    let sink = build_sink(&spec.sink.kind, spec.sink.config.clone()).await?;
+    // DLQ sinks resolve against an empty catalog — shared `auth: { ref }` on a
+    // DLQ sink is out of scope (DLQ targets are typically local jsonl/stdout).
+    let sink = build_sink(
+        &spec.sink.kind,
+        spec.sink.config.clone(),
+        &AuthCatalog::new(),
+    )
+    .await?;
     Ok(DlqConfig {
         sink: Arc::from(sink),
         on_batch_error: match spec.on_batch_error {
@@ -731,6 +743,7 @@ mod tests {
             version: 1,
             name: Some("test".into()),
             vars: None,
+            auth: None,
             pipeline: PipelineSpec {
                 source: Some(ConnectorSpec {
                     kind: "csv".into(),
@@ -772,6 +785,7 @@ mod tests {
                 dry_run: false,
                 limit: None,
                 state_path_override: None,
+                auth: Default::default(),
             },
         )
         .await
@@ -820,6 +834,7 @@ matrix:
                 dry_run: false,
                 limit: None,
                 state_path_override: None,
+                auth: Default::default(),
             },
         )
         .await
@@ -868,6 +883,7 @@ matrix:
                 dry_run: false,
                 limit: None,
                 state_path_override: None,
+                auth: Default::default(),
             },
         )
         .await
@@ -926,6 +942,7 @@ execution:
                 dry_run: false,
                 limit: None,
                 state_path_override: None,
+                auth: Default::default(),
             },
         )
         .await
@@ -955,9 +972,9 @@ execution:
         // must exist. The converse does NOT hold: under `on_error: stop`,
         // abort_all() can cancel an in-flight "good" after its sink has already
         // created/partially written the file. That partial sink state is an
-        // accepted, documented consequence of stop mode (see CLAUDE.md), so a
-        // present file does not imply completion — asserting the biconditional
-        // made this test race-dependent on which root won the permit.
+        // accepted, documented consequence of stop mode, so a present file
+        // does not imply completion — asserting the biconditional made this
+        // test race-dependent on which root won the permit.
         let good_completed = summary
             .invocations
             .iter()
@@ -1015,6 +1032,7 @@ execution:
                 dry_run: false,
                 limit: None,
                 state_path_override: None,
+                auth: Default::default(),
             },
         )
         .await
@@ -1072,6 +1090,7 @@ matrix:
                 dry_run: false,
                 limit: None,
                 state_path_override: None,
+                auth: Default::default(),
             },
         )
         .await

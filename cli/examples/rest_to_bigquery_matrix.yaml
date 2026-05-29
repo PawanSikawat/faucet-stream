@@ -17,8 +17,9 @@ pipeline:
       base_url: https://api.example.com
       method: GET
       auth:
-        type: Bearer
-        token: ${env:API_TOKEN}
+        type: bearer
+        config:
+          token: ${env:API_TOKEN}
       pagination:
         type: PageNumber
         param_name: page
@@ -39,9 +40,10 @@ pipeline:
     type: bigquery
     config:
       project_id: my-gcp-project
-      credentials:
-        type: ServiceAccountKeyJson
-        value: ${env:GCP_KEY_JSON}
+      auth:
+        type: service_account_key
+        config:
+          json: ${env:GCP_KEY_JSON}
       batch_size: 1000
 
 matrix:

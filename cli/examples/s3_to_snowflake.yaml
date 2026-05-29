@@ -22,7 +22,8 @@ pipeline:
       schema: RAW
       table: EVENTS
       auth:
-        type: KeyPair
-        user: LOADER
-        private_key_pem: ${file:./snowflake_key.pem}
+        type: key_pair
+        config:
+          user: LOADER
+          private_key_pem: ${file:./snowflake_key.pem}
       batch_size: 1000

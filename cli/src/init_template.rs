@@ -273,23 +273,59 @@ fn emit_alternative_variants(
                 continue;
             }
             let resolved = resolve_ref(field_schema, defs);
-            // Tagged-enum-within-tagged-enum is rare and gets flattened to a
-            // bare placeholder line; users can drill into the nested schema
-            // via `faucet schema` if they hit this case.
-            let placeholder = if is_object_with_properties(&resolved) {
-                "{ ... }".to_string()
+            // Adjacent tagging nests a variant's real fields under a `config`
+            // object — drill into it so the commented alternative shows the
+            // actual fields, not an opaque `{ ... }`.
+            if is_object_with_properties(&resolved) {
+                out.push_str(&format!("{pad}# {field_key}:\n"));
+                emit_commented_object_props(&resolved, defs, indent + 2, out);
             } else {
-                resolved
+                let placeholder = resolved
                     .get("default")
                     .map(render_default)
-                    .unwrap_or_else(|| type_placeholder(&resolved))
-            };
-            let marker = if *field_required {
-                "    # REQUIRED"
-            } else {
-                ""
-            };
-            out.push_str(&format!("{pad}# {field_key}: {placeholder}{marker}\n"));
+                    .unwrap_or_else(|| type_placeholder(&resolved));
+                let marker = if *field_required {
+                    "    # REQUIRED"
+                } else {
+                    ""
+                };
+                out.push_str(&format!("{pad}# {field_key}: {placeholder}{marker}\n"));
+            }
+        }
+    }
+}
+
+/// Emit every property of an object schema as commented-out YAML lines at
+/// `indent`, recursing into nested objects. Used for the commented "alternative
+/// variant" blocks where the whole block is already prefixed with `# `.
+fn emit_commented_object_props(
+    schema: &Value,
+    defs: Option<&Value>,
+    indent: usize,
+    out: &mut String,
+) {
+    let pad = " ".repeat(indent);
+    let Some(props) = schema.get("properties").and_then(|v| v.as_object()) else {
+        return;
+    };
+    let required: Vec<&str> = schema
+        .get("required")
+        .and_then(|v| v.as_array())
+        .map(|a| a.iter().filter_map(|v| v.as_str()).collect())
+        .unwrap_or_default();
+    for (k, s) in props {
+        let resolved = resolve_ref(s, defs);
+        let req = required.contains(&k.as_str());
+        if is_object_with_properties(&resolved) {
+            out.push_str(&format!("{pad}# {k}:\n"));
+            emit_commented_object_props(&resolved, defs, indent + 2, out);
+        } else {
+            let placeholder = resolved
+                .get("default")
+                .map(render_default)
+                .unwrap_or_else(|| type_placeholder(&resolved));
+            let marker = if req { "    # REQUIRED" } else { "" };
+            out.push_str(&format!("{pad}# {k}: {placeholder}{marker}\n"));
         }
     }
 }
@@ -304,7 +340,21 @@ fn tagged_enum_variants<'a>(
     schema: &'a Value,
     defs: Option<&'a Value>,
 ) -> Option<Vec<TaggedVariant<'a>>> {
-    let arr = schema.get("oneOf")?.as_array()?;
+    // A directly tagged enum exposes `oneOf`. An `AuthSpec`-style wrapper
+    // (`#[serde(untagged)]` over the inline auth enum plus a `{ ref }` struct)
+    // exposes `anyOf`; unwrap to the inline member that is itself a tagged enum
+    // so `auth: { ref }` fields still render their inline-auth variants.
+    let arr = match schema.get("oneOf").and_then(|v| v.as_array()) {
+        Some(a) => a,
+        None => {
+            let any = schema.get("anyOf")?.as_array()?;
+            let inner = any
+                .iter()
+                .map(|m| resolve_ref_borrowed(m, defs))
+                .find(|r| r.get("oneOf").is_some())?;
+            inner.get("oneOf")?.as_array()?
+        }
+    };
     if arr.is_empty() {
         return None;
     }
@@ -629,6 +679,45 @@ mod tests {
         let yaml = schema_to_yaml_template(&schema, 0);
         assert!(yaml.contains("# auth: { type: none }"), "yaml: {yaml}");
         assert!(yaml.contains("one of: none, bearer"), "yaml: {yaml}");
+    }
+
+    #[test]
+    fn adjacent_tagged_enum_nests_config_block() {
+        // schemars emits adjacent-tagged enums (`#[serde(tag="type", content="config")]`)
+        // with the variant's real fields nested under a `config` object property.
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "auth": {
+                    "oneOf": [
+                        {
+                            "type": "object",
+                            "properties": { "type": { "const": "none" } },
+                            "required": ["type"]
+                        },
+                        {
+                            "type": "object",
+                            "properties": {
+                                "type": { "const": "bearer" },
+                                "config": {
+                                    "type": "object",
+                                    "properties": { "token": { "type": "string" } },
+                                    "required": ["token"]
+                                }
+                            },
+                            "required": ["type", "config"]
+                        }
+                    ]
+                }
+            },
+            "required": ["auth"]
+        });
+        let yaml = schema_to_yaml_template(&schema, 0);
+        // Inline (chosen = none) + bearer in the alternatives with nested config.
+        assert!(yaml.contains("type: none"), "yaml: {yaml}");
+        assert!(yaml.contains("# type: bearer"), "yaml: {yaml}");
+        assert!(yaml.contains("# config:"), "yaml: {yaml}");
+        assert!(yaml.contains("# token: \"\""), "yaml: {yaml}");
     }
 
     #[test]

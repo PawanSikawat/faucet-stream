@@ -3,8 +3,8 @@
 use crate::config::{XmlAuth, XmlPagination, XmlStreamConfig};
 use crate::convert;
 use async_trait::async_trait;
-use faucet_core::FaucetError;
 use faucet_core::util::{self, DEFAULT_ERROR_BODY_MAX_LEN};
+use faucet_core::{AuthSpec, Credential, FaucetError, SharedAuthProvider};
 use faucet_core::{Stream, StreamPage};
 use reqwest::Client;
 use serde_json::Value;
@@ -21,6 +21,26 @@ const RETRY_BASE_BACKOFF: Duration = Duration::from_millis(500);
 pub struct XmlStream {
     config: XmlStreamConfig,
     client: Client,
+    /// Optional shared auth provider. When present it takes precedence over
+    /// inline auth, so several sources can share one token with single-flight
+    /// refresh. Used by the CLI to resolve `auth: { ref }`, and by library
+    /// callers who construct one provider and inject it into many sources.
+    auth_provider: Option<SharedAuthProvider>,
+}
+
+/// Map a [`Credential`] from a shared provider onto the XML [`XmlAuth`]
+/// representation so the existing header-application path can be reused.
+fn credential_to_auth(cred: Credential) -> XmlAuth {
+    match cred {
+        Credential::Bearer(token) => XmlAuth::Bearer { token },
+        Credential::Token(token) => XmlAuth::Custom {
+            headers: std::iter::once(("Authorization".to_string(), token)).collect(),
+        },
+        Credential::Basic { username, password } => XmlAuth::Basic { username, password },
+        Credential::Header { name, value } => XmlAuth::Custom {
+            headers: std::iter::once((name, value)).collect(),
+        },
+    }
 }
 
 impl XmlStream {
@@ -29,7 +49,19 @@ impl XmlStream {
         Self {
             config,
             client: Client::new(),
+            auth_provider: None,
         }
+    }
+
+    /// Attach a shared [`AuthProvider`](faucet_core::AuthProvider). When set,
+    /// the provider supplies the credential for every request (taking precedence
+    /// over inline auth), so several sources can share one token with
+    /// single-flight refresh. Used by the CLI to resolve `auth: { ref }`, and by
+    /// library callers who construct one provider and inject it into many
+    /// sources.
+    pub fn with_auth_provider(mut self, provider: SharedAuthProvider) -> Self {
+        self.auth_provider = Some(provider);
+        self
     }
 
     /// Fetch all records across all pages.
@@ -175,8 +207,26 @@ impl XmlStream {
             .headers(self.config.headers.clone())
             .query(&resolved_params);
 
+        // Resolve credentials to concrete auth. A shared auth provider
+        // (from `auth: { ref }` or injected by a library caller) takes
+        // precedence; otherwise inline auth is used.
+        let effective_auth: XmlAuth = if let Some(provider) = &self.auth_provider {
+            credential_to_auth(provider.credential().await?)
+        } else {
+            match &self.config.auth {
+                AuthSpec::Inline(a) => a.clone(),
+                AuthSpec::Reference(r) => {
+                    return Err(FaucetError::Auth(format!(
+                        "auth references provider '{}' but no provider was supplied; \
+                         set one via the CLI `auth:` catalog or `with_auth_provider`",
+                        r.name
+                    )));
+                }
+            }
+        };
+
         // Apply auth.
-        match &self.config.auth {
+        match &effective_auth {
             XmlAuth::None => {}
             XmlAuth::Bearer { token } => {
                 req = req.bearer_auth(token);

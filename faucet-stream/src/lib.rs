@@ -55,6 +55,15 @@ pub use faucet_core::*;
 pub use faucet_core::TransformingSource;
 pub use faucet_core::observability::Labels;
 
+// ── Shared auth providers ────────────────────────────────────────────────────
+/// Single-flight OAuth2 / token-endpoint auth providers (enable the `auth`
+/// feature). Share one across connectors via `with_auth_provider` or the CLI
+/// `auth: { ref }` catalog.
+#[cfg(feature = "auth")]
+pub mod auth {
+    pub use faucet_auth::*;
+}
+
 // ── Source connectors ────────────────────────────────────────────────────────
 
 #[cfg(feature = "source-rest")]

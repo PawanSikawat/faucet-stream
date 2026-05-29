@@ -47,9 +47,10 @@ source:
   type: gcs
   bucket: my-bucket
   prefix: events/2026/
-  credentials:
-    method: service_account_json_file
-    path: /run/secrets/gcp.json
+  auth:
+    type: service_account_json_file
+    config:
+      path: /run/secrets/gcp.json
   file_format: json_lines
   concurrency: 20
   batch_size: 5000

@@ -194,16 +194,16 @@ fn init_with_source_sink_flags_uses_those_kinds() {
         "missing alternatives block:\n{body}"
     );
     assert!(
-        body.contains("# type: Bearer"),
-        "REST Bearer alternative missing:\n{body}"
+        body.contains("# type: bearer"),
+        "REST bearer alternative missing:\n{body}"
     );
     assert!(
-        body.contains("# type: OAuth2"),
-        "REST OAuth2 alternative missing:\n{body}"
+        body.contains("# type: oauth2"),
+        "REST oauth2 alternative missing:\n{body}"
     );
     assert!(
-        body.contains("# type: ApplicationDefault"),
-        "BigQuery ApplicationDefault alternative missing:\n{body}"
+        body.contains("# type: application_default"),
+        "BigQuery application_default alternative missing:\n{body}"
     );
 }
 
@@ -450,6 +450,11 @@ fn shipped_example_yamls_pass_validate() {
         ("SOAP_PASS", "x"),
         ("STRIPE_TOKEN", "x"),
         ("FEED_TOKEN", "x"),
+        // shared_auth_rest.yaml (top-level `auth:` catalog provider).
+        ("API_BASE_URL", "https://api.example.com"),
+        ("API_TOKEN_URL", "https://auth.example.com/oauth/token"),
+        ("API_CLIENT_ID", "x"),
+        ("API_CLIENT_SECRET", "x"),
         (
             "GOOGLE_APPLICATION_CREDENTIALS",
             "/tmp/service-account.json",

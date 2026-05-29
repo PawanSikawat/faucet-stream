@@ -22,6 +22,7 @@ reqwest.workspace = true
 jsonpath-rust.workspace = true
 async-stream = { workspace = true }
 futures.workspace = true
+base64.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "time"] }

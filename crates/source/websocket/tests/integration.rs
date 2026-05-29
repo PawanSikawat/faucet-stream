@@ -1,6 +1,8 @@
 //! Integration tests against an in-process tokio-tungstenite server.
 
-use faucet_core::Source;
+use faucet_core::{
+    AuthProvider, AuthReference, AuthSpec, Credential, FaucetError, SharedAuthProvider, Source,
+};
 use faucet_source_websocket::{
     OnParseError, WebsocketAuth, WebsocketSource, WebsocketSourceConfig, WsMessageFormat,
 };
@@ -15,7 +17,7 @@ use tokio_tungstenite::tungstenite::Message;
 fn base_config(url: &str) -> WebsocketSourceConfig {
     WebsocketSourceConfig {
         url: url.to_string(),
-        auth: WebsocketAuth::None,
+        auth: AuthSpec::Inline(WebsocketAuth::None),
         subscribe_messages: vec![],
         message_format: WsMessageFormat::Json,
         on_parse_error: OnParseError::Fail,
@@ -172,9 +174,9 @@ async fn auth_header_is_sent() {
         }
     });
     let mut cfg = base_config(&format!("ws://{addr}"));
-    cfg.auth = WebsocketAuth::Bearer {
+    cfg.auth = AuthSpec::Inline(WebsocketAuth::Bearer {
         token: "secret".into(),
-    };
+    });
     cfg.max_messages = Some(1);
     cfg.idle_timeout = Some(Duration::from_secs(5));
     let src = WebsocketSource::new(cfg).unwrap();
@@ -257,7 +259,7 @@ async fn custom_headers_auth_is_sent() {
     let mut headers = BTreeMap::new();
     headers.insert("x-api-key".to_string(), "k123".to_string());
     let mut cfg = base_config(&format!("ws://{addr}"));
-    cfg.auth = WebsocketAuth::Custom { headers };
+    cfg.auth = AuthSpec::Inline(WebsocketAuth::Custom { headers });
     cfg.max_messages = Some(1);
     cfg.idle_timeout = Some(Duration::from_secs(5));
     let src = WebsocketSource::new(cfg).unwrap();
@@ -305,6 +307,96 @@ async fn ping_keepalive_is_sent() {
         saw_ping.load(Ordering::SeqCst),
         1,
         "server did not observe a keepalive Ping within the idle window"
+    );
+}
+
+// ── Shared AuthProvider tests ─────────────────────────────────────────────────
+
+#[derive(Debug)]
+struct FixedBearer(&'static str);
+
+#[async_trait::async_trait]
+impl AuthProvider for FixedBearer {
+    async fn credential(&self) -> Result<Credential, FaucetError> {
+        Ok(Credential::Bearer(self.0.to_string()))
+    }
+    fn provider_name(&self) -> &'static str {
+        "fixed-bearer"
+    }
+}
+
+/// Injecting a `FixedBearer` provider causes the handshake to carry the token.
+#[tokio::test]
+async fn injected_provider_supplies_bearer_token() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let seen = Arc::new(AtomicUsize::new(0));
+    let seen2 = Arc::clone(&seen);
+    tokio::spawn(async move {
+        if let Ok((stream, _)) = listener.accept().await {
+            #[allow(clippy::result_large_err)]
+            let callback = |req: &tokio_tungstenite::tungstenite::handshake::server::Request,
+                            resp: tokio_tungstenite::tungstenite::handshake::server::Response| {
+                if req
+                    .headers()
+                    .get("authorization")
+                    .and_then(|v| v.to_str().ok())
+                    == Some("Bearer INJECTED")
+                {
+                    seen2.store(1, Ordering::SeqCst);
+                }
+                Ok(resp)
+            };
+            let mut ws = tokio_tungstenite::accept_hdr_async(stream, callback)
+                .await
+                .unwrap();
+            let _ = ws
+                .send(tokio_tungstenite::tungstenite::Message::Text(
+                    r#"{"id":1}"#.into(),
+                ))
+                .await;
+            loop {
+                if ws.next().await.is_none() {
+                    break;
+                }
+            }
+        }
+    });
+
+    let provider: SharedAuthProvider = Arc::new(FixedBearer("INJECTED"));
+    let mut cfg = base_config(&format!("ws://{addr}"));
+    cfg.max_messages = Some(1);
+    cfg.idle_timeout = Some(Duration::from_secs(5));
+    let src = WebsocketSource::new(cfg)
+        .unwrap()
+        .with_auth_provider(provider);
+    let records = src.fetch_all().await.unwrap();
+    assert_eq!(records.len(), 1);
+    assert_eq!(
+        seen.load(Ordering::SeqCst),
+        1,
+        "server did not see the Authorization: Bearer INJECTED header"
+    );
+}
+
+/// A `{ ref: name }` auth with no provider supplied must error at connect time.
+#[tokio::test]
+async fn unresolved_auth_reference_errors() {
+    // We need a valid WS server for the connect attempt, but the error should
+    // fire before the network round-trip, so the listener never has to accept.
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let mut cfg = base_config(&format!("ws://{addr}"));
+    cfg.auth = AuthSpec::Reference(AuthReference {
+        name: "missing".into(),
+    });
+    cfg.max_messages = Some(1);
+    cfg.idle_timeout = Some(Duration::from_millis(500));
+    let src = WebsocketSource::new(cfg).unwrap();
+    let err = src.fetch_all().await.unwrap_err();
+    assert!(
+        matches!(err, FaucetError::Auth(_)),
+        "expected Auth error, got {err:?}"
     );
 }
 

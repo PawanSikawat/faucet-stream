@@ -74,8 +74,11 @@ compression = [
     "faucet-sink-s3?/compression",
     "faucet-sink-gcs?/compression",
 ]
+## Shared, single-flight auth providers (OAuth2 client-credentials / refresh,
+## token-endpoint) usable across connectors via `auth: { ref }`.
+auth = ["dep:faucet-auth"]
 ## Every connector and state backend.
-full = ["source", "sink", "state", "kafka-schema-registry", "compression"]
+full = ["source", "sink", "state", "auth", "kafka-schema-registry", "compression"]
 
 ## Individual source connectors.
 source-rest = ["dep:faucet-source-rest"]
@@ -147,6 +150,7 @@ transforms = ["faucet-source-rest?/transforms"]
 
 [dependencies]
 faucet-core.workspace = true
+faucet-auth = { workspace = true, optional = true }
 faucet-bigquery-common = { workspace = true, optional = true }
 faucet-gcs-common = { workspace = true, optional = true }
 faucet-kafka-common = { workspace = true, optional = true }

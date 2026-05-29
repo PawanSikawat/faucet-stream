@@ -112,9 +112,11 @@ let config: ElasticsearchSourceConfig = load_env_file(".env", "ES_SOURCE")?;
   "scroll_timeout": "2m",
   "batch_size": 5000,
   "auth": {
-    "type": "Basic",
-    "username": "elastic",
-    "password": "changeme"
+    "type": "basic",
+    "config": {
+      "username": "elastic",
+      "password": "changeme"
+    }
   },
   "max_pages": 100
 }

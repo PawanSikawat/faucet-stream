@@ -13,6 +13,7 @@
 //! - [`ReplicationMethod`] — incremental replication support
 //! - [`schema::infer_schema`] — JSON Schema inference from record samples
 
+pub mod auth;
 pub mod config;
 pub mod dlq;
 pub mod error;
@@ -31,6 +32,7 @@ pub mod util;
 #[cfg(feature = "compression")]
 pub mod compression;
 
+pub use auth::{AuthProvider, AuthReference, AuthSpec, Credential, SharedAuthProvider};
 pub use dlq::{DlqConfig, DlqReason, DlqStats, OnBatchError, build_envelope};
 pub use error::FaucetError;
 pub use observability::{

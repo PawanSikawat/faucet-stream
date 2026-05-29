@@ -59,7 +59,7 @@ pipeline:
       base_url: https://api.github.com
       path: /repos/PawanSikawat/faucet-stream/issues
       method: GET
-      auth: { type: ApiKey, header: Authorization, value: "Bearer ${env:GITHUB_TOKEN}" }
+      auth: { type: api_key, config: { header: Authorization, value: "Bearer ${env:GITHUB_TOKEN}" } }
       query_params: { state: open }
       pagination: { type: LinkHeader }
       max_retries: 3
@@ -146,11 +146,12 @@ flowchart LR
     P -.->|metrics + spans| O
 ```
 
-faucet-stream is a Cargo workspace with 46 crates — 20 sources, 16 sinks, 5 shared connector libraries, 2 state-store backends, the shared core, the umbrella crate, and the CLI binary:
+faucet-stream is a Cargo workspace with 47 crates — 20 sources, 16 sinks, 5 shared connector libraries, the shared auth-provider library, 2 state-store backends, the shared core, the umbrella crate, and the CLI binary:
 
 | Crate | Description |
 |-------|-------------|
-| [`faucet-core`](crates/core) | Shared types, traits (`Source`, `Sink`), pipeline orchestration, transforms, error types |
+| [`faucet-core`](crates/core) | Shared types, traits (`Source`, `Sink`, `AuthProvider`), pipeline orchestration, transforms, error types |
+| [`faucet-auth`](crates/auth) | Shared single-flight auth providers (OAuth2, token-endpoint) for `auth: { ref }` |
 | **Sources** | |
 | [`faucet-source-rest`](crates/source/rest) | REST API — auth, pagination, extraction, schema inference |
 | [`faucet-source-graphql`](crates/source/graphql) | GraphQL API — cursor-based pagination, variable injection |
@@ -249,7 +250,7 @@ Every connector is optimised for throughput out of the box:
 
 ## Streaming by default
 
-`Pipeline::run` drives sources via `stream_pages` and writes each page to the sink as it arrives, keeping sink-side memory bounded at the configured `batch_size`. See the "Performance" section in CLAUDE.md for the full contract.
+`Pipeline::run` drives sources via `stream_pages` and writes each page to the sink as it arrives, keeping sink-side memory bounded at the configured `batch_size`.
 
 ### Tuning
 

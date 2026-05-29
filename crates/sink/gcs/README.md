@@ -45,8 +45,8 @@ sink:
   type: gcs
   bucket: my-bucket
   prefix: events/2026/
-  credentials:
-    method: application_default
+  auth:
+    type: application_default
   file_extension: .jsonl
   max_records_per_file: 50000
   concurrency: 16

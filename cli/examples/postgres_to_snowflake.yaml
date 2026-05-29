@@ -23,7 +23,8 @@ pipeline:
       schema: RAW
       table: USERS
       auth:
-        type: KeyPair
-        user: INGEST_USER
-        private_key_pem: ${file:./snowflake_key.pem}
+        type: key_pair
+        config:
+          user: INGEST_USER
+          private_key_pem: ${file:./snowflake_key.pem}
       batch_size: 500

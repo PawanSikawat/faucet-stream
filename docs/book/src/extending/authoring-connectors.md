@@ -93,4 +93,4 @@ source and a sink for the same system, put shared types (auth, formats) in a
 `faucet-<name>-common` crate that both depend on and re-export.
 
 > See any built-in connector (e.g. `faucet-source-rest`) for a reference
-> implementation, and `CLAUDE.md` in the repo for the full conventions.
+> implementation.

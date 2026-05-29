@@ -1,8 +1,9 @@
 //! gRPC stream executor using dynamic protobuf messages.
 
-use crate::config::{GrpcAuth, GrpcStreamConfig, RpcKind};
+use crate::config::{GrpcAuth, GrpcStreamConfig, MetadataEntry, RpcKind};
 use async_trait::async_trait;
-use faucet_core::{FaucetError, StreamPage};
+use base64::Engine as _;
+use faucet_core::{AuthSpec, Credential, FaucetError, SharedAuthProvider, StreamPage};
 use futures_core::Stream;
 use prost::Message;
 use prost::bytes::Bytes;
@@ -18,6 +19,9 @@ use tonic::transport::Channel;
 pub struct GrpcStream {
     config: GrpcStreamConfig,
     pool: DescriptorPool,
+    /// Optional shared auth provider. When set, takes precedence over inline
+    /// auth in `config.auth`. Injected via [`GrpcStream::with_auth_provider`].
+    auth_provider: Option<SharedAuthProvider>,
 }
 
 impl GrpcStream {
@@ -33,7 +37,22 @@ impl GrpcStream {
         let pool = DescriptorPool::decode(Bytes::from(descriptor_bytes))
             .map_err(|e| FaucetError::Config(format!("failed to parse FileDescriptorSet: {e}")))?;
 
-        Ok(Self { config, pool })
+        Ok(Self {
+            config,
+            pool,
+            auth_provider: None,
+        })
+    }
+
+    /// Attach a shared [`AuthProvider`](faucet_core::AuthProvider). When set,
+    /// the provider supplies the credential for every request (taking
+    /// precedence over inline auth), so several sources can share one token
+    /// with single-flight refresh. Used by the CLI to resolve `auth: { ref }`,
+    /// and by library callers who construct one provider and inject it into
+    /// many sources.
+    pub fn with_auth_provider(mut self, provider: SharedAuthProvider) -> Self {
+        self.auth_provider = Some(provider);
+        self
     }
 
     /// Fetch all records by calling the configured gRPC method.
@@ -68,7 +87,7 @@ impl GrpcStream {
                     .map_err(|e| FaucetError::Config(format!("gRPC channel not ready: {e}")))?;
 
                 let codec = DynamicCodec::new(output_desc);
-                let request = self.build_grpc_request(request_bytes)?;
+                let request = self.build_grpc_request(request_bytes).await?;
 
                 let response: tonic::Response<DynamicMessage> = grpc_client
                     .unary(request, path, codec)
@@ -206,7 +225,7 @@ impl GrpcStream {
         }
 
         let codec = DynamicCodec::new(output_desc);
-        let request = match self.build_grpc_request(request_bytes) {
+        let request = match self.build_grpc_request(request_bytes).await {
             Ok(r) => r,
             Err(e) => {
                 // Auth/metadata errors are not transient — propagate directly.
@@ -359,36 +378,32 @@ impl GrpcStream {
     }
 
     /// Wrap raw request bytes in a `tonic::Request` and attach auth metadata.
-    fn build_grpc_request(
+    ///
+    /// Resolves the effective auth by consulting the shared provider first
+    /// (if one was injected), then falling back to the inline config. An
+    /// unresolved `AuthSpec::Reference` without a provider yields
+    /// [`FaucetError::Auth`].
+    async fn build_grpc_request(
         &self,
         request_bytes: Vec<u8>,
     ) -> Result<tonic::Request<Vec<u8>>, FaucetError> {
-        let mut request = tonic::Request::new(request_bytes);
-
-        match &self.config.auth {
-            GrpcAuth::None => {}
-            GrpcAuth::Bearer { token } => {
-                let val: tonic::metadata::MetadataValue<tonic::metadata::Ascii> =
-                    format!("Bearer {token}")
-                        .parse()
-                        .map_err(|e| FaucetError::Auth(format!("invalid bearer token: {e}")))?;
-                request.metadata_mut().insert("authorization", val);
-            }
-            GrpcAuth::Metadata { entries } => {
-                for entry in entries {
-                    let val: tonic::metadata::MetadataValue<tonic::metadata::Ascii> = entry
-                        .value
-                        .parse()
-                        .map_err(|e| FaucetError::Auth(format!("invalid metadata value: {e}")))?;
-                    let key: tonic::metadata::MetadataKey<tonic::metadata::Ascii> = entry
-                        .key
-                        .parse()
-                        .map_err(|e| FaucetError::Auth(format!("invalid metadata key: {e}")))?;
-                    request.metadata_mut().insert(key, val);
+        let effective = if let Some(provider) = &self.auth_provider {
+            credential_to_auth(provider.credential().await?)
+        } else {
+            match &self.config.auth {
+                AuthSpec::Inline(a) => a.clone(),
+                AuthSpec::Reference(r) => {
+                    return Err(FaucetError::Auth(format!(
+                        "auth references provider '{}' but no provider was supplied; \
+                         set one via the CLI `auth:` catalog or `with_auth_provider`",
+                        r.name
+                    )));
                 }
             }
-        }
+        };
 
+        let mut request = tonic::Request::new(request_bytes);
+        apply_grpc_auth(&effective, &mut request)?;
         Ok(request)
     }
 }
@@ -643,6 +658,68 @@ impl GrpcStream {
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
+/// Map a [`Credential`] from a shared provider onto the gRPC [`GrpcAuth`]
+/// representation so the existing metadata-application path can be reused.
+///
+/// This mapping is infallible: gRPC's `Metadata` variant can carry any
+/// header-style credential, so every [`Credential`] variant has a clear home.
+fn credential_to_auth(cred: Credential) -> GrpcAuth {
+    match cred {
+        Credential::Bearer(token) => GrpcAuth::Bearer { token },
+        Credential::Token(token) => GrpcAuth::Metadata {
+            entries: vec![MetadataEntry {
+                key: "authorization".into(),
+                value: token,
+            }],
+        },
+        Credential::Header { name, value } => GrpcAuth::Metadata {
+            entries: vec![MetadataEntry { key: name, value }],
+        },
+        Credential::Basic { username, password } => GrpcAuth::Metadata {
+            entries: vec![MetadataEntry {
+                key: "authorization".into(),
+                value: format!(
+                    "Basic {}",
+                    base64::engine::general_purpose::STANDARD
+                        .encode(format!("{username}:{password}"))
+                ),
+            }],
+        },
+    }
+}
+
+/// Apply a resolved [`GrpcAuth`] to a tonic request's metadata.
+fn apply_grpc_auth(
+    auth: &GrpcAuth,
+    request: &mut tonic::Request<Vec<u8>>,
+) -> Result<(), FaucetError> {
+    match auth {
+        GrpcAuth::None => {}
+        GrpcAuth::Bearer { token } => {
+            let val: tonic::metadata::MetadataValue<tonic::metadata::Ascii> =
+                format!("Bearer {token}")
+                    .parse()
+                    .map_err(|e| FaucetError::Auth(format!("invalid bearer token: {e}")))?;
+            request.metadata_mut().insert("authorization", val);
+        }
+        GrpcAuth::Metadata { entries } => {
+            for entry in entries {
+                let val: tonic::metadata::MetadataValue<tonic::metadata::Ascii> = entry
+                    .value
+                    .parse()
+                    .map_err(|e| FaucetError::Auth(format!("invalid metadata value: {e}")))?;
+                let key: tonic::metadata::MetadataKey<tonic::metadata::Ascii> =
+                    entry
+                        .key
+                        .parse()
+                        .map_err(|e| FaucetError::Auth(format!("invalid metadata key: {e}")))?;
+                request.metadata_mut().insert(key, val);
+            }
+        }
+    }
+    Ok(())
+}
+
 fn parse_method_path(
     service_name: &str,
     method_name: &str,
@@ -743,6 +820,10 @@ impl Decoder for DynamicDecoder {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use faucet_core::{AuthProvider, AuthReference, AuthSpec, Credential, FaucetError};
+    use std::sync::Arc;
+
+    // ── Backoff ───────────────────────────────────────────────────────────────
 
     #[test]
     fn next_backoff_doubles_up_to_cap() {
@@ -760,5 +841,141 @@ mod tests {
         assert_eq!(e, Duration::from_secs(16));
         assert_eq!(f, Duration::from_secs(30));
         assert_eq!(g, Duration::from_secs(30));
+    }
+
+    // ── credential_to_auth mapping ────────────────────────────────────────────
+
+    #[test]
+    fn credential_bearer_maps_to_grpc_bearer() {
+        let auth = credential_to_auth(Credential::Bearer("tok".into()));
+        assert!(matches!(auth, GrpcAuth::Bearer { token } if token == "tok"));
+    }
+
+    #[test]
+    fn credential_token_maps_to_metadata_authorization() {
+        let auth = credential_to_auth(Credential::Token("Custom xyz".into()));
+        match auth {
+            GrpcAuth::Metadata { entries } => {
+                assert_eq!(entries.len(), 1);
+                assert_eq!(entries[0].key, "authorization");
+                assert_eq!(entries[0].value, "Custom xyz");
+            }
+            other => panic!("expected Metadata, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn credential_header_maps_to_metadata_with_given_name() {
+        let auth = credential_to_auth(Credential::Header {
+            name: "x-api-key".into(),
+            value: "secret".into(),
+        });
+        match auth {
+            GrpcAuth::Metadata { entries } => {
+                assert_eq!(entries.len(), 1);
+                assert_eq!(entries[0].key, "x-api-key");
+                assert_eq!(entries[0].value, "secret");
+            }
+            other => panic!("expected Metadata, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn credential_basic_maps_to_base64_authorization_metadata() {
+        let auth = credential_to_auth(Credential::Basic {
+            username: "alice".into(),
+            password: "p@ss".into(),
+        });
+        match auth {
+            GrpcAuth::Metadata { entries } => {
+                assert_eq!(entries.len(), 1);
+                assert_eq!(entries[0].key, "authorization");
+                let expected = format!(
+                    "Basic {}",
+                    base64::engine::general_purpose::STANDARD.encode("alice:p@ss")
+                );
+                assert_eq!(entries[0].value, expected);
+            }
+            other => panic!("expected Metadata, got {other:?}"),
+        }
+    }
+
+    // ── Helpers for tests that need a live GrpcStream ─────────────────────────
+
+    /// Build a minimal valid `GrpcStream` from an in-memory `FileDescriptorSet`
+    /// so we can test `build_grpc_request` without a real proto file on disk.
+    fn make_dummy_stream() -> GrpcStream {
+        use prost::Message;
+        let fds_set = prost_types::FileDescriptorSet {
+            file: vec![prost_types::FileDescriptorProto {
+                name: Some("dummy.proto".into()),
+                syntax: Some("proto3".into()),
+                ..Default::default()
+            }],
+        };
+        let bytes = fds_set.encode_to_vec();
+        let tmp = tempfile::NamedTempFile::new().expect("tempfile");
+        std::fs::write(tmp.path(), &bytes).expect("write descriptor");
+        let config = GrpcStreamConfig::new(
+            "http://localhost:50051",
+            "dummy.Svc",
+            "Call",
+            tmp.path().to_str().unwrap(),
+        );
+        // `tmp` is dropped here but the bytes were already decoded by `new()`.
+        GrpcStream::new(config).expect("new from in-memory descriptor")
+    }
+
+    // ── Unresolved Reference error path ───────────────────────────────────────
+
+    #[tokio::test]
+    async fn unresolved_auth_reference_errors_at_request_time() {
+        let mut stream = make_dummy_stream();
+        stream.config.auth = AuthSpec::Reference(AuthReference {
+            name: "missing-provider".into(),
+        });
+        let err = stream.build_grpc_request(vec![]).await.unwrap_err();
+        assert!(
+            matches!(err, FaucetError::Auth(_)),
+            "expected Auth error, got {err:?}"
+        );
+        let msg = err.to_string();
+        assert!(
+            msg.contains("missing-provider"),
+            "error message should name the provider: {msg}"
+        );
+    }
+
+    // ── Injected provider takes precedence ────────────────────────────────────
+
+    #[derive(Debug)]
+    struct FixedBearer(&'static str);
+
+    #[async_trait::async_trait]
+    impl AuthProvider for FixedBearer {
+        async fn credential(&self) -> Result<Credential, FaucetError> {
+            Ok(Credential::Bearer(self.0.to_string()))
+        }
+        fn provider_name(&self) -> &'static str {
+            "fixed-bearer"
+        }
+    }
+
+    #[tokio::test]
+    async fn injected_provider_overrides_inline_none() {
+        let provider: SharedAuthProvider = Arc::new(FixedBearer("MYTOKEN"));
+        let stream = make_dummy_stream().with_auth_provider(provider);
+        // config.auth is Inline(None) but the provider should inject Bearer.
+        let req = stream
+            .build_grpc_request(vec![])
+            .await
+            .expect("build request");
+        let auth_header = req
+            .metadata()
+            .get("authorization")
+            .expect("authorization metadata must be present")
+            .to_str()
+            .expect("ascii");
+        assert_eq!(auth_header, "Bearer MYTOKEN");
     }
 }

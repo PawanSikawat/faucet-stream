@@ -17,7 +17,7 @@ pipeline:
       config:
         base_url: ${vars.api_base}
         method: GET
-        auth: { type: Bearer, token: "${vars.api_token}" }
+        auth: { type: bearer, config: { token: "${vars.api_token}" } }
         records_path: $.data[*]
         pagination:
           type: PageNumber
@@ -39,7 +39,7 @@ pipeline:
       config:
         base_url: ${vars.api_base}
         method: GET
-        auth: { type: Bearer, token: "${vars.api_token}" }
+        auth: { type: bearer, config: { token: "${vars.api_token}" } }
         records_path: $.data[*]
         pagination:
           type: PageNumber

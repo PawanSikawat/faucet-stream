@@ -23,19 +23,22 @@ use serde::{Deserialize, Serialize};
 
 /// How to authenticate with Google BigQuery.
 ///
-/// **Wire-format note:** the `#[serde(tag = "type", content = "value")]`
-/// discriminator uses PascalCase variant names (`"ServiceAccountKeyPath"`,
-/// `"ServiceAccountKey"`, `"ApplicationDefault"`) for byte-compatibility with
-/// existing YAML configs that predate the extraction of this crate from
-/// `faucet-sink-bigquery`. Do not add `#[serde(rename_all = "snake_case")]`
-/// here — it would silently break those configs.
+/// Serializes as `{ type: <method>, config: { … } }` (adjacent tagging,
+/// snake_case discriminators) — the consistent auth wire shape shared by
+/// every faucet connector.
 #[derive(Clone, Serialize, Deserialize, JsonSchema)]
-#[serde(tag = "type", content = "value")]
+#[serde(tag = "type", content = "config", rename_all = "snake_case")]
 pub enum BigQueryCredentials {
     /// Path to a service account JSON key file.
-    ServiceAccountKeyPath(String),
+    ServiceAccountKeyPath {
+        /// Filesystem path to the service-account JSON key.
+        path: String,
+    },
     /// Inline service account JSON key content.
-    ServiceAccountKey(String),
+    ServiceAccountKey {
+        /// Service-account JSON key as an inline string.
+        json: String,
+    },
     /// Use application default credentials (e.g. workload identity, `gcloud auth`).
     ApplicationDefault,
 }
@@ -43,10 +46,11 @@ pub enum BigQueryCredentials {
 impl std::fmt::Debug for BigQueryCredentials {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::ServiceAccountKeyPath(path) => {
-                f.debug_tuple("ServiceAccountKeyPath").field(path).finish()
-            }
-            Self::ServiceAccountKey(_) => write!(f, "ServiceAccountKey(***)"),
+            Self::ServiceAccountKeyPath { path } => f
+                .debug_struct("ServiceAccountKeyPath")
+                .field("path", path)
+                .finish(),
+            Self::ServiceAccountKey { .. } => write!(f, "ServiceAccountKey(***)"),
             Self::ApplicationDefault => write!(f, "ApplicationDefault"),
         }
     }
@@ -58,12 +62,12 @@ impl std::fmt::Debug for BigQueryCredentials {
 /// service-account JSON that fails to parse.
 pub async fn build_client(creds: &BigQueryCredentials) -> Result<Client, FaucetError> {
     match creds {
-        BigQueryCredentials::ServiceAccountKeyPath(path) => {
+        BigQueryCredentials::ServiceAccountKeyPath { path } => {
             Client::from_service_account_key_file(path)
                 .await
                 .map_err(|e| FaucetError::Auth(format!("BigQuery auth failed: {e}")))
         }
-        BigQueryCredentials::ServiceAccountKey(json) => {
+        BigQueryCredentials::ServiceAccountKey { json } => {
             let sa_key = serde_json::from_str(json)
                 .map_err(|e| FaucetError::Auth(format!("invalid service account JSON: {e}")))?;
             Client::from_service_account_key(sa_key, false)
@@ -82,7 +86,9 @@ mod tests {
 
     #[test]
     fn debug_masks_inline_service_account_key() {
-        let creds = BigQueryCredentials::ServiceAccountKey("secret-json".into());
+        let creds = BigQueryCredentials::ServiceAccountKey {
+            json: "secret-json".into(),
+        };
         let debug = format!("{creds:?}");
         assert!(debug.contains("***"));
         assert!(!debug.contains("secret-json"));
@@ -90,7 +96,9 @@ mod tests {
 
     #[test]
     fn debug_does_not_mask_service_account_key_path() {
-        let creds = BigQueryCredentials::ServiceAccountKeyPath("/path/to/key.json".into());
+        let creds = BigQueryCredentials::ServiceAccountKeyPath {
+            path: "/path/to/key.json".into(),
+        };
         let debug = format!("{creds:?}");
         assert!(debug.contains("/path/to/key.json"));
     }
@@ -110,22 +118,26 @@ mod tests {
 
     #[test]
     fn serde_round_trip_service_account_key_path() {
-        let creds = BigQueryCredentials::ServiceAccountKeyPath("/k.json".into());
+        let creds = BigQueryCredentials::ServiceAccountKeyPath {
+            path: "/k.json".into(),
+        };
         let json = serde_json::to_string(&creds).unwrap();
         assert_eq!(
             json,
-            r#"{"type":"ServiceAccountKeyPath","value":"/k.json"}"#
+            r#"{"type":"service_account_key_path","config":{"path":"/k.json"}}"#
         );
         let parsed: BigQueryCredentials = serde_json::from_str(&json).unwrap();
         match parsed {
-            BigQueryCredentials::ServiceAccountKeyPath(p) => assert_eq!(p, "/k.json"),
+            BigQueryCredentials::ServiceAccountKeyPath { path } => assert_eq!(path, "/k.json"),
             _ => panic!("expected ServiceAccountKeyPath"),
         }
     }
 
     #[tokio::test]
     async fn build_client_with_invalid_inline_json_surfaces_auth_error() {
-        let creds = BigQueryCredentials::ServiceAccountKey("not-json".into());
+        let creds = BigQueryCredentials::ServiceAccountKey {
+            json: "not-json".into(),
+        };
         match build_client(&creds).await {
             Ok(_) => panic!("expected auth error"),
             Err(FaucetError::Auth(_)) => {}

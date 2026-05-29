@@ -1,11 +1,11 @@
 //! Snowflake sink configuration.
 
-use faucet_core::DEFAULT_BATCH_SIZE;
+use faucet_core::{AuthSpec, DEFAULT_BATCH_SIZE};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
-// Re-export the shared auth type so end-user imports remain stable
+// Re-export the shared auth types so end-user imports remain stable
 // (`use faucet_sink_snowflake::SnowflakeAuth;` keeps working).
 pub use faucet_snowflake_common::SnowflakeAuth;
 
@@ -22,8 +22,11 @@ pub struct SnowflakeSinkConfig {
     pub schema: String,
     /// Target table name.
     pub table: String,
-    /// Authentication credentials.
-    pub auth: SnowflakeAuth,
+    /// Authentication: either inline (`{ type, config }`) or a `{ ref: <name> }`
+    /// pointer to a shared provider in the CLI's top-level `auth:` catalog.
+    /// A shared provider must yield a `Bearer` or `Token` credential, which
+    /// maps onto [`SnowflakeAuth::OAuth`]; key-pair JWT is always inline.
+    pub auth: AuthSpec<SnowflakeAuth>,
     /// Maximum number of records sent per Snowflake SQL REST API request.
     /// Defaults to [`DEFAULT_BATCH_SIZE`] (1000), which matches the
     /// documented sweet spot for the SQL REST API.
@@ -75,7 +78,7 @@ impl SnowflakeSinkConfig {
             database: database.into(),
             schema: schema.into(),
             table: table.into(),
-            auth,
+            auth: AuthSpec::Inline(auth),
             batch_size: DEFAULT_BATCH_SIZE,
             poll_timeout: default_poll_timeout(),
         }
@@ -164,7 +167,7 @@ mod tests {
             "database": "MY_DB",
             "schema": "PUBLIC",
             "table": "events",
-            "auth": {"type": "OAuth", "token": "tok"},
+            "auth": {"type": "oauth", "config": {"token": "tok"}},
             "batch_size": 250
         }"#;
         let config: SnowflakeSinkConfig = serde_json::from_str(json).unwrap();
@@ -179,7 +182,7 @@ mod tests {
             "database": "MY_DB",
             "schema": "PUBLIC",
             "table": "events",
-            "auth": {"type": "OAuth", "token": "tok"}
+            "auth": {"type": "oauth", "config": {"token": "tok"}}
         }"#;
         let config: SnowflakeSinkConfig = serde_json::from_str(json).unwrap();
         assert_eq!(config.batch_size, faucet_core::DEFAULT_BATCH_SIZE);

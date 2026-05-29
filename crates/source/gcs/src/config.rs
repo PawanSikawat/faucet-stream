@@ -30,7 +30,7 @@ pub struct GcsSourceConfig {
     pub object_keys: Option<Vec<String>>,
     /// Credential source.
     #[serde(default)]
-    pub credentials: GcsCredentials,
+    pub auth: GcsCredentials,
     /// File format.
     #[serde(default)]
     pub file_format: GcsFileFormat,
@@ -71,7 +71,7 @@ impl GcsSourceConfig {
             bucket: bucket.into(),
             prefix: None,
             object_keys: None,
-            credentials: GcsCredentials::default(),
+            auth: GcsCredentials::default(),
             file_format: GcsFileFormat::default(),
             max_objects: None,
             concurrency: default_concurrency(),
@@ -92,8 +92,8 @@ impl GcsSourceConfig {
         self
     }
 
-    pub fn credentials(mut self, creds: GcsCredentials) -> Self {
-        self.credentials = creds;
+    pub fn auth(mut self, creds: GcsCredentials) -> Self {
+        self.auth = creds;
         self
     }
 
@@ -140,10 +140,7 @@ mod tests {
         assert_eq!(config.bucket, "my-bucket");
         assert!(config.prefix.is_none());
         assert!(config.object_keys.is_none());
-        assert!(matches!(
-            config.credentials,
-            GcsCredentials::ApplicationDefault
-        ));
+        assert!(matches!(config.auth, GcsCredentials::ApplicationDefault));
         assert!(matches!(config.file_format, GcsFileFormat::JsonLines));
         assert!(config.max_objects.is_none());
         assert_eq!(config.concurrency, 10);

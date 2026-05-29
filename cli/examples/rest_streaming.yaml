@@ -17,9 +17,10 @@ pipeline:
       method: GET
       name: comments
       auth:
-        type: ApiKey
-        header: X-API-Key
-        value: ${env:API_KEY}
+        type: api_key
+        config:
+          header: X-API-Key
+          value: ${env:API_KEY}
       query_params: {}
       pagination:
         type: LinkHeader

@@ -149,6 +149,7 @@ observability = [
 
 [dependencies]
 faucet-core.workspace = true
+faucet-auth.workspace = true
 faucet-source-rest = { workspace = true, optional = true }
 faucet-source-graphql = { workspace = true, optional = true }
 faucet-source-xml = { workspace = true, optional = true }

@@ -28,8 +28,9 @@ pipeline:
       base_url: https://es.example.com:9200
       index: products
       auth:
-        type: Basic
-        username: ${env:ES_USER}
-        password: ${env:ES_PASS}
+        type: basic
+        config:
+          username: ${env:ES_USER}
+          password: ${env:ES_PASS}
       batch_size: 1000
       id_field: _id

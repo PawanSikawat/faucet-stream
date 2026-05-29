@@ -1,6 +1,6 @@
 //! Elasticsearch sink configuration.
 
-use faucet_core::DEFAULT_BATCH_SIZE;
+use faucet_core::{AuthSpec, DEFAULT_BATCH_SIZE};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -17,8 +17,9 @@ pub struct ElasticsearchSinkConfig {
     pub base_url: String,
     /// Target index name.
     pub index: String,
-    /// Authentication method.
-    pub auth: ElasticsearchAuth,
+    /// Authentication: either inline (`{ type, config }`) or a `{ ref: <name> }`
+    /// pointer to a shared provider in the CLI's top-level `auth:` catalog.
+    pub auth: AuthSpec<ElasticsearchAuth>,
     /// Maximum documents per `_bulk` HTTP request. Defaults to
     /// [`DEFAULT_BATCH_SIZE`].
     ///
@@ -53,7 +54,7 @@ impl ElasticsearchSinkConfig {
         Self {
             base_url: base_url.into().trim_end_matches('/').to_string(),
             index: index.into(),
-            auth: ElasticsearchAuth::None,
+            auth: AuthSpec::Inline(ElasticsearchAuth::None),
             batch_size: DEFAULT_BATCH_SIZE,
             id_field: None,
         }
@@ -61,7 +62,7 @@ impl ElasticsearchSinkConfig {
 
     /// Set the authentication method.
     pub fn auth(mut self, a: ElasticsearchAuth) -> Self {
-        self.auth = a;
+        self.auth = AuthSpec::Inline(a);
         self
     }
 
@@ -143,12 +144,13 @@ mod tests {
         let json = r#"{
             "base_url": "http://localhost:9200",
             "index": "idx",
-            "auth": {"type": "None"},
+            "auth": {"type": "none"},
             "batch_size": 2500,
             "id_field": null
         }"#;
         let config: ElasticsearchSinkConfig = serde_json::from_str(json).unwrap();
         assert_eq!(config.batch_size, 2500);
+        assert!(matches!(config.auth, faucet_core::AuthSpec::Inline(_)));
     }
 
     #[test]
@@ -156,7 +158,7 @@ mod tests {
         let json = r#"{
             "base_url": "http://localhost:9200",
             "index": "idx",
-            "auth": {"type": "None"},
+            "auth": {"type": "none"},
             "id_field": null
         }"#;
         let config: ElasticsearchSinkConfig = serde_json::from_str(json).unwrap();

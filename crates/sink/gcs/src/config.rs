@@ -14,7 +14,7 @@ pub struct GcsSinkConfig {
     pub prefix: String,
     /// Credential source.
     #[serde(default)]
-    pub credentials: GcsCredentials,
+    pub auth: GcsCredentials,
     /// File extension for written objects (default `.jsonl`).
     #[serde(default = "default_file_extension")]
     pub file_extension: String,
@@ -58,7 +58,7 @@ impl GcsSinkConfig {
         Self {
             bucket: bucket.into(),
             prefix: String::new(),
-            credentials: GcsCredentials::default(),
+            auth: GcsCredentials::default(),
             file_extension: default_file_extension(),
             max_records_per_file: None,
             concurrency: default_concurrency(),
@@ -73,8 +73,8 @@ impl GcsSinkConfig {
         self.prefix = p.into();
         self
     }
-    pub fn credentials(mut self, c: GcsCredentials) -> Self {
-        self.credentials = c;
+    pub fn auth(mut self, c: GcsCredentials) -> Self {
+        self.auth = c;
         self
     }
     pub fn file_extension(mut self, ext: impl Into<String>) -> Self {
@@ -115,7 +115,7 @@ mod tests {
         let c = GcsSinkConfig::new("b");
         assert_eq!(c.bucket, "b");
         assert_eq!(c.prefix, "");
-        assert!(matches!(c.credentials, GcsCredentials::ApplicationDefault));
+        assert!(matches!(c.auth, GcsCredentials::ApplicationDefault));
         assert_eq!(c.file_extension, ".jsonl");
         assert!(c.max_records_per_file.is_none());
         assert_eq!(c.concurrency, 10);

@@ -11,6 +11,7 @@
 //! uses (config parsing, env interpolation, the connector registry) so that
 //! integrations and tests can reuse them.
 
+pub mod auth_catalog;
 pub mod cli;
 pub mod commands;
 pub mod config;
@@ -53,6 +54,7 @@ pub async fn run_from_yaml_str(yaml: &str) -> CliResult<executor::RunSummary> {
         });
     }
     let pipeline_name = cfg.name.clone().unwrap_or_else(|| "unnamed".to_string());
+    let auth = auth_catalog::build_auth_catalog(cfg.auth.as_ref())?;
     let nodes = expand::expand(&cfg)?;
     executor::run_expanded(
         nodes,
@@ -62,6 +64,7 @@ pub async fn run_from_yaml_str(yaml: &str) -> CliResult<executor::RunSummary> {
             dry_run: false,
             limit: None,
             state_path_override: None,
+            auth,
         },
     )
     .await

@@ -3,7 +3,7 @@
 use crate::config::{ElasticsearchAuth, ElasticsearchSourceConfig};
 use async_trait::async_trait;
 use faucet_core::util::{DEFAULT_ERROR_BODY_MAX_LEN, check_http_response};
-use faucet_core::{FaucetError, Stream, StreamPage};
+use faucet_core::{AuthSpec, FaucetError, SharedAuthProvider, Stream, StreamPage};
 use reqwest::Client;
 use serde_json::{Value, json};
 use std::pin::Pin;
@@ -17,6 +17,10 @@ pub(crate) const NO_BATCHING_SEARCH_SIZE: usize = 10_000;
 pub struct ElasticsearchSource {
     config: ElasticsearchSourceConfig,
     client: Client,
+    /// Optional shared auth provider. When set it takes precedence over inline
+    /// auth. Injected by the CLI (to resolve `auth: { ref }`) or directly by
+    /// library callers who want to share one token across multiple sources.
+    auth_provider: Option<SharedAuthProvider>,
 }
 
 impl ElasticsearchSource {
@@ -25,12 +29,45 @@ impl ElasticsearchSource {
         Self {
             config,
             client: Client::new(),
+            auth_provider: None,
         }
     }
 
-    /// Apply the configured authentication to a request builder.
-    fn apply_auth(&self, req: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+    /// Attach a shared [`AuthProvider`](faucet_core::AuthProvider). When set,
+    /// the provider supplies the credential for every request (taking precedence
+    /// over inline auth), so several sources can share one token with
+    /// single-flight refresh. Used by the CLI to resolve `auth: { ref }`, and
+    /// by library callers who inject one provider into many sources.
+    pub fn with_auth_provider(mut self, provider: SharedAuthProvider) -> Self {
+        self.auth_provider = Some(provider);
+        self
+    }
+
+    /// Resolve the effective [`ElasticsearchAuth`] for the current request.
+    ///
+    /// Resolution order:
+    /// 1. If a shared provider is attached, call it and map the credential.
+    /// 2. Otherwise use the inline auth from config.
+    /// 3. If the config is a `Reference` with no provider, return an error.
+    async fn resolve_auth(&self) -> Result<ElasticsearchAuth, FaucetError> {
+        if let Some(p) = &self.auth_provider {
+            return faucet_elasticsearch_common::credential_to_auth(p.credential().await?);
+        }
         match &self.config.auth {
+            AuthSpec::Inline(a) => Ok(a.clone()),
+            AuthSpec::Reference(r) => Err(FaucetError::Auth(format!(
+                "auth references provider '{}' but no provider was supplied",
+                r.name
+            ))),
+        }
+    }
+
+    /// Apply an [`ElasticsearchAuth`] to a request builder.
+    fn apply_auth_value(
+        req: reqwest::RequestBuilder,
+        auth: &ElasticsearchAuth,
+    ) -> reqwest::RequestBuilder {
+        match auth {
             ElasticsearchAuth::None => req,
             ElasticsearchAuth::Basic { username, password } => {
                 req.basic_auth(username, Some(password))
@@ -69,7 +106,14 @@ impl ElasticsearchSource {
             .client
             .delete(&url)
             .json(&json!({"scroll_id": scroll_id}));
-        let req = self.apply_auth(req);
+        let auth = match self.resolve_auth().await {
+            Ok(a) => a,
+            Err(e) => {
+                tracing::warn!(error = %e, "failed to resolve auth for scroll cleanup");
+                return;
+            }
+        };
+        let req = Self::apply_auth_value(req, &auth);
 
         if let Err(e) = req.send().await {
             tracing::warn!(error = %e, "failed to clear Elasticsearch scroll context");
@@ -108,6 +152,8 @@ impl faucet_core::Source for ElasticsearchSource {
         context: &std::collections::HashMap<String, serde_json::Value>,
     ) -> Result<Vec<Value>, FaucetError> {
         let (index, query) = self.resolve_index_and_query(context)?;
+        // Resolve auth once; reuse the same credential across all scroll pages.
+        let auth = self.resolve_auth().await?;
 
         let mut all_records = Vec::new();
 
@@ -126,7 +172,7 @@ impl faucet_core::Source for ElasticsearchSource {
             self.config.base_url, index, self.config.scroll_timeout, page_size
         );
         let req = self.client.post(&url).json(&json!({"query": query}));
-        let req = self.apply_auth(req);
+        let req = Self::apply_auth_value(req, &auth);
 
         let resp = req.send().await?;
         let resp = check_http_response(resp, DEFAULT_ERROR_BODY_MAX_LEN).await?;
@@ -159,7 +205,7 @@ impl faucet_core::Source for ElasticsearchSource {
                 "scroll": self.config.scroll_timeout,
                 "scroll_id": sid,
             }));
-            let req = self.apply_auth(req);
+            let req = Self::apply_auth_value(req, &auth);
 
             let resp = req.send().await?;
             let resp = check_http_response(resp, DEFAULT_ERROR_BODY_MAX_LEN).await?;
@@ -231,6 +277,8 @@ impl faucet_core::Source for ElasticsearchSource {
 
         Box::pin(async_stream::try_stream! {
             let (index, query) = self.resolve_index_and_query(context)?;
+            // Resolve auth once; reuse across all scroll pages and cleanup.
+            let auth = self.resolve_auth().await?;
 
             // batch_size == 0: single non-scroll _search with size = max_result_window default.
             if batch_size == 0 {
@@ -239,7 +287,7 @@ impl faucet_core::Source for ElasticsearchSource {
                     self.config.base_url, index, NO_BATCHING_SEARCH_SIZE
                 );
                 let req = self.client.post(&url).json(&json!({"query": query}));
-                let req = self.apply_auth(req);
+                let req = Self::apply_auth_value(req, &auth);
                 let resp = req.send().await?;
                 let resp = check_http_response(resp, DEFAULT_ERROR_BODY_MAX_LEN).await?;
                 let body: Value = resp.json().await?;
@@ -255,14 +303,20 @@ impl faucet_core::Source for ElasticsearchSource {
 
             // Scroll path. Wire up a guard so the scroll context is always
             // cleared, even on early-return / error / drop.
-            let mut guard = ScrollGuard::new(self);
+            // Pass the already-resolved auth so the guard's spawned cleanup
+            // tasks never need to call async auth resolution.
+            let mut guard = ScrollGuard::new(
+                self.config.base_url.clone(),
+                self.client.clone(),
+                auth.clone(),
+            );
 
             let url = format!(
                 "{}/{}/_search?scroll={}&size={}",
                 self.config.base_url, index, self.config.scroll_timeout, batch_size
             );
             let req = self.client.post(&url).json(&json!({"query": query}));
-            let req = self.apply_auth(req);
+            let req = Self::apply_auth_value(req, &auth);
             let resp = req.send().await?;
             let resp = check_http_response(resp, DEFAULT_ERROR_BODY_MAX_LEN).await?;
             let body: Value = resp.json().await?;
@@ -297,7 +351,7 @@ impl faucet_core::Source for ElasticsearchSource {
                     "scroll": self.config.scroll_timeout,
                     "scroll_id": sid,
                 }));
-                let req = self.apply_auth(req);
+                let req = Self::apply_auth_value(req, &auth);
                 let resp = req.send().await?;
                 let resp = check_http_response(resp, DEFAULT_ERROR_BODY_MAX_LEN).await?;
                 let body: Value = resp.json().await?;
@@ -347,20 +401,21 @@ impl faucet_core::Source for ElasticsearchSource {
 
 /// RAII guard that owns the active scroll id and clears it on drop.
 ///
-/// The guard holds a `&ElasticsearchSource` so it can build the same
-/// authenticated `DELETE _search/scroll` request used by `clear_scroll`. On
-/// drop the cleanup is spawned as a detached task — ES contexts are cheap
-/// but unbounded if leaked, and the alternative (blocking the dropping
-/// future) would not work inside `async_stream`'s generator.
-struct ScrollGuard<'a> {
-    source: &'a ElasticsearchSource,
+/// Holds a pre-resolved [`ElasticsearchAuth`] (not `AuthSpec`) so the drop-path
+/// spawned cleanup tasks never need to perform async auth resolution.
+struct ScrollGuard {
+    base_url: String,
+    client: Client,
+    auth: ElasticsearchAuth,
     scroll_id: Option<String>,
 }
 
-impl<'a> ScrollGuard<'a> {
-    fn new(source: &'a ElasticsearchSource) -> Self {
+impl ScrollGuard {
+    fn new(base_url: String, client: Client, auth: ElasticsearchAuth) -> Self {
         Self {
-            source,
+            base_url,
+            client,
+            auth,
             scroll_id: None,
         }
     }
@@ -375,20 +430,13 @@ impl<'a> ScrollGuard<'a> {
         }
     }
 
-    /// Called when the stream drained cleanly. Clears the scroll context
-    /// inline (we are still inside the stream's `.await` graph so this is
-    /// the cheaper, synchronous cleanup path) and disarms the drop fallback.
+    /// Called when the stream drained cleanly. Spawns cleanup as a detached
+    /// task and disarms the drop fallback.
     fn disarm_if_done(&mut self) {
         if let Some(sid) = self.scroll_id.take() {
-            let source = self.source;
-            // We're inside a `try_stream!` block — spawn so cleanup happens
-            // regardless of whether the consumer awaits the stream's final
-            // yield. Using `tokio::spawn` rather than awaiting avoids
-            // blocking the generator if the consumer has already
-            // disconnected.
-            let base_url = source.config.base_url.clone();
-            let auth = source.config.auth.clone();
-            let client = source.client.clone();
+            let base_url = self.base_url.clone();
+            let auth = self.auth.clone();
+            let client = self.client.clone();
             tokio::spawn(async move {
                 let url = format!("{base_url}/_search/scroll");
                 let req = client.delete(&url).json(&json!({"scroll_id": sid}));
@@ -401,14 +449,14 @@ impl<'a> ScrollGuard<'a> {
     }
 }
 
-impl Drop for ScrollGuard<'_> {
+impl Drop for ScrollGuard {
     fn drop(&mut self) {
         if let Some(sid) = self.scroll_id.take() {
             // Error / cancellation path. Spawn so cleanup survives the
             // stream future being dropped mid-await.
-            let base_url = self.source.config.base_url.clone();
-            let auth = self.source.config.auth.clone();
-            let client = self.source.client.clone();
+            let base_url = self.base_url.clone();
+            let auth = self.auth.clone();
+            let client = self.client.clone();
             tokio::spawn(async move {
                 let url = format!("{base_url}/_search/scroll");
                 let req = client.delete(&url).json(&json!({"scroll_id": sid}));
@@ -424,8 +472,8 @@ impl Drop for ScrollGuard<'_> {
     }
 }
 
-/// Standalone version of `ElasticsearchSource::apply_auth` so the drop-path
-/// cleanup can run without holding a `&ElasticsearchSource`.
+/// Apply an [`ElasticsearchAuth`] to a request builder. Standalone so
+/// spawned cleanup tasks can use it without holding a source reference.
 fn apply_auth_to(
     req: reqwest::RequestBuilder,
     auth: &ElasticsearchAuth,

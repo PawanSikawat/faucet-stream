@@ -2,9 +2,11 @@
 
 use crate::config::SnowflakeSinkConfig;
 use async_trait::async_trait;
-use faucet_core::FaucetError;
 use faucet_core::util::quote_ident;
-use faucet_snowflake_common::{authorization_header, snowflake_token_type};
+use faucet_core::{AuthSpec, FaucetError, SharedAuthProvider};
+use faucet_snowflake_common::{
+    SnowflakeAuth, authorization_header, credential_to_auth, snowflake_token_type,
+};
 use reqwest::Client;
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -18,6 +20,10 @@ pub struct SnowflakeSink {
     /// from `config.account`. Used by tests to point the sink at a mock
     /// server, and useful for proxies / private-link deployments.
     endpoint: Option<String>,
+    /// Optional shared auth provider. When set, takes precedence over inline
+    /// auth; the provider yields a `Bearer` or `Token` credential mapped onto
+    /// [`SnowflakeAuth::OAuth`]. Set via [`Self::with_auth_provider`].
+    auth_provider: Option<SharedAuthProvider>,
 }
 
 #[derive(Deserialize)]
@@ -58,7 +64,22 @@ impl SnowflakeSink {
             config,
             client: Client::new(),
             endpoint: None,
+            auth_provider: None,
         })
+    }
+
+    /// Attach a shared [`AuthProvider`](faucet_core::AuthProvider). When set,
+    /// the provider supplies the credential for every request (taking
+    /// precedence over inline auth), so several sinks can share one OAuth
+    /// token with single-flight refresh. Used by the CLI to resolve
+    /// `auth: { ref }`, and by library callers who inject a provider directly.
+    ///
+    /// The provider must yield a `Bearer` or `Token` credential, which maps
+    /// onto [`SnowflakeAuth::OAuth`]. Key-pair JWT cannot be supplied via a
+    /// provider (JWT is minted locally from the RSA key).
+    pub fn with_auth_provider(mut self, provider: SharedAuthProvider) -> Self {
+        self.auth_provider = Some(provider);
+        self
     }
 
     /// Override the API endpoint URL (full URL including
@@ -81,17 +102,39 @@ impl SnowflakeSink {
         )
     }
 
+    /// Resolve the effective [`SnowflakeAuth`] for this request.
+    ///
+    /// Resolution order:
+    /// 1. If a shared provider is attached, call it and map the credential.
+    /// 2. Otherwise, use the inline auth from the config.
+    /// 3. If the config holds an unresolved `Reference` with no provider,
+    ///    return [`FaucetError::Auth`].
+    async fn resolve_auth(&self) -> Result<SnowflakeAuth, FaucetError> {
+        if let Some(p) = &self.auth_provider {
+            return credential_to_auth(p.credential().await?);
+        }
+        match &self.config.auth {
+            AuthSpec::Inline(a) => Ok(a.clone()),
+            AuthSpec::Reference(r) => Err(FaucetError::Auth(format!(
+                "auth references provider '{}' but no provider was supplied",
+                r.name
+            ))),
+        }
+    }
+
     /// Get the authorization header value.
-    fn auth_header(&self) -> Result<String, FaucetError> {
-        authorization_header(&self.config.auth, &self.config.account)
+    async fn auth_header(&self) -> Result<(String, &'static str), FaucetError> {
+        let effective = self.resolve_auth().await?;
+        let header = authorization_header(&effective, &self.config.account)?;
+        let token_type = snowflake_token_type(&effective);
+        Ok((header, token_type))
     }
 
     /// Execute a SQL statement via the REST API, optionally with positional
     /// bindings (`{"1": {"type": "TEXT", "value": ...}}`).
     async fn execute_sql(&self, sql: &str, bindings: Option<Value>) -> Result<(), FaucetError> {
         let url = self.api_url();
-        let auth = self.auth_header()?;
-        let token_type = snowflake_token_type(&self.config.auth);
+        let (auth, token_type) = self.auth_header().await?;
 
         let mut body = json!({
             "statement": sql,
@@ -301,8 +344,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn oauth_auth_header() {
+    #[tokio::test]
+    async fn oauth_auth_header() {
         let config = SnowflakeSinkConfig::new(
             "acct",
             "wh",
@@ -314,8 +357,9 @@ mod tests {
             },
         );
         let sink = SnowflakeSink::new(config).unwrap();
-        let header = sink.auth_header().unwrap();
+        let (header, token_type) = sink.auth_header().await.unwrap();
         assert_eq!(header, "Snowflake Token=\"my-token\"");
+        assert_eq!(token_type, "OAUTH");
     }
 
     #[test]

@@ -14,8 +14,9 @@ pipeline:
       base_url: https://api.example.com
       method: GET
       auth:
-        type: Bearer
-        token: ${env:API_TOKEN}
+        type: bearer
+        config:
+          token: ${env:API_TOKEN}
       headers: {}
       records_path: $.data[*]
       pagination:

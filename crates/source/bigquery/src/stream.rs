@@ -41,7 +41,7 @@ impl BigQuerySource {
     /// for an OAuth token. Returns [`FaucetError::Auth`] on credential
     /// failures.
     pub async fn new(config: BigQuerySourceConfig) -> Result<Self, FaucetError> {
-        let client = build_client(&config.credentials).await?;
+        let client = build_client(&config.auth).await?;
         Ok(Self { config, client })
     }
 

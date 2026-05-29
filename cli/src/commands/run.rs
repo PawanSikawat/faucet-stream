@@ -115,6 +115,7 @@ pub async fn run(args: RunArgs) -> CliResult<()> {
             .to_owned()
     });
 
+    let auth = crate::auth_catalog::build_auth_catalog(cfg.auth.as_ref())?;
     let nodes = expand(&cfg)?;
     let summary = run_expanded(
         nodes,
@@ -124,6 +125,7 @@ pub async fn run(args: RunArgs) -> CliResult<()> {
             dry_run: args.dry_run,
             limit: args.limit,
             state_path_override: args.state_path.clone(),
+            auth,
         },
     )
     .await?;

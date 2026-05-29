@@ -91,7 +91,7 @@ let config = RedisSinkConfig::new(
 
 ## Streaming and batching
 
-The sink fits the [streaming pipeline contract](https://github.com/PawanSikawat/faucet-stream/blob/main/CLAUDE.md#streaming-and-batching): `Pipeline::run` drives `Source::stream_pages` and writes each `StreamPage` via `Sink::write_batch` as it arrives. `batch_size` controls how those records get packed into Redis pipelines on the way out:
+The sink fits the workspace's streaming pipeline contract: `Pipeline::run` drives `Source::stream_pages` and writes each `StreamPage` via `Sink::write_batch` as it arrives. `batch_size` controls how those records get packed into Redis pipelines on the way out:
 
 | `batch_size` | Behaviour |
 |--------------|-----------|

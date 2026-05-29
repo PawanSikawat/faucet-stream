@@ -18,8 +18,9 @@ pipeline:
       url: https://downstream.example.com/ingest
       method: POST
       auth:
-        type: Bearer
-        token: ${env:INGEST_TOKEN}
+        type: bearer
+        config:
+          token: ${env:INGEST_TOKEN}
       batch_mode:
         type: Individual
       max_retries: 3

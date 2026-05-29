@@ -12,9 +12,10 @@ pipeline:
       method: GET
       name: events
       auth:
-        type: ApiKey
-        header: X-Auth-Token
-        value: ${env:AUTH_TOKEN}
+        type: api_key
+        config:
+          header: X-Auth-Token
+          value: ${env:AUTH_TOKEN}
       query_params:
         source: web
       records_path: $.events[*]

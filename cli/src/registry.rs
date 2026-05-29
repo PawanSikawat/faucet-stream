@@ -5,34 +5,58 @@
 //! they need. The string keys here are the public contract of the CLI's
 //! `type:` field in YAML/JSON pipeline configs.
 
+use crate::auth_catalog::{self, AuthCatalog};
 use crate::error::{CliError, CliResult};
 use faucet_core::{Sink, Source};
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 
-/// Build a [`Source`] trait object from a `(kind, config)` pair.
-pub async fn build_source(kind: &str, config: Value) -> CliResult<Box<dyn Source>> {
+/// Build a [`Source`] trait object from a `(kind, config)` pair. When the
+/// config carries `auth: { ref: <name> }`, the named provider is resolved from
+/// `auth` (the catalog) and injected into the connector.
+pub async fn build_source(
+    kind: &str,
+    config: Value,
+    auth: &AuthCatalog,
+) -> CliResult<Box<dyn Source>> {
+    let auth_ref = auth_catalog::auth_ref(&config);
     match kind {
         #[cfg(feature = "source-rest")]
         "rest" => {
             let cfg = decode::<faucet_source_rest::RestStreamConfig>("source", "rest", config)?;
-            Ok(Box::new(faucet_source_rest::RestStream::new(cfg)?))
+            let mut s = faucet_source_rest::RestStream::new(cfg)?;
+            if let Some(name) = &auth_ref {
+                s = s.with_auth_provider(auth_catalog::resolve(auth, name)?);
+            }
+            Ok(Box::new(s))
         }
         #[cfg(feature = "source-graphql")]
         "graphql" => {
             let cfg =
                 decode::<faucet_source_graphql::GraphqlStreamConfig>("source", "graphql", config)?;
-            Ok(Box::new(faucet_source_graphql::GraphqlStream::new(cfg)))
+            let mut s = faucet_source_graphql::GraphqlStream::new(cfg);
+            if let Some(name) = &auth_ref {
+                s = s.with_auth_provider(auth_catalog::resolve(auth, name)?);
+            }
+            Ok(Box::new(s))
         }
         #[cfg(feature = "source-xml")]
         "xml" => {
             let cfg = decode::<faucet_source_xml::XmlStreamConfig>("source", "xml", config)?;
-            Ok(Box::new(faucet_source_xml::XmlStream::new(cfg)))
+            let mut s = faucet_source_xml::XmlStream::new(cfg);
+            if let Some(name) = &auth_ref {
+                s = s.with_auth_provider(auth_catalog::resolve(auth, name)?);
+            }
+            Ok(Box::new(s))
         }
         #[cfg(feature = "source-grpc")]
         "grpc" => {
             let cfg = decode::<faucet_source_grpc::GrpcStreamConfig>("source", "grpc", config)?;
-            Ok(Box::new(faucet_source_grpc::GrpcStream::new(cfg)?))
+            let mut s = faucet_source_grpc::GrpcStream::new(cfg)?;
+            if let Some(name) = &auth_ref {
+                s = s.with_auth_provider(auth_catalog::resolve(auth, name)?);
+            }
+            Ok(Box::new(s))
         }
         #[cfg(feature = "source-postgres")]
         "postgres" => {
@@ -98,9 +122,11 @@ pub async fn build_source(kind: &str, config: Value) -> CliResult<Box<dyn Source
                 "websocket",
                 config,
             )?;
-            Ok(Box::new(faucet_source_websocket::WebsocketSource::new(
-                cfg,
-            )?))
+            let mut s = faucet_source_websocket::WebsocketSource::new(cfg)?;
+            if let Some(name) = &auth_ref {
+                s = s.with_auth_provider(auth_catalog::resolve(auth, name)?);
+            }
+            Ok(Box::new(s))
         }
         #[cfg(feature = "source-csv")]
         "csv" => {
@@ -114,9 +140,11 @@ pub async fn build_source(kind: &str, config: Value) -> CliResult<Box<dyn Source
                 "elasticsearch",
                 config,
             )?;
-            Ok(Box::new(
-                faucet_source_elasticsearch::ElasticsearchSource::new(cfg),
-            ))
+            let mut s = faucet_source_elasticsearch::ElasticsearchSource::new(cfg);
+            if let Some(name) = &auth_ref {
+                s = s.with_auth_provider(auth_catalog::resolve(auth, name)?);
+            }
+            Ok(Box::new(s))
         }
         #[cfg(feature = "source-kafka")]
         "kafka" => {
@@ -152,14 +180,21 @@ pub async fn build_source(kind: &str, config: Value) -> CliResult<Box<dyn Source
                 "snowflake",
                 config,
             )?;
-            Ok(Box::new(faucet_source_snowflake::SnowflakeSource::new(cfg)))
+            let mut s = faucet_source_snowflake::SnowflakeSource::new(cfg);
+            if let Some(name) = &auth_ref {
+                s = s.with_auth_provider(auth_catalog::resolve(auth, name)?);
+            }
+            Ok(Box::new(s))
         }
         other => Err(unknown(other, "source", source_kinds())),
     }
 }
 
-/// Build a [`Sink`] trait object from a `(kind, config)` pair.
-pub async fn build_sink(kind: &str, config: Value) -> CliResult<Box<dyn Sink>> {
+/// Build a [`Sink`] trait object from a `(kind, config)` pair. When the config
+/// carries `auth: { ref: <name> }`, the named provider is resolved from `auth`
+/// (the catalog) and injected into the connector.
+pub async fn build_sink(kind: &str, config: Value, auth: &AuthCatalog) -> CliResult<Box<dyn Sink>> {
+    let auth_ref = auth_catalog::auth_ref(&config);
     match kind {
         #[cfg(feature = "sink-bigquery")]
         "bigquery" => {
@@ -186,7 +221,11 @@ pub async fn build_sink(kind: &str, config: Value) -> CliResult<Box<dyn Sink>> {
         "snowflake" => {
             let cfg =
                 decode::<faucet_sink_snowflake::SnowflakeSinkConfig>("sink", "snowflake", config)?;
-            Ok(Box::new(faucet_sink_snowflake::SnowflakeSink::new(cfg)?))
+            let mut s = faucet_sink_snowflake::SnowflakeSink::new(cfg)?;
+            if let Some(name) = &auth_ref {
+                s = s.with_auth_provider(auth_catalog::resolve(auth, name)?);
+            }
+            Ok(Box::new(s))
         }
         #[cfg(feature = "sink-mysql")]
         "mysql" => {
@@ -225,9 +264,11 @@ pub async fn build_sink(kind: &str, config: Value) -> CliResult<Box<dyn Sink>> {
                 "elasticsearch",
                 config,
             )?;
-            Ok(Box::new(faucet_sink_elasticsearch::ElasticsearchSink::new(
-                cfg,
-            )?))
+            let mut s = faucet_sink_elasticsearch::ElasticsearchSink::new(cfg)?;
+            if let Some(name) = &auth_ref {
+                s = s.with_auth_provider(auth_catalog::resolve(auth, name)?);
+            }
+            Ok(Box::new(s))
         }
         #[cfg(feature = "sink-kafka")]
         "kafka" => {
@@ -237,7 +278,11 @@ pub async fn build_sink(kind: &str, config: Value) -> CliResult<Box<dyn Sink>> {
         #[cfg(feature = "sink-http")]
         "http" => {
             let cfg = decode::<faucet_sink_http::HttpSinkConfig>("sink", "http", config)?;
-            Ok(Box::new(faucet_sink_http::HttpSink::new(cfg)))
+            let mut s = faucet_sink_http::HttpSink::new(cfg);
+            if let Some(name) = &auth_ref {
+                s = s.with_auth_provider(auth_catalog::resolve(auth, name)?);
+            }
+            Ok(Box::new(s))
         }
         #[cfg(feature = "sink-stdout")]
         "stdout" => {
@@ -542,7 +587,7 @@ mod tests {
 
     #[tokio::test]
     async fn unknown_source_kind_errors() {
-        let err = build_source("nope", serde_json::json!({}))
+        let err = build_source("nope", serde_json::json!({}), &AuthCatalog::new())
             .await
             .err()
             .expect("should fail");
@@ -557,7 +602,7 @@ mod tests {
 
     #[tokio::test]
     async fn unknown_sink_kind_errors() {
-        let err = build_sink("nope", serde_json::json!({}))
+        let err = build_sink("nope", serde_json::json!({}), &AuthCatalog::new())
             .await
             .err()
             .expect("should fail");

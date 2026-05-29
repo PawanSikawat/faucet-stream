@@ -15,8 +15,9 @@ pipeline:
       path: /repos/PawanSikawat/faucet-stream/issues
       method: GET
       auth:
-        type: Bearer
-        token: ${env:GITHUB_TOKEN}
+        type: bearer
+        config:
+          token: ${env:GITHUB_TOKEN}
       query_params:
         state: open
         per_page: "100"

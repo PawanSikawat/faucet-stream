@@ -18,7 +18,8 @@ pipeline:
       base_url: https://es.example.com:9200
       index: articles
       auth:
-        type: ApiKey
-        key: ${env:ES_API_KEY}
+        type: api_key
+        config:
+          key: ${env:ES_API_KEY}
       batch_size: 500
       id_field: id

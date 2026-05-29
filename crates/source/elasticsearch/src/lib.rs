@@ -9,7 +9,7 @@
 pub mod config;
 pub mod stream;
 
-pub use faucet_core::{FaucetError, Source};
+pub use faucet_core::{AuthSpec, FaucetError, SharedAuthProvider, Source};
 
 pub use config::{ElasticsearchAuth, ElasticsearchSourceConfig};
 pub use stream::ElasticsearchSource;

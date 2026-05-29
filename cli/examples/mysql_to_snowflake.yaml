@@ -19,6 +19,7 @@ pipeline:
       schema: STAGING
       table: ORDERS
       auth:
-        type: OAuth
-        token: ${env:SNOWFLAKE_OAUTH_TOKEN}
+        type: oauth
+        config:
+          token: ${env:SNOWFLAKE_OAUTH_TOKEN}
       batch_size: 1000

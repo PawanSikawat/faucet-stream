@@ -15,9 +15,10 @@ pipeline:
       path: /InventoryService
       method: POST
       auth:
-        type: Basic
-        username: ${env:SOAP_USER}
-        password: ${env:SOAP_PASS}
+        type: basic
+        config:
+          username: ${env:SOAP_USER}
+          password: ${env:SOAP_PASS}
       body: |
         <?xml version="1.0"?>
         <soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">

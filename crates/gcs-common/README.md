@@ -9,15 +9,15 @@ SDK (1.12) and [`google-cloud-auth`](https://crates.io/crates/google-cloud-auth)
 
 ## `GcsCredentials`
 
-Tagged enum (`#[serde(tag = "method")]`) so YAML/JSON configs read naturally.
+Tagged enum (`#[serde(tag = "type")]`) so YAML/JSON configs read naturally.
 The discriminator is `snake_case`.
 
 | Variant | YAML example |
 |---|---|
-| `application_default` *(default)* | `{ method: application_default }` |
-| `service_account_json_file` | `{ method: service_account_json_file, path: /run/secrets/sa.json }` |
-| `service_account_json_inline` | `{ method: service_account_json_inline, json: "${env:GCP_SA_JSON}" }` |
-| `anonymous` | `{ method: anonymous }` |
+| `application_default` *(default)* | `{ type: application_default }` |
+| `service_account_json_file` | `{ type: service_account_json_file, config: { path: /run/secrets/sa.json } }` |
+| `service_account_json_inline` | `{ type: service_account_json_inline, config: { json: "${env:GCP_SA_JSON}" } }` |
+| `anonymous` | `{ type: anonymous }` |
 
 `application_default` (ADC) honours `GOOGLE_APPLICATION_CREDENTIALS`,
 `gcloud auth application-default login` creds, and the GCE/GKE metadata
