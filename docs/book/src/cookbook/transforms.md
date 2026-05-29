@@ -381,3 +381,58 @@ transforms:
   separate, larger discussion.
 
 [#99]: https://github.com/PawanSikawat/faucet-stream/issues/99
+
+## Filter and explode
+
+### Filter — keep records matching a predicate
+
+```yaml
+transforms:
+  - { type: filter, config: { path: deleted, op: ne, value: true } }
+```
+
+Operators: `eq`, `ne`, `exists`, `in`, `not_in`.
+
+- `path:` — JSONPath subset: bare key (`status`), dot path (`$.user.status`), or bracketed string key (`$['order-id']`). Bare keys are auto-prefixed with `$.`. Keys that literally contain `.` require bracket form (`"['foo.bar']"`).
+- `value:` — required for `eq` / `ne` / `in` / `not_in`. For `in` / `not_in`, must be an array. Forbidden for `exists`.
+- Type semantics: strict JSON equality. `"5" eq 5` is false. Chain `cast` upstream to coerce.
+- `ne` and `not_in` **keep records with a missing path** (the predicate is satisfied by absence). All other operators drop missing-path records.
+
+### Explode — expand an array into one record per element
+
+```yaml
+transforms:
+  - { type: explode, config: { path: items, prefix: item } }
+```
+
+- `path:` — same JSONPath subset as filter.
+- `prefix:` — prepended to each element field when the element is an object. Defaults to the last segment of `path` (so `path: items` ⇒ `prefix: items`). Empty string opts out of prefixing (pure LATERAL FLATTEN).
+- `separator:` — between prefix and element field key. Default `"_"`.
+- `on_missing:` — what to do when the path doesn't yield a non-empty array. `passthrough` (default — record flows through unchanged), `drop` (SQL `UNNEST` semantics), or `error`.
+
+**Merge rule (object elements):** the array node at `path` is removed from its parent container and each element field is added as a sibling, prefixed.
+
+| Input | Stage | Output |
+|---|---|---|
+| `{id: 1, items: [{sku: A, qty: 2}]}` | `explode { path: items }` | `{id: 1, items_sku: A, items_qty: 2}` |
+| `{id: 1, items: [{sku: A}, {sku: B}]}` | `explode { path: items, prefix: item }` | `{id: 1, item_sku: A}`, `{id: 1, item_sku: B}` |
+| `{id: 1, items: [{sku: A}], prefix: ""}` | `explode { path: items, prefix: "" }` | `{id: 1, sku: A}` |
+| `{id: 1, tags: ["rust", "etl"]}` | `explode { path: tags }` | `{id: 1, tags: rust}`, `{id: 1, tags: etl}` |
+| `{id: 1, user: {name: A, items: [{x: 1}]}}` | `explode { path: $.user.items }` | `{id: 1, user: {name: A, items_x: 1}}` |
+
+**Collisions** (a prefixed element key would overwrite a sibling) fail loudly with `FaucetError::Transform("explode produced duplicate key 'X'")` — mirroring `flatten` / `keys_case`.
+
+### Ordering: explode early, filter late (usually)
+
+The recommended order is `explode → transform → filter`: each child of the explode gets transforms applied uniformly, and the final filter acts on cleaned shape. Two legitimate deviations:
+
+- **filter before explode**: drop soft-deleted parents *before* exploding, saving the work of expanding children of dead rows.
+- **filter both sides**: drop dead parents, explode, then drop archived children.
+
+```yaml
+transforms:
+  - { type: filter, config: { path: deleted, op: ne, value: true } }
+  - { type: explode, config: { path: items, prefix: item } }
+  - { type: filter, config: { path: item_status, op: in, value: [active, pending] } }
+  - { type: keys_case, config: { mode: snake } }
+```
