@@ -387,12 +387,14 @@ mod tests {
         let inner: Box<dyn Source> = Box::new(MockSource(vec![json!({"x": 1})]));
         let wrapped = TransformingSource::new(
             inner,
-            vec![TransformStage::Map(RecordTransform::custom(|mut record| {
-                if let Some(obj) = record.as_object_mut() {
-                    obj.insert("added".to_string(), json!(true));
-                }
-                record
-            }))],
+            vec![TransformStage::Map(RecordTransform::custom(
+                |mut record| {
+                    if let Some(obj) = record.as_object_mut() {
+                        obj.insert("added".to_string(), json!(true));
+                    }
+                    record
+                },
+            ))],
             Labels::for_named("test"),
         )
         .unwrap();
@@ -441,8 +443,7 @@ mod tests {
             &'a self,
             _ctx: &'a HashMap<String, Value>,
             _batch_size: usize,
-        ) -> Pin<Box<dyn Stream<Item = Result<StreamPage, FaucetError>> + Send + 'a>>
-        {
+        ) -> Pin<Box<dyn Stream<Item = Result<StreamPage, FaucetError>> + Send + 'a>> {
             let page = StreamPage {
                 records: self.records.clone(),
                 bookmark: self.bookmark.clone(),
@@ -481,12 +482,8 @@ mod tests {
             records: explode_10x_records(100), // 100 → 1000 after explode
             bookmark: Some(json!("bm")),
         });
-        let wrapped = TransformingSource::new(
-            inner,
-            vec![explode_stage()],
-            Labels::for_named("t"),
-        )
-        .unwrap();
+        let wrapped =
+            TransformingSource::new(inner, vec![explode_stage()], Labels::for_named("t")).unwrap();
         let ctx = HashMap::new();
         let mut stream = wrapped.stream_pages(&ctx, 200);
         let mut sub_pages: Vec<StreamPage> = Vec::new();
@@ -497,7 +494,10 @@ mod tests {
         for (i, p) in sub_pages.iter().enumerate() {
             assert_eq!(p.records.len(), 200, "sub-page {i} should be size 200");
             if i < 4 {
-                assert!(p.bookmark.is_none(), "non-final sub-page {i} carries no bookmark");
+                assert!(
+                    p.bookmark.is_none(),
+                    "non-final sub-page {i} carries no bookmark"
+                );
             } else {
                 assert_eq!(p.bookmark, Some(json!("bm")), "final sub-page has bookmark");
             }
@@ -511,12 +511,8 @@ mod tests {
             records: explode_10x_records(10), // 10 → 100 after explode
             bookmark: Some(json!("bm")),
         });
-        let wrapped = TransformingSource::new(
-            inner,
-            vec![explode_stage()],
-            Labels::for_named("t"),
-        )
-        .unwrap();
+        let wrapped =
+            TransformingSource::new(inner, vec![explode_stage()], Labels::for_named("t")).unwrap();
         let ctx = HashMap::new();
         let mut stream = wrapped.stream_pages(&ctx, 0);
         let mut sub_pages: Vec<StreamPage> = Vec::new();
@@ -540,8 +536,8 @@ mod tests {
             op: crate::stage::FilterOp::Ne,
             value: Some(json!(true)),
         });
-        let wrapped = TransformingSource::new(inner, vec![drop_all], Labels::for_named("t"))
-            .unwrap();
+        let wrapped =
+            TransformingSource::new(inner, vec![drop_all], Labels::for_named("t")).unwrap();
         let ctx = HashMap::new();
         let mut stream = wrapped.stream_pages(&ctx, 100);
         let mut sub_pages: Vec<StreamPage> = Vec::new();

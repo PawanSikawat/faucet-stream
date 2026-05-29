@@ -5,9 +5,9 @@
 
 use crate::config::TransformSpec;
 use crate::error::{CliError, CliResult};
-use faucet_core::{RecordTransform, TransformStage};
 #[cfg(feature = "transforms")]
 use faucet_core::{CastOnError, CastType, JsonSchema, KeyCaseMode, ValueCaseMode, schema_for};
+use faucet_core::{RecordTransform, TransformStage};
 #[cfg(feature = "transforms")]
 use serde::Deserialize;
 use serde_json::Value;

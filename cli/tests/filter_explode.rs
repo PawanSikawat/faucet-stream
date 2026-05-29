@@ -64,8 +64,7 @@ async fn end_to_end_filter_explode_keys_case() {
             json!({"Id": 3, "deleted": false, "items": [{"Sku": "C", "Qty": 5}]}),
         ],
     });
-    let wrapped =
-        TransformingSource::new(inner, stages, Labels::for_named("test")).expect("wrap");
+    let wrapped = TransformingSource::new(inner, stages, Labels::for_named("test")).expect("wrap");
 
     let ctx: HashMap<String, Value> = HashMap::new();
     let mut stream = wrapped.stream_pages(&ctx, 100);

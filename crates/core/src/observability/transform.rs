@@ -46,13 +46,8 @@ pub fn instrumented_apply_stages(
             }
         }
     }
-    counter!(
-        "faucet_transform_records_in_total",
-        metric_labels.clone()
-    )
-    .increment(n_in as u64);
-    counter!("faucet_transform_records_out_total", metric_labels)
-        .increment(out.len() as u64);
+    counter!("faucet_transform_records_in_total", metric_labels.clone()).increment(n_in as u64);
+    counter!("faucet_transform_records_out_total", metric_labels).increment(out.len() as u64);
     Ok(out)
 }
 

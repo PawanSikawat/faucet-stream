@@ -45,11 +45,11 @@ pub use pipeline::{
 };
 pub use replication::ReplicationMethod;
 pub use retry::execute_with_retry;
-pub use stage::{TransformStage, compile_stage};
 #[cfg(feature = "transform-explode")]
 pub use stage::{ExplodeSpec, OnMissing};
 #[cfg(feature = "transform-filter")]
 pub use stage::{FilterOp, FilterSpec};
+pub use stage::{TransformStage, compile_stage};
 pub use state::{FileStateStore, MemoryStateStore, StateStore};
 pub use traits::{RowOutcome, Sink, Source};
 #[cfg(feature = "transform-keys-case")]

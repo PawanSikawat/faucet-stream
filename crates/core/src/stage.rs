@@ -162,9 +162,7 @@ impl CompiledPath {
                     return Err(v1_syntax_err());
                 }
                 // Read an identifier up to the next `.` or `[`.
-                let end = after_dot
-                    .find(['.', '['])
-                    .unwrap_or(after_dot.len());
+                let end = after_dot.find(['.', '[']).unwrap_or(after_dot.len());
                 let key = &after_dot[..end];
                 if key.is_empty() {
                     return Err(FaucetError::Transform(format!(
@@ -179,9 +177,7 @@ impl CompiledPath {
                 // those with the v1 message before the generic "needs a
                 // quoted key" error.
                 let next = after_open.chars().next().ok_or_else(|| {
-                    FaucetError::Transform(format!(
-                        "invalid path '{raw}': unterminated bracket"
-                    ))
+                    FaucetError::Transform(format!("invalid path '{raw}': unterminated bracket"))
                 })?;
                 if next == '*' || next == '?' {
                     return Err(v1_syntax_err());
@@ -194,18 +190,15 @@ impl CompiledPath {
                 let quote = next;
                 let after_quote = &after_open[quote.len_utf8()..];
                 let close = after_quote.find(quote).ok_or_else(|| {
-                    FaucetError::Transform(format!(
-                        "invalid path '{raw}': unterminated quoted key"
-                    ))
+                    FaucetError::Transform(format!("invalid path '{raw}': unterminated quoted key"))
                 })?;
                 let key = &after_quote[..close];
                 let after_close_quote = &after_quote[close + quote.len_utf8()..];
-                let after_close_bracket =
-                    after_close_quote.strip_prefix(']').ok_or_else(|| {
-                        FaucetError::Transform(format!(
-                            "invalid path '{raw}': expected ']' after quoted key"
-                        ))
-                    })?;
+                let after_close_bracket = after_close_quote.strip_prefix(']').ok_or_else(|| {
+                    FaucetError::Transform(format!(
+                        "invalid path '{raw}': expected ']' after quoted key"
+                    ))
+                })?;
                 segments.push(PathSegment::Key(key.to_owned()));
                 rest = after_close_bracket;
             } else {
@@ -219,7 +212,10 @@ impl CompiledPath {
                 "invalid path '{raw}': empty (must address a key)"
             )));
         }
-        Ok(Self { normalised, segments })
+        Ok(Self {
+            normalised,
+            segments,
+        })
     }
 
     /// All segments of the path.
@@ -318,8 +314,7 @@ pub struct FilterSpec {
 /// Comparison operator for [`FilterSpec`].
 #[cfg(feature = "transform-filter")]
 #[derive(
-    Debug, Clone, Copy, PartialEq, Eq,
-    serde::Serialize, serde::Deserialize, schemars::JsonSchema,
+    Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
 )]
 #[serde(rename_all = "snake_case")]
 pub enum FilterOp {
@@ -472,8 +467,15 @@ pub struct ExplodeSpec {
 /// unchanged lets downstream stages decide.
 #[cfg(feature = "transform-explode")]
 #[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Default,
-    serde::Serialize, serde::Deserialize, schemars::JsonSchema,
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Default,
+    serde::Serialize,
+    serde::Deserialize,
+    schemars::JsonSchema,
 )]
 #[serde(rename_all = "snake_case")]
 pub enum OnMissing {
@@ -565,9 +567,7 @@ impl CompiledExplode {
         leaf: &str,
         element: Value,
     ) -> Result<(), FaucetError> {
-        let Some(parent_map) =
-            CompiledPath::resolve_segments_mut(record, parent_segments)?
-        else {
+        let Some(parent_map) = CompiledPath::resolve_segments_mut(record, parent_segments)? else {
             return Err(FaucetError::Transform(format!(
                 "explode: parent container at '{}' unexpectedly missing during merge",
                 self.path.normalised
@@ -604,9 +604,7 @@ pub fn compile_stage(s: &TransformStage) -> Result<CompiledStage, FaucetError> {
     match s {
         TransformStage::Map(t) => Ok(CompiledStage::Map(compile_record(t)?)),
         #[cfg(feature = "transform-filter")]
-        TransformStage::Filter(spec) => {
-            Ok(CompiledStage::Filter(CompiledFilter::compile(spec)?))
-        }
+        TransformStage::Filter(spec) => Ok(CompiledStage::Filter(CompiledFilter::compile(spec)?)),
         #[cfg(feature = "transform-explode")]
         TransformStage::Explode(spec) => {
             Ok(CompiledStage::Explode(CompiledExplode::compile(spec)?))
@@ -616,10 +614,7 @@ pub fn compile_stage(s: &TransformStage) -> Result<CompiledStage, FaucetError> {
 }
 
 /// Per-record stage runner. Returns 0..N output records. Pure; no metrics.
-pub fn apply_stages(
-    rec: Value,
-    stages: &[CompiledStage],
-) -> Result<Vec<Value>, FaucetError> {
+pub fn apply_stages(rec: Value, stages: &[CompiledStage]) -> Result<Vec<Value>, FaucetError> {
     let mut acc = vec![rec];
     for stage in stages {
         let mut next: Vec<Value> = Vec::with_capacity(acc.len());
@@ -633,7 +628,10 @@ pub fn apply_stages(
 
 fn apply_one_stage(rec: Value, stage: &CompiledStage) -> Result<Vec<Value>, FaucetError> {
     match stage {
-        CompiledStage::Map(t) => Ok(vec![crate::transform::apply_all(rec, std::slice::from_ref(t))?]),
+        CompiledStage::Map(t) => Ok(vec![crate::transform::apply_all(
+            rec,
+            std::slice::from_ref(t),
+        )?]),
         #[cfg(feature = "transform-filter")]
         CompiledStage::Filter(f) => {
             if f.evaluate(&rec)? {
@@ -655,7 +653,11 @@ mod tests {
     use serde_json::json;
 
     fn compile(stages: &[TransformStage]) -> Vec<CompiledStage> {
-        stages.iter().map(compile_stage).collect::<Result<_, _>>().unwrap()
+        stages
+            .iter()
+            .map(compile_stage)
+            .collect::<Result<_, _>>()
+            .unwrap()
     }
 
     #[test]
@@ -676,10 +678,12 @@ mod tests {
     #[test]
     fn custom_closure_can_drop_and_multiply() {
         // 0-output closure
-        let drop_all: Arc<dyn Fn(Value) -> Vec<Value> + Send + Sync> =
-            Arc::new(|_| vec![]);
+        let drop_all: Arc<dyn Fn(Value) -> Vec<Value> + Send + Sync> = Arc::new(|_| vec![]);
         let stages = vec![CompiledStage::Custom(drop_all)];
-        assert_eq!(apply_stages(json!({"a": 1}), &stages).unwrap(), Vec::<Value>::new());
+        assert_eq!(
+            apply_stages(json!({"a": 1}), &stages).unwrap(),
+            Vec::<Value>::new()
+        );
 
         // N-output closure
         let multiply: Arc<dyn Fn(Value) -> Vec<Value> + Send + Sync> =
@@ -803,13 +807,20 @@ mod tests {
 
     #[test]
     fn path_last_segment_for_prefix_defaulting() {
-        assert_eq!(CompiledPath::compile("items").unwrap().last_segment(), "items");
         assert_eq!(
-            CompiledPath::compile("$.user.items").unwrap().last_segment(),
+            CompiledPath::compile("items").unwrap().last_segment(),
             "items"
         );
         assert_eq!(
-            CompiledPath::compile("$['order-lines']").unwrap().last_segment(),
+            CompiledPath::compile("$.user.items")
+                .unwrap()
+                .last_segment(),
+            "items"
+        );
+        assert_eq!(
+            CompiledPath::compile("$['order-lines']")
+                .unwrap()
+                .last_segment(),
             "order-lines"
         );
     }
@@ -927,10 +938,7 @@ mod tests {
             Vec::<Value>::new()
         );
         // missing path → keep
-        assert_eq!(
-            apply_stages(json!({}), &stages).unwrap(),
-            vec![json!({})]
-        );
+        assert_eq!(apply_stages(json!({}), &stages).unwrap(), vec![json!({})]);
     }
 
     #[cfg(feature = "transform-filter")]
@@ -969,8 +977,7 @@ mod tests {
     #[cfg(feature = "transform-filter")]
     #[test]
     fn filter_compile_rejects_eq_with_missing_value() {
-        let err = compile_stage(&filter("v", FilterOp::Eq, None))
-            .expect_err("eq requires value");
+        let err = compile_stage(&filter("v", FilterOp::Eq, None)).expect_err("eq requires value");
         assert!(matches!(err, FaucetError::Transform(_)));
         assert!(format!("{err}").contains("requires a"));
     }
@@ -978,8 +985,7 @@ mod tests {
     #[cfg(feature = "transform-filter")]
     #[test]
     fn filter_compile_rejects_bad_path() {
-        let err = compile_stage(&filter("$..nope", FilterOp::Exists, None))
-            .expect_err("bad path");
+        let err = compile_stage(&filter("$..nope", FilterOp::Exists, None)).expect_err("bad path");
         assert!(matches!(err, FaucetError::Transform(_)));
     }
 
@@ -999,12 +1005,12 @@ mod tests {
     #[test]
     fn explode_object_default_prefix() {
         let stages = compile(&[explode("items")]);
-        let out = apply_stages(
-            json!({"id": 1, "items": [{"sku": "A", "qty": 2}]}),
-            &stages,
-        )
-        .unwrap();
-        assert_eq!(out, vec![json!({"id": 1, "items_sku": "A", "items_qty": 2})]);
+        let out =
+            apply_stages(json!({"id": 1, "items": [{"sku": "A", "qty": 2}]}), &stages).unwrap();
+        assert_eq!(
+            out,
+            vec![json!({"id": 1, "items_sku": "A", "items_qty": 2})]
+        );
     }
 
     #[cfg(feature = "transform-explode")]
@@ -1168,11 +1174,7 @@ mod tests {
     #[test]
     fn explode_default_prefix_for_nested_path_is_last_segment() {
         let stages = compile(&[explode("$.user.items")]);
-        let out = apply_stages(
-            json!({"user": {"items": [{"id": 1}]}}),
-            &stages,
-        )
-        .unwrap();
+        let out = apply_stages(json!({"user": {"items": [{"id": 1}]}}), &stages).unwrap();
         assert_eq!(out, vec![json!({"user": {"items_id": 1}})]);
     }
 

@@ -888,15 +888,17 @@ async fn test_custom_transform_applied_to_records() {
     let stream = TransformingSource::new(
         inner,
         // Double the "value" field and inject a "_source" tag.
-        vec![TransformStage::Map(RecordTransform::custom(|mut record| {
-            if let serde_json::Value::Object(ref mut m) = record {
-                if let Some(v) = m.get("value").and_then(|v| v.as_i64()) {
-                    m.insert("value".to_string(), json!(v * 2));
+        vec![TransformStage::Map(RecordTransform::custom(
+            |mut record| {
+                if let serde_json::Value::Object(ref mut m) = record {
+                    if let Some(v) = m.get("value").and_then(|v| v.as_i64()) {
+                        m.insert("value".to_string(), json!(v * 2));
+                    }
+                    m.insert("_source".to_string(), json!("test-api"));
                 }
-                m.insert("_source".to_string(), json!("test-api"));
-            }
-            record
-        }))],
+                record
+            },
+        ))],
         Labels::for_named("rest"),
     )
     .unwrap();
