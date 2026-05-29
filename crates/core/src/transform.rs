@@ -26,6 +26,14 @@
 //!                   features = ["transform-flatten"] }
 //! ```
 //!
+//! ## Stage-level transforms (filter / explode)
+//!
+//! `filter` and `explode` are not `RecordTransform` variants — they live as
+//! [`crate::stage::TransformStage::Filter`] / `TransformStage::Explode` because
+//! they may emit 0 or N records per input. Their feature flags are
+//! `transform-filter` and `transform-explode`. See the `stage` module for
+//! details.
+//!
 //! ## Custom transforms
 //!
 //! [`RecordTransform::Custom`] is always available regardless of features.
