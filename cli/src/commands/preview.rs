@@ -29,6 +29,7 @@ pub async fn run(args: PreviewArgs) -> CliResult<()> {
         None => crate::env_loader::discover_config_path(&cwd).ok_or(CliError::NoConfigOrFromEnv)?,
     };
     let cfg = PipelineConfig::from_path(&path)?;
+    let auth = crate::auth_catalog::build_auth_catalog(cfg.auth.as_ref())?;
     let nodes = expand(&cfg)?;
     let first_root = nodes
         .iter()
@@ -39,7 +40,8 @@ pub async fn run(args: PreviewArgs) -> CliResult<()> {
         })?;
     tracing::info!(row = %first_root.id, "previewing first root row");
 
-    let source = build_source(&first_root.source.kind, first_root.source.config.clone()).await?;
+    let source =
+        build_source(&first_root.source.kind, first_root.source.config.clone(), &auth).await?;
     let stages = compile_transforms(&first_root.transforms)?;
     let records = source.fetch_all().await?;
     let records: Vec<_> = if stages.is_empty() {

@@ -54,6 +54,13 @@ pub struct PipelineConfig {
     #[serde(default)]
     pub vars: Option<HashMap<String, Value>>,
 
+    /// Optional named auth providers. Each entry is a `{ type, config }` spec
+    /// (the same shape as inline auth) built once and shared across every
+    /// connector that references it via `auth: { ref: <name> }`. Values are kept
+    /// as raw JSON so `faucet-auth` owns the per-type schema.
+    #[serde(default)]
+    pub auth: Option<HashMap<String, Value>>,
+
     /// Base pipeline — every matrix row is deep-merged into this.
     pub pipeline: PipelineSpec,
 

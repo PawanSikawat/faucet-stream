@@ -221,6 +221,18 @@ pub enum CliError {
     #[error("interpolation '{token}' could not be resolved: {reason}")]
     UnknownTemplateRef { token: String, reason: String },
 
+    /// A connector's `auth: { ref }` named a provider not declared in the
+    /// top-level `auth:` catalog.
+    #[error(
+        "auth references unknown provider '{name}'. Declared providers: {}",
+        if known.is_empty() { String::from("(none)") } else { known.join(", ") }
+    )]
+    UnknownAuthProvider { name: String, known: Vec<String> },
+
+    /// A top-level `auth:` provider spec failed to build.
+    #[error("failed to build auth provider '{name}': {message}")]
+    AuthProviderBuild { name: String, message: String },
+
     /// Pass-through for failures bubbling up from `faucet-core` or a connector.
     #[error(transparent)]
     Faucet(#[from] faucet_core::FaucetError),

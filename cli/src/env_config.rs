@@ -281,6 +281,9 @@ pub fn build_pipeline_config(env: &HashMap<String, String>) -> CliResult<Pipelin
         version: 1,
         name,
         vars,
+        // Pure-env mode doesn't (yet) assemble a shared `auth:` catalog; inline
+        // auth via FAUCET_*_AUTH_JSON still works.
+        auth: None,
         pipeline: PipelineSpec {
             source,
             sink,
