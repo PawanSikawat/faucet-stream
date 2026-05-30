@@ -305,6 +305,13 @@ pub fn resolve_config_refs(cfg: &mut crate::config::PipelineConfig) -> CliResult
     if let Some(d) = cfg.pipeline.dlq.as_mut() {
         resolve_value_full(&mut d.sink.config, vars_ref, &snapshot)?;
     }
+    // The shared `auth:` catalog is a first-class config location: provider
+    // specs may reference `${vars.X}` / `${sources.X.PATH}` like any other (#134).
+    if let Some(auth) = cfg.auth.as_mut() {
+        for (_name, spec) in auth.iter_mut() {
+            resolve_value_full(spec, vars_ref, &snapshot)?;
+        }
+    }
     for (i, row) in cfg.matrix.iter_mut().enumerate() {
         let _row_owner = row.id.clone().unwrap_or_else(|| format!("row-{i}"));
         if let Some(p) = row.source.as_mut()
@@ -1100,6 +1107,28 @@ pipeline:
         assert_eq!(
             cfg.pipeline.source.as_ref().unwrap().config["path"],
             "/v1/users/${users.id}/posts"
+        );
+    }
+
+    #[test]
+    fn resolves_vars_inside_auth_catalog() {
+        // The shared `auth:` catalog must be a first-class config location:
+        // ${vars.X} (and ${sources/sinks.X.PATH}) resolve there too (#134).
+        let cfg = load(
+            r#"
+version: 1
+vars:
+  idp_token: topsecret
+auth:
+  idp: { type: static, config: { token: "Bearer ${vars.idp_token}" } }
+pipeline:
+  source: { type: rest, config: { base_url: https://x } }
+  sink:   { type: jsonl, config: { path: ./o.jsonl } }
+"#,
+        );
+        assert_eq!(
+            cfg.auth.as_ref().unwrap()["idp"]["config"]["token"],
+            "Bearer topsecret"
         );
     }
 }
