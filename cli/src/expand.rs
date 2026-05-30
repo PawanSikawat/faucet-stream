@@ -188,6 +188,20 @@ impl<'a> Registry<'a> {
 /// Expand `cfg` into a topologically valid list of nodes. Roots come first,
 /// then children in BFS order.
 pub fn expand(cfg: &PipelineConfig) -> CliResult<Vec<ExpandedNode>> {
+    // Fail-fast at config load: validate the execution-level adaptive
+    // batch-size controller here (the shared `validate`/`run`/`preview`/
+    // `doctor`/`schedule` gate) so `faucet validate` rejects a bad block
+    // rather than only surfacing it mid-run in the executor.
+    if let Some(ab) = cfg
+        .execution
+        .as_ref()
+        .and_then(|e| e.adaptive_batch_size.as_ref())
+    {
+        // `validate()` returns `FaucetError::Config` whose message already names
+        // the offending field; propagate it directly (CliError: From<FaucetError>).
+        ab.validate()?;
+    }
+
     // Implicit single-row case: empty matrix → run pipeline once with no merge.
     let synthetic_row;
     let rows: &[MatrixRow] = if cfg.matrix.is_empty() {
@@ -1298,5 +1312,47 @@ matrix:
             CliError::ReservedRowId { id } => assert_eq!(id, "now"),
             other => panic!("expected ReservedRowId, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn expand_rejects_invalid_adaptive_batch_size_at_load() {
+        // Fail-fast: an invalid execution.adaptive_batch_size block must be
+        // rejected by `expand` (the gate `faucet validate` uses), not only at
+        // run time in the executor.
+        let yaml = r#"
+version: 1
+pipeline:
+  source: { type: rest, config: {} }
+  sink:   { type: jsonl, config: { path: ./o.jsonl } }
+execution:
+  adaptive_batch_size:
+    enabled: true
+    min: 5000
+    max: 100
+"#;
+        let cfg = parse_with_extension(yaml, "yaml").unwrap();
+        let err = expand(&cfg).unwrap_err();
+        assert!(
+            err.to_string().contains("adaptive_batch_size.min"),
+            "expected adaptive validation error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn expand_accepts_valid_adaptive_batch_size() {
+        let yaml = r#"
+version: 1
+pipeline:
+  source: { type: rest, config: {} }
+  sink:   { type: jsonl, config: { path: ./o.jsonl } }
+execution:
+  adaptive_batch_size:
+    enabled: true
+    min: 100
+    max: 5000
+    target_latency_ms: 500
+"#;
+        let cfg = parse_with_extension(yaml, "yaml").unwrap();
+        assert!(expand(&cfg).is_ok());
     }
 }
