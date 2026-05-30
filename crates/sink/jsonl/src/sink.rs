@@ -65,6 +65,16 @@ impl JsonlSink {
             } else {
                 (self.config.append, !self.config.append)
             };
+            if let Some(parent) = self.config.path.parent()
+                && !parent.as_os_str().is_empty()
+            {
+                tokio::fs::create_dir_all(parent).await.map_err(|e| {
+                    FaucetError::Sink(format!(
+                        "failed to create parent directory '{}': {e}",
+                        parent.display()
+                    ))
+                })?;
+            }
             let file = OpenOptions::new()
                 .create(true)
                 .write(true)
@@ -281,6 +291,23 @@ mod tests {
             .unwrap();
         assert_eq!(report.failed_count(), 1);
         assert_eq!(report.probes[0].name, "io");
+    }
+
+    #[tokio::test]
+    async fn creates_missing_parent_directories() {
+        let dir = tempfile::tempdir().unwrap();
+        let nested = dir.path().join("a").join("b").join("out.jsonl");
+        let sink = JsonlSink::new(JsonlSinkConfig::new(&nested));
+
+        let records = vec![json!({"id": 1})];
+        let count = sink.write_batch(&records).await.unwrap();
+        sink.flush().await.unwrap();
+
+        assert_eq!(count, 1);
+        assert!(nested.exists(), "output file must exist after write");
+        let content = tokio::fs::read_to_string(&nested).await.unwrap();
+        let first: Value = serde_json::from_str(content.trim()).unwrap();
+        assert_eq!(first["id"], 1);
     }
 
     #[cfg(feature = "compression")]

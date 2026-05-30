@@ -187,6 +187,7 @@ Output:
 ## How It Works
 
 - The file is opened lazily on the first `write_batch()` call and wrapped in a `tokio::io::BufWriter` for efficient buffered writes.
+- Missing parent directories of `path` are created automatically (equivalent to `mkdir -p`) before the file is opened, matching the behaviour of the parquet sink. Dated-subdirectory paths such as `./data/dt=2026-03-08/part.jsonl` work without any pre-creation step.
 - A `Mutex` protects the writer for thread-safe concurrent access.
 - Each record is serialized to a single JSON line (or pretty-printed if configured) followed by a newline character.
 - Multiple `write_batch()` calls accumulate data in the same file without re-opening it.

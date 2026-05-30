@@ -233,6 +233,7 @@ sink.flush().await?;
 ## How It Works
 
 - The file is opened lazily on the first `write_batch()` call. Column order is determined from the keys of the first record.
+- Missing parent directories of `path` are created automatically (equivalent to `mkdir -p`) before the file is opened, matching the behaviour of the parquet sink. Dated-subdirectory paths such as `./data/dt=2026-03-08/part.csv` work without any pre-creation step.
 - All CSV I/O runs inside `tokio::task::spawn_blocking` to avoid blocking the async runtime.
 - A `Mutex` protects the writer state (column order + csv::Writer) for thread-safe access.
 - Headers are written only on file creation (not in append mode) when `write_headers` is `true`.

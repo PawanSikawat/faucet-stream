@@ -210,6 +210,16 @@ fn write_csv_blocking(
                 (config.append, !config.append)
             };
 
+            if let Some(parent) = std::path::Path::new(&config.path).parent()
+                && !parent.as_os_str().is_empty()
+            {
+                std::fs::create_dir_all(parent).map_err(|e| {
+                    FaucetError::Sink(format!(
+                        "failed to create parent directory '{}': {e}",
+                        parent.display()
+                    ))
+                })?;
+            }
             let file = OpenOptions::new()
                 .create(true)
                 .write(true)
@@ -403,6 +413,25 @@ mod tests {
             .unwrap();
         assert_eq!(report.failed_count(), 1);
         assert_eq!(report.probes[0].name, "io");
+    }
+
+    #[tokio::test]
+    async fn creates_missing_parent_directories() {
+        let dir = tempfile::tempdir().unwrap();
+        let nested = dir.path().join("a").join("b").join("out.csv");
+        let path_str = nested.to_str().unwrap().to_string();
+        let sink = CsvSink::new(CsvSinkConfig::new(&path_str));
+
+        let records = vec![json!({"id": "1", "name": "Alice"})];
+        let count = sink.write_batch(&records).await.unwrap();
+        sink.flush().await.unwrap();
+
+        assert_eq!(count, 1);
+        assert!(nested.exists(), "output file must exist after write");
+        let content = tokio::fs::read_to_string(&nested).await.unwrap();
+        let lines: Vec<&str> = content.trim().split('\n').collect();
+        // Header + 1 data row.
+        assert_eq!(lines.len(), 2);
     }
 
     #[cfg(feature = "compression")]
