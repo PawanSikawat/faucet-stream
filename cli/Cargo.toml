@@ -210,7 +210,7 @@ serde.workspace = true
 serde_json.workspace = true
 serde_yaml = "0.9"
 thiserror.workspace = true
-tokio = { workspace = true, features = ["rt-multi-thread", "macros", "signal", "fs"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "signal", "fs", "sync"] }
 tracing.workspace = true
 tracing-subscriber = { workspace = true, optional = true }
 async-trait.workspace = true
