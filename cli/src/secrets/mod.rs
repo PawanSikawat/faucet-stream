@@ -171,6 +171,19 @@ fn make_resolver(scheme: &str) -> CliResult<Arc<dyn SecretResolver>> {
 /// Apply a read-only closure to every config `Value` location (mirrors
 /// `resolve_config_refs`'s traversal).
 fn visit_config_values<F: FnMut(&Value)>(cfg: &PipelineConfig, mut f: F) {
+    // The shared `auth:` catalog and the `vars:` block are first-class config
+    // locations: a secret placed in either must resolve before the auth catalog
+    // is built / vars are consumed (#134).
+    if let Some(auth) = cfg.auth.as_ref() {
+        for spec in auth.values() {
+            f(spec);
+        }
+    }
+    if let Some(vars) = cfg.vars.as_ref() {
+        for v in vars.values() {
+            f(v);
+        }
+    }
     for spec in cfg.pipeline.sources.values() {
         f(&spec.config);
     }
@@ -222,6 +235,18 @@ fn visit_config_values_mut<F: FnMut(&mut Value) -> CliResult<()>>(
     cfg: &mut PipelineConfig,
     mut f: F,
 ) -> CliResult<()> {
+    // See `visit_config_values`: the `auth:` catalog and `vars:` block are
+    // walked too so secrets resolve there before they are consumed (#134).
+    if let Some(auth) = cfg.auth.as_mut() {
+        for spec in auth.values_mut() {
+            f(spec)?;
+        }
+    }
+    if let Some(vars) = cfg.vars.as_mut() {
+        for v in vars.values_mut() {
+            f(v)?;
+        }
+    }
     for spec in cfg.pipeline.sources.values_mut() {
         f(&mut spec.config)?;
     }
@@ -437,6 +462,56 @@ pipeline:
         resolve_secrets_with(&mut cfg, &set).await.unwrap();
         let token = &cfg.pipeline.source.as_ref().unwrap().config["auth"]["config"]["token"];
         assert_eq!(token, "RESOLVED");
+    }
+
+    #[tokio::test]
+    async fn resolve_secrets_resolves_auth_catalog_and_vars_block() {
+        // A secret placed in the shared `auth:` catalog and in the `vars:` block
+        // must be resolved just like one in a connector config (#134). Without
+        // it, `build_auth_catalog` would receive a literal `${vault:…}` token.
+        let mut set = ResolverSet::default();
+        set.insert(Arc::new(FakeResolver {
+            scheme: "vault",
+            value: "RESOLVED".into(),
+        }));
+        let cfg_yaml = r#"
+version: 1
+vars:
+  shared_token: "${vault:secret/data/app#token}"
+auth:
+  idp: { type: static, config: { token: "${vault:secret/data/idp#token}" } }
+pipeline:
+  source: { type: rest, config: { base_url: https://x, auth: { ref: idp } } }
+  sink:   { type: jsonl, config: { path: ./o.jsonl } }
+"#;
+        let mut cfg = PipelineConfig::from_text(cfg_yaml, std::path::Path::new("p.yaml")).unwrap();
+        resolve_secrets_with(&mut cfg, &set).await.unwrap();
+
+        let auth_token = &cfg.auth.as_ref().unwrap()["idp"]["config"]["token"];
+        assert_eq!(auth_token, "RESOLVED", "auth-catalog secret should resolve");
+
+        let var_value = &cfg.vars.as_ref().unwrap()["shared_token"];
+        assert_eq!(var_value, "RESOLVED", "vars-block secret should resolve");
+    }
+
+    #[tokio::test]
+    async fn scan_config_collects_refs_from_auth_and_vars() {
+        // The preflight scan (used by `faucet validate`) must report secret
+        // references that live only in the auth catalog or vars block.
+        let cfg_yaml = r#"
+version: 1
+vars:
+  v: "${aws-sm:prod/api#key}"
+auth:
+  idp: { type: static, config: { token: "${vault:secret/data/idp#token}" } }
+pipeline:
+  source: { type: rest, config: { base_url: https://x, auth: { ref: idp } } }
+  sink:   { type: jsonl, config: { path: ./o.jsonl } }
+"#;
+        let cfg = PipelineConfig::from_text(cfg_yaml, std::path::Path::new("p.yaml")).unwrap();
+        let refs = scan_config(&cfg);
+        assert!(refs.contains(&("vault".into(), "secret/data/idp#token".into())));
+        assert!(refs.contains(&("aws-sm".into(), "prod/api#key".into())));
     }
 
     #[tokio::test]

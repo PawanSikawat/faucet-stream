@@ -255,38 +255,50 @@ boundary. In particular:
   this boundary.
 - The scrubber does not redact values shorter than 4 characters.
 
-## Known limitation: `auth:` catalog and `vars:` block
+## Secrets in the `auth:` catalog and `vars:` block
 
-Secret directives are resolved in connector configs, transforms, state, dlq, and
-matrix rows — everywhere config interpolation runs. They are **not** resolved
-inside:
+Secret directives are resolved **everywhere** config interpolation runs:
+connector configs, transforms, state, dlq, matrix rows, the top-level
+**`auth:`** shared-provider catalog, and the top-level **`vars:`** block.
 
-- The top-level **`auth:`** shared-provider catalog.
-- The top-level **`vars:`** block.
-
-This is consistent with the scope of `${vars.X}` and `${sources.X}` — those are
-also not resolved inside `auth:` or `vars:` themselves.
-
-**Workaround:** put the secret directive directly in the connector's inline `auth:`
-block rather than in the shared catalog:
+Putting a secret in the shared `auth:` catalog is often the cleanest option — a
+single bearer token resolved once and shared across every matrix row that
+references it via `auth: { ref }` (one token cache, single-flight refresh):
 
 ```yaml
-# Works — inline auth resolves secrets
-pipeline:
-  source:
-    type: rest
-    config:
-      auth:
-        type: bearer
-        config:
-          token: "${vault:secret/data/app#token}"
-
-# Does NOT work — secrets are not resolved in the top-level auth: catalog
+# A secret in the shared catalog, resolved once and shared by reference.
 auth:
   api:
     type: static
     config:
-      token: "${vault:secret/data/app#token}"   # <-- not resolved
+      token: "${vault:secret/data/app#token}"
+
+pipeline:
+  sources:
+    orders:  { type: rest, config: { base_url: https://api.example.com/orders,  auth: { ref: api } } }
+    refunds: { type: rest, config: { base_url: https://api.example.com/refunds, auth: { ref: api } } }
+  sink: { type: jsonl, config: { path: ./out.jsonl } }
 ```
 
-This limitation may be lifted in a future release.
+A secret in the `vars:` block works the same way and can be reused through
+`${vars.X}`:
+
+```yaml
+vars:
+  db_password: "${aws-sm:prod/db#password}"
+
+pipeline:
+  source:
+    type: postgres
+    config:
+      connection_url: "postgres://app:${vars.db_password}@db.internal:5432/app"
+  sink: { type: jsonl, config: { path: ./rows.jsonl } }
+```
+
+The shared `auth:` catalog is a first-class config location in every respect:
+its provider specs can also reference `${vars.X}` and `${sources.X.PATH}`, not
+just secret directives.
+
+> Inline `auth:` blocks on individual connectors resolve secrets too — use the
+> shared catalog when several connectors share one credential, and inline auth
+> when a credential belongs to a single connector.
