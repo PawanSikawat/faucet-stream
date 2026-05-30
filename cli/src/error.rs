@@ -335,10 +335,16 @@ mod secrets_error_tests {
         assert!(msg.contains("password"));
         assert!(msg.contains("username") && msg.contains("host"));
 
-        let e = CliError::SecretBackendDisabled { scheme: "azure-kv".into() };
+        let e = CliError::SecretBackendDisabled {
+            scheme: "azure-kv".into(),
+        };
         assert!(e.to_string().contains("secrets-azure-kv"));
 
-        assert!(CliError::SecretsRequireAsyncLoad.to_string().contains("async"));
+        assert!(
+            CliError::SecretsRequireAsyncLoad
+                .to_string()
+                .contains("async")
+        );
     }
 
     #[test]

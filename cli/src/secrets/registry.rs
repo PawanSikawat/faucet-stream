@@ -105,7 +105,10 @@ mod tests {
     fn redacts_registered_value() {
         clear();
         register("supersecrettoken");
-        assert_eq!(redact("Authorization: supersecrettoken"), "Authorization: ***");
+        assert_eq!(
+            redact("Authorization: supersecrettoken"),
+            "Authorization: ***"
+        );
     }
 
     #[test]

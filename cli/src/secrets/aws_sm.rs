@@ -4,7 +4,7 @@
 //! profile, instance profile, web identity). The SDK client is built lazily
 //! on first resolve so a config that never references aws-sm pays nothing.
 
-use super::{extract_field, split_field, SecretResolver};
+use super::{SecretResolver, extract_field, split_field};
 use crate::error::{CliError, CliResult};
 use async_trait::async_trait;
 use tokio::sync::OnceCell;
@@ -29,8 +29,7 @@ impl AwsSmResolver {
     async fn client(&self) -> &aws_sdk_secretsmanager::Client {
         self.client
             .get_or_init(|| async {
-                let conf =
-                    aws_config::load_defaults(aws_config::BehaviorVersion::latest()).await;
+                let conf = aws_config::load_defaults(aws_config::BehaviorVersion::latest()).await;
                 aws_sdk_secretsmanager::Client::new(&conf)
             })
             .await
@@ -57,10 +56,12 @@ impl SecretResolver for AwsSmResolver {
                 reference: reference.into(),
                 source: Box::new(source),
             })?;
-        let body = out.secret_string().ok_or_else(|| CliError::SecretNotFound {
-            scheme: "aws-sm".into(),
-            reference: reference.into(),
-        })?;
+        let body = out
+            .secret_string()
+            .ok_or_else(|| CliError::SecretNotFound {
+                scheme: "aws-sm".into(),
+                reference: reference.into(),
+            })?;
         match field {
             Some(f) => extract_field("aws-sm", reference, body, f),
             None => Ok(body.to_owned()),

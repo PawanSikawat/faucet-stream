@@ -3,7 +3,7 @@
 //! Auth: `VAULT_ADDR` + `VAULT_TOKEN`, optional `VAULT_NAMESPACE`. Pure HTTP
 //! via `reqwest` — no Vault client dependency.
 
-use super::{extract_field, split_field, SecretResolver};
+use super::{SecretResolver, extract_field, split_field};
 use crate::error::{CliError, CliResult};
 use async_trait::async_trait;
 use serde_json::Value;
@@ -48,11 +48,14 @@ impl SecretResolver for VaultResolver {
         if let Some(ns) = &self.namespace {
             req = req.header("X-Vault-Namespace", ns);
         }
-        let resp = req.send().await.map_err(|source| CliError::SecretFetchFailed {
-            scheme: "vault".into(),
-            reference: reference.into(),
-            source: Box::new(source),
-        })?;
+        let resp = req
+            .send()
+            .await
+            .map_err(|source| CliError::SecretFetchFailed {
+                scheme: "vault".into(),
+                reference: reference.into(),
+                source: Box::new(source),
+            })?;
         if resp.status() == reqwest::StatusCode::NOT_FOUND {
             return Err(CliError::SecretNotFound {
                 scheme: "vault".into(),
@@ -67,16 +70,21 @@ impl SecretResolver for VaultResolver {
                 hint: "VAULT_TOKEN was rejected (403/401) — check the token and its policy".into(),
             });
         }
-        let resp = resp.error_for_status().map_err(|source| CliError::SecretFetchFailed {
-            scheme: "vault".into(),
-            reference: reference.into(),
-            source: Box::new(source),
-        })?;
-        let body: Value = resp.json().await.map_err(|source| CliError::SecretFetchFailed {
-            scheme: "vault".into(),
-            reference: reference.into(),
-            source: Box::new(source),
-        })?;
+        let resp = resp
+            .error_for_status()
+            .map_err(|source| CliError::SecretFetchFailed {
+                scheme: "vault".into(),
+                reference: reference.into(),
+                source: Box::new(source),
+            })?;
+        let body: Value = resp
+            .json()
+            .await
+            .map_err(|source| CliError::SecretFetchFailed {
+                scheme: "vault".into(),
+                reference: reference.into(),
+                source: Box::new(source),
+            })?;
         // KV v2: secret map lives at .data.data
         let data = &body["data"]["data"];
         match field {

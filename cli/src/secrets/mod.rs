@@ -119,14 +119,14 @@ pub fn collect_refs(value: &Value, out: &mut BTreeSet<SecretRef>) {
 pub fn substitute(value: &mut Value, cache: &HashMap<SecretRef, String>) -> CliResult<()> {
     for_each_string_mut(value, &mut |s| {
         let new = interpolate::rewrite(s, |body| match interpolate::classify_directive(body) {
-            Directive::LoadTime { prefix, body: b } if SECRET_SCHEMES.contains(&prefix) => Ok(
-                Some(
+            Directive::LoadTime { prefix, body: b } if SECRET_SCHEMES.contains(&prefix) => {
+                Ok(Some(
                     cache
                         .get(&(prefix.to_owned(), b.to_owned()))
                         .cloned()
                         .expect("scan collected every secret ref before fetch"),
-                ),
-            ),
+                ))
+            }
             _ => Ok(None),
         })?;
         *s = new;
@@ -325,22 +325,23 @@ async fn fetch_all(
     set: &ResolverSet,
 ) -> CliResult<HashMap<SecretRef, String>> {
     const MAX_CONCURRENCY: usize = 8;
-    let pairs: Vec<(SecretRef, String)> = stream::iter(refs.iter().cloned())
-        .map(|(scheme, reference)| async move {
-            // Clone the Arc so each concurrent future owns its resolver rather
-            // than borrowing `set` across the await point.
-            let resolver = Arc::clone(set.get(&scheme).ok_or_else(|| {
-                CliError::SecretBackendDisabled {
-                    scheme: scheme.clone(),
-                }
-            })?);
-            let value = resolver.resolve(&reference).await?;
-            registry::register(&value);
-            Ok::<(SecretRef, String), CliError>(((scheme, reference), value))
-        })
-        .buffer_unordered(MAX_CONCURRENCY)
-        .try_collect()
-        .await?;
+    let pairs: Vec<(SecretRef, String)> =
+        stream::iter(refs.iter().cloned())
+            .map(|(scheme, reference)| async move {
+                // Clone the Arc so each concurrent future owns its resolver rather
+                // than borrowing `set` across the await point.
+                let resolver = Arc::clone(set.get(&scheme).ok_or_else(|| {
+                    CliError::SecretBackendDisabled {
+                        scheme: scheme.clone(),
+                    }
+                })?);
+                let value = resolver.resolve(&reference).await?;
+                registry::register(&value);
+                Ok::<(SecretRef, String), CliError>(((scheme, reference), value))
+            })
+            .buffer_unordered(MAX_CONCURRENCY)
+            .try_collect()
+            .await?;
     Ok(pairs.into_iter().collect())
 }
 
@@ -377,7 +378,10 @@ mod tests {
             "path": "/v1/${users.id}"
         });
         let mut cache = HashMap::new();
-        cache.insert(("vault".into(), "secret/data/app#token".into()), "abc123".into());
+        cache.insert(
+            ("vault".into(), "secret/data/app#token".into()),
+            "abc123".into(),
+        );
         substitute(&mut v, &cache).unwrap();
         assert_eq!(v["token"], "Bearer abc123");
         assert_eq!(v["path"], "/v1/${users.id}");
@@ -386,7 +390,10 @@ mod tests {
     #[test]
     fn extract_field_picks_key_or_errors_with_available() {
         let body = r#"{"username":"u","password":"p"}"#;
-        assert_eq!(extract_field("aws-sm", "ref", body, "password").unwrap(), "p");
+        assert_eq!(
+            extract_field("aws-sm", "ref", body, "password").unwrap(),
+            "p"
+        );
         match extract_field("aws-sm", "ref", body, "missing").unwrap_err() {
             CliError::SecretFieldMissing { available, .. } => {
                 assert!(available.contains(&"username".to_string()));
@@ -426,8 +433,7 @@ pipeline:
   source: { type: rest, config: { base_url: https://x, auth: { type: bearer, config: { token: "${vault:secret/data/app#token}" } } } }
   sink:   { type: jsonl, config: { path: ./o.jsonl } }
 "#;
-        let mut cfg =
-            PipelineConfig::from_text(cfg_yaml, std::path::Path::new("p.yaml")).unwrap();
+        let mut cfg = PipelineConfig::from_text(cfg_yaml, std::path::Path::new("p.yaml")).unwrap();
         resolve_secrets_with(&mut cfg, &set).await.unwrap();
         let token = &cfg.pipeline.source.as_ref().unwrap().config["auth"]["config"]["token"];
         assert_eq!(token, "RESOLVED");
@@ -442,8 +448,7 @@ pipeline:
   source: { type: rest, config: { url: "${vault:secret/x}" } }
   sink:   { type: jsonl, config: { path: ./o.jsonl } }
 "#;
-        let mut cfg =
-            PipelineConfig::from_text(cfg_yaml, std::path::Path::new("p.yaml")).unwrap();
+        let mut cfg = PipelineConfig::from_text(cfg_yaml, std::path::Path::new("p.yaml")).unwrap();
         match resolve_secrets_with(&mut cfg, &set).await.unwrap_err() {
             CliError::SecretBackendDisabled { scheme } => assert_eq!(scheme, "vault"),
             other => panic!("expected SecretBackendDisabled, got {other:?}"),
@@ -458,8 +463,7 @@ pipeline:
   source: { type: rest, config: { url: "${vault:secret/x}" } }
   sink:   { type: jsonl, config: { path: ./o.jsonl } }
 "#;
-        let cfg =
-            PipelineConfig::from_text(cfg_yaml, std::path::Path::new("p.yaml")).unwrap();
+        let cfg = PipelineConfig::from_text(cfg_yaml, std::path::Path::new("p.yaml")).unwrap();
         assert!(matches!(
             ensure_no_secret_directives(&cfg),
             Err(CliError::SecretsRequireAsyncLoad)

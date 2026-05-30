@@ -12,9 +12,7 @@ use super::SecretResolver;
 use crate::error::{CliError, CliResult};
 use async_trait::async_trait;
 use azure_core::credentials::{AccessToken, Secret, TokenCredential, TokenRequestOptions};
-use azure_identity::{
-    ClientSecretCredential, DeveloperToolsCredential, ManagedIdentityCredential,
-};
+use azure_identity::{ClientSecretCredential, DeveloperToolsCredential, ManagedIdentityCredential};
 use std::sync::Arc;
 
 // ── Chained credential ────────────────────────────────────────────────────────
@@ -79,12 +77,7 @@ fn build_credential() -> CliResult<Arc<dyn TokenCredential>> {
         std::env::var("AZURE_CLIENT_ID"),
         std::env::var("AZURE_CLIENT_SECRET"),
     ) {
-        match ClientSecretCredential::new(
-            &tenant_id,
-            client_id,
-            Secret::new(client_secret),
-            None,
-        ) {
+        match ClientSecretCredential::new(&tenant_id, client_id, Secret::new(client_secret), None) {
             Ok(cred) => sources.push(cred),
             Err(e) => {
                 tracing::debug!("Azure ClientSecretCredential build failed: {e}");
@@ -142,20 +135,24 @@ impl SecretResolver for AzureKvResolver {
         // reference = "<vault>/<secret>[/<version>]"
         let mut parts = reference.splitn(3, '/');
 
-        let vault = parts.next().filter(|s| !s.is_empty()).ok_or_else(|| {
-            CliError::SecretFetchFailed {
-                scheme: "azure-kv".into(),
-                reference: reference.into(),
-                source: "expected '<vault>/<secret>[/<version>]'".into(),
-            }
-        })?;
-        let secret_name = parts.next().filter(|s| !s.is_empty()).ok_or_else(|| {
-            CliError::SecretFetchFailed {
-                scheme: "azure-kv".into(),
-                reference: reference.into(),
-                source: "expected '<vault>/<secret>[/<version>]'".into(),
-            }
-        })?;
+        let vault =
+            parts
+                .next()
+                .filter(|s| !s.is_empty())
+                .ok_or_else(|| CliError::SecretFetchFailed {
+                    scheme: "azure-kv".into(),
+                    reference: reference.into(),
+                    source: "expected '<vault>/<secret>[/<version>]'".into(),
+                })?;
+        let secret_name =
+            parts
+                .next()
+                .filter(|s| !s.is_empty())
+                .ok_or_else(|| CliError::SecretFetchFailed {
+                    scheme: "azure-kv".into(),
+                    reference: reference.into(),
+                    source: "expected '<vault>/<secret>[/<version>]'".into(),
+                })?;
         let version = parts.next().filter(|s| !s.is_empty());
 
         let credential = build_credential()?;
@@ -177,24 +174,21 @@ impl SecretResolver for AzureKvResolver {
             }
         });
 
-        let resp = client
-            .get_secret(secret_name, options)
-            .await
-            .map_err(|e| CliError::SecretFetchFailed {
+        let resp = client.get_secret(secret_name, options).await.map_err(|e| {
+            CliError::SecretFetchFailed {
                 scheme: "azure-kv".into(),
                 reference: reference.into(),
                 source: Box::new(e),
-            })?;
+            }
+        })?;
 
         // `Response<Secret>::into_model()` is sync and deserializes the body
         // into the typed `Secret` model (the JSON format is inferred from F).
-        let secret = resp
-            .into_model()
-            .map_err(|e| CliError::SecretFetchFailed {
-                scheme: "azure-kv".into(),
-                reference: reference.into(),
-                source: Box::new(e),
-            })?;
+        let secret = resp.into_model().map_err(|e| CliError::SecretFetchFailed {
+            scheme: "azure-kv".into(),
+            reference: reference.into(),
+            source: Box::new(e),
+        })?;
 
         secret.value.ok_or_else(|| CliError::SecretNotFound {
             scheme: "azure-kv".into(),

@@ -93,11 +93,14 @@ impl SecretResolver for GcpSmResolver {
                 reference: reference.into(),
                 source: Box::new(source),
             })?;
-        let body: Value = resp.json().await.map_err(|source| CliError::SecretFetchFailed {
-            scheme: "gcp-sm".into(),
-            reference: reference.into(),
-            source: Box::new(source),
-        })?;
+        let body: Value = resp
+            .json()
+            .await
+            .map_err(|source| CliError::SecretFetchFailed {
+                scheme: "gcp-sm".into(),
+                reference: reference.into(),
+                source: Box::new(source),
+            })?;
         let b64 = body["payload"]["data"]
             .as_str()
             .ok_or_else(|| CliError::SecretNotFound {
@@ -127,7 +130,9 @@ mod tests {
     fn decodes_base64_payload() {
         // Guards the decode/utf8 logic independently of the token fetch.
         let b64 = base64::engine::general_purpose::STANDARD.encode("my-secret");
-        let decoded = base64::engine::general_purpose::STANDARD.decode(&b64).unwrap();
+        let decoded = base64::engine::general_purpose::STANDARD
+            .decode(&b64)
+            .unwrap();
         assert_eq!(String::from_utf8(decoded).unwrap(), "my-secret");
     }
 }
