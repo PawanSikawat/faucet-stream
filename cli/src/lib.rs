@@ -24,6 +24,7 @@ pub mod init_template;
 pub mod interpolate;
 pub mod merge;
 pub mod registry;
+pub mod secrets;
 pub mod state;
 pub mod transforms;
 
