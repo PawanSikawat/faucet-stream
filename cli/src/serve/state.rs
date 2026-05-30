@@ -80,7 +80,11 @@ mod tests {
 
     #[test]
     fn auth_token_reflects_mode() {
-        let s = ServerState::new(&cfg(AuthMode::Token("x".into())), None, CancellationToken::new());
+        let s = ServerState::new(
+            &cfg(AuthMode::Token("x".into())),
+            None,
+            CancellationToken::new(),
+        );
         assert_eq!(s.auth_token(), Some("x"));
         let s = ServerState::new(&cfg(AuthMode::None), None, CancellationToken::new());
         assert_eq!(s.auth_token(), None);

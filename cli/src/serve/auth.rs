@@ -19,7 +19,9 @@ pub(crate) fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
 /// Validate a raw `Authorization` header value against the expected token.
 pub fn authorize_header(header: Option<&str>, expected: &str) -> Result<(), ServeError> {
     let value = header.ok_or(ServeError::Unauthorized)?;
-    let token = value.strip_prefix("Bearer ").ok_or(ServeError::Unauthorized)?;
+    let token = value
+        .strip_prefix("Bearer ")
+        .ok_or(ServeError::Unauthorized)?;
     if constant_time_eq(token.as_bytes(), expected.as_bytes()) {
         Ok(())
     } else {

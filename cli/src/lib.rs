@@ -27,9 +27,9 @@ pub mod obs;
 pub mod registry;
 #[cfg(feature = "schedule")]
 pub mod schedule;
+pub mod secrets;
 #[cfg(feature = "serve")]
 pub mod serve;
-pub mod secrets;
 pub mod state;
 pub mod transforms;
 

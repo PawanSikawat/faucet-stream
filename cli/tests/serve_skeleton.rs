@@ -2,7 +2,7 @@
 //! `/healthz` and `/metrics` without auth, and shuts down on signal.
 #![cfg(feature = "serve")]
 
-use faucet_cli::serve::{run_server, ServeConfig};
+use faucet_cli::serve::{ServeConfig, run_server};
 use std::time::Duration;
 
 /// Build a ServeConfig bound to a given address with auth disabled.

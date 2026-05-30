@@ -1,9 +1,9 @@
 //! HTTP-facing error type. Every fallible serve handler returns `ServeError`,
 //! which renders to a JSON `ApiError` body with the right status code.
 
+use axum::Json;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use axum::Json;
 use serde::Serialize;
 
 /// JSON error envelope: `{ "error": { "code": "...", "message": "..." } }`.

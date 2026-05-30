@@ -56,8 +56,7 @@ fn default_max_concurrent() -> usize {
     std::thread::available_parallelism()
         .map(|n| n.get())
         .unwrap_or(4)
-        .min(16)
-        .max(1)
+        .clamp(1, 16)
 }
 
 impl ServeConfig {

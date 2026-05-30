@@ -47,7 +47,10 @@ mod tests {
 
     #[test]
     fn unmatched_path_falls_back_to_sentinel() {
-        let req = Request::builder().uri("/whatever").body(axum::body::Body::empty()).unwrap();
+        let req = Request::builder()
+            .uri("/whatever")
+            .body(axum::body::Body::empty())
+            .unwrap();
         assert_eq!(matched_path_label(&req), "<unmatched>");
     }
 }

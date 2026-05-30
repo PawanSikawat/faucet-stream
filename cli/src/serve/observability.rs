@@ -26,9 +26,9 @@ pub fn install(level: &str) -> Option<PrometheusHandle> {
 #[cfg(feature = "observability")]
 fn install_subscriber(level: &str) {
     use crate::secrets::registry::RedactingMakeWriter;
+    use tracing_subscriber::EnvFilter;
     use tracing_subscriber::layer::SubscriberExt;
     use tracing_subscriber::util::SubscriberInitExt;
-    use tracing_subscriber::EnvFilter;
 
     let filter = EnvFilter::try_new(level).unwrap_or_else(|_| EnvFilter::new("info"));
     let registry = tracing_subscriber::registry()

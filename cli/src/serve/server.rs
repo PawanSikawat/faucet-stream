@@ -5,8 +5,8 @@ use crate::serve::config::ServeConfig;
 use crate::serve::handlers::health;
 use crate::serve::state::ServerState;
 use crate::serve::{auth, metrics};
-use axum::routing::get;
 use axum::Router;
+use axum::routing::get;
 use tokio_util::sync::CancellationToken;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::limit::RequestBodyLimitLayer;
@@ -97,7 +97,7 @@ pub async fn serve(config: ServeConfig) -> CliResult<()> {
 async fn wait_for_signal() {
     #[cfg(unix)]
     {
-        use tokio::signal::unix::{signal, SignalKind};
+        use tokio::signal::unix::{SignalKind, signal};
         let mut term = match signal(SignalKind::terminate()) {
             Ok(s) => s,
             Err(_) => {
