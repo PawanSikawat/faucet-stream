@@ -47,6 +47,9 @@ pub struct ServeConfig {
     pub probe_timeout: Duration,
     pub env_file: Option<PathBuf>,
     pub no_env_file: bool,
+    /// Tracing filter directive for serve's own subscriber. Set from the
+    /// clap-resolved `--log-level` / `FAUCET_LOG`; defaults to `"info"`.
+    pub log_level: String,
 }
 
 fn default_max_concurrent() -> usize {
@@ -122,6 +125,7 @@ impl ServeConfig {
             probe_timeout: Duration::from_secs(args.probe_timeout_secs),
             env_file: args.env_file,
             no_env_file: args.no_env_file,
+            log_level: "info".to_string(),
         })
     }
 }

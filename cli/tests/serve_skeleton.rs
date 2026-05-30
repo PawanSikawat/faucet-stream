@@ -29,7 +29,10 @@ fn test_config(listen: &str) -> ServeConfig {
 
 #[tokio::test]
 async fn healthz_is_reachable_without_auth() {
-    // Bind a throwaway listener to grab a free port, then release it.
+    // Grab a free port via a throwaway listener, then bind serve to it. There is
+    // a small TOCTOU window where another process could claim the port between
+    // drop and re-bind; acceptable for a smoke test. A later phase can have
+    // `serve()` bind `:0` and report the chosen address to remove the window.
     let probe = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let port = probe.local_addr().unwrap().port();
     drop(probe);

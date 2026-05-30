@@ -74,6 +74,7 @@ mod tests {
             probe_timeout: Duration::from_secs(10),
             env_file: None,
             no_env_file: false,
+            log_level: "info".into(),
         }
     }
 

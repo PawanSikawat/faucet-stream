@@ -17,6 +17,8 @@ async fn main() {
     if !is_serve {
         install_tracing(&cli.log_level);
     }
+    #[cfg(feature = "serve")]
+    let serve_log_level = cli.log_level.clone();
 
     let result = match cli.command {
         Command::Run(args) => commands::run::run(args).await,
@@ -29,7 +31,7 @@ async fn main() {
         #[cfg(feature = "schedule")]
         Command::Schedule(args) => commands::schedule::run(args).await,
         #[cfg(feature = "serve")]
-        Command::Serve(args) => commands::serve::run(args).await,
+        Command::Serve(args) => commands::serve::run(args, serve_log_level).await,
     };
 
     if let Err(err) = result {

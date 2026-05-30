@@ -43,7 +43,13 @@ pub fn build_router(state: ServerState, config: &ServeConfig) -> Router {
         let origins: Vec<axum::http::HeaderValue> = config
             .cors_origins
             .iter()
-            .filter_map(|o| o.parse().ok())
+            .filter_map(|o| match o.parse() {
+                Ok(v) => Some(v),
+                Err(e) => {
+                    tracing::warn!(origin = %o, error = %e, "ignoring invalid --cors-origin");
+                    None
+                }
+            })
             .collect();
         CorsLayer::new().allow_origin(AllowOrigin::list(origins))
     };
@@ -59,8 +65,7 @@ pub fn build_router(state: ServerState, config: &ServeConfig) -> Router {
 /// Boot the server: install observability, build the router, bind the listener,
 /// and serve until SIGTERM / SIGINT, then drain.
 pub async fn serve(config: ServeConfig) -> CliResult<()> {
-    let level = std::env::var("FAUCET_LOG").unwrap_or_else(|_| "info".to_string());
-    let prom = crate::serve::observability::install(&level);
+    let prom = crate::serve::observability::install(&config.log_level);
 
     let shutdown = CancellationToken::new();
     let state = ServerState::new(&config, prom, shutdown.clone());
