@@ -31,9 +31,11 @@ can drop on any box or a library you compile in.
 - **A runtime, not just connectors** — incremental + resumable replication,
   PostgreSQL change-data-capture, built-in data-quality checks (13 per-record and
   per-batch assertions with quarantine routing and abort policies), dead-letter
-  queues, automatic retries, secrets-manager interpolation (`${vault:…}`,
-  `${aws-sm:…}`, `${gcp-sm:…}`, `${azure-kv:…}`), cron scheduling (`faucet schedule`),
-  and built-in Prometheus metrics + `tracing` spans, all with zero per-connector code.
+  queues, automatic retries, adaptive batch sizing (AIMD controller that tunes
+  write batch size from sink latency and error rate), secrets-manager interpolation
+  (`${vault:…}`, `${aws-sm:…}`, `${gcp-sm:…}`, `${azure-kv:…}`), cron scheduling
+  (`faucet schedule`), and built-in Prometheus metrics + `tracing` spans, all with
+  zero per-connector code.
 - **Pay only for what you use** — every connector is a Cargo feature, so a slim
   build can be just REST + JSONL, or pull in all 35 connectors with `--features full`.
 

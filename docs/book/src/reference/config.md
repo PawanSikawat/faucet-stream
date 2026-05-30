@@ -176,6 +176,45 @@ auth:
 - `on_error` — `continue` (siblings finish; failed subtree skipped) or `stop`
   (abort pending and in-flight work on first failure).
 
+### Adaptive batch sizing
+
+The optional `adaptive_batch_size:` sub-block enables the AIMD controller that
+auto-tunes the effective write batch size from observed sink latency and error
+rate. Default `enabled: false` (opt-in).
+
+```yaml
+execution:
+  adaptive_batch_size:
+    enabled: true          # master switch
+    controller: aimd       # only "aimd" is supported in v1
+    min: 100               # lower bound (rows)
+    max: 50000             # upper bound; inert above the source page size
+    increase_step: 250     # additive growth per clean batch
+    decrease_factor: 0.5   # multiplicative shrink on error/high latency  (0, 1)
+    cooldown_batches: 5    # batches to skip after a shrink
+    target_latency_ms: null  # optional write-latency target (ms)
+    latency_window: 10     # rolling window size for p50 latency
+    error_threshold: 0.01  # per-batch error rate that triggers a shrink
+    respect_source_max: true  # cap at source page size (see Caveats)
+    log_every: 50          # tracing::info every N adjustments
+```
+
+**Key caveats:**
+
+- **Error-driven shrink requires a `dlq:` block.** Without one the controller
+  sees no per-row errors; only `target_latency_ms` can drive shrinks.
+- **Effective ceiling = source page size.** In v1 the controller reslices pages
+  in-memory — it cannot buffer across pages. Setting `max` higher than the
+  source `batch_size` is harmless but inert. Raise the source `batch_size` to
+  allow bigger write batches.
+- **No-op for per-record sinks.** `jsonl`, `csv`, and `stdout` write one record
+  at a time; the controller adjusts normally but the write granularity is
+  unchanged.
+
+See the [Adaptive batching cookbook](../cookbook/adaptive-batching.md) for a
+full worked example, the AIMD trajectory, and the four Prometheus metrics
+(`faucet_pipeline_adaptive_batch_*`).
+
 ## `schedule`
 
 Present only when you run `faucet schedule`. Absent configs are rejected by that
