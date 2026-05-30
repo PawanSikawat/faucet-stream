@@ -214,6 +214,39 @@ impl faucet_core::Sink for SqliteSink {
             .expect("schema serialization")
     }
 
+    /// Preflight connectivity probe (`faucet doctor`).
+    ///
+    /// Acquires a connection from the existing pool and runs `SELECT 1`. This
+    /// is non-mutating and idempotent — it validates that the database file /
+    /// connection opens without writing anything.
+    async fn check(
+        &self,
+        ctx: &faucet_core::check::CheckContext,
+    ) -> Result<faucet_core::check::CheckReport, FaucetError> {
+        use faucet_core::check::{CheckReport, Probe};
+
+        let started = std::time::Instant::now();
+        let probe =
+            match tokio::time::timeout(ctx.timeout, sqlx::query("SELECT 1").execute(&self.pool))
+                .await
+            {
+                Ok(Ok(_)) => Probe::pass("auth", started.elapsed()),
+                Ok(Err(e)) => Probe::fail_hint(
+                    "auth",
+                    started.elapsed(),
+                    e.to_string(),
+                    "check database_url / that the database file is reachable and openable",
+                ),
+                Err(_) => Probe::fail_hint(
+                    "auth",
+                    started.elapsed(),
+                    "timed out",
+                    "check database_url / that the database file is reachable and openable",
+                ),
+            };
+        Ok(CheckReport::single(probe))
+    }
+
     async fn write_batch(&self, records: &[Value]) -> Result<usize, FaucetError> {
         if records.is_empty() {
             return Ok(0);

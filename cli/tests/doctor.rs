@@ -101,7 +101,8 @@ async fn doctor_json_emits_parseable_summary() {
         .stdout
         .clone();
 
-    let v: serde_json::Value = serde_json::from_slice(&output).expect("doctor --json emits valid JSON");
+    let v: serde_json::Value =
+        serde_json::from_slice(&output).expect("doctor --json emits valid JSON");
     assert!(v["summary"]["failed"].as_u64().unwrap() >= 1);
     assert_eq!(v["invocations"][0]["probes"][0]["role"], "source");
 }

@@ -431,4 +431,64 @@ impl Source for KafkaSource {
         *guard = Some(parsed);
         Ok(())
     }
+
+    fn connector_name(&self) -> &'static str {
+        "kafka"
+    }
+
+    /// Preflight probe that does **not** consume any message.
+    ///
+    /// The default [`Source::check`] would call `stream_pages`, which polls for
+    /// a message and would block on an empty topic until the idle/max-message
+    /// terminator fires. Instead we fetch cluster metadata
+    /// (`fetch_metadata(None, timeout)`), which validates broker connectivity +
+    /// auth without consuming or committing anything.
+    ///
+    /// `fetch_metadata` is a blocking librdkafka call, so it runs on a blocking
+    /// thread; the whole probe is additionally bounded by `ctx.timeout`.
+    async fn check(
+        &self,
+        ctx: &faucet_core::check::CheckContext,
+    ) -> Result<faucet_core::check::CheckReport, FaucetError> {
+        use faucet_core::check::{CheckReport, Probe};
+        use rdkafka::util::Timeout;
+
+        let start = std::time::Instant::now();
+        let consumer = Arc::clone(&self.consumer);
+        let rd_timeout = Timeout::After(ctx.timeout);
+
+        // Run the blocking fetch_metadata off the async runtime, bounded by the
+        // same wall-clock budget so an unreachable broker can't hang the probe.
+        let fetch = tokio::task::spawn_blocking(move || {
+            consumer
+                .fetch_metadata(None, rd_timeout)
+                .map(|md| md.brokers().len())
+                .map_err(|e| e.to_string())
+        });
+
+        let probe = match tokio::time::timeout(ctx.timeout, fetch).await {
+            Ok(Ok(Ok(broker_count))) => {
+                tracing::debug!(broker_count, "kafka check: fetched cluster metadata");
+                Probe::pass("metadata", start.elapsed())
+            }
+            Ok(Ok(Err(e))) => Probe::fail_hint(
+                "metadata",
+                start.elapsed(),
+                e,
+                "verify brokers, network reachability, and auth (SASL/TLS) settings",
+            ),
+            Ok(Err(join_err)) => Probe::fail(
+                "metadata",
+                start.elapsed(),
+                format!("metadata fetch task failed: {join_err}"),
+            ),
+            Err(_elapsed) => Probe::fail_hint(
+                "metadata",
+                start.elapsed(),
+                "metadata fetch timed out",
+                "no broker responded within the check timeout",
+            ),
+        };
+        Ok(CheckReport::single(probe))
+    }
 }

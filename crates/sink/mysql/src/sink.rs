@@ -192,6 +192,39 @@ impl faucet_core::Sink for MysqlSink {
             .expect("schema serialization")
     }
 
+    /// Preflight connectivity probe (`faucet doctor`).
+    ///
+    /// Acquires a connection from the existing pool and runs `SELECT 1`. This
+    /// is non-mutating and idempotent — it validates that the database is
+    /// reachable and the credentials are accepted without writing anything.
+    async fn check(
+        &self,
+        ctx: &faucet_core::check::CheckContext,
+    ) -> Result<faucet_core::check::CheckReport, FaucetError> {
+        use faucet_core::check::{CheckReport, Probe};
+
+        let started = std::time::Instant::now();
+        let probe =
+            match tokio::time::timeout(ctx.timeout, sqlx::query("SELECT 1").execute(&self.pool))
+                .await
+            {
+                Ok(Ok(_)) => Probe::pass("auth", started.elapsed()),
+                Ok(Err(e)) => Probe::fail_hint(
+                    "auth",
+                    started.elapsed(),
+                    e.to_string(),
+                    "check connection_url / credentials / that the database is reachable",
+                ),
+                Err(_) => Probe::fail_hint(
+                    "auth",
+                    started.elapsed(),
+                    "timed out",
+                    "check connection_url / credentials / that the database is reachable",
+                ),
+            };
+        Ok(CheckReport::single(probe))
+    }
+
     /// Write records to MySQL.
     ///
     /// When `config.batch_size > 0` and the input slice is larger than

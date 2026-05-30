@@ -1,7 +1,7 @@
 //! PostgreSQL-backed [`StateStore`].
 
 use async_trait::async_trait;
-use faucet_core::state::{StateStore, validate_state_key};
+use faucet_core::state::{DOCTOR_SENTINEL_KEY, StateStore, validate_state_key};
 use faucet_core::util::quote_ident;
 use faucet_core::{FaucetError, Value};
 use sqlx::postgres::PgPoolOptions;
@@ -180,6 +180,61 @@ impl StateStore for PostgresStateStore {
                 FaucetError::State(format!("Postgres DELETE for key '{key}' failed: {e}"))
             })?;
         Ok(())
+    }
+
+    async fn check(
+        &self,
+        ctx: &faucet_core::check::CheckContext,
+    ) -> Result<faucet_core::check::CheckReport, FaucetError> {
+        use faucet_core::check::{CheckReport, Probe};
+
+        // Exercise the real upsert → select → delete cycle on a sentinel key.
+        // This validates connectivity, auth, the table's existence, and
+        // read/write permissions through the actual code path and leaves no
+        // residue.
+        let start = std::time::Instant::now();
+        let probe = match tokio::time::timeout(ctx.timeout, self.sentinel_roundtrip()).await {
+            Ok(Ok(())) => Probe::pass("sentinel", start.elapsed()),
+            Ok(Err(e)) => Probe::fail_hint(
+                "sentinel",
+                start.elapsed(),
+                e.to_string(),
+                format!(
+                    "verify the server is reachable, the credentials grant read/write access, \
+                     and the '{}' table exists (call ensure_table or create it manually)",
+                    self.table
+                ),
+            ),
+            Err(_) => Probe::fail_hint(
+                "sentinel",
+                start.elapsed(),
+                format!(
+                    "round-trip timed out after {:?}; Postgres did not respond",
+                    ctx.timeout
+                ),
+                "verify the server is reachable or raise the check timeout",
+            ),
+        };
+        Ok(CheckReport::single(probe))
+    }
+}
+
+impl PostgresStateStore {
+    /// Write, read back, and delete a sentinel key — the body of the `check()`
+    /// probe, factored out so the happy path stays linear. Reuses the store's
+    /// own `put`/`get`/`delete` against the configured table.
+    async fn sentinel_roundtrip(&self) -> Result<(), FaucetError> {
+        let probe = serde_json::json!({ "faucet_doctor": true });
+        self.put(DOCTOR_SENTINEL_KEY, &probe).await?;
+        let got = self.get(DOCTOR_SENTINEL_KEY).await?;
+        // Best-effort cleanup regardless of the read result.
+        let _ = self.delete(DOCTOR_SENTINEL_KEY).await;
+        match got {
+            Some(v) if v == probe => Ok(()),
+            _ => Err(FaucetError::State(
+                "sentinel readback did not match what was written".into(),
+            )),
+        }
     }
 }
 

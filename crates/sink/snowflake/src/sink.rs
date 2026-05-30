@@ -269,6 +269,47 @@ impl faucet_core::Sink for SnowflakeSink {
             .expect("schema serialization")
     }
 
+    /// Preflight check (`faucet doctor`).
+    ///
+    /// Runs a single read-only `SELECT 1` through the existing SQL REST API
+    /// request path ([`execute_sql`](Self::execute_sql)), reusing the sink's
+    /// configured account/warehouse/auth. This resolves the effective
+    /// credential (inline or shared provider), builds the authorization
+    /// header, and confirms Snowflake accepts the session — without writing
+    /// any rows. Auth-resolution, network, and SQL-API errors surface as a
+    /// `Fail` probe with a hint. Tokens are never placed in the reason/hint.
+    async fn check(
+        &self,
+        ctx: &faucet_core::check::CheckContext,
+    ) -> Result<faucet_core::check::CheckReport, FaucetError> {
+        use faucet_core::check::{CheckReport, Probe};
+
+        let started = std::time::Instant::now();
+
+        let result = tokio::time::timeout(ctx.timeout, self.execute_sql("SELECT 1", None)).await;
+
+        let probe = match result {
+            Ok(Ok(())) => Probe::pass("auth", started.elapsed()),
+            Ok(Err(e)) => Probe::fail_hint(
+                "auth",
+                started.elapsed(),
+                format!("Snowflake SELECT 1 failed: {e}"),
+                "Verify the account identifier, warehouse, and credentials \
+                 (OAuth token or key-pair JWT) and that the role can use the \
+                 configured warehouse.",
+            ),
+            Err(_elapsed) => Probe::fail_hint(
+                "auth",
+                started.elapsed(),
+                format!("Snowflake SELECT 1 timed out after {:?}", ctx.timeout),
+                "Check network reachability to the Snowflake SQL REST API \
+                 endpoint and that the warehouse can resume within the timeout.",
+            ),
+        };
+
+        Ok(CheckReport::single(probe))
+    }
+
     async fn write_batch(&self, records: &[Value]) -> Result<usize, FaucetError> {
         if records.is_empty() {
             return Ok(0);

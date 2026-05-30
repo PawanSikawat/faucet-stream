@@ -3,7 +3,7 @@
 use crate::config::GcsSinkConfig;
 use async_trait::async_trait;
 use faucet_core::FaucetError;
-use faucet_gcs_common::build_storage;
+use faucet_gcs_common::{build_storage, build_storage_control};
 use futures::stream::{self, StreamExt, TryStreamExt};
 use google_cloud_storage::client::Storage;
 use serde_json::Value;
@@ -104,6 +104,61 @@ impl faucet_core::Sink for GcsSink {
 
     fn connector_name(&self) -> &'static str {
         "gcs"
+    }
+
+    /// Preflight probe: confirm the configured bucket is reachable and the
+    /// credentials work via a non-mutating `list_objects` call capped at a
+    /// single result. Writes nothing.
+    ///
+    /// The sink only holds a data-plane [`Storage`] client (which exposes no
+    /// list/get-bucket call), so the probe builds a control-plane
+    /// `StorageControl` client on demand using the same credentials.
+    async fn check(
+        &self,
+        ctx: &faucet_core::check::CheckContext,
+    ) -> Result<faucet_core::check::CheckReport, FaucetError> {
+        use faucet_core::check::{CheckReport, Probe};
+
+        let started = std::time::Instant::now();
+
+        // Build a control-plane client (the data-plane Storage client has no
+        // read-only list/get-bucket call). Credential/client-build failures
+        // surface as a failed probe rather than an Err.
+        let control =
+            match build_storage_control(&self.config.auth, self.config.storage_host.as_deref())
+                .await
+            {
+                Ok(c) => c,
+                Err(e) => {
+                    return Ok(CheckReport::single(Probe::fail_hint(
+                        "auth",
+                        started.elapsed(),
+                        e.to_string(),
+                        "check bucket name, credentials, and network",
+                    )));
+                }
+            };
+
+        let probe = match tokio::time::timeout(
+            ctx.timeout,
+            control
+                .list_objects()
+                .set_parent(self.bucket_path())
+                .set_page_size(1_i32)
+                .send(),
+        )
+        .await
+        {
+            Ok(Ok(_)) => Probe::pass("auth", started.elapsed()),
+            Ok(Err(e)) => Probe::fail_hint(
+                "auth",
+                started.elapsed(),
+                e.to_string(),
+                "check bucket name, credentials, and network",
+            ),
+            Err(_) => Probe::fail("network", started.elapsed(), "timed out"),
+        };
+        Ok(CheckReport::single(probe))
     }
 }
 

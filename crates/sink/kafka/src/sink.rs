@@ -284,6 +284,61 @@ impl Sink for KafkaSink {
         let schema = schemars::schema_for!(KafkaSinkConfig);
         serde_json::to_value(&schema).unwrap_or(Value::Null)
     }
+
+    /// Preflight check (`faucet doctor`).
+    ///
+    /// Fetches cluster metadata for all topics via the existing producer's
+    /// underlying client (`producer.client().fetch_metadata(None, timeout)`),
+    /// which validates broker connectivity and authentication without
+    /// producing any messages. `fetch_metadata` is a blocking librdkafka
+    /// call, so it runs on a blocking thread; the whole probe is bounded by
+    /// `ctx.timeout` (also passed to librdkafka as its own metadata timeout).
+    /// Connection/auth failures surface as a `Fail` probe with a hint; no
+    /// credentials are placed in the reason/hint.
+    async fn check(
+        &self,
+        ctx: &faucet_core::check::CheckContext,
+    ) -> Result<faucet_core::check::CheckReport, FaucetError> {
+        use faucet_core::check::{CheckReport, Probe};
+
+        let started = std::time::Instant::now();
+        let producer = self.producer.clone();
+        let timeout = ctx.timeout;
+
+        // `fetch_metadata` blocks (FFI into librdkafka), so run it off the
+        // async runtime. Bound the await with `ctx.timeout` as well, in case
+        // the blocking call ignores its own deadline.
+        let join = tokio::time::timeout(
+            timeout,
+            tokio::task::spawn_blocking(move || producer.client().fetch_metadata(None, timeout)),
+        )
+        .await;
+
+        let probe = match join {
+            Ok(Ok(Ok(_metadata))) => Probe::pass("metadata", started.elapsed()),
+            Ok(Ok(Err(e))) => Probe::fail_hint(
+                "metadata",
+                started.elapsed(),
+                format!("kafka fetch_metadata failed: {e}"),
+                "Verify the broker list is reachable and that any SASL/TLS \
+                 credentials and protocol settings are correct.",
+            ),
+            Ok(Err(join_err)) => Probe::fail(
+                "metadata",
+                started.elapsed(),
+                format!("kafka metadata probe task failed: {join_err}"),
+            ),
+            Err(_elapsed) => Probe::fail_hint(
+                "metadata",
+                started.elapsed(),
+                format!("kafka fetch_metadata timed out after {timeout:?}"),
+                "Check broker reachability and authentication; the cluster did \
+                 not return metadata within the timeout.",
+            ),
+        };
+
+        Ok(CheckReport::single(probe))
+    }
 }
 
 /// Send a single record, retrying on `QueueFull` up to `max_retries` times

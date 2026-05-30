@@ -640,8 +640,12 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(report.failed_count(), 0);
-        assert!(report.probes.iter().any(|p| p.name == "read"
-            && matches!(p.status, crate::check::ProbeStatus::Pass)));
+        assert!(
+            report
+                .probes
+                .iter()
+                .any(|p| p.name == "read" && matches!(p.status, crate::check::ProbeStatus::Pass))
+        );
     }
 
     #[tokio::test]
@@ -663,8 +667,9 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(report.failed_count(), 1);
-        assert!(report.probes.iter().any(|p| p.name == "read"
-            && matches!(p.status, crate::check::ProbeStatus::Fail { .. })));
+        assert!(report.probes.iter().any(
+            |p| p.name == "read" && matches!(p.status, crate::check::ProbeStatus::Fail { .. })
+        ));
     }
 
     #[tokio::test]

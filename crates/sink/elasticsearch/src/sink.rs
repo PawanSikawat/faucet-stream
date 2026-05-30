@@ -176,6 +176,97 @@ impl faucet_core::Sink for ElasticsearchSink {
             .expect("schema serialization")
     }
 
+    /// Non-mutating preflight probe.
+    ///
+    /// Runs `GET /_cluster/health` over the existing reqwest client (probe
+    /// name `"health"`). When an index is configured, a second probe
+    /// (`"schema"`) issues `HEAD /<index>`: a `404` is reported as a
+    /// [`Skip`](faucet_core::check::ProbeStatus::Skip) ("index not found"),
+    /// any other HTTP response is a pass, and a transport error is a failure.
+    async fn check(
+        &self,
+        ctx: &faucet_core::check::CheckContext,
+    ) -> Result<faucet_core::check::CheckReport, FaucetError> {
+        use faucet_core::check::{CheckReport, Probe};
+
+        // Auth is shared by both probes; if it can't be resolved the whole
+        // check fails on the `health` probe.
+        let auth = match self.resolve_auth().await {
+            Ok(a) => a,
+            Err(e) => {
+                return Ok(CheckReport::single(Probe::fail_hint(
+                    "health",
+                    std::time::Duration::ZERO,
+                    e.to_string(),
+                    "check the configured auth / that a shared auth provider is wired up",
+                )));
+            }
+        };
+
+        let mut probes = Vec::new();
+        let health_hint =
+            "check base_url / auth / that the Elasticsearch cluster is reachable and healthy";
+
+        // ── Probe 1: GET /_cluster/health ───────────────────────────────────
+        // The per-request `.timeout(ctx.timeout)` bounds the call; this crate
+        // has no direct `tokio` dependency so we rely on reqwest's own timeout.
+        let started = std::time::Instant::now();
+        let health_url = format!("{}/_cluster/health", self.config.base_url);
+        let req = Self::apply_auth_value(self.client.get(&health_url), &auth).timeout(ctx.timeout);
+        let health_probe = match req.send().await {
+            Ok(resp) => {
+                if resp.status().is_success() {
+                    Probe::pass("health", started.elapsed())
+                } else {
+                    Probe::fail_hint(
+                        "health",
+                        started.elapsed(),
+                        format!("cluster health returned HTTP {}", resp.status().as_u16()),
+                        health_hint,
+                    )
+                }
+            }
+            Err(e) if e.is_timeout() => {
+                Probe::fail_hint("health", started.elapsed(), "timed out", health_hint)
+            }
+            Err(e) => Probe::fail_hint("health", started.elapsed(), e.to_string(), health_hint),
+        };
+        let health_failed = matches!(
+            health_probe.status,
+            faucet_core::check::ProbeStatus::Fail { .. }
+        );
+        probes.push(health_probe);
+
+        // ── Probe 2 (optional): HEAD /<index> ───────────────────────────────
+        // Only run when the cluster itself is reachable — a transport failure
+        // on the index HEAD would just duplicate the health failure.
+        if !health_failed && !self.config.index.is_empty() {
+            let started = std::time::Instant::now();
+            let index_hint = "check that the index exists / base_url is correct";
+            let index_url = format!("{}/{}", self.config.base_url, self.config.index);
+            let req =
+                Self::apply_auth_value(self.client.head(&index_url), &auth).timeout(ctx.timeout);
+            let schema_probe = match req.send().await {
+                // 404 → index absent: report as Skip, not a failure (it may be
+                // auto-created on first write).
+                Ok(resp) if resp.status().as_u16() == 404 => {
+                    Probe::skip("schema", format!("index '{}' not found", self.config.index))
+                }
+                // Any other HTTP response means the host answered — the index
+                // exists (2xx) or the request was rejected for some non-404
+                // reason; either way the endpoint is reachable.
+                Ok(_) => Probe::pass("schema", started.elapsed()),
+                Err(e) if e.is_timeout() => {
+                    Probe::fail_hint("schema", started.elapsed(), "timed out", index_hint)
+                }
+                Err(e) => Probe::fail_hint("schema", started.elapsed(), e.to_string(), index_hint),
+            };
+            probes.push(schema_probe);
+        }
+
+        Ok(CheckReport { probes })
+    }
+
     /// Write records to Elasticsearch using the `_bulk` API.
     ///
     /// When `config.batch_size > 0` and the input slice is larger than

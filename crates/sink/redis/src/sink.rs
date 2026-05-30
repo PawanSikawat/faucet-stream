@@ -38,6 +38,32 @@ impl faucet_core::Sink for RedisSink {
             .expect("schema serialization")
     }
 
+    /// Non-mutating preflight probe: issue a Redis `PING` over the existing
+    /// multiplexed connection (probe name `"ping"`).
+    async fn check(
+        &self,
+        ctx: &faucet_core::check::CheckContext,
+    ) -> Result<faucet_core::check::CheckReport, FaucetError> {
+        use faucet_core::check::{CheckReport, Probe};
+
+        // MultiplexedConnection is cheaply cloneable; clone to satisfy &self.
+        let mut conn = self.conn.clone();
+        let started = std::time::Instant::now();
+        let hint = "check the Redis url / that the server is reachable and accepting connections";
+
+        let probe = match tokio::time::timeout(
+            ctx.timeout,
+            redis::cmd("PING").query_async::<String>(&mut conn),
+        )
+        .await
+        {
+            Ok(Ok(_)) => Probe::pass("ping", started.elapsed()),
+            Ok(Err(e)) => Probe::fail_hint("ping", started.elapsed(), e.to_string(), hint),
+            Err(_) => Probe::fail_hint("ping", started.elapsed(), "timed out", hint),
+        };
+        Ok(CheckReport::single(probe))
+    }
+
     async fn write_batch(&self, records: &[Value]) -> Result<usize, FaucetError> {
         if records.is_empty() {
             return Ok(0);

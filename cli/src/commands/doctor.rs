@@ -129,7 +129,13 @@ pub async fn run(args: DoctorArgs) -> CliResult<()> {
             serde_json::to_string_pretty(&v).expect("doctor json serializes")
         );
     } else {
-        render_human(cfg_ms, roots.len(), n_children, overall.elapsed(), &invocations);
+        render_human(
+            cfg_ms,
+            roots.len(),
+            n_children,
+            overall.elapsed(),
+            &invocations,
+        );
     }
 
     if failed > 0 {
@@ -150,20 +156,22 @@ async fn probe_invocation(
     let mut probes = Vec::new();
 
     match build_source(&source.kind, source.config.clone(), auth).await {
-        Ok(src) => probes.extend(collect_probes("source", src.connector_name(), ctx, src.check(ctx)).await),
+        Ok(src) => {
+            probes.extend(collect_probes("source", src.connector_name(), ctx, src.check(ctx)).await)
+        }
         Err(e) => probes.push(construct_fail("source", &source.kind, &e)),
     }
 
     match build_sink(&sink.kind, sink.config.clone(), auth).await {
-        Ok(snk) => probes.extend(collect_probes("sink", snk.connector_name(), ctx, snk.check(ctx)).await),
+        Ok(snk) => {
+            probes.extend(collect_probes("sink", snk.connector_name(), ctx, snk.check(ctx)).await)
+        }
         Err(e) => probes.push(construct_fail("sink", &sink.kind, &e)),
     }
 
     if let Some(spec) = state {
         match build_state_store(&spec).await {
-            Ok(st) => {
-                probes.extend(collect_probes("state", &spec.kind, ctx, st.check(ctx)).await)
-            }
+            Ok(st) => probes.extend(collect_probes("state", &spec.kind, ctx, st.check(ctx)).await),
             Err(e) => probes.push(construct_fail("state", &spec.kind, &e)),
         }
     }
@@ -330,7 +338,13 @@ mod tests {
         let invs = vec![inv(vec![
             probe_out("source", "read", ProbeStatus::Pass),
             probe_out("sink", "auth", ProbeStatus::Fail { reason: "x".into() }),
-            probe_out("state", "sentinel", ProbeStatus::Skip { reason: "n/a".into() }),
+            probe_out(
+                "state",
+                "sentinel",
+                ProbeStatus::Skip {
+                    reason: "n/a".into(),
+                },
+            ),
             probe_out("sink", "schema", ProbeStatus::Fail { reason: "y".into() }),
         ])];
         assert_eq!(tally(&invs), (1, 2, 1));
@@ -364,11 +378,20 @@ mod tests {
         }])];
         redact_invocations(&mut invs);
         if let ProbeStatus::Fail { reason } = &invs[0].probes[0].status {
-            assert!(!reason.contains("supersecretvalue"), "reason not redacted: {reason}");
+            assert!(
+                !reason.contains("supersecretvalue"),
+                "reason not redacted: {reason}"
+            );
         } else {
             panic!("expected fail");
         }
-        assert!(!invs[0].probes[0].hint.as_ref().unwrap().contains("supersecretvalue"));
+        assert!(
+            !invs[0].probes[0]
+                .hint
+                .as_ref()
+                .unwrap()
+                .contains("supersecretvalue")
+        );
     }
 
     #[test]

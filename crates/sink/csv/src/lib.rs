@@ -7,6 +7,7 @@
 //! Writes JSON records to a CSV file with configurable delimiter and headers.
 
 pub mod config;
+pub(crate) mod probe;
 pub mod sink;
 
 pub use faucet_core::{FaucetError, Sink};

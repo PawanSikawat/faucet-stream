@@ -87,6 +87,33 @@ impl faucet_core::Sink for S3Sink {
         serde_json::to_value(faucet_core::schema_for!(S3SinkConfig)).expect("schema serialization")
     }
 
+    /// Preflight probe: confirm the configured bucket is reachable and the
+    /// credentials work via a non-mutating `HeadBucket` call. Uploads nothing.
+    async fn check(
+        &self,
+        ctx: &faucet_core::check::CheckContext,
+    ) -> Result<faucet_core::check::CheckReport, FaucetError> {
+        use faucet_core::check::{CheckReport, Probe};
+
+        let started = std::time::Instant::now();
+        let probe = match tokio::time::timeout(
+            ctx.timeout,
+            self.client.head_bucket().bucket(&self.config.bucket).send(),
+        )
+        .await
+        {
+            Ok(Ok(_)) => Probe::pass("auth", started.elapsed()),
+            Ok(Err(e)) => Probe::fail_hint(
+                "auth",
+                started.elapsed(),
+                e.to_string(),
+                "check bucket name, credentials, and network",
+            ),
+            Err(_) => Probe::fail("network", started.elapsed(), "timed out"),
+        };
+        Ok(CheckReport::single(probe))
+    }
+
     async fn write_batch(&self, records: &[Value]) -> Result<usize, FaucetError> {
         if records.is_empty() {
             return Ok(0);

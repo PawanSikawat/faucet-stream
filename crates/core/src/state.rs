@@ -128,10 +128,9 @@ impl StateStore for MemoryStateStore {
         _ctx: &crate::check::CheckContext,
     ) -> Result<crate::check::CheckReport, FaucetError> {
         // In-process map — always reachable.
-        Ok(crate::check::CheckReport::single(crate::check::Probe::pass(
-            "sentinel",
-            std::time::Duration::ZERO,
-        )))
+        Ok(crate::check::CheckReport::single(
+            crate::check::Probe::pass("sentinel", std::time::Duration::ZERO),
+        ))
     }
 }
 
@@ -606,7 +605,10 @@ mod tests {
     #[tokio::test]
     async fn memory_check_passes() {
         let s = MemoryStateStore::new();
-        let report = s.check(&crate::check::CheckContext::default()).await.unwrap();
+        let report = s
+            .check(&crate::check::CheckContext::default())
+            .await
+            .unwrap();
         assert_eq!(report.failed_count(), 0);
         assert!(
             report
@@ -620,7 +622,10 @@ mod tests {
     async fn file_check_passes_for_writable_root() {
         let dir = TempDir::new().unwrap();
         let s = FileStateStore::new(dir.path());
-        let report = s.check(&crate::check::CheckContext::default()).await.unwrap();
+        let report = s
+            .check(&crate::check::CheckContext::default())
+            .await
+            .unwrap();
         assert_eq!(report.failed_count(), 0, "writable root should pass");
         // The sentinel probe must leave no residue.
         let leftovers: Vec<_> = std::fs::read_dir(dir.path()).unwrap().collect();
@@ -634,7 +639,10 @@ mod tests {
         let file = dir.path().join("not_a_dir");
         std::fs::write(&file, b"x").unwrap();
         let s = FileStateStore::new(file.join("state"));
-        let report = s.check(&crate::check::CheckContext::default()).await.unwrap();
+        let report = s
+            .check(&crate::check::CheckContext::default())
+            .await
+            .unwrap();
         assert_eq!(report.failed_count(), 1, "unusable root should fail");
     }
 }

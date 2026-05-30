@@ -159,6 +159,26 @@ impl faucet_core::Sink for CsvSink {
         }
         Ok(())
     }
+
+    /// Preflight probe for `faucet doctor`. Verifies the configured output
+    /// path's parent directory exists and is writable by creating, then
+    /// immediately removing, a uniquely-named temp file there. Never touches
+    /// the user's actual output file, so it is fully idempotent.
+    async fn check(
+        &self,
+        _ctx: &faucet_core::check::CheckContext,
+    ) -> Result<faucet_core::check::CheckReport, FaucetError> {
+        use faucet_core::check::CheckReport;
+        let path = self.config.path.clone();
+        // The filesystem probe is synchronous; run it on a blocking thread to
+        // stay off the async runtime, matching how the sink does its I/O.
+        let probe = tokio::task::spawn_blocking(move || {
+            crate::probe::probe_parent_writable(&path, std::time::Instant::now())
+        })
+        .await
+        .map_err(|e| FaucetError::Sink(format!("CSV check task failed: {e}")))?;
+        Ok(CheckReport::single(probe))
+    }
 }
 
 /// Synchronous CSV writing logic, run inside `spawn_blocking`.
@@ -353,6 +373,36 @@ mod tests {
         let path = tmp.path().to_str().unwrap().to_string();
         let sink = CsvSink::new(CsvSinkConfig::new(&path));
         assert!(sink.flush().await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn check_passes_when_parent_dir_exists() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("out.csv");
+        let path_str = path.to_str().unwrap().to_string();
+        let sink = CsvSink::new(CsvSinkConfig::new(&path_str));
+        let report = sink
+            .check(&faucet_core::check::CheckContext::default())
+            .await
+            .unwrap();
+        assert_eq!(report.failed_count(), 0);
+        assert_eq!(report.probes[0].name, "io");
+        // The probe must not have created the user's output file.
+        assert!(!path.exists(), "check() must not create the output file");
+    }
+
+    #[tokio::test]
+    async fn check_fails_when_parent_dir_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("nope").join("out.csv");
+        let path_str = path.to_str().unwrap().to_string();
+        let sink = CsvSink::new(CsvSinkConfig::new(&path_str));
+        let report = sink
+            .check(&faucet_core::check::CheckContext::default())
+            .await
+            .unwrap();
+        assert_eq!(report.failed_count(), 1);
+        assert_eq!(report.probes[0].name, "io");
     }
 
     #[cfg(feature = "compression")]

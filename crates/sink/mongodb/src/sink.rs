@@ -48,6 +48,27 @@ impl faucet_core::Sink for MongoSink {
             .expect("schema serialization")
     }
 
+    /// Non-mutating preflight probe: run the `ping` admin command against the
+    /// configured database via the existing client (probe name `"ping"`).
+    async fn check(
+        &self,
+        ctx: &faucet_core::check::CheckContext,
+    ) -> Result<faucet_core::check::CheckReport, FaucetError> {
+        use faucet_core::check::{CheckReport, Probe};
+
+        let started = std::time::Instant::now();
+        let hint = "check connection_uri / credentials / that the MongoDB server is reachable";
+
+        let db = self.client.database(&self.config.database);
+        let probe =
+            match tokio::time::timeout(ctx.timeout, db.run_command(bson::doc! {"ping": 1})).await {
+                Ok(Ok(_)) => Probe::pass("ping", started.elapsed()),
+                Ok(Err(e)) => Probe::fail_hint("ping", started.elapsed(), e.to_string(), hint),
+                Err(_) => Probe::fail_hint("ping", started.elapsed(), "timed out", hint),
+            };
+        Ok(CheckReport::single(probe))
+    }
+
     /// Write records to MongoDB.
     ///
     /// When `config.batch_size > 0` and the input slice is larger than
