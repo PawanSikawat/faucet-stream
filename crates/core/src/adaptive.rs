@@ -275,7 +275,7 @@ impl AimdController {
 
     fn bump_log(&mut self, direction: AdjustDirection, reason: AdjustReason) {
         self.adjustments += 1;
-        if self.log_every > 0 && self.adjustments % self.log_every as u64 == 0 {
+        if self.log_every > 0 && self.adjustments.is_multiple_of(self.log_every as u64) {
             tracing::info!(
                 current = self.current,
                 direction = direction.as_str(),
@@ -441,5 +441,42 @@ mod controller_tests {
         assert_eq!(c.current(), 500);
         // p50 = 500ms in deadband [250,600] -> no change
         assert!(c.observe(Observation { batch_len: 500, errors: 0, latency: Duration::from_millis(500) }).is_none());
+    }
+
+    #[test]
+    fn error_during_cooldown_reshrinks_and_rearms() {
+        // The spec's distinctive invariant: error shrink fires BEFORE the
+        // cooldown gate, so a mid-cooldown error shrinks again + re-arms.
+        let mut c = AimdController::new(&cfg(), 800);
+        let bad = Observation { batch_len: 100, errors: 50, latency: Duration::from_millis(1) };
+        let a = c.observe(bad).unwrap(); // 800 -> 400, cooldown armed (2)
+        assert_eq!(a.new_size, 400);
+        assert!(c.cooldown_active());
+        // Still in cooldown, but another error shrinks again (400 -> 200) and re-arms.
+        let a = c.observe(bad).unwrap();
+        assert_eq!(a.new_size, 200);
+        assert_eq!(a.reason, AdjustReason::Error);
+        assert!(c.cooldown_active());
+    }
+
+    #[test]
+    fn p50_uses_median_of_multi_sample_window() {
+        let mut c = AimdController::new(
+            &serde_json::from_value(serde_json::json!({
+                "enabled": true, "min": 100, "max": 1000, "increase_step": 100,
+                "decrease_factor": 0.5, "cooldown_batches": 0,
+                "target_latency_ms": 500, "latency_window": 5
+            })).unwrap(),
+            800,
+        );
+        // Feed five fast samples (10ms): p50 = 10ms < 250 -> grows each time.
+        for _ in 0..5 {
+            c.observe(Observation { batch_len: 800, errors: 0, latency: Duration::from_millis(10) });
+        }
+        assert_eq!(c.p50_latency_ms(), Some(10));
+        // One slow sample doesn't move the median of a 5-window enough to flip it
+        // (sorted [10,10,10,10,900] -> p50 = 10), so still in grow/deadband territory.
+        c.observe(Observation { batch_len: 800, errors: 0, latency: Duration::from_millis(900) });
+        assert_eq!(c.p50_latency_ms(), Some(10));
     }
 }
