@@ -11,3 +11,5 @@ pub mod metrics;
 pub mod observability;
 pub mod server;
 pub mod state;
+
+pub use config::ServeConfig;
