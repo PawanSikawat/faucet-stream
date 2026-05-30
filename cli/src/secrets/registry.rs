@@ -7,6 +7,7 @@
 
 use std::borrow::Cow;
 use std::collections::HashSet;
+use std::io::{self, Write};
 use std::sync::{OnceLock, RwLock};
 
 /// Values shorter than this are not registered — masking 1–3 char strings
@@ -47,6 +48,49 @@ pub fn redact(input: &str) -> Cow<'_, str> {
     }
 }
 
+/// An `io::Write` adapter that runs [`redact`] over every chunk before
+/// forwarding it to the inner writer. Wrapping the tracing subscriber's
+/// writer in this scrubs secret values out of *all* CLI log/diagnostic output
+/// at the I/O boundary, regardless of which field carried the value.
+pub struct RedactingWriter<W> {
+    inner: W,
+}
+
+impl<W: Write> RedactingWriter<W> {
+    pub fn new(inner: W) -> Self {
+        Self { inner }
+    }
+}
+
+impl<W: Write> Write for RedactingWriter<W> {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        let text = String::from_utf8_lossy(buf);
+        let scrubbed = redact(&text);
+        self.inner.write_all(scrubbed.as_bytes())?;
+        // Report the original length consumed — the tracing fmt layer treats a
+        // short write as an error, and the scrubbed bytes are an internal detail.
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.inner.flush()
+    }
+}
+
+/// `MakeWriter` that produces a [`RedactingWriter`] over stderr, for the
+/// tracing fmt subscriber. Only needed when the `observability` feature wires
+/// a subscriber (the sole place the CLI formats tracing output).
+#[cfg(feature = "observability")]
+pub struct RedactingMakeWriter;
+
+#[cfg(feature = "observability")]
+impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for RedactingMakeWriter {
+    type Writer = RedactingWriter<std::io::Stderr>;
+    fn make_writer(&'a self) -> Self::Writer {
+        RedactingWriter::new(std::io::stderr())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -78,5 +122,19 @@ mod tests {
         clear();
         register("abc"); // < MIN_REDACT_LEN
         assert_eq!(redact("abc def"), "abc def");
+    }
+
+    #[test]
+    #[serial]
+    fn writer_scrubs_secret_on_write() {
+        clear();
+        register("hunter2pass");
+        let mut buf: Vec<u8> = Vec::new();
+        {
+            let mut w = RedactingWriter::new(&mut buf);
+            write!(w, "token={} done", "hunter2pass").unwrap();
+            w.flush().unwrap();
+        }
+        assert_eq!(String::from_utf8(buf).unwrap(), "token=*** done");
     }
 }
