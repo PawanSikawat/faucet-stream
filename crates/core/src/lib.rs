@@ -14,6 +14,7 @@
 //! - [`schema::infer_schema`] — JSON Schema inference from record samples
 
 pub mod auth;
+pub mod check;
 pub mod config;
 pub mod dlq;
 pub mod error;
@@ -35,6 +36,7 @@ pub mod util;
 pub mod compression;
 
 pub use auth::{AuthProvider, AuthReference, AuthSpec, Credential, SharedAuthProvider};
+pub use check::{CheckContext, CheckReport, Probe, ProbeStatus};
 pub use dlq::{DlqConfig, DlqReason, DlqStats, OnBatchError, build_envelope};
 pub use error::FaucetError;
 #[cfg(feature = "quality")]
