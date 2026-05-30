@@ -157,6 +157,36 @@ pub trait Source: Send + Sync {
     fn connector_name(&self) -> &'static str {
         crate::observability::strip_type_name(std::any::type_name::<Self>())
     }
+
+    /// Run a fast, non-mutating preflight probe (used by `faucet doctor`).
+    ///
+    /// The default pulls a **single page** via
+    /// [`stream_pages`](Self::stream_pages) and reports success/failure — it
+    /// exercises the real read path (DNS, TLS, auth, the first request, the
+    /// first-record decode) but never paginates the full dataset and never
+    /// repeats. The page stream is dropped immediately after the first page.
+    ///
+    /// Sources whose first page *blocks* waiting for inbound data (webhook,
+    /// websocket) or has *side effects* (CDC consuming WAL) override this with a
+    /// cheaper, side-effect-free probe. Probe-level failures are returned as a
+    /// [`ProbeStatus::Fail`](crate::check::ProbeStatus) inside `Ok(report)`.
+    async fn check(
+        &self,
+        ctx: &crate::check::CheckContext,
+    ) -> Result<crate::check::CheckReport, FaucetError> {
+        use crate::check::{CheckReport, Probe};
+        use futures::StreamExt;
+
+        let empty = std::collections::HashMap::new();
+        let start = std::time::Instant::now();
+        let mut pages = self.stream_pages(&empty, 1);
+        let probe = match tokio::time::timeout(ctx.timeout, pages.next()).await {
+            Err(_) => Probe::fail("read", start.elapsed(), "timed out fetching first page"),
+            Ok(None) | Ok(Some(Ok(_))) => Probe::pass("read", start.elapsed()),
+            Ok(Some(Err(e))) => Probe::fail("read", start.elapsed(), e.to_string()),
+        };
+        Ok(CheckReport::single(probe))
+    }
 }
 
 /// Per-row outcome from [`Sink::write_batch_partial`].
@@ -210,6 +240,23 @@ pub trait Sink: Send + Sync {
     /// `connector` attribute on spans. See `Source::connector_name`.
     fn connector_name(&self) -> &'static str {
         crate::observability::strip_type_name(std::any::type_name::<Self>())
+    }
+
+    /// Run a fast, non-mutating preflight probe (used by `faucet doctor`).
+    ///
+    /// Unlike sources, a sink has no non-mutating "first page" equivalent
+    /// (`write_batch` mutates the destination), so the default returns
+    /// [`CheckReport::not_implemented`](crate::check::CheckReport::not_implemented).
+    /// Built-in sinks override this with a connect / auth / metadata probe.
+    ///
+    /// The probe **MUST be idempotent and side-effect-free** — no inserts, no
+    /// residual rows or objects — and must never put credentials or connection
+    /// strings in a probe `reason`/`hint`.
+    async fn check(
+        &self,
+        _ctx: &crate::check::CheckContext,
+    ) -> Result<crate::check::CheckReport, FaucetError> {
+        Ok(crate::check::CheckReport::not_implemented())
     }
 }
 
@@ -579,5 +626,70 @@ mod tests {
         let outcomes = sink.write_batch_partial(&records).await.unwrap();
         assert_eq!(outcomes.len(), 2);
         assert!(outcomes.iter().all(|o| o.is_ok()));
+    }
+
+    // ── check() tests ─────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn source_default_check_pulls_first_page_and_passes() {
+        let source = MockSource {
+            records: vec![json!({"id": 1}), json!({"id": 2})],
+        };
+        let report = source
+            .check(&crate::check::CheckContext::default())
+            .await
+            .unwrap();
+        assert_eq!(report.failed_count(), 0);
+        assert!(report.probes.iter().any(|p| p.name == "read"
+            && matches!(p.status, crate::check::ProbeStatus::Pass)));
+    }
+
+    #[tokio::test]
+    async fn source_default_check_passes_on_empty_source() {
+        let source = MockSource { records: vec![] };
+        let report = source
+            .check(&crate::check::CheckContext::default())
+            .await
+            .unwrap();
+        // Reachable but empty is still a healthy source.
+        assert_eq!(report.failed_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn source_default_check_fails_when_fetch_errors() {
+        let source = FailingSource;
+        let report = source
+            .check(&crate::check::CheckContext::default())
+            .await
+            .unwrap();
+        assert_eq!(report.failed_count(), 1);
+        assert!(report.probes.iter().any(|p| p.name == "read"
+            && matches!(p.status, crate::check::ProbeStatus::Fail { .. })));
+    }
+
+    #[tokio::test]
+    async fn sink_default_check_is_not_implemented_skip() {
+        let sink = MockSink::new();
+        let report = sink
+            .check(&crate::check::CheckContext::default())
+            .await
+            .unwrap();
+        assert_eq!(report.probes.len(), 1);
+        assert!(matches!(
+            report.probes[0].status,
+            crate::check::ProbeStatus::Skip { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn source_check_callable_through_trait_object() {
+        let source: Box<dyn Source> = Box::new(MockSource {
+            records: vec![json!({"id": 1})],
+        });
+        let report = source
+            .check(&crate::check::CheckContext::default())
+            .await
+            .unwrap();
+        assert_eq!(report.failed_count(), 0);
     }
 }
