@@ -23,6 +23,7 @@ pub mod expand;
 pub mod init_template;
 pub mod interpolate;
 pub mod merge;
+pub mod obs;
 pub mod registry;
 #[cfg(feature = "schedule")]
 pub mod schedule;

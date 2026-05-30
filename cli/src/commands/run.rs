@@ -6,34 +6,6 @@ use crate::config::PipelineConfig;
 use crate::error::{CliError, CliResult};
 use crate::executor::{ExecuteOptions, run_expanded};
 use crate::expand::expand;
-use faucet_core::{ObservabilityConfig, PrometheusConfig, TracingConfig, install_observability};
-
-/// Resolve the effective `tracing-subscriber` env-filter directive using
-/// the documented precedence:
-///   `--log-level` flag > `FAUCET_LOG` > `RUST_LOG` > YAML `observability.tracing.level` > `None`
-///
-/// Returns `None` when nothing is set (caller falls back to the default).
-///
-/// Note: `cli_flag` is `None` when called from `run` because the top-level
-/// `Cli.log_level` (already applied by `main.rs`) is not forwarded through
-/// `RunArgs`. Pass `Some(level)` in tests or future call-sites that do have
-/// the CLI value available.
-fn resolve_tracing_level(cli_flag: Option<&str>, yaml_level: Option<&str>) -> Option<String> {
-    if let Some(l) = cli_flag {
-        return Some(l.to_string());
-    }
-    if let Ok(l) = std::env::var("FAUCET_LOG")
-        && !l.is_empty()
-    {
-        return Some(l);
-    }
-    if let Ok(l) = std::env::var("RUST_LOG")
-        && !l.is_empty()
-    {
-        return Some(l);
-    }
-    yaml_level.map(|s| s.to_string())
-}
 
 /// Execute the `run` subcommand.
 pub async fn run(args: RunArgs) -> CliResult<()> {
@@ -64,48 +36,7 @@ pub async fn run(args: RunArgs) -> CliResult<()> {
         .await?
     };
 
-    // Install observability (Prometheus + tracing) before any pipeline work.
-    // `main.rs` already called `install_tracing` from `Cli.log_level`, so
-    // the tracing subscriber is likely already set; `install_observability`
-    // is idempotent — it logs a warning and continues rather than panicking.
-    //
-    // Tracing-level precedence for the YAML-block tracing config:
-    //   --log-level flag (in Cli, not in RunArgs) > FAUCET_LOG > RUST_LOG
-    //   > YAML observability.tracing.level > None (main.rs default applies)
-    let level = resolve_tracing_level(
-        // `RunArgs` does not carry `log_level`; the top-level `Cli.log_level`
-        // (already consumed in main.rs) is not forwarded here, so pass `None`.
-        None,
-        cfg.observability
-            .as_ref()
-            .and_then(|o| o.tracing.as_ref())
-            .and_then(|t| t.level.as_deref()),
-    );
-    let obs_cfg = ObservabilityConfig {
-        prometheus: cfg
-            .observability
-            .as_ref()
-            .and_then(|o| o.prometheus.as_ref())
-            .map(|p| PrometheusConfig {
-                listen: p.listen.clone(),
-                buckets: p.buckets.clone(),
-            }),
-        tracing: level.map(|l| TracingConfig { level: l }),
-    };
-    let report = install_observability(&obs_cfg)?;
-    if let Some(addr) = report.prometheus_listen.as_deref() {
-        tracing::info!("Prometheus /metrics listening on {addr}");
-    }
-    if report.prometheus_already_installed {
-        tracing::warn!(
-            "Prometheus recorder already installed; metrics route through the existing recorder"
-        );
-    }
-    if report.tracing_already_installed {
-        tracing::warn!(
-            "tracing subscriber already installed; logs route through the existing subscriber"
-        );
-    }
+    crate::obs::install(&cfg)?;
 
     let pipeline_name = cfg.name.clone().unwrap_or_else(|| {
         resolved_config_path
@@ -166,81 +97,4 @@ pub async fn run(args: RunArgs) -> CliResult<()> {
         return Err(CliError::PipelineHadFailures { count: failed });
     }
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    // The env tests share process-global state — serialize them via a mutex.
-    use std::sync::Mutex;
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
-
-    fn with_clean_env<F: FnOnce()>(f: F) {
-        let _g = ENV_LOCK.lock().unwrap();
-        // Rust 2024: set_var/remove_var are unsafe (touch process-wide state).
-        unsafe {
-            std::env::remove_var("FAUCET_LOG");
-            std::env::remove_var("RUST_LOG");
-        }
-        f();
-    }
-
-    #[test]
-    fn cli_flag_beats_env_and_yaml() {
-        with_clean_env(|| {
-            unsafe {
-                std::env::set_var("FAUCET_LOG", "debug");
-                std::env::set_var("RUST_LOG", "trace");
-            }
-            assert_eq!(
-                resolve_tracing_level(Some("error"), Some("info")).as_deref(),
-                Some("error")
-            );
-        });
-    }
-
-    #[test]
-    fn faucet_log_beats_rust_log_and_yaml() {
-        with_clean_env(|| {
-            unsafe {
-                std::env::set_var("FAUCET_LOG", "debug");
-                std::env::set_var("RUST_LOG", "trace");
-            }
-            assert_eq!(
-                resolve_tracing_level(None, Some("info")).as_deref(),
-                Some("debug")
-            );
-        });
-    }
-
-    #[test]
-    fn rust_log_beats_yaml() {
-        with_clean_env(|| {
-            unsafe {
-                std::env::set_var("RUST_LOG", "trace");
-            }
-            assert_eq!(
-                resolve_tracing_level(None, Some("info")).as_deref(),
-                Some("trace")
-            );
-        });
-    }
-
-    #[test]
-    fn yaml_used_when_no_flag_or_env() {
-        with_clean_env(|| {
-            assert_eq!(
-                resolve_tracing_level(None, Some("info")).as_deref(),
-                Some("info")
-            );
-        });
-    }
-
-    #[test]
-    fn none_returned_when_nothing_set() {
-        with_clean_env(|| {
-            assert_eq!(resolve_tracing_level(None, None), None);
-        });
-    }
 }
