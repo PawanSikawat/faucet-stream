@@ -22,6 +22,20 @@ pub async fn run(args: SchemaArgs) -> CliResult<()> {
             serde_json::to_value(quality_schema)
                 .unwrap_or_else(|_| serde_json::json!({"type": "object"}))
         }
+        SchemaTarget::Secrets => serde_json::json!({
+            "title": "Secrets-manager interpolation grammar",
+            "schemes": {
+                "vault":    { "syntax": "${vault:<path>[#field]}", "auth": ["VAULT_ADDR", "VAULT_TOKEN", "VAULT_NAMESPACE (optional)"] },
+                "aws-sm":   { "syntax": "${aws-sm:<name-or-ARN>[#field]}", "auth": ["aws-config default credential chain"] },
+                "gcp-sm":   { "syntax": "${gcp-sm:projects/<p>/secrets/<s>/versions/<v>}", "auth": ["Application Default Credentials"] },
+                "azure-kv": { "syntax": "${azure-kv:<vault>/<secret>[/<version>]}", "auth": ["AZURE_* env / managed identity / az login"] }
+            },
+            "notes": [
+                "#field parses the secret as JSON and extracts one key (vault, aws-sm).",
+                "Resolved at config load; fetched concurrently and de-duplicated; never persisted.",
+                "Build with --features secrets (or per-backend secrets-vault / secrets-aws-sm / ...)."
+            ]
+        }),
     };
     let body = serde_json::to_string_pretty(&schema).unwrap_or_else(|_| schema.to_string());
     println!("{body}");

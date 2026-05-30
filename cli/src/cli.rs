@@ -78,6 +78,10 @@ pub struct ValidateArgs {
     /// Skip auto-loading `.env` from cwd.
     #[arg(long)]
     pub no_env_file: bool,
+    /// Validate grammar and structure only — skip fetching from secrets
+    /// managers (no network / credentials needed).
+    #[arg(long)]
+    pub no_secrets: bool,
 }
 
 /// `faucet schema` arguments.
@@ -111,6 +115,8 @@ pub enum SchemaTarget {
     /// JSON Schema for the `quality:` block.
     #[cfg(feature = "quality")]
     Quality,
+    /// Grammar reference for secrets-manager interpolation directives.
+    Secrets,
 }
 
 /// `faucet preview` arguments.

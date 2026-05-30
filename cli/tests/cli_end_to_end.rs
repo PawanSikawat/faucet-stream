@@ -478,8 +478,12 @@ fn shipped_example_yamls_pass_validate() {
         for (k, v) in env_placeholders {
             cmd.env(k, v);
         }
+        // `--no-secrets` validates grammar / structure / expansion without
+        // resolving secrets-manager directives (e.g. `${vault:...}`), which
+        // would otherwise require live backends unavailable in CI. It is a
+        // no-op for the (majority) of examples that reference no secrets.
         cmd.current_dir(workdir.path())
-            .args(["validate"])
+            .args(["validate", "--no-secrets"])
             .arg(&path)
             .assert()
             .success();

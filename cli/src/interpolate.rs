@@ -74,7 +74,7 @@ pub fn interpolate_record(input: &str, ctx: &HashMap<String, Value>) -> CliResul
 
 /// Walk `input` byte-by-byte, calling `resolve` on each `${...}` body.
 /// `resolve` returns `Some(s)` to substitute, or `None` to keep verbatim.
-fn rewrite<F>(input: &str, mut resolve: F) -> CliResult<String>
+pub(crate) fn rewrite<F>(input: &str, mut resolve: F) -> CliResult<String>
 where
     F: FnMut(&str) -> CliResult<Option<String>>,
 {

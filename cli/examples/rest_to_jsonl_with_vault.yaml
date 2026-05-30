@@ -1,0 +1,18 @@
+version: 1
+name: rest-to-jsonl-with-vault
+# Requires: VAULT_ADDR + VAULT_TOKEN in the environment, and a KV v2 secret at
+# secret/data/faucet/api with a `token` field. Build with --features secrets-vault.
+pipeline:
+  source:
+    type: rest
+    config:
+      base_url: https://api.example.com
+      path: /v1/items
+      auth:
+        type: bearer
+        config:
+          token: "${vault:secret/data/faucet/api#token}"
+  sink:
+    type: jsonl
+    config:
+      path: ./out/items.jsonl

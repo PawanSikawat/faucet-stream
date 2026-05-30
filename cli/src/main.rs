@@ -28,10 +28,11 @@ async fn main() {
 
 #[cfg(feature = "observability")]
 fn install_tracing(level: &str) {
+    use faucet_cli::secrets::registry::RedactingMakeWriter;
     let filter = EnvFilter::try_new(level).unwrap_or_else(|_| EnvFilter::new("info"));
     let _ = tracing_subscriber::fmt()
         .with_env_filter(filter)
-        .with_writer(std::io::stderr)
+        .with_writer(RedactingMakeWriter)
         .try_init();
 }
 

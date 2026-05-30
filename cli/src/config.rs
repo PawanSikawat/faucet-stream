@@ -347,6 +347,10 @@ impl PipelineConfig {
     /// Load a pipeline config from disk. The file extension determines the
     /// parser: `.yaml` / `.yml` → YAML, `.json` → JSON. Other extensions are
     /// rejected.
+    ///
+    /// Secret directives (`${vault:…}`, `${aws-sm:…}`, etc.) are **not**
+    /// resolved by this path. If any are present the call returns
+    /// `CliError::SecretsRequireAsyncLoad` — use [`Self::from_path_async`] instead.
     pub fn from_path(path: impl AsRef<Path>) -> CliResult<Self> {
         let path = path.as_ref();
         let raw = std::fs::read_to_string(path).map_err(|source| CliError::ReadConfig {
@@ -354,7 +358,37 @@ impl PipelineConfig {
             source,
         })?;
         let interpolated = interpolate(&raw)?;
+        let cfg = Self::from_text(&interpolated, path)?;
+        // Secret directives need the async resolver path; never let them survive
+        // into a connector config as literal `${vault:…}` text.
+        crate::secrets::ensure_no_secret_directives(&cfg)?;
+        Ok(cfg)
+    }
+
+    /// Like [`Self::from_path`] but does not reject secret directives — they are
+    /// left unresolved. Used by `validate --no-secrets`.
+    pub fn from_path_tolerating_secrets(path: impl AsRef<Path>) -> CliResult<Self> {
+        let path = path.as_ref();
+        let raw = std::fs::read_to_string(path).map_err(|source| CliError::ReadConfig {
+            path: path.to_path_buf(),
+            source,
+        })?;
+        let interpolated = interpolate(&raw)?;
         Self::from_text(&interpolated, path)
+    }
+
+    /// Async load path: like [`Self::from_path`] but resolves secret-manager
+    /// directives (`${vault:…}`, `${aws-sm:…}`, …) as a final stage.
+    pub async fn from_path_async(path: impl AsRef<Path>) -> CliResult<Self> {
+        let path = path.as_ref();
+        let raw = std::fs::read_to_string(path).map_err(|source| CliError::ReadConfig {
+            path: path.to_path_buf(),
+            source,
+        })?;
+        let interpolated = interpolate(&raw)?;
+        let mut cfg = Self::from_text(&interpolated, path)?;
+        crate::secrets::resolve_secrets(&mut cfg).await?;
+        Ok(cfg)
     }
 
     /// Parse an already-interpolated config string. `path` is only used for
@@ -886,5 +920,43 @@ pipeline:
             cfg.pipeline.source.as_ref().unwrap().config["url"],
             "https://api.example.com/v1"
         );
+    }
+
+    #[test]
+    fn sync_from_path_errors_on_secret_directive() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("p.yaml");
+        std::fs::write(
+            &path,
+            r#"
+version: 1
+pipeline:
+  source: { type: rest, config: { url: "${vault:secret/x}" } }
+  sink:   { type: jsonl, config: { path: ./o.jsonl } }
+"#,
+        )
+        .unwrap();
+        match PipelineConfig::from_path(&path).unwrap_err() {
+            CliError::SecretsRequireAsyncLoad => {}
+            other => panic!("expected SecretsRequireAsyncLoad, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn async_from_path_loads_without_secrets() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("p.yaml");
+        std::fs::write(
+            &path,
+            r#"
+version: 1
+pipeline:
+  source: { type: rest, config: { base_url: https://x } }
+  sink:   { type: jsonl, config: { path: ./o.jsonl } }
+"#,
+        )
+        .unwrap();
+        let cfg = PipelineConfig::from_path_async(&path).await.unwrap();
+        assert_eq!(cfg.version, 1);
     }
 }

@@ -6,6 +6,7 @@
 
 [![Crates.io](https://img.shields.io/crates/v/faucet-stream.svg)](https://crates.io/crates/faucet-stream)
 [![Docs.rs](https://docs.rs/faucet-stream/badge.svg)](https://docs.rs/faucet-stream)
+[![Guide](https://img.shields.io/badge/guide-pawansikawat.github.io-1f6feb)](https://pawansikawat.github.io/faucet-stream/)
 [![CI](https://github.com/PawanSikawat/faucet-stream/actions/workflows/ci.yml/badge.svg)](https://github.com/PawanSikawat/faucet-stream/actions/workflows/ci.yml)
 [![Coverage](https://codecov.io/gh/PawanSikawat/faucet-stream/branch/main/graph/badge.svg)](https://codecov.io/gh/PawanSikawat/faucet-stream)
 [![Downloads](https://img.shields.io/crates/d/faucet-stream.svg)](https://crates.io/crates/faucet-stream)
@@ -30,8 +31,9 @@ can drop on any box or a library you compile in.
 - **A runtime, not just connectors** — incremental + resumable replication,
   PostgreSQL change-data-capture, built-in data-quality checks (13 per-record and
   per-batch assertions with quarantine routing and abort policies), dead-letter
-  queues, automatic retries, and built-in Prometheus metrics + `tracing` spans,
-  all with zero per-connector code.
+  queues, automatic retries, secrets-manager interpolation (`${vault:…}`,
+  `${aws-sm:…}`, `${gcp-sm:…}`, `${azure-kv:…}`), and built-in Prometheus
+  metrics + `tracing` spans, all with zero per-connector code.
 - **Pay only for what you use** — every connector is a Cargo feature, so a slim
   build can be just REST + JSONL, or pull in all 35 connectors with `--features full`.
 

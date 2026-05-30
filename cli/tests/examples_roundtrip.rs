@@ -19,12 +19,17 @@ fn examples_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples")
 }
 
-/// Returns `true` when the error is a missing credential (env var / file) —
-/// these are expected in environments without secrets and should be skipped.
+/// Returns `true` when the error is a missing credential (env var / file) or a
+/// secrets-manager directive that the synchronous loader cannot resolve — both
+/// are expected in environments without those resources and should be skipped.
+/// (Examples that reference `${vault:…}` etc. are still structurally validated
+/// by the `shipped_example_yamls_pass_validate` test via `validate --no-secrets`.)
 fn is_credential_error(e: &CliError) -> bool {
     matches!(
         e,
-        CliError::MissingEnvVar { .. } | CliError::ReadInterpolatedFile { .. }
+        CliError::MissingEnvVar { .. }
+            | CliError::ReadInterpolatedFile { .. }
+            | CliError::SecretsRequireAsyncLoad
     )
 }
 

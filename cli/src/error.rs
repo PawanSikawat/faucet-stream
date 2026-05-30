@@ -255,11 +255,132 @@ pub enum CliError {
     /// silently producing a partial result.
     #[error("internal error: {0}")]
     Internal(String),
+
+    /// A secret-manager directive used a scheme whose backend feature was not
+    /// compiled into this binary.
+    #[error(
+        "secret directive uses scheme '{scheme}' but this binary was built without \
+         the `secrets-{scheme}` feature — rebuild with `--features secrets-{scheme}` (or `secrets`)"
+    )]
+    SecretBackendDisabled { scheme: String },
+
+    /// The secrets manager has no secret at the given reference.
+    #[error("secret '{reference}' not found in {scheme}")]
+    SecretNotFound { scheme: String, reference: String },
+
+    /// The secret fetch failed (network / API error).
+    #[error("failed to fetch secret '{reference}' from {scheme}: {source}")]
+    SecretFetchFailed {
+        scheme: String,
+        reference: String,
+        #[source]
+        source: Box<dyn std::error::Error + Send + Sync>,
+    },
+
+    /// No ambient credentials were available for the backend.
+    #[error("could not authenticate to {scheme}: {hint}")]
+    SecretAuthFailed { scheme: String, hint: String },
+
+    /// A `#field` selector was used on a secret that is not JSON.
+    #[error("secret '{reference}' from {scheme} is not JSON, but a '#field' selector was used")]
+    SecretNotJson { scheme: String, reference: String },
+
+    /// A `#field` selector named a key absent from the secret JSON.
+    #[error(
+        "secret '{reference}' from {scheme} has no field '{field}' (available: {})",
+        if available.is_empty() { String::from("(none — secret is an empty object)") } else { available.join(", ") }
+    )]
+    SecretFieldMissing {
+        scheme: String,
+        reference: String,
+        field: String,
+        available: Vec<String>,
+    },
+
+    /// A secret directive was found while loading via the synchronous path.
+    #[error(
+        "config references a secrets manager (${{vault:…}} / ${{aws-sm:…}} / …) which requires \
+         the async load path — load via `faucet run`/`validate`/`preview` rather than the sync API"
+    )]
+    SecretsRequireAsyncLoad,
 }
 
 impl From<faucet_core::InstallError> for CliError {
     fn from(e: faucet_core::InstallError) -> Self {
         CliError::Observability(e.to_string())
+    }
+}
+
+#[cfg(test)]
+mod secrets_error_tests {
+    use super::*;
+
+    #[test]
+    fn secret_errors_render_reference_not_value() {
+        let e = CliError::SecretNotFound {
+            scheme: "vault".into(),
+            reference: "secret/data/app#token".into(),
+        };
+        let msg = e.to_string();
+        assert!(msg.contains("vault"));
+        assert!(msg.contains("secret/data/app#token"));
+
+        let e = CliError::SecretFieldMissing {
+            scheme: "aws-sm".into(),
+            reference: "prod/db".into(),
+            field: "password".into(),
+            available: vec!["username".into(), "host".into()],
+        };
+        let msg = e.to_string();
+        assert!(msg.contains("password"));
+        assert!(msg.contains("username") && msg.contains("host"));
+
+        let e = CliError::SecretBackendDisabled {
+            scheme: "azure-kv".into(),
+        };
+        assert!(e.to_string().contains("secrets-azure-kv"));
+
+        assert!(
+            CliError::SecretsRequireAsyncLoad
+                .to_string()
+                .contains("async")
+        );
+    }
+
+    #[test]
+    fn fetch_auth_notjson_errors_render_safely() {
+        let e = CliError::SecretFetchFailed {
+            scheme: "vault".into(),
+            reference: "secret/data/app#token".into(),
+            source: "connection refused".into(),
+        };
+        let msg = e.to_string();
+        assert!(msg.contains("vault") && msg.contains("secret/data/app#token"));
+
+        let e = CliError::SecretAuthFailed {
+            scheme: "aws-sm".into(),
+            hint: "set AWS_PROFILE".into(),
+        };
+        assert!(e.to_string().contains("aws-sm") && e.to_string().contains("set AWS_PROFILE"));
+
+        let e = CliError::SecretNotJson {
+            scheme: "vault".into(),
+            reference: "secret/raw".into(),
+        };
+        assert!(e.to_string().contains("not JSON"));
+    }
+
+    #[test]
+    fn field_missing_with_empty_available_has_no_dangling_list() {
+        let e = CliError::SecretFieldMissing {
+            scheme: "vault".into(),
+            reference: "secret/data/app".into(),
+            field: "token".into(),
+            available: vec![],
+        };
+        let msg = e.to_string();
+        assert!(!msg.ends_with("(available: )"));
+        assert!(msg.contains("token"));
     }
 }
 

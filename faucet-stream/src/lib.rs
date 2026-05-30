@@ -5,6 +5,8 @@
 //! A declarative, config-driven data pipeline with pluggable source and sink
 //! connectors.
 //!
+//! 📖 **Guide, tutorials & cookbook:** <https://pawansikawat.github.io/faucet-stream/>
+//!
 //! ## Feature flags
 //!
 //! | Feature | Description |

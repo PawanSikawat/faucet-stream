@@ -56,11 +56,12 @@ pub async fn run(args: RunArgs) -> CliResult<()> {
     let cfg = if args.from_env {
         crate::env_config::from_process_env()?
     } else {
-        PipelineConfig::from_path(
+        PipelineConfig::from_path_async(
             resolved_config_path
                 .as_ref()
                 .expect("YAML mode always resolves a path above"),
-        )?
+        )
+        .await?
     };
 
     // Install observability (Prometheus + tracing) before any pipeline work.
