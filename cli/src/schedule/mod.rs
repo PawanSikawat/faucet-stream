@@ -7,5 +7,6 @@
 //! (metrics — added in Task 5).
 
 pub mod compiled;
+pub mod metrics;
 pub mod spec;
 pub mod state;
