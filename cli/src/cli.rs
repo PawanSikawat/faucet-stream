@@ -115,6 +115,8 @@ pub enum SchemaTarget {
     /// JSON Schema for the `quality:` block.
     #[cfg(feature = "quality")]
     Quality,
+    /// Grammar reference for secrets-manager interpolation directives.
+    Secrets,
 }
 
 /// `faucet preview` arguments.
