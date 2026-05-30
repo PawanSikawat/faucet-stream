@@ -781,6 +781,8 @@ mod tests {
             matrix: Vec::new(),
             execution: None,
             observability: None,
+            #[cfg(feature = "schedule")]
+            schedule: None,
         }
     }
 
