@@ -26,6 +26,8 @@ pub async fn run() -> CliResult<()> {
         println!();
     }
     println!("State stores: {}", available_state_kinds().join(", "));
+    #[cfg(feature = "schedule")]
+    println!("Scheduler:    compiled in (run `faucet schedule --help`, `faucet schema schedule`)");
     Ok(())
 }
 
