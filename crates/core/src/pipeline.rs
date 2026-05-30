@@ -420,6 +420,10 @@ where
     let mut last_bookmark: Option<Value> = None;
     let mut dlq_stats = DlqStats::default();
 
+    let adaptive_cfg = options.adaptive.clone().filter(|c| c.enabled);
+    let mut controller: Option<crate::adaptive::AimdController> = None;
+    let mut warned_noop_sink = false;
+
     let sink_name = sink.connector_name();
     let dlq_sink_name = dlq.as_ref().map(|d| d.sink.connector_name()).unwrap_or("");
 
@@ -659,7 +663,30 @@ where
                             "quality quarantine without DLQ should have been rejected at run start"
                         );
                         if !page.records.is_empty() {
-                            records_written += sink.write_batch(&page.records).await?;
+                            if let Some(cfg) = adaptive_cfg.as_ref() {
+                                let ctrl = controller.get_or_insert_with(|| {
+                                    crate::adaptive::AimdController::new(cfg, page.records.len())
+                                });
+                                maybe_warn_noop_sink(sink_name, &mut warned_noop_sink);
+                                let mut offset = 0;
+                                while offset < page.records.len() {
+                                    let size = ctrl.current().max(1).min(page.records.len() - offset);
+                                    let chunk = &page.records[offset..offset + size];
+                                    let t0 = std::time::Instant::now();
+                                    let n = sink.write_batch(chunk).await?;
+                                    let latency = t0.elapsed();
+                                    records_written += n;
+                                    offset += size;
+                                    let _adj = ctrl.observe(crate::adaptive::Observation {
+                                        batch_len: chunk.len(),
+                                        errors: 0,
+                                        latency,
+                                    });
+                                    // (metric emission added in a later task)
+                                }
+                            } else {
+                                records_written += sink.write_batch(&page.records).await?;
+                            }
                         }
                         if let Some(bookmark) = page.bookmark {
                             sink.flush().await?;
@@ -757,6 +784,18 @@ where
         bookmark: last_bookmark,
         dlq: dlq.is_some().then_some(dlq_stats),
     })
+}
+
+/// One-shot info when adaptive sizing targets a per-record sink that ignores
+/// `batch_size` (its adjustments are harmless no-ops).
+fn maybe_warn_noop_sink(sink_name: &str, warned: &mut bool) {
+    if !*warned && matches!(sink_name, "jsonl" | "csv" | "stdout") {
+        tracing::info!(
+            sink = sink_name,
+            "adaptive batch sizing is a no-op for this per-record sink"
+        );
+        *warned = true;
+    }
 }
 
 #[cfg(test)]
@@ -2175,5 +2214,67 @@ mod tests {
         let opts = RunStreamOptions::new().with_quality(quality);
         let result = run_stream(futures::stream::iter(pages), &main, opts).await;
         assert!(matches!(result, Err(FaucetError::Config(_))));
+    }
+
+    // ── Adaptive batch-size tests ──────────────────────────────────────────
+
+    /// A sink that records each write_batch call's size and reports a fixed
+    /// per-call latency, so we can assert the adaptive controller resliced.
+    struct RecordingSink {
+        calls: std::sync::Mutex<Vec<usize>>,
+        latency: std::time::Duration,
+    }
+    impl RecordingSink {
+        fn new(latency_ms: u64) -> Self {
+            Self { calls: std::sync::Mutex::new(Vec::new()), latency: std::time::Duration::from_millis(latency_ms) }
+        }
+        fn call_sizes(&self) -> Vec<usize> { self.calls.lock().unwrap().clone() }
+    }
+    #[async_trait]
+    impl Sink for RecordingSink {
+        async fn write_batch(&self, records: &[Value]) -> Result<usize, FaucetError> {
+            tokio::time::sleep(self.latency).await;
+            self.calls.lock().unwrap().push(records.len());
+            Ok(records.len())
+        }
+    }
+
+    #[tokio::test]
+    async fn adaptive_reslices_non_dlq_page_into_subbatches() {
+        use crate::adaptive::AdaptiveBatchConfig;
+        let page = StreamPage {
+            records: (0..1000).map(|i| json!({ "i": i })).collect(),
+            bookmark: None,
+        };
+        let stream = futures::stream::iter(vec![Ok(page)]);
+        let sink = RecordingSink::new(0);
+        let cfg: AdaptiveBatchConfig =
+            serde_json::from_value(json!({"enabled": true, "min": 100, "max": 1000})).unwrap();
+        let result = run_stream(stream, &sink, RunStreamOptions::new().with_adaptive(cfg))
+            .await
+            .unwrap();
+        assert_eq!(result.records_written, 1000);
+        // current starts at min(max, page_len)=1000 → one chunk (no regression).
+        assert_eq!(sink.call_sizes(), vec![1000]);
+    }
+
+    #[tokio::test]
+    async fn adaptive_shrinks_under_latency_target_then_smaller_chunks() {
+        use crate::adaptive::AdaptiveBatchConfig;
+        let mk = || StreamPage { records: (0..400).map(|i| json!({"i": i})).collect(), bookmark: None };
+        let stream = futures::stream::iter(vec![Ok(mk()), Ok(mk()), Ok(mk())]);
+        let sink = RecordingSink::new(50);
+        let cfg: AdaptiveBatchConfig = serde_json::from_value(json!({
+            "enabled": true, "min": 50, "max": 400,
+            "decrease_factor": 0.5, "cooldown_batches": 0,
+            "target_latency_ms": 10, "latency_window": 1
+        })).unwrap();
+        let result = run_stream(stream, &sink, RunStreamOptions::new().with_adaptive(cfg))
+            .await
+            .unwrap();
+        assert_eq!(result.records_written, 1200);
+        let sizes = sink.call_sizes();
+        assert_eq!(sizes[0], 400);
+        assert!(sizes.last().unwrap() < &400, "controller should have shrunk: {sizes:?}");
     }
 }
