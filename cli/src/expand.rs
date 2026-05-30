@@ -24,7 +24,7 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 
 /// Row ids that callers can never use because they collide with
 /// load-time interpolation prefixes or future runtime scopes.
-pub const RESERVED_IDS: &[&str] = &["env", "file", "secret", "matrix", "pipeline"];
+pub const RESERVED_IDS: &[&str] = &["env", "file", "secret", "matrix", "pipeline", "now"];
 
 /// One fully-merged matrix row, ready for the executor.
 #[derive(Debug, Clone)]
@@ -430,7 +430,9 @@ fn check_refs(value: &Value, id_set: &HashSet<&str>, owner: &str) -> CliResult<(
             // Load-time / template directives (`${env:..}`, `${vars.X}`, …) are
             // resolved before expansion; only deferred `${id.path}` references
             // are validated here, against the known row ids.
+            // `now` is a reserved built-in deferred id resolved at run time.
             if let Directive::Deferred { id, .. } = dir
+                && id != "now"
                 && !id_set.contains(id)
             {
                 return Err(CliError::UnknownInterpolationId {
@@ -447,6 +449,12 @@ fn collect_deferred(value: &Value, out: &mut Vec<DeferredRef>) {
     let _ = walk_strings(value, &mut |s| {
         for (token, dir) in iter_directives(s) {
             if let Directive::Deferred { id, path } = dir {
+                // `now` is a reserved built-in resolved at run time, not a
+                // parent-record dependency — skip it so the executor doesn't
+                // treat it as a deferred parent-record reference.
+                if id == "now" {
+                    continue;
+                }
                 out.push(DeferredRef {
                     referenced_id: id.to_owned(),
                     dotted_path: path.to_owned(),
@@ -1259,5 +1267,36 @@ matrix:
             .unwrap();
         let nodes = crate::expand::expand(&cfg).unwrap();
         assert!(nodes[0].transforms.is_empty());
+    }
+
+    #[test]
+    fn now_is_a_valid_builtin_ref_not_an_unknown_id() {
+        // A root pipeline referencing ${now.date} must pass expand validation.
+        let yaml = r#"
+version: 1
+pipeline:
+  source: { type: rest, config: {} }
+  sink:   { type: jsonl, config: { path: "out-${now.date}.jsonl" } }
+"#;
+        let cfg = parse_with_extension(yaml, "yaml").unwrap();
+        // expand must NOT raise UnknownInterpolationId for `now`.
+        assert!(expand(&cfg).is_ok());
+    }
+
+    #[test]
+    fn now_is_a_reserved_row_id() {
+        let yaml = r#"
+version: 1
+pipeline:
+  source: { type: rest, config: {} }
+  sink:   { type: jsonl, config: { path: ./o.jsonl } }
+matrix:
+  - id: now
+"#;
+        let cfg = parse_with_extension(yaml, "yaml").unwrap();
+        match expand(&cfg).unwrap_err() {
+            CliError::ReservedRowId { id } => assert_eq!(id, "now"),
+            other => panic!("expected ReservedRowId, got {other:?}"),
+        }
     }
 }
