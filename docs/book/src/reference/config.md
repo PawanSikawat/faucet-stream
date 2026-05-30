@@ -67,10 +67,32 @@ Three stages resolve placeholders:
 - **Load time:** `${env:VAR}`, `${file:PATH}`, `${secret:VAR}` are resolved when
   the file is read. `${vars.X}` resolves against the top-level `vars:` block;
   `${sources.NAME.PATH}` / `${sinks.NAME.PATH}` resolve against named templates.
+  Secret-manager directives (see below) run as the final load-time stage.
 - **Runtime:** `${row_id.dotted.path}` tokens are resolved per parent record in
   DAG runs.
 
 Reference cycles surface as a clear `InterpolationCycle` error.
+
+### Secrets-manager directives
+
+Four additional load-time schemes pull values from external secrets managers.
+Each requires the matching build feature (`--features secrets-vault`, etc.;
+`--features secrets` enables all four). Values are fetched concurrently and
+de-duplicated; they are never written to disk.
+
+| Directive | Backend | Auth |
+|-----------|---------|------|
+| `${vault:<path>[#field]}` | HashiCorp Vault KV v2 | `VAULT_ADDR` + `VAULT_TOKEN` (+ optional `VAULT_NAMESPACE`) |
+| `${aws-sm:<name-or-ARN>[#field]}` | AWS Secrets Manager | `aws-config` default chain (env / profile / instance / web-identity) |
+| `${gcp-sm:projects/<p>/secrets/<s>/versions/<v>}` | GCP Secret Manager (`versions/latest` ok) | Application Default Credentials |
+| `${azure-kv:<vault>/<secret>[/<version>]}` | Azure Key Vault | `AZURE_*` env / managed identity / `az login` |
+
+The `#field` selector (Vault and AWS only) parses the secret body as a JSON
+object and extracts a single key. Use `faucet schema secrets` for the machine-readable
+grammar reference and `faucet validate --no-secrets` to check grammar offline.
+
+See the [secrets cookbook](../cookbook/secrets.md) for full examples, the
+redaction guarantee, and the known limitation around the `auth:` catalog.
 
 ## `matrix`
 

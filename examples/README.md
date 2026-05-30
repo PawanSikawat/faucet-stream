@@ -37,6 +37,7 @@ These run immediately after installing the CLI — great for a first smoke test:
 | `rest_to_jsonl.yaml`, `rest_streaming.yaml`, `rest_to_stdout_preview.yaml` | point `base_url` at any HTTP API; preview needs no sink setup |
 | `rest_filter_explode_to_stdout.yaml` | `filter` + `explode` + `keys_case` against DummyJSON; demonstrates the v1 JSONPath subset and the merge rule |
 | `shared_auth_rest.yaml` | one OAuth2 provider in the top-level `auth:` block shared across four matrix rows via `auth: { ref }` — single token, single-flight refresh (point `base_url` / token endpoint at a real API) |
+| `rest_to_jsonl_with_vault.yaml` | Vault KV v2 secret injected as a Bearer token via `${vault:…#field}`; requires `VAULT_ADDR` + `VAULT_TOKEN` and `--features secrets-vault` |
 | `websocket_to_jsonl.yaml` | none (live public WS endpoint — Binance BTC/USDT trade stream, no auth) |
 
 > REST / GraphQL / XML / gRPC / webhook source examples hit an external endpoint

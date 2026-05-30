@@ -34,6 +34,24 @@ before deploying.
 faucet validate pipeline.yaml
 ```
 
+When the config contains secrets-manager directives (`${vault:…}`, `${aws-sm:…}`,
+etc.), `faucet validate` resolves them as a real preflight and prints one
+confirmation line per reference (never the value):
+
+```
+secret: vault:secret/data/faucet/api#token → resolved
+ok: 'my-pipeline' rows=1 (roots=1, children=0) execution=(defaults)
+  - default [root] source=rest sink=jsonl
+```
+
+Pass `--no-secrets` to validate grammar and structure only, skipping all secret
+fetches. This is useful in CI environments that lack credentials, or in local
+development before vault access is available:
+
+```bash
+faucet validate --no-secrets pipeline.yaml
+```
+
 ## `preview`
 
 Runs the first root row's source and prints records (via the stdout sink).
@@ -51,11 +69,16 @@ faucet schema source rest
 faucet schema sink bigquery
 faucet schema transform keys_case
 faucet schema dlq
+faucet schema secrets
 ```
 
 `faucet schema transform <name>` prints the inline config schema for a
 transform (e.g. `keys_case` lists the valid `mode:` values). Run
 `faucet list` to see which transforms are compiled into your binary.
+
+`faucet schema secrets` prints the directive grammar and auth requirements for
+all four secrets-manager backends in machine-readable JSON — useful for tooling
+that needs to understand the interpolation syntax without reading the docs.
 
 ## `init`
 

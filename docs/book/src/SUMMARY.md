@@ -24,6 +24,7 @@
 - [Data-quality checks](./cookbook/quality.md)
 - [Compression](./cookbook/compression.md)
 - [Record transforms](./cookbook/transforms.md)
+- [Secrets-manager interpolation](./cookbook/secrets.md)
 
 # Reference
 

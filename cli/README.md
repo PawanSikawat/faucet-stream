@@ -229,6 +229,10 @@ Tokens are resolved in two passes:
 | `${env:VAR}` | Load-time, before YAML parsing. |
 | `${file:./path}` | Load-time. File contents trimmed of trailing whitespace. Capped at 1 MiB — this is for small token/secret/cert files, not bulk data. |
 | `${secret:VAR}` | Load-time. Alias for `${env:VAR}` today (no at-rest redaction). |
+| `${vault:<path>[#field]}` | Load-time. HashiCorp Vault KV v2. Requires `VAULT_ADDR` + `VAULT_TOKEN`. `#field` extracts one key from a JSON secret. Build with `--features secrets-vault`. |
+| `${aws-sm:<name-or-ARN>[#field]}` | Load-time. AWS Secrets Manager. Auth: `aws-config` default chain (env / profile / instance / web-identity). Build with `--features secrets-aws-sm`. |
+| `${gcp-sm:projects/<p>/secrets/<s>/versions/<v>}` | Load-time. GCP Secret Manager (`versions/latest` ok). Auth: Application Default Credentials. Build with `--features secrets-gcp-sm`. |
+| `${azure-kv:<vault>/<secret>[/<version>]}` | Load-time. Azure Key Vault. Auth: `AZURE_*` env / managed identity / `az login`. Build with `--features secrets-azure-kv`. |
 | `${row_id.dotted.path}` | Run-time, per parent record. The `row_id` must be the id of another matrix row. |
 
 A token's form decides its meaning: a **colon** marks a load-time directive (`${env:VAR}`), while a **dot or nothing** marks a deferred row-id reference (`${users.id}`). The same rule is used by both `faucet validate` and `faucet run`, so a token like `${env.foo}` (a dot, not a colon) is consistently treated as a reference to row id `env` and rejected at validate-time rather than failing only at run-time.
@@ -352,6 +356,62 @@ Build the CLI with the feature enabled:
 ```bash
 cargo install --path cli --features compression
 ```
+
+## Secrets-manager interpolation
+
+Pull secret values directly from a secrets manager using `${scheme:reference}`
+directives anywhere in your config. Resolution happens at config-load time:
+values are fetched concurrently (up to 8 in parallel), de-duplicated, and
+substituted in place. They are never written to disk.
+
+```yaml
+auth:
+  type: bearer
+  config:
+    token: "${vault:secret/data/myapp/api#token}"
+```
+
+| Backend | Directive | Auth |
+|---------|-----------|------|
+| HashiCorp Vault KV v2 | `${vault:<path>[#field]}` | `VAULT_ADDR` + `VAULT_TOKEN` (+ optional `VAULT_NAMESPACE`) |
+| AWS Secrets Manager | `${aws-sm:<name-or-ARN>[#field]}` | `aws-config` default chain |
+| GCP Secret Manager | `${gcp-sm:projects/<p>/secrets/<s>/versions/<v>}` | Application Default Credentials |
+| Azure Key Vault | `${azure-kv:<vault>/<secret>[/<version>]}` | `AZURE_*` env / managed identity / `az login` |
+
+The `#field` selector (Vault and AWS) parses the secret body as JSON and returns
+one key. Omit it to receive the full secret body as a string.
+
+**Build features** — none compiled in by default:
+
+```bash
+cargo install faucet-cli --features secrets          # all four backends
+cargo install faucet-cli --features secrets-vault    # Vault only
+cargo install faucet-cli --features secrets-aws-sm   # AWS only
+cargo install faucet-cli --features secrets-gcp-sm   # GCP only
+cargo install faucet-cli --features secrets-azure-kv # Azure only
+```
+
+**Validation flags:**
+
+- `faucet validate pipeline.yaml` — resolves all secrets as a preflight; prints
+  `secret: <scheme>:<reference> → resolved` per reference (never the value).
+- `faucet validate --no-secrets pipeline.yaml` — grammar / structure only; no
+  network or credentials required.
+- `faucet schema secrets` — prints the grammar descriptor as JSON.
+
+**Redaction:** faucet scrubs every resolved secret value from its own tracing,
+log, and error output via a `RedactingWriter` on the tracing subscriber.
+This boundary covers faucet's own output only — connector libraries that
+debug-log deserialized config fields are outside it; never enable debug logging
+on connectors that hold resolved secrets.
+
+**Known limitation:** secret directives are resolved in connector configs,
+transforms, state, dlq, and matrix rows. They are **not** resolved in the
+top-level `auth:` catalog or `vars:` block. Put secrets in a connector's inline
+`auth:` config instead of the shared catalog until this is lifted.
+
+See the [docs-site secrets cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/secrets.html)
+for full examples and details.
 
 ## Running from environment variables (`--from-env`)
 
