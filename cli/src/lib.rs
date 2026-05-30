@@ -40,7 +40,7 @@ pub async fn run_from_yaml_str(yaml: &str) -> CliResult<executor::RunSummary> {
     // Parse through the same interpolate → from_text path that the binary uses,
     // but accept a bare string instead of a file path.
     let interpolated = interpolate::interpolate(yaml)?;
-    let cfg: config::PipelineConfig =
+    let mut cfg: config::PipelineConfig =
         serde_yaml::from_str(&interpolated).map_err(|e| CliError::ParseConfig {
             path: std::path::PathBuf::from("<yaml-string>"),
             message: e.to_string(),
@@ -54,6 +54,7 @@ pub async fn run_from_yaml_str(yaml: &str) -> CliResult<executor::RunSummary> {
             ),
         });
     }
+    crate::secrets::resolve_secrets(&mut cfg).await?;
     let pipeline_name = cfg.name.clone().unwrap_or_else(|| "unnamed".to_string());
     let auth = auth_catalog::build_auth_catalog(cfg.auth.as_ref())?;
     let nodes = expand::expand(&cfg)?;

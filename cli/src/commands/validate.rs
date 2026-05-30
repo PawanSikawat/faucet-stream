@@ -22,7 +22,7 @@ pub async fn run(args: ValidateArgs) -> CliResult<()> {
         Some(p) => p,
         None => crate::env_loader::discover_config_path(&cwd).ok_or(CliError::NoConfigOrFromEnv)?,
     };
-    let cfg = PipelineConfig::from_path(&path)?;
+    let cfg = PipelineConfig::from_path_async(&path).await?;
     let nodes = expand(&cfg)?;
 
     for node in &nodes {
