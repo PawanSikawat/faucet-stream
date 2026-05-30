@@ -421,6 +421,14 @@ where
     let mut dlq_stats = DlqStats::default();
 
     let adaptive_cfg = options.adaptive.clone().filter(|c| c.enabled);
+    if let Some(cfg) = adaptive_cfg.as_ref()
+        && !cfg.respect_source_max
+    {
+        tracing::warn!(
+            "adaptive_batch_size.respect_source_max=false is not yet implemented \
+             (cross-page buffering); growth is capped at the source page size"
+        );
+    }
     let mut controller: Option<crate::adaptive::AimdController> = None;
     let mut warned_noop_sink = false;
 
@@ -576,12 +584,12 @@ where
                                 }
                             }
                             if let Some(ctrl) = controller.as_mut() {
-                                let _adj = ctrl.observe(crate::adaptive::Observation {
+                                let adj = ctrl.observe(crate::adaptive::Observation {
                                     batch_len: chunk.len(),
                                     errors: chunk_errors,
                                     latency,
                                 });
-                                // (metric emission added in a later task)
+                                emit_adaptive_metrics(ctrl, adj, &pipeline_name, &row);
                             }
                             offset += size;
                         }
@@ -726,12 +734,12 @@ where
                                     let latency = t0.elapsed();
                                     records_written += n;
                                     offset += size;
-                                    let _adj = ctrl.observe(crate::adaptive::Observation {
+                                    let adj = ctrl.observe(crate::adaptive::Observation {
                                         batch_len: chunk.len(),
                                         errors: 0,
                                         latency,
                                     });
-                                    // (metric emission added in a later task)
+                                    emit_adaptive_metrics(ctrl, adj, &pipeline_name, &row);
                                 }
                             } else {
                                 records_written += sink.write_batch(&page.records).await?;
@@ -833,6 +841,39 @@ where
         bookmark: last_bookmark,
         dlq: dlq.is_some().then_some(dlq_stats),
     })
+}
+
+/// Emit the adaptive controller's current state + any adjustment as metrics.
+/// Labels are `pipeline,row` only (the controller is pipeline-scoped).
+fn emit_adaptive_metrics(
+    ctrl: &crate::adaptive::AimdController,
+    adj: Option<crate::adaptive::Adjustment>,
+    pipeline: &str,
+    row: &str,
+) {
+    use metrics::{Label, SharedString, counter, gauge};
+    let base = vec![
+        Label::new("pipeline", SharedString::from(pipeline.to_string())),
+        Label::new("row", SharedString::from(row.to_string())),
+    ];
+    gauge!("faucet_pipeline_adaptive_batch_size", base.clone()).set(ctrl.current() as f64);
+    gauge!("faucet_pipeline_adaptive_batch_cooldown_active", base.clone())
+        .set(if ctrl.cooldown_active() { 1.0 } else { 0.0 });
+    if let Some(p50) = ctrl.p50_latency_ms() {
+        gauge!("faucet_pipeline_adaptive_batch_p50_latency_ms", base.clone()).set(p50 as f64);
+    }
+    if let Some(a) = adj {
+        let mut lbl = base;
+        lbl.push(Label::new(
+            "direction",
+            SharedString::const_str(a.direction.as_str()),
+        ));
+        lbl.push(Label::new(
+            "reason",
+            SharedString::const_str(a.reason.as_str()),
+        ));
+        counter!("faucet_pipeline_adaptive_batch_adjustments_total", lbl).increment(1);
+    }
 }
 
 /// One-shot info when adaptive sizing targets a per-record sink that ignores
@@ -2383,5 +2424,79 @@ mod tests {
         let sizes = sink.call_sizes();
         assert_eq!(sizes[0], 400);
         assert!(sizes.last().unwrap() < &400, "controller should have shrunk: {sizes:?}");
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn adaptive_emits_batch_size_and_adjustments_metrics() {
+        // Mirror the same LOCK+snapshotter pattern used by
+        // `pipeline_run_increments_runs_total` and `dlq_emits_records_total_and_pages_total`.
+        use crate::adaptive::AdaptiveBatchConfig;
+        use crate::observability::decorator::source_tests::{LOCK, snapshotter};
+        use metrics_util::debugging::DebugValue;
+
+        let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let snap = snapshotter();
+
+        // Three pages of 400 records. RecordingSink(50) reports 50ms latency.
+        // Config: target_latency_ms=10, latency_window=1, cooldown_batches=0 so
+        // p50 (50ms) > 10*1.2=12ms on every batch → controller shrinks each time,
+        // guaranteeing at least one `faucet_pipeline_adaptive_batch_adjustments_total`
+        // is emitted.
+        let mk = || StreamPage {
+            records: (0..400).map(|i| json!({"i": i})).collect(),
+            bookmark: None,
+        };
+        let stream = futures::stream::iter(vec![Ok(mk()), Ok(mk()), Ok(mk())]);
+        let sink = RecordingSink::new(50);
+        let cfg: AdaptiveBatchConfig = serde_json::from_value(json!({
+            "enabled": true, "min": 50, "max": 400,
+            "decrease_factor": 0.5, "cooldown_batches": 0,
+            "target_latency_ms": 10, "latency_window": 1
+        }))
+        .unwrap();
+
+        let _ = run_stream(
+            stream,
+            &sink,
+            RunStreamOptions::new()
+                .with_adaptive(cfg)
+                .with_name("p")
+                .with_row("r"),
+        )
+        .await
+        .unwrap();
+
+        let snapshot = snap.snapshot();
+        let mut saw_batch_size = false;
+        let mut saw_adjustments = false;
+        for (k, _u, _d, v) in snapshot.into_vec() {
+            let key = k.key();
+            let labels = key.labels().collect::<Vec<_>>();
+            let has = |k: &str, val: &str| labels.iter().any(|l| l.key() == k && l.value() == val);
+
+            if key.name() == "faucet_pipeline_adaptive_batch_size"
+                && has("pipeline", "p")
+                && has("row", "r")
+                && matches!(v, DebugValue::Gauge(_))
+            {
+                saw_batch_size = true;
+            }
+            if key.name() == "faucet_pipeline_adaptive_batch_adjustments_total"
+                && has("pipeline", "p")
+                && has("row", "r")
+                && matches!(v, DebugValue::Counter(c) if c >= 1)
+            {
+                saw_adjustments = true;
+            }
+        }
+        assert!(
+            saw_batch_size,
+            "expected faucet_pipeline_adaptive_batch_size gauge with pipeline=p, row=r"
+        );
+        assert!(
+            saw_adjustments,
+            "expected faucet_pipeline_adaptive_batch_adjustments_total counter with pipeline=p, row=r"
+        );
     }
 }
