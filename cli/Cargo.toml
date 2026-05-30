@@ -132,7 +132,7 @@ secrets = ["secrets-vault", "secrets-aws-sm", "secrets-gcp-sm", "secrets-azure-k
 secrets-vault = ["dep:reqwest"]
 secrets-aws-sm = ["dep:aws-sdk-secretsmanager", "dep:aws-config"]
 secrets-gcp-sm = ["dep:reqwest", "dep:google-cloud-auth", "dep:base64"]
-secrets-azure-kv = ["dep:azure_security_keyvault_secrets", "dep:azure_identity"]
+secrets-azure-kv = ["dep:azure_security_keyvault_secrets", "dep:azure_identity", "dep:azure_core"]
 
 state-redis = ["dep:faucet-state-redis"]
 state-postgres = ["dep:faucet-state-postgres"]
@@ -226,6 +226,7 @@ google-cloud-auth = { workspace = true, optional = true }
 base64 = { workspace = true, optional = true }
 azure_security_keyvault_secrets = { workspace = true, optional = true }
 azure_identity = { workspace = true, optional = true }
+azure_core = { workspace = true, optional = true }
 
 [dev-dependencies]
 tempfile = "3"

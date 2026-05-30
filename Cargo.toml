@@ -147,6 +147,7 @@ aws-sdk-secretsmanager = "1"
 aws-config = { version = "1", features = ["behavior-version-latest"] }
 azure_security_keyvault_secrets = "1"
 azure_identity = "1"
+azure_core = "1"
 tokio-util = { version = "0.7", features = ["io"] }
 
 mongodb = "3"
