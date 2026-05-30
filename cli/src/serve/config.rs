@@ -22,9 +22,11 @@ pub enum AuthMode {
 pub enum HistoryBackendSpec {
     /// In-process `DashMap`; lost on restart (default).
     Memory,
-    /// Postgres connection URL.
+    /// Postgres connection URL (stored verbatim, e.g. `postgres://host/db`).
     Postgres(String),
-    /// SQLite path / URL.
+    /// SQLite connection URL, stored verbatim including the `sqlite:` scheme
+    /// (e.g. `sqlite:runs.db`, `sqlite::memory:`) so the backend can hand it
+    /// straight to `sqlx` without re-deriving the form.
     Sqlite(String),
 }
 
@@ -60,6 +62,13 @@ impl ServeConfig {
     /// no-auth gate: a server with neither a token nor `--no-auth` refuses to start.
     pub fn from_args(args: ServeArgs) -> CliResult<Self> {
         let auth = match (args.auth_token, args.no_auth) {
+            (Some(t), _) if t.is_empty() => {
+                return Err(CliError::Serve(
+                    "--auth-token / FAUCET_SERVE_AUTH_TOKEN must not be empty \
+                     (use --no-auth to explicitly disable authentication)"
+                        .into(),
+                ));
+            }
             (Some(t), _) => AuthMode::Token(t),
             (None, true) => AuthMode::None,
             (None, false) => {
@@ -81,9 +90,7 @@ impl ServeConfig {
             Some(u) if u.starts_with("postgres://") || u.starts_with("postgresql://") => {
                 HistoryBackendSpec::Postgres(u)
             }
-            Some(u) if u.starts_with("sqlite:") => {
-                HistoryBackendSpec::Sqlite(u.trim_start_matches("sqlite:").to_string())
-            }
+            Some(u) if u.starts_with("sqlite:") => HistoryBackendSpec::Sqlite(u),
             Some(u) => {
                 return Err(CliError::Serve(format!(
                     "unrecognised --history '{u}': use a postgres:// URL or sqlite:<path>"
@@ -97,7 +104,7 @@ impl ServeConfig {
             .max(1);
         let max_queued_runs = args
             .max_queued_runs
-            .unwrap_or(max_concurrent_runs * 8)
+            .unwrap_or_else(|| max_concurrent_runs.saturating_mul(8))
             .max(1);
 
         Ok(Self {
@@ -184,10 +191,43 @@ mod tests {
             ServeConfig::from_args(a.clone()).unwrap().history,
             HistoryBackendSpec::Postgres(_)
         ));
-        a.history = Some("sqlite:runs.db".into());
+        // The `postgresql://` alias maps to the same backend.
+        a.history = Some("postgresql://localhost/db".into());
         assert!(matches!(
-            ServeConfig::from_args(a).unwrap().history,
-            HistoryBackendSpec::Sqlite(_)
+            ServeConfig::from_args(a.clone()).unwrap().history,
+            HistoryBackendSpec::Postgres(_)
         ));
+        // SQLite is stored verbatim, scheme included (for direct sqlx use).
+        a.history = Some("sqlite:runs.db".into());
+        match ServeConfig::from_args(a).unwrap().history {
+            HistoryBackendSpec::Sqlite(url) => assert_eq!(url, "sqlite:runs.db"),
+            other => panic!("expected Sqlite, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn empty_token_is_rejected() {
+        let mut a = base_args();
+        a.auth_token = Some(String::new());
+        let err = ServeConfig::from_args(a).unwrap_err();
+        assert!(err.to_string().contains("must not be empty"), "{err}");
+    }
+
+    #[test]
+    fn invalid_listen_returns_error() {
+        let mut a = base_args();
+        a.no_auth = true;
+        a.listen = "not-a-socket".into();
+        let err = ServeConfig::from_args(a).unwrap_err();
+        assert!(err.to_string().contains("invalid --listen"), "{err}");
+    }
+
+    #[test]
+    fn unrecognised_history_scheme_returns_error() {
+        let mut a = base_args();
+        a.no_auth = true;
+        a.history = Some("mysql://localhost/db".into());
+        let err = ServeConfig::from_args(a).unwrap_err();
+        assert!(err.to_string().contains("unrecognised --history"), "{err}");
     }
 }
