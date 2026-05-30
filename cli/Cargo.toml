@@ -19,7 +19,7 @@ path = "src/main.rs"
 # yields a binary that can run any of the published example YAMLs out of the box.
 default = ["observability", "full", "quality"]
 
-full = ["observability", "source", "sink", "state", "transforms", "compression", "quality", "schedule"]
+full = ["observability", "source", "sink", "state", "transforms", "compression", "quality", "schedule", "serve"]
 
 # Data-quality checks (`quality:` config block). `quality-jsonschema` adds the
 # `json_schema` record check via a JSON Schema validator. Forwarded to
@@ -165,6 +165,12 @@ observability = [
 # Pulls a cron parser + IANA timezone db; opt out of it for slim builds.
 schedule = ["dep:croner", "dep:chrono-tz"]
 
+# HTTP control plane (`faucet serve`). Pulls axum + an in-process run registry.
+# Enables `observability` (serve renders /metrics on its own port).
+serve = ["observability", "dep:axum", "dep:tower-http", "dep:dashmap", "dep:tokio-util", "dep:subtle"]
+serve-history-postgres = ["serve", "dep:sqlx"]
+serve-history-sqlite = ["serve", "dep:sqlx"]
+
 [dependencies]
 faucet-core.workspace = true
 faucet-auth.workspace = true
@@ -214,7 +220,7 @@ serde.workspace = true
 serde_json.workspace = true
 serde_yaml = "0.9"
 thiserror.workspace = true
-tokio = { workspace = true, features = ["rt-multi-thread", "macros", "signal", "fs", "sync"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "signal", "fs", "sync", "net", "time"] }
 tracing.workspace = true
 tracing-subscriber = { workspace = true, optional = true }
 async-trait.workspace = true
@@ -234,6 +240,12 @@ azure_core = { workspace = true, optional = true }
 chrono = { workspace = true }
 chrono-tz = { workspace = true, optional = true }
 croner = { workspace = true, optional = true }
+axum = { workspace = true, optional = true }
+tower-http = { workspace = true, optional = true }
+dashmap = { workspace = true, optional = true }
+tokio-util = { workspace = true, optional = true }
+subtle = { workspace = true, optional = true }
+sqlx = { workspace = true, optional = true }
 
 [dev-dependencies]
 tempfile = "3"
@@ -245,6 +257,7 @@ metrics-util.workspace = true
 serde_yaml = "0.9"
 async-stream.workspace = true
 futures-core.workspace = true
+reqwest = { workspace = true, features = ["json"] }
 
 [package.metadata.docs.rs]
 all-features = true

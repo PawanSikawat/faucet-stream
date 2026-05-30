@@ -157,6 +157,8 @@ jobs:
           - quality-jsonschema
           # Scheduler (CLI-only)
           - schedule
+          # HTTP control plane (CLI-only)
+          - serve
           # Secrets backends
           - secrets-vault
           - secrets-aws-sm
@@ -190,7 +192,7 @@ jobs:
         run: |
           # Secrets and schedule features live in faucet-cli (CLI layer), not
           # in the faucet-stream umbrella crate. Route accordingly.
-          if [[ "${{ matrix.feature }}" == secrets-* || "${{ matrix.feature }}" == "schedule" ]]; then
+          if [[ "${{ matrix.feature }}" == secrets-* || "${{ matrix.feature }}" == "schedule" || "${{ matrix.feature }}" == serve* ]]; then
             cargo check -p faucet-cli --no-default-features --features ${{ matrix.feature }}
           else
             cargo check -p faucet-stream --no-default-features --features ${{ matrix.feature }}
