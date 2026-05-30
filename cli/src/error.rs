@@ -310,6 +310,10 @@ pub enum CliError {
     #[error("{failed} preflight probe(s) failed")]
     DoctorFailed { failed: usize },
 
+    /// A `faucet serve` startup or runtime failure (bind, auth gate, etc.).
+    #[error("serve error: {0}")]
+    Serve(String),
+
     /// `overlap_policy: forbid` saw a tick fire while a run was still in flight.
     #[error("scheduled run overlap with overlap_policy: forbid — previous run still in progress")]
     ScheduleOverlapForbidden,

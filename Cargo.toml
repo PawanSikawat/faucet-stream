@@ -157,6 +157,8 @@ csv = "1.3"
 csv-async = { version = "1.3", features = ["tokio"] }
 redis = { version = "0.29", features = ["tokio-comp", "aio"] }
 axum = "0.8"
+subtle = "2"
+tower-http = { version = "0.6", features = ["limit", "cors", "trace", "request-id", "util"] }
 tokio-tungstenite = { version = "0.29", default-features = false, features = ["connect", "rustls-tls-webpki-roots"] }
 schemars = "1.2.1"
 futures = "0.3"

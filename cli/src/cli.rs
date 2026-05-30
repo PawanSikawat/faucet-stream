@@ -36,6 +36,9 @@ pub enum Command {
     /// Run a pipeline on a cron schedule (long-running; Ctrl-C / SIGTERM to stop).
     #[cfg(feature = "schedule")]
     Schedule(ScheduleArgs),
+    /// Run a long-running HTTP control plane (submit / poll / cancel pipeline runs).
+    #[cfg(feature = "serve")]
+    Serve(ServeArgs),
 }
 
 /// `faucet doctor` arguments.
@@ -77,6 +80,59 @@ pub struct ScheduleArgs {
     /// Useful for platform-driven invocation (k8s CronJob / systemd OnCalendar).
     #[arg(long)]
     pub once: bool,
+}
+
+/// `faucet serve` arguments.
+#[cfg(feature = "serve")]
+#[derive(Debug, Clone, Parser)]
+pub struct ServeArgs {
+    /// Bind address. Defaults to loopback; set 0.0.0.0:PORT to expose externally.
+    #[arg(long, env = "FAUCET_SERVE_LISTEN", default_value = "127.0.0.1:8080")]
+    pub listen: String,
+    /// Bearer token required on /v1/* requests. Prefer the env var (avoids `ps` leakage).
+    #[arg(long, env = "FAUCET_SERVE_AUTH_TOKEN", conflicts_with = "no_auth")]
+    pub auth_token: Option<String>,
+    /// Explicitly disable authentication. Required if no token is set, so an
+    /// unauthenticated server is never accidental.
+    #[arg(long)]
+    pub no_auth: bool,
+    /// Max pipeline runs executing at once. Default: min(16, cpu count).
+    #[arg(long)]
+    pub max_concurrent_runs: Option<usize>,
+    /// Max queued (not-yet-running) runs before POST /v1/runs returns 429.
+    /// Default: 8 × max-concurrent-runs.
+    #[arg(long)]
+    pub max_queued_runs: Option<usize>,
+    /// Workspace-default config merged under every submitted run.
+    #[arg(long)]
+    pub default_config: Option<std::path::PathBuf>,
+    /// Run-history backend URL: omitted = in-memory; postgres://… ; sqlite:… .
+    #[arg(long)]
+    pub history: Option<String>,
+    /// CORS allow-list origin (repeatable). Omitted = CORS disabled.
+    #[arg(long)]
+    pub cors_origin: Vec<String>,
+    /// Max POST /v1/runs body size in bytes (413 on exceed).
+    #[arg(long, default_value_t = 1_048_576)]
+    pub body_limit_bytes: usize,
+    /// SIGTERM/SIGINT drain window in seconds.
+    #[arg(long, default_value_t = 60)]
+    pub shutdown_grace_secs: u64,
+    /// Retain terminal run records this long (seconds).
+    #[arg(long, default_value_t = 604_800)]
+    pub retain_terminal_runs_secs: u64,
+    /// Idempotency-key replay window (seconds).
+    #[arg(long, default_value_t = 86_400)]
+    pub idempotency_retention_secs: u64,
+    /// Per-probe timeout for `doctor_first` preflight (seconds).
+    #[arg(long, default_value_t = 10)]
+    pub probe_timeout_secs: u64,
+    /// Path to a `.env` file loaded for the server's own startup interpolation.
+    #[arg(long, conflicts_with = "no_env_file")]
+    pub env_file: Option<std::path::PathBuf>,
+    /// Skip auto-loading `.env` from cwd at startup.
+    #[arg(long)]
+    pub no_env_file: bool,
 }
 
 /// `faucet run` arguments.
