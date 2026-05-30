@@ -28,6 +28,9 @@ pub async fn track_metrics(req: Request, next: Next) -> Response {
         "method" => method.clone(), "path" => path.clone(), "status" => status
     )
     .increment(1);
+    // `status` is intentionally omitted from the histogram to cap series count
+    // (a duration histogram per status code multiplies time-series); join with
+    // the counter when a status breakdown is needed.
     metrics::histogram!(
         "faucet_serve_request_duration_seconds",
         "method" => method, "path" => path

@@ -33,6 +33,9 @@ pub fn build_router(state: ServerState, config: &ServeConfig) -> Router {
         auth::require_auth,
     ));
 
+    // No origins configured → `CorsLayer::new()` emits no `Access-Control-*`
+    // headers, so browsers block cross-origin requests (CORS effectively off).
+    // The layer is a cheap pass-through for non-browser clients.
     let cors = if config.cors_origins.is_empty() {
         CorsLayer::new()
     } else {

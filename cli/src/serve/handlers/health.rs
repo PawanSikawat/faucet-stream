@@ -26,8 +26,13 @@ pub async fn metrics(State(state): State<ServerState>) -> Response {
             body,
         )
             .into_response(),
+        // 503 (not 200) so a Prometheus scraper marks the target down rather
+        // than silently recording a successful scrape with zero metrics. This
+        // only fires if the recorder failed to install (e.g. a second server in
+        // one process); in normal operation `render_metrics()` is `Some`.
         None => (
-            StatusCode::OK,
+            StatusCode::SERVICE_UNAVAILABLE,
+            [(header::CONTENT_TYPE, "text/plain; version=0.0.4")],
             "# metrics recorder not installed in this process\n",
         )
             .into_response(),

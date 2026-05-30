@@ -8,9 +8,11 @@ use axum::middleware::Next;
 use axum::response::Response;
 use subtle::ConstantTimeEq;
 
-/// Timing-safe byte-slice equality (length-aware: differing lengths never match,
-/// and the comparison does not early-exit on the first mismatching byte).
-pub fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+/// Timing-safe byte-slice equality. Differing lengths return `false` after a
+/// constant-time length check (subtle short-circuits unequal lengths — this
+/// leaks only the token *length*, never its content); equal-length inputs are
+/// compared byte-by-byte with no early exit on the first mismatch.
+pub(crate) fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     a.ct_eq(b).into()
 }
 
