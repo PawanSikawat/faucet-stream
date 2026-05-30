@@ -131,6 +131,7 @@ pub struct Pipeline<'a, So: Source + ?Sized, Si: Sink + ?Sized> {
     dlq: Option<DlqConfig>,
     #[cfg(feature = "quality")]
     quality: Option<Arc<crate::quality::CompiledQuality>>,
+    adaptive: Option<crate::adaptive::AdaptiveBatchConfig>,
 }
 
 impl<'a, So: Source + ?Sized, Si: Sink + ?Sized> Pipeline<'a, So, Si> {
@@ -146,6 +147,7 @@ impl<'a, So: Source + ?Sized, Si: Sink + ?Sized> Pipeline<'a, So, Si> {
             dlq: None,
             #[cfg(feature = "quality")]
             quality: None,
+            adaptive: None,
         }
     }
 
@@ -200,6 +202,14 @@ impl<'a, So: Source + ?Sized, Si: Sink + ?Sized> Pipeline<'a, So, Si> {
     #[cfg(feature = "quality")]
     pub fn with_quality(mut self, quality: Arc<crate::quality::CompiledQuality>) -> Self {
         self.quality = Some(quality);
+        self
+    }
+
+    /// Attach an adaptive batch-size controller (opt-in). When `enabled`, the
+    /// pipeline reslices each source page into sub-batches whose size the
+    /// controller tunes from observed sink latency + error rate.
+    pub fn with_adaptive(mut self, cfg: crate::adaptive::AdaptiveBatchConfig) -> Self {
+        self.adaptive = Some(cfg);
         self
     }
 
@@ -325,6 +335,9 @@ impl<'a, So: Source + ?Sized, Si: Sink + ?Sized> Pipeline<'a, So, Si> {
             #[cfg(feature = "quality")]
             if let Some(q) = self.quality.clone() {
                 opts = opts.with_quality(q);
+            }
+            if let Some(ad) = self.adaptive.clone() {
+                opts = opts.with_adaptive(ad);
             }
 
             run_stream(pages, &wrapped_sink, opts).await

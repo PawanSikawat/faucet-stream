@@ -16,6 +16,9 @@ pub struct RunStreamOptions {
     pub dlq: Option<DlqConfig>,
     #[cfg(feature = "quality")]
     pub quality: Option<std::sync::Arc<crate::quality::CompiledQuality>>,
+    /// Adaptive batch-size controller config; `None` (or `enabled = false`)
+    /// leaves the per-page write path unchanged.
+    pub adaptive: Option<crate::adaptive::AdaptiveBatchConfig>,
 }
 
 impl RunStreamOptions {
@@ -46,6 +49,12 @@ impl RunStreamOptions {
 
     pub fn with_dlq(mut self, dlq: DlqConfig) -> Self {
         self.dlq = Some(dlq);
+        self
+    }
+
+    /// Attach an adaptive batch-size controller config.
+    pub fn with_adaptive(mut self, cfg: crate::adaptive::AdaptiveBatchConfig) -> Self {
+        self.adaptive = Some(cfg);
         self
     }
 
