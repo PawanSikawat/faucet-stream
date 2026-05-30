@@ -130,7 +130,7 @@ mod config_tests {
         assert_eq!(c.min, 100);
         assert_eq!(c.max, 50_000);
         assert!(c.respect_source_max);
-        assert!(!c.target_latency_ms.is_some());
+        assert!(c.target_latency_ms.is_none());
         c.validate().unwrap();
     }
 
@@ -165,6 +165,17 @@ mod config_tests {
         assert!(c.validate().is_err());
         let mut c = valid();
         c.target_latency_ms = Some(0);
+        assert!(c.validate().is_err());
+        // decrease_factor is an *exclusive* (0, 1) range — both bounds invalid.
+        let mut c = valid();
+        c.decrease_factor = 0.0;
+        assert!(c.validate().is_err());
+        let mut c = valid();
+        c.decrease_factor = 1.0;
+        assert!(c.validate().is_err());
+        // latency_window must be >= 1.
+        let mut c = valid();
+        c.latency_window = 0;
         assert!(c.validate().is_err());
     }
 }
