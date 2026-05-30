@@ -6,8 +6,8 @@ use crate::error::{CliError, CliResult};
 use crate::schedule::spec::{OverlapPolicy, ScheduleOnFailure, ScheduleSpec};
 use chrono::{DateTime, Utc};
 use chrono_tz::Tz;
-use croner::parser::{CronParser, Seconds};
 use croner::Cron;
+use croner::parser::{CronParser, Seconds};
 use std::time::Duration;
 
 /// A `ScheduleSpec` whose cron + timezone have been parsed and whose invariants
@@ -28,10 +28,9 @@ pub struct CompiledSchedule {
 impl CompiledSchedule {
     /// Validate + compile. Every problem surfaces here, never mid-run.
     pub fn compile(spec: &ScheduleSpec) -> CliResult<Self> {
-        let tz: Tz = spec
-            .timezone
-            .parse()
-            .map_err(|_| CliError::Config(format!("schedule: unknown timezone '{}'", spec.timezone)))?;
+        let tz: Tz = spec.timezone.parse().map_err(|_| {
+            CliError::Config(format!("schedule: unknown timezone '{}'", spec.timezone))
+        })?;
 
         let cron = CronParser::builder()
             .seconds(Seconds::Optional)
@@ -168,7 +167,9 @@ mod tests {
         let c = CompiledSchedule::compile(&spec("30 2 * * *", "America/Los_Angeles")).unwrap();
         // 2026-03-08 09:00Z == 01:00 PST, before the skipped 02:30 local.
         let after = Utc.with_ymd_and_hms(2026, 3, 8, 9, 0, 0).unwrap();
-        let next = c.next_after(after).expect("must produce a valid occurrence");
+        let next = c
+            .next_after(after)
+            .expect("must produce a valid occurrence");
         // Must be strictly after `after` and exist as a real instant.
         assert!(next > after);
     }

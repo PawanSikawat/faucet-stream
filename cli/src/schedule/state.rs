@@ -141,12 +141,16 @@ mod tests {
         assert_eq!(s.on_tick(true), TickAction::Queue);
         assert_eq!(
             s.on_run_finished(RunOutcome::Success),
-            AfterRun::Continue { dispatch_pending: true }
+            AfterRun::Continue {
+                dispatch_pending: true
+            }
         );
         // Pending consumed exactly once.
         assert_eq!(
             s.on_run_finished(RunOutcome::Success),
-            AfterRun::Continue { dispatch_pending: false }
+            AfterRun::Continue {
+                dispatch_pending: false
+            }
         );
     }
 
@@ -161,11 +165,15 @@ mod tests {
         let mut s = state("cron: \"* * * * *\"\nmax_runs: 2");
         assert_eq!(
             s.on_run_finished(RunOutcome::Failure),
-            AfterRun::Continue { dispatch_pending: false }
+            AfterRun::Continue {
+                dispatch_pending: false
+            }
         );
         assert_eq!(
             s.on_run_finished(RunOutcome::Success),
-            AfterRun::Continue { dispatch_pending: false }
+            AfterRun::Continue {
+                dispatch_pending: false
+            }
         );
         assert_eq!(s.on_run_finished(RunOutcome::Success), AfterRun::ExitOk);
     }
@@ -184,20 +192,28 @@ mod tests {
         let mut s = state("cron: \"* * * * *\"\nmax_consecutive_failures: 3");
         assert_eq!(
             s.on_run_finished(RunOutcome::Failure),
-            AfterRun::Continue { dispatch_pending: false }
+            AfterRun::Continue {
+                dispatch_pending: false
+            }
         );
         assert_eq!(
             s.on_run_finished(RunOutcome::Success),
-            AfterRun::Continue { dispatch_pending: false }
+            AfterRun::Continue {
+                dispatch_pending: false
+            }
         );
         // Counter reset by the success above.
         assert_eq!(
             s.on_run_finished(RunOutcome::Failure),
-            AfterRun::Continue { dispatch_pending: false }
+            AfterRun::Continue {
+                dispatch_pending: false
+            }
         );
         assert_eq!(
             s.on_run_finished(RunOutcome::Failure),
-            AfterRun::Continue { dispatch_pending: false }
+            AfterRun::Continue {
+                dispatch_pending: false
+            }
         );
         assert_eq!(
             s.on_run_finished(RunOutcome::Failure),

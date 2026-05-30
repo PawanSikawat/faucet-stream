@@ -42,13 +42,18 @@ fn once_runs_one_pipeline_and_exits_zero() {
         .assert()
         .success();
     let out = std::fs::read_to_string(dir.path().join("out.jsonl")).unwrap();
-    assert_eq!(out.lines().count(), 2, "expected the two CSV rows written once");
+    assert_eq!(
+        out.lines().count(),
+        2,
+        "expected the two CSV rows written once"
+    );
 }
 
 #[test]
 fn max_runs_stops_the_loop() {
     // Seconds-cron firing every second; stop after 2 successful runs.
-    let (dir, cfg) = fixture("  cron: \"*/1 * * * * *\"\n  max_runs: 2\n  start_immediately: true\n");
+    let (dir, cfg) =
+        fixture("  cron: \"*/1 * * * * *\"\n  max_runs: 2\n  start_immediately: true\n");
     Command::cargo_bin("faucet")
         .unwrap()
         .arg("schedule")

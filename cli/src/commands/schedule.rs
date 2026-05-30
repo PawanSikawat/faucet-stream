@@ -42,8 +42,9 @@ impl Shutdown {
         #[cfg(unix)]
         {
             use tokio::signal::unix::{SignalKind, signal};
-            let sigterm = signal(SignalKind::terminate())
-                .map_err(|e| CliError::Internal(format!("failed to install SIGTERM handler: {e}")))?;
+            let sigterm = signal(SignalKind::terminate()).map_err(|e| {
+                CliError::Internal(format!("failed to install SIGTERM handler: {e}"))
+            })?;
             Ok(Self { sigterm })
         }
         #[cfg(not(unix))]
@@ -111,7 +112,16 @@ pub async fn run(args: ScheduleArgs) -> CliResult<()> {
         return run_once(&nodes, &auth, &execution, &compiled, &pipeline_name).await;
     }
 
-    run_loop(compiled, nodes, auth, execution, pipeline_name, cron, timezone).await
+    run_loop(
+        compiled,
+        nodes,
+        auth,
+        execution,
+        pipeline_name,
+        cron,
+        timezone,
+    )
+    .await
 }
 
 /// Build a fresh `ExecuteOptions` for one tick (connectors are rebuilt per run;
@@ -177,9 +187,16 @@ fn classify(joined: Result<CliResult<RunSummary>, tokio::task::JoinError>) -> Ru
         ),
         Ok(Ok(_)) => (RunOutcome::Success, None),
         Ok(Err(e)) => (RunOutcome::Failure, Some(e.to_string())),
-        Err(je) => (RunOutcome::Failure, Some(format!("run task panicked: {je}"))),
+        Err(je) => (
+            RunOutcome::Failure,
+            Some(format!("run task panicked: {je}")),
+        ),
     };
-    RunFinished { outcome, duration: Duration::ZERO, detail }
+    RunFinished {
+        outcome,
+        duration: Duration::ZERO,
+        detail,
+    }
 }
 
 /// `--once`: run exactly one pipeline run now and map its result to an exit.
@@ -194,15 +211,18 @@ async fn run_once(
     let opts = make_opts(pipeline_name, execution, auth);
     let fut = run_expanded(nodes.to_vec(), opts);
     let summary = match compiled.run_timeout {
-        Some(d) => tokio::time::timeout(d, fut)
-            .await
-            .map_err(|_| {
-                CliError::Internal(format!("--once run exceeded run_timeout_secs ({}s)", d.as_secs()))
-            })??,
+        Some(d) => tokio::time::timeout(d, fut).await.map_err(|_| {
+            CliError::Internal(format!(
+                "--once run exceeded run_timeout_secs ({}s)",
+                d.as_secs()
+            ))
+        })??,
         None => fut.await?,
     };
     if summary.had_failures() {
-        return Err(CliError::PipelineHadFailures { count: summary.failure_count() });
+        return Err(CliError::PipelineHadFailures {
+            count: summary.failure_count(),
+        });
     }
     Ok(())
 }
@@ -270,7 +290,10 @@ async fn run_loop(
                     m::last_run_started(&pipeline_name, now);
                     m::lateness(&pipeline_name, now - next_due);
                     tracing::info!(pipeline = %pipeline_name, run_ordinal, scheduled_for = %next_due, "run started");
-                    running = Some(RunningRun { handle, started: Instant::now() });
+                    running = Some(RunningRun {
+                        handle,
+                        started: Instant::now(),
+                    });
                 }
                 TickAction::Skip => {
                     m::overlap(&pipeline_name, "skip");
@@ -301,7 +324,10 @@ async fn run_loop(
         let now2 = Utc::now();
         m::heartbeat(&pipeline_name, now2);
         m::next_tick(&pipeline_name, next_due);
-        let chunk = (next_due - now2).to_std().unwrap_or(Duration::ZERO).min(MAX_SLEEP);
+        let chunk = (next_due - now2)
+            .to_std()
+            .unwrap_or(Duration::ZERO)
+            .min(MAX_SLEEP);
 
         tokio::select! {
             biased;
@@ -380,7 +406,9 @@ async fn wait_for_run(running: &mut Option<RunningRun>) -> RunFinished {
 async fn graceful_shutdown(running: Option<RunningRun>, grace: Duration, pipeline_name: &str) {
     if let Some(mut rr) = running {
         match tokio::time::timeout(grace, &mut rr.handle).await {
-            Ok(_) => tracing::info!(pipeline = %pipeline_name, "in-flight run finished during shutdown grace"),
+            Ok(_) => {
+                tracing::info!(pipeline = %pipeline_name, "in-flight run finished during shutdown grace")
+            }
             Err(_) => {
                 rr.handle.abort();
                 tracing::warn!(
