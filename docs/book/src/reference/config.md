@@ -7,6 +7,7 @@ version: 1                 # required, must be 1
 name: my_pipeline          # optional; used in state keys and metrics
 vars: {}                   # optional; reusable values referenced as ${vars.X}
 auth: {}                   # optional; named shared auth providers (see below)
+schedule: {}               # optional; cron schedule for faucet schedule (see below)
 pipeline:                  # required
   source: { type: …, config: { … } }
   transforms: []           # optional list
@@ -128,9 +129,47 @@ auth:
 - `on_error` — `continue` (siblings finish; failed subtree skipped) or `stop`
   (abort pending and in-flight work on first failure).
 
+## `schedule`
+
+Present only when you run `faucet schedule`. Absent configs are rejected by that
+command with a hint to use `faucet run` instead. All fields except `cron` are
+optional.
+
+```yaml
+schedule:
+  cron: "0 2 * * *"               # REQUIRED. Standard 5-field cron, or 6-field with leading seconds.
+  timezone: "UTC"                 # IANA timezone name. Default UTC.
+  overlap_policy: skip            # skip | queue | forbid. Default skip.
+  max_runs: null                  # null = run forever; N = exit 0 after N successful runs.
+  max_consecutive_failures: null  # null = never exit on failure; N = exit non-zero after N straight failures.
+  on_failure: continue            # continue | stop. Default continue.
+  start_immediately: false        # Run once on startup before waiting for the first tick. Default false.
+  run_timeout_secs: null          # Per-run wall-clock kill switch (seconds). Timed-out runs count as failed.
+  shutdown_grace_secs: 30         # SIGTERM: wait this long for the in-flight run before aborting. Default 30.
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `cron` | string | **required** | 5-field standard Unix cron (`MIN HOUR DOM MON DOW`) or 6-field with a leading seconds field (`SEC MIN HOUR DOM MON DOW`). Validated at load time. |
+| `timezone` | string | `"UTC"` | IANA timezone name (e.g. `"America/Los_Angeles"`, `"Europe/Berlin"`). Affects how the cron expression is interpreted. |
+| `overlap_policy` | `skip` \| `queue` \| `forbid` | `skip` | What to do when a tick fires while a run is already in flight. `skip` drops the tick; `queue` buffers one missed tick (in-memory only, lost on restart); `forbid` exits non-zero. |
+| `max_runs` | integer \| null | `null` | Stop the scheduler cleanly (exit 0) after this many *successful* runs. `null` means run forever. `0` is rejected as a config error. |
+| `max_consecutive_failures` | integer \| null | `null` | Exit non-zero after this many consecutive failed runs without a success in between. A successful run resets the counter. `null` means never exit on failures alone. |
+| `on_failure` | `continue` \| `stop` | `continue` | `stop` exits non-zero immediately after the first failed run. `continue` keeps scheduling; use `max_consecutive_failures` to bound sustained outages. |
+| `start_immediately` | bool | `false` | When `true`, the first run fires right on startup before the cron clock reaches its first tick. |
+| `run_timeout_secs` | integer \| null | `null` | Per-run time limit in seconds. A run that exceeds this is killed and counts as a failure. `null` means no timeout. |
+| `shutdown_grace_secs` | integer | `30` | On SIGTERM/SIGINT, wait this many seconds for the in-flight run to finish before forcibly aborting it. |
+
+**Validation:** `faucet validate pipeline.yaml` checks the `schedule:` block at parse time — bad cron
+syntax, unknown timezone names, `max_runs: 0`, and a cron expression that can never fire all produce
+a clear `config error: schedule: …` message before any run starts.
+
+See the [scheduling cookbook](../cookbook/scheduling.md) for worked examples, the DST/timezone
+details, the overlap-policy decision tree, and the full Prometheus metric set.
+
 ## Discovery & env files
 
-`run` / `validate` / `preview` auto-discover `faucet.yaml` → `.yml` → `.json` in
+`run` / `validate` / `preview` / `schedule` auto-discover `faucet.yaml` → `.yml` → `.json` in
 the current directory, and load a sibling `.env` unless `--no-env-file` is given
 (`--env-file PATH` points elsewhere).
 

@@ -12,8 +12,9 @@ The `faucet` binary exposes these commands. Pass `--log-level <level>` (or set
 | `faucet list` | List every compiled-in source, sink, and transform with a one-line description. |
 | `faucet init [name]` | Scaffold a commented config skeleton from connector schemas. |
 | `faucet doctor [config]` | Probe every connector (auth/network/permissions) and print a checklist. |
+| `faucet schedule [config]` | Run a pipeline on a cron schedule (long-running foreground process). |
 
-`[config]` is optional for `run` / `validate` / `preview` / `doctor`: if omitted,
+`[config]` is optional for `run` / `validate` / `preview` / `doctor` / `schedule`: if omitted,
 faucet auto-discovers `faucet.yaml` → `.yml` → `.json` in the current directory.
 
 ## `run`
@@ -119,6 +120,36 @@ scrubbed for resolved secrets before printing.
 
 See the [Troubleshooting](../cookbook/troubleshooting.md) cookbook page for
 reading the output and common failures.
+
+## `schedule`
+
+```bash
+faucet schedule pipeline.yaml                  # run on cron schedule, foreground; Ctrl-C to stop
+faucet schedule pipeline.yaml --once           # run exactly once now, then exit
+faucet schedule pipeline.yaml --env-file prod.env
+faucet schedule pipeline.yaml --no-env-file
+```
+
+Runs a pipeline on a recurring cron schedule in a **long-running foreground process**. The config
+must contain a top-level `schedule:` block (without one, faucet errors and suggests `faucet run`).
+Requires the `schedule` Cargo feature (included in `full`).
+
+- Stop with Ctrl-C or SIGTERM; the in-flight run drains for up to `shutdown_grace_secs` (default 30)
+  before the process exits.
+- `--once` ignores cron timing and runs the pipeline exactly once immediately — handy for testing
+  a scheduled config or for one-shot container invocations.
+- Missed ticks are skipped, not backfilled. A run that starts late emits
+  `faucet_schedule_run_lateness_seconds` for monitoring.
+
+Flags:
+
+| Flag | Purpose |
+|------|---------|
+| `--once` | Run exactly once now, then exit. Ignores cron timing. |
+| `--env-file <path>` / `--no-env-file` | Same `.env` handling as `run` / `validate`. |
+
+See the [scheduling cookbook](../cookbook/scheduling.md) for worked examples, the overlap-policy
+decision tree, the resilience/supervisor model, and the full metric set to scrape.
 
 ## Environment-only mode
 

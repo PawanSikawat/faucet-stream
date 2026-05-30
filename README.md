@@ -32,8 +32,8 @@ can drop on any box or a library you compile in.
   PostgreSQL change-data-capture, built-in data-quality checks (13 per-record and
   per-batch assertions with quarantine routing and abort policies), dead-letter
   queues, automatic retries, secrets-manager interpolation (`${vault:…}`,
-  `${aws-sm:…}`, `${gcp-sm:…}`, `${azure-kv:…}`), and built-in Prometheus
-  metrics + `tracing` spans, all with zero per-connector code.
+  `${aws-sm:…}`, `${gcp-sm:…}`, `${azure-kv:…}`), cron scheduling (`faucet schedule`),
+  and built-in Prometheus metrics + `tracing` spans, all with zero per-connector code.
 - **Pay only for what you use** — every connector is a Cargo feature, so a slim
   build can be just REST + JSONL, or pull in all 35 connectors with `--features full`.
 
@@ -52,6 +52,7 @@ faucet init my_pipeline --source postgres --sink bigquery   # scaffold pipeline.
 faucet validate pipeline.yaml
 faucet doctor pipeline.yaml                                  # preflight: probe auth/network/permissions
 faucet run pipeline.yaml
+faucet schedule pipeline.yaml                               # run on cron schedule (add a schedule: block)
 ```
 
 ```yaml
@@ -207,7 +208,7 @@ faucet-stream is a Cargo workspace with 47 crates — 20 sources, 16 sinks, 5 sh
 | [`faucet-state-postgres`](crates/state/postgres) | PostgreSQL-backed `StateStore` for persistent bookmarks |
 | [`faucet-stream`](faucet-stream) | Umbrella crate — feature-gated re-exports of all connectors and state backends |
 | **CLI** | |
-| [`faucet-cli`](cli) | `faucet` binary — YAML/JSON config-driven pipeline runner (`run`, `validate`, `schema`, `list`, `preview`, `init`) |
+| [`faucet-cli`](cli) | `faucet` binary — YAML/JSON config-driven pipeline runner (`run`, `validate`, `schema`, `list`, `preview`, `init`, `doctor`, `schedule`) |
 
 See the [connector capability matrix](https://pawansikawat.github.io/faucet-stream/reference/connectors.html)
 (streaming, resumable state, compression, auth per connector) and the

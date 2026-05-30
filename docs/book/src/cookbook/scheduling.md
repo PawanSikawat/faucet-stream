@@ -1,0 +1,240 @@
+# Scheduling pipelines with `faucet schedule`
+
+`faucet schedule` runs a pipeline on a cron schedule in a **long-running
+foreground process**. It is designed for server-side deployment: drop it into
+systemd, Kubernetes, or any supervisor that can restart it on failure, and the
+pipeline fires on time every time.
+
+```bash
+faucet schedule pipeline.yaml           # foreground; Ctrl-C or SIGTERM to stop
+faucet schedule pipeline.yaml --once    # run exactly once now, then exit
+```
+
+The config must include a `schedule:` block alongside the usual `pipeline:`.
+Configs without one are rejected with a hint to use `faucet run` instead.
+
+## A runnable example
+
+The following config runs a CSV→JSONL pipeline every night at 02:00
+America/Los_Angeles. Save it as `nightly.yaml` and start it with
+`faucet schedule nightly.yaml`:
+
+```yaml
+# nightly.yaml — run at 02:00 Pacific every night
+version: 1
+name: nightly-rollup
+
+schedule:
+  cron: "0 2 * * *"
+  timezone: "America/Los_Angeles"
+  overlap_policy: skip            # don't pile up if a run runs long
+  max_consecutive_failures: 5     # exit non-zero after 5 straight failures (supervisor restarts)
+  on_failure: continue
+  shutdown_grace_secs: 30
+
+pipeline:
+  source:
+    type: csv
+    config:
+      path: ./events.csv
+  sink:
+    type: jsonl
+    config:
+      path: ./events.jsonl
+```
+
+See [`cli/examples/scheduled_nightly.yaml`](https://github.com/PawanSikawat/faucet-stream/blob/main/cli/examples/scheduled_nightly.yaml)
+for the canonical copy.
+
+## Cron syntax
+
+faucet uses a standard Unix cron expression, validated at config-load time.
+A bad expression or an expression that can never fire produces a clear error
+before the process starts.
+
+**5-field form** (`MIN HOUR DOM MON DOW`):
+
+| Expression | Meaning |
+|------------|---------|
+| `0 2 * * *` | Every night at 02:00 |
+| `*/15 * * * *` | Every 15 minutes |
+| `0 9 * * 1-5` | Weekdays at 09:00 |
+| `0 0 1 * *` | First of every month at midnight |
+| `0 */6 * * *` | Every 6 hours |
+
+**6-field form** (`SEC MIN HOUR DOM MON DOW`) — add a leading seconds field
+for sub-minute intervals:
+
+| Expression | Meaning |
+|------------|---------|
+| `*/30 * * * * *` | Every 30 seconds |
+| `0 */5 * * * *` | Every 5 minutes (explicit seconds=0) |
+
+Field ranges follow standard cron semantics: `*` (every), `*/N` (every N),
+`a-b` (range), `a,b,c` (list). Month and day-of-week names (`JAN`, `MON`,
+etc.) are accepted. Special strings like `@daily` and `@hourly` are **not**
+supported — use the numeric form.
+
+## Timezone and DST
+
+Set `timezone` to any [IANA timezone name](https://www.iana.org/time-zones)
+(e.g. `America/Los_Angeles`, `Europe/Berlin`, `Asia/Tokyo`). The default is
+`UTC`.
+
+All tick times are computed on UTC monotonic instants with timezone-correct
+wall-clock interpretation, so DST transitions behave correctly:
+
+- **Fall-back (clocks go back):** a repeated wall-clock hour fires **once**.
+- **Spring-forward (clocks skip ahead):** a wall-clock time in the skipped
+  hour is treated as if it were in the hour immediately after the gap — the
+  next valid tick.
+
+The scheduler loop re-checks the wall clock at least every 30 seconds, so
+NTP steps, VM freeze/thaw, and DST shifts can never drift a scheduled fire
+by more than ~30 seconds.
+
+## Missed-tick behavior
+
+If the process was down or a run took longer than one cron period, missed
+ticks are **skipped** — not backfilled. The scheduler fires once at the next
+due time and moves on. There is no catch-up storm.
+
+To find out how late a run fired, scrape
+`faucet_schedule_run_lateness_seconds` (histogram: `actual_start −
+scheduled_for`).
+
+## Overlap policy
+
+The overlap policy controls what happens when a tick fires while a run is
+already executing.
+
+| Policy | When to use |
+|--------|-------------|
+| `skip` (default) | The tick is dropped and a `faucet_schedule_overlaps_total{policy=skip}` counter is incremented. Use when it is acceptable to miss a cycle if the previous one ran long. Most pipelines. |
+| `queue` | One missed tick is buffered and fires immediately when the current run finishes. Further misses during that same run collapse into the single queued tick (in-memory only — lost on restart). Use when missing a cycle is unacceptable but strict concurrency still must be preserved. |
+| `forbid` | The process exits non-zero the moment an overlap would occur. Use when overlapping runs would produce corrupt output or you want a hard guarantee that no two instances run simultaneously — pair with a supervisor that alerts or pages on non-zero exit. |
+
+**Choosing between skip and queue:** if your pipeline is idempotent and
+catching up after a long run matters (e.g. incremental replication with
+state), use `queue`. If occasional missed cycles are harmless and you prefer
+simplicity, use `skip`.
+
+## Failure model and supervisor integration
+
+Two independent knobs govern what happens when a run fails:
+
+| `on_failure` | `max_consecutive_failures` | Behaviour |
+|---|---|---|
+| `continue` (default) | `null` | Tolerates all failures indefinitely. Alert via `faucet_schedule_consecutive_failures` gauge. |
+| `continue` | `N` | Tolerates up to N−1 straight failures; exits non-zero when the Nth consecutive failure occurs. A successful run resets the counter to 0. |
+| `stop` | any | Exits non-zero immediately on the **first** failure. |
+
+The recommended production pattern is `on_failure: continue` with
+`max_consecutive_failures: N` (5–10 depending on how quickly you want a
+supervisor restart):
+
+```yaml
+schedule:
+  cron: "*/5 * * * *"
+  on_failure: continue
+  max_consecutive_failures: 5   # restart after 5 straight failures
+```
+
+### Systemd unit example
+
+```ini
+# /etc/systemd/system/nightly-rollup.service
+[Unit]
+Description=faucet nightly rollup
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/faucet schedule /opt/pipelines/nightly.yaml
+Restart=on-failure
+RestartSec=30s
+# Env vars for the pipeline
+EnvironmentFile=/opt/pipelines/nightly.env
+
+[Install]
+WantedBy=multi-user.target
+```
+
+`Restart=on-failure` means systemd restarts the process whenever it exits
+with a non-zero code, which is exactly the condition `max_consecutive_failures`
+produces. `RestartSec=30s` adds a brief cooldown between restarts to avoid
+hammering a broken upstream.
+
+### Kubernetes CronJob vs long-running Deployment
+
+`faucet schedule` is designed for a **Deployment** (or long-running Pod):
+one process, always running, fires on cron. This keeps token caches warm
+and avoids cold-start latency on every tick.
+
+If you need Kubernetes to manage the schedule itself, use a Kubernetes
+**CronJob** with `faucet run` instead — each invocation is ephemeral and
+the scheduler handles missed/overlapping pods at the platform level.
+
+## Graceful shutdown and SIGTERM
+
+On SIGTERM or Ctrl-C:
+
+1. faucet stops accepting new ticks.
+2. If a run is in flight, it waits up to `shutdown_grace_secs` (default 30)
+   for it to finish.
+3. If the run finishes within the grace period, the process exits 0.
+4. If the run is still running after the grace period, it is aborted. The
+   per-page `StateStore` bookmark means the next start resumes from the last
+   confirmed write — no data is lost, but the partial page since the last
+   bookmark is re-fetched on the next run. Whether that causes duplicates
+   depends on your sink's idempotency.
+
+Increase `shutdown_grace_secs` for long-running pages (e.g. a BigQuery batch
+that takes several minutes to flush):
+
+```yaml
+schedule:
+  cron: "0 * * * *"
+  shutdown_grace_secs: 120
+```
+
+## Health metrics to scrape
+
+Register a Prometheus listener via the `observability:` block:
+
+```yaml
+observability:
+  prometheus:
+    listen: "127.0.0.1:9464"
+```
+
+Key metrics for a scheduling health dashboard:
+
+| Metric | What to alert on |
+|--------|-----------------|
+| `faucet_schedule_heartbeat_unix_seconds` | `time() - value > 90` → scheduler loop is stuck or process crashed |
+| `faucet_schedule_consecutive_failures` | `> 0` → at least one recent failure; `>= max_consecutive_failures` → imminent exit |
+| `faucet_schedule_next_tick_unix_seconds` | `value - time() > 2 * expected_interval` → scheduler is not advancing |
+| `faucet_schedule_runs_total{outcome="err"}` | Increasing counter → runs are failing |
+| `faucet_schedule_overlaps_total` | Repeated increments → runs are taking longer than the cron period |
+| `faucet_schedule_run_lateness_seconds` | p99 > threshold → runs are starting significantly late |
+
+Full metric reference:
+
+| Metric | Type | Description |
+|--------|------|-------------|
+| `faucet_schedule_runs_total{pipeline,outcome}` | Counter | `outcome` ∈ `{ok, err, skipped}` |
+| `faucet_schedule_overlaps_total{pipeline,policy}` | Counter | Overlap events by policy |
+| `faucet_schedule_next_tick_unix_seconds{pipeline}` | Gauge | Unix timestamp of the next scheduled tick |
+| `faucet_schedule_runs_in_flight{pipeline}` | Gauge | 0 or 1 |
+| `faucet_schedule_consecutive_failures{pipeline}` | Gauge | Resets to 0 on success |
+| `faucet_schedule_heartbeat_unix_seconds{pipeline}` | Gauge | Updated every loop wake (≤30 s) |
+| `faucet_schedule_last_run_started_unix_seconds{pipeline}` | Gauge | |
+| `faucet_schedule_last_run_completed_unix_seconds{pipeline}` | Gauge | |
+| `faucet_schedule_last_run_duration_seconds{pipeline}` | Gauge | |
+| `faucet_schedule_run_lateness_seconds{pipeline}` | Histogram | `actual_start − scheduled_for` |
+
+Each run also emits a `faucet.schedule.run` tracing span (attributes:
+`run_ordinal`, `scheduled_for_unix_seconds`, `tick_unix_seconds`) that wraps
+the inner pipeline spans, so distributed tracing carries the scheduling
+context through the full pipeline.
