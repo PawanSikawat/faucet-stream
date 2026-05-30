@@ -502,47 +502,76 @@ where
                         );
                         let _enter = span.enter();
 
-                        let outcomes_result = if page.records.is_empty() {
-                            Ok(Vec::new())
-                        } else {
-                            sink.write_batch_partial(&page.records).await
-                        };
-                        let mut outer_err_recovered = false;
-                        let outcomes = match outcomes_result {
-                            Ok(o) => o,
-                            Err(e) => match dlq_cfg.on_batch_error {
-                                OnBatchError::Propagate => return Err(e),
-                                OnBatchError::DlqAll => {
-                                    // Synthesize per-row failures echoing the
-                                    // underlying message so envelopes carry it.
-                                    // The flag distinguishes this from a sink
-                                    // override that legitimately returned all
-                                    // per-row Errs — that case keeps the
-                                    // `partial` reason label.
-                                    outer_err_recovered = true;
-                                    let msg = e.to_string();
-                                    (0..page.records.len())
-                                        .map(|_| Err(FaucetError::Sink(msg.clone())))
-                                        .collect()
-                                }
-                            },
-                        };
-
-                        // Partition into success count + failure envelopes.
+                        // Reslice the page into sub-batches driven by the
+                        // adaptive controller (or write the whole page in one
+                        // shot when adaptive is disabled — same as before).
                         let mut envelopes: Vec<Value> = Vec::new();
                         let mut page_success = 0usize;
-                        for (i, outcome) in outcomes.iter().enumerate() {
-                            match outcome {
-                                Ok(()) => page_success += 1,
-                                Err(err) => envelopes.push(build_envelope(
-                                    &page.records[i],
-                                    err,
-                                    sink_name,
-                                    &pipeline_name,
-                                    &row,
-                                    i,
-                                )),
+                        let mut outer_err_recovered = false;
+                        let records_len = page.records.len();
+                        let mut offset = 0usize;
+                        while offset < records_len {
+                            let size = match adaptive_cfg.as_ref() {
+                                Some(cfg) => {
+                                    let ctrl = controller.get_or_insert_with(|| {
+                                        crate::adaptive::AimdController::new(cfg, records_len)
+                                    });
+                                    ctrl.current().max(1).min(records_len - offset)
+                                }
+                                None => records_len - offset, // whole page = today's behavior
+                            };
+                            if adaptive_cfg.is_some() {
+                                maybe_warn_noop_sink(sink_name, &mut warned_noop_sink);
                             }
+                            let chunk = &page.records[offset..offset + size];
+                            let t0 = std::time::Instant::now();
+                            let chunk_outcomes_result = sink.write_batch_partial(chunk).await;
+                            let latency = t0.elapsed();
+                            let chunk_outcomes = match chunk_outcomes_result {
+                                Ok(o) => o,
+                                Err(e) => match dlq_cfg.on_batch_error {
+                                    OnBatchError::Propagate => return Err(e),
+                                    OnBatchError::DlqAll => {
+                                        // Synthesize per-row failures echoing the
+                                        // underlying message so envelopes carry it.
+                                        // The flag distinguishes this from a sink
+                                        // override that legitimately returned all
+                                        // per-row Errs — that case keeps the
+                                        // `partial` reason label.
+                                        outer_err_recovered = true;
+                                        let msg = e.to_string();
+                                        (0..chunk.len())
+                                            .map(|_| Err(FaucetError::Sink(msg.clone())))
+                                            .collect()
+                                    }
+                                },
+                            };
+                            let mut chunk_errors = 0usize;
+                            for (j, outcome) in chunk_outcomes.iter().enumerate() {
+                                match outcome {
+                                    Ok(()) => page_success += 1,
+                                    Err(err) => {
+                                        chunk_errors += 1;
+                                        envelopes.push(build_envelope(
+                                            &chunk[j],
+                                            err,
+                                            sink_name,
+                                            &pipeline_name,
+                                            &row,
+                                            offset + j,
+                                        ));
+                                    }
+                                }
+                            }
+                            if let Some(ctrl) = controller.as_mut() {
+                                let _adj = ctrl.observe(crate::adaptive::Observation {
+                                    batch_len: chunk.len(),
+                                    errors: chunk_errors,
+                                    latency,
+                                });
+                                // (metric emission added in a later task)
+                            }
+                            offset += size;
                         }
                         // Quality-quarantined records share the DLQ budget/write.
                         // Capture the quality count BEFORE the splice — the splice
@@ -2214,6 +2243,64 @@ mod tests {
         let opts = RunStreamOptions::new().with_quality(quality);
         let result = run_stream(futures::stream::iter(pages), &main, opts).await;
         assert!(matches!(result, Err(FaucetError::Config(_))));
+    }
+
+    /// Sink whose write_batch_partial fails every Nth record; drives the
+    /// error-rate signal. Requires a DLQ in run_stream.
+    struct FlakySink { every: usize, calls: std::sync::Mutex<Vec<usize>> }
+    impl FlakySink {
+        fn new(every: usize) -> Self { Self { every, calls: std::sync::Mutex::new(Vec::new()) } }
+        fn call_sizes(&self) -> Vec<usize> { self.calls.lock().unwrap().clone() }
+    }
+    #[async_trait]
+    impl Sink for FlakySink {
+        async fn write_batch(&self, records: &[Value]) -> Result<usize, FaucetError> {
+            Ok(records.len())
+        }
+        async fn write_batch_partial(&self, records: &[Value]) -> Result<Vec<crate::RowOutcome>, FaucetError> {
+            self.calls.lock().unwrap().push(records.len());
+            Ok(records.iter().enumerate().map(|(i, _)| {
+                if (i + 1) % self.every == 0 { Err(FaucetError::Sink("synthetic".into())) } else { Ok(()) }
+            }).collect())
+        }
+    }
+
+    #[tokio::test]
+    async fn adaptive_shrinks_under_errors_on_dlq_path() {
+        use crate::adaptive::AdaptiveBatchConfig;
+        use crate::dlq::{DlqConfig, OnBatchError};
+        // Three pages of 400 records each, matching the pattern used by
+        // adaptive_shrinks_under_latency_target_then_smaller_chunks. After
+        // page 1 (single 400-record chunk, 25% error rate > threshold 0.1),
+        // the controller shrinks and subsequent pages get smaller sub-batches.
+        let mk = || StreamPage { records: (0..400).map(|i| json!({"i": i})).collect(), bookmark: None };
+        let stream = futures::stream::iter(vec![Ok(mk()), Ok(mk()), Ok(mk())]);
+        let sink = FlakySink::new(4); // 25% error rate > threshold 0.1
+        let dlq_sink: Arc<dyn Sink> = Arc::new(MockSink::new());
+        let dlq = DlqConfig {
+            sink: dlq_sink,
+            on_batch_error: OnBatchError::Propagate,
+            max_failures_per_page: None,
+            max_failures_total: None,
+            include_original_payload: true,
+        };
+        let cfg: AdaptiveBatchConfig = serde_json::from_value(json!({
+            "enabled": true, "min": 50, "max": 400,
+            "decrease_factor": 0.5, "cooldown_batches": 0, "error_threshold": 0.1
+        })).unwrap();
+        let opts = RunStreamOptions::new().with_dlq(dlq).with_adaptive(cfg);
+        let result = run_stream(stream, &sink, opts).await.unwrap();
+        // 3 × 400 = 1200 records total; FlakySink(4) fails every 4th record
+        // per-chunk (floor(n/4)), so exact counts depend on chunk sizes due to
+        // integer arithmetic. With the controller shrinking under 25% error
+        // rate: page 1 = one 400-record chunk (300 written, 100 DLQ); pages
+        // 2–3 = smaller sub-batches; overall >≈75% of 1200 commit and ~25% go
+        // to the DLQ.
+        assert!(result.records_written >= 900, "expected ≥900 written, got {}", result.records_written);
+        let sizes = sink.call_sizes();
+        assert_eq!(sizes[0], 400, "first chunk is the full page");
+        assert!(sizes.last().unwrap() < &400, "controller should shrink under errors: {sizes:?}");
+        assert!(result.dlq.unwrap().records_dlq >= 250, "expected ≥250 DLQ records");
     }
 
     // ── Adaptive batch-size tests ──────────────────────────────────────────
