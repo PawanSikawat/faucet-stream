@@ -190,8 +190,8 @@ jobs:
           brew install cmake openssl@3 curl
       - name: Check feature in isolation
         run: |
-          # Secrets and schedule features live in faucet-cli (CLI layer), not
-          # in the faucet-stream umbrella crate. Route accordingly.
+          # Secrets, schedule, and serve features live in faucet-cli (CLI layer),
+          # not in the faucet-stream umbrella crate. Route accordingly.
           if [[ "${{ matrix.feature }}" == secrets-* || "${{ matrix.feature }}" == "schedule" || "${{ matrix.feature }}" == serve* ]]; then
             cargo check -p faucet-cli --no-default-features --features ${{ matrix.feature }}
           else

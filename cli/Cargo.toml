@@ -166,8 +166,10 @@ observability = [
 schedule = ["dep:croner", "dep:chrono-tz"]
 
 # HTTP control plane (`faucet serve`). Pulls axum + an in-process run registry.
-# Enables `observability` (serve renders /metrics on its own port).
-serve = ["observability", "dep:axum", "dep:tower-http", "dep:dashmap", "dep:tokio-util", "dep:subtle"]
+# Enables `observability` (serve renders /metrics on its own port). Gates the
+# tokio net/time features here (rather than the base dep) so slim non-serve
+# builds don't link the TCP stack.
+serve = ["observability", "tokio/net", "tokio/time", "dep:axum", "dep:tower-http", "dep:dashmap", "dep:tokio-util", "dep:subtle"]
 serve-history-postgres = ["serve", "dep:sqlx"]
 serve-history-sqlite = ["serve", "dep:sqlx"]
 
@@ -220,7 +222,7 @@ serde.workspace = true
 serde_json.workspace = true
 serde_yaml = "0.9"
 thiserror.workspace = true
-tokio = { workspace = true, features = ["rt-multi-thread", "macros", "signal", "fs", "sync", "net", "time"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "signal", "fs", "sync"] }
 tracing.workspace = true
 tracing-subscriber = { workspace = true, optional = true }
 async-trait.workspace = true
