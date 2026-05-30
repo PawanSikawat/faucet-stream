@@ -110,6 +110,11 @@ pub struct RunArgs {
     /// Override the state-store directory (file backend only).
     #[arg(long)]
     pub state_path: Option<PathBuf>,
+    /// Override the `${now.*}` interpolation clock (RFC3339 like
+    /// `2026-01-31T00:00:00Z`, or a date `2026-01-31`). Default: process start (UTC).
+    /// Use for backfills.
+    #[arg(long)]
+    pub clock: Option<String>,
 }
 
 /// `faucet validate` arguments.

@@ -7,6 +7,27 @@ use crate::error::{CliError, CliResult};
 use crate::executor::{ExecuteOptions, run_expanded};
 use crate::expand::expand;
 
+/// Parse the optional `--clock` override (RFC3339 or `YYYY-MM-DD`), or default
+/// to process start. Returned as a UTC fixed-offset clock for `${now.*}`.
+fn resolve_run_clock(flag: Option<&str>) -> CliResult<chrono::DateTime<chrono::FixedOffset>> {
+    use chrono::{DateTime, NaiveDate, TimeZone, Utc};
+    match flag {
+        None => Ok(Utc::now().fixed_offset()),
+        Some(s) => {
+            if let Ok(dt) = DateTime::parse_from_rfc3339(s) {
+                return Ok(dt);
+            }
+            if let Ok(d) = NaiveDate::parse_from_str(s, "%Y-%m-%d") {
+                let ndt = d.and_hms_opt(0, 0, 0).expect("00:00:00 is valid");
+                return Ok(Utc.from_utc_datetime(&ndt).fixed_offset());
+            }
+            Err(CliError::Config(format!(
+                "--clock '{s}' is not RFC3339 (2026-01-31T00:00:00Z) or a date (2026-01-31)"
+            )))
+        }
+    }
+}
+
 /// Execute the `run` subcommand.
 pub async fn run(args: RunArgs) -> CliResult<()> {
     let cwd = std::env::current_dir()?;
@@ -58,6 +79,7 @@ pub async fn run(args: RunArgs) -> CliResult<()> {
             limit: args.limit,
             state_path_override: args.state_path.clone(),
             auth,
+            clock: resolve_run_clock(args.clock.as_deref())?,
         },
     )
     .await?;
@@ -97,4 +119,24 @@ pub async fn run(args: RunArgs) -> CliResult<()> {
         return Err(CliError::PipelineHadFailures { count: failed });
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn run_clock_parses_rfc3339_date_and_defaults() {
+        // RFC3339
+        let c = resolve_run_clock(Some("2026-01-31T12:00:00Z")).unwrap();
+        assert_eq!(c.format("%Y-%m-%d %H:%M").to_string(), "2026-01-31 12:00");
+        // date-only → midnight UTC
+        let c = resolve_run_clock(Some("2026-01-31")).unwrap();
+        assert_eq!(c.format("%Y-%m-%d %H:%M").to_string(), "2026-01-31 00:00");
+        // default = now (just assert it's Ok / recent year)
+        let c = resolve_run_clock(None).unwrap();
+        assert!(c.format("%Y").to_string().parse::<i32>().unwrap() >= 2025);
+        // bad input errors
+        assert!(resolve_run_clock(Some("not-a-date")).is_err());
+    }
 }

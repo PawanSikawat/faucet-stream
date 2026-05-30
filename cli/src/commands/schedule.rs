@@ -130,6 +130,7 @@ fn make_opts(
     pipeline_name: &str,
     execution: &Option<crate::config::ExecutionSpec>,
     auth: &AuthCatalog,
+    clock: chrono::DateTime<chrono::FixedOffset>,
 ) -> ExecuteOptions {
     ExecuteOptions {
         pipeline_name: pipeline_name.to_string(),
@@ -138,6 +139,7 @@ fn make_opts(
         limit: None,
         state_path_override: None,
         auth: auth.clone(),
+        clock,
     }
 }
 
@@ -208,7 +210,7 @@ async fn run_once(
     pipeline_name: &str,
 ) -> CliResult<()> {
     tracing::info!(pipeline = %pipeline_name, "schedule --once: running one pipeline now");
-    let opts = make_opts(pipeline_name, execution, auth);
+    let opts = make_opts(pipeline_name, execution, auth, compiled.clock_at(chrono::Utc::now()));
     let fut = run_expanded(nodes.to_vec(), opts);
     let summary = match compiled.run_timeout {
         Some(d) => tokio::time::timeout(d, fut).await.map_err(|_| {
@@ -283,7 +285,7 @@ async fn run_loop(
             match state.on_tick(running.is_some()) {
                 TickAction::Dispatch => {
                     run_ordinal += 1;
-                    let opts = make_opts(&pipeline_name, &execution, &auth);
+                    let opts = make_opts(&pipeline_name, &execution, &auth, compiled.clock_at(next_due));
                     let span = run_span(run_ordinal, next_due, now);
                     let handle = spawn_run(nodes.clone(), opts, compiled.run_timeout, span);
                     m::in_flight(&pipeline_name, 1);
@@ -375,7 +377,7 @@ async fn run_loop(
                         if dispatch_pending {
                             run_ordinal += 1;
                             let sched_for = pending_scheduled_for.take().unwrap_or(done_at);
-                            let opts = make_opts(&pipeline_name, &execution, &auth);
+                            let opts = make_opts(&pipeline_name, &execution, &auth, compiled.clock_at(sched_for));
                             let span = run_span(run_ordinal, sched_for, done_at);
                             let handle = spawn_run(nodes.clone(), opts, compiled.run_timeout, span);
                             m::in_flight(&pipeline_name, 1);

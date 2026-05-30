@@ -70,6 +70,7 @@ pub async fn run_from_yaml_str(yaml: &str) -> CliResult<executor::RunSummary> {
             limit: None,
             state_path_override: None,
             auth,
+            clock: chrono::Utc::now().fixed_offset(),
         },
     )
     .await

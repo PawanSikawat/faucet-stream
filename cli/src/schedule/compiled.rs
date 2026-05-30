@@ -74,6 +74,12 @@ impl CompiledSchedule {
         Ok(compiled)
     }
 
+    /// Render a UTC instant in the schedule's timezone, as a fixed-offset clock
+    /// for `${now.*}` interpolation.
+    pub fn clock_at(&self, at: chrono::DateTime<chrono::Utc>) -> chrono::DateTime<chrono::FixedOffset> {
+        at.with_timezone(&self.tz).fixed_offset()
+    }
+
     /// The next UTC instant strictly after `after` that matches the cron in the
     /// configured timezone. `None` when there is no such occurrence.
     ///
