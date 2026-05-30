@@ -128,11 +128,12 @@ mod tests {
     #[serial]
     fn writer_scrubs_secret_on_write() {
         clear();
-        register("hunter2pass");
+        let secret = "hunter2pass";
+        register(secret);
         let mut buf: Vec<u8> = Vec::new();
         {
             let mut w = RedactingWriter::new(&mut buf);
-            write!(w, "token={} done", "hunter2pass").unwrap();
+            write!(w, "token={secret} done").unwrap();
             w.flush().unwrap();
         }
         assert_eq!(String::from_utf8(buf).unwrap(), "token=*** done");
