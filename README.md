@@ -6,6 +6,7 @@
 
 [![Crates.io](https://img.shields.io/crates/v/faucet-stream.svg)](https://crates.io/crates/faucet-stream)
 [![Docs.rs](https://docs.rs/faucet-stream/badge.svg)](https://docs.rs/faucet-stream)
+[![Guide](https://img.shields.io/badge/guide-pawansikawat.github.io-1f6feb)](https://pawansikawat.github.io/faucet-stream/)
 [![CI](https://github.com/PawanSikawat/faucet-stream/actions/workflows/ci.yml/badge.svg)](https://github.com/PawanSikawat/faucet-stream/actions/workflows/ci.yml)
 [![Coverage](https://codecov.io/gh/PawanSikawat/faucet-stream/branch/main/graph/badge.svg)](https://codecov.io/gh/PawanSikawat/faucet-stream)
 [![Downloads](https://img.shields.io/crates/d/faucet-stream.svg)](https://crates.io/crates/faucet-stream)
