@@ -508,6 +508,11 @@ where
                         let mut envelopes: Vec<Value> = Vec::new();
                         let mut page_success = 0usize;
                         let mut outer_err_recovered = false;
+                        // True if any chunk reported genuine per-row sink `Err`s
+                        // (as opposed to a chunk wholly synthesized from an outer
+                        // error under `DlqAll`). Drives the `partial` label when a
+                        // resliced page mixes the two failure modes.
+                        let mut had_per_row_sink_failure = false;
                         let records_len = page.records.len();
                         let mut offset = 0usize;
                         while offset < records_len {
@@ -527,31 +532,38 @@ where
                             let t0 = std::time::Instant::now();
                             let chunk_outcomes_result = sink.write_batch_partial(chunk).await;
                             let latency = t0.elapsed();
-                            let chunk_outcomes = match chunk_outcomes_result {
-                                Ok(o) => o,
-                                Err(e) => match dlq_cfg.on_batch_error {
-                                    OnBatchError::Propagate => return Err(e),
-                                    OnBatchError::DlqAll => {
-                                        // Synthesize per-row failures echoing the
-                                        // underlying message so envelopes carry it.
-                                        // The flag distinguishes this from a sink
-                                        // override that legitimately returned all
-                                        // per-row Errs — that case keeps the
-                                        // `partial` reason label.
-                                        outer_err_recovered = true;
-                                        let msg = e.to_string();
-                                        (0..chunk.len())
-                                            .map(|_| Err(FaucetError::Sink(msg.clone())))
-                                            .collect()
-                                    }
-                                },
-                            };
+                            // `chunk_synthesized` is true only when this chunk's
+                            // outcomes were fabricated from a single outer
+                            // `write_batch_partial` error under `DlqAll` — as
+                            // opposed to genuine per-row `Err`s the sink
+                            // reported. Tracking it per chunk keeps the page
+                            // `reason` label accurate when adaptive reslicing
+                            // mixes a synthesized chunk with partial-failure
+                            // chunks on the same page.
+                            let (chunk_outcomes, chunk_synthesized): (Vec<crate::RowOutcome>, bool) =
+                                match chunk_outcomes_result {
+                                    Ok(o) => (o, false),
+                                    Err(e) => match dlq_cfg.on_batch_error {
+                                        OnBatchError::Propagate => return Err(e),
+                                        OnBatchError::DlqAll => {
+                                            outer_err_recovered = true;
+                                            let msg = e.to_string();
+                                            let synth = (0..chunk.len())
+                                                .map(|_| Err(FaucetError::Sink(msg.clone())))
+                                                .collect();
+                                            (synth, true)
+                                        }
+                                    },
+                                };
                             let mut chunk_errors = 0usize;
                             for (j, outcome) in chunk_outcomes.iter().enumerate() {
                                 match outcome {
                                     Ok(()) => page_success += 1,
                                     Err(err) => {
                                         chunk_errors += 1;
+                                        if !chunk_synthesized {
+                                            had_per_row_sink_failure = true;
+                                        }
                                         envelopes.push(build_envelope(
                                             &chunk[j],
                                             err,
@@ -629,19 +641,27 @@ where
                             dlq_stats.records_dlq += page_failures;
                             dlq_stats.pages_with_failures += 1;
 
-                            // Page `reason` label, 3-way:
-                            //  - `dlq_all`  — the whole page was synthesized from a
-                            //    single outer sink error (OnBatchError::DlqAll).
-                            //  - `partial`  — at least one row failed on the SINK
-                            //    side (`page_failures > quality_count`). A mixed
-                            //    page carrying both sink failures and quality
-                            //    quarantines is labeled `partial`: the sink failure
-                            //    dominates.
+                            // Page `reason` label, 3-way (precedence: partial > dlq_all > quality):
+                            //  - `partial`  — at least one chunk reported genuine
+                            //    per-row sink `Err`s. Checked FIRST so a resliced
+                            //    page that mixes a synthesized chunk (DlqAll) with
+                            //    partial-failure chunks is labeled `partial` — the
+                            //    real per-row failure dominates. (For a
+                            //    non-resliced page this is equivalent to the old
+                            //    `page_failures > quality_count` test, since a
+                            //    single chunk is either all-synthesized or all
+                            //    per-row.)
+                            //  - `dlq_all`  — every sink-side failure on the page
+                            //    was synthesized from an outer `write_batch_partial`
+                            //    error (OnBatchError::DlqAll); no genuine per-row
+                            //    failures occurred.
                             //  - `quality`  — every envelope is quality-sourced
                             //    (no sink-side failures on this page).
                             // The per-row quality volume is separately exposed via
                             // `faucet_quality_records_quarantined_total`.
-                            let reason_label = if outer_err_recovered {
+                            let reason_label = if had_per_row_sink_failure {
+                                DlqReason::Partial.as_str()
+                            } else if outer_err_recovered {
                                 DlqReason::DlqAll.as_str()
                             } else if page_failures > quality_count {
                                 DlqReason::Partial.as_str()
