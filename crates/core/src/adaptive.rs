@@ -9,16 +9,36 @@ use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use std::time::Duration;
 
-fn default_controller() -> String { "aimd".to_string() }
-fn default_min() -> usize { 100 }
-fn default_max() -> usize { 50_000 }
-fn default_increase_step() -> usize { 250 }
-fn default_decrease_factor() -> f64 { 0.5 }
-fn default_cooldown_batches() -> usize { 5 }
-fn default_latency_window() -> usize { 10 }
-fn default_error_threshold() -> f64 { 0.01 }
-fn default_true() -> bool { true }
-fn default_log_every() -> usize { 50 }
+fn default_controller() -> String {
+    "aimd".to_string()
+}
+fn default_min() -> usize {
+    100
+}
+fn default_max() -> usize {
+    50_000
+}
+fn default_increase_step() -> usize {
+    250
+}
+fn default_decrease_factor() -> f64 {
+    0.5
+}
+fn default_cooldown_batches() -> usize {
+    5
+}
+fn default_latency_window() -> usize {
+    10
+}
+fn default_error_threshold() -> f64 {
+    0.01
+}
+fn default_true() -> bool {
+    true
+}
+fn default_log_every() -> usize {
+    50
+}
 
 /// Configuration for the adaptive batch-size controller. Lives under
 /// `execution.adaptive_batch_size`. Default `enabled = false` (opt-in); when
@@ -119,16 +139,26 @@ impl AdaptiveBatchConfig {
 
 /// Direction of a batch-size adjustment (metric label).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AdjustDirection { Up, Down }
+pub enum AdjustDirection {
+    Up,
+    Down,
+}
 impl AdjustDirection {
     pub fn as_str(&self) -> &'static str {
-        match self { AdjustDirection::Up => "up", AdjustDirection::Down => "down" }
+        match self {
+            AdjustDirection::Up => "up",
+            AdjustDirection::Down => "down",
+        }
     }
 }
 
 /// Why an adjustment happened (metric label).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AdjustReason { Success, Error, Latency }
+pub enum AdjustReason {
+    Success,
+    Error,
+    Latency,
+}
 impl AdjustReason {
     pub fn as_str(&self) -> &'static str {
         match self {
@@ -196,8 +226,12 @@ impl AimdController {
         }
     }
 
-    pub fn current(&self) -> usize { self.current }
-    pub fn cooldown_active(&self) -> bool { self.cooldown > 0 }
+    pub fn current(&self) -> usize {
+        self.current
+    }
+    pub fn cooldown_active(&self) -> bool {
+        self.cooldown > 0
+    }
 
     /// p50 of the rolling latency window (ms), if any samples present.
     pub fn p50_latency_ms(&self) -> Option<u64> {
@@ -260,7 +294,11 @@ impl AimdController {
         }
         self.current = new;
         self.bump_log(AdjustDirection::Down, reason);
-        Some(Adjustment { new_size: new, direction: AdjustDirection::Down, reason })
+        Some(Adjustment {
+            new_size: new,
+            direction: AdjustDirection::Down,
+            reason,
+        })
     }
 
     fn grow(&mut self, reason: AdjustReason) -> Option<Adjustment> {
@@ -270,7 +308,11 @@ impl AimdController {
         }
         self.current = new;
         self.bump_log(AdjustDirection::Up, reason);
-        Some(Adjustment { new_size: new, direction: AdjustDirection::Up, reason })
+        Some(Adjustment {
+            new_size: new,
+            direction: AdjustDirection::Up,
+            reason,
+        })
     }
 
     fn bump_log(&mut self, direction: AdjustDirection, reason: AdjustReason) {
@@ -367,7 +409,11 @@ mod controller_tests {
     }
 
     fn ok(len: usize) -> Observation {
-        Observation { batch_len: len, errors: 0, latency: Duration::from_millis(1) }
+        Observation {
+            batch_len: len,
+            errors: 0,
+            latency: Duration::from_millis(1),
+        }
     }
 
     #[test]
@@ -397,7 +443,13 @@ mod controller_tests {
     #[test]
     fn shrinks_multiplicatively_on_error_and_arms_cooldown() {
         let mut c = AimdController::new(&cfg(), 800);
-        let a = c.observe(Observation { batch_len: 100, errors: 20, latency: Duration::from_millis(1) }).unwrap();
+        let a = c
+            .observe(Observation {
+                batch_len: 100,
+                errors: 20,
+                latency: Duration::from_millis(1),
+            })
+            .unwrap();
         assert_eq!(a.new_size, 400); // floor(800*0.5)
         assert_eq!(a.direction, AdjustDirection::Down);
         assert_eq!(a.reason, AdjustReason::Error);
@@ -413,7 +465,11 @@ mod controller_tests {
     #[test]
     fn does_not_shrink_below_min_and_warns_once() {
         let mut c = AimdController::new(&cfg(), 100); // == min
-        let bad = Observation { batch_len: 100, errors: 100, latency: Duration::from_millis(1) };
+        let bad = Observation {
+            batch_len: 100,
+            errors: 100,
+            latency: Duration::from_millis(1),
+        };
         // Already at min: shrink is a no-op (no adjustment), cooldown still arms.
         assert!(c.observe(bad).is_none());
         assert_eq!(c.current(), 100);
@@ -426,21 +482,41 @@ mod controller_tests {
                 "enabled": true, "min": 100, "max": 1000, "increase_step": 100,
                 "decrease_factor": 0.5, "cooldown_batches": 0,
                 "target_latency_ms": 500, "latency_window": 1
-            })).unwrap(),
+            }))
+            .unwrap(),
             800,
         );
         // p50 = 700ms > 500*1.2=600 -> shrink
-        let a = c.observe(Observation { batch_len: 800, errors: 0, latency: Duration::from_millis(700) }).unwrap();
+        let a = c
+            .observe(Observation {
+                batch_len: 800,
+                errors: 0,
+                latency: Duration::from_millis(700),
+            })
+            .unwrap();
         assert_eq!(a.reason, AdjustReason::Latency);
         assert_eq!(a.direction, AdjustDirection::Down);
         assert_eq!(c.current(), 400);
         // p50 = 100ms < 500*0.5=250 -> grow
-        let a = c.observe(Observation { batch_len: 400, errors: 0, latency: Duration::from_millis(100) }).unwrap();
+        let a = c
+            .observe(Observation {
+                batch_len: 400,
+                errors: 0,
+                latency: Duration::from_millis(100),
+            })
+            .unwrap();
         assert_eq!(a.direction, AdjustDirection::Up);
         assert_eq!(a.reason, AdjustReason::Latency);
         assert_eq!(c.current(), 500);
         // p50 = 500ms in deadband [250,600] -> no change
-        assert!(c.observe(Observation { batch_len: 500, errors: 0, latency: Duration::from_millis(500) }).is_none());
+        assert!(
+            c.observe(Observation {
+                batch_len: 500,
+                errors: 0,
+                latency: Duration::from_millis(500)
+            })
+            .is_none()
+        );
     }
 
     #[test]
@@ -448,7 +524,11 @@ mod controller_tests {
         // The spec's distinctive invariant: error shrink fires BEFORE the
         // cooldown gate, so a mid-cooldown error shrinks again + re-arms.
         let mut c = AimdController::new(&cfg(), 800);
-        let bad = Observation { batch_len: 100, errors: 50, latency: Duration::from_millis(1) };
+        let bad = Observation {
+            batch_len: 100,
+            errors: 50,
+            latency: Duration::from_millis(1),
+        };
         let a = c.observe(bad).unwrap(); // 800 -> 400, cooldown armed (2)
         assert_eq!(a.new_size, 400);
         assert!(c.cooldown_active());
@@ -466,17 +546,26 @@ mod controller_tests {
                 "enabled": true, "min": 100, "max": 1000, "increase_step": 100,
                 "decrease_factor": 0.5, "cooldown_batches": 0,
                 "target_latency_ms": 500, "latency_window": 5
-            })).unwrap(),
+            }))
+            .unwrap(),
             800,
         );
         // Feed five fast samples (10ms): p50 = 10ms < 250 -> grows each time.
         for _ in 0..5 {
-            c.observe(Observation { batch_len: 800, errors: 0, latency: Duration::from_millis(10) });
+            c.observe(Observation {
+                batch_len: 800,
+                errors: 0,
+                latency: Duration::from_millis(10),
+            });
         }
         assert_eq!(c.p50_latency_ms(), Some(10));
         // One slow sample doesn't move the median of a 5-window enough to flip it
         // (sorted [10,10,10,10,900] -> p50 = 10), so still in grow/deadband territory.
-        c.observe(Observation { batch_len: 800, errors: 0, latency: Duration::from_millis(900) });
+        c.observe(Observation {
+            batch_len: 800,
+            errors: 0,
+            latency: Duration::from_millis(900),
+        });
         assert_eq!(c.p50_latency_ms(), Some(10));
     }
 }

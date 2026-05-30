@@ -548,21 +548,23 @@ where
                             // `reason` label accurate when adaptive reslicing
                             // mixes a synthesized chunk with partial-failure
                             // chunks on the same page.
-                            let (chunk_outcomes, chunk_synthesized): (Vec<crate::RowOutcome>, bool) =
-                                match chunk_outcomes_result {
-                                    Ok(o) => (o, false),
-                                    Err(e) => match dlq_cfg.on_batch_error {
-                                        OnBatchError::Propagate => return Err(e),
-                                        OnBatchError::DlqAll => {
-                                            outer_err_recovered = true;
-                                            let msg = e.to_string();
-                                            let synth = (0..chunk.len())
-                                                .map(|_| Err(FaucetError::Sink(msg.clone())))
-                                                .collect();
-                                            (synth, true)
-                                        }
-                                    },
-                                };
+                            let (chunk_outcomes, chunk_synthesized): (
+                                Vec<crate::RowOutcome>,
+                                bool,
+                            ) = match chunk_outcomes_result {
+                                Ok(o) => (o, false),
+                                Err(e) => match dlq_cfg.on_batch_error {
+                                    OnBatchError::Propagate => return Err(e),
+                                    OnBatchError::DlqAll => {
+                                        outer_err_recovered = true;
+                                        let msg = e.to_string();
+                                        let synth = (0..chunk.len())
+                                            .map(|_| Err(FaucetError::Sink(msg.clone())))
+                                            .collect();
+                                        (synth, true)
+                                    }
+                                },
+                            };
                             let mut chunk_errors = 0usize;
                             for (j, outcome) in chunk_outcomes.iter().enumerate() {
                                 match outcome {
@@ -727,7 +729,8 @@ where
                                 maybe_warn_noop_sink(sink_name, &mut warned_noop_sink);
                                 let mut offset = 0;
                                 while offset < page.records.len() {
-                                    let size = ctrl.current().max(1).min(page.records.len() - offset);
+                                    let size =
+                                        ctrl.current().max(1).min(page.records.len() - offset);
                                     let chunk = &page.records[offset..offset + size];
                                     let t0 = std::time::Instant::now();
                                     let n = sink.write_batch(chunk).await?;
@@ -857,10 +860,17 @@ fn emit_adaptive_metrics(
         Label::new("row", SharedString::from(row.to_string())),
     ];
     gauge!("faucet_pipeline_adaptive_batch_size", base.clone()).set(ctrl.current() as f64);
-    gauge!("faucet_pipeline_adaptive_batch_cooldown_active", base.clone())
-        .set(if ctrl.cooldown_active() { 1.0 } else { 0.0 });
+    gauge!(
+        "faucet_pipeline_adaptive_batch_cooldown_active",
+        base.clone()
+    )
+    .set(if ctrl.cooldown_active() { 1.0 } else { 0.0 });
     if let Some(p50) = ctrl.p50_latency_ms() {
-        gauge!("faucet_pipeline_adaptive_batch_p50_latency_ms", base.clone()).set(p50 as f64);
+        gauge!(
+            "faucet_pipeline_adaptive_batch_p50_latency_ms",
+            base.clone()
+        )
+        .set(p50 as f64);
     }
     if let Some(a) = adj {
         let mut lbl = base;
@@ -2308,21 +2318,42 @@ mod tests {
 
     /// Sink whose write_batch_partial fails every Nth record; drives the
     /// error-rate signal. Requires a DLQ in run_stream.
-    struct FlakySink { every: usize, calls: std::sync::Mutex<Vec<usize>> }
+    struct FlakySink {
+        every: usize,
+        calls: std::sync::Mutex<Vec<usize>>,
+    }
     impl FlakySink {
-        fn new(every: usize) -> Self { Self { every, calls: std::sync::Mutex::new(Vec::new()) } }
-        fn call_sizes(&self) -> Vec<usize> { self.calls.lock().unwrap().clone() }
+        fn new(every: usize) -> Self {
+            Self {
+                every,
+                calls: std::sync::Mutex::new(Vec::new()),
+            }
+        }
+        fn call_sizes(&self) -> Vec<usize> {
+            self.calls.lock().unwrap().clone()
+        }
     }
     #[async_trait]
     impl Sink for FlakySink {
         async fn write_batch(&self, records: &[Value]) -> Result<usize, FaucetError> {
             Ok(records.len())
         }
-        async fn write_batch_partial(&self, records: &[Value]) -> Result<Vec<crate::RowOutcome>, FaucetError> {
+        async fn write_batch_partial(
+            &self,
+            records: &[Value],
+        ) -> Result<Vec<crate::RowOutcome>, FaucetError> {
             self.calls.lock().unwrap().push(records.len());
-            Ok(records.iter().enumerate().map(|(i, _)| {
-                if (i + 1) % self.every == 0 { Err(FaucetError::Sink("synthetic".into())) } else { Ok(()) }
-            }).collect())
+            Ok(records
+                .iter()
+                .enumerate()
+                .map(|(i, _)| {
+                    if (i + 1) % self.every == 0 {
+                        Err(FaucetError::Sink("synthetic".into()))
+                    } else {
+                        Ok(())
+                    }
+                })
+                .collect())
         }
     }
 
@@ -2334,7 +2365,10 @@ mod tests {
         // adaptive_shrinks_under_latency_target_then_smaller_chunks. After
         // page 1 (single 400-record chunk, 25% error rate > threshold 0.1),
         // the controller shrinks and subsequent pages get smaller sub-batches.
-        let mk = || StreamPage { records: (0..400).map(|i| json!({"i": i})).collect(), bookmark: None };
+        let mk = || StreamPage {
+            records: (0..400).map(|i| json!({"i": i})).collect(),
+            bookmark: None,
+        };
         let stream = futures::stream::iter(vec![Ok(mk()), Ok(mk()), Ok(mk())]);
         let sink = FlakySink::new(4); // 25% error rate > threshold 0.1
         let dlq_sink: Arc<dyn Sink> = Arc::new(MockSink::new());
@@ -2348,7 +2382,8 @@ mod tests {
         let cfg: AdaptiveBatchConfig = serde_json::from_value(json!({
             "enabled": true, "min": 50, "max": 400,
             "decrease_factor": 0.5, "cooldown_batches": 0, "error_threshold": 0.1
-        })).unwrap();
+        }))
+        .unwrap();
         let opts = RunStreamOptions::new().with_dlq(dlq).with_adaptive(cfg);
         let result = run_stream(stream, &sink, opts).await.unwrap();
         // 3 × 400 = 1200 records total; FlakySink(4) fails every 4th record
@@ -2357,11 +2392,21 @@ mod tests {
         // rate: page 1 = one 400-record chunk (300 written, 100 DLQ); pages
         // 2–3 = smaller sub-batches; overall >≈75% of 1200 commit and ~25% go
         // to the DLQ.
-        assert!(result.records_written >= 900, "expected ≥900 written, got {}", result.records_written);
+        assert!(
+            result.records_written >= 900,
+            "expected ≥900 written, got {}",
+            result.records_written
+        );
         let sizes = sink.call_sizes();
         assert_eq!(sizes[0], 400, "first chunk is the full page");
-        assert!(sizes.last().unwrap() < &400, "controller should shrink under errors: {sizes:?}");
-        assert!(result.dlq.unwrap().records_dlq >= 250, "expected ≥250 DLQ records");
+        assert!(
+            sizes.last().unwrap() < &400,
+            "controller should shrink under errors: {sizes:?}"
+        );
+        assert!(
+            result.dlq.unwrap().records_dlq >= 250,
+            "expected ≥250 DLQ records"
+        );
     }
 
     // ── Adaptive batch-size tests ──────────────────────────────────────────
@@ -2374,9 +2419,14 @@ mod tests {
     }
     impl RecordingSink {
         fn new(latency_ms: u64) -> Self {
-            Self { calls: std::sync::Mutex::new(Vec::new()), latency: std::time::Duration::from_millis(latency_ms) }
+            Self {
+                calls: std::sync::Mutex::new(Vec::new()),
+                latency: std::time::Duration::from_millis(latency_ms),
+            }
         }
-        fn call_sizes(&self) -> Vec<usize> { self.calls.lock().unwrap().clone() }
+        fn call_sizes(&self) -> Vec<usize> {
+            self.calls.lock().unwrap().clone()
+        }
     }
     #[async_trait]
     impl Sink for RecordingSink {
@@ -2409,21 +2459,28 @@ mod tests {
     #[tokio::test]
     async fn adaptive_shrinks_under_latency_target_then_smaller_chunks() {
         use crate::adaptive::AdaptiveBatchConfig;
-        let mk = || StreamPage { records: (0..400).map(|i| json!({"i": i})).collect(), bookmark: None };
+        let mk = || StreamPage {
+            records: (0..400).map(|i| json!({"i": i})).collect(),
+            bookmark: None,
+        };
         let stream = futures::stream::iter(vec![Ok(mk()), Ok(mk()), Ok(mk())]);
         let sink = RecordingSink::new(50);
         let cfg: AdaptiveBatchConfig = serde_json::from_value(json!({
             "enabled": true, "min": 50, "max": 400,
             "decrease_factor": 0.5, "cooldown_batches": 0,
             "target_latency_ms": 10, "latency_window": 1
-        })).unwrap();
+        }))
+        .unwrap();
         let result = run_stream(stream, &sink, RunStreamOptions::new().with_adaptive(cfg))
             .await
             .unwrap();
         assert_eq!(result.records_written, 1200);
         let sizes = sink.call_sizes();
         assert_eq!(sizes[0], 400);
-        assert!(sizes.last().unwrap() < &400, "controller should have shrunk: {sizes:?}");
+        assert!(
+            sizes.last().unwrap() < &400,
+            "controller should have shrunk: {sizes:?}"
+        );
     }
 
     #[tokio::test]
