@@ -11,9 +11,10 @@ The `faucet` binary exposes these commands. Pass `--log-level <level>` (or set
 | `faucet schema <target>` | Print the JSON Schema for a connector, transform, or the DLQ. |
 | `faucet list` | List every compiled-in source, sink, and transform with a one-line description. |
 | `faucet init [name]` | Scaffold a commented config skeleton from connector schemas. |
+| `faucet doctor [config]` | Probe every connector (auth/network/permissions) and print a checklist. |
 
-`[config]` is optional for `run` / `validate` / `preview`: if omitted, faucet
-auto-discovers `faucet.yaml` → `.yml` → `.json` in the current directory.
+`[config]` is optional for `run` / `validate` / `preview` / `doctor`: if omitted,
+faucet auto-discovers `faucet.yaml` → `.yml` → `.json` in the current directory.
 
 ## `run`
 
@@ -89,6 +90,35 @@ faucet init my_pipeline --source postgres --sink bigquery
 Required fields are surfaced with a typed placeholder and a `# REQUIRED` marker;
 optional fields are commented out so connector defaults apply. The interactive
 mode (`--interactive`) is gated behind the `cli-interactive` feature.
+
+## `doctor`
+
+```bash
+faucet doctor pipeline.yaml                  # checklist; exit code = # of failed probes
+faucet doctor pipeline.yaml --timeout-secs 5 # per-probe timeout (default 10)
+faucet doctor pipeline.yaml --json           # machine-readable, for CI gating
+```
+
+Runs a fast, **non-mutating** preflight against every connector in the config so
+misconfiguration surfaces before a real run. For each root invocation it probes
+the source, sink, and state store and prints a green/red checklist with elapsed
+times; the **exit code equals the number of failed probes** (clamped to 255).
+
+- **Sources** reuse the real read path — the probe pulls a single page and stops
+  (never the full dataset). Sources whose first page would block or mutate use a
+  targeted probe instead: `webhook` (port bindable), `websocket` (TCP connect),
+  `postgres-cdc` (slot reachable), `kafka` (cluster metadata).
+- **Sinks** run a read-only connect/auth/metadata call — `SELECT 1`, `HeadBucket`,
+  `PING`, `tables.get`, cluster health, `fetch_metadata`, or a directory-writable
+  check for file sinks. Never a real write.
+- **State stores** do a sentinel `put`/`get`/`delete` that leaves no residue.
+
+Child invocations (parent/child matrix rows) are listed but not probed — their
+configs depend on parent records that only exist at run time. Probe messages are
+scrubbed for resolved secrets before printing.
+
+See the [Troubleshooting](../cookbook/troubleshooting.md) cookbook page for
+reading the output and common failures.
 
 ## Environment-only mode
 

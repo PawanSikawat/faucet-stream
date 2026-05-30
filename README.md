@@ -50,6 +50,7 @@ as both a reusable library and a standalone CLI.
 cargo install faucet-cli
 faucet init my_pipeline --source postgres --sink bigquery   # scaffold pipeline.yaml from schemas
 faucet validate pipeline.yaml
+faucet doctor pipeline.yaml                                  # preflight: probe auth/network/permissions
 faucet run pipeline.yaml
 ```
 
