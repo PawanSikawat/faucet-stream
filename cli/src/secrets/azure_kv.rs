@@ -14,6 +14,7 @@ use async_trait::async_trait;
 use azure_core::credentials::{AccessToken, Secret, TokenCredential, TokenRequestOptions};
 use azure_identity::{ClientSecretCredential, DeveloperToolsCredential, ManagedIdentityCredential};
 use std::sync::Arc;
+use tokio::sync::OnceCell;
 
 // ── Chained credential ────────────────────────────────────────────────────────
 
@@ -111,11 +112,30 @@ fn build_credential() -> CliResult<Arc<dyn TokenCredential>> {
 
 // ── Resolver ──────────────────────────────────────────────────────────────────
 
-pub struct AzureKvResolver;
+pub struct AzureKvResolver {
+    /// The Azure credential chain, built lazily on first resolve and reused
+    /// thereafter so the SDK's inner `TokenCache` survives across references
+    /// (#135). Errors are not cached — a failed build is retried next call.
+    credential: OnceCell<Arc<dyn TokenCredential>>,
+}
 
 impl AzureKvResolver {
     pub fn new() -> Self {
-        Self
+        Self {
+            credential: OnceCell::new(),
+        }
+    }
+
+    /// Build the Azure credential chain once and reuse it. The chain (and its
+    /// inner `TokenCache`) is constructed lazily on first use, so a config that
+    /// never references `azure-kv` pays nothing and auth failures are deferred
+    /// to the first fetch.
+    async fn credential(&self) -> CliResult<Arc<dyn TokenCredential>> {
+        let cred = self
+            .credential
+            .get_or_try_init(|| async { build_credential() })
+            .await?;
+        Ok(Arc::clone(cred))
     }
 }
 
@@ -155,7 +175,7 @@ impl SecretResolver for AzureKvResolver {
                 })?;
         let version = parts.next().filter(|s| !s.is_empty());
 
-        let credential = build_credential()?;
+        let credential = self.credential().await?;
 
         let vault_url = format!("https://{vault}.vault.azure.net/");
         let client =
@@ -194,5 +214,24 @@ impl SecretResolver for AzureKvResolver {
             scheme: "azure-kv".into(),
             reference: reference.into(),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn credential_chain_is_built_once() {
+        // #135: the credential chain (and its inner TokenCache) must be reused
+        // across resolve() calls, not rebuilt — and discarded — each time.
+        // Constructing the chain does no network I/O, so this is safe offline.
+        let resolver = AzureKvResolver::new();
+        let first = resolver.credential().await.expect("chain builds");
+        let second = resolver.credential().await.expect("chain builds");
+        assert!(
+            Arc::ptr_eq(&first, &second),
+            "credential chain should be built at most once and reused"
+        );
     }
 }
