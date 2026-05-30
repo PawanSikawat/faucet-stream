@@ -50,6 +50,11 @@ impl CompiledSchedule {
                 "schedule: max_consecutive_failures must be >= 1".into(),
             ));
         }
+        if matches!(spec.run_timeout_secs, Some(0)) {
+            return Err(CliError::Config(
+                "schedule: run_timeout_secs must be >= 1 (omit it for no timeout)".into(),
+            ));
+        }
 
         let compiled = Self {
             cron,
@@ -142,6 +147,14 @@ mod tests {
         s.max_consecutive_failures = Some(0);
         let err = CompiledSchedule::compile(&s).unwrap_err();
         assert!(err.to_string().contains("max_consecutive_failures"));
+    }
+
+    #[test]
+    fn rejects_zero_run_timeout() {
+        let mut s = spec("0 2 * * *", "UTC");
+        s.run_timeout_secs = Some(0);
+        let err = CompiledSchedule::compile(&s).unwrap_err();
+        assert!(err.to_string().contains("run_timeout_secs"));
     }
 
     #[test]

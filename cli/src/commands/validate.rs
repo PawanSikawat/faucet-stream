@@ -36,6 +36,14 @@ pub async fn run(args: ValidateArgs) -> CliResult<()> {
     };
     let nodes = expand(&cfg)?;
 
+    // Validate the schedule block (cron / timezone / bounds) so `faucet validate`
+    // catches schedule misconfiguration in CI without running. Offline-safe.
+    #[cfg(feature = "schedule")]
+    if let Some(spec) = &cfg.schedule {
+        crate::schedule::compiled::CompiledSchedule::compile(spec)?;
+        println!("schedule: cron '{}' tz '{}' — valid", spec.cron, spec.timezone);
+    }
+
     for node in &nodes {
         // Verifying the schema lookup also catches unknown connector kinds.
         source_schema(&node.source.kind)?;

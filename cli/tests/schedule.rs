@@ -88,3 +88,27 @@ fn missing_schedule_block_is_a_clear_error() {
         .failure()
         .stderr(predicates::str::contains("schedule"));
 }
+
+#[test]
+fn validate_rejects_bad_schedule_cron() {
+    let dir = tempfile::tempdir().unwrap();
+    let csv = dir.path().join("in.csv");
+    std::fs::write(&csv, "name\nx\n").unwrap();
+    let cfg = dir.path().join("pipeline.yaml");
+    std::fs::write(
+        &cfg,
+        format!(
+            "version: 1\nschedule:\n  cron: \"not a cron\"\npipeline:\n  source: {{ type: csv, config: {{ path: {csv} }} }}\n  sink: {{ type: jsonl, config: {{ path: {out} }} }}\n",
+            csv = csv.display(),
+            out = dir.path().join("o.jsonl").display(),
+        ),
+    )
+    .unwrap();
+    assert_cmd::Command::cargo_bin("faucet")
+        .unwrap()
+        .arg("validate")
+        .arg(&cfg)
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("cron"));
+}

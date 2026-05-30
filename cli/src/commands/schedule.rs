@@ -210,8 +210,10 @@ async fn run_once(
     pipeline_name: &str,
 ) -> CliResult<()> {
     tracing::info!(pipeline = %pipeline_name, "schedule --once: running one pipeline now");
-    let opts = make_opts(pipeline_name, execution, auth, compiled.clock_at(chrono::Utc::now()));
-    let fut = run_expanded(nodes.to_vec(), opts);
+    let now = chrono::Utc::now();
+    let opts = make_opts(pipeline_name, execution, auth, compiled.clock_at(now));
+    let span = run_span(1, now, now);
+    let fut = run_expanded(nodes.to_vec(), opts).instrument(span);
     let summary = match compiled.run_timeout {
         Some(d) => tokio::time::timeout(d, fut).await.map_err(|_| {
             CliError::Internal(format!(
