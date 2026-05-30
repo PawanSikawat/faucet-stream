@@ -36,7 +36,7 @@ pub mod util;
 #[cfg(feature = "compression")]
 pub mod compression;
 
-pub use adaptive::AdaptiveBatchConfig;
+pub use adaptive::{AdaptiveBatchConfig, AdjustDirection, AdjustReason, Adjustment, AimdController, Observation};
 pub use auth::{AuthProvider, AuthReference, AuthSpec, Credential, SharedAuthProvider};
 pub use check::{CheckContext, CheckReport, Probe, ProbeStatus};
 pub use dlq::{DlqConfig, DlqReason, DlqStats, OnBatchError, build_envelope};
