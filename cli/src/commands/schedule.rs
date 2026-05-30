@@ -287,7 +287,12 @@ async fn run_loop(
             match state.on_tick(running.is_some()) {
                 TickAction::Dispatch => {
                     run_ordinal += 1;
-                    let opts = make_opts(&pipeline_name, &execution, &auth, compiled.clock_at(next_due));
+                    let opts = make_opts(
+                        &pipeline_name,
+                        &execution,
+                        &auth,
+                        compiled.clock_at(next_due),
+                    );
                     let span = run_span(run_ordinal, next_due, now);
                     let handle = spawn_run(nodes.clone(), opts, compiled.run_timeout, span);
                     m::in_flight(&pipeline_name, 1);

@@ -41,7 +41,10 @@ pub async fn run(args: ValidateArgs) -> CliResult<()> {
     #[cfg(feature = "schedule")]
     if let Some(spec) = &cfg.schedule {
         crate::schedule::compiled::CompiledSchedule::compile(spec)?;
-        println!("schedule: cron '{}' tz '{}' — valid", spec.cron, spec.timezone);
+        println!(
+            "schedule: cron '{}' tz '{}' — valid",
+            spec.cron, spec.timezone
+        );
     }
 
     for node in &nodes {

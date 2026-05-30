@@ -81,7 +81,10 @@ impl CompiledSchedule {
 
     /// Render a UTC instant in the schedule's timezone, as a fixed-offset clock
     /// for `${now.*}` interpolation.
-    pub fn clock_at(&self, at: chrono::DateTime<chrono::Utc>) -> chrono::DateTime<chrono::FixedOffset> {
+    pub fn clock_at(
+        &self,
+        at: chrono::DateTime<chrono::Utc>,
+    ) -> chrono::DateTime<chrono::FixedOffset> {
         at.with_timezone(&self.tz).fixed_offset()
     }
 

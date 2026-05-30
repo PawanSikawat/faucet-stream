@@ -1201,9 +1201,19 @@ pipeline:
         assert_eq!(resolve_now("${now.hour}", c).unwrap(), "14");
         assert_eq!(resolve_now("${now.minute}", c).unwrap(), "05");
         assert_eq!(resolve_now("${now.second}", c).unwrap(), "09");
-        assert_eq!(resolve_now("${now.unix}", c).unwrap(), c.timestamp().to_string());
-        assert!(resolve_now("${now.iso}", c).unwrap().starts_with("2026-03-08T14:05:09"));
-        assert_eq!(resolve_now("${now.datetime}", c).unwrap(), resolve_now("${now.iso}", c).unwrap());
+        assert_eq!(
+            resolve_now("${now.unix}", c).unwrap(),
+            c.timestamp().to_string()
+        );
+        assert!(
+            resolve_now("${now.iso}", c)
+                .unwrap()
+                .starts_with("2026-03-08T14:05:09")
+        );
+        assert_eq!(
+            resolve_now("${now.datetime}", c).unwrap(),
+            resolve_now("${now.iso}", c).unwrap()
+        );
     }
 
     #[test]
@@ -1218,7 +1228,10 @@ pipeline:
     #[test]
     fn now_strftime_renders_and_rejects_bad_format() {
         let c = fixed_clock();
-        assert_eq!(resolve_now("${now.strftime.%Y/%m/%d}", c).unwrap(), "2026/03/08");
+        assert_eq!(
+            resolve_now("${now.strftime.%Y/%m/%d}", c).unwrap(),
+            "2026/03/08"
+        );
         // A bogus specifier must be a clean config error, NOT a panic.
         // `%Q` is not a valid strftime specifier in chrono and produces Item::Error.
         let err = resolve_now("${now.strftime.%Q}", c).unwrap_err();

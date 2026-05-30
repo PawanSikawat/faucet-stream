@@ -610,7 +610,9 @@ fn resolve_now_inplace(value: &mut Value, clock: DateTime<FixedOffset>) -> CliRe
             Ok(())
         }
         Value::Array(a) => a.iter_mut().try_for_each(|v| resolve_now_inplace(v, clock)),
-        Value::Object(m) => m.values_mut().try_for_each(|v| resolve_now_inplace(v, clock)),
+        Value::Object(m) => m
+            .values_mut()
+            .try_for_each(|v| resolve_now_inplace(v, clock)),
         _ => Ok(()),
     }
 }
