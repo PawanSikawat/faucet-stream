@@ -8,6 +8,8 @@ pub mod preview;
 pub mod run;
 #[cfg(feature = "schedule")]
 pub mod schedule;
+#[cfg(feature = "serve")]
+pub mod serve;
 pub mod schema;
 pub mod validate;
 

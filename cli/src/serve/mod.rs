@@ -13,3 +13,10 @@ pub mod server;
 pub mod state;
 
 pub use config::ServeConfig;
+
+use crate::error::CliResult;
+
+/// Boot the HTTP control plane and serve until SIGTERM/SIGINT.
+pub async fn run_server(config: ServeConfig) -> CliResult<()> {
+    server::serve(config).await
+}

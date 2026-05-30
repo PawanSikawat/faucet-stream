@@ -36,6 +36,9 @@ pub enum Command {
     /// Run a pipeline on a cron schedule (long-running; Ctrl-C / SIGTERM to stop).
     #[cfg(feature = "schedule")]
     Schedule(ScheduleArgs),
+    /// Run a long-running HTTP control plane (submit / poll / cancel pipeline runs).
+    #[cfg(feature = "serve")]
+    Serve(ServeArgs),
 }
 
 /// `faucet doctor` arguments.

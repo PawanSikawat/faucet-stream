@@ -10,7 +10,13 @@ use tracing_subscriber::EnvFilter;
 #[tokio::main]
 async fn main() {
     let cli = Cli::parse();
-    install_tracing(&cli.log_level);
+    #[cfg(feature = "serve")]
+    let is_serve = matches!(cli.command, Command::Serve(_));
+    #[cfg(not(feature = "serve"))]
+    let is_serve = false;
+    if !is_serve {
+        install_tracing(&cli.log_level);
+    }
 
     let result = match cli.command {
         Command::Run(args) => commands::run::run(args).await,
@@ -22,6 +28,8 @@ async fn main() {
         Command::Doctor(args) => commands::doctor::run(args).await,
         #[cfg(feature = "schedule")]
         Command::Schedule(args) => commands::schedule::run(args).await,
+        #[cfg(feature = "serve")]
+        Command::Serve(args) => commands::serve::run(args).await,
     };
 
     if let Err(err) = result {
