@@ -309,6 +309,10 @@ pub enum CliError {
     /// failed-probe count (clamped to 255).
     #[error("{failed} preflight probe(s) failed")]
     DoctorFailed { failed: usize },
+
+    /// `overlap_policy: forbid` saw a tick fire while a run was still in flight.
+    #[error("scheduled run overlap with overlap_policy: forbid — previous run still in progress")]
+    ScheduleOverlapForbidden,
 }
 
 impl From<faucet_core::InstallError> for CliError {

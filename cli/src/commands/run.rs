@@ -6,33 +6,26 @@ use crate::config::PipelineConfig;
 use crate::error::{CliError, CliResult};
 use crate::executor::{ExecuteOptions, run_expanded};
 use crate::expand::expand;
-use faucet_core::{ObservabilityConfig, PrometheusConfig, TracingConfig, install_observability};
 
-/// Resolve the effective `tracing-subscriber` env-filter directive using
-/// the documented precedence:
-///   `--log-level` flag > `FAUCET_LOG` > `RUST_LOG` > YAML `observability.tracing.level` > `None`
-///
-/// Returns `None` when nothing is set (caller falls back to the default).
-///
-/// Note: `cli_flag` is `None` when called from `run` because the top-level
-/// `Cli.log_level` (already applied by `main.rs`) is not forwarded through
-/// `RunArgs`. Pass `Some(level)` in tests or future call-sites that do have
-/// the CLI value available.
-fn resolve_tracing_level(cli_flag: Option<&str>, yaml_level: Option<&str>) -> Option<String> {
-    if let Some(l) = cli_flag {
-        return Some(l.to_string());
+/// Parse the optional `--clock` override (RFC3339 or `YYYY-MM-DD`), or default
+/// to process start. Returned as a UTC fixed-offset clock for `${now.*}`.
+fn resolve_run_clock(flag: Option<&str>) -> CliResult<chrono::DateTime<chrono::FixedOffset>> {
+    use chrono::{DateTime, NaiveDate, TimeZone, Utc};
+    match flag {
+        None => Ok(Utc::now().fixed_offset()),
+        Some(s) => {
+            if let Ok(dt) = DateTime::parse_from_rfc3339(s) {
+                return Ok(dt);
+            }
+            if let Ok(d) = NaiveDate::parse_from_str(s, "%Y-%m-%d") {
+                let ndt = d.and_hms_opt(0, 0, 0).expect("00:00:00 is valid");
+                return Ok(Utc.from_utc_datetime(&ndt).fixed_offset());
+            }
+            Err(CliError::Config(format!(
+                "--clock '{s}' is not RFC3339 (2026-01-31T00:00:00Z) or a date (2026-01-31)"
+            )))
+        }
     }
-    if let Ok(l) = std::env::var("FAUCET_LOG")
-        && !l.is_empty()
-    {
-        return Some(l);
-    }
-    if let Ok(l) = std::env::var("RUST_LOG")
-        && !l.is_empty()
-    {
-        return Some(l);
-    }
-    yaml_level.map(|s| s.to_string())
 }
 
 /// Execute the `run` subcommand.
@@ -64,48 +57,7 @@ pub async fn run(args: RunArgs) -> CliResult<()> {
         .await?
     };
 
-    // Install observability (Prometheus + tracing) before any pipeline work.
-    // `main.rs` already called `install_tracing` from `Cli.log_level`, so
-    // the tracing subscriber is likely already set; `install_observability`
-    // is idempotent — it logs a warning and continues rather than panicking.
-    //
-    // Tracing-level precedence for the YAML-block tracing config:
-    //   --log-level flag (in Cli, not in RunArgs) > FAUCET_LOG > RUST_LOG
-    //   > YAML observability.tracing.level > None (main.rs default applies)
-    let level = resolve_tracing_level(
-        // `RunArgs` does not carry `log_level`; the top-level `Cli.log_level`
-        // (already consumed in main.rs) is not forwarded here, so pass `None`.
-        None,
-        cfg.observability
-            .as_ref()
-            .and_then(|o| o.tracing.as_ref())
-            .and_then(|t| t.level.as_deref()),
-    );
-    let obs_cfg = ObservabilityConfig {
-        prometheus: cfg
-            .observability
-            .as_ref()
-            .and_then(|o| o.prometheus.as_ref())
-            .map(|p| PrometheusConfig {
-                listen: p.listen.clone(),
-                buckets: p.buckets.clone(),
-            }),
-        tracing: level.map(|l| TracingConfig { level: l }),
-    };
-    let report = install_observability(&obs_cfg)?;
-    if let Some(addr) = report.prometheus_listen.as_deref() {
-        tracing::info!("Prometheus /metrics listening on {addr}");
-    }
-    if report.prometheus_already_installed {
-        tracing::warn!(
-            "Prometheus recorder already installed; metrics route through the existing recorder"
-        );
-    }
-    if report.tracing_already_installed {
-        tracing::warn!(
-            "tracing subscriber already installed; logs route through the existing subscriber"
-        );
-    }
+    crate::obs::install(&cfg)?;
 
     let pipeline_name = cfg.name.clone().unwrap_or_else(|| {
         resolved_config_path
@@ -127,6 +79,7 @@ pub async fn run(args: RunArgs) -> CliResult<()> {
             limit: args.limit,
             state_path_override: args.state_path.clone(),
             auth,
+            clock: resolve_run_clock(args.clock.as_deref())?,
         },
     )
     .await?;
@@ -172,75 +125,18 @@ pub async fn run(args: RunArgs) -> CliResult<()> {
 mod tests {
     use super::*;
 
-    // The env tests share process-global state — serialize them via a mutex.
-    use std::sync::Mutex;
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
-
-    fn with_clean_env<F: FnOnce()>(f: F) {
-        let _g = ENV_LOCK.lock().unwrap();
-        // Rust 2024: set_var/remove_var are unsafe (touch process-wide state).
-        unsafe {
-            std::env::remove_var("FAUCET_LOG");
-            std::env::remove_var("RUST_LOG");
-        }
-        f();
-    }
-
     #[test]
-    fn cli_flag_beats_env_and_yaml() {
-        with_clean_env(|| {
-            unsafe {
-                std::env::set_var("FAUCET_LOG", "debug");
-                std::env::set_var("RUST_LOG", "trace");
-            }
-            assert_eq!(
-                resolve_tracing_level(Some("error"), Some("info")).as_deref(),
-                Some("error")
-            );
-        });
-    }
-
-    #[test]
-    fn faucet_log_beats_rust_log_and_yaml() {
-        with_clean_env(|| {
-            unsafe {
-                std::env::set_var("FAUCET_LOG", "debug");
-                std::env::set_var("RUST_LOG", "trace");
-            }
-            assert_eq!(
-                resolve_tracing_level(None, Some("info")).as_deref(),
-                Some("debug")
-            );
-        });
-    }
-
-    #[test]
-    fn rust_log_beats_yaml() {
-        with_clean_env(|| {
-            unsafe {
-                std::env::set_var("RUST_LOG", "trace");
-            }
-            assert_eq!(
-                resolve_tracing_level(None, Some("info")).as_deref(),
-                Some("trace")
-            );
-        });
-    }
-
-    #[test]
-    fn yaml_used_when_no_flag_or_env() {
-        with_clean_env(|| {
-            assert_eq!(
-                resolve_tracing_level(None, Some("info")).as_deref(),
-                Some("info")
-            );
-        });
-    }
-
-    #[test]
-    fn none_returned_when_nothing_set() {
-        with_clean_env(|| {
-            assert_eq!(resolve_tracing_level(None, None), None);
-        });
+    fn run_clock_parses_rfc3339_date_and_defaults() {
+        // RFC3339
+        let c = resolve_run_clock(Some("2026-01-31T12:00:00Z")).unwrap();
+        assert_eq!(c.format("%Y-%m-%d %H:%M").to_string(), "2026-01-31 12:00");
+        // date-only → midnight UTC
+        let c = resolve_run_clock(Some("2026-01-31")).unwrap();
+        assert_eq!(c.format("%Y-%m-%d %H:%M").to_string(), "2026-01-31 00:00");
+        // default = now (just assert it's Ok / recent year)
+        let c = resolve_run_clock(None).unwrap();
+        assert!(c.format("%Y").to_string().parse::<i32>().unwrap() >= 2025);
+        // bad input errors
+        assert!(resolve_run_clock(Some("not-a-date")).is_err());
     }
 }

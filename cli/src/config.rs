@@ -76,6 +76,12 @@ pub struct PipelineConfig {
     /// Optional observability configuration (Prometheus + tracing).
     #[serde(default)]
     pub observability: Option<ObservabilitySpec>,
+
+    /// Optional cron schedule. Only consumed by `faucet schedule`; ignored by
+    /// `faucet run`. Presence makes the config runnable on a schedule.
+    #[cfg(feature = "schedule")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schedule: Option<crate::schedule::spec::ScheduleSpec>,
 }
 
 /// The base pipeline definition. Each matrix row is resolved against the
@@ -710,6 +716,27 @@ pipeline:
             cfg.pipeline.source.as_ref().unwrap().config["path"],
             "/v1/users/${users.id}/posts"
         );
+    }
+
+    #[cfg(feature = "schedule")]
+    #[test]
+    fn parses_schedule_block() {
+        let yaml = r#"
+version: 1
+schedule:
+  cron: "0 2 * * *"
+  timezone: "America/Los_Angeles"
+  overlap_policy: skip
+  max_consecutive_failures: 5
+pipeline:
+  source: { type: rest, config: {} }
+  sink:   { type: jsonl, config: { path: ./o.jsonl } }
+"#;
+        let cfg = parse_with_extension(yaml, "yaml").unwrap();
+        let s = cfg.schedule.expect("schedule parsed");
+        assert_eq!(s.cron, "0 2 * * *");
+        assert_eq!(s.timezone, "America/Los_Angeles");
+        assert_eq!(s.max_consecutive_failures, Some(5));
     }
 
     #[cfg(feature = "quality")]

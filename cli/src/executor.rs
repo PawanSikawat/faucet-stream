@@ -26,6 +26,7 @@ use crate::registry::{build_sink, build_source};
 use crate::state::build_state_store;
 use crate::transforms::compile_transforms;
 use async_trait::async_trait;
+use chrono::{DateTime, FixedOffset};
 use faucet_core::observability::Labels;
 use faucet_core::{DlqConfig, FaucetError, OnBatchError, Pipeline, Sink, Source, StateStore};
 use serde_json::Value;
@@ -53,6 +54,10 @@ pub struct ExecuteOptions {
     /// that reference one via `auth: { ref }` resolve against this catalog;
     /// every row sharing a provider gets the same `Arc` (one token, shared).
     pub auth: AuthCatalog,
+    /// Wall-clock instant for `${now.*}` interpolation in this run's configs.
+    /// `faucet run` sets process-start (or `--clock`); `faucet schedule` sets
+    /// the tick's scheduled time in the schedule timezone.
+    pub clock: DateTime<FixedOffset>,
 }
 
 /// One pipeline invocation's outcome.
@@ -453,6 +458,12 @@ async fn run_one_invocation(
     // 1) Resolve `${parent.path}` in the per-row source + sink configs.
     let mut source_cfg = node.source.config.clone();
     let mut sink_cfg = node.sink.config.clone();
+
+    // Resolve `${now.*}` run-clock tokens for every invocation (root + child),
+    // before the parent-record pass. Leaves all other tokens verbatim.
+    resolve_now_inplace(&mut source_cfg, opts.clock)?;
+    resolve_now_inplace(&mut sink_cfg, opts.clock)?;
+
     if let (Some(record), NodeRole::Child { parent_id, .. }) = (parent_record, &node.role) {
         let ctx: HashMap<String, Value> = HashMap::from([(parent_id.clone(), record.clone())]);
         resolve_inplace(&mut source_cfg, &ctx)?;
@@ -588,6 +599,22 @@ pub async fn build_dlq_config(spec: &crate::config::DlqSpec) -> CliResult<DlqCon
         max_failures_total: spec.max_failures_total,
         include_original_payload: spec.include_original_payload,
     })
+}
+
+/// In-place `${now.*}` resolution against the run clock. Walks every string
+/// leaf and rewrites `${now.<token>}`; all other `${...}` tokens are untouched.
+fn resolve_now_inplace(value: &mut Value, clock: DateTime<FixedOffset>) -> CliResult<()> {
+    match value {
+        Value::String(s) => {
+            *s = crate::interpolate::resolve_now(s, clock)?;
+            Ok(())
+        }
+        Value::Array(a) => a.iter_mut().try_for_each(|v| resolve_now_inplace(v, clock)),
+        Value::Object(m) => m
+            .values_mut()
+            .try_for_each(|v| resolve_now_inplace(v, clock)),
+        _ => Ok(()),
+    }
 }
 
 /// In-place runtime interpolation against a parent-record context. Walks every
@@ -781,6 +808,8 @@ mod tests {
             matrix: Vec::new(),
             execution: None,
             observability: None,
+            #[cfg(feature = "schedule")]
+            schedule: None,
         }
     }
 
@@ -801,6 +830,7 @@ mod tests {
                 limit: None,
                 state_path_override: None,
                 auth: Default::default(),
+                clock: chrono::Utc::now().fixed_offset(),
             },
         )
         .await
@@ -850,6 +880,7 @@ matrix:
                 limit: None,
                 state_path_override: None,
                 auth: Default::default(),
+                clock: chrono::Utc::now().fixed_offset(),
             },
         )
         .await
@@ -899,6 +930,7 @@ matrix:
                 limit: None,
                 state_path_override: None,
                 auth: Default::default(),
+                clock: chrono::Utc::now().fixed_offset(),
             },
         )
         .await
@@ -958,6 +990,7 @@ execution:
                 limit: None,
                 state_path_override: None,
                 auth: Default::default(),
+                clock: chrono::Utc::now().fixed_offset(),
             },
         )
         .await
@@ -1048,6 +1081,7 @@ execution:
                 limit: None,
                 state_path_override: None,
                 auth: Default::default(),
+                clock: chrono::Utc::now().fixed_offset(),
             },
         )
         .await
@@ -1106,6 +1140,7 @@ matrix:
                 limit: None,
                 state_path_override: None,
                 auth: Default::default(),
+                clock: chrono::Utc::now().fixed_offset(),
             },
         )
         .await

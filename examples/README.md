@@ -39,6 +39,7 @@ These run immediately after installing the CLI — great for a first smoke test:
 | `shared_auth_rest.yaml` | one OAuth2 provider in the top-level `auth:` block shared across four matrix rows via `auth: { ref }` — single token, single-flight refresh (point `base_url` / token endpoint at a real API) |
 | `rest_to_jsonl_with_vault.yaml` | Vault KV v2 secret injected as a Bearer token via `${vault:…#field}`; requires `VAULT_ADDR` + `VAULT_TOKEN` and `--features secrets-vault` |
 | `websocket_to_jsonl.yaml` | none (live public WS endpoint — Binance BTC/USDT trade stream, no auth) |
+| `scheduled_nightly.yaml` | `faucet schedule` — CSV→JSONL pipeline on a nightly cron at 02:00 Pacific; demonstrates timezone, overlap_policy, and max_consecutive_failures |
 
 > REST / GraphQL / XML / gRPC / webhook source examples hit an external endpoint
 > (the configs use a placeholder `base_url`). Edit it to a real API — there's no

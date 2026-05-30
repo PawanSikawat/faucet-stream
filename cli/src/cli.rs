@@ -33,6 +33,9 @@ pub enum Command {
     /// Probe every connector in a config (auth / network / permissions) and
     /// print a green/red checklist. Exits non-zero if any probe fails.
     Doctor(DoctorArgs),
+    /// Run a pipeline on a cron schedule (long-running; Ctrl-C / SIGTERM to stop).
+    #[cfg(feature = "schedule")]
+    Schedule(ScheduleArgs),
 }
 
 /// `faucet doctor` arguments.
@@ -54,6 +57,26 @@ pub struct DoctorArgs {
     /// Emit machine-readable JSON instead of the human checklist.
     #[arg(long)]
     pub json: bool,
+}
+
+/// `faucet schedule` arguments.
+#[cfg(feature = "schedule")]
+#[derive(Debug, Parser)]
+pub struct ScheduleArgs {
+    /// Path to a `.yaml`, `.yml`, or `.json` pipeline config with a `schedule:`
+    /// block. If omitted, auto-discover `faucet.yaml` / `.yml` / `.json` in cwd.
+    pub config: Option<PathBuf>,
+    /// Path to a `.env` file to load for `${env:VAR}` interpolation.
+    /// Defaults to `.env` in cwd if present.
+    #[arg(long, conflicts_with = "no_env_file")]
+    pub env_file: Option<PathBuf>,
+    /// Skip auto-loading `.env` from cwd.
+    #[arg(long)]
+    pub no_env_file: bool,
+    /// Run exactly one pipeline run immediately, then exit (ignores cron timing).
+    /// Useful for platform-driven invocation (k8s CronJob / systemd OnCalendar).
+    #[arg(long)]
+    pub once: bool,
 }
 
 /// `faucet run` arguments.
@@ -87,6 +110,11 @@ pub struct RunArgs {
     /// Override the state-store directory (file backend only).
     #[arg(long)]
     pub state_path: Option<PathBuf>,
+    /// Override the `${now.*}` interpolation clock (RFC3339 like
+    /// `2026-01-31T00:00:00Z`, or a date `2026-01-31`). Default: process start (UTC).
+    /// Use for backfills.
+    #[arg(long)]
+    pub clock: Option<String>,
 }
 
 /// `faucet validate` arguments.
@@ -141,6 +169,9 @@ pub enum SchemaTarget {
     Quality,
     /// Grammar reference for secrets-manager interpolation directives.
     Secrets,
+    /// JSON Schema for the `schedule:` block.
+    #[cfg(feature = "schedule")]
+    Schedule,
 }
 
 /// `faucet preview` arguments.

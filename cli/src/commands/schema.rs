@@ -22,6 +22,11 @@ pub async fn run(args: SchemaArgs) -> CliResult<()> {
             serde_json::to_value(quality_schema)
                 .unwrap_or_else(|_| serde_json::json!({"type": "object"}))
         }
+        #[cfg(feature = "schedule")]
+        SchemaTarget::Schedule => {
+            let s = faucet_core::schema_for!(crate::schedule::spec::ScheduleSpec);
+            serde_json::to_value(s).unwrap_or_else(|_| serde_json::json!({"type": "object"}))
+        }
         SchemaTarget::Secrets => serde_json::json!({
             "title": "Secrets-manager interpolation grammar",
             "schemes": {

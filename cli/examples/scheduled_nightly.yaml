@@ -1,0 +1,31 @@
+# Run a CSV→JSONL pipeline every night at 02:00 America/Los_Angeles.
+# Start it with:  faucet schedule cli/examples/scheduled_nightly.yaml
+# Stop it with Ctrl-C (or SIGTERM); the in-flight run drains first.
+#
+# ${now.date} resolves to the tick's scheduled date in the schedule's timezone
+# (America/Los_Angeles), so each nightly run writes to its own dated partition.
+# Example: ./warehouse/dt=2026-03-08/events.jsonl
+#
+# To backfill a specific date without changing this file:
+#   faucet run --clock 2026-03-01 cli/examples/scheduled_nightly.yaml
+version: 1
+name: nightly-rollup
+
+schedule:
+  cron: "0 2 * * *"
+  timezone: "America/Los_Angeles"
+  overlap_policy: skip            # don't pile up if a run runs long
+  max_consecutive_failures: 5     # exit non-zero after 5 straight failures (supervisor restarts)
+  on_failure: continue
+  shutdown_grace_secs: 30
+
+pipeline:
+  source:
+    type: csv
+    config:
+      path: ./events.csv
+  sink:
+    type: jsonl
+    config:
+      # Dated partition — parent directory is created automatically.
+      path: "./warehouse/dt=${now.date}/events.jsonl"

@@ -29,6 +29,7 @@ cargo install faucet-cli --no-default-features \
 | `faucet preview <config> --limit N` | Run only the source side and emit the first N records to stdout as JSONL. |
 | `faucet init [name] [--source X] [--sink Y]` | Scaffold a pipeline.yaml from each connector's JSON Schema. |
 | `faucet doctor <config> [--timeout-secs N] [--json]` | Probe every connector (auth/network/permissions/reachability) and print a checklist. Exits with the failed-probe count. |
+| `faucet schedule <config> [--once]` | Run a pipeline on a cron schedule (long-running foreground process). Requires a `schedule:` block. |
 
 Pass `--log-level debug` (or set `FAUCET_LOG=debug`) for verbose tracing. Logs are written to stderr; pipeline records and command output go to stdout.
 
@@ -73,6 +74,108 @@ Flags:
 **Exit code** = the number of failed probes, clamped to 255 (so `0` means all probes passed). **Child invocations** (parent/child matrix rows) are listed but not probed — their configs depend on parent records that only exist at run time. Probe `reason`/`hint` text is scrubbed for resolved secrets before printing, but third-party connectors should never place credentials in a probe message.
 
 **Probe contract for connector authors:** `Source::check` / `Sink::check` / `StateStore::check` (in `faucet-core`) default to a generic probe (source) or "not implemented" skip (sink / state). Override them with a probe that is **idempotent and side-effect-free** and never echoes credentials. Return probe-level failures as `ProbeStatus::Fail` inside an `Ok(CheckReport)`; reserve `Err` for "couldn't run any probe".
+
+### `faucet schedule`
+
+`faucet schedule <config>` runs a pipeline on a cron schedule in a **long-running foreground process**. Stop it with Ctrl-C or SIGTERM; an in-flight run drains gracefully before the process exits.
+
+```bash
+faucet schedule pipeline.yaml                        # run on cron schedule, foreground
+faucet schedule pipeline.yaml --once                 # run exactly once now, then exit
+faucet schedule pipeline.yaml --env-file prod.env    # inject env before loading config
+faucet schedule pipeline.yaml --no-env-file          # disable .env auto-loading
+```
+
+The config must contain a top-level `schedule:` block (a config without one is rejected with a clear hint pointing to `faucet run`). Requires the `schedule` Cargo feature (included in the default `full` build).
+
+#### `schedule:` block grammar
+
+```yaml
+schedule:
+  cron: "0 2 * * *"               # REQUIRED. 5-field standard Unix cron, or 6-field with leading seconds.
+  timezone: "UTC"                 # IANA name (e.g. America/Los_Angeles). Default UTC.
+  overlap_policy: skip            # skip (default) | queue | forbid
+  max_runs: null                  # null = forever; N = stop cleanly (exit 0) after N *successful* runs
+  max_consecutive_failures: null  # null = never exit on failure; N = exit non-zero after N straight failures
+  on_failure: continue            # continue (default) | stop (exit non-zero on first failed run)
+  start_immediately: false        # run once on startup before waiting for the first tick
+  run_timeout_secs: null          # optional per-run kill switch (seconds); a timed-out run counts as failed
+  shutdown_grace_secs: 30         # SIGTERM: await the in-flight run this long, then abort
+```
+
+**Cron syntax:** standard 5-field Unix cron (`MIN HOUR DOM MON DOW`) or 6-field with a leading seconds field (`SEC MIN HOUR DOM MON DOW`). Examples:
+
+| Expression | Meaning |
+|------------|---------|
+| `0 2 * * *` | Every night at 02:00 |
+| `*/15 * * * *` | Every 15 minutes |
+| `0 9 * * 1-5` | Weekdays at 09:00 |
+| `*/30 * * * * *` | Every 30 seconds (6-field) |
+
+Bad cron expressions, unknown timezones, `max_runs: 0`, and a cron that can never fire all fail fast with a clear `config error: schedule: …` message.
+
+**Timezone and DST:** all ticks are computed on UTC instants with timezone-correct wall times via `chrono-tz`. Fall-back repeated hours fire once; spring-forward skipped hours roll to the next valid time. The loop re-checks the wall clock every ≤30 s so NTP steps and VM freezes can't drift a fire by more than ~30 s.
+
+**Missed ticks:** skipped, not backfilled. If a run ran long or the box was down, the scheduler fires at the next due time — no catch-up storm.
+
+#### Overlap policy
+
+| Policy | Behaviour |
+|--------|-----------|
+| `skip` (default) | Drop the tick if a run is already in flight. Increment `faucet_schedule_overlaps_total`. |
+| `queue` | Buffer one missed tick; run it when the current run finishes. Further misses collapse to one queued tick (in-memory only — lost on restart). |
+| `forbid` | Exit non-zero immediately if a second run would overlap. |
+
+#### Failure model
+
+Two independent knobs control what happens when a run fails:
+
+| `on_failure` | `max_consecutive_failures` | Behaviour |
+|---|---|---|
+| `continue` (default) | `null` | Tolerates all failures; never exits on failure alone. Alert on `faucet_schedule_consecutive_failures`. |
+| `continue` | `N` | Tolerates up to N−1 straight failures; exits non-zero after N consecutive failures (a success resets the counter). Pair with a supervisor (`systemd Restart=on-failure`, Kubernetes) for "tolerate blips, restart on sustained outage". |
+| `stop` | any | Exits non-zero on the **first** failed run. |
+
+#### Connectors and state
+
+Connectors are rebuilt fresh per run so no idle connections pool up. The shared `auth:` catalog (cached tokens) is reused across ticks. Resumability rides faucet's existing per-page `StateStore` bookmark: the scheduler itself keeps no run-state across restarts, so a crash or SIGKILL resume from the last persisted bookmark on the next start.
+
+#### Metrics
+
+All metrics carry the `{pipeline}` label. Register a Prometheus listener via the `observability:` block as usual.
+
+| Metric | Type | Description |
+|--------|------|-------------|
+| `faucet_schedule_runs_total{pipeline,outcome}` | Counter | `outcome` ∈ `{ok, err, skipped}` |
+| `faucet_schedule_overlaps_total{pipeline,policy}` | Counter | Overlap events; `policy` ∈ `{skip, queue, forbid}` |
+| `faucet_schedule_next_tick_unix_seconds{pipeline}` | Gauge | Unix timestamp of the next scheduled tick |
+| `faucet_schedule_runs_in_flight{pipeline}` | Gauge | 0 or 1 — whether a run is currently executing |
+| `faucet_schedule_consecutive_failures{pipeline}` | Gauge | Resets to 0 on a successful run |
+| `faucet_schedule_heartbeat_unix_seconds{pipeline}` | Gauge | Updated every loop wake (≤30 s); alert `time() − heartbeat > 90` to detect a stuck scheduler |
+| `faucet_schedule_last_run_started_unix_seconds{pipeline}` | Gauge | |
+| `faucet_schedule_last_run_completed_unix_seconds{pipeline}` | Gauge | |
+| `faucet_schedule_last_run_duration_seconds{pipeline}` | Gauge | |
+| `faucet_schedule_run_lateness_seconds{pipeline}` | Histogram | `actual_start − scheduled_for` — how late the run fired |
+
+Each run also emits a `faucet.schedule.run` tracing span (attributes: `run_ordinal`, `scheduled_for_unix_seconds`, `tick_unix_seconds`) wrapping the inner pipeline spans.
+
+#### Exit codes
+
+| Condition | Exit code |
+|-----------|-----------|
+| `max_runs` reached | 0 |
+| SIGTERM / SIGINT graceful drain | 0 |
+| `on_failure: stop` — first run failed | non-zero |
+| `max_consecutive_failures` reached | non-zero |
+| `overlap_policy: forbid` overlap | non-zero |
+| Bad cron / timezone / config | non-zero |
+
+#### Build feature
+
+```bash
+cargo install faucet-cli                         # schedule included (in full)
+cargo install faucet-cli --features schedule     # explicit, no-default-features build
+```
 
 ### `faucet init`
 
@@ -277,10 +380,44 @@ Tokens are resolved in two passes:
 | `${gcp-sm:projects/<p>/secrets/<s>/versions/<v>}` | Load-time. GCP Secret Manager (`versions/latest` ok). Auth: Application Default Credentials. Build with `--features secrets-gcp-sm`. |
 | `${azure-kv:<vault>/<secret>[/<version>]}` | Load-time. Azure Key Vault. Auth: `AZURE_*` env / managed identity / `az login`. Build with `--features secrets-azure-kv`. |
 | `${row_id.dotted.path}` | Run-time, per parent record. The `row_id` must be the id of another matrix row. |
+| `${now.*}` | Run-time, per invocation. Injects the run's wall time into source and sink config values. See below. |
 
 A token's form decides its meaning: a **colon** marks a load-time directive (`${env:VAR}`), while a **dot or nothing** marks a deferred row-id reference (`${users.id}`). The same rule is used by both `faucet validate` and `faucet run`, so a token like `${env.foo}` (a dot, not a colon) is consistently treated as a reference to row id `env` and rejected at validate-time rather than failing only at run-time.
 
-`$${` escapes a literal `${`. Reserved row ids that can never appear in `matrix.id`: `env`, `file`, `secret`, `matrix`, `pipeline`.
+`$${` escapes a literal `${`. Reserved row ids that can never appear in `matrix.id`: `env`, `file`, `secret`, `matrix`, `pipeline`, `now`.
+
+#### `${now.*}` — run-clock interpolation
+
+Inject the invocation's wall time into any **source or sink** config value. Common use case: writing to a dated output path so each scheduled run lands in its own partition.
+
+| Token | Example | Notes |
+|-------|---------|-------|
+| `${now.date}` | `2026-03-08` | `YYYY-MM-DD` |
+| `${now.datetime}` / `${now.iso}` | `2026-03-08T14:05:09+00:00` | RFC 3339 |
+| `${now.year}` | `2026` | Zero-padded |
+| `${now.month}` | `03` | Zero-padded (01–12) |
+| `${now.day}` | `08` | Zero-padded (01–31) |
+| `${now.hour}` | `14` | Zero-padded (00–23) |
+| `${now.minute}` | `05` | Zero-padded (00–59) |
+| `${now.second}` | `09` | Zero-padded (00–59) |
+| `${now.unix}` | `1741442709` | Epoch seconds |
+| `${now.strftime.<fmt>}` | `2026/03/08/14` | Arbitrary chrono strftime, e.g. `${now.strftime.%Y/%m/%d/%H}` |
+
+An unknown token (e.g. `${now.foo}`) is a config error at run time. `${now.*}` is **not** resolved in `state:`, `dlq:`, `transforms:`, or the `auth:` / `vars:` blocks.
+
+**Clock source:**
+
+- `faucet run` — process start time in UTC, or `--clock <RFC3339|YYYY-MM-DD>` for backfills (a bare date means midnight UTC).
+- `faucet schedule` — the tick's scheduled time in the schedule's `timezone`; `${now.date}` therefore matches the timezone the cron fires in, not UTC.
+
+**Backfills:**
+
+```bash
+faucet run --clock 2026-03-01 pipeline.yaml          # midnight UTC
+faucet run --clock 2026-03-01T02:00:00-08:00 pipeline.yaml  # precise timestamp
+```
+
+**Local file sinks** (JSONL, CSV) create missing parent directories automatically, so dated subdirectory paths like `./data/dt=${now.date}/part.jsonl` work without pre-creating the tree.
 
 **Security note.** Pipeline configs are trusted input: `${file:...}` reads any path the process can access (capped at 1 MiB), and `${env:}`/`${secret:}` inject process environment values. Connector-config deserialization errors are scrubbed (double-quoted values redacted, length-capped) before they reach logs so an injected secret can't leak through an error message, but treat configs and their resolved values as sensitive.
 

@@ -12,19 +12,30 @@ The `faucet` binary exposes these commands. Pass `--log-level <level>` (or set
 | `faucet list` | List every compiled-in source, sink, and transform with a one-line description. |
 | `faucet init [name]` | Scaffold a commented config skeleton from connector schemas. |
 | `faucet doctor [config]` | Probe every connector (auth/network/permissions) and print a checklist. |
+| `faucet schedule [config]` | Run a pipeline on a cron schedule (long-running foreground process). |
 
-`[config]` is optional for `run` / `validate` / `preview` / `doctor`: if omitted,
+`[config]` is optional for `run` / `validate` / `preview` / `doctor` / `schedule`: if omitted,
 faucet auto-discovers `faucet.yaml` → `.yml` → `.json` in the current directory.
 
 ## `run`
 
 ```bash
 faucet run pipeline.yaml
-faucet run                       # auto-discover faucet.yaml in cwd
-faucet run --from-env            # build the pipeline entirely from FAUCET_* env vars
+faucet run                              # auto-discover faucet.yaml in cwd
+faucet run --from-env                   # build the pipeline entirely from FAUCET_* env vars
 faucet run pipeline.yaml --env-file prod.env
 faucet run pipeline.yaml --no-env-file
+faucet run pipeline.yaml --clock 2026-03-01          # backfill: set ${now.*} clock to midnight UTC
+faucet run pipeline.yaml --clock 2026-03-01T02:00:00-08:00  # backfill: precise RFC 3339 timestamp
 ```
+
+Flags:
+
+| Flag | Purpose |
+|------|---------|
+| `--clock <value>` | Override the clock used by `${now.*}` tokens. Accepts an RFC 3339 timestamp (`2026-03-01T00:00:00Z`) or a bare date (`2026-03-01`, treated as midnight UTC). Default: process start time in UTC. Use this for backfills — run the same config with a different date without changing the file. |
+| `--env-file <path>` / `--no-env-file` | Same `.env` handling as `validate` / `preview`. |
+| `--from-env` | Build the pipeline entirely from `FAUCET_*` environment variables; mutually exclusive with a positional config path. |
 
 ## `validate`
 
@@ -119,6 +130,36 @@ scrubbed for resolved secrets before printing.
 
 See the [Troubleshooting](../cookbook/troubleshooting.md) cookbook page for
 reading the output and common failures.
+
+## `schedule`
+
+```bash
+faucet schedule pipeline.yaml                  # run on cron schedule, foreground; Ctrl-C to stop
+faucet schedule pipeline.yaml --once           # run exactly once now, then exit
+faucet schedule pipeline.yaml --env-file prod.env
+faucet schedule pipeline.yaml --no-env-file
+```
+
+Runs a pipeline on a recurring cron schedule in a **long-running foreground process**. The config
+must contain a top-level `schedule:` block (without one, faucet errors and suggests `faucet run`).
+Requires the `schedule` Cargo feature (included in `full`).
+
+- Stop with Ctrl-C or SIGTERM; the in-flight run drains for up to `shutdown_grace_secs` (default 30)
+  before the process exits.
+- `--once` ignores cron timing and runs the pipeline exactly once immediately — handy for testing
+  a scheduled config or for one-shot container invocations.
+- Missed ticks are skipped, not backfilled. A run that starts late emits
+  `faucet_schedule_run_lateness_seconds` for monitoring.
+
+Flags:
+
+| Flag | Purpose |
+|------|---------|
+| `--once` | Run exactly once now, then exit. Ignores cron timing. |
+| `--env-file <path>` / `--no-env-file` | Same `.env` handling as `run` / `validate`. |
+
+See the [scheduling cookbook](../cookbook/scheduling.md) for worked examples, the overlap-policy
+decision tree, the resilience/supervisor model, and the full metric set to scrape.
 
 ## Environment-only mode
 

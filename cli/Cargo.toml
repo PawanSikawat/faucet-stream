@@ -19,7 +19,7 @@ path = "src/main.rs"
 # yields a binary that can run any of the published example YAMLs out of the box.
 default = ["observability", "full", "quality"]
 
-full = ["observability", "source", "sink", "state", "transforms", "compression", "quality"]
+full = ["observability", "source", "sink", "state", "transforms", "compression", "quality", "schedule"]
 
 # Data-quality checks (`quality:` config block). `quality-jsonschema` adds the
 # `json_schema` record check via a JSON Schema validator. Forwarded to
@@ -161,6 +161,10 @@ observability = [
     "dep:tracing-subscriber",
 ]
 
+# Built-in cron scheduler (`faucet schedule` + the `schedule:` config block).
+# Pulls a cron parser + IANA timezone db; opt out of it for slim builds.
+schedule = ["dep:croner", "dep:chrono-tz"]
+
 [dependencies]
 faucet-core.workspace = true
 faucet-auth.workspace = true
@@ -227,6 +231,9 @@ base64 = { workspace = true, optional = true }
 azure_security_keyvault_secrets = { workspace = true, optional = true }
 azure_identity = { workspace = true, optional = true }
 azure_core = { workspace = true, optional = true }
+chrono = { workspace = true }
+chrono-tz = { workspace = true, optional = true }
+croner = { workspace = true, optional = true }
 
 [dev-dependencies]
 tempfile = "3"

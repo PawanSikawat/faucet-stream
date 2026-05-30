@@ -23,7 +23,10 @@ pub mod expand;
 pub mod init_template;
 pub mod interpolate;
 pub mod merge;
+pub mod obs;
 pub mod registry;
+#[cfg(feature = "schedule")]
+pub mod schedule;
 pub mod secrets;
 pub mod state;
 pub mod transforms;
@@ -67,6 +70,7 @@ pub async fn run_from_yaml_str(yaml: &str) -> CliResult<executor::RunSummary> {
             limit: None,
             state_path_override: None,
             auth,
+            clock: chrono::Utc::now().fixed_offset(),
         },
     )
     .await

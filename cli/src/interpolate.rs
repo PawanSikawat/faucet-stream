@@ -22,6 +22,7 @@
 //! deferred to record-time. A literal `${` is written `$${`.
 
 use crate::error::{CliError, CliResult};
+use chrono::{DateTime, FixedOffset};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -70,6 +71,53 @@ pub fn interpolate_record(input: &str, ctx: &HashMap<String, Value>) -> CliResul
             Ok(Some(value_to_string(&resolved)))
         }
     })
+}
+
+/// Resolve `${now.<token>}` references in `input` against the run clock. Every
+/// other `${...}` token (env/file/secret/vars/sources/sinks/row-id) is left
+/// verbatim. `now` is a reserved built-in id (see `expand.rs`). An unknown
+/// `${now.<bad>}` token is a config error (never silently passed through).
+pub fn resolve_now(input: &str, clock: DateTime<FixedOffset>) -> CliResult<String> {
+    rewrite(input, |body| {
+        if let Directive::Deferred { id: "now", path } = classify_directive(body) {
+            return Ok(Some(now_token(path, clock)?));
+        }
+        Ok(None)
+    })
+}
+
+/// Render one `${now.<path>}` token. `path` is the text after `now.`.
+fn now_token(path: &str, clock: DateTime<FixedOffset>) -> CliResult<String> {
+    // Arbitrary chrono strftime via the dot-form `${now.strftime.<fmt>}`.
+    if let Some(fmt) = path.strip_prefix("strftime.") {
+        // Pre-validate: a bad specifier yields `Item::Error`, and rendering it
+        // would panic in `to_string()`. Reject it as a config error instead.
+        use chrono::format::{Item, StrftimeItems};
+        let items: Vec<Item> = StrftimeItems::new(fmt).collect();
+        if items.iter().any(|i| matches!(i, Item::Error)) {
+            return Err(CliError::Config(format!(
+                "invalid strftime format in `${{now.strftime.{fmt}}}`"
+            )));
+        }
+        return Ok(clock.format_with_items(items.iter()).to_string());
+    }
+    let rendered = match path {
+        "date" => clock.format("%Y-%m-%d").to_string(),
+        "datetime" | "iso" => clock.to_rfc3339(),
+        "year" => clock.format("%Y").to_string(),
+        "month" => clock.format("%m").to_string(),
+        "day" => clock.format("%d").to_string(),
+        "hour" => clock.format("%H").to_string(),
+        "minute" => clock.format("%M").to_string(),
+        "second" => clock.format("%S").to_string(),
+        "unix" => clock.timestamp().to_string(),
+        other => {
+            return Err(CliError::Config(format!(
+                "unknown `${{now.{other}}}` token — valid: date, datetime, iso, year, month, day, hour, minute, second, unix, strftime.<fmt>"
+            )));
+        }
+    };
+    Ok(rendered)
 }
 
 /// Walk `input` byte-by-byte, calling `resolve` on each `${...}` body.
@@ -1129,6 +1177,81 @@ pipeline:
         assert_eq!(
             cfg.auth.as_ref().unwrap()["idp"]["config"]["token"],
             "Bearer topsecret"
+        );
+    }
+
+    // ── resolve_now tests ────────────────────────────────────────────────────
+
+    fn fixed_clock() -> chrono::DateTime<chrono::FixedOffset> {
+        use chrono::TimeZone;
+        // 2026-03-08 14:05:09 +00:00
+        chrono::FixedOffset::east_opt(0)
+            .unwrap()
+            .with_ymd_and_hms(2026, 3, 8, 14, 5, 9)
+            .unwrap()
+    }
+
+    #[test]
+    fn now_named_tokens_render() {
+        let c = fixed_clock();
+        assert_eq!(resolve_now("${now.date}", c).unwrap(), "2026-03-08");
+        assert_eq!(resolve_now("${now.year}", c).unwrap(), "2026");
+        assert_eq!(resolve_now("${now.month}", c).unwrap(), "03");
+        assert_eq!(resolve_now("${now.day}", c).unwrap(), "08");
+        assert_eq!(resolve_now("${now.hour}", c).unwrap(), "14");
+        assert_eq!(resolve_now("${now.minute}", c).unwrap(), "05");
+        assert_eq!(resolve_now("${now.second}", c).unwrap(), "09");
+        assert_eq!(
+            resolve_now("${now.unix}", c).unwrap(),
+            c.timestamp().to_string()
+        );
+        assert!(
+            resolve_now("${now.iso}", c)
+                .unwrap()
+                .starts_with("2026-03-08T14:05:09")
+        );
+        assert_eq!(
+            resolve_now("${now.datetime}", c).unwrap(),
+            resolve_now("${now.iso}", c).unwrap()
+        );
+    }
+
+    #[test]
+    fn now_in_a_path_template() {
+        let c = fixed_clock();
+        assert_eq!(
+            resolve_now("s3://bucket/dt=${now.date}/part.jsonl", c).unwrap(),
+            "s3://bucket/dt=2026-03-08/part.jsonl"
+        );
+    }
+
+    #[test]
+    fn now_strftime_renders_and_rejects_bad_format() {
+        let c = fixed_clock();
+        assert_eq!(
+            resolve_now("${now.strftime.%Y/%m/%d}", c).unwrap(),
+            "2026/03/08"
+        );
+        // A bogus specifier must be a clean config error, NOT a panic.
+        // `%Q` is not a valid strftime specifier in chrono and produces Item::Error.
+        let err = resolve_now("${now.strftime.%Q}", c).unwrap_err();
+        assert!(err.to_string().contains("strftime"));
+    }
+
+    #[test]
+    fn now_unknown_token_errors() {
+        let c = fixed_clock();
+        let err = resolve_now("${now.bogus}", c).unwrap_err();
+        assert!(err.to_string().contains("now.bogus"));
+    }
+
+    #[test]
+    fn now_leaves_other_tokens_verbatim() {
+        let c = fixed_clock();
+        // env/row-id/vars tokens must survive the now-pass untouched.
+        assert_eq!(
+            resolve_now("${env:VAR}/${users.id}/${now.date}", c).unwrap(),
+            "${env:VAR}/${users.id}/2026-03-08"
         );
     }
 }

@@ -6,6 +6,8 @@ pub mod init;
 pub mod list;
 pub mod preview;
 pub mod run;
+#[cfg(feature = "schedule")]
+pub mod schedule;
 pub mod schema;
 pub mod validate;
 

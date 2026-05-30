@@ -298,6 +298,8 @@ pub fn build_pipeline_config(env: &HashMap<String, String>) -> CliResult<Pipelin
         matrix: Vec::new(),
         execution: None,
         observability: None,
+        #[cfg(feature = "schedule")]
+        schedule: None,
     })
 }
 
