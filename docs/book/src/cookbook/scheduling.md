@@ -198,6 +198,83 @@ schedule:
   shutdown_grace_secs: 120
 ```
 
+## Dated outputs with `${now.*}`
+
+`${now.*}` tokens let you inject the run's wall time into source and sink config
+values — so a scheduled pipeline can write to a different file or object-storage
+prefix on every tick without any manual bookkeeping.
+
+The headline use case is a dated partition path:
+
+```yaml
+# nightly_partitioned.yaml — write to a new dated partition every night
+version: 1
+name: nightly-events
+
+schedule:
+  cron: "0 2 * * *"
+  timezone: "America/Los_Angeles"
+  overlap_policy: skip
+  max_consecutive_failures: 5
+
+pipeline:
+  source:
+    type: rest
+    config:
+      base_url: https://api.example.com
+      path: /v1/events
+  sink:
+    type: jsonl
+    config:
+      # ${now.date} reflects the schedule's timezone (America/Los_Angeles),
+      # so the partition label matches the business date of the run.
+      path: "./warehouse/dt=${now.date}/events.jsonl"
+```
+
+When the cron fires at 02:00 on 2026-03-09 Pacific time, `${now.date}` resolves
+to `2026-03-09` and faucet writes to `./warehouse/dt=2026-03-09/events.jsonl`.
+The parent directory is created automatically — local file sinks (JSONL, CSV)
+create missing parent directories so dated subdirectory paths work without
+pre-creating the tree.
+
+The full token set:
+
+| Token | Example | Use case |
+|-------|---------|----------|
+| `${now.date}` | `2026-03-08` | Daily partition key |
+| `${now.year}` / `${now.month}` / `${now.day}` | `2026` / `03` / `08` | Hive-style `year=…/month=…/day=…` paths |
+| `${now.hour}` | `14` | Hourly partitions |
+| `${now.unix}` | `1741442709` | Unique epoch-based filenames |
+| `${now.strftime.<fmt>}` | `2026/03/08/14` | Arbitrary layout — e.g. `${now.strftime.%Y/%m/%d/%H}` |
+| `${now.datetime}` / `${now.iso}` | `2026-03-08T14:05:09+00:00` | RFC 3339 timestamp in a filename or object key |
+
+### Clock semantics
+
+`faucet schedule` uses the **tick's scheduled time** rendered in the schedule's
+`timezone` — not the actual wall clock when the run started. This means
+`${now.date}` is deterministic: re-running the same tick (e.g. after a restart)
+produces the same path.
+
+`faucet schedule --once` uses the current wall clock in the schedule's timezone.
+
+### Backfilling with `faucet run --clock`
+
+To backfill a range of dates, use `faucet run` with the `--clock` flag instead
+of `faucet schedule`. `--clock` overrides the process start time used by
+`${now.*}`:
+
+```bash
+# Backfill three nightly partitions
+faucet run --clock 2026-03-01 nightly_partitioned.yaml
+faucet run --clock 2026-03-02 nightly_partitioned.yaml
+faucet run --clock 2026-03-03 nightly_partitioned.yaml
+```
+
+A bare date (`2026-03-01`) is treated as midnight UTC. An RFC 3339 timestamp
+(`2026-03-01T02:00:00-08:00`) sets the clock precisely. Unknown `${now.*}`
+tokens are config errors; the token set is validated at run start before any
+I/O begins.
+
 ## Health metrics to scrape
 
 Register a Prometheus listener via the `observability:` block:

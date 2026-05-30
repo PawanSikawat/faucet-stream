@@ -380,10 +380,44 @@ Tokens are resolved in two passes:
 | `${gcp-sm:projects/<p>/secrets/<s>/versions/<v>}` | Load-time. GCP Secret Manager (`versions/latest` ok). Auth: Application Default Credentials. Build with `--features secrets-gcp-sm`. |
 | `${azure-kv:<vault>/<secret>[/<version>]}` | Load-time. Azure Key Vault. Auth: `AZURE_*` env / managed identity / `az login`. Build with `--features secrets-azure-kv`. |
 | `${row_id.dotted.path}` | Run-time, per parent record. The `row_id` must be the id of another matrix row. |
+| `${now.*}` | Run-time, per invocation. Injects the run's wall time into source and sink config values. See below. |
 
 A token's form decides its meaning: a **colon** marks a load-time directive (`${env:VAR}`), while a **dot or nothing** marks a deferred row-id reference (`${users.id}`). The same rule is used by both `faucet validate` and `faucet run`, so a token like `${env.foo}` (a dot, not a colon) is consistently treated as a reference to row id `env` and rejected at validate-time rather than failing only at run-time.
 
-`$${` escapes a literal `${`. Reserved row ids that can never appear in `matrix.id`: `env`, `file`, `secret`, `matrix`, `pipeline`.
+`$${` escapes a literal `${`. Reserved row ids that can never appear in `matrix.id`: `env`, `file`, `secret`, `matrix`, `pipeline`, `now`.
+
+#### `${now.*}` — run-clock interpolation
+
+Inject the invocation's wall time into any **source or sink** config value. Common use case: writing to a dated output path so each scheduled run lands in its own partition.
+
+| Token | Example | Notes |
+|-------|---------|-------|
+| `${now.date}` | `2026-03-08` | `YYYY-MM-DD` |
+| `${now.datetime}` / `${now.iso}` | `2026-03-08T14:05:09+00:00` | RFC 3339 |
+| `${now.year}` | `2026` | Zero-padded |
+| `${now.month}` | `03` | Zero-padded (01–12) |
+| `${now.day}` | `08` | Zero-padded (01–31) |
+| `${now.hour}` | `14` | Zero-padded (00–23) |
+| `${now.minute}` | `05` | Zero-padded (00–59) |
+| `${now.second}` | `09` | Zero-padded (00–59) |
+| `${now.unix}` | `1741442709` | Epoch seconds |
+| `${now.strftime.<fmt>}` | `2026/03/08/14` | Arbitrary chrono strftime, e.g. `${now.strftime.%Y/%m/%d/%H}` |
+
+An unknown token (e.g. `${now.foo}`) is a config error at run time. `${now.*}` is **not** resolved in `state:`, `dlq:`, `transforms:`, or the `auth:` / `vars:` blocks.
+
+**Clock source:**
+
+- `faucet run` — process start time in UTC, or `--clock <RFC3339|YYYY-MM-DD>` for backfills (a bare date means midnight UTC).
+- `faucet schedule` — the tick's scheduled time in the schedule's `timezone`; `${now.date}` therefore matches the timezone the cron fires in, not UTC.
+
+**Backfills:**
+
+```bash
+faucet run --clock 2026-03-01 pipeline.yaml          # midnight UTC
+faucet run --clock 2026-03-01T02:00:00-08:00 pipeline.yaml  # precise timestamp
+```
+
+**Local file sinks** (JSONL, CSV) create missing parent directories automatically, so dated subdirectory paths like `./data/dt=${now.date}/part.jsonl` work without pre-creating the tree.
 
 **Security note.** Pipeline configs are trusted input: `${file:...}` reads any path the process can access (capped at 1 MiB), and `${env:}`/`${secret:}` inject process environment values. Connector-config deserialization errors are scrubbed (double-quoted values redacted, length-capped) before they reach logs so an injected secret can't leak through an error message, but treat configs and their resolved values as sensitive.
 

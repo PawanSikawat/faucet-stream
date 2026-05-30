@@ -21,11 +21,21 @@ faucet auto-discovers `faucet.yaml` → `.yml` → `.json` in the current direct
 
 ```bash
 faucet run pipeline.yaml
-faucet run                       # auto-discover faucet.yaml in cwd
-faucet run --from-env            # build the pipeline entirely from FAUCET_* env vars
+faucet run                              # auto-discover faucet.yaml in cwd
+faucet run --from-env                   # build the pipeline entirely from FAUCET_* env vars
 faucet run pipeline.yaml --env-file prod.env
 faucet run pipeline.yaml --no-env-file
+faucet run pipeline.yaml --clock 2026-03-01          # backfill: set ${now.*} clock to midnight UTC
+faucet run pipeline.yaml --clock 2026-03-01T02:00:00-08:00  # backfill: precise RFC 3339 timestamp
 ```
+
+Flags:
+
+| Flag | Purpose |
+|------|---------|
+| `--clock <value>` | Override the clock used by `${now.*}` tokens. Accepts an RFC 3339 timestamp (`2026-03-01T00:00:00Z`) or a bare date (`2026-03-01`, treated as midnight UTC). Default: process start time in UTC. Use this for backfills — run the same config with a different date without changing the file. |
+| `--env-file <path>` / `--no-env-file` | Same `.env` handling as `validate` / `preview`. |
+| `--from-env` | Build the pipeline entirely from `FAUCET_*` environment variables; mutually exclusive with a positional config path. |
 
 ## `validate`
 

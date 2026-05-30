@@ -70,9 +70,56 @@ Three stages resolve placeholders:
   `${sources.NAME.PATH}` / `${sinks.NAME.PATH}` resolve against named templates.
   Secret-manager directives (see below) run as the final load-time stage.
 - **Runtime:** `${row_id.dotted.path}` tokens are resolved per parent record in
-  DAG runs.
+  DAG runs. `${now.*}` tokens are resolved per invocation at run time (see
+  below).
 
 Reference cycles surface as a clear `InterpolationCycle` error.
+
+### `${now.*}` — run-clock interpolation
+
+`${now.*}` tokens inject the current wall time into **source and sink config
+values**. Each invocation evaluates them once at run time:
+
+| Token | Example output | Notes |
+|-------|---------------|-------|
+| `${now.date}` | `2026-03-08` | `YYYY-MM-DD` |
+| `${now.datetime}` | `2026-03-08T14:05:09+00:00` | RFC 3339; alias: `${now.iso}` |
+| `${now.iso}` | `2026-03-08T14:05:09+00:00` | Alias for `${now.datetime}` |
+| `${now.year}` | `2026` | Zero-padded 4-digit year |
+| `${now.month}` | `03` | Zero-padded month (01–12) |
+| `${now.day}` | `08` | Zero-padded day (01–31) |
+| `${now.hour}` | `14` | Zero-padded hour (00–23) |
+| `${now.minute}` | `05` | Zero-padded minute (00–59) |
+| `${now.second}` | `09` | Zero-padded second (00–59) |
+| `${now.unix}` | `1741442709` | Unix epoch seconds |
+| `${now.strftime.<fmt>}` | `2026/03/08/14` | Arbitrary [chrono strftime](https://docs.rs/chrono/latest/chrono/format/strftime/index.html) — e.g. `${now.strftime.%Y/%m/%d/%H}` |
+
+An unknown token (e.g. `${now.foo}`) is a config error at run time. An invalid
+strftime format produces a clean config error rather than a panic.
+
+**Clock source:**
+
+- **`faucet run`** — the process start time in UTC. Override with
+  `--clock <value>` for backfills: an RFC 3339 timestamp
+  (`2026-03-01T00:00:00Z`) or a bare date (`2026-03-01`, treated as midnight
+  UTC). See the [`run` command reference](cli.md#run).
+- **`faucet schedule`** — the tick's **scheduled time**, rendered in the
+  schedule's `timezone`. `${now.date}` therefore reflects the date in the
+  timezone the cron fires in (e.g. `America/Los_Angeles`), not UTC. Queued
+  runs use their original scheduled time; `--once` uses the current wall clock.
+
+**Scope:** `${now.*}` tokens are resolved only in source and sink config values.
+They are **not** resolved in `state:`, `dlq:`, `transforms:`, or the top-level
+`auth:` / `vars:` blocks.
+
+**Reserved id:** `now` is a reserved matrix row id — a matrix row cannot be
+named `now`.
+
+**SQL caveat:** `${now.*}` substitutes as plain text into config values — the
+same semantics as `${row_id.path}` tokens. For SQL sources that interpolate
+`${now.*}` into a query string, prefer the connector's bind-parameter path
+(`substitute_context_bind_params`) over raw text substitution to avoid
+injection risk.
 
 ### Secrets-manager directives
 
