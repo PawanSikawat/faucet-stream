@@ -126,6 +126,14 @@ compression = [
     "faucet-sink-gcs?/compression",
 ]
 
+# Secrets-manager interpolation resolvers for the config layer. None in
+# defaults — opt in per backend, or `secrets` for all four.
+secrets = ["secrets-vault", "secrets-aws-sm", "secrets-gcp-sm", "secrets-azure-kv"]
+secrets-vault = ["dep:reqwest"]
+secrets-aws-sm = ["dep:aws-sdk-secretsmanager", "dep:aws-config"]
+secrets-gcp-sm = ["dep:reqwest", "dep:google-cloud-auth", "dep:base64"]
+secrets-azure-kv = ["dep:azure_security_keyvault_secrets", "dep:azure_identity"]
+
 state-redis = ["dep:faucet-state-redis"]
 state-postgres = ["dep:faucet-state-postgres"]
 
@@ -210,6 +218,14 @@ metrics.workspace = true
 metrics-exporter-prometheus = { workspace = true, optional = true }
 uuid.workspace = true
 inquire = { version = "0.9", optional = true, default-features = false, features = ["crossterm"] }
+futures = { workspace = true }
+reqwest = { workspace = true, optional = true }
+aws-config = { workspace = true, optional = true }
+aws-sdk-secretsmanager = { workspace = true, optional = true }
+google-cloud-auth = { workspace = true, optional = true }
+base64 = { workspace = true, optional = true }
+azure_security_keyvault_secrets = { workspace = true, optional = true }
+azure_identity = { workspace = true, optional = true }
 
 [dev-dependencies]
 tempfile = "3"
@@ -219,7 +235,6 @@ wiremock = "0.6"
 serial_test = "3"
 metrics-util.workspace = true
 serde_yaml = "0.9"
-futures.workspace = true
 async-stream.workspace = true
 futures-core.workspace = true
 
