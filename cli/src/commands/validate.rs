@@ -22,7 +22,18 @@ pub async fn run(args: ValidateArgs) -> CliResult<()> {
         Some(p) => p,
         None => crate::env_loader::discover_config_path(&cwd).ok_or(CliError::NoConfigOrFromEnv)?,
     };
-    let cfg = PipelineConfig::from_path_async(&path).await?;
+    let cfg = if args.no_secrets {
+        // Grammar / structure only — never touch the network.
+        PipelineConfig::from_path_tolerating_secrets(&path)?
+    } else {
+        // Real preflight: report each secret reference, then resolve.
+        let refs = crate::secrets::scan_path_refs(&path)?;
+        let cfg = PipelineConfig::from_path_async(&path).await?;
+        for (scheme, reference) in &refs {
+            println!("secret: {scheme}:{reference} → resolved");
+        }
+        cfg
+    };
     let nodes = expand(&cfg)?;
 
     for node in &nodes {

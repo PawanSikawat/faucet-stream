@@ -270,10 +270,16 @@ fn visit_config_values_mut<F: FnMut(&mut Value) -> CliResult<()>>(
 }
 
 /// Collect every unique secret reference across the whole config.
-fn scan_config(cfg: &PipelineConfig) -> BTreeSet<SecretRef> {
+pub(crate) fn scan_config(cfg: &PipelineConfig) -> BTreeSet<SecretRef> {
     let mut refs = BTreeSet::new();
     visit_config_values(cfg, |v| collect_refs(v, &mut refs));
     refs
+}
+
+/// Parse `path` (tolerating secret directives) and return its unique secret refs.
+pub fn scan_path_refs(path: &std::path::Path) -> CliResult<BTreeSet<SecretRef>> {
+    let cfg = PipelineConfig::from_path_tolerating_secrets(path)?;
+    Ok(scan_config(&cfg))
 }
 
 /// Error with `SecretsRequireAsyncLoad` if any secret directive is present.

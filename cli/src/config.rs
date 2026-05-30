@@ -365,6 +365,18 @@ impl PipelineConfig {
         Ok(cfg)
     }
 
+    /// Like [`from_path`] but does not reject secret directives — they are
+    /// left unresolved. Used by `validate --no-secrets`.
+    pub fn from_path_tolerating_secrets(path: impl AsRef<Path>) -> CliResult<Self> {
+        let path = path.as_ref();
+        let raw = std::fs::read_to_string(path).map_err(|source| CliError::ReadConfig {
+            path: path.to_path_buf(),
+            source,
+        })?;
+        let interpolated = interpolate(&raw)?;
+        Self::from_text(&interpolated, path)
+    }
+
     /// Async load path: like [`from_path`] but resolves secret-manager
     /// directives (`${vault:…}`, `${aws-sm:…}`, …) as a final stage.
     pub async fn from_path_async(path: impl AsRef<Path>) -> CliResult<Self> {
