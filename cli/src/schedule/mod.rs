@@ -6,4 +6,5 @@
 //! state machine (state — added in Task 4), and the metric emitters
 //! (metrics — added in Task 5).
 
+pub mod compiled;
 pub mod spec;
