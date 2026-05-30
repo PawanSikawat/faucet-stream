@@ -98,5 +98,23 @@ mod tests {
         let body = ServeError::NotFound.api_error();
         assert_eq!(body.error.code, "not_found");
         assert!(!body.error.message.is_empty());
+
+        // Fixed-message variant carries the expected static text.
+        let body = ServeError::Unauthorized.api_error();
+        assert_eq!(body.error.code, "unauthorized");
+        assert_eq!(body.error.message, "missing or invalid bearer token");
+    }
+
+    #[test]
+    fn dynamic_message_variants_round_trip_to_body() {
+        // BadConfig / Internal carry caller-supplied text — confirm it reaches
+        // the body intact (the redaction pass leaves non-secret text unchanged).
+        let body = ServeError::BadConfig("bad thing".into()).api_error();
+        assert_eq!(body.error.code, "bad_config");
+        assert_eq!(body.error.message, "bad thing");
+
+        let body = ServeError::Internal("boom".into()).api_error();
+        assert_eq!(body.error.code, "internal");
+        assert_eq!(body.error.message, "boom");
     }
 }
