@@ -314,6 +314,82 @@ impl faucet_core::Sink for ParquetSink {
         tracing::debug!(files = state.files_written, "Parquet sink flushed");
         Ok(())
     }
+
+    /// Preflight probe for `faucet doctor`.
+    ///
+    /// For a local destination, verifies the target's parent directory exists
+    /// and is writable by creating and immediately removing a uniquely-named
+    /// temp file there — never touching the user's actual output. For an S3
+    /// destination the probe is skipped: object-store targets are not probed by
+    /// the doctor.
+    async fn check(
+        &self,
+        _ctx: &faucet_core::check::CheckContext,
+    ) -> Result<faucet_core::check::CheckReport, FaucetError> {
+        use faucet_core::check::{CheckReport, Probe};
+
+        let path = match &self.config.destination {
+            ParquetDestination::S3(_) => {
+                return Ok(CheckReport::single(Probe::skip(
+                    "io",
+                    "object-store target not probed by doctor",
+                )));
+            }
+            ParquetDestination::LocalPath { path } => path.clone(),
+        };
+
+        // Guard against object-store URLs that slipped into a LocalPath
+        // destination (e.g. `s3://` / `gs://`): treat them as object-store
+        // targets and skip rather than mis-probing the local filesystem.
+        let lower = path.to_ascii_lowercase();
+        if lower.starts_with("s3://") || lower.starts_with("gs://") {
+            return Ok(CheckReport::single(Probe::skip(
+                "io",
+                "object-store target not probed by doctor",
+            )));
+        }
+
+        let start = std::time::Instant::now();
+
+        // Mirror `build_store`'s parent-directory derivation: a `.parquet`
+        // path is a single file whose parent is the target directory; any
+        // other path is itself the (directory) destination.
+        let target = FsPath::new(&path);
+        let parent = if target.extension().and_then(|e| e.to_str()) == Some("parquet") {
+            target.parent().map(|p| p.to_path_buf())
+        } else {
+            Some(PathBuf::from(&path))
+        }
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or_else(|| PathBuf::from("."));
+
+        if !tokio::fs::try_exists(&parent).await.unwrap_or(false) {
+            return Ok(CheckReport::single(Probe::fail_hint(
+                "io",
+                start.elapsed(),
+                format!("parent directory {} does not exist", parent.display()),
+                format!(
+                    "create the directory {} before running the pipeline",
+                    parent.display()
+                ),
+            )));
+        }
+
+        let probe_path = parent.join(format!(".faucet_doctor_probe-{}", Uuid::new_v4()));
+        let probe = match tokio::fs::write(&probe_path, b"").await {
+            Ok(()) => {
+                let _ = tokio::fs::remove_file(&probe_path).await;
+                Probe::pass("io", start.elapsed())
+            }
+            Err(e) => Probe::fail_hint(
+                "io",
+                start.elapsed(),
+                format!("cannot write to directory {}: {e}", parent.display()),
+                "ensure the directory is writable by the current user",
+            ),
+        };
+        Ok(CheckReport::single(probe))
+    }
 }
 
 /// Decide whether to start a new file before the current chunk.

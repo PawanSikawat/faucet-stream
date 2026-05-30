@@ -39,7 +39,24 @@ pub trait StateStore: Send + Sync {
 
     /// Remove the entry for `key`. A missing key is not an error.
     async fn delete(&self, key: &str) -> Result<(), FaucetError>;
+
+    /// Run a fast, non-mutating preflight probe (used by `faucet doctor`).
+    ///
+    /// The default returns
+    /// [`CheckReport::not_implemented`](crate::check::CheckReport::not_implemented).
+    /// Built-in stores override this with a reachability + sentinel
+    /// get/put/delete probe that leaves no residue.
+    async fn check(
+        &self,
+        _ctx: &crate::check::CheckContext,
+    ) -> Result<crate::check::CheckReport, FaucetError> {
+        Ok(crate::check::CheckReport::not_implemented())
+    }
 }
+
+/// Sentinel key used by state-store `check()` probes. Valid per
+/// [`validate_state_key`] and deleted after the probe so it leaves no residue.
+pub const DOCTOR_SENTINEL_KEY: &str = "faucet_doctor_probe";
 
 /// Reject keys that could escape the storage namespace or break filename
 /// rules on common filesystems. Allowed: ASCII letters, digits, `_`, `-`,
@@ -104,6 +121,16 @@ impl StateStore for MemoryStateStore {
         validate_state_key(key)?;
         self.inner.lock().await.remove(key);
         Ok(())
+    }
+
+    async fn check(
+        &self,
+        _ctx: &crate::check::CheckContext,
+    ) -> Result<crate::check::CheckReport, FaucetError> {
+        // In-process map — always reachable.
+        Ok(crate::check::CheckReport::single(
+            crate::check::Probe::pass("sentinel", std::time::Duration::ZERO),
+        ))
     }
 }
 
@@ -276,6 +303,45 @@ impl StateStore for FileStateStore {
                 "failed to delete state file {}: {e}",
                 path.display()
             ))),
+        }
+    }
+
+    async fn check(
+        &self,
+        _ctx: &crate::check::CheckContext,
+    ) -> Result<crate::check::CheckReport, FaucetError> {
+        use crate::check::{CheckReport, Probe};
+        // Exercise the real put → get → delete cycle on a sentinel key. `put`
+        // creates the root dir if needed, so this validates "dir exists +
+        // writable" via the actual code path and leaves no residue.
+        let start = std::time::Instant::now();
+        let probe = match self.sentinel_roundtrip().await {
+            Ok(()) => Probe::pass("sentinel", start.elapsed()),
+            Err(e) => Probe::fail_hint(
+                "sentinel",
+                start.elapsed(),
+                e.to_string(),
+                format!("ensure {} exists and is writable", self.root.display()),
+            ),
+        };
+        Ok(CheckReport::single(probe))
+    }
+}
+
+impl FileStateStore {
+    /// Write, read back, and delete a sentinel key — the body of the `check()`
+    /// probe, factored out so the happy path stays linear.
+    async fn sentinel_roundtrip(&self) -> Result<(), FaucetError> {
+        let probe = serde_json::json!({ "faucet_doctor": true });
+        self.put(DOCTOR_SENTINEL_KEY, &probe).await?;
+        let got = self.get(DOCTOR_SENTINEL_KEY).await?;
+        // Best-effort cleanup regardless of the read result.
+        let _ = self.delete(DOCTOR_SENTINEL_KEY).await;
+        match got {
+            Some(v) if v == probe => Ok(()),
+            _ => Err(FaucetError::State(
+                "sentinel readback did not match what was written".into(),
+            )),
         }
     }
 }
@@ -532,5 +598,51 @@ mod tests {
         let s: Box<dyn StateStore> = Box::new(FileStateStore::new(dir.path()));
         s.put("k", &json!(1)).await.unwrap();
         assert_eq!(s.get("k").await.unwrap().unwrap(), json!(1));
+    }
+
+    // ── check() ──────────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn memory_check_passes() {
+        let s = MemoryStateStore::new();
+        let report = s
+            .check(&crate::check::CheckContext::default())
+            .await
+            .unwrap();
+        assert_eq!(report.failed_count(), 0);
+        assert!(
+            report
+                .probes
+                .iter()
+                .all(|p| matches!(p.status, crate::check::ProbeStatus::Pass))
+        );
+    }
+
+    #[tokio::test]
+    async fn file_check_passes_for_writable_root() {
+        let dir = TempDir::new().unwrap();
+        let s = FileStateStore::new(dir.path());
+        let report = s
+            .check(&crate::check::CheckContext::default())
+            .await
+            .unwrap();
+        assert_eq!(report.failed_count(), 0, "writable root should pass");
+        // The sentinel probe must leave no residue.
+        let leftovers: Vec<_> = std::fs::read_dir(dir.path()).unwrap().collect();
+        assert!(leftovers.is_empty(), "check() must not leave files behind");
+    }
+
+    #[tokio::test]
+    async fn file_check_fails_when_root_unusable() {
+        // Root whose parent is a regular file → create_dir_all fails.
+        let dir = TempDir::new().unwrap();
+        let file = dir.path().join("not_a_dir");
+        std::fs::write(&file, b"x").unwrap();
+        let s = FileStateStore::new(file.join("state"));
+        let report = s
+            .check(&crate::check::CheckContext::default())
+            .await
+            .unwrap();
+        assert_eq!(report.failed_count(), 1, "unusable root should fail");
     }
 }

@@ -303,6 +303,12 @@ pub enum CliError {
          the async load path — load via `faucet run`/`validate`/`preview` rather than the sync API"
     )]
     SecretsRequireAsyncLoad,
+
+    /// One or more `faucet doctor` preflight probes failed. The checklist is
+    /// printed by the command; `main` maps this to an exit code equal to the
+    /// failed-probe count (clamped to 255).
+    #[error("{failed} preflight probe(s) failed")]
+    DoctorFailed { failed: usize },
 }
 
 impl From<faucet_core::InstallError> for CliError {

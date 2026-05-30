@@ -149,6 +149,20 @@ impl faucet_core::Sink for JsonlSink {
         }
         Ok(())
     }
+
+    /// Preflight probe for `faucet doctor`. Verifies the configured output
+    /// path's parent directory exists and is writable by creating, then
+    /// immediately removing, a uniquely-named temp file there. Never touches
+    /// the user's actual output file, so it is fully idempotent.
+    async fn check(
+        &self,
+        _ctx: &faucet_core::check::CheckContext,
+    ) -> Result<faucet_core::check::CheckReport, FaucetError> {
+        use faucet_core::check::CheckReport;
+        let start = std::time::Instant::now();
+        let probe = crate::probe::probe_parent_writable(&self.config.path, start).await;
+        Ok(CheckReport::single(probe))
+    }
 }
 
 #[cfg(test)]
@@ -239,6 +253,34 @@ mod tests {
         let tmp = NamedTempFile::new().unwrap();
         let sink = JsonlSink::new(JsonlSinkConfig::new(tmp.path()));
         assert_eq!(sink.connector_name(), "jsonl");
+    }
+
+    #[tokio::test]
+    async fn check_passes_when_parent_dir_exists() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("out.jsonl");
+        let sink = JsonlSink::new(JsonlSinkConfig::new(&path));
+        let report = sink
+            .check(&faucet_core::check::CheckContext::default())
+            .await
+            .unwrap();
+        assert_eq!(report.failed_count(), 0);
+        assert_eq!(report.probes[0].name, "io");
+        // The probe must not have created the user's output file.
+        assert!(!path.exists(), "check() must not create the output file");
+    }
+
+    #[tokio::test]
+    async fn check_fails_when_parent_dir_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("nope").join("out.jsonl");
+        let sink = JsonlSink::new(JsonlSinkConfig::new(&path));
+        let report = sink
+            .check(&faucet_core::check::CheckContext::default())
+            .await
+            .unwrap();
+        assert_eq!(report.failed_count(), 1);
+        assert_eq!(report.probes[0].name, "io");
     }
 
     #[cfg(feature = "compression")]

@@ -196,6 +196,40 @@ impl faucet_core::Source for WebhookSource {
         serde_json::to_value(faucet_core::schema_for!(WebhookSourceConfig))
             .expect("schema serialization")
     }
+
+    fn connector_name(&self) -> &'static str {
+        "webhook"
+    }
+
+    /// Preflight probe that does **not** start the receive loop.
+    ///
+    /// The default `Source::check` would call `stream_pages`, which boots the
+    /// HTTP server and blocks for the whole receive window waiting for inbound
+    /// POSTs — useless as a fast preflight. Instead we just verify the
+    /// configured `listen_addr` is bindable: bind a `tokio::net::TcpListener`
+    /// to it and immediately drop it. Success means the port is free; a bind
+    /// error (port in use, permission denied, bad address) fails the probe.
+    async fn check(
+        &self,
+        _ctx: &faucet_core::check::CheckContext,
+    ) -> Result<faucet_core::check::CheckReport, FaucetError> {
+        use faucet_core::check::{CheckReport, Probe};
+
+        let start = std::time::Instant::now();
+        match tokio::net::TcpListener::bind(&self.config.listen_addr).await {
+            Ok(listener) => {
+                // Drop the listener immediately so we don't hold the port.
+                drop(listener);
+                Ok(CheckReport::single(Probe::pass("io", start.elapsed())))
+            }
+            Err(e) => Ok(CheckReport::single(Probe::fail_hint(
+                "io",
+                start.elapsed(),
+                e.to_string(),
+                format!("{} is not bindable", self.config.listen_addr),
+            ))),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -268,6 +302,53 @@ mod tests {
         assert_eq!(records.len(), 2);
         assert_eq!(records[0]["event"], "created");
         assert_eq!(records[1]["event"], "updated");
+    }
+
+    #[tokio::test]
+    async fn check_passes_when_port_is_bindable() {
+        use faucet_core::Source;
+        use faucet_core::check::{CheckContext, ProbeStatus};
+
+        // Port 0 = let the OS pick a free port, so the bind always succeeds.
+        let source = WebhookSource::new(WebhookSourceConfig::new().listen_addr("127.0.0.1:0"));
+        let report = source.check(&CheckContext::default()).await.unwrap();
+        assert_eq!(report.probes.len(), 1);
+        assert_eq!(report.probes[0].name, "io");
+        assert!(
+            matches!(report.probes[0].status, ProbeStatus::Pass),
+            "expected Pass, got {:?}",
+            report.probes[0].status
+        );
+        assert_eq!(report.failed_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn check_fails_when_port_is_already_bound() {
+        use faucet_core::Source;
+        use faucet_core::check::{CheckContext, ProbeStatus};
+
+        // Hold a real listener, then point the source at the same address so
+        // the probe's bind collides.
+        let held = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = held.local_addr().unwrap();
+
+        let source = WebhookSource::new(WebhookSourceConfig::new().listen_addr(addr.to_string()));
+        let report = source.check(&CheckContext::default()).await.unwrap();
+        assert_eq!(report.probes.len(), 1);
+        assert_eq!(report.probes[0].name, "io");
+        assert!(
+            matches!(report.probes[0].status, ProbeStatus::Fail { .. }),
+            "expected Fail, got {:?}",
+            report.probes[0].status
+        );
+        assert_eq!(report.failed_count(), 1);
+        assert!(
+            report.probes[0]
+                .hint
+                .as_deref()
+                .unwrap()
+                .contains("not bindable")
+        );
     }
 
     #[tokio::test]

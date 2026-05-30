@@ -169,6 +169,63 @@ impl faucet_core::Sink for HttpSink {
             .expect("schema serialization")
     }
 
+    /// Non-mutating preflight probe (probe name `"network"`).
+    ///
+    /// Issues a lightweight `HEAD` request to the configured endpoint over the
+    /// existing reqwest client. We only care that the host is reachable — that
+    /// DNS, TCP, TLS and the server all work — so **any** HTTP response (2xx,
+    /// 4xx including `405 Method Not Allowed`, or 5xx) counts as a pass. Only a
+    /// transport/connection error (no response at all) is a failure.
+    async fn check(
+        &self,
+        ctx: &faucet_core::check::CheckContext,
+    ) -> Result<faucet_core::check::CheckReport, FaucetError> {
+        use faucet_core::check::{CheckReport, Probe};
+
+        // Resolve auth so authenticated endpoints don't reject the connection
+        // before we learn the host is reachable. An unresolvable auth ref is a
+        // configuration failure surfaced on this probe.
+        let auth = match self.resolve_auth().await {
+            Ok(a) => a,
+            Err(e) => {
+                return Ok(CheckReport::single(Probe::fail_hint(
+                    "network",
+                    std::time::Duration::ZERO,
+                    e.to_string(),
+                    "check the configured auth / that a shared auth provider is wired up",
+                )));
+            }
+        };
+
+        let started = std::time::Instant::now();
+        let hint = "check the url / DNS / TLS / that the host is reachable";
+
+        let req = self
+            .client
+            .head(&self.config.url)
+            .headers(self.config.headers.clone());
+        let req = match self.apply_auth(req, &auth) {
+            Ok(r) => r,
+            Err(e) => {
+                return Ok(CheckReport::single(Probe::fail_hint(
+                    "network",
+                    started.elapsed(),
+                    e.to_string(),
+                    hint,
+                )));
+            }
+        };
+
+        let probe = match tokio::time::timeout(ctx.timeout, req.send()).await {
+            // Any HTTP response means DNS + TCP + TLS + the host all work.
+            Ok(Ok(_)) => Probe::pass("network", started.elapsed()),
+            // Transport/connection error: no response received.
+            Ok(Err(e)) => Probe::fail_hint("network", started.elapsed(), e.to_string(), hint),
+            Err(_) => Probe::fail_hint("network", started.elapsed(), "timed out", hint),
+        };
+        Ok(CheckReport::single(probe))
+    }
+
     async fn write_batch(&self, records: &[Value]) -> Result<usize, FaucetError> {
         if records.is_empty() {
             return Ok(0);

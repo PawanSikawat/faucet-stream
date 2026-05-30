@@ -3,6 +3,7 @@
 use clap::Parser;
 use faucet_cli::cli::{Cli, Command};
 use faucet_cli::commands;
+use faucet_cli::error::CliError;
 #[cfg(feature = "observability")]
 use tracing_subscriber::EnvFilter;
 
@@ -18,9 +19,15 @@ async fn main() {
         Command::List => commands::list::run().await,
         Command::Preview(args) => commands::preview::run(args).await,
         Command::Init(args) => commands::init::run(args).await,
+        Command::Doctor(args) => commands::doctor::run(args).await,
     };
 
     if let Err(err) = result {
+        // `doctor` already printed its checklist; surface the failure count as
+        // the exit code (clamped to 255) rather than the generic exit-1 path.
+        if let CliError::DoctorFailed { failed } = &err {
+            std::process::exit((*failed).min(255) as i32);
+        }
         commands::report(&err);
         std::process::exit(1);
     }

@@ -8,6 +8,7 @@
 //! format (one JSON object per line).
 
 pub mod config;
+pub(crate) mod probe;
 pub mod sink;
 
 pub use faucet_core::{FaucetError, Sink};

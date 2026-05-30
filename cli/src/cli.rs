@@ -30,6 +30,30 @@ pub enum Command {
     Preview(PreviewArgs),
     /// Scaffold a starter `pipeline.yaml` to disk.
     Init(InitArgs),
+    /// Probe every connector in a config (auth / network / permissions) and
+    /// print a green/red checklist. Exits non-zero if any probe fails.
+    Doctor(DoctorArgs),
+}
+
+/// `faucet doctor` arguments.
+#[derive(Debug, Parser)]
+pub struct DoctorArgs {
+    /// Path to a `.yaml`, `.yml`, or `.json` pipeline config. If omitted,
+    /// auto-discover `faucet.yaml` / `faucet.yml` / `faucet.json` in cwd.
+    pub config: Option<PathBuf>,
+    /// Path to a `.env` file to load for `${env:VAR}` interpolation.
+    /// Defaults to `.env` in cwd if present.
+    #[arg(long, conflicts_with = "no_env_file")]
+    pub env_file: Option<PathBuf>,
+    /// Skip auto-loading `.env` from cwd.
+    #[arg(long)]
+    pub no_env_file: bool,
+    /// Per-probe timeout in seconds.
+    #[arg(long, default_value_t = 10)]
+    pub timeout_secs: u64,
+    /// Emit machine-readable JSON instead of the human checklist.
+    #[arg(long)]
+    pub json: bool,
 }
 
 /// `faucet run` arguments.

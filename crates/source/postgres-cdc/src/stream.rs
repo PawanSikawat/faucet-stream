@@ -149,6 +149,98 @@ impl Source for PostgresCdcSource {
         *self.pending_bookmark.lock().await = Some(parsed);
         Ok(())
     }
+
+    fn connector_name(&self) -> &'static str {
+        "postgres-cdc"
+    }
+
+    /// Preflight probe that does **not** start replication.
+    ///
+    /// The default [`Source::check`] would call `stream_pages`, which opens the
+    /// replication stream and consumes/holds WAL (a side effect that pins server
+    /// resources) — unacceptable as a preflight. Instead we open a *normal*
+    /// (non-replication) SQL connection — the same connection style
+    /// `ensure_slot` uses — and inspect the slot catalog without touching the
+    /// replication protocol:
+    ///
+    /// - connection fails → `auth` probe `Fail` (could not connect / authenticate),
+    /// - connected but the slot row is absent → `slot` probe `Skip`
+    ///   (faucet can create it on the first run),
+    /// - slot present → `slot` probe `Pass`.
+    ///
+    /// The whole call is bounded by `ctx.timeout`.
+    async fn check(
+        &self,
+        ctx: &faucet_core::check::CheckContext,
+    ) -> Result<faucet_core::check::CheckReport, FaucetError> {
+        use faucet_core::check::{CheckReport, Probe};
+        use sqlx::ConnectOptions as _;
+        use sqlx::postgres::{PgConnectOptions, PgConnection};
+
+        let start = std::time::Instant::now();
+
+        // A bad connection URL is a config error, not an unreachable server.
+        let opts: PgConnectOptions = match self.config.connection_url.parse() {
+            Ok(o) => o,
+            Err(e) => {
+                return Ok(CheckReport::single(Probe::fail_hint(
+                    "auth",
+                    start.elapsed(),
+                    format!("invalid connection URL: {e}"),
+                    "connection_url must be a valid postgres:// URL",
+                )));
+            }
+        };
+
+        // Bound the whole connect+query under ctx.timeout so an unreachable
+        // host doesn't hang the probe.
+        let probe = async {
+            let mut conn: PgConnection = opts.connect().await.map_err(|e| {
+                Probe::fail_hint(
+                    "auth",
+                    start.elapsed(),
+                    format!("could not connect: {e}"),
+                    "verify the host is reachable and credentials are valid",
+                )
+            })?;
+
+            let row: Option<(String,)> = sqlx::query_as(
+                "SELECT slot_name::text FROM pg_replication_slots WHERE slot_name = $1",
+            )
+            .bind(&self.config.slot_name)
+            .fetch_optional(&mut conn)
+            .await
+            .map_err(|e| {
+                Probe::fail(
+                    "slot",
+                    start.elapsed(),
+                    format!("could not query pg_replication_slots: {e}"),
+                )
+            })?;
+
+            Ok::<Probe, Probe>(match row {
+                Some(_) => Probe::pass("slot", start.elapsed()),
+                None => Probe::skip(
+                    "slot",
+                    format!(
+                        "replication slot {} does not exist yet (faucet run can create it)",
+                        self.config.slot_name
+                    ),
+                ),
+            })
+        };
+
+        let probe = match tokio::time::timeout(ctx.timeout, probe).await {
+            Ok(Ok(p)) | Ok(Err(p)) => p,
+            Err(_elapsed) => Probe::fail_hint(
+                "auth",
+                start.elapsed(),
+                "connection timed out",
+                "the database did not respond within the check timeout",
+            ),
+        };
+        Ok(CheckReport::single(probe))
+    }
 }
 
 impl PostgresCdcSource {

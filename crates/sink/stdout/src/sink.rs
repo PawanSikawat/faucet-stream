@@ -157,6 +157,20 @@ impl faucet_core::Sink for StdoutSink {
             .await
             .map_err(|e| FaucetError::Sink(format!("flush failed: {e}")))
     }
+
+    /// Preflight probe for `faucet doctor`. The standard streams are always
+    /// reachable (the OS hands them to every process), so there is nothing to
+    /// fail on — this always passes immediately.
+    async fn check(
+        &self,
+        _ctx: &faucet_core::check::CheckContext,
+    ) -> Result<faucet_core::check::CheckReport, FaucetError> {
+        use faucet_core::check::{CheckReport, Probe};
+        Ok(CheckReport::single(Probe::pass(
+            "io",
+            std::time::Duration::ZERO,
+        )))
+    }
 }
 
 #[cfg(test)]
@@ -368,5 +382,17 @@ mod tests {
         let schema = sink.config_schema();
         assert_eq!(schema["type"], "object");
         assert!(schema["properties"].is_object());
+    }
+
+    #[tokio::test]
+    async fn check_always_passes() {
+        let sink = StdoutSink::new(StdoutSinkConfig::new());
+        let report = sink
+            .check(&faucet_core::check::CheckContext::default())
+            .await
+            .unwrap();
+        assert_eq!(report.failed_count(), 0);
+        assert_eq!(report.probes.len(), 1);
+        assert_eq!(report.probes[0].name, "io");
     }
 }

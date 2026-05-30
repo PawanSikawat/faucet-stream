@@ -1,7 +1,7 @@
 //! Redis-backed [`StateStore`].
 
 use async_trait::async_trait;
-use faucet_core::state::{StateStore, validate_state_key};
+use faucet_core::state::{DOCTOR_SENTINEL_KEY, StateStore, validate_state_key};
 use faucet_core::{FaucetError, Value};
 use redis::AsyncCommands;
 
@@ -119,6 +119,56 @@ impl StateStore for RedisStateStore {
             .await
             .map_err(|e| FaucetError::State(format!("Redis DEL for key '{key}' failed: {e}")))?;
         Ok(())
+    }
+
+    async fn check(
+        &self,
+        ctx: &faucet_core::check::CheckContext,
+    ) -> Result<faucet_core::check::CheckReport, FaucetError> {
+        use faucet_core::check::{CheckReport, Probe};
+
+        // Exercise the real put → get → delete cycle on a sentinel key. This
+        // validates connectivity, auth, and read/write permissions through the
+        // actual code path and leaves no residue.
+        let start = std::time::Instant::now();
+        let probe = match tokio::time::timeout(ctx.timeout, self.sentinel_roundtrip()).await {
+            Ok(Ok(())) => Probe::pass("sentinel", start.elapsed()),
+            Ok(Err(e)) => Probe::fail_hint(
+                "sentinel",
+                start.elapsed(),
+                e.to_string(),
+                "verify the Redis server is reachable and the credentials grant read/write access",
+            ),
+            Err(_) => Probe::fail_hint(
+                "sentinel",
+                start.elapsed(),
+                format!(
+                    "round-trip timed out after {:?}; Redis did not respond",
+                    ctx.timeout
+                ),
+                "verify the Redis server is reachable or raise the check timeout",
+            ),
+        };
+        Ok(CheckReport::single(probe))
+    }
+}
+
+impl RedisStateStore {
+    /// Write, read back, and delete a sentinel key — the body of the `check()`
+    /// probe, factored out so the happy path stays linear. Reuses the store's
+    /// own `put`/`get`/`delete`, which already namespace the key.
+    async fn sentinel_roundtrip(&self) -> Result<(), FaucetError> {
+        let probe = serde_json::json!({ "faucet_doctor": true });
+        self.put(DOCTOR_SENTINEL_KEY, &probe).await?;
+        let got = self.get(DOCTOR_SENTINEL_KEY).await?;
+        // Best-effort cleanup regardless of the read result.
+        let _ = self.delete(DOCTOR_SENTINEL_KEY).await;
+        match got {
+            Some(v) if v == probe => Ok(()),
+            _ => Err(FaucetError::State(
+                "sentinel readback did not match what was written".into(),
+            )),
+        }
     }
 }
 

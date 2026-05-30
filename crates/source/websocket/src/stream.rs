@@ -380,6 +380,82 @@ impl Source for WebsocketSource {
     fn connector_name(&self) -> &'static str {
         "websocket"
     }
+
+    /// Preflight probe that does **not** open the WebSocket stream.
+    ///
+    /// The default `Source::check` would call `stream_pages`, which connects,
+    /// sends subscribe frames, and then blocks waiting for inbound frames until
+    /// `max_messages` / `idle_timeout` — useless as a fast preflight. Instead we
+    /// only verify TCP reachability of the configured endpoint: parse the
+    /// `ws://`/`wss://` URL, resolve host + port (default 80 for `ws`, 443 for
+    /// `wss`), open a [`tokio::net::TcpStream`] (no WS upgrade handshake, no
+    /// auth, no frames), and immediately drop it.
+    async fn check(
+        &self,
+        ctx: &faucet_core::check::CheckContext,
+    ) -> Result<faucet_core::check::CheckReport, FaucetError> {
+        use faucet_core::check::{CheckReport, Probe};
+
+        let start = std::time::Instant::now();
+
+        // Resolve host + port from the configured URL. The config is validated
+        // at construction (`ws://`/`wss://`), so parse failures here are
+        // probe-level failures, never panics.
+        let (host, port) = match resolve_host_port(&self.config.url) {
+            Ok(hp) => hp,
+            Err(reason) => {
+                return Ok(CheckReport::single(Probe::fail_hint(
+                    "network",
+                    start.elapsed(),
+                    reason,
+                    "url must be ws://host[:port]/... or wss://host[:port]/...",
+                )));
+            }
+        };
+
+        let connect = tokio::net::TcpStream::connect((host.as_str(), port));
+        match tokio::time::timeout(ctx.timeout, connect).await {
+            Ok(Ok(stream)) => {
+                drop(stream);
+                Ok(CheckReport::single(Probe::pass("network", start.elapsed())))
+            }
+            Ok(Err(e)) => Ok(CheckReport::single(Probe::fail_hint(
+                "network",
+                start.elapsed(),
+                e.to_string(),
+                format!("cannot reach {host}:{port} over TCP"),
+            ))),
+            Err(_elapsed) => Ok(CheckReport::single(Probe::fail_hint(
+                "network",
+                start.elapsed(),
+                format!("TCP connect to {host}:{port} timed out"),
+                format!("{host}:{port} did not accept a connection within the check timeout"),
+            ))),
+        }
+    }
+}
+
+/// Parse a `ws://`/`wss://` URL into `(host, port)`, applying the scheme's
+/// default port (80 for `ws`, 443 for `wss`) when none is specified.
+///
+/// Returns the human-readable reason string on failure (never leaks the full
+/// URL, which may carry query-string credentials — only the host is surfaced).
+fn resolve_host_port(url: &str) -> Result<(String, u16), String> {
+    let request = url
+        .into_client_request()
+        .map_err(|e| format!("invalid websocket url: {e}"))?;
+    let uri = request.uri();
+    let host = uri
+        .host()
+        .filter(|h| !h.is_empty())
+        .ok_or_else(|| "websocket url is missing a host".to_string())?
+        .to_string();
+    let default_port = match uri.scheme_str() {
+        Some("wss") => 443,
+        _ => 80,
+    };
+    let port = uri.port_u16().unwrap_or(default_port);
+    Ok((host, port))
 }
 
 #[cfg(test)]
@@ -436,5 +512,102 @@ mod tests {
                 headers: BTreeMap::from([("Authorization".into(), "Basic dXNlcjpwYXNz".into())])
             }
         );
+    }
+
+    #[test]
+    fn resolve_host_port_applies_scheme_defaults() {
+        assert_eq!(
+            resolve_host_port("ws://example.com/feed").unwrap(),
+            ("example.com".to_string(), 80)
+        );
+        assert_eq!(
+            resolve_host_port("wss://example.com/feed").unwrap(),
+            ("example.com".to_string(), 443)
+        );
+        assert_eq!(
+            resolve_host_port("wss://example.com:9443/feed").unwrap(),
+            ("example.com".to_string(), 9443)
+        );
+    }
+
+    #[tokio::test]
+    async fn check_passes_against_a_live_tcp_listener() {
+        use faucet_core::check::{CheckContext, ProbeStatus};
+
+        // Bind a real TCP listener and point the source's URL at it. The probe
+        // only needs the TCP handshake to succeed — no WS upgrade is performed,
+        // so a plain listener is enough.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let config = WebsocketSourceConfig {
+            url: format!("ws://{addr}/feed"),
+            auth: AuthSpec::Inline(WebsocketAuth::None),
+            subscribe_messages: vec![],
+            message_format: crate::config::WsMessageFormat::Json,
+            on_parse_error: crate::config::OnParseError::Fail,
+            envelope: false,
+            ping_interval: None,
+            max_messages: Some(1),
+            idle_timeout: None,
+            reconnect: false,
+            reconnect_backoff: Duration::from_secs(1),
+            max_reconnect_attempts: None,
+            max_message_bytes: None,
+            batch_size: faucet_core::DEFAULT_BATCH_SIZE,
+        };
+        let source = WebsocketSource::new(config).unwrap();
+        let report = source.check(&CheckContext::default()).await.unwrap();
+        assert_eq!(report.probes.len(), 1);
+        assert_eq!(report.probes[0].name, "network");
+        assert!(
+            matches!(report.probes[0].status, ProbeStatus::Pass),
+            "expected Pass, got {:?}",
+            report.probes[0].status
+        );
+    }
+
+    #[tokio::test]
+    async fn check_fails_against_a_closed_port() {
+        use faucet_core::check::{CheckContext, ProbeStatus};
+
+        // Bind then drop a listener to obtain a port that is (almost certainly)
+        // closed, so the connect is refused quickly.
+        let addr = {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            listener.local_addr().unwrap()
+        };
+
+        let config = WebsocketSourceConfig {
+            url: format!("ws://{addr}/feed"),
+            auth: AuthSpec::Inline(WebsocketAuth::None),
+            subscribe_messages: vec![],
+            message_format: crate::config::WsMessageFormat::Json,
+            on_parse_error: crate::config::OnParseError::Fail,
+            envelope: false,
+            ping_interval: None,
+            max_messages: Some(1),
+            idle_timeout: None,
+            reconnect: false,
+            reconnect_backoff: Duration::from_secs(1),
+            max_reconnect_attempts: None,
+            max_message_bytes: None,
+            batch_size: faucet_core::DEFAULT_BATCH_SIZE,
+        };
+        let source = WebsocketSource::new(config).unwrap();
+        let report = source
+            .check(&CheckContext {
+                timeout: Duration::from_secs(2),
+            })
+            .await
+            .unwrap();
+        assert_eq!(report.probes.len(), 1);
+        assert_eq!(report.probes[0].name, "network");
+        assert!(
+            matches!(report.probes[0].status, ProbeStatus::Fail { .. }),
+            "expected Fail, got {:?}",
+            report.probes[0].status
+        );
+        assert_eq!(report.failed_count(), 1);
     }
 }

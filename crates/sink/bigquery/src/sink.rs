@@ -122,6 +122,64 @@ impl faucet_core::Sink for BigQuerySink {
             .expect("schema serialization")
     }
 
+    /// Preflight check (`faucet doctor`).
+    ///
+    /// Runs a single read-only `tables.get` against the configured
+    /// `project_id.dataset_id.table_id` using the already-authenticated
+    /// client built in [`BigQuerySink::new`]. This mints/uses the access
+    /// token and confirms the credentials can read the target table's
+    /// metadata — without inserting any rows. Auth, missing-dataset,
+    /// missing-table, and permission errors all surface as a `Fail` probe
+    /// with a remediation hint. The access token is never included in the
+    /// reason or hint.
+    async fn check(
+        &self,
+        ctx: &faucet_core::check::CheckContext,
+    ) -> Result<faucet_core::check::CheckReport, FaucetError> {
+        use faucet_core::check::{CheckReport, Probe};
+
+        let started = std::time::Instant::now();
+        let fqn = format!(
+            "{}.{}.{}",
+            self.config.project_id, self.config.dataset_id, self.config.table_id
+        );
+
+        let result = tokio::time::timeout(
+            ctx.timeout,
+            self.client.table().get(
+                &self.config.project_id,
+                &self.config.dataset_id,
+                &self.config.table_id,
+                Some(vec!["tableReference"]),
+            ),
+        )
+        .await;
+
+        let probe = match result {
+            Ok(Ok(_table)) => Probe::pass("auth", started.elapsed()),
+            Ok(Err(e)) => Probe::fail_hint(
+                "auth",
+                started.elapsed(),
+                format!("BigQuery tables.get on {fqn} failed: {e}"),
+                "Verify the service account has roles/bigquery.dataViewer (or \
+                 read access) on the dataset and that the project, dataset, and \
+                 table IDs are correct.",
+            ),
+            Err(_elapsed) => Probe::fail_hint(
+                "auth",
+                started.elapsed(),
+                format!(
+                    "BigQuery tables.get on {fqn} timed out after {:?}",
+                    ctx.timeout
+                ),
+                "Check network reachability to bigquery.googleapis.com and that \
+                 credentials can be minted within the timeout.",
+            ),
+        };
+
+        Ok(CheckReport::single(probe))
+    }
+
     /// Write records to BigQuery.
     ///
     /// When `config.batch_size > 0` and the input slice is larger than

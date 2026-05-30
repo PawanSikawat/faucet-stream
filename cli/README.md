@@ -28,8 +28,51 @@ cargo install faucet-cli --no-default-features \
 | `faucet list` | List every compiled-in source, sink, transform, and state-store backend. |
 | `faucet preview <config> --limit N` | Run only the source side and emit the first N records to stdout as JSONL. |
 | `faucet init [name] [--source X] [--sink Y]` | Scaffold a pipeline.yaml from each connector's JSON Schema. |
+| `faucet doctor <config> [--timeout-secs N] [--json]` | Probe every connector (auth/network/permissions/reachability) and print a checklist. Exits with the failed-probe count. |
 
 Pass `--log-level debug` (or set `FAUCET_LOG=debug`) for verbose tracing. Logs are written to stderr; pipeline records and command output go to stdout.
+
+### `faucet doctor`
+
+`faucet doctor <config>` runs a fast, **non-mutating** preflight against every connector in a config before you commit to a real run — so a misconfigured credential, an unreachable host, or a missing permission surfaces in seconds with a clear remediation hint, instead of failing mid-run and polluting your metrics.
+
+For each root invocation it probes the source, sink, and state store:
+
+- **Sources** reuse the real read path — the probe pulls a *single page* (DNS + TLS + auth + the first request + first-record decode) and stops, never paginating the full dataset. A handful of sources whose first page would block or have side effects use a targeted probe instead: `webhook` checks the port is bindable, `websocket` does a TCP connect, `postgres-cdc` checks the replication slot is reachable, `kafka` fetches cluster metadata.
+- **Sinks** run a non-mutating connect/auth/metadata call (e.g. `SELECT 1`, `HeadBucket`, `PING`, `tables.get`, cluster health, `fetch_metadata`) — never a real write. File sinks check the target directory is writable; `stdout` always passes.
+- **State stores** do a sentinel `put`/`get`/`delete` round-trip that leaves no residue.
+
+```bash
+faucet doctor pipeline.yaml                      # checklist, exit code = # of failed probes
+faucet doctor pipeline.yaml --timeout-secs 5     # per-probe timeout (default 10)
+faucet doctor pipeline.yaml --json               # machine-readable, for CI gating
+```
+
+Example output:
+
+```text
+✓ Config parses and interpolates                                 8 ms
+✓ Matrix expands to 2 invocations                    0 skipped (children)
+
+▸ Invocation default::us-east  (source=postgres, sink=bigquery)
+  ✓ source [postgres] read                                      42 ms
+  ✗ sink   [bigquery] auth (dataset us_east not found)         410 ms
+        hint: check bigquery credentials and that the dataset exists
+
+Summary: 1 passed, 1 failed, 0 skipped       total elapsed 0.5s
+```
+
+Flags:
+
+| Flag | Purpose |
+|------|---------|
+| `--timeout-secs <N>` | Per-probe timeout in seconds (default 10). |
+| `--json` | Emit a `{ config, invocations, summary }` JSON document instead of the checklist. |
+| `--env-file <path>` / `--no-env-file` | Same `.env` handling as `run` / `validate`. |
+
+**Exit code** = the number of failed probes, clamped to 255 (so `0` means all probes passed). **Child invocations** (parent/child matrix rows) are listed but not probed — their configs depend on parent records that only exist at run time. Probe `reason`/`hint` text is scrubbed for resolved secrets before printing, but third-party connectors should never place credentials in a probe message.
+
+**Probe contract for connector authors:** `Source::check` / `Sink::check` / `StateStore::check` (in `faucet-core`) default to a generic probe (source) or "not implemented" skip (sink / state). Override them with a probe that is **idempotent and side-effect-free** and never echoes credentials. Return probe-level failures as `ProbeStatus::Fail` inside an `Ok(CheckReport)`; reserve `Err` for "couldn't run any probe".
 
 ### `faucet init`
 
