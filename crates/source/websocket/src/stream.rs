@@ -383,7 +383,7 @@ impl Source for WebsocketSource {
 
     /// Preflight probe that does **not** open the WebSocket stream.
     ///
-    /// The default [`Source::check`] would call `stream_pages`, which connects,
+    /// The default `Source::check` would call `stream_pages`, which connects,
     /// sends subscribe frames, and then blocks waiting for inbound frames until
     /// `max_messages` / `idle_timeout` — useless as a fast preflight. Instead we
     /// only verify TCP reachability of the configured endpoint: parse the

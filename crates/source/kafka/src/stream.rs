@@ -438,7 +438,7 @@ impl Source for KafkaSource {
 
     /// Preflight probe that does **not** consume any message.
     ///
-    /// The default [`Source::check`] would call `stream_pages`, which polls for
+    /// The default `Source::check` would call `stream_pages`, which polls for
     /// a message and would block on an empty topic until the idle/max-message
     /// terminator fires. Instead we fetch cluster metadata
     /// (`fetch_metadata(None, timeout)`), which validates broker connectivity +

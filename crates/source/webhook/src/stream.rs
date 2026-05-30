@@ -203,10 +203,10 @@ impl faucet_core::Source for WebhookSource {
 
     /// Preflight probe that does **not** start the receive loop.
     ///
-    /// The default [`Source::check`] would call `stream_pages`, which boots the
+    /// The default `Source::check` would call `stream_pages`, which boots the
     /// HTTP server and blocks for the whole receive window waiting for inbound
     /// POSTs — useless as a fast preflight. Instead we just verify the
-    /// configured `listen_addr` is bindable: bind a [`tokio::net::TcpListener`]
+    /// configured `listen_addr` is bindable: bind a `tokio::net::TcpListener`
     /// to it and immediately drop it. Success means the port is free; a bind
     /// error (port in use, permission denied, bad address) fails the probe.
     async fn check(

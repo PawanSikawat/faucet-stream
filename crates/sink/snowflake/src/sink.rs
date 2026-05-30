@@ -272,7 +272,7 @@ impl faucet_core::Sink for SnowflakeSink {
     /// Preflight check (`faucet doctor`).
     ///
     /// Runs a single read-only `SELECT 1` through the existing SQL REST API
-    /// request path ([`execute_sql`](Self::execute_sql)), reusing the sink's
+    /// request path (`execute_sql`), reusing the sink's
     /// configured account/warehouse/auth. This resolves the effective
     /// credential (inline or shared provider), builds the authorization
     /// header, and confirms Snowflake accepts the session — without writing
