@@ -17,9 +17,16 @@ path = "src/main.rs"
 [features]
 # Default: every first-party source, sink, and state backend so `cargo install`
 # yields a binary that can run any of the published example YAMLs out of the box.
-default = ["observability", "full", "quality"]
+# The two long-running runtime modes are intentionally excluded from this one-shot
+# runner: `schedule` (cron scheduler; pulls a cron parser + IANA timezone db) and
+# `serve` (HTTP control plane; links a web-server dependency tree and opens a
+# network listener). Opt in with `--features schedule` / `--features serve`, or
+# take everything with `--features full`.
+default = ["observability", "source", "sink", "state", "transforms", "compression", "quality"]
 
-full = ["observability", "source", "sink", "state", "transforms", "compression", "quality", "schedule", "serve"]
+# Everything the default build ships, plus the long-running runtime modes:
+# `schedule` (cron scheduler) and `serve` (HTTP control plane).
+full = ["default", "schedule", "serve"]
 
 # Data-quality checks (`quality:` config block). `quality-jsonschema` adds the
 # `json_schema` record check via a JSON Schema validator. Forwarded to
