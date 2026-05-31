@@ -1,16 +1,13 @@
 //! axum router assembly and the bind / graceful-shutdown serve loop.
 
 use crate::error::{CliError, CliResult};
-use crate::serve::config::{HistoryBackendSpec, ServeConfig};
+use crate::serve::config::ServeConfig;
 use crate::serve::handlers::{health, logs, runs};
-use crate::serve::history::RunHistory;
-use crate::serve::history::memory::MemoryHistory;
 use crate::serve::state::ServerState;
 use crate::serve::{auth, metrics};
 use axum::Router;
 use axum::routing::{get, post};
 use serde_json::Value;
-use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::limit::RequestBodyLimitLayer;
@@ -59,21 +56,6 @@ pub fn build_router(state: ServerState, config: &ServeConfig) -> Router {
         .with_state(state)
 }
 
-/// Construct the run-history backend. Phase 2/3 supports only memory; the
-/// Postgres/SQLite specs return a typed "not yet implemented" error (Phase 5).
-async fn build_history(config: &ServeConfig) -> CliResult<Arc<dyn RunHistory>> {
-    match &config.history {
-        HistoryBackendSpec::Memory => {
-            Ok(Arc::new(MemoryHistory::new(config.idempotency_retention)) as Arc<dyn RunHistory>)
-        }
-        HistoryBackendSpec::Postgres(_) | HistoryBackendSpec::Sqlite(_) => Err(CliError::Serve(
-            "persistent run history (postgres/sqlite) is not yet available — \
-             omit --history to use the in-memory backend (tracking: #127 Phase 5)"
-                .into(),
-        )),
-    }
-}
-
 /// Load the optional `--default-config` once at startup, fully resolved, as a
 /// merge base `Value`.
 async fn load_default_base(config: &ServeConfig) -> CliResult<Option<Value>> {
@@ -93,11 +75,18 @@ async fn load_default_base(config: &ServeConfig) -> CliResult<Option<Value>> {
 pub async fn serve(config: ServeConfig) -> CliResult<()> {
     let (prom, log_hub) = crate::serve::observability::install(&config.log_level);
 
-    let history = build_history(&config).await?;
-    history
+    let history =
+        crate::serve::history::connect(&config.history, config.idempotency_retention).await?;
+    let recovered = history
         .recover_orphans()
         .await
         .map_err(|e| CliError::Serve(format!("history recovery: {e}")))?;
+    if recovered > 0 {
+        tracing::warn!(
+            recovered,
+            "marked orphaned non-terminal runs as failed (server restart)"
+        );
+    }
     let default_base = load_default_base(&config).await?;
 
     let shutdown = CancellationToken::new();

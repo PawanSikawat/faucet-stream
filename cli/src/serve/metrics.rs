@@ -63,6 +63,12 @@ pub fn record_idempotency_hit() {
     metrics::counter!("faucet_serve_idempotency_hits_total").increment(1);
 }
 
+/// Set the run-history degraded gauge (`1` once the persistent backend has
+/// fallen back to in-memory; drives alerting alongside `/readyz`).
+pub fn set_history_degraded(degraded: bool) {
+    metrics::gauge!("faucet_serve_history_degraded").set(if degraded { 1.0 } else { 0.0 });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

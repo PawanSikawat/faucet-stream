@@ -157,8 +157,10 @@ jobs:
           - quality-jsonschema
           # Scheduler (CLI-only)
           - schedule
-          # HTTP control plane (CLI-only)
+          # HTTP control plane (CLI-only) + its persistent run-history backends
           - serve
+          - serve-history-postgres
+          - serve-history-sqlite
           # Secrets backends
           - secrets-vault
           - secrets-aws-sm

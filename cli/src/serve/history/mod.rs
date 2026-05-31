@@ -1,14 +1,27 @@
-//! Run-history storage. The trait is defined in full now (Phase 2/3 ships only
-//! the in-memory backend in `memory.rs`); Phase 5 adds Postgres/SQLite as new
-//! impls with no trait change. See spec §11 + §20.
+//! Run-history storage. The trait is defined in full now; the in-memory backend
+//! lives in `memory.rs`, and the feature-gated SQL backends (`postgres.rs` /
+//! `sqlite.rs`, sharing `sql.rs`) wrap themselves in `fallback.rs` so an
+//! unreachable backend degrades to in-memory rather than refusing to start.
+//! See spec §11 + §20.
 
+#[cfg(any(feature = "serve-history-postgres", feature = "serve-history-sqlite"))]
+pub mod fallback;
 pub mod memory;
+#[cfg(feature = "serve-history-postgres")]
+pub mod postgres;
+#[cfg(any(feature = "serve-history-postgres", feature = "serve-history-sqlite"))]
+pub mod sql;
+#[cfg(feature = "serve-history-sqlite")]
+pub mod sqlite;
 
+use crate::error::CliResult;
 use crate::executor::InvocationOutcome;
+use crate::serve::config::HistoryBackendSpec;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+use std::sync::Arc;
 use std::time::Duration;
 
 /// Lifecycle state of a submitted run.
@@ -181,6 +194,83 @@ pub trait RunHistory: Send + Sync {
     /// True when the backend is in fallback mode (drives `/readyz`). Always false
     /// for memory.
     fn degraded(&self) -> bool;
+}
+
+/// Build the configured run-history backend. `Memory` is always available; the
+/// SQL backends require their respective `serve-history-*` build features (a
+/// clear error otherwise). A SQL backend that fails to connect at startup
+/// degrades to in-memory (via `FallbackHistory`) rather than aborting boot.
+pub async fn connect(
+    spec: &HistoryBackendSpec,
+    idem_retention: Duration,
+) -> CliResult<Arc<dyn RunHistory>> {
+    match spec {
+        HistoryBackendSpec::Memory => {
+            Ok(Arc::new(memory::MemoryHistory::new(idem_retention)) as Arc<dyn RunHistory>)
+        }
+        HistoryBackendSpec::Postgres(url) => connect_postgres(url, idem_retention).await,
+        HistoryBackendSpec::Sqlite(url) => connect_sqlite(url, idem_retention).await,
+    }
+}
+
+#[cfg(feature = "serve-history-postgres")]
+async fn connect_postgres(url: &str, idem: Duration) -> CliResult<Arc<dyn RunHistory>> {
+    Ok(into_history(
+        postgres::PostgresHistory::connect(url, idem).await,
+        idem,
+        "postgres",
+    ))
+}
+
+#[cfg(not(feature = "serve-history-postgres"))]
+async fn connect_postgres(_url: &str, _idem: Duration) -> CliResult<Arc<dyn RunHistory>> {
+    Err(crate::error::CliError::Serve(
+        "persistent Postgres run history requires building faucet with the \
+         `serve-history-postgres` feature"
+            .into(),
+    ))
+}
+
+#[cfg(feature = "serve-history-sqlite")]
+async fn connect_sqlite(url: &str, idem: Duration) -> CliResult<Arc<dyn RunHistory>> {
+    Ok(into_history(
+        sqlite::SqliteHistory::connect(url, idem).await,
+        idem,
+        "sqlite",
+    ))
+}
+
+#[cfg(not(feature = "serve-history-sqlite"))]
+async fn connect_sqlite(_url: &str, _idem: Duration) -> CliResult<Arc<dyn RunHistory>> {
+    Err(crate::error::CliError::Serve(
+        "persistent SQLite run history requires building faucet with the \
+         `serve-history-sqlite` feature"
+            .into(),
+    ))
+}
+
+/// Wrap a SQL backend in `FallbackHistory`: healthy on success; degraded-on-
+/// in-memory (server stays up, `/readyz` reports 503) on a connect failure.
+#[cfg(any(feature = "serve-history-postgres", feature = "serve-history-sqlite"))]
+fn into_history<H: RunHistory + 'static>(
+    result: Result<H, HistoryError>,
+    idem: Duration,
+    label: &'static str,
+) -> Arc<dyn RunHistory> {
+    match result {
+        Ok(backend) => Arc::new(fallback::FallbackHistory::healthy(
+            Box::new(backend),
+            idem,
+            label,
+        )),
+        Err(e) => {
+            tracing::error!(
+                backend = label, error = %e,
+                "run-history backend unavailable at startup; starting DEGRADED on in-memory store"
+            );
+            Arc::new(fallback::FallbackHistory::degraded_at_startup(idem, label))
+        }
+    }
 }
 
 #[cfg(test)]
