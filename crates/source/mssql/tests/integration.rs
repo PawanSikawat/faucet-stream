@@ -16,6 +16,11 @@ use testcontainers_modules::testcontainers::runners::AsyncRunner;
 /// `yourStrong(!)Password` percent-encoded for a URL userinfo segment.
 const ENCODED_PW: &str = "yourStrong%28%21%29Password";
 
+// SQL Server containers need ~2 GB RAM each. `cargo test` runs a binary's tests
+// in parallel; serialize them so at most one container runs at a time and the
+// CI runner doesn't run out of memory.
+static SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 async fn start_mssql() -> (ContainerAsync<MssqlServer>, u16) {
     let container = MssqlServer::default()
         .with_accept_eula()
@@ -47,6 +52,7 @@ async fn exec(pool: &faucet_mssql_common::MssqlPool, sql: &str) {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn decodes_column_types_and_streams_pages() {
+    let _serial = SERIAL.lock().await;
     let (_c, port) = start_mssql().await;
     let cfg = conn_cfg(port);
     let pool = build_pool(&cfg, 4).await.expect("pool");
@@ -135,6 +141,7 @@ async fn decodes_column_types_and_streams_pages() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn incremental_resumes_without_duplicates() {
+    let _serial = SERIAL.lock().await;
     let (_c, port) = start_mssql().await;
     let cfg = conn_cfg(port);
     let pool = build_pool(&cfg, 4).await.expect("pool");

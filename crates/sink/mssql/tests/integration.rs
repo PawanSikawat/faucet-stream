@@ -13,6 +13,11 @@ use testcontainers_modules::testcontainers::runners::AsyncRunner;
 
 const ENCODED_PW: &str = "yourStrong%28%21%29Password";
 
+// SQL Server containers need ~2 GB RAM each. `cargo test` runs a binary's tests
+// in parallel, so without this guard all three would start a container at once
+// and exhaust the CI runner. Serialize them: at most one container at a time.
+static SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 async fn start_mssql() -> (ContainerAsync<MssqlServer>, u16) {
     let container = MssqlServer::default()
         .with_accept_eula()
@@ -62,6 +67,7 @@ fn sink_cfg(cfg: &MssqlConnectionConfig, table: &str) -> MssqlSinkConfig {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn auto_columns_bulk_write_splits_param_limit() {
+    let _serial = SERIAL.lock().await;
     let (_c, port) = start_mssql().await;
     let cfg = conn_cfg(port);
     let pool = build_pool(&cfg, 4).await.expect("pool");
@@ -87,6 +93,7 @@ async fn auto_columns_bulk_write_splits_param_limit() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn row_isolation_routes_only_the_bad_row() {
+    let _serial = SERIAL.lock().await;
     let (_c, port) = start_mssql().await;
     let cfg = conn_cfg(port);
     let pool = build_pool(&cfg, 4).await.expect("pool");
@@ -124,6 +131,7 @@ async fn row_isolation_routes_only_the_bad_row() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn json_column_with_create_table() {
+    let _serial = SERIAL.lock().await;
     let (_c, port) = start_mssql().await;
     let cfg = conn_cfg(port);
     let pool = build_pool(&cfg, 4).await.expect("pool");
