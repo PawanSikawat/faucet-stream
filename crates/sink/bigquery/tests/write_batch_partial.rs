@@ -218,7 +218,9 @@ async fn captured_insert_bodies(server: &MockServer) -> Vec<serde_json::Value> {
             let bytes = if gzipped {
                 let mut decoder = GzDecoder::new(&r.body[..]);
                 let mut out = Vec::new();
-                decoder.read_to_end(&mut out).expect("gunzip insertAll body");
+                decoder
+                    .read_to_end(&mut out)
+                    .expect("gunzip insertAll body");
                 out
             } else {
                 r.body.clone()
@@ -246,7 +248,10 @@ async fn write_batch_partial_sends_skip_invalid_rows_true() {
 
     let (sink, _sa_file) = build_sink(&server, 0).await;
     let records = vec![json!({"a": 1}), json!({"a": 2})];
-    let outcomes = sink.write_batch_partial(&records).await.expect("partial write");
+    let outcomes = sink
+        .write_batch_partial(&records)
+        .await
+        .expect("partial write");
     assert_eq!(outcomes.len(), 2);
     assert!(outcomes.iter().all(|o| o.is_ok()));
 
@@ -273,7 +278,10 @@ async fn write_batch_keeps_all_or_nothing_skip_invalid_rows_false() {
         .await;
 
     let (sink, _sa_file) = build_sink(&server, 0).await;
-    let written = sink.write_batch(&[json!({"a": 1})]).await.expect("write_batch");
+    let written = sink
+        .write_batch(&[json!({"a": 1})])
+        .await
+        .expect("write_batch");
     assert_eq!(written, 1);
 
     let bodies = captured_insert_bodies(&server).await;

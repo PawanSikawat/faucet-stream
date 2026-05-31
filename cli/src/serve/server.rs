@@ -80,7 +80,8 @@ async fn load_default_base(config: &ServeConfig) -> CliResult<Option<Value>> {
 /// `idempotency_retention`) without churning on the multi-day default
 /// `retain_terminal_runs`.
 fn purge_interval(retain_terminal: Duration, idem_retention: Duration) -> Duration {
-    (retain_terminal.min(idem_retention) / 4).clamp(Duration::from_secs(60), Duration::from_secs(3600))
+    (retain_terminal.min(idem_retention) / 4)
+        .clamp(Duration::from_secs(60), Duration::from_secs(3600))
 }
 
 /// Background history-maintenance loop: every `period`, drop terminal run

@@ -540,7 +540,10 @@ mod tests {
         assert!(sql.contains("value:\"user_id\"::string"), "sql: {sql}");
         assert!(sql.contains("value:\"event\"::string"), "sql: {sql}");
         // Crucially, NOT a metadata-projecting `SELECT *`.
-        assert!(!sql.contains("SELECT *"), "must not SELECT * over FLATTEN: {sql}");
+        assert!(
+            !sql.contains("SELECT *"),
+            "must not SELECT * over FLATTEN: {sql}"
+        );
         assert!(
             sql.contains("FLATTEN(input => PARSE_JSON(?))"),
             "sql: {sql}"

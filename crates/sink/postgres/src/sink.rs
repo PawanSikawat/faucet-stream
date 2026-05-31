@@ -324,7 +324,10 @@ mod tests {
     #[test]
     fn scalars_bind_plain_text_for_typed_columns() {
         // The `$N::<udt>` cast parses these via the column's input function.
-        assert_eq!(pg_bind_text(Some(&json!(42)), "int4").as_deref(), Some("42"));
+        assert_eq!(
+            pg_bind_text(Some(&json!(42)), "int4").as_deref(),
+            Some("42")
+        );
         assert_eq!(
             pg_bind_text(Some(&json!(1.5)), "numeric").as_deref(),
             Some("1.5")
