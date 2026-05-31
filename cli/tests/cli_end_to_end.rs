@@ -473,6 +473,12 @@ fn shipped_example_yamls_pass_validate() {
         if path.extension().and_then(|e| e.to_str()) != Some("yaml") {
             continue;
         }
+        // serve_minimal.yaml is a `faucet serve --default-config` partial: it
+        // carries workspace defaults only (no source/sink — those arrive per
+        // HTTP request), so it intentionally does not pass standalone expand.
+        if path.file_name().and_then(|f| f.to_str()) == Some("serve_minimal.yaml") {
+            continue;
+        }
         // Skip examples that require a feature the test binary wasn't built
         // with.  In CI `--all-features` covers everything; local feature-
         // specific test runs (e.g. `--features serve`) must not trip on

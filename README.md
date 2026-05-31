@@ -34,7 +34,8 @@ can drop on any box or a library you compile in.
   queues, automatic retries, adaptive batch sizing (AIMD controller that tunes
   write batch size from sink latency and error rate), secrets-manager interpolation
   (`${vault:…}`, `${aws-sm:…}`, `${gcp-sm:…}`, `${azure-kv:…}`), cron scheduling
-  (`faucet schedule`), and built-in Prometheus metrics + `tracing` spans, all with
+  (`faucet schedule`), an HTTP control plane (`faucet serve` — submit/poll/cancel
+  runs over REST), and built-in Prometheus metrics + `tracing` spans, all with
   zero per-connector code.
 - **Pay only for what you use** — every connector is a Cargo feature, so a slim
   build can be just REST + JSONL, or pull in all 35 connectors with `--features full`.
@@ -55,6 +56,7 @@ faucet validate pipeline.yaml
 faucet doctor pipeline.yaml                                  # preflight: probe auth/network/permissions
 faucet run pipeline.yaml
 faucet schedule pipeline.yaml                               # run on cron schedule (add a schedule: block)
+faucet serve --no-auth                                      # HTTP control plane: submit/poll/cancel runs over REST
 ```
 
 ```yaml
@@ -129,7 +131,7 @@ is its most common runtime.
 - You need a connector faucet-stream **doesn't ship yet and can't write** — [Meltano](https://meltano.com/) (600+ Singer taps) and [Airbyte](https://airbyte.com/) (350+) have far broader catalogs today.
 - You want a **fully-managed, hosted service** with a UI and a team operating it — Fivetran or Airbyte Cloud.
 - Your job is **in-warehouse transformation** — use dbt, and pair it with faucet-stream for the extract/load.
-- You need a **long-running streaming service or agent topology** — [Benthos / Redpanda Connect](https://www.redpanda.com/connect) and [Vector](https://vector.dev/) are purpose-built for that; faucet-stream runs pipelines to completion rather than as a daemon.
+- You need a **continuous record-by-record streaming processor** — [Benthos / Redpanda Connect](https://www.redpanda.com/connect) and [Vector](https://vector.dev/) are purpose-built for that. faucet-stream runs discrete pipelines to completion; even the long-running modes (`faucet schedule`, `faucet serve`) orchestrate complete runs rather than a never-ending stream.
 
 ## Architecture
 
@@ -210,7 +212,7 @@ faucet-stream is a Cargo workspace with 47 crates — 20 sources, 16 sinks, 5 sh
 | [`faucet-state-postgres`](crates/state/postgres) | PostgreSQL-backed `StateStore` for persistent bookmarks |
 | [`faucet-stream`](faucet-stream) | Umbrella crate — feature-gated re-exports of all connectors and state backends |
 | **CLI** | |
-| [`faucet-cli`](cli) | `faucet` binary — YAML/JSON config-driven pipeline runner (`run`, `validate`, `schema`, `list`, `preview`, `init`, `doctor`, `schedule`) |
+| [`faucet-cli`](cli) | `faucet` binary — YAML/JSON config-driven pipeline runner (`run`, `validate`, `schema`, `list`, `preview`, `init`, `doctor`, `schedule`, `serve`) |
 
 See the [connector capability matrix](https://pawansikawat.github.io/faucet-stream/reference/connectors.html)
 (streaming, resumable state, compression, auth per connector) and the

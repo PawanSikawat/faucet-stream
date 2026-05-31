@@ -177,6 +177,46 @@ cargo install faucet-cli                         # schedule included (in full)
 cargo install faucet-cli --features schedule     # explicit, no-default-features build
 ```
 
+### `faucet serve`
+
+`faucet serve` runs a **long-running HTTP control plane**: it accepts pipeline configs over REST, executes them under bounded concurrency (reusing the same executor as `faucet run`), and exposes submit / poll / list / cancel / SSE-log endpoints plus `/healthz`, `/readyz`, and `/metrics`. It takes **no config file** — configs arrive per request.
+
+```bash
+FAUCET_SERVE_AUTH_TOKEN=s3cret faucet serve --listen 0.0.0.0:8080      # bearer auth (preferred)
+faucet serve --no-auth                                                 # explicit no-auth opt-in (required if no token)
+faucet serve --history sqlite:/var/lib/faucet/runs.db                  # durable run history
+faucet serve --default-config defaults.yaml                            # merge workspace defaults under every run
+```
+
+Auth is mandatory: without `--auth-token`/`FAUCET_SERVE_AUTH_TOKEN` **and** without `--no-auth`, startup fails (an unauthenticated server is never accidental). The default bind is loopback.
+
+| Flag | Purpose |
+|------|---------|
+| `--listen <addr>` | Bind address (default `127.0.0.1:8080`; env `FAUCET_SERVE_LISTEN`). |
+| `--auth-token <t>` / `--no-auth` | Bearer token (prefer the env var) or explicit no-auth opt-in. |
+| `--max-concurrent-runs` / `--max-queued-runs` | Concurrency + queue caps (submit past the queue → 429 + `Retry-After`). |
+| `--history <url>` | `postgres://…` / `sqlite:…` for durable history (`serve-history-postgres` / `serve-history-sqlite`; default in-memory). |
+| `--default-config <path>` | Workspace defaults merged **under** every submitted run. |
+| `--cors-origin <o>` | Allow-list a browser origin (repeatable; CORS off by default). |
+| `--body-limit-bytes`, `--shutdown-grace-secs`, `--retain-terminal-runs-secs`, `--idempotency-retention-secs`, `--probe-timeout-secs` | Tuning knobs. |
+
+Submit a run:
+
+```bash
+curl -XPOST localhost:8080/v1/runs -H "Authorization: Bearer s3cret" \
+  -H 'content-type: application/json' \
+  -d '{"config":"version: 1\npipeline:\n  source: {type: csv, config: {path: in.csv}}\n  sink: {type: jsonl, config: {path: out.jsonl}}\n","name":"adhoc","idempotency_key":"k1"}'
+```
+
+> ⚠️ **Security:** `serve` executes arbitrary client-supplied configs with the server's identity — secrets, files, and network egress (SSRF). Run single-tenant, authenticated, behind egress controls; terminate TLS at a proxy. See the [serve cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/serve.html) and [HTTP API reference](https://pawansikawat.github.io/faucet-stream/reference/http-api.html).
+
+Requires the `serve` Cargo feature (included in `full`):
+
+```bash
+cargo install faucet-cli --features serve
+cargo install faucet-cli --features "serve,serve-history-postgres,serve-history-sqlite"
+```
+
 ### `faucet init`
 
 `faucet init` writes a starter `pipeline.yaml` by walking each selected connector's JSON Schema. Required fields are surfaced with a `# REQUIRED` comment and a typed placeholder (`""`, `0`, `false`, `[]`, `{}`); optional fields are commented out so connector-level defaults stay in force. Enum-typed fields list valid values in the trailing comment. Tagged-enum blocks (the `#[serde(tag = "type")]` shape used by `auth:`, `pagination:`, BigQuery `credentials:`, etc.) inline the chosen variant and emit every other variant as a commented-out "Alternative variants" block right below it — so users can switch auth modes (or pagination, or credentials) without leaving the file to consult `faucet schema`. Run `faucet init --interactive` (requires `--features cli-interactive`) to be prompted for each variant up front.

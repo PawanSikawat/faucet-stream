@@ -13,6 +13,7 @@ The `faucet` binary exposes these commands. Pass `--log-level <level>` (or set
 | `faucet init [name]` | Scaffold a commented config skeleton from connector schemas. |
 | `faucet doctor [config]` | Probe every connector (auth/network/permissions) and print a checklist. |
 | `faucet schedule [config]` | Run a pipeline on a cron schedule (long-running foreground process). |
+| `faucet serve` | Run a long-running HTTP control plane: submit / poll / cancel pipeline runs over REST. |
 
 `[config]` is optional for `run` / `validate` / `preview` / `doctor` / `schedule`: if omitted,
 faucet auto-discovers `faucet.yaml` → `.yml` → `.json` in the current directory.
@@ -160,6 +161,40 @@ Flags:
 
 See the [scheduling cookbook](../cookbook/scheduling.md) for worked examples, the overlap-policy
 decision tree, the resilience/supervisor model, and the full metric set to scrape.
+
+## `serve`
+
+```bash
+FAUCET_SERVE_AUTH_TOKEN=s3cret faucet serve --listen 0.0.0.0:8080
+faucet serve --no-auth                             # explicit opt-in; required if no token
+faucet serve --history sqlite:/var/lib/faucet/runs.db --default-config defaults.yaml
+```
+
+Runs a **long-running HTTP control plane** that accepts pipeline configs over REST, executes them
+under bounded concurrency (reusing the same executor as `faucet run`), and exposes status / cancel /
+list / SSE-logs endpoints plus `/healthz`, `/readyz`, and `/metrics`. Requires the `serve` Cargo
+feature (included in `full`).
+
+Unlike the other commands, `serve` takes **no config file** — configs arrive per request. Auth is
+mandatory: pass `--auth-token`/`FAUCET_SERVE_AUTH_TOKEN`, or `--no-auth` to explicitly disable it
+(absent both, startup fails).
+
+Selected flags (`faucet serve --help` for the full list):
+
+| Flag | Purpose |
+|------|---------|
+| `--listen <addr>` | Bind address (default `127.0.0.1:8080`; env `FAUCET_SERVE_LISTEN`). |
+| `--auth-token <t>` / `--no-auth` | Bearer token (prefer the env var) or explicit no-auth opt-in. |
+| `--max-concurrent-runs <n>` / `--max-queued-runs <n>` | Concurrency + queue caps (429 past the queue). |
+| `--history <url>` | `postgres://…` / `sqlite:…` for durable run history (feature-gated; default in-memory). |
+| `--default-config <path>` | Workspace defaults merged under every submitted run. |
+| `--cors-origin <origin>` | Allow-list a browser origin (repeatable; CORS off by default). |
+| `--body-limit-bytes` / `--shutdown-grace-secs` / `--retain-terminal-runs-secs` / `--idempotency-retention-secs` | Tuning knobs. |
+
+> ⚠️ `serve` executes arbitrary client-supplied configs with the server's identity (secrets, files,
+> network egress). Run single-tenant, authenticated, behind egress controls. See the
+> [serve cookbook](../cookbook/serve.md) for the security model and the
+> [HTTP API reference](./http-api.md) for endpoints.
 
 ## Environment-only mode
 

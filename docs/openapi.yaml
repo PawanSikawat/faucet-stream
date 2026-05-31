@@ -1,0 +1,226 @@
+openapi: 3.0.3
+info:
+  title: faucet serve — HTTP control plane
+  description: >
+    The `faucet serve` REST API (#127). Submit pipeline configs over HTTP, poll
+    run status, list/cancel/delete runs, and stream per-run logs over SSE, plus
+    unauthenticated health and Prometheus endpoints. All `/v1/*` endpoints
+    require a bearer token unless the server was started with `--no-auth`.
+
+    This spec is kept in two-way sync with the live router by
+    `cli/tests/serve_openapi.rs` (every documented path is routable; every route
+    is documented).
+  version: "1.0.0"
+servers:
+  - url: http://127.0.0.1:8080
+    description: Default loopback bind
+security:
+  - bearerAuth: []
+paths:
+  /v1/runs:
+    post:
+      summary: Submit a pipeline run
+      description: >
+        Validate + interpolate the config synchronously (4xx on error), then
+        queue the run and return immediately. Long-running execution is
+        asynchronous — poll `GET /v1/runs/{id}`.
+      operationId: submitRun
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SubmitRequest" }
+      responses:
+        "202":
+          description: Run queued (or an idempotency replay of an existing run).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SubmitResponse" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "413": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/Error" }
+    get:
+      summary: List runs
+      operationId: listRuns
+      parameters:
+        - { name: status, in: query, schema: { $ref: "#/components/schemas/RunStatus" } }
+        - { name: name, in: query, schema: { type: string } }
+        - { name: since, in: query, schema: { type: string, format: date-time } }
+        - { name: until, in: query, schema: { type: string, format: date-time } }
+        - { name: limit, in: query, schema: { type: integer, default: 50, maximum: 500 } }
+        - { name: cursor, in: query, schema: { type: string }, description: "Last run_id from the previous page." }
+      responses:
+        "200":
+          description: A page of runs, newest first.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ListResponse" }
+        "401": { $ref: "#/components/responses/Error" }
+  /v1/runs/{id}:
+    get:
+      summary: Get a run record
+      operationId: getRun
+      parameters: [ { $ref: "#/components/parameters/RunId" } ]
+      responses:
+        "200":
+          description: The run record.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RunRecord" }
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+    delete:
+      summary: Delete a terminal run from history
+      description: Does not cancel a running run; returns 409 if it is still in flight.
+      operationId: deleteRun
+      parameters: [ { $ref: "#/components/parameters/RunId" } ]
+      responses:
+        "204": { description: Deleted. }
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+  /v1/runs/{id}/cancel:
+    post:
+      summary: Cancel a run
+      description: 202 if cancellation was requested for an in-flight run; 200 (no-op) if already terminal.
+      operationId: cancelRun
+      parameters: [ { $ref: "#/components/parameters/RunId" } ]
+      responses:
+        "200": { description: Already terminal — no-op. }
+        "202": { description: Cancellation requested. }
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+  /v1/runs/{id}/logs:
+    get:
+      summary: Stream a run's logs (SSE)
+      description: >
+        `text/event-stream`. Replays the run's ring buffer, then streams the live
+        tail. Events: `log` (a line), `truncated` (the reader fell behind —
+        rely on the centralized log sink), `end` (the run finished; the stream
+        closes). Log buffers are ephemeral (a short drain window after the run
+        ends); a known run whose buffer expired yields a single `end`.
+      operationId: streamRunLogs
+      parameters: [ { $ref: "#/components/parameters/RunId" } ]
+      responses:
+        "200":
+          description: SSE stream.
+          content:
+            text/event-stream:
+              schema: { type: string }
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+  /healthz:
+    get:
+      summary: Liveness probe (unauthenticated)
+      operationId: healthz
+      security: []
+      responses:
+        "200": { description: The process is alive. }
+  /readyz:
+    get:
+      summary: Readiness probe (unauthenticated)
+      description: 503 when the history backend is degraded or the run queue is full.
+      operationId: readyz
+      security: []
+      responses:
+        "200": { description: Ready to accept work. }
+        "503": { description: Not ready (history degraded or queue full). }
+  /metrics:
+    get:
+      summary: Prometheus metrics (unauthenticated)
+      operationId: metrics
+      security: []
+      responses:
+        "200":
+          description: Prometheus text exposition.
+          content:
+            text/plain: { schema: { type: string } }
+        "503": { description: Metrics recorder unavailable in this process. }
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+  parameters:
+    RunId:
+      name: id
+      in: path
+      required: true
+      schema: { type: string }
+  responses:
+    Error:
+      description: Error envelope.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ApiError" }
+  schemas:
+    RunStatus:
+      type: string
+      enum: [queued, running, completed, failed, cancelled]
+    SubmitRequest:
+      type: object
+      required: [config]
+      properties:
+        config: { type: string, description: "YAML or JSON pipeline body." }
+        config_format: { type: string, enum: [yaml, json], default: yaml }
+        name: { type: string, description: "Metadata + state-key/metric identity. Reused name = shared bookmarks." }
+        labels: { type: object, additionalProperties: { type: string } }
+        timeout_secs: { type: integer, nullable: true }
+        doctor_first: { type: boolean, default: false, description: "Run doctor probes first; 422 with report on failure." }
+        idempotency_key: { type: string, nullable: true }
+        clock: { type: string, format: date-time, description: "Override the ${now.*} clock (backfills)." }
+    SubmitResponse:
+      type: object
+      required: [run_id, status, submitted_at]
+      properties:
+        run_id: { type: string }
+        status: { $ref: "#/components/schemas/RunStatus" }
+        submitted_at: { type: string, format: date-time }
+    InvocationRecord:
+      type: object
+      properties:
+        row_id: { type: string }
+        parent_record_key: { type: string, nullable: true }
+        records_written: { type: integer }
+        error: { type: string, nullable: true }
+    RunRecord:
+      type: object
+      required: [run_id, status, submitted_at, records_written, invocations, labels]
+      properties:
+        run_id: { type: string }
+        name: { type: string, nullable: true }
+        labels: { type: object, additionalProperties: { type: string } }
+        status: { $ref: "#/components/schemas/RunStatus" }
+        submitted_at: { type: string, format: date-time }
+        started_at: { type: string, format: date-time, nullable: true }
+        finished_at: { type: string, format: date-time, nullable: true }
+        elapsed_secs: { type: number, nullable: true }
+        records_written: { type: integer }
+        invocations:
+          type: array
+          items: { $ref: "#/components/schemas/InvocationRecord" }
+        error: { type: string, nullable: true }
+        idempotency_key: { type: string, nullable: true }
+        doctor_report: { type: object, nullable: true }
+    ListResponse:
+      type: object
+      required: [runs]
+      properties:
+        runs:
+          type: array
+          items: { $ref: "#/components/schemas/RunRecord" }
+        next_cursor: { type: string, nullable: true }
+    ApiError:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code: { type: string }
+            message: { type: string }
+            details: { type: object, nullable: true }

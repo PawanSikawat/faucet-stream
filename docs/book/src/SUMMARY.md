@@ -27,6 +27,7 @@
 - [Secrets-manager interpolation](./cookbook/secrets.md)
 - [Adaptive batching](./cookbook/adaptive-batching.md)
 - [Scheduling](./cookbook/scheduling.md)
+- [Running faucet as a service](./cookbook/serve.md)
 - [Troubleshooting with faucet doctor](./cookbook/troubleshooting.md)
 
 # Reference
@@ -35,6 +36,7 @@
 - [Choosing a connector](./reference/choosing.md)
 - [CLI commands](./reference/cli.md)
 - [Configuration file format](./reference/config.md)
+- [HTTP API (`faucet serve`)](./reference/http-api.md)
 
 # Operations
 
