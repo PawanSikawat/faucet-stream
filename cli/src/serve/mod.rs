@@ -13,6 +13,7 @@ pub mod load;
 pub mod metrics;
 pub mod observability;
 pub mod registry;
+pub mod runner;
 pub mod server;
 pub mod state;
 
