@@ -422,6 +422,9 @@ fn spawn_run(
 
         let span = tracing::info_span!("faucet.serve.run", serve_run_id = %run_id);
         let work = async move {
+            // Emitted inside the run span so it is captured by the SSE log layer
+            // (and gives every `/logs` reader at least one line to anchor on).
+            tracing::info!("pipeline run starting");
             match timeout {
                 Some(d) => match tokio::time::timeout(d, run_expanded(nodes, opts)).await {
                     Ok(r) => classify_run(r),
@@ -441,6 +444,10 @@ fn spawn_run(
         };
 
         finalize(&state, &run_id, started, terminal).await;
+        // Signal `/logs` readers the run is done, then drop the buffer after a
+        // drain window so a late fetcher can still replay it (spec §12).
+        state.log_hub().finish(&run_id);
+        schedule_log_drop(state.clone(), run_id.clone());
         // `_guard` drops here → mark_finished + gauge refresh.
     });
 }
@@ -460,6 +467,15 @@ async fn finalize(state: &ServerState, run_id: &str, started: DateTime<Utc>, ter
         let _ = state.history().upsert(&rec).await;
     }
     metrics::record_run_finished(status, reason);
+}
+
+/// Spawn a detached timer that drops a finished run's log buffer after the drain
+/// window, freeing its ring once late `/logs` fetchers have had a chance to read.
+fn schedule_log_drop(state: ServerState, run_id: String) {
+    tokio::spawn(async move {
+        tokio::time::sleep(crate::serve::logs::LOG_DRAIN).await;
+        state.log_hub().drop_run(&run_id);
+    });
 }
 
 #[cfg(test)]
@@ -545,7 +561,14 @@ mod tests {
             log_level: "info".into(),
         };
         let history = Arc::new(MemoryHistory::new(Duration::from_secs(60))) as Arc<dyn RunHistory>;
-        let state = ServerState::new(&cfg, None, CancellationToken::new(), history, None);
+        let state = ServerState::new(
+            &cfg,
+            None,
+            CancellationToken::new(),
+            history,
+            crate::serve::logs::LogHub::new(),
+            None,
+        );
 
         // Pre-claim the key with a DIFFERENT fingerprint so submit() hits Conflict.
         state

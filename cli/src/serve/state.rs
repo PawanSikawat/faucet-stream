@@ -5,6 +5,7 @@
 
 use crate::serve::config::{AuthMode, ServeConfig};
 use crate::serve::history::RunHistory;
+use crate::serve::logs::LogHub;
 use crate::serve::registry::Registry;
 use metrics_exporter_prometheus::PrometheusHandle;
 use serde_json::Value;
@@ -25,17 +26,20 @@ struct Inner {
     registry: Registry,
     semaphore: Arc<Semaphore>,
     history: Arc<dyn RunHistory>,
+    log_hub: LogHub,
     default_base: Option<Value>,
     idempotency_retention: Duration,
     probe_timeout: Duration,
 }
 
 impl ServerState {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         config: &ServeConfig,
         prometheus: Option<PrometheusHandle>,
         shutdown: CancellationToken,
         history: Arc<dyn RunHistory>,
+        log_hub: LogHub,
         default_base: Option<Value>,
     ) -> Self {
         Self {
@@ -46,6 +50,7 @@ impl ServerState {
                 registry: Registry::new(config.max_queued_runs),
                 semaphore: Arc::new(Semaphore::new(config.max_concurrent_runs)),
                 history,
+                log_hub,
                 default_base,
                 idempotency_retention: config.idempotency_retention,
                 probe_timeout: config.probe_timeout,
@@ -78,6 +83,11 @@ impl ServerState {
 
     pub fn history(&self) -> Arc<dyn RunHistory> {
         Arc::clone(&self.inner.history)
+    }
+
+    /// The per-run log buffer registry shared with the tracing [`LogHub`] layer.
+    pub fn log_hub(&self) -> &LogHub {
+        &self.inner.log_hub
     }
 
     pub fn default_base(&self) -> Option<&Value> {
@@ -120,8 +130,16 @@ mod tests {
     }
 
     fn state(auth: AuthMode) -> ServerState {
+        use crate::serve::logs::LogHub;
         let history = Arc::new(MemoryHistory::new(Duration::from_secs(60))) as Arc<dyn RunHistory>;
-        ServerState::new(&cfg(auth), None, CancellationToken::new(), history, None)
+        ServerState::new(
+            &cfg(auth),
+            None,
+            CancellationToken::new(),
+            history,
+            LogHub::new(),
+            None,
+        )
     }
 
     #[test]

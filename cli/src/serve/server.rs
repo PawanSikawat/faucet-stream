@@ -2,7 +2,7 @@
 
 use crate::error::{CliError, CliResult};
 use crate::serve::config::{HistoryBackendSpec, ServeConfig};
-use crate::serve::handlers::{health, runs};
+use crate::serve::handlers::{health, logs, runs};
 use crate::serve::history::RunHistory;
 use crate::serve::history::memory::MemoryHistory;
 use crate::serve::state::ServerState;
@@ -28,6 +28,7 @@ pub fn build_router(state: ServerState, config: &ServeConfig) -> Router {
         .route("/v1/runs", post(runs::submit_run).get(runs::list_runs))
         .route("/v1/runs/{id}", get(runs::get_run).delete(runs::delete_run))
         .route("/v1/runs/{id}/cancel", post(runs::cancel_run))
+        .route("/v1/runs/{id}/logs", get(logs::stream_logs))
         .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),
             auth::require_auth,
@@ -90,7 +91,7 @@ async fn load_default_base(config: &ServeConfig) -> CliResult<Option<Value>> {
 /// Boot the server: install observability, build state + router, bind, serve
 /// until SIGTERM/SIGINT, then drain in-flight runs up to the grace window.
 pub async fn serve(config: ServeConfig) -> CliResult<()> {
-    let prom = crate::serve::observability::install(&config.log_level);
+    let (prom, log_hub) = crate::serve::observability::install(&config.log_level);
 
     let history = build_history(&config).await?;
     history
@@ -100,7 +101,14 @@ pub async fn serve(config: ServeConfig) -> CliResult<()> {
     let default_base = load_default_base(&config).await?;
 
     let shutdown = CancellationToken::new();
-    let state = ServerState::new(&config, prom, shutdown.clone(), history, default_base);
+    let state = ServerState::new(
+        &config,
+        prom,
+        shutdown.clone(),
+        history,
+        log_hub,
+        default_base,
+    );
     let app = build_router(state.clone(), &config);
 
     let listener = tokio::net::TcpListener::bind(config.listen)
