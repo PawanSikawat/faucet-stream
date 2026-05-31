@@ -27,15 +27,15 @@ use tokio::sync::Semaphore;
 /// A single probe enriched with the role + connector it came from. This is the
 /// `--json` shape for each probe.
 #[derive(Debug, Serialize)]
-struct ProbeOut {
-    role: &'static str,
-    connector: String,
-    name: &'static str,
+pub struct ProbeOut {
+    pub role: &'static str,
+    pub connector: String,
+    pub name: &'static str,
     #[serde(flatten)]
-    status: ProbeStatus,
-    elapsed_ms: u64,
+    pub status: ProbeStatus,
+    pub elapsed_ms: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
-    hint: Option<String>,
+    pub hint: Option<String>,
 }
 
 impl ProbeOut {
@@ -53,14 +53,14 @@ impl ProbeOut {
 
 /// One expanded invocation and its probes (the `--json` per-invocation shape).
 #[derive(Debug, Serialize)]
-struct InvocationOut {
-    id: String,
-    probes: Vec<ProbeOut>,
+pub struct InvocationOut {
+    pub id: String,
+    pub probes: Vec<ProbeOut>,
     // Connector kinds for the human header; not part of the JSON contract.
     #[serde(skip)]
-    source_kind: String,
+    pub source_kind: String,
     #[serde(skip)]
-    sink_kind: String,
+    pub sink_kind: String,
 }
 
 /// Execute the `doctor` subcommand.
@@ -91,33 +91,7 @@ pub async fn run(args: DoctorArgs) -> CliResult<()> {
         .collect();
     let n_children = nodes.len() - roots.len();
 
-    let permits = cfg
-        .execution
-        .as_ref()
-        .and_then(|e| e.max_concurrent)
-        .filter(|n| *n > 0)
-        .unwrap_or(8);
-    let sem = Arc::new(Semaphore::new(permits));
-
-    let mut handles = Vec::with_capacity(roots.len());
-    for node in &roots {
-        let id = node.id.clone();
-        let source = node.source.clone();
-        let sink = node.sink.clone();
-        let state = node.state.clone();
-        let auth = auth.clone();
-        let ctx = ctx.clone();
-        let sem = sem.clone();
-        handles.push(tokio::spawn(async move {
-            let _permit = sem.acquire_owned().await.expect("semaphore not closed");
-            probe_invocation(id, source, sink, state, &auth, &ctx).await
-        }));
-    }
-
-    let mut invocations = Vec::with_capacity(handles.len());
-    for h in handles {
-        invocations.push(h.await.expect("doctor probe task panicked"));
-    }
+    let mut invocations = probe_roots(&nodes, &auth, &ctx).await;
 
     redact_invocations(&mut invocations);
     let (_passed, failed, _skipped) = tally(&invocations);
@@ -145,7 +119,7 @@ pub async fn run(args: DoctorArgs) -> CliResult<()> {
 }
 
 /// Build the three connectors for one invocation and run their probes.
-async fn probe_invocation(
+pub async fn probe_invocation(
     id: String,
     source: ConnectorSpec,
     sink: ConnectorSpec,
@@ -184,6 +158,44 @@ async fn probe_invocation(
     }
 }
 
+/// Probe every *root* invocation's source/sink/state concurrently (bounded).
+/// Child invocations are skipped — their configs need parent records. Reused by
+/// `faucet doctor` and serve's `doctor_first` preflight.
+pub async fn probe_roots(
+    nodes: &[ExpandedNode],
+    auth: &AuthCatalog,
+    ctx: &CheckContext,
+) -> Vec<InvocationOut> {
+    let sem = Arc::new(Semaphore::new(8));
+    let mut handles = Vec::new();
+    for node in nodes.iter().filter(|n| matches!(n.role, NodeRole::Root)) {
+        let id = node.id.clone();
+        let source = node.source.clone();
+        let sink = node.sink.clone();
+        let state = node.state.clone();
+        let auth = auth.clone();
+        let ctx = ctx.clone();
+        let sem = sem.clone();
+        handles.push(tokio::spawn(async move {
+            let _permit = sem.acquire_owned().await.expect("semaphore not closed");
+            probe_invocation(id, source, sink, state, &auth, &ctx).await
+        }));
+    }
+    let mut out = Vec::with_capacity(handles.len());
+    for h in handles {
+        out.push(h.await.expect("doctor probe task panicked"));
+    }
+    out
+}
+
+/// Total number of failed probes across all invocations.
+pub fn count_failures(invs: &[InvocationOut]) -> usize {
+    invs.iter()
+        .flat_map(|i| &i.probes)
+        .filter(|p| matches!(p.status, ProbeStatus::Fail { .. }))
+        .count()
+}
+
 /// Run one connector's `check()` future under the timeout, mapping the report
 /// (or an outer error / timeout) into role-tagged [`ProbeOut`]s.
 async fn collect_probes(
@@ -217,7 +229,7 @@ fn construct_fail(role: &'static str, kind: &str, e: impl std::fmt::Display) -> 
 }
 
 /// Scrub resolved secrets out of every probe `reason` / `hint`.
-fn redact_invocations(invs: &mut [InvocationOut]) {
+pub fn redact_invocations(invs: &mut [InvocationOut]) {
     for inv in invs.iter_mut() {
         for p in inv.probes.iter_mut() {
             match &mut p.status {
@@ -401,5 +413,17 @@ mod tests {
         assert_eq!(p.name, "construct");
         assert!(matches!(p.status, ProbeStatus::Fail { .. }));
         assert_eq!(p.connector, "postgres");
+    }
+
+    #[test]
+    fn count_failures_sums_across_invocations() {
+        let invs = vec![
+            inv(vec![
+                probe_out("source", "read", ProbeStatus::Pass),
+                probe_out("sink", "auth", ProbeStatus::Fail { reason: "x".into() }),
+            ]),
+            inv(vec![probe_out("sink", "auth", ProbeStatus::Fail { reason: "y".into() })]),
+        ];
+        assert_eq!(count_failures(&invs), 2);
     }
 }
