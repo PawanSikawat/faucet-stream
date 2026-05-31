@@ -1,0 +1,42 @@
+# Microsoft SQL Server -> JSONL, with incremental replication.
+#
+# Each run emits only rows whose `updated_at` is greater than the bookmark
+# persisted in the file state store, so re-runs continue where they left off.
+# The `@bookmark` token is bound as a parameter for server-side filtering; the
+# source also filters client-side as a correctness backstop.
+#
+# Run:
+#   faucet run cli/examples/mssql_to_jsonl.yaml
+#
+# Prereqs:
+#   - SQL Server reachable on localhost:1433 with a `sales` database and a
+#     `dbo.users (id, email, updated_at)` table.
+#   - URL credentials are percent-encoded (@ -> %40, : -> %3A, / -> %2F).
+
+version: 1
+name: mssql_to_jsonl
+pipeline:
+  source:
+    type: mssql
+    config:
+      connection_url: "mssql://sa:Str0ng%40Pass@localhost:1433/sales"
+      query: "SELECT id, email, updated_at FROM dbo.users WHERE updated_at > @bookmark ORDER BY updated_at"
+      batch_size: 1000
+      # Self-signed dev cert: trust it. Use `prefer`/`require` in production.
+      tls:
+        type: trust_server_certificate
+      replication:
+        type: incremental
+        column: updated_at
+        initial_value: "1970-01-01T00:00:00Z"
+
+  sink:
+    type: jsonl
+    config:
+      path: ./out/users.jsonl
+      append: true
+
+  state:
+    type: file
+    config:
+      path: ./.faucet-state

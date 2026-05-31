@@ -1,0 +1,41 @@
+# REST API -> Microsoft SQL Server (single JSON column).
+#
+# Pulls records from a paginated REST API and stores each one as a JSON string
+# in a single NVARCHAR(MAX) column. `create_table: true` creates the table
+# (id IDENTITY + payload NVARCHAR(MAX)) if it doesn't exist — schema-agnostic
+# landing with no DDL coupling.
+#
+# Run:
+#   faucet run cli/examples/rest_to_mssql.yaml
+#
+# Point `base_url` at any JSON HTTP API and adjust the records path.
+
+version: 1
+name: rest_to_mssql
+pipeline:
+  source:
+    type: rest
+    config:
+      base_url: "https://dummyjson.com"
+      path: "/products"
+      method: GET
+      records_path: "products"
+      pagination:
+        type: offset
+        limit_param: limit
+        offset_param: skip
+        limit: 30
+        total_path: total
+
+  sink:
+    type: mssql
+    config:
+      connection_url: "mssql://sa:Str0ng%40Pass@localhost:1433/raw"
+      table: dbo.products_raw
+      column_mapping:
+        type: json_column
+        column: payload
+      create_table: true
+      batch_size: 500
+      tls:
+        type: trust_server_certificate

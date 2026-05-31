@@ -1,0 +1,31 @@
+[package]
+name = "faucet-mssql-common"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Shared configuration, TLS, and connection-pool types for the faucet-stream MSSQL source and sink connectors"
+readme = "README.md"
+keywords = ["mssql", "sqlserver", "tiberius", "etl", "pipeline"]
+categories.workspace = true
+
+[dependencies]
+faucet-core.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+schemars.workspace = true
+tiberius.workspace = true
+bb8.workspace = true
+bb8-tiberius.workspace = true
+tokio.workspace = true
+url.workspace = true
+percent-encoding.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "time"] }
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

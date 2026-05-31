@@ -18,6 +18,7 @@
 //! | `source-postgres` | PostgreSQL query source |
 //! | `source-postgres-cdc` | PostgreSQL CDC source (logical replication) |
 //! | `source-mysql` | MySQL query source |
+//! | `source-mssql` | Microsoft SQL Server query source |
 //! | `source-sqlite` | SQLite query source |
 
 //! | `source-s3` | AWS S3 file source |
@@ -34,6 +35,7 @@
 //! | `sink-jsonl` | JSON Lines file sink |
 //! | `sink-snowflake` | Snowflake SQL REST API sink |
 //! | `sink-mysql` | MySQL sink |
+//! | `sink-mssql` | Microsoft SQL Server sink |
 //! | `sink-sqlite` | SQLite sink |
 
 //! | `sink-s3` | AWS S3 file sink |
@@ -102,6 +104,11 @@ pub mod source {
     #[cfg(feature = "source-mysql")]
     pub mod mysql {
         pub use faucet_source_mysql::*;
+    }
+
+    #[cfg(feature = "source-mssql")]
+    pub mod mssql {
+        pub use faucet_source_mssql::*;
     }
 
     #[cfg(feature = "source-sqlite")]
@@ -191,6 +198,11 @@ pub mod source {
     #[cfg(feature = "source-mysql")]
     pub mod mysql {
         pub use faucet_source_mysql::*;
+    }
+
+    #[cfg(feature = "source-mssql")]
+    pub mod mssql {
+        pub use faucet_source_mssql::*;
     }
 
     #[cfg(feature = "source-sqlite")]
@@ -283,6 +295,11 @@ pub mod sink {
     #[cfg(feature = "sink-mysql")]
     pub mod mysql {
         pub use faucet_sink_mysql::*;
+    }
+
+    #[cfg(feature = "sink-mssql")]
+    pub mod mssql {
+        pub use faucet_sink_mssql::*;
     }
 
     #[cfg(feature = "sink-sqlite")]

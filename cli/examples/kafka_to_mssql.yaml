@@ -1,0 +1,45 @@
+# Apache Kafka -> Microsoft SQL Server (auto-mapped columns).
+#
+# Drains a topic and lands each message as a row, mapping top-level JSON keys to
+# same-named columns. The sink batches into multi-row INSERTs, auto-splitting to
+# stay within MSSQL's 2100-parameter limit, and wraps each batch in a transaction.
+#
+# Run:
+#   faucet run cli/examples/kafka_to_mssql.yaml
+#
+# Prereqs:
+#   - A Kafka/Redpanda broker on localhost:9092 with an `events` topic.
+#   - SQL Server with a `dbo.events` table whose columns match the message keys.
+
+version: 1
+name: kafka_to_mssql
+pipeline:
+  source:
+    type: kafka
+    config:
+      brokers: "localhost:9092"
+      topics: ["events"]
+      group_id: "faucet-kafka-to-mssql"
+      value_format: {type: json}
+      auto_offset_reset: earliest
+      max_messages: 5000
+      idle_timeout: 10
+
+  sink:
+    type: mssql
+    config:
+      connection_url: "mssql://sa:Str0ng%40Pass@localhost:1433/analytics"
+      table: dbo.events
+      column_mapping:
+        type: auto_columns
+        on_unknown_field: warn
+      batch_size: 500
+      transaction_per_batch: true
+      isolate_row_failures: true
+      tls:
+        type: trust_server_certificate
+
+  state:
+    type: file
+    config:
+      path: ./.faucet-state

@@ -83,6 +83,11 @@ pub async fn build_source(
             let cfg = decode::<faucet_source_mysql::MysqlSourceConfig>("source", "mysql", config)?;
             Ok(Box::new(faucet_source_mysql::MysqlSource::new(cfg).await?))
         }
+        #[cfg(feature = "source-mssql")]
+        "mssql" => {
+            let cfg = decode::<faucet_source_mssql::MssqlSourceConfig>("source", "mssql", config)?;
+            Ok(Box::new(faucet_source_mssql::MssqlSource::new(cfg).await?))
+        }
         #[cfg(feature = "source-sqlite")]
         "sqlite" => {
             let cfg =
@@ -232,6 +237,11 @@ pub async fn build_sink(kind: &str, config: Value, auth: &AuthCatalog) -> CliRes
             let cfg = decode::<faucet_sink_mysql::MysqlSinkConfig>("sink", "mysql", config)?;
             Ok(Box::new(faucet_sink_mysql::MysqlSink::new(cfg).await?))
         }
+        #[cfg(feature = "sink-mssql")]
+        "mssql" => {
+            let cfg = decode::<faucet_sink_mssql::MssqlSinkConfig>("sink", "mssql", config)?;
+            Ok(Box::new(faucet_sink_mssql::MssqlSink::new(cfg).await?))
+        }
         #[cfg(feature = "sink-sqlite")]
         "sqlite" => {
             let cfg = decode::<faucet_sink_sqlite::SqliteSinkConfig>("sink", "sqlite", config)?;
@@ -320,6 +330,8 @@ pub fn source_schema(kind: &str) -> CliResult<Value> {
         "postgres-cdc" => Ok(schema::<faucet_source_postgres_cdc::PostgresCdcSourceConfig>()),
         #[cfg(feature = "source-mysql")]
         "mysql" => Ok(schema::<faucet_source_mysql::MysqlSourceConfig>()),
+        #[cfg(feature = "source-mssql")]
+        "mssql" => Ok(schema::<faucet_source_mssql::MssqlSourceConfig>()),
         #[cfg(feature = "source-sqlite")]
         "sqlite" => Ok(schema::<faucet_source_sqlite::SqliteSourceConfig>()),
         #[cfg(feature = "source-s3")]
@@ -375,6 +387,8 @@ pub fn sink_schema(kind: &str) -> CliResult<Value> {
         "snowflake" => Ok(schema::<faucet_sink_snowflake::SnowflakeSinkConfig>()),
         #[cfg(feature = "sink-mysql")]
         "mysql" => Ok(schema::<faucet_sink_mysql::MysqlSinkConfig>()),
+        #[cfg(feature = "sink-mssql")]
+        "mssql" => Ok(schema::<faucet_sink_mssql::MssqlSinkConfig>()),
         #[cfg(feature = "sink-sqlite")]
         "sqlite" => Ok(schema::<faucet_sink_sqlite::SqliteSinkConfig>()),
         #[cfg(feature = "sink-s3")]
@@ -422,6 +436,8 @@ pub fn source_descriptions() -> Vec<(&'static str, &'static str)> {
     ));
     #[cfg(feature = "source-mysql")]
     v.push(("mysql", "MySQL query source"));
+    #[cfg(feature = "source-mssql")]
+    v.push(("mssql", "Microsoft SQL Server query source"));
     #[cfg(feature = "source-sqlite")]
     v.push(("sqlite", "SQLite query source"));
     #[cfg(feature = "source-s3")]
@@ -477,6 +493,11 @@ pub fn sink_descriptions() -> Vec<(&'static str, &'static str)> {
     v.push(("snowflake", "Snowflake SQL REST API sink"));
     #[cfg(feature = "sink-mysql")]
     v.push(("mysql", "MySQL sink"));
+    #[cfg(feature = "sink-mssql")]
+    v.push((
+        "mssql",
+        "Microsoft SQL Server sink (auto-mapped columns or JSON column)",
+    ));
     #[cfg(feature = "sink-sqlite")]
     v.push(("sqlite", "SQLite sink"));
     #[cfg(feature = "sink-s3")]
