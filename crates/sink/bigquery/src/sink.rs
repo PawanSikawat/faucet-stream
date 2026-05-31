@@ -45,11 +45,26 @@ impl BigQuerySink {
     /// Returns `Err` only on transport-level or HTTP-level failures. Per-row
     /// `insertErrors` in the response body are surfaced to the caller as-is;
     /// it is the caller's responsibility to inspect them.
+    ///
+    /// `skip_invalid_rows` maps to BigQuery's `skipInvalidRows` flag. When
+    /// `false` (the all-or-nothing [`write_batch`](Self::write_batch) path) a
+    /// single invalid row makes BigQuery commit *nothing* and return per-row
+    /// errors. When `true` (the [`write_batch_partial`] DLQ path) BigQuery
+    /// commits every valid row and reports `insertErrors` only for the rejected
+    /// ones — which is what makes the per-row `Ok`/`Err` mapping in
+    /// `write_batch_partial` truthful (without it, the "good" siblings are
+    /// reported `Ok` but were never actually committed → silent data loss).
+    ///
+    /// [`write_batch_partial`]: faucet_core::Sink::write_batch_partial
     async fn insert_chunk_raw(
         &self,
         rows: &[Value],
+        skip_invalid_rows: bool,
     ) -> Result<TableDataInsertAllResponse, FaucetError> {
         let mut insert_request = TableDataInsertAllRequest::new();
+        if skip_invalid_rows {
+            insert_request.skip_invalid_rows();
+        }
         for row in rows {
             // When `insert_id_field` is configured, send that field's value as
             // the streaming `insertId` so BigQuery can de-duplicate retries
@@ -88,7 +103,11 @@ impl BigQuerySink {
             return Ok(0);
         }
 
-        let response = self.insert_chunk_raw(rows).await?;
+        // All-or-nothing path: `skipInvalidRows=false` so BigQuery commits the
+        // whole chunk or nothing. Any `insertErrors` below becomes an outer
+        // `Err`, so the pipeline aborts before the bookmark advances — no
+        // partial commit to resume past.
+        let response = self.insert_chunk_raw(rows, false).await?;
 
         // Check for per-row errors.
         if let Some(errors) = response.insert_errors
@@ -253,7 +272,13 @@ impl faucet_core::Sink for BigQuerySink {
         let mut outcomes: Vec<faucet_core::RowOutcome> = Vec::with_capacity(records.len());
 
         for chunk in chunks {
-            let response = self.insert_chunk_raw(chunk).await?;
+            // `skipInvalidRows=true`: BigQuery commits every valid row and
+            // returns `insertErrors` only for the rejected ones. This is what
+            // makes mapping the flagged indices to `Err` and the rest to
+            // `Ok(())` correct — the unflagged rows really were committed, so
+            // the DLQ router quarantines only the bad rows and the bookmark
+            // advances over genuinely-persisted data.
+            let response = self.insert_chunk_raw(chunk, true).await?;
 
             // Build a set of failed row indices → first error message.
             let failed: HashMap<usize, String> = response

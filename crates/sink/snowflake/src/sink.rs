@@ -240,23 +240,67 @@ impl SnowflakeSink {
     /// Build an INSERT statement plus the JSON payload to bind to its single
     /// `PARSE_JSON(?)` parameter.
     ///
-    /// The record array is passed as a bound `TEXT` parameter, never
-    /// interpolated into a SQL string literal: interpolation was a
-    /// SQL-injection vector and corrupted any value containing an apostrophe
-    /// (#78/#5). Returns `(sql, json_payload)`.
+    /// The record array travels as one bound `TEXT` parameter to
+    /// `PARSE_JSON(?)`, never interpolated into a SQL string literal:
+    /// interpolation was a SQL-injection vector and corrupted any value
+    /// containing an apostrophe (#78/#5). `FLATTEN` then yields one row per
+    /// array element, and each record field is projected into its matching
+    /// column.
+    ///
+    /// The projection is **per-column** — `value:"col"::string` for each key —
+    /// not `SELECT *`. `SELECT *` over `FLATTEN` returns FLATTEN's fixed
+    /// `SEQ, KEY, PATH, INDEX, VALUE, THIS` metadata columns, so the previous
+    /// statement inserted that metadata instead of the record's fields and was
+    /// non-functional for any normal table (audit #146 C2). The `::string` cast
+    /// strips the VARIANT's JSON quotes and lets Snowflake coerce the scalar
+    /// into the destination column's type on `INSERT` (text → number / boolean
+    /// / timestamp, etc.). The column set is taken from the first non-empty
+    /// record; a key missing from a later record projects to SQL `NULL`.
+    ///
+    /// Both the column identifiers and the JSON path keys are escaped via
+    /// [`quote_ident`] (double-quote doubling), so record keys cannot inject
+    /// SQL. Returns `(sql, json_payload)`.
+    ///
+    /// Note: a record key whose target column is semi-structured (`VARIANT` /
+    /// `OBJECT` / `ARRAY`) is stringified by the `::string` cast rather than
+    /// stored as structured JSON; this sink maps records to scalar columns.
     fn build_insert(&self, records: &[Value]) -> Result<(String, String), FaucetError> {
+        // The column set is the keys of the first non-empty record (all rows in
+        // one INSERT must share a column list). Every record must be an object.
+        let mut columns: Option<Vec<String>> = None;
         for record in records {
-            record.as_object().ok_or_else(|| {
+            let obj = record.as_object().ok_or_else(|| {
                 FaucetError::Sink("Snowflake sink requires JSON object records".into())
             })?;
+            if columns.is_none() && !obj.is_empty() {
+                columns = Some(obj.keys().cloned().collect());
+            }
         }
+        let columns = columns.ok_or_else(|| {
+            FaucetError::Sink("Snowflake sink: records have no fields to insert".into())
+        })?;
+
+        // `quote_ident` produces a `"`-escaped quoted identifier, which is also
+        // the correct (injection-safe) form for a FLATTEN path key: `value:"k"`.
+        let col_list = columns
+            .iter()
+            .map(|c| quote_ident(c))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let projection = columns
+            .iter()
+            .map(|c| format!("value:{}::string", quote_ident(c)))
+            .collect::<Vec<_>>()
+            .join(", ");
 
         let payload = Value::Array(records.to_vec()).to_string();
         let sql = format!(
-            "INSERT INTO {}.{}.{} (SELECT * FROM TABLE(FLATTEN(input => PARSE_JSON(?))))",
+            "INSERT INTO {}.{}.{} ({}) SELECT {} FROM TABLE(FLATTEN(input => PARSE_JSON(?)))",
             quote_ident(&self.config.database),
             quote_ident(&self.config.schema),
             quote_ident(&self.config.table),
+            col_list,
+            projection,
         );
         Ok((sql, payload))
     }
@@ -469,5 +513,76 @@ mod tests {
         let parsed: Value = serde_json::from_str(&payload).unwrap();
         assert_eq!(parsed[0]["name"], "O'Brien");
         assert_eq!(parsed[1]["note"], "'); DROP TABLE events;--");
+    }
+
+    #[test]
+    fn build_insert_maps_record_fields_to_columns_not_flatten_metadata() {
+        // C2 regression (audit #146): the INSERT must project each record field
+        // into its named column, NOT `SELECT *` over FLATTEN — `SELECT *` over
+        // FLATTEN returns the fixed SEQ/KEY/PATH/INDEX/VALUE/THIS metadata
+        // columns, so the old statement inserted metadata instead of the
+        // record's own fields.
+        let config = SnowflakeSinkConfig::new(
+            "acct",
+            "wh",
+            "db",
+            "schema",
+            "events",
+            SnowflakeAuth::OAuth { token: "t".into() },
+        );
+        let sink = SnowflakeSink::new(config).unwrap();
+        let records = vec![serde_json::json!({"user_id": 1, "event": "click"})];
+        let (sql, _payload) = sink.build_insert(&records).unwrap();
+
+        // Named column list + per-column projection from the FLATTEN `value`.
+        assert!(sql.contains("\"user_id\""), "sql: {sql}");
+        assert!(sql.contains("\"event\""), "sql: {sql}");
+        assert!(sql.contains("value:\"user_id\"::string"), "sql: {sql}");
+        assert!(sql.contains("value:\"event\"::string"), "sql: {sql}");
+        // Crucially, NOT a metadata-projecting `SELECT *`.
+        assert!(
+            !sql.contains("SELECT *"),
+            "must not SELECT * over FLATTEN: {sql}"
+        );
+        assert!(
+            sql.contains("FLATTEN(input => PARSE_JSON(?))"),
+            "sql: {sql}"
+        );
+    }
+
+    #[test]
+    fn build_insert_escapes_record_keys_in_columns_and_paths() {
+        // Record keys are user-controlled; a key containing a double quote must
+        // be `"`-doubled in both the column list and the FLATTEN path so it
+        // cannot break out of the identifier / path.
+        let config = SnowflakeSinkConfig::new(
+            "acct",
+            "wh",
+            "db",
+            "schema",
+            "events",
+            SnowflakeAuth::OAuth { token: "t".into() },
+        );
+        let sink = SnowflakeSink::new(config).unwrap();
+        let records = vec![serde_json::json!({"a\"b": 1})];
+        let (sql, _payload) = sink.build_insert(&records).unwrap();
+        // Column identifier and path key are both escaped as "a""b".
+        assert!(sql.contains("\"a\"\"b\""), "sql: {sql}");
+        assert!(sql.contains("value:\"a\"\"b\"::string"), "sql: {sql}");
+    }
+
+    #[test]
+    fn build_insert_rejects_all_empty_records() {
+        let config = SnowflakeSinkConfig::new(
+            "acct",
+            "wh",
+            "db",
+            "schema",
+            "events",
+            SnowflakeAuth::OAuth { token: "t".into() },
+        );
+        let sink = SnowflakeSink::new(config).unwrap();
+        let records = vec![serde_json::json!({})];
+        assert!(sink.build_insert(&records).is_err());
     }
 }

@@ -194,3 +194,101 @@ async fn chunked_outcomes_concatenate_in_order() {
     assert!(outcomes[2].is_err(), "record 2 should be err");
     assert!(outcomes[3].is_ok(), "record 3 should be ok");
 }
+
+/// Capture the JSON body of every `insertAll` request the client sent,
+/// transparently gunzipping it (gcp-bigquery-client's default `gzip` feature
+/// gzips the insertAll body with `Content-Encoding: gzip`).
+async fn captured_insert_bodies(server: &MockServer) -> Vec<serde_json::Value> {
+    use flate2::read::GzDecoder;
+    use std::io::Read;
+
+    server
+        .received_requests()
+        .await
+        .expect("request recording is enabled")
+        .into_iter()
+        .filter(|r| r.url.path().ends_with("/insertAll"))
+        .map(|r| {
+            let gzipped = r
+                .headers
+                .get("content-encoding")
+                .and_then(|v| v.to_str().ok())
+                .map(|v| v.contains("gzip"))
+                .unwrap_or(false);
+            let bytes = if gzipped {
+                let mut decoder = GzDecoder::new(&r.body[..]);
+                let mut out = Vec::new();
+                decoder
+                    .read_to_end(&mut out)
+                    .expect("gunzip insertAll body");
+                out
+            } else {
+                r.body.clone()
+            };
+            serde_json::from_slice(&bytes).expect("insertAll body is JSON")
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn write_batch_partial_sends_skip_invalid_rows_true() {
+    // C3 regression (audit #146): the DLQ/partial path MUST set
+    // skipInvalidRows=true. Otherwise, under the default skipInvalidRows=false,
+    // BigQuery commits *nothing* for a chunk that contains a bad row while
+    // `write_batch_partial` maps the unflagged siblings to `Ok(())` — the
+    // pipeline then advances the bookmark over rows that were never persisted
+    // (silent data loss).
+    let server = MockServer::start().await;
+    mount_token_endpoint(&server).await;
+    Mock::given(method("POST"))
+        .and(path(insert_path()))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({})))
+        .mount(&server)
+        .await;
+
+    let (sink, _sa_file) = build_sink(&server, 0).await;
+    let records = vec![json!({"a": 1}), json!({"a": 2})];
+    let outcomes = sink
+        .write_batch_partial(&records)
+        .await
+        .expect("partial write");
+    assert_eq!(outcomes.len(), 2);
+    assert!(outcomes.iter().all(|o| o.is_ok()));
+
+    let bodies = captured_insert_bodies(&server).await;
+    assert_eq!(bodies.len(), 1, "expected one insertAll call");
+    assert_eq!(
+        bodies[0]["skipInvalidRows"],
+        json!(true),
+        "the DLQ/partial path must send skipInvalidRows=true (C3)"
+    );
+}
+
+#[tokio::test]
+async fn write_batch_keeps_all_or_nothing_skip_invalid_rows_false() {
+    // The non-DLQ `write_batch` path stays all-or-nothing: skipInvalidRows=false
+    // so a single bad row fails the whole request (no partial commit to resume
+    // past, no duplicate-on-retry window).
+    let server = MockServer::start().await;
+    mount_token_endpoint(&server).await;
+    Mock::given(method("POST"))
+        .and(path(insert_path()))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({})))
+        .mount(&server)
+        .await;
+
+    let (sink, _sa_file) = build_sink(&server, 0).await;
+    let written = sink
+        .write_batch(&[json!({"a": 1})])
+        .await
+        .expect("write_batch");
+    assert_eq!(written, 1);
+
+    let bodies = captured_insert_bodies(&server).await;
+    assert_eq!(bodies.len(), 1, "expected one insertAll call");
+    assert_eq!(
+        bodies[0]["skipInvalidRows"],
+        json!(false),
+        "the non-DLQ write_batch path must stay all-or-nothing (skipInvalidRows=false)"
+    );
+}
