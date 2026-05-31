@@ -50,13 +50,21 @@ impl BoundParam {
 /// `PARAM_LIMIT - 2` — sending a full 2100 bind values overflows by two.
 const SP_EXECUTESQL_RESERVED: usize = 2;
 
-/// Maximum rows per `INSERT` so the request stays within MSSQL's 2100-parameter
-/// limit, accounting for the `sp_executesql` overhead. Always at least 1.
+/// MSSQL's table value constructor (the `VALUES (…), (…), …` clause) allows at
+/// most 1000 row expressions per statement — a separate limit from the 2100
+/// parameters. For narrow tables (1–2 columns) this binds before the parameter
+/// budget does.
+const MAX_VALUES_ROWS: usize = 1000;
+
+/// Maximum rows per `INSERT` so the request stays within **both** of MSSQL's
+/// limits: the 2100-parameter cap (minus the `sp_executesql` overhead) and the
+/// 1000-row-values cap on a `VALUES` clause. Always at least 1.
 pub(crate) fn max_rows_per_insert(num_cols: usize) -> usize {
     if num_cols == 0 {
         return 1;
     }
-    (PARAM_LIMIT.saturating_sub(SP_EXECUTESQL_RESERVED) / num_cols).max(1)
+    let by_params = (PARAM_LIMIT.saturating_sub(SP_EXECUTESQL_RESERVED) / num_cols).max(1);
+    by_params.min(MAX_VALUES_ROWS)
 }
 
 /// Build a multi-row `INSERT` with `@P`-numbered placeholders:
@@ -159,19 +167,25 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn param_split_respects_2100_limit() {
-        // Usable budget is PARAM_LIMIT - 2 (sp_executesql overhead).
-        // 1 col -> 2098 rows; 3 cols -> 699; wide tables -> at least 1.
-        assert_eq!(max_rows_per_insert(1), 2098);
-        assert_eq!(max_rows_per_insert(3), 699);
+    fn param_split_respects_both_mssql_limits() {
+        // Narrow tables are capped by the 1000-row-values limit; wider tables by
+        // the parameter budget (PARAM_LIMIT - 2 sp_executesql params).
+        assert_eq!(max_rows_per_insert(1), 1000); // 2098 params allowed, but row cap is 1000
+        assert_eq!(max_rows_per_insert(2), 1000); // 1049 params allowed, row cap 1000
+        assert_eq!(max_rows_per_insert(3), 699); // 2098/3 = 699 < 1000
         assert_eq!(max_rows_per_insert(0), 1);
         assert_eq!(max_rows_per_insert(5000), 1);
-        // For any column count, rows*cols PLUS the 2 sp_executesql params must
-        // stay within the hard 2100 limit (this is what the server enforces).
+        // For any column count, a single INSERT must satisfy BOTH limits:
+        // (rows*cols + 2 sp params) <= 2100, and rows <= 1000.
         for cols in 1..=64 {
+            let rows = max_rows_per_insert(cols);
             assert!(
-                max_rows_per_insert(cols) * cols + SP_EXECUTESQL_RESERVED <= PARAM_LIMIT,
-                "cols={cols} exceeds the 2100 limit"
+                rows <= MAX_VALUES_ROWS,
+                "cols={cols} exceeds 1000 row values"
+            );
+            assert!(
+                rows * cols + SP_EXECUTESQL_RESERVED <= PARAM_LIMIT,
+                "cols={cols} exceeds the 2100 parameter limit"
             );
         }
     }

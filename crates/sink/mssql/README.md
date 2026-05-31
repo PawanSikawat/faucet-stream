@@ -52,13 +52,15 @@ full connection / TLS reference.
 `auto_columns` + `create_table` is rejected — schema inference for MSSQL types is
 unsafe, so create the table yourself first.
 
-## Batching, transactions, and the 2100-parameter limit
+## Batching, transactions, and MSSQL's statement limits
 
-MSSQL caps a request at **2100 parameters**. A multi-row `INSERT` binds
-`rows × columns` parameters, so the sink auto-splits a batch into multiple
-`INSERT` statements (all within one transaction when `transaction_per_batch`) so
-the limit is never exceeded. `MERGE`/`UPSERT` and bulk-copy (`BCP`) are out of
-scope for v1 — this is an append-only sink.
+MSSQL enforces two caps on a multi-row `INSERT`: at most **2100 parameters** per
+request (and `tiberius` spends 2 of them on its `sp_executesql` wrapper, so the
+usable budget is 2098), and at most **1000 row expressions** in a `VALUES`
+clause. The sink auto-splits a batch into multiple `INSERT` statements that stay
+within *both* limits — `min(2098 / columns, 1000)` rows each — all within one
+transaction when `transaction_per_batch`. `MERGE`/`UPSERT` and bulk-copy (`BCP`)
+are out of scope for v1 — this is an append-only sink.
 
 ## Partial failures (DLQ)
 
