@@ -11,6 +11,7 @@ pub mod history;
 pub mod idempotency;
 pub mod metrics;
 pub mod observability;
+pub mod registry;
 pub mod server;
 pub mod state;
 
