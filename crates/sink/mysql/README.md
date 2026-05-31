@@ -90,7 +90,7 @@ quoting, and column-mapping behaviour are unchanged.
 | Variant | Description |
 |---------|-------------|
 | `Json { column }` | Insert each record as a serialized JSON string in a single column. The column name defaults to `"data"` but can be overridden. Uses a multi-row `INSERT INTO t (col) VALUES (?), (?), ...` for efficiency. |
-| `AutoMap` | Map top-level JSON keys directly to table columns. Column names are discovered from `INFORMATION_SCHEMA.COLUMNS`. Values are bound as **native MySQL types** (strings as text, JSON numbers as integer/double, booleans as `TINYINT` 0/1, arrays/objects as JSON text), and a key present in the first record but missing from a later one is bound as SQL `NULL`. Only keys that match existing columns are inserted; extra keys are silently ignored. Records with no matching keys are skipped with a warning. |
+| `AutoMap` | Map top-level JSON keys directly to table columns. Column names are discovered from `INFORMATION_SCHEMA.COLUMNS`. Values are bound as **native MySQL types** (strings as text, JSON numbers as integer/double, booleans as `TINYINT` 0/1, arrays/objects as JSON text). The INSERT column set is the **union** of record keys across the batch, so a field present only in a later record is still written; a row missing a column binds SQL `NULL`. Only keys that match existing columns are inserted; extra keys are silently ignored. Records with no matching keys are skipped with a warning. |
 
 ### Builder Methods
 
@@ -266,7 +266,7 @@ let sink = MysqlSink::new(config).await?;
 - A connection pool is created in `MysqlSink::new()` using `sqlx::MySqlPool` with the configured `max_connections`.
 - `write_batch()` slices the input into `batch_size`-row chunks (or forwards the whole slice when `batch_size = 0`) and inserts each chunk using a single multi-row INSERT statement.
 - In JSON mode, each record is serialized to a JSON string and inserted as `INSERT INTO t (col) VALUES (?), (?), ...`.
-- In AutoMap mode, column names are queried from `INFORMATION_SCHEMA.COLUMNS` for the current database. A multi-row INSERT is built dynamically with `?` placeholders. Column values are serialized as JSON strings. Missing keys are bound as `"null"`.
+- In AutoMap mode, column names are queried from `INFORMATION_SCHEMA.COLUMNS` for the current database. A multi-row INSERT is built dynamically with `?` placeholders. Column values are bound as **native MySQL types** (#78/#4). The column set is the **union** of record keys across the batch, so a field present only in a later record is still written; a row missing a column binds SQL `NULL`. The INSERT is sub-chunked so `rows × columns` never exceeds MySQL's 65,535-placeholder limit.
 - All identifiers (table names, column names) are quoted with backticks using MySQL-safe escaping (embedded backticks are doubled).
 
 ## License

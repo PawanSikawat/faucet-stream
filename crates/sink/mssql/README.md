@@ -40,7 +40,8 @@ full connection / TLS reference.
 ## Write modes
 
 - **`auto_columns`** — top-level JSON keys map to same-named table columns. The
-  column set is fixed from the first record (missing keys → SQL `NULL`).
+  column set is the **union** of keys across the batch (a field present only in
+  a later record is still written; rows missing a column → SQL `NULL`).
   `IDENTITY` columns are skipped automatically (the server generates them) — do
   **not** put identity values in your records unless you've set
   `SET IDENTITY_INSERT <table> ON` yourself. Keys with no matching column are
