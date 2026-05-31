@@ -92,15 +92,15 @@ impl Registry {
         self.queued() >= self.max_queued
     }
 
-    /// Resolve once no run is in flight. Arms the notification *before*
-    /// re-checking the counter to avoid a missed wake-up.
+    /// Resolve once no run is queued or in flight. Arms the notification *before*
+    /// re-checking so a transition can't be missed.
     pub async fn wait_drained(&self) {
         loop {
-            if self.in_flight() == 0 {
+            if self.queued() == 0 && self.in_flight() == 0 {
                 return;
             }
             let notified = self.drained.notified();
-            if self.in_flight() == 0 {
+            if self.queued() == 0 && self.in_flight() == 0 {
                 return;
             }
             notified.await;
@@ -143,6 +143,15 @@ mod tests {
         assert!(r.cancel("run1"));
         assert!(token.is_cancelled());
         assert!(!r.cancel("missing"));
+    }
+
+    #[test]
+    fn is_not_idle_while_queued() {
+        let r = Registry::new(4);
+        r.try_reserve();
+        // queued=1, in_flight=0 — must NOT be considered drained.
+        assert_eq!(r.queued(), 1);
+        assert_eq!(r.in_flight(), 0);
     }
 
     #[tokio::test]
