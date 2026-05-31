@@ -102,7 +102,11 @@ impl FaucetError {
                     true
                 }
             }
-            FaucetError::HttpStatus { status, .. } => *status >= 500,
+            // 5xx are retriable; 429 (Too Many Requests) is too — sources that
+            // surface a rate-limit as a plain HttpStatus rather than the
+            // dedicated RateLimited variant (XML, GraphQL) would otherwise abort
+            // on the first 429 (audit #146 H3).
+            FaucetError::HttpStatus { status, .. } => *status >= 500 || *status == 429,
             FaucetError::RateLimited(_) => true,
             _ => false,
         }
@@ -145,6 +149,18 @@ mod tests {
             body: "".into(),
         };
         assert!(!err.is_retriable());
+    }
+
+    #[test]
+    fn http_status_429_is_retriable() {
+        // H3 (audit #146): a 429 surfaced as a plain HttpStatus (XML/GraphQL
+        // sources) must be retriable, not aborted on the first hit.
+        let err = FaucetError::HttpStatus {
+            status: 429,
+            url: "https://example.com".into(),
+            body: "Too Many Requests".into(),
+        };
+        assert!(err.is_retriable());
     }
 
     #[test]

@@ -27,9 +27,24 @@ mod static_provider;
 mod token_endpoint;
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use faucet_core::{FaucetError, SharedAuthProvider};
 use serde_json::Value;
+
+/// Build the HTTP client the auth providers use, with a bounded request timeout.
+///
+/// Providers hold a single-flight mutex across the token-fetch network call, so
+/// a hung or unreachable IdP with no timeout would wedge that mutex — and thus
+/// every connector sharing the provider — indefinitely. A bounded timeout lets
+/// the fetch fail and release the lock so callers can retry (audit #146 H11).
+pub(crate) fn auth_http_client() -> reqwest::Client {
+    const AUTH_HTTP_TIMEOUT: Duration = Duration::from_secs(30);
+    reqwest::Client::builder()
+        .timeout(AUTH_HTTP_TIMEOUT)
+        .build()
+        .unwrap_or_else(|_| reqwest::Client::new())
+}
 
 pub use oauth2::{OAuth2ClientCredentialsProvider, OAuth2RefreshProvider};
 pub use static_provider::StaticProvider;
