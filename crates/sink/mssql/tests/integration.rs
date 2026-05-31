@@ -72,9 +72,9 @@ async fn auto_columns_bulk_write_splits_param_limit() {
     let cfg = conn_cfg(port);
     let pool = build_pool(&cfg, 4).await.expect("pool");
 
-    exec(&pool, "CREATE TABLE dbo.bulk (id INT, name NVARCHAR(50))").await;
+    exec(&pool, "CREATE TABLE dbo.bulk_rows (id INT, name NVARCHAR(50))").await;
 
-    let mut scfg = sink_cfg(&cfg, "dbo.bulk");
+    let mut scfg = sink_cfg(&cfg, "dbo.bulk_rows");
     scfg.column_mapping = MssqlColumnMapping::AutoColumns {
         on_unknown_field: faucet_sink_mssql::OnUnknownField::Warn,
     };
@@ -88,7 +88,7 @@ async fn auto_columns_bulk_write_splits_param_limit() {
         .collect();
     let written = sink.write_batch(&records).await.expect("write");
     assert_eq!(written, 5000);
-    assert_eq!(count(&pool, "dbo.bulk").await, 5000);
+    assert_eq!(count(&pool, "dbo.bulk_rows").await, 5000);
 }
 
 #[tokio::test(flavor = "multi_thread")]
