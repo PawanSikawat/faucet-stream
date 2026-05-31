@@ -110,7 +110,8 @@ impl IntoResponse for ServeError {
         if let ServeError::QueueFull { retry_after_secs } = &self
             && let Ok(v) = axum::http::HeaderValue::from_str(&retry_after_secs.to_string())
         {
-            resp.headers_mut().insert(axum::http::header::RETRY_AFTER, v);
+            resp.headers_mut()
+                .insert(axum::http::header::RETRY_AFTER, v);
         }
         resp
     }
@@ -163,12 +164,22 @@ mod tests {
     #[test]
     fn new_variants_map_to_status_codes() {
         assert_eq!(
-            ServeError::Unprocessable { message: "x".into(), details: None }.status(),
+            ServeError::Unprocessable {
+                message: "x".into(),
+                details: None
+            }
+            .status(),
             StatusCode::UNPROCESSABLE_ENTITY
         );
-        assert_eq!(ServeError::Conflict("x".into()).status(), StatusCode::CONFLICT);
         assert_eq!(
-            ServeError::QueueFull { retry_after_secs: 5 }.status(),
+            ServeError::Conflict("x".into()).status(),
+            StatusCode::CONFLICT
+        );
+        assert_eq!(
+            ServeError::QueueFull {
+                retry_after_secs: 5
+            }
+            .status(),
             StatusCode::TOO_MANY_REQUESTS
         );
     }
@@ -195,7 +206,10 @@ mod tests {
 
     #[tokio::test]
     async fn queue_full_sets_retry_after_header() {
-        let resp = ServeError::QueueFull { retry_after_secs: 7 }.into_response();
+        let resp = ServeError::QueueFull {
+            retry_after_secs: 7,
+        }
+        .into_response();
         assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
         assert_eq!(
             resp.headers().get(axum::http::header::RETRY_AFTER).unwrap(),

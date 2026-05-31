@@ -122,14 +122,18 @@ pub async fn serve(config: ServeConfig) -> CliResult<()> {
         .map_err(|e| CliError::Serve(format!("server error: {e}")))?;
 
     // Now drain run tasks: wait up to the grace window, then cancel the rest.
-    let drained = tokio::time::timeout(config.shutdown_grace, state.registry().wait_drained()).await;
+    let drained =
+        tokio::time::timeout(config.shutdown_grace, state.registry().wait_drained()).await;
     if drained.is_err() {
         let remaining = state.registry().in_flight();
         tracing::warn!(remaining, "grace window expired; cancelling in-flight runs");
         shutdown.cancel();
         // Give cancelled tasks a brief moment to write their terminal status.
-        let _ = tokio::time::timeout(std::time::Duration::from_secs(5), state.registry().wait_drained())
-            .await;
+        let _ = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            state.registry().wait_drained(),
+        )
+        .await;
     }
     tracing::info!("faucet serve stopped");
     Ok(())

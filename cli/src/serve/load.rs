@@ -100,7 +100,9 @@ mod tests {
     #[tokio::test]
     async fn submitted_overrides_default() {
         let body = r#"{ "pipeline": { "source": { "config": { "path": "OVERRIDE.csv" } } } }"#;
-        let loaded = load_submission(body, ConfigFormat::Json, Some(&base())).await.unwrap();
+        let loaded = load_submission(body, ConfigFormat::Json, Some(&base()))
+            .await
+            .unwrap();
         // The override wins; the default sink survives the merge.
         let node = &loaded.nodes[0];
         assert_eq!(node.source.config["path"], "OVERRIDE.csv");
@@ -112,8 +114,13 @@ mod tests {
         // version defaults to 1 via serde, so this exercises the expand/validation
         // failure path (pipeline with no source/sink). Accept either layer's error.
         let body = r#"{ "pipeline": {} }"#;
-        let err = load_submission(body, ConfigFormat::Json, None).await.unwrap_err();
-        assert!(matches!(err, ServeError::Unprocessable { .. } | ServeError::BadConfig(_)));
+        let err = load_submission(body, ConfigFormat::Json, None)
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            ServeError::Unprocessable { .. } | ServeError::BadConfig(_)
+        ));
     }
 
     #[cfg(feature = "schedule")]
@@ -128,7 +135,9 @@ schedule:
   cron: "0 * * * *"
   timezone: UTC
 "#;
-        let err = load_submission(body, ConfigFormat::Yaml, None).await.unwrap_err();
+        let err = load_submission(body, ConfigFormat::Yaml, None)
+            .await
+            .unwrap_err();
         match err {
             ServeError::BadConfig(m) => assert!(m.contains("schedule:")),
             other => panic!("expected BadConfig, got {other:?}"),
@@ -137,7 +146,9 @@ schedule:
 
     #[tokio::test]
     async fn invalid_yaml_is_bad_config() {
-        let err = load_submission("{[bad", ConfigFormat::Yaml, None).await.unwrap_err();
+        let err = load_submission("{[bad", ConfigFormat::Yaml, None)
+            .await
+            .unwrap_err();
         assert!(matches!(err, ServeError::BadConfig(_)));
     }
 }

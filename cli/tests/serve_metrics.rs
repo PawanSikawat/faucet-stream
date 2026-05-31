@@ -109,15 +109,28 @@ async fn submit_poll_get_completes_and_records_metrics() {
         }
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
-    assert_eq!(status, "completed", "run did not complete within poll window");
+    assert_eq!(
+        status, "completed",
+        "run did not complete within poll window"
+    );
     assert!(output.exists(), "sink output file was not created");
 
     // Assert /metrics contains the expected metric names.
     let metrics_resp = client.get(format!("{base}/metrics")).send().await.unwrap();
-    assert_eq!(metrics_resp.status(), 200, "/metrics should render (recorder installed)");
+    assert_eq!(
+        metrics_resp.status(),
+        200,
+        "/metrics should render (recorder installed)"
+    );
     let metrics = metrics_resp.text().await.unwrap();
-    assert!(metrics.contains("faucet_serve_runs_total"), "metrics missing runs_total:\n{metrics}");
-    assert!(metrics.contains("faucet_serve_requests_total"), "metrics missing requests_total");
+    assert!(
+        metrics.contains("faucet_serve_runs_total"),
+        "metrics missing runs_total:\n{metrics}"
+    );
+    assert!(
+        metrics.contains("faucet_serve_requests_total"),
+        "metrics missing requests_total"
+    );
 
     // Verify GET /v1/runs lists the completed run.
     let list: serde_json::Value = client

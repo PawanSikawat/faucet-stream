@@ -422,7 +422,11 @@ mod tests {
                 probe_out("source", "read", ProbeStatus::Pass),
                 probe_out("sink", "auth", ProbeStatus::Fail { reason: "x".into() }),
             ]),
-            inv(vec![probe_out("sink", "auth", ProbeStatus::Fail { reason: "y".into() })]),
+            inv(vec![probe_out(
+                "sink",
+                "auth",
+                ProbeStatus::Fail { reason: "y".into() },
+            )]),
         ];
         assert_eq!(count_failures(&invs), 2);
     }

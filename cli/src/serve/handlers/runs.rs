@@ -47,8 +47,13 @@ pub async fn get_run(
         .await
         .map_err(|e| ServeError::Internal(e.to_string()))?
         .ok_or(ServeError::NotFound)?;
-    if rec.status == RunStatus::Running && let Some(started) = rec.started_at {
-        rec.elapsed_secs = (Utc::now() - started).to_std().ok().map(|d| d.as_secs_f64());
+    if rec.status == RunStatus::Running
+        && let Some(started) = rec.started_at
+    {
+        rec.elapsed_secs = (Utc::now() - started)
+            .to_std()
+            .ok()
+            .map(|d| d.as_secs_f64());
     }
     redact_record(&mut rec);
     Ok(Json(rec))
@@ -185,7 +190,9 @@ mod tests {
             serde_json::from_value(serde_json::json!("2026-01-01T00:00:00Z")).unwrap();
         assert_eq!(
             zulu.0,
-            chrono::DateTime::parse_from_rfc3339("2026-01-01T00:00:00Z").unwrap().to_utc()
+            chrono::DateTime::parse_from_rfc3339("2026-01-01T00:00:00Z")
+                .unwrap()
+                .to_utc()
         );
     }
 

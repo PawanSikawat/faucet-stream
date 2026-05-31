@@ -76,6 +76,9 @@ mod tests {
 
     #[test]
     fn array_order_is_significant() {
-        assert_ne!(fingerprint(&json!([1, 2]), None), fingerprint(&json!([2, 1]), None));
+        assert_ne!(
+            fingerprint(&json!([1, 2]), None),
+            fingerprint(&json!([2, 1]), None)
+        );
     }
 }

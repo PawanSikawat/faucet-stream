@@ -94,7 +94,12 @@ impl RunHistory for MemoryHistory {
             .iter()
             .map(|r| r.clone())
             .filter(|r| filter.status.is_none_or(|s| r.status == s))
-            .filter(|r| filter.name.as_deref().is_none_or(|n| r.name.as_deref() == Some(n)))
+            .filter(|r| {
+                filter
+                    .name
+                    .as_deref()
+                    .is_none_or(|n| r.name.as_deref() == Some(n))
+            })
             .filter(|r| filter.since.is_none_or(|t| r.submitted_at >= t))
             .filter(|r| filter.until.is_none_or(|t| r.submitted_at <= t))
             .collect();
@@ -186,14 +191,20 @@ mod tests {
     async fn idempotency_fresh_replay_conflict() {
         let h = MemoryHistory::new(Duration::from_secs(60));
         let w = Duration::from_secs(60);
-        assert_eq!(h.claim_idempotency("k", "fp1", "run1", w).await.unwrap(), Claim::Fresh);
+        assert_eq!(
+            h.claim_idempotency("k", "fp1", "run1", w).await.unwrap(),
+            Claim::Fresh
+        );
         // Same key + same fingerprint → replay the first run id.
         assert_eq!(
             h.claim_idempotency("k", "fp1", "run2", w).await.unwrap(),
             Claim::Replay("run1".into())
         );
         // Same key + different fingerprint → conflict.
-        assert_eq!(h.claim_idempotency("k", "fp2", "run3", w).await.unwrap(), Claim::Conflict);
+        assert_eq!(
+            h.claim_idempotency("k", "fp2", "run3", w).await.unwrap(),
+            Claim::Conflict
+        );
     }
 
     #[tokio::test]
@@ -201,17 +212,27 @@ mod tests {
         let h = MemoryHistory::new(Duration::from_secs(60));
         // Zero window → any prior claim is immediately expired.
         let w = Duration::ZERO;
-        assert_eq!(h.claim_idempotency("k", "fp1", "run1", w).await.unwrap(), Claim::Fresh);
-        assert_eq!(h.claim_idempotency("k", "fp2", "run2", w).await.unwrap(), Claim::Fresh);
+        assert_eq!(
+            h.claim_idempotency("k", "fp1", "run1", w).await.unwrap(),
+            Claim::Fresh
+        );
+        assert_eq!(
+            h.claim_idempotency("k", "fp2", "run2", w).await.unwrap(),
+            Claim::Fresh
+        );
     }
 
     #[tokio::test]
     async fn delete_respects_terminal_state() {
         let h = MemoryHistory::new(Duration::from_secs(60));
-        h.upsert(&rec("run", RunStatus::Running, Utc::now())).await.unwrap();
+        h.upsert(&rec("run", RunStatus::Running, Utc::now()))
+            .await
+            .unwrap();
         assert_eq!(h.delete("run").await.unwrap(), DeleteOutcome::StillRunning);
         assert_eq!(h.delete("nope").await.unwrap(), DeleteOutcome::NotFound);
-        h.upsert(&rec("run", RunStatus::Completed, Utc::now())).await.unwrap();
+        h.upsert(&rec("run", RunStatus::Completed, Utc::now()))
+            .await
+            .unwrap();
         assert_eq!(h.delete("run").await.unwrap(), DeleteOutcome::Deleted);
         assert!(h.get("run").await.unwrap().is_none());
     }
@@ -221,23 +242,47 @@ mod tests {
         let h = MemoryHistory::new(Duration::from_secs(60));
         let t0 = Utc::now();
         for (i, id) in ["a", "b", "c"].iter().enumerate() {
-            h.upsert(&rec(id, RunStatus::Completed, t0 + chrono::Duration::seconds(i as i64)))
-                .await
-                .unwrap();
+            h.upsert(&rec(
+                id,
+                RunStatus::Completed,
+                t0 + chrono::Duration::seconds(i as i64),
+            ))
+            .await
+            .unwrap();
         }
         // Newest first → c, b, a. Page size 2.
         let page = h
-            .list(&ListFilter { limit: 2, ..Default::default() })
+            .list(&ListFilter {
+                limit: 2,
+                ..Default::default()
+            })
             .await
             .unwrap();
-        assert_eq!(page.runs.iter().map(|r| r.run_id.clone()).collect::<Vec<_>>(), vec!["c", "b"]);
+        assert_eq!(
+            page.runs
+                .iter()
+                .map(|r| r.run_id.clone())
+                .collect::<Vec<_>>(),
+            vec!["c", "b"]
+        );
         assert_eq!(page.next_cursor.as_deref(), Some("b"));
         // Next page from the cursor → a.
         let page2 = h
-            .list(&ListFilter { limit: 2, cursor: Some("b".into()), ..Default::default() })
+            .list(&ListFilter {
+                limit: 2,
+                cursor: Some("b".into()),
+                ..Default::default()
+            })
             .await
             .unwrap();
-        assert_eq!(page2.runs.iter().map(|r| r.run_id.clone()).collect::<Vec<_>>(), vec!["a"]);
+        assert_eq!(
+            page2
+                .runs
+                .iter()
+                .map(|r| r.run_id.clone())
+                .collect::<Vec<_>>(),
+            vec!["a"]
+        );
         assert!(page2.next_cursor.is_none());
     }
 
@@ -247,16 +292,26 @@ mod tests {
         let mut r = rec("x", RunStatus::Failed, Utc::now());
         r.name = Some("nightly".into());
         h.upsert(&r).await.unwrap();
-        h.upsert(&rec("y", RunStatus::Completed, Utc::now())).await.unwrap();
+        h.upsert(&rec("y", RunStatus::Completed, Utc::now()))
+            .await
+            .unwrap();
         let only_failed = h
-            .list(&ListFilter { status: Some(RunStatus::Failed), limit: 50, ..Default::default() })
+            .list(&ListFilter {
+                status: Some(RunStatus::Failed),
+                limit: 50,
+                ..Default::default()
+            })
             .await
             .unwrap();
         assert_eq!(only_failed.runs.len(), 1);
         assert_eq!(only_failed.runs[0].run_id, "x");
         // Name filter also works.
         let by_name = h
-            .list(&ListFilter { name: Some("nightly".into()), limit: 50, ..Default::default() })
+            .list(&ListFilter {
+                name: Some("nightly".into()),
+                limit: 50,
+                ..Default::default()
+            })
             .await
             .unwrap();
         assert_eq!(by_name.runs.len(), 1);
@@ -266,10 +321,16 @@ mod tests {
     #[tokio::test]
     async fn purge_drops_expired_terminal_runs() {
         let h = MemoryHistory::new(Duration::from_secs(60));
-        h.upsert(&rec("old", RunStatus::Completed, Utc::now() - chrono::Duration::seconds(10)))
+        h.upsert(&rec(
+            "old",
+            RunStatus::Completed,
+            Utc::now() - chrono::Duration::seconds(10),
+        ))
+        .await
+        .unwrap();
+        h.upsert(&rec("live", RunStatus::Running, Utc::now()))
             .await
             .unwrap();
-        h.upsert(&rec("live", RunStatus::Running, Utc::now())).await.unwrap();
         // retain_for = 0 → every terminal record is expired; running is kept.
         let removed = h.purge_expired(Duration::ZERO).await.unwrap();
         assert_eq!(removed, 1);

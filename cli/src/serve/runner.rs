@@ -134,7 +134,14 @@ pub async fn submit(state: ServerState, req: SubmitRequest) -> Result<SubmitResp
 
     // The spawned task now owns the queued→running→finished lifecycle.
     reservation.defuse();
-    spawn_run(state.clone(), loaded, req, run_id.clone(), run_token, submitted_at);
+    spawn_run(
+        state.clone(),
+        loaded,
+        req,
+        run_id.clone(),
+        run_token,
+        submitted_at,
+    );
 
     Ok(SubmitResponse {
         run_id,
@@ -144,11 +151,19 @@ pub async fn submit(state: ServerState, req: SubmitRequest) -> Result<SubmitResp
 }
 
 /// Run the `doctor_first` probes; on any failure return 422 with the report.
-async fn run_doctor_first(state: &ServerState, loaded: &LoadedSubmission) -> Result<(), ServeError> {
+async fn run_doctor_first(
+    state: &ServerState,
+    loaded: &LoadedSubmission,
+) -> Result<(), ServeError> {
     use faucet_core::check::CheckContext;
-    let auth = build_auth_catalog(loaded.cfg.auth.as_ref())
-        .map_err(|e| ServeError::Unprocessable { message: e.to_string(), details: None })?;
-    let ctx = CheckContext { timeout: state.probe_timeout() };
+    let auth =
+        build_auth_catalog(loaded.cfg.auth.as_ref()).map_err(|e| ServeError::Unprocessable {
+            message: e.to_string(),
+            details: None,
+        })?;
+    let ctx = CheckContext {
+        timeout: state.probe_timeout(),
+    };
     let mut invs = crate::commands::doctor::probe_roots(&loaded.nodes, &auth, &ctx).await;
     let failed = crate::commands::doctor::count_failures(&invs);
     if failed > 0 {
@@ -223,21 +238,42 @@ impl Drop for InFlightGuard {
 
 /// Terminal classification of a run task.
 enum Terminal {
-    Completed { records: u64, invs: Vec<InvocationRecord> },
-    Failed { reason: String, records: u64, invs: Vec<InvocationRecord> },
-    Timeout { secs: u64 },
+    Completed {
+        records: u64,
+        invs: Vec<InvocationRecord>,
+    },
+    Failed {
+        reason: String,
+        records: u64,
+        invs: Vec<InvocationRecord>,
+    },
+    Timeout {
+        secs: u64,
+    },
     Cancelled,
     ShutdownFailed,
 }
 
 impl Terminal {
     /// (status, metric reason label, records, invocations, error message)
-    fn into_parts(self) -> (RunStatus, &'static str, u64, Vec<InvocationRecord>, Option<String>) {
+    fn into_parts(
+        self,
+    ) -> (
+        RunStatus,
+        &'static str,
+        u64,
+        Vec<InvocationRecord>,
+        Option<String>,
+    ) {
         match self {
-            Terminal::Completed { records, invs } => (RunStatus::Completed, "ok", records, invs, None),
-            Terminal::Failed { reason, records, invs } => {
-                (RunStatus::Failed, "error", records, invs, Some(reason))
+            Terminal::Completed { records, invs } => {
+                (RunStatus::Completed, "ok", records, invs, None)
             }
+            Terminal::Failed {
+                reason,
+                records,
+                invs,
+            } => (RunStatus::Failed, "error", records, invs, Some(reason)),
             Terminal::Timeout { secs } => (
                 RunStatus::Failed,
                 "timeout",
@@ -261,9 +297,16 @@ impl Terminal {
 fn classify_run(result: crate::error::CliResult<RunSummary>) -> Terminal {
     match result {
         Ok(summary) => {
-            let records: u64 = summary.invocations.iter().map(|i| i.records_written as u64).sum();
-            let invs: Vec<InvocationRecord> =
-                summary.invocations.iter().map(InvocationRecord::from).collect();
+            let records: u64 = summary
+                .invocations
+                .iter()
+                .map(|i| i.records_written as u64)
+                .sum();
+            let invs: Vec<InvocationRecord> = summary
+                .invocations
+                .iter()
+                .map(InvocationRecord::from)
+                .collect();
             if summary.had_failures() {
                 Terminal::Failed {
                     reason: format!("{} invocation(s) failed", summary.failure_count()),
@@ -274,12 +317,19 @@ fn classify_run(result: crate::error::CliResult<RunSummary>) -> Terminal {
                 Terminal::Completed { records, invs }
             }
         }
-        Err(e) => Terminal::Failed { reason: e.to_string(), records: 0, invs: Vec::new() },
+        Err(e) => Terminal::Failed {
+            reason: e.to_string(),
+            records: 0,
+            invs: Vec::new(),
+        },
     }
 }
 
 /// Parse the optional request `clock` (RFC3339), defaulting to `submitted_at`.
-fn resolve_clock(flag: Option<&str>, default: DateTime<Utc>) -> Result<DateTime<FixedOffset>, ServeError> {
+fn resolve_clock(
+    flag: Option<&str>,
+    default: DateTime<Utc>,
+) -> Result<DateTime<FixedOffset>, ServeError> {
     match flag {
         None => Ok(default.fixed_offset()),
         Some(s) => DateTime::parse_from_rfc3339(s)
@@ -327,11 +377,16 @@ fn spawn_run(
         let auth = match build_auth_catalog(cfg.auth.as_ref()) {
             Ok(a) => a,
             Err(e) => {
-                finalize(&state, &run_id, started, Terminal::Failed {
-                    reason: format!("auth catalog: {e}"),
-                    records: 0,
-                    invs: Vec::new(),
-                })
+                finalize(
+                    &state,
+                    &run_id,
+                    started,
+                    Terminal::Failed {
+                        reason: format!("auth catalog: {e}"),
+                        records: 0,
+                        invs: Vec::new(),
+                    },
+                )
                 .await;
                 return;
             }
@@ -339,11 +394,16 @@ fn spawn_run(
         let clock = match resolve_clock(req.clock.as_deref(), submitted_at) {
             Ok(c) => c,
             Err(e) => {
-                finalize(&state, &run_id, started, Terminal::Failed {
-                    reason: e.api_error().error.message,
-                    records: 0,
-                    invs: Vec::new(),
-                })
+                finalize(
+                    &state,
+                    &run_id,
+                    started,
+                    Terminal::Failed {
+                        reason: e.api_error().error.message,
+                        records: 0,
+                        invs: Vec::new(),
+                    },
+                )
                 .await;
                 return;
             }
@@ -450,7 +510,10 @@ mod tests {
     #[test]
     fn resolve_clock_defaults_and_parses() {
         let default = Utc::now();
-        assert_eq!(resolve_clock(None, default).unwrap(), default.fixed_offset());
+        assert_eq!(
+            resolve_clock(None, default).unwrap(),
+            default.fixed_offset()
+        );
         assert!(resolve_clock(Some("2026-01-31T00:00:00Z"), default).is_ok());
         assert!(resolve_clock(Some("not-a-time"), default).is_err());
     }
@@ -503,7 +566,10 @@ mod tests {
         };
 
         let err = submit(state.clone(), req).await.unwrap_err();
-        assert!(matches!(err, ServeError::Conflict(_)), "expected Conflict, got {err:?}");
+        assert!(
+            matches!(err, ServeError::Conflict(_)),
+            "expected Conflict, got {err:?}"
+        );
         // The reservation taken before the claim must have been released by the guard.
         assert_eq!(state.registry().queued(), 0);
     }

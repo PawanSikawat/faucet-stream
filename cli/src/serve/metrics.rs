@@ -1,11 +1,11 @@
 //! `faucet_serve_*` request metrics. The `path` label is the *matched route
 //! template* (`/v1/runs/{id}`), never the raw path — cardinality safety.
 
+use crate::serve::history::RunStatus;
+use crate::serve::state::ServerState;
 use axum::extract::{MatchedPath, Request};
 use axum::middleware::Next;
 use axum::response::Response;
-use crate::serve::history::RunStatus;
-use crate::serve::state::ServerState;
 use std::time::Instant;
 
 /// The matched route template for a request, or `<unmatched>` for a 404.

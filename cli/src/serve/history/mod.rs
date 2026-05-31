@@ -198,7 +198,13 @@ mod tests {
 
     #[test]
     fn run_record_serializes_status_snake_case() {
-        let rec = RunRecord::queued("r1".into(), Some("n".into()), Default::default(), None, Utc::now());
+        let rec = RunRecord::queued(
+            "r1".into(),
+            Some("n".into()),
+            Default::default(),
+            None,
+            Utc::now(),
+        );
         let v = serde_json::to_value(&rec).unwrap();
         assert_eq!(v["status"], "queued");
         assert_eq!(v["run_id"], "r1");
