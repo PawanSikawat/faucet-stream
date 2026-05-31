@@ -17,7 +17,7 @@
 
 **The fast, config-driven way to move data in Rust.**
 
-faucet-stream wires **20 source** and **16 sink** connectors together with a single
+faucet-stream wires **21 source** and **17 sink** connectors together with a single
 `faucet` binary that runs pipelines declaratively from a YAML/JSON file — no Rust
 code required. Or skip the binary and embed the same engine in your own service
 through the typed `Source` / `Sink` traits. One toolkit, whether you want a CLI you
@@ -38,7 +38,7 @@ can drop on any box or a library you compile in.
   runs over REST), and built-in Prometheus metrics + `tracing` spans, all with
   zero per-connector code.
 - **Pay only for what you use** — every connector is a Cargo feature, so a slim
-  build can be just REST + JSONL, or pull in all 35 connectors with `--features full`.
+  build can be just REST + JSONL, or pull in all 38 connectors with `--features full`.
 
 Inspired by [Meltano's Singer SDK](https://sdk.meltano.com/) — reimagined for Rust
 as both a reusable library and a standalone CLI.
@@ -102,7 +102,7 @@ when you want to compile pipelines into your own service.
 | Single static binary | ✓ | ✗ | ✗ | ✓ | ✓ | n/a |
 | Config-driven (YAML/JSON) | ✓ | ✓ | via UI/API | ✓ | ✓ | via UI |
 | Embeddable as a library | ✓ (Rust) | ✗ | ✗ | ✓ (Go) | ✗ | ✗ |
-| Connector count | 35, growing | 600+ taps | 350+ | dozens | dozens | 500+ |
+| Connector count | 38, growing | 600+ taps | 350+ | dozens | dozens | 500+ |
 | Change data capture | ✓ PostgreSQL | partial¹ | ✓ | partial | ✗ | ✓ |
 | Incremental + resumable state | ✓ | ✓ | ✓ | partial | n/a | ✓ |
 | Built-in data-quality checks | ✓ native | ✗ | paywalled add-on | ✗ | ✗ | paywalled add-on |
