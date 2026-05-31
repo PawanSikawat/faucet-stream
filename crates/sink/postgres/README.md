@@ -272,7 +272,7 @@ let sink = PostgresSink::new(config).await?;
 - A connection pool is created in `PostgresSink::new()` using `sqlx::PgPool` with the configured `max_connections`.
 - `write_batch()` slices records into chunks of `batch_size` (or forwards the whole slice when `batch_size = 0`) and inserts each chunk using a single multi-row INSERT statement.
 - In JSONB mode, inserts use `INSERT INTO table (col) SELECT * FROM unnest($1::jsonb[])` for maximum efficiency.
-- In AutoMap mode, column names are queried from `information_schema.columns`. A multi-row `INSERT INTO ... VALUES ($1, $2), ($3, $4), ...` is built dynamically. Column values are bound as JSONB. Missing keys are bound as null.
+- In AutoMap mode, each column's name **and underlying type** (`udt_name`) are queried from `information_schema.columns`. A multi-row `INSERT INTO ... VALUES ($1::int4, $2::timestamptz), ...` is built dynamically with a per-column cast, and each value is bound as text so the destination column's input function parses it — numbers, booleans, timestamps, uuids land in their native column types, and `json`/`jsonb` columns receive JSON text. (Values are **not** bound as `jsonb` regardless of column type — doing so previously made the typed-column example above fail at runtime.) Missing keys are bound as SQL `NULL`.
 - All identifiers (table names, column names) are quoted using `quote_ident()` to prevent SQL injection.
 
 ## License

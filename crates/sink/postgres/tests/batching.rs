@@ -179,8 +179,10 @@ async fn write_batch_empty_input_is_a_noop() {
 async fn write_batch_auto_map_re_chunks_when_input_exceeds_batch_size() {
     let (_container, url) = start_postgres().await;
     let pool = sqlx::PgPool::connect(&url).await.expect("pool connect");
-    // AutoMap binds every value as JSONB, so the table columns must be
-    // JSONB too (the sink does not coerce per-column).
+    // AutoMap now binds values as text cast to each column's type (audit #146
+    // C1), so typed columns work too — but this test keeps JSONB columns to
+    // isolate the re-chunking behavior (a number binds as `5`, a string as
+    // `"row"`, both valid jsonb).
     sqlx::query("CREATE TABLE events (id JSONB, name JSONB)")
         .execute(&pool)
         .await
@@ -256,4 +258,66 @@ async fn auto_map_chunks_to_respect_postgres_param_limit() {
         .expect("count");
     pool.close().await;
     assert_eq!(count, 1_000);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn write_batch_auto_map_into_typed_columns() {
+    // C1 regression (audit #146): AutoMap previously bound every value as
+    // `jsonb`, so inserting into any non-`jsonb` column failed with
+    // "column is of type X but expression is of type jsonb" — the documented
+    // README example (TEXT/NUMERIC/TIMESTAMPTZ columns) errored at runtime.
+    // The sink now binds text cast to each column's type, so native columns
+    // work; this test would not even insert before the fix.
+    let (_container, url) = start_postgres().await;
+    let pool = sqlx::PgPool::connect(&url).await.expect("pool connect");
+    sqlx::query(
+        "CREATE TABLE events (\
+           user_id BIGINT, \
+           event TEXT, \
+           amount NUMERIC, \
+           active BOOLEAN, \
+           ts TIMESTAMPTZ, \
+           meta JSONB)",
+    )
+    .execute(&pool)
+    .await
+    .expect("create typed table");
+    pool.close().await;
+
+    let config = PostgresSinkConfig::new(&url, "events")
+        .column_mapping(PostgresColumnMapping::AutoMap)
+        .with_batch_size(0);
+    let sink = PostgresSink::new(config).await.expect("sink new");
+
+    let records = vec![json!({
+        "user_id": 42,
+        "event": "click",
+        "amount": 19.95,
+        "active": true,
+        "ts": "2025-01-02T03:04:05Z",
+        "meta": {"k": "v"}
+    })];
+    let written = sink.write_batch(&records).await.expect("typed write");
+    assert_eq!(written, 1);
+
+    // Read back with the *native* column types — proves each value landed in
+    // its real type, not as jsonb.
+    let pool = sqlx::PgPool::connect(&url).await.expect("pool connect");
+    let row = sqlx::query(
+        "SELECT user_id, event, amount::FLOAT8 AS amount, active, \
+                to_char(ts AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS') AS ts, \
+                meta->>'k' AS meta_k \
+         FROM events",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("read back typed row");
+    use sqlx::Row;
+    assert_eq!(row.get::<i64, _>("user_id"), 42);
+    assert_eq!(row.get::<String, _>("event"), "click");
+    assert!((row.get::<f64, _>("amount") - 19.95).abs() < 1e-9);
+    assert!(row.get::<bool, _>("active"));
+    assert_eq!(row.get::<String, _>("ts"), "2025-01-02T03:04:05");
+    assert_eq!(row.get::<String, _>("meta_k"), "v");
+    pool.close().await;
 }

@@ -8,6 +8,43 @@ use serde_json::Value;
 use sqlx::postgres::PgPoolOptions;
 use sqlx::{PgPool, Row};
 
+/// Render a JSON value as the text to bind for a PostgreSQL column whose
+/// underlying type is `udt` (`information_schema.columns.udt_name`), or `None`
+/// for SQL `NULL`.
+///
+/// The accompanying placeholder is emitted as `$N::<udt>`, so PostgreSQL runs
+/// the destination column type's input function over this text. That makes
+/// `string → timestamptz/uuid/date`, `number → int4/numeric/float8`,
+/// `bool → bool`, and `json → jsonb` all work — instead of binding every value
+/// as `serde_json::Value` (which sqlx encodes as `jsonb`, so an insert into any
+/// non-`jsonb` column fails at runtime with *"column is of type … but
+/// expression is of type jsonb"*; this was the C1 bug in audit #146).
+///
+/// For `json`/`jsonb` columns the value is bound as its JSON text (so a string
+/// keeps its quotes and objects/arrays round-trip); the `::jsonb` cast then
+/// parses it. For every other type the scalar's plain text form is bound and
+/// the column's input function parses it via the cast.
+fn pg_bind_text(value: Option<&Value>, udt: &str) -> Option<String> {
+    match value {
+        None | Some(Value::Null) => None,
+        Some(v) => {
+            if udt.eq_ignore_ascii_case("json") || udt.eq_ignore_ascii_case("jsonb") {
+                Some(v.to_string())
+            } else {
+                match v {
+                    Value::Bool(b) => Some(b.to_string()),
+                    Value::Number(n) => Some(n.to_string()),
+                    Value::String(s) => Some(s.clone()),
+                    // Arrays/objects have no scalar text form for a non-JSON
+                    // column; bind their JSON text so the `::<type>` cast fails
+                    // loudly rather than silently coercing.
+                    other => Some(other.to_string()),
+                }
+            }
+        }
+    }
+}
+
 /// A sink that writes JSON records to a PostgreSQL table.
 pub struct PostgresSink {
     config: PostgresSinkConfig,
@@ -51,24 +88,32 @@ impl PostgresSink {
 
     /// Insert a batch of records using auto-mapped columns.
     ///
-    /// Discovers column names from the table schema and maps
-    /// top-level JSON fields to columns. Values are inserted as JSONB.
-    /// Uses a single multi-row INSERT for efficiency.
+    /// Discovers each column's name *and* underlying type (`udt_name`) from the
+    /// table schema and maps top-level JSON fields to columns. Each placeholder
+    /// is emitted as `$N::<udt>` and the value is bound as text (see
+    /// [`pg_bind_text`]), so the destination column's input function parses it —
+    /// numbers, booleans, timestamps, uuids, and JSON all land in their native
+    /// column types. (Previously every value was bound as `serde_json::Value`,
+    /// which sqlx encodes as `jsonb`, so an insert into any non-`jsonb` column
+    /// failed at runtime — audit #146 C1.) Uses a single multi-row INSERT
+    /// (sub-chunked at the 65535-parameter cap) for efficiency.
     async fn insert_auto_map(&self, records: &[Value]) -> Result<usize, FaucetError> {
         if records.is_empty() {
             return Ok(0);
         }
 
-        // Get column names from the table.
-        let columns: Vec<String> = sqlx::query(
-            "SELECT column_name FROM information_schema.columns WHERE table_name = $1 ORDER BY ordinal_position"
+        // Get column names AND their underlying types from the table. `udt_name`
+        // is the concrete type (e.g. `int4`, `timestamptz`, `numeric`, `jsonb`,
+        // `uuid`, `text`) used as the per-placeholder cast target below.
+        let columns: Vec<(String, String)> = sqlx::query(
+            "SELECT column_name, udt_name FROM information_schema.columns WHERE table_name = $1 ORDER BY ordinal_position"
         )
         .bind(&self.config.table_name)
         .fetch_all(&self.pool)
         .await
         .map_err(|e| FaucetError::Sink(format!("failed to query table columns: {e}")))?
         .iter()
-        .map(|row| row.get::<String, _>("column_name"))
+        .map(|row| (row.get::<String, _>("column_name"), row.get::<String, _>("udt_name")))
         .collect();
 
         if columns.is_empty() {
@@ -78,23 +123,25 @@ impl PostgresSink {
             )));
         }
 
-        // Pre-validate all records and collect matched column values.
-        // Each entry is the list of (column_index, value) for one record.
-        let mut matched_rows: Vec<Vec<(&String, &Value)>> = Vec::with_capacity(records.len());
+        // Pre-validate all records and collect matched (column, udt, value)
+        // triples per record.
+        let mut matched_rows: Vec<Vec<(&String, &String, &Value)>> =
+            Vec::with_capacity(records.len());
 
         // Determine the set of columns used across all records by using
         // the columns from the first valid record. All rows in a single
-        // multi-row INSERT must share the same column list.
-        let mut insert_columns: Option<Vec<String>> = None;
+        // multi-row INSERT must share the same column list. Each entry is
+        // (column_name, udt_name).
+        let mut insert_columns: Option<Vec<(String, String)>> = None;
 
         for record in records {
             let obj = record
                 .as_object()
                 .ok_or_else(|| FaucetError::Sink("AutoMap requires JSON object records".into()))?;
 
-            let matching: Vec<(&String, &Value)> = columns
+            let matching: Vec<(&String, &String, &Value)> = columns
                 .iter()
-                .filter_map(|col| obj.get(col).map(|v| (col, v)))
+                .filter_map(|(col, udt)| obj.get(col).map(|v| (col, udt, v)))
                 .collect();
 
             if matching.is_empty() {
@@ -108,7 +155,12 @@ impl PostgresSink {
 
             // Fix the column set from the first valid record.
             if insert_columns.is_none() {
-                insert_columns = Some(matching.iter().map(|(c, _)| (*c).clone()).collect());
+                insert_columns = Some(
+                    matching
+                        .iter()
+                        .map(|(c, u, _)| ((*c).clone(), (*u).clone()))
+                        .collect(),
+                );
             }
 
             matched_rows.push(matching);
@@ -125,7 +177,7 @@ impl PostgresSink {
 
         let num_cols = insert_columns.len();
         let num_rows = matched_rows.len();
-        let col_names: Vec<String> = insert_columns.iter().map(|c| quote_ident(c)).collect();
+        let col_names: Vec<String> = insert_columns.iter().map(|(c, _)| quote_ident(c)).collect();
 
         // PostgreSQL caps bind parameters per statement at 65535. A multi-row
         // INSERT binds `rows × num_cols` parameters, so a wide table at a large
@@ -135,12 +187,15 @@ impl PostgresSink {
         let max_rows_per_insert = (MAX_PG_PARAMS / num_cols).max(1);
 
         for sub in matched_rows.chunks(max_rows_per_insert) {
-            // Build multi-row VALUES clause: ($1, $2), ($3, $4), ...
+            // Build multi-row VALUES clause with per-column casts so the column
+            // type's input function parses the bound text:
+            //   ($1::int4, $2::timestamptz), ($3::int4, $4::timestamptz), ...
             let mut value_tuples: Vec<String> = Vec::with_capacity(sub.len());
             for row_idx in 0..sub.len() {
                 let start = row_idx * num_cols + 1;
-                let placeholders: Vec<String> =
-                    (start..start + num_cols).map(|i| format!("${i}")).collect();
+                let placeholders: Vec<String> = (0..num_cols)
+                    .map(|c| format!("${}::{}", start + c, insert_columns[c].1))
+                    .collect();
                 value_tuples.push(format!("({})", placeholders.join(", ")));
             }
 
@@ -153,11 +208,15 @@ impl PostgresSink {
 
             let mut q = sqlx::query(&query);
             for matched in sub {
-                // Bind values in the fixed column order. If a record is missing
-                // a column that appeared in the first record, bind null.
-                for col in &insert_columns {
-                    let val = matched.iter().find(|(c, _)| *c == col).map(|(_, v)| *v);
-                    q = q.bind(val.cloned());
+                // Bind values in the fixed column order, as text matching each
+                // column's type. A record missing a column that appeared in the
+                // first record binds SQL NULL.
+                for (col, udt) in &insert_columns {
+                    let val = matched
+                        .iter()
+                        .find(|(c, _, _)| *c == col)
+                        .map(|(_, _, v)| *v);
+                    q = q.bind(pg_bind_text(val, udt));
                 }
             }
 
@@ -247,5 +306,81 @@ impl faucet_core::Sink for PostgresSink {
             "PostgreSQL write complete"
         );
         Ok(total)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::pg_bind_text;
+    use serde_json::json;
+
+    #[test]
+    fn null_and_absent_bind_sql_null() {
+        assert_eq!(pg_bind_text(None, "text"), None);
+        assert_eq!(pg_bind_text(Some(&json!(null)), "int4"), None);
+        assert_eq!(pg_bind_text(Some(&json!(null)), "jsonb"), None);
+    }
+
+    #[test]
+    fn scalars_bind_plain_text_for_typed_columns() {
+        // The `$N::<udt>` cast parses these via the column's input function.
+        assert_eq!(pg_bind_text(Some(&json!(42)), "int4").as_deref(), Some("42"));
+        assert_eq!(
+            pg_bind_text(Some(&json!(1.5)), "numeric").as_deref(),
+            Some("1.5")
+        );
+        assert_eq!(
+            pg_bind_text(Some(&json!(true)), "bool").as_deref(),
+            Some("true")
+        );
+        assert_eq!(
+            pg_bind_text(Some(&json!("2025-01-01T00:00:00Z")), "timestamptz").as_deref(),
+            Some("2025-01-01T00:00:00Z")
+        );
+        // A plain string into TEXT keeps NO JSON quotes (the bug bound `"Bob"`).
+        assert_eq!(
+            pg_bind_text(Some(&json!("Bob")), "text").as_deref(),
+            Some("Bob")
+        );
+        // Large u64 beyond i64 keeps exact text (no f64 precision loss).
+        assert_eq!(
+            pg_bind_text(Some(&json!(18446744073709551615u64)), "numeric").as_deref(),
+            Some("18446744073709551615")
+        );
+    }
+
+    #[test]
+    fn json_columns_get_json_text_with_quotes_preserved() {
+        // For jsonb/json columns the value is bound as JSON text so the
+        // `::jsonb` cast parses it: a string keeps its quotes, objects/arrays
+        // round-trip.
+        assert_eq!(
+            pg_bind_text(Some(&json!("Bob")), "jsonb").as_deref(),
+            Some("\"Bob\"")
+        );
+        assert_eq!(
+            pg_bind_text(Some(&json!({"a": 1})), "jsonb").as_deref(),
+            Some("{\"a\":1}")
+        );
+        assert_eq!(
+            pg_bind_text(Some(&json!([1, 2])), "json").as_deref(),
+            Some("[1,2]")
+        );
+        assert_eq!(pg_bind_text(Some(&json!(5)), "jsonb").as_deref(), Some("5"));
+        // udt match is case-insensitive.
+        assert_eq!(
+            pg_bind_text(Some(&json!("x")), "JSONB").as_deref(),
+            Some("\"x\"")
+        );
+    }
+
+    #[test]
+    fn objects_into_non_json_columns_emit_json_text_so_the_cast_fails_loudly() {
+        // No scalar text form for an object targeting e.g. an int column; the
+        // `::int4` cast will reject this rather than silently coercing.
+        assert_eq!(
+            pg_bind_text(Some(&json!({"a": 1})), "int4").as_deref(),
+            Some("{\"a\":1}")
+        );
     }
 }
