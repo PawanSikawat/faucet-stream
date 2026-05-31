@@ -80,6 +80,34 @@ pub fn xml_to_json(xml: &str) -> Result<Value, FaucetError> {
                     }
                 }
             }
+            Ok(Event::CData(e)) => {
+                // CDATA is literal (un-escaped) text that quick_xml emits as a
+                // separate event; without this arm the content was silently
+                // dropped — data loss for SOAP / feed APIs that wrap markup in
+                // CDATA (audit #146 H15). Decode and append to `#text` exactly
+                // like Event::Text.
+                let text = e
+                    .decode()
+                    .map_err(|err| {
+                        FaucetError::Transform(format!("XML CDATA decode error: {err}"))
+                    })?
+                    .trim()
+                    .to_string();
+
+                if !text.is_empty()
+                    && let Some(current) = stack.last_mut()
+                {
+                    match current.1.get_mut("#text") {
+                        Some(Value::String(s)) => {
+                            s.push(' ');
+                            s.push_str(&text);
+                        }
+                        _ => {
+                            current.1.insert("#text".into(), Value::String(text));
+                        }
+                    }
+                }
+            }
             Ok(Event::Empty(e)) => {
                 let name = String::from_utf8_lossy(e.name().as_ref()).into_owned();
                 let mut obj = Map::new();
@@ -332,8 +360,48 @@ pub fn stream_extract<F: FnMut(Value)>(
                     }
                 }
             }
+            Ok(Event::CData(e)) => {
+                // CDATA is literal text emitted as its own event; capture it
+                // instead of dropping it — data loss for CDATA-wrapped markup
+                // (audit #146 H15). Decode and append to `#text` like Text.
+                let text = e
+                    .decode()
+                    .map_err(|err| {
+                        FaucetError::Transform(format!("XML CDATA decode error: {err}"))
+                    })?
+                    .trim()
+                    .to_string();
+                if text.is_empty() {
+                    continue;
+                }
+                if let Some(doc) = full_doc.as_mut() {
+                    if let Some(current) = doc.last_mut() {
+                        match current.1.get_mut("#text") {
+                            Some(Value::String(s)) => {
+                                s.push(' ');
+                                s.push_str(&text);
+                            }
+                            _ => {
+                                current.1.insert("#text".into(), Value::String(text));
+                            }
+                        }
+                    }
+                } else if start_depth.is_some()
+                    && let Some(current) = subtree.last_mut()
+                {
+                    match current.1.get_mut("#text") {
+                        Some(Value::String(s)) => {
+                            s.push(' ');
+                            s.push_str(&text);
+                        }
+                        _ => {
+                            current.1.insert("#text".into(), Value::String(text));
+                        }
+                    }
+                }
+            }
             Ok(Event::Eof) => break,
-            Ok(_) => {} // Comments, PIs, CDATA boundaries, etc.
+            Ok(_) => {} // Comments, PIs, etc.
             Err(e) => {
                 return Err(FaucetError::Transform(format!("XML parse error: {e}")));
             }
@@ -408,6 +476,24 @@ mod tests {
         let xml = r#"<root><user><address><city>NYC</city></address></user></root>"#;
         let json = xml_to_json(xml).unwrap();
         assert_eq!(json["root"]["user"]["address"]["city"], "NYC");
+    }
+
+    #[test]
+    fn cdata_content_is_captured_not_dropped() {
+        // H15 (audit #146): quick_xml emits CDATA as a separate event; it must
+        // be captured into #text, not silently dropped (it was, before the fix).
+        let xml = r#"<root><body><![CDATA[<b>hi</b> & bye]]></body></root>"#;
+        let json = xml_to_json(xml).unwrap();
+        assert_eq!(json["root"]["body"], "<b>hi</b> & bye");
+    }
+
+    #[test]
+    fn cdata_content_captured_in_streaming_path() {
+        // H15: the streaming converter must also capture CDATA.
+        let xml = r#"<feed><item><html><![CDATA[<p>x</p>]]></html></item></feed>"#;
+        let recs = collect_stream_extract(xml, Some("feed.item"));
+        assert_eq!(recs.len(), 1);
+        assert_eq!(recs[0]["html"], "<p>x</p>");
     }
 
     #[test]
