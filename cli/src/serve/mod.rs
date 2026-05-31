@@ -8,6 +8,7 @@ pub mod config;
 pub mod error;
 pub mod handlers;
 pub mod history;
+pub mod idempotency;
 pub mod metrics;
 pub mod observability;
 pub mod server;
