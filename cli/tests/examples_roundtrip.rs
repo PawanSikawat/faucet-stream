@@ -47,6 +47,13 @@ fn every_example_loads_and_expands() {
         if !matches!(ext, "yaml" | "yml" | "json") {
             continue;
         }
+        // serve_minimal.yaml is a `faucet serve --default-config` partial
+        // (workspace defaults only, no source/sink), so it does not expand on
+        // its own — it is merged under each submitted run at request time.
+        if path.file_name().and_then(|f| f.to_str()) == Some("serve_minimal.yaml") {
+            skipped += 1;
+            continue;
+        }
         // Skip examples that rely on a feature not compiled into this test
         // binary.  In CI `--all-features` covers everything; local single-
         // feature runs must not fail on example YAMLs that need an orthogonal
@@ -87,4 +94,14 @@ fn every_example_loads_and_expands() {
         failures.len(),
         failures.join("\n")
     );
+}
+
+/// The `serve --default-config` partial is excluded from the expand loop above
+/// (no source/sink), so check it parses as a structurally valid `PipelineConfig`
+/// here — this still catches bad YAML / unknown fields in the example.
+#[test]
+fn serve_minimal_default_config_parses() {
+    let path = examples_dir().join("serve_minimal.yaml");
+    PipelineConfig::from_path(&path)
+        .expect("serve_minimal.yaml must parse as a valid PipelineConfig");
 }

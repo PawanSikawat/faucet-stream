@@ -1,0 +1,29 @@
+# `faucet serve --default-config` — workspace defaults merged UNDER every
+# submitted run. Submitted configs win on conflicts (objects merge; scalars and
+# arrays replace). This lets an operator pin shared state, execution, and other
+# cross-cutting settings once instead of repeating them in every HTTP request.
+#
+#   faucet serve --no-auth --default-config cli/examples/serve_minimal.yaml
+#
+# Then submit runs that only need to specify their source/sink:
+#
+#   curl -XPOST localhost:8080/v1/runs -H 'content-type: application/json' \
+#     -d '{"config":"version: 1\npipeline:\n  source: {type: csv, config: {path: in.csv}}\n  sink: {type: jsonl, config: {path: out.jsonl}}\n","name":"adhoc"}'
+#
+# This file is a partial pipeline config: it carries no source/sink (those come
+# from each submission) — only the defaults to fold in.
+version: 1
+
+pipeline:
+  # Durable replication bookmarks shared by every run, so incremental/CDC
+  # pipelines resume across submissions. State keys are namespaced per run name.
+  state:
+    type: file
+    config:
+      path: /var/lib/faucet/state
+
+# Per-run pipeline concurrency + error policy (independent of the server's
+# --max-concurrent-runs, which bounds how many runs execute at once).
+execution:
+  max_concurrent: 4
+  on_error: continue
