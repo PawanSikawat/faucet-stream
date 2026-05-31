@@ -429,6 +429,38 @@ faucet run --clock 2026-03-01T02:00:00-08:00 pipeline.yaml  # precise timestamp
 
 > **Caveat for `stop`:** cancelling a task mid-write may leave partial state in the sink — a half-flushed file, an open transaction, a connection that closed before the server's response was read. Idempotent sinks (JSONL append, S3 put with a fixed key, BigQuery streaming insert with `insertId`, upsert-style writes) handle re-runs cleanly. Non-idempotent sinks (`HTTP POST` without dedupe headers, `INSERT` with auto-id) may double-write on retry. If you can't tolerate that, prefer `on_error: continue` and reconcile failed rows after the fact.
 
+#### Adaptive batch sizing
+
+The optional `adaptive_batch_size:` sub-block under `execution:` enables the
+AIMD controller that auto-tunes the effective write batch size from observed sink
+latency and error rate. Default `enabled: false` (opt-in).
+
+```yaml
+execution:
+  adaptive_batch_size:
+    enabled: true
+    min: 500               # lower bound (rows)
+    max: 10000             # upper bound; inert above the source page size
+    increase_step: 500     # additive growth per clean, fast batch
+    decrease_factor: 0.5   # multiplicative shrink on error or high latency
+    cooldown_batches: 5    # batches to skip after a shrink before growing again
+    target_latency_ms: 1000  # optional write-latency target (ms)
+    error_threshold: 0.01  # per-batch error rate that triggers a shrink
+```
+
+**Caveats:**
+
+- **Error-driven shrink requires a `dlq:` block.** The error signal comes from
+  per-row outcomes reported via the DLQ path. Without a DLQ the controller sees
+  no errors; only `target_latency_ms` can drive shrinks.
+- **Effective ceiling = source page size (within-page only in v1).** The
+  controller reslices pages it already received — it cannot buffer across pages.
+  Raise the source `batch_size` to allow bigger write batches.
+
+See the [Adaptive batching cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/adaptive-batching.html)
+for the full field reference, AIMD trajectory example, and the four Prometheus
+metrics (`faucet_pipeline_adaptive_batch_*`).
+
 #### State keys
 
 - Root invocations: `{name}::{row_id}`.

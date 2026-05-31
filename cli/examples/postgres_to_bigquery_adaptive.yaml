@@ -1,0 +1,85 @@
+# PostgreSQL → BigQuery with adaptive batch sizing.
+#
+# The `execution.adaptive_batch_size` block enables the AIMD controller: the
+# pipeline starts at the source page size, grows the write batch additively on
+# clean, fast pages, and shrinks multiplicatively when the BigQuery insertAll
+# response latency exceeds the target or when per-row errors are reported.
+#
+# Error-driven shrink requires a `dlq:` block so the pipeline can observe
+# per-row outcomes from BigQuery's partial-write API. Remove `dlq:` (and set
+# `error_threshold` to 0.0 or rely on latency alone) if you do not want a DLQ.
+#
+# Required env vars:
+#   PG_URL        — connection URL, e.g. postgres://user:pass@localhost/app
+#   GCP_KEY_JSON  — GCP service-account key (full JSON string)
+
+version: 1
+name: postgres_to_bigquery_adaptive
+
+pipeline:
+  source:
+    type: postgres
+    config:
+      connection_url: ${env:PG_URL}
+      query: SELECT id, created_at, payload FROM orders WHERE created_at > $1
+      params:
+        - "2026-01-01T00:00:00Z"
+      # batch_size controls the source page size; the adaptive controller's
+      # effective ceiling is min(max, page_size).  Raise this to allow bigger
+      # write batches.
+      batch_size: 5000
+      max_connections: 8
+
+  sink:
+    type: bigquery
+    config:
+      project_id: my-gcp-project
+      dataset_id: warehouse
+      table_id: orders
+      auth:
+        type: service_account_key
+        config:
+          json: ${env:GCP_KEY_JSON}
+      # batch_size here is the initial write size; the controller will tune it
+      # at runtime between `min` and `max` (capped at the source page size).
+      batch_size: 1000
+
+  dlq:
+    # BigQuery's insertAll API reports per-row failures; the DLQ captures just
+    # those rows.  The adaptive controller uses the per-row error signal to
+    # decide when to shrink the batch.
+    sink:
+      type: jsonl
+      config:
+        path: ./dlq/orders_failed.jsonl
+    on_batch_error: dlq_all
+
+execution:
+  adaptive_batch_size:
+    enabled: true
+    # Controller algorithm (only "aimd" is supported in v1).
+    controller: aimd
+    # Hard lower bound: never write fewer than 500 rows per batch.
+    min: 500
+    # Hard upper bound: never write more than 10 000 rows per batch.
+    # Values above the source batch_size (5 000) are inert under within-page
+    # reslicing, so the effective ceiling here is 5 000.
+    max: 10000
+    # Grow by 500 rows on each clean, fast batch.
+    increase_step: 500
+    # Shrink to 50 % of current size on errors or high latency.
+    decrease_factor: 0.5
+    # After a shrink, skip this many batches before allowing growth again.
+    cooldown_batches: 5
+    # Target BigQuery write latency.  The controller shrinks when the rolling
+    # p50 exceeds 1.2 × target (1 200 ms) and grows when it falls below
+    # 0.5 × target (500 ms).
+    target_latency_ms: 1000
+    # Rolling window size (batches) for the p50 latency estimate.
+    latency_window: 10
+    # Per-batch error rate above which the controller shrinks.  0.01 = 1 %.
+    error_threshold: 0.01
+    # Cap effective batch size at the source page size (within-page only in v1).
+    respect_source_max: true
+    # Emit a tracing::info summary every 50 adjustments.
+    log_every: 50

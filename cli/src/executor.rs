@@ -541,6 +541,18 @@ async fn run_one_invocation(
     } else {
         pipeline
     };
+    // Execution-level adaptive batch-size controller (shared by all rows).
+    let pipeline = if let Some(ab) = opts
+        .execution
+        .as_ref()
+        .and_then(|e| e.adaptive_batch_size.clone())
+    {
+        ab.validate()
+            .map_err(|e| CliError::Config(format!("adaptive_batch_size: {e}")))?;
+        pipeline.with_adaptive(ab)
+    } else {
+        pipeline
+    };
     let result = pipeline.run().await?;
     sink.flush().await?;
 

@@ -131,6 +131,7 @@ pub struct Pipeline<'a, So: Source + ?Sized, Si: Sink + ?Sized> {
     dlq: Option<DlqConfig>,
     #[cfg(feature = "quality")]
     quality: Option<Arc<crate::quality::CompiledQuality>>,
+    adaptive: Option<crate::adaptive::AdaptiveBatchConfig>,
 }
 
 impl<'a, So: Source + ?Sized, Si: Sink + ?Sized> Pipeline<'a, So, Si> {
@@ -146,6 +147,7 @@ impl<'a, So: Source + ?Sized, Si: Sink + ?Sized> Pipeline<'a, So, Si> {
             dlq: None,
             #[cfg(feature = "quality")]
             quality: None,
+            adaptive: None,
         }
     }
 
@@ -200,6 +202,14 @@ impl<'a, So: Source + ?Sized, Si: Sink + ?Sized> Pipeline<'a, So, Si> {
     #[cfg(feature = "quality")]
     pub fn with_quality(mut self, quality: Arc<crate::quality::CompiledQuality>) -> Self {
         self.quality = Some(quality);
+        self
+    }
+
+    /// Attach an adaptive batch-size controller (opt-in). When `enabled`, the
+    /// pipeline reslices each source page into sub-batches whose size the
+    /// controller tunes from observed sink latency + error rate.
+    pub fn with_adaptive(mut self, cfg: crate::adaptive::AdaptiveBatchConfig) -> Self {
+        self.adaptive = Some(cfg);
         self
     }
 
@@ -326,6 +336,9 @@ impl<'a, So: Source + ?Sized, Si: Sink + ?Sized> Pipeline<'a, So, Si> {
             if let Some(q) = self.quality.clone() {
                 opts = opts.with_quality(q);
             }
+            if let Some(ad) = self.adaptive.clone() {
+                opts = opts.with_adaptive(ad);
+            }
 
             run_stream(pages, &wrapped_sink, opts).await
         }
@@ -407,6 +420,18 @@ where
     let mut last_bookmark: Option<Value> = None;
     let mut dlq_stats = DlqStats::default();
 
+    let adaptive_cfg = options.adaptive.clone().filter(|c| c.enabled);
+    if let Some(cfg) = adaptive_cfg.as_ref()
+        && !cfg.respect_source_max
+    {
+        tracing::warn!(
+            "adaptive_batch_size.respect_source_max=false is not yet implemented \
+             (cross-page buffering); growth is capped at the source page size"
+        );
+    }
+    let mut controller: Option<crate::adaptive::AimdController> = None;
+    let mut warned_noop_sink = false;
+
     let sink_name = sink.connector_name();
     let dlq_sink_name = dlq.as_ref().map(|d| d.sink.connector_name()).unwrap_or("");
 
@@ -485,47 +510,90 @@ where
                         );
                         let _enter = span.enter();
 
-                        let outcomes_result = if page.records.is_empty() {
-                            Ok(Vec::new())
-                        } else {
-                            sink.write_batch_partial(&page.records).await
-                        };
-                        let mut outer_err_recovered = false;
-                        let outcomes = match outcomes_result {
-                            Ok(o) => o,
-                            Err(e) => match dlq_cfg.on_batch_error {
-                                OnBatchError::Propagate => return Err(e),
-                                OnBatchError::DlqAll => {
-                                    // Synthesize per-row failures echoing the
-                                    // underlying message so envelopes carry it.
-                                    // The flag distinguishes this from a sink
-                                    // override that legitimately returned all
-                                    // per-row Errs — that case keeps the
-                                    // `partial` reason label.
-                                    outer_err_recovered = true;
-                                    let msg = e.to_string();
-                                    (0..page.records.len())
-                                        .map(|_| Err(FaucetError::Sink(msg.clone())))
-                                        .collect()
-                                }
-                            },
-                        };
-
-                        // Partition into success count + failure envelopes.
+                        // Reslice the page into sub-batches driven by the
+                        // adaptive controller (or write the whole page in one
+                        // shot when adaptive is disabled — same as before).
                         let mut envelopes: Vec<Value> = Vec::new();
                         let mut page_success = 0usize;
-                        for (i, outcome) in outcomes.iter().enumerate() {
-                            match outcome {
-                                Ok(()) => page_success += 1,
-                                Err(err) => envelopes.push(build_envelope(
-                                    &page.records[i],
-                                    err,
-                                    sink_name,
-                                    &pipeline_name,
-                                    &row,
-                                    i,
-                                )),
+                        let mut outer_err_recovered = false;
+                        // True if any chunk reported genuine per-row sink `Err`s
+                        // (as opposed to a chunk wholly synthesized from an outer
+                        // error under `DlqAll`). Drives the `partial` label when a
+                        // resliced page mixes the two failure modes.
+                        let mut had_per_row_sink_failure = false;
+                        let records_len = page.records.len();
+                        let mut offset = 0usize;
+                        while offset < records_len {
+                            let size = match adaptive_cfg.as_ref() {
+                                Some(cfg) => {
+                                    let ctrl = controller.get_or_insert_with(|| {
+                                        crate::adaptive::AimdController::new(cfg, records_len)
+                                    });
+                                    ctrl.current().max(1).min(records_len - offset)
+                                }
+                                None => records_len - offset, // whole page = today's behavior
+                            };
+                            if adaptive_cfg.is_some() {
+                                maybe_warn_noop_sink(sink_name, &mut warned_noop_sink);
                             }
+                            let chunk = &page.records[offset..offset + size];
+                            let t0 = std::time::Instant::now();
+                            let chunk_outcomes_result = sink.write_batch_partial(chunk).await;
+                            let latency = t0.elapsed();
+                            // `chunk_synthesized` is true only when this chunk's
+                            // outcomes were fabricated from a single outer
+                            // `write_batch_partial` error under `DlqAll` — as
+                            // opposed to genuine per-row `Err`s the sink
+                            // reported. Tracking it per chunk keeps the page
+                            // `reason` label accurate when adaptive reslicing
+                            // mixes a synthesized chunk with partial-failure
+                            // chunks on the same page.
+                            let (chunk_outcomes, chunk_synthesized): (
+                                Vec<crate::RowOutcome>,
+                                bool,
+                            ) = match chunk_outcomes_result {
+                                Ok(o) => (o, false),
+                                Err(e) => match dlq_cfg.on_batch_error {
+                                    OnBatchError::Propagate => return Err(e),
+                                    OnBatchError::DlqAll => {
+                                        outer_err_recovered = true;
+                                        let msg = e.to_string();
+                                        let synth = (0..chunk.len())
+                                            .map(|_| Err(FaucetError::Sink(msg.clone())))
+                                            .collect();
+                                        (synth, true)
+                                    }
+                                },
+                            };
+                            let mut chunk_errors = 0usize;
+                            for (j, outcome) in chunk_outcomes.iter().enumerate() {
+                                match outcome {
+                                    Ok(()) => page_success += 1,
+                                    Err(err) => {
+                                        chunk_errors += 1;
+                                        if !chunk_synthesized {
+                                            had_per_row_sink_failure = true;
+                                        }
+                                        envelopes.push(build_envelope(
+                                            &chunk[j],
+                                            err,
+                                            sink_name,
+                                            &pipeline_name,
+                                            &row,
+                                            offset + j,
+                                        ));
+                                    }
+                                }
+                            }
+                            if let Some(ctrl) = controller.as_mut() {
+                                let adj = ctrl.observe(crate::adaptive::Observation {
+                                    batch_len: chunk.len(),
+                                    errors: chunk_errors,
+                                    latency,
+                                });
+                                emit_adaptive_metrics(ctrl, adj, &pipeline_name, &row);
+                            }
+                            offset += size;
                         }
                         // Quality-quarantined records share the DLQ budget/write.
                         // Capture the quality count BEFORE the splice — the splice
@@ -583,19 +651,27 @@ where
                             dlq_stats.records_dlq += page_failures;
                             dlq_stats.pages_with_failures += 1;
 
-                            // Page `reason` label, 3-way:
-                            //  - `dlq_all`  — the whole page was synthesized from a
-                            //    single outer sink error (OnBatchError::DlqAll).
-                            //  - `partial`  — at least one row failed on the SINK
-                            //    side (`page_failures > quality_count`). A mixed
-                            //    page carrying both sink failures and quality
-                            //    quarantines is labeled `partial`: the sink failure
-                            //    dominates.
+                            // Page `reason` label, 3-way (precedence: partial > dlq_all > quality):
+                            //  - `partial`  — at least one chunk reported genuine
+                            //    per-row sink `Err`s. Checked FIRST so a resliced
+                            //    page that mixes a synthesized chunk (DlqAll) with
+                            //    partial-failure chunks is labeled `partial` — the
+                            //    real per-row failure dominates. (For a
+                            //    non-resliced page this is equivalent to the old
+                            //    `page_failures > quality_count` test, since a
+                            //    single chunk is either all-synthesized or all
+                            //    per-row.)
+                            //  - `dlq_all`  — every sink-side failure on the page
+                            //    was synthesized from an outer `write_batch_partial`
+                            //    error (OnBatchError::DlqAll); no genuine per-row
+                            //    failures occurred.
                             //  - `quality`  — every envelope is quality-sourced
                             //    (no sink-side failures on this page).
                             // The per-row quality volume is separately exposed via
                             // `faucet_quality_records_quarantined_total`.
-                            let reason_label = if outer_err_recovered {
+                            let reason_label = if had_per_row_sink_failure {
+                                DlqReason::Partial.as_str()
+                            } else if outer_err_recovered {
                                 DlqReason::DlqAll.as_str()
                             } else if page_failures > quality_count {
                                 DlqReason::Partial.as_str()
@@ -646,7 +722,31 @@ where
                             "quality quarantine without DLQ should have been rejected at run start"
                         );
                         if !page.records.is_empty() {
-                            records_written += sink.write_batch(&page.records).await?;
+                            if let Some(cfg) = adaptive_cfg.as_ref() {
+                                let ctrl = controller.get_or_insert_with(|| {
+                                    crate::adaptive::AimdController::new(cfg, page.records.len())
+                                });
+                                maybe_warn_noop_sink(sink_name, &mut warned_noop_sink);
+                                let mut offset = 0;
+                                while offset < page.records.len() {
+                                    let size =
+                                        ctrl.current().max(1).min(page.records.len() - offset);
+                                    let chunk = &page.records[offset..offset + size];
+                                    let t0 = std::time::Instant::now();
+                                    let n = sink.write_batch(chunk).await?;
+                                    let latency = t0.elapsed();
+                                    records_written += n;
+                                    offset += size;
+                                    let adj = ctrl.observe(crate::adaptive::Observation {
+                                        batch_len: chunk.len(),
+                                        errors: 0,
+                                        latency,
+                                    });
+                                    emit_adaptive_metrics(ctrl, adj, &pipeline_name, &row);
+                                }
+                            } else {
+                                records_written += sink.write_batch(&page.records).await?;
+                            }
                         }
                         if let Some(bookmark) = page.bookmark {
                             sink.flush().await?;
@@ -744,6 +844,58 @@ where
         bookmark: last_bookmark,
         dlq: dlq.is_some().then_some(dlq_stats),
     })
+}
+
+/// Emit the adaptive controller's current state + any adjustment as metrics.
+/// Labels are `pipeline,row` only (the controller is pipeline-scoped).
+fn emit_adaptive_metrics(
+    ctrl: &crate::adaptive::AimdController,
+    adj: Option<crate::adaptive::Adjustment>,
+    pipeline: &str,
+    row: &str,
+) {
+    use metrics::{Label, SharedString, counter, gauge};
+    let base = vec![
+        Label::new("pipeline", SharedString::from(pipeline.to_string())),
+        Label::new("row", SharedString::from(row.to_string())),
+    ];
+    gauge!("faucet_pipeline_adaptive_batch_size", base.clone()).set(ctrl.current() as f64);
+    gauge!(
+        "faucet_pipeline_adaptive_batch_cooldown_active",
+        base.clone()
+    )
+    .set(if ctrl.cooldown_active() { 1.0 } else { 0.0 });
+    if let Some(p50) = ctrl.p50_latency_ms() {
+        gauge!(
+            "faucet_pipeline_adaptive_batch_p50_latency_ms",
+            base.clone()
+        )
+        .set(p50 as f64);
+    }
+    if let Some(a) = adj {
+        let mut lbl = base;
+        lbl.push(Label::new(
+            "direction",
+            SharedString::const_str(a.direction.as_str()),
+        ));
+        lbl.push(Label::new(
+            "reason",
+            SharedString::const_str(a.reason.as_str()),
+        ));
+        counter!("faucet_pipeline_adaptive_batch_adjustments_total", lbl).increment(1);
+    }
+}
+
+/// One-shot info when adaptive sizing targets a per-record sink that ignores
+/// `batch_size` (its adjustments are harmless no-ops).
+fn maybe_warn_noop_sink(sink_name: &str, warned: &mut bool) {
+    if !*warned && matches!(sink_name, "jsonl" | "csv" | "stdout") {
+        tracing::info!(
+            sink = sink_name,
+            "adaptive batch sizing is a no-op for this per-record sink"
+        );
+        *warned = true;
+    }
 }
 
 #[cfg(test)]
@@ -2162,5 +2314,246 @@ mod tests {
         let opts = RunStreamOptions::new().with_quality(quality);
         let result = run_stream(futures::stream::iter(pages), &main, opts).await;
         assert!(matches!(result, Err(FaucetError::Config(_))));
+    }
+
+    /// Sink whose write_batch_partial fails every Nth record; drives the
+    /// error-rate signal. Requires a DLQ in run_stream.
+    struct FlakySink {
+        every: usize,
+        calls: std::sync::Mutex<Vec<usize>>,
+    }
+    impl FlakySink {
+        fn new(every: usize) -> Self {
+            Self {
+                every,
+                calls: std::sync::Mutex::new(Vec::new()),
+            }
+        }
+        fn call_sizes(&self) -> Vec<usize> {
+            self.calls.lock().unwrap().clone()
+        }
+    }
+    #[async_trait]
+    impl Sink for FlakySink {
+        async fn write_batch(&self, records: &[Value]) -> Result<usize, FaucetError> {
+            Ok(records.len())
+        }
+        async fn write_batch_partial(
+            &self,
+            records: &[Value],
+        ) -> Result<Vec<crate::RowOutcome>, FaucetError> {
+            self.calls.lock().unwrap().push(records.len());
+            Ok(records
+                .iter()
+                .enumerate()
+                .map(|(i, _)| {
+                    if (i + 1) % self.every == 0 {
+                        Err(FaucetError::Sink("synthetic".into()))
+                    } else {
+                        Ok(())
+                    }
+                })
+                .collect())
+        }
+    }
+
+    #[tokio::test]
+    async fn adaptive_shrinks_under_errors_on_dlq_path() {
+        use crate::adaptive::AdaptiveBatchConfig;
+        use crate::dlq::{DlqConfig, OnBatchError};
+        // Three pages of 400 records each, matching the pattern used by
+        // adaptive_shrinks_under_latency_target_then_smaller_chunks. After
+        // page 1 (single 400-record chunk, 25% error rate > threshold 0.1),
+        // the controller shrinks and subsequent pages get smaller sub-batches.
+        let mk = || StreamPage {
+            records: (0..400).map(|i| json!({"i": i})).collect(),
+            bookmark: None,
+        };
+        let stream = futures::stream::iter(vec![Ok(mk()), Ok(mk()), Ok(mk())]);
+        let sink = FlakySink::new(4); // 25% error rate > threshold 0.1
+        let dlq_sink: Arc<dyn Sink> = Arc::new(MockSink::new());
+        let dlq = DlqConfig {
+            sink: dlq_sink,
+            on_batch_error: OnBatchError::Propagate,
+            max_failures_per_page: None,
+            max_failures_total: None,
+            include_original_payload: true,
+        };
+        let cfg: AdaptiveBatchConfig = serde_json::from_value(json!({
+            "enabled": true, "min": 50, "max": 400,
+            "decrease_factor": 0.5, "cooldown_batches": 0, "error_threshold": 0.1
+        }))
+        .unwrap();
+        let opts = RunStreamOptions::new().with_dlq(dlq).with_adaptive(cfg);
+        let result = run_stream(stream, &sink, opts).await.unwrap();
+        // 3 × 400 = 1200 records total; FlakySink(4) fails every 4th record
+        // per-chunk (floor(n/4)), so exact counts depend on chunk sizes due to
+        // integer arithmetic. With the controller shrinking under 25% error
+        // rate: page 1 = one 400-record chunk (300 written, 100 DLQ); pages
+        // 2–3 = smaller sub-batches; overall >≈75% of 1200 commit and ~25% go
+        // to the DLQ.
+        assert!(
+            result.records_written >= 900,
+            "expected ≥900 written, got {}",
+            result.records_written
+        );
+        let sizes = sink.call_sizes();
+        assert_eq!(sizes[0], 400, "first chunk is the full page");
+        assert!(
+            sizes.last().unwrap() < &400,
+            "controller should shrink under errors: {sizes:?}"
+        );
+        assert!(
+            result.dlq.unwrap().records_dlq >= 250,
+            "expected ≥250 DLQ records"
+        );
+    }
+
+    // ── Adaptive batch-size tests ──────────────────────────────────────────
+
+    /// A sink that records each write_batch call's size and reports a fixed
+    /// per-call latency, so we can assert the adaptive controller resliced.
+    struct RecordingSink {
+        calls: std::sync::Mutex<Vec<usize>>,
+        latency: std::time::Duration,
+    }
+    impl RecordingSink {
+        fn new(latency_ms: u64) -> Self {
+            Self {
+                calls: std::sync::Mutex::new(Vec::new()),
+                latency: std::time::Duration::from_millis(latency_ms),
+            }
+        }
+        fn call_sizes(&self) -> Vec<usize> {
+            self.calls.lock().unwrap().clone()
+        }
+    }
+    #[async_trait]
+    impl Sink for RecordingSink {
+        async fn write_batch(&self, records: &[Value]) -> Result<usize, FaucetError> {
+            tokio::time::sleep(self.latency).await;
+            self.calls.lock().unwrap().push(records.len());
+            Ok(records.len())
+        }
+    }
+
+    #[tokio::test]
+    async fn adaptive_reslices_non_dlq_page_into_subbatches() {
+        use crate::adaptive::AdaptiveBatchConfig;
+        let page = StreamPage {
+            records: (0..1000).map(|i| json!({ "i": i })).collect(),
+            bookmark: None,
+        };
+        let stream = futures::stream::iter(vec![Ok(page)]);
+        let sink = RecordingSink::new(0);
+        let cfg: AdaptiveBatchConfig =
+            serde_json::from_value(json!({"enabled": true, "min": 100, "max": 1000})).unwrap();
+        let result = run_stream(stream, &sink, RunStreamOptions::new().with_adaptive(cfg))
+            .await
+            .unwrap();
+        assert_eq!(result.records_written, 1000);
+        // current starts at min(max, page_len)=1000 → one chunk (no regression).
+        assert_eq!(sink.call_sizes(), vec![1000]);
+    }
+
+    #[tokio::test]
+    async fn adaptive_shrinks_under_latency_target_then_smaller_chunks() {
+        use crate::adaptive::AdaptiveBatchConfig;
+        let mk = || StreamPage {
+            records: (0..400).map(|i| json!({"i": i})).collect(),
+            bookmark: None,
+        };
+        let stream = futures::stream::iter(vec![Ok(mk()), Ok(mk()), Ok(mk())]);
+        let sink = RecordingSink::new(50);
+        let cfg: AdaptiveBatchConfig = serde_json::from_value(json!({
+            "enabled": true, "min": 50, "max": 400,
+            "decrease_factor": 0.5, "cooldown_batches": 0,
+            "target_latency_ms": 10, "latency_window": 1
+        }))
+        .unwrap();
+        let result = run_stream(stream, &sink, RunStreamOptions::new().with_adaptive(cfg))
+            .await
+            .unwrap();
+        assert_eq!(result.records_written, 1200);
+        let sizes = sink.call_sizes();
+        assert_eq!(sizes[0], 400);
+        assert!(
+            sizes.last().unwrap() < &400,
+            "controller should have shrunk: {sizes:?}"
+        );
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn adaptive_emits_batch_size_and_adjustments_metrics() {
+        // Mirror the same LOCK+snapshotter pattern used by
+        // `pipeline_run_increments_runs_total` and `dlq_emits_records_total_and_pages_total`.
+        use crate::adaptive::AdaptiveBatchConfig;
+        use crate::observability::decorator::source_tests::{LOCK, snapshotter};
+        use metrics_util::debugging::DebugValue;
+
+        let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let snap = snapshotter();
+
+        // Three pages of 400 records. RecordingSink(50) reports 50ms latency.
+        // Config: target_latency_ms=10, latency_window=1, cooldown_batches=0 so
+        // p50 (50ms) > 10*1.2=12ms on every batch → controller shrinks each time,
+        // guaranteeing at least one `faucet_pipeline_adaptive_batch_adjustments_total`
+        // is emitted.
+        let mk = || StreamPage {
+            records: (0..400).map(|i| json!({"i": i})).collect(),
+            bookmark: None,
+        };
+        let stream = futures::stream::iter(vec![Ok(mk()), Ok(mk()), Ok(mk())]);
+        let sink = RecordingSink::new(50);
+        let cfg: AdaptiveBatchConfig = serde_json::from_value(json!({
+            "enabled": true, "min": 50, "max": 400,
+            "decrease_factor": 0.5, "cooldown_batches": 0,
+            "target_latency_ms": 10, "latency_window": 1
+        }))
+        .unwrap();
+
+        let _ = run_stream(
+            stream,
+            &sink,
+            RunStreamOptions::new()
+                .with_adaptive(cfg)
+                .with_name("p")
+                .with_row("r"),
+        )
+        .await
+        .unwrap();
+
+        let snapshot = snap.snapshot();
+        let mut saw_batch_size = false;
+        let mut saw_adjustments = false;
+        for (k, _u, _d, v) in snapshot.into_vec() {
+            let key = k.key();
+            let labels = key.labels().collect::<Vec<_>>();
+            let has = |k: &str, val: &str| labels.iter().any(|l| l.key() == k && l.value() == val);
+
+            if key.name() == "faucet_pipeline_adaptive_batch_size"
+                && has("pipeline", "p")
+                && has("row", "r")
+                && matches!(v, DebugValue::Gauge(_))
+            {
+                saw_batch_size = true;
+            }
+            if key.name() == "faucet_pipeline_adaptive_batch_adjustments_total"
+                && has("pipeline", "p")
+                && has("row", "r")
+                && matches!(v, DebugValue::Counter(c) if c >= 1)
+            {
+                saw_adjustments = true;
+            }
+        }
+        assert!(
+            saw_batch_size,
+            "expected faucet_pipeline_adaptive_batch_size gauge with pipeline=p, row=r"
+        );
+        assert!(
+            saw_adjustments,
+            "expected faucet_pipeline_adaptive_batch_adjustments_total counter with pipeline=p, row=r"
+        );
     }
 }

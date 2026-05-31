@@ -256,6 +256,10 @@ pub struct ExecutionSpec {
     /// What to do when a pipeline invocation fails.
     #[serde(default)]
     pub on_error: OnError,
+
+    /// Adaptive batch-size controller (opt-in). See `faucet_core::AdaptiveBatchConfig`.
+    #[serde(default)]
+    pub adaptive_batch_size: Option<faucet_core::AdaptiveBatchConfig>,
 }
 
 /// Failure-handling policy across the matrix.
@@ -737,6 +741,28 @@ pipeline:
         assert_eq!(s.cron, "0 2 * * *");
         assert_eq!(s.timezone, "America/Los_Angeles");
         assert_eq!(s.max_consecutive_failures, Some(5));
+    }
+
+    #[test]
+    fn execution_spec_parses_adaptive_block() {
+        let yaml = r#"
+version: 1
+pipeline:
+  source: { type: rest, config: { base_url: https://api.example.com } }
+  sink:   { type: jsonl, config: { path: ./out.jsonl } }
+execution:
+  adaptive_batch_size:
+    enabled: true
+    min: 200
+    max: 4000
+    target_latency_ms: 800
+"#;
+        let cfg = crate::config::parse_with_extension(yaml, "yaml").unwrap();
+        let ab = cfg.execution.unwrap().adaptive_batch_size.unwrap();
+        assert!(ab.enabled);
+        assert_eq!(ab.min, 200);
+        assert_eq!(ab.target_latency_ms, Some(800));
+        ab.validate().unwrap();
     }
 
     #[cfg(feature = "quality")]

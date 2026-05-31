@@ -25,6 +25,7 @@
 - [Compression](./cookbook/compression.md)
 - [Record transforms](./cookbook/transforms.md)
 - [Secrets-manager interpolation](./cookbook/secrets.md)
+- [Adaptive batching](./cookbook/adaptive-batching.md)
 - [Scheduling](./cookbook/scheduling.md)
 - [Troubleshooting with faucet doctor](./cookbook/troubleshooting.md)
 

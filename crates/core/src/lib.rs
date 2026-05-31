@@ -13,6 +13,7 @@
 //! - [`ReplicationMethod`] — incremental replication support
 //! - [`schema::infer_schema`] — JSON Schema inference from record samples
 
+pub mod adaptive;
 pub mod auth;
 pub mod check;
 pub mod config;
@@ -35,6 +36,9 @@ pub mod util;
 #[cfg(feature = "compression")]
 pub mod compression;
 
+pub use adaptive::{
+    AdaptiveBatchConfig, AdjustDirection, AdjustReason, Adjustment, AimdController, Observation,
+};
 pub use auth::{AuthProvider, AuthReference, AuthSpec, Credential, SharedAuthProvider};
 pub use check::{CheckContext, CheckReport, Probe, ProbeStatus};
 pub use dlq::{DlqConfig, DlqReason, DlqStats, OnBatchError, build_envelope};
