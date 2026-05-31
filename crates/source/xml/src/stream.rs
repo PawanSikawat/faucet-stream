@@ -12,6 +12,22 @@ use std::collections::HashMap;
 use std::pin::Pin;
 use std::time::Duration;
 
+/// Content fingerprint of a fetched page, used as a pagination loop guard: a
+/// server that ignores the page/offset parameter (or clamps to the last page)
+/// returns the same non-empty page on every request, which would otherwise loop
+/// forever. Stopping when two consecutive pages fingerprint identically mirrors
+/// the REST source's body-fingerprint guard (audit #146 H4/H5).
+fn page_fingerprint(records: &[Value]) -> u64 {
+    use std::hash::{Hash, Hasher};
+    // `serde_json::Value` is not `Hash`; hash its canonical string form.
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    records.len().hash(&mut hasher);
+    for r in records {
+        r.to_string().hash(&mut hasher);
+    }
+    hasher.finish()
+}
+
 /// Retries on transient (5xx / connection) failures before giving up.
 const RETRY_MAX_ATTEMPTS: u32 = 3;
 /// Base exponential-backoff delay between retries.
@@ -78,7 +94,7 @@ impl XmlStream {
         let mut pages_fetched = 0usize;
         let mut offset = 0usize;
         let mut page_number = None;
-        let mut prev_record_count: Option<usize> = None;
+        let mut prev_fingerprint: Option<u64> = None;
 
         // Initialize pagination state.
         if let Some(XmlPagination::PageNumber { start_page, .. }) = &self.config.pagination {
@@ -105,8 +121,20 @@ impl XmlStream {
             };
 
             let record_count = records.len();
+            let fingerprint = page_fingerprint(&records);
             all_records.extend(records);
             pages_fetched += 1;
+
+            // Loop guard: a server that ignores the page/offset parameter (or
+            // clamps to the last page) returns the same non-empty page forever.
+            // Stop when two consecutive pages are identical (audit #146 H4/H5).
+            if record_count > 0 && prev_fingerprint == Some(fingerprint) {
+                tracing::warn!(
+                    "XML pagination returned an identical page; stopping to avoid an infinite loop"
+                );
+                break;
+            }
+            prev_fingerprint = Some(fingerprint);
 
             // Advance pagination or stop.
             match &self.config.pagination {
@@ -126,16 +154,10 @@ impl XmlStream {
                     if record_count < *limit {
                         break;
                     }
-                    // Loop detection: stop if record count is identical and offset hasn't advanced.
-                    if prev_record_count == Some(record_count) && record_count == 0 {
-                        tracing::warn!("offset pagination loop detected, stopping");
-                        break;
-                    }
                     offset += record_count;
                 }
                 None => break,
             }
-            prev_record_count = Some(record_count);
         }
 
         tracing::info!(
@@ -327,7 +349,7 @@ impl faucet_core::Source for XmlStream {
             let mut pages_fetched = 0usize;
             let mut offset = 0usize;
             let mut page_number = None;
-            let mut prev_record_count: Option<usize> = None;
+            let mut prev_fingerprint: Option<u64> = None;
 
             if let Some(XmlPagination::PageNumber { start_page, .. }) =
                 &self.config.pagination
@@ -362,6 +384,7 @@ impl faucet_core::Source for XmlStream {
                 )?;
 
                 let record_count = page_records.len();
+                let fingerprint = page_fingerprint(&page_records);
 
                 for rec in page_records.drain(..) {
                     buffer.push(rec);
@@ -372,6 +395,17 @@ impl faucet_core::Source for XmlStream {
                     }
                 }
                 pages_fetched += 1;
+
+                // Loop guard: stop when two consecutive pages are identical — a
+                // server ignoring the page/offset parameter (or clamping to the
+                // last page) returns the same non-empty page forever (#146 H4/H5).
+                if record_count > 0 && prev_fingerprint == Some(fingerprint) {
+                    tracing::warn!(
+                        "XML pagination returned an identical page; stopping to avoid an infinite loop"
+                    );
+                    break;
+                }
+                prev_fingerprint = Some(fingerprint);
 
                 // Advance pagination using the same rules as
                 // `fetch_all_with_context`.
@@ -391,15 +425,10 @@ impl faucet_core::Source for XmlStream {
                         if record_count < *limit {
                             break;
                         }
-                        if prev_record_count == Some(record_count) && record_count == 0 {
-                            tracing::warn!("offset pagination loop detected, stopping");
-                            break;
-                        }
                         offset += record_count;
                     }
                     None => break,
                 }
-                prev_record_count = Some(record_count);
             }
 
             if !buffer.is_empty() {
