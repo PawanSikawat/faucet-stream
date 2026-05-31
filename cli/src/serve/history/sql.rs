@@ -2,7 +2,7 @@
 //! (Phase 5, #127). Both backends are identical except for the connection setup
 //! and the placeholder dialect (`$n` vs `?`), so the schema, prepared-statement
 //! text, pure helpers, and the entire `RunHistory` impl live here once and are
-//! instantiated for each concrete `sqlx` pool via [`impl_sql_history!`].
+//! instantiated for each concrete `sqlx` pool via the `impl_sql_history!` macro.
 //!
 //! **Portability:** every column is `TEXT` (timestamps are stored as fixed-width
 //! RFC3339 with nanosecond precision + `Z`, which sorts lexicographically in

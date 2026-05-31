@@ -1,6 +1,6 @@
 //! serve-owned observability: install the Prometheus recorder (returning a
 //! render handle for the `/metrics` route) and a tracing subscriber whose fmt
-//! layer routes through the secret-redacting writer and whose [`RunLogLayer`]
+//! layer routes through the secret-redacting writer and whose `RunLogLayer`
 //! feeds the per-run SSE log buffers. Both are process-global and set-once; a
 //! second install in the same process is tolerated (returns no handle / leaves
 //! the existing subscriber). The returned [`LogHub`] is shared with
@@ -19,7 +19,7 @@ static LOG_HUB: OnceLock<LogHub> = OnceLock::new();
 /// Install the recorder + tracing subscriber. Returns the Prometheus render
 /// handle (when this call installed the recorder; `None` if one was already
 /// present) and the process-global [`LogHub`] wired into the subscriber's
-/// [`RunLogLayer`].
+/// `RunLogLayer`.
 pub fn install(level: &str) -> (Option<PrometheusHandle>, LogHub) {
     let handle = match PrometheusBuilder::new().install_recorder() {
         Ok(h) => Some(h),

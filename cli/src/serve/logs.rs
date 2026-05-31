@@ -4,7 +4,7 @@
 //! tags every span that carries a `serve_run_id` field (the
 //! `faucet.serve.run` span each run executes inside — see `runner.rs`) and, for
 //! every event in such a span's scope, formats a redacted line and pushes it into
-//! that run's [`RunBuffer`]: a bounded ring (for backfill) plus a `broadcast`
+//! that run's per-run buffer: a bounded ring (for backfill) plus a `broadcast`
 //! channel (for the live tail). The `/logs` handler replays the ring, then
 //! streams the live tail via [`log_events`].
 //!
