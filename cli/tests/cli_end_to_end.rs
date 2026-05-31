@@ -478,10 +478,12 @@ fn shipped_example_yamls_pass_validate() {
         // specific test runs (e.g. `--features serve`) must not trip on
         // example YAMLs that need the orthogonal `schedule` feature (or vice
         // versa).
-        let yaml_text = fs::read_to_string(&path).unwrap_or_default();
         #[cfg(not(feature = "schedule"))]
-        if yaml_text.contains("\nschedule:") || yaml_text.starts_with("schedule:") {
-            continue;
+        {
+            let yaml_text = fs::read_to_string(&path).unwrap_or_default();
+            if yaml_text.contains("\nschedule:") || yaml_text.starts_with("schedule:") {
+                continue;
+            }
         }
         count += 1;
         let mut cmd = Command::cargo_bin("faucet").unwrap();

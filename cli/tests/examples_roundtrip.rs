@@ -51,11 +51,13 @@ fn every_example_loads_and_expands() {
         // binary.  In CI `--all-features` covers everything; local single-
         // feature runs must not fail on example YAMLs that need an orthogonal
         // feature (e.g. `schedule:` requires `--features schedule`).
-        let yaml_text = std::fs::read_to_string(&path).unwrap_or_default();
         #[cfg(not(feature = "schedule"))]
-        if yaml_text.contains("\nschedule:") || yaml_text.starts_with("schedule:") {
-            skipped += 1;
-            continue;
+        {
+            let yaml_text = std::fs::read_to_string(&path).unwrap_or_default();
+            if yaml_text.contains("\nschedule:") || yaml_text.starts_with("schedule:") {
+                skipped += 1;
+                continue;
+            }
         }
         count += 1;
         let cfg = match PipelineConfig::from_path(&path) {
