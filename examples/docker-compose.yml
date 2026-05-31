@@ -127,3 +127,42 @@ services:
       interval: 5s
       timeout: 5s
       retries: 15
+
+  # Microsoft SQL Server (Developer edition) for the mssql source/sink examples.
+  # ~1.5 GB image — start it explicitly (`docker compose up -d mssql mssql-init`)
+  # if you only want this one.
+  mssql:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    environment:
+      ACCEPT_EULA: "Y"
+      MSSQL_SA_PASSWORD: "Str0ng@Pass"
+      MSSQL_PID: "Developer"
+    ports:
+      - "1433:1433"
+    healthcheck:
+      # The server image doesn't bundle sqlcmd; a bash /dev/tcp probe confirms
+      # the TDS port is accepting connections.
+      test: ["CMD-SHELL", "bash -c 'echo > /dev/tcp/localhost/1433' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+
+  # One-shot: waits for SQL Server, then creates the `sales` / `analytics` / `raw`
+  # databases and the sample tables the mssql examples use.
+  mssql-init:
+    image: mcr.microsoft.com/mssql-tools
+    depends_on:
+      mssql:
+        condition: service_healthy
+    volumes:
+      - ./infra/mssql-init.sql:/init.sql:ro
+    entrypoint:
+      - bash
+      - -c
+      - >
+        for i in $$(seq 1 30); do
+          /opt/mssql-tools/bin/sqlcmd -S mssql -U sa -P "Str0ng@Pass" -b -Q "SELECT 1" && break;
+          echo "waiting for sql server ($$i)..."; sleep 2;
+        done;
+        /opt/mssql-tools/bin/sqlcmd -S mssql -U sa -P "Str0ng@Pass" -b -i /init.sql
+    restart: "no"

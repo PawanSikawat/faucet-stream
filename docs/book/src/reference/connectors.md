@@ -1,6 +1,6 @@
 # Connector catalog
 
-faucet-stream ships **20 sources** and **16 sinks**. Each is a Cargo feature
+faucet-stream ships **21 sources** and **17 sinks**. Each is a Cargo feature
 (`source-<name>` / `sink-<name>`) and an independently published crate. Full API
 docs are on [docs.rs](https://docs.rs/faucet-stream).
 
@@ -22,6 +22,7 @@ Legend: ✓ supported · ✗ not applicable.
 | PostgreSQL | `source-postgres` | ✓ | ✗ | ✗ | SQL query, rows as JSON |
 | PostgreSQL CDC | `source-postgres-cdc` | ✓ | ✓ | ✗ | logical replication (pgoutput), LSN bookmarks |
 | MySQL | `source-mysql` | ✓ | ✗ | ✗ | SQL query, rows as JSON |
+| Microsoft SQL Server | `source-mssql` | ✓ | ✓⁷ | ✗ | SQL query (tiberius), rows as JSON |
 | SQLite | `source-sqlite` | ✓ | ✗ | ✗ | SQL query, rows as JSON |
 | AWS S3 | `source-s3` | ✓⁴ | ✗ | ✓ | object reader: JSONL, JSON array, raw text |
 | Google Cloud Storage | `source-gcs` | ✓⁴ | ✗ | ✓ | object reader: JSONL, JSON array, raw text |
@@ -42,7 +43,8 @@ so re-runs continue where they left off (incremental replication / CDC / Kafka
 offsets). ³ gRPC streams natively in *server-streaming* mode; unary buffers the
 single response. ⁴ S3/GCS stream in JSONL and raw-text modes; JSON-array mode
 buffers one object. ⁵ Webhook is buffer-shaped by nature (it collects POSTs over
-a window).
+a window). ⁷ MSSQL is resumable only in `replication: incremental` mode (it
+persists a tracking-column bookmark); in `full` mode it is not.
 
 ## Sinks
 
@@ -56,6 +58,7 @@ file/append sinks (`jsonl`, `csv`, `stdout`) it's a no-op — they write per rec
 | JSON Lines | `sink-jsonl` | no-op | ✓ | buffered file append |
 | Snowflake | `sink-snowflake` | ✓ | ✗ | SQL REST API |
 | MySQL | `sink-mysql` | ✓ | ✗ | multi-row `INSERT` |
+| Microsoft SQL Server | `sink-mssql` | ✓ | ✗ | multi-row `INSERT` (2100-param auto-split, per-row DLQ) |
 | SQLite | `sink-sqlite` | ✓ | ✗ | transaction-wrapped batch |
 | AWS S3 | `sink-s3` | ✓ | ✓ | JSONL objects, parallel uploads |
 | Google Cloud Storage | `sink-gcs` | ✓ | ✓ | JSONL objects |

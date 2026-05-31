@@ -57,6 +57,9 @@ The service column lists what each example touches; all are provided by
 | `rest_to_postgres.yaml`, `rest_to_postgres_with_quality.yaml`, `mongodb_to_postgres.yaml`, `graphql_to_postgres.yaml`, `webhook_to_postgres.yaml` | postgres (+ source) |
 | `mysql_to_postgres.yaml` | mysql, postgres |
 | `csv_to_mysql.yaml`, `redis_to_mysql.yaml` | mysql (+ source) |
+| `mssql_to_jsonl.yaml` | mssql + mssql-init (incremental source; seeds `sales.dbo.users`) |
+| `kafka_to_mssql.yaml` | mssql + mssql-init, redpanda (produce JSON to `events` matching `analytics.dbo.events`) |
+| `rest_to_mssql.yaml` | mssql + mssql-init (json_column; auto-creates `raw.dbo.products_raw`) |
 | `redis_to_sqlite.yaml`, `mongodb_to_redis.yaml`, `elasticsearch_to_redis.yaml` | redis (+ source) |
 | `kafka_to_jsonl.yaml`, `rest_to_kafka.yaml` | redpanda (Kafka API) |
 | `mongodb_to_elasticsearch.yaml`, `postgres_to_elasticsearch.yaml`, `grpc_to_elasticsearch.yaml` | elasticsearch (+ source) |

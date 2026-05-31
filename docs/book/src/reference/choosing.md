@@ -78,7 +78,7 @@ Use **`source-bigquery`** / **`source-snowflake`** to *read out of* a warehouse
 
 ## Sinks: column-mapped vs. JSON blob (SQL databases)
 
-The Postgres/MySQL/SQLite sinks can write either:
+The Postgres/MySQL/SQLite/SQL Server sinks can write either:
 
 - **a single JSON/JSONB column** (`column_mapping: { type: jsonb, column: data }`)
   — schemaless, no DDL coupling, easiest to start with; or

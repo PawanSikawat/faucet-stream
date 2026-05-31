@@ -157,7 +157,7 @@ flowchart LR
     P -.->|metrics + spans| O
 ```
 
-faucet-stream is a Cargo workspace with 47 crates — 20 sources, 16 sinks, 5 shared connector libraries, the shared auth-provider library, 2 state-store backends, the shared core, the umbrella crate, and the CLI binary:
+faucet-stream is a Cargo workspace with 50 crates — 21 sources, 17 sinks, 6 shared connector libraries, the shared auth-provider library, 2 state-store backends, the shared core, the umbrella crate, and the CLI binary:
 
 | Crate | Description |
 |-------|-------------|
@@ -171,6 +171,7 @@ faucet-stream is a Cargo workspace with 47 crates — 20 sources, 16 sinks, 5 sh
 | [`faucet-source-postgres`](crates/source/postgres) | PostgreSQL — run SQL queries, return rows as JSON |
 | [`faucet-source-postgres-cdc`](crates/source/postgres-cdc) | PostgreSQL CDC — logical replication via pgoutput, resumable with any StateStore |
 | [`faucet-source-mysql`](crates/source/mysql) | MySQL — run SQL queries, return rows as JSON |
+| [`faucet-source-mssql`](crates/source/mssql) | Microsoft SQL Server — run SQL queries (streaming, incremental), rows as JSON |
 | [`faucet-source-sqlite`](crates/source/sqlite) | SQLite — run SQL queries, return rows as JSON |
 | [`faucet-source-s3`](crates/source/s3) | AWS S3 — read objects as JSONL, JSON array, or raw text |
 | [`faucet-source-gcs`](crates/source/gcs) | Google Cloud Storage — read objects as JSONL, JSON array, or raw text |
@@ -190,6 +191,7 @@ faucet-stream is a Cargo workspace with 47 crates — 20 sources, 16 sinks, 5 sh
 | [`faucet-sink-jsonl`](crates/sink/jsonl) | JSON Lines — file output with append/truncate |
 | [`faucet-sink-snowflake`](crates/sink/snowflake) | Snowflake — SQL REST API with JWT/OAuth |
 | [`faucet-sink-mysql`](crates/sink/mysql) | MySQL — JSON column or auto-mapped columns |
+| [`faucet-sink-mssql`](crates/sink/mssql) | Microsoft SQL Server — JSON column or auto-mapped columns |
 | [`faucet-sink-sqlite`](crates/sink/sqlite) | SQLite — JSON column or auto-mapped columns |
 | [`faucet-sink-s3`](crates/sink/s3) | AWS S3 — write JSONL files to bucket |
 | [`faucet-sink-gcs`](crates/sink/gcs) | Google Cloud Storage — write JSONL files to bucket |
@@ -207,6 +209,7 @@ faucet-stream is a Cargo workspace with 47 crates — 20 sources, 16 sinks, 5 sh
 | [`faucet-gcs-common`](crates/gcs-common) | Shared GCS types — credentials enum, Storage/StorageControl client builders |
 | [`faucet-kafka-common`](crates/kafka-common) | Shared Kafka types — auth, value formats, Schema Registry client |
 | [`faucet-snowflake-common`](crates/snowflake-common) | Shared Snowflake types — `SnowflakeAuth` enum + auth header helpers |
+| [`faucet-mssql-common`](crates/mssql-common) | Shared MSSQL types — connection/TLS config, `tiberius`+`bb8` pool builder, identifier quoting |
 | **State stores** | |
 | [`faucet-state-redis`](crates/state/redis) | Redis-backed `StateStore` for persistent bookmarks |
 | [`faucet-state-postgres`](crates/state/postgres) | PostgreSQL-backed `StateStore` for persistent bookmarks |
@@ -250,9 +253,9 @@ Every connector is optimised for throughput out of the box:
 | Technique | Where |
 |-----------|-------|
 | **Parallel I/O** | S3 reads/writes objects concurrently (configurable `concurrency`); HTTP sink sends requests in parallel; REST source processes partitions concurrently |
-| **Multi-row INSERT** | PostgreSQL, MySQL, and SQLite sinks batch records into single INSERT statements instead of one per row |
+| **Multi-row INSERT** | PostgreSQL, MySQL, SQLite, and SQL Server sinks batch records into single INSERT statements instead of one per row (MSSQL auto-splits at the 2100-parameter limit) |
 | **Transaction wrapping** | SQLite sink wraps batches in `BEGIN`/`COMMIT` for 10-50x write speedup |
-| **Connection pooling** | All database connectors (PostgreSQL, MySQL, SQLite) use connection pools with configurable `max_connections` |
+| **Connection pooling** | All database connectors (PostgreSQL, MySQL, SQLite, SQL Server) use connection pools with configurable `max_connections` |
 | **Connection reuse** | S3, MongoDB, Redis, Elasticsearch, and HTTP connectors create clients once and reuse across all operations |
 | **Redis pipelining** | Redis sink batches commands with `pipe()`; Redis source uses `MGET` for bulk key reads |
 | **Bulk APIs** | Elasticsearch uses the bulk NDJSON API; BigQuery uses `insertAll`; MongoDB uses `insert_many` |
@@ -371,6 +374,13 @@ Every pipeline emits OTel-compatible `tracing` spans and Prometheus metrics auto
 - **SQL queries** — run any SQL query and get results as JSON records
 - **Connection pooling** — built on `sqlx` with `MySqlPool`
 
+### Source: Microsoft SQL Server (`faucet-source-mssql`)
+
+- **SQL queries** — run any SQL query and get results as JSON records
+- **Streaming + connection pooling** — built on `tiberius` + `bb8`, streams rows page-by-page
+- **Incremental replication** — tracking-column bookmark with an `@bookmark` token for server-side pushdown
+- **Type-aware decoding** — DECIMAL/MONEY → precision-preserving strings, DATETIMEOFFSET keeps its offset, binary → base64
+
 ### Source: SQLite (`faucet-source-sqlite`)
 
 - **SQL queries** — run any SQL query and get results as JSON records
@@ -415,6 +425,13 @@ Every pipeline emits OTel-compatible `tracing` spans and Prometheus metrics auto
 - **JSON mode** — insert records as JSON strings into a column
 - **Auto-map mode** — discover columns from INFORMATION_SCHEMA, map JSON fields automatically
 - **Connection pooling** — built on `sqlx` with `MySqlPool`
+
+### Sink: Microsoft SQL Server (`faucet-sink-mssql`)
+
+- **JSON mode** — insert records as JSON strings into a single column (optionally auto-creating the table)
+- **Auto-map mode** — discover columns from `sys.columns` (IDENTITY columns skipped), map JSON fields automatically
+- **2100-parameter auto-split** — multi-row INSERTs split to stay within MSSQL's per-request limit, wrapped in a transaction
+- **Row-isolation DLQ** — on batch failure, retries row-by-row so only the offending row is dead-lettered
 
 ### Sink: SQLite (`faucet-sink-sqlite`)
 
@@ -890,6 +907,7 @@ Every pagination style has a termination/loop guard. `Cursor`, `LinkHeader`, and
 | `source-postgres` | no | PostgreSQL query source |
 | `source-postgres-cdc` | no | PostgreSQL CDC source (logical replication) |
 | `source-mysql` | no | MySQL query source |
+| `source-mssql` | no | Microsoft SQL Server query source |
 | `source-sqlite` | no | SQLite query source |
 | `source-s3` | no | AWS S3 file source |
 | `source-gcs` | no | Google Cloud Storage file source |
@@ -908,6 +926,7 @@ Every pagination style has a termination/loop guard. `Cursor`, `LinkHeader`, and
 | `sink-jsonl` | no | JSON Lines file sink |
 | `sink-snowflake` | no | Snowflake sink |
 | `sink-mysql` | no | MySQL sink |
+| `sink-mssql` | no | Microsoft SQL Server sink |
 | `sink-sqlite` | no | SQLite sink |
 | `sink-s3` | no | AWS S3 file sink |
 | `sink-gcs` | no | Google Cloud Storage file sink |
@@ -1077,6 +1096,7 @@ crates/
     postgres/                 — PostgreSQL queries
     postgres-cdc/             — PostgreSQL CDC (logical replication)
     mysql/                    — MySQL queries
+    mssql/                    — Microsoft SQL Server queries (streaming, incremental)
     sqlite/                   — SQLite queries
 
     s3/                       — AWS S3 object reader
@@ -1096,6 +1116,7 @@ crates/
     jsonl/                    — JSON Lines file output
     snowflake/                — Snowflake SQL REST API
     mysql/                    — MySQL (JSON or auto-map)
+    mssql/                    — Microsoft SQL Server (JSON or auto-map, 2100-param split)
     sqlite/                   — SQLite (JSON or auto-map)
 
     s3/                       — AWS S3 JSONL writer
@@ -1112,6 +1133,7 @@ crates/
   gcs-common/                 — faucet-gcs-common: shared GCS credentials + client builders
   kafka-common/               — faucet-kafka-common: shared Kafka auth, formats, Schema Registry
   snowflake-common/           — faucet-snowflake-common: shared SnowflakeAuth + JWT/OAuth header helpers
+  mssql-common/               — faucet-mssql-common: shared MSSQL connection/TLS config + tiberius/bb8 pool
   state/
     redis/                    — Redis-backed StateStore
     postgres/                 — PostgreSQL-backed StateStore
