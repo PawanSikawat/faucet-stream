@@ -177,7 +177,14 @@ impl MssqlSink {
             .collect::<Result<_, _>>()?;
         let per_insert = max_rows_per_insert(cols_quoted.len());
 
-        let txn = self.config.transaction_per_batch;
+        // Wrap the chunk in a transaction when configured, OR whenever it spans
+        // more than one ≤2100-param sub-INSERT. Under autocommit a multi-sub
+        // chunk commits each sub-INSERT independently, so a later failure leaves
+        // earlier sub-INSERTs committed — and both the batch-level transient
+        // retry (`write_batch`) and the per-row isolation (`write_batch_partial`)
+        // re-run the whole chunk, duplicating those committed rows (audit #146
+        // H6). Forcing a transaction makes the chunk atomic so re-running is safe.
+        let txn = self.config.transaction_per_batch || rows.len() > per_insert;
         if txn {
             control(conn, "BEGIN TRAN").await?;
         }
