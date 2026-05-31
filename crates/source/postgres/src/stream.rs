@@ -123,10 +123,13 @@ fn bind_params<'q>(
     config_params: &'q [Value],
     bind_values: &'q [Value],
 ) -> sqlx::query::Query<'q, sqlx::Postgres, sqlx::postgres::PgArguments> {
-    for param in config_params {
-        query = query.bind(param);
-    }
-    for value in bind_values {
+    // Bind the static config params and the per-context values as native
+    // scalar types, in positional order ($1, $2, …). Binding a raw
+    // `serde_json::Value` encodes it as `jsonb` (sqlx), which breaks comparisons
+    // against typed columns — e.g. `WHERE id = $1` against an integer column
+    // fails with "operator does not exist: integer = jsonb". config_params
+    // previously bound the raw Value and hit exactly this (audit #146 H12).
+    for value in config_params.iter().chain(bind_values) {
         query = match value {
             Value::String(s) => query.bind(s.clone()),
             Value::Number(n) if n.is_i64() => query.bind(n.as_i64().unwrap()),
