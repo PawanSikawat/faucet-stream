@@ -110,6 +110,7 @@ jobs:
           - source-postgres
           - source-postgres-cdc
           - source-mysql
+          - source-mssql
           - source-sqlite
           - source-s3
           - source-mongodb
@@ -129,6 +130,7 @@ jobs:
           - sink-jsonl
           - sink-snowflake
           - sink-mysql
+          - sink-mssql
           - sink-sqlite
           - sink-s3
           - sink-mongodb

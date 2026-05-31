@@ -24,6 +24,7 @@ source = [
     "source-postgres",
     "source-postgres-cdc",
     "source-mysql",
+    "source-mssql",
     "source-sqlite",
     "source-s3",
     "source-mongodb",
@@ -45,6 +46,7 @@ sink = [
     "sink-snowflake",
     "sink-kafka",
     "sink-mysql",
+    "sink-mssql",
     "sink-sqlite",
     "sink-s3",
     "sink-mongodb",
@@ -93,6 +95,7 @@ source-grpc = ["dep:faucet-source-grpc"]
 source-postgres = ["dep:faucet-source-postgres"]
 source-postgres-cdc = ["dep:faucet-source-postgres-cdc"]
 source-mysql = ["dep:faucet-source-mysql"]
+source-mssql = ["dep:faucet-source-mssql"]
 source-sqlite = ["dep:faucet-source-sqlite"]
 source-s3 = ["dep:faucet-source-s3"]
 source-mongodb = ["dep:faucet-source-mongodb"]
@@ -113,6 +116,7 @@ sink-postgres = ["dep:faucet-sink-postgres"]
 sink-jsonl = ["dep:faucet-sink-jsonl"]
 sink-snowflake = ["dep:faucet-sink-snowflake"]
 sink-mysql = ["dep:faucet-sink-mysql"]
+sink-mssql = ["dep:faucet-sink-mssql"]
 sink-sqlite = ["dep:faucet-sink-sqlite"]
 
 sink-s3 = ["dep:faucet-sink-s3"]
@@ -168,6 +172,7 @@ faucet-source-kafka = { workspace = true, optional = true }
 faucet-source-postgres = { workspace = true, optional = true }
 faucet-source-postgres-cdc = { workspace = true, optional = true }
 faucet-source-mysql = { workspace = true, optional = true }
+faucet-source-mssql = { workspace = true, optional = true }
 faucet-source-sqlite = { workspace = true, optional = true }
 faucet-source-s3 = { workspace = true, optional = true }
 faucet-source-mongodb = { workspace = true, optional = true }
@@ -186,6 +191,7 @@ faucet-sink-jsonl = { workspace = true, optional = true }
 faucet-sink-snowflake = { workspace = true, optional = true }
 faucet-sink-kafka = { workspace = true, optional = true }
 faucet-sink-mysql = { workspace = true, optional = true }
+faucet-sink-mssql = { workspace = true, optional = true }
 faucet-sink-sqlite = { workspace = true, optional = true }
 
 faucet-sink-s3 = { workspace = true, optional = true }
