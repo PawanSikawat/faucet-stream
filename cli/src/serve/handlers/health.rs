@@ -13,9 +13,16 @@ pub async fn healthz() -> impl IntoResponse {
     StatusCode::OK
 }
 
-/// Readiness: ready to accept work. Phase 1 is unconditionally ready.
-pub async fn readyz() -> impl IntoResponse {
-    StatusCode::OK
+/// Readiness: 503 if the history backend is degraded or the queue is full
+/// (cannot accept new work), else 200.
+pub async fn readyz(State(state): State<ServerState>) -> impl IntoResponse {
+    let history_ok = !state.history().degraded();
+    let queue_ok = !state.registry().is_full();
+    if history_ok && queue_ok {
+        StatusCode::OK
+    } else {
+        StatusCode::SERVICE_UNAVAILABLE
+    }
 }
 
 /// Prometheus exposition rendered from serve's own recorder handle.

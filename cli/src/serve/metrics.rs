@@ -1,6 +1,8 @@
 //! `faucet_serve_*` request metrics. The `path` label is the *matched route
 //! template* (`/v1/runs/{id}`), never the raw path — cardinality safety.
 
+use crate::serve::history::RunStatus;
+use crate::serve::state::ServerState;
 use axum::extract::{MatchedPath, Request};
 use axum::middleware::Next;
 use axum::response::Response;
@@ -40,6 +42,27 @@ pub async fn track_metrics(req: Request, next: Next) -> Response {
     resp
 }
 
+/// Refresh the queue-depth + in-flight gauges from the registry. Called on every
+/// queue transition (submit, queued→running, finish).
+pub fn set_run_gauges(state: &ServerState) {
+    metrics::gauge!("faucet_serve_runs_queued").set(state.registry().queued() as f64);
+    metrics::gauge!("faucet_serve_runs_in_flight").set(state.registry().in_flight() as f64);
+}
+
+/// Count a run reaching a terminal state, labelled by status + a finer reason.
+pub fn record_run_finished(status: RunStatus, reason: &'static str) {
+    metrics::counter!(
+        "faucet_serve_runs_total",
+        "status" => status.as_str(), "reason" => reason
+    )
+    .increment(1);
+}
+
+/// Count an idempotency-key replay hit.
+pub fn record_idempotency_hit() {
+    metrics::counter!("faucet_serve_idempotency_hits_total").increment(1);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -52,5 +75,59 @@ mod tests {
             .body(axum::body::Body::empty())
             .unwrap();
         assert_eq!(matched_path_label(&req), "<unmatched>");
+    }
+
+    #[test]
+    fn run_finished_label_strings_are_stable() {
+        // Guards against accidental relabeling (which would split Prometheus series).
+        use crate::serve::history::RunStatus;
+        assert_eq!(RunStatus::Completed.as_str(), "completed");
+        assert_eq!(RunStatus::Cancelled.as_str(), "cancelled");
+    }
+
+    /// Regression guard: axum 0.8 populates `MatchedPath` *before* middleware
+    /// fires even for outer `.layer()` middleware (axum 0.8 changed this from
+    /// 0.7 where outer layers ran before routing). Verifies the cardinality-safe
+    /// matched-path design works correctly in `build_router`'s outer-layer
+    /// position and that the `path` label is never stuck at `"<unmatched>"` for
+    /// routed requests.
+    #[tokio::test]
+    async fn matched_path_captured_in_outer_layer_position() {
+        use axum::routing::get;
+        use std::sync::{Arc, Mutex};
+        use tower::util::ServiceExt;
+
+        // Capture the path label that track_metrics sees from an outer .layer()
+        // — the same position used by build_router.
+        let captured: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+        let captured2 = captured.clone();
+
+        let capture_middleware = axum::middleware::from_fn(move |req: Request, next: Next| {
+            let captured = captured2.clone();
+            async move {
+                let label = matched_path_label(&req);
+                *captured.lock().unwrap() = Some(label);
+                next.run(req).await
+            }
+        });
+
+        // Mirrors build_router: outer .layer() on the merged router.
+        let router = axum::Router::new()
+            .route("/v1/runs/{id}", get(|| async { "ok" }))
+            .layer(capture_middleware);
+
+        let req = Request::builder()
+            .uri("/v1/runs/abc-123")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let _resp: axum::response::Response = router.oneshot(req).await.unwrap();
+
+        let label = captured.lock().unwrap().clone().unwrap();
+        // axum 0.8: MatchedPath is populated before the outer layer runs.
+        assert_eq!(
+            label, "/v1/runs/{id}",
+            "MatchedPath must be the route template, not '<unmatched>' — \
+             axum 0.8 outer .layer() correctly sees MatchedPath"
+        );
     }
 }

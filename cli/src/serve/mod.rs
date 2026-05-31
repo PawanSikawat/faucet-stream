@@ -7,8 +7,13 @@ pub mod auth;
 pub mod config;
 pub mod error;
 pub mod handlers;
+pub mod history;
+pub mod idempotency;
+pub mod load;
 pub mod metrics;
 pub mod observability;
+pub mod registry;
+pub mod runner;
 pub mod server;
 pub mod state;
 

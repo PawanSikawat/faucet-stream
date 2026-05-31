@@ -16,15 +16,28 @@ pub struct ApiError {
 pub struct ApiErrorBody {
     pub code: String,
     pub message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub details: Option<serde_json::Value>,
 }
 
-/// All error outcomes a serve handler can produce. (More variants — 413, 429,
-/// 409, 422 — arrive with the endpoints that raise them in later phases.)
+/// All error outcomes a serve handler can produce.
 #[derive(Debug)]
 pub enum ServeError {
     Unauthorized,
     NotFound,
     BadConfig(String),
+    /// 422 — expand/validation failure or a failed `doctor_first` preflight;
+    /// `details` carries the doctor report when present.
+    Unprocessable {
+        message: String,
+        details: Option<serde_json::Value>,
+    },
+    /// 409 — delete on a running run, or idempotency key reused with a new payload.
+    Conflict(String),
+    /// 429 — the run queue is full.
+    QueueFull {
+        retry_after_secs: u64,
+    },
     Internal(String),
 }
 
@@ -34,6 +47,9 @@ impl ServeError {
             ServeError::Unauthorized => StatusCode::UNAUTHORIZED,
             ServeError::NotFound => StatusCode::NOT_FOUND,
             ServeError::BadConfig(_) => StatusCode::BAD_REQUEST,
+            ServeError::Unprocessable { .. } => StatusCode::UNPROCESSABLE_ENTITY,
+            ServeError::Conflict(_) => StatusCode::CONFLICT,
+            ServeError::QueueFull { .. } => StatusCode::TOO_MANY_REQUESTS,
             ServeError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
@@ -43,6 +59,9 @@ impl ServeError {
             ServeError::Unauthorized => "unauthorized",
             ServeError::NotFound => "not_found",
             ServeError::BadConfig(_) => "bad_config",
+            ServeError::Unprocessable { .. } => "unprocessable",
+            ServeError::Conflict(_) => "conflict",
+            ServeError::QueueFull { .. } => "queue_full",
             ServeError::Internal(_) => "internal",
         }
     }
@@ -52,17 +71,33 @@ impl ServeError {
             ServeError::Unauthorized => "missing or invalid bearer token".into(),
             ServeError::NotFound => "not found".into(),
             ServeError::BadConfig(m) => m.clone(),
+            ServeError::Unprocessable { message, .. } => message.clone(),
+            ServeError::Conflict(m) => m.clone(),
+            ServeError::QueueFull { .. } => "run queue is full; retry later".into(),
             ServeError::Internal(m) => m.clone(),
         }
     }
 
+    fn details(&self) -> Option<serde_json::Value> {
+        match self {
+            ServeError::Unprocessable { details, .. } => details.clone(),
+            _ => None,
+        }
+    }
+
     pub fn api_error(&self) -> ApiError {
-        // Scrub any resolved secret that reached the message.
+        // Scrub any resolved secret that reached the message or details.
         let message = crate::secrets::registry::redact(&self.message()).into_owned();
+        let details = self.details().map(|d| {
+            let scrubbed = crate::secrets::registry::redact(&d.to_string()).into_owned();
+            serde_json::from_str(&scrubbed)
+                .unwrap_or_else(|_| serde_json::json!({ "redacted": true }))
+        });
         ApiError {
             error: ApiErrorBody {
                 code: self.code().to_string(),
                 message,
+                details,
             },
         }
     }
@@ -70,7 +105,15 @@ impl ServeError {
 
 impl IntoResponse for ServeError {
     fn into_response(self) -> Response {
-        (self.status(), Json(self.api_error())).into_response()
+        let status = self.status();
+        let mut resp = (status, Json(self.api_error())).into_response();
+        if let ServeError::QueueFull { retry_after_secs } = &self
+            && let Ok(v) = axum::http::HeaderValue::from_str(&retry_after_secs.to_string())
+        {
+            resp.headers_mut()
+                .insert(axum::http::header::RETRY_AFTER, v);
+        }
+        resp
     }
 }
 
@@ -116,5 +159,61 @@ mod tests {
         let body = ServeError::Internal("boom".into()).api_error();
         assert_eq!(body.error.code, "internal");
         assert_eq!(body.error.message, "boom");
+    }
+
+    #[test]
+    fn new_variants_map_to_status_codes() {
+        assert_eq!(
+            ServeError::Unprocessable {
+                message: "x".into(),
+                details: None
+            }
+            .status(),
+            StatusCode::UNPROCESSABLE_ENTITY
+        );
+        assert_eq!(
+            ServeError::Conflict("x".into()).status(),
+            StatusCode::CONFLICT
+        );
+        assert_eq!(
+            ServeError::QueueFull {
+                retry_after_secs: 5
+            }
+            .status(),
+            StatusCode::TOO_MANY_REQUESTS
+        );
+    }
+
+    #[test]
+    fn unprocessable_carries_details() {
+        let body = ServeError::Unprocessable {
+            message: "doctor failed".into(),
+            details: Some(serde_json::json!({"invocations": []})),
+        }
+        .api_error();
+        assert_eq!(body.error.code, "unprocessable");
+        assert!(body.error.details.is_some());
+    }
+
+    #[test]
+    fn phase1_variants_omit_details_on_the_wire() {
+        // details uses skip_serializing_if=Option::is_none, so non-422 variants
+        // must not emit a "details" key (backward-compatible wire shape).
+        let body = ServeError::NotFound.api_error();
+        let v = serde_json::to_value(&body).unwrap();
+        assert!(v["error"].get("details").is_none());
+    }
+
+    #[tokio::test]
+    async fn queue_full_sets_retry_after_header() {
+        let resp = ServeError::QueueFull {
+            retry_after_secs: 7,
+        }
+        .into_response();
+        assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(
+            resp.headers().get(axum::http::header::RETRY_AFTER).unwrap(),
+            "7"
+        );
     }
 }
