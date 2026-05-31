@@ -268,6 +268,27 @@ impl RestStream {
             let mut running_max: Option<Value> = effective_start.clone();
             let mut bookmark_emitted = false;
 
+            // H13 (audit #146): combining `max_pages` with incremental
+            // replication only makes safe forward progress when the API returns
+            // rows ordered ascending by the replication key. On truncation we
+            // advance the bookmark to the max key seen so far (so the next run
+            // resumes past it — without this the stream would re-read the same
+            // first `max_pages` window forever and never progress); but if the
+            // feed is unordered, unfetched later pages may hold lower keys that
+            // resuming past `running_max` would then drop. Warn loudly so the
+            // requirement is explicit rather than a silent data-loss edge.
+            if self.config.max_pages.is_some()
+                && self.config.replication_method == ReplicationMethod::Incremental
+                && self.config.replication_key.is_some()
+            {
+                tracing::warn!(
+                    "max_pages combined with incremental replication assumes the API returns rows \
+                     ordered ascending by the replication key; an unordered feed can drop unfetched \
+                     lower-key records on resume. Ensure ordering, or remove max_pages for a full \
+                     incremental sweep."
+                );
+            }
+
             loop {
                 if let Some(max) = self.config.max_pages
                     && pages_fetched >= max
@@ -368,6 +389,8 @@ impl RestStream {
             // zero pages fetched and a seeded start bookmark), emit one empty
             // page carrying the consolidated bookmark so the pipeline still
             // persists incremental progress and the next run resumes from here.
+            // (Safe forward progress under max_pages assumes ascending order by
+            // the replication key — see the warning emitted above, audit #146 H13.)
             if !bookmark_emitted && running_max.is_some() {
                 yield faucet_core::StreamPage {
                     records: Vec::new(),
