@@ -136,7 +136,8 @@ impl MssqlSinkConfig {
         if self.table.trim().is_empty() {
             return Err(FaucetError::Config("MSSQL sink requires a `table`".into()));
         }
-        if self.create_table && matches!(self.column_mapping, MssqlColumnMapping::AutoColumns { .. })
+        if self.create_table
+            && matches!(self.column_mapping, MssqlColumnMapping::AutoColumns { .. })
         {
             return Err(FaucetError::Config(
                 "MSSQL sink `create_table` is only supported with `json_column` mode \

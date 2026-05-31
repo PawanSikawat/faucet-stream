@@ -67,7 +67,9 @@ pub(crate) fn build_insert_sql(
     let mut tuples = Vec::with_capacity(num_rows);
     for row in 0..num_rows {
         let start = row * num_cols + 1;
-        let placeholders: Vec<String> = (start..start + num_cols).map(|i| format!("@P{i}")).collect();
+        let placeholders: Vec<String> = (start..start + num_cols)
+            .map(|i| format!("@P{i}"))
+            .collect();
         tuples.push(format!("({})", placeholders.join(", ")));
     }
     format!(
@@ -111,7 +113,10 @@ pub(crate) fn resolve_insert_columns(
                 )));
             }
             OnUnknownField::Warn => {
-                tracing::warn!(?unknown, "auto_columns: dropping record keys with no matching column");
+                tracing::warn!(
+                    ?unknown,
+                    "auto_columns: dropping record keys with no matching column"
+                );
             }
             OnUnknownField::Drop => {}
         }
@@ -195,12 +200,30 @@ mod tests {
 
     #[test]
     fn bound_param_classifies_json() {
-        assert!(matches!(BoundParam::from_value(&json!("s")), BoundParam::Str(_)));
-        assert!(matches!(BoundParam::from_value(&json!(7)), BoundParam::I64(7)));
-        assert!(matches!(BoundParam::from_value(&json!(1.5)), BoundParam::F64(_)));
-        assert!(matches!(BoundParam::from_value(&json!(true)), BoundParam::Bool(true)));
-        assert!(matches!(BoundParam::from_value(&Value::Null), BoundParam::Null(None)));
+        assert!(matches!(
+            BoundParam::from_value(&json!("s")),
+            BoundParam::Str(_)
+        ));
+        assert!(matches!(
+            BoundParam::from_value(&json!(7)),
+            BoundParam::I64(7)
+        ));
+        assert!(matches!(
+            BoundParam::from_value(&json!(1.5)),
+            BoundParam::F64(_)
+        ));
+        assert!(matches!(
+            BoundParam::from_value(&json!(true)),
+            BoundParam::Bool(true)
+        ));
+        assert!(matches!(
+            BoundParam::from_value(&Value::Null),
+            BoundParam::Null(None)
+        ));
         // nested -> serialized string
-        assert!(matches!(BoundParam::from_value(&json!({"k":1})), BoundParam::Str(_)));
+        assert!(matches!(
+            BoundParam::from_value(&json!({"k":1})),
+            BoundParam::Str(_)
+        ));
     }
 }

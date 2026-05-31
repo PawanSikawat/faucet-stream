@@ -494,7 +494,10 @@ pub fn sink_descriptions() -> Vec<(&'static str, &'static str)> {
     #[cfg(feature = "sink-mysql")]
     v.push(("mysql", "MySQL sink"));
     #[cfg(feature = "sink-mssql")]
-    v.push(("mssql", "Microsoft SQL Server sink (auto-mapped columns or JSON column)"));
+    v.push((
+        "mssql",
+        "Microsoft SQL Server sink (auto-mapped columns or JSON column)",
+    ));
     #[cfg(feature = "sink-sqlite")]
     v.push(("sqlite", "SQLite sink"));
     #[cfg(feature = "sink-s3")]

@@ -92,11 +92,17 @@ async fn decodes_column_types_and_streams_pages() {
     assert_eq!(r["price"], Value::from("19.99")); // DECIMAL -> string
     assert_eq!(r["active"], Value::from(true)); // BIT -> bool
     assert!(
-        r["created"].as_str().unwrap().starts_with("2024-01-02T03:04:05"),
+        r["created"]
+            .as_str()
+            .unwrap()
+            .starts_with("2024-01-02T03:04:05"),
         "datetime2 -> {}",
         r["created"]
     );
-    assert_eq!(r["uid"], Value::from("00000000-0000-0000-0000-000000000001"));
+    assert_eq!(
+        r["uid"],
+        Value::from("00000000-0000-0000-0000-000000000001")
+    );
     assert_eq!(r["payload"], Value::from("AQID")); // 0x010203 -> base64
     assert_eq!(r["big"], Value::from(9_000_000_000_i64));
     assert_eq!(r["ratio"], Value::from(1.5));
@@ -133,7 +139,11 @@ async fn incremental_resumes_without_duplicates() {
     let cfg = conn_cfg(port);
     let pool = build_pool(&cfg, 4).await.expect("pool");
 
-    exec(&pool, "CREATE TABLE dbo.events (id INT, updated_at NVARCHAR(30))").await;
+    exec(
+        &pool,
+        "CREATE TABLE dbo.events (id INT, updated_at NVARCHAR(30))",
+    )
+    .await;
     for (id, ts) in [(1, "2024-01-01"), (2, "2024-02-01"), (3, "2024-03-01")] {
         exec(
             &pool,
@@ -160,7 +170,10 @@ async fn incremental_resumes_without_duplicates() {
     assert_eq!(bookmark, Some(Value::from("2024-03-01")));
 
     // Persist the bookmark, add a newer row, run again.
-    source.apply_start_bookmark(bookmark.unwrap()).await.unwrap();
+    source
+        .apply_start_bookmark(bookmark.unwrap())
+        .await
+        .unwrap();
     exec(
         &pool,
         "INSERT INTO dbo.events (id, updated_at) VALUES (4, '2024-04-01')",

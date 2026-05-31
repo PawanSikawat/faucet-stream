@@ -95,7 +95,9 @@ fn build_query_and_params(
             column,
             initial_value,
         } => {
-            let start = start_bookmark.cloned().unwrap_or_else(|| initial_value.clone());
+            let start = start_bookmark
+                .cloned()
+                .unwrap_or_else(|| initial_value.clone());
             // Server-side pushdown: bind the cursor where the user wrote
             // `@bookmark`. If absent, only the client-side filter applies.
             if query.contains("@bookmark") {
@@ -164,7 +166,13 @@ fn default_state_key(config: &MssqlSourceConfig) -> String {
     // Host may contain dots (allowed mid-key); sanitise anything else.
     let host: String = host
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.') { c } else { '_' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.') {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect();
     format!("mssql:{host}:{fingerprint:016x}")
 }
@@ -191,7 +199,11 @@ impl Source for MssqlSource {
         _batch_size: usize,
     ) -> Pin<Box<dyn Stream<Item = Result<StreamPage, FaucetError>> + Send + 'a>> {
         let batch_size = self.config.batch_size;
-        let chunk = if batch_size == 0 { usize::MAX } else { batch_size };
+        let chunk = if batch_size == 0 {
+            usize::MAX
+        } else {
+            batch_size
+        };
         let cap = if batch_size == 0 { 1024 } else { batch_size };
         let start = self.current_start();
         let (query, values, incr) = build_query_and_params(&self.config, context, start.as_ref());
@@ -259,7 +271,8 @@ impl Source for MssqlSource {
     }
 
     fn config_schema(&self) -> Value {
-        serde_json::to_value(faucet_core::schema_for!(MssqlSourceConfig)).expect("schema serialization")
+        serde_json::to_value(faucet_core::schema_for!(MssqlSourceConfig))
+            .expect("schema serialization")
     }
 
     fn connector_name(&self) -> &'static str {
@@ -279,7 +292,10 @@ impl Source for MssqlSource {
     }
 
     async fn apply_start_bookmark(&self, bookmark: Value) -> Result<(), FaucetError> {
-        *self.start_bookmark.lock().expect("start_bookmark mutex poisoned") = Some(bookmark);
+        *self
+            .start_bookmark
+            .lock()
+            .expect("start_bookmark mutex poisoned") = Some(bookmark);
         Ok(())
     }
 
@@ -455,17 +471,38 @@ mod tests {
 
     #[test]
     fn owned_param_classifies_json() {
-        assert!(matches!(OwnedParam::from_value(&json!("s")), OwnedParam::Str(_)));
-        assert!(matches!(OwnedParam::from_value(&json!(7)), OwnedParam::I64(7)));
-        assert!(matches!(OwnedParam::from_value(&json!(1.5)), OwnedParam::F64(_)));
-        assert!(matches!(OwnedParam::from_value(&json!(true)), OwnedParam::Bool(true)));
-        assert!(matches!(OwnedParam::from_value(&Value::Null), OwnedParam::Null(None)));
-        assert!(matches!(OwnedParam::from_value(&json!({"a":1})), OwnedParam::Str(_)));
+        assert!(matches!(
+            OwnedParam::from_value(&json!("s")),
+            OwnedParam::Str(_)
+        ));
+        assert!(matches!(
+            OwnedParam::from_value(&json!(7)),
+            OwnedParam::I64(7)
+        ));
+        assert!(matches!(
+            OwnedParam::from_value(&json!(1.5)),
+            OwnedParam::F64(_)
+        ));
+        assert!(matches!(
+            OwnedParam::from_value(&json!(true)),
+            OwnedParam::Bool(true)
+        ));
+        assert!(matches!(
+            OwnedParam::from_value(&Value::Null),
+            OwnedParam::Null(None)
+        ));
+        assert!(matches!(
+            OwnedParam::from_value(&json!({"a":1})),
+            OwnedParam::Str(_)
+        ));
     }
 
     #[test]
     fn apply_incremental_filters_and_tracks_max() {
-        let ctx = IncrementalCtx { column: "c".into(), start: json!(10) };
+        let ctx = IncrementalCtx {
+            column: "c".into(),
+            start: json!(10),
+        };
         let mut running = None;
         let page = vec![json!({"c": 5}), json!({"c": 15}), json!({"c": 20})];
         let kept = apply_incremental(page, Some(&ctx), &mut running);

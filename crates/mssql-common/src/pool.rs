@@ -62,13 +62,13 @@ fn apply_tls(config: &mut Config, tls: &MssqlTls) -> Result<(), FaucetError> {
         }
     }
 
-    if tls.mode != MssqlTlsMode::Disable {
-        if let Some(path) = &tls.ca_cert_path {
-            let p = path.to_str().ok_or_else(|| {
-                FaucetError::Config("MSSQL tls.ca_cert_path is not valid UTF-8".into())
-            })?;
-            config.trust_cert_ca(p);
-        }
+    if tls.mode != MssqlTlsMode::Disable
+        && let Some(path) = &tls.ca_cert_path
+    {
+        let p = path.to_str().ok_or_else(|| {
+            FaucetError::Config("MSSQL tls.ca_cert_path is not valid UTF-8".into())
+        })?;
+        config.trust_cert_ca(p);
     }
     Ok(())
 }
@@ -120,12 +120,11 @@ mod tests {
 
     #[tokio::test]
     async fn timeout_passes_through_completed_future() {
-        let out: Result<i32, FaucetError> = with_statement_timeout(
-            Duration::from_secs(5),
-            async { Ok(42) },
-            || FaucetError::Source("unused".into()),
-        )
-        .await;
+        let out: Result<i32, FaucetError> =
+            with_statement_timeout(Duration::from_secs(5), async { Ok(42) }, || {
+                FaucetError::Source("unused".into())
+            })
+            .await;
         assert_eq!(out.unwrap(), 42);
     }
 

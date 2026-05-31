@@ -109,12 +109,12 @@ impl MssqlSourceConfig {
     pub fn validate(&self) -> Result<(), FaucetError> {
         self.connection.validate()?;
         validate_batch_size(self.batch_size)?;
-        if let MssqlReplication::Incremental { column, .. } = &self.replication {
-            if column.trim().is_empty() {
-                return Err(FaucetError::Config(
-                    "MSSQL incremental replication requires a non-empty `column`".into(),
-                ));
-            }
+        if let MssqlReplication::Incremental { column, .. } = &self.replication
+            && column.trim().is_empty()
+        {
+            return Err(FaucetError::Config(
+                "MSSQL incremental replication requires a non-empty `column`".into(),
+            ));
         }
         Ok(())
     }

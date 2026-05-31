@@ -91,7 +91,11 @@ async fn row_isolation_routes_only_the_bad_row() {
     let cfg = conn_cfg(port);
     let pool = build_pool(&cfg, 4).await.expect("pool");
 
-    exec(&pool, "CREATE TABLE dbo.strict (id INT NOT NULL, n INT NOT NULL)").await;
+    exec(
+        &pool,
+        "CREATE TABLE dbo.strict (id INT NOT NULL, n INT NOT NULL)",
+    )
+    .await;
 
     let mut scfg = sink_cfg(&cfg, "dbo.strict");
     scfg.column_mapping = MssqlColumnMapping::AutoColumns {
@@ -105,7 +109,10 @@ async fn row_isolation_routes_only_the_bad_row() {
         json!({"id": 2, "n": 20}),
         json!({"id": 3}),
     ];
-    let outcomes = sink.write_batch_partial(&records).await.expect("partial write");
+    let outcomes = sink
+        .write_batch_partial(&records)
+        .await
+        .expect("partial write");
     assert_eq!(outcomes.len(), 3);
     assert!(outcomes[0].is_ok(), "row 1 ok");
     assert!(outcomes[1].is_ok(), "row 2 ok");

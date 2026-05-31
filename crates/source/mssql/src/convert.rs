@@ -121,7 +121,10 @@ mod tests {
 
     #[test]
     fn numeric_formats_with_scale() {
-        assert_eq!(numeric_to_string(Numeric::new_with_scale(12345, 2)), "123.45");
+        assert_eq!(
+            numeric_to_string(Numeric::new_with_scale(12345, 2)),
+            "123.45"
+        );
         assert_eq!(numeric_to_string(Numeric::new_with_scale(100, 0)), "100");
         // value < 1 must keep a leading zero
         assert_eq!(numeric_to_string(Numeric::new_with_scale(5, 2)), "0.05");
@@ -139,12 +142,18 @@ mod tests {
             scalar_to_json(&ColumnData::I64(Some(9_000_000_000))),
             Some(json!(9_000_000_000i64))
         );
-        assert_eq!(scalar_to_json(&ColumnData::F64(Some(1.5))), Some(json!(1.5)));
+        assert_eq!(
+            scalar_to_json(&ColumnData::F64(Some(1.5))),
+            Some(json!(1.5))
+        );
     }
 
     #[test]
     fn scalar_bool_string_guid() {
-        assert_eq!(scalar_to_json(&ColumnData::Bit(Some(true))), Some(json!(true)));
+        assert_eq!(
+            scalar_to_json(&ColumnData::Bit(Some(true))),
+            Some(json!(true))
+        );
         assert_eq!(
             scalar_to_json(&ColumnData::String(Some(Cow::Borrowed("hi")))),
             Some(json!("hi"))

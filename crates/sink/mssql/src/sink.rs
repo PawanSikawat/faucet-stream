@@ -139,7 +139,11 @@ impl MssqlSink {
                 let cols = vec![column.clone()];
                 let rows: Vec<Vec<BoundParam>> = chunk
                     .iter()
-                    .map(|r| vec![BoundParam::Str(serde_json::to_string(r).unwrap_or_default())])
+                    .map(|r| {
+                        vec![BoundParam::Str(
+                            serde_json::to_string(r).unwrap_or_default(),
+                        )]
+                    })
                     .collect();
                 Ok(Some((cols, rows)))
             }
@@ -346,7 +350,8 @@ impl Sink for MssqlSink {
     }
 
     fn config_schema(&self) -> Value {
-        serde_json::to_value(faucet_core::schema_for!(MssqlSinkConfig)).expect("schema serialization")
+        serde_json::to_value(faucet_core::schema_for!(MssqlSinkConfig))
+            .expect("schema serialization")
     }
 
     fn connector_name(&self) -> &'static str {
@@ -382,15 +387,24 @@ mod tests {
     fn quote_table_handles_schema_qualified() {
         assert_eq!(quote_table("dbo.events").unwrap(), "[dbo].[events]");
         assert_eq!(quote_table("events").unwrap(), "[events]");
-        assert_eq!(quote_table("my.sales.events").unwrap(), "[my].[sales].[events]");
+        assert_eq!(
+            quote_table("my.sales.events").unwrap(),
+            "[my].[sales].[events]"
+        );
     }
 
     #[test]
     fn transient_classifier() {
-        assert!(is_transient_error("Transaction (Process ID 55) was deadlocked"));
-        assert!(is_transient_error("Lock request time out period exceeded (1205)"));
+        assert!(is_transient_error(
+            "Transaction (Process ID 55) was deadlocked"
+        ));
+        assert!(is_transient_error(
+            "Lock request time out period exceeded (1205)"
+        ));
         assert!(is_transient_error("connection reset by peer"));
         assert!(!is_transient_error("Violation of PRIMARY KEY constraint"));
-        assert!(!is_transient_error("Conversion failed when converting date"));
+        assert!(!is_transient_error(
+            "Conversion failed when converting date"
+        ));
     }
 }

@@ -22,4 +22,6 @@ mod config;
 mod pool;
 
 pub use config::{MssqlConnectionConfig, MssqlTls, MssqlTlsMode, PARAM_LIMIT, quote_ident_mssql};
-pub use pool::{MssqlPool, MssqlPooledConnection, build_config, build_pool, with_statement_timeout};
+pub use pool::{
+    MssqlPool, MssqlPooledConnection, build_config, build_pool, with_statement_timeout,
+};
