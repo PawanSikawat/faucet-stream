@@ -5,7 +5,7 @@
 
 CSV file sink connector for the [faucet-stream](https://github.com/PawanSikawat/faucet-stream) ecosystem.
 
-Writes JSON records to a CSV file. Column order is determined from the keys of the first record. Supports configurable delimiters, optional header rows, and append mode. Uses `spawn_blocking` to avoid blocking the async runtime during file I/O.
+Writes JSON records to a CSV file. Column order is the union of keys across the records of the first `write_batch()` call. Supports configurable delimiters, optional header rows, and append mode. Uses `spawn_blocking` to avoid blocking the async runtime during file I/O.
 
 ## Installation
 
@@ -75,10 +75,10 @@ let config = CsvSinkConfig::new("/data/output.tsv")
 
 ### Column Order and Missing Fields
 
-- Column order is determined by the keys of the **first record** in the first `write_batch()` call.
+- Column order is the **union of keys across all records in the first** `write_batch()` call, in first-seen order — so a field present only in a later record of that batch is still captured (audit #146 H2).
 - All subsequent records use the same column order, regardless of their key order.
 - If a record is missing a field that exists in the column list, an empty string is written for that cell.
-- Extra keys in subsequent records that were not in the first record are ignored.
+- Keys that appear only in a **later** `write_batch()` call (after the header is written) are still ignored — the header is fixed once on the first call.
 
 ### Value Conversion
 
@@ -232,7 +232,7 @@ sink.flush().await?;
 
 ## How It Works
 
-- The file is opened lazily on the first `write_batch()` call. Column order is determined from the keys of the first record.
+- The file is opened lazily on the first `write_batch()` call. Column order is the union of keys across the records of the first `write_batch()` call.
 - Missing parent directories of `path` are created automatically (equivalent to `mkdir -p`) before the file is opened, matching the behaviour of the parquet sink. Dated-subdirectory paths such as `./data/dt=2026-03-08/part.csv` work without any pre-creation step.
 - All CSV I/O runs inside `tokio::task::spawn_blocking` to avoid blocking the async runtime.
 - A `Mutex` protects the writer state (column order + csv::Writer) for thread-safe access.

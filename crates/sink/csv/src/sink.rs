@@ -24,9 +24,10 @@ struct WriterState {
 
 /// A sink that writes JSON records to a CSV file.
 ///
-/// Column order is determined from the keys of the first record in the first
-/// `write_batch` call. Subsequent records use the same column order; missing
-/// fields are written as empty strings.
+/// Column order is the union of keys across the records of the first
+/// `write_batch` call, in first-seen order (so a field present only in a later
+/// record of that batch is still captured). Subsequent records use the same
+/// column order; missing fields are written as empty strings.
 ///
 /// [`Sink::flush`](faucet_core::Sink::flush) finalises the encoder (writes the trailer) and clears the
 /// writer slot — a subsequent `write_batch` reopens the file in append mode
@@ -191,15 +192,30 @@ fn write_csv_blocking(
     let mut state = match existing_state {
         Some(s) => s,
         None => {
-            // Determine columns from the first record.
-            let columns: Vec<String> = match &records[0] {
-                Value::Object(map) => map.keys().cloned().collect(),
-                _ => {
-                    return Err(FaucetError::Sink(
-                        "CSV sink expects JSON objects, got non-object record".into(),
-                    ));
+            // Determine columns from the UNION of keys across the first batch's
+            // records, in first-seen order — not just `records[0]`. Otherwise a
+            // field present only in a later record of the first batch would be
+            // absent from the header and silently dropped from every row (audit
+            // #146 H2). (A later flush-segment cannot change the already-written
+            // header — that is a separate, documented limitation.)
+            let mut columns: Vec<String> = Vec::new();
+            let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+            for record in records {
+                match record {
+                    Value::Object(map) => {
+                        for k in map.keys() {
+                            if seen.insert(k.as_str()) {
+                                columns.push(k.clone());
+                            }
+                        }
+                    }
+                    _ => {
+                        return Err(FaucetError::Sink(
+                            "CSV sink expects JSON objects, got non-object record".into(),
+                        ));
+                    }
                 }
-            };
+            }
 
             // First open obeys `config.append`. Re-opens (after flush()
             // cleared the writer) always append, so flush-then-write
@@ -305,6 +321,40 @@ mod tests {
         let lines: Vec<&str> = content.trim().split('\n').collect();
         // Header + 2 data rows.
         assert_eq!(lines.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn columns_union_across_first_batch_not_just_first_record() {
+        // H2 (audit #146): column order is the union of keys across the first
+        // batch's records. The first record lacks `email`; before the fix the
+        // header was fixed from record 0 and `email` was silently dropped from
+        // every row. After the fix `email` is a column and the second record's
+        // value appears (the first row leaves it empty).
+        let tmp = NamedTempFile::new().unwrap();
+        let path = tmp.path().to_str().unwrap().to_string();
+        let sink = CsvSink::new(CsvSinkConfig::new(&path));
+
+        let records = vec![
+            json!({ "id": 1, "name": "Alice" }),
+            json!({ "id": 2, "name": "Bob", "email": "bob@x.y" }),
+        ];
+        sink.write_batch(&records).await.unwrap();
+        sink.flush().await.unwrap();
+
+        let content = tokio::fs::read_to_string(&path).await.unwrap();
+        let lines: Vec<&str> = content.trim().split('\n').collect();
+        assert_eq!(lines.len(), 3, "header + 2 rows");
+        assert!(
+            lines[0].contains("email"),
+            "header must include the later-record-only column: {}",
+            lines[0]
+        );
+        // Row 2 carries the email value; row 1 leaves it empty.
+        assert!(
+            lines[2].contains("bob@x.y"),
+            "second row must carry the unioned column value: {}",
+            lines[2]
+        );
     }
 
     #[tokio::test]
