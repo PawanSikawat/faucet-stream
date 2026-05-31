@@ -178,7 +178,24 @@ impl FileStateStore {
     }
 
     fn temp_path(&self, key: &str) -> PathBuf {
-        self.root.join(format!("{}.json.tmp", safe_filename(key)))
+        // Unique per write: a process id + a monotonic counter, so two writers
+        // (different processes sharing the directory, or two store instances in
+        // one process) never share a temp file. A *fixed* temp name let a
+        // second writer `File::create`-truncate the first's half-written temp,
+        // which the first could then `rename` over the final path — yielding
+        // torn/truncated state JSON that breaks resume (audit #146 H10). The
+        // per-store `write_lock` only serializes writers within one process.
+        // Orphaned `.tmp` files from an interrupted write are harmless: `get`
+        // only ever reads the final `.json` path.
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static SEQ: AtomicU64 = AtomicU64::new(0);
+        let seq = SEQ.fetch_add(1, Ordering::Relaxed);
+        self.root.join(format!(
+            "{}.{}.{}.json.tmp",
+            safe_filename(key),
+            std::process::id(),
+            seq
+        ))
     }
 
     async fn ensure_root(&self) -> Result<(), FaucetError> {
@@ -497,6 +514,16 @@ mod tests {
         assert!(!has_colon, "no state filename may contain ':'");
     }
 
+    /// True if any `.json.tmp` residue remains in `dir`. Temp names are unique
+    /// per write since #146 H10, so we glob for the suffix rather than check a
+    /// fixed name (which would never exist now and pass vacuously).
+    fn has_tmp_residue(dir: &std::path::Path) -> bool {
+        std::fs::read_dir(dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .any(|e| e.file_name().to_string_lossy().ends_with(".json.tmp"))
+    }
+
     #[tokio::test]
     async fn file_put_overwrites_previous_value_atomically() {
         let dir = TempDir::new().unwrap();
@@ -504,9 +531,23 @@ mod tests {
         s.put("k", &json!({"v": 1})).await.unwrap();
         s.put("k", &json!({"v": 2})).await.unwrap();
         assert_eq!(s.get("k").await.unwrap().unwrap(), json!({"v": 2}));
-        // The temp path must not be left behind.
-        let leftover = dir.path().join("k.json.tmp");
-        assert!(!leftover.exists());
+        // No temp file left behind.
+        assert!(!has_tmp_residue(dir.path()), "no temp residue after put");
+    }
+
+    #[test]
+    fn file_temp_paths_are_unique_per_write() {
+        // H10 (audit #146): the temp path must be unique per write so two
+        // writers (different processes, or two store instances in one process
+        // with independent write_locks) never `File::create`-truncate a shared
+        // temp that the other then renames over the final file (torn state).
+        let dir = TempDir::new().unwrap();
+        let s = FileStateStore::new(dir.path());
+        let a = s.temp_path("k");
+        let b = s.temp_path("k");
+        assert_ne!(a, b, "each write must get a distinct temp path");
+        // The committed (final) path stays stable across writes.
+        assert_eq!(s.entry_path("k"), s.entry_path("k"));
     }
 
     #[tokio::test]
@@ -535,7 +576,7 @@ mod tests {
         assert_eq!(parsed, value);
 
         // No temp file left behind.
-        assert!(!dir.path().join("github_issues.json.tmp").exists());
+        assert!(!has_tmp_residue(dir.path()), "no temp residue after put");
     }
 
     #[tokio::test]
@@ -589,7 +630,10 @@ mod tests {
         let i = got["i"].as_i64().unwrap();
         assert!((0..50).contains(&i));
         // And no temp file should remain.
-        assert!(!dir.path().join("k.json.tmp").exists());
+        assert!(
+            !has_tmp_residue(dir.path()),
+            "no temp residue after concurrent puts"
+        );
     }
 
     #[tokio::test]
