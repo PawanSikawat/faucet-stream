@@ -58,7 +58,7 @@ impl TokenEndpointProvider {
             })?
             .to_string();
         Ok(Self {
-            http: Client::new(),
+            http: crate::auth_http_client(),
             url,
             method,
             body: config.get("body").cloned().filter(|v| !v.is_null()),

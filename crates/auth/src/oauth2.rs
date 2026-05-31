@@ -62,7 +62,7 @@ impl OAuth2ClientCredentialsProvider {
     /// `client_secret`, optional `scopes` and `expiry_ratio`.
     pub fn from_config(config: &Value) -> Result<Self, FaucetError> {
         Ok(Self {
-            http: Client::new(),
+            http: crate::auth_http_client(),
             token_url: required_str(config, "token_url")?,
             client_id: required_str(config, "client_id")?,
             client_secret: required_str(config, "client_secret")?,
@@ -147,7 +147,7 @@ impl OAuth2RefreshProvider {
     pub fn from_config(config: &Value) -> Result<Self, FaucetError> {
         let refresh_token = required_str(config, "refresh_token")?;
         Ok(Self {
-            http: Client::new(),
+            http: crate::auth_http_client(),
             token_url: required_str(config, "token_url")?,
             client_id: required_str(config, "client_id")?,
             client_secret: required_str(config, "client_secret")?,
