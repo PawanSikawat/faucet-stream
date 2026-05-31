@@ -3,10 +3,13 @@
 use crate::error::{CliError, CliResult};
 use crate::serve::config::ServeConfig;
 use crate::serve::handlers::health;
+use crate::serve::history::memory::MemoryHistory;
+use crate::serve::history::RunHistory;
 use crate::serve::state::ServerState;
 use crate::serve::{auth, metrics};
 use axum::Router;
 use axum::routing::get;
+use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::limit::RequestBodyLimitLayer;
@@ -68,7 +71,10 @@ pub async fn serve(config: ServeConfig) -> CliResult<()> {
     let prom = crate::serve::observability::install(&config.log_level);
 
     let shutdown = CancellationToken::new();
-    let state = ServerState::new(&config, prom, shutdown.clone());
+    let history: Arc<dyn RunHistory> =
+        Arc::new(MemoryHistory::new(config.idempotency_retention));
+    let default_base = None; // populated in a later phase via --default-config
+    let state = ServerState::new(&config, prom, shutdown.clone(), history, default_base);
     let app = build_router(state, &config);
 
     let listener = tokio::net::TcpListener::bind(config.listen)
