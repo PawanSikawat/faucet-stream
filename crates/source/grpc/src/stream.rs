@@ -164,6 +164,17 @@ impl GrpcStream {
                     if self.config.terminate_on_error {
                         return Err(error);
                     }
+                    // If this attempt delivered messages before failing, the
+                    // stream recovered and made progress — so this disconnect is
+                    // a fresh transient failure, not a consecutive one. Reset the
+                    // attempt counter and backoff; otherwise a healthy long-lived
+                    // stream is aborted once its *lifetime* reconnects reach
+                    // reconnect_max_attempts, and backoff stays pinned at the cap
+                    // after one early hiccup (audit #146 H8).
+                    if consumed > 0 {
+                        attempt = 0;
+                        backoff = self.config.reconnect_initial_backoff;
+                    }
                     if let Some(max_attempts) = self.config.reconnect_max_attempts
                         && attempt >= max_attempts
                     {
@@ -527,7 +538,8 @@ impl GrpcStream {
         let max_messages = self.config.max_messages.unwrap_or(usize::MAX);
         let terminate_on_error = self.config.terminate_on_error;
         let reconnect_max_attempts = self.config.reconnect_max_attempts;
-        let mut backoff = self.config.reconnect_initial_backoff;
+        let reconnect_initial_backoff = self.config.reconnect_initial_backoff;
+        let mut backoff = reconnect_initial_backoff;
         let max_backoff = self.config.reconnect_max_backoff;
 
         Box::pin(async_stream::try_stream! {
@@ -630,6 +642,14 @@ impl GrpcStream {
                             // fragile `unreachable!()` (#78 LOW).
                             Err(error)?;
                             return;
+                        }
+                        // Progress before the disconnect → the stream recovered,
+                        // so reset the attempt counter and backoff (count only
+                        // *consecutive* failures, don't pin backoff at the cap) —
+                        // audit #146 H8.
+                        if consumed > 0 {
+                            attempt = 0;
+                            backoff = reconnect_initial_backoff;
                         }
                         if let Some(max_attempts) = reconnect_max_attempts
                             && attempt >= max_attempts
