@@ -271,3 +271,95 @@ async fn write_batch_empty_records_makes_no_inserts() {
         "empty input must short-circuit before issuing any INSERT"
     );
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn auto_map_unions_columns_across_heterogeneous_batch() {
+    // H1 (audit #146): the AutoMap column set is the UNION across the batch, not
+    // just the first record's keys. The first record lacks `email`; before the
+    // fix the second record's `email` was silently dropped.
+    let (_container, url) = start_mysql().await;
+    let pool = sqlx::MySqlPool::connect(&url).await.expect("pool");
+    sqlx::query("CREATE TABLE events (id BIGINT, name VARCHAR(64), email VARCHAR(64))")
+        .execute(&pool)
+        .await
+        .expect("create table");
+    pool.close().await;
+
+    let config = MysqlSinkConfig::new(&url, "events").column_mapping(MysqlColumnMapping::AutoMap);
+    let sink = MysqlSink::new(config).await.expect("sink new");
+    let records = vec![
+        json!({ "id": 1 }),
+        json!({ "id": 2, "name": "b", "email": "x@y" }),
+    ];
+    assert_eq!(sink.write_batch(&records).await.expect("write"), 2);
+
+    let pool = sqlx::MySqlPool::connect(&url).await.expect("pool");
+    let row2 = sqlx::query("SELECT name, email FROM events WHERE id = 2")
+        .fetch_one(&pool)
+        .await
+        .expect("row 2");
+    let email1: Option<String> = sqlx::query("SELECT email FROM events WHERE id = 1")
+        .fetch_one(&pool)
+        .await
+        .expect("row 1")
+        .get("email");
+    pool.close().await;
+
+    assert_eq!(row2.get::<Option<String>, _>("name").as_deref(), Some("b"));
+    assert_eq!(
+        row2.get::<Option<String>, _>("email").as_deref(),
+        Some("x@y"),
+        "later-record-only column must be inserted, not dropped (H1)"
+    );
+    assert_eq!(
+        email1, None,
+        "row missing the unioned column binds SQL NULL"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn auto_map_chunks_to_respect_mysql_param_limit() {
+    // H14 (audit #146): MySQL caps prepared-statement placeholders at 65535. A
+    // 66-column table at batch_size=0 (single slice) would bind 66 × 1000 =
+    // 66_000 placeholders in one INSERT → "Prepared statement contains too many
+    // placeholders". The sink must sub-chunk and still land every row.
+    let (_container, url) = start_mysql().await;
+    let cols: Vec<String> = (0..66).map(|i| format!("c{i}")).collect();
+    let create = format!(
+        "CREATE TABLE wide ({})",
+        cols.iter()
+            .map(|c| format!("{c} BIGINT"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+    let pool = sqlx::MySqlPool::connect(&url).await.expect("pool");
+    sqlx::query(&create)
+        .execute(&pool)
+        .await
+        .expect("create wide");
+    pool.close().await;
+
+    let config = MysqlSinkConfig::new(&url, "wide")
+        .column_mapping(MysqlColumnMapping::AutoMap)
+        .with_batch_size(0);
+    let sink = MysqlSink::new(config).await.expect("sink new");
+    let records: Vec<Value> = (0..1_000)
+        .map(|r| {
+            let mut m = serde_json::Map::new();
+            for (i, c) in cols.iter().enumerate() {
+                m.insert(c.clone(), json!(r * 100 + i as i64));
+            }
+            Value::Object(m)
+        })
+        .collect();
+    assert_eq!(sink.write_batch(&records).await.expect("write"), 1_000);
+
+    let pool = sqlx::MySqlPool::connect(&url).await.expect("pool");
+    let n: i64 = sqlx::query("SELECT COUNT(*) FROM wide")
+        .fetch_one(&pool)
+        .await
+        .expect("count")
+        .get(0);
+    pool.close().await;
+    assert_eq!(n, 1_000);
+}

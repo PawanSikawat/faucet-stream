@@ -91,9 +91,14 @@ impl MysqlSink {
             )));
         }
 
-        // Pre-validate all records and collect matched column values.
+        // Pre-validate all records and collect matched column values. The
+        // INSERT column set is the UNION of table columns present in ANY record
+        // (in declared table order), not just the first record's keys —
+        // otherwise a field present only in a later record of the batch would be
+        // silently dropped (audit #146 H1). A row missing a unioned column binds
+        // SQL NULL.
         let mut matched_rows: Vec<Vec<(&String, &Value)>> = Vec::with_capacity(records.len());
-        let mut insert_columns: Option<Vec<String>> = None;
+        let mut used: std::collections::HashSet<&str> = std::collections::HashSet::new();
 
         for record in records {
             let obj = record
@@ -114,21 +119,22 @@ impl MysqlSink {
                 continue;
             }
 
-            if insert_columns.is_none() {
-                insert_columns = Some(matching.iter().map(|(c, _)| (*c).clone()).collect());
+            for (c, _) in &matching {
+                used.insert(c.as_str());
             }
-
             matched_rows.push(matching);
         }
-
-        let insert_columns = match insert_columns {
-            Some(cols) => cols,
-            None => return Ok(0),
-        };
 
         if matched_rows.is_empty() {
             return Ok(0);
         }
+
+        // Table columns (in declared order) that appear in at least one record.
+        let insert_columns: Vec<String> = columns
+            .iter()
+            .filter(|c| used.contains(c.as_str()))
+            .cloned()
+            .collect();
 
         let num_cols = insert_columns.len();
         let num_rows = matched_rows.len();
@@ -137,49 +143,60 @@ impl MysqlSink {
             .map(|c| quote_ident_mysql(c))
             .collect();
 
-        // Build multi-row VALUES clause: (?, ?), (?, ?), ...
-        let row_placeholder = format!("({})", vec!["?"; num_cols].join(", "));
-        let value_tuples: Vec<&str> = (0..num_rows).map(|_| row_placeholder.as_str()).collect();
+        // MySQL caps prepared-statement placeholders at 65535. A multi-row
+        // INSERT binds `rows × num_cols`, so a wide table at a large batch_size
+        // overflows and fails at runtime; split into sub-INSERTs of at most
+        // floor(MAX / num_cols) rows (audit #146 H14 — postgres/sqlite/mssql
+        // already sub-chunk this way).
+        const MAX_MYSQL_PARAMS: usize = 65535;
+        let max_rows_per_insert = (MAX_MYSQL_PARAMS / num_cols).max(1);
 
-        let query = format!(
-            "INSERT INTO {} ({}) VALUES {}",
-            quote_ident_mysql(&self.config.table_name),
-            col_names.join(", "),
-            value_tuples.join(", ")
-        );
+        for sub in matched_rows.chunks(max_rows_per_insert) {
+            // Build multi-row VALUES clause: (?, ?), (?, ?), ...
+            let row_placeholder = format!("({})", vec!["?"; num_cols].join(", "));
+            let value_tuples: Vec<&str> =
+                (0..sub.len()).map(|_| row_placeholder.as_str()).collect();
 
-        let mut q = sqlx::query(&query);
-        for matched in &matched_rows {
-            for col in &insert_columns {
-                let val = matched.iter().find(|(c, _)| *c == col).map(|(_, v)| *v);
-                // Bind native MySQL types. Binding every value as a JSON string
-                // (the old behaviour) stored `"Bob"` with embedded quotes,
-                // turned `true` into the text "true", and bound the literal
-                // text "null" for absent columns instead of SQL NULL (#78/#4).
-                q = match val {
-                    None | Some(Value::Null) => q.bind(None::<String>),
-                    Some(Value::Bool(b)) => q.bind(*b),
-                    Some(Value::Number(n)) => {
-                        if let Some(i) = n.as_i64() {
-                            q.bind(i)
-                        } else if let Some(f) = n.as_f64() {
-                            q.bind(f)
-                        } else {
-                            // u64 above i64::MAX — preserve exact text.
-                            q.bind(n.to_string())
+            let query = format!(
+                "INSERT INTO {} ({}) VALUES {}",
+                quote_ident_mysql(&self.config.table_name),
+                col_names.join(", "),
+                value_tuples.join(", ")
+            );
+
+            let mut q = sqlx::query(&query);
+            for matched in sub {
+                for col in &insert_columns {
+                    let val = matched.iter().find(|(c, _)| *c == col).map(|(_, v)| *v);
+                    // Bind native MySQL types. Binding every value as a JSON string
+                    // (the old behaviour) stored `"Bob"` with embedded quotes,
+                    // turned `true` into the text "true", and bound the literal
+                    // text "null" for absent columns instead of SQL NULL (#78/#4).
+                    q = match val {
+                        None | Some(Value::Null) => q.bind(None::<String>),
+                        Some(Value::Bool(b)) => q.bind(*b),
+                        Some(Value::Number(n)) => {
+                            if let Some(i) = n.as_i64() {
+                                q.bind(i)
+                            } else if let Some(f) = n.as_f64() {
+                                q.bind(f)
+                            } else {
+                                // u64 above i64::MAX — preserve exact text.
+                                q.bind(n.to_string())
+                            }
                         }
-                    }
-                    Some(Value::String(s)) => q.bind(s.clone()),
-                    // Arrays/objects have no scalar SQL representation — store
-                    // their JSON text (suitable for TEXT / JSON columns).
-                    Some(v) => q.bind(v.to_string()),
-                };
+                        Some(Value::String(s)) => q.bind(s.clone()),
+                        // Arrays/objects have no scalar SQL representation — store
+                        // their JSON text (suitable for TEXT / JSON columns).
+                        Some(v) => q.bind(v.to_string()),
+                    };
+                }
             }
-        }
 
-        q.execute(&self.pool)
-            .await
-            .map_err(|e| FaucetError::Sink(format!("MySQL insert failed: {e}")))?;
+            q.execute(&self.pool)
+                .await
+                .map_err(|e| FaucetError::Sink(format!("MySQL insert failed: {e}")))?;
+        }
 
         Ok(num_rows)
     }
