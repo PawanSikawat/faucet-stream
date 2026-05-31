@@ -124,15 +124,14 @@ impl PostgresSink {
         }
 
         // Pre-validate all records and collect matched (column, udt, value)
-        // triples per record.
+        // triples per record. The INSERT column set is the UNION of table
+        // columns present in ANY record (in declared table order), not just the
+        // first record's keys — otherwise a field present only in a later record
+        // of the batch would be silently dropped (audit #146 H1). A row missing
+        // a unioned column binds SQL NULL.
         let mut matched_rows: Vec<Vec<(&String, &String, &Value)>> =
             Vec::with_capacity(records.len());
-
-        // Determine the set of columns used across all records by using
-        // the columns from the first valid record. All rows in a single
-        // multi-row INSERT must share the same column list. Each entry is
-        // (column_name, udt_name).
-        let mut insert_columns: Option<Vec<(String, String)>> = None;
+        let mut used: std::collections::HashSet<&str> = std::collections::HashSet::new();
 
         for record in records {
             let obj = record
@@ -153,27 +152,23 @@ impl PostgresSink {
                 continue;
             }
 
-            // Fix the column set from the first valid record.
-            if insert_columns.is_none() {
-                insert_columns = Some(
-                    matching
-                        .iter()
-                        .map(|(c, u, _)| ((*c).clone(), (*u).clone()))
-                        .collect(),
-                );
+            for (c, _, _) in &matching {
+                used.insert(c.as_str());
             }
-
             matched_rows.push(matching);
         }
-
-        let insert_columns = match insert_columns {
-            Some(cols) => cols,
-            None => return Ok(0),
-        };
 
         if matched_rows.is_empty() {
             return Ok(0);
         }
+
+        // Table columns (in declared order, with their udt) present in at least
+        // one record.
+        let insert_columns: Vec<(String, String)> = columns
+            .iter()
+            .filter(|(c, _)| used.contains(c.as_str()))
+            .cloned()
+            .collect();
 
         let num_cols = insert_columns.len();
         let num_rows = matched_rows.len();

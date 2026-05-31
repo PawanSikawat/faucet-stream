@@ -136,16 +136,19 @@ pub(crate) fn resolve_insert_columns(
         }
     }
 
-    // Fix the column set from the first record that has any matching key.
-    let first = records.iter().find_map(|r| r.as_object());
-    let columns: Vec<String> = match first {
-        Some(obj) => insertable
-            .iter()
-            .filter(|c| obj.contains_key(c.as_str()))
-            .cloned()
-            .collect(),
-        None => Vec::new(),
-    };
+    // Column set = insertable columns present in ANY record (union), preserving
+    // the insertable order. Using only the first record's keys would silently
+    // drop a field present only in a later record of the batch (audit #146 H1);
+    // a row missing a unioned column binds SQL NULL.
+    let columns: Vec<String> = insertable
+        .iter()
+        .filter(|c| {
+            records
+                .iter()
+                .any(|r| r.as_object().is_some_and(|o| o.contains_key(c.as_str())))
+        })
+        .cloned()
+        .collect();
     Ok(columns)
 }
 
@@ -214,6 +217,25 @@ mod tests {
         assert!(resolve_insert_columns(&insertable, &records, OnUnknownField::Error).is_err());
         // Warn/Drop tolerate it.
         assert!(resolve_insert_columns(&insertable, &records, OnUnknownField::Drop).is_ok());
+    }
+
+    #[test]
+    fn resolve_columns_unions_keys_across_records() {
+        // H1 (audit #146): the column set is the UNION across all records, not
+        // just the first record's keys — a field present only in a LATER record
+        // must not be dropped. Order follows `insertable` (declared column order).
+        let insertable = vec!["id".to_string(), "name".to_string(), "email".to_string()];
+        // The first record is the sparsest; `name`/`email` appear only later.
+        let records = vec![
+            json!({ "id": 1 }),
+            json!({ "id": 2, "name": "b", "email": "x@y" }),
+        ];
+        let cols = resolve_insert_columns(&insertable, &records, OnUnknownField::Warn).unwrap();
+        assert_eq!(
+            cols,
+            vec!["id".to_string(), "name".to_string(), "email".to_string()],
+            "later-record-only columns (name, email) must be included"
+        );
     }
 
     #[test]

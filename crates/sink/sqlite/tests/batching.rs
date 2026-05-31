@@ -281,6 +281,55 @@ async fn auto_map_mode_batch_size_zero_passes_page_through() {
 }
 
 #[tokio::test]
+async fn auto_map_unions_columns_across_heterogeneous_batch() {
+    // H1 (audit #146): the AutoMap column set is the UNION across the batch, not
+    // just the first record's keys. Here the FIRST record lacks `email`; before
+    // the fix the column set was fixed from record 0, so the second record's
+    // `email` was silently dropped. After the fix it must be inserted, while the
+    // first row (which lacked it) keeps SQL NULL.
+    let (_dir, url) = fresh_db("CREATE TABLE events (id INTEGER, name TEXT, email TEXT)").await;
+
+    let config = SqliteSinkConfig::new(&url, "events").column_mapping(SqliteColumnMapping::AutoMap);
+    let sink = SqliteSink::new(config).await.unwrap();
+
+    let records = vec![
+        json!({ "id": 1 }),
+        json!({ "id": 2, "name": "b", "email": "x@y" }),
+    ];
+    let n = sink.write_batch(&records).await.unwrap();
+    assert_eq!(n, 2);
+
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect(&url)
+        .await
+        .expect("connect");
+    let row2 = sqlx::query("SELECT name, email FROM events WHERE id = 2")
+        .fetch_one(&pool)
+        .await
+        .expect("read row 2");
+    let row1 = sqlx::query("SELECT email FROM events WHERE id = 1")
+        .fetch_one(&pool)
+        .await
+        .expect("read row 1");
+    let name2: Option<String> = row2.get("name");
+    let email2: Option<String> = row2.get("email");
+    let email1: Option<String> = row1.get("email");
+    pool.close().await;
+
+    assert_eq!(name2.as_deref(), Some("b"));
+    assert_eq!(
+        email2.as_deref(),
+        Some("x@y"),
+        "later-record-only column must be inserted, not dropped (H1)"
+    );
+    assert_eq!(
+        email1, None,
+        "row missing the unioned column binds SQL NULL"
+    );
+}
+
+#[tokio::test]
 async fn batch_size_atomicity_per_chunk_preserved() {
     // Each chunk is wrapped in its own BEGIN/COMMIT transaction. The
     // implementation guarantees `records.is_empty()` short-circuits before

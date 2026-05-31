@@ -321,3 +321,53 @@ async fn write_batch_auto_map_into_typed_columns() {
     assert_eq!(row.get::<String, _>("meta_k"), "v");
     pool.close().await;
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn write_batch_auto_map_unions_columns_across_heterogeneous_batch() {
+    // H1 (audit #146): the AutoMap column set is the UNION across the batch, not
+    // just the first record's keys. The first record lacks `email`; before the
+    // fix the column set was fixed from record 0 and the second record's `email`
+    // was silently dropped. After the fix it must be inserted, while row 1 keeps
+    // NULL for the columns it didn't carry.
+    let (_container, url) = start_postgres().await;
+    let pool = sqlx::PgPool::connect(&url).await.expect("pool connect");
+    sqlx::query("CREATE TABLE events (id BIGINT, name TEXT, email TEXT)")
+        .execute(&pool)
+        .await
+        .expect("create table");
+    pool.close().await;
+
+    let config = PostgresSinkConfig::new(&url, "events")
+        .column_mapping(PostgresColumnMapping::AutoMap)
+        .with_batch_size(0);
+    let sink = PostgresSink::new(config).await.expect("sink new");
+
+    let records = vec![
+        json!({ "id": 1 }),
+        json!({ "id": 2, "name": "b", "email": "x@y" }),
+    ];
+    assert_eq!(sink.write_batch(&records).await.expect("write"), 2);
+
+    let pool = sqlx::PgPool::connect(&url).await.expect("pool connect");
+    use sqlx::Row;
+    let row2 = sqlx::query("SELECT name, email FROM events WHERE id = 2")
+        .fetch_one(&pool)
+        .await
+        .expect("row 2");
+    let email1: Option<String> = sqlx::query_scalar("SELECT email FROM events WHERE id = 1")
+        .fetch_one(&pool)
+        .await
+        .expect("row 1");
+    pool.close().await;
+
+    assert_eq!(row2.get::<Option<String>, _>("name").as_deref(), Some("b"));
+    assert_eq!(
+        row2.get::<Option<String>, _>("email").as_deref(),
+        Some("x@y"),
+        "later-record-only column must be inserted, not dropped (H1)"
+    );
+    assert_eq!(
+        email1, None,
+        "row missing the unioned column binds SQL NULL"
+    );
+}
