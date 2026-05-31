@@ -44,13 +44,19 @@ impl BoundParam {
     }
 }
 
-/// Maximum rows per `INSERT` so `rows * num_cols` stays within
-/// [`PARAM_LIMIT`]. Always at least 1.
+/// `tiberius` routes parameterized statements through `sp_executesql`, which
+/// consumes two of the 2100 parameters itself (the statement text and the
+/// parameter-declaration string). So the usable budget for bind values is
+/// `PARAM_LIMIT - 2` — sending a full 2100 bind values overflows by two.
+const SP_EXECUTESQL_RESERVED: usize = 2;
+
+/// Maximum rows per `INSERT` so the request stays within MSSQL's 2100-parameter
+/// limit, accounting for the `sp_executesql` overhead. Always at least 1.
 pub(crate) fn max_rows_per_insert(num_cols: usize) -> usize {
     if num_cols == 0 {
         return 1;
     }
-    (PARAM_LIMIT / num_cols).max(1)
+    (PARAM_LIMIT.saturating_sub(SP_EXECUTESQL_RESERVED) / num_cols).max(1)
 }
 
 /// Build a multi-row `INSERT` with `@P`-numbered placeholders:
@@ -154,13 +160,20 @@ mod tests {
 
     #[test]
     fn param_split_respects_2100_limit() {
-        // 1 col -> 2100 rows; 3 cols -> 700; 2101 cols -> at least 1.
-        assert_eq!(max_rows_per_insert(1), 2100);
-        assert_eq!(max_rows_per_insert(3), 700);
+        // Usable budget is PARAM_LIMIT - 2 (sp_executesql overhead).
+        // 1 col -> 2098 rows; 3 cols -> 699; wide tables -> at least 1.
+        assert_eq!(max_rows_per_insert(1), 2098);
+        assert_eq!(max_rows_per_insert(3), 699);
         assert_eq!(max_rows_per_insert(0), 1);
         assert_eq!(max_rows_per_insert(5000), 1);
-        // a 10-col table never exceeds the limit in one statement
-        assert!(max_rows_per_insert(10) * 10 <= PARAM_LIMIT);
+        // For any column count, rows*cols PLUS the 2 sp_executesql params must
+        // stay within the hard 2100 limit (this is what the server enforces).
+        for cols in 1..=64 {
+            assert!(
+                max_rows_per_insert(cols) * cols + SP_EXECUTESQL_RESERVED <= PARAM_LIMIT,
+                "cols={cols} exceeds the 2100 limit"
+            );
+        }
     }
 
     #[test]
