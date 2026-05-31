@@ -84,4 +84,50 @@ mod tests {
         assert_eq!(RunStatus::Completed.as_str(), "completed");
         assert_eq!(RunStatus::Cancelled.as_str(), "cancelled");
     }
+
+    /// Regression guard: axum 0.8 populates `MatchedPath` *before* middleware
+    /// fires even for outer `.layer()` middleware (axum 0.8 changed this from
+    /// 0.7 where outer layers ran before routing). Verifies the cardinality-safe
+    /// matched-path design works correctly in `build_router`'s outer-layer
+    /// position and that the `path` label is never stuck at `"<unmatched>"` for
+    /// routed requests.
+    #[tokio::test]
+    async fn matched_path_captured_in_outer_layer_position() {
+        use axum::routing::get;
+        use std::sync::{Arc, Mutex};
+        use tower::util::ServiceExt;
+
+        // Capture the path label that track_metrics sees from an outer .layer()
+        // — the same position used by build_router.
+        let captured: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+        let captured2 = captured.clone();
+
+        let capture_middleware = axum::middleware::from_fn(move |req: Request, next: Next| {
+            let captured = captured2.clone();
+            async move {
+                let label = matched_path_label(&req);
+                *captured.lock().unwrap() = Some(label);
+                next.run(req).await
+            }
+        });
+
+        // Mirrors build_router: outer .layer() on the merged router.
+        let router = axum::Router::new()
+            .route("/v1/runs/{id}", get(|| async { "ok" }))
+            .layer(capture_middleware);
+
+        let req = Request::builder()
+            .uri("/v1/runs/abc-123")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let _resp: axum::response::Response = router.oneshot(req).await.unwrap();
+
+        let label = captured.lock().unwrap().clone().unwrap();
+        // axum 0.8: MatchedPath is populated before the outer layer runs.
+        assert_eq!(
+            label, "/v1/runs/{id}",
+            "MatchedPath must be the route template, not '<unmatched>' — \
+             axum 0.8 outer .layer() correctly sees MatchedPath"
+        );
+    }
 }

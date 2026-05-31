@@ -270,6 +270,7 @@ serde_yaml = "0.9"
 async-stream.workspace = true
 futures-core.workspace = true
 reqwest = { workspace = true, features = ["json"] }
+tower = { version = "0.5", features = ["util"] }
 
 [package.metadata.docs.rs]
 all-features = true
