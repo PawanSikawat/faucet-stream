@@ -408,7 +408,7 @@ impl PipelineConfig {
             .extension()
             .and_then(|e| e.to_str())
             .map(str::to_ascii_lowercase);
-        let mut cfg: PipelineConfig = match ext.as_deref() {
+        let cfg: PipelineConfig = match ext.as_deref() {
             Some("yaml" | "yml") => {
                 serde_yaml::from_str(text).map_err(|e| CliError::ParseConfig {
                     path: path.to_path_buf(),
@@ -425,6 +425,28 @@ impl PipelineConfig {
                 });
             }
         };
+        Self::finish(cfg, path)
+    }
+
+    /// Build a config from an already-parsed JSON value (used by `faucet serve`,
+    /// which merges a submitted body onto a `--default-config` base). Runs the
+    /// same version check + structural `${...}` ref resolution as [`Self::from_text`].
+    ///
+    /// **Note:** load-time `${env:VAR}` / `${file:PATH}` / `${secret:VAR}` directives
+    /// are **not** resolved here — the caller must pre-resolve them (e.g. by running
+    /// `interpolate` on the source text) before building the `Value`.
+    pub fn from_value(value: serde_json::Value) -> CliResult<Self> {
+        let synthetic = Path::new("<submitted>");
+        let cfg: PipelineConfig =
+            serde_json::from_value(value).map_err(|e| CliError::ParseConfig {
+                path: synthetic.to_path_buf(),
+                message: friendly_parse_error(&e.to_string()),
+            })?;
+        Self::finish(cfg, synthetic)
+    }
+
+    /// Shared post-parse tail: version gate + structural `${...}` ref resolution.
+    fn finish(mut cfg: PipelineConfig, path: &Path) -> CliResult<Self> {
         if cfg.version != 1 {
             return Err(CliError::ParseConfig {
                 path: path.to_path_buf(),
@@ -992,6 +1014,33 @@ pipeline:
         match PipelineConfig::from_path(&path).unwrap_err() {
             CliError::SecretsRequireAsyncLoad => {}
             other => panic!("expected SecretsRequireAsyncLoad, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn from_value_accepts_v1_and_resolves_refs() {
+        let v = serde_json::json!({
+            "version": 1,
+            "vars": { "out": "resolved.jsonl" },
+            "pipeline": {
+                "source": { "type": "csv",  "config": { "path": "x.csv" } },
+                "sink":   { "type": "jsonl", "config": { "path": "${vars.out}" } }
+            }
+        });
+        let cfg = PipelineConfig::from_value(v).unwrap();
+        assert_eq!(cfg.version, 1);
+        // structural ${vars.*} refs are resolved by from_value (via finish → resolve_config_refs)
+        assert_eq!(cfg.pipeline.sink.unwrap().config["path"], "resolved.jsonl");
+    }
+
+    #[test]
+    fn from_value_rejects_non_v1() {
+        // structurally valid config; only the version is wrong
+        let v = serde_json::json!({ "version": 99, "pipeline": {} });
+        let err = PipelineConfig::from_value(v).unwrap_err();
+        match err {
+            CliError::ParseConfig { message, .. } => assert!(message.contains("version 99")),
+            other => panic!("expected ParseConfig, got {other:?}"),
         }
     }
 

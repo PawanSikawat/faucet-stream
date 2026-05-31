@@ -176,7 +176,7 @@ schedule = ["dep:croner", "dep:chrono-tz"]
 # Enables `observability` (serve renders /metrics on its own port). Gates the
 # tokio net/time features here (rather than the base dep) so slim non-serve
 # builds don't link the TCP stack.
-serve = ["observability", "tokio/net", "tokio/time", "dep:axum", "dep:tower-http", "dep:tokio-util", "dep:subtle"]
+serve = ["observability", "tokio/net", "tokio/time", "dep:axum", "dep:tower-http", "dep:tokio-util", "dep:subtle", "dep:dashmap", "dep:sha2"]
 serve-history-postgres = ["serve", "dep:sqlx"]
 serve-history-sqlite = ["serve", "dep:sqlx"]
 
@@ -253,6 +253,10 @@ axum = { workspace = true, optional = true }
 tower-http = { workspace = true, optional = true }
 tokio-util = { workspace = true, optional = true }
 subtle = { workspace = true, optional = true }
+# faucet serve run registry (Phase 2+); only compiled with the `serve` feature.
+dashmap = { workspace = true, optional = true }
+# faucet serve idempotency-key hashing (Phase 2+); only compiled with `serve`.
+sha2 = { workspace = true, optional = true }
 sqlx = { workspace = true, optional = true }
 
 [dev-dependencies]
