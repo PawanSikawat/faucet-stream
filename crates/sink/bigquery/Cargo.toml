@@ -26,6 +26,9 @@ tokio = { version = "1", features = ["full", "test-util"] }
 wiremock = "0.6"
 tempfile = "3"
 serde = { workspace = true }
+# Tests only: gunzip captured insertAll request bodies (the client gzips them
+# via gcp-bigquery-client's default `gzip` feature) to assert skipInvalidRows.
+flate2 = { workspace = true }
 
 [package.metadata.docs.rs]
 all-features = true
