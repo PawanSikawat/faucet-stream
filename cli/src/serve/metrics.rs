@@ -4,6 +4,8 @@
 use axum::extract::{MatchedPath, Request};
 use axum::middleware::Next;
 use axum::response::Response;
+use crate::serve::history::RunStatus;
+use crate::serve::state::ServerState;
 use std::time::Instant;
 
 /// The matched route template for a request, or `<unmatched>` for a 404.
@@ -40,6 +42,27 @@ pub async fn track_metrics(req: Request, next: Next) -> Response {
     resp
 }
 
+/// Refresh the queue-depth + in-flight gauges from the registry. Called on every
+/// queue transition (submit, queued→running, finish).
+pub fn set_run_gauges(state: &ServerState) {
+    metrics::gauge!("faucet_serve_runs_queued").set(state.registry().queued() as f64);
+    metrics::gauge!("faucet_serve_runs_in_flight").set(state.registry().in_flight() as f64);
+}
+
+/// Count a run reaching a terminal state, labelled by status + a finer reason.
+pub fn record_run_finished(status: RunStatus, reason: &'static str) {
+    metrics::counter!(
+        "faucet_serve_runs_total",
+        "status" => status.as_str(), "reason" => reason
+    )
+    .increment(1);
+}
+
+/// Count an idempotency-key replay hit.
+pub fn record_idempotency_hit() {
+    metrics::counter!("faucet_serve_idempotency_hits_total").increment(1);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -52,5 +75,13 @@ mod tests {
             .body(axum::body::Body::empty())
             .unwrap();
         assert_eq!(matched_path_label(&req), "<unmatched>");
+    }
+
+    #[test]
+    fn run_finished_label_strings_are_stable() {
+        // Guards against accidental relabeling (which would split Prometheus series).
+        use crate::serve::history::RunStatus;
+        assert_eq!(RunStatus::Completed.as_str(), "completed");
+        assert_eq!(RunStatus::Cancelled.as_str(), "cancelled");
     }
 }
