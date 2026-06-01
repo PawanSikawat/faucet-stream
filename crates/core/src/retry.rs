@@ -164,7 +164,10 @@ mod tests {
         let d = backoff_with_jitter(Duration::from_secs(1), 60);
         assert!(d < Duration::from_secs(90), "backoff not capped: {d:?}");
         // …and never collapses to zero for a non-zero base.
-        assert!(d >= Duration::from_secs(30), "backoff unexpectedly tiny: {d:?}");
+        assert!(
+            d >= Duration::from_secs(30),
+            "backoff unexpectedly tiny: {d:?}"
+        );
     }
 
     #[test]
@@ -179,7 +182,10 @@ mod tests {
         assert_ne!(b, c);
         assert_ne!(a, c);
         for v in [a, b, c] {
-            assert!(v < 1_000_000_000, "decorrelate out of jitter_factor range: {v}");
+            assert!(
+                v < 1_000_000_000,
+                "decorrelate out of jitter_factor range: {v}"
+            );
         }
     }
 
