@@ -69,7 +69,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 |-------|------|---------|-------------|
 | `timeout` | `Option<Duration>` | `Some(30s)` | HTTP request timeout per individual request |
 | `max_retries` | `u32` | `3` | Maximum number of retries on transient failures |
-| `retry_backoff` | `Duration` | `1s` | Base duration for exponential backoff between retries |
+| `retry_backoff` | `Duration` | `1s` | Base duration for exponential backoff between retries. The per-attempt sleep is `retry_backoff × 2^attempt`, **capped at 60s** and scaled by random jitter in `[0.5, 1.5)` (decorrelated across concurrent retries) to avoid a thundering herd. On `429`, the server's `Retry-After` (delta-seconds **or** an RFC 7231 HTTP-date) is honored instead. |
 | `tolerated_http_errors` | `Vec<u16>` | `[]` | HTTP status codes treated as an empty page **on the first request only** (i.e. a legitimately absent/empty resource). Mid-pagination a tolerated status is surfaced as an error instead of silently ending the stream — otherwise a transient failure on page _N_ would drop every later page as a "successful" run. Only safe for genuinely-empty resources. |
 
 A **`204 No Content`** response — or any `2xx` with an empty / whitespace-only
