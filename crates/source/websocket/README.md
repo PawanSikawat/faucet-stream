@@ -58,7 +58,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 | `envelope` | bool | `false` | `true` → `{data,received_at,url}` |
 | `ping_interval` | secs | — | Client keepalive ping |
 | `max_messages` | int | — | At least one of `max_messages`/`idle_timeout` required |
-| `idle_timeout` | secs | — | Stop after this silence; also caps outages |
+| `idle_timeout` | secs | — | Stop after this long with no frame received. Reset by **any** inbound frame — data, ping/pong, or a frame dropped by `on_parse_error=skip` — so a live server streaming skippable frames does not trip it. Also caps outages |
 | `reconnect` | bool | `false` | Reconnect on drop / non-1000 close |
 | `reconnect_backoff` | secs | `1` | Fixed wait between attempts |
 | `max_reconnect_attempts` | int | — | Cap consecutive failures (`None` = unlimited) |

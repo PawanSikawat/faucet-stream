@@ -23,6 +23,9 @@ fn default_tcp_keepalive() -> Duration {
 fn default_batch_size() -> usize {
     DEFAULT_BATCH_SIZE
 }
+fn default_slot_acquire_retries() -> u32 {
+    10
+}
 
 /// Configuration for [`PostgresCdcSource`](crate::PostgresCdcSource).
 #[derive(Clone, Serialize, Deserialize, JsonSchema)]
@@ -154,6 +157,17 @@ pub struct PostgresCdcSourceConfig {
     /// initial-snapshot style runs.
     #[serde(default = "default_batch_size")]
     pub batch_size: usize,
+
+    /// Number of times to retry acquiring the replication slot when the server
+    /// reports it is still **active** (held by a not-yet-released prior
+    /// connection). On a rapid restart — a scheduler or `serve` re-running the
+    /// pipeline before the previous backend has dropped the slot — both the
+    /// pre-stream `pg_replication_slot_advance` and `START_REPLICATION` fail
+    /// with *"replication slot … is active for PID …"*. Each retry waits an
+    /// exponentially increasing backoff (250 ms, doubling, capped at 4 s).
+    /// `0` disables retries (fail fast). Defaults to 10.
+    #[serde(default = "default_slot_acquire_retries")]
+    pub slot_acquire_retries: u32,
 }
 
 /// Lifetime of a newly-created replication slot.
@@ -206,6 +220,7 @@ impl std::fmt::Debug for PostgresCdcSourceConfig {
             .field("status_update_interval", &self.status_update_interval)
             .field("tcp_keepalive", &self.tcp_keepalive)
             .field("batch_size", &self.batch_size)
+            .field("slot_acquire_retries", &self.slot_acquire_retries)
             .finish()
     }
 }
@@ -303,6 +318,7 @@ mod tests {
             status_update_interval: std::time::Duration::from_secs(10),
             tcp_keepalive: std::time::Duration::from_secs(60),
             batch_size: DEFAULT_BATCH_SIZE,
+            slot_acquire_retries: default_slot_acquire_retries(),
         }
     }
 

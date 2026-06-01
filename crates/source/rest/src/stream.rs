@@ -633,7 +633,20 @@ impl RestStream {
         }
 
         let resp_headers = resp.headers().clone();
-        let body: Value = resp.json().await?;
+
+        // A 204 No Content — or any 2xx with an empty / whitespace-only body —
+        // carries no JSON to parse. `resp.json()` on such a response yields a
+        // non-retriable decode error ("EOF while parsing a value") that aborts
+        // the run; treat it as an empty page ("no data") instead (#146 M10). A
+        // non-empty body that isn't valid JSON still surfaces as a parse error.
+        if status == reqwest::StatusCode::NO_CONTENT {
+            return Ok((Value::Array(vec![]), resp_headers));
+        }
+        let bytes = resp.bytes().await?;
+        if bytes.iter().all(u8::is_ascii_whitespace) {
+            return Ok((Value::Array(vec![]), resp_headers));
+        }
+        let body: Value = serde_json::from_slice(&bytes)?;
         Ok((body, resp_headers))
     }
 }

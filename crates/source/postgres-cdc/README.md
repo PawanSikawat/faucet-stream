@@ -127,6 +127,7 @@ The decoder fails fast (`FaucetError::Source`, which the pipeline restarts from 
 | `max_staged_records`        | usize?   | `null`  | Max change records buffered for a **single in-progress transaction** before the run aborts with a typed error. `null` = unbounded. A safety valve against OOM on huge bulk transactions — see [Transactional consistency](#transactional-consistency). |
 | `status_update_interval`    | seconds  | `10`    | Standby Status Update cadence. Must be `< idle_timeout` and well under the server's `wal_sender_timeout`. |
 | `tcp_keepalive`             | seconds  | `60`    | TCP keepalive on the replication connection. |
+| `slot_acquire_retries`      | u32      | `10`    | Retries when the slot is still **active** (held by a not-yet-released prior connection) on a rapid restart. Both the pre-stream slot advance and `START_REPLICATION` are retried with exponential backoff (250 ms, doubling, capped at 4 s). `0` = fail fast. |
 
 ---
 

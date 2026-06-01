@@ -72,6 +72,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 | `retry_backoff` | `Duration` | `1s` | Base duration for exponential backoff between retries |
 | `tolerated_http_errors` | `Vec<u16>` | `[]` | HTTP status codes treated as an empty page **on the first request only** (i.e. a legitimately absent/empty resource). Mid-pagination a tolerated status is surfaced as an error instead of silently ending the stream — otherwise a transient failure on page _N_ would drop every later page as a "successful" run. Only safe for genuinely-empty resources. |
 
+A **`204 No Content`** response — or any `2xx` with an empty / whitespace-only
+body — is treated as an empty page ("no data"), not a parse error. A non-empty
+body that isn't valid JSON still fails loudly with `FaucetError::Json`.
+
 ### Replication Fields
 
 | Field | Type | Default | Description |

@@ -230,6 +230,56 @@ async fn stream_pages_multi_file_glob_flattens() {
 }
 
 #[tokio::test]
+async fn stream_pages_schema_mismatch_fails_before_yielding_any_rows() {
+    // M11 (#146): a schema mismatch on a *later* file must fail eagerly,
+    // before any earlier file's rows are yielded downstream. Under the old
+    // streaming path, file A's rows were yielded to the sink and only then was
+    // file B opened and its divergent schema detected — a partial, non-atomic
+    // write committed before the abort. Schemas are now validated up front, so
+    // the mismatch surfaces with zero pages emitted.
+    let dir = TempDir::new().unwrap();
+    let path_a = dir.path().join("a_part.parquet");
+    let path_b = dir.path().join("b_part.parquet");
+    // File A: (id, name). File B: a divergent schema (id only).
+    let (batch_a, _) = small_batch(300);
+    let schema_b = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
+    let batch_b = RecordBatch::try_new(
+        schema_b.clone(),
+        vec![Arc::new(Int64Array::from((0..300i64).collect::<Vec<_>>()))],
+    )
+    .unwrap();
+    write_single_row_group(&path_a, &batch_a);
+    write_single_row_group(&path_b, &batch_b);
+
+    let pattern = format!("{}/*_part.parquet", dir.path().display());
+    let source = ParquetSource::new(ParquetSourceConfig::glob(pattern).with_batch_size(100))
+        .await
+        .unwrap();
+
+    let ctx = std::collections::HashMap::new();
+    let mut stream = source.stream_pages(&ctx, 0);
+    let mut pages_before_error = 0usize;
+    let mut errored = false;
+    while let Some(item) = stream.next().await {
+        match item {
+            Ok(_) => pages_before_error += 1,
+            Err(_) => {
+                errored = true;
+                break;
+            }
+        }
+    }
+    assert!(
+        errored,
+        "a cross-file schema mismatch must surface as an error"
+    );
+    assert_eq!(
+        pages_before_error, 0,
+        "no rows may be yielded before the schema-mismatch abort (eager, atomic fail)"
+    );
+}
+
+#[tokio::test]
 async fn stream_pages_empty_file_yields_no_pages() {
     let dir = TempDir::new().unwrap();
     let path = dir.path().join("empty.parquet");
