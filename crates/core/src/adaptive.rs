@@ -106,6 +106,20 @@ impl AdaptiveBatchConfig {
                 self.min, self.max
             )));
         }
+        if self.max > crate::MAX_BATCH_SIZE {
+            return Err(FaucetError::Config(format!(
+                "adaptive_batch_size.max ({}) must be <= {} (MAX_BATCH_SIZE)",
+                self.max,
+                crate::MAX_BATCH_SIZE
+            )));
+        }
+        if self.increase_step > crate::MAX_BATCH_SIZE {
+            return Err(FaucetError::Config(format!(
+                "adaptive_batch_size.increase_step ({}) must be <= {} (MAX_BATCH_SIZE)",
+                self.increase_step,
+                crate::MAX_BATCH_SIZE
+            )));
+        }
         if !(self.decrease_factor > 0.0 && self.decrease_factor < 1.0) {
             return Err(FaucetError::Config(
                 "adaptive_batch_size.decrease_factor must be in (0, 1)".into(),
@@ -302,7 +316,9 @@ impl AimdController {
     }
 
     fn grow(&mut self, reason: AdjustReason) -> Option<Adjustment> {
-        let new = (self.current + self.increase_step).min(self.max);
+        // `saturating_add` so a controller built directly with a large
+        // `increase_step` (bypassing `validate`) can't overflow `usize`.
+        let new = self.current.saturating_add(self.increase_step).min(self.max);
         if new == self.current {
             return None;
         }
@@ -367,6 +383,20 @@ mod config_tests {
     }
 
     #[test]
+    fn rejects_max_and_increase_step_above_max_batch_size() {
+        let mut c = valid();
+        c.max = crate::MAX_BATCH_SIZE + 1;
+        assert!(c.validate().is_err());
+        let mut c = valid();
+        c.increase_step = crate::MAX_BATCH_SIZE + 1;
+        assert!(c.validate().is_err());
+        // The ceiling itself is accepted.
+        let mut c = valid();
+        c.max = crate::MAX_BATCH_SIZE;
+        c.validate().unwrap();
+    }
+
+    #[test]
     fn rejects_out_of_range_factors() {
         let mut c = valid();
         c.decrease_factor = 1.5;
@@ -424,6 +454,22 @@ mod controller_tests {
         assert_eq!(c.current(), 1000);
         let c = AimdController::new(&cfg(), 500);
         assert_eq!(c.current(), 500);
+    }
+
+    #[test]
+    fn grow_saturates_instead_of_overflowing_usize() {
+        // A controller built directly (bypassing `validate`) with a huge
+        // increase_step must not overflow `usize` on growth — it saturates and
+        // clamps to `max`. Guards the `current + increase_step` arithmetic.
+        let cfg: AdaptiveBatchConfig = serde_json::from_value(serde_json::json!({
+            "enabled": true, "min": 1, "max": usize::MAX,
+            "increase_step": usize::MAX, "decrease_factor": 0.5
+        }))
+        .unwrap();
+        let mut c = AimdController::new(&cfg, 1);
+        let adj = c.observe(ok(1)).expect("growth should occur");
+        assert_eq!(adj.new_size, usize::MAX);
+        assert_eq!(c.current(), usize::MAX);
     }
 
     #[test]
