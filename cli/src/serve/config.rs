@@ -9,12 +9,25 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 /// How `/v1/*` requests are authenticated.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub enum AuthMode {
     /// Require `Authorization: Bearer <token>`.
     Token(String),
     /// Authentication explicitly disabled via `--no-auth`.
     None,
+}
+
+// Hand-written so `{:?}` of an `AuthMode` (or the `ServeConfig` that embeds one)
+// never prints the bearer token in clear. The token is also registered for
+// redaction in `ServeConfig::from_args`, but masking here closes the Debug path
+// directly.
+impl std::fmt::Debug for AuthMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            AuthMode::Token(_) => f.debug_tuple("Token").field(&"***").finish(),
+            AuthMode::None => f.write_str("None"),
+        }
+    }
 }
 
 /// Run-history storage backend selection (parsed from `--history`).
@@ -73,7 +86,12 @@ impl ServeConfig {
                         .into(),
                 ));
             }
-            (Some(t), _) => AuthMode::Token(t),
+            (Some(t), _) => {
+                // Register so the RedactingWriter scrubs the token from any
+                // tracing/log/error output for the lifetime of the process.
+                crate::secrets::registry::register(&t);
+                AuthMode::Token(t)
+            }
             (None, true) => AuthMode::None,
             (None, false) => {
                 return Err(CliError::Serve(
@@ -187,6 +205,32 @@ mod tests {
         a.auth_token = Some("hunter2".into());
         let cfg = ServeConfig::from_args(a).unwrap();
         assert!(matches!(cfg.auth, AuthMode::Token(t) if t == "hunter2"));
+    }
+
+    #[test]
+    fn auth_mode_debug_masks_token() {
+        // ServeConfig derives Debug and embeds AuthMode; a {:?} must not print
+        // the bearer token in clear.
+        let s = format!("{:?}", AuthMode::Token("supersecrettoken".into()));
+        assert!(
+            !s.contains("supersecrettoken"),
+            "serve token leaked via Debug: {s}"
+        );
+        assert!(s.contains("***"), "token not masked: {s}");
+    }
+
+    #[test]
+    fn token_is_registered_for_redaction() {
+        let mut a = base_args();
+        a.auth_token = Some("uniqueserveauthsecret987".into());
+        let _cfg = ServeConfig::from_args(a).unwrap();
+        // The token must be registered so the RedactingWriter scrubs it from logs.
+        let scrubbed =
+            crate::secrets::registry::redact("hdr=uniqueserveauthsecret987 end").into_owned();
+        assert!(
+            !scrubbed.contains("uniqueserveauthsecret987"),
+            "serve token not registered for redaction: {scrubbed}"
+        );
     }
 
     #[test]
