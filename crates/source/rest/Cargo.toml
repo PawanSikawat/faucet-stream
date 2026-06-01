@@ -36,6 +36,7 @@ serde_json.workspace = true
 jsonpath-rust = "1"
 tokio = { version = "1", features = ["time"] }
 base64 = "0.22"
+httpdate = "1"
 tracing.workspace = true
 async-stream = { workspace = true }
 futures-core = "0.3.32"
