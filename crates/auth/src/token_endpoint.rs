@@ -11,7 +11,7 @@ use tokio::time::Instant;
 
 use crate::expiry_instant;
 
-#[derive(Debug, Default)]
+#[derive(Default)]
 struct CachedToken {
     token: Option<String>,
     expires_at: Option<Instant>,
@@ -20,7 +20,6 @@ struct CachedToken {
 /// Fetches a token from an arbitrary endpoint, extracts it via `token_path`
 /// (JSONPath), and caches it with optional expiry tracking. Single-flight
 /// refresh via an internal [`Mutex`].
-#[derive(Debug)]
 pub struct TokenEndpointProvider {
     http: Client,
     url: String,
@@ -30,6 +29,20 @@ pub struct TokenEndpointProvider {
     expiry_path: Option<String>,
     expiry_ratio: f64,
     state: Mutex<CachedToken>,
+}
+
+// Hand-written so `{:?}` never prints the cached token in `state` or the request
+// `body` (which can carry a `client_secret`). `finish_non_exhaustive` omits both.
+impl std::fmt::Debug for TokenEndpointProvider {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TokenEndpointProvider")
+            .field("url", &self.url)
+            .field("method", &self.method)
+            .field("token_path", &self.token_path)
+            .field("expiry_path", &self.expiry_path)
+            .field("expiry_ratio", &self.expiry_ratio)
+            .finish_non_exhaustive()
+    }
 }
 
 impl TokenEndpointProvider {
@@ -200,6 +213,27 @@ mod tests {
             assert_eq!(r.as_ref().unwrap(), &Credential::Bearer("tok1".into()));
         }
         assert_eq!(hits.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn provider_debug_does_not_leak_body_secrets() {
+        // The request `body` may carry a client secret; a `{:?}` of the provider
+        // (held as `Arc<dyn AuthProvider>`) must not print it.
+        let p = TokenEndpointProvider::from_config(&serde_json::json!({
+            "url": "https://idp.example/token",
+            "token_path": "$.access_token",
+            "body": { "client_secret": "topsecretbody" },
+        }))
+        .unwrap();
+        let s = format!("{p:?}");
+        assert!(
+            !s.contains("topsecretbody"),
+            "request body secret leaked: {s}"
+        );
+        assert!(
+            s.contains("token_path"),
+            "non-secret fields should remain: {s}"
+        );
     }
 
     #[test]

@@ -246,7 +246,12 @@ Every resolution path registers its result for redaction — the secrets-manager
 directives (`${vault:…}`, `${aws-sm:…}`, …) **and** the load-time
 `${env:…}` / `${secret:…}` / `${file:…}` forms. A credential supplied via the
 common `${env:TOKEN}` form is therefore scrubbed exactly like a `${vault:…}` one
-(values shorter than 4 characters are not registered).
+(values shorter than 4 characters are not registered). The `faucet serve` bearer
+auth token (`--auth-token` / `FAUCET_SERVE_AUTH_TOKEN`) is registered the same way.
+The scrubber withholds a short trailing window between writes, so a secret split
+across two separate log writes is still masked. Independently, `faucet_core::Credential`
+and the built-in auth providers hand-write their `Debug` to print secrets as `***`,
+so a `{:?}` of a credential or shared provider never reveals the token.
 
 **This boundary covers faucet's own output only.** A third-party connector that
 debug-logs its own deserialized config fields — or any library that logs a

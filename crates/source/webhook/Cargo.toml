@@ -19,6 +19,7 @@ async-trait.workspace = true
 tracing.workspace = true
 tokio = { workspace = true, features = ["time", "net", "sync", "macros"] }
 axum = { workspace = true }
+subtle.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt", "time", "net", "sync"] }
