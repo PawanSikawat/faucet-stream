@@ -9,7 +9,7 @@ use serde_json::Value;
 use tokio::sync::Mutex;
 use tokio::time::Instant;
 
-use crate::{DEFAULT_EXPIRY_RATIO, expiry_instant};
+use crate::expiry_instant;
 
 #[derive(Debug, Default)]
 struct CachedToken {
@@ -67,10 +67,7 @@ impl TokenEndpointProvider {
                 .get("expiry_path")
                 .and_then(Value::as_str)
                 .map(str::to_string),
-            expiry_ratio: config
-                .get("expiry_ratio")
-                .and_then(Value::as_f64)
-                .unwrap_or(DEFAULT_EXPIRY_RATIO),
+            expiry_ratio: crate::parse_expiry_ratio(config)?,
             state: Mutex::new(CachedToken::default()),
         })
     }
@@ -114,6 +111,31 @@ impl AuthProvider for TokenEndpointProvider {
         };
         if still_valid {
             return Ok(Credential::Bearer(state.token.clone().unwrap()));
+        }
+        let (token, expires_in) = self.fetch().await?;
+        state.token = Some(token.clone());
+        state.expires_at = expiry_instant(expires_in, self.expiry_ratio);
+        Ok(Credential::Bearer(token))
+    }
+
+    async fn invalidate(&self, stale: &Credential) -> Result<Credential, FaucetError> {
+        let mut state = self.state.lock().await;
+        // CAS: if the cache already holds a *different* still-valid token, a
+        // concurrent caller already refreshed after the same 401 — hand that
+        // back instead of fetching again (single-flight). Only refetch when the
+        // cached token is the stale one (or itself expired). Without this
+        // override the default `invalidate` just returns `credential()`, which
+        // serves the still-cached stale token straight back, so a connector that
+        // hit a 401 can never force a refresh (#146 M15).
+        let current_valid = match (&state.token, state.expires_at) {
+            (Some(t), Some(exp)) if Instant::now() < exp => Some(t.clone()),
+            (Some(t), None) => Some(t.clone()),
+            _ => None,
+        };
+        if let (Some(cur), Credential::Bearer(stale_tok)) = (&current_valid, stale)
+            && cur != stale_tok
+        {
+            return Ok(Credential::Bearer(cur.clone()));
         }
         let (token, expires_in) = self.fetch().await?;
         state.token = Some(token.clone());
@@ -184,6 +206,102 @@ mod tests {
     fn missing_url_errors() {
         assert!(
             TokenEndpointProvider::from_config(&serde_json::json!({"token_path": "$.t"})).is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn invalidate_forces_a_refresh_of_the_stale_token() {
+        // M15 (#146): a connector that hit a 401 calls invalidate(stale) and
+        // must get a freshly-fetched token — not the cached stale one back.
+        let server = MockServer::start().await;
+        let hits = Arc::new(AtomicUsize::new(0));
+        Mock::given(method("POST"))
+            .respond_with(Counting(hits.clone()))
+            .mount(&server)
+            .await;
+        let p = TokenEndpointProvider::from_config(&serde_json::json!({
+            "url": server.uri(),
+            "token_path": "$.auth.access_token",
+            "expiry_path": "$.ttl",
+        }))
+        .unwrap();
+
+        assert_eq!(
+            p.credential().await.unwrap(),
+            Credential::Bearer("tok1".into())
+        );
+        assert_eq!(hits.load(Ordering::SeqCst), 1);
+
+        // invalidate(tok1) must refetch → tok2.
+        assert_eq!(
+            p.invalidate(&Credential::Bearer("tok1".into()))
+                .await
+                .unwrap(),
+            Credential::Bearer("tok2".into())
+        );
+        assert_eq!(hits.load(Ordering::SeqCst), 2);
+
+        // The refreshed token is now cached — no extra fetch.
+        assert_eq!(
+            p.credential().await.unwrap(),
+            Credential::Bearer("tok2".into())
+        );
+        assert_eq!(hits.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn invalidate_short_circuits_when_token_already_rotated() {
+        // CAS: if the cache already holds a token different from the stale one,
+        // a concurrent caller already refreshed — return it without refetching.
+        let server = MockServer::start().await;
+        let hits = Arc::new(AtomicUsize::new(0));
+        Mock::given(method("POST"))
+            .respond_with(Counting(hits.clone()))
+            .mount(&server)
+            .await;
+        let p = TokenEndpointProvider::from_config(&serde_json::json!({
+            "url": server.uri(),
+            "token_path": "$.auth.access_token",
+            "expiry_path": "$.ttl",
+        }))
+        .unwrap();
+
+        assert_eq!(
+            p.credential().await.unwrap(),
+            Credential::Bearer("tok1".into())
+        );
+        assert_eq!(hits.load(Ordering::SeqCst), 1);
+        // Invalidating an already-superseded token returns cached tok1, no fetch.
+        assert_eq!(
+            p.invalidate(&Credential::Bearer("old-token".into()))
+                .await
+                .unwrap(),
+            Credential::Bearer("tok1".into())
+        );
+        assert_eq!(hits.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn rejects_out_of_range_expiry_ratio() {
+        // M16 (#146): an out-of-range expiry_ratio breaks caching — reject it.
+        assert!(
+            TokenEndpointProvider::from_config(&serde_json::json!({
+                "url": "http://x", "token_path": "$.t", "expiry_ratio": 0
+            }))
+            .is_err()
+        );
+        assert!(
+            TokenEndpointProvider::from_config(&serde_json::json!({
+                "url": "http://x", "token_path": "$.t", "expiry_ratio": 1.5
+            }))
+            .is_err()
+        );
+        // A valid ratio still constructs.
+        assert!(
+            TokenEndpointProvider::from_config(&serde_json::json!({
+                "url": "http://x", "token_path": "$.t", "expiry_ratio": 0.5
+            }))
+            .is_ok()
         );
     }
 }

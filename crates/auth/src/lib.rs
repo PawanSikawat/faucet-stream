@@ -93,6 +93,34 @@ pub(crate) fn expiry_instant(
     })
 }
 
+/// Parse and validate the optional `expiry_ratio` config field, shared by every
+/// provider that caches a token. Must be a finite number in `(0, 1]`; defaults
+/// to [`DEFAULT_EXPIRY_RATIO`] when absent or null.
+///
+/// Out-of-range values silently break token caching (#146 M16): `≤ 0` or `NaN`
+/// makes the effective expiry `0`, so every call refetches (defeating the cache
+/// and single-flight refresh); `> 1` treats the token as valid past its real
+/// expiry, causing 401s mid-use. Rejecting at construction surfaces the mistake
+/// at config-load time instead.
+pub(crate) fn parse_expiry_ratio(config: &Value) -> Result<f64, FaucetError> {
+    match config.get("expiry_ratio") {
+        None | Some(Value::Null) => Ok(DEFAULT_EXPIRY_RATIO),
+        Some(v) => {
+            let r = v.as_f64().ok_or_else(|| {
+                FaucetError::Config(format!(
+                    "auth provider: `expiry_ratio` must be a number in (0, 1], got {v}"
+                ))
+            })?;
+            if !r.is_finite() || r <= 0.0 || r > 1.0 {
+                return Err(FaucetError::Config(format!(
+                    "auth provider: `expiry_ratio` must be a finite number in (0, 1], got {r}"
+                )));
+            }
+            Ok(r)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -117,6 +145,46 @@ mod tests {
     #[test]
     fn build_provider_missing_type_errors() {
         let spec = serde_json::json!({ "config": {} });
+        assert!(build_provider(&spec).is_err());
+    }
+
+    #[test]
+    fn parse_expiry_ratio_validates_range() {
+        use serde_json::json;
+        // Absent / null → default.
+        assert_eq!(
+            parse_expiry_ratio(&json!({})).unwrap(),
+            DEFAULT_EXPIRY_RATIO
+        );
+        assert_eq!(
+            parse_expiry_ratio(&json!({ "expiry_ratio": null })).unwrap(),
+            DEFAULT_EXPIRY_RATIO
+        );
+        // In-range values pass.
+        assert_eq!(
+            parse_expiry_ratio(&json!({ "expiry_ratio": 0.5 })).unwrap(),
+            0.5
+        );
+        assert_eq!(
+            parse_expiry_ratio(&json!({ "expiry_ratio": 1.0 })).unwrap(),
+            1.0
+        );
+        // Out-of-range / non-numeric are rejected (#146 M16).
+        assert!(parse_expiry_ratio(&json!({ "expiry_ratio": 0 })).is_err());
+        assert!(parse_expiry_ratio(&json!({ "expiry_ratio": -0.5 })).is_err());
+        assert!(parse_expiry_ratio(&json!({ "expiry_ratio": 1.5 })).is_err());
+        assert!(parse_expiry_ratio(&json!({ "expiry_ratio": "0.5" })).is_err());
+    }
+
+    #[test]
+    fn build_provider_rejects_out_of_range_expiry_ratio() {
+        let spec = serde_json::json!({
+            "type": "oauth2",
+            "config": {
+                "token_url": "http://x", "client_id": "id",
+                "client_secret": "sec", "expiry_ratio": 2.0
+            }
+        });
         assert!(build_provider(&spec).is_err());
     }
 }
