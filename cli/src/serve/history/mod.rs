@@ -159,6 +159,11 @@ pub struct ListPage {
 pub enum HistoryError {
     #[error("run-history backend error: {0}")]
     Backend(String),
+    /// The backend is degraded and the operation can't be honored safely
+    /// (e.g. an idempotency claim that would risk a duplicate run). Maps to a
+    /// `503` so the caller can retry once the backend recovers (#146 M5).
+    #[error("{0}")]
+    Degraded(String),
 }
 
 #[async_trait]

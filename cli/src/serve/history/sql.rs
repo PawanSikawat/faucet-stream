@@ -61,6 +61,11 @@ pub struct Stmts {
     pub insert_idem: String,
     pub select_idem: String,
     pub takeover_idem: String,
+    /// Delete the idempotency claim(s) that point at a given run — used when a
+    /// run is deleted so a replay of the key starts fresh rather than 404-ing
+    /// on the missing record (#146 M8). Scoped by `run_id`, so a newer run that
+    /// re-claimed the same key keeps its claim.
+    pub delete_idem_by_run: String,
 }
 
 impl Stmts {
@@ -112,6 +117,7 @@ impl Stmts {
             takeover_idem: "UPDATE faucet_serve_idem \
                 SET run_id=$1,fingerprint=$2,claimed_at=$3 WHERE key=$4 AND claimed_at=$5"
                 .into(),
+            delete_idem_by_run: "DELETE FROM faucet_serve_idem WHERE run_id=$1".into(),
         }
     }
 
@@ -154,6 +160,7 @@ impl Stmts {
             takeover_idem: "UPDATE faucet_serve_idem \
                 SET run_id=?,fingerprint=?,claimed_at=? WHERE key=? AND claimed_at=?"
                 .into(),
+            delete_idem_by_run: "DELETE FROM faucet_serve_idem WHERE run_id=?".into(),
         }
     }
 }
@@ -462,6 +469,16 @@ macro_rules! impl_sql_history {
                     }
                     Some(_) => {
                         sqlx::query(&self.stmts.delete)
+                            .bind(id)
+                            .execute(&self.pool)
+                            .await
+                            .map_err(backend)?;
+                        // Drop the run's idempotency claim too, so a replay of
+                        // the key starts fresh instead of 404-ing on the deleted
+                        // record until the claim self-expires (#146 M8). Scoped
+                        // by run_id, so a newer run that re-claimed the same key
+                        // keeps its claim.
+                        sqlx::query(&self.stmts.delete_idem_by_run)
                             .bind(id)
                             .execute(&self.pool)
                             .await

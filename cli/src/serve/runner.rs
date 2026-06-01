@@ -87,13 +87,26 @@ pub async fn submit(state: ServerState, req: SubmitRequest) -> Result<SubmitResp
     // Idempotency claim (if a key was supplied).
     if let Some(key) = &req.idempotency_key {
         let merged = serde_json::to_value(&loaded.cfg).unwrap_or(serde_json::Value::Null);
-        let fp = idempotency::fingerprint(&merged, loaded.cfg.name.as_deref());
+        // Fold the run-affecting request fields (clock / timeout_secs / labels)
+        // into the fingerprint, not just the config — so a key replayed with a
+        // different backfill `clock` is a 409, not a replay of the original
+        // run's window (#146 M7).
+        let fp_config = idempotency::fingerprint(&merged, loaded.cfg.name.as_deref());
+        let fp = idempotency::request_fingerprint(
+            &fp_config,
+            req.clock.as_deref(),
+            req.timeout_secs,
+            &req.labels,
+        );
         match state
             .history()
             .claim_idempotency(key, &fp, &run_id, state.idempotency_retention())
             .await
-            .map_err(|e| ServeError::Internal(e.to_string()))?
-        {
+            .map_err(|e| match e {
+                // Degraded backend can't safely honor idempotency → 503, retry.
+                crate::serve::history::HistoryError::Degraded(m) => ServeError::Unavailable(m),
+                other => ServeError::Internal(other.to_string()),
+            })? {
             Claim::Fresh => {}
             Claim::Replay(existing) => {
                 metrics::record_idempotency_hit();
@@ -457,14 +470,43 @@ async fn finalize(state: &ServerState, run_id: &str, started: DateTime<Utc>, ter
     let finished = Utc::now();
     let elapsed = (finished - started).to_std().ok().map(|d| d.as_secs_f64());
     let (status, reason, records, invs, error) = term.into_parts();
-    if let Ok(Some(mut rec)) = state.history().get(run_id).await {
-        rec.status = status;
-        rec.finished_at = Some(finished);
-        rec.elapsed_secs = elapsed;
-        rec.records_written = records;
-        rec.invocations = invs;
-        rec.error = error;
-        let _ = state.history().upsert(&rec).await;
+    // Read-modify-write the existing record to preserve its metadata
+    // (name / labels / idempotency_key / submitted_at). If it can't be read —
+    // the backend errored, or the record was purged / landed in another store
+    // under degraded fallback — DON'T silently drop the terminal status (#146
+    // M6): reconstruct a minimal terminal record and upsert it, so the run
+    // never lingers non-terminal while `record_run_finished` has already fired.
+    let mut rec = match state.history().get(run_id).await {
+        Ok(Some(rec)) => rec,
+        Ok(None) => {
+            tracing::warn!(
+                run_id,
+                "finalize: run record not found; writing a fresh terminal record"
+            );
+            RunRecord::queued(run_id.to_string(), None, BTreeMap::new(), None, started)
+        }
+        Err(e) => {
+            tracing::warn!(
+                run_id,
+                error = %e,
+                "finalize: failed to read run record; writing a fresh terminal record"
+            );
+            RunRecord::queued(run_id.to_string(), None, BTreeMap::new(), None, started)
+        }
+    };
+    rec.status = status;
+    rec.started_at.get_or_insert(started);
+    rec.finished_at = Some(finished);
+    rec.elapsed_secs = elapsed;
+    rec.records_written = records;
+    rec.invocations = invs;
+    rec.error = error;
+    if let Err(e) = state.history().upsert(&rec).await {
+        tracing::error!(
+            run_id,
+            error = %e,
+            "finalize: failed to persist terminal run record"
+        );
     }
     metrics::record_run_finished(status, reason);
 }
@@ -595,5 +637,107 @@ mod tests {
         );
         // The reservation taken before the claim must have been released by the guard.
         assert_eq!(state.registry().queued(), 0);
+    }
+
+    /// A `ServerState` backed by an in-memory history, for finalize tests.
+    fn memory_state() -> crate::serve::state::ServerState {
+        use crate::serve::config::{AuthMode, HistoryBackendSpec, ServeConfig};
+        use crate::serve::history::RunHistory;
+        use crate::serve::history::memory::MemoryHistory;
+        use crate::serve::state::ServerState;
+        use std::sync::Arc;
+        use tokio_util::sync::CancellationToken;
+
+        let cfg = ServeConfig {
+            listen: "127.0.0.1:0".parse().unwrap(),
+            auth: AuthMode::None,
+            max_concurrent_runs: 4,
+            max_queued_runs: 4,
+            default_config_path: None,
+            history: HistoryBackendSpec::Memory,
+            cors_origins: vec![],
+            body_limit_bytes: 1_048_576,
+            shutdown_grace: Duration::from_secs(60),
+            retain_terminal_runs: Duration::from_secs(60),
+            idempotency_retention: Duration::from_secs(60),
+            probe_timeout: Duration::from_secs(10),
+            env_file: None,
+            no_env_file: false,
+            log_level: "info".into(),
+        };
+        let history = Arc::new(MemoryHistory::new(Duration::from_secs(60))) as Arc<dyn RunHistory>;
+        ServerState::new(
+            &cfg,
+            None,
+            CancellationToken::new(),
+            history,
+            crate::serve::logs::LogHub::new(),
+            None,
+        )
+    }
+
+    #[tokio::test]
+    async fn finalize_writes_terminal_record_when_record_is_missing() {
+        // M6 (#146): if the run record can't be read at finalize time (purged,
+        // or split to another store under degraded fallback), the terminal
+        // status must NOT be silently dropped — a fresh terminal record is
+        // written so the run never lingers non-terminal while the run-finished
+        // metric has already fired.
+        let state = memory_state();
+        let started = Utc::now();
+        finalize(
+            &state,
+            "ghost",
+            started,
+            Terminal::Failed {
+                reason: "boom".into(),
+                records: 0,
+                invs: Vec::new(),
+            },
+        )
+        .await;
+        let rec = state
+            .history()
+            .get("ghost")
+            .await
+            .unwrap()
+            .expect("finalize must create a terminal record even when none existed");
+        assert_eq!(rec.status, RunStatus::Failed);
+        assert!(rec.finished_at.is_some());
+        assert!(rec.started_at.is_some());
+        assert_eq!(rec.error.as_deref(), Some("boom"));
+    }
+
+    #[tokio::test]
+    async fn finalize_preserves_metadata_of_existing_record() {
+        // The happy path still read-modify-writes, preserving name/labels/key.
+        let state = memory_state();
+        let started = Utc::now();
+        let mut rec = RunRecord::queued(
+            "r1".into(),
+            Some("nightly".into()),
+            BTreeMap::new(),
+            Some("idem-k".into()),
+            started,
+        );
+        rec.status = RunStatus::Running;
+        rec.started_at = Some(started);
+        state.history().upsert(&rec).await.unwrap();
+
+        finalize(
+            &state,
+            "r1",
+            started,
+            Terminal::Completed {
+                records: 5,
+                invs: Vec::new(),
+            },
+        )
+        .await;
+        let got = state.history().get("r1").await.unwrap().unwrap();
+        assert_eq!(got.status, RunStatus::Completed);
+        assert_eq!(got.records_written, 5);
+        assert_eq!(got.name.as_deref(), Some("nightly"));
+        assert_eq!(got.idempotency_key.as_deref(), Some("idem-k"));
     }
 }

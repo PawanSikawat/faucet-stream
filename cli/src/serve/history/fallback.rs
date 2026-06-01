@@ -93,9 +93,35 @@ impl RunHistory for FallbackHistory {
         run_id: &str,
         window: Duration,
     ) -> Result<Claim, HistoryError> {
-        via!(self,
-            p => p.claim_idempotency(key, fingerprint, run_id, window),
-            f => f.claim_idempotency(key, fingerprint, run_id, window))
+        // Idempotency is correctness-critical, so it does NOT use the generic
+        // `via!` fall-through. While the primary is healthy it is the
+        // authoritative claim store; its first error trips degraded.
+        if !self.is_degraded()
+            && let Some(p) = self.primary.as_ref()
+        {
+            match p.claim_idempotency(key, fingerprint, run_id, window).await {
+                Ok(v) => return Ok(v),
+                Err(e) => self.trip(&e),
+            }
+        }
+        // Tripped from a healthy primary: the in-memory fallback cannot see
+        // claims persisted to the primary before the trip, so serving a `Fresh`
+        // from memory could duplicate a run the primary already claimed.
+        // Fail closed — reject idempotent submissions while degraded rather than
+        // risk a silent duplicate (#146 M5). A submission with no idempotency
+        // key never reaches here. When the wrapper *started* degraded (`primary`
+        // is `None` — no primary ever held a claim), the in-memory store is the
+        // sole authoritative store, so its claims are safe to serve.
+        if self.primary.is_some() {
+            return Err(HistoryError::Degraded(
+                "idempotency unavailable: the run-history backend is degraded; retry once it \
+                 recovers, or resubmit without an idempotency key"
+                    .into(),
+            ));
+        }
+        self.fallback
+            .claim_idempotency(key, fingerprint, run_id, window)
+            .await
     }
 
     async fn upsert(&self, rec: &RunRecord) -> Result<(), HistoryError> {
@@ -188,6 +214,45 @@ mod tests {
         // Subsequent reads are served from the in-memory fallback.
         let got = fb.get("r1").await.unwrap();
         assert_eq!(got.unwrap().run_id, "r1");
+    }
+
+    #[tokio::test]
+    async fn claim_fails_closed_once_degraded_from_a_healthy_primary() {
+        // M5 (#146): the primary may hold claims the in-memory fallback can't
+        // see, so once it trips, an idempotency claim must fail CLOSED rather
+        // than return a `Fresh` from the empty memory store and duplicate a run.
+        let fb = FallbackHistory::healthy(Box::new(AlwaysFail), Duration::from_secs(60), "test");
+        let err = fb
+            .claim_idempotency("k", "fp", "r1", Duration::from_secs(60))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, HistoryError::Degraded(_)), "got {err:?}");
+        assert!(fb.degraded(), "the failed primary claim trips degraded");
+        // A second attempt (already degraded) also fails closed — never Fresh.
+        assert!(matches!(
+            fb.claim_idempotency("k", "fp", "r2", Duration::from_secs(60))
+                .await,
+            Err(HistoryError::Degraded(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn claim_uses_memory_when_started_degraded() {
+        // No primary ever existed → the in-memory store is authoritative, so
+        // idempotency works normally (no split is possible).
+        let fb = FallbackHistory::degraded_at_startup(Duration::from_secs(60), "test");
+        assert_eq!(
+            fb.claim_idempotency("k", "fp", "r1", Duration::from_secs(60))
+                .await
+                .unwrap(),
+            Claim::Fresh
+        );
+        assert_eq!(
+            fb.claim_idempotency("k", "fp", "r2", Duration::from_secs(60))
+                .await
+                .unwrap(),
+            Claim::Replay("r1".into())
+        );
     }
 
     #[tokio::test]
