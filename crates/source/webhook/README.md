@@ -66,7 +66,7 @@ The server responds with `200 OK` to valid requests and `400 Bad Request` for no
 | `max_payloads` | `Option<usize>` | `None` | Stop after receiving this many payloads. `None` means collect until timeout |
 | `timeout_secs` | `u64` | `30` | How long to listen before returning, in seconds |
 | `max_body_bytes` | `usize` | `1048576` | Max accepted request body size (1 MiB). Larger POSTs are rejected with `413` so one huge request can't exhaust memory. |
-| `auth_token` | `Option<String>` | `None` | Optional shared secret. When set, requests must send it in the `Authorization` header (raw or `Bearer <token>`); others get `401`. Strongly recommended whenever `listen_addr` isn't loopback. |
+| `auth_token` | `Option<String>` | `None` | Optional shared secret. When set, requests must send it in the `Authorization` header (raw or `Bearer <token>`); others get `401`. The comparison is constant-time (no timing side-channel). Strongly recommended whenever `listen_addr` isn't loopback. |
 | `batch_size` | `usize` | `1000` | Records per emitted `StreamPage`. `0` is the "no batching" sentinel — emit the full flush window in one page. See [Streaming and batching](#streaming-and-batching) |
 
 ## Streaming and batching
