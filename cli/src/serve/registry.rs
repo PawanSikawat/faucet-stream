@@ -70,6 +70,17 @@ impl Registry {
         self.drained.notify_waiters();
     }
 
+    /// Queued → terminal: a run was cancelled (or the server shut down) while
+    /// still waiting for an execution permit, so it never became in-flight.
+    /// Release its **queue** slot (not `in_flight`), drop the token, and wake any
+    /// drain waiter. Distinct from [`Self::mark_finished`], which decrements
+    /// `in_flight` (#146 R: a cancel on a queued run now takes effect at once).
+    pub fn mark_queued_cancelled(&self, run_id: &str) {
+        self.queued.fetch_sub(1, Ordering::AcqRel);
+        self.tokens.remove(run_id);
+        self.drained.notify_waiters();
+    }
+
     /// Cancel a live run. Returns `true` if a live token existed.
     pub fn cancel(&self, run_id: &str) -> bool {
         if let Some(t) = self.tokens.get(run_id) {

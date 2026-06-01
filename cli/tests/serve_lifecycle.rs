@@ -291,3 +291,176 @@ async fn cancel_transitions_to_cancelled() {
     }
     assert_eq!(status, "cancelled", "run must transition to 'cancelled'");
 }
+
+/// `doctor_first: true` against a healthy pipeline must store the (redacted)
+/// preflight report on the run record, so `GET /v1/runs/{id}` exposes
+/// `doctor_report` (#146 R: the field was declared but never populated).
+#[tokio::test]
+async fn doctor_first_success_populates_doctor_report() {
+    let port = free_port();
+    spawn_server(port, None).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://127.0.0.1:{port}");
+
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("in.csv");
+    std::fs::write(&input, "name\nalice\n").unwrap();
+    let output = dir.path().join("out.jsonl");
+    let body = serde_json::json!({
+        "config": csv_to_jsonl_yaml(&input, &output),
+        "doctor_first": true,
+    });
+    let submit: serde_json::Value = client
+        .post(format!("{base}/v1/runs"))
+        .json(&body)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let run_id = submit["run_id"].as_str().unwrap().to_string();
+
+    let rec: serde_json::Value = client
+        .get(format!("{base}/v1/runs/{run_id}"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(
+        rec["doctor_report"]["invocations"].is_array(),
+        "a doctor_first run must expose its preflight report; got:\n{rec:#}"
+    );
+}
+
+/// Cancelling a run that is still QUEUED (no execution permit yet) must finalize
+/// it as `cancelled` promptly — not only after a permit frees. With
+/// `max_concurrent_runs=1`, a blocking run holds the sole permit so a second run
+/// stays queued; before the #146 fix the queued run's cancel was ignored until
+/// the permit freed (here: never, since the blocker runs for an hour), so this
+/// test would hang/fail.
+#[tokio::test(flavor = "multi_thread")]
+async fn cancel_of_queued_run_transitions_to_cancelled() {
+    let port = free_port();
+    let mut config = ServeConfig::from_args({
+        let mut a = args_on(port, None);
+        a.max_concurrent_runs = Some(1);
+        a
+    })
+    .unwrap();
+    config.log_level = "warn".into();
+    tokio::spawn(async move {
+        let _ = faucet_cli::serve::run_server(config).await;
+    });
+    let client = reqwest::Client::new();
+    for _ in 0..100 {
+        if client
+            .get(format!("http://127.0.0.1:{port}/healthz"))
+            .send()
+            .await
+            .map(|r| r.status().is_success())
+            .unwrap_or(false)
+        {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    let base = format!("http://127.0.0.1:{port}");
+
+    // Run A: a webhook source that blocks for an hour, taking the only permit.
+    let webhook_port = free_port();
+    let dir = tempfile::tempdir().unwrap();
+    let block_cfg = format!(
+        "version: 1\npipeline:\n  source:\n    type: webhook\n    config:\n      listen_addr: \"127.0.0.1:{webhook_port}\"\n      timeout_secs: 3600\n  sink:\n    type: jsonl\n    config:\n      path: \"{}\"\n",
+        dir.path().join("a.jsonl").display(),
+    );
+    let a_id = client
+        .post(format!("{base}/v1/runs"))
+        .json(&serde_json::json!({ "config": block_cfg }))
+        .send()
+        .await
+        .unwrap()
+        .json::<serde_json::Value>()
+        .await
+        .unwrap()["run_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    for _ in 0..200 {
+        let rec: serde_json::Value = client
+            .get(format!("{base}/v1/runs/{a_id}"))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        if rec["status"] == "running" {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+
+    // Run B: a trivial csv→jsonl run that stays QUEUED behind A's permit.
+    let input = dir.path().join("in.csv");
+    std::fs::write(&input, "name\nbob\n").unwrap();
+    let b_id = client
+        .post(format!("{base}/v1/runs"))
+        .json(&serde_json::json!({ "config": csv_to_jsonl_yaml(&input, &dir.path().join("b.jsonl")) }))
+        .send()
+        .await
+        .unwrap()
+        .json::<serde_json::Value>()
+        .await
+        .unwrap()["run_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    let b_rec: serde_json::Value = client
+        .get(format!("{base}/v1/runs/{b_id}"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        b_rec["status"], "queued",
+        "B must be queued behind the single permit; got:\n{b_rec:#}"
+    );
+
+    // Cancel the QUEUED run → must converge to cancelled while A still blocks.
+    let c = client
+        .post(format!("{base}/v1/runs/{b_id}/cancel"))
+        .send()
+        .await
+        .unwrap();
+    assert!(
+        c.status() == 202 || c.status() == 200,
+        "cancel status {}",
+        c.status()
+    );
+    let mut status = String::new();
+    for _ in 0..200 {
+        let rec: serde_json::Value = client
+            .get(format!("{base}/v1/runs/{b_id}"))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        status = rec["status"].as_str().unwrap_or("").to_string();
+        if status == "cancelled" {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert_eq!(
+        status, "cancelled",
+        "a queued run must cancel promptly without waiting for a permit (#146 R E6)"
+    );
+}
