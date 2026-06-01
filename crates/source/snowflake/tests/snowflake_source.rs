@@ -32,7 +32,9 @@ fn cfg() -> SnowflakeSourceConfig {
 }
 
 fn build_source(cfg: SnowflakeSourceConfig, server: &MockServer) -> SnowflakeSource {
-    SnowflakeSource::new(cfg).unwrap().with_endpoint_base(server.uri())
+    SnowflakeSource::new(cfg)
+        .unwrap()
+        .with_endpoint_base(server.uri())
 }
 
 fn metadata(num_partitions: usize) -> Value {

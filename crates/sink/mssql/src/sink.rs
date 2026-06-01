@@ -211,7 +211,10 @@ impl MssqlSink {
             let (result, timed_out) = match self.timeout() {
                 Some(t) => match tokio::time::timeout(t, exec).await {
                     Ok(inner) => (inner, false),
-                    Err(_) => (Err(FaucetError::Sink("MSSQL insert timed out".into())), true),
+                    Err(_) => (
+                        Err(FaucetError::Sink("MSSQL insert timed out".into())),
+                        true,
+                    ),
                 },
                 None => (exec.await, false),
             };
