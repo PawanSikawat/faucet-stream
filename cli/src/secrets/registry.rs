@@ -191,7 +191,10 @@ mod tests {
         register("abcd");
         register("abcdXYZW");
         let out = redact("value=abcdXYZW end");
-        assert!(!out.contains("XYZW"), "longer secret partially leaked: {out}");
+        assert!(
+            !out.contains("XYZW"),
+            "longer secret partially leaked: {out}"
+        );
         assert_eq!(out, "value=*** end");
     }
 

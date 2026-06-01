@@ -230,7 +230,10 @@ mod tests {
             !s.contains("topsecretbody"),
             "request body secret leaked: {s}"
         );
-        assert!(s.contains("token_path"), "non-secret fields should remain: {s}");
+        assert!(
+            s.contains("token_path"),
+            "non-secret fields should remain: {s}"
+        );
     }
 
     #[test]

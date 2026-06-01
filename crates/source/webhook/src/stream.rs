@@ -258,7 +258,10 @@ mod tests {
 
     #[test]
     fn token_matches_accepts_raw_and_bearer() {
-        assert!(token_matches(Some("sekret-token-value"), "sekret-token-value"));
+        assert!(token_matches(
+            Some("sekret-token-value"),
+            "sekret-token-value"
+        ));
         assert!(token_matches(
             Some("Bearer sekret-token-value"),
             "sekret-token-value"
@@ -267,14 +270,20 @@ mod tests {
 
     #[test]
     fn token_matches_rejects_wrong_and_missing() {
-        assert!(!token_matches(Some("wrong-token-value"), "sekret-token-value"));
+        assert!(!token_matches(
+            Some("wrong-token-value"),
+            "sekret-token-value"
+        ));
         assert!(!token_matches(
             Some("Bearer wrong-token-value"),
             "sekret-token-value"
         ));
         assert!(!token_matches(None, "sekret-token-value"));
         // Differing length must reject (not panic).
-        assert!(!token_matches(Some("sekret-token-valu"), "sekret-token-value"));
+        assert!(!token_matches(
+            Some("sekret-token-valu"),
+            "sekret-token-value"
+        ));
     }
 
     #[tokio::test]

@@ -364,7 +364,10 @@ mod tests {
         .unwrap();
         let s = format!("{cc:?}");
         assert!(!s.contains("topsecretclient"), "client_secret leaked: {s}");
-        assert!(s.contains("client_id"), "non-secret fields should remain: {s}");
+        assert!(
+            s.contains("client_id"),
+            "non-secret fields should remain: {s}"
+        );
 
         let rf = OAuth2RefreshProvider::from_config(&serde_json::json!({
             "token_url": "https://idp.example/token",
