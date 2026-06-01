@@ -129,6 +129,20 @@ impl ServeConfig {
             ));
         }
 
+        // A zero drain window makes graceful shutdown `timeout(Duration::ZERO,
+        // wait_drained())` time out instantly and cancel in-flight runs —
+        // defeating the drain. Reject it (mirroring the lease-ttl gate).
+        // `--idempotency-retention-secs == 0` is NOT rejected: it is an explicit
+        // "dedup disabled" sentinel (every prior claim is immediately expired).
+        if args.shutdown_grace_secs == 0 {
+            return Err(CliError::Serve(
+                "--shutdown-grace-secs must be > 0 (0 makes graceful shutdown cancel \
+                 in-flight runs immediately instead of draining them; use a small \
+                 value like 1)"
+                    .into(),
+            ));
+        }
+
         let max_concurrent_runs = args
             .max_concurrent_runs
             .unwrap_or_else(default_max_concurrent)
@@ -307,5 +321,37 @@ mod tests {
         a.lease_ttl_secs = 45;
         let cfg = ServeConfig::from_args(a).unwrap();
         assert_eq!(cfg.lease_ttl, Duration::from_secs(45));
+    }
+
+    #[test]
+    fn zero_shutdown_grace_is_rejected() {
+        // A zero drain window makes graceful shutdown `timeout(Duration::ZERO,
+        // wait_drained())` cancel in-flight runs instantly — defeating the
+        // drain. Reject it the same way the lease-ttl gate does.
+        let mut a = base_args();
+        a.no_auth = true;
+        a.shutdown_grace_secs = 0;
+        let err = ServeConfig::from_args(a).unwrap_err();
+        assert!(err.to_string().contains("--shutdown-grace-secs"), "{err}");
+    }
+
+    #[test]
+    fn nonzero_shutdown_grace_is_accepted() {
+        let mut a = base_args();
+        a.no_auth = true;
+        a.shutdown_grace_secs = 5;
+        let cfg = ServeConfig::from_args(a).unwrap();
+        assert_eq!(cfg.shutdown_grace, Duration::from_secs(5));
+    }
+
+    #[test]
+    fn zero_idempotency_retention_is_accepted_as_dedup_disabled_sentinel() {
+        // `idempotency_retention_secs == 0` is an explicit "dedup disabled"
+        // sentinel (every prior claim is immediately expired), NOT an error.
+        let mut a = base_args();
+        a.no_auth = true;
+        a.idempotency_retention_secs = 0;
+        let cfg = ServeConfig::from_args(a).unwrap();
+        assert_eq!(cfg.idempotency_retention, Duration::ZERO);
     }
 }

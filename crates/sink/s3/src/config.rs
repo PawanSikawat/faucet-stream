@@ -17,7 +17,10 @@ pub struct S3SinkConfig {
     pub endpoint_url: Option<String>,
     /// File extension for written objects (default: `.jsonl`).
     pub file_extension: String,
-    /// Maximum records per file. `None` writes all records to a single file.
+    /// Maximum records per file. `None` removes the per-file record cap — but
+    /// the sink still writes **one object per `write_batch` call** (i.e. one per
+    /// upstream page), and `batch_size` may chunk a call further; it does not
+    /// coalesce a streaming run into a single object.
     pub max_records_per_file: Option<usize>,
     /// Maximum number of concurrent file uploads (default: 10).
     pub concurrency: usize,

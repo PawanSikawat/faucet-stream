@@ -54,8 +54,10 @@ pub enum InstallError {
 /// Behavior:
 /// - If `prometheus` is set, builds a `PrometheusBuilder` and installs the
 ///   recorder + HTTP `/metrics` endpoint at the configured listen address.
-///   Already-installed recorder is logged via `tracing::warn!` and continues.
-///   Listen-parse / bind failures return `InstallError`.
+///   Already-installed recorder (typed `BuildError::FailedToSetGlobalRecorder`)
+///   is logged via `tracing::warn!` and continues. Listen-address parse failures
+///   and HTTP-listener bind failures (e.g. port-in-use, typed
+///   `BuildError::FailedToCreateHTTPListener`) return `InstallError::PrometheusBind`.
 /// - If `tracing` is set, installs a `tracing-subscriber` registry with the
 ///   given env-filter directive as the default subscriber. Already-set-default
 ///   is logged via `tracing::warn!` and continues.
@@ -64,7 +66,7 @@ pub fn install_observability(cfg: &ObservabilityConfig) -> Result<InstallReport,
     let mut report = InstallReport::default();
 
     if let Some(p) = cfg.prometheus.as_ref() {
-        use metrics_exporter_prometheus::PrometheusBuilder;
+        use metrics_exporter_prometheus::{BuildError, PrometheusBuilder};
 
         let listen: std::net::SocketAddr =
             p.listen.parse().map_err(|e: std::net::AddrParseError| {
@@ -86,22 +88,29 @@ pub fn install_observability(cfg: &ObservabilityConfig) -> Result<InstallReport,
 
         match builder.install() {
             Ok(()) => report.prometheus_listen = Some(p.listen.clone()),
-            Err(e) => {
-                let msg = e.to_string();
-                // metrics-exporter-prometheus surfaces "already initialized"
-                // via BuildError::FailedToSetGlobalRecorder(SetRecorderError)
-                // whose Display is:
-                //   "attempted to set a recorder after the metrics system was
-                //    already initialized"
-                if msg.to_lowercase().contains("already")
-                    && msg.to_lowercase().contains("initialized")
-                {
+            // Match the TYPED `BuildError` variant rather than scraping its
+            // Display string — the latter breaks silently if the upstream
+            // wording changes.
+            Err(e) => match e {
+                // Recorder already installed (e.g. a prior `install` call or a
+                // test harness). Idempotent: warn and continue.
+                BuildError::FailedToSetGlobalRecorder(_) => {
                     tracing::warn!("Prometheus recorder already installed; continuing");
                     report.prometheus_already_installed = true;
-                } else {
-                    return Err(InstallError::PrometheusInstall(msg));
                 }
-            }
+                // The HTTP `/metrics` listener could not bind. This is where a
+                // genuine bind failure (e.g. EADDRINUSE / port-in-use) lands,
+                // since the real `TcpListener::bind` happens inside `install()`,
+                // not in the address parse above. Surface it as the dedicated
+                // bind error so port-in-use is reported correctly.
+                BuildError::FailedToCreateHTTPListener(msg) => {
+                    return Err(InstallError::PrometheusBind {
+                        listen: p.listen.clone(),
+                        source: std::io::Error::other(msg),
+                    });
+                }
+                other => return Err(InstallError::PrometheusInstall(other.to_string())),
+            },
         }
     }
 

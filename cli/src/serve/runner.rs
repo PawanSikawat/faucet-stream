@@ -75,11 +75,6 @@ pub async fn submit(state: ServerState, req: SubmitRequest) -> Result<SubmitResp
     let format: ConfigFormat = req.config_format.into();
     let loaded = load_submission(&req.config, format, state.default_base()).await?;
 
-    // doctor_first preflight (before reserving any slot or claiming the key).
-    if req.doctor_first {
-        run_doctor_first(&state, &loaded).await?;
-    }
-
     // Reserve a queue slot first, so a Fresh idempotency claim is always followed
     // by a spawned run (no orphaned claims — spec §20.2).
     if !state.registry().try_reserve() {
@@ -87,9 +82,20 @@ pub async fn submit(state: ServerState, req: SubmitRequest) -> Result<SubmitResp
             retry_after_secs: QUEUE_FULL_RETRY_AFTER_SECS,
         });
     }
-    // Releases the reservation on ANY early return below (replay / conflict /
-    // claim or upsert error). Defused just before the run is spawned.
+    // Releases the reservation on ANY early return below (doctor_first 422 /
+    // replay / conflict / claim or upsert error). Defused just before spawn.
     let reservation = ReservationGuard::new(state.clone());
+
+    // doctor_first preflight — run BEHIND the reservation so concurrent preflight
+    // probing is bounded by `max_queued_runs` rather than running unthrottled
+    // before any limit applies (#146 R). On failure the guard releases the slot
+    // via the early `?`. The (redacted) report is stored on the run record below
+    // so `GET /v1/runs/{id}` exposes it (#146 R: doctor_report was never set).
+    let doctor_report = if req.doctor_first {
+        Some(run_doctor_first(&state, &loaded).await?)
+    } else {
+        None
+    };
 
     let run_id = uuid::Uuid::now_v7().to_string();
 
@@ -137,13 +143,14 @@ pub async fn submit(state: ServerState, req: SubmitRequest) -> Result<SubmitResp
     }
 
     let submitted_at = Utc::now();
-    let rec = RunRecord::queued(
+    let mut rec = RunRecord::queued(
         run_id.clone(),
         req.name.clone(),
         req.labels.clone(),
         req.idempotency_key.clone(),
         submitted_at,
     );
+    rec.doctor_report = doctor_report;
     state
         .history()
         .upsert(&rec)
@@ -173,10 +180,13 @@ pub async fn submit(state: ServerState, req: SubmitRequest) -> Result<SubmitResp
 }
 
 /// Run the `doctor_first` probes; on any failure return 422 with the report.
+/// Run the `doctor_first` probes. On success returns the (redacted) report so
+/// the caller can store it on the run record (`doctor_report`); on any probe
+/// failure returns 422 with the same redacted report as `details`.
 async fn run_doctor_first(
     state: &ServerState,
     loaded: &LoadedSubmission,
-) -> Result<(), ServeError> {
+) -> Result<serde_json::Value, ServeError> {
     use faucet_core::check::CheckContext;
     let auth =
         build_auth_catalog(loaded.cfg.auth.as_ref()).map_err(|e| ServeError::Unprocessable {
@@ -188,14 +198,17 @@ async fn run_doctor_first(
     };
     let mut invs = crate::commands::doctor::probe_roots(&loaded.nodes, &auth, &ctx).await;
     let failed = crate::commands::doctor::count_failures(&invs);
+    // Redact regardless of outcome — the report is surfaced either way (as the
+    // 422 `details` on failure, or stored on the run record on success).
+    crate::commands::doctor::redact_invocations(&mut invs);
+    let report = serde_json::json!({ "invocations": invs });
     if failed > 0 {
-        crate::commands::doctor::redact_invocations(&mut invs);
         return Err(ServeError::Unprocessable {
             message: format!("doctor_first preflight failed: {failed} probe(s) failed"),
-            details: Some(serde_json::json!({ "invocations": invs })),
+            details: Some(report),
         });
     }
-    Ok(())
+    Ok(report)
 }
 
 /// Build the replay response for an idempotency hit (the existing run's status).
@@ -373,11 +386,23 @@ fn spawn_run(
     let LoadedSubmission { cfg, nodes } = loaded;
 
     tokio::spawn(async move {
-        let _permit = state
-            .semaphore()
-            .acquire_owned()
-            .await
-            .expect("semaphore not closed");
+        // Race the permit acquisition against cancel / shutdown so a run
+        // cancelled while STILL QUEUED (before any permit frees) is finalized
+        // immediately, instead of only after it eventually acquires a permit
+        // (#146 R). `biased` prefers the cancel/shutdown signals over a
+        // simultaneously-available permit.
+        let _permit = tokio::select! {
+            biased;
+            _ = run_token.cancelled() => {
+                finalize_queued_cancel(&state, &run_id, submitted_at, Terminal::Cancelled).await;
+                return;
+            }
+            _ = server_shutdown.cancelled() => {
+                finalize_queued_cancel(&state, &run_id, submitted_at, Terminal::ShutdownFailed).await;
+                return;
+            }
+            permit = state.semaphore().acquire_owned() => permit.expect("semaphore not closed"),
+        };
 
         // Queued → running. From here the guard guarantees `mark_finished` (and a
         // gauge refresh) on EVERY exit, including early returns and panics.
@@ -556,6 +581,24 @@ async fn finalize(state: &ServerState, run_id: &str, started: DateTime<Utc>, ter
         );
     }
     metrics::record_run_finished(status, reason);
+}
+
+/// Finalize a run that was cancelled / hit shutdown while still QUEUED (before
+/// it acquired an execution permit, so it never became in-flight and has no
+/// `InFlightGuard`). Releases the queue slot, writes the terminal record, closes
+/// the log buffer, and refreshes the gauges — the queued-path analogue of the
+/// normal `finalize` + `InFlightGuard`-drop cleanup.
+async fn finalize_queued_cancel(
+    state: &ServerState,
+    run_id: &str,
+    submitted_at: DateTime<Utc>,
+    term: Terminal,
+) {
+    state.registry().mark_queued_cancelled(run_id);
+    finalize(state, run_id, submitted_at, term).await;
+    state.log_hub().finish(run_id);
+    schedule_log_drop(state.clone(), run_id.to_string());
+    metrics::set_run_gauges(state);
 }
 
 /// Spawn a detached timer that drops a finished run's log buffer after the drain

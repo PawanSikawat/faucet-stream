@@ -6,9 +6,11 @@
 //! { "last_lsn": "0/16A4F88" }
 //! ```
 //!
-//! `last_lsn` is the `commit_lsn` of the last transaction whose change
-//! records have been written to the sink — i.e. the position to resume
-//! *after* on the next `START_REPLICATION`.
+//! `last_lsn` is the **`end_lsn`** of the last committed transaction whose
+//! change records have been written to the sink — the WAL position immediately
+//! *after* that commit record, i.e. exactly where the next `START_REPLICATION`
+//! resumes. (It is the commit's `end_lsn`, not its `commit_lsn`; see the
+//! persist site in `stream.rs`.)
 
 use faucet_core::FaucetError;
 use serde::{Deserialize, Serialize};

@@ -122,8 +122,11 @@ impl faucet_core::Source for CsvSource {
 
             while let Some(rec) = records.next().await {
                 let record = rec.map_err(|e| FaucetError::Config(format!(
-                    "CSV parse error at row {} in '{}': {e}",
-                    row_idx + 1,
+                    "CSV parse error at line {} in '{}': {e}",
+                    // Physical file line: `row_idx` is the 0-based *data* row, so
+                    // +1 for 1-based, and +1 more when a header row was consumed —
+                    // otherwise the first data row (file line 2) is misreported as 1.
+                    row_idx + 1 + usize::from(config.has_headers),
                     config.path
                 )))?;
 

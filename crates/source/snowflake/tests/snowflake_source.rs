@@ -71,6 +71,35 @@ fn rows_for_partition(p: usize) -> Vec<Vec<Value>> {
 }
 
 #[tokio::test]
+async fn check_probes_with_select_1_not_the_configured_query() {
+    use faucet_core::check::{CheckContext, ProbeStatus};
+    use wiremock::matchers::body_partial_json;
+
+    let server = MockServer::start().await;
+    // Mock matches ONLY a `SELECT 1` statement body. If `check()` submitted the
+    // configured query ("SELECT id, name, active FROM events") — i.e. a billed
+    // execution — this mock would not match, wiremock would 404, and the probe
+    // would fail. A passing probe therefore proves the cheap `SELECT 1` is used.
+    Mock::given(method("POST"))
+        .and(path("/api/v2/statements"))
+        .and(body_partial_json(json!({"statement": "SELECT 1"})))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"code": "090001"})))
+        .mount(&server)
+        .await;
+
+    let source = build_source(cfg(), &server);
+    let report = source.check(&CheckContext::default()).await.unwrap();
+    assert!(
+        report
+            .probes
+            .iter()
+            .all(|p| matches!(p.status, ProbeStatus::Pass)),
+        "doctor probe must pass against the SELECT 1 mock (proving it didn't run \
+         the configured query): {report:?}"
+    );
+}
+
+#[tokio::test]
 async fn fetch_all_returns_first_partition_when_no_partitions() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
