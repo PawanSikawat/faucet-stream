@@ -66,7 +66,7 @@ impl S3Source {
             }
 
             let response = req.send().await.map_err(|e| {
-                FaucetError::Config(format!(
+                FaucetError::Source(format!(
                     "S3 list objects error for bucket '{}': {e}",
                     self.config.bucket
                 ))
@@ -114,7 +114,7 @@ impl S3Source {
         let mut reader = self.open_object_reader(key).await?;
         let mut text = String::new();
         reader.read_to_string(&mut text).await.map_err(|e| {
-            FaucetError::Config(format!(
+            FaucetError::Source(format!(
                 "S3 read/decode error for key '{key}' (not valid UTF-8?): {e}"
             ))
         })?;
@@ -137,7 +137,7 @@ impl S3Source {
             .send()
             .await
             .map_err(|e| {
-                FaucetError::Config(format!("S3 get object error for key '{key}': {e}"))
+                FaucetError::Source(format!("S3 get object error for key '{key}': {e}"))
             })?;
 
         // `ByteStream::into_async_read` returns `impl AsyncRead`; wrap in a
@@ -166,7 +166,7 @@ impl S3Source {
                         continue;
                     }
                     let value: Value = serde_json::from_str(trimmed).map_err(|e| {
-                        FaucetError::Config(format!(
+                        FaucetError::Source(format!(
                             "S3 JSON parse error in '{key}' at line {}: {e}",
                             line_num + 1
                         ))
@@ -177,11 +177,11 @@ impl S3Source {
             }
             S3FileFormat::JsonArray => {
                 let value: Value = serde_json::from_str(text).map_err(|e| {
-                    FaucetError::Config(format!("S3 JSON parse error in '{key}': {e}"))
+                    FaucetError::Source(format!("S3 JSON parse error in '{key}': {e}"))
                 })?;
                 match value {
                     Value::Array(arr) => Ok(arr),
-                    _ => Err(FaucetError::Config(format!(
+                    _ => Err(FaucetError::Source(format!(
                         "S3 expected JSON array in '{key}', got {}",
                         value_type_name(&value)
                     ))),
@@ -304,7 +304,7 @@ impl faucet_core::Source for S3Source {
                         while let Some(line) = lines
                             .next_line()
                             .await
-                            .map_err(|e| FaucetError::Config(format!(
+                            .map_err(|e| FaucetError::Source(format!(
                                 "S3 read body error for key '{key}': {e}"
                             )))?
                         {
@@ -315,7 +315,7 @@ impl faucet_core::Source for S3Source {
                             }
                             let value: Value =
                                 serde_json::from_str(trimmed).map_err(|e| {
-                                    FaucetError::Config(format!(
+                                    FaucetError::Source(format!(
                                         "S3 JSON parse error in '{key}' at line {line_num}: {e}",
                                     ))
                                 })?;
@@ -367,11 +367,11 @@ impl faucet_core::Source for S3Source {
                         // crate README.
                         let text = self.read_object_text(key).await?;
                         let value: Value = serde_json::from_str(&text).map_err(|e| {
-                            FaucetError::Config(format!("S3 JSON parse error in '{key}': {e}"))
+                            FaucetError::Source(format!("S3 JSON parse error in '{key}': {e}"))
                         })?;
                         let array = match value {
                             Value::Array(arr) => arr,
-                            other => Err(FaucetError::Config(format!(
+                            other => Err(FaucetError::Source(format!(
                                 "S3 expected JSON array in '{key}', got {}",
                                 value_type_name(&other)
                             )))?,

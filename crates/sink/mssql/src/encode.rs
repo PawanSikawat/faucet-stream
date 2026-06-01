@@ -23,7 +23,13 @@ impl BoundParam {
         match v {
             Value::String(s) => BoundParam::Str(s.clone()),
             Value::Number(n) if n.is_i64() => BoundParam::I64(n.as_i64().unwrap()),
-            Value::Number(n) if n.is_u64() => BoundParam::I64(n.as_u64().unwrap() as i64),
+            Value::Number(n) if n.is_u64() => match i64::try_from(n.as_u64().unwrap()) {
+                Ok(i) => BoundParam::I64(i),
+                // A u64 above i64::MAX would wrap to a negative i64; bind it as a
+                // string so MSSQL coerces to NUMERIC/DECIMAL instead of corrupting
+                // the value.
+                Err(_) => BoundParam::Str(n.as_u64().unwrap().to_string()),
+            },
             Value::Number(n) => BoundParam::F64(n.as_f64().unwrap_or(0.0)),
             Value::Bool(b) => BoundParam::Bool(*b),
             Value::Null => BoundParam::Null(None),
@@ -274,5 +280,21 @@ mod tests {
             BoundParam::from_value(&json!({"k":1})),
             BoundParam::Str(_)
         ));
+    }
+
+    #[test]
+    fn u64_above_i64_max_binds_as_string_not_wrapped() {
+        // A u64 that fits in i64 still binds as I64.
+        match BoundParam::from_value(&json!(i64::MAX as u64)) {
+            BoundParam::I64(v) => assert_eq!(v, i64::MAX),
+            _ => panic!("expected I64 for an in-range u64"),
+        }
+        // A u64 above i64::MAX must NOT wrap to a negative I64 — bind as a string
+        // so MSSQL coerces to NUMERIC/DECIMAL rather than corrupting the value.
+        match BoundParam::from_value(&json!(u64::MAX)) {
+            BoundParam::Str(s) => assert_eq!(s, "18446744073709551615"),
+            BoundParam::I64(v) => panic!("u64::MAX wrapped to negative I64({v})"),
+            _ => panic!("expected Str for u64 > i64::MAX"),
+        }
     }
 }

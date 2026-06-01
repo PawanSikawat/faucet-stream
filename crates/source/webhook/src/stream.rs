@@ -115,6 +115,53 @@ fn token_matches(provided: Option<&str>, expected: &str) -> bool {
     raw | stripped
 }
 
+/// Decision for an incoming payload, given the current record count and the
+/// configured cap. Extracted as a pure function so the cap invariant can be
+/// tested deterministically without driving concurrent HTTP.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PayloadDecision {
+    /// Whether to store the just-received payload.
+    accept: bool,
+    /// Whether the receive loop is now done (cap reached) and `done` should be
+    /// notified.
+    done: bool,
+}
+
+/// Decide whether to store a payload and whether the cap is now satisfied.
+///
+/// `current_len` is the number of records already stored (observed under the
+/// records lock). With no cap, every payload is accepted and the loop never
+/// self-terminates. With a cap, the cap is **exact**: once `current_len` has
+/// reached `max`, further concurrently-accepted POSTs are dropped (so the Vec
+/// never exceeds `max`) while still notifying `done` so a slightly-late request
+/// doesn't wedge the receive loop (#146 LOW).
+fn decide_payload(current_len: usize, max_payloads: Option<usize>) -> PayloadDecision {
+    match max_payloads {
+        None => PayloadDecision {
+            accept: true,
+            done: false,
+        },
+        Some(max) => {
+            if current_len >= max {
+                // Already at (or somehow past) the cap — drop this payload and
+                // signal completion. Pushing here is what let concurrent
+                // in-flight POSTs overflow the Vec past `max`.
+                PayloadDecision {
+                    accept: false,
+                    done: true,
+                }
+            } else {
+                // Room for this one. Accept it; we're done once it fills the
+                // last slot.
+                PayloadDecision {
+                    accept: true,
+                    done: current_len + 1 >= max,
+                }
+            }
+        }
+    }
+}
+
 /// Axum handler for incoming webhook POST requests.
 async fn webhook_handler(
     State(state): State<Arc<AppState>>,
@@ -144,11 +191,15 @@ async fn webhook_handler(
     };
 
     let mut records = state.records.lock().await;
-    records.push(value);
-
-    if let Some(max) = state.max_payloads
-        && records.len() >= max
-    {
+    // Decide under the lock so the cap is exact: concurrent in-flight POSTs
+    // that have already been accepted can't push the Vec past `max_payloads`
+    // — once the cap is reached we drop the surplus payload instead of
+    // storing it (#146 LOW).
+    let decision = decide_payload(records.len(), state.max_payloads);
+    if decision.accept {
+        records.push(value);
+    }
+    if decision.done {
         state.done.notify_one();
     }
 
@@ -284,6 +335,118 @@ mod tests {
             Some("sekret-token-valu"),
             "sekret-token-value"
         ));
+    }
+
+    #[test]
+    fn decide_payload_no_cap_always_accepts() {
+        for len in [0usize, 1, 100, 10_000] {
+            assert_eq!(
+                decide_payload(len, None),
+                PayloadDecision {
+                    accept: true,
+                    done: false
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn decide_payload_accepts_until_cap_then_drops() {
+        let max = Some(2);
+        // 0 stored: accept, not yet done.
+        assert_eq!(
+            decide_payload(0, max),
+            PayloadDecision {
+                accept: true,
+                done: false
+            }
+        );
+        // 1 stored: accept the last slot, now done.
+        assert_eq!(
+            decide_payload(1, max),
+            PayloadDecision {
+                accept: true,
+                done: true
+            }
+        );
+        // 2 stored (at cap): drop, signal done.
+        assert_eq!(
+            decide_payload(2, max),
+            PayloadDecision {
+                accept: false,
+                done: true
+            }
+        );
+        // 3 stored (somehow past cap): still drop, still done.
+        assert_eq!(
+            decide_payload(3, max),
+            PayloadDecision {
+                accept: false,
+                done: true
+            }
+        );
+    }
+
+    #[test]
+    fn cap_invariant_never_exceeded_under_concurrent_arrivals() {
+        // Simulate many in-flight POSTs all racing the cap: the same record
+        // count can be observed by several requests before any of them push.
+        // Applying `decide_payload` per request must still bound the Vec at
+        // `max`, dropping the surplus rather than overflowing (#146 LOW).
+        let max = 2usize;
+        let mut records: Vec<Value> = Vec::new();
+        // 5 concurrent arrivals; each makes its decision against the current
+        // length and only pushes if accepted (mirroring the handler under the
+        // records lock).
+        for i in 0..5 {
+            let decision = decide_payload(records.len(), Some(max));
+            if decision.accept {
+                records.push(json!({ "id": i }));
+            }
+        }
+        assert_eq!(
+            records.len(),
+            max,
+            "Vec must never exceed max_payloads, got {}",
+            records.len()
+        );
+    }
+
+    #[tokio::test]
+    async fn handler_never_exceeds_cap_under_concurrent_posts() {
+        // Drive the real handler with many concurrent requests against one
+        // shared AppState. The records Vec must never exceed `max_payloads`,
+        // even though several requests are accepted in-flight before any of
+        // them observe the cap being hit (#146 LOW).
+        let max = 3usize;
+        let state = Arc::new(AppState {
+            records: Mutex::new(Vec::new()),
+            max_payloads: Some(max),
+            done: Notify::new(),
+            auth_token: None,
+        });
+
+        let mut handles = Vec::new();
+        for i in 0..50 {
+            let st = Arc::clone(&state);
+            handles.push(tokio::spawn(async move {
+                let body = axum::body::Bytes::from(format!("{{\"id\":{i}}}"));
+                webhook_handler(State(st), axum::http::HeaderMap::new(), body).await
+            }));
+        }
+        for h in handles {
+            // Every request returns 200 (accepted or gracefully dropped — we
+            // don't surface a different status for drops to keep clients happy).
+            assert_eq!(h.await.unwrap(), StatusCode::OK);
+        }
+
+        let records = state.records.lock().await;
+        assert_eq!(
+            records.len(),
+            max,
+            "Vec must never exceed max_payloads, got {}",
+            records.len()
+        );
     }
 
     #[tokio::test]

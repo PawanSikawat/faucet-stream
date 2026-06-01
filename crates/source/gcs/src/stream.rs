@@ -43,7 +43,7 @@ impl GcsSource {
         prefix_override: Option<&str>,
     ) -> Result<Vec<String>, FaucetError> {
         if let Some(ref keys) = self.config.object_keys {
-            return Ok(keys.clone());
+            return Ok(cap_keys(keys.clone(), self.config.max_objects));
         }
 
         let effective_prefix = prefix_override.or(self.config.prefix.as_deref());
@@ -357,6 +357,19 @@ impl faucet_core::Source for GcsSource {
     }
 }
 
+/// Truncate an explicit object-key list to the `max_objects` cap.
+///
+/// `None` leaves the list untouched; `Some(n)` keeps at most the first `n`
+/// keys. This mirrors the cap the listing path applies while paginating, so
+/// `max_objects` is honoured whether keys come from `object_keys` or a live
+/// `list_objects` scan.
+fn cap_keys(mut keys: Vec<String>, max: Option<usize>) -> Vec<String> {
+    if let Some(n) = max {
+        keys.truncate(n);
+    }
+    keys
+}
+
 fn value_type_name(v: &Value) -> &'static str {
     match v {
         Value::Null => "null",
@@ -470,5 +483,26 @@ mod tests {
     fn parse_raw_text_yields_single_record() {
         let r = parse(GcsFileFormat::RawText, "p/f.txt", "hello").unwrap();
         assert_eq!(r, vec![json!({"key": "p/f.txt", "content": "hello"})]);
+    }
+
+    #[test]
+    fn cap_keys_truncates_explicit_list_to_max_objects() {
+        let keys = vec!["a".to_string(), "b".to_string(), "c".to_string()];
+        let capped = cap_keys(keys, Some(2));
+        assert_eq!(capped, vec!["a".to_string(), "b".to_string()]);
+    }
+
+    #[test]
+    fn cap_keys_passes_through_when_no_max() {
+        let keys = vec!["a".to_string(), "b".to_string(), "c".to_string()];
+        let capped = cap_keys(keys.clone(), None);
+        assert_eq!(capped, keys);
+    }
+
+    #[test]
+    fn cap_keys_noop_when_max_exceeds_len() {
+        let keys = vec!["a".to_string(), "b".to_string()];
+        let capped = cap_keys(keys.clone(), Some(10));
+        assert_eq!(capped, keys);
     }
 }

@@ -48,12 +48,25 @@ pub struct SqliteSinkConfig {
     /// preserved exactly, no internal re-chunking is performed.
     #[serde(default = "default_batch_size")]
     pub batch_size: usize,
-    /// Maximum number of connections in the pool. Defaults to 5.
+    /// Maximum number of connections in the pool. Defaults to `1`.
+    ///
+    /// SQLite serializes writers at the file level, so a single SQLite file
+    /// can only ever have one writer at a time. A multi-connection pool against
+    /// one file therefore races for the write lock and risks `SQLITE_BUSY`
+    /// errors under concurrency; one writer is the safe default. Raise this only
+    /// if your workload is read-heavy against a WAL database (the sink opens the
+    /// pool in WAL mode with a `busy_timeout`, so extra connections can still
+    /// read concurrently with the single writer).
+    #[serde(default = "default_max_connections")]
     pub max_connections: u32,
 }
 
 fn default_batch_size() -> usize {
     DEFAULT_BATCH_SIZE
+}
+
+fn default_max_connections() -> u32 {
+    1
 }
 
 impl SqliteSinkConfig {
@@ -64,7 +77,7 @@ impl SqliteSinkConfig {
             table_name: table_name.into(),
             column_mapping: SqliteColumnMapping::default(),
             batch_size: DEFAULT_BATCH_SIZE,
-            max_connections: 5,
+            max_connections: default_max_connections(),
         }
     }
 
@@ -104,6 +117,26 @@ mod tests {
             config.column_mapping,
             SqliteColumnMapping::Json { ref column } if column == "data"
         ));
+    }
+
+    #[test]
+    fn default_max_connections_is_one() {
+        // SQLite serializes writers at the file level, so a single-writer pool
+        // is the safe default — a multi-connection pool against one SQLite file
+        // races for the write lock and risks SQLITE_BUSY (audit #146 LOW).
+        let config = SqliteSinkConfig::new("sqlite::memory:", "events");
+        assert_eq!(config.max_connections, 1);
+    }
+
+    #[test]
+    fn default_max_connections_deserializes_to_one_when_absent() {
+        let json = r#"{
+            "database_url": "sqlite::memory:",
+            "table_name": "events",
+            "column_mapping": {"json": {"column": "data"}}
+        }"#;
+        let config: SqliteSinkConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(config.max_connections, 1);
     }
 
     #[test]

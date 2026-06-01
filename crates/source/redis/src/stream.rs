@@ -40,7 +40,7 @@ impl RedisSource {
                 client
                     .get_multiplexed_async_connection()
                     .await
-                    .map_err(|e| FaucetError::Config(format!("Redis connection failed: {e}")))
+                    .map_err(|e| FaucetError::Source(format!("Redis connection failed: {e}")))
             })
             .await?;
         Ok(conn.clone())
@@ -81,7 +81,7 @@ impl RedisSource {
         let values: Vec<String> = conn
             .lrange(key, 0, -1)
             .await
-            .map_err(|e| FaucetError::Config(format!("LRANGE failed on '{key}': {e}")))?;
+            .map_err(|e| FaucetError::Source(format!("LRANGE failed on '{key}': {e}")))?;
 
         let records = values
             .into_iter()
@@ -106,7 +106,7 @@ impl RedisSource {
                 conn.xread_options(&[key], &[">"], &opts.group(group_name, consumer_name))
                     .await
                     .map_err(|e| {
-                        FaucetError::Config(format!("XREADGROUP failed on '{key}': {e}"))
+                        FaucetError::Source(format!("XREADGROUP failed on '{key}': {e}"))
                     })?
             }
             _ => {
@@ -116,7 +116,7 @@ impl RedisSource {
                 }
                 conn.xread_options(&[key], &["0"], &opts)
                     .await
-                    .map_err(|e| FaucetError::Config(format!("XREAD failed on '{key}': {e}")))?
+                    .map_err(|e| FaucetError::Source(format!("XREAD failed on '{key}': {e}")))?
             }
         };
 
@@ -140,7 +140,7 @@ impl RedisSource {
             let mut collected = Vec::new();
             let mut iter: redis::AsyncIter<String> =
                 conn.scan_match(pattern).await.map_err(|e| {
-                    FaucetError::Config(format!("SCAN failed with pattern '{pattern}': {e}"))
+                    FaucetError::Source(format!("SCAN failed with pattern '{pattern}': {e}"))
                 })?;
 
             while let Some(key) = iter.next_item().await {
@@ -157,7 +157,7 @@ impl RedisSource {
             .arg(&keys)
             .query_async(conn)
             .await
-            .map_err(|e| FaucetError::Config(format!("MGET failed: {e}")))?;
+            .map_err(|e| FaucetError::Source(format!("MGET failed: {e}")))?;
 
         let mut records = Vec::new();
         for (key, value) in keys.iter().zip(values.into_iter()) {
@@ -378,7 +378,7 @@ fn stream_list<'a>(
             let values: Vec<String> = conn
                 .lrange(key, 0, -1)
                 .await
-                .map_err(|e| FaucetError::Config(format!("LRANGE failed on '{key}': {e}")))?;
+                .map_err(|e| FaucetError::Source(format!("LRANGE failed on '{key}': {e}")))?;
             let mut records: Vec<Value> = values
                 .into_iter()
                 .map(|v| serde_json::from_str::<Value>(&v).unwrap_or_else(|_| Value::String(v.clone())))
@@ -397,7 +397,7 @@ fn stream_list<'a>(
             let values: Vec<String> = conn
                 .lrange(key, start, stop)
                 .await
-                .map_err(|e| FaucetError::Config(format!("LRANGE failed on '{key}': {e}")))?;
+                .map_err(|e| FaucetError::Source(format!("LRANGE failed on '{key}': {e}")))?;
             if values.is_empty() {
                 break;
             }
@@ -438,7 +438,7 @@ fn stream_xrange<'a>(
             let reply: redis::streams::StreamRangeReply = conn
                 .xrange_all(key)
                 .await
-                .map_err(|e| FaucetError::Config(format!("XRANGE failed on '{key}': {e}")))?;
+                .map_err(|e| FaucetError::Source(format!("XRANGE failed on '{key}': {e}")))?;
             let mut records: Vec<Value> = reply
                 .ids
                 .iter()
@@ -457,7 +457,7 @@ fn stream_xrange<'a>(
             let reply: redis::streams::StreamRangeReply = conn
                 .xrange_count(key, &start, "+", batch_size)
                 .await
-                .map_err(|e| FaucetError::Config(format!("XRANGE failed on '{key}': {e}")))?;
+                .map_err(|e| FaucetError::Source(format!("XRANGE failed on '{key}': {e}")))?;
 
             if reply.ids.is_empty() {
                 break;
@@ -534,7 +534,7 @@ fn stream_keys<'a>(
                 .arg(scan_hint)
                 .query_async(conn)
                 .await
-                .map_err(|e| FaucetError::Config(format!("SCAN failed with pattern '{pattern}': {e}")))?;
+                .map_err(|e| FaucetError::Source(format!("SCAN failed with pattern '{pattern}': {e}")))?;
             cursor = next_cursor;
             buffer.extend(keys);
 
@@ -572,7 +572,7 @@ async fn mget_records(
         .arg(keys)
         .query_async(conn)
         .await
-        .map_err(|e| FaucetError::Config(format!("MGET failed: {e}")))?;
+        .map_err(|e| FaucetError::Source(format!("MGET failed: {e}")))?;
     Ok(collect_kv_records(keys, values))
 }
 
