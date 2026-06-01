@@ -9,7 +9,7 @@ Snowflake query source connector for the [`faucet-stream`](https://crates.io/cra
 - **Configurable batching** — `batch_size` re-frames partitions into pages for `Source::stream_pages`; `batch_size = 0` opts out of re-chunking and emits the full result set as one page.
 - **Async / sync handling** — if Snowflake returns `202 Accepted` (statement still running), the source polls the handle until the result is ready, bounded by `poll_timeout` (default 300 s; `0` = poll forever) so a stuck statement fails instead of hanging.
 - **Bind parameters** — positional `params` from config are merged with `${parent.path}` tokens resolved from the matrix-row context. Each bind's Snowflake type is inferred from the JSON value (`FIXED` for integers, `REAL` for floats, `BOOLEAN` for bools, `TEXT` otherwise), so numeric/boolean binds compare against typed columns instead of being forced to `TEXT`.
-- **Type-aware row conversion** — `FIXED`, `REAL`, `BOOLEAN`, and `VARIANT`/`OBJECT`/`ARRAY` columns are parsed into native JSON shapes; everything else (timestamps, dates, binary) passes through as strings.
+- **Type-aware row conversion** — `FIXED`, `REAL`, `BOOLEAN`, and `VARIANT`/`OBJECT`/`ARRAY` columns are parsed into native JSON shapes; everything else (timestamps, dates, binary) passes through as strings. A scale-0 `FIXED`/`NUMBER` value beyond `u64` (e.g. `NUMBER(38,0)`) is kept as a **string** rather than a lossy `f64`, preserving full precision (the same approach as BigQuery NUMERIC).
 
 ## Configuration
 
