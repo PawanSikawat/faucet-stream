@@ -76,9 +76,12 @@ pub struct AdaptiveBatchConfig {
     /// Per-batch error rate above which the controller shrinks.
     #[serde(default = "default_error_threshold")]
     pub error_threshold: f64,
-    /// Never grow past the source page size. v1 honors only `true`; `false`
-    /// logs a one-shot warning and behaves as `true` (cross-page buffering is
-    /// a future enhancement).
+    /// Never grow the effective batch past the source page size. Only `true`
+    /// is supported (the default) — `false` is rejected by [`validate`], since
+    /// cross-page buffering would have to hold records across source pages and
+    /// break the pipeline's O(batch_size) memory guarantee.
+    ///
+    /// [`validate`]: AdaptiveBatchConfig::validate
     #[serde(default = "default_true")]
     pub respect_source_max: bool,
     /// Emit a `tracing::info!` summary every N adjustments.
@@ -145,6 +148,14 @@ impl AdaptiveBatchConfig {
         {
             return Err(FaucetError::Config(
                 "adaptive_batch_size.target_latency_ms must be > 0 when set".into(),
+            ));
+        }
+        if !self.respect_source_max {
+            return Err(FaucetError::Config(
+                "adaptive_batch_size.respect_source_max=false is not supported \
+                 (cross-page buffering would violate the O(batch_size) memory \
+                 guarantee); remove the field or set it to true"
+                    .into(),
             ));
         }
         Ok(())
@@ -362,6 +373,16 @@ mod config_tests {
         assert!(c.respect_source_max);
         assert!(c.target_latency_ms.is_none());
         c.validate().unwrap();
+    }
+
+    #[test]
+    fn rejects_respect_source_max_false() {
+        // `false` was a frozen no-op (it warned, then behaved as `true`).
+        // Cross-page buffering would violate the O(batch_size) memory
+        // guarantee, so the knob is rejected rather than silently ignored.
+        let mut c = valid();
+        c.respect_source_max = false;
+        assert!(c.validate().is_err());
     }
 
     #[test]
