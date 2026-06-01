@@ -19,13 +19,14 @@ pub struct RedisSource {
 
 impl RedisSource {
     /// Create a new Redis source from the given configuration. The connection
-    /// is opened lazily on first use (so construction stays infallible and
-    /// synchronous).
-    pub fn new(config: RedisSourceConfig) -> Self {
-        Self {
+    /// is opened lazily on first use, so construction stays synchronous and does
+    /// no I/O; it fails only on an invalid config (an out-of-range `batch_size`).
+    pub fn new(config: RedisSourceConfig) -> Result<Self, FaucetError> {
+        faucet_core::validate_batch_size(config.batch_size)?;
+        Ok(Self {
             config,
             conn: tokio::sync::OnceCell::new(),
-        }
+        })
     }
 
     /// Return a clone of the shared multiplexed connection, opening it once on
@@ -602,7 +603,20 @@ mod tests {
             "redis://localhost",
             RedisSourceType::List { key: "test".into() },
         );
-        let _source = RedisSource::new(config);
+        let _source = RedisSource::new(config).unwrap();
+    }
+
+    #[test]
+    fn new_rejects_out_of_range_batch_size() {
+        let mut config = RedisSourceConfig::new(
+            "redis://localhost",
+            RedisSourceType::List { key: "test".into() },
+        );
+        config.batch_size = faucet_core::MAX_BATCH_SIZE + 1;
+        match RedisSource::new(config) {
+            Err(FaucetError::Config(m)) => assert!(m.contains("batch_size"), "got: {m}"),
+            other => panic!("expected a batch_size Config error, got {:?}", other.is_ok()),
+        }
     }
 
     #[test]

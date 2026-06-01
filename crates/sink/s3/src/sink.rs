@@ -18,6 +18,7 @@ impl S3Sink {
     ///
     /// Builds the S3 client eagerly so it is reused across calls.
     pub async fn new(config: S3SinkConfig) -> Result<Self, FaucetError> {
+        faucet_core::validate_batch_size(config.batch_size)?;
         let client = Self::build_client(&config).await?;
         Ok(Self { config, client })
     }
@@ -222,6 +223,18 @@ mod tests {
         assert!(key.ends_with(".jsonl"));
         // No prefix means key starts with UUID
         assert!(!key.starts_with('/'));
+    }
+
+    #[tokio::test]
+    async fn new_rejects_out_of_range_batch_size() {
+        let mut config = S3SinkConfig::new("bucket");
+        config.batch_size = faucet_core::MAX_BATCH_SIZE + 1;
+        match S3Sink::new(config).await {
+            Err(faucet_core::FaucetError::Config(m)) => {
+                assert!(m.contains("batch_size"), "got: {m}")
+            }
+            _ => panic!("expected a batch_size Config error"),
+        }
     }
 
     #[cfg(feature = "compression")]

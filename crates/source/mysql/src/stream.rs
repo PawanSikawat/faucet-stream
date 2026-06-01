@@ -18,6 +18,8 @@ pub struct MysqlSource {
 impl MysqlSource {
     /// Create a new MySQL source. Establishes a connection pool.
     pub async fn new(config: MysqlSourceConfig) -> Result<Self, FaucetError> {
+        faucet_core::validate_batch_size(config.batch_size)?;
+
         let pool = MySqlPoolOptions::new()
             .max_connections(config.max_connections)
             .connect(&config.connection_url)
@@ -215,5 +217,22 @@ impl faucet_core::Source for MysqlSource {
     fn config_schema(&self) -> serde_json::Value {
         serde_json::to_value(faucet_core::schema_for!(MysqlSourceConfig))
             .expect("schema serialization")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn new_rejects_out_of_range_batch_size() {
+        let mut config = MysqlSourceConfig::new("mysql://localhost/test", "SELECT 1");
+        config.batch_size = faucet_core::MAX_BATCH_SIZE + 1;
+        match MysqlSource::new(config).await {
+            Err(faucet_core::FaucetError::Config(m)) => {
+                assert!(m.contains("batch_size"), "got: {m}")
+            }
+            _ => panic!("expected a batch_size Config error"),
+        }
     }
 }

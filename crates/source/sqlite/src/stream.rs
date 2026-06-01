@@ -18,6 +18,8 @@ pub struct SqliteSource {
 impl SqliteSource {
     /// Create a new SQLite source. Establishes a connection pool.
     pub async fn new(config: SqliteSourceConfig) -> Result<Self, FaucetError> {
+        faucet_core::validate_batch_size(config.batch_size)?;
+
         let pool = SqlitePoolOptions::new()
             .max_connections(config.max_connections)
             .connect(&config.database_url)
@@ -314,5 +316,17 @@ mod tests {
         let records = source.fetch_with_context(&context).await.unwrap();
         assert_eq!(records.len(), 1);
         assert_eq!(records[0]["result"], "1; DROP TABLE test; --");
+    }
+
+    #[tokio::test]
+    async fn new_rejects_out_of_range_batch_size() {
+        let mut config = SqliteSourceConfig::new("sqlite::memory:", "SELECT 1");
+        config.batch_size = faucet_core::MAX_BATCH_SIZE + 1;
+        match SqliteSource::new(config).await {
+            Err(faucet_core::FaucetError::Config(m)) => {
+                assert!(m.contains("batch_size"), "got: {m}")
+            }
+            _ => panic!("expected a batch_size Config error"),
+        }
     }
 }

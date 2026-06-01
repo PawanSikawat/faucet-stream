@@ -24,6 +24,7 @@ impl MongoSource {
     /// This establishes the MongoDB client (with its internal connection pool)
     /// immediately.
     pub async fn new(config: MongoSourceConfig) -> Result<Self, FaucetError> {
+        faucet_core::validate_batch_size(config.batch_size)?;
         let client = Client::with_uri_str(&config.connection_uri)
             .await
             .map_err(|e| FaucetError::Config(format!("MongoDB connection failed: {e}")))?;
@@ -360,5 +361,17 @@ mod tests {
         let val = json!({});
         let doc = json_value_to_document(&val).unwrap();
         assert!(doc.is_empty());
+    }
+
+    #[tokio::test]
+    async fn new_rejects_out_of_range_batch_size() {
+        let mut config = MongoSourceConfig::new("mongodb://localhost:27017", "db", "c");
+        config.batch_size = faucet_core::MAX_BATCH_SIZE + 1;
+        match MongoSource::new(config).await {
+            Err(faucet_core::FaucetError::Config(m)) => {
+                assert!(m.contains("batch_size"), "got: {m}")
+            }
+            _ => panic!("expected a batch_size Config error"),
+        }
     }
 }
