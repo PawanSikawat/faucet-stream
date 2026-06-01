@@ -606,7 +606,19 @@ where
                         envelopes.splice(0..0, quality_envelopes);
                         let page_failures = envelopes.len();
 
-                        // Budget checks — increment counter before returning.
+                        // Budget checks. `write_batch_partial` above already
+                        // committed this page's survivors to the main sink, so
+                        // we must NOT abort here: returning now would strand
+                        // those committed survivors without advancing the
+                        // bookmark (they would re-deliver on the next run) and
+                        // drop this page's failures before they reach the DLQ
+                        // (#146 M4). Instead, record the budget error, finish
+                        // committing the page below (route failures to the DLQ,
+                        // flush, persist the bookmark), and abort only once the
+                        // page is fully durable. The failed rows that crossed
+                        // the threshold are still written to the DLQ — losing
+                        // them would be strictly worse than the small overshoot.
+                        let mut budget_error: Option<FaucetError> = None;
                         if let Some(limit) = dlq_cfg.max_failures_per_page
                             && page_failures > limit
                         {
@@ -614,19 +626,20 @@ where
                             lbl.retain(|l| l.key() != "dlq_connector");
                             lbl.push(Label::new("scope", SharedString::const_str("per_page")));
                             counter!("faucet_sink_dlq_budget_exceeded_total", lbl).increment(1);
-                            return Err(FaucetError::Sink(format!(
+                            budget_error = Some(FaucetError::Sink(format!(
                                 "DLQ per-page budget exceeded: {page_failures} > {limit}"
                             )));
                         }
                         let new_total = dlq_stats.records_dlq + page_failures;
-                        if let Some(limit) = dlq_cfg.max_failures_total
+                        if budget_error.is_none()
+                            && let Some(limit) = dlq_cfg.max_failures_total
                             && new_total > limit
                         {
                             let mut lbl = metric_labels.clone();
                             lbl.retain(|l| l.key() != "dlq_connector");
                             lbl.push(Label::new("scope", SharedString::const_str("total")));
                             counter!("faucet_sink_dlq_budget_exceeded_total", lbl).increment(1);
-                            return Err(FaucetError::Sink(format!(
+                            budget_error = Some(FaucetError::Sink(format!(
                                 "DLQ total budget exceeded: {new_total} > {limit}"
                             )));
                         }
@@ -714,6 +727,16 @@ where
                                 store.put(key, &bookmark).await?;
                             }
                             last_bookmark = Some(bookmark);
+                        }
+
+                        // The page is now durable — survivors committed to the
+                        // main sink, failures routed to the DLQ, and (if the
+                        // page carried one) the bookmark persisted. Honor a
+                        // deferred DLQ-budget abort now, so the run still stops
+                        // as a circuit breaker but never re-delivers this
+                        // already-committed page (#146 M4).
+                        if let Some(e) = budget_error {
+                            return Err(e);
                         }
                     } else {
                         // ── DLQ-disabled path (today's behaviour) ──────────────
@@ -1917,6 +1940,80 @@ mod tests {
             matches!(&result, Err(FaucetError::Sink(m)) if m.contains("total budget exceeded")),
             "got: {result:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn dlq_per_page_budget_exceeded_commits_page_before_aborting() {
+        // M4 (#146): write_batch_partial already commits the survivors to the
+        // main sink. When the per-page budget then trips, the run must finish
+        // committing the page — route its failures to the DLQ and persist the
+        // bookmark — BEFORE aborting, so the committed survivors do NOT
+        // re-deliver on the next run and the failed rows are not lost.
+        let main = PartialSink::new(vec![1, 2]); // rows 1,2 fail; row 0 commits
+        let dlq = std::sync::Arc::new(MockSink::new());
+        let mut dlq_cfg = DlqConfig::new(dlq.clone());
+        dlq_cfg.max_failures_per_page = Some(1); // 2 failures > 1 → trips
+
+        let store: std::sync::Arc<dyn StateStore> = std::sync::Arc::new(MemoryStateStore::new());
+        let pages: Vec<Result<StreamPage, FaucetError>> = vec![Ok(StreamPage {
+            records: (0..3).map(|i| json!({ "i": i })).collect(),
+            bookmark: Some(json!("v1")),
+        })];
+        let stream = futures::stream::iter(pages);
+        let result = run_stream(
+            stream,
+            &main,
+            RunStreamOptions::new()
+                .with_dlq(dlq_cfg)
+                .with_state(std::sync::Arc::clone(&store), "k"),
+        )
+        .await;
+
+        // Run still aborts with the budget error.
+        assert!(
+            matches!(&result, Err(FaucetError::Sink(m)) if m.contains("per-page budget exceeded")),
+            "got: {result:?}"
+        );
+        // The survivor (row 0) was committed to the main sink.
+        assert_eq!(main.committed.lock().unwrap().len(), 1);
+        // The two failures were routed to the DLQ (not lost on abort).
+        assert_eq!(dlq.0.lock().unwrap().len(), 2);
+        // The bookmark was persisted, so the survivor will NOT re-deliver.
+        assert_eq!(store.get("k").await.unwrap(), Some(json!("v1")));
+    }
+
+    #[tokio::test]
+    async fn dlq_total_budget_exceeded_commits_tripping_page_before_aborting() {
+        // M4 (#146): same guarantee for the cumulative total budget — the page
+        // that crosses the threshold is committed fully (failures→DLQ, bookmark
+        // persisted) before the run aborts.
+        let main = PartialSink::new(vec![1, 2]); // rows 1,2 fail; row 0 commits
+        let dlq = std::sync::Arc::new(MockSink::new());
+        let mut dlq_cfg = DlqConfig::new(dlq.clone());
+        dlq_cfg.max_failures_total = Some(1); // 2 failures > 1 → trips
+
+        let store: std::sync::Arc<dyn StateStore> = std::sync::Arc::new(MemoryStateStore::new());
+        let pages: Vec<Result<StreamPage, FaucetError>> = vec![Ok(StreamPage {
+            records: (0..3).map(|i| json!({ "i": i })).collect(),
+            bookmark: Some(json!("v1")),
+        })];
+        let stream = futures::stream::iter(pages);
+        let result = run_stream(
+            stream,
+            &main,
+            RunStreamOptions::new()
+                .with_dlq(dlq_cfg)
+                .with_state(std::sync::Arc::clone(&store), "k"),
+        )
+        .await;
+
+        assert!(
+            matches!(&result, Err(FaucetError::Sink(m)) if m.contains("total budget exceeded")),
+            "got: {result:?}"
+        );
+        assert_eq!(main.committed.lock().unwrap().len(), 1);
+        assert_eq!(dlq.0.lock().unwrap().len(), 2);
+        assert_eq!(store.get("k").await.unwrap(), Some(json!("v1")));
     }
 
     /// DLQ sink that always fails. Used to assert the router does not
