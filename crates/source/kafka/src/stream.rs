@@ -29,6 +29,11 @@ pub struct KafkaSource {
     consumer: Arc<StreamConsumer<BookmarkContext>>,
     context: BookmarkContext,
     state_key_value: String,
+    /// Cache of watermark-derived floor offsets for assigned partitions that
+    /// have produced no message (so `position()` reports no concrete offset).
+    /// Resolved once per partition and reused so the streaming bookmark build
+    /// doesn't issue a broker `fetch_watermarks` every page (#146 H9).
+    assigned_floor: std::sync::Mutex<HashMap<(String, i32), i64>>,
     #[cfg(feature = "schema-registry")]
     sr_client: Option<SchemaRegistryClient>,
 }
@@ -74,6 +79,7 @@ impl KafkaSource {
             consumer: Arc::new(consumer),
             context,
             state_key_value,
+            assigned_floor: std::sync::Mutex::new(HashMap::new()),
             #[cfg(feature = "schema-registry")]
             sr_client,
         })
@@ -93,40 +99,103 @@ impl KafkaSource {
         Ok(())
     }
 
-    /// Snapshot the consumer's current position for every *assigned*
-    /// partition.
+    /// Resolve a starting offset for **every assigned partition**, so the
+    /// persisted bookmark records partitions that produced no message this run
+    /// — otherwise such a partition is absent on resume and resets to
+    /// `auto.offset.reset` (default `latest`), silently skipping any records
+    /// that arrived in the meantime (the H9 fix).
     ///
-    /// Seeds the persisted bookmark with partitions that were assigned but
-    /// produced no message this run, so they resume from where the consumer
-    /// actually sits instead of resetting to `auto.offset.reset` (the H9
-    /// fix). Only concrete `Offset::Offset(n)` positions are captured;
-    /// partitions whose position librdkafka has not yet resolved are skipped
-    /// (the carry-forward layer and the per-message offsets cover those).
-    ///
-    /// `position()` reads librdkafka's local, cached consume positions — it
-    /// does not round-trip to the broker — so it is cheap to call per page.
-    fn assigned_positions(&self) -> Vec<PartitionOffset> {
-        match self.consumer.position() {
-            Ok(tpl) => tpl
-                .elements()
-                .iter()
-                .filter_map(|e| match e.offset() {
-                    rdkafka::Offset::Offset(n) => Some(PartitionOffset {
-                        topic: e.topic().to_string(),
-                        partition: e.partition(),
-                        offset: n,
-                    }),
-                    _ => None,
-                })
-                .collect(),
+    /// For a partition that delivered messages, `position()` reports a concrete
+    /// next-offset (cheap, local). For one that produced nothing, `position()`
+    /// reports `Offset::Invalid` (librdkafka only tracks *consumed* offsets), so
+    /// we fall back to its watermark via `fetch_watermarks`: the **low**
+    /// watermark under `earliest`, the **high** watermark under `latest` — i.e.
+    /// exactly where the consumer is positioned for that reset policy. Those
+    /// watermark lookups are a broker round-trip, so each empty partition's
+    /// floor is resolved once and cached.
+    async fn resolve_assigned_offsets(&self) -> Vec<PartitionOffset> {
+        let assigned = match self.consumer.assignment() {
+            Ok(tpl) => tpl,
             Err(e) => {
-                tracing::warn!(
-                    error = %e,
-                    "kafka source: position() failed; bookmark falls back to consumed/carry-forward offsets"
-                );
-                Vec::new()
+                tracing::warn!(error = %e, "kafka source: assignment() failed; bookmark falls back to consumed/carry-forward offsets");
+                return Vec::new();
+            }
+        };
+        let positions: HashMap<(String, i32), rdkafka::Offset> = self
+            .consumer
+            .position()
+            .map(|tpl| {
+                tpl.elements()
+                    .iter()
+                    .map(|e| ((e.topic().to_string(), e.partition()), e.offset()))
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        let mut out: Vec<PartitionOffset> = Vec::new();
+        let mut need_watermark: Vec<(String, i32)> = Vec::new();
+        {
+            let cache = self.assigned_floor.lock().ok();
+            for elem in assigned.elements() {
+                let key = (elem.topic().to_string(), elem.partition());
+                match positions.get(&key) {
+                    // A delivered partition: its concrete next-offset.
+                    Some(rdkafka::Offset::Offset(n)) => out.push(PartitionOffset {
+                        topic: key.0,
+                        partition: key.1,
+                        offset: *n,
+                    }),
+                    // No concrete position → use a cached watermark floor, or
+                    // schedule a lookup for it.
+                    _ => match cache.as_ref().and_then(|c| c.get(&key)) {
+                        Some(&floor) => out.push(PartitionOffset {
+                            topic: key.0,
+                            partition: key.1,
+                            offset: floor,
+                        }),
+                        None => need_watermark.push(key),
+                    },
+                }
             }
         }
+
+        if !need_watermark.is_empty() {
+            let earliest = matches!(
+                self.config.auto_offset_reset,
+                crate::config::OffsetReset::Earliest
+            );
+            let consumer = Arc::clone(&self.consumer);
+            let to_fetch = need_watermark.clone();
+            // `fetch_watermarks` is a blocking librdkafka broker call — run it
+            // off the async runtime.
+            let resolved = tokio::task::spawn_blocking(move || {
+                to_fetch
+                    .into_iter()
+                    .filter_map(|(topic, partition)| {
+                        consumer
+                            .fetch_watermarks(&topic, partition, Duration::from_secs(5))
+                            .ok()
+                            .map(|(low, high)| {
+                                (topic, partition, if earliest { low } else { high })
+                            })
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .await
+            .unwrap_or_default();
+
+            if let Ok(mut cache) = self.assigned_floor.lock() {
+                for (topic, partition, floor) in resolved {
+                    cache.insert((topic.clone(), partition), floor);
+                    out.push(PartitionOffset {
+                        topic,
+                        partition,
+                        offset: floor,
+                    });
+                }
+            }
+        }
+        out
     }
 
     /// The start bookmark applied via [`apply_start_bookmark`], retained for
@@ -140,18 +209,15 @@ impl KafkaSource {
     }
 
     /// Build the bookmark to persist from the offsets consumed this page/run,
-    /// merging in the assigned-partition positions and the carry-forward
-    /// start bookmark. Returns `None` only when there is nothing at all to
-    /// record (no partition assigned, nothing consumed, no prior state).
-    fn build_bookmark(
+    /// merging in the assigned-partition offsets and the carry-forward start
+    /// bookmark. Returns `None` only when there is nothing at all to record (no
+    /// partition assigned, nothing consumed, no prior state).
+    async fn build_bookmark(
         &self,
         consumed: &HashMap<(String, i32), i64>,
     ) -> Result<Option<Value>, FaucetError> {
-        let merged = Bookmark::merged(
-            self.start_bookmark().as_ref(),
-            &self.assigned_positions(),
-            consumed,
-        );
+        let assigned = self.resolve_assigned_offsets().await;
+        let merged = Bookmark::merged(self.start_bookmark().as_ref(), &assigned, consumed);
         if merged.partition_offsets.is_empty() {
             Ok(None)
         } else {
@@ -315,7 +381,7 @@ impl Source for KafkaSource {
             }
         }
 
-        let bookmark_value = self.build_bookmark(&pending_offsets)?;
+        let bookmark_value = self.build_bookmark(&pending_offsets).await?;
         Ok((records, bookmark_value))
     }
 
@@ -451,7 +517,7 @@ impl Source for KafkaSource {
                         &mut buffer,
                         Vec::with_capacity(initial_capacity),
                     );
-                    let bookmark = self.build_bookmark(&pending_offsets)?;
+                    let bookmark = self.build_bookmark(&pending_offsets).await?;
                     yield StreamPage { records: page_records, bookmark };
                 }
 
@@ -464,7 +530,7 @@ impl Source for KafkaSource {
             // exactly on a page boundary). When non-empty, emit one final
             // page carrying the cumulative bookmark.
             if !buffer.is_empty() {
-                let bookmark = self.build_bookmark(&pending_offsets)?;
+                let bookmark = self.build_bookmark(&pending_offsets).await?;
                 yield StreamPage { records: buffer, bookmark };
             }
 
