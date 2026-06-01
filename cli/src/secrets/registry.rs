@@ -35,11 +35,18 @@ pub fn redact(input: &str) -> Cow<'_, str> {
     if reg.is_empty() {
         return Cow::Borrowed(input);
     }
+    // Process **longest secret first**: a secret that is a substring of another
+    // (e.g. `abcd` inside `abcdXYZW`) must be replaced *after* the longer one,
+    // otherwise replacing the shorter one first destroys the longer match and
+    // leaves its extra tail (`XYZW`) exposed. `HashSet` iteration order is
+    // randomized, so without this sort redaction is nondeterministic.
+    let mut secrets: Vec<&str> = reg.iter().map(String::as_str).collect();
+    secrets.sort_by(|a, b| b.len().cmp(&a.len()).then_with(|| a.cmp(b)));
     let mut out: Option<String> = None;
-    for secret in reg.iter() {
+    for secret in secrets {
         let current = out.as_deref().unwrap_or(input);
-        if current.contains(secret.as_str()) {
-            out = Some(current.replace(secret.as_str(), "***"));
+        if current.contains(secret) {
+            out = Some(current.replace(secret, "***"));
         }
     }
     match out {
@@ -48,32 +55,79 @@ pub fn redact(input: &str) -> Cow<'_, str> {
     }
 }
 
+/// Longest registered secret in bytes (0 if none). Sizes the [`RedactingWriter`]
+/// hold-back window so a secret split across two `write()` calls is still caught.
+fn max_secret_len() -> usize {
+    registry()
+        .read()
+        .expect("secret registry lock poisoned")
+        .iter()
+        .map(String::len)
+        .max()
+        .unwrap_or(0)
+}
+
 /// An `io::Write` adapter that runs [`redact`] over every chunk before
 /// forwarding it to the inner writer. Wrapping the tracing subscriber's
 /// writer in this scrubs secret values out of *all* CLI log/diagnostic output
 /// at the I/O boundary, regardless of which field carried the value.
-pub struct RedactingWriter<W> {
+pub struct RedactingWriter<W: Write> {
     inner: W,
+    /// Trailing bytes withheld from the previous `write` — the window that might
+    /// be the *start* of a secret completing in a later write. Bounded by the
+    /// longest registered secret; flushed on `flush`/drop.
+    pending: Vec<u8>,
 }
 
 impl<W: Write> RedactingWriter<W> {
     pub fn new(inner: W) -> Self {
-        Self { inner }
+        Self {
+            inner,
+            pending: Vec::new(),
+        }
     }
 }
 
 impl<W: Write> Write for RedactingWriter<W> {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        let text = String::from_utf8_lossy(buf);
-        let scrubbed = redact(&text);
-        self.inner.write_all(scrubbed.as_bytes())?;
+        self.pending.extend_from_slice(buf);
+        // Withhold the last `max_secret_len - 1` bytes so a secret straddling
+        // this write and the next is scrubbed once the two are joined. Everything
+        // before that window is safe to emit: any *complete* secret in it has
+        // already been masked, and an *incomplete* prefix can only sit in the
+        // withheld tail.
+        let keep = max_secret_len().saturating_sub(1);
+        if self.pending.len() > keep {
+            // `into_owned` drops the borrow of `self.pending` so we can mutate it.
+            let scrubbed = redact(&String::from_utf8_lossy(&self.pending)).into_owned();
+            let mut split = scrubbed.len().saturating_sub(keep);
+            while split > 0 && !scrubbed.is_char_boundary(split) {
+                split -= 1;
+            }
+            self.inner.write_all(scrubbed[..split].as_bytes())?;
+            self.pending.clear();
+            self.pending.extend_from_slice(scrubbed[split..].as_bytes());
+        }
         // Report the original length consumed — the tracing fmt layer treats a
-        // short write as an error, and the scrubbed bytes are an internal detail.
+        // short write as an error, and the withheld bytes are an internal detail.
         Ok(buf.len())
     }
 
     fn flush(&mut self) -> io::Result<()> {
+        if !self.pending.is_empty() {
+            let scrubbed = redact(&String::from_utf8_lossy(&self.pending)).into_owned();
+            self.inner.write_all(scrubbed.as_bytes())?;
+            self.pending.clear();
+        }
         self.inner.flush()
+    }
+}
+
+impl<W: Write> Drop for RedactingWriter<W> {
+    fn drop(&mut self) {
+        // Emit any withheld tail so the final bytes of a stream (e.g. a log event
+        // formatted then dropped without an explicit flush) are never lost.
+        let _ = self.flush();
     }
 }
 
@@ -125,6 +179,41 @@ mod tests {
         clear();
         register("abc"); // < MIN_REDACT_LEN
         assert_eq!(redact("abc def"), "abc def");
+    }
+
+    #[test]
+    #[serial]
+    fn redact_handles_overlapping_secrets_longest_first() {
+        clear();
+        // A shorter secret that is a prefix of a longer one. Redacting the
+        // shorter first (unordered iteration) leaves the longer secret's tail
+        // ("XYZW") exposed; longest-first redaction must mask the whole thing.
+        register("abcd");
+        register("abcdXYZW");
+        let out = redact("value=abcdXYZW end");
+        assert!(!out.contains("XYZW"), "longer secret partially leaked: {out}");
+        assert_eq!(out, "value=*** end");
+    }
+
+    #[test]
+    #[serial]
+    fn writer_scrubs_secret_split_across_writes() {
+        clear();
+        register("supersecretvalue");
+        let mut buf: Vec<u8> = Vec::new();
+        {
+            let mut w = RedactingWriter::new(&mut buf);
+            // The secret straddles two separate write() calls.
+            w.write_all(b"token=supersec").unwrap();
+            w.write_all(b"retvalue done").unwrap();
+            w.flush().unwrap();
+        }
+        let out = String::from_utf8(buf).unwrap();
+        assert!(
+            !out.contains("supersecretvalue"),
+            "secret leaked across write boundary: {out}"
+        );
+        assert_eq!(out, "token=*** done");
     }
 
     #[test]
