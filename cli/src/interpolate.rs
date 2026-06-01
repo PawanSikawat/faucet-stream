@@ -33,13 +33,25 @@ use std::path::PathBuf;
 pub fn interpolate(input: &str) -> CliResult<String> {
     rewrite(input, |body| match classify_directive(body) {
         Directive::LoadTime { prefix, body } => match prefix {
-            "env" | "secret" => Ok(Some(std::env::var(body).map_err(|_| {
-                CliError::MissingEnvVar {
+            "env" | "secret" => {
+                let value = std::env::var(body).map_err(|_| CliError::MissingEnvVar {
                     var: body.to_owned(),
                     location: format!("${{{prefix}:{body}}}"),
-                }
-            })?)),
-            "file" => Ok(Some(read_file_trimmed(body)?)),
+                })?;
+                // Register the resolved value for redaction, exactly as the
+                // secrets-manager pass does for `${vault:…}` etc. — otherwise a
+                // credential supplied via the very common `${env:TOKEN}` /
+                // `${secret:VAR}` form leaks into tracing/log/error output while
+                // `${vault:…}` ones are scrubbed (an inconsistent boundary,
+                // #146 M3). `register` no-ops for values below the min length.
+                crate::secrets::registry::register(&value);
+                Ok(Some(value))
+            }
+            "file" => {
+                let value = read_file_trimmed(body)?;
+                crate::secrets::registry::register(&value);
+                Ok(Some(value))
+            }
             // Any other ${prefix:body} that isn't env/file/secret — leave it
             // literal so a downstream validator can flag truly bogus prefixes.
             _ => Ok(None),
@@ -702,6 +714,24 @@ mod tests {
         let out = interpolate("${secret:FAUCET_SECRET_VAR}").unwrap();
         assert_eq!(out, "shh");
         unsafe { std::env::remove_var("FAUCET_SECRET_VAR") };
+    }
+
+    #[test]
+    fn resolved_env_and_secret_values_are_registered_for_redaction() {
+        // M3 (#146): credentials supplied via ${env:}/${secret:} must be
+        // scrubbed from faucet's tracing/log/error output, just like
+        // ${vault:…} values — not left to leak.
+        let secret = "super-secret-token-abcdef-1234567890"; // >= MIN_REDACT_LEN
+        unsafe { std::env::set_var("FAUCET_M3_REDACT_TOKEN", secret) };
+        let out = interpolate("Authorization: Bearer ${env:FAUCET_M3_REDACT_TOKEN}").unwrap();
+        assert!(out.contains(secret));
+        let redacted = crate::secrets::registry::redact(&out);
+        assert!(
+            !redacted.contains(secret),
+            "resolved ${{env:}} value must be registered for redaction"
+        );
+        assert!(redacted.contains("***"));
+        unsafe { std::env::remove_var("FAUCET_M3_REDACT_TOKEN") };
     }
 
     #[test]

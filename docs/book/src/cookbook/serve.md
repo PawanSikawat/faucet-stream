@@ -73,12 +73,26 @@ pipeline work ≈ `max-concurrent-runs × each config's execution.max_concurrent
 Supply `idempotency_key` to make retries safe (Stripe-style):
 
 - First submit with a key → runs normally.
-- Re-submit the **same key + same config** within `--idempotency-retention-secs`
+- Re-submit the **same key + same request** within `--idempotency-retention-secs`
   (default 24h) → returns the **original** `run_id` (replayed, no new run).
-- Same key + a **different** config → `409 Conflict`.
+- Same key + a **different** request → `409 Conflict`.
 - After the retention window, the key is re-usable for a fresh run.
+- Deleting a run also frees its idempotency key immediately — a later submit
+  with that key starts a fresh run rather than 404-ing on the deleted record.
+
+The "request" identity covers the merged config **and** the run-affecting
+request fields — `clock`, `timeout_secs`, and `labels`. In particular, a retry
+that reuses the key but changes the backfill `clock` is a `409`, not a replay of
+the original window (so you can't silently get the original clock's results).
 
 The claim is atomic, so concurrent retries can't both start a run.
+
+> **Degraded mode:** while the persistent history backend is degraded (see
+> [Run history](#run-history--persistence)), the in-memory fallback can't see
+> claims the database made before the outage. Rather than risk a duplicate run,
+> submissions **carrying an idempotency key are rejected with `503`** until the
+> backend recovers — retry then, or resubmit without a key if at-least-once is
+> acceptable. Submissions without a key are unaffected.
 
 ## Cancellation
 

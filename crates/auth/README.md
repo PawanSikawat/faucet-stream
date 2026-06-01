@@ -18,6 +18,20 @@ racing to refresh a single-active / rotating token.
 | `oauth2_refresh` | `OAuth2RefreshProvider`           | OAuth2 `refresh_token` grant with refresh-token **rotation capture**. |
 | `token_endpoint` | `TokenEndpointProvider`           | Fetch a token from any HTTP endpoint, extract via JSONPath. |
 
+### Token caching & refresh
+
+The three fetching providers (`oauth2`, `oauth2_refresh`, `token_endpoint`)
+cache the token until `expires_in × expiry_ratio` has elapsed, then refresh
+single-flight. All three also support **force-refresh on rejection**: a
+connector that gets a `401` calls `invalidate(stale)` and receives a
+freshly-fetched token (concurrent invalidations of the same token collapse into
+one refresh).
+
+`expiry_ratio` (default `0.9`) must be a finite number in `(0, 1]` — it is
+validated at construction. A value `≤ 0` would expire every token immediately
+(defeating the cache); a value `> 1` would use a token past its real expiry
+(causing `401`s mid-use).
+
 ## CLI usage
 
 Define a provider once in the top-level `auth:` catalog and reference it from any

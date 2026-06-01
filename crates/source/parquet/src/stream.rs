@@ -313,18 +313,18 @@ impl faucet_core::Source for ParquetSource {
                 return;
             }
 
-            let mut total_records = 0usize;
-            let mut total_pages = 0usize;
-            // Reference schema captured from the first opened file. Used to
-            // detect cross-file divergence in glob / S3-prefix scans —
-            // preserves the eager `fetch_with_context` failure mode.
+            // Validate every file's schema UP FRONT, before yielding any rows.
+            // A divergent schema on a *later* file must fail before earlier
+            // files' rows are committed downstream — otherwise the streaming
+            // path performs a partial, non-atomic write and only then aborts
+            // (#146 M11). Opening a target reads just the Parquet footer
+            // metadata (not row data), so this is a cheap probe; we drop each
+            // probe stream immediately. The cost is one extra footer read per
+            // file, paid once before streaming begins.
             let mut reference: Option<(String, arrow::datatypes::SchemaRef)> = None;
-
             for target in &targets {
-                let (mut batches, arrow_schema, display) =
-                    self.open_target_stream(target).await?;
-
-                if let Some((ref first_path, ref first_schema)) = reference {
+                let (_, arrow_schema, display) = self.open_target_stream(target).await?;
+                if let Some((first_path, first_schema)) = &reference {
                     if first_schema != &arrow_schema {
                         Err(FaucetError::Source(schema_mismatch_message_pair(
                             first_path,
@@ -334,9 +334,15 @@ impl faucet_core::Source for ParquetSource {
                         )))?;
                     }
                 } else {
-                    reference = Some((display.clone(), arrow_schema));
+                    reference = Some((display, arrow_schema));
                 }
+            }
 
+            // Schemas are consistent across all files; stream rows file by file.
+            let mut total_records = 0usize;
+            let mut total_pages = 0usize;
+            for target in &targets {
+                let (mut batches, _schema, display) = self.open_target_stream(target).await?;
                 while let Some(batch) = batches.next().await {
                     let batch = batch.map_err(|e| {
                         FaucetError::Source(format!(

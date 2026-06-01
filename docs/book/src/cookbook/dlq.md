@@ -45,6 +45,26 @@ sink in `Individual` mode) override the partial-write path so only the genuinely
 failed rows are dead-lettered — the already-delivered rows are not duplicated
 into the DLQ.
 
+## Failure budgets
+
+A DLQ keeps a run going through *occasional* bad rows, but a flood of failures
+usually means something is broken upstream. Two optional budgets turn the DLQ
+into a circuit breaker:
+
+```yaml
+  dlq:
+    sink: { type: jsonl, config: { path: ./dead-letters.jsonl } }
+    max_failures_per_page: 50    # abort if a single page dead-letters > 50 rows
+    max_failures_total: 500      # abort once the run has dead-lettered > 500 rows
+```
+
+When a budget trips, the run aborts — but only **after the page that crossed the
+threshold is fully committed**: its surviving rows are written to the main sink,
+its failed rows are routed to the DLQ, and (if the page carried one) the bookmark
+advances. So the committed survivors are *not* re-delivered when you fix the
+upstream problem and re-run, and the failed rows are preserved in the DLQ for
+replay rather than dropped. The run still stops, so you get alerted.
+
 > The full design is in
 > [`docs/superpowers/specs/2026-05-24-dlq-design.md`](https://github.com/PawanSikawat/faucet-stream/blob/main/docs)
 > and the `faucet_core::dlq` module on docs.rs.

@@ -15,7 +15,7 @@ use serde_json::Value;
 use tokio::sync::Mutex;
 use tokio::time::Instant;
 
-use crate::{DEFAULT_EXPIRY_RATIO, expiry_instant};
+use crate::expiry_instant;
 
 #[derive(Debug, Deserialize)]
 struct TokenResponse {
@@ -67,10 +67,7 @@ impl OAuth2ClientCredentialsProvider {
             client_id: required_str(config, "client_id")?,
             client_secret: required_str(config, "client_secret")?,
             scopes: string_array(config, "scopes"),
-            expiry_ratio: config
-                .get("expiry_ratio")
-                .and_then(Value::as_f64)
-                .unwrap_or(DEFAULT_EXPIRY_RATIO),
+            expiry_ratio: crate::parse_expiry_ratio(config)?,
             state: Mutex::new(CachedToken::default()),
         })
     }
@@ -151,10 +148,7 @@ impl OAuth2RefreshProvider {
             token_url: required_str(config, "token_url")?,
             client_id: required_str(config, "client_id")?,
             client_secret: required_str(config, "client_secret")?,
-            expiry_ratio: config
-                .get("expiry_ratio")
-                .and_then(Value::as_f64)
-                .unwrap_or(DEFAULT_EXPIRY_RATIO),
+            expiry_ratio: crate::parse_expiry_ratio(config)?,
             state: Mutex::new(RefreshState {
                 refresh_token,
                 ..Default::default()

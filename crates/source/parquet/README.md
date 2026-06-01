@@ -143,10 +143,13 @@ memory is bounded by `batch_size * row_width` rather than the file size.
   Parquet row-group. Useful for sinks (SQL `COPY`, BigQuery load jobs)
   that prefer one large request per natural file boundary.
 - Multi-file scans (Glob / S3 prefix) flatten through the streaming
-  pipeline in sorted-path order. The first file's Arrow schema is the
-  reference; any subsequent file with a different schema surfaces as
-  `FaucetError::Source` naming both paths and the first diverging field
-  — matching the eager `fetch_with_context` behaviour.
+  pipeline in sorted-path order. **All files' Arrow schemas are validated
+  up front** — by a cheap footer-only metadata probe — before any rows are
+  yielded, so a schema mismatch on a later file fails *before* earlier
+  files' rows are committed downstream rather than after a partial write
+  (#146 M11). The first file's schema is the reference; any divergent file
+  surfaces as `FaucetError::Source` naming both paths and the first
+  diverging field — matching the eager `fetch_with_context` behaviour.
 - Every page carries `bookmark: None` — the Parquet source has no
   incremental-replication mode.
 - The trait-level `batch_size` argument that `Pipeline::run` passes is

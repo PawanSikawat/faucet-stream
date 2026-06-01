@@ -129,14 +129,21 @@ impl RunHistory for MemoryHistory {
     }
 
     async fn delete(&self, id: &str) -> Result<DeleteOutcome, HistoryError> {
-        match self.runs.get(id).map(|r| r.status) {
-            None => Ok(DeleteOutcome::NotFound),
-            Some(s) if !s.is_terminal() => Ok(DeleteOutcome::StillRunning),
-            Some(_) => {
-                self.runs.remove(id);
-                Ok(DeleteOutcome::Deleted)
-            }
+        let Some(rec) = self.runs.get(id).map(|r| r.clone()) else {
+            return Ok(DeleteOutcome::NotFound);
+        };
+        if !rec.status.is_terminal() {
+            return Ok(DeleteOutcome::StillRunning);
         }
+        self.runs.remove(id);
+        // Also drop this run's idempotency claim so a replay of the key starts a
+        // fresh run instead of 404-ing on the now-deleted record until the claim
+        // self-expires (#146 M8). Only remove it if the claim still points at
+        // THIS run — a newer run may have re-claimed the key after expiry.
+        if let Some(key) = rec.idempotency_key.as_deref() {
+            self.idem.remove_if(key, |_, e| e.run_id == id);
+        }
+        Ok(DeleteOutcome::Deleted)
     }
 
     async fn purge_expired(&self, retain_for: Duration) -> Result<usize, HistoryError> {
@@ -235,6 +242,70 @@ mod tests {
             .unwrap();
         assert_eq!(h.delete("run").await.unwrap(), DeleteOutcome::Deleted);
         assert!(h.get("run").await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn delete_also_removes_matching_idem_claim() {
+        // M8 (#146): deleting a run must drop its idempotency claim, so a later
+        // replay of the key starts a fresh run instead of 404-ing on the
+        // now-missing record until the claim self-expires.
+        let h = MemoryHistory::new(Duration::from_secs(3600));
+        let w = Duration::from_secs(3600);
+        assert_eq!(
+            h.claim_idempotency("k", "fp", "r1", w).await.unwrap(),
+            Claim::Fresh
+        );
+        let mut r = RunRecord::queued(
+            "r1".into(),
+            None,
+            BTreeMap::new(),
+            Some("k".into()),
+            Utc::now(),
+        );
+        r.status = RunStatus::Completed;
+        r.finished_at = Some(Utc::now());
+        h.upsert(&r).await.unwrap();
+
+        assert_eq!(h.delete("r1").await.unwrap(), DeleteOutcome::Deleted);
+        // The key is free again → fresh run, not a replay of the deleted one.
+        assert_eq!(
+            h.claim_idempotency("k", "fp", "r2", w).await.unwrap(),
+            Claim::Fresh
+        );
+    }
+
+    #[tokio::test]
+    async fn delete_keeps_claim_owned_by_a_newer_run() {
+        // Guard: deleting an OLD run must not remove a claim a NEWER run owns.
+        let h = MemoryHistory::new(Duration::from_secs(3600));
+        h.claim_idempotency("k", "fp", "r1", Duration::from_secs(3600))
+            .await
+            .unwrap();
+        // r2 re-claims the key (force the prior claim stale with a zero window).
+        assert_eq!(
+            h.claim_idempotency("k", "fp", "r2", Duration::ZERO)
+                .await
+                .unwrap(),
+            Claim::Fresh
+        );
+        let mut r1 = RunRecord::queued(
+            "r1".into(),
+            None,
+            BTreeMap::new(),
+            Some("k".into()),
+            Utc::now(),
+        );
+        r1.status = RunStatus::Completed;
+        r1.finished_at = Some(Utc::now());
+        h.upsert(&r1).await.unwrap();
+        assert_eq!(h.delete("r1").await.unwrap(), DeleteOutcome::Deleted);
+        // The claim still belongs to r2.
+        assert_eq!(
+            h.claim_idempotency("k", "fp", "r3", Duration::from_secs(3600))
+                .await
+                .unwrap(),
+            Claim::Replay("r2".into())
+        );
     }
 
     #[tokio::test]

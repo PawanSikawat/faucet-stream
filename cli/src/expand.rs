@@ -375,6 +375,23 @@ pub fn expand(cfg: &PipelineConfig) -> CliResult<Vec<ExpandedNode>> {
             }
         }
 
+        // Runtime interpolation (`${row.path}` parent refs and `${now.*}`) is
+        // resolved only in source/sink configs. A token in a transform / state
+        // / dlq config would otherwise reach the connector as a literal
+        // `${...}` string with no error (#146 M2) — reject it at expand time.
+        for (ti, t) in transforms.iter().enumerate() {
+            reject_runtime_tokens(
+                &t.config,
+                &format!("row `{row_id}` transform[{ti}] (`{}`)", t.kind),
+            )?;
+        }
+        if let Some(ref st) = state {
+            reject_runtime_tokens(&st.config, &format!("row `{row_id}` state config"))?;
+        }
+        if let Some(ref d) = dlq {
+            reject_runtime_tokens(&d.sink.config, &format!("row `{row_id}` dlq sink config"))?;
+        }
+
         // `quality:` is pipeline-level only in v1 (no matrix-row override), so
         // every node carries the same spec. Compile it once per node to (a)
         // surface invalid paths/regexes/bounds at expand time, and (b) fail
@@ -459,6 +476,28 @@ fn check_refs(value: &Value, id_set: &HashSet<&str>, owner: &str) -> CliResult<(
     })
 }
 
+/// Reject any runtime interpolation token (`${id.path}` parent-record refs and
+/// `${now.*}`) found in `value`. These resolve **only** in source/sink configs;
+/// elsewhere — transform / state / dlq bodies — they would silently reach the
+/// connector as a literal `${...}` string (#146 M2). Load-time directives
+/// (`${env:}`, `${vars.X}`, `${sources.X}`, …) are already resolved before
+/// expansion, so any deferred token still present here is genuinely
+/// unsupported in this location.
+fn reject_runtime_tokens(value: &Value, location: &str) -> CliResult<()> {
+    walk_strings(value, &mut |s| {
+        for (token, dir) in iter_directives(s) {
+            if let Directive::Deferred { .. } = dir {
+                return Err(CliError::Config(format!(
+                    "interpolation token `{token}` in {location} is not supported: \
+                     `${{...}}` runtime tokens (parent-record references and `${{now.*}}`) \
+                     resolve only in source/sink configs"
+                )));
+            }
+        }
+        Ok(())
+    })
+}
+
 fn collect_deferred(value: &Value, out: &mut Vec<DeferredRef>) {
     let _ = walk_strings(value, &mut |s| {
         for (token, dir) in iter_directives(s) {
@@ -515,6 +554,76 @@ pipeline:
         assert!(matches!(nodes[0].role, NodeRole::Root));
         assert_eq!(nodes[0].source.kind, "rest");
         assert_eq!(nodes[0].sink.kind, "jsonl");
+    }
+
+    #[test]
+    fn rejects_runtime_token_in_dlq_config() {
+        // M2 (#146): `${now.*}` / `${parent.path}` resolve only in source/sink
+        // configs. In a dlq config they would silently pass through as a literal
+        // `${...}` string — expand must reject them with a clear error.
+        let c = cfg(r#"
+version: 1
+pipeline:
+  source: { type: rest, config: { base_url: https://x } }
+  sink:   { type: jsonl, config: { path: ./o } }
+  dlq:
+    sink: { type: jsonl, config: { path: "dead-${now.date}.jsonl" } }
+"#);
+        let err = expand(&c).unwrap_err();
+        assert!(
+            matches!(&err, CliError::Config(m) if m.contains("now.date") && m.contains("dlq")),
+            "got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn rejects_runtime_token_in_state_config() {
+        let c = cfg(r#"
+version: 1
+pipeline:
+  source: { type: rest, config: { base_url: https://x } }
+  sink:   { type: jsonl, config: { path: ./o } }
+  state:
+    type: file
+    config: { path: "state-${now.date}" }
+"#);
+        let err = expand(&c).unwrap_err();
+        assert!(
+            matches!(&err, CliError::Config(m) if m.contains("state")),
+            "got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn rejects_runtime_token_in_transform_config() {
+        let c = cfg(r#"
+version: 1
+pipeline:
+  source: { type: rest, config: { base_url: https://x } }
+  sink:   { type: jsonl, config: { path: ./o } }
+  transforms:
+    - type: set
+      config: { field: ts, value: "${now.datetime}" }
+"#);
+        let err = expand(&c).unwrap_err();
+        assert!(
+            matches!(&err, CliError::Config(m) if m.contains("transform")),
+            "got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn allows_runtime_token_in_source_and_sink_configs() {
+        // The same tokens remain valid in source/sink configs (regression guard
+        // that M2's rejection didn't over-reach).
+        let c = cfg(r#"
+version: 1
+pipeline:
+  source: { type: rest, config: { base_url: "https://x?d=${now.date}" } }
+  sink:   { type: jsonl, config: { path: "out-${now.date}.jsonl" } }
+"#);
+        let nodes = expand(&c).unwrap();
+        assert_eq!(nodes.len(), 1);
     }
 
     #[test]

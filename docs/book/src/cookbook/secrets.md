@@ -242,6 +242,12 @@ output. Every byte written through the CLI's tracing subscriber passes through a
 that contain deserialized config fields go through the same scrubber before they
 reach stderr.
 
+Every resolution path registers its result for redaction — the secrets-manager
+directives (`${vault:…}`, `${aws-sm:…}`, …) **and** the load-time
+`${env:…}` / `${secret:…}` / `${file:…}` forms. A credential supplied via the
+common `${env:TOKEN}` form is therefore scrubbed exactly like a `${vault:…}` one
+(values shorter than 4 characters are not registered).
+
 **This boundary covers faucet's own output only.** A third-party connector that
 debug-logs its own deserialized config fields — or any library that logs a
 `reqwest::Request`, a database row, or a JSON object — operates outside this

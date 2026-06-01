@@ -315,15 +315,25 @@ impl PostgresCdcSource {
             // do NOT advance, so an interrupted run with no persisted bookmark
             // redelivers rather than loses data (#78/#1).
             if let Some(lsn) = start_lsn {
-                replication::advance_slot(
-                    &self.config.connection_url,
-                    &self.config.slot_name,
-                    lsn,
-                )
+                // Both the slot advance and START_REPLICATION require the slot
+                // to be inactive; on a rapid re-run the prior connection may not
+                // have released it yet ("slot is active"). Retry with bounded
+                // backoff instead of failing the whole run (#146 M12).
+                replication::retry_on_slot_active(self.config.slot_acquire_retries, || {
+                    replication::advance_slot(
+                        &self.config.connection_url,
+                        &self.config.slot_name,
+                        lsn,
+                    )
+                })
                 .await?;
             }
 
-            let mut duplex = replication::start_replication(&client, &params).await?;
+            let mut duplex = replication::retry_on_slot_active(
+                self.config.slot_acquire_retries,
+                || replication::start_replication(&client, &params),
+            )
+            .await?;
 
             // Send an initial Standby Status Update advertising the same
             // durable position so the server's bookkeeping is consistent.
