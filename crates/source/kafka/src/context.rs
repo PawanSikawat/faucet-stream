@@ -30,6 +30,12 @@ pub(crate) struct BookmarkContext {
     /// Bookmark to apply on the next `Rebalance::Assign`. Taken (not peeked)
     /// when the assign fires, so subsequent rebalances do not re-seek.
     pub(crate) pending_bookmark: Arc<Mutex<Option<Bookmark>>>,
+    /// A retained copy of the start bookmark (never taken). Read at
+    /// bookmark-build time so previously-known partitions that are assigned
+    /// yet produce no message this run carry their offset forward instead of
+    /// being dropped (part of the H9 fix). Distinct from `pending_bookmark`,
+    /// which is consumed by the rebalance callback.
+    pub(crate) start_offsets: Arc<Mutex<Option<Bookmark>>>,
     /// First error raised inside the rebalance callback (assign failures).
     /// The poll loop drains this between iterations and surfaces it to the
     /// caller.
@@ -116,6 +122,14 @@ impl ConsumerContext for BookmarkContext {
 
                     // Partitions absent from the bookmark are left at their
                     // default offset (earliest/latest per `auto.offset.reset`).
+                    // With the assigned-set bookmark seeding in
+                    // `Bookmark::merged`, an absent partition here is one that
+                    // was never assigned in any prior run (e.g. a partition
+                    // added to the topic since the last run) — honouring
+                    // `auto.offset.reset` for a genuinely-new partition is
+                    // correct. Partitions that were assigned but empty in a
+                    // prior run are recorded via their position and so DO
+                    // appear in the bookmark and get seeked here.
                     for (topic, partition, offset) in seeks {
                         if let Err(e) =
                             tpl.set_partition_offset(&topic, partition, Offset::Offset(offset))

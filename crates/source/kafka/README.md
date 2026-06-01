@@ -58,7 +58,7 @@ All fields are top-level keys under `source.config` in the pipeline YAML.
 | `auth` | `KafkaAuth` | `{type: none}` | Authentication mode. See [Auth](#auth) below. Full details in the `faucet-kafka-common` README. |
 | `value_format` | `KafkaValueFormat` | `{type: json}` | How message value bytes are decoded. See [Value formats](#value-formats). |
 | `key_format` | `KafkaValueFormat \| null` | `null` | How message key bytes are decoded. When absent or `null`, key bytes are decoded as UTF-8 (or `null` if no key was set on the message). |
-| `auto_offset_reset` | `"earliest" \| "latest"` | `"latest"` | Where to start consuming when no committed offset exists for the group. |
+| `auto_offset_reset` | `"earliest" \| "latest"` | `"latest"` | Where to start consuming a partition that has **no** bookmarked offset. On a resume, every partition assigned in a prior run carries a bookmarked offset (see [Resume and state store](#resume-and-state-store)), so this only governs first-ever encounters — a fresh run or a newly-added partition. |
 | `max_messages` | `integer \| null` | `null` | Stop after this many messages have been consumed. At least one of `max_messages` and `idle_timeout` must be set. |
 | `idle_timeout` | `integer \| null` | `null` | Stop after this many **seconds** with no new messages. At least one of `max_messages` and `idle_timeout` must be set. |
 | `poll_timeout` | `integer` | `1` | Maximum seconds to wait on a single `consumer.recv()` call before checking termination conditions. Rarely needs tuning. |
@@ -147,9 +147,13 @@ When a `StateStore` is wired into the pipeline (via `state:` in the YAML, or `Pi
 
 1. **Before each run**, the pipeline reads the stored bookmark from the `StateStore` using the source's state key and calls `apply_start_bookmark`. The bookmark is buffered in memory; no seeking happens yet.
 
-2. **After the first Kafka message arrives** (which triggers partition assignment), the source calls `seek` on each `(topic, partition)` pair stored in the bookmark, positioning the consumer at the next unread offset.
+2. **On partition assignment** (the consumer's rebalance callback, which fires before any message is fetched), the bookmarked offset for each assigned `(topic, partition)` is injected into the assignment so the consumer starts there. Setting the offset *as part of* the assignment — rather than seeking after the first poll — means no message from before the bookmark is ever delivered, so a resume never produces a duplicate.
 
-3. **After the sink confirms the batch**, the pipeline persists the new bookmark — a list of `{topic, partition, offset}` entries recording one past the highest offset written. The bookmark is only written on successful sink completion, so a crashed run never marks data as consumed.
+3. **After the sink confirms the batch**, the pipeline persists the new bookmark — a list of `{topic, partition, offset}` entries recording one past the highest offset written.
+
+   The persisted bookmark records an offset for **every assigned partition**, not only the partitions that delivered a message in this run. A partition that was assigned but produced nothing is recorded at the consumer's current position (and a partition known from a prior run is carried forward). This is deliberate: if an empty-this-run partition were omitted, the next resume would have no offset for it and would fall back to `auto_offset_reset` (default `latest`) — silently **skipping** any records that arrived in the meantime. Recording its position closes that gap. The bookmark is only written on successful sink completion, so a crashed run never marks data as consumed.
+
+   A partition that has *never* been assigned in any run (e.g. one added to the topic after the last run) has no recorded offset and so honours `auto_offset_reset` on first encounter — `earliest` reads it from the start, `latest` from the tail.
 
 **State key format:**
 

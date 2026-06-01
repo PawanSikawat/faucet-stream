@@ -3,7 +3,7 @@
 use crate::config::KafkaSourceConfig;
 use crate::context::BookmarkContext;
 use crate::decode;
-use crate::state::{Bookmark, state_key};
+use crate::state::{Bookmark, PartitionOffset, state_key};
 use async_trait::async_trait;
 use base64::Engine;
 use faucet_core::{FaucetError, Source, Stream, StreamPage};
@@ -91,6 +91,72 @@ impl KafkaSource {
             return Err(e);
         }
         Ok(())
+    }
+
+    /// Snapshot the consumer's current position for every *assigned*
+    /// partition.
+    ///
+    /// Seeds the persisted bookmark with partitions that were assigned but
+    /// produced no message this run, so they resume from where the consumer
+    /// actually sits instead of resetting to `auto.offset.reset` (the H9
+    /// fix). Only concrete `Offset::Offset(n)` positions are captured;
+    /// partitions whose position librdkafka has not yet resolved are skipped
+    /// (the carry-forward layer and the per-message offsets cover those).
+    ///
+    /// `position()` reads librdkafka's local, cached consume positions — it
+    /// does not round-trip to the broker — so it is cheap to call per page.
+    fn assigned_positions(&self) -> Vec<PartitionOffset> {
+        match self.consumer.position() {
+            Ok(tpl) => tpl
+                .elements()
+                .iter()
+                .filter_map(|e| match e.offset() {
+                    rdkafka::Offset::Offset(n) => Some(PartitionOffset {
+                        topic: e.topic().to_string(),
+                        partition: e.partition(),
+                        offset: n,
+                    }),
+                    _ => None,
+                })
+                .collect(),
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "kafka source: position() failed; bookmark falls back to consumed/carry-forward offsets"
+                );
+                Vec::new()
+            }
+        }
+    }
+
+    /// The start bookmark applied via [`apply_start_bookmark`], retained for
+    /// carry-forward (cloned, not consumed). `None` on a fresh run.
+    fn start_bookmark(&self) -> Option<Bookmark> {
+        self.context
+            .start_offsets
+            .lock()
+            .ok()
+            .and_then(|g| g.clone())
+    }
+
+    /// Build the bookmark to persist from the offsets consumed this page/run,
+    /// merging in the assigned-partition positions and the carry-forward
+    /// start bookmark. Returns `None` only when there is nothing at all to
+    /// record (no partition assigned, nothing consumed, no prior state).
+    fn build_bookmark(
+        &self,
+        consumed: &HashMap<(String, i32), i64>,
+    ) -> Result<Option<Value>, FaucetError> {
+        let merged = Bookmark::merged(
+            self.start_bookmark().as_ref(),
+            &self.assigned_positions(),
+            consumed,
+        );
+        if merged.partition_offsets.is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(merged.to_value()?))
+        }
     }
 
     async fn message_to_value(
@@ -249,11 +315,7 @@ impl Source for KafkaSource {
             }
         }
 
-        let bookmark_value = if pending_offsets.is_empty() {
-            None
-        } else {
-            Some(Bookmark::from_map(pending_offsets).to_value()?)
-        };
+        let bookmark_value = self.build_bookmark(&pending_offsets)?;
         Ok((records, bookmark_value))
     }
 
@@ -389,7 +451,7 @@ impl Source for KafkaSource {
                         &mut buffer,
                         Vec::with_capacity(initial_capacity),
                     );
-                    let bookmark = Some(Bookmark::from_map(pending_offsets.clone()).to_value()?);
+                    let bookmark = self.build_bookmark(&pending_offsets)?;
                     yield StreamPage { records: page_records, bookmark };
                 }
 
@@ -402,7 +464,7 @@ impl Source for KafkaSource {
             // exactly on a page boundary). When non-empty, emit one final
             // page carrying the cumulative bookmark.
             if !buffer.is_empty() {
-                let bookmark = Some(Bookmark::from_map(pending_offsets.clone()).to_value()?);
+                let bookmark = self.build_bookmark(&pending_offsets)?;
                 yield StreamPage { records: buffer, bookmark };
             }
 
@@ -425,6 +487,16 @@ impl Source for KafkaSource {
 
     async fn apply_start_bookmark(&self, bookmark: Value) -> Result<(), FaucetError> {
         let parsed = Bookmark::from_value(bookmark)?;
+        // `pending_bookmark` is consumed by the rebalance callback to seed the
+        // assigned partitions' starting offsets. `start_offsets` keeps a
+        // retained copy so previously-known partitions that are empty this run
+        // carry their offset forward into the next bookmark (the H9 fix).
+        {
+            let mut guard = self.context.start_offsets.lock().map_err(|e| {
+                FaucetError::State(format!("kafka start_offsets mutex poisoned: {e}"))
+            })?;
+            *guard = Some(parsed.clone());
+        }
         let mut guard = self.context.pending_bookmark.lock().map_err(|e| {
             FaucetError::State(format!("kafka pending_bookmark mutex poisoned: {e}"))
         })?;

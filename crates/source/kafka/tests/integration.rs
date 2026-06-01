@@ -13,6 +13,8 @@ use faucet_core::{DEFAULT_BATCH_SIZE, Source};
 use faucet_kafka_common::{KafkaAuth, KafkaValueFormat, OnDecodeError};
 use faucet_source_kafka::{KafkaSource, KafkaSourceConfig, OffsetReset};
 use rdkafka::ClientConfig;
+use rdkafka::admin::{AdminClient, AdminOptions, NewTopic, TopicReplication};
+use rdkafka::client::DefaultClientContext;
 use rdkafka::producer::{FutureProducer, FutureRecord, Producer};
 use std::collections::BTreeMap;
 use std::time::Duration;
@@ -48,6 +50,41 @@ async fn produce(brokers: &str, topic: &str, messages: &[(Option<&str>, &str)]) 
             .await
             .expect("producer send");
     }
+    producer
+        .flush(Duration::from_secs(5))
+        .expect("producer flush");
+}
+
+/// Create a topic with an explicit partition count (testcontainers' Kafka
+/// auto-creates topics with a single partition, which can't exercise the
+/// empty-partition resume path).
+async fn create_topic(brokers: &str, topic: &str, partitions: i32) {
+    let admin: AdminClient<DefaultClientContext> = ClientConfig::new()
+        .set("bootstrap.servers", brokers)
+        .create()
+        .expect("admin client init");
+    admin
+        .create_topics(
+            &[NewTopic::new(topic, partitions, TopicReplication::Fixed(1))],
+            &AdminOptions::new(),
+        )
+        .await
+        .expect("create_topics");
+}
+
+/// Produce a single message to an explicit partition.
+async fn produce_to_partition(brokers: &str, topic: &str, partition: i32, value: &str) {
+    let producer: FutureProducer = ClientConfig::new()
+        .set("bootstrap.servers", brokers)
+        .set("message.timeout.ms", "5000")
+        .create()
+        .expect("producer init");
+    let record: FutureRecord<'_, str, str> =
+        FutureRecord::to(topic).partition(partition).payload(value);
+    producer
+        .send(record, Duration::from_secs(5))
+        .await
+        .expect("producer send");
     producer
         .flush(Duration::from_secs(5))
         .expect("producer flush");
@@ -160,6 +197,78 @@ async fn resume_with_bookmark_no_restart_duplicate() {
     );
     assert_eq!(second[0]["value"]["id"], 3);
     assert_eq!(second[1]["value"]["id"], 4);
+}
+
+/// Regression for #146 H9: a partition that is **empty during the bookmarked
+/// run** must not be skipped on resume.
+///
+/// Before the fix, the bookmark recorded `next_offset` only for partitions
+/// that delivered a message, and the rebalance callback left absent
+/// partitions at `auto.offset.reset` (default `latest`). So a partition empty
+/// in run 1 that gains records before run 2 reset to `latest` and silently
+/// skipped them — data loss.
+///
+/// The fix seeds the bookmark with the consumer's `position()` for **every
+/// assigned** partition, so the empty-in-run-1 partition is recorded (at
+/// offset 0) and seeked back to 0 on resume — even though run 2 is configured
+/// with `auto.offset.reset = latest`.
+#[tokio::test(flavor = "multi_thread")]
+async fn resume_does_not_skip_partition_empty_during_bookmarked_run() {
+    let (_container, brokers) = start_kafka().await;
+    let topic = "empty-partition-resume";
+    create_topic(&brokers, topic, 2).await;
+
+    // Run 1 sees data only on partition 0; partition 1 is empty.
+    produce_to_partition(&brokers, topic, 0, r#"{"id":"p0-first"}"#).await;
+
+    // Run 1: earliest, bounded by idle_timeout so the consumer fully resolves
+    // every assigned partition's position (including the empty partition 1)
+    // before the bookmark is built.
+    let mut cfg1 = source_config(&brokers, topic, "g-h9", 100);
+    cfg1.idle_timeout = Some(Duration::from_secs(10));
+    let s1 = KafkaSource::new(cfg1).await.unwrap();
+    let (first, bookmark) = s1.fetch_all_incremental().await.unwrap();
+    assert_eq!(first.len(), 1, "run 1 reads only partition 0's message");
+    assert_eq!(first[0]["value"]["id"], "p0-first");
+
+    // Core assertion: the bookmark must include partition 1 even though it
+    // delivered nothing, so the next resume seeks it rather than resetting.
+    let bookmark = bookmark.expect("bookmark should be Some");
+    let partitions: Vec<i64> = bookmark["partition_offsets"]
+        .as_array()
+        .expect("partition_offsets array")
+        .iter()
+        .filter(|p| p["partition"].as_i64() == Some(1))
+        .map(|p| p["offset"].as_i64().expect("offset"))
+        .collect();
+    assert_eq!(
+        partitions,
+        vec![0],
+        "the empty partition 1 must be recorded at offset 0 in the bookmark, \
+         got bookmark = {bookmark}"
+    );
+
+    // Records arrive on the previously-empty partition 1 between runs.
+    produce_to_partition(&brokers, topic, 1, r#"{"id":"p1-new"}"#).await;
+
+    // Run 2: a fresh group configured with `latest`. Without the fix,
+    // partition 1 would reset to `latest` and skip `p1-new`. With the fix,
+    // the applied bookmark seeks partition 1 back to offset 0.
+    let mut cfg2 = source_config(&brokers, topic, "g-h9-2", 100);
+    cfg2.auto_offset_reset = OffsetReset::Latest;
+    cfg2.idle_timeout = Some(Duration::from_secs(10));
+    let s2 = KafkaSource::new(cfg2).await.unwrap();
+    s2.apply_start_bookmark(bookmark).await.unwrap();
+    let (second, _) = s2.fetch_all_incremental().await.unwrap();
+
+    assert_eq!(
+        second.len(),
+        1,
+        "run 2 must read the record on the previously-empty partition \
+         (no skip, no partition-0 duplicate), got {second:#?}"
+    );
+    assert_eq!(second[0]["value"]["id"], "p1-new");
+    assert_eq!(second[0]["partition"], 1);
 }
 
 #[tokio::test(flavor = "multi_thread")]

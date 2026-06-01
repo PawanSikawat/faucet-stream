@@ -17,6 +17,7 @@
 use faucet_core::FaucetError;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::HashMap;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PartitionOffset {
@@ -42,7 +43,7 @@ impl Bookmark {
             .map_err(|e| FaucetError::State(format!("kafka bookmark serialize: {e}")))
     }
 
-    pub fn from_map(map: std::collections::HashMap<(String, i32), i64>) -> Self {
+    pub fn from_map(map: HashMap<(String, i32), i64>) -> Self {
         let mut entries: Vec<PartitionOffset> = map
             .into_iter()
             .map(|((topic, partition), offset)| PartitionOffset {
@@ -57,6 +58,45 @@ impl Bookmark {
         Self {
             partition_offsets: entries,
         }
+    }
+
+    /// Build the bookmark to persist for a run/page, merging three offset
+    /// sources in **increasing precedence** so no assigned partition is ever
+    /// silently dropped from the bookmark (the H9 data-loss fix):
+    ///
+    /// 1. `prior` — offsets from the bookmark applied at run start
+    ///    (carry-forward). A partition consumed in an earlier run but
+    ///    assigned-yet-empty in this one keeps its last-known offset instead
+    ///    of vanishing. Acts as the safety net when librdkafka has not yet
+    ///    resolved a position for an assigned partition.
+    /// 2. `positions` — the consumer's current position for every *assigned*
+    ///    partition (from `rdkafka::consumer::Consumer::position`). This is
+    ///    the crux of the fix: a partition that produced **no** message this
+    ///    run still records where the consumer actually sits, so the next
+    ///    resume seeks it to that offset instead of leaving it absent — an
+    ///    absent partition resets to `auto.offset.reset` (default `latest`)
+    ///    and silently skips any records that arrived in the meantime.
+    /// 3. `consumed` — the next offset after each message actually delivered
+    ///    this run (authoritative: we definitely read up to here, so this
+    ///    overrides a position/prior value for the same partition).
+    pub fn merged(
+        prior: Option<&Bookmark>,
+        positions: &[PartitionOffset],
+        consumed: &HashMap<(String, i32), i64>,
+    ) -> Self {
+        let mut map: HashMap<(String, i32), i64> = HashMap::new();
+        if let Some(prior) = prior {
+            for p in &prior.partition_offsets {
+                map.insert((p.topic.clone(), p.partition), p.offset);
+            }
+        }
+        for p in positions {
+            map.insert((p.topic.clone(), p.partition), p.offset);
+        }
+        for (&(ref topic, partition), &offset) in consumed {
+            map.insert((topic.clone(), partition), offset);
+        }
+        Self::from_map(map)
     }
 }
 
@@ -139,5 +179,91 @@ mod tests {
         let v = b.to_value().unwrap();
         let parsed = Bookmark::from_value(v).unwrap();
         assert!(parsed.partition_offsets.is_empty());
+    }
+
+    fn po(topic: &str, partition: i32, offset: i64) -> PartitionOffset {
+        PartitionOffset {
+            topic: topic.into(),
+            partition,
+            offset,
+        }
+    }
+
+    fn offsets_of(b: &Bookmark) -> Vec<(&str, i32, i64)> {
+        b.partition_offsets
+            .iter()
+            .map(|p| (p.topic.as_str(), p.partition, p.offset))
+            .collect()
+    }
+
+    #[test]
+    fn merged_consumed_overrides_position_and_prior() {
+        // A partition that delivered messages this run: the per-message
+        // next-offset is authoritative and wins over both the consumer
+        // position and the carry-forward value.
+        let prior = Bookmark {
+            partition_offsets: vec![po("orders", 0, 50)],
+        };
+        let positions = vec![po("orders", 0, 90)];
+        let mut consumed = HashMap::new();
+        consumed.insert(("orders".to_string(), 0), 100);
+
+        let merged = Bookmark::merged(Some(&prior), &positions, &consumed);
+        assert_eq!(offsets_of(&merged), vec![("orders", 0, 100)]);
+    }
+
+    #[test]
+    fn merged_seeds_empty_assigned_partition_from_position() {
+        // The H9 case: partition 1 produced no message this run (absent from
+        // `consumed`) but is assigned, so its current position must be
+        // recorded — otherwise it would be missing from the bookmark and
+        // reset to `auto.offset.reset` on the next resume, skipping records.
+        let positions = vec![po("orders", 0, 100), po("orders", 1, 0)];
+        let mut consumed = HashMap::new();
+        consumed.insert(("orders".to_string(), 0), 100);
+
+        let merged = Bookmark::merged(None, &positions, &consumed);
+        assert_eq!(
+            offsets_of(&merged),
+            vec![("orders", 0, 100), ("orders", 1, 0)],
+            "the empty-this-run partition must be seeded from its position"
+        );
+    }
+
+    #[test]
+    fn merged_carries_forward_prior_when_no_position_or_message() {
+        // A previously-known partition with neither a fresh position nor a
+        // delivered message this run keeps its prior offset rather than being
+        // dropped (safety net for an unresolved position).
+        let prior = Bookmark {
+            partition_offsets: vec![po("orders", 2, 777)],
+        };
+        let merged = Bookmark::merged(Some(&prior), &[], &HashMap::new());
+        assert_eq!(offsets_of(&merged), vec![("orders", 2, 777)]);
+    }
+
+    #[test]
+    fn merged_position_overrides_prior_but_not_consumed() {
+        // position > prior (we trust where the consumer currently sits over a
+        // stale carry-forward), but consumed still wins over both.
+        let prior = Bookmark {
+            partition_offsets: vec![po("t", 0, 10), po("t", 1, 20)],
+        };
+        let positions = vec![po("t", 0, 15), po("t", 1, 25)];
+        let mut consumed = HashMap::new();
+        consumed.insert(("t".to_string(), 1), 30);
+
+        let merged = Bookmark::merged(Some(&prior), &positions, &consumed);
+        assert_eq!(
+            offsets_of(&merged),
+            vec![("t", 0, 15), ("t", 1, 30)],
+            "p0 takes the position; p1 takes the consumed next-offset"
+        );
+    }
+
+    #[test]
+    fn merged_all_empty_yields_empty_bookmark() {
+        let merged = Bookmark::merged(None, &[], &HashMap::new());
+        assert!(merged.partition_offsets.is_empty());
     }
 }
