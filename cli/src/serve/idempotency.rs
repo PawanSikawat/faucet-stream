@@ -18,6 +18,45 @@ pub fn fingerprint(merged: &Value, name: Option<&str>) -> String {
     format!("{:x}", hasher.finalize())
 }
 
+/// Fold the run-affecting request fields into the config fingerprint.
+///
+/// The idempotency key identifies a *request*, not just a config: a key
+/// replayed with the same merged config but a different `clock`,
+/// `timeout_secs`, or `labels` is a genuinely different run and must be
+/// detected as a **conflict** (409), not silently replayed as the original
+/// (#146 M7). `clock` is the most important — it sets the `${now.*}` backfill
+/// window the run reads, so a retry that changes only the clock would otherwise
+/// return the original backfill's result.
+///
+/// `labels` is hashed in `BTreeMap` (sorted-key) order, so the result is stable
+/// regardless of insertion order.
+pub fn request_fingerprint(
+    config_fingerprint: &str,
+    clock: Option<&str>,
+    timeout_secs: Option<u64>,
+    labels: &std::collections::BTreeMap<String, String>,
+) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(config_fingerprint.as_bytes());
+    hasher.update([0u8]);
+    hasher.update(clock.unwrap_or("").as_bytes());
+    hasher.update([0u8]);
+    hasher.update(
+        timeout_secs
+            .map(|t| t.to_string())
+            .unwrap_or_default()
+            .as_bytes(),
+    );
+    hasher.update([0u8]);
+    for (k, v) in labels {
+        hasher.update(k.as_bytes());
+        hasher.update([0u8]);
+        hasher.update(v.as_bytes());
+        hasher.update([0u8]);
+    }
+    format!("{:x}", hasher.finalize())
+}
+
 /// Append a canonical (object keys sorted) JSON rendering of `v` to `out`.
 fn write_canonical(v: &Value, out: &mut String) {
     match v {
@@ -79,6 +118,45 @@ mod tests {
         assert_ne!(
             fingerprint(&json!([1, 2]), None),
             fingerprint(&json!([2, 1]), None)
+        );
+    }
+
+    #[test]
+    fn request_fingerprint_includes_run_affecting_fields() {
+        use std::collections::BTreeMap;
+        let cfg_fp = fingerprint(&json!({ "a": 1 }), Some("p"));
+        let empty = BTreeMap::new();
+        let base = request_fingerprint(&cfg_fp, None, None, &empty);
+
+        // Same inputs → same fingerprint.
+        assert_eq!(base, request_fingerprint(&cfg_fp, None, None, &empty));
+        // A different clock (backfill window) must change it (#146 M7).
+        assert_ne!(
+            base,
+            request_fingerprint(&cfg_fp, Some("2026-01-01T00:00:00Z"), None, &empty)
+        );
+        // timeout_secs is run-affecting.
+        assert_ne!(base, request_fingerprint(&cfg_fp, None, Some(30), &empty));
+        // labels are part of the request identity.
+        let mut labels = BTreeMap::new();
+        labels.insert("env".to_string(), "prod".to_string());
+        assert_ne!(base, request_fingerprint(&cfg_fp, None, None, &labels));
+        // A different config fingerprint still changes the result.
+        let other_cfg = fingerprint(&json!({ "a": 2 }), Some("p"));
+        assert_ne!(base, request_fingerprint(&other_cfg, None, None, &empty));
+    }
+
+    #[test]
+    fn request_fingerprint_label_value_is_significant() {
+        use std::collections::BTreeMap;
+        let cfg_fp = fingerprint(&json!({}), None);
+        let mut a = BTreeMap::new();
+        a.insert("k".to_string(), "v1".to_string());
+        let mut b = BTreeMap::new();
+        b.insert("k".to_string(), "v2".to_string());
+        assert_ne!(
+            request_fingerprint(&cfg_fp, None, None, &a),
+            request_fingerprint(&cfg_fp, None, None, &b)
         );
     }
 }

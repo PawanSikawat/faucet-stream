@@ -346,3 +346,34 @@ async fn purge_drops_expired_terminal_runs() {
     assert!(h.get("old").await.unwrap().is_none());
     assert!(h.get("live").await.unwrap().is_some());
 }
+
+#[tokio::test]
+async fn delete_also_removes_matching_idem_claim_at_sql_layer() {
+    // M8 (#146): deleting a run drops its idempotency claim, so a replay of the
+    // key starts a fresh run instead of 404-ing on the missing record until the
+    // claim self-expires. Exercises the shared SQL `delete_idem_by_run`.
+    let dir = tempfile::tempdir().unwrap();
+    let h = store(&dir, "delete_idem.db").await;
+    let w = Duration::from_secs(3600);
+    assert_eq!(
+        h.claim_idempotency("k", "fp", "r1", w).await.unwrap(),
+        Claim::Fresh
+    );
+    let mut r = RunRecord::queued(
+        "r1".into(),
+        None,
+        BTreeMap::new(),
+        Some("k".into()),
+        Utc::now(),
+    );
+    r.status = RunStatus::Completed;
+    r.finished_at = Some(Utc::now());
+    h.upsert(&r).await.unwrap();
+
+    assert_eq!(h.delete("r1").await.unwrap(), DeleteOutcome::Deleted);
+    // The claim is gone → a fresh run, not a replay of the deleted one.
+    assert_eq!(
+        h.claim_idempotency("k", "fp", "r2", w).await.unwrap(),
+        Claim::Fresh
+    );
+}
