@@ -6,6 +6,7 @@ use axum::{Router, extract::State, http::StatusCode, routing::post};
 use faucet_core::FaucetError;
 use serde_json::Value;
 use std::sync::Arc;
+use subtle::ConstantTimeEq;
 use tokio::sync::{Mutex, Notify};
 
 /// Shared state for the webhook HTTP handler.
@@ -94,6 +95,26 @@ impl WebhookSource {
     }
 }
 
+/// Constant-time check of an `Authorization` header value against the shared
+/// secret. Accepts either the raw token or a `Bearer <token>` form, matching the
+/// original behaviour. The comparison uses [`subtle::ConstantTimeEq`] and a
+/// non-short-circuiting `|` so neither *which* form matched nor *where* the first
+/// byte differs is observable via response timing — closing a side-channel that
+/// could otherwise leak the secret byte-by-byte. (Length difference short-circuits;
+/// the secret's length is not itself sensitive.)
+fn token_matches(provided: Option<&str>, expected: &str) -> bool {
+    let Some(p) = provided else {
+        return false;
+    };
+    let exp = expected.as_bytes();
+    let raw = bool::from(p.as_bytes().ct_eq(exp));
+    let stripped = p
+        .strip_prefix("Bearer ")
+        .map(|s| bool::from(s.as_bytes().ct_eq(exp)))
+        .unwrap_or(false);
+    raw | stripped
+}
+
 /// Axum handler for incoming webhook POST requests.
 async fn webhook_handler(
     State(state): State<Arc<AppState>>,
@@ -106,9 +127,7 @@ async fn webhook_handler(
         let provided = headers
             .get(axum::http::header::AUTHORIZATION)
             .and_then(|v| v.to_str().ok());
-        let authorized = provided
-            .is_some_and(|p| p == expected || p.strip_prefix("Bearer ") == Some(expected.as_str()));
-        if !authorized {
+        if !token_matches(provided, expected) {
             return StatusCode::UNAUTHORIZED;
         }
     }
@@ -236,6 +255,27 @@ impl faucet_core::Source for WebhookSource {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn token_matches_accepts_raw_and_bearer() {
+        assert!(token_matches(Some("sekret-token-value"), "sekret-token-value"));
+        assert!(token_matches(
+            Some("Bearer sekret-token-value"),
+            "sekret-token-value"
+        ));
+    }
+
+    #[test]
+    fn token_matches_rejects_wrong_and_missing() {
+        assert!(!token_matches(Some("wrong-token-value"), "sekret-token-value"));
+        assert!(!token_matches(
+            Some("Bearer wrong-token-value"),
+            "sekret-token-value"
+        ));
+        assert!(!token_matches(None, "sekret-token-value"));
+        // Differing length must reject (not panic).
+        assert!(!token_matches(Some("sekret-token-valu"), "sekret-token-value"));
+    }
 
     #[tokio::test]
     async fn webhook_collects_payloads() {
