@@ -211,10 +211,8 @@ mod tests {
 
     #[tokio::test]
     async fn new_rejects_out_of_range_batch_size() {
-        let mut config = RedisSinkConfig::new(
-            "redis://localhost",
-            RedisSinkType::List { key: "k".into() },
-        );
+        let mut config =
+            RedisSinkConfig::new("redis://localhost", RedisSinkType::List { key: "k".into() });
         config.batch_size = faucet_core::MAX_BATCH_SIZE + 1;
         match RedisSink::new(config).await {
             Err(faucet_core::FaucetError::Config(m)) => {

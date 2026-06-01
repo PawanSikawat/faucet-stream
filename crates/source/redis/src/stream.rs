@@ -615,7 +615,10 @@ mod tests {
         config.batch_size = faucet_core::MAX_BATCH_SIZE + 1;
         match RedisSource::new(config) {
             Err(FaucetError::Config(m)) => assert!(m.contains("batch_size"), "got: {m}"),
-            other => panic!("expected a batch_size Config error, got {:?}", other.is_ok()),
+            other => panic!(
+                "expected a batch_size Config error, got {:?}",
+                other.is_ok()
+            ),
         }
     }
 

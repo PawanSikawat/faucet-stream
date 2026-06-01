@@ -611,7 +611,9 @@ mod tests {
 
     #[test]
     fn statements_url_uses_endpoint_override() {
-        let src = SnowflakeSource::new(cfg()).unwrap().with_endpoint_base("http://127.0.0.1:9999");
+        let src = SnowflakeSource::new(cfg())
+            .unwrap()
+            .with_endpoint_base("http://127.0.0.1:9999");
         assert_eq!(
             src.statements_url(),
             "http://127.0.0.1:9999/api/v2/statements"
@@ -620,7 +622,9 @@ mod tests {
 
     #[test]
     fn partition_url_includes_handle_and_index() {
-        let src = SnowflakeSource::new(cfg()).unwrap().with_endpoint_base("http://srv");
+        let src = SnowflakeSource::new(cfg())
+            .unwrap()
+            .with_endpoint_base("http://srv");
         assert_eq!(
             src.partition_url("abc-123", 2),
             "http://srv/api/v2/statements/abc-123?partition=2"
