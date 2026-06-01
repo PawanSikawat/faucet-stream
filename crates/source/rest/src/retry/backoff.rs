@@ -55,7 +55,7 @@ where
                     attempt + 1,
                     max_retries + 1
                 );
-                let wait = backoff_with_jitter(base_backoff, attempt);
+                let wait = faucet_core::retry::backoff_with_jitter(base_backoff, attempt);
                 tokio::time::sleep(wait).await;
                 attempt += 1;
             }
@@ -71,67 +71,19 @@ where
     }
 }
 
-/// Compute exponential backoff with random jitter.
-///
-/// `base * 2^attempt` gives the exponential component; a random factor
-/// between 0.5 and 1.5 is applied to spread out concurrent retries
-/// (avoids thundering-herd).
-fn backoff_with_jitter(base: Duration, attempt: u32) -> Duration {
-    let exp = base * 2u32.pow(attempt);
-    // Simple jitter: multiply by a random factor in [0.5, 1.5).
-    // Uses a lightweight approach — no extra crate dependency.
-    let nanos = exp.as_nanos() as u64;
-    let jitter_factor = pseudo_random_factor();
-    Duration::from_nanos((nanos as f64 * jitter_factor) as u64)
-}
-
-/// Returns a pseudo-random factor in [0.5, 1.5) using the current time's
-/// nanosecond component as entropy. Not cryptographically secure, but
-/// sufficient for retry jitter.
-fn pseudo_random_factor() -> f64 {
-    // Use the low bits of the current timestamp for cheap randomness.
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .subsec_nanos();
-    // Map to [0.5, 1.5)
-    0.5 + (nanos as f64 / u32::MAX as f64)
-}
+// Backoff + jitter now lives in `faucet_core::retry::backoff_with_jitter` (capped
+// at 60s, range-correct [0.5,1.5), decorrelated across concurrent retries). This
+// module keeps only the 429/`Retry-After`-aware loop and delegates the sleep
+// computation, so the jitter bug fixed in core can never diverge in a copy here.
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use faucet_core::FaucetError;
 
-    #[test]
-    fn backoff_with_jitter_increases_with_attempt() {
-        let base = Duration::from_millis(100);
-        let d0 = backoff_with_jitter(base, 0);
-        let _d1 = backoff_with_jitter(base, 1);
-        let d2 = backoff_with_jitter(base, 2);
-
-        // With jitter in [0.5, 1.5), the expected center doubles each attempt.
-        // d0 center: 100ms, d1 center: 200ms, d2 center: 400ms
-        // Even with worst-case jitter, d2 should be > d0's minimum.
-        assert!(
-            d0.as_millis() >= 50,
-            "d0 should be at least 50ms, got {d0:?}"
-        );
-        assert!(
-            d2.as_millis() >= 200,
-            "d2 should be at least 200ms, got {d2:?}"
-        );
-    }
-
-    #[test]
-    fn pseudo_random_factor_in_expected_range() {
-        // Call multiple times to increase confidence.
-        for _ in 0..100 {
-            let f = pseudo_random_factor();
-            assert!(f >= 0.5, "factor {f} < 0.5");
-            assert!(f < 1.5, "factor {f} >= 1.5");
-        }
-    }
+    // Backoff/jitter behaviour (range, cap, decorrelation) is tested in
+    // `faucet_core::retry`; this module now delegates to it. The tests below
+    // exercise the 429/`Retry-After`-aware retry loop that is unique to REST.
 
     #[tokio::test]
     async fn execute_with_retry_success_on_first_try() {
