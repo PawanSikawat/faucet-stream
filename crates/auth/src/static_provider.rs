@@ -106,4 +106,13 @@ mod tests {
     fn from_config_empty_errors() {
         assert!(StaticProvider::from_config(&serde_json::json!({})).is_err());
     }
+
+    #[test]
+    fn debug_does_not_leak_token() {
+        // `StaticProvider` derives `Debug`; it must inherit `Credential`'s
+        // redacting `Debug` rather than print the pre-minted token in clear.
+        let p = StaticProvider::bearer("supersecretstatic");
+        let s = format!("{p:?}");
+        assert!(!s.contains("supersecretstatic"), "static token leaked: {s}");
+    }
 }

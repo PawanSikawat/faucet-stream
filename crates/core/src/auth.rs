@@ -30,7 +30,7 @@ use std::sync::Arc;
 /// Intentionally **not** `#[non_exhaustive]`: connectors must map every variant,
 /// so adding one should be a compile error that forces correct handling rather
 /// than a silently-ignored fallback.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub enum Credential {
     /// `Authorization: Bearer <token>`.
     Bearer(String),
@@ -51,6 +51,31 @@ pub enum Credential {
     /// A raw token for connector-specific assembly (e.g. gRPC `authorization`
     /// metadata, Snowflake's `Authorization` with a token-type header).
     Token(String),
+}
+
+// `Debug` is hand-written (not derived) so a `{:?}` of a credential — or of any
+// struct that embeds one, e.g. a logged connector config or a `StaticProvider` —
+// never prints the secret in clear. The secret-bearing fields render as `"***"`;
+// the non-secret identifiers (header name, basic-auth username) stay visible so
+// the output is still useful for diagnostics. `Credential` is a 1.0-frozen public
+// type, so this redaction is part of its contract.
+impl std::fmt::Debug for Credential {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Credential::Bearer(_) => f.debug_tuple("Bearer").field(&"***").finish(),
+            Credential::Header { name, .. } => f
+                .debug_struct("Header")
+                .field("name", name)
+                .field("value", &"***")
+                .finish(),
+            Credential::Basic { username, .. } => f
+                .debug_struct("Basic")
+                .field("username", username)
+                .field("password", &"***")
+                .finish(),
+            Credential::Token(_) => f.debug_tuple("Token").field(&"***").finish(),
+        }
+    }
 }
 
 impl Credential {
@@ -260,6 +285,49 @@ mod tests {
         fn provider_name(&self) -> &'static str {
             "fixed"
         }
+    }
+
+    #[test]
+    fn credential_debug_redacts_secrets() {
+        // Bearer / Token fully redact the secret value.
+        let b = format!("{:?}", Credential::Bearer("supersecrettoken".into()));
+        assert!(!b.contains("supersecrettoken"), "bearer token leaked: {b}");
+        assert!(b.contains("***"), "bearer token not masked: {b}");
+
+        let t = format!("{:?}", Credential::Token("tok-supersecretxyz".into()));
+        assert!(!t.contains("tok-supersecretxyz"), "raw token leaked: {t}");
+        assert!(t.contains("***"), "raw token not masked: {t}");
+
+        // Basic redacts the password but keeps the (non-secret) username.
+        let basic = format!(
+            "{:?}",
+            Credential::Basic {
+                username: "alice".into(),
+                password: "hunter2secret".into(),
+            }
+        );
+        assert!(!basic.contains("hunter2secret"), "password leaked: {basic}");
+        assert!(
+            basic.contains("alice"),
+            "username should stay visible for diagnostics: {basic}"
+        );
+
+        // Header redacts the value but keeps the (non-secret) header name.
+        let header = format!(
+            "{:?}",
+            Credential::Header {
+                name: "X-Api-Key".into(),
+                value: "secretkeyvalue".into(),
+            }
+        );
+        assert!(
+            !header.contains("secretkeyvalue"),
+            "header value leaked: {header}"
+        );
+        assert!(
+            header.contains("X-Api-Key"),
+            "header name should stay visible for diagnostics: {header}"
+        );
     }
 
     #[tokio::test]

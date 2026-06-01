@@ -17,7 +17,7 @@ use tokio::time::Instant;
 
 use crate::expiry_instant;
 
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize)]
 struct TokenResponse {
     access_token: String,
     #[serde(default)]
@@ -29,7 +29,7 @@ struct TokenResponse {
     token_type: Option<String>,
 }
 
-#[derive(Debug, Default)]
+#[derive(Default)]
 struct CachedToken {
     access_token: Option<String>,
     expires_at: Option<Instant>,
@@ -46,7 +46,6 @@ impl CachedToken {
 }
 
 /// OAuth2 `client_credentials` grant provider.
-#[derive(Debug)]
 pub struct OAuth2ClientCredentialsProvider {
     http: Client,
     token_url: String,
@@ -55,6 +54,21 @@ pub struct OAuth2ClientCredentialsProvider {
     scopes: Vec<String>,
     expiry_ratio: f64,
     state: Mutex<CachedToken>,
+}
+
+// Hand-written so `{:?}` (the trait requires `AuthProvider: Debug`, and providers
+// are shared as `Arc<dyn AuthProvider>`) never prints the `client_secret` or the
+// cached access token in `state`.
+impl std::fmt::Debug for OAuth2ClientCredentialsProvider {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OAuth2ClientCredentialsProvider")
+            .field("token_url", &self.token_url)
+            .field("client_id", &self.client_id)
+            .field("client_secret", &"***")
+            .field("scopes", &self.scopes)
+            .field("expiry_ratio", &self.expiry_ratio)
+            .finish_non_exhaustive()
+    }
 }
 
 impl OAuth2ClientCredentialsProvider {
@@ -120,7 +134,7 @@ impl AuthProvider for OAuth2ClientCredentialsProvider {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Default)]
 struct RefreshState {
     access_token: Option<String>,
     expires_at: Option<Instant>,
@@ -128,7 +142,6 @@ struct RefreshState {
 }
 
 /// OAuth2 `refresh_token` grant provider with refresh-token rotation capture.
-#[derive(Debug)]
 pub struct OAuth2RefreshProvider {
     http: Client,
     token_url: String,
@@ -136,6 +149,19 @@ pub struct OAuth2RefreshProvider {
     client_secret: String,
     expiry_ratio: f64,
     state: Mutex<RefreshState>,
+}
+
+// Hand-written so `{:?}` never prints the `client_secret` or the `refresh_token`
+// / cached access token held in `state`.
+impl std::fmt::Debug for OAuth2RefreshProvider {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OAuth2RefreshProvider")
+            .field("token_url", &self.token_url)
+            .field("client_id", &self.client_id)
+            .field("client_secret", &"***")
+            .field("expiry_ratio", &self.expiry_ratio)
+            .finish_non_exhaustive()
+    }
 }
 
 impl OAuth2RefreshProvider {
@@ -324,6 +350,32 @@ mod tests {
         let again = provider.invalidate(&first).await.unwrap();
         assert_eq!(again, Credential::Bearer("A2".into()));
         assert_eq!(hits.load(Ordering::SeqCst), 2, "stale CAS must not refetch");
+    }
+
+    #[test]
+    fn provider_debug_does_not_leak_secrets() {
+        // `AuthProvider: Debug`, and providers are held as `Arc<dyn AuthProvider>`,
+        // so a stray `{:?}` must never print the client secret / refresh token.
+        let cc = OAuth2ClientCredentialsProvider::from_config(&serde_json::json!({
+            "token_url": "https://idp.example/token",
+            "client_id": "id",
+            "client_secret": "topsecretclient",
+        }))
+        .unwrap();
+        let s = format!("{cc:?}");
+        assert!(!s.contains("topsecretclient"), "client_secret leaked: {s}");
+        assert!(s.contains("client_id"), "non-secret fields should remain: {s}");
+
+        let rf = OAuth2RefreshProvider::from_config(&serde_json::json!({
+            "token_url": "https://idp.example/token",
+            "client_id": "id",
+            "client_secret": "topsecretclient",
+            "refresh_token": "topsecretrefresh",
+        }))
+        .unwrap();
+        let s = format!("{rf:?}");
+        assert!(!s.contains("topsecretclient"), "client_secret leaked: {s}");
+        assert!(!s.contains("topsecretrefresh"), "refresh_token leaked: {s}");
     }
 
     #[tokio::test]
