@@ -30,6 +30,10 @@ pub struct QuarantinedRecord {
     pub field: Option<String>,
     /// Human-readable failure message (goes into the DLQ envelope error).
     pub message: String,
+    /// 0-based position **within the original page** (not within the quarantine
+    /// list). This is the value the DLQ envelope's `record_index` must carry —
+    /// the frozen contract is "position within the page that failed".
+    pub page_index: usize,
 }
 
 /// Per-check counters + elapsed time, keyed by check name. Emitted as metrics
@@ -79,9 +83,13 @@ pub fn apply_quality(
     q: &CompiledQuality,
 ) -> Result<QualityOutcome, FaucetError> {
     let mut out = QualityOutcome::default();
+    // Original page index of each survivor, kept in lockstep with
+    // `out.survivors`, so a record quarantined later by a *batch* check still
+    // carries its true page position (not its index within the survivor slice).
+    let mut survivor_idx: Vec<usize> = Vec::new();
 
     // ── Per-record pass ───────────────────────────────────────────────
-    'next_record: for rec in records {
+    'next_record: for (page_index, rec) in records.into_iter().enumerate() {
         for check in &q.record {
             // Per-check timing feeds the per-page duration histogram (catches slow
             // checks like json_schema). The per-record Instant overhead is negligible
@@ -107,6 +115,7 @@ pub fn apply_quality(
                                 check: check.name,
                                 field: check.field.clone(),
                                 message: field_msg(&check.field, &message),
+                                page_index,
                             });
                             continue 'next_record;
                         }
@@ -115,6 +124,7 @@ pub fn apply_quality(
             }
         }
         out.survivors.push(rec);
+        survivor_idx.push(page_index);
     }
 
     // ── Per-batch pass over survivors ─────────────────────────────────
@@ -139,6 +149,8 @@ pub fn apply_quality(
                     // quarantine the duplicate occurrences (keep first).
                     let dup_set: std::collections::HashSet<usize> = dups.into_iter().collect();
                     let mut survivors = Vec::with_capacity(out.survivors.len());
+                    let mut new_idx = Vec::with_capacity(survivor_idx.len());
+                    let old_idx = std::mem::take(&mut survivor_idx);
                     for (i, rec) in std::mem::take(&mut out.survivors).into_iter().enumerate() {
                         if dup_set.contains(&i) {
                             out.quarantined.push(QuarantinedRecord {
@@ -146,12 +158,15 @@ pub fn apply_quality(
                                 check: check.name,
                                 field: check.field.clone(),
                                 message: field_msg(&check.field, "duplicate key"),
+                                page_index: old_idx[i],
                             });
                         } else {
                             survivors.push(rec);
+                            new_idx.push(old_idx[i]);
                         }
                     }
                     out.survivors = survivors;
+                    survivor_idx = new_idx;
                 }
             }
         } else {
@@ -170,12 +185,16 @@ pub fn apply_quality(
                         }
                         // quarantine_batch: route all survivors to the DLQ.
                         _ => {
-                            for rec in std::mem::take(&mut out.survivors) {
+                            let old_idx = std::mem::take(&mut survivor_idx);
+                            for (rec, page_index) in
+                                std::mem::take(&mut out.survivors).into_iter().zip(old_idx)
+                            {
                                 out.quarantined.push(QuarantinedRecord {
                                     record: rec,
                                     check: check.name,
                                     field: check.field.clone(),
                                     message: field_msg(&check.field, &message),
+                                    page_index,
                                 });
                             }
                         }
@@ -221,6 +240,63 @@ mod tests {
         assert_eq!(out.quarantined.len(), 1);
         assert_eq!(out.quarantined[0].check, "not_null");
         assert_eq!(out.quarantined[0].field.as_deref(), Some("id"));
+    }
+
+    #[test]
+    fn quarantined_records_carry_page_index_not_list_index() {
+        // Records at page positions 1 and 3 fail; their `page_index` must be 1
+        // and 3 (the frozen DLQ `record_index` contract), NOT the quarantine-list
+        // indices 0 and 1 (#146 R).
+        let q = compiled(QualitySpec {
+            record: vec![RecordCheck::NotNull {
+                field: "id".into(),
+                treat_missing_as_null: true,
+                on_failure: OnFailure::Quarantine,
+            }],
+            batch: vec![],
+        });
+        let page = vec![
+            json!({"id": 0}),
+            json!({"id": null}),
+            json!({"id": 2}),
+            json!({"id": null}),
+        ];
+        let out = apply_quality(page, &q).unwrap();
+        let idxs: Vec<usize> = out.quarantined.iter().map(|qr| qr.page_index).collect();
+        assert_eq!(
+            idxs,
+            vec![1, 3],
+            "quarantined records must carry their original page position"
+        );
+    }
+
+    #[test]
+    fn batch_quarantined_records_carry_page_index() {
+        // A unique check: positions 1 and 3 duplicate position 0's key. They
+        // survive the (empty) per-record pass and are quarantined by the BATCH
+        // pass, yet must still carry page positions 1 and 3 — proving the page
+        // index survives the survivor-slice re-indexing.
+        let q = compiled(QualitySpec {
+            record: vec![],
+            batch: vec![BatchCheck::Unique {
+                fields: vec!["k".into()],
+                on_failure: OnFailure::Quarantine,
+            }],
+        });
+        let page = vec![
+            json!({"k": "a"}),
+            json!({"k": "a"}),
+            json!({"k": "b"}),
+            json!({"k": "a"}),
+        ];
+        let out = apply_quality(page, &q).unwrap();
+        let mut idxs: Vec<usize> = out.quarantined.iter().map(|qr| qr.page_index).collect();
+        idxs.sort_unstable();
+        assert_eq!(
+            idxs,
+            vec![1, 3],
+            "batch-quarantined duplicates must carry their original page positions"
+        );
     }
 
     #[test]

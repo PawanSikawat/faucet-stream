@@ -234,17 +234,29 @@ pub fn compress_buf(data: &[u8], c: Compression) -> Result<Vec<u8>, FaucetError>
 pub fn warn_mismatch(path: &str, declared: Compression) {
     use std::collections::HashSet;
     use std::sync::{Mutex, OnceLock};
+    /// Hard cap on the dedup set so a run touching an unbounded number of
+    /// *distinct* mismatched paths can't leak memory for the process lifetime
+    /// (#146 R). Beyond this, mismatches re-warn rather than being tracked —
+    /// hitting thousands of distinct mismatched paths is already pathological.
+    const MAX_SEEN: usize = 4096;
     static SEEN: OnceLock<Mutex<HashSet<(String, Compression)>>> = OnceLock::new();
     let detected = detect_from_path(path);
     if detected == declared {
         return;
     }
     let key = (path.to_string(), declared);
-    let mut seen = SEEN
-        .get_or_init(|| Mutex::new(HashSet::new()))
-        .lock()
-        .expect("compression mismatch log mutex poisoned");
-    if seen.insert(key) {
+    let should_warn = {
+        let mut seen = SEEN
+            .get_or_init(|| Mutex::new(HashSet::new()))
+            .lock()
+            .expect("compression mismatch log mutex poisoned");
+        if seen.len() >= MAX_SEEN {
+            true
+        } else {
+            seen.insert(key)
+        }
+    };
+    if should_warn {
         tracing::warn!(
             path = %path,
             declared = ?declared,
