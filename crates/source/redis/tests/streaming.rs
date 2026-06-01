@@ -248,6 +248,44 @@ async fn stream_stream_pages_chunks_into_batch_sized_pages() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn stream_fetch_all_with_group_drains_beyond_default_count() {
+    // Regression (#146 narrowed): the convenience fetch_all consumer-group path
+    // did a single XREADGROUP capped at the default count (100), silently
+    // truncating the rest. It must now drain the whole pending backlog.
+    let (_container, url) = start_redis().await;
+    let mut conn = open_conn(&url).await;
+    // Create the stream + a consumer group at the start, so every subsequently
+    // added entry is an undelivered (`>`) message for the group.
+    let _: () = redis::cmd("XGROUP")
+        .arg("CREATE")
+        .arg("evt")
+        .arg("g1")
+        .arg("0")
+        .arg("MKSTREAM")
+        .query_async(&mut conn)
+        .await
+        .expect("XGROUP CREATE");
+    seed_stream(&url, "evt", 150).await;
+
+    let config = RedisSourceConfig::new(
+        &url,
+        RedisSourceType::Stream {
+            key: "evt".into(),
+            group: Some("g1".into()),
+            consumer: Some("c1".into()),
+            count: None,
+        },
+    );
+    let source = RedisSource::new(config).unwrap();
+    let records = source.fetch_all().await.expect("fetch_all ok");
+    assert_eq!(
+        records.len(),
+        150,
+        "consumer-group fetch_all must drain all 150 entries, not truncate at the default 100"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn stream_stream_pages_partial_final_page() {
     let (_container, url) = start_redis().await;
     seed_stream(&url, "events", 2_500).await;

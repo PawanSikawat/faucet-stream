@@ -100,30 +100,59 @@ impl RedisSource {
         consumer: &Option<String>,
         count: &Option<usize>,
     ) -> Result<Vec<Value>, FaucetError> {
-        let entries: redis::streams::StreamReadReply = match (group, consumer) {
+        let mut records = Vec::new();
+        match (group, consumer) {
             (Some(group_name), Some(consumer_name)) => {
-                let opts = redis::streams::StreamReadOptions::default().count(count.unwrap_or(100));
-                conn.xread_options(&[key], &[">"], &opts.group(group_name, consumer_name))
-                    .await
-                    .map_err(|e| {
-                        FaucetError::Source(format!("XREADGROUP failed on '{key}': {e}"))
-                    })?
+                // Drain ALL currently-pending new messages for the group, not just
+                // the first `count`. A single XREADGROUP with the default
+                // `count = 100` silently truncated the rest (#146 narrowed); loop,
+                // consuming `>` until a short read (fewer than requested → the
+                // backlog is drained) or the `max_records` cap is hit.
+                let per_read = count.unwrap_or(100).max(1);
+                loop {
+                    let opts = redis::streams::StreamReadOptions::default().count(per_read);
+                    let reply: redis::streams::StreamReadReply = conn
+                        .xread_options(&[key], &[">"], &opts.group(group_name, consumer_name))
+                        .await
+                        .map_err(|e| {
+                            FaucetError::Source(format!("XREADGROUP failed on '{key}': {e}"))
+                        })?;
+                    let mut got = 0usize;
+                    for stream_key in &reply.keys {
+                        for entry in &stream_key.ids {
+                            records.push(stream_entry_to_json(&entry.id, &entry.map));
+                            got += 1;
+                        }
+                    }
+                    // A short read means Redis returned everything currently
+                    // pending — stop (also breaks at `got == 0`). This also avoids
+                    // spinning against a live producer.
+                    if got < per_read {
+                        break;
+                    }
+                    if let Some(max) = self.config.max_records
+                        && records.len() >= max
+                    {
+                        break;
+                    }
+                }
             }
             _ => {
+                // No consumer group: XREAD from `0` returns the whole stream when
+                // no `count` is set; an explicit `count` is the caller's own cap.
                 let mut opts = redis::streams::StreamReadOptions::default();
                 if let Some(c) = count {
                     opts = opts.count(*c);
                 }
-                conn.xread_options(&[key], &["0"], &opts)
+                let reply: redis::streams::StreamReadReply = conn
+                    .xread_options(&[key], &["0"], &opts)
                     .await
-                    .map_err(|e| FaucetError::Source(format!("XREAD failed on '{key}': {e}")))?
-            }
-        };
-
-        let mut records = Vec::new();
-        for stream_key in &entries.keys {
-            for entry in &stream_key.ids {
-                records.push(stream_entry_to_json(&entry.id, &entry.map));
+                    .map_err(|e| FaucetError::Source(format!("XREAD failed on '{key}': {e}")))?;
+                for stream_key in &reply.keys {
+                    for entry in &stream_key.ids {
+                        records.push(stream_entry_to_json(&entry.id, &entry.map));
+                    }
+                }
             }
         }
 
