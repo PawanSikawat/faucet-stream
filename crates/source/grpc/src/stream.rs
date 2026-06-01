@@ -27,6 +27,14 @@ pub struct GrpcStream {
 impl GrpcStream {
     /// Create a new gRPC stream. Loads the `FileDescriptorSet` from disk.
     pub fn new(config: GrpcStreamConfig) -> Result<Self, FaucetError> {
+        // A zero initial backoff makes `next_backoff(0, cap) == 0`, so a
+        // server-streaming reconnect loop would busy-spin with no delay.
+        if config.reconnect_initial_backoff.is_zero() {
+            return Err(FaucetError::Config(
+                "grpc reconnect_initial_backoff must be > 0 (a zero backoff busy-spins reconnects)"
+                    .into(),
+            ));
+        }
         let descriptor_bytes = std::fs::read(&config.descriptor_set_path).map_err(|e| {
             FaucetError::Config(format!(
                 "failed to read descriptor set at {}: {e}",
@@ -944,6 +952,37 @@ mod tests {
         );
         // `tmp` is dropped here but the bytes were already decoded by `new()`.
         GrpcStream::new(config).expect("new from in-memory descriptor")
+    }
+
+    #[test]
+    fn rejects_zero_reconnect_initial_backoff() {
+        use prost::Message;
+        // A valid descriptor on disk, so the only thing that can fail `new` is
+        // the backoff validation (not a missing-file read).
+        let fds_set = prost_types::FileDescriptorSet {
+            file: vec![prost_types::FileDescriptorProto {
+                name: Some("dummy.proto".into()),
+                syntax: Some("proto3".into()),
+                ..Default::default()
+            }],
+        };
+        let tmp = tempfile::NamedTempFile::new().expect("tempfile");
+        std::fs::write(tmp.path(), fds_set.encode_to_vec()).expect("write descriptor");
+        let mut config = GrpcStreamConfig::new(
+            "http://localhost:50051",
+            "dummy.Svc",
+            "Call",
+            tmp.path().to_str().unwrap(),
+        );
+        config.reconnect_initial_backoff = std::time::Duration::ZERO;
+        let Err(err) = GrpcStream::new(config) else {
+            panic!("a zero reconnect_initial_backoff must be rejected (it busy-spins)");
+        };
+        assert!(matches!(err, FaucetError::Config(_)), "{err:?}");
+        assert!(
+            err.to_string().contains("reconnect_initial_backoff"),
+            "{err}"
+        );
     }
 
     // ── Unresolved Reference error path ───────────────────────────────────────

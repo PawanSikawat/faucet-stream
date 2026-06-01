@@ -303,7 +303,10 @@ overwriting a real value.
 Target types: `int` (i64), `float` (f64), `bool`, `string`, `timestamp`
 (RFC 3339). `bool` from a string accepts `true|false|1|0|yes|no`
 case-insensitively. `timestamp` parses RFC 3339 / ISO 8601 and
-normalises the output (so `+00:00` becomes `Z`).
+normalises the output (so `+00:00` becomes `Z`). Casting a **float to
+`int`** only succeeds for a whole number within i64 range — a fractional
+value (e.g. `3.9`) or one beyond ±9.2e18 is treated as uncastable (governed
+by `on_error`) rather than being silently truncated or saturated.
 
 Failure behaviour is controlled by `on_error`:
 

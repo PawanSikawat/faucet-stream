@@ -104,14 +104,14 @@ below.
 | `enabled` | bool | `false` | Master switch. Set to `true` to activate the controller. |
 | `controller` | string | `"aimd"` | Algorithm. Only `"aimd"` is supported in v1. |
 | `min` | integer | `100` | Lower bound on effective batch size. Must be ≥ 1. |
-| `max` | integer | `50000` | Upper bound. Values above the source page size are inert (see Caveats). |
-| `increase_step` | integer | `250` | Rows added per clean, fast batch (additive growth). Must be ≥ 1. |
+| `max` | integer | `50000` | Upper bound. Must be ≤ 1,000,000. Values above the source page size are inert (see Caveats). |
+| `increase_step` | integer | `250` | Rows added per clean, fast batch (additive growth). Must be ≥ 1 and ≤ 1,000,000. |
 | `decrease_factor` | float | `0.5` | Multiplicative shrink factor on error or high latency. Must be in (0, 1). |
 | `cooldown_batches` | integer | `5` | Batches to skip after a shrink before allowing growth again. |
 | `target_latency_ms` | integer \| null | `null` | Optional target write latency (ms). `null` means react to errors only. |
 | `latency_window` | integer | `10` | Rolling window size (batches) for the p50 latency estimate. Must be ≥ 1. |
 | `error_threshold` | float | `0.01` | Per-batch error rate (0.0–1.0) above which the controller shrinks. |
-| `respect_source_max` | bool | `true` | Cap effective batch size at the source page size. `false` is not yet implemented (logs a warning and behaves as `true`). |
+| `respect_source_max` | bool | `true` | Cap effective batch size at the source page size. Must be `true`; `false` is rejected (cross-page buffering would break the O(batch_size) memory guarantee). |
 | `log_every` | integer | `50` | Emit a `tracing::info` summary every N adjustments (0 = never). |
 
 ## AIMD behavior
@@ -195,8 +195,10 @@ per call.
 `batch_size: 20000` on the postgres source config). Setting `max` higher than
 the source page size is harmless but inert.
 
-`respect_source_max: false` to cross page boundaries is planned but not yet
-implemented. Setting it logs a one-shot warning and behaves as `true`.
+`respect_source_max: false` to cross page boundaries is **rejected** at config
+load: cross-page buffering would have to hold records across source pages, which
+breaks the pipeline's O(batch_size) memory guarantee. Raise the source
+`batch_size` instead.
 
 ### No-op for per-record sinks
 

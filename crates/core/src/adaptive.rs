@@ -76,9 +76,12 @@ pub struct AdaptiveBatchConfig {
     /// Per-batch error rate above which the controller shrinks.
     #[serde(default = "default_error_threshold")]
     pub error_threshold: f64,
-    /// Never grow past the source page size. v1 honors only `true`; `false`
-    /// logs a one-shot warning and behaves as `true` (cross-page buffering is
-    /// a future enhancement).
+    /// Never grow the effective batch past the source page size. Only `true`
+    /// is supported (the default) — `false` is rejected by [`validate`], since
+    /// cross-page buffering would have to hold records across source pages and
+    /// break the pipeline's O(batch_size) memory guarantee.
+    ///
+    /// [`validate`]: AdaptiveBatchConfig::validate
     #[serde(default = "default_true")]
     pub respect_source_max: bool,
     /// Emit a `tracing::info!` summary every N adjustments.
@@ -106,6 +109,20 @@ impl AdaptiveBatchConfig {
                 self.min, self.max
             )));
         }
+        if self.max > crate::MAX_BATCH_SIZE {
+            return Err(FaucetError::Config(format!(
+                "adaptive_batch_size.max ({}) must be <= {} (MAX_BATCH_SIZE)",
+                self.max,
+                crate::MAX_BATCH_SIZE
+            )));
+        }
+        if self.increase_step > crate::MAX_BATCH_SIZE {
+            return Err(FaucetError::Config(format!(
+                "adaptive_batch_size.increase_step ({}) must be <= {} (MAX_BATCH_SIZE)",
+                self.increase_step,
+                crate::MAX_BATCH_SIZE
+            )));
+        }
         if !(self.decrease_factor > 0.0 && self.decrease_factor < 1.0) {
             return Err(FaucetError::Config(
                 "adaptive_batch_size.decrease_factor must be in (0, 1)".into(),
@@ -131,6 +148,14 @@ impl AdaptiveBatchConfig {
         {
             return Err(FaucetError::Config(
                 "adaptive_batch_size.target_latency_ms must be > 0 when set".into(),
+            ));
+        }
+        if !self.respect_source_max {
+            return Err(FaucetError::Config(
+                "adaptive_batch_size.respect_source_max=false is not supported \
+                 (cross-page buffering would violate the O(batch_size) memory \
+                 guarantee); remove the field or set it to true"
+                    .into(),
             ));
         }
         Ok(())
@@ -302,7 +327,12 @@ impl AimdController {
     }
 
     fn grow(&mut self, reason: AdjustReason) -> Option<Adjustment> {
-        let new = (self.current + self.increase_step).min(self.max);
+        // `saturating_add` so a controller built directly with a large
+        // `increase_step` (bypassing `validate`) can't overflow `usize`.
+        let new = self
+            .current
+            .saturating_add(self.increase_step)
+            .min(self.max);
         if new == self.current {
             return None;
         }
@@ -349,6 +379,16 @@ mod config_tests {
     }
 
     #[test]
+    fn rejects_respect_source_max_false() {
+        // `false` was a frozen no-op (it warned, then behaved as `true`).
+        // Cross-page buffering would violate the O(batch_size) memory
+        // guarantee, so the knob is rejected rather than silently ignored.
+        let mut c = valid();
+        c.respect_source_max = false;
+        assert!(c.validate().is_err());
+    }
+
+    #[test]
     fn rejects_unknown_controller() {
         let mut c = valid();
         c.controller = "pid".into();
@@ -364,6 +404,20 @@ mod config_tests {
         let mut c = valid();
         c.min = 0;
         assert!(c.validate().is_err());
+    }
+
+    #[test]
+    fn rejects_max_and_increase_step_above_max_batch_size() {
+        let mut c = valid();
+        c.max = crate::MAX_BATCH_SIZE + 1;
+        assert!(c.validate().is_err());
+        let mut c = valid();
+        c.increase_step = crate::MAX_BATCH_SIZE + 1;
+        assert!(c.validate().is_err());
+        // The ceiling itself is accepted.
+        let mut c = valid();
+        c.max = crate::MAX_BATCH_SIZE;
+        c.validate().unwrap();
     }
 
     #[test]
@@ -424,6 +478,22 @@ mod controller_tests {
         assert_eq!(c.current(), 1000);
         let c = AimdController::new(&cfg(), 500);
         assert_eq!(c.current(), 500);
+    }
+
+    #[test]
+    fn grow_saturates_instead_of_overflowing_usize() {
+        // A controller built directly (bypassing `validate`) with a huge
+        // increase_step must not overflow `usize` on growth — it saturates and
+        // clamps to `max`. Guards the `current + increase_step` arithmetic.
+        let cfg: AdaptiveBatchConfig = serde_json::from_value(serde_json::json!({
+            "enabled": true, "min": 1, "max": usize::MAX,
+            "increase_step": usize::MAX, "decrease_factor": 0.5
+        }))
+        .unwrap();
+        let mut c = AimdController::new(&cfg, 1);
+        let adj = c.observe(ok(1)).expect("growth should occur");
+        assert_eq!(adj.new_size, usize::MAX);
+        assert_eq!(c.current(), usize::MAX);
     }
 
     #[test]

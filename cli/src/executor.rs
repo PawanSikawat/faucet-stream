@@ -231,7 +231,9 @@ pub async fn run_expanded(nodes: Vec<ExpandedNode>, opts: ExecuteOptions) -> Cli
             }
             match &node.role {
                 NodeRole::Root => {
+                    let uses_state = node.state.is_some() || opts.state_path_override.is_some();
                     let state_key = build_state_key(&opts.pipeline_name, &node.id, None);
+                    validate_unit_state_key(&node.id, uses_state, &state_key)?;
                     units.push(Unit {
                         node: node.clone(),
                         parent_record: None,
@@ -255,6 +257,7 @@ pub async fn run_expanded(nodes: Vec<ExpandedNode>, opts: ExecuteOptions) -> Cli
                         continue;
                     }
                     // Detect state-key collisions among siblings sharing one parent.
+                    let uses_state = node.state.is_some() || opts.state_path_override.is_some();
                     let mut seen_keys: HashSet<String> = HashSet::new();
                     for record in &parent_records {
                         let pk_value = resolve_parent_key(record, parent_key);
@@ -264,6 +267,7 @@ pub async fn run_expanded(nodes: Vec<ExpandedNode>, opts: ExecuteOptions) -> Cli
                             .unwrap_or_else(|| "(missing)".to_string());
                         let state_key =
                             build_state_key(&opts.pipeline_name, &node.id, Some(&pk_string));
+                        validate_unit_state_key(&node.id, uses_state, &state_key)?;
                         if !seen_keys.insert(state_key.clone()) {
                             return Err(CliError::DuplicateStateKey {
                                 id: node.id.clone(),
@@ -481,6 +485,23 @@ fn build_state_key(pipeline_name: &str, row_id: &str, parent_key: Option<&str>) 
         None => format!("{pipeline_name}::{row_id}"),
         Some(k) => format!("{pipeline_name}::{row_id}::{k}"),
     }
+}
+
+/// Reject an invalid state key up front (at unit construction) when the node
+/// will use a state store, so a bad pipeline name or parent-key value surfaces
+/// as a clear [`CliError::InvalidStateKey`] instead of a late mid-run
+/// `FaucetError::State` after connectors are built and the stream has started.
+fn validate_unit_state_key(node_id: &str, uses_state: bool, state_key: &str) -> CliResult<()> {
+    if uses_state {
+        faucet_core::state::validate_state_key(state_key).map_err(|e| {
+            CliError::InvalidStateKey {
+                id: node_id.to_owned(),
+                state_key: state_key.to_owned(),
+                reason: e.to_string(),
+            }
+        })?;
+    }
+    Ok(())
 }
 
 /// Walk the parent record by `parent_key` (a dotted path) and clone the value.
@@ -1108,6 +1129,97 @@ execution:
                 "a good that wrote records must have produced its output file"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn invalid_pipeline_name_with_state_errors_up_front() {
+        // A pipeline name that can't form a valid state key must fail up front
+        // (at unit construction) when state is configured — not deep mid-run
+        // as a `FaucetError::State`.
+        let dir = tempfile::tempdir().unwrap();
+        let input = dir.path().join("in.csv");
+        let output = dir.path().join("out.jsonl");
+        std::fs::write(&input, "name\nalice\n").unwrap();
+        let yaml = format!(
+            r#"version: 1
+pipeline:
+  source: {{ type: csv, config: {{ path: {input} }} }}
+  sink:   {{ type: jsonl, config: {{ path: {output} }} }}
+  state:  {{ type: memory }}
+"#,
+            input = input.display(),
+            output = output.display(),
+        );
+        let cfg = crate::config::parse_with_extension(&yaml, "yaml").unwrap();
+        let nodes = expand(&cfg).unwrap();
+        let err = run_expanded(
+            nodes,
+            ExecuteOptions {
+                pipeline_name: "bad name".into(), // space is illegal in a state key
+                execution: None,
+                dry_run: false,
+                limit: None,
+                state_path_override: None,
+                auth: Default::default(),
+                clock: chrono::Utc::now().fixed_offset(),
+                cancel: None,
+            },
+        )
+        .await
+        .expect_err("an invalid pipeline name must be rejected up front when state is configured");
+        assert!(matches!(err, CliError::InvalidStateKey { .. }), "{err:?}");
+    }
+
+    #[tokio::test]
+    async fn invalid_parent_key_value_with_state_errors_up_front() {
+        // A parent-record value that yields an illegal state-key suffix must
+        // fail up front at the child's unit construction, not mid-run.
+        let dir = tempfile::tempdir().unwrap();
+        let parent_csv = dir.path().join("parents.csv");
+        let child_csv = dir.path().join("child.csv");
+        // The parent `id` value contains a space — illegal in a state key.
+        std::fs::write(&parent_csv, "id\nbad id\n").unwrap();
+        std::fs::write(&child_csv, "x\nA\n").unwrap();
+        let parent_out = dir.path().join("parents.jsonl");
+        let child_out = dir.path().join("child.jsonl");
+        let yaml = format!(
+            r#"version: 1
+pipeline:
+  source: {{ type: csv, config: {{ path: {parent} }} }}
+  sink:   {{ type: jsonl, config: {{ path: {parent_out} }} }}
+  state:  {{ type: memory }}
+matrix:
+  - id: parents
+  - id: child
+    parent: parents
+    source: {{ config: {{ path: {child} }} }}
+    sink:   {{ config: {{ path: {child_out} }} }}
+"#,
+            parent = parent_csv.display(),
+            parent_out = parent_out.display(),
+            child = child_csv.display(),
+            child_out = child_out.display(),
+        );
+        let cfg = crate::config::parse_with_extension(&yaml, "yaml").unwrap();
+        let nodes = expand(&cfg).unwrap();
+        let err = run_expanded(
+            nodes,
+            ExecuteOptions {
+                pipeline_name: "ok".into(),
+                execution: None,
+                dry_run: false,
+                limit: None,
+                state_path_override: None,
+                auth: Default::default(),
+                clock: chrono::Utc::now().fixed_offset(),
+                cancel: None,
+            },
+        )
+        .await
+        .expect_err(
+            "an illegal parent-key value must be rejected up front when state is configured",
+        );
+        assert!(matches!(err, CliError::InvalidStateKey { .. }), "{err:?}");
     }
 
     #[tokio::test]

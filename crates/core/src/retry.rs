@@ -57,7 +57,15 @@ fn pseudo_random_factor() -> f64 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .subsec_nanos();
-    0.5 + (nanos as f64 / u32::MAX as f64)
+    jitter_factor(nanos)
+}
+
+/// Map a sub-second nanosecond count (`[0, 1_000_000_000)`) to a jitter factor
+/// in `[0.5, 1.5)`. `subsec_nanos()` is bounded by 1e9, so the divisor must be
+/// 1e9 — not `u32::MAX` (~4.29e9), which would cap the factor at ~0.733 and
+/// make every backoff shorter than documented.
+fn jitter_factor(nanos: u32) -> f64 {
+    0.5 + (nanos as f64 / 1_000_000_000.0)
 }
 
 #[cfg(test)]
@@ -100,6 +108,21 @@ mod tests {
         .await;
         assert_eq!(r.unwrap(), 42);
         assert_eq!(calls.load(Ordering::SeqCst), 3);
+    }
+
+    #[test]
+    fn jitter_factor_spans_documented_half_to_one_and_a_half_range() {
+        // The factor must span [0.5, 1.5): 0 nanos → 0.5, the midpoint → 1.0,
+        // and the maximum sub-second value → just under 1.5. A `u32::MAX`
+        // divisor caps the top at ~0.733, so backoff is always too short.
+        assert_eq!(jitter_factor(0), 0.5);
+        let mid = jitter_factor(500_000_000);
+        assert!((mid - 1.0).abs() < 1e-6, "midpoint factor was {mid}");
+        let hi = jitter_factor(999_999_999);
+        assert!(
+            (1.4..1.5).contains(&hi),
+            "factor at max sub-second nanos was {hi}, expected ~1.5"
+        );
     }
 
     #[tokio::test]

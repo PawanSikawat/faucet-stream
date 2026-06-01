@@ -1032,11 +1032,28 @@ fn cast_fields(
 fn cast_value(v: &Value, target: CastType) -> Result<Value, String> {
     match target {
         CastType::Int => match v {
-            Value::Number(n) => n
-                .as_i64()
-                .map(|i| Value::Number(i.into()))
-                .or_else(|| n.as_f64().map(|f| Value::Number((f as i64).into())))
-                .ok_or_else(|| format!("number '{n}' is not representable as i64")),
+            Value::Number(n) => {
+                if let Some(i) = n.as_i64() {
+                    return Ok(Value::Number(i.into()));
+                }
+                // A float-backed number only converts when it is a whole
+                // number within i64 range. A fractional or out-of-range float
+                // is an error rather than a silent truncate/saturate — so
+                // `on_error` (error/null/skip) governs it as documented.
+                // `2^63` is the exact f64 just above i64::MAX; `[-2^63, 2^63)`
+                // with a zero fractional part round-trips losslessly.
+                match n.as_f64() {
+                    Some(f)
+                        if f.fract() == 0.0 && (-(2f64.powi(63))..2f64.powi(63)).contains(&f) =>
+                    {
+                        Ok(Value::Number((f as i64).into()))
+                    }
+                    Some(f) => Err(format!(
+                        "float '{f}' is not a whole number representable as i64"
+                    )),
+                    None => Err(format!("number '{n}' is not representable as i64")),
+                }
+            }
             Value::String(s) => s
                 .trim()
                 .parse::<i64>()
@@ -1721,6 +1738,55 @@ mod tests {
             &compiled(&cast_specs("age", CastType::Int, CastOnError::Error)),
         );
         assert_eq!(result["age"], 42);
+    }
+
+    #[cfg(feature = "transform-cast")]
+    #[test]
+    fn cast_whole_number_float_to_int_succeeds() {
+        // A float with no fractional part and within i64 range converts.
+        let record = json!({"n": 5.0});
+        let result = apply_all(
+            record,
+            &compiled(&cast_specs("n", CastType::Int, CastOnError::Error)),
+        );
+        assert_eq!(result["n"], 5);
+    }
+
+    #[cfg(feature = "transform-cast")]
+    #[test]
+    fn cast_fractional_float_to_int_errors_under_on_error_error() {
+        // A fractional float must surface an error, not silently truncate to 3.
+        let record = json!({"n": 3.9});
+        let err = super::apply_all(
+            record,
+            &compiled(&cast_specs("n", CastType::Int, CastOnError::Error)),
+        )
+        .expect_err("a fractional float must not silently truncate to int");
+        assert!(matches!(err, FaucetError::Transform(_)), "{err}");
+    }
+
+    #[cfg(feature = "transform-cast")]
+    #[test]
+    fn cast_out_of_range_float_to_int_errors_under_on_error_error() {
+        // A float beyond i64 range must error, not silently saturate to i64::MAX.
+        let record = json!({"n": 1e30});
+        let err = super::apply_all(
+            record,
+            &compiled(&cast_specs("n", CastType::Int, CastOnError::Error)),
+        )
+        .expect_err("an out-of-range float must not silently saturate to i64::MAX");
+        assert!(matches!(err, FaucetError::Transform(_)), "{err}");
+    }
+
+    #[cfg(feature = "transform-cast")]
+    #[test]
+    fn cast_fractional_float_to_int_nulls_under_on_error_null() {
+        let record = json!({"n": 3.9});
+        let result = apply_all(
+            record,
+            &compiled(&cast_specs("n", CastType::Int, CastOnError::Null)),
+        );
+        assert_eq!(result["n"], Value::Null);
     }
 
     #[cfg(feature = "transform-cast")]

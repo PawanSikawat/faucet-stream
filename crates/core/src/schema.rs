@@ -204,8 +204,15 @@ fn add_null_type(schema: &mut Value) {
     }
     types.insert("null".to_string());
     let new_type = make_type_value(types.into_iter().collect());
-    if let Some(t) = schema.get_mut("type") {
-        *t = new_type;
+    match schema {
+        // Insert (not just overwrite) so a type-less `{}` fragment is still
+        // marked nullable instead of silently dropping the null.
+        Value::Object(map) => {
+            map.insert("type".to_string(), new_type);
+        }
+        // A non-object fragment (e.g. a bare `null`) becomes a minimal
+        // nullable object schema.
+        _ => *schema = json!({ "type": new_type }),
     }
 }
 
@@ -225,6 +232,30 @@ fn make_type_value(mut types: Vec<String>) -> Value {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn add_null_type_marks_typeless_schema_nullable() {
+        // A type-less `{}` fragment (an unknown field) must still be marked
+        // nullable when absent from some records — previously the missing
+        // `type` key meant the null was silently dropped.
+        let mut s = json!({});
+        add_null_type(&mut s);
+        assert_eq!(s, json!({"type": "null"}));
+    }
+
+    #[test]
+    fn add_null_type_adds_null_to_existing_type() {
+        let mut s = json!({"type": "string"});
+        add_null_type(&mut s);
+        assert_eq!(s["type"], json!(["null", "string"]));
+    }
+
+    #[test]
+    fn add_null_type_is_idempotent_when_already_nullable() {
+        let mut s = json!({"type": ["null", "string"]});
+        add_null_type(&mut s);
+        assert_eq!(s["type"], json!(["null", "string"]));
+    }
 
     #[test]
     fn test_infer_schema_basic_types() {

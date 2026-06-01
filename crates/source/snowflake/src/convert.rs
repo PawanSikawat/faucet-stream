@@ -83,9 +83,23 @@ fn cell_to_json(cell: Option<&Value>, ty: &str) -> Value {
 /// Parse an integer-valued column (`FIXED`/`NUMBER` with scale 0 ships an
 /// integer literal here; non-zero-scale columns ship a decimal string and
 /// fall back to `f64`).
+///
+/// A scale-0 value beyond `i64`/`u64` (e.g. `NUMBER(38,0)`) would lose
+/// precision as `f64`, so it is kept as a string (lossless), matching how
+/// BigQuery NUMERIC is handled. Decimal/scientific literals (non-zero scale)
+/// still fall back to `f64`.
 fn parse_number(s: &str) -> Value {
     if let Ok(i) = s.parse::<i64>() {
         return Value::Number(i.into());
+    }
+    if let Ok(u) = s.parse::<u64>() {
+        return Value::Number(u.into());
+    }
+    // Past u64: only an integer literal stays a (lossless) string; a decimal or
+    // scientific value is genuinely floating-point, so let `parse_real` handle it.
+    let digits = s.trim().strip_prefix(['+', '-']).unwrap_or(s.trim());
+    if !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()) {
+        return Value::String(s.to_owned());
     }
     parse_real(s)
 }
@@ -136,6 +150,31 @@ mod tests {
         let row = [json!("2.5")];
         let cols = [col("RATIO", "fixed")];
         assert_eq!(row_to_json(&row, &cols), json!({"RATIO": 2.5}));
+    }
+
+    #[test]
+    fn fixed_past_i64_within_u64_stays_numeric() {
+        // A FIXED/NUMBER(20,0) value above i64::MAX but within u64 range is
+        // still losslessly representable as a JSON integer — keep it numeric
+        // instead of dropping precision through f64.
+        let row = [json!("18446744073709551615")]; // u64::MAX
+        let cols = [col("ID", "fixed")];
+        assert_eq!(
+            row_to_json(&row, &cols),
+            json!({"ID": 18446744073709551615u64})
+        );
+    }
+
+    #[test]
+    fn fixed_beyond_u64_kept_as_string_lossless() {
+        // A NUMBER(38,0) value beyond u64 can't be a JSON integer; keep it as a
+        // string (lossless) rather than a lossy f64.
+        let row = [json!("123456789012345678901234567890")];
+        let cols = [col("ID", "fixed")];
+        assert_eq!(
+            row_to_json(&row, &cols),
+            json!({"ID": "123456789012345678901234567890"})
+        );
     }
 
     #[test]

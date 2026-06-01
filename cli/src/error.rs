@@ -152,6 +152,16 @@ pub enum CliError {
     )]
     DuplicateStateKey { id: String, state_key: String },
 
+    /// The state key derived from the pipeline name + row id (+ resolved
+    /// parent-key value) is not a valid state-store key. Caught up front at
+    /// unit construction rather than mid-run.
+    #[error("invalid state key '{state_key}' for row '{id}': {reason}")]
+    InvalidStateKey {
+        id: String,
+        state_key: String,
+        reason: String,
+    },
+
     /// One or more matrix invocations failed under `on_error: continue`.
     #[error("{count} pipeline invocation(s) failed (see logs above for details)")]
     PipelineHadFailures { count: usize },

@@ -436,13 +436,11 @@ where
     let mut dlq_stats = DlqStats::default();
 
     let adaptive_cfg = options.adaptive.clone().filter(|c| c.enabled);
-    if let Some(cfg) = adaptive_cfg.as_ref()
-        && !cfg.respect_source_max
-    {
-        tracing::warn!(
-            "adaptive_batch_size.respect_source_max=false is not yet implemented \
-             (cross-page buffering); growth is capped at the source page size"
-        );
+    // Validate at the core boundary so library callers of `run_stream` (not
+    // just the CLI, which validates earlier) reject an invalid adaptive config
+    // — e.g. the rejected `respect_source_max=false` knob — up front.
+    if let Some(cfg) = adaptive_cfg.as_ref() {
+        cfg.validate()?;
     }
     let mut controller: Option<crate::adaptive::AimdController> = None;
     let mut warned_noop_sink = false;

@@ -158,13 +158,13 @@ When a `StateStore` is wired into the pipeline (via `state:` in the YAML, or `Pi
 **State key format:**
 
 ```
-kafka:{group_id}:{topic1}.{topic2}...
+kafka:{group_id}:{topic1}:{topic2}...
 ```
 
-Topics are sorted alphabetically before joining, so the key is stable regardless of the order you list topics in the config. For example, `group_id = "my-group"` and `topics = ["beta", "alpha"]` produces:
+Topics are sorted alphabetically before joining, so the key is stable regardless of the order you list topics in the config. They are joined with `:` (not `.`) because a Kafka topic name may legally contain `.`, which would otherwise let `["a.b", "c"]` and `["a", "b.c"]` collide on the same `group_id`. For example, `group_id = "my-group"` and `topics = ["beta", "alpha"]` produces:
 
 ```
-kafka:my-group:alpha.beta
+kafka:my-group:alpha:beta
 ```
 
 **Delivery semantics:** Offsets are persisted via faucet-stream's state store only after the sink confirms a batch, and on restart the consumer seeds the partition assignment with the bookmarked offset *before* any message is fetched. End-to-end this is at-least-once if the sink can fail mid-batch; pair with idempotent sinks if you need stricter guarantees.

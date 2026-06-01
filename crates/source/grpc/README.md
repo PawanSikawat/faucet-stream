@@ -76,7 +76,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 | `rpc_kind` | `RpcKind` | `Unary` | RPC kind: `Unary` (one request → one response) or `ServerStreaming` (one request → stream of responses). See [Server-streaming RPCs](#server-streaming-rpcs) below |
 | `max_messages` | `Option<usize>` | `None` | Server-streaming only. Cap on the number of streamed messages to consume before terminating. `None` means consume until the server closes the stream |
 | `terminate_on_error` | `bool` | `false` | Server-streaming only. If `true`, transient stream errors terminate the run. If `false`, the source reconnects with exponential backoff |
-| `reconnect_initial_backoff` | `Duration` (secs) | `1` | Server-streaming only. Initial backoff before the first reconnect attempt; doubles after each failure up to `reconnect_max_backoff` |
+| `reconnect_initial_backoff` | `Duration` (secs) | `1` | Server-streaming only. Initial backoff before the first reconnect attempt; doubles after each failure up to `reconnect_max_backoff`. Must be `> 0` (a zero backoff would busy-spin reconnects and is rejected at construction) |
 | `reconnect_max_backoff` | `Duration` (secs) | `30` | Server-streaming only. Upper bound on reconnect backoff |
 | `reconnect_max_attempts` | `Option<u32>` | `None` | Server-streaming only. Maximum reconnect attempts before surfacing the error. `None` means unlimited |
 | `reconnect_replay_from_start` | `bool` | `true` | Server-streaming only. Whether the server replays the stream from message 0 when the same request is re-issued on reconnect. `true` (default) skips already-emitted messages so each is delivered once; `false` emits every received message (at-least-once). See [Reconnect on transient errors](#reconnect-on-transient-errors) |
