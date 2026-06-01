@@ -95,9 +95,13 @@ by more than ~30 seconds.
 
 ## Missed-tick behavior
 
-If the process was down or a run took longer than one cron period, missed
-ticks are **skipped** — not backfilled. The scheduler fires once at the next
-due time and moves on. There is no catch-up storm.
+The scheduler advances from the **scheduled** tick, not the wall clock, so a
+single occurrence is **not skipped** just because dispatch latency pushed the
+clock a little past it — it fires promptly (slightly late) and the schedule
+resumes. But if many ticks elapsed (the process was down, or a run took longer
+than several cron periods), the backlog is **collapsed to a single catch-up**:
+the scheduler fires once at the next due time and moves on. There is no
+catch-up storm and no flood of backfilled runs.
 
 To find out how late a run fired, scrape
 `faucet_schedule_run_lateness_seconds` (histogram: `actual_start −

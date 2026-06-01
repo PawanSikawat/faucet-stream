@@ -322,7 +322,11 @@ async fn run_loop(
                     return Err(CliError::ScheduleOverlapForbidden);
                 }
             }
-            next_due = match compiled.next_after(Utc::now()) {
+            // Advance from the tick that just fired (`next_due`), not from the
+            // wall clock — so a sub-minute occurrence isn't skipped just because
+            // dispatch latency pushed `now` past it. A long backlog (suspension)
+            // is collapsed to a single catch-up inside `next_due_after_tick`.
+            next_due = match compiled.next_due_after_tick(next_due, Utc::now()) {
                 Some(t) => t,
                 None => {
                     tracing::info!(pipeline = %pipeline_name, "no further scheduled occurrences; exiting");

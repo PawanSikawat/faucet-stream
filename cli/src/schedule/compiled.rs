@@ -102,6 +102,37 @@ impl CompiledSchedule {
             .ok()
             .map(|dt| dt.with_timezone(&Utc))
     }
+
+    /// The next due tick after firing the tick scheduled for `fired`, given the
+    /// current wall clock `now`.
+    ///
+    /// Advances from the *scheduled* tick (not wall-clock `now`) so an
+    /// occurrence isn't silently skipped merely because dispatch latency pushed
+    /// the clock past it — the loop fires the returned tick promptly even if it
+    /// is already slightly in the past (this is the sub-minute-skip fix). But if
+    /// firing that occurrence would still leave a *further* occurrence already
+    /// elapsed (the process was suspended across many ticks), the backlog is
+    /// collapsed to the next occurrence strictly after `now`, so a long sleep
+    /// produces a single catch-up run rather than a flood of backfilled runs.
+    /// Returns `None` when the schedule has no further occurrence.
+    pub fn next_due_after_tick(
+        &self,
+        fired: DateTime<Utc>,
+        now: DateTime<Utc>,
+    ) -> Option<DateTime<Utc>> {
+        let next = self.next_after(fired)?;
+        if next > now {
+            // On schedule: the next occurrence is still ahead.
+            return Some(next);
+        }
+        // `next` already elapsed. If the occurrence after it is *also* in the
+        // past we are badly behind — collapse the backlog. Otherwise run the
+        // single just-missed `next` (possibly a touch late) and resume.
+        match self.next_after(next) {
+            Some(after) if after <= now => self.next_after(now),
+            _ => Some(next),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -180,6 +211,43 @@ mod tests {
             c.next_after(just_before).unwrap(),
             Utc.with_ymd_and_hms(2026, 3, 11, 0, 0, 0).unwrap()
         );
+    }
+
+    #[test]
+    fn next_due_after_tick_runs_a_single_missed_sub_minute_occurrence() {
+        // Every-second cron. The tick scheduled for 06:00:00 fired, but
+        // dispatch latency pushed the clock to 06:00:01.3. The 06:00:01
+        // occurrence must still run (not be skipped) — that is the bug:
+        // recomputing from `now` would jump straight to 06:00:02.
+        let c = CompiledSchedule::compile(&spec("* * * * * *", "UTC")).unwrap();
+        let fired = Utc.with_ymd_and_hms(2026, 3, 10, 6, 0, 0).unwrap();
+        let now = Utc.with_ymd_and_hms(2026, 3, 10, 6, 0, 1).unwrap()
+            + chrono::Duration::milliseconds(300);
+        let due = c.next_due_after_tick(fired, now).unwrap();
+        assert_eq!(due, Utc.with_ymd_and_hms(2026, 3, 10, 6, 0, 1).unwrap());
+        // The old wall-clock recompute would have skipped to 06:00:02.
+        assert_ne!(due, c.next_after(now).unwrap());
+    }
+
+    #[test]
+    fn next_due_after_tick_returns_future_occurrence_when_on_schedule() {
+        let c = CompiledSchedule::compile(&spec("* * * * * *", "UTC")).unwrap();
+        let fired = Utc.with_ymd_and_hms(2026, 3, 10, 6, 0, 0).unwrap();
+        // Fired essentially on time.
+        let due = c.next_due_after_tick(fired, fired).unwrap();
+        assert_eq!(due, Utc.with_ymd_and_hms(2026, 3, 10, 6, 0, 1).unwrap());
+    }
+
+    #[test]
+    fn next_due_after_tick_collapses_a_long_backlog_to_one_catch_up() {
+        // The process was suspended for 100s on an every-second cron. Instead
+        // of replaying 100 ticks, collapse to the next future occurrence.
+        let c = CompiledSchedule::compile(&spec("* * * * * *", "UTC")).unwrap();
+        let fired = Utc.with_ymd_and_hms(2026, 3, 10, 6, 0, 0).unwrap();
+        let now = Utc.with_ymd_and_hms(2026, 3, 10, 6, 1, 40).unwrap(); // +100s
+        let due = c.next_due_after_tick(fired, now).unwrap();
+        assert_eq!(due, Utc.with_ymd_and_hms(2026, 3, 10, 6, 1, 41).unwrap());
+        assert!(due > now, "collapsed catch-up must be in the future");
     }
 
     #[test]
