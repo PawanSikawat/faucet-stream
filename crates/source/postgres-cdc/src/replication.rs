@@ -500,6 +500,57 @@ fn quote_literal(s: &str) -> String {
 
 // ── Tests ──────────────────────────────────────────────────────────────────
 
+/// Returns `true` if `err` is Postgres reporting that the replication slot is
+/// still **active** — held by a backend that has not yet released it. Postgres
+/// raises *"replication slot \"…\" is active for PID …"* (SQLSTATE `55006`).
+///
+/// This is transient on a rapid restart: a scheduler or `serve` re-running the
+/// pipeline before the previous connection's backend has fully exited finds the
+/// slot momentarily still in use. It clears within a short window, so it is
+/// safe to retry after a backoff (#146 M12).
+pub fn is_slot_active_error(err: &FaucetError) -> bool {
+    let msg = err.to_string().to_ascii_lowercase();
+    msg.contains("is active") || msg.contains("55006")
+}
+
+/// Exponential backoff for slot-acquisition retries: `250ms · 2^attempt`,
+/// capped at 4 s.
+fn slot_acquire_backoff(attempt: u32) -> Duration {
+    let factor = 1u64.checked_shl(attempt).unwrap_or(u64::MAX);
+    let ms = 250u64.saturating_mul(factor).min(4000);
+    Duration::from_millis(ms)
+}
+
+/// Run `op`, retrying up to `max_retries` times with exponential backoff while
+/// it fails because the replication slot is still active (#146 M12). Any other
+/// error — and the final attempt's error after exhausting retries — is returned
+/// immediately. `max_retries = 0` preserves the previous fail-fast behaviour.
+pub async fn retry_on_slot_active<F, Fut, T>(max_retries: u32, op: F) -> Result<T, FaucetError>
+where
+    F: Fn() -> Fut,
+    Fut: std::future::Future<Output = Result<T, FaucetError>>,
+{
+    let mut attempt = 0u32;
+    loop {
+        match op().await {
+            Ok(value) => return Ok(value),
+            Err(e) if attempt < max_retries && is_slot_active_error(&e) => {
+                let backoff = slot_acquire_backoff(attempt);
+                tracing::warn!(
+                    attempt = attempt + 1,
+                    max_retries,
+                    backoff_ms = backoff.as_millis() as u64,
+                    error = %e,
+                    "postgres-cdc: replication slot still active; retrying after backoff"
+                );
+                tokio::time::sleep(backoff).await;
+                attempt += 1;
+            }
+            Err(e) => return Err(e),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -586,5 +637,91 @@ mod tests {
     fn parse_url_rejects_missing_user() {
         let err = parse_url("postgres://db.example.com/analytics").unwrap_err();
         assert!(format!("{err}").contains("missing a user"), "{err}");
+    }
+
+    #[test]
+    fn is_slot_active_error_classifies_the_postgres_message() {
+        // The canonical Postgres message (SQLSTATE 55006).
+        assert!(is_slot_active_error(&FaucetError::Source(
+            "postgres-cdc start_replication: db error: ERROR: replication slot \"s\" \
+             is active for PID 4242"
+                .into()
+        )));
+        // SQLSTATE code present.
+        assert!(is_slot_active_error(&FaucetError::Source(
+            "55006: replication slot is in use".into()
+        )));
+        // Unrelated errors are NOT slot-active.
+        assert!(!is_slot_active_error(&FaucetError::Source(
+            "connection refused".into()
+        )));
+        assert!(!is_slot_active_error(&FaucetError::Config(
+            "bad url".into()
+        )));
+    }
+
+    #[test]
+    fn slot_acquire_backoff_grows_and_is_capped() {
+        assert_eq!(slot_acquire_backoff(0), Duration::from_millis(250));
+        assert_eq!(slot_acquire_backoff(1), Duration::from_millis(500));
+        assert_eq!(slot_acquire_backoff(2), Duration::from_millis(1000));
+        // Capped at 4s no matter how large the attempt.
+        assert_eq!(slot_acquire_backoff(20), Duration::from_millis(4000));
+        assert_eq!(slot_acquire_backoff(64), Duration::from_millis(4000));
+    }
+
+    #[tokio::test]
+    async fn retry_on_slot_active_retries_then_succeeds() {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        let calls = AtomicU32::new(0);
+        let result = retry_on_slot_active(5, || {
+            let n = calls.fetch_add(1, Ordering::SeqCst);
+            async move {
+                if n < 2 {
+                    Err(FaucetError::Source(
+                        "replication slot \"s\" is active for PID 1".into(),
+                    ))
+                } else {
+                    Ok::<u32, FaucetError>(42)
+                }
+            }
+        })
+        .await;
+        assert_eq!(result.unwrap(), 42);
+        assert_eq!(calls.load(Ordering::SeqCst), 3, "2 failures + 1 success");
+    }
+
+    #[tokio::test]
+    async fn retry_on_slot_active_gives_up_after_max_retries() {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        let calls = AtomicU32::new(0);
+        let result: Result<(), _> = retry_on_slot_active(2, || {
+            calls.fetch_add(1, Ordering::SeqCst);
+            async { Err(FaucetError::Source("slot is active".into())) }
+        })
+        .await;
+        assert!(result.is_err());
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            3,
+            "initial attempt + 2 retries"
+        );
+    }
+
+    #[tokio::test]
+    async fn retry_on_slot_active_does_not_retry_unrelated_errors() {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        let calls = AtomicU32::new(0);
+        let result: Result<(), _> = retry_on_slot_active(5, || {
+            calls.fetch_add(1, Ordering::SeqCst);
+            async { Err(FaucetError::Source("connection refused".into())) }
+        })
+        .await;
+        assert!(result.is_err());
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "a non-slot-active error must not be retried"
+        );
     }
 }

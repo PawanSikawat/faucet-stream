@@ -139,6 +139,46 @@ async fn skip_drops_malformed_json() {
 }
 
 #[tokio::test]
+async fn skipped_frames_reset_idle_timeout() {
+    // M9 (#146): with on_parse_error=Skip, an unparseable frame yields no
+    // record but the connection is demonstrably alive — receiving any frame
+    // must reset the idle timer. Here the server sends one skippable frame at
+    // ~300ms (within the 400ms idle window), then a valid record at ~600ms.
+    // Before the fix the skip frame didn't reset `last_message_at`, so the run
+    // idle-timed-out at ~400ms and the valid record was never received (0
+    // records). After the fix the skip frame resets the timer, so the run stays
+    // alive long enough to receive the record.
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        if let Ok((stream, _)) = listener.accept().await {
+            let mut ws = tokio_tungstenite::accept_async(stream).await.unwrap();
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            let _ = ws.send(Message::Text("not json".into())).await;
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            let _ = ws.send(Message::Text(r#"{"id":99}"#.into())).await;
+            loop {
+                if ws.next().await.is_none() {
+                    break;
+                }
+            }
+        }
+    });
+    let mut cfg = base_config(&format!("ws://{addr}"));
+    cfg.on_parse_error = OnParseError::Skip;
+    cfg.idle_timeout = Some(Duration::from_millis(400));
+    cfg.max_messages = Some(1);
+    let src = WebsocketSource::new(cfg).unwrap();
+    let records = src.fetch_all().await.unwrap();
+    assert_eq!(
+        records.len(),
+        1,
+        "a skipped frame must reset idle_timeout so the later valid record is still received"
+    );
+    assert_eq!(records[0]["id"], 99);
+}
+
+#[tokio::test]
 async fn auth_header_is_sent() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();

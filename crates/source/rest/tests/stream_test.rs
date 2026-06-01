@@ -38,6 +38,80 @@ async fn test_single_page_fetch() {
 }
 
 #[tokio::test]
+async fn test_204_no_content_is_empty_page_not_error() {
+    // M10 (#146): a 204 No Content has no body. Calling resp.json() on it
+    // raises a non-retriable parse error that aborts the run; it must instead
+    // be treated as an empty page ("no data").
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/users"))
+        .respond_with(ResponseTemplate::new(204))
+        .mount(&server)
+        .await;
+
+    let stream = RestStream::new(
+        RestStreamConfig::new(&server.uri(), "/api/users")
+            .records_path("$.data[*]")
+            .pagination(PaginationStyle::None),
+    )
+    .unwrap();
+
+    let records = stream
+        .fetch_all()
+        .await
+        .expect("204 must be treated as an empty page, not a JSON error");
+    assert!(records.is_empty());
+}
+
+#[tokio::test]
+async fn test_empty_body_200_is_empty_page_not_error() {
+    // M10 (#146): an empty-body 200 likewise has nothing to parse.
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/users"))
+        .respond_with(ResponseTemplate::new(200)) // no body set
+        .mount(&server)
+        .await;
+
+    let stream = RestStream::new(
+        RestStreamConfig::new(&server.uri(), "/api/users")
+            .records_path("$.data[*]")
+            .pagination(PaginationStyle::None),
+    )
+    .unwrap();
+
+    let records = stream
+        .fetch_all()
+        .await
+        .expect("empty 200 body must be treated as an empty page");
+    assert!(records.is_empty());
+}
+
+#[tokio::test]
+async fn test_malformed_nonempty_body_still_errors() {
+    // Guard: a non-empty body that isn't valid JSON must still error loudly —
+    // the empty-body tolerance must not swallow genuine parse failures.
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/users"))
+        .respond_with(ResponseTemplate::new(200).set_body_string("this is not json"))
+        .mount(&server)
+        .await;
+
+    let stream = RestStream::new(
+        RestStreamConfig::new(&server.uri(), "/api/users")
+            .records_path("$.data[*]")
+            .pagination(PaginationStyle::None),
+    )
+    .unwrap();
+
+    assert!(
+        stream.fetch_all().await.is_err(),
+        "a non-empty, non-JSON body must surface as an error"
+    );
+}
+
+#[tokio::test]
 async fn test_cursor_pagination() {
     let server = MockServer::start().await;
 
