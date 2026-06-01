@@ -1044,8 +1044,7 @@ fn cast_value(v: &Value, target: CastType) -> Result<Value, String> {
                 // with a zero fractional part round-trips losslessly.
                 match n.as_f64() {
                     Some(f)
-                        if f.fract() == 0.0
-                            && (-(2f64.powi(63))..2f64.powi(63)).contains(&f) =>
+                        if f.fract() == 0.0 && (-(2f64.powi(63))..2f64.powi(63)).contains(&f) =>
                     {
                         Ok(Value::Number((f as i64).into()))
                     }

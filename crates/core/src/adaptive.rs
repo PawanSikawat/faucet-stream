@@ -329,7 +329,10 @@ impl AimdController {
     fn grow(&mut self, reason: AdjustReason) -> Option<Adjustment> {
         // `saturating_add` so a controller built directly with a large
         // `increase_step` (bypassing `validate`) can't overflow `usize`.
-        let new = self.current.saturating_add(self.increase_step).min(self.max);
+        let new = self
+            .current
+            .saturating_add(self.increase_step)
+            .min(self.max);
         if new == self.current {
             return None;
         }

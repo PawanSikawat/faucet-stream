@@ -1216,7 +1216,9 @@ matrix:
             },
         )
         .await
-        .expect_err("an illegal parent-key value must be rejected up front when state is configured");
+        .expect_err(
+            "an illegal parent-key value must be rejected up front when state is configured",
+        );
         assert!(matches!(err, CliError::InvalidStateKey { .. }), "{err:?}");
     }
 

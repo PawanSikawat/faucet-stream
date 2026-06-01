@@ -329,9 +329,9 @@ mod tests {
         // actually available *before* allocating a buffer for it.
         let bytes = hex("00 01 74 00 00 03 E8 41 42");
         let mut c = Cursor::new(bytes.as_slice());
-        let err = decode_tuple(&mut c)
-            .err()
-            .expect("an oversized declared text length must be rejected");
+        let Err(err) = decode_tuple(&mut c) else {
+            panic!("an oversized declared text length must be rejected");
+        };
         assert!(err.to_string().contains("exceeds"), "{err}");
     }
 
@@ -341,9 +341,9 @@ mod tests {
         // 4-byte OID follows. Must be rejected before reserving for `n`.
         let bytes = hex("00 0F 42 40 00 00 00 00 2A");
         let mut c = Cursor::new(bytes.as_slice());
-        let err = decode_truncate(&mut c)
-            .err()
-            .expect("an oversized declared relation count must be rejected");
+        let Err(err) = decode_truncate(&mut c) else {
+            panic!("an oversized declared relation count must be rejected");
+        };
         assert!(err.to_string().contains("exceeds"), "{err}");
     }
 

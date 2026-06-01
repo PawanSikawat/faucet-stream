@@ -975,9 +975,9 @@ mod tests {
             tmp.path().to_str().unwrap(),
         );
         config.reconnect_initial_backoff = std::time::Duration::ZERO;
-        let err = GrpcStream::new(config)
-            .err()
-            .expect("a zero reconnect_initial_backoff must be rejected (it busy-spins)");
+        let Err(err) = GrpcStream::new(config) else {
+            panic!("a zero reconnect_initial_backoff must be rejected (it busy-spins)");
+        };
         assert!(matches!(err, FaucetError::Config(_)), "{err:?}");
         assert!(
             err.to_string().contains("reconnect_initial_backoff"),
