@@ -13,14 +13,14 @@ Indexes JSON records into an Elasticsearch index using the bulk API (`_bulk` end
 
 ```toml
 [dependencies]
-faucet-sink-elasticsearch = "0.1"
+faucet-sink-elasticsearch = "1.0"
 tokio = { version = "1", features = ["full"] }
 ```
 
 Or via the umbrella crate:
 
 ```toml
-faucet-stream = { version = "0.2", features = ["sink-elasticsearch"] }
+faucet-stream = { version = "1.0", features = ["sink-elasticsearch"] }
 ```
 
 ## Quick Start

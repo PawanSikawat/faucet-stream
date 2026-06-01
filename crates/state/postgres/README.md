@@ -6,8 +6,8 @@ PostgreSQL-backed [`StateStore`](https://docs.rs/faucet-core/latest/faucet_core/
 
 ```toml
 [dependencies]
-faucet-core = "0.2"
-faucet-state-postgres = "0.2"
+faucet-core = "1.0"
+faucet-state-postgres = "1.0"
 ```
 
 ## Usage

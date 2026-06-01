@@ -226,24 +226,24 @@ Install only what you need:
 
 ```toml
 # Everything (default includes REST source)
-faucet-stream = "0.2"
+faucet-stream = "1.0"
 
 # All sources
-faucet-stream = { version = "0.2", features = ["source"] }
+faucet-stream = { version = "1.0", features = ["source"] }
 
 # All sinks
-faucet-stream = { version = "0.2", features = ["sink"] }
+faucet-stream = { version = "1.0", features = ["sink"] }
 
 # All connectors
-faucet-stream = { version = "0.2", features = ["full"] }
+faucet-stream = { version = "1.0", features = ["full"] }
 
 # Pick individual connectors
-faucet-stream = { version = "0.2", features = ["source-rest", "sink-postgres", "sink-s3"] }
+faucet-stream = { version = "1.0", features = ["source-rest", "sink-postgres", "sink-s3"] }
 
 # Or use individual crates directly
-faucet-source-rest = "0.1"
+faucet-source-rest = "1.0"
 
-faucet-source-mongodb = "0.1"
+faucet-source-mongodb = "1.0"
 ```
 
 ## Performance
@@ -519,7 +519,7 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-faucet-stream = "0.2"
+faucet-stream = "1.0"
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
 ```
@@ -745,7 +745,7 @@ Disable transforms you don't need:
 
 ```toml
 [dependencies]
-faucet-stream = { version = "0.2", default-features = false, features = ["transform-flatten"] }
+faucet-stream = { version = "1.0", default-features = false, features = ["transform-flatten"] }
 ```
 
 ### Schema inference
@@ -973,7 +973,7 @@ dependency you need is `faucet-core` — it re-exports everything required
 
 ```toml
 [dependencies]
-faucet-core = "0.1"
+faucet-core = "1.0"
 serde = { version = "1", features = ["derive"] }
 tokio = { version = "1", features = ["rt"] }
 ```

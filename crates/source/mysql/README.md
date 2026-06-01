@@ -11,13 +11,13 @@ Part of the [faucet-stream](https://github.com/PawanSikawat/faucet-stream) ecosy
 
 ```toml
 [dependencies]
-faucet-source-mysql = "0.1"
+faucet-source-mysql = "1.0"
 tokio = { version = "1", features = ["full"] }
 ```
 
 Or via the umbrella crate:
 ```toml
-faucet-stream = { version = "0.2", features = ["source-mysql"] }
+faucet-stream = { version = "1.0", features = ["source-mysql"] }
 ```
 
 ## Quick Start

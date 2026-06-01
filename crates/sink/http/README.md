@@ -11,14 +11,14 @@ Sends JSON records to an HTTP endpoint. Supports two batch modes: Individual (on
 
 ```toml
 [dependencies]
-faucet-sink-http = "0.1"
+faucet-sink-http = "1.0"
 tokio = { version = "1", features = ["full"] }
 ```
 
 Or via the umbrella crate:
 
 ```toml
-faucet-stream = { version = "0.2", features = ["sink-http"] }
+faucet-stream = { version = "1.0", features = ["sink-http"] }
 ```
 
 ## Quick Start

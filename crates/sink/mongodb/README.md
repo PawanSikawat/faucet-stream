@@ -11,14 +11,14 @@ Inserts JSON records into a MongoDB collection using `insert_many` for efficient
 
 ```toml
 [dependencies]
-faucet-sink-mongodb = "0.1"
+faucet-sink-mongodb = "1.0"
 tokio = { version = "1", features = ["full"] }
 ```
 
 Or via the umbrella crate:
 
 ```toml
-faucet-stream = { version = "0.2", features = ["sink-mongodb"] }
+faucet-stream = { version = "1.0", features = ["sink-mongodb"] }
 ```
 
 ## Quick Start

@@ -11,14 +11,14 @@ Writes JSON records to Redis data structures: lists (`RPUSH`), streams (`XADD`),
 
 ```toml
 [dependencies]
-faucet-sink-redis = "0.1"
+faucet-sink-redis = "1.0"
 tokio = { version = "1", features = ["full"] }
 ```
 
 Or via the umbrella crate:
 
 ```toml
-faucet-stream = { version = "0.2", features = ["sink-redis"] }
+faucet-stream = { version = "1.0", features = ["sink-redis"] }
 ```
 
 ## Quick Start

@@ -10,19 +10,19 @@ Umbrella crate for the [faucet-stream](https://github.com/PawanSikawat/faucet-st
 ```toml
 [dependencies]
 # Default: REST source only
-faucet-stream = "0.2"
+faucet-stream = "1.0"
 
 # All sources
-faucet-stream = { version = "0.2", features = ["source"] }
+faucet-stream = { version = "1.0", features = ["source"] }
 
 # All sinks
-faucet-stream = { version = "0.2", features = ["sink"] }
+faucet-stream = { version = "1.0", features = ["sink"] }
 
 # Everything
-faucet-stream = { version = "0.2", features = ["full"] }
+faucet-stream = { version = "1.0", features = ["full"] }
 
 # Pick what you need
-faucet-stream = { version = "0.2", features = ["source-rest", "source-s3", "sink-postgres", "sink-jsonl"] }
+faucet-stream = { version = "1.0", features = ["source-rest", "source-s3", "sink-postgres", "sink-jsonl"] }
 ```
 
 ## Feature Flags
@@ -208,9 +208,9 @@ You can also depend on connector crates directly instead of using the umbrella:
 
 ```toml
 [dependencies]
-faucet-core = "0.1"
-faucet-source-rest = "0.1"
-faucet-sink-postgres = "0.1"
+faucet-core = "1.0"
+faucet-source-rest = "1.0"
+faucet-sink-postgres = "1.0"
 ```
 
 This gives finer control over dependencies and compile times.

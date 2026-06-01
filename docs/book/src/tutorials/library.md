@@ -8,7 +8,7 @@ ability to build a `Source` or `Sink` from your own code.
 
 ```toml
 [dependencies]
-faucet-stream = { version = "0.2", features = ["source-rest", "sink-bigquery"] }
+faucet-stream = { version = "1.0", features = ["source-rest", "sink-bigquery"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 ```
 

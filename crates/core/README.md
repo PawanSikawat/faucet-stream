@@ -11,7 +11,7 @@ This is the foundation crate that all faucet source and sink connectors depend o
 
 ```toml
 [dependencies]
-faucet-core = "0.1"
+faucet-core = "1.0"
 tokio = { version = "1", features = ["rt"] }
 ```
 

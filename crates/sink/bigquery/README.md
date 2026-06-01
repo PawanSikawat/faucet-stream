@@ -13,14 +13,14 @@ Writes JSON records to a BigQuery table using the `tabledata.insertAll` streamin
 
 ```toml
 [dependencies]
-faucet-sink-bigquery = "0.1"
+faucet-sink-bigquery = "1.0"
 tokio = { version = "1", features = ["full"] }
 ```
 
 Or via the umbrella crate:
 
 ```toml
-faucet-stream = { version = "0.2", features = ["sink-bigquery"] }
+faucet-stream = { version = "1.0", features = ["sink-bigquery"] }
 ```
 
 ## Quick Start

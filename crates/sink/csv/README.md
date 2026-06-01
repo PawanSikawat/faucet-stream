@@ -11,14 +11,14 @@ Writes JSON records to a CSV file. Column order is the union of keys across the 
 
 ```toml
 [dependencies]
-faucet-sink-csv = "0.1"
+faucet-sink-csv = "1.0"
 tokio = { version = "1", features = ["full"] }
 ```
 
 Or via the umbrella crate:
 
 ```toml
-faucet-stream = { version = "0.2", features = ["sink-csv"] }
+faucet-stream = { version = "1.0", features = ["sink-csv"] }
 ```
 
 ## Quick Start

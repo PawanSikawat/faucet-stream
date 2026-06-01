@@ -13,14 +13,14 @@ Writes JSON records to a PostgreSQL table using either JSONB column mode (storin
 
 ```toml
 [dependencies]
-faucet-sink-postgres = "0.1"
+faucet-sink-postgres = "1.0"
 tokio = { version = "1", features = ["full"] }
 ```
 
 Or via the umbrella crate:
 
 ```toml
-faucet-stream = { version = "0.2", features = ["sink-postgres"] }
+faucet-stream = { version = "1.0", features = ["sink-postgres"] }
 ```
 
 ## Quick Start

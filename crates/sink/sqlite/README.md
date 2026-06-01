@@ -13,14 +13,14 @@ Writes JSON records to a SQLite table using either JSON column mode (storing eac
 
 ```toml
 [dependencies]
-faucet-sink-sqlite = "0.1"
+faucet-sink-sqlite = "1.0"
 tokio = { version = "1", features = ["full"] }
 ```
 
 Or via the umbrella crate:
 
 ```toml
-faucet-stream = { version = "0.2", features = ["sink-sqlite"] }
+faucet-stream = { version = "1.0", features = ["sink-sqlite"] }
 ```
 
 ## Quick Start

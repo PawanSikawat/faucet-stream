@@ -10,7 +10,7 @@ the `compression` feature, then set a `compression:` field on the connector.
 cargo install faucet-cli --features compression
 
 # Library (umbrella) — activates compression on whichever file connectors you've enabled
-faucet-stream = { version = "0.2", features = ["sink-jsonl", "source-csv", "compression"] }
+faucet-stream = { version = "1.0", features = ["sink-jsonl", "source-csv", "compression"] }
 ```
 
 The `compression` aggregate feature forwards to whichever of the supported

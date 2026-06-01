@@ -11,14 +11,14 @@ Writes JSON records to S3 as JSON Lines (NDJSON) files. Each file is keyed with 
 
 ```toml
 [dependencies]
-faucet-sink-s3 = "0.1"
+faucet-sink-s3 = "1.0"
 tokio = { version = "1", features = ["full"] }
 ```
 
 Or via the umbrella crate:
 
 ```toml
-faucet-stream = { version = "0.2", features = ["sink-s3"] }
+faucet-stream = { version = "1.0", features = ["sink-s3"] }
 ```
 
 ## Quick Start

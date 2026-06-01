@@ -31,13 +31,13 @@ enable the connectors you need:
 ```toml
 [dependencies]
 # Default features include the REST source only.
-faucet-stream = "0.2"
+faucet-stream = "1.0"
 
 # Or enable specific connectors:
-faucet-stream = { version = "0.2", features = ["source-rest", "sink-postgres", "sink-s3"] }
+faucet-stream = { version = "1.0", features = ["source-rest", "sink-postgres", "sink-s3"] }
 
 # Or everything:
-faucet-stream = { version = "0.2", features = ["full"] }
+faucet-stream = { version = "1.0", features = ["full"] }
 ```
 
 Feature groups: `source` (all sources), `sink` (all sinks), `state` (all

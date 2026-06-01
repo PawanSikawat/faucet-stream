@@ -13,13 +13,13 @@ Part of the [faucet-stream](https://github.com/PawanSikawat/faucet-stream) ecosy
 
 ```toml
 [dependencies]
-faucet-source-websocket = "0.1"
+faucet-source-websocket = "1.0"
 tokio = { version = "1", features = ["full"] }
 ```
 
 Or via the umbrella crate:
 ```toml
-faucet-stream = { version = "0.2", features = ["source-websocket"] }
+faucet-stream = { version = "1.0", features = ["source-websocket"] }
 ```
 
 ## Quick Start — Binance trade stream

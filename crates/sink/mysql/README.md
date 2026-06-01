@@ -13,14 +13,14 @@ Writes JSON records to a MySQL table using either JSON column mode (storing each
 
 ```toml
 [dependencies]
-faucet-sink-mysql = "0.1"
+faucet-sink-mysql = "1.0"
 tokio = { version = "1", features = ["full"] }
 ```
 
 Or via the umbrella crate:
 
 ```toml
-faucet-stream = { version = "0.2", features = ["sink-mysql"] }
+faucet-stream = { version = "1.0", features = ["sink-mysql"] }
 ```
 
 ## Quick Start

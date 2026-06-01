@@ -11,14 +11,14 @@ Writes JSON records to a file in [JSON Lines](https://jsonlines.org/) format (on
 
 ```toml
 [dependencies]
-faucet-sink-jsonl = "0.1"
+faucet-sink-jsonl = "1.0"
 tokio = { version = "1", features = ["full"] }
 ```
 
 Or via the umbrella crate:
 
 ```toml
-faucet-stream = { version = "0.2", features = ["sink-jsonl"] }
+faucet-stream = { version = "1.0", features = ["sink-jsonl"] }
 ```
 
 ## Quick Start

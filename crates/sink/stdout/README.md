@@ -6,15 +6,15 @@ Stdout/stderr sink for the [faucet-stream](https://crates.io/crates/faucet-strea
 
 ```toml
 [dependencies]
-faucet-core = "0.2"
-faucet-sink-stdout = "0.2"
+faucet-core = "1.0"
+faucet-sink-stdout = "1.0"
 ```
 
 Or via the umbrella crate with the `sink-stdout` feature:
 
 ```toml
 [dependencies]
-faucet-stream = { version = "0.2", features = ["sink-stdout"] }
+faucet-stream = { version = "1.0", features = ["sink-stdout"] }
 ```
 
 ## Usage

@@ -6,8 +6,8 @@ Redis-backed [`StateStore`](https://docs.rs/faucet-core/latest/faucet_core/state
 
 ```toml
 [dependencies]
-faucet-core = "0.2"
-faucet-state-redis = "0.2"
+faucet-core = "1.0"
+faucet-state-redis = "1.0"
 ```
 
 ## Usage

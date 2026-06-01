@@ -11,13 +11,13 @@ Part of the [faucet-stream](https://github.com/PawanSikawat/faucet-stream) ecosy
 
 ```toml
 [dependencies]
-faucet-source-s3 = "0.1"
+faucet-source-s3 = "1.0"
 tokio = { version = "1", features = ["full"] }
 ```
 
 Or via the umbrella crate:
 ```toml
-faucet-stream = { version = "0.2", features = ["source-s3"] }
+faucet-stream = { version = "1.0", features = ["source-s3"] }
 ```
 
 ## Quick Start

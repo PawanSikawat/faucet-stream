@@ -11,14 +11,14 @@ Writes JSON records to a Snowflake table using the Snowflake SQL REST API. Suppo
 
 ```toml
 [dependencies]
-faucet-sink-snowflake = "0.1"
+faucet-sink-snowflake = "1.0"
 tokio = { version = "1", features = ["full"] }
 ```
 
 Or via the umbrella crate:
 
 ```toml
-faucet-stream = { version = "0.2", features = ["sink-snowflake"] }
+faucet-stream = { version = "1.0", features = ["sink-snowflake"] }
 ```
 
 ## Quick Start
