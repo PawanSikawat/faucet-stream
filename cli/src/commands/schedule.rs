@@ -281,6 +281,15 @@ async fn run_loop(
         "scheduler started (Ctrl-C / SIGTERM to stop)"
     );
 
+    // Register HELP text and pre-emit the two run-state gauges at 0 so both
+    // series exist in `/metrics` from t=0 — the `metrics` exporter only renders
+    // a series after its first emission, and these gauges are otherwise first
+    // touched mid/post-run, leaving a pre-first-run scrape blind to them
+    // (#146 R NIT).
+    m::describe();
+    m::in_flight(&pipeline_name, 0);
+    m::consecutive_failures(&pipeline_name, 0);
+
     loop {
         let now = Utc::now();
 
@@ -319,6 +328,10 @@ async fn run_loop(
                 }
                 TickAction::ForbidAbort => {
                     m::overlap(&pipeline_name, "forbid");
+                    // A prior `Dispatch` set the in-flight gauge to 1; reset it
+                    // before we bail so `/metrics` doesn't read a stuck 1 after
+                    // the scheduler exits (#146 R LOW).
+                    m::in_flight(&pipeline_name, 0);
                     return Err(CliError::ScheduleOverlapForbidden);
                 }
             }
