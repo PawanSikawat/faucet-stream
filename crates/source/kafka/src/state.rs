@@ -102,14 +102,16 @@ impl Bookmark {
 
 /// Generate the `state_key` for a `(group_id, topics)` pair.
 ///
-/// Topics are sorted before joining so the key is stable regardless of
-/// config ordering. Allowed characters per
-/// [`faucet_core::state::validate_state_key`] are `[A-Za-z0-9_:.-]`, so we
-/// replace `,` with `.` when joining.
+/// Topics are sorted before joining so the key is stable regardless of config
+/// ordering. Topics are joined with `:` rather than `.`: a Kafka topic name may
+/// legally contain `.` (e.g. `orders.eu`), so a `.` join made `["a.b","c"]` and
+/// `["a","b.c"]` collide on a shared `group_id`. `:` is **not** a legal Kafka
+/// topic character, so it is an unambiguous separator — and it is permitted in a
+/// state key per [`faucet_core::state::validate_state_key`] (`[A-Za-z0-9_:.-]`).
 pub fn state_key(group_id: &str, topics: &[String]) -> String {
     let mut sorted = topics.to_vec();
     sorted.sort();
-    format!("kafka:{group_id}:{}", sorted.join("."))
+    format!("kafka:{group_id}:{}", sorted.join(":"))
 }
 
 #[cfg(test)]
@@ -158,13 +160,23 @@ mod tests {
     fn state_key_sorts_topics() {
         assert_eq!(
             state_key("g1", &["beta".into(), "alpha".into()]),
-            "kafka:g1:alpha.beta"
+            "kafka:g1:alpha:beta"
         );
     }
 
     #[test]
     fn state_key_single_topic() {
         assert_eq!(state_key("g1", &["only".into()]), "kafka:g1:only");
+    }
+
+    #[test]
+    fn state_key_distinguishes_topic_sets_containing_dots() {
+        // Topic names legally contain dots. Joining with '.' made
+        // ["a.b","c"] and ["a","b.c"] collide on a shared group_id, so two
+        // distinct subscriptions would clobber each other's bookmark.
+        let k1 = state_key("g", &["a.b".into(), "c".into()]);
+        let k2 = state_key("g", &["a".into(), "b.c".into()]);
+        assert_ne!(k1, k2, "topic sets with dots must not produce the same key");
     }
 
     #[test]
