@@ -287,6 +287,69 @@ impl faucet_core::Sink for HttpSink {
             }
         }
     }
+
+    /// Report per-row outcomes so the DLQ router dead-letters only the records
+    /// that genuinely failed.
+    ///
+    /// In **Individual** mode every record is an independent POST, so each
+    /// record's success/failure is attributable: we attempt *all* of them
+    /// (unlike `write_batch`, whose `?` short-circuits on the first failure)
+    /// and return one `Ok`/`Err` per record. Without this
+    /// override the default impl would surface the first error as an outer
+    /// `Err`, and under `on_batch_error: dlq_all` the pipeline would route the
+    /// *entire* batch to the DLQ — duplicating the already-delivered rows
+    /// against a non-idempotent endpoint (#146 M14).
+    ///
+    /// In **Array** mode a single array POST cannot attribute a failure to
+    /// specific rows, so it stays all-or-nothing (matches the default trait
+    /// impl): the whole batch surfaces as an outer `Err` and the router's
+    /// `on_batch_error` policy decides whether to abort or dead-letter it.
+    async fn write_batch_partial(
+        &self,
+        records: &[Value],
+    ) -> Result<Vec<faucet_core::RowOutcome>, FaucetError> {
+        if records.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let auth = self.resolve_auth().await?;
+
+        match &self.config.batch_mode {
+            HttpBatchMode::Individual => {
+                let concurrency = self.config.concurrency.max(1);
+                let auth = &auth;
+                // Attempt every record (failures don't short-circuit the
+                // siblings) with at most `concurrency` POSTs in flight. Tag each
+                // outcome with its index so we can restore record order after
+                // the unordered completion. The per-record futures are built
+                // eagerly (lazy, not yet polled) so `buffer_unordered` drives a
+                // single concrete future type.
+                let pending: Vec<_> =
+                    records
+                        .iter()
+                        .enumerate()
+                        .map(|(idx, record)| async move {
+                            (idx, self.send_with_retry(record, auth).await)
+                        })
+                        .collect();
+                let mut indexed: Vec<(usize, faucet_core::RowOutcome)> =
+                    futures::stream::iter(pending)
+                        .buffer_unordered(concurrency)
+                        .collect()
+                        .await;
+                indexed.sort_by_key(|(idx, _)| *idx);
+                tracing::debug!(
+                    records = records.len(),
+                    "HTTP individual partial batch written"
+                );
+                Ok(indexed.into_iter().map(|(_, outcome)| outcome).collect())
+            }
+            HttpBatchMode::Array => {
+                self.write_batch(records).await?;
+                Ok(records.iter().map(|_| Ok(())).collect())
+            }
+        }
+    }
 }
 
 #[cfg(test)]
