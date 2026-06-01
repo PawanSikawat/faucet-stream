@@ -184,7 +184,7 @@ impl SnowflakeSink {
                     "Snowflake returned HTTP 202 without a statementHandle to poll".into(),
                 )
             })?;
-            return self.poll_until_complete(&handle, &auth, token_type).await;
+            return self.poll_until_complete(&handle).await;
         }
 
         check_statement_code(&sf_resp)
@@ -192,20 +192,21 @@ impl SnowflakeSink {
 
     /// Poll `GET /api/v2/statements/{handle}` until the statement finishes
     /// executing (HTTP 200 + code `090001`), bounded by `poll_timeout`.
-    async fn poll_until_complete(
-        &self,
-        handle: &str,
-        auth: &str,
-        token_type: &'static str,
-    ) -> Result<(), FaucetError> {
+    async fn poll_until_complete(&self, handle: &str) -> Result<(), FaucetError> {
         let url = format!("{}/{}", self.api_url(), handle);
         let poll_timeout = self.config.poll_timeout;
         let started = std::time::Instant::now();
         loop {
+            // Re-resolve auth every iteration: a long-running async statement can
+            // outlive a short-lived OAuth token, so we re-ask the (single-flight,
+            // cached) provider for a current token rather than reusing the one
+            // minted at submit time — otherwise the poll 401s mid-run after a
+            // rotation (#146).
+            let (auth, token_type) = self.auth_header().await?;
             let resp = self
                 .client
                 .get(&url)
-                .header("Authorization", auth)
+                .header("Authorization", &auth)
                 .header("Accept", "application/json")
                 .header("X-Snowflake-Authorization-Token-Type", token_type)
                 .send()

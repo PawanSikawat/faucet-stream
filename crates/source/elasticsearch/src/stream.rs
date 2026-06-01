@@ -25,12 +25,15 @@ pub struct ElasticsearchSource {
 
 impl ElasticsearchSource {
     /// Create a new Elasticsearch source from the given configuration.
-    pub fn new(config: ElasticsearchSourceConfig) -> Self {
-        Self {
+    /// Construction does no I/O; it fails only on an invalid config (an
+    /// out-of-range `batch_size`).
+    pub fn new(config: ElasticsearchSourceConfig) -> Result<Self, FaucetError> {
+        faucet_core::validate_batch_size(config.batch_size)?;
+        Ok(Self {
             config,
             client: Client::new(),
             auth_provider: None,
-        }
+        })
     }
 
     /// Attach a shared [`AuthProvider`](faucet_core::AuthProvider). When set,
@@ -483,5 +486,20 @@ fn apply_auth_to(
         ElasticsearchAuth::Basic { username, password } => req.basic_auth(username, Some(password)),
         ElasticsearchAuth::Bearer { token } => req.bearer_auth(token),
         ElasticsearchAuth::ApiKey { key } => req.header("Authorization", format!("ApiKey {key}")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn new_rejects_out_of_range_batch_size() {
+        let mut config = ElasticsearchSourceConfig::new("http://localhost:9200", "idx");
+        config.batch_size = faucet_core::MAX_BATCH_SIZE + 1;
+        match ElasticsearchSource::new(config) {
+            Err(FaucetError::Config(m)) => assert!(m.contains("batch_size"), "got: {m}"),
+            _ => panic!("expected a batch_size Config error"),
+        }
     }
 }

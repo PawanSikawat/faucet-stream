@@ -55,7 +55,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 | `table_name` | `String` | *(required)* | Target table name |
 | `column_mapping` | `SqliteColumnMapping` | `Json { column: "data" }` | How to map JSON records to table columns (see below) |
 | `batch_size` | `usize` | `1000` | Maximum number of rows per multi-row INSERT. See [Streaming and batching](#streaming-and-batching) below |
-| `max_connections` | `u32` | `5` | Maximum number of connections in the connection pool |
+| `max_connections` | `u32` | `1` | Maximum number of connections in the connection pool. SQLite serializes writers at the file level, so one writer is the safe default — a multi-connection pool against a single file races for the write lock and risks `SQLITE_BUSY`. The pool opens connections in WAL mode with a 5s `busy_timeout`, so raising this lets extra connections read concurrently with the single writer. |
 
 ### Streaming and batching
 
@@ -247,7 +247,7 @@ let sink = SqliteSink::new(config).await?;
 
 ## How It Works
 
-- A connection pool is created in `SqliteSink::new()` using `sqlx::SqlitePool` with the configured `max_connections`.
+- A connection pool is created in `SqliteSink::new()` using `sqlx::SqlitePool` with the configured `max_connections` (default `1`). Each connection is opened in WAL journal mode (`journal_mode = WAL`) with a 5-second `busy_timeout` and `create_if_missing`, so a writer and readers can proceed concurrently and lock contention waits-and-retries instead of failing immediately with `SQLITE_BUSY`. WAL on a `sqlite::memory:` database is a harmless no-op.
 - `write_batch()` slices the input into `batch_size`-row chunks (or forwards the whole slice when `batch_size = 0`). Each chunk is inserted using a single multi-row INSERT statement wrapped in a `BEGIN`/`COMMIT` transaction for write performance.
 - In JSON mode, each record is serialized to a JSON string and inserted as `INSERT INTO t (col) VALUES (?), (?), ...`.
 - In AutoMap mode, column names are discovered using `PRAGMA table_info(table_name)`. A multi-row INSERT is built dynamically. Column values are bound as **native SQLite types** — strings as `TEXT`, JSON numbers as `INTEGER`/`REAL`, booleans as `INTEGER` 0/1 — so column affinity and typed reads round-trip correctly. Arrays and objects (which have no scalar SQL representation) are bound as their JSON text. The INSERT column set is the **union** of record keys across the batch (in table order), so a field present only in a later record is still written; a row missing a column binds SQL `NULL`.

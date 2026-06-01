@@ -28,7 +28,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 password: std::env::var("ES_PASS")?,
             })
             .max_pages(500),
-    );
+    )?;
 
     let sink = RedisSink::new(
         RedisSinkConfig::new(

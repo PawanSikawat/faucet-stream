@@ -36,10 +36,12 @@ your database's connection limit.
 
 ## Retries
 
-HTTP-based sources retry with exponential backoff + jitter on retriable failures;
-the REST source additionally honors `429` / `Retry-After`. Tune `max_retries` and
-`retry_backoff` per connector. A permanently throttled endpoint surfaces a
-`RateLimited` error rather than hanging.
+HTTP-based sources retry with exponential backoff + jitter on retriable failures.
+The backoff is capped at 60s and its jitter is decorrelated across concurrent
+retries (so a fleet of matrix rows doesn't re-align into a thundering herd). The
+REST source additionally honors `429` / `Retry-After` (delta-seconds **or** an
+RFC 7231 HTTP-date). Tune `max_retries` and `retry_backoff` per connector. A
+permanently throttled endpoint surfaces a `RateLimited` error rather than hanging.
 
 ## Choosing values
 

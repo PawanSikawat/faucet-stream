@@ -27,7 +27,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             },
         )
         .max_records(100_000),
-    );
+    )?;
 
     let sink = MysqlSink::new(
         MysqlSinkConfig::new("mysql://user:pass@localhost/archive", "events_raw")

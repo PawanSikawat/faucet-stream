@@ -83,15 +83,17 @@ pub struct SnowflakeSource {
 }
 
 impl SnowflakeSource {
-    /// Create a new Snowflake source. Initialises the underlying HTTP
-    /// client; does not perform any I/O.
-    pub fn new(config: SnowflakeSourceConfig) -> Self {
-        Self {
+    /// Create a new Snowflake source. Initialises the underlying HTTP client and
+    /// does no I/O; it fails only on an invalid config (an out-of-range
+    /// `batch_size`).
+    pub fn new(config: SnowflakeSourceConfig) -> Result<Self, FaucetError> {
+        faucet_core::validate_batch_size(config.batch_size)?;
+        Ok(Self {
             config,
             client: Client::new(),
             endpoint_base: None,
             auth_provider: None,
-        }
+        })
     }
 
     /// Attach a shared [`AuthProvider`](faucet_core::AuthProvider). When set,
@@ -589,8 +591,18 @@ mod tests {
     }
 
     #[test]
+    fn new_rejects_out_of_range_batch_size() {
+        let mut config = cfg();
+        config.batch_size = faucet_core::MAX_BATCH_SIZE + 1;
+        match SnowflakeSource::new(config) {
+            Err(FaucetError::Config(m)) => assert!(m.contains("batch_size"), "got: {m}"),
+            _ => panic!("expected a batch_size Config error"),
+        }
+    }
+
+    #[test]
     fn statements_url_uses_account_when_no_override() {
-        let src = SnowflakeSource::new(cfg());
+        let src = SnowflakeSource::new(cfg()).unwrap();
         assert_eq!(
             src.statements_url(),
             "https://xy12345.us-east-1.snowflakecomputing.com/api/v2/statements"
@@ -599,7 +611,9 @@ mod tests {
 
     #[test]
     fn statements_url_uses_endpoint_override() {
-        let src = SnowflakeSource::new(cfg()).with_endpoint_base("http://127.0.0.1:9999");
+        let src = SnowflakeSource::new(cfg())
+            .unwrap()
+            .with_endpoint_base("http://127.0.0.1:9999");
         assert_eq!(
             src.statements_url(),
             "http://127.0.0.1:9999/api/v2/statements"
@@ -608,7 +622,9 @@ mod tests {
 
     #[test]
     fn partition_url_includes_handle_and_index() {
-        let src = SnowflakeSource::new(cfg()).with_endpoint_base("http://srv");
+        let src = SnowflakeSource::new(cfg())
+            .unwrap()
+            .with_endpoint_base("http://srv");
         assert_eq!(
             src.partition_url("abc-123", 2),
             "http://srv/api/v2/statements/abc-123?partition=2"
@@ -617,7 +633,7 @@ mod tests {
 
     #[test]
     fn build_request_body_minimal() {
-        let src = SnowflakeSource::new(cfg());
+        let src = SnowflakeSource::new(cfg()).unwrap();
         let body = src.build_request_body(&[]);
         assert_eq!(body["statement"], "SELECT 1");
         assert_eq!(body["timeout"], 60);
@@ -632,7 +648,7 @@ mod tests {
     fn build_request_body_includes_role_when_set() {
         let mut c = cfg();
         c.role = Some("ANALYST".into());
-        let src = SnowflakeSource::new(c);
+        let src = SnowflakeSource::new(c).unwrap();
         let body = src.build_request_body(&[]);
         assert_eq!(body["role"], "ANALYST");
     }
@@ -641,7 +657,7 @@ mod tests {
     fn build_request_body_infers_binding_types() {
         // #78/#34: types are inferred from the JSON value (value still a
         // string), so numeric/boolean binds compare against typed columns.
-        let src = SnowflakeSource::new(cfg());
+        let src = SnowflakeSource::new(cfg()).unwrap();
         let body = src.build_request_body(&[
             Value::String("alice".into()),
             json!(42),
@@ -664,7 +680,7 @@ mod tests {
         // Regression for #78/#18: a NULL must occupy its positional slot as an
         // explicit null-valued binding, not be skipped (which would shift "42"
         // onto marker 1 and leave marker 2 unbound).
-        let src = SnowflakeSource::new(cfg());
+        let src = SnowflakeSource::new(cfg()).unwrap();
         let body = src.build_request_body(&[Value::Null, json!(42)]);
         let b = &body["bindings"];
         assert_eq!(b["1"]["type"], "TEXT");
@@ -678,7 +694,7 @@ mod tests {
 
     #[test]
     fn resolve_query_with_no_context_returns_input() {
-        let src = SnowflakeSource::new(cfg().with_params(vec![json!(7)]));
+        let src = SnowflakeSource::new(cfg().with_params(vec![json!(7)])).unwrap();
         let (q, binds) = src.resolve_query(&HashMap::new());
         assert_eq!(q, "SELECT 1");
         assert_eq!(binds, vec![json!(7)]);
@@ -688,7 +704,7 @@ mod tests {
     fn resolve_query_substitutes_context_with_question_mark_markers() {
         let mut c = cfg();
         c.query = "SELECT * FROM t WHERE id = {parent.id}".into();
-        let src = SnowflakeSource::new(c);
+        let src = SnowflakeSource::new(c).unwrap();
         let mut ctx = HashMap::new();
         ctx.insert("parent.id".to_string(), json!(7));
         let (q, binds) = src.resolve_query(&ctx);

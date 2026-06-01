@@ -41,6 +41,7 @@ impl BigQuerySource {
     /// for an OAuth token. Returns [`FaucetError::Auth`] on credential
     /// failures.
     pub async fn new(config: BigQuerySourceConfig) -> Result<Self, FaucetError> {
+        faucet_core::validate_batch_size(config.batch_size)?;
         let client = build_client(&config.auth).await?;
         Ok(Self { config, client })
     }
@@ -474,6 +475,22 @@ mod tests {
         assert!(req.use_legacy_sql);
         assert_eq!(req.location.as_deref(), Some("EU"));
         assert_eq!(req.max_results, Some(250));
+    }
+
+    #[tokio::test]
+    async fn new_rejects_out_of_range_batch_size() {
+        let mut config = BigQuerySourceConfig::new(
+            "my-project",
+            BigQueryCredentials::ApplicationDefault,
+            "SELECT id FROM events",
+        );
+        config.batch_size = faucet_core::MAX_BATCH_SIZE + 1;
+        match BigQuerySource::new(config).await {
+            Err(faucet_core::FaucetError::Config(m)) => {
+                assert!(m.contains("batch_size"), "got: {m}")
+            }
+            _ => panic!("expected a batch_size Config error"),
+        }
     }
 
     #[test]

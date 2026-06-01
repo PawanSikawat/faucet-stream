@@ -84,7 +84,7 @@ async fn keys_stream_pages_chunks_into_batch_sized_pages() {
         },
     )
     .with_batch_size(1000);
-    let source = RedisSource::new(config);
+    let source = RedisSource::new(config).unwrap();
 
     let ctx: HashMap<String, serde_json::Value> = HashMap::new();
     let mut pages = source.stream_pages(&ctx, 1000);
@@ -127,7 +127,7 @@ async fn keys_stream_pages_batch_size_zero_emits_single_page() {
         },
     )
     .with_batch_size(0);
-    let source = RedisSource::new(config);
+    let source = RedisSource::new(config).unwrap();
 
     let ctx: HashMap<String, serde_json::Value> = HashMap::new();
     let mut pages = source.stream_pages(&ctx, 0);
@@ -155,7 +155,7 @@ async fn keys_stream_pages_empty_pattern_yields_no_pages() {
         },
     )
     .with_batch_size(DEFAULT_BATCH_SIZE);
-    let source = RedisSource::new(config);
+    let source = RedisSource::new(config).unwrap();
 
     let ctx: HashMap<String, serde_json::Value> = HashMap::new();
     let mut pages = source.stream_pages(&ctx, DEFAULT_BATCH_SIZE);
@@ -183,7 +183,7 @@ async fn keys_stream_pages_preserves_key_value_pairs() {
         },
     )
     .with_batch_size(2);
-    let source = RedisSource::new(config);
+    let source = RedisSource::new(config).unwrap();
 
     let ctx: HashMap<String, serde_json::Value> = HashMap::new();
     let mut pages = source.stream_pages(&ctx, 2);
@@ -231,7 +231,7 @@ async fn stream_stream_pages_chunks_into_batch_sized_pages() {
         },
     )
     .with_batch_size(1000);
-    let source = RedisSource::new(config);
+    let source = RedisSource::new(config).unwrap();
 
     let ctx: HashMap<String, serde_json::Value> = HashMap::new();
     let mut pages = source.stream_pages(&ctx, 1000);
@@ -262,7 +262,7 @@ async fn stream_stream_pages_partial_final_page() {
         },
     )
     .with_batch_size(1000);
-    let source = RedisSource::new(config);
+    let source = RedisSource::new(config).unwrap();
 
     let ctx: HashMap<String, serde_json::Value> = HashMap::new();
     let mut pages = source.stream_pages(&ctx, 1000);
@@ -289,7 +289,7 @@ async fn stream_stream_pages_batch_size_zero_emits_single_page() {
         },
     )
     .with_batch_size(0);
-    let source = RedisSource::new(config);
+    let source = RedisSource::new(config).unwrap();
 
     let ctx: HashMap<String, serde_json::Value> = HashMap::new();
     let mut pages = source.stream_pages(&ctx, 0);
@@ -320,7 +320,7 @@ async fn stream_stream_pages_empty_stream_yields_no_pages() {
         },
     )
     .with_batch_size(DEFAULT_BATCH_SIZE);
-    let source = RedisSource::new(config);
+    let source = RedisSource::new(config).unwrap();
 
     let ctx: HashMap<String, serde_json::Value> = HashMap::new();
     let mut pages = source.stream_pages(&ctx, DEFAULT_BATCH_SIZE);
@@ -351,7 +351,7 @@ async fn stream_stream_pages_preserves_entry_ids_and_fields() {
         },
     )
     .with_batch_size(2);
-    let source = RedisSource::new(config);
+    let source = RedisSource::new(config).unwrap();
 
     let ctx: HashMap<String, serde_json::Value> = HashMap::new();
     let mut pages = source.stream_pages(&ctx, 2);
@@ -397,7 +397,7 @@ async fn list_stream_pages_chunks_into_batch_sized_pages() {
         },
     )
     .with_batch_size(1000);
-    let source = RedisSource::new(config);
+    let source = RedisSource::new(config).unwrap();
 
     let ctx: HashMap<String, serde_json::Value> = HashMap::new();
     let mut pages = source.stream_pages(&ctx, 1000);
@@ -423,7 +423,7 @@ async fn list_stream_pages_partial_final_page() {
         },
     )
     .with_batch_size(1000);
-    let source = RedisSource::new(config);
+    let source = RedisSource::new(config).unwrap();
 
     let ctx: HashMap<String, serde_json::Value> = HashMap::new();
     let mut pages = source.stream_pages(&ctx, 1000);
@@ -447,7 +447,7 @@ async fn list_stream_pages_batch_size_zero_emits_single_page() {
         },
     )
     .with_batch_size(0);
-    let source = RedisSource::new(config);
+    let source = RedisSource::new(config).unwrap();
 
     let ctx: HashMap<String, serde_json::Value> = HashMap::new();
     let mut pages = source.stream_pages(&ctx, 0);
@@ -475,7 +475,7 @@ async fn list_stream_pages_empty_list_yields_no_pages() {
         },
     )
     .with_batch_size(DEFAULT_BATCH_SIZE);
-    let source = RedisSource::new(config);
+    let source = RedisSource::new(config).unwrap();
 
     let ctx: HashMap<String, serde_json::Value> = HashMap::new();
     let mut pages = source.stream_pages(&ctx, DEFAULT_BATCH_SIZE);
@@ -505,7 +505,7 @@ async fn list_stream_pages_preserves_element_order() {
         },
     )
     .with_batch_size(2);
-    let source = RedisSource::new(config);
+    let source = RedisSource::new(config).unwrap();
 
     let ctx: HashMap<String, serde_json::Value> = HashMap::new();
     let mut pages = source.stream_pages(&ctx, 2);
@@ -544,7 +544,7 @@ async fn keys_first_page_completes_without_parsing_full_keyspace() {
         },
     )
     .with_batch_size(1000);
-    let source = RedisSource::new(config_full);
+    let source = RedisSource::new(config_full).unwrap();
     let start = Instant::now();
     let mut pages = source.stream_pages(&ctx, 1000);
     while let Some(page) = pages.next().await {
@@ -562,7 +562,7 @@ async fn keys_first_page_completes_without_parsing_full_keyspace() {
         },
     )
     .with_batch_size(1000);
-    let source = RedisSource::new(config_first);
+    let source = RedisSource::new(config_first).unwrap();
     let start = Instant::now();
     let mut pages = source.stream_pages(&ctx, 1000);
     let first = pages

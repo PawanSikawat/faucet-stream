@@ -19,6 +19,7 @@ pub struct MongoSink {
 impl MongoSink {
     /// Create a new MongoDB sink, establishing the client connection.
     pub async fn new(config: MongoSinkConfig) -> Result<Self, FaucetError> {
+        faucet_core::validate_batch_size(config.batch_size)?;
         let client = Client::with_uri_str(&config.connection_uri)
             .await
             .map_err(|e| FaucetError::Config(format!("MongoDB connection failed: {e}")))?;
@@ -176,5 +177,17 @@ mod tests {
         let val = Value::Null;
         let result = MongoSink::value_to_document(&val);
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn new_rejects_out_of_range_batch_size() {
+        let mut config = MongoSinkConfig::new("mongodb://localhost:27017", "db", "c");
+        config.batch_size = faucet_core::MAX_BATCH_SIZE + 1;
+        match MongoSink::new(config).await {
+            Err(faucet_core::FaucetError::Config(m)) => {
+                assert!(m.contains("batch_size"), "got: {m}")
+            }
+            _ => panic!("expected a batch_size Config error"),
+        }
     }
 }

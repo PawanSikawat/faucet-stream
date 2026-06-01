@@ -19,6 +19,7 @@ impl RedisSink {
     ///
     /// This opens a multiplexed async connection to Redis immediately.
     pub async fn new(config: RedisSinkConfig) -> Result<Self, FaucetError> {
+        faucet_core::validate_batch_size(config.batch_size)?;
         let client = redis::Client::open(config.url.as_str())
             .map_err(|e| FaucetError::Config(format!("invalid Redis URL: {e}")))?;
 
@@ -206,5 +207,18 @@ mod tests {
         assert_eq!(fields.len(), 1);
         assert_eq!(fields[0].0, "data");
         assert_eq!(fields[0].1, r#"{"nested":true}"#);
+    }
+
+    #[tokio::test]
+    async fn new_rejects_out_of_range_batch_size() {
+        let mut config =
+            RedisSinkConfig::new("redis://localhost", RedisSinkType::List { key: "k".into() });
+        config.batch_size = faucet_core::MAX_BATCH_SIZE + 1;
+        match RedisSink::new(config).await {
+            Err(faucet_core::FaucetError::Config(m)) => {
+                assert!(m.contains("batch_size"), "got: {m}")
+            }
+            _ => panic!("expected a batch_size Config error"),
+        }
     }
 }

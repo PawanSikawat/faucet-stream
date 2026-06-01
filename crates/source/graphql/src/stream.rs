@@ -287,10 +287,14 @@ impl GraphqlStream {
         match &self.config.records_path {
             Some(path) => util::extract_records(body, Some(path)),
             None => {
-                // GraphQL-specific: return the `data` field as a single record.
+                // GraphQL-specific: return the `data` field as a single
+                // record. A `data` that is JSON null (or absent entirely)
+                // means there is nothing to extract — emit an empty page
+                // rather than forwarding a bogus null record to the sink
+                // (#146 LOW).
                 match body.get("data") {
+                    Some(Value::Null) | None => Ok(Vec::new()),
                     Some(data) => Ok(vec![data.clone()]),
-                    None => Ok(vec![body.clone()]),
                 }
             }
         }
@@ -491,5 +495,36 @@ mod tests {
         let records = stream.extract_records(&body).unwrap();
         assert_eq!(records.len(), 1);
         assert_eq!(records[0]["user"]["id"], 1);
+    }
+
+    #[test]
+    fn extract_records_without_path_null_data_yields_empty() {
+        // A response of `{"data": null}` must NOT emit a bogus null record:
+        // `data` being JSON null means there is nothing to extract, so the
+        // page is empty (#146 LOW).
+        let config =
+            GraphqlStreamConfig::new("https://api.example.com/graphql", "query { user { id } }");
+        let stream = GraphqlStream::new(config);
+        let body = json!({ "data": null });
+        let records = stream.extract_records(&body).unwrap();
+        assert!(
+            records.is_empty(),
+            "expected empty Vec for null `data`, got {records:?}"
+        );
+    }
+
+    #[test]
+    fn extract_records_without_path_absent_data_yields_empty() {
+        // No `data` field at all → nothing to extract → empty page (matches
+        // the null-data case rather than forwarding the whole body).
+        let config =
+            GraphqlStreamConfig::new("https://api.example.com/graphql", "query { user { id } }");
+        let stream = GraphqlStream::new(config);
+        let body = json!({ "extensions": { "foo": 1 } });
+        let records = stream.extract_records(&body).unwrap();
+        assert!(
+            records.is_empty(),
+            "expected empty Vec when `data` is absent, got {records:?}"
+        );
     }
 }

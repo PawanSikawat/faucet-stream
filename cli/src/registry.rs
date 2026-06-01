@@ -112,7 +112,7 @@ pub async fn build_source(
         #[cfg(feature = "source-redis")]
         "redis" => {
             let cfg = decode::<faucet_source_redis::RedisSourceConfig>("source", "redis", config)?;
-            Ok(Box::new(faucet_source_redis::RedisSource::new(cfg)))
+            Ok(Box::new(faucet_source_redis::RedisSource::new(cfg)?))
         }
         #[cfg(feature = "source-webhook")]
         "webhook" => {
@@ -145,7 +145,7 @@ pub async fn build_source(
                 "elasticsearch",
                 config,
             )?;
-            let mut s = faucet_source_elasticsearch::ElasticsearchSource::new(cfg);
+            let mut s = faucet_source_elasticsearch::ElasticsearchSource::new(cfg)?;
             if let Some(name) = &auth_ref {
                 s = s.with_auth_provider(auth_catalog::resolve(auth, name)?);
             }
@@ -185,7 +185,7 @@ pub async fn build_source(
                 "snowflake",
                 config,
             )?;
-            let mut s = faucet_source_snowflake::SnowflakeSource::new(cfg);
+            let mut s = faucet_source_snowflake::SnowflakeSource::new(cfg)?;
             if let Some(name) = &auth_ref {
                 s = s.with_auth_provider(auth_catalog::resolve(auth, name)?);
             }

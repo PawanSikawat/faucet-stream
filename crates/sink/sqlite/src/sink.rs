@@ -5,8 +5,10 @@ use async_trait::async_trait;
 use faucet_core::FaucetError;
 use faucet_core::util::quote_ident;
 use serde_json::Value;
-use sqlx::sqlite::SqlitePoolOptions;
+use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
 use sqlx::{Row, SqlitePool};
+use std::str::FromStr;
+use std::time::Duration;
 
 /// A sink that writes JSON records to a SQLite table.
 pub struct SqliteSink {
@@ -16,10 +18,24 @@ pub struct SqliteSink {
 
 impl SqliteSink {
     /// Create a new SQLite sink. Establishes a connection pool.
+    ///
+    /// The pool opens each connection with `journal_mode = WAL` and a 5-second
+    /// `busy_timeout`. WAL lets a writer and readers proceed concurrently
+    /// instead of locking each other out, and the busy timeout makes a
+    /// connection wait-and-retry for the write lock rather than failing
+    /// immediately with `SQLITE_BUSY` under contention. `create_if_missing`
+    /// preserves the previous behaviour of creating the database file on first
+    /// open. WAL on a `sqlite::memory:` database is a harmless no-op.
     pub async fn new(config: SqliteSinkConfig) -> Result<Self, FaucetError> {
+        let options = SqliteConnectOptions::from_str(&config.database_url)
+            .map_err(|e| FaucetError::Sink(format!("invalid SQLite database_url: {e}")))?
+            .create_if_missing(true)
+            .journal_mode(SqliteJournalMode::Wal)
+            .busy_timeout(Duration::from_secs(5));
+
         let pool = SqlitePoolOptions::new()
             .max_connections(config.max_connections)
-            .connect(&config.database_url)
+            .connect_with(options)
             .await
             .map_err(|e| FaucetError::Sink(format!("SQLite connection failed: {e}")))?;
 

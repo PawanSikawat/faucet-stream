@@ -154,7 +154,7 @@ async fn stream_pages_chunks_via_scroll() {
     mount_paged_responder(&server, PagedResponder::new(pages)).await;
 
     let config = ElasticsearchSourceConfig::new(server.uri(), "test").with_batch_size(1000);
-    let source = ElasticsearchSource::new(config);
+    let source = ElasticsearchSource::new(config).unwrap();
 
     let ctx: HashMap<String, Value> = HashMap::new();
     let mut pages = source.stream_pages(&ctx, 1000);
@@ -197,7 +197,7 @@ async fn stream_pages_partial_final_page() {
     mount_paged_responder(&server, PagedResponder::new(pages)).await;
 
     let config = ElasticsearchSourceConfig::new(server.uri(), "test").with_batch_size(1000);
-    let source = ElasticsearchSource::new(config);
+    let source = ElasticsearchSource::new(config).unwrap();
 
     let ctx: HashMap<String, Value> = HashMap::new();
     let mut pages = source.stream_pages(&ctx, 1000);
@@ -257,7 +257,7 @@ async fn stream_pages_batch_size_zero_uses_single_search_no_scroll() {
         .await;
 
     let config = ElasticsearchSourceConfig::new(server.uri(), "test").with_batch_size(0);
-    let source = ElasticsearchSource::new(config);
+    let source = ElasticsearchSource::new(config).unwrap();
 
     let ctx: HashMap<String, Value> = HashMap::new();
     let mut pages = source.stream_pages(&ctx, 0);
@@ -317,7 +317,7 @@ async fn fetch_all_with_batch_size_zero_returns_all_records() {
         .await;
 
     let config = ElasticsearchSourceConfig::new(server.uri(), "test").with_batch_size(0);
-    let source = ElasticsearchSource::new(config);
+    let source = ElasticsearchSource::new(config).unwrap();
     let records = source.fetch_all().await.unwrap();
     assert_eq!(records.len(), 3, "batch_size=0 must not send size=0");
 }
@@ -330,7 +330,7 @@ async fn stream_pages_empty_result_yields_no_pages() {
 
     let config =
         ElasticsearchSourceConfig::new(server.uri(), "test").with_batch_size(DEFAULT_BATCH_SIZE);
-    let source = ElasticsearchSource::new(config);
+    let source = ElasticsearchSource::new(config).unwrap();
 
     let ctx: HashMap<String, Value> = HashMap::new();
     let mut pages = source.stream_pages(&ctx, DEFAULT_BATCH_SIZE);
@@ -361,7 +361,7 @@ async fn stream_pages_preserves_doc_contents() {
     mount_paged_responder(&server, PagedResponder::new(pages)).await;
 
     let config = ElasticsearchSourceConfig::new(server.uri(), "test").with_batch_size(2);
-    let source = ElasticsearchSource::new(config);
+    let source = ElasticsearchSource::new(config).unwrap();
 
     let ctx: HashMap<String, Value> = HashMap::new();
     let mut pages = source.stream_pages(&ctx, 2);
@@ -404,7 +404,7 @@ async fn stream_pages_first_page_arrives_before_full_scroll_completes() {
     mount_paged_responder(&server, responder).await;
 
     let config = ElasticsearchSourceConfig::new(server.uri(), "test").with_batch_size(100);
-    let source = ElasticsearchSource::new(config);
+    let source = ElasticsearchSource::new(config).unwrap();
 
     let ctx: HashMap<String, Value> = HashMap::new();
     let start = Instant::now();
@@ -447,7 +447,7 @@ async fn stream_pages_respects_max_pages_cap() {
     let config = ElasticsearchSourceConfig::new(server.uri(), "test")
         .with_batch_size(100)
         .max_pages(3);
-    let source = ElasticsearchSource::new(config);
+    let source = ElasticsearchSource::new(config).unwrap();
 
     let ctx: HashMap<String, Value> = HashMap::new();
     let mut pages = source.stream_pages(&ctx, 100);

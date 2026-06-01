@@ -19,13 +19,14 @@ pub struct RedisSource {
 
 impl RedisSource {
     /// Create a new Redis source from the given configuration. The connection
-    /// is opened lazily on first use (so construction stays infallible and
-    /// synchronous).
-    pub fn new(config: RedisSourceConfig) -> Self {
-        Self {
+    /// is opened lazily on first use, so construction stays synchronous and does
+    /// no I/O; it fails only on an invalid config (an out-of-range `batch_size`).
+    pub fn new(config: RedisSourceConfig) -> Result<Self, FaucetError> {
+        faucet_core::validate_batch_size(config.batch_size)?;
+        Ok(Self {
             config,
             conn: tokio::sync::OnceCell::new(),
-        }
+        })
     }
 
     /// Return a clone of the shared multiplexed connection, opening it once on
@@ -39,7 +40,7 @@ impl RedisSource {
                 client
                     .get_multiplexed_async_connection()
                     .await
-                    .map_err(|e| FaucetError::Config(format!("Redis connection failed: {e}")))
+                    .map_err(|e| FaucetError::Source(format!("Redis connection failed: {e}")))
             })
             .await?;
         Ok(conn.clone())
@@ -80,7 +81,7 @@ impl RedisSource {
         let values: Vec<String> = conn
             .lrange(key, 0, -1)
             .await
-            .map_err(|e| FaucetError::Config(format!("LRANGE failed on '{key}': {e}")))?;
+            .map_err(|e| FaucetError::Source(format!("LRANGE failed on '{key}': {e}")))?;
 
         let records = values
             .into_iter()
@@ -105,7 +106,7 @@ impl RedisSource {
                 conn.xread_options(&[key], &[">"], &opts.group(group_name, consumer_name))
                     .await
                     .map_err(|e| {
-                        FaucetError::Config(format!("XREADGROUP failed on '{key}': {e}"))
+                        FaucetError::Source(format!("XREADGROUP failed on '{key}': {e}"))
                     })?
             }
             _ => {
@@ -115,7 +116,7 @@ impl RedisSource {
                 }
                 conn.xread_options(&[key], &["0"], &opts)
                     .await
-                    .map_err(|e| FaucetError::Config(format!("XREAD failed on '{key}': {e}")))?
+                    .map_err(|e| FaucetError::Source(format!("XREAD failed on '{key}': {e}")))?
             }
         };
 
@@ -139,7 +140,7 @@ impl RedisSource {
             let mut collected = Vec::new();
             let mut iter: redis::AsyncIter<String> =
                 conn.scan_match(pattern).await.map_err(|e| {
-                    FaucetError::Config(format!("SCAN failed with pattern '{pattern}': {e}"))
+                    FaucetError::Source(format!("SCAN failed with pattern '{pattern}': {e}"))
                 })?;
 
             while let Some(key) = iter.next_item().await {
@@ -156,7 +157,7 @@ impl RedisSource {
             .arg(&keys)
             .query_async(conn)
             .await
-            .map_err(|e| FaucetError::Config(format!("MGET failed: {e}")))?;
+            .map_err(|e| FaucetError::Source(format!("MGET failed: {e}")))?;
 
         let mut records = Vec::new();
         for (key, value) in keys.iter().zip(values.into_iter()) {
@@ -377,7 +378,7 @@ fn stream_list<'a>(
             let values: Vec<String> = conn
                 .lrange(key, 0, -1)
                 .await
-                .map_err(|e| FaucetError::Config(format!("LRANGE failed on '{key}': {e}")))?;
+                .map_err(|e| FaucetError::Source(format!("LRANGE failed on '{key}': {e}")))?;
             let mut records: Vec<Value> = values
                 .into_iter()
                 .map(|v| serde_json::from_str::<Value>(&v).unwrap_or_else(|_| Value::String(v.clone())))
@@ -396,7 +397,7 @@ fn stream_list<'a>(
             let values: Vec<String> = conn
                 .lrange(key, start, stop)
                 .await
-                .map_err(|e| FaucetError::Config(format!("LRANGE failed on '{key}': {e}")))?;
+                .map_err(|e| FaucetError::Source(format!("LRANGE failed on '{key}': {e}")))?;
             if values.is_empty() {
                 break;
             }
@@ -437,7 +438,7 @@ fn stream_xrange<'a>(
             let reply: redis::streams::StreamRangeReply = conn
                 .xrange_all(key)
                 .await
-                .map_err(|e| FaucetError::Config(format!("XRANGE failed on '{key}': {e}")))?;
+                .map_err(|e| FaucetError::Source(format!("XRANGE failed on '{key}': {e}")))?;
             let mut records: Vec<Value> = reply
                 .ids
                 .iter()
@@ -456,7 +457,7 @@ fn stream_xrange<'a>(
             let reply: redis::streams::StreamRangeReply = conn
                 .xrange_count(key, &start, "+", batch_size)
                 .await
-                .map_err(|e| FaucetError::Config(format!("XRANGE failed on '{key}': {e}")))?;
+                .map_err(|e| FaucetError::Source(format!("XRANGE failed on '{key}': {e}")))?;
 
             if reply.ids.is_empty() {
                 break;
@@ -533,7 +534,7 @@ fn stream_keys<'a>(
                 .arg(scan_hint)
                 .query_async(conn)
                 .await
-                .map_err(|e| FaucetError::Config(format!("SCAN failed with pattern '{pattern}': {e}")))?;
+                .map_err(|e| FaucetError::Source(format!("SCAN failed with pattern '{pattern}': {e}")))?;
             cursor = next_cursor;
             buffer.extend(keys);
 
@@ -571,7 +572,7 @@ async fn mget_records(
         .arg(keys)
         .query_async(conn)
         .await
-        .map_err(|e| FaucetError::Config(format!("MGET failed: {e}")))?;
+        .map_err(|e| FaucetError::Source(format!("MGET failed: {e}")))?;
     Ok(collect_kv_records(keys, values))
 }
 
@@ -602,7 +603,23 @@ mod tests {
             "redis://localhost",
             RedisSourceType::List { key: "test".into() },
         );
-        let _source = RedisSource::new(config);
+        let _source = RedisSource::new(config).unwrap();
+    }
+
+    #[test]
+    fn new_rejects_out_of_range_batch_size() {
+        let mut config = RedisSourceConfig::new(
+            "redis://localhost",
+            RedisSourceType::List { key: "test".into() },
+        );
+        config.batch_size = faucet_core::MAX_BATCH_SIZE + 1;
+        match RedisSource::new(config) {
+            Err(FaucetError::Config(m)) => assert!(m.contains("batch_size"), "got: {m}"),
+            other => panic!(
+                "expected a batch_size Config error, got {:?}",
+                other.is_ok()
+            ),
+        }
     }
 
     #[test]

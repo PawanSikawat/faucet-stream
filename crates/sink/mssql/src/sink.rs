@@ -11,9 +11,7 @@ use faucet_core::{FaucetError, RowOutcome, Sink};
 use serde_json::Value;
 use tiberius::ToSql;
 
-use faucet_mssql_common::{
-    MssqlPool, MssqlPooledConnection, build_pool, quote_ident_mssql, with_statement_timeout,
-};
+use faucet_mssql_common::{MssqlPool, MssqlPooledConnection, build_pool, quote_ident_mssql};
 
 use crate::config::{MssqlColumnMapping, MssqlSinkConfig};
 use crate::encode::{
@@ -140,11 +138,15 @@ impl MssqlSink {
                 let rows: Vec<Vec<BoundParam>> = chunk
                     .iter()
                     .map(|r| {
-                        vec![BoundParam::Str(
-                            serde_json::to_string(r).unwrap_or_default(),
-                        )]
+                        serde_json::to_string(r)
+                            .map(|s| vec![BoundParam::Str(s)])
+                            .map_err(|e| {
+                                FaucetError::Sink(format!(
+                                    "MSSQL json_column: failed to serialize record to JSON: {e}"
+                                ))
+                            })
                     })
-                    .collect();
+                    .collect::<Result<_, _>>()?;
                 Ok(Some((cols, rows)))
             }
             MssqlColumnMapping::AutoColumns { on_unknown_field } => {
@@ -200,17 +202,24 @@ impl MssqlSink {
                     .map(|_| ())
                     .map_err(|e| FaucetError::Sink(format!("MSSQL insert failed: {e}")))
             };
-            let result = match self.timeout() {
-                Some(t) => {
-                    with_statement_timeout(t, exec, || {
-                        FaucetError::Sink("MSSQL insert timed out".into())
-                    })
-                    .await
-                }
-                None => exec.await,
+            // Track whether the failure was a *timeout* specifically. On timeout
+            // the `exec` future is dropped mid-TDS, leaving an unread response on
+            // the wire — the connection is desynced and must NOT be reused (the
+            // pool helper's contract is "drop it"). Issuing ROLLBACK on it would
+            // run on a corrupt stream. A *normal* error leaves the connection in
+            // sync, so ROLLBACK is safe and releases the transaction promptly.
+            let (result, timed_out) = match self.timeout() {
+                Some(t) => match tokio::time::timeout(t, exec).await {
+                    Ok(inner) => (inner, false),
+                    Err(_) => (
+                        Err(FaucetError::Sink("MSSQL insert timed out".into())),
+                        true,
+                    ),
+                },
+                None => (exec.await, false),
             };
             if let Err(e) = result {
-                if txn {
+                if txn && !timed_out {
                     let _ = control(conn, "ROLLBACK TRAN").await;
                 }
                 return Err(e);

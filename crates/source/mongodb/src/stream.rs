@@ -24,9 +24,10 @@ impl MongoSource {
     /// This establishes the MongoDB client (with its internal connection pool)
     /// immediately.
     pub async fn new(config: MongoSourceConfig) -> Result<Self, FaucetError> {
+        faucet_core::validate_batch_size(config.batch_size)?;
         let client = Client::with_uri_str(&config.connection_uri)
             .await
-            .map_err(|e| FaucetError::Config(format!("MongoDB connection failed: {e}")))?;
+            .map_err(|e| FaucetError::Source(format!("MongoDB connection failed: {e}")))?;
 
         Ok(Self { config, client })
     }
@@ -62,18 +63,18 @@ impl MongoSource {
             .find(filter.unwrap_or_default())
             .with_options(find_options)
             .await
-            .map_err(|e| FaucetError::Config(format!("MongoDB find failed: {e}")))?;
+            .map_err(|e| FaucetError::Source(format!("MongoDB find failed: {e}")))?;
 
         let mut records = Vec::new();
 
         while cursor
             .advance()
             .await
-            .map_err(|e| FaucetError::Config(format!("MongoDB cursor advance failed: {e}")))?
+            .map_err(|e| FaucetError::Source(format!("MongoDB cursor advance failed: {e}")))?
         {
             let doc = cursor
                 .deserialize_current()
-                .map_err(|e| FaucetError::Config(format!("MongoDB deserialization failed: {e}")))?;
+                .map_err(|e| FaucetError::Source(format!("MongoDB deserialization failed: {e}")))?;
 
             let value = bson_document_to_json_value(&doc)?;
             records.push(value);
@@ -128,17 +129,17 @@ impl faucet_core::Source for MongoSource {
             .find(filter_doc.unwrap_or_default())
             .with_options(find_options)
             .await
-            .map_err(|e| FaucetError::Config(format!("MongoDB find failed: {e}")))?;
+            .map_err(|e| FaucetError::Source(format!("MongoDB find failed: {e}")))?;
 
         let mut records = Vec::new();
         while cursor
             .advance()
             .await
-            .map_err(|e| FaucetError::Config(format!("MongoDB cursor advance failed: {e}")))?
+            .map_err(|e| FaucetError::Source(format!("MongoDB cursor advance failed: {e}")))?
         {
             let doc = cursor
                 .deserialize_current()
-                .map_err(|e| FaucetError::Config(format!("MongoDB deserialization failed: {e}")))?;
+                .map_err(|e| FaucetError::Source(format!("MongoDB deserialization failed: {e}")))?;
             records.push(bson_document_to_json_value(&doc)?);
         }
 
@@ -216,7 +217,7 @@ impl faucet_core::Source for MongoSource {
                 .find(filter_doc.unwrap_or_default())
                 .with_options(find_options)
                 .await
-                .map_err(|e| FaucetError::Config(format!("MongoDB find failed: {e}")))?;
+                .map_err(|e| FaucetError::Source(format!("MongoDB find failed: {e}")))?;
 
             let chunk = if batch_size == 0 { usize::MAX } else { batch_size };
             let initial_capacity = if batch_size == 0 { 1024 } else { batch_size };
@@ -226,11 +227,11 @@ impl faucet_core::Source for MongoSource {
             while cursor
                 .advance()
                 .await
-                .map_err(|e| FaucetError::Config(format!("MongoDB cursor advance failed: {e}")))?
+                .map_err(|e| FaucetError::Source(format!("MongoDB cursor advance failed: {e}")))?
             {
                 let doc = cursor
                     .deserialize_current()
-                    .map_err(|e| FaucetError::Config(format!("MongoDB deserialization failed: {e}")))?;
+                    .map_err(|e| FaucetError::Source(format!("MongoDB deserialization failed: {e}")))?;
                 buffer.push(bson_document_to_json_value(&doc)?);
                 if buffer.len() >= chunk {
                     let page = std::mem::replace(&mut buffer, Vec::with_capacity(initial_capacity));
@@ -360,5 +361,17 @@ mod tests {
         let val = json!({});
         let doc = json_value_to_document(&val).unwrap();
         assert!(doc.is_empty());
+    }
+
+    #[tokio::test]
+    async fn new_rejects_out_of_range_batch_size() {
+        let mut config = MongoSourceConfig::new("mongodb://localhost:27017", "db", "c");
+        config.batch_size = faucet_core::MAX_BATCH_SIZE + 1;
+        match MongoSource::new(config).await {
+            Err(faucet_core::FaucetError::Config(m)) => {
+                assert!(m.contains("batch_size"), "got: {m}")
+            }
+            _ => panic!("expected a batch_size Config error"),
+        }
     }
 }

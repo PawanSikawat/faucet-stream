@@ -18,6 +18,8 @@ pub struct PostgresSource {
 impl PostgresSource {
     /// Create a new PostgreSQL source. Establishes a connection pool.
     pub async fn new(config: PostgresSourceConfig) -> Result<Self, FaucetError> {
+        faucet_core::validate_batch_size(config.batch_size)?;
+
         let pool = PgPoolOptions::new()
             .max_connections(config.max_connections)
             .connect(&config.connection_url)
@@ -235,5 +237,22 @@ impl faucet_core::Source for PostgresSource {
     fn config_schema(&self) -> serde_json::Value {
         serde_json::to_value(faucet_core::schema_for!(PostgresSourceConfig))
             .expect("schema serialization")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn new_rejects_out_of_range_batch_size() {
+        let mut config = PostgresSourceConfig::new("postgres://localhost/test", "SELECT 1");
+        config.batch_size = faucet_core::MAX_BATCH_SIZE + 1;
+        match PostgresSource::new(config).await {
+            Err(faucet_core::FaucetError::Config(m)) => {
+                assert!(m.contains("batch_size"), "got: {m}")
+            }
+            _ => panic!("expected a batch_size Config error"),
+        }
     }
 }

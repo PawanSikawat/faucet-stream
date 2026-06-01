@@ -651,15 +651,30 @@ impl RestStream {
     }
 }
 
-/// Parse the `Retry-After` header as a number of seconds.
-/// Falls back to 60 s if the header is absent or unparseable.
+/// Parse the `Retry-After` header. RFC 7231 permits **either** delta-seconds
+/// **or** an HTTP-date; we honour both. An HTTP-date in the past yields a zero
+/// wait (retry now). Falls back to 60 s only when the header is absent or in
+/// neither form.
 fn parse_retry_after(headers: &HeaderMap) -> Duration {
-    headers
+    const DEFAULT: Duration = Duration::from_secs(60);
+    let Some(raw) = headers
         .get(reqwest::header::RETRY_AFTER)
         .and_then(|v| v.to_str().ok())
-        .and_then(|s| s.parse::<u64>().ok())
-        .map(Duration::from_secs)
-        .unwrap_or(Duration::from_secs(60))
+        .map(str::trim)
+    else {
+        return DEFAULT;
+    };
+    // delta-seconds form.
+    if let Ok(secs) = raw.parse::<u64>() {
+        return Duration::from_secs(secs);
+    }
+    // HTTP-date form (IMF-fixdate / RFC 850 / asctime).
+    if let Ok(when) = httpdate::parse_http_date(raw) {
+        return when
+            .duration_since(std::time::SystemTime::now())
+            .unwrap_or(Duration::ZERO);
+    }
+    DEFAULT
 }
 
 #[async_trait]
@@ -786,6 +801,41 @@ mod tests {
             reqwest::header::HeaderValue::from_static("not-a-number"),
         );
         assert_eq!(parse_retry_after(&headers), Duration::from_secs(60));
+    }
+
+    #[test]
+    fn test_parse_retry_after_http_date() {
+        // RFC 7231 permits an HTTP-date form instead of delta-seconds.
+        let future = std::time::SystemTime::now() + Duration::from_secs(7200);
+        let date = httpdate::fmt_http_date(future);
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            reqwest::header::RETRY_AFTER,
+            reqwest::header::HeaderValue::from_str(&date).unwrap(),
+        );
+        let d = parse_retry_after(&headers);
+        // ~2 hours out — must not collapse to the 60s fallback.
+        assert!(
+            d > Duration::from_secs(3600),
+            "expected ~2h from HTTP-date, got {d:?}"
+        );
+        assert!(
+            d <= Duration::from_secs(7200),
+            "should not exceed the target instant, got {d:?}"
+        );
+    }
+
+    #[test]
+    fn test_parse_retry_after_past_http_date_is_zero() {
+        // A date already in the past → retry now (zero wait), not the fallback.
+        let past = std::time::SystemTime::now() - Duration::from_secs(3600);
+        let date = httpdate::fmt_http_date(past);
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            reqwest::header::RETRY_AFTER,
+            reqwest::header::HeaderValue::from_str(&date).unwrap(),
+        );
+        assert_eq!(parse_retry_after(&headers), Duration::ZERO);
     }
 
     #[test]

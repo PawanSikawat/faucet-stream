@@ -83,6 +83,7 @@ async fn injected_provider_supplies_bearer_token() {
     let source = ElasticsearchSource::new(
         ElasticsearchSourceConfig::new(server.uri(), "my_index").with_batch_size(10),
     )
+    .unwrap()
     .with_auth_provider(provider);
 
     let records = source.fetch_all().await.unwrap();
@@ -99,7 +100,7 @@ async fn unresolved_auth_reference_errors() {
     config.auth = AuthSpec::Reference(AuthReference {
         name: "missing-provider".into(),
     });
-    let source = ElasticsearchSource::new(config);
+    let source = ElasticsearchSource::new(config).unwrap();
 
     let err = source.fetch_all().await.unwrap_err();
     assert!(

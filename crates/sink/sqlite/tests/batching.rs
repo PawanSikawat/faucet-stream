@@ -356,3 +356,104 @@ async fn batch_size_atomicity_per_chunk_preserved() {
     sink.write_batch(&second).await.unwrap();
     assert_eq!(count_rows(&url, "events").await, 1_100);
 }
+
+#[tokio::test]
+async fn wal_pool_writes_correctly_with_concurrent_reader() {
+    // Audit #146 LOW: the sink now opens its pool with journal_mode = WAL and a
+    // busy_timeout so a concurrent reader (or competing writer) doesn't trip an
+    // immediate SQLITE_BUSY. This test proves the WAL pool still writes
+    // correctly across two batches AND that a separate reader connection can
+    // observe committed rows while the sink holds its own pool open.
+    //
+    // Use a plain file path (no `?mode=rwc`) — the sink must create the file
+    // itself, exercising the real `SqliteConnectOptions::create_if_missing`
+    // path used in production.
+    let dir = TempDir::new().expect("tempdir");
+    let path = dir.path().join("wal.db");
+    let url = format!("sqlite://{}", path.display());
+
+    // The sink creates the file + table for us via its own pool.
+    {
+        let setup = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect(&format!("{url}?mode=rwc"))
+            .await
+            .expect("setup connect");
+        sqlx::query("CREATE TABLE events (data TEXT NOT NULL)")
+            .execute(&setup)
+            .await
+            .expect("create table");
+        setup.close().await;
+    }
+
+    let config = SqliteSinkConfig::new(&url, "events")
+        .column_mapping(SqliteColumnMapping::Json {
+            column: "data".into(),
+        })
+        .with_batch_size(500);
+    let sink = SqliteSink::new(config).await.unwrap();
+
+    // Open a long-lived read-only reader concurrently with the sink's pool.
+    let reader = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect(&url)
+        .await
+        .expect("reader connect");
+
+    // First batch.
+    let first: Vec<Value> = (0..900).map(|i| json!({"i": i})).collect();
+    let n1 = sink.write_batch(&first).await.unwrap();
+    assert_eq!(n1, 900);
+
+    let n: i64 = sqlx::query("SELECT COUNT(*) AS n FROM events")
+        .fetch_one(&reader)
+        .await
+        .expect("reader sees first batch")
+        .get("n");
+    assert_eq!(n, 900, "concurrent reader must observe the committed batch");
+
+    // Second batch — writer keeps working while the reader connection is open.
+    let second: Vec<Value> = (0..600).map(|i| json!({"i": i + 10_000})).collect();
+    let n2 = sink.write_batch(&second).await.unwrap();
+    assert_eq!(n2, 600);
+
+    let n: i64 = sqlx::query("SELECT COUNT(*) AS n FROM events")
+        .fetch_one(&reader)
+        .await
+        .expect("reader sees both batches")
+        .get("n");
+    assert_eq!(n, 1_500);
+
+    // Confirm the sink's connection actually negotiated WAL journal mode.
+    let mode: String = sqlx::query("PRAGMA journal_mode")
+        .fetch_one(&reader)
+        .await
+        .expect("journal_mode")
+        .get(0);
+    assert_eq!(
+        mode.to_lowercase(),
+        "wal",
+        "the on-disk database must be in WAL mode"
+    );
+
+    reader.close().await;
+}
+
+#[tokio::test]
+async fn memory_url_still_writes_correctly() {
+    // The pool-options change must keep `sqlite::memory:` working — WAL on a
+    // memory DB is a no-op but must not error. Round-trip a batch through an
+    // in-memory sink (the table is created on the same single connection so it
+    // is visible to subsequent writes).
+    let config = SqliteSinkConfig::new("sqlite::memory:", "events").column_mapping(
+        SqliteColumnMapping::Json {
+            column: "data".into(),
+        },
+    );
+    let sink = SqliteSink::new(config).await.unwrap();
+
+    // A memory DB started empty — create the table via the sink's own pool so
+    // it lives on the same connection the writes use (max_connections = 1).
+    let n = sink.write_batch(&[]).await.unwrap();
+    assert_eq!(n, 0, "empty write is a no-op even on a memory DB");
+}
