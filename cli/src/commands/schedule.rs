@@ -140,6 +140,7 @@ fn make_opts(
         state_path_override: None,
         auth: auth.clone(),
         clock,
+        cancel: None,
     }
 }
 

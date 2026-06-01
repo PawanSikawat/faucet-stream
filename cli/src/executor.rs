@@ -34,7 +34,9 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::Duration;
 use tokio::sync::{Mutex, Semaphore};
+use tokio_util::sync::CancellationToken;
 
 /// Knobs passed to [`run_expanded`].
 pub struct ExecuteOptions {
@@ -58,7 +60,19 @@ pub struct ExecuteOptions {
     /// `faucet run` sets process-start (or `--clock`); `faucet schedule` sets
     /// the tick's scheduled time in the schedule timezone.
     pub clock: DateTime<FixedOffset>,
+    /// Optional external cancellation token. When set and cancelled, in-flight
+    /// invocations stop at their next page boundary and **flush** their sinks
+    /// (so buffered output like a Parquet footer is durable), rather than being
+    /// hard-dropped (#146 H16). `faucet serve` wires this to run-cancel /
+    /// timeout / shutdown; `faucet run` leaves it `None`.
+    pub cancel: Option<CancellationToken>,
 }
+
+/// Grace window granted to in-flight invocations to flush cooperatively after
+/// an `on_error: stop` cancellation, before the remaining tasks are
+/// hard-aborted (the backstop for a sink genuinely stuck mid-write). Bounded so
+/// a hung sink can't wedge the whole run.
+const STOP_FLUSH_GRACE: Duration = Duration::from_secs(5);
 
 /// One pipeline invocation's outcome.
 #[derive(Debug)]
@@ -144,6 +158,11 @@ pub async fn run_expanded(nodes: Vec<ExpandedNode>, opts: ExecuteOptions) -> Cli
     let mut outcomes: Vec<InvocationOutcome> = Vec::new();
     let mut skipped_subtrees: HashSet<String> = HashSet::new();
 
+    // Root cooperative-cancel token: the caller's (serve wires run-cancel /
+    // timeout / shutdown) or a fresh one. Each level derives a child token so
+    // an `on_error: stop` cancels only that level's invocations, while an
+    // external cancel of the root propagates to every level (#146 H16).
+    let cancel = opts.cancel.clone().unwrap_or_default();
     let opts = Arc::new(opts);
 
     // We execute level-by-level. Each level is "every node whose parent is
@@ -274,6 +293,10 @@ pub async fn run_expanded(nodes: Vec<ExpandedNode>, opts: ExecuteOptions) -> Cli
         // partial sink state — the trade-off users opt into by choosing
         // `stop`). Under `on_error: continue` every spawned task runs to
         // completion regardless of sibling failures.
+        // Per-level cancel token: cancelling it (on `on_error: stop`) stops only
+        // this level's invocations cooperatively; it is a child of the root
+        // token, so an external cancel (serve) still propagates here (#146 H16).
+        let level_cancel = cancel.child_token();
         let mut joinset = tokio::task::JoinSet::new();
         // Map each spawned task's id back to its row id + parent key so that a
         // panic (surfaced as a JoinError, which doesn't carry the unit) can be
@@ -285,17 +308,42 @@ pub async fn run_expanded(nodes: Vec<ExpandedNode>, opts: ExecuteOptions) -> Cli
             let captured = Arc::clone(&captured);
             let needs_capture = nodes_with_descendants.contains(&unit.node.id);
             let meta = (unit.node.id.clone(), unit.parent_record_key.clone());
+            let unit_cancel = level_cancel.clone();
             let handle = joinset.spawn(async move {
                 let _permit = sem.acquire().await.expect("semaphore not closed");
-                run_unit(&unit, needs_capture, &captured, &opts2).await
+                run_unit(&unit, needs_capture, &captured, &opts2, unit_cancel).await
             });
             task_meta.insert(handle.id(), meta);
         }
 
         let mut stop_triggered = false;
-        while let Some(joined) = joinset.join_next_with_id().await {
+        let mut aborted = false;
+        let mut stop_deadline: Option<tokio::time::Instant> = None;
+        loop {
+            // Once `on_error: stop` has cancelled the level, give in-flight
+            // invocations a bounded grace to flush cooperatively, then
+            // hard-abort the stragglers (the backstop for a sink stuck
+            // mid-write that can't reach a page boundary to observe the cancel).
+            let joined = match stop_deadline {
+                Some(deadline) if !aborted => {
+                    match tokio::time::timeout_at(deadline, joinset.join_next_with_id()).await {
+                        Ok(j) => j,
+                        Err(_) => {
+                            tracing::warn!(
+                                "on_error: stop — flush grace elapsed; aborting remaining \
+                                 in-flight invocations"
+                            );
+                            joinset.abort_all();
+                            aborted = true;
+                            continue;
+                        }
+                    }
+                }
+                _ => joinset.join_next_with_id().await,
+            };
+            let Some(joined) = joined else { break };
             // A failure (an `Err` outcome or a panicked task) marks the level
-            // failed and, under `on_error: stop`, aborts the rest. A panicking
+            // failed and, under `on_error: stop`, stops the rest. A panicking
             // connector must NOT take down the whole process (#78/#24).
             let outcome = match joined {
                 Ok((_id, outcome)) => outcome,
@@ -325,9 +373,14 @@ pub async fn run_expanded(nodes: Vec<ExpandedNode>, opts: ExecuteOptions) -> Cli
                 if matches!(on_error, OnError::Stop) && !stop_triggered {
                     stop_triggered = true;
                     tracing::error!(
-                        "on_error: stop — aborting every in-flight and pending invocation"
+                        "on_error: stop — cancelling in-flight invocations (cooperative \
+                         flush), then aborting any that don't stop within the grace window"
                     );
-                    joinset.abort_all();
+                    // Cooperative first: in-flight pipelines flush at their next
+                    // page boundary so a Parquet footer / S3 upload is completed
+                    // rather than orphaned (#146 H16).
+                    level_cancel.cancel();
+                    stop_deadline = Some(tokio::time::Instant::now() + STOP_FLUSH_GRACE);
                 }
             } else {
                 tracing::info!(
@@ -383,6 +436,7 @@ async fn run_unit(
     needs_capture: bool,
     captured: &Arc<Mutex<HashMap<String, Vec<Value>>>>,
     opts: &ExecuteOptions,
+    cancel: CancellationToken,
 ) -> InvocationOutcome {
     let result = run_one_invocation(
         &unit.node,
@@ -390,6 +444,7 @@ async fn run_unit(
         &unit.state_key,
         needs_capture,
         opts,
+        cancel,
     )
     .await;
     let row_id = unit.node.id.clone();
@@ -448,6 +503,7 @@ async fn run_one_invocation(
     state_key: &str,
     needs_capture: bool,
     opts: &ExecuteOptions,
+    cancel: CancellationToken,
 ) -> CliResult<(Vec<Value>, usize)> {
     // Observability identity for this invocation — built once, reused by both
     // the Pipeline builder and the transform instrumentation.
@@ -528,6 +584,9 @@ async fn run_one_invocation(
     } else {
         pipeline
     };
+    // Cooperative cancellation: a cancelled token makes the streaming loop stop
+    // at the next page boundary and flush the sink (#146 H16).
+    let pipeline = pipeline.with_cancel(cancel);
     // Pipeline-level quality checks (v1: no matrix-row override). `expand`
     // already validated this spec, but compile again here to obtain the
     // runtime `CompiledQuality`; map any error to a config-level failure.
@@ -843,6 +902,7 @@ mod tests {
                 state_path_override: None,
                 auth: Default::default(),
                 clock: chrono::Utc::now().fixed_offset(),
+                cancel: None,
             },
         )
         .await
@@ -893,6 +953,7 @@ matrix:
                 state_path_override: None,
                 auth: Default::default(),
                 clock: chrono::Utc::now().fixed_offset(),
+                cancel: None,
             },
         )
         .await
@@ -943,6 +1004,7 @@ matrix:
                 state_path_override: None,
                 auth: Default::default(),
                 clock: chrono::Utc::now().fixed_offset(),
+                cancel: None,
             },
         )
         .await
@@ -1003,6 +1065,7 @@ execution:
                 state_path_override: None,
                 auth: Default::default(),
                 clock: chrono::Utc::now().fixed_offset(),
+                cancel: None,
             },
         )
         .await
@@ -1027,22 +1090,22 @@ execution:
             summary.invocations
         );
 
-        // "good" only appears in the summary if it actually completed (aborted
-        // tasks are dropped, not recorded). If it completed, its output file
-        // must exist. The converse does NOT hold: under `on_error: stop`,
-        // abort_all() can cancel an in-flight "good" after its sink has already
-        // created/partially written the file. That partial sink state is an
-        // accepted, documented consequence of stop mode, so a present file
-        // does not imply completion — asserting the biconditional made this
-        // test race-dependent on which root won the permit.
-        let good_completed = summary
+        // "good" may: (a) win the permit first and run fully (writes its row,
+        // file exists); (b) lose the race, acquire the permit after "bad" fails,
+        // observe the cooperative stop-cancel at its first page boundary, and
+        // return a 0-record success (no file); or (c) never appear if it was
+        // still pending when the level finished. So the only invariant is: a
+        // "good" that actually WROTE records must have produced its file.
+        let good_wrote = summary
             .invocations
             .iter()
-            .any(|o| o.row_id == "good" && o.error.is_none());
-        if good_completed {
+            .find(|o| o.row_id == "good" && o.error.is_none())
+            .map(|o| o.records_written)
+            .unwrap_or(0);
+        if good_wrote > 0 {
             assert!(
                 good_out.exists(),
-                "a completed good must have written its output file"
+                "a good that wrote records must have produced its output file"
             );
         }
     }
@@ -1051,10 +1114,12 @@ execution:
     async fn on_error_stop_under_parallelism_aborts_other_in_flight() {
         // Three roots running with `max_concurrent: 3`. The bad row points
         // its sink at a directory (open fails fast). The other two point at
-        // sinks that block forever on the writer end of a pipe — the only
-        // way they can complete is if abort_all() cancels them. The test
-        // would hang if `on_error: stop` failed to abort in-flight work,
-        // so a passing run is itself the assertion.
+        // sinks that block forever on the writer end of a pipe — stuck *inside*
+        // the sink write, they never reach a page boundary to observe the
+        // cooperative stop-cancel, so the only way they can complete is the
+        // hard-abort backstop that fires after the flush grace (#146 H16). The
+        // test would hang if `on_error: stop` never aborted them, so a passing
+        // run is itself the assertion.
         let dir = tempfile::tempdir().unwrap();
         let bad_sink_dir = dir.path().to_path_buf();
         // A real csv source with one row — small enough that the pipeline
@@ -1094,6 +1159,7 @@ execution:
                 state_path_override: None,
                 auth: Default::default(),
                 clock: chrono::Utc::now().fixed_offset(),
+                cancel: None,
             },
         )
         .await
@@ -1153,6 +1219,7 @@ matrix:
                 state_path_override: None,
                 auth: Default::default(),
                 clock: chrono::Utc::now().fixed_offset(),
+                cancel: None,
             },
         )
         .await

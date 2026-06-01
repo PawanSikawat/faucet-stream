@@ -97,8 +97,16 @@ The claim is atomic, so concurrent retries can't both start a run.
 ## Cancellation
 
 `POST /v1/runs/{id}/cancel` cooperatively cancels an in-flight run (202); on an
-already-terminal run it's a 200 no-op. Cancellation drops the pipeline future at
-its next `.await` — the same partial-sink-state trade-off as `on_error: stop`.
+already-terminal run it's a 200 no-op. The same cooperative path handles a run
+that hits its `timeout_secs` and the server-shutdown drain.
+
+Cancellation is **flush-completing**: the pipeline stops at its next page
+boundary and flushes the sink, so a buffered sink (e.g. Parquet, whose footer is
+only written on flush) commits the rows written so far rather than orphaning the
+whole file (#146 H16). The run is then marked `cancelled` — there is no
+cross-process resume, so re-submit to continue. A run still stuck *mid-write*
+after a bounded flush grace is hard-dropped (its buffered output may be lost),
+so a hung run can't wedge shutdown.
 
 ## `--default-config` (workspace defaults)
 

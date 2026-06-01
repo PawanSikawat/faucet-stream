@@ -180,7 +180,7 @@ schedule = ["dep:croner", "dep:chrono-tz"]
 # Enables `observability` (serve renders /metrics on its own port). Gates the
 # tokio net/time features here (rather than the base dep) so slim non-serve
 # builds don't link the TCP stack.
-serve = ["observability", "tokio/net", "tokio/time", "dep:axum", "dep:tower-http", "dep:tokio-util", "dep:subtle", "dep:dashmap", "dep:sha2", "dep:async-stream"]
+serve = ["observability", "tokio/net", "tokio/time", "dep:axum", "dep:tower-http", "dep:subtle", "dep:dashmap", "dep:sha2", "dep:async-stream"]
 serve-history-postgres = ["serve", "dep:sqlx"]
 serve-history-sqlite = ["serve", "dep:sqlx"]
 
@@ -235,7 +235,7 @@ serde.workspace = true
 serde_json.workspace = true
 serde_yaml = "0.9"
 thiserror.workspace = true
-tokio = { workspace = true, features = ["rt-multi-thread", "macros", "signal", "fs", "sync"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "signal", "fs", "sync", "time"] }
 tracing.workspace = true
 tracing-subscriber = { workspace = true, optional = true }
 async-trait.workspace = true
@@ -257,7 +257,10 @@ chrono-tz = { workspace = true, optional = true }
 croner = { workspace = true, optional = true }
 axum = { workspace = true, optional = true }
 tower-http = { workspace = true, optional = true }
-tokio-util = { workspace = true, optional = true }
+# `CancellationToken` for cooperative run cancellation in the executor + serve
+# runner (flush-on-cancel, #146 H16). Non-optional: the executor is used by
+# `faucet run`/`schedule`, not just `serve`.
+tokio-util = { workspace = true }
 subtle = { workspace = true, optional = true }
 # faucet serve run registry (Phase 2+); only compiled with the `serve` feature.
 dashmap = { workspace = true, optional = true }

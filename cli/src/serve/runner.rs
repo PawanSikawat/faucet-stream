@@ -1,6 +1,8 @@
 //! The run lifecycle: validate + queue a submission (`submit`), then run it under
-//! a permit inside a 3-arm `select!` (user-cancel token / server-shutdown token /
-//! timeout) and finalize an authoritative terminal status. See spec §7 + §20.
+//! a permit. A cancel / timeout / shutdown trigger cooperatively cancels the
+//! pipeline (so a buffered sink flushes at its next page boundary, #146 H16) and
+//! grants a bounded flush grace before hard-dropping it; the task then finalizes
+//! an authoritative terminal status. See spec §7 + §20.
 
 use crate::auth_catalog::build_auth_catalog;
 use crate::executor::{ExecuteOptions, RunSummary, run_expanded};
@@ -18,6 +20,13 @@ use tracing::Instrument;
 
 /// `Retry-After` advertised when the queue is full.
 const QUEUE_FULL_RETRY_AFTER_SECS: u64 = 5;
+
+/// Grace granted to a cancelled / timed-out / shutting-down run to flush
+/// buffered sink output cooperatively before its future is hard-dropped (which
+/// aborts the pipeline's task set, the backstop for a run stuck mid-write so a
+/// hung run can't wedge shutdown). Generous enough for an S3 multipart
+/// completion (#146 H16).
+const RUN_FLUSH_GRACE: Duration = Duration::from_secs(30);
 
 /// `POST /v1/runs` request body.
 #[derive(Debug, Deserialize)]
@@ -422,6 +431,11 @@ fn spawn_run(
             }
         };
 
+        // Cooperative-cancel token the pipeline observes so it flushes buffered
+        // output (e.g. a Parquet footer, an S3 multipart upload) at its next
+        // page boundary on cancel / timeout / shutdown — instead of having its
+        // future hard-dropped, which flushes nothing (#146 H16).
+        let coop = CancellationToken::new();
         let opts = ExecuteOptions {
             pipeline_name,
             execution: cfg.execution.clone(),
@@ -430,30 +444,63 @@ fn spawn_run(
             state_path_override: None,
             auth,
             clock,
+            cancel: Some(coop.clone()),
         };
-        let timeout = req.timeout_secs.map(Duration::from_secs);
+        let timeout_secs = req.timeout_secs;
 
         let span = tracing::info_span!("faucet.serve.run", serve_run_id = %run_id);
         let work = async move {
             // Emitted inside the run span so it is captured by the SSE log layer
             // (and gives every `/logs` reader at least one line to anchor on).
             tracing::info!("pipeline run starting");
-            match timeout {
-                Some(d) => match tokio::time::timeout(d, run_expanded(nodes, opts)).await {
-                    Ok(r) => classify_run(r),
-                    Err(_) => Terminal::Timeout { secs: d.as_secs() },
-                },
-                None => classify_run(run_expanded(nodes, opts).await),
-            }
+            classify_run(run_expanded(nodes, opts).await)
         }
         .instrument(span);
+        tokio::pin!(work);
 
-        // Cooperative cancel: dropping `work` cancels in-flight pipeline work at
-        // its next await; the task stays alive to write its own terminal status.
-        let terminal = tokio::select! {
-            _ = run_token.cancelled() => Terminal::Cancelled,
-            _ = server_shutdown.cancelled() => Terminal::ShutdownFailed,
-            t = work => t,
+        // The run timeout is modelled as a cancel trigger (not a hard
+        // `tokio::time::timeout` drop) so a timed-out run still flushes.
+        let timeout_fut = async {
+            match timeout_secs {
+                Some(s) => tokio::time::sleep(Duration::from_secs(s)).await,
+                None => std::future::pending::<()>().await,
+            }
+        };
+        tokio::pin!(timeout_fut);
+
+        enum Trigger {
+            Done(Terminal),
+            Cancel,
+            Shutdown,
+            Timeout(u64),
+        }
+
+        // Phase 1: run to natural completion, or until a cancel trigger fires.
+        // `biased` prefers a just-completed run over a simultaneous trigger.
+        let trigger = tokio::select! {
+            biased;
+            t = &mut work => Trigger::Done(t),
+            _ = run_token.cancelled() => Trigger::Cancel,
+            _ = server_shutdown.cancelled() => Trigger::Shutdown,
+            _ = &mut timeout_fut => Trigger::Timeout(timeout_secs.unwrap_or(0)),
+        };
+
+        let terminal = match trigger {
+            Trigger::Done(t) => t,
+            triggered => {
+                // Phase 2: a trigger fired. Cancel cooperatively and give the
+                // pipeline a bounded grace to flush at its next page boundary,
+                // then hard-drop it (drops the JoinSet, aborting any pipeline
+                // genuinely stuck mid-write) so a hung run can't wedge shutdown.
+                coop.cancel();
+                let _ = tokio::time::timeout(RUN_FLUSH_GRACE, &mut work).await;
+                match triggered {
+                    Trigger::Cancel => Terminal::Cancelled,
+                    Trigger::Shutdown => Terminal::ShutdownFailed,
+                    Trigger::Timeout(secs) => Terminal::Timeout { secs },
+                    Trigger::Done(_) => unreachable!("matched in the outer arm"),
+                }
+            }
         };
 
         finalize(&state, &run_id, started, terminal).await;

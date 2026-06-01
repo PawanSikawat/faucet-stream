@@ -132,6 +132,7 @@ pub struct Pipeline<'a, So: Source + ?Sized, Si: Sink + ?Sized> {
     #[cfg(feature = "quality")]
     quality: Option<Arc<crate::quality::CompiledQuality>>,
     adaptive: Option<crate::adaptive::AdaptiveBatchConfig>,
+    cancel: Option<tokio_util::sync::CancellationToken>,
 }
 
 impl<'a, So: Source + ?Sized, Si: Sink + ?Sized> Pipeline<'a, So, Si> {
@@ -148,6 +149,7 @@ impl<'a, So: Source + ?Sized, Si: Sink + ?Sized> Pipeline<'a, So, Si> {
             #[cfg(feature = "quality")]
             quality: None,
             adaptive: None,
+            cancel: None,
         }
     }
 
@@ -210,6 +212,15 @@ impl<'a, So: Source + ?Sized, Si: Sink + ?Sized> Pipeline<'a, So, Si> {
     /// controller tunes from observed sink latency + error rate.
     pub fn with_adaptive(mut self, cfg: crate::adaptive::AdaptiveBatchConfig) -> Self {
         self.adaptive = Some(cfg);
+        self
+    }
+
+    /// Attach a cancellation token. When cancelled mid-run, the streaming loop
+    /// stops at the next page boundary, flushes the sink(s) so buffered output
+    /// (e.g. a Parquet footer) is durable, and returns the partial result
+    /// instead of leaving the file unreadable (#146 H16).
+    pub fn with_cancel(mut self, cancel: tokio_util::sync::CancellationToken) -> Self {
+        self.cancel = Some(cancel);
         self
     }
 
@@ -339,6 +350,9 @@ impl<'a, So: Source + ?Sized, Si: Sink + ?Sized> Pipeline<'a, So, Si> {
             if let Some(ad) = self.adaptive.clone() {
                 opts = opts.with_adaptive(ad);
             }
+            if let Some(cancel) = self.cancel.clone() {
+                opts = opts.with_cancel(cancel);
+            }
 
             run_stream(pages, &wrapped_sink, opts).await
         }
@@ -397,6 +411,7 @@ where
     let row = options.row.unwrap_or_default();
     let run_id = options.run_id.unwrap_or_default();
     let dlq = options.dlq.clone();
+    let cancel = options.cancel.clone();
 
     #[cfg(feature = "quality")]
     let quality = options.quality.clone();
@@ -441,9 +456,27 @@ where
     // flush the sinks before propagating, so a buffered sink that only commits
     // on flush — Parquet writes its footer there; without it the whole file is
     // unreadable — does not lose everything written so far (#78/#3).
+    // Set when the loop exits because the cancellation token fired (vs. the
+    // stream ending naturally). Either way we fall through to the success-path
+    // flush below, so a buffered sink (Parquet footer, S3 multipart) is made
+    // durable — the difference from a dropped future, which flushes nothing.
+    let mut cancelled = false;
     let loop_result: Result<(), FaucetError> = async {
         loop {
-            let page = std::future::poll_fn(|cx| Pin::new(&mut pages).poll_next(cx)).await;
+            // Poll the next page, but if a cancellation token is wired, race it
+            // so a cancel between pages stops the run promptly and cleanly
+            // (#146 H16). `biased` checks cancellation first each iteration.
+            let page = match &cancel {
+                Some(token) => tokio::select! {
+                    biased;
+                    _ = token.cancelled() => {
+                        cancelled = true;
+                        break;
+                    }
+                    p = std::future::poll_fn(|cx| Pin::new(&mut pages).poll_next(cx)) => p,
+                },
+                None => std::future::poll_fn(|cx| Pin::new(&mut pages).poll_next(cx)).await,
+            };
             match page {
                 Some(Ok(page)) => {
                     if page.records.is_empty() && page.bookmark.is_none() {
@@ -854,8 +887,16 @@ where
     }
     sink.flush().await?;
 
+    if cancelled {
+        tracing::info!(
+            records_written,
+            "pipeline run cancelled cooperatively; sink flushed (partial output is durable)"
+        );
+    }
+
     tracing::info!(
         records_written,
+        cancelled,
         has_bookmark = last_bookmark.is_some(),
         persisted = state_store.is_some() && state_key.is_some() && last_bookmark.is_some(),
         dlq_records = dlq_stats.records_dlq,
@@ -1203,6 +1244,45 @@ mod tests {
         assert!(
             sink.flush_count() >= 1,
             "sink must be flushed on the error path so partial output is durable"
+        );
+    }
+
+    #[tokio::test]
+    async fn stream_pipeline_flushes_sink_on_cancel() {
+        // #146 H16: a cooperative cancellation mid-run must stop polling, flush
+        // the sink (so a Parquet footer / S3 multipart is completed rather than
+        // orphaned), and return the partial result — NOT drop the run future,
+        // which would flush nothing.
+        use tokio_util::sync::CancellationToken;
+
+        // One page, then block forever — the only way out is the cancel token.
+        let stream = Box::pin(async_stream::stream! {
+            yield Ok(StreamPage {
+                records: vec![json!({"id": 1}), json!({"id": 2})],
+                bookmark: None,
+            });
+            futures::future::pending::<()>().await;
+        });
+        let sink = FlushTrackingSink::new();
+
+        let token = CancellationToken::new();
+        let canceller = token.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            canceller.cancel();
+        });
+
+        let result = run_stream(stream, &sink, RunStreamOptions::new().with_cancel(token))
+            .await
+            .expect("a cooperative cancel returns Ok with the partial result");
+
+        // The page written before cancellation survives, and the sink was
+        // flushed so that output is durable.
+        assert_eq!(result.records_written, 2);
+        assert_eq!(sink.written().len(), 2);
+        assert!(
+            sink.flush_count() >= 1,
+            "sink must be flushed on the cancel path so partial output is durable"
         );
     }
 
