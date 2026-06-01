@@ -3,6 +3,18 @@
 //! `faucet_pipeline_last_bookmark_unix_seconds` (epoch seconds of the
 //! bookmark) and `faucet_pipeline_seconds_since_last_bookmark` (now - that).
 //! Non-string / non-RFC3339 bookmarks leave the gauges untouched.
+//!
+//! **Intentional staleness of `faucet_pipeline_seconds_since_last_bookmark`.**
+//! That gauge is computed *only at bookmark-write time*, so it captures the lag
+//! observed at the moment the last bookmark was persisted — it does **not**
+//! advance on its own between writes. When a pipeline stalls (no new bookmarks),
+//! this gauge freezes at its last value rather than climbing, by design: it
+//! reports recency-at-write, not live lag, and recomputing it on every scrape
+//! would require a background ticker this layer intentionally avoids. For live
+//! stall detection, alert on the freshness of the absolute timestamp instead —
+//! `time() - faucet_pipeline_last_bookmark_unix_seconds` grows continuously
+//! while a pipeline is wedged (Prometheus evaluates `time()` at scrape time, so
+//! no in-process ticker is needed).
 
 use crate::observability::labels::Labels;
 use metrics::{Label, SharedString, gauge};

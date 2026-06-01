@@ -18,6 +18,25 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use tracing::{Instrument, info_span};
 
+/// Guard an inner connector's `connector_name()` so an empty string maps to
+/// the `"unknown"` fallback. Used both for the `connector` metric label and the
+/// `connector_name()` passthrough so the two never disagree.
+fn guarded_connector_name(raw: &'static str) -> &'static str {
+    if raw.is_empty() { "unknown" } else { raw }
+}
+
+/// Build the base `pipeline` / `row` / `connector` label vec once. The two
+/// `pipeline` / `row` heap allocations and the vec construction happen a single
+/// time at decorator construction; per-call sites `clone()` this instead of
+/// rebuilding from the `Arc<str>` labels on every page / write / flush.
+fn base_metric_labels(labels: &Labels, connector: &SharedString) -> Vec<Label> {
+    vec![
+        Label::new("pipeline", SharedString::from(labels.pipeline.to_string())),
+        Label::new("row", SharedString::from(labels.row.to_string())),
+        Label::new("connector", connector.clone()),
+    ]
+}
+
 /// Wraps a `&dyn Source` (or any `&S: Source`) and emits spans + metrics
 /// around every call. Constructed by `Pipeline::run` and never exposed to
 /// end users; the wrapped source remains the user-facing object.
@@ -25,6 +44,8 @@ pub struct InstrumentedSource<'a, S: Source + ?Sized> {
     inner: &'a S,
     labels: Labels,
     connector: SharedString,
+    /// Precomputed `pipeline` / `row` / `connector` labels, cloned per call.
+    base_labels: Vec<Label>,
     page_index: Arc<AtomicUsize>,
 }
 
@@ -35,25 +56,19 @@ impl<'a, S: Source + ?Sized> InstrumentedSource<'a, S> {
             !raw.is_empty(),
             "connector_name() must return a non-empty string"
         );
-        let connector: SharedString =
-            SharedString::const_str(if raw.is_empty() { "unknown" } else { raw });
+        let connector: SharedString = SharedString::const_str(guarded_connector_name(raw));
+        let base_labels = base_metric_labels(&labels, &connector);
         Self {
             inner,
             labels,
             connector,
+            base_labels,
             page_index: Arc::new(AtomicUsize::new(0)),
         }
     }
 
     fn metric_labels(&self) -> Vec<Label> {
-        vec![
-            Label::new(
-                "pipeline",
-                SharedString::from(self.labels.pipeline.to_string()),
-            ),
-            Label::new("row", SharedString::from(self.labels.row.to_string())),
-            Label::new("connector", self.connector.clone()),
-        ]
+        self.base_labels.clone()
     }
 
     /// Returns `metric_labels()` with an additional `kind` label appended.
@@ -70,7 +85,10 @@ impl<'a, S: Source + ?Sized> InstrumentedSource<'a, S> {
 #[async_trait]
 impl<'a, S: Source + ?Sized> Source for InstrumentedSource<'a, S> {
     fn connector_name(&self) -> &'static str {
-        self.inner.connector_name()
+        // Return the guarded name so an inner connector that returns "" maps to
+        // the "unknown" fallback — keeping this passthrough consistent with the
+        // `connector` metric label rather than leaking an empty string.
+        guarded_connector_name(self.inner.connector_name())
     }
 
     fn state_key(&self) -> Option<String> {
@@ -132,7 +150,11 @@ impl<'a, S: Source + ?Sized> Source for InstrumentedSource<'a, S> {
                     connector = %connector,
                     page_index = idx,
                 );
-                let _timer = DurationGuard::new(
+                // Armed across the poll so a cancelled / panicking page-fetch
+                // still records the time spent. Disarmed on the terminal empty
+                // poll (`Ok(None)`) so end-of-stream doesn't record a spurious
+                // ~0 sample into the page-duration histogram.
+                let mut _timer = DurationGuard::new(
                     "faucet_source_page_duration_seconds",
                     metric_labels.clone(),
                 );
@@ -158,7 +180,10 @@ impl<'a, S: Source + ?Sized> Source for InstrumentedSource<'a, S> {
                         counter!("faucet_source_errors_total", l).increment(1);
                         Err(e)?;
                     }
-                    Ok(None) => break,
+                    Ok(None) => {
+                        _timer.disarm();
+                        break;
+                    }
                     Err(panic) => {
                         let mut l = metric_labels.clone();
                         l.push(Label::new("kind", SharedString::const_str("Panic")));
@@ -201,6 +226,8 @@ pub struct InstrumentedSink<'a, S: Sink + ?Sized> {
     inner: &'a S,
     labels: Labels,
     connector: SharedString,
+    /// Precomputed `pipeline` / `row` / `connector` labels, cloned per call.
+    base_labels: Vec<Label>,
 }
 
 impl<'a, S: Sink + ?Sized> InstrumentedSink<'a, S> {
@@ -210,24 +237,18 @@ impl<'a, S: Sink + ?Sized> InstrumentedSink<'a, S> {
             !raw.is_empty(),
             "connector_name() must return a non-empty string"
         );
-        let connector: SharedString =
-            SharedString::const_str(if raw.is_empty() { "unknown" } else { raw });
+        let connector: SharedString = SharedString::const_str(guarded_connector_name(raw));
+        let base_labels = base_metric_labels(&labels, &connector);
         Self {
             inner,
             labels,
             connector,
+            base_labels,
         }
     }
 
     fn metric_labels(&self) -> Vec<Label> {
-        vec![
-            Label::new(
-                "pipeline",
-                SharedString::from(self.labels.pipeline.to_string()),
-            ),
-            Label::new("row", SharedString::from(self.labels.row.to_string())),
-            Label::new("connector", self.connector.clone()),
-        ]
+        self.base_labels.clone()
     }
 
     fn error_labels(&self, kind: &'static str) -> Vec<Label> {
@@ -240,7 +261,10 @@ impl<'a, S: Sink + ?Sized> InstrumentedSink<'a, S> {
 #[async_trait]
 impl<'a, S: Sink + ?Sized> Sink for InstrumentedSink<'a, S> {
     fn connector_name(&self) -> &'static str {
-        self.inner.connector_name()
+        // Return the guarded name so an inner connector that returns "" maps to
+        // the "unknown" fallback — keeping this passthrough consistent with the
+        // `connector` metric label rather than leaking an empty string.
+        guarded_connector_name(self.inner.connector_name())
     }
 
     async fn write_batch(&self, records: &[Value]) -> Result<usize, FaucetError> {
@@ -462,6 +486,43 @@ pub(crate) mod source_tests {
         }
     }
 
+    // Inner connector that returns an empty name. The instrumented wrapper must
+    // map this to the `"unknown"` fallback so the `connector_name()` passthrough
+    // never disagrees with the `connector` metric label.
+    struct EmptyNameSource;
+    #[async_trait]
+    impl Source for EmptyNameSource {
+        async fn fetch_with_context(
+            &self,
+            _: &HashMap<String, Value>,
+        ) -> Result<Vec<Value>, FaucetError> {
+            Ok(vec![])
+        }
+        fn connector_name(&self) -> &'static str {
+            ""
+        }
+    }
+
+    #[test]
+    fn empty_inner_connector_name_falls_back_to_unknown() {
+        let inner = EmptyNameSource;
+        // `InstrumentedSource::new` debug_asserts on an empty inner name, so
+        // build the wrapper directly with the fallback name to exercise the
+        // passthrough without tripping the assertion in debug builds.
+        let wrapped = InstrumentedSource {
+            inner: &inner,
+            labels: labels(),
+            connector: SharedString::const_str("unknown"),
+            base_labels: Vec::new(),
+            page_index: Arc::new(AtomicUsize::new(0)),
+        };
+        assert_eq!(
+            Source::connector_name(&wrapped),
+            "unknown",
+            "instrumented source must not leak an empty connector name"
+        );
+    }
+
     #[tokio::test]
     #[allow(clippy::await_holding_lock)]
     async fn records_records_counter_per_page() {
@@ -488,6 +549,63 @@ pub(crate) mod source_tests {
         assert!(
             records >= 5,
             "expected at least 5 records counted, got {records}"
+        );
+    }
+
+    // Source with a unique connector name so the page-duration histogram for
+    // this run can be isolated in the shared global recorder.
+    struct PageCountSource(Vec<Value>);
+    #[async_trait]
+    impl Source for PageCountSource {
+        async fn fetch_with_context(
+            &self,
+            _: &HashMap<String, Value>,
+        ) -> Result<Vec<Value>, FaucetError> {
+            Ok(self.0.clone())
+        }
+        fn connector_name(&self) -> &'static str {
+            "page-count-probe"
+        }
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn page_duration_records_one_sample_per_yielded_page() {
+        // 5 records at batch_size 2 → pages [2, 2, 1] = 3 yielded pages. The
+        // terminal empty poll must NOT add a 4th (spurious ~0) sample.
+        let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let snap = snapshotter();
+        let inner = PageCountSource((0..5).map(|i| json!({"i": i})).collect());
+        let wrapped = InstrumentedSource::new(&inner, labels());
+        let ctx = HashMap::new();
+        let mut s = wrapped.stream_pages(&ctx, 2);
+        let mut pages = 0usize;
+        while s.next().await.is_some() {
+            pages += 1;
+        }
+        assert_eq!(pages, 3, "expected 3 yielded pages");
+
+        let snapshot = snap.snapshot();
+        let samples: usize = snapshot
+            .into_vec()
+            .into_iter()
+            .filter_map(|(key, _u, _d, v)| {
+                if key.key().name() == "faucet_source_page_duration_seconds"
+                    && key
+                        .key()
+                        .labels()
+                        .any(|l| l.key() == "connector" && l.value() == "page-count-probe")
+                    && let DebugValue::Histogram(h) = v
+                {
+                    return Some(h.len());
+                }
+                None
+            })
+            .sum();
+        assert_eq!(
+            samples, pages,
+            "page-duration histogram must have exactly one sample per yielded \
+             page ({pages}), not page+1 (no spurious terminal sample)"
         );
     }
 
@@ -538,6 +656,36 @@ mod sink_tests {
         fn connector_name(&self) -> &'static str {
             "failing-sink"
         }
+    }
+
+    struct EmptyNameSink;
+    #[async_trait]
+    impl Sink for EmptyNameSink {
+        async fn write_batch(&self, _: &[Value]) -> Result<usize, FaucetError> {
+            Ok(0)
+        }
+        fn connector_name(&self) -> &'static str {
+            ""
+        }
+    }
+
+    #[test]
+    fn empty_inner_connector_name_falls_back_to_unknown() {
+        let inner = EmptyNameSink;
+        // `InstrumentedSink::new` debug_asserts on an empty inner name, so build
+        // the wrapper directly with the fallback name to exercise the
+        // passthrough without tripping the assertion in debug builds.
+        let wrapped = InstrumentedSink {
+            inner: &inner,
+            labels: labels(),
+            connector: SharedString::const_str("unknown"),
+            base_labels: Vec::new(),
+        };
+        assert_eq!(
+            Sink::connector_name(&wrapped),
+            "unknown",
+            "instrumented sink must not leak an empty connector name"
+        );
     }
 
     #[tokio::test]

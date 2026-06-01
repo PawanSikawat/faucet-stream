@@ -12,6 +12,7 @@ pub struct DurationGuard {
     name: KeyName,
     labels: Vec<Label>,
     started_at: Instant,
+    armed: bool,
 }
 
 impl DurationGuard {
@@ -20,7 +21,16 @@ impl DurationGuard {
             name: name.into(),
             labels,
             started_at: Instant::now(),
+            armed: true,
         }
+    }
+
+    /// Disarm the guard so dropping it records nothing. Used when the timed
+    /// span turns out not to represent real work — e.g. the terminal empty
+    /// poll at the end of a source page stream, which would otherwise record a
+    /// spurious ~0 sample into the page-duration histogram.
+    pub fn disarm(&mut self) {
+        self.armed = false;
     }
 
     /// Build the canonical (name, pipeline, row, connector) label trio.
@@ -43,6 +53,9 @@ impl DurationGuard {
 
 impl Drop for DurationGuard {
     fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
         let elapsed = self.started_at.elapsed().as_secs_f64();
         histogram!(self.name.clone(), self.labels.clone()).record(elapsed);
     }
