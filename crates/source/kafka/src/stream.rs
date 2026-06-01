@@ -7,7 +7,7 @@ use crate::state::{Bookmark, PartitionOffset, state_key};
 use async_trait::async_trait;
 use base64::Engine;
 use faucet_core::{FaucetError, Source, Stream, StreamPage};
-use faucet_kafka_common::OnDecodeError;
+use faucet_common_kafka::OnDecodeError;
 use rdkafka::ClientConfig;
 use rdkafka::Message;
 use rdkafka::config::RDKafkaLogLevel;
@@ -20,9 +20,9 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 #[cfg(feature = "schema-registry")]
-use faucet_kafka_common::KafkaValueFormat;
+use faucet_common_kafka::KafkaValueFormat;
 #[cfg(feature = "schema-registry")]
-use faucet_kafka_common::schema_registry::client::SchemaRegistryClient;
+use faucet_common_kafka::schema_registry::client::SchemaRegistryClient;
 
 pub struct KafkaSource {
     config: KafkaSourceConfig,
@@ -288,7 +288,7 @@ fn build_sr_client(
     value_format: &KafkaValueFormat,
     key_format: Option<&KafkaValueFormat>,
 ) -> Result<Option<SchemaRegistryClient>, FaucetError> {
-    fn extract_cfg(f: &KafkaValueFormat) -> Option<&faucet_kafka_common::SchemaRegistryConfig> {
+    fn extract_cfg(f: &KafkaValueFormat) -> Option<&faucet_common_kafka::SchemaRegistryConfig> {
         match f {
             KafkaValueFormat::ConfluentAvro { schema_registry }
             | KafkaValueFormat::ConfluentProtobuf { schema_registry } => Some(schema_registry),

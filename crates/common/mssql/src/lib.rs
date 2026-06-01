@@ -1,6 +1,6 @@
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
-//! # faucet-mssql-common
+//! # faucet-common-mssql
 //!
 //! Shared configuration, TLS, and connection-pool types for the
 //! [`faucet-stream`](https://crates.io/crates/faucet-stream) Microsoft SQL

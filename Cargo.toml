@@ -3,12 +3,12 @@ resolver = "3"
 members = [
     "crates/core",
     "crates/auth",
-    "crates/bigquery-common",
-    "crates/elasticsearch-common",
-    "crates/gcs-common",
-    "crates/kafka-common",
-    "crates/snowflake-common",
-    "crates/mssql-common",
+    "crates/common/bigquery",
+    "crates/common/elasticsearch",
+    "crates/common/gcs",
+    "crates/common/kafka",
+    "crates/common/snowflake",
+    "crates/common/mssql",
     "crates/source/rest",
     "crates/source/graphql",
     "crates/source/xml",
@@ -70,12 +70,12 @@ categories = ["database", "asynchronous"]
 # Internal crates
 faucet-core = { path = "crates/core", version = "1.0.0" }
 faucet-auth = { path = "crates/auth", version = "1.0.0" }
-faucet-bigquery-common = { path = "crates/bigquery-common", version = "1.0.0" }
-faucet-elasticsearch-common = { path = "crates/elasticsearch-common", version = "1.0.0" }
-faucet-gcs-common = { path = "crates/gcs-common", version = "1.0.0" }
-faucet-kafka-common = { path = "crates/kafka-common", version = "1.0.0" }
-faucet-snowflake-common = { path = "crates/snowflake-common", version = "1.0.0" }
-faucet-mssql-common = { path = "crates/mssql-common", version = "1.0.0" }
+faucet-common-bigquery = { path = "crates/common/bigquery", version = "1.0.0" }
+faucet-common-elasticsearch = { path = "crates/common/elasticsearch", version = "1.0.0" }
+faucet-common-gcs = { path = "crates/common/gcs", version = "1.0.0" }
+faucet-common-kafka = { path = "crates/common/kafka", version = "1.0.0" }
+faucet-common-snowflake = { path = "crates/common/snowflake", version = "1.0.0" }
+faucet-common-mssql = { path = "crates/common/mssql", version = "1.0.0" }
 faucet-source-rest = { path = "crates/source/rest", version = "1.0.0" }
 faucet-source-graphql = { path = "crates/source/graphql", version = "1.0.0" }
 faucet-source-xml = { path = "crates/source/xml", version = "1.0.0" }

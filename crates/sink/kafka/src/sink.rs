@@ -6,8 +6,8 @@ use crate::extract;
 use async_trait::async_trait;
 use faucet_core::{FaucetError, Sink};
 #[cfg(feature = "schema-registry")]
-use faucet_kafka_common::KafkaValueFormat;
-use faucet_kafka_common::OnKeyError;
+use faucet_common_kafka::KafkaValueFormat;
+use faucet_common_kafka::OnKeyError;
 use futures::stream::{FuturesUnordered, StreamExt};
 use rdkafka::ClientConfig;
 use rdkafka::error::{KafkaError, RDKafkaErrorCode};
@@ -17,7 +17,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 #[cfg(feature = "schema-registry")]
-use faucet_kafka_common::schema_registry::client::SchemaRegistryClient;
+use faucet_common_kafka::schema_registry::client::SchemaRegistryClient;
 
 pub struct KafkaSink {
     config: KafkaSinkConfig,
@@ -175,7 +175,7 @@ fn build_sr_client(
     value_format: &KafkaValueFormat,
     key_format: Option<&KafkaValueFormat>,
 ) -> Result<Option<SchemaRegistryClient>, FaucetError> {
-    fn cfg(f: &KafkaValueFormat) -> Option<&faucet_kafka_common::SchemaRegistryConfig> {
+    fn cfg(f: &KafkaValueFormat) -> Option<&faucet_common_kafka::SchemaRegistryConfig> {
         match f {
             KafkaValueFormat::ConfluentAvro { schema_registry }
             | KafkaValueFormat::ConfluentProtobuf { schema_registry } => Some(schema_registry),

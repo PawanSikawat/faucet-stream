@@ -2,7 +2,7 @@
 //! bound parameters. No I/O — all unit-testable.
 
 use faucet_core::FaucetError;
-use faucet_mssql_common::PARAM_LIMIT;
+use faucet_common_mssql::PARAM_LIMIT;
 use serde_json::Value;
 use tiberius::ToSql;
 

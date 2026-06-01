@@ -1,7 +1,7 @@
 //! Configuration for the MSSQL sink.
 
 use faucet_core::{FaucetError, validate_batch_size};
-use faucet_mssql_common::MssqlConnectionConfig;
+use faucet_common_mssql::MssqlConnectionConfig;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 

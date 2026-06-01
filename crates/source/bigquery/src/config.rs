@@ -7,7 +7,7 @@ use serde_json::Value;
 use std::time::Duration;
 
 // Re-export the shared credentials type so end-user imports remain stable.
-pub use faucet_bigquery_common::BigQueryCredentials;
+pub use faucet_common_bigquery::BigQueryCredentials;
 
 fn default_use_legacy_sql() -> bool {
     false

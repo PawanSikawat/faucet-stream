@@ -1,6 +1,6 @@
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
-//! # faucet-kafka-common
+//! # faucet-common-kafka
 //!
 //! Shared configuration types for the [`faucet-stream`](https://crates.io/crates/faucet-stream)
 //! Kafka source and sink connectors.

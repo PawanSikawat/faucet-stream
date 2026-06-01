@@ -132,7 +132,7 @@ async fn unresolved_auth_reference_errors() {
     );
 }
 
-/// The `credential_to_auth` helper in `faucet-snowflake-common` must reject
+/// The `credential_to_auth` helper in `faucet-common-snowflake` must reject
 /// credential variants that Snowflake has no concept of.
 #[test]
 fn credential_to_auth_rejects_basic() {
@@ -140,7 +140,7 @@ fn credential_to_auth_rejects_basic() {
         username: "u".into(),
         password: "p".into(),
     };
-    let err = faucet_snowflake_common::credential_to_auth(cred).unwrap_err();
+    let err = faucet_common_snowflake::credential_to_auth(cred).unwrap_err();
     assert!(
         matches!(err, FaucetError::Auth(_)),
         "expected Auth error, got {err:?}"

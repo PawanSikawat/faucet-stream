@@ -362,14 +362,14 @@ pub mod sink {
 
 #[cfg(any(feature = "source-gcs", feature = "sink-gcs"))]
 pub mod gcs_common {
-    pub use faucet_gcs_common::*;
+    pub use faucet_common_gcs::*;
 }
 
 // ── Kafka common types ───────────────────────────────────────────────────────
 
 #[cfg(any(feature = "source-kafka", feature = "sink-kafka"))]
 pub mod kafka_common {
-    pub use faucet_kafka_common::*;
+    pub use faucet_common_kafka::*;
 }
 
 // ── State-store backends ─────────────────────────────────────────────────────

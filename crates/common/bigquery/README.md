@@ -1,4 +1,4 @@
-# faucet-bigquery-common
+# faucet-common-bigquery
 
 Shared credential configuration and client construction for the BigQuery source and sink connectors in the [`faucet-stream`](https://crates.io/crates/faucet-stream) ecosystem.
 

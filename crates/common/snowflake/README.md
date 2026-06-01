@@ -1,4 +1,4 @@
-# faucet-snowflake-common
+# faucet-common-snowflake
 
 Shared configuration types and helpers for the Snowflake source and sink connectors in the [`faucet-stream`](https://crates.io/crates/faucet-stream) ecosystem.
 

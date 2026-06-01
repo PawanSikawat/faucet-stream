@@ -288,9 +288,9 @@ jobs:
       - name: Run kafka sink integration tests
         run: cargo test -p faucet-sink-kafka --test integration -- --test-threads=1
       - name: Run kafka schema-registry-enabled tests
-        run: cargo test -p faucet-kafka-common --all-features
+        run: cargo test -p faucet-common-kafka --all-features
       - name: Run elasticsearch-common tests
-        run: cargo test -p faucet-elasticsearch-common
+        run: cargo test -p faucet-common-elasticsearch
 
   supply-chain:
     name: Supply chain (cargo-deny)

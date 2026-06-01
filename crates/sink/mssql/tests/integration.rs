@@ -4,7 +4,7 @@
 //! `cargo test -p faucet-sink-mssql --test integration`.
 
 use faucet_core::Sink;
-use faucet_mssql_common::{MssqlConnectionConfig, MssqlPool, MssqlTls, MssqlTlsMode, build_pool};
+use faucet_common_mssql::{MssqlConnectionConfig, MssqlPool, MssqlTls, MssqlTlsMode, build_pool};
 use faucet_sink_mssql::{MssqlColumnMapping, MssqlSink, MssqlSinkConfig};
 use serde_json::{Value, json};
 use testcontainers_modules::mssql_server::MssqlServer;

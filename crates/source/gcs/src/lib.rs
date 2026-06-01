@@ -8,5 +8,5 @@ mod config;
 mod stream;
 
 pub use config::{GcsFileFormat, GcsSourceConfig};
-pub use faucet_gcs_common::GcsCredentials;
+pub use faucet_common_gcs::GcsCredentials;
 pub use stream::GcsSource;

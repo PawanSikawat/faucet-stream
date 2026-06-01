@@ -58,7 +58,7 @@ source:
 
 ## Authentication
 
-See [`faucet-gcs-common`](../../gcs-common/README.md) for the full
+See [`faucet-common-gcs`](../../gcs-common/README.md) for the full
 `GcsCredentials` reference. v1 supports:
 
 - `application_default` (ADC — recommended on GCE/GKE).

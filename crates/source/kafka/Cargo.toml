@@ -12,7 +12,7 @@ categories.workspace = true
 
 [dependencies]
 faucet-core.workspace = true
-faucet-kafka-common.workspace = true
+faucet-common-kafka.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 schemars.workspace = true
@@ -32,7 +32,7 @@ testcontainers-modules = { version = "0.15", features = ["kafka"] }
 
 [features]
 default = []
-schema-registry = ["faucet-kafka-common/schema-registry"]
+schema-registry = ["faucet-common-kafka/schema-registry"]
 
 [package.metadata.docs.rs]
 all-features = true

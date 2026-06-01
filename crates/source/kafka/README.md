@@ -55,7 +55,7 @@ All fields are top-level keys under `source.config` in the pipeline YAML.
 | `brokers` | `string` | **required** | Comma-separated list of bootstrap broker addresses, e.g. `"broker1:9092,broker2:9092"`. |
 | `topics` | `string[]` | **required** | One or more topic names to subscribe to. |
 | `group_id` | `string` | **required** | Kafka consumer group ID. Used for partition assignment and is part of the state-store key. |
-| `auth` | `KafkaAuth` | `{type: none}` | Authentication mode. See [Auth](#auth) below. Full details in the `faucet-kafka-common` README. |
+| `auth` | `KafkaAuth` | `{type: none}` | Authentication mode. See [Auth](#auth) below. Full details in the `faucet-common-kafka` README. |
 | `value_format` | `KafkaValueFormat` | `{type: json}` | How message value bytes are decoded. See [Value formats](#value-formats). |
 | `key_format` | `KafkaValueFormat \| null` | `null` | How message key bytes are decoded. When absent or `null`, key bytes are decoded as UTF-8 (or `null` if no key was set on the message). |
 | `auto_offset_reset` | `"earliest" \| "latest"` | `"latest"` | Where to start consuming a partition that has **no** bookmarked offset. On a resume, every partition assigned in a prior run carries a bookmarked offset (see [Resume and state store](#resume-and-state-store)), so this only governs first-ever encounters — a fresh run or a newly-added partition. |
@@ -120,13 +120,13 @@ The three Confluent formats require building with the `schema-registry` feature 
 faucet-source-kafka = { version = "...", features = ["schema-registry"] }
 ```
 
-Each Confluent format takes a `schema_registry` block — see the `faucet-kafka-common` README for the full `SchemaRegistryConfig` options (URL, basic auth, cache capacity, request timeout).
+Each Confluent format takes a `schema_registry` block — see the `faucet-common-kafka` README for the full `SchemaRegistryConfig` options (URL, basic auth, cache capacity, request timeout).
 
 ---
 
 ## Auth
 
-Authentication is configured via the `auth` field using `KafkaAuth` from `faucet-kafka-common`. The full auth reference — SASL/PLAIN, SASL/SCRAM, SSL client certificates, and SASL+SSL — is in the [`faucet-kafka-common` README](../kafka-common/README.md#auth-modes).
+Authentication is configured via the `auth` field using `KafkaAuth` from `faucet-common-kafka`. The full auth reference — SASL/PLAIN, SASL/SCRAM, SSL client certificates, and SASL+SSL — is in the [`faucet-common-kafka` README](../kafka-common/README.md#auth-modes).
 
 Quick example for SASL/PLAIN (Confluent Cloud, MSK with SASL):
 
@@ -243,7 +243,7 @@ A complete working example is in [`cli/examples/kafka_to_jsonl.yaml`](../../cli/
 ## See also
 
 - [`faucet-sink-kafka`](../../crates/sink/kafka/README.md) — produce records to Kafka topics.
-- [`faucet-kafka-common`](../kafka-common/README.md) — shared auth modes, value formats, schema registry client, and policy enums used by both connectors.
+- [`faucet-common-kafka`](../kafka-common/README.md) — shared auth modes, value formats, schema registry client, and policy enums used by both connectors.
 
 ---
 

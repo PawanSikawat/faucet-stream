@@ -1,7 +1,7 @@
 //! Configuration for the Kafka sink.
 
 use faucet_core::{DEFAULT_BATCH_SIZE, FaucetError};
-use faucet_kafka_common::{CompressionType, KafkaAuth, KafkaValueFormat, OnKeyError};
+use faucet_common_kafka::{CompressionType, KafkaAuth, KafkaValueFormat, OnKeyError};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -260,7 +260,7 @@ mod tests {
     fn validate_requires_schema_for_confluent_value_format() {
         // Regression for #78/#9: a Confluent SR value_format with no
         // value_schema must be rejected at config load, not fail per-record.
-        use faucet_kafka_common::SchemaRegistryConfig;
+        use faucet_common_kafka::SchemaRegistryConfig;
         let mut c = minimal();
         c.value_format = KafkaValueFormat::ConfluentAvro {
             schema_registry: SchemaRegistryConfig::new("http://localhost:8081"),

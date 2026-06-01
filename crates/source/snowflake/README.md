@@ -4,7 +4,7 @@ Snowflake query source connector for the [`faucet-stream`](https://crates.io/cra
 
 ## Features
 
-- **JWT key-pair and OAuth bearer authentication** — `SnowflakeAuth` re-exported from [`faucet-snowflake-common`](https://crates.io/crates/faucet-snowflake-common); credentials are masked in `Debug` output.
+- **JWT key-pair and OAuth bearer authentication** — `SnowflakeAuth` re-exported from [`faucet-common-snowflake`](https://crates.io/crates/faucet-common-snowflake); credentials are masked in `Debug` output.
 - **Server-side partitioning** — large result sets are paged via `GET /api/v2/statements/{handle}?partition=N`; one HTTP round-trip per partition, no client-side buffering of unrelated partitions.
 - **Configurable batching** — `batch_size` re-frames partitions into pages for `Source::stream_pages`; `batch_size = 0` opts out of re-chunking and emits the full result set as one page.
 - **Async / sync handling** — if Snowflake returns `202 Accepted` (statement still running), the source polls the handle until the result is ready, bounded by `poll_timeout` (default 300 s; `0` = poll forever) so a stuck statement fails instead of hanging.

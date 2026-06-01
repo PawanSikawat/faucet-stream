@@ -3,11 +3,11 @@
 
 use base64::Engine;
 use faucet_core::FaucetError;
-use faucet_kafka_common::KafkaValueFormat;
+use faucet_common_kafka::KafkaValueFormat;
 use serde_json::Value;
 
 #[cfg(feature = "schema-registry")]
-use faucet_kafka_common::schema_registry::{
+use faucet_common_kafka::schema_registry::{
     avro, client::SchemaRegistryClient, json_schema, protobuf,
 };
 

@@ -1,6 +1,6 @@
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
-//! # faucet-elasticsearch-common
+//! # faucet-common-elasticsearch
 //!
 //! Shared configuration types for the [`faucet-stream`](https://crates.io/crates/faucet-stream)
 //! Elasticsearch source and sink connectors.

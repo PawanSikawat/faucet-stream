@@ -2,7 +2,7 @@
 //! (`${gcp-sm:projects/<p>/secrets/<s>/versions/<v>}`).
 //!
 //! Auth: Application Default Credentials via `google-cloud-auth` (same chain
-//! `faucet-gcs-common` uses). Fetches via the REST `:access` endpoint and
+//! `faucet-common-gcs` uses). Fetches via the REST `:access` endpoint and
 //! base64-decodes the payload.
 
 use super::SecretResolver;

@@ -2,7 +2,7 @@
 
 use crate::config::BigQuerySinkConfig;
 use async_trait::async_trait;
-use faucet_bigquery_common::build_client;
+use faucet_common_bigquery::build_client;
 use faucet_core::FaucetError;
 use gcp_bigquery_client::Client;
 use gcp_bigquery_client::model::table_data_insert_all_request::TableDataInsertAllRequest;

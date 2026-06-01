@@ -1,6 +1,6 @@
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
-//! # faucet-bigquery-common
+//! # faucet-common-bigquery
 //!
 //! Shared credential configuration and client construction for the
 //! [`faucet-stream`](https://crates.io/crates/faucet-stream) BigQuery source

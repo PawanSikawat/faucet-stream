@@ -15,8 +15,8 @@ pub mod stream;
 
 pub use faucet_core::{FaucetError, Source};
 #[cfg(feature = "schema-registry")]
-pub use faucet_kafka_common::SchemaRegistryConfig;
-pub use faucet_kafka_common::{
+pub use faucet_common_kafka::SchemaRegistryConfig;
+pub use faucet_common_kafka::{
     BasicAuth, CompressionType, KafkaAuth, KafkaValueFormat, OnDecodeError, OnKeyError,
     ScramMechanism,
 };

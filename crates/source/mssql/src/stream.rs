@@ -15,7 +15,7 @@ use futures::{Stream, TryStreamExt};
 use serde_json::Value;
 use tiberius::{QueryItem, ToSql};
 
-use faucet_mssql_common::{MssqlPool, build_pool, with_statement_timeout};
+use faucet_common_mssql::{MssqlPool, build_pool, with_statement_timeout};
 
 use crate::config::{MssqlReplication, MssqlSourceConfig};
 use crate::convert::row_to_json;

@@ -1,7 +1,7 @@
 //! Configuration types for the Kafka source.
 
 use faucet_core::{DEFAULT_BATCH_SIZE, FaucetError};
-use faucet_kafka_common::{KafkaAuth, KafkaValueFormat, OnDecodeError};
+use faucet_common_kafka::{KafkaAuth, KafkaValueFormat, OnDecodeError};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;

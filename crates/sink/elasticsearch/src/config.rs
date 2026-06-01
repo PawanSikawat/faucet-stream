@@ -4,7 +4,7 @@ use faucet_core::{AuthSpec, DEFAULT_BATCH_SIZE};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-pub use faucet_elasticsearch_common::ElasticsearchAuth;
+pub use faucet_common_elasticsearch::ElasticsearchAuth;
 
 /// Deprecated alias retained for one minor release. Removed in `0.4.0`.
 #[deprecated(since = "0.3.0", note = "renamed to `ElasticsearchAuth`")]

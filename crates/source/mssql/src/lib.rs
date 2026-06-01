@@ -33,5 +33,5 @@ pub use config::{MssqlReplication, MssqlSourceConfig};
 pub use stream::MssqlSource;
 
 // Re-export the shared connection/TLS types so users configure the source
-// without depending on `faucet-mssql-common` directly.
-pub use faucet_mssql_common::{MssqlConnectionConfig, MssqlTls, MssqlTlsMode};
+// without depending on `faucet-common-mssql` directly.
+pub use faucet_common_mssql::{MssqlConnectionConfig, MssqlTls, MssqlTlsMode};

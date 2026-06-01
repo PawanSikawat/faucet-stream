@@ -4,7 +4,7 @@ BigQuery query source connector for the [`faucet-stream`](https://crates.io/crat
 
 ## Features
 
-- **Three credential modes** — `ApplicationDefault`, `ServiceAccountKeyPath`, or inline `ServiceAccountKey`; the shared `BigQueryCredentials` enum is re-exported from [`faucet-bigquery-common`](https://crates.io/crates/faucet-bigquery-common) so it matches the BigQuery sink byte-for-byte.
+- **Three credential modes** — `ApplicationDefault`, `ServiceAccountKeyPath`, or inline `ServiceAccountKey`; the shared `BigQueryCredentials` enum is re-exported from [`faucet-common-bigquery`](https://crates.io/crates/faucet-common-bigquery) so it matches the BigQuery sink byte-for-byte.
 - **Sync + async result handling** — when BigQuery returns `jobComplete=false` (statement timeout exceeded), the source polls `getQueryResults` until the job finishes, bounded by `poll_timeout` (default 300 s; `0` = poll forever) so a job that never completes fails instead of hanging.
 - **Server-side pagination** — pages via `pageToken` for arbitrarily-large result sets; rows are re-framed into pages of `batch_size` for `Source::stream_pages`.
 - **Type-aware row decoding** — `INTEGER`/`INT64` → JSON number, `FLOAT`/`FLOAT64` → number, `BOOLEAN`/`BOOL` → bool, `NUMERIC`/`BIGNUMERIC` → string (full precision), `RECORD`/`STRUCT` → nested object, `REPEATED` → array, `JSON` → parsed value, everything else → string.

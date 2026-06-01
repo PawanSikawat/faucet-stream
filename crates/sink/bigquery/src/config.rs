@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 
 // Re-export the shared credentials type so end-user imports remain stable
 // (`use faucet_sink_bigquery::BigQueryCredentials;` keeps working).
-pub use faucet_bigquery_common::BigQueryCredentials;
+pub use faucet_common_bigquery::BigQueryCredentials;
 
 /// Configuration for the BigQuery streaming insert sink.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]

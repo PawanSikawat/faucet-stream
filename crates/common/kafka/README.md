@@ -1,4 +1,4 @@
-# faucet-kafka-common
+# faucet-common-kafka
 
 Shared configuration types for `faucet-source-kafka` and `faucet-sink-kafka`.
 
@@ -38,7 +38,7 @@ Additional dependencies pulled in: `reqwest`, `lru`, `bytes`, `apache-avro`,
 
 ## Auth modes
 
-Authentication is configured via `KafkaAuth` (`crates/kafka-common/src/auth.rs`).
+Authentication is configured via `KafkaAuth` (`crates/common/kafka/src/auth.rs`).
 The `type` discriminator uses `snake_case` matching the enum variant names.
 
 ### `none` (default)
@@ -115,7 +115,7 @@ overridden to `SASL_SSL`.
 
 ## Value formats
 
-Configured via `KafkaValueFormat` (`crates/kafka-common/src/format.rs`).
+Configured via `KafkaValueFormat` (`crates/common/kafka/src/format.rs`).
 The `type` discriminator uses `snake_case`.
 
 ### `json` (default)
@@ -202,9 +202,9 @@ errors fail per `on_decode_error`.
 
 ## Schema Registry
 
-Configuration struct: `SchemaRegistryConfig` (`crates/kafka-common/src/schema_registry/mod.rs`).
+Configuration struct: `SchemaRegistryConfig` (`crates/common/kafka/src/schema_registry/mod.rs`).
 
-**Wire envelope** (`crates/kafka-common/src/schema_registry/envelope.rs`):
+**Wire envelope** (`crates/common/kafka/src/schema_registry/envelope.rs`):
 
 ```
 [0x00] [schema_id: 4 bytes big-endian] [payload bytes...]
@@ -214,7 +214,7 @@ The magic byte `0x00` identifies the Confluent wire format. `envelope::decode` s
 the header and returns `(schema_id, payload_bytes)`. `envelope::encode` prepends the
 header to a serialized payload.
 
-**Client** (`crates/kafka-common/src/schema_registry/client.rs`):
+**Client** (`crates/common/kafka/src/schema_registry/client.rs`):
 
 `SchemaRegistryClient` is `Arc`-cloneable and safe to share across tasks. Schema
 fetches are cached in an LRU bounded by `cache_capacity` (default 1024), keyed by
@@ -234,7 +234,7 @@ parse writer schema → decode payload bytes into `serde_json::Value`.
 
 ## Policy enums
 
-All three enums are in `crates/kafka-common/src/format.rs` and derive `Serialize`,
+All three enums are in `crates/common/kafka/src/format.rs` and derive `Serialize`,
 `Deserialize`, `JsonSchema`.
 
 ### `OnDecodeError`

@@ -3,7 +3,7 @@
 use crate::config::GcsSinkConfig;
 use async_trait::async_trait;
 use faucet_core::FaucetError;
-use faucet_gcs_common::{build_storage, build_storage_control};
+use faucet_common_gcs::{build_storage, build_storage_control};
 use futures::stream::{self, StreamExt, TryStreamExt};
 use google_cloud_storage::client::Storage;
 use serde_json::Value;

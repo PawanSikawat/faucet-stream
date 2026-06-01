@@ -34,7 +34,7 @@ sink:
       ca_cert_path: null
 ```
 
-See [`faucet-mssql-common`](https://crates.io/crates/faucet-mssql-common) for the
+See [`faucet-common-mssql`](https://crates.io/crates/faucet-common-mssql) for the
 full connection / TLS reference.
 
 ## Write modes

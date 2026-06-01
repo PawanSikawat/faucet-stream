@@ -7,7 +7,7 @@ use serde_json::Value;
 use std::time::Duration;
 
 // Re-export the shared auth types so end-user imports remain stable.
-pub use faucet_snowflake_common::SnowflakeAuth;
+pub use faucet_common_snowflake::SnowflakeAuth;
 
 fn default_statement_timeout() -> Duration {
     Duration::from_secs(60)

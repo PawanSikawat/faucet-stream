@@ -1,6 +1,6 @@
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
-//! # faucet-snowflake-common
+//! # faucet-common-snowflake
 //!
 //! Shared configuration types and helpers for the
 //! [`faucet-stream`](https://crates.io/crates/faucet-stream)

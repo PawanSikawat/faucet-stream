@@ -5,7 +5,7 @@
 //! a plain `cargo test --lib` (unit tests), mirroring the postgres/kafka pattern.
 
 use faucet_core::Source;
-use faucet_mssql_common::{MssqlConnectionConfig, MssqlTls, MssqlTlsMode, build_pool};
+use faucet_common_mssql::{MssqlConnectionConfig, MssqlTls, MssqlTlsMode, build_pool};
 use faucet_source_mssql::{MssqlReplication, MssqlSource, MssqlSourceConfig};
 use futures::StreamExt;
 use serde_json::Value;
@@ -45,7 +45,7 @@ fn conn_cfg(port: u16) -> MssqlConnectionConfig {
     }
 }
 
-async fn exec(pool: &faucet_mssql_common::MssqlPool, sql: &str) {
+async fn exec(pool: &faucet_common_mssql::MssqlPool, sql: &str) {
     let mut conn = pool.get().await.expect("checkout");
     conn.execute(sql, &[]).await.expect("execute setup sql");
 }

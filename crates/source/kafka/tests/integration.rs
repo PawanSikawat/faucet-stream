@@ -10,7 +10,7 @@
 //! - `AsyncRunner` is at `testcontainers::runners::AsyncRunner` (not via modules re-export)
 
 use faucet_core::{DEFAULT_BATCH_SIZE, Source};
-use faucet_kafka_common::{KafkaAuth, KafkaValueFormat, OnDecodeError};
+use faucet_common_kafka::{KafkaAuth, KafkaValueFormat, OnDecodeError};
 use faucet_source_kafka::{KafkaSource, KafkaSourceConfig, OffsetReset};
 use rdkafka::ClientConfig;
 use rdkafka::admin::{AdminClient, AdminOptions, NewTopic, TopicReplication};

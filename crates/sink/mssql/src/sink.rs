@@ -11,7 +11,7 @@ use faucet_core::{FaucetError, RowOutcome, Sink};
 use serde_json::Value;
 use tiberius::ToSql;
 
-use faucet_mssql_common::{MssqlPool, MssqlPooledConnection, build_pool, quote_ident_mssql};
+use faucet_common_mssql::{MssqlPool, MssqlPooledConnection, build_pool, quote_ident_mssql};
 
 use crate::config::{MssqlColumnMapping, MssqlSinkConfig};
 use crate::encode::{

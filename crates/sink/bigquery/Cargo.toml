@@ -12,7 +12,7 @@ categories.workspace = true
 
 [dependencies]
 faucet-core.workspace = true
-faucet-bigquery-common.workspace = true
+faucet-common-bigquery.workspace = true
 gcp-bigquery-client = "0.28.0"
 schemars.workspace = true
 serde.workspace = true

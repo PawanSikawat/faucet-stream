@@ -104,11 +104,11 @@ source-webhook = ["dep:faucet-source-webhook"]
 source-websocket = ["dep:faucet-source-websocket"]
 source-csv = ["dep:faucet-source-csv"]
 source-elasticsearch = ["dep:faucet-source-elasticsearch"]
-source-kafka = ["dep:faucet-source-kafka", "dep:faucet-kafka-common"]
+source-kafka = ["dep:faucet-source-kafka", "dep:faucet-common-kafka"]
 source-parquet = ["dep:faucet-source-parquet"]
-source-gcs = ["dep:faucet-source-gcs", "dep:faucet-gcs-common"]
-source-bigquery = ["dep:faucet-source-bigquery", "dep:faucet-bigquery-common"]
-source-snowflake = ["dep:faucet-source-snowflake", "dep:faucet-snowflake-common"]
+source-gcs = ["dep:faucet-source-gcs", "dep:faucet-common-gcs"]
+source-bigquery = ["dep:faucet-source-bigquery", "dep:faucet-common-bigquery"]
+source-snowflake = ["dep:faucet-source-snowflake", "dep:faucet-common-snowflake"]
 
 ## Individual sink connectors.
 sink-bigquery = ["dep:faucet-sink-bigquery"]
@@ -126,13 +126,13 @@ sink-csv = ["dep:faucet-sink-csv"]
 sink-elasticsearch = ["dep:faucet-sink-elasticsearch"]
 sink-http = ["dep:faucet-sink-http"]
 sink-stdout = ["dep:faucet-sink-stdout"]
-sink-kafka = ["dep:faucet-sink-kafka", "dep:faucet-kafka-common"]
+sink-kafka = ["dep:faucet-sink-kafka", "dep:faucet-common-kafka"]
 sink-parquet = ["dep:faucet-sink-parquet"]
-sink-gcs = ["dep:faucet-sink-gcs", "dep:faucet-gcs-common"]
+sink-gcs = ["dep:faucet-sink-gcs", "dep:faucet-common-gcs"]
 
 ## Kafka Schema Registry support (forwarded to kafka crates).
 kafka-schema-registry = [
-    "faucet-kafka-common?/schema-registry",
+    "faucet-common-kafka?/schema-registry",
     "faucet-source-kafka?/schema-registry",
     "faucet-sink-kafka?/schema-registry",
 ]
@@ -160,10 +160,10 @@ transforms = ["faucet-source-rest?/transforms"]
 [dependencies]
 faucet-core.workspace = true
 faucet-auth = { workspace = true, optional = true }
-faucet-bigquery-common = { workspace = true, optional = true }
-faucet-gcs-common = { workspace = true, optional = true }
-faucet-kafka-common = { workspace = true, optional = true }
-faucet-snowflake-common = { workspace = true, optional = true }
+faucet-common-bigquery = { workspace = true, optional = true }
+faucet-common-gcs = { workspace = true, optional = true }
+faucet-common-kafka = { workspace = true, optional = true }
+faucet-common-snowflake = { workspace = true, optional = true }
 faucet-source-rest = { workspace = true, optional = true }
 faucet-source-graphql = { workspace = true, optional = true }
 faucet-source-xml = { workspace = true, optional = true }

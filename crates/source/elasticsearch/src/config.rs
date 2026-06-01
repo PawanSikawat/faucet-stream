@@ -5,7 +5,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-pub use faucet_elasticsearch_common::ElasticsearchAuth;
+pub use faucet_common_elasticsearch::ElasticsearchAuth;
 
 /// Configuration for the Elasticsearch search source.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]

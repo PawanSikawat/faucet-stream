@@ -1,4 +1,4 @@
-# faucet-elasticsearch-common
+# faucet-common-elasticsearch
 
 Shared configuration types for the Elasticsearch source and sink connectors in the [`faucet-stream`](https://crates.io/crates/faucet-stream) ecosystem.
 

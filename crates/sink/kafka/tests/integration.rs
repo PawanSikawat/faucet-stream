@@ -10,7 +10,7 @@
 //! - `AsyncRunner` is at `testcontainers::runners::AsyncRunner` (not via modules re-export)
 
 use faucet_core::{DEFAULT_BATCH_SIZE, Sink};
-use faucet_kafka_common::{CompressionType, KafkaAuth, KafkaValueFormat, OnKeyError};
+use faucet_common_kafka::{CompressionType, KafkaAuth, KafkaValueFormat, OnKeyError};
 use faucet_sink_kafka::{Acks, KafkaSink, KafkaSinkConfig, KafkaSinkTopic};
 use rdkafka::ClientConfig;
 use rdkafka::Message;

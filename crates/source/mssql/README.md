@@ -35,7 +35,7 @@ source:
 
 URL credentials with special characters must be percent-encoded
 (`@`→`%40`, `:`→`%3A`, `/`→`%2F`). See
-[`faucet-mssql-common`](https://crates.io/crates/faucet-mssql-common) for the
+[`faucet-common-mssql`](https://crates.io/crates/faucet-common-mssql) for the
 full connection / TLS reference.
 
 ## Incremental replication

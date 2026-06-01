@@ -34,5 +34,5 @@ pub use config::{MssqlColumnMapping, MssqlSinkConfig, OnUnknownField};
 pub use sink::MssqlSink;
 
 // Re-export the shared connection/TLS types so users configure the sink without
-// depending on `faucet-mssql-common` directly.
-pub use faucet_mssql_common::{MssqlConnectionConfig, MssqlTls, MssqlTlsMode};
+// depending on `faucet-common-mssql` directly.
+pub use faucet_common_mssql::{MssqlConnectionConfig, MssqlTls, MssqlTlsMode};

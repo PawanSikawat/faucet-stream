@@ -11,7 +11,7 @@
 use crate::config::BigQuerySourceConfig;
 use crate::convert::row_to_json;
 use async_trait::async_trait;
-use faucet_bigquery_common::build_client;
+use faucet_common_bigquery::build_client;
 use faucet_core::util::substitute_context_bind_params;
 use faucet_core::{FaucetError, Stream, StreamPage};
 use gcp_bigquery_client::Client;

@@ -1,7 +1,7 @@
 //! GCS source configuration.
 
 use faucet_core::DEFAULT_BATCH_SIZE;
-use faucet_gcs_common::GcsCredentials;
+use faucet_common_gcs::GcsCredentials;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 

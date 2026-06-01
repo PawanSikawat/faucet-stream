@@ -65,7 +65,7 @@ impl ElasticsearchSink {
     /// 3. If the config is a `Reference` with no provider, return an error.
     async fn resolve_auth(&self) -> Result<ElasticsearchAuth, FaucetError> {
         if let Some(p) = &self.auth_provider {
-            return faucet_elasticsearch_common::credential_to_auth(p.credential().await?);
+            return faucet_common_elasticsearch::credential_to_auth(p.credential().await?);
         }
         match &self.config.auth {
             AuthSpec::Inline(a) => Ok(a.clone()),

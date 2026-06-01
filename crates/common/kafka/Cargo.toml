@@ -1,5 +1,5 @@
 [package]
-name = "faucet-kafka-common"
+name = "faucet-common-kafka"
 version = "1.0.0"
 edition.workspace = true
 rust-version.workspace = true

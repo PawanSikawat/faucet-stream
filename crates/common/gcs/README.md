@@ -1,4 +1,4 @@
-# faucet-gcs-common
+# faucet-common-gcs
 
 Shared credential and client-construction types for `faucet-source-gcs` and
 `faucet-sink-gcs`. Both crates re-export `GcsCredentials`, so end-users

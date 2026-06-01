@@ -7,7 +7,7 @@ use std::time::Duration;
 
 // Re-export the shared auth types so end-user imports remain stable
 // (`use faucet_sink_snowflake::SnowflakeAuth;` keeps working).
-pub use faucet_snowflake_common::SnowflakeAuth;
+pub use faucet_common_snowflake::SnowflakeAuth;
 
 /// Configuration for the Snowflake sink.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]

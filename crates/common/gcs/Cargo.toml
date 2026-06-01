@@ -1,22 +1,23 @@
 [package]
-name = "faucet-elasticsearch-common"
+name = "faucet-common-gcs"
 version = "1.0.0"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Shared configuration types for the faucet-stream Elasticsearch source and sink connectors"
+description = "Shared GCS credential and client types for the faucet-stream ecosystem"
 readme = "README.md"
-keywords = ["elasticsearch", "search", "etl", "pipeline", "faucet"]
+keywords = ["gcs", "gcp", "storage", "etl", "faucet"]
 categories.workspace = true
 
 [dependencies]
 faucet-core.workspace = true
-serde = { workspace = true, features = ["derive"] }
 schemars.workspace = true
-
-[dev-dependencies]
+serde.workspace = true
 serde_json.workspace = true
+google-cloud-storage.workspace = true
+google-cloud-auth.workspace = true
+tokio.workspace = true
 
 [package.metadata.docs.rs]
 all-features = true

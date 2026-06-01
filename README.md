@@ -204,12 +204,12 @@ faucet-stream is a Cargo workspace with 50 crates — 21 sources, 17 sinks, 6 sh
 | [`faucet-sink-kafka`](crates/sink/kafka) | Apache Kafka — producer with FuturesUnordered batching, multi-topic routing |
 | [`faucet-sink-parquet`](crates/sink/parquet) | Apache Parquet — local file or S3; schema inference, compression, row/byte rollover |
 | **Shared libraries** | |
-| [`faucet-bigquery-common`](crates/bigquery-common) | Shared BigQuery types — `BigQueryCredentials` enum and `build_client` helper |
-| [`faucet-elasticsearch-common`](crates/elasticsearch-common) | Shared `ElasticsearchAuth` enum for Elasticsearch source/sink |
-| [`faucet-gcs-common`](crates/gcs-common) | Shared GCS types — credentials enum, Storage/StorageControl client builders |
-| [`faucet-kafka-common`](crates/kafka-common) | Shared Kafka types — auth, value formats, Schema Registry client |
-| [`faucet-snowflake-common`](crates/snowflake-common) | Shared Snowflake types — `SnowflakeAuth` enum + auth header helpers |
-| [`faucet-mssql-common`](crates/mssql-common) | Shared MSSQL types — connection/TLS config, `tiberius`+`bb8` pool builder, identifier quoting |
+| [`faucet-common-bigquery`](crates/common/bigquery) | Shared BigQuery types — `BigQueryCredentials` enum and `build_client` helper |
+| [`faucet-common-elasticsearch`](crates/common/elasticsearch) | Shared `ElasticsearchAuth` enum for Elasticsearch source/sink |
+| [`faucet-common-gcs`](crates/common/gcs) | Shared GCS types — credentials enum, Storage/StorageControl client builders |
+| [`faucet-common-kafka`](crates/common/kafka) | Shared Kafka types — auth, value formats, Schema Registry client |
+| [`faucet-common-snowflake`](crates/common/snowflake) | Shared Snowflake types — `SnowflakeAuth` enum + auth header helpers |
+| [`faucet-common-mssql`](crates/common/mssql) | Shared MSSQL types — connection/TLS config, `tiberius`+`bb8` pool builder, identifier quoting |
 | **State stores** | |
 | [`faucet-state-redis`](crates/state/redis) | Redis-backed `StateStore` for persistent bookmarks |
 | [`faucet-state-postgres`](crates/state/postgres) | PostgreSQL-backed `StateStore` for persistent bookmarks |
@@ -1128,12 +1128,12 @@ crates/
     stdout/                   — Stdout / stderr (JSON Lines, pretty JSON, TSV)
     kafka/                    — Apache Kafka producer
     parquet/                  — Apache Parquet writer (local, S3)
-  bigquery-common/            — faucet-bigquery-common: shared BigQueryCredentials + build_client
-  elasticsearch-common/       — faucet-elasticsearch-common: shared ElasticsearchAuth enum
-  gcs-common/                 — faucet-gcs-common: shared GCS credentials + client builders
-  kafka-common/               — faucet-kafka-common: shared Kafka auth, formats, Schema Registry
-  snowflake-common/           — faucet-snowflake-common: shared SnowflakeAuth + JWT/OAuth header helpers
-  mssql-common/               — faucet-mssql-common: shared MSSQL connection/TLS config + tiberius/bb8 pool
+  bigquery-common/            — faucet-common-bigquery: shared BigQueryCredentials + build_client
+  elasticsearch-common/       — faucet-common-elasticsearch: shared ElasticsearchAuth enum
+  gcs-common/                 — faucet-common-gcs: shared GCS credentials + client builders
+  kafka-common/               — faucet-common-kafka: shared Kafka auth, formats, Schema Registry
+  snowflake-common/           — faucet-common-snowflake: shared SnowflakeAuth + JWT/OAuth header helpers
+  mssql-common/               — faucet-common-mssql: shared MSSQL connection/TLS config + tiberius/bb8 pool
   state/
     redis/                    — Redis-backed StateStore
     postgres/                 — PostgreSQL-backed StateStore
