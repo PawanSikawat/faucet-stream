@@ -353,6 +353,12 @@ impl Source for WebsocketSource {
                     }
 
                     if reconnect_now {
+                        // At-most-once across a reconnect: a live WebSocket has no
+                        // replayable offset, so `continue 'outer` re-connects and
+                        // re-subscribes to the *current* stream — any frames the
+                        // server pushed during the disconnect gap are not replayed
+                        // and are lost. Inherent to live feeds (documented in the
+                        // README under "Not resumable"), not a bug.
                         if reconnect && max_attempts.is_none_or(|m| reconnect_attempts < m) {
                             reconnect_attempts += 1;
                             tracing::warn!(attempt = reconnect_attempts, "websocket source: reconnecting");
