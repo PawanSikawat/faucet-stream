@@ -124,6 +124,14 @@ pub struct ServeArgs {
     /// Idempotency-key replay window (seconds).
     #[arg(long, default_value_t = 86_400)]
     pub idempotency_retention_secs: u64,
+    /// Run-ownership lease TTL in seconds (multi-instance orphan fencing). A run
+    /// is owned by the instance executing it and its lease is heartbeated at
+    /// ~⅓ of this interval; only a run whose lease has expired (owner presumed
+    /// dead) is recovered as failed. Make this comfortably larger than expected
+    /// GC/IO stalls so a healthy-but-slow instance is never falsely reclaimed.
+    /// Only relevant with a persistent (postgres/sqlite) history backend.
+    #[arg(long, default_value_t = 30)]
+    pub lease_ttl_secs: u64,
     /// Per-probe timeout for `doctor_first` preflight (seconds).
     #[arg(long, default_value_t = 10)]
     pub probe_timeout_secs: u64,

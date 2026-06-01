@@ -125,14 +125,32 @@ faucet serve --history 'postgres://user:pw@db/faucet'
 faucet serve --history 'sqlite:/var/lib/faucet/runs.db'
 ```
 
-Both create their schema on first connect. On startup, any run left
-non-terminal by a previous process is marked `failed` (no cross-process resume —
-re-submit to retry). If the backend is unreachable at startup, or fails at
-runtime, serve **degrades to the in-memory store** so it stays up: it logs once,
-sets the `faucet_serve_history_degraded` gauge, and `/readyz` returns `503`.
-Persisted records are not migrated into the fallback — degraded mode is a
-stay-alive, not a replica. Terminal records are retained for
+Both create their schema on first connect. If the backend is unreachable at
+startup, or fails at runtime, serve **degrades to the in-memory store** so it
+stays up: it logs once, sets the `faucet_serve_history_degraded` gauge, and
+`/readyz` returns `503`. Persisted records are not migrated into the fallback —
+degraded mode is a stay-alive, not a replica. Terminal records are retained for
 `--retain-terminal-runs-secs` (default 7 days).
+
+### Multi-instance orphan recovery (run-ownership leases)
+
+A persistent backend can be **shared by several `faucet serve` instances** (an
+HA pair, a rolling/blue-green deploy). Each instance gets a fresh id at startup
+and *owns* the runs it executes; while a run is in flight its owner heartbeats a
+**lease** on the run record (at ~⅓ of `--lease-ttl-secs`, default 30s). A run is
+only recovered — marked `failed` with `owning serve instance's lease expired` —
+once its lease has expired, i.e. its owner stopped heartbeating (crashed or was
+shut down). Recovery runs both at startup and periodically, so a surviving
+instance reclaims a dead peer's orphans without waiting for a restart.
+
+This means a starting or running instance **never** fails another *live*
+instance's in-flight runs — the gap that an unscoped "fail every non-terminal
+run at startup" sweep would open on a shared database. Tune `--lease-ttl-secs`
+above your worst-case GC/IO stall so a healthy-but-slow instance is never
+falsely reclaimed (a longer TTL is safer but slows how quickly a crashed
+instance's runs are cleaned up). The in-memory backend is single-process and
+unshared, so leases don't apply to it. There is still no cross-process *resume*:
+a recovered run is marked failed, not continued — re-submit to retry.
 
 ## Graceful shutdown
 

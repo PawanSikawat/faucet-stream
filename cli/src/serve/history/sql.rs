@@ -23,6 +23,10 @@ use std::time::Duration;
 /// DDL run at connect time. Valid verbatim on both Postgres and SQLite (only
 /// `TEXT` columns, `IF NOT EXISTS`, and standard indexes).
 pub const DDL: &[&str] = &[
+    // `owner` is the id of the serve instance that owns the run; `lease_expires_at`
+    // is the RFC3339 instant past which that ownership is presumed dead. Together
+    // they fence orphan recovery: an instance only fails a non-terminal run whose
+    // lease has expired, never another live instance's heartbeated runs (#146 H7).
     "CREATE TABLE IF NOT EXISTS faucet_serve_runs (\
         run_id TEXT PRIMARY KEY,\
         name TEXT,\
@@ -30,9 +34,15 @@ pub const DDL: &[&str] = &[
         submitted_at TEXT NOT NULL,\
         finished_at TEXT,\
         idempotency_key TEXT,\
+        owner TEXT,\
+        lease_expires_at TEXT,\
         body TEXT NOT NULL)",
     "CREATE INDEX IF NOT EXISTS faucet_serve_runs_submitted_idx \
         ON faucet_serve_runs (submitted_at)",
+    // Speeds the per-tick orphan scan / lease renewal, which filter on
+    // (status, owner, lease_expires_at).
+    "CREATE INDEX IF NOT EXISTS faucet_serve_runs_status_lease_idx \
+        ON faucet_serve_runs (status, lease_expires_at)",
     "CREATE TABLE IF NOT EXISTS faucet_serve_idem (\
         key TEXT PRIMARY KEY,\
         run_id TEXT NOT NULL,\
@@ -57,7 +67,12 @@ pub struct Stmts {
     pub list: String,
     pub purge_runs: String,
     pub purge_idem: String,
+    /// Select non-terminal runs whose owning instance's lease has expired (or
+    /// is unset) — the orphans this instance may safely fail. Param: `now`.
     pub select_orphans: String,
+    /// Extend the lease of this instance's own non-terminal runs (heartbeat).
+    /// Params: `new_lease_expiry`, `instance_id`.
+    pub renew_leases: String,
     pub insert_idem: String,
     pub select_idem: String,
     pub takeover_idem: String,
@@ -79,11 +94,12 @@ impl Stmts {
     fn postgres() -> Self {
         Self {
             upsert: "INSERT INTO faucet_serve_runs \
-                (run_id,name,status,submitted_at,finished_at,idempotency_key,body) \
-                VALUES ($1,$2,$3,$4,$5,$6,$7) \
+                (run_id,name,status,submitted_at,finished_at,idempotency_key,owner,lease_expires_at,body) \
+                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) \
                 ON CONFLICT (run_id) DO UPDATE SET \
                 name=excluded.name,status=excluded.status,submitted_at=excluded.submitted_at,\
                 finished_at=excluded.finished_at,idempotency_key=excluded.idempotency_key,\
+                owner=excluded.owner,lease_expires_at=excluded.lease_expires_at,\
                 body=excluded.body"
                 .into(),
             select_body: "SELECT body FROM faucet_serve_runs WHERE run_id=$1".into(),
@@ -107,7 +123,11 @@ impl Stmts {
                 .into(),
             purge_idem: "DELETE FROM faucet_serve_idem WHERE claimed_at < $1".into(),
             select_orphans: "SELECT body FROM faucet_serve_runs \
-                WHERE status IN ('queued','running')"
+                WHERE status IN ('queued','running') \
+                AND (lease_expires_at IS NULL OR lease_expires_at < $1)"
+                .into(),
+            renew_leases: "UPDATE faucet_serve_runs SET lease_expires_at = $1 \
+                WHERE owner = $2 AND status IN ('queued','running')"
                 .into(),
             insert_idem: "INSERT INTO faucet_serve_idem (key,run_id,fingerprint,claimed_at) \
                 VALUES ($1,$2,$3,$4) ON CONFLICT (key) DO NOTHING"
@@ -124,11 +144,12 @@ impl Stmts {
     fn sqlite() -> Self {
         Self {
             upsert: "INSERT INTO faucet_serve_runs \
-                (run_id,name,status,submitted_at,finished_at,idempotency_key,body) \
-                VALUES (?,?,?,?,?,?,?) \
+                (run_id,name,status,submitted_at,finished_at,idempotency_key,owner,lease_expires_at,body) \
+                VALUES (?,?,?,?,?,?,?,?,?) \
                 ON CONFLICT (run_id) DO UPDATE SET \
                 name=excluded.name,status=excluded.status,submitted_at=excluded.submitted_at,\
                 finished_at=excluded.finished_at,idempotency_key=excluded.idempotency_key,\
+                owner=excluded.owner,lease_expires_at=excluded.lease_expires_at,\
                 body=excluded.body"
                 .into(),
             select_body: "SELECT body FROM faucet_serve_runs WHERE run_id=?".into(),
@@ -150,7 +171,11 @@ impl Stmts {
                 .into(),
             purge_idem: "DELETE FROM faucet_serve_idem WHERE claimed_at < ?".into(),
             select_orphans: "SELECT body FROM faucet_serve_runs \
-                WHERE status IN ('queued','running')"
+                WHERE status IN ('queued','running') \
+                AND (lease_expires_at IS NULL OR lease_expires_at < ?)"
+                .into(),
+            renew_leases: "UPDATE faucet_serve_runs SET lease_expires_at = ? \
+                WHERE owner = ? AND status IN ('queued','running')"
                 .into(),
             insert_idem: "INSERT INTO faucet_serve_idem (key,run_id,fingerprint,claimed_at) \
                 VALUES (?,?,?,?) ON CONFLICT (key) DO NOTHING"
@@ -223,6 +248,10 @@ macro_rules! impl_sql_history {
         pub struct $name {
             pool: $pool,
             idem_retention: std::time::Duration,
+            /// This serve instance's id, stamped as `owner` on every upsert.
+            instance_id: String,
+            /// How far ahead each upsert / heartbeat pushes a run's lease.
+            lease_ttl: std::time::Duration,
             stmts: $crate::serve::history::sql::Stmts,
         }
 
@@ -231,11 +260,15 @@ macro_rules! impl_sql_history {
             pub fn from_parts(
                 pool: $pool,
                 idem_retention: std::time::Duration,
+                lease_ttl: std::time::Duration,
+                instance_id: String,
                 stmts: $crate::serve::history::sql::Stmts,
             ) -> Self {
                 Self {
                     pool,
                     idem_retention,
+                    instance_id,
+                    lease_ttl,
                     stmts,
                 }
             }
@@ -334,6 +367,11 @@ macro_rules! impl_sql_history {
                 let body = sql::encode_body(rec)?;
                 let submitted = sql::fmt_ts(rec.submitted_at);
                 let finished = rec.finished_at.map(sql::fmt_ts);
+                // Stamp this instance as the owner and start/renew the lease.
+                // The owner/lease are SQL-column-only (never in the record body),
+                // so the heartbeat can extend a lease without a body read-modify-
+                // write race (#146 H7).
+                let lease = sql::fmt_ts(chrono::Utc::now() + self.lease_ttl);
                 sqlx::query(&self.stmts.upsert)
                     .bind(&rec.run_id)
                     .bind(rec.name.as_deref())
@@ -341,6 +379,8 @@ macro_rules! impl_sql_history {
                     .bind(&submitted)
                     .bind(finished.as_deref())
                     .bind(rec.idempotency_key.as_deref())
+                    .bind(&self.instance_id)
+                    .bind(&lease)
                     .bind(&body)
                     .execute(&self.pool)
                     .await
@@ -516,18 +556,25 @@ macro_rules! impl_sql_history {
                 use $crate::serve::history::RunStatus;
                 use $crate::serve::history::sql;
                 let backend = |e: sqlx::Error| HistoryError::Backend(e.to_string());
+                let now = chrono::Utc::now();
+                // Only non-terminal runs whose lease has expired (the owning
+                // instance is presumed dead). A live instance heartbeats its
+                // runs' leases into the future, so this never fails another
+                // healthy instance's in-flight runs (#146 H7).
                 let rows = sqlx::query(&self.stmts.select_orphans)
+                    .bind(sql::fmt_ts(now))
                     .fetch_all(&self.pool)
                     .await
                     .map_err(backend)?;
-                let now = chrono::Utc::now();
                 let mut count = 0usize;
                 for r in &rows {
                     let body: String = r.try_get("body").map_err(backend)?;
                     let mut rec = sql::decode_body(&body)?;
                     rec.status = RunStatus::Failed;
                     rec.finished_at = Some(now);
-                    rec.error = Some("server restarted before the run finished".into());
+                    rec.error = Some(
+                        "owning serve instance's lease expired before the run finished".into(),
+                    );
                     if rec.elapsed_secs.is_none()
                         && let Some(started) = rec.started_at
                     {
@@ -537,6 +584,21 @@ macro_rules! impl_sql_history {
                     count += 1;
                 }
                 Ok(count)
+            }
+
+            async fn renew_leases(&self) -> Result<usize, $crate::serve::history::HistoryError> {
+                use $crate::serve::history::HistoryError;
+                use $crate::serve::history::sql;
+                let backend = |e: sqlx::Error| HistoryError::Backend(e.to_string());
+                let new_lease = sql::fmt_ts(chrono::Utc::now() + self.lease_ttl);
+                let renewed = sqlx::query(&self.stmts.renew_leases)
+                    .bind(&new_lease)
+                    .bind(&self.instance_id)
+                    .execute(&self.pool)
+                    .await
+                    .map_err(backend)?
+                    .rows_affected() as usize;
+                Ok(renewed)
             }
 
             fn degraded(&self) -> bool {

@@ -29,6 +29,7 @@ fn args_on(port: u16) -> ServeArgs {
         shutdown_grace_secs: 5,
         retain_terminal_runs_secs: 604_800,
         idempotency_retention_secs: 86_400,
+        lease_ttl_secs: 30,
         probe_timeout_secs: 5,
         env_file: None,
         no_env_file: true,

@@ -42,9 +42,16 @@ async fn postgres_backend_full_lifecycle() {
         return;
     };
 
-    let h = PostgresHistory::connect(&url, Duration::from_secs(3600))
-        .await
-        .expect("connect postgres history (is FAUCET_TEST_POSTGRES_URL reachable?)");
+    // Zero lease TTL → every run's lease is born expired, so the orphan written
+    // below is recoverable by recover_orphans without waiting for a real TTL.
+    let h = PostgresHistory::connect(
+        &url,
+        Duration::from_secs(3600),
+        Duration::ZERO,
+        "pg-test".into(),
+    )
+    .await
+    .expect("connect postgres history (is FAUCET_TEST_POSTGRES_URL reachable?)");
 
     // Unique id prefix so repeated runs against a shared DB don't collide.
     let p = format!("pg-{}", Utc::now().timestamp_nanos_opt().unwrap_or(0));

@@ -13,8 +13,14 @@ impl_sql_history!(SqliteHistory, sqlx::SqlitePool);
 impl SqliteHistory {
     /// Connect (creating the database file if missing), create the schema if
     /// absent, and return the backend. WAL + a busy timeout let the connection
-    /// pool tolerate concurrent run writes.
-    pub async fn connect(url: &str, idem_retention: Duration) -> Result<Self, HistoryError> {
+    /// pool tolerate concurrent run writes. `lease_ttl` and `instance_id` drive
+    /// instance-fenced orphan recovery (#146 H7).
+    pub async fn connect(
+        url: &str,
+        idem_retention: Duration,
+        lease_ttl: Duration,
+        instance_id: String,
+    ) -> Result<Self, HistoryError> {
         let opts = SqliteConnectOptions::from_str(url)
             .map_err(|e| HistoryError::Backend(format!("invalid sqlite url '{url}': {e}")))?
             .create_if_missing(true)
@@ -34,6 +40,8 @@ impl SqliteHistory {
         Ok(Self::from_parts(
             pool,
             idem_retention,
+            lease_ttl,
+            instance_id,
             Stmts::new(Dialect::Sqlite),
         ))
     }

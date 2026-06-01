@@ -13,10 +13,23 @@ use std::collections::BTreeMap;
 use std::time::Duration;
 
 async fn store(dir: &tempfile::TempDir, file: &str) -> SqliteHistory {
+    store_with(dir, file, Duration::from_secs(3600), "test-instance").await
+}
+
+/// Build a backend with an explicit lease TTL + instance id, for the
+/// instance-fencing tests (#146 H7).
+async fn store_with(
+    dir: &tempfile::TempDir,
+    file: &str,
+    lease_ttl: Duration,
+    instance: &str,
+) -> SqliteHistory {
     let path = dir.path().join(file);
     SqliteHistory::connect(
         &format!("sqlite:{}", path.display()),
         Duration::from_secs(3600),
+        lease_ttl,
+        instance.to_string(),
     )
     .await
     .expect("connect sqlite history")
@@ -166,10 +179,12 @@ async fn delete_respects_terminal_state() {
 }
 
 #[tokio::test]
-async fn recover_orphans_marks_non_terminal_failed_across_restart() {
+async fn recover_orphans_marks_expired_lease_non_terminal_failed() {
     let dir = tempfile::tempdir().unwrap();
     {
-        let h = store(&dir, "recover.db").await;
+        // A zero TTL makes the owner's lease expire immediately, so the orphan
+        // is recoverable as soon as the owning "process" goes away.
+        let h = store_with(&dir, "recover.db", Duration::ZERO, "inst-a").await;
         h.upsert(&rec("orphan", RunStatus::Running, Utc::now()))
             .await
             .unwrap();
@@ -178,20 +193,97 @@ async fn recover_orphans_marks_non_terminal_failed_across_restart() {
             .unwrap();
     } // drop the first "process"
 
-    // Reconnect to the same file (simulating a restart) and recover.
-    let h2 = store(&dir, "recover.db").await;
+    // A new instance reconnects (simulating a restart) and recovers.
+    let h2 = store_with(&dir, "recover.db", Duration::from_secs(30), "inst-b").await;
     let recovered = h2.recover_orphans().await.unwrap();
-    assert_eq!(recovered, 1, "only the non-terminal run is recovered");
+    assert_eq!(
+        recovered, 1,
+        "only the non-terminal expired-lease run is recovered"
+    );
     let orphan = h2.get("orphan").await.unwrap().unwrap();
     assert_eq!(orphan.status, RunStatus::Failed);
-    assert!(orphan.error.as_deref().unwrap().contains("server restart"));
+    assert!(orphan.error.as_deref().unwrap().contains("lease expired"));
     // The already-terminal run is untouched.
     assert_eq!(
         h2.get("done").await.unwrap().unwrap().status,
         RunStatus::Completed
     );
-    // Idempotent: a second pass finds nothing.
+    // Idempotent: a second pass finds nothing (the orphan is now terminal).
     assert_eq!(h2.recover_orphans().await.unwrap(), 0);
+}
+
+/// The H7 fix: a healthy peer's in-flight run carries a live (future) lease, so
+/// a *different* instance's `recover_orphans` must NOT mark it failed.
+#[tokio::test]
+async fn recover_orphans_skips_live_lease_of_another_instance() {
+    let dir = tempfile::tempdir().unwrap();
+    // Instance A upserts a Running run with a long lease (it's alive).
+    let a = store_with(&dir, "fence.db", Duration::from_secs(3600), "inst-a").await;
+    a.upsert(&rec("a-run", RunStatus::Running, Utc::now()))
+        .await
+        .unwrap();
+
+    // Instance B starts against the same DB and runs recovery. A's run has a
+    // live lease, so it must be left alone.
+    let b = store_with(&dir, "fence.db", Duration::from_secs(3600), "inst-b").await;
+    assert_eq!(
+        b.recover_orphans().await.unwrap(),
+        0,
+        "a live peer's run must not be recovered"
+    );
+    assert_eq!(
+        b.get("a-run").await.unwrap().unwrap().status,
+        RunStatus::Running,
+        "the peer's run must still be Running"
+    );
+}
+
+/// `renew_leases` is scoped to the calling instance's own non-terminal runs.
+#[tokio::test]
+async fn renew_leases_is_owner_and_status_scoped() {
+    let dir = tempfile::tempdir().unwrap();
+    let a = store_with(&dir, "renew.db", Duration::from_secs(3600), "inst-a").await;
+    a.upsert(&rec("a-running", RunStatus::Running, Utc::now()))
+        .await
+        .unwrap();
+    a.upsert(&rec("a-done", RunStatus::Completed, Utc::now()))
+        .await
+        .unwrap();
+
+    // A renews only its own non-terminal run (the completed one is excluded).
+    assert_eq!(a.renew_leases().await.unwrap(), 1);
+
+    // A different instance owns nothing here, so it renews nothing.
+    let b = store_with(&dir, "renew.db", Duration::from_secs(3600), "inst-b").await;
+    assert_eq!(b.renew_leases().await.unwrap(), 0);
+}
+
+/// A heartbeat renews the lease, so a previously-recoverable run becomes
+/// protected from a peer's recovery scan.
+#[tokio::test]
+async fn renew_leases_protects_a_run_from_recovery() {
+    let dir = tempfile::tempdir().unwrap();
+    // TTL 0 → the run's lease is born expired (recoverable).
+    let a = store_with(&dir, "protect.db", Duration::ZERO, "inst-a").await;
+    a.upsert(&rec("a-run", RunStatus::Running, Utc::now()))
+        .await
+        .unwrap();
+
+    // A peer would recover it right now (expired lease)...
+    let b = store_with(&dir, "protect.db", Duration::from_secs(3600), "inst-b").await;
+    // ...but first A heartbeats with a fresh, long lease.
+    let a_live = store_with(&dir, "protect.db", Duration::from_secs(3600), "inst-a").await;
+    assert_eq!(a_live.renew_leases().await.unwrap(), 1);
+
+    assert_eq!(
+        b.recover_orphans().await.unwrap(),
+        0,
+        "the heartbeat extended the lease, so the run must no longer be an orphan"
+    );
+    assert_eq!(
+        b.get("a-run").await.unwrap().unwrap().status,
+        RunStatus::Running
+    );
 }
 
 /// End-to-end: boot `faucet serve --history sqlite:…`, submit a run over HTTP,
@@ -221,6 +313,7 @@ async fn server_with_sqlite_history_persists_runs() {
         shutdown_grace_secs: 5,
         retain_terminal_runs_secs: 604_800,
         idempotency_retention_secs: 86_400,
+        lease_ttl_secs: 30,
         probe_timeout_secs: 5,
         env_file: None,
         no_env_file: true,

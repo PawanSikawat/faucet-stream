@@ -122,6 +122,7 @@ mod tests {
             shutdown_grace: Duration::from_secs(60),
             retain_terminal_runs: Duration::from_secs(60),
             idempotency_retention: Duration::from_secs(60),
+            lease_ttl: Duration::from_secs(30),
             probe_timeout: Duration::from_secs(10),
             env_file: None,
             no_env_file: false,
