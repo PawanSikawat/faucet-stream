@@ -5,6 +5,7 @@
 use crate::dlq::DlqConfig;
 use crate::state::StateStore;
 use std::sync::Arc;
+use tokio_util::sync::CancellationToken;
 
 #[derive(Default, Clone)]
 pub struct RunStreamOptions {
@@ -19,6 +20,12 @@ pub struct RunStreamOptions {
     /// Adaptive batch-size controller config; `None` (or `enabled = false`)
     /// leaves the per-page write path unchanged.
     pub adaptive: Option<crate::adaptive::AdaptiveBatchConfig>,
+    /// Cooperative cancellation. When set and cancelled mid-run, the streaming
+    /// loop stops polling new pages, **flushes the sinks** (so a buffered sink
+    /// like Parquet writes its footer / completes its upload rather than
+    /// orphaning the file), and returns the partial result. Without this, a
+    /// dropped run future loses everything written-but-unflushed (#146 H16).
+    pub cancel: Option<CancellationToken>,
 }
 
 impl RunStreamOptions {
@@ -49,6 +56,12 @@ impl RunStreamOptions {
 
     pub fn with_dlq(mut self, dlq: DlqConfig) -> Self {
         self.dlq = Some(dlq);
+        self
+    }
+
+    /// Attach a cancellation token for cooperative, flush-completing cancel.
+    pub fn with_cancel(mut self, cancel: CancellationToken) -> Self {
+        self.cancel = Some(cancel);
         self
     }
 

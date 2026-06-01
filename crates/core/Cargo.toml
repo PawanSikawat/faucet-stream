@@ -57,7 +57,12 @@ regex = { workspace = true, optional = true }
 futures-core.workspace = true
 futures.workspace = true
 async-stream = { workspace = true }
-tokio = { workspace = true, features = ["sync", "fs", "io-util", "time"] }
+# `macros` is required by `tokio::select!` in the streaming loop's cooperative
+# cancellation (#146 H16); without it a connector built in feature isolation
+# (no dependent pulling tokio/macros in via unification) fails to compile.
+tokio = { workspace = true, features = ["sync", "fs", "io-util", "time", "macros"] }
+# `CancellationToken` for cooperative run cancellation (flush-on-cancel, #146 H16).
+tokio-util = { workspace = true }
 dotenvy = "0.15"
 envy = "0.4"
 metrics.workspace = true

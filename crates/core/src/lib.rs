@@ -80,6 +80,10 @@ pub use async_trait::async_trait;
 pub use futures_core::{self, Stream};
 pub use schemars::{self, JsonSchema, schema_for};
 pub use serde_json::{self, Value, json};
+/// Re-exported so callers of [`Pipeline::with_cancel`](pipeline::Pipeline::with_cancel)
+/// / [`RunStreamOptions::with_cancel`] can name the token type without adding
+/// `tokio-util` themselves.
+pub use tokio_util::sync::CancellationToken;
 
 #[cfg(feature = "compression")]
 pub use compression::{Compression, CompressionConfig, compress_buf, warn_mismatch};

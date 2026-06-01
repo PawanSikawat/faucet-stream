@@ -153,6 +153,15 @@ calling `flush()`, no visible file is produced** — the upload is aborted by
 disk or in S3.
 
 Pipelines must therefore always call `flush()` at the end of their run.
+`faucet-core`'s streaming pipeline does this on the success path **and** on the
+error-unwind path. It also flushes on **cooperative cancellation**: when a run
+is cancelled via a `CancellationToken` (the `faucet serve` run-timeout / `POST
+/cancel` / shutdown, or the CLI's `on_error: stop`), the pipeline stops at the
+next page boundary and flushes, so the footer is written and the rows committed
+so far survive — rather than the whole file being orphaned by a dropped future
+(#146 H16). A sink stuck *mid-write* past the flush-grace window is still
+hard-dropped (and its file lost), so size pages so a single `write_batch` stays
+well within the grace.
 
 ## Round-tripping with `faucet-source-parquet`
 

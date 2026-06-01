@@ -80,6 +80,9 @@ pub async fn run(args: RunArgs) -> CliResult<()> {
             state_path_override: args.state_path.clone(),
             auth,
             clock: resolve_run_clock(args.clock.as_deref())?,
+            // `faucet run` has no external cancel signal; the executor still
+            // cooperatively cancels in-flight rows on `on_error: stop`.
+            cancel: None,
         },
     )
     .await?;

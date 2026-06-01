@@ -10,8 +10,14 @@ use std::time::Duration;
 impl_sql_history!(PostgresHistory, sqlx::PgPool);
 
 impl PostgresHistory {
-    /// Connect, create the schema if absent, and return the backend.
-    pub async fn connect(url: &str, idem_retention: Duration) -> Result<Self, HistoryError> {
+    /// Connect, create the schema if absent, and return the backend. `lease_ttl`
+    /// and `instance_id` drive instance-fenced orphan recovery (#146 H7).
+    pub async fn connect(
+        url: &str,
+        idem_retention: Duration,
+        lease_ttl: Duration,
+        instance_id: String,
+    ) -> Result<Self, HistoryError> {
         let pool = PgPoolOptions::new()
             .max_connections(5)
             .connect(url)
@@ -26,6 +32,8 @@ impl PostgresHistory {
         Ok(Self::from_parts(
             pool,
             idem_retention,
+            lease_ttl,
+            instance_id,
             Stmts::new(Dialect::Postgres),
         ))
     }

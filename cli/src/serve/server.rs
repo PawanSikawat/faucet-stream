@@ -113,13 +113,72 @@ pub(crate) async fn maintenance_loop(
     }
 }
 
+/// The lease heartbeat / orphan-recovery cadence: one third of the lease TTL
+/// (so a run sees ≥2 renewals before its lease could expire), floored at 1s.
+fn lease_interval(lease_ttl: Duration) -> Duration {
+    (lease_ttl / 3).max(Duration::from_secs(1))
+}
+
+/// Background lease-maintenance loop (#146 H7). Every `period`:
+///
+/// 1. **Heartbeat** — renew this instance's own non-terminal runs' leases, so a
+///    peer never reclaims a run we are still executing.
+/// 2. **Recover** — fail any non-terminal run whose owning instance's lease has
+///    expired (a crashed/gone peer), so a survivor eventually cleans up orphans
+///    rather than waiting for the next process restart.
+///
+/// Renew runs *before* recover so this instance's leases are fresh when the
+/// expiry scan runs. For the in-memory backend both calls are no-ops.
+pub(crate) async fn lease_loop(
+    history: Arc<dyn RunHistory>,
+    period: Duration,
+    shutdown: CancellationToken,
+) {
+    let mut tick = tokio::time::interval(period);
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    tick.tick().await; // consume the immediate first tick
+    loop {
+        tokio::select! {
+            _ = shutdown.cancelled() => break,
+            _ = tick.tick() => {
+                if let Err(e) = history.renew_leases().await {
+                    tracing::warn!(error = %e, "lease heartbeat (renew_leases) failed");
+                }
+                match history.recover_orphans().await {
+                    Ok(n) if n > 0 => tracing::warn!(
+                        recovered = n,
+                        "recovered orphaned runs from an expired-lease instance"
+                    ),
+                    Ok(_) => {}
+                    Err(e) => tracing::warn!(error = %e, "orphan recovery failed"),
+                }
+            }
+        }
+    }
+}
+
 /// Boot the server: install observability, build state + router, bind, serve
 /// until SIGTERM/SIGINT, then drain in-flight runs up to the grace window.
 pub async fn serve(config: ServeConfig) -> CliResult<()> {
     let (prom, log_hub) = crate::serve::observability::install(&config.log_level);
 
-    let history =
-        crate::serve::history::connect(&config.history, config.idempotency_retention).await?;
+    // This process's identity for run-ownership leases (#146 H7). A fresh id per
+    // process, so a restarted instance recovers its prior incarnation's runs only
+    // once their lease expires — never another live instance's heartbeated runs.
+    let instance_id = uuid::Uuid::new_v4().to_string();
+    tracing::info!(
+        instance_id = %instance_id,
+        lease_ttl_secs = config.lease_ttl.as_secs(),
+        "faucet serve instance id"
+    );
+
+    let history = crate::serve::history::connect(
+        &config.history,
+        config.idempotency_retention,
+        config.lease_ttl,
+        &instance_id,
+    )
+    .await?;
     let recovered = history
         .recover_orphans()
         .await
@@ -127,7 +186,7 @@ pub async fn serve(config: ServeConfig) -> CliResult<()> {
     if recovered > 0 {
         tracing::warn!(
             recovered,
-            "marked orphaned non-terminal runs as failed (server restart)"
+            "marked orphaned non-terminal runs (expired owner lease) as failed"
         );
     }
     let default_base = load_default_base(&config).await?;
@@ -166,6 +225,12 @@ pub async fn serve(config: ServeConfig) -> CliResult<()> {
         shutdown.clone(),
     ));
 
+    // Lease heartbeat + cross-instance orphan recovery (#146 H7). Renews this
+    // instance's run leases and reclaims runs whose owning instance's lease has
+    // expired. A no-op for the in-memory backend.
+    let lease_period = lease_interval(config.lease_ttl);
+    let leases = tokio::spawn(lease_loop(state.history(), lease_period, shutdown.clone()));
+
     // The HTTP graceful-shutdown future resolves on signal and stops accepting
     // new connections / drains in-flight HTTP — it does NOT cancel run tasks.
     axum::serve(listener, app)
@@ -191,6 +256,7 @@ pub async fn serve(config: ServeConfig) -> CliResult<()> {
         .await;
     }
     maintenance.abort();
+    leases.abort();
     tracing::info!("faucet serve stopped");
     Ok(())
 }
@@ -225,6 +291,27 @@ mod tests {
     use crate::serve::history::{RunRecord, RunStatus};
     use chrono::Utc;
     use std::collections::BTreeMap;
+
+    #[test]
+    fn lease_interval_is_third_of_ttl_floored_at_one_sec() {
+        assert_eq!(
+            lease_interval(Duration::from_secs(30)),
+            Duration::from_secs(10)
+        );
+        assert_eq!(
+            lease_interval(Duration::from_secs(90)),
+            Duration::from_secs(30)
+        );
+        // Floor: a tiny TTL still heartbeats at least once per second.
+        assert_eq!(
+            lease_interval(Duration::from_secs(1)),
+            Duration::from_secs(1)
+        );
+        assert_eq!(
+            lease_interval(Duration::from_secs(2)),
+            Duration::from_secs(1)
+        );
+    }
 
     #[test]
     fn purge_interval_is_quarter_of_shorter_window_clamped() {

@@ -333,6 +333,48 @@ async fn pipeline_flushes_parquet_on_mid_stream_source_error() {
 }
 
 #[tokio::test]
+async fn pipeline_flushes_parquet_on_cancel() {
+    // #146 H16: a Parquet file is only readable once its footer is written on
+    // flush(). A run cancelled mid-stream (serve timeout / POST cancel / CLI
+    // on_error: stop) used to drop the run future without flushing, orphaning
+    // the multipart upload and losing the *entire* file. With cooperative
+    // cancellation the loop stops at the next page boundary and flushes, so the
+    // rows written before the cancel survive and the file is readable.
+    use faucet_core::{
+        CancellationToken, FaucetError, RunStreamOptions, StreamPage, async_stream, run_stream,
+    };
+
+    let tmp = TempDir::new().unwrap();
+    let sink = ParquetSink::new(cfg_dir(tmp.path())).await.unwrap();
+
+    // One good page, then request cancellation and block forever — the only way
+    // out of the loop is the cooperative cancel observed at the page boundary.
+    let token = CancellationToken::new();
+    let from_stream = token.clone();
+    let stream = Box::pin(async_stream::stream! {
+        yield Ok::<_, FaucetError>(StreamPage {
+            records: vec![
+                json!({"id": 1, "name": "alice"}),
+                json!({"id": 2, "name": "bob"}),
+            ],
+            bookmark: None,
+        });
+        from_stream.cancel();
+        std::future::pending::<()>().await;
+    });
+
+    let result = run_stream(stream, &sink, RunStreamOptions::new().with_cancel(token))
+        .await
+        .expect("a cooperative cancel returns Ok with the partial result");
+    assert_eq!(result.records_written, 2);
+
+    // Despite the cancellation, the footer was written: the file is readable
+    // and holds the two rows from the page written before the cancel.
+    let batches = read_all_local(tmp.path()).await;
+    assert_eq!(rows_in(&batches), 2);
+}
+
+#[tokio::test]
 async fn in_memory_object_store_path_round_trips() {
     // We can't easily run end-to-end through `ParquetSink::new` with an
     // arbitrary `Arc<dyn ObjectStore>` (it builds its own from config), but we

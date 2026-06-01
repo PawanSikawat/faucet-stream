@@ -192,9 +192,19 @@ pub trait RunHistory: Send + Sync {
     /// number removed.
     async fn purge_expired(&self, retain_for: Duration) -> Result<usize, HistoryError>;
 
-    /// Mark any non-terminal record left over from a previous process as failed.
-    /// The memory backend has nothing to recover (returns 0).
+    /// Mark non-terminal records whose owning instance's lease has expired as
+    /// failed (instance-fenced orphan recovery — never touches a live peer's
+    /// heartbeated runs, #146 H7). Returns the number recovered. The memory
+    /// backend has nothing to recover (returns 0).
     async fn recover_orphans(&self) -> Result<usize, HistoryError>;
+
+    /// Heartbeat: extend the lease of *this* instance's own non-terminal runs so
+    /// a peer's [`recover_orphans`](Self::recover_orphans) won't reclaim them.
+    /// Returns the number of leases renewed. The memory backend (single-process,
+    /// unshared) is a no-op returning 0.
+    async fn renew_leases(&self) -> Result<usize, HistoryError> {
+        Ok(0)
+    }
 
     /// True when the backend is in fallback mode (drives `/readyz`). Always false
     /// for memory.
@@ -208,27 +218,43 @@ pub trait RunHistory: Send + Sync {
 pub async fn connect(
     spec: &HistoryBackendSpec,
     idem_retention: Duration,
+    lease_ttl: Duration,
+    instance_id: &str,
 ) -> CliResult<Arc<dyn RunHistory>> {
     match spec {
         HistoryBackendSpec::Memory => {
             Ok(Arc::new(memory::MemoryHistory::new(idem_retention)) as Arc<dyn RunHistory>)
         }
-        HistoryBackendSpec::Postgres(url) => connect_postgres(url, idem_retention).await,
-        HistoryBackendSpec::Sqlite(url) => connect_sqlite(url, idem_retention).await,
+        HistoryBackendSpec::Postgres(url) => {
+            connect_postgres(url, idem_retention, lease_ttl, instance_id).await
+        }
+        HistoryBackendSpec::Sqlite(url) => {
+            connect_sqlite(url, idem_retention, lease_ttl, instance_id).await
+        }
     }
 }
 
 #[cfg(feature = "serve-history-postgres")]
-async fn connect_postgres(url: &str, idem: Duration) -> CliResult<Arc<dyn RunHistory>> {
+async fn connect_postgres(
+    url: &str,
+    idem: Duration,
+    lease_ttl: Duration,
+    instance_id: &str,
+) -> CliResult<Arc<dyn RunHistory>> {
     Ok(into_history(
-        postgres::PostgresHistory::connect(url, idem).await,
+        postgres::PostgresHistory::connect(url, idem, lease_ttl, instance_id.to_string()).await,
         idem,
         "postgres",
     ))
 }
 
 #[cfg(not(feature = "serve-history-postgres"))]
-async fn connect_postgres(_url: &str, _idem: Duration) -> CliResult<Arc<dyn RunHistory>> {
+async fn connect_postgres(
+    _url: &str,
+    _idem: Duration,
+    _lease_ttl: Duration,
+    _instance_id: &str,
+) -> CliResult<Arc<dyn RunHistory>> {
     Err(crate::error::CliError::Serve(
         "persistent Postgres run history requires building faucet with the \
          `serve-history-postgres` feature"
@@ -237,16 +263,26 @@ async fn connect_postgres(_url: &str, _idem: Duration) -> CliResult<Arc<dyn RunH
 }
 
 #[cfg(feature = "serve-history-sqlite")]
-async fn connect_sqlite(url: &str, idem: Duration) -> CliResult<Arc<dyn RunHistory>> {
+async fn connect_sqlite(
+    url: &str,
+    idem: Duration,
+    lease_ttl: Duration,
+    instance_id: &str,
+) -> CliResult<Arc<dyn RunHistory>> {
     Ok(into_history(
-        sqlite::SqliteHistory::connect(url, idem).await,
+        sqlite::SqliteHistory::connect(url, idem, lease_ttl, instance_id.to_string()).await,
         idem,
         "sqlite",
     ))
 }
 
 #[cfg(not(feature = "serve-history-sqlite"))]
-async fn connect_sqlite(_url: &str, _idem: Duration) -> CliResult<Arc<dyn RunHistory>> {
+async fn connect_sqlite(
+    _url: &str,
+    _idem: Duration,
+    _lease_ttl: Duration,
+    _instance_id: &str,
+) -> CliResult<Arc<dyn RunHistory>> {
     Err(crate::error::CliError::Serve(
         "persistent SQLite run history requires building faucet with the \
          `serve-history-sqlite` feature"

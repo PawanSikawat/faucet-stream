@@ -189,6 +189,7 @@ Selected flags (`faucet serve --help` for the full list):
 | `--history <url>` | `postgres://…` / `sqlite:…` for durable run history (feature-gated; default in-memory). |
 | `--default-config <path>` | Workspace defaults merged under every submitted run. |
 | `--cors-origin <origin>` | Allow-list a browser origin (repeatable; CORS off by default). |
+| `--lease-ttl-secs <n>` | Run-ownership lease TTL (default 30) for multi-instance orphan fencing on a shared persistent backend — set above worst-case stalls. See the [serve cookbook](../cookbook/serve.md#multi-instance-orphan-recovery-run-ownership-leases). |
 | `--body-limit-bytes` / `--shutdown-grace-secs` / `--retain-terminal-runs-secs` / `--idempotency-retention-secs` | Tuning knobs. |
 
 > ⚠️ `serve` executes arbitrary client-supplied configs with the server's identity (secrets, files,

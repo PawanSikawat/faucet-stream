@@ -148,6 +148,10 @@ impl RunHistory for FallbackHistory {
         via!(self, p => p.recover_orphans(), f => f.recover_orphans())
     }
 
+    async fn renew_leases(&self) -> Result<usize, HistoryError> {
+        via!(self, p => p.renew_leases(), f => f.renew_leases())
+    }
+
     fn degraded(&self) -> bool {
         self.is_degraded()
     }

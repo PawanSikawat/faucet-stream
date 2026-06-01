@@ -44,6 +44,8 @@ pub struct ServeConfig {
     pub shutdown_grace: Duration,
     pub retain_terminal_runs: Duration,
     pub idempotency_retention: Duration,
+    /// Run-ownership lease TTL for multi-instance orphan fencing (#146 H7).
+    pub lease_ttl: Duration,
     pub probe_timeout: Duration,
     pub env_file: Option<PathBuf>,
     pub no_env_file: bool,
@@ -100,6 +102,15 @@ impl ServeConfig {
             }
         };
 
+        if args.lease_ttl_secs == 0 {
+            return Err(CliError::Serve(
+                "--lease-ttl-secs must be > 0 (it gates multi-instance orphan recovery; \
+                 0 would immediately expire every run's lease and let a maintenance tick \
+                 fail in-flight runs)"
+                    .into(),
+            ));
+        }
+
         let max_concurrent_runs = args
             .max_concurrent_runs
             .unwrap_or_else(default_max_concurrent)
@@ -121,6 +132,7 @@ impl ServeConfig {
             shutdown_grace: Duration::from_secs(args.shutdown_grace_secs),
             retain_terminal_runs: Duration::from_secs(args.retain_terminal_runs_secs),
             idempotency_retention: Duration::from_secs(args.idempotency_retention_secs),
+            lease_ttl: Duration::from_secs(args.lease_ttl_secs),
             probe_timeout: Duration::from_secs(args.probe_timeout_secs),
             env_file: args.env_file,
             no_env_file: args.no_env_file,
@@ -148,6 +160,7 @@ mod tests {
             shutdown_grace_secs: 60,
             retain_terminal_runs_secs: 604_800,
             idempotency_retention_secs: 86_400,
+            lease_ttl_secs: 30,
             probe_timeout_secs: 10,
             env_file: None,
             no_env_file: false,
@@ -232,5 +245,23 @@ mod tests {
         a.history = Some("mysql://localhost/db".into());
         let err = ServeConfig::from_args(a).unwrap_err();
         assert!(err.to_string().contains("unrecognised --history"), "{err}");
+    }
+
+    #[test]
+    fn zero_lease_ttl_is_rejected() {
+        let mut a = base_args();
+        a.no_auth = true;
+        a.lease_ttl_secs = 0;
+        let err = ServeConfig::from_args(a).unwrap_err();
+        assert!(err.to_string().contains("--lease-ttl-secs"), "{err}");
+    }
+
+    #[test]
+    fn lease_ttl_maps_to_duration() {
+        let mut a = base_args();
+        a.no_auth = true;
+        a.lease_ttl_secs = 45;
+        let cfg = ServeConfig::from_args(a).unwrap();
+        assert_eq!(cfg.lease_ttl, Duration::from_secs(45));
     }
 }
