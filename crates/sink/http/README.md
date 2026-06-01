@@ -268,8 +268,8 @@ let sink = HttpSink::new(config);
 ## How It Works
 
 - The HTTP client is created in `HttpSink::new()` and reused across all requests.
-- In **Individual** mode, each record is sent as a separate HTTP request. Requests are executed concurrently using a `tokio::sync::Semaphore` to limit the number of in-flight requests to the `concurrency` value. All requests must succeed; the first error aborts the batch via `try_join_all`.
-- In **Array** mode, all records are collected into a JSON array and sent as a single request body.
+- In **Individual** mode, each record is sent as a separate HTTP request. Requests are executed concurrently (bounded by `concurrency`). In `write_batch` the first error aborts the batch; when a [DLQ](https://pawansikawat.github.io/faucet-stream/cookbook/dlq.html) is configured the sink instead reports **per-row** outcomes (`write_batch_partial`), attempting every record and dead-lettering only the ones that actually failed — so already-delivered rows are never duplicated against a non-idempotent endpoint.
+- In **Array** mode, all records are collected into a JSON array and sent as a single request body. A failure can't be attributed to specific rows, so the whole array surfaces as an error (the DLQ `on_batch_error` policy decides whether to abort or dead-letter the batch).
 - Retry logic: on transient failures (network errors, retriable HTTP status codes), the request is retried up to `max_retries` times. Non-retriable errors (4xx client errors) are returned immediately.
 - Authentication and custom headers are applied to every request.
 - HTTP responses are validated using `check_http_response()` from `faucet-core`, which checks status codes and returns structured errors.

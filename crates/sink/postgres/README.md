@@ -57,6 +57,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 |-------|------|---------|-------------|
 | `connection_url` | `String` | *(required)* | PostgreSQL connection URL (e.g. `postgres://user:pass@host:5432/db`) |
 | `table_name` | `String` | *(required)* | Target table name |
+| `schema` | `Option<String>` | `null` | Schema (namespace) qualifying `table_name`. When set, both AutoMap column discovery and the `INSERT` target `schema.table_name` explicitly. When unset, the table resolves against the connection's `search_path` |
 | `column_mapping` | `PostgresColumnMapping` | `Jsonb { column: "data" }` | How to map JSON records to table columns (see below) |
 | `batch_size` | `usize` | `1000` | Maximum rows per multi-row `INSERT`. See [Streaming and batching](#streaming-and-batching) below |
 | `max_connections` | `u32` | `5` | Maximum number of connections in the connection pool |
@@ -92,7 +93,7 @@ quoting, and JSONB vs AutoMap behaviour are unchanged.
 | Variant | Description |
 |---------|-------------|
 | `Jsonb { column }` | Insert each record as a single `jsonb` column. The column name defaults to `"data"` but can be overridden. Uses PostgreSQL's `unnest($1::jsonb[])` for efficient batch inserts. |
-| `AutoMap` | Map top-level JSON keys directly to table columns. Column names are discovered from `information_schema.columns`. Only keys that match existing columns are inserted; extra keys are silently ignored. Records with no matching keys are skipped with a warning. |
+| `AutoMap` | Map top-level JSON keys directly to table columns. Column names are discovered from the PostgreSQL catalog, scoped (via `to_regclass`) to exactly the relation the `INSERT` targets — the configured `schema` if set, otherwise the `search_path`-resolved table. Only keys that match existing columns are inserted; extra keys are silently ignored. Records with no matching keys are skipped with a warning. |
 
 ### Builder Methods
 
@@ -272,7 +273,7 @@ let sink = PostgresSink::new(config).await?;
 - A connection pool is created in `PostgresSink::new()` using `sqlx::PgPool` with the configured `max_connections`.
 - `write_batch()` slices records into chunks of `batch_size` (or forwards the whole slice when `batch_size = 0`) and inserts each chunk using a single multi-row INSERT statement.
 - In JSONB mode, inserts use `INSERT INTO table (col) SELECT * FROM unnest($1::jsonb[])` for maximum efficiency.
-- In AutoMap mode, each column's name **and underlying type** (`udt_name`) are queried from `information_schema.columns`. A multi-row `INSERT INTO ... VALUES ($1::int4, $2::timestamptz), ...` is built dynamically with a per-column cast, and each value is bound as text so the destination column's input function parses it — numbers, booleans, timestamps, uuids land in their native column types, and `json`/`jsonb` columns receive JSON text. (Values are **not** bound as `jsonb` regardless of column type — doing so previously made the typed-column example above fail at runtime.) The column set is the **union** of record keys across the batch (in declared table order), so a field present only in a later record is still written; a row missing a column binds SQL `NULL`.
+- In AutoMap mode, each column's name **and underlying type** (`udt_name`) are queried from the PostgreSQL catalog, scoped via `to_regclass` to exactly the relation the `INSERT` targets (the configured `schema`, else the `search_path`-resolved table) — so a same-named table in another schema can't pollute the column set. A multi-row `INSERT INTO ... VALUES ($1::int4, $2::timestamptz), ...` is built dynamically with a per-column cast, and each value is bound as text so the destination column's input function parses it — numbers, booleans, timestamps, uuids land in their native column types, and `json`/`jsonb` columns receive JSON text. (Values are **not** bound as `jsonb` regardless of column type — doing so previously made the typed-column example above fail at runtime.) The column set is the **union** of record keys across the batch (in declared table order), so a field present only in a later record is still written; a row missing a column binds SQL `NULL`.
 - All identifiers (table names, column names) are quoted using `quote_ident()` to prevent SQL injection.
 
 ## License

@@ -45,6 +45,23 @@ fn pg_bind_text(value: Option<&Value>, udt: &str) -> Option<String> {
     }
 }
 
+/// Build the SQL relation reference for the configured table, optionally
+/// schema-qualified.
+///
+/// Both the AutoMap column-discovery probe and the `INSERT` statements use this
+/// single helper, so column discovery is always scoped to the *exact* relation
+/// the `INSERT` targets (#146 M13). With no schema the bare quoted table name
+/// resolves against the connection's `search_path`; with a schema it becomes
+/// `"schema"."table"`, pinning both discovery and insert to that namespace —
+/// otherwise a table of the same name in another schema pollutes the
+/// AutoMap column set (duplicate / wrong columns).
+fn qualified_table_ref(schema: Option<&str>, table: &str) -> String {
+    match schema {
+        Some(s) => format!("{}.{}", quote_ident(s), quote_ident(table)),
+        None => quote_ident(table),
+    }
+}
+
 /// A sink that writes JSON records to a PostgreSQL table.
 pub struct PostgresSink {
     config: PostgresSinkConfig,
@@ -73,7 +90,7 @@ impl PostgresSink {
         let json_values: Vec<serde_json::Value> = records.to_vec();
         let query = format!(
             "INSERT INTO {} ({}) SELECT * FROM unnest($1::jsonb[])",
-            quote_ident(&self.config.table_name),
+            qualified_table_ref(self.config.schema.as_deref(), &self.config.table_name),
             quote_ident(column)
         );
 
@@ -102,24 +119,45 @@ impl PostgresSink {
             return Ok(0);
         }
 
-        // Get column names AND their underlying types from the table. `udt_name`
-        // is the concrete type (e.g. `int4`, `timestamptz`, `numeric`, `jsonb`,
-        // `uuid`, `text`) used as the per-placeholder cast target below.
+        // Get column names AND their underlying types for the *exact* relation
+        // the INSERT will target. Scoping by `to_regclass(<qualified ref>)`
+        // resolves the relation the same way the INSERT does — by the configured
+        // schema if set, otherwise by the connection's `search_path` — so a
+        // table of the same name in another schema can no longer pollute the
+        // column set with duplicate/wrong columns (#146 M13). The previous query
+        // filtered `information_schema.columns` by `table_name` alone (no schema
+        // predicate), merging every same-named table across all schemas.
+        //
+        // `pg_type.typname` is the concrete type (`int4`, `timestamptz`,
+        // `numeric`, `jsonb`, `uuid`, `text`, …) — identical to the old
+        // `information_schema.columns.udt_name` — used as the per-placeholder
+        // cast target below. `::text` casts the `name`-typed catalog columns so
+        // sqlx decodes them as `String`.
+        let table_ref = qualified_table_ref(self.config.schema.as_deref(), &self.config.table_name);
         let columns: Vec<(String, String)> = sqlx::query(
-            "SELECT column_name, udt_name FROM information_schema.columns WHERE table_name = $1 ORDER BY ordinal_position"
+            "SELECT a.attname::text AS column_name, t.typname::text AS udt_name \
+             FROM pg_catalog.pg_attribute a \
+             JOIN pg_catalog.pg_type t ON t.oid = a.atttypid \
+             WHERE a.attrelid = to_regclass($1)::oid \
+               AND a.attnum > 0 AND NOT a.attisdropped \
+             ORDER BY a.attnum",
         )
-        .bind(&self.config.table_name)
+        .bind(&table_ref)
         .fetch_all(&self.pool)
         .await
         .map_err(|e| FaucetError::Sink(format!("failed to query table columns: {e}")))?
         .iter()
-        .map(|row| (row.get::<String, _>("column_name"), row.get::<String, _>("udt_name")))
+        .map(|row| {
+            (
+                row.get::<String, _>("column_name"),
+                row.get::<String, _>("udt_name"),
+            )
+        })
         .collect();
 
         if columns.is_empty() {
             return Err(FaucetError::Sink(format!(
-                "table '{}' has no columns or does not exist",
-                self.config.table_name
+                "table {table_ref} has no columns or does not exist"
             )));
         }
 
@@ -196,7 +234,7 @@ impl PostgresSink {
 
             let query = format!(
                 "INSERT INTO {} ({}) VALUES {}",
-                quote_ident(&self.config.table_name),
+                table_ref,
                 col_names.join(", "),
                 value_tuples.join(", ")
             );
@@ -306,8 +344,33 @@ impl faucet_core::Sink for PostgresSink {
 
 #[cfg(test)]
 mod tests {
-    use super::pg_bind_text;
+    use super::{pg_bind_text, qualified_table_ref};
     use serde_json::json;
+
+    #[test]
+    fn qualified_table_ref_unqualified_is_bare_quoted_table() {
+        // No schema → bare quoted table, resolved against the search_path.
+        assert_eq!(qualified_table_ref(None, "events"), "\"events\"");
+    }
+
+    #[test]
+    fn qualified_table_ref_with_schema_is_schema_dot_table() {
+        // With a schema → "schema"."table", so discovery and INSERT both
+        // target the same explicit relation (#146 M13).
+        assert_eq!(
+            qualified_table_ref(Some("analytics"), "events"),
+            "\"analytics\".\"events\""
+        );
+    }
+
+    #[test]
+    fn qualified_table_ref_escapes_embedded_quotes() {
+        // SQL-injection safety: embedded double-quotes are doubled.
+        assert_eq!(
+            qualified_table_ref(Some("we\"ird"), "ta\"ble"),
+            "\"we\"\"ird\".\"ta\"\"ble\""
+        );
+    }
 
     #[test]
     fn null_and_absent_bind_sql_null() {

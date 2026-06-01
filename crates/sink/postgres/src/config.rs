@@ -31,6 +31,16 @@ pub struct PostgresSinkConfig {
     pub connection_url: String,
     /// Target table name.
     pub table_name: String,
+    /// Optional schema (namespace) qualifying [`table_name`](Self::table_name).
+    ///
+    /// When set, both the AutoMap column-discovery probe and the `INSERT`
+    /// target `schema.table_name` explicitly. When unset (the default), the
+    /// table resolves against the connection's `search_path`, and column
+    /// discovery is scoped to whichever schema the `INSERT` actually resolves
+    /// to — so a same-named table in another schema no longer pollutes the
+    /// AutoMap column set (#146 M13).
+    #[serde(default)]
+    pub schema: Option<String>,
     /// How to map JSON records to columns.
     pub column_mapping: PostgresColumnMapping,
     /// Maximum rows per multi-row `INSERT` statement. Defaults to
@@ -68,6 +78,7 @@ impl std::fmt::Debug for PostgresSinkConfig {
         f.debug_struct("PostgresSinkConfig")
             .field("connection_url", &"***")
             .field("table_name", &self.table_name)
+            .field("schema", &self.schema)
             .field("column_mapping", &self.column_mapping)
             .field("batch_size", &self.batch_size)
             .field("max_connections", &self.max_connections)
@@ -81,10 +92,18 @@ impl PostgresSinkConfig {
         Self {
             connection_url: connection_url.into(),
             table_name: table_name.into(),
+            schema: None,
             column_mapping: PostgresColumnMapping::default(),
             batch_size: DEFAULT_BATCH_SIZE,
             max_connections: 5,
         }
+    }
+
+    /// Set the schema (namespace) that qualifies the table. When unset, the
+    /// table resolves against the connection's `search_path`.
+    pub fn with_schema(mut self, schema: impl Into<String>) -> Self {
+        self.schema = Some(schema.into());
+        self
     }
 
     /// Set the column mapping strategy.

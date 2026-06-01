@@ -40,9 +40,10 @@ For a sink that can only succeed or fail a whole batch (no per-row detail):
 - `propagate` — a batch failure aborts the run (the default, fail-fast behavior).
 - `dlq_all` — route every row in the failed batch to the DLQ and keep going.
 
-Sinks that *do* report per-row results (BigQuery, Elasticsearch) override the
-partial-write path so only the genuinely failed rows are dead-lettered — they are
-not duplicated into the DLQ.
+Sinks that *do* report per-row results (BigQuery, Elasticsearch, and the HTTP
+sink in `Individual` mode) override the partial-write path so only the genuinely
+failed rows are dead-lettered — the already-delivered rows are not duplicated
+into the DLQ.
 
 > The full design is in
 > [`docs/superpowers/specs/2026-05-24-dlq-design.md`](https://github.com/PawanSikawat/faucet-stream/blob/main/docs)

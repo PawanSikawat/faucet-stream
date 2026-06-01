@@ -371,3 +371,61 @@ async fn write_batch_auto_map_unions_columns_across_heterogeneous_batch() {
         "row missing the unioned column binds SQL NULL"
     );
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn auto_map_discovery_is_scoped_to_configured_schema() {
+    // M13 (audit #146): AutoMap column discovery previously filtered
+    // `information_schema.columns` by `table_name` alone, with no schema
+    // predicate, so a same-named table in another schema polluted the column
+    // set. Here two schemas each hold an `events` table with a DISTINCT extra
+    // column. Before the fix the probe returned the columns of BOTH tables —
+    // the shared `id`/`shared` columns appear twice, so the generated
+    // `INSERT INTO analytics.events (id, shared, id, shared, only_analytics)`
+    // fails with "column specified more than once". After the fix discovery is
+    // scoped via `to_regclass` to exactly the relation the INSERT targets, so
+    // only `analytics.events`' columns are used and the write succeeds.
+    let (_container, url) = start_postgres().await;
+    let pool = sqlx::PgPool::connect(&url).await.expect("pool connect");
+    for stmt in [
+        "CREATE SCHEMA staging",
+        "CREATE SCHEMA analytics",
+        "CREATE TABLE staging.events (id BIGINT, shared TEXT, only_staging TEXT)",
+        "CREATE TABLE analytics.events (id BIGINT, shared TEXT, only_analytics TEXT)",
+    ] {
+        sqlx::query(stmt).execute(&pool).await.expect("ddl");
+    }
+    pool.close().await;
+
+    let config = PostgresSinkConfig::new(&url, "events")
+        .with_schema("analytics")
+        .column_mapping(PostgresColumnMapping::AutoMap)
+        .with_batch_size(0);
+    let sink = PostgresSink::new(config).await.expect("sink new");
+
+    // `only_analytics` exists only in analytics.events; `only_staging` only in
+    // staging.events. The record carries the analytics-only column.
+    let records = vec![json!({ "id": 7, "shared": "s", "only_analytics": "a" })];
+    let written = sink
+        .write_batch(&records)
+        .await
+        .expect("write must target analytics.events only");
+    assert_eq!(written, 1);
+
+    let pool = sqlx::PgPool::connect(&url).await.expect("pool connect");
+    use sqlx::Row;
+    // The row landed in analytics.events with the analytics-only column set.
+    let row = sqlx::query("SELECT id, shared, only_analytics FROM analytics.events WHERE id = 7")
+        .fetch_one(&pool)
+        .await
+        .expect("row in analytics.events");
+    assert_eq!(row.get::<i64, _>("id"), 7);
+    assert_eq!(row.get::<String, _>("shared"), "s");
+    assert_eq!(row.get::<String, _>("only_analytics"), "a");
+    // staging.events is untouched.
+    let staging_count: i64 = sqlx::query_scalar("SELECT COUNT(*)::BIGINT FROM staging.events")
+        .fetch_one(&pool)
+        .await
+        .expect("count staging");
+    assert_eq!(staging_count, 0, "staging.events must not be written to");
+    pool.close().await;
+}
