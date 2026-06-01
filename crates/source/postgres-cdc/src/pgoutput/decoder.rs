@@ -203,6 +203,15 @@ fn decode_delete(c: &mut Cursor<&[u8]>) -> Result<Delete, FaucetError> {
 fn decode_truncate(c: &mut Cursor<&[u8]>) -> Result<Truncate, FaucetError> {
     let n = c.read_u32::<BigEndian>().map_err(io_err_in("TRUNCATE"))?;
     let flags = c.read_u8().map_err(io_err_in("TRUNCATE"))?;
+    // Each relation OID is 4 bytes; a wire-controlled `n` can't exceed the
+    // bytes that actually remain. Reject before reserving so a corrupt frame
+    // can't drive a huge pre-allocation.
+    let rem = remaining(c);
+    if (n as usize).saturating_mul(4) > rem {
+        return Err(FaucetError::Source(format!(
+            "pgoutput TRUNCATE: declared relation count {n} exceeds {rem} remaining bytes"
+        )));
+    }
     let mut oids = Vec::with_capacity(n as usize);
     for _ in 0..n {
         oids.push(c.read_u32::<BigEndian>().map_err(io_err_in("TRUNCATE"))?);
@@ -224,6 +233,14 @@ fn decode_tuple(c: &mut Cursor<&[u8]>) -> Result<TupleData, FaucetError> {
             b'u' => TupleCell::UnchangedToast,
             b't' => {
                 let len = c.read_u32::<BigEndian>().map_err(io_err_in("tuple"))?;
+                // Reject a wire-controlled length larger than the bytes that
+                // remain before allocating a buffer for it.
+                let rem = remaining(c);
+                if len as usize > rem {
+                    return Err(FaucetError::Source(format!(
+                        "pgoutput tuple: declared text length {len} exceeds {rem} remaining bytes"
+                    )));
+                }
                 let mut buf = vec![0u8; len as usize];
                 c.read_exact(&mut buf).map_err(io_err_in("tuple"))?;
                 TupleCell::Text(String::from_utf8(buf).map_err(|e| {
@@ -256,6 +273,12 @@ fn read_cstring(c: &mut Cursor<&[u8]>) -> Result<String, FaucetError> {
         out.push(b);
     }
     String::from_utf8(out).map_err(|e| FaucetError::Source(format!("pgoutput cstring: {e}")))
+}
+
+/// Bytes still unread in the cursor — used to bound wire-controlled
+/// allocations against the data that actually remains.
+fn remaining(c: &Cursor<&[u8]>) -> usize {
+    c.get_ref().len().saturating_sub(c.position() as usize)
 }
 
 fn io_err(e: std::io::Error) -> FaucetError {
@@ -297,6 +320,31 @@ mod tests {
         let k = PrimaryKeepAlive::decode(&bytes).unwrap();
         assert_eq!(k.wal_end, 0x0000_0000_016A_4F88);
         assert!(k.reply_requested);
+    }
+
+    #[test]
+    fn decode_tuple_rejects_text_length_exceeding_remaining() {
+        // n_cells=1, kind 't', declared text len=1000 (0x3E8), but only 2 bytes
+        // ("AB") follow. The declared length must be rejected against the bytes
+        // actually available *before* allocating a buffer for it.
+        let bytes = hex("00 01 74 00 00 03 E8 41 42");
+        let mut c = Cursor::new(bytes.as_slice());
+        let err = decode_tuple(&mut c)
+            .err()
+            .expect("an oversized declared text length must be rejected");
+        assert!(err.to_string().contains("exceeds"), "{err}");
+    }
+
+    #[test]
+    fn decode_truncate_rejects_relation_count_exceeding_remaining() {
+        // n=1_000_000 relations declared (4 MB of OIDs), flags=0, but only one
+        // 4-byte OID follows. Must be rejected before reserving for `n`.
+        let bytes = hex("00 0F 42 40 00 00 00 00 2A");
+        let mut c = Cursor::new(bytes.as_slice());
+        let err = decode_truncate(&mut c)
+            .err()
+            .expect("an oversized declared relation count must be rejected");
+        assert!(err.to_string().contains("exceeds"), "{err}");
     }
 
     #[test]
