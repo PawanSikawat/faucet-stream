@@ -407,6 +407,74 @@ impl faucet_core::Source for SnowflakeSource {
             .expect("schema serialization")
     }
 
+    /// Preflight probe for `faucet doctor`. Overrides the default (which pulls a
+    /// page via `stream_pages` and would **execute the configured query**).
+    /// Instead submits a cheap `SELECT 1` so doctor validates auth, warehouse,
+    /// and connectivity without running the user's real statement.
+    async fn check(
+        &self,
+        ctx: &faucet_core::check::CheckContext,
+    ) -> Result<faucet_core::check::CheckReport, FaucetError> {
+        use faucet_core::check::{CheckReport, Probe};
+        let start = std::time::Instant::now();
+        let probe = async {
+            let mut body = self.build_request_body(&[]);
+            body["statement"] = Value::String("SELECT 1".to_string());
+            let url = self.statements_url();
+            let effective = self.resolve_auth().await.map_err(|e| {
+                Probe::fail_hint(
+                    "auth",
+                    start.elapsed(),
+                    e.to_string(),
+                    "verify the Snowflake credentials / shared auth provider",
+                )
+            })?;
+            let auth = authorization_header(&effective, &self.config.account)
+                .map_err(|e| Probe::fail("auth", start.elapsed(), e.to_string()))?;
+            let token_type = snowflake_token_type(&effective);
+            let resp = self
+                .client
+                .post(&url)
+                .header("Authorization", &auth)
+                .header("Content-Type", "application/json")
+                .header("Accept", "application/json")
+                .header("X-Snowflake-Authorization-Token-Type", token_type)
+                .json(&body)
+                .send()
+                .await
+                .map_err(|e| {
+                    Probe::fail_hint(
+                        "query",
+                        start.elapsed(),
+                        format!("Snowflake request failed: {e}"),
+                        "verify the account endpoint is reachable",
+                    )
+                })?;
+            let status = resp.status();
+            if status.is_success() || status.as_u16() == 202 {
+                Ok::<Probe, Probe>(Probe::pass("query", start.elapsed()))
+            } else {
+                let text = resp.text().await.unwrap_or_default();
+                Err(Probe::fail_hint(
+                    "query",
+                    start.elapsed(),
+                    format!("Snowflake SQL API returned HTTP {status}: {text}"),
+                    "verify credentials, warehouse, database/schema, and role",
+                ))
+            }
+        };
+        let probe = match tokio::time::timeout(ctx.timeout, probe).await {
+            Ok(Ok(p)) | Ok(Err(p)) => p,
+            Err(_elapsed) => Probe::fail_hint(
+                "query",
+                start.elapsed(),
+                "Snowflake probe timed out",
+                "Snowflake did not respond within the check timeout",
+            ),
+        };
+        Ok(CheckReport::single(probe))
+    }
+
     async fn fetch_with_context(
         &self,
         context: &HashMap<String, Value>,

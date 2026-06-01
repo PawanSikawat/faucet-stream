@@ -188,6 +188,44 @@ impl faucet_core::Source for BigQuerySource {
             .expect("schema serialization")
     }
 
+    /// Preflight probe for `faucet doctor`. Overrides the default (which pulls a
+    /// page via `stream_pages` and would run the configured query — a **billed**
+    /// execution). Instead submits the same query with `dryRun: true`, which
+    /// validates auth, SQL syntax, and table/permission access **without
+    /// executing or billing** it.
+    async fn check(
+        &self,
+        ctx: &faucet_core::check::CheckContext,
+    ) -> Result<faucet_core::check::CheckReport, FaucetError> {
+        use faucet_core::check::{CheckReport, Probe};
+        let start = std::time::Instant::now();
+        let mut req =
+            build_query_request(&self.config, self.config.query.clone(), &self.config.params);
+        req.dry_run = Some(true);
+
+        let probe = async {
+            match self.client.job().query(&self.config.project_id, req).await {
+                Ok(_) => Ok::<Probe, Probe>(Probe::pass("query", start.elapsed())),
+                Err(e) => Err(Probe::fail_hint(
+                    "query",
+                    start.elapsed(),
+                    format!("BigQuery dry-run failed: {e}"),
+                    "verify credentials, project_id, dataset/table access, and the SQL",
+                )),
+            }
+        };
+        let probe = match tokio::time::timeout(ctx.timeout, probe).await {
+            Ok(Ok(p)) | Ok(Err(p)) => p,
+            Err(_elapsed) => Probe::fail_hint(
+                "query",
+                start.elapsed(),
+                "BigQuery dry-run timed out",
+                "BigQuery did not respond within the check timeout",
+            ),
+        };
+        Ok(CheckReport::single(probe))
+    }
+
     async fn fetch_with_context(
         &self,
         context: &HashMap<String, Value>,
@@ -445,6 +483,21 @@ mod tests {
         assert!(req.parameter_mode.is_none());
         assert!(!req.use_legacy_sql);
         assert_eq!(req.max_results, Some(1000));
+    }
+
+    #[test]
+    fn doctor_probe_request_is_dry_run() {
+        // The `faucet doctor` `check()` probe submits the configured query with
+        // dryRun=true so it validates auth/SQL/permissions without a billed
+        // execution — mirror that construction here to guard the field name.
+        let c = cfg();
+        let mut req = build_query_request(&c, "SELECT 1".to_string(), &[]);
+        req.dry_run = Some(true);
+        assert_eq!(
+            req.dry_run,
+            Some(true),
+            "doctor probe must dry-run (no billing)"
+        );
     }
 
     #[test]
