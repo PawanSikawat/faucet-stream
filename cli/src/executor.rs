@@ -36,6 +36,11 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 use tokio::sync::{Mutex, Semaphore};
+
+/// Captured fan-out records, keyed by node id. Records are held as `Arc<Value>`
+/// so the per-level snapshot and per-child-unit hand-off are pointer bumps, not
+/// deep clones of the JSON tree (#160).
+type CapturedRecords = Arc<Mutex<HashMap<String, Vec<Arc<Value>>>>>;
 use tokio_util::sync::CancellationToken;
 
 /// Knobs passed to [`run_expanded`].
@@ -151,8 +156,10 @@ pub async fn run_expanded(nodes: Vec<ExpandedNode>, opts: ExecuteOptions) -> Cli
     }
 
     // Captured records per node id. Only populated for nodes that have
-    // children (= are referenced by another node's `parent:`).
-    let captured: Arc<Mutex<HashMap<String, Vec<Value>>>> = Arc::new(Mutex::new(HashMap::new()));
+    // children (= are referenced by another node's `parent:`). Records are held
+    // as `Arc<Value>` so the per-level snapshot clone and the per-child-unit
+    // hand-off are pointer bumps, not deep clones of the JSON tree (#160).
+    let captured: CapturedRecords = Arc::new(Mutex::new(HashMap::new()));
     let nodes_with_descendants: HashSet<String> = children_of.keys().cloned().collect();
 
     let mut outcomes: Vec<InvocationOutcome> = Vec::new();
@@ -430,7 +437,7 @@ pub async fn run_expanded(nodes: Vec<ExpandedNode>, opts: ExecuteOptions) -> Cli
 /// record. Built by the level loop, consumed by [`run_unit`].
 struct Unit {
     node: ExpandedNode,
-    parent_record: Option<Value>,
+    parent_record: Option<Arc<Value>>,
     state_key: String,
     parent_record_key: Option<String>,
 }
@@ -438,13 +445,13 @@ struct Unit {
 async fn run_unit(
     unit: &Unit,
     needs_capture: bool,
-    captured: &Arc<Mutex<HashMap<String, Vec<Value>>>>,
+    captured: &CapturedRecords,
     opts: &ExecuteOptions,
     cancel: CancellationToken,
 ) -> InvocationOutcome {
     let result = run_one_invocation(
         &unit.node,
-        unit.parent_record.as_ref(),
+        unit.parent_record.as_deref(),
         &unit.state_key,
         needs_capture,
         opts,
@@ -461,7 +468,9 @@ async fn run_unit(
                     .await
                     .entry(row_id.clone())
                     .or_default()
-                    .extend(records);
+                    // Move each record into an `Arc` once here; downstream
+                    // per-level / per-unit hand-offs then clone only the pointer.
+                    .extend(records.into_iter().map(Arc::new));
             }
             InvocationOutcome {
                 row_id,

@@ -6,6 +6,19 @@ use faucet_core::util::{DEFAULT_ERROR_BODY_MAX_LEN, check_http_response};
 use faucet_core::{AuthSpec, FaucetError, SharedAuthProvider};
 use reqwest::Client;
 use serde_json::Value;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+/// True when a page is split into more than one `_bulk` chunk *and* documents
+/// get auto-generated IDs (no `id_field`). In that configuration an earlier
+/// chunk can commit before a later chunk fails; because the bookmark only
+/// advances after the whole page is written, a resumed run re-sends the earlier
+/// chunk, and auto-generated IDs make those re-sends **duplicates** rather than
+/// idempotent overwrites. Setting `id_field` (or configuring a DLQ, whose
+/// per-row `write_batch_partial` path avoids the whole-page re-send) makes
+/// resume idempotent.
+fn resume_dup_risk(chunk_count: usize, has_id_field: bool) -> bool {
+    chunk_count > 1 && !has_id_field
+}
 
 /// A sink that writes JSON records to an Elasticsearch index using the bulk API.
 pub struct ElasticsearchSink {
@@ -15,6 +28,9 @@ pub struct ElasticsearchSink {
     /// auth. Injected by the CLI (to resolve `auth: { ref }`) or directly by
     /// library callers who want to share one token across multiple sinks.
     auth_provider: Option<SharedAuthProvider>,
+    /// One-shot guard so the resume-duplication warning (see [`resume_dup_risk`])
+    /// is logged at most once per sink instance, not per page.
+    resume_dup_warned: AtomicBool,
 }
 
 impl ElasticsearchSink {
@@ -28,6 +44,7 @@ impl ElasticsearchSink {
             config,
             client: Client::new(),
             auth_provider: None,
+            resume_dup_warned: AtomicBool::new(false),
         })
     }
 
@@ -294,6 +311,23 @@ impl faucet_core::Sink for ElasticsearchSink {
             records.chunks(self.config.batch_size).collect()
         };
 
+        // At-least-once + auto-generated IDs + multi-chunk page = duplicates on a
+        // resumed run (an earlier chunk commits, a later one fails, the bookmark
+        // doesn't advance, and the re-sent earlier chunk is re-indexed under new
+        // IDs). Warn once so operators set `id_field` (idempotent overwrite) or a
+        // DLQ (per-row outcomes, no whole-page re-send).
+        if resume_dup_risk(chunks.len(), self.config.id_field.is_some())
+            && !self.resume_dup_warned.swap(true, Ordering::Relaxed)
+        {
+            tracing::warn!(
+                index = %self.config.index,
+                chunks = chunks.len(),
+                "Elasticsearch sink: a page split across multiple _bulk chunks with \
+                 auto-generated document IDs (no id_field) can produce DUPLICATES on a \
+                 resumed run. Set id_field for idempotent overwrites, or configure a DLQ.",
+            );
+        }
+
         for chunk in chunks {
             let resp_body = self.send_bulk_raw(chunk, &auth).await?;
 
@@ -410,6 +444,25 @@ impl faucet_core::Sink for ElasticsearchSink {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn resume_dup_risk_only_when_multichunk_and_no_id_field() {
+        // The duplication-on-resume risk exists only when a page splits into
+        // >1 _bulk chunk AND documents get auto-generated IDs.
+        assert!(
+            resume_dup_risk(2, false),
+            "multi-chunk + no id_field is risky"
+        );
+        assert!(
+            !resume_dup_risk(1, false),
+            "single chunk can't partially commit"
+        );
+        assert!(
+            !resume_dup_risk(5, true),
+            "id_field makes re-sends idempotent"
+        );
+        assert!(!resume_dup_risk(1, true));
+    }
     use serde_json::json;
 
     #[test]

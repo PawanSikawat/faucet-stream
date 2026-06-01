@@ -40,7 +40,15 @@ pub struct ElasticsearchSinkConfig {
     #[serde(default = "default_batch_size")]
     pub batch_size: usize,
     /// Optional JSON field name to use as the document `_id`.
-    /// If `None`, Elasticsearch auto-generates IDs.
+    ///
+    /// If `None`, Elasticsearch auto-generates a fresh ID for every indexed
+    /// document. Under faucet's at-least-once contract that means a **resumed or
+    /// retried run re-indexes already-written records as duplicates** (a page
+    /// can partially commit across `_bulk` chunks before failing, and the
+    /// bookmark only advances once the whole page is written). Set `id_field` to
+    /// a stable business key so re-sends become **idempotent overwrites** (the
+    /// recommended setting for resumable pipelines); alternatively, configure a
+    /// DLQ, whose per-row `write_batch_partial` path avoids the whole-page re-send.
     pub id_field: Option<String>,
 }
 
