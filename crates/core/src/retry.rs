@@ -49,8 +49,8 @@ where
     }
 }
 
-/// `base * 2^attempt`, capped at [`MAX_BACKOFF`], scaled by a random factor in
-/// `[0.5, 1.5)` to avoid a thundering herd.
+/// `base * 2^attempt`, capped at `MAX_BACKOFF` (60s), scaled by a random factor
+/// in `[0.5, 1.5)` to avoid a thundering herd.
 ///
 /// Public so a connector with a bespoke retry loop (e.g. one that also honours
 /// `Retry-After`, like the REST source) reuses this one tested, capped,
