@@ -69,7 +69,7 @@ async fn injected_provider_supplies_oauth_token() {
         .await;
 
     let provider = Arc::new(FixedBearer("INJECTED"));
-    let src = SnowflakeSource::new(base_cfg())
+    let src = SnowflakeSource::new(base_cfg()).unwrap()
         .with_endpoint_base(server.uri())
         .with_auth_provider(provider);
 
@@ -102,7 +102,7 @@ async fn token_credential_maps_to_oauth() {
         }
     }
 
-    let src = SnowflakeSource::new(base_cfg())
+    let src = SnowflakeSource::new(base_cfg()).unwrap()
         .with_endpoint_base(server.uri())
         .with_auth_provider(Arc::new(FixedToken("TOKEN-CRED")));
 
@@ -119,7 +119,7 @@ async fn unresolved_auth_reference_errors() {
     config.auth = AuthSpec::Reference(AuthReference {
         name: "missing-provider".into(),
     });
-    let src = SnowflakeSource::new(config).with_endpoint_base(server.uri());
+    let src = SnowflakeSource::new(config).unwrap().with_endpoint_base(server.uri());
 
     let err = src.fetch_all().await.unwrap_err();
     assert!(
@@ -155,10 +155,10 @@ async fn one_provider_shared_across_two_sources() {
         .await;
 
     let provider = Arc::new(FixedBearer("SHARED"));
-    let a = SnowflakeSource::new(base_cfg())
+    let a = SnowflakeSource::new(base_cfg()).unwrap()
         .with_endpoint_base(server.uri())
         .with_auth_provider(provider.clone());
-    let b = SnowflakeSource::new(base_cfg())
+    let b = SnowflakeSource::new(base_cfg()).unwrap()
         .with_endpoint_base(server.uri())
         .with_auth_provider(provider.clone());
 

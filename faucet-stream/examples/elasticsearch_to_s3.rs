@@ -27,7 +27,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 key: std::env::var("ES_API_KEY")?,
             })
             .max_pages(usize::MAX),
-    );
+    )?;
 
     let sink = S3Sink::new(
         S3SinkConfig::new("my-es-backups")

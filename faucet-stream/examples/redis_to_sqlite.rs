@@ -24,7 +24,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             },
         )
         .max_records(10_000),
-    );
+    )?;
 
     let sink = SqliteSink::new(
         SqliteSinkConfig::new("sqlite:./cache.db", "jobs")
