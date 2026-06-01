@@ -1128,12 +1128,13 @@ crates/
     stdout/                   — Stdout / stderr (JSON Lines, pretty JSON, TSV)
     kafka/                    — Apache Kafka producer
     parquet/                  — Apache Parquet writer (local, S3)
-  bigquery-common/            — faucet-common-bigquery: shared BigQueryCredentials + build_client
-  elasticsearch-common/       — faucet-common-elasticsearch: shared ElasticsearchAuth enum
-  gcs-common/                 — faucet-common-gcs: shared GCS credentials + client builders
-  kafka-common/               — faucet-common-kafka: shared Kafka auth, formats, Schema Registry
-  snowflake-common/           — faucet-common-snowflake: shared SnowflakeAuth + JWT/OAuth header helpers
-  mssql-common/               — faucet-common-mssql: shared MSSQL connection/TLS config + tiberius/bb8 pool
+  common/
+    bigquery/                 — faucet-common-bigquery: shared BigQueryCredentials + build_client
+    elasticsearch/            — faucet-common-elasticsearch: shared ElasticsearchAuth enum
+    gcs/                      — faucet-common-gcs: shared GCS credentials + client builders
+    kafka/                    — faucet-common-kafka: shared Kafka auth, formats, Schema Registry
+    snowflake/                — faucet-common-snowflake: shared SnowflakeAuth + JWT/OAuth header helpers
+    mssql/                    — faucet-common-mssql: shared MSSQL connection/TLS config + tiberius/bb8 pool
   state/
     redis/                    — Redis-backed StateStore
     postgres/                 — PostgreSQL-backed StateStore
