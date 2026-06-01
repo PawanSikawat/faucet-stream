@@ -483,32 +483,40 @@ where
 
                     // ── Quality pass (after transforms, before sink) ─────────
                     #[cfg(feature = "quality")]
-                    let (records, quality_envelopes): (Vec<Value>, Vec<Value>) = if let Some(q) =
-                        quality.as_ref()
-                    {
-                        let labels =
-                            crate::observability::Labels::new(&*pipeline_name, &*row, &*run_id);
-                        let outcome = crate::observability::instrumented_apply_quality(
-                            page.records,
-                            q,
-                            &labels,
-                        )?;
-                        let envelopes: Vec<Value> = outcome
-                            .quarantined
-                            .iter()
-                            .enumerate()
-                            .map(|(i, qr)| {
-                                let err = FaucetError::QualityFailure {
-                                    check: qr.check.to_string(),
-                                    message: qr.message.clone(),
-                                };
-                                build_envelope(&qr.record, &err, sink_name, &pipeline_name, &row, i)
-                            })
-                            .collect();
-                        (outcome.survivors, envelopes)
-                    } else {
-                        (page.records, Vec::new())
-                    };
+                    let (records, quality_envelopes): (Vec<Value>, Vec<Value>) =
+                        if let Some(q) = quality.as_ref() {
+                            let labels =
+                                crate::observability::Labels::new(&*pipeline_name, &*row, &*run_id);
+                            let outcome = crate::observability::instrumented_apply_quality(
+                                page.records,
+                                q,
+                                &labels,
+                            )?;
+                            let envelopes: Vec<Value> = outcome
+                                .quarantined
+                                .iter()
+                                .map(|qr| {
+                                    let err = FaucetError::QualityFailure {
+                                        check: qr.check.to_string(),
+                                        message: qr.message.clone(),
+                                    };
+                                    // `record_index` is the position within the PAGE
+                                    // (the frozen envelope contract), not the index in
+                                    // the quarantine list (#146 R).
+                                    build_envelope(
+                                        &qr.record,
+                                        &err,
+                                        sink_name,
+                                        &pipeline_name,
+                                        &row,
+                                        qr.page_index,
+                                    )
+                                })
+                                .collect();
+                            (outcome.survivors, envelopes)
+                        } else {
+                            (page.records, Vec::new())
+                        };
                     #[cfg(not(feature = "quality"))]
                     let (records, quality_envelopes): (Vec<Value>, Vec<Value>) =
                         (page.records, Vec::new());

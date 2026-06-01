@@ -16,6 +16,7 @@ pub struct GcsSink {
 
 impl GcsSink {
     pub async fn new(config: GcsSinkConfig) -> Result<Self, FaucetError> {
+        faucet_core::validate_batch_size(config.batch_size)?;
         let storage = build_storage(&config.auth, config.storage_host.as_deref()).await?;
         Ok(Self { config, storage })
     }
@@ -184,6 +185,17 @@ fn generate_object_key(prefix: &str, file_extension: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn new_rejects_out_of_range_batch_size() {
+        // Validation runs before any GCS client setup, so this needs no backend.
+        let mut config = GcsSinkConfig::new("bucket");
+        config.batch_size = faucet_core::MAX_BATCH_SIZE + 1;
+        match GcsSink::new(config).await {
+            Err(FaucetError::Config(m)) => assert!(m.contains("batch_size"), "got: {m}"),
+            _ => panic!("expected a batch_size Config error"),
+        }
+    }
     use serde_json::json;
 
     #[test]
