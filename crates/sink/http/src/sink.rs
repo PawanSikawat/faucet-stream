@@ -293,8 +293,8 @@ impl faucet_core::Sink for HttpSink {
     ///
     /// In **Individual** mode every record is an independent POST, so each
     /// record's success/failure is attributable: we attempt *all* of them
-    /// (unlike [`write_batch`](Self::write_batch), whose `?` short-circuits on
-    /// the first failure) and return one `Ok`/`Err` per record. Without this
+    /// (unlike `write_batch`, whose `?` short-circuits on the first failure)
+    /// and return one `Ok`/`Err` per record. Without this
     /// override the default impl would surface the first error as an outer
     /// `Err`, and under `on_batch_error: dlq_all` the pipeline would route the
     /// *entire* batch to the DLQ — duplicating the already-delivered rows
