@@ -104,9 +104,12 @@ impl<W: Write> Write for RedactingWriter<W> {
             while split > 0 && !scrubbed.is_char_boundary(split) {
                 split -= 1;
             }
-            self.inner.write_all(scrubbed[..split].as_bytes())?;
+            // Snapped to a char boundary above, so the byte split is also a char
+            // boundary — emit the prefix, retain the suffix.
+            let bytes = scrubbed.as_bytes();
+            self.inner.write_all(&bytes[..split])?;
             self.pending.clear();
-            self.pending.extend_from_slice(scrubbed[split..].as_bytes());
+            self.pending.extend_from_slice(&bytes[split..]);
         }
         // Report the original length consumed — the tracing fmt layer treats a
         // short write as an error, and the withheld bytes are an internal detail.
