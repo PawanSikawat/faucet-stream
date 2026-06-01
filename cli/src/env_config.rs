@@ -211,11 +211,34 @@ fn build_named_catalog(
         }
         kinds.insert(name_upper.to_ascii_lowercase(), value.clone());
     }
+    // All template scope prefixes, so each env var can be assigned to its
+    // LONGEST matching prefix. Without this, a template like `users` would
+    // absorb `users_api`'s vars, since `FAUCET_SOURCES_USERS_` is a prefix of
+    // `FAUCET_SOURCES_USERS_API_` — the shorter template silently gets the
+    // longer one's fields (#146 M17).
+    let scope_prefixes: Vec<String> = kinds
+        .keys()
+        .map(|name| format!("{prefix}{}_", name.to_ascii_uppercase()))
+        .collect();
+
     // Second sweep: harvest each template's config block.
     let mut out: HashMap<String, ConnectorSpec> = HashMap::new();
     for (name, kind) in kinds {
         let scope_prefix = format!("{prefix}{}_", name.to_ascii_uppercase());
-        let mut config = extract_scope(env, &scope_prefix)?;
+        // A view of `env` containing only the vars whose longest matching
+        // template prefix is THIS template's — i.e. drop any var that also
+        // matches a longer sibling prefix nested under this one.
+        let scoped: HashMap<String, String> = env
+            .iter()
+            .filter(|(k, _)| {
+                k.starts_with(&scope_prefix)
+                    && !scope_prefixes.iter().any(|other| {
+                        other.len() > scope_prefix.len() && k.starts_with(other.as_str())
+                    })
+            })
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        let mut config = extract_scope(&scoped, &scope_prefix)?;
         // Remove the `type` field — it's the selector, not a config field.
         if let Value::Object(m) = &mut config {
             m.remove("type");
@@ -337,6 +360,44 @@ mod tests {
         ]);
         let v = extract_scope(&e, "FAUCET_SOURCE_REST_").unwrap();
         assert_eq!(v, json!({"base_url": "https://x.example"}));
+    }
+
+    #[test]
+    fn named_templates_do_not_leak_across_prefix_overlapping_names() {
+        // M17 (#146): template `users` must NOT absorb `users_api`'s vars just
+        // because `FAUCET_SOURCES_USERS_` is a prefix of `FAUCET_SOURCES_USERS_API_`.
+        let e = env(&[
+            ("FAUCET_SOURCES_USERS_TYPE", "rest"),
+            ("FAUCET_SOURCES_USERS_BASE_URL", "https://u"),
+            ("FAUCET_SOURCES_USERS_API_TYPE", "rest"),
+            ("FAUCET_SOURCES_USERS_API_BASE_URL", "https://api"),
+            ("FAUCET_SOURCES_USERS_API_TIMEOUT", "30"),
+        ]);
+        let out = build_named_sources(&e).unwrap();
+
+        let users = out.get("users").expect("users template").config.clone();
+        let users = users.as_object().unwrap();
+        assert_eq!(
+            users.get("base_url").and_then(|v| v.as_str()),
+            Some("https://u")
+        );
+        assert!(
+            !users.contains_key("api_base_url"),
+            "users must not absorb users_api's vars"
+        );
+        assert!(!users.contains_key("api_timeout"));
+
+        let api = out
+            .get("users_api")
+            .expect("users_api template")
+            .config
+            .clone();
+        let api = api.as_object().unwrap();
+        assert_eq!(
+            api.get("base_url").and_then(|v| v.as_str()),
+            Some("https://api")
+        );
+        assert_eq!(api.get("timeout").and_then(|v| v.as_i64()), Some(30));
     }
 
     #[test]

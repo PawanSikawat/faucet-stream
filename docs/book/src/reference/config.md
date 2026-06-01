@@ -20,6 +20,12 @@ execution:                 # optional
   on_error: continue       # continue | stop
 ```
 
+> **Unknown keys are rejected.** The structural blocks (`pipeline`, each
+> `source`/`sink`/`transform`/`state` spec, `matrix` rows, `execution`) reject
+> unrecognized fields, so a typo like `transorms:` or `parnet:` is a load-time
+> error rather than a silently-ignored field. A connector's own `config: { … }`
+> object is still passed through verbatim to that connector.
+
 ## `pipeline`
 
 `source` and `sink` each take a `type` (the connector name) and a `config`
@@ -108,9 +114,12 @@ strftime format produces a clean config error rather than a panic.
   timezone the cron fires in (e.g. `America/Los_Angeles`), not UTC. Queued
   runs use their original scheduled time; `--once` uses the current wall clock.
 
-**Scope:** `${now.*}` tokens are resolved only in source and sink config values.
-They are **not** resolved in `state:`, `dlq:`, `transforms:`, or the top-level
-`auth:` / `vars:` blocks.
+**Scope:** `${now.*}` tokens (and `${row_id.path}` parent-record references) are
+resolved only in source and sink config values. Using one in a `state:`,
+`dlq:`, or `transforms:` config is a **config error at validate/expand time** —
+it is rejected rather than silently passed to the connector as a literal
+`${…}` string. (`${env:…}` / `${vars.X}` / `${sources.X}` still resolve
+everywhere.)
 
 **Reserved id:** `now` is a reserved matrix row id — a matrix row cannot be
 named `now`.

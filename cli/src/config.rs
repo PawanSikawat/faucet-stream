@@ -88,6 +88,7 @@ pub struct PipelineConfig {
 /// template catalogs below; the singular `source` / `sink` fields are the
 /// legacy way to declare a single template (internally named `default`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PipelineSpec {
     /// Legacy singular source — registers as a template named `default`.
     /// Defining both `source` and `sources.default` is an error at expand time.
@@ -124,6 +125,7 @@ pub struct PipelineSpec {
 /// Source templates may additionally carry `transforms:` and
 /// `inherit_transforms:`. Both are rejected on sink templates at expand time.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct ConnectorSpec {
     /// Connector type — matches the suffix of the underlying crate
     /// (e.g. `rest` for `faucet-source-rest`).
@@ -155,6 +157,7 @@ pub struct ConnectorSpec {
 /// the row inherits the legacy singular `pipeline.source` / `pipeline.sink`
 /// (registered internally as a template named `default`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PartialConnector {
     /// Name of the template under `pipeline.sources` / `pipeline.sinks` to
     /// instantiate. `None` falls back to the `default` template.
@@ -170,6 +173,7 @@ pub struct PartialConnector {
 
 /// A single transform declaration.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct TransformSpec {
     /// Built-in transform identifier. One of: `flatten`, `rename_keys`,
     /// `snake_case`, `select`, `drop`, `set`, `rename_field`, `cast`, `redact`,
@@ -185,6 +189,7 @@ pub struct TransformSpec {
 
 /// State-store backend selector.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct StateStoreSpec {
     /// Store type: `file`, `memory`, `redis`, or `postgres`.
     #[serde(rename = "type")]
@@ -197,6 +202,7 @@ pub struct StateStoreSpec {
 
 /// One row of the `matrix:` block.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct MatrixRow {
     /// Row identifier. Required for parent/child references and runtime
     /// `${id.path}` interpolation. Anonymous rows get a synthetic `row-N` id.
@@ -246,6 +252,7 @@ pub struct MatrixRow {
 
 /// Execution-time controls.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ExecutionSpec {
     /// Maximum concurrent pipeline invocations (root + per-parent-record
     /// child invocations all share this budget). Defaults to
