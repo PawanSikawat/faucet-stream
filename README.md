@@ -1,5 +1,5 @@
 <p align="center">
-  <img src=".github/assets/logo.svg" alt="faucet-stream logo" width="96" height="96">
+  <img src="https://raw.githubusercontent.com/PawanSikawat/faucet-stream/main/.github/assets/social-banner.png" alt="faucet-stream" width="640">
 </p>
 
 # faucet-stream
