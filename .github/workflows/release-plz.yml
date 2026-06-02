@@ -27,6 +27,15 @@ jobs:
   release-plz-pr:
     name: Open / update release PR
     runs-on: ubuntu-latest
+    # Run AFTER release-plz-release so the per-crate tags it creates already
+    # exist before this job evaluates. Without this, a release-PR merge fires
+    # both jobs in parallel and this one can observe a just-bumped manifest
+    # whose tag release-plz-release hasn't created yet — concluding the version
+    # is unreleased and opening a redundant duplicate release PR (see #169,
+    # #172). `needs` serializes them; `!cancelled()` keeps this running even
+    # when the release job was a no-op (normal push) or failed.
+    needs: release-plz-release
+    if: ${{ !cancelled() }}
     permissions:
       contents: write
       pull-requests: write
