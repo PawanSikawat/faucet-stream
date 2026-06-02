@@ -2,8 +2,8 @@
 //! KafkaValueFormat.
 
 use base64::Engine;
-use faucet_core::FaucetError;
 use faucet_common_kafka::KafkaValueFormat;
+use faucet_core::FaucetError;
 use serde_json::Value;
 
 #[cfg(feature = "schema-registry")]

@@ -2,11 +2,11 @@
 
 use crate::config::SnowflakeSinkConfig;
 use async_trait::async_trait;
-use faucet_core::util::quote_ident;
-use faucet_core::{AuthSpec, FaucetError, SharedAuthProvider};
 use faucet_common_snowflake::{
     SnowflakeAuth, authorization_header, credential_to_auth, snowflake_token_type,
 };
+use faucet_core::util::quote_ident;
+use faucet_core::{AuthSpec, FaucetError, SharedAuthProvider};
 use reqwest::Client;
 use serde::Deserialize;
 use serde_json::{Value, json};

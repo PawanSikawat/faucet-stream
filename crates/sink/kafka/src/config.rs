@@ -1,7 +1,7 @@
 //! Configuration for the Kafka sink.
 
-use faucet_core::{DEFAULT_BATCH_SIZE, FaucetError};
 use faucet_common_kafka::{CompressionType, KafkaAuth, KafkaValueFormat, OnKeyError};
+use faucet_core::{DEFAULT_BATCH_SIZE, FaucetError};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;

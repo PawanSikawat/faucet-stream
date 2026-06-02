@@ -10,8 +10,8 @@
 //! - The port constant is `testcontainers_modules::kafka::apache::KAFKA_PORT`
 //! - `AsyncRunner` is at `testcontainers::runners::AsyncRunner`
 
-use faucet_core::{DEFAULT_BATCH_SIZE, Source};
 use faucet_common_kafka::{KafkaAuth, KafkaValueFormat, OnDecodeError};
+use faucet_core::{DEFAULT_BATCH_SIZE, Source};
 use faucet_source_kafka::{KafkaSource, KafkaSourceConfig, OffsetReset};
 use futures::StreamExt;
 use rdkafka::ClientConfig;
