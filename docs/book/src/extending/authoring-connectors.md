@@ -90,7 +90,7 @@ and make the first line of `lib.rs` `#![cfg_attr(docsrs, feature(doc_cfg))]`.
 
 Name crates `faucet-source-<name>` / `faucet-sink-<name>`. If you ship both a
 source and a sink for the same system, put shared types (auth, formats) in a
-`faucet-<name>-common` crate that both depend on and re-export.
+`faucet-common-<name>` crate that both depend on and re-export.
 
 > See any built-in connector (e.g. `faucet-source-rest`) for a reference
 > implementation.

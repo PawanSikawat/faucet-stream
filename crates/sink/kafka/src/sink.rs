@@ -4,10 +4,10 @@ use crate::config::{KafkaSinkConfig, KafkaSinkTopic};
 use crate::encode;
 use crate::extract;
 use async_trait::async_trait;
-use faucet_core::{FaucetError, Sink};
 #[cfg(feature = "schema-registry")]
 use faucet_common_kafka::KafkaValueFormat;
 use faucet_common_kafka::OnKeyError;
+use faucet_core::{FaucetError, Sink};
 use futures::stream::{FuturesUnordered, StreamExt};
 use rdkafka::ClientConfig;
 use rdkafka::error::{KafkaError, RDKafkaErrorCode};

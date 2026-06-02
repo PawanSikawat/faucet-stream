@@ -1,8 +1,8 @@
 //! Pure helpers for turning JSON records into MSSQL `INSERT` statements and
 //! bound parameters. No I/O — all unit-testable.
 
-use faucet_core::FaucetError;
 use faucet_common_mssql::PARAM_LIMIT;
+use faucet_core::FaucetError;
 use serde_json::Value;
 use tiberius::ToSql;
 

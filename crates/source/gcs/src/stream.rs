@@ -2,8 +2,8 @@
 
 use crate::config::{GcsFileFormat, GcsSourceConfig};
 use async_trait::async_trait;
-use faucet_core::{FaucetError, Stream, StreamPage};
 use faucet_common_gcs::{build_storage, build_storage_control};
+use faucet_core::{FaucetError, Stream, StreamPage};
 use futures::stream::{self, StreamExt, TryStreamExt};
 use google_cloud_gax::paginator::ItemPaginator;
 use google_cloud_storage::client::{Storage, StorageControl};

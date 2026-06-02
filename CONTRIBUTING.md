@@ -71,7 +71,7 @@ faucet-stream connectors follow a fixed shape. To add `faucet-source-foo` /
    example under `cli/examples/`.
 
 Shared types for a source/sink pair (auth, formats) go in a
-`faucet-<name>-common` crate that both depend on. See `faucet-source-rest` for a
+`faucet-common-<name>` crate that both depend on. See `faucet-source-rest` for a
 reference implementation, and the docs-site
 [authoring guide](./docs/book/src/extending/authoring-connectors.md).
 
@@ -134,7 +134,7 @@ The default release path is automated by [release-plz](https://release-plz.dev/)
    prefixes (`feat` → minor, `fix` / `perf` → patch, anything tagged
    `BREAKING CHANGE` → major).
 3. **Merge the release PR.** release-plz then publishes the bumped crates to
-   crates.io in dependency order (`faucet-core` and the `*-common` crates
+   crates.io in dependency order (`faucet-core` and the `faucet-common-*` crates
    before connectors before `faucet-stream` and `faucet-cli`), waits for the
    sparse index to propagate between dependents, creates per-crate GitHub
    releases, and pushes the `<crate>-v<X.Y.Z>` tags.

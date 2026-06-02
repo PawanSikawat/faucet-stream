@@ -4,8 +4,8 @@
 //! `cargo test -p faucet-source-mssql --test integration`. These are skipped by
 //! a plain `cargo test --lib` (unit tests), mirroring the postgres/kafka pattern.
 
-use faucet_core::Source;
 use faucet_common_mssql::{MssqlConnectionConfig, MssqlTls, MssqlTlsMode, build_pool};
+use faucet_core::Source;
 use faucet_source_mssql::{MssqlReplication, MssqlSource, MssqlSourceConfig};
 use futures::StreamExt;
 use serde_json::Value;

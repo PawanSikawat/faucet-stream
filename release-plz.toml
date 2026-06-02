@@ -73,20 +73,6 @@ release_always = false
 # desired once the registry is stable.
 semver_check = false
 
-# Exclude the umbrella `faucet-stream` crate from release-plz processing.
-# It re-exports 30+ optional connector crates, and computing the local-vs-
-# registry diff for it requires materializing the full dependency tree
-# (`cargo package` / semver-checks). When several of those connector deps
-# aren't on crates.io yet (e.g. brand-new sources/sinks awaiting their own
-# first publish), the resolution hangs the entire release-pr job. Until the
-# registry has caught up for every dep, the umbrella is released manually
-# via the `.github/workflows/release.yml` fallback. Remove this once every
-# faucet-source-* / faucet-sink-* listed in faucet-stream/Cargo.toml is on
-# crates.io.
-[[package]]
-name = "faucet-stream"
-release = false
-
 # Changelog body template — mirrors cliff.toml so rendered output looks the
 # same as past entries. release-plz uses git-cliff internally but no longer
 # honours the deprecated `changelog_config = "cliff.toml"` pointer, so the

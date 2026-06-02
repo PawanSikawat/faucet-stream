@@ -9,8 +9,8 @@
 //! - The port constant is `testcontainers_modules::kafka::apache::KAFKA_PORT`
 //! - `AsyncRunner` is at `testcontainers::runners::AsyncRunner` (not via modules re-export)
 
-use faucet_core::{DEFAULT_BATCH_SIZE, Sink};
 use faucet_common_kafka::{CompressionType, KafkaAuth, KafkaValueFormat, OnKeyError};
+use faucet_core::{DEFAULT_BATCH_SIZE, Sink};
 use faucet_sink_kafka::{Acks, KafkaSink, KafkaSinkConfig, KafkaSinkTopic};
 use rdkafka::ClientConfig;
 use rdkafka::Message;

@@ -104,7 +104,7 @@ Configured via `value_format` (and optionally `key_format`). All formats use a `
 | Confluent Protobuf | `confluent_protobuf` | v1 returns an error — tracked in issue #44. Requires `schema-registry` feature. |
 | Confluent JSON Schema | `confluent_json_schema` | Confluent wire-format JSON. Requires `schema-registry` feature. |
 
-The three Confluent formats require the `schema-registry` feature flag. Each takes a `schema_registry` block — see the [`faucet-common-kafka` README](../kafka-common/README.md#value-formats) for `SchemaRegistryConfig` options.
+The three Confluent formats require the `schema-registry` feature flag. Each takes a `schema_registry` block — see the [`faucet-common-kafka` README](../../common/kafka/README.md#value-formats) for `SchemaRegistryConfig` options.
 
 When a Confluent format is used on the **sink** side you must also supply the schema text to register and encode against: set `value_schema` (for `value_format`) and/or `key_schema` (for `key_format`) to the Avro `.avsc` JSON, `.proto`, or JSON Schema document. They are registered under the `{topic}-value` / `{topic}-key` subjects on first use. The config is rejected at load time if a Confluent format is selected without its schema.
 
@@ -217,7 +217,7 @@ When `batch_size > 0`, `KafkaSink::new` also sets librdkafka's `queue.buffering.
 
 ## SASL/SSL setup
 
-Authentication is configured via the `auth` field using `KafkaAuth` from `faucet-common-kafka`. The full auth reference is in the [`faucet-common-kafka` README](../kafka-common/README.md#auth-modes).
+Authentication is configured via the `auth` field using `KafkaAuth` from `faucet-common-kafka`. The full auth reference is in the [`faucet-common-kafka` README](../../common/kafka/README.md#auth-modes).
 
 ```yaml
 # SASL/PLAIN (Confluent Cloud, Amazon MSK)
@@ -263,7 +263,7 @@ A complete working example is in [`cli/examples/rest_to_kafka.yaml`](../../cli/e
 ## See also
 
 - [`faucet-source-kafka`](../../crates/source/kafka/README.md) — consume records from Kafka topics.
-- [`faucet-common-kafka`](../kafka-common/README.md) — shared auth modes, value formats, schema registry client, and policy enums.
+- [`faucet-common-kafka`](../../common/kafka/README.md) — shared auth modes, value formats, schema registry client, and policy enums.
 
 ---
 
