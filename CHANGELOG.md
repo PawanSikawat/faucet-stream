@@ -8,6 +8,102 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 independently).
 ## [Unreleased]
 
+## `faucet-stream` — [1.0.1](https://github.com/PawanSikawat/faucet-stream/compare/faucet-stream-v1.0.0...faucet-stream-v1.0.1) - 2026-06-02
+
+### Bug Fixes
+
+- Correct stale crates.io READMEs + finish faucet-common-* umbrella rename
+
+### Miscellaneous
+
+- Release v1.0.1 ([#168](https://github.com/PawanSikawat/faucet-stream/pull/168))
+
+## `faucet-sink-kafka` — [1.0.1](https://github.com/PawanSikawat/faucet-stream/compare/faucet-sink-kafka-v1.0.0...faucet-sink-kafka-v1.0.1) - 2026-06-02
+
+### Bug Fixes
+
+- Correct stale crates.io READMEs + finish faucet-common-* umbrella rename
+
+### Miscellaneous
+
+- Release v1.0.1 ([#168](https://github.com/PawanSikawat/faucet-stream/pull/168))
+
+### Other
+
+- Restore rustfmt import ordering after the faucet-common-* rename
+
+## `faucet-sink-elasticsearch` — [1.0.1](https://github.com/PawanSikawat/faucet-stream/compare/faucet-sink-elasticsearch-v1.0.0...faucet-sink-elasticsearch-v1.0.1) - 2026-06-02
+
+### Bug Fixes
+
+- Correct stale crates.io READMEs + finish faucet-common-* umbrella rename
+
+### Miscellaneous
+
+- Release v1.0.1 ([#168](https://github.com/PawanSikawat/faucet-stream/pull/168))
+
+## `faucet-sink-gcs` — [1.0.1](https://github.com/PawanSikawat/faucet-stream/compare/faucet-sink-gcs-v1.0.0...faucet-sink-gcs-v1.0.1) - 2026-06-02
+
+### Bug Fixes
+
+- Correct stale crates.io READMEs + finish faucet-common-* umbrella rename
+
+### Miscellaneous
+
+- Release v1.0.1 ([#168](https://github.com/PawanSikawat/faucet-stream/pull/168))
+
+### Other
+
+- Restore rustfmt import ordering after the faucet-common-* rename
+
+## `faucet-source-elasticsearch` — [1.0.1](https://github.com/PawanSikawat/faucet-stream/compare/faucet-source-elasticsearch-v1.0.0...faucet-source-elasticsearch-v1.0.1) - 2026-06-02
+
+### Bug Fixes
+
+- Correct stale crates.io READMEs + finish faucet-common-* umbrella rename
+
+### Miscellaneous
+
+- Release v1.0.1 ([#168](https://github.com/PawanSikawat/faucet-stream/pull/168))
+
+## `faucet-source-gcs` — [1.0.1](https://github.com/PawanSikawat/faucet-stream/compare/faucet-source-gcs-v1.0.0...faucet-source-gcs-v1.0.1) - 2026-06-02
+
+### Bug Fixes
+
+- Correct stale crates.io READMEs + finish faucet-common-* umbrella rename
+
+### Miscellaneous
+
+- Release v1.0.1 ([#168](https://github.com/PawanSikawat/faucet-stream/pull/168))
+
+### Other
+
+- Restore rustfmt import ordering after the faucet-common-* rename
+
+## `faucet-source-kafka` — [1.0.1](https://github.com/PawanSikawat/faucet-stream/compare/faucet-source-kafka-v1.0.0...faucet-source-kafka-v1.0.1) - 2026-06-02
+
+### Bug Fixes
+
+- Correct stale crates.io READMEs + finish faucet-common-* umbrella rename
+
+### Miscellaneous
+
+- Release v1.0.1 ([#168](https://github.com/PawanSikawat/faucet-stream/pull/168))
+
+### Other
+
+- Restore rustfmt import ordering after the faucet-common-* rename
+
+## `faucet-common-mssql` — [1.0.1](https://github.com/PawanSikawat/faucet-stream/compare/faucet-common-mssql-v1.0.0...faucet-common-mssql-v1.0.1) - 2026-06-02
+
+### Bug Fixes
+
+- Correct stale crates.io READMEs + finish faucet-common-* umbrella rename
+
+### Miscellaneous
+
+- Release v1.0.1 ([#168](https://github.com/PawanSikawat/faucet-stream/pull/168))
+
 ## `faucet-cli` — [1.0.1](https://github.com/PawanSikawat/faucet-stream/compare/faucet-cli-v1.0.0...faucet-cli-v1.0.1) - 2026-06-02
 
 ### Miscellaneous
