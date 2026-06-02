@@ -126,7 +126,7 @@ Each Confluent format takes a `schema_registry` block — see the `faucet-common
 
 ## Auth
 
-Authentication is configured via the `auth` field using `KafkaAuth` from `faucet-common-kafka`. The full auth reference — SASL/PLAIN, SASL/SCRAM, SSL client certificates, and SASL+SSL — is in the [`faucet-common-kafka` README](../kafka-common/README.md#auth-modes).
+Authentication is configured via the `auth` field using `KafkaAuth` from `faucet-common-kafka`. The full auth reference — SASL/PLAIN, SASL/SCRAM, SSL client certificates, and SASL+SSL — is in the [`faucet-common-kafka` README](../../common/kafka/README.md#auth-modes).
 
 Quick example for SASL/PLAIN (Confluent Cloud, MSK with SASL):
 
@@ -243,7 +243,7 @@ A complete working example is in [`cli/examples/kafka_to_jsonl.yaml`](../../cli/
 ## See also
 
 - [`faucet-sink-kafka`](../../crates/sink/kafka/README.md) — produce records to Kafka topics.
-- [`faucet-common-kafka`](../kafka-common/README.md) — shared auth modes, value formats, schema registry client, and policy enums used by both connectors.
+- [`faucet-common-kafka`](../../common/kafka/README.md) — shared auth modes, value formats, schema registry client, and policy enums used by both connectors.
 
 ---
 

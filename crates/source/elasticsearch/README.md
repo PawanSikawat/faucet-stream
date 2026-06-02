@@ -220,7 +220,7 @@ let metrics = source.fetch_all().await?;
 
 ## Shared types
 
-`ElasticsearchAuth` lives in [`faucet-common-elasticsearch`](../../elasticsearch-common) and is shared with `faucet-sink-elasticsearch`. The source re-exports it for convenience, so `faucet_source_elasticsearch::ElasticsearchAuth` continues to work unchanged.
+`ElasticsearchAuth` lives in [`faucet-common-elasticsearch`](../../common/elasticsearch) and is shared with `faucet-sink-elasticsearch`. The source re-exports it for convenience, so `faucet_source_elasticsearch::ElasticsearchAuth` continues to work unchanged.
 
 ## License
 

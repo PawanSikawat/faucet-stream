@@ -305,7 +305,7 @@ there — already-indexed items stay in the main sink with no duplicates.
 
 ## Shared types
 
-`ElasticsearchAuth` lives in [`faucet-common-elasticsearch`](../../elasticsearch-common) and is shared with `faucet-source-elasticsearch`. The sink re-exports it as `faucet_sink_elasticsearch::ElasticsearchAuth`.
+`ElasticsearchAuth` lives in [`faucet-common-elasticsearch`](../../common/elasticsearch) and is shared with `faucet-source-elasticsearch`. The sink re-exports it as `faucet_sink_elasticsearch::ElasticsearchAuth`.
 
 > **Deprecation:** the previous name `ElasticsearchSinkAuth` is retained as a deprecated type alias in `0.3.x` and removed in `0.4.0`. Migrate imports to `ElasticsearchAuth` at your convenience.
 

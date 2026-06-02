@@ -10,7 +10,7 @@ connectors. Built on [`tiberius`](https://crates.io/crates/tiberius) +
 You normally don't depend on this crate directly — both connectors re-export the
 types you configure. It exists so the source and sink share one connection /
 TLS / pooling implementation (per the faucet "source/sink pair shares a
-`-common` crate" convention).
+`faucet-common-<name>` crate" convention).
 
 ## What's here
 

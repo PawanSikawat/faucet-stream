@@ -31,7 +31,7 @@ pub struct GcsSinkConfig {
 |---|---|
 | `bucket` | GCS bucket name. |
 | `prefix` | Object-name prefix; concatenated with the UUIDv7 key and file extension. |
-| `credentials` | See [`GcsCredentials`](../../gcs-common/README.md). Defaults to `application_default`. |
+| `credentials` | See [`GcsCredentials`](../../common/gcs/README.md). Defaults to `application_default`. |
 | `file_extension` | Suffix appended to every object name (default `.jsonl`). |
 | `max_records_per_file` | Hard cap on records per uploaded object. `None` means a single object per `write_batch` call (still subject to `batch_size`). |
 | `concurrency` | Maximum concurrent uploads. |
