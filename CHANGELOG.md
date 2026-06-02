@@ -8,6 +8,24 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 independently).
 ## [Unreleased]
 
+## `faucet-cli` — [1.0.1](https://github.com/PawanSikawat/faucet-stream/compare/faucet-cli-v1.0.0...faucet-cli-v1.0.1) - 2026-06-02
+
+### Miscellaneous
+
+- Updated the following local packages: faucet-source-kafka, faucet-source-gcs, faucet-source-elasticsearch, faucet-sink-gcs, faucet-sink-elasticsearch, faucet-sink-kafka, faucet-source-mssql, faucet-sink-mssql
+
+## `faucet-sink-mssql` — [1.0.1](https://github.com/PawanSikawat/faucet-stream/compare/faucet-sink-mssql-v1.0.0...faucet-sink-mssql-v1.0.1) - 2026-06-02
+
+### Miscellaneous
+
+- Updated the following local packages: faucet-common-mssql
+
+## `faucet-source-mssql` — [1.0.1](https://github.com/PawanSikawat/faucet-stream/compare/faucet-source-mssql-v1.0.0...faucet-source-mssql-v1.0.1) - 2026-06-02
+
+### Miscellaneous
+
+- Updated the following local packages: faucet-common-mssql
+
 ### Bug Fixes
 
 - Add multi-parent DAG validation and move futures to workspace deps
