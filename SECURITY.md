@@ -2,9 +2,10 @@
 
 ## Supported versions
 
-faucet-stream is pre-1.0 and under active development. Security fixes are applied
-to the latest published `0.x` release on crates.io and to `main`. Older versions
-are not maintained — please upgrade to the latest release before reporting.
+faucet-stream has reached **1.0**. Security fixes are applied to the latest
+published `1.x` release on crates.io and to `main`. Older releases — including
+all pre-1.0 (`0.x`) versions — are no longer maintained; please upgrade to the
+latest release before reporting.
 
 ## Reporting a vulnerability
 
