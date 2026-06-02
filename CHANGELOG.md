@@ -8,6 +8,12 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 independently).
 ## [Unreleased]
 
+## `faucet-stream` — [1.0.2](https://github.com/PawanSikawat/faucet-stream/compare/faucet-stream-v1.0.1...faucet-stream-v1.0.2) - 2026-06-02
+
+### Bug Fixes
+
+- Absolute PNG banner for crates.io README hero + Codecov upload token
+
 ## `faucet-cli` — [1.0.1](https://github.com/PawanSikawat/faucet-stream/compare/faucet-cli-v1.0.0...faucet-cli-v1.0.1) - 2026-06-02
 
 ### Miscellaneous
