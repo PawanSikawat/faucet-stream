@@ -1,6 +1,11 @@
 name: CI
 
 on:
+  # Run on PRs, and on pushes to main — the latter so the Coverage job uploads
+  # main-branch coverage to Codecov (the badge tracks branch/main) and so merge
+  # commits themselves get CI-verified (PR CI only tests the PR head).
+  push:
+    branches: [main]
   pull_request:
     branches: [main]
 
