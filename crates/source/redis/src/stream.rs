@@ -189,7 +189,7 @@ impl RedisSource {
             .map_err(|e| FaucetError::Source(format!("MGET failed: {e}")))?;
 
         let mut records = Vec::new();
-        for (key, value) in keys.iter().zip(values.into_iter()) {
+        for (key, value) in keys.iter().zip(values) {
             if let Some(v) = value {
                 let parsed =
                     serde_json::from_str::<Value>(&v).unwrap_or_else(|_| Value::String(v.clone()));
