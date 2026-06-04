@@ -28,23 +28,14 @@ impl Registry {
     }
 
     /// Reserve a queue slot. Returns `true` if a slot was reserved, or `false`
-    /// if the queue is full. Atomic against concurrent submits via a CAS loop.
+    /// if the queue is full. Atomic against concurrent submits via a CAS loop
+    /// (`AtomicUsize::try_update`, stabilized in Rust 1.95).
     pub fn try_reserve(&self) -> bool {
-        let mut cur = self.queued.load(Ordering::Acquire);
-        loop {
-            if cur >= self.max_queued {
-                return false;
-            }
-            match self.queued.compare_exchange_weak(
-                cur,
-                cur + 1,
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            ) {
-                Ok(_) => return true,
-                Err(actual) => cur = actual,
-            }
-        }
+        self.queued
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |cur| {
+                (cur < self.max_queued).then_some(cur + 1)
+            })
+            .is_ok()
     }
 
     /// Release a slot reserved by `try_reserve` that will not be spawned
