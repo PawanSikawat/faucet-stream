@@ -68,7 +68,7 @@ Every change event is one JSON object:
 | `before` | object \| null | Pre-image of the document. Populated only when `full_document_before_change` is enabled and the collection has `changeStreamPreAndPostImages` turned on (MongoDB 6.0+). |
 | `after` | object \| null | Post-image of the document. Populated on inserts, replaces, and updates when `full_document` is `update_lookup`, `when_available`, or `required`. `null` on deletes. |
 | `update_description` | object \| null | Present on `u` events: `{ "updated_fields": {…}, "removed_fields": ["…"], "truncated_arrays": [{…}] }`. `null` for all other op types. |
-| `resume_token` | object | Opaque server-assigned token. The pipeline persists this as the page bookmark and passes it to `startAfter` on the next run. |
+| `resume_token` | object | Opaque server-assigned token. The pipeline persists this as the page bookmark and passes it to `resumeAfter` on the next run. |
 
 ### op mapping
 
@@ -101,7 +101,7 @@ Every change event is one JSON object:
 
 ## Resumability and state key
 
-The connector is fully resumable. After each emitted page the pipeline writes the `resume_token` of the last event in that page to the configured `StateStore` (per-batch durability). On the next run, `apply_start_bookmark` restores the token and the Change Stream opens with `startAfter: <token>` — MongoDB delivers events from exactly that point onwards with no duplicates and no gap.
+The connector is fully resumable. After each emitted page the pipeline writes the `resume_token` of the last event in that page to the configured `StateStore` (per-batch durability). On the next run, `apply_start_bookmark` restores the token and the Change Stream opens with `resumeAfter: <token>` — MongoDB delivers events from exactly that point onwards with no duplicates and no gap.
 
 **`start_from` precedence:**
 
@@ -126,7 +126,7 @@ An `invalidate` event (emitted when a watched collection or database is dropped 
 
 ## Caveats
 
-- **Replica set or sharded cluster required.** Standalone `mongod` instances do not support Change Streams. The connector validates this at startup and returns a typed `FaucetError::Config` immediately.
+- **Replica set or sharded cluster required.** Standalone `mongod` instances do not support Change Streams. The connector validates this at startup and returns a typed `FaucetError::Source` immediately.
 - **`full_document: update_lookup` has at-least-once / read-skew semantics.** The document is re-read from the primary at event delivery time, not at the time of the original change. If the document has been further modified or deleted between the change and the lookup, the `after` image will reflect the later state (or be absent). Do not rely on `after` for exactly-once semantics when using `update_lookup`.
 - **`start_from: earliest` may error.** If the oplog has rolled past the earliest available timestamp (common on busy clusters with a short oplog window), MongoDB returns an error. Use `{ type: now }` for new deployments and keep your oplog window large enough for your expected downtime.
 - **`full_document_before_change` requires MongoDB 6.0+ and per-collection configuration.** Enable pre-images on the collection before starting the stream:

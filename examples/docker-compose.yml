@@ -87,15 +87,28 @@ services:
       timeout: 5s
       retries: 10
 
+  # MongoDB as a single-node replica set so the mongodb-cdc source (Change
+  # Streams require a replica set) works out of the box. The healthcheck
+  # self-initiates the set on first run. Query-mode mongodb examples connect to
+  # the primary without the `?replicaSet=` param and work unchanged.
   mongodb:
     image: mongo:7
+    command: ["--replSet", "rs0", "--bind_ip_all"]
     ports:
       - "27017:27017"
     healthcheck:
-      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping')"]
+      # Idempotent: initiates the replica set on the first check, then reports
+      # healthy once a primary is writable.
+      test:
+        - "CMD"
+        - "mongosh"
+        - "--quiet"
+        - "--eval"
+        - "try { db.hello().isWritablePrimary } catch (e) { rs.initiate({ _id: 'rs0', members: [{ _id: 0, host: 'localhost:27017' }] }) } finally { quit(db.hello().isWritablePrimary ? 0 : 1) }"
       interval: 5s
       timeout: 5s
-      retries: 10
+      retries: 30
+      start_period: 5s
 
   elasticsearch:
     image: docker.elastic.co/elasticsearch/elasticsearch:8.15.0
