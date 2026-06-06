@@ -153,8 +153,7 @@ async fn build_sql(inner: &CatalogInner) -> Result<Arc<dyn Catalog>, FaucetError
     // we always supply `LocalFsStorageFactory`; cloud-scheme users will get a
     // clear error from the iceberg SDK at I/O time rather than a cryptic
     // "StorageFactory must be provided" panic.
-    let storage_factory: Arc<dyn iceberg::io::StorageFactory> =
-        Arc::new(LocalFsStorageFactory);
+    let storage_factory: Arc<dyn iceberg::io::StorageFactory> = Arc::new(LocalFsStorageFactory);
 
     let catalog = SqlCatalogBuilder::default()
         .with_storage_factory(storage_factory)
