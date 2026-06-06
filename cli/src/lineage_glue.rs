@@ -20,7 +20,7 @@ pub fn build_emitter(cfg: Option<&LineageConfig>) -> Result<Option<Arc<LineageEm
 /// `rename_keys`) and any unknown transform become `Opaque`, which makes
 /// `faucet_lineage::derive` omit the column-lineage facet (never fabricated).
 pub fn column_ops(specs: &[TransformSpec]) -> Vec<ColumnOp> {
-    specs.iter().map(|s| map_one(s)).collect()
+    specs.iter().map(map_one).collect()
 }
 
 fn map_one(s: &TransformSpec) -> ColumnOp {
