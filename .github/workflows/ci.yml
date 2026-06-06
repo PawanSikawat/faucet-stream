@@ -133,6 +133,7 @@ jobs:
           - source-snowflake
           # Sinks
           - sink-bigquery
+          - sink-iceberg
           - sink-postgres
           - sink-jsonl
           - sink-snowflake

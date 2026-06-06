@@ -231,6 +231,14 @@ pub async fn build_sink(kind: &str, config: Value, auth: &AuthCatalog) -> CliRes
                 faucet_sink_bigquery::BigQuerySink::new(cfg).await?,
             ))
         }
+        #[cfg(feature = "sink-iceberg")]
+        "iceberg" => {
+            let cfg =
+                decode::<faucet_sink_iceberg::IcebergSinkConfig>("sink", "iceberg", config)?;
+            Ok(Box::new(
+                faucet_sink_iceberg::IcebergSink::new(cfg).await?,
+            ))
+        }
         #[cfg(feature = "sink-postgres")]
         "postgres" => {
             let cfg =
@@ -405,6 +413,8 @@ pub fn sink_schema(kind: &str) -> CliResult<Value> {
     match kind {
         #[cfg(feature = "sink-bigquery")]
         "bigquery" => Ok(schema::<faucet_sink_bigquery::BigQuerySinkConfig>()),
+        #[cfg(feature = "sink-iceberg")]
+        "iceberg" => Ok(schema::<faucet_sink_iceberg::IcebergSinkConfig>()),
         #[cfg(feature = "sink-postgres")]
         "postgres" => Ok(schema::<faucet_sink_postgres::PostgresSinkConfig>()),
         #[cfg(feature = "sink-jsonl")]
@@ -515,6 +525,8 @@ pub fn sink_descriptions() -> Vec<(&'static str, &'static str)> {
     let mut v: Vec<(&'static str, &'static str)> = Vec::new();
     #[cfg(feature = "sink-bigquery")]
     v.push(("bigquery", "Google BigQuery streaming-insert sink"));
+    #[cfg(feature = "sink-iceberg")]
+    v.push(("iceberg", "Apache Iceberg sink (append, REST/Glue/SQL/HMS catalogs)"));
     #[cfg(feature = "sink-postgres")]
     v.push(("postgres", "PostgreSQL sink (JSONB or auto-mapped columns)"));
     #[cfg(feature = "sink-jsonl")]

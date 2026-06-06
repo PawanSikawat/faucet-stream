@@ -1,0 +1,51 @@
+version: 1
+name: kafka-to-iceberg
+# Consume a Kafka topic and write each message as a row in an Apache Iceberg
+# table via the REST catalog.
+#
+# Run:
+#   faucet run cli/examples/kafka_to_iceberg.yaml
+#
+# Prereqs:
+#   - A running Kafka or Redpanda broker on localhost:9092.
+#   - The topic 'events' exists and has some messages.
+#   - An Iceberg REST catalog reachable at http://localhost:8181 (e.g. Polaris,
+#     Nessie, or a Tabular/Snowflake Open Catalog endpoint).
+#   - An S3-compatible object store (real S3, MinIO, or LocalStack) at the
+#     warehouse root configured in the catalog.
+
+pipeline:
+  source:
+    type: kafka
+    config:
+      brokers: "localhost:9092"
+      topics: ["events"]
+      group_id: "faucet-example-kafka-to-iceberg"
+      value_format: {type: json}
+      auto_offset_reset: earliest
+      # Stop when either condition fires.
+      max_messages: 100000
+      idle_timeout: 30
+
+  sink:
+    type: iceberg
+    config:
+      catalog:
+        type: rest
+        uri: "http://localhost:8181"
+        warehouse: "s3://warehouse/"
+        # Optional bearer token for REST catalogs that require authentication.
+        # Set credential to your token string or use an env-var interpolation.
+      namespace: ["streaming"]
+      table: "events"
+      create_if_missing: true
+      write_mode: append
+      target_file_size_mb: 256
+      parquet:
+        compression: snappy
+      batch_size: 10000
+
+  state:
+    type: file
+    config:
+      path: ./.faucet-state

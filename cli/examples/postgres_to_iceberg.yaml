@@ -1,0 +1,49 @@
+version: 1
+name: postgres-to-iceberg
+# Stream every row from a PostgreSQL table into an Apache Iceberg table via the
+# REST catalog. The Iceberg table is created on first run if it does not exist.
+#
+# Run:
+#   faucet run cli/examples/postgres_to_iceberg.yaml
+#
+# Prereqs:
+#   - A PostgreSQL instance reachable at localhost:5432.
+#   - An Iceberg REST catalog reachable at http://localhost:8181 (e.g. Polaris,
+#     Nessie, or a Tabular/Snowflake Open Catalog endpoint).
+#   - An S3-compatible object store (real S3, MinIO, or LocalStack) at the
+#     warehouse root configured in the catalog.
+
+pipeline:
+  source:
+    type: postgres
+    config:
+      connection_url: "postgres://faucet:faucet@localhost:5432/appdb"
+      query: "SELECT * FROM users"
+      batch_size: 10000
+
+  sink:
+    type: iceberg
+    config:
+      catalog:
+        type: rest
+        uri: "http://localhost:8181"
+        warehouse: "s3://warehouse/"
+        # Optional bearer token for REST catalogs that require authentication.
+        # Set credential to your token string or use an env-var interpolation.
+        # Optional extra properties forwarded to the catalog builder
+        # (e.g. AWS region, S3 endpoint URL).
+        # properties:
+        #   s3.region: us-east-1
+      namespace: ["analytics"]
+      table: "users"
+      create_if_missing: true
+      # Partition by the `created_at` date column (day granularity).
+      # Ignored when writing to an existing table — the table's spec is used.
+      partition_spec:
+        - source: created_at
+          transform: day
+      write_mode: append
+      target_file_size_mb: 256
+      parquet:
+        compression: snappy
+      batch_size: 10000
