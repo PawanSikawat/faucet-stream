@@ -21,6 +21,7 @@ members = [
     "crates/source/gcs",
     "crates/source/s3",
     "crates/source/mongodb",
+    "crates/source/mongodb-cdc",
     "crates/source/redis",
     "crates/source/webhook",
     "crates/source/websocket",
@@ -93,6 +94,7 @@ faucet-source-mssql = { path = "crates/source/mssql", version = "1.0.1" }
 faucet-source-gcs = { path = "crates/source/gcs", version = "1.0.1" }
 faucet-source-s3 = { path = "crates/source/s3", version = "1.0.0" }
 faucet-source-mongodb = { path = "crates/source/mongodb", version = "1.0.0" }
+faucet-source-mongodb-cdc = { path = "crates/source/mongodb-cdc", version = "1.0.0" }
 faucet-source-redis = { path = "crates/source/redis", version = "1.0.0" }
 faucet-source-webhook = { path = "crates/source/webhook", version = "1.0.0" }
 faucet-source-websocket = { path = "crates/source/websocket", version = "1.0.0" }
