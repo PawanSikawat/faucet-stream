@@ -39,6 +39,15 @@ impl faucet_core::Sink for RedisSink {
             .expect("schema serialization")
     }
 
+    fn dataset_uri(&self) -> String {
+        use crate::config::RedisSinkType;
+        let key = match &self.config.sink_type {
+            RedisSinkType::List { key } | RedisSinkType::Stream { key } => format!("?key={key}"),
+            RedisSinkType::KeyValue { key_field } => format!("?key_field={key_field}"),
+        };
+        format!("{}{}", faucet_core::redact_uri_credentials(&self.config.url), key)
+    }
+
     /// Non-mutating preflight probe: issue a Redis `PING` over the existing
     /// multiplexed connection (probe name `"ping"`).
     async fn check(
@@ -172,6 +181,10 @@ mod tests {
     use super::*;
     use crate::config::RedisSinkConfig;
     use serde_json::json;
+
+    // dataset_uri test is skipped: RedisSink::new() requires a live Redis
+    // connection (opens a multiplexed connection in new()), and no offline
+    // constructor exists.
 
     #[test]
     fn config_fields_accessible() {

@@ -193,6 +193,11 @@ impl faucet_core::Sink for ElasticsearchSink {
             .expect("schema serialization")
     }
 
+    fn dataset_uri(&self) -> String {
+        format!("{}/{}",
+            faucet_core::redact_uri_credentials(&self.config.base_url), self.config.index)
+    }
+
     /// Non-mutating preflight probe.
     ///
     /// Runs `GET /_cluster/health` over the existing reqwest client (probe
@@ -444,6 +449,14 @@ impl faucet_core::Sink for ElasticsearchSink {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use faucet_core::Sink as _;
+
+    #[test]
+    fn dataset_uri_combines_base_url_and_index() {
+        let config = ElasticsearchSinkConfig::new("http://localhost:9200", "my-index");
+        let sink = ElasticsearchSink::new(config).unwrap();
+        assert_eq!(sink.dataset_uri(), "http://localhost:9200/my-index");
+    }
 
     #[test]
     fn resume_dup_risk_only_when_multichunk_and_no_id_field() {
