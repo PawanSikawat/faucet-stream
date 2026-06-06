@@ -329,6 +329,31 @@ impl IcebergSinkConfig {
             }
         }
 
+        // Catalog connection URI. REST / SQL / HMS need an endpoint URI; Glue
+        // resolves its endpoint from AWS config (region/credentials in
+        // `properties` or the default chain), so it has no required URI. Caught
+        // here at config-load time rather than only at connect time.
+        let (uri_required, kind) = match &self.catalog {
+            CatalogConfig::Rest(_) => (true, "rest"),
+            CatalogConfig::Sql(_) => (true, "sql"),
+            CatalogConfig::Hms(_) => (true, "hms"),
+            CatalogConfig::Glue(_) => (false, "glue"),
+        };
+        if uri_required
+            && self
+                .catalog
+                .inner()
+                .uri
+                .as_deref()
+                .map(str::trim)
+                .unwrap_or("")
+                .is_empty()
+        {
+            return Err(FaucetError::Config(format!(
+                "iceberg: catalog '{kind}' requires a non-empty `uri`"
+            )));
+        }
+
         // Batch size
         faucet_core::validate_batch_size(self.batch_size)?;
 
@@ -515,6 +540,43 @@ mod tests {
         assert!(matches!(err, FaucetError::Config(_)));
         let msg = err.to_string();
         assert!(msg.contains("table"), "should mention table: {msg}");
+    }
+
+    // ── catalog uri requirement ───────────────────────────────────────────────
+
+    #[test]
+    fn rest_catalog_without_uri_is_rejected() {
+        let cfg = parse(serde_json::json!({
+            "catalog": { "type": "rest" },
+            "namespace": ["analytics"],
+            "table": "events"
+        }));
+        let err = cfg.validate().unwrap_err();
+        assert!(matches!(err, FaucetError::Config(_)));
+        assert!(err.to_string().contains("uri"), "should mention uri: {err}");
+    }
+
+    #[test]
+    fn sql_and_hms_without_uri_are_rejected() {
+        for ty in ["sql", "hms"] {
+            let cfg = parse(serde_json::json!({
+                "catalog": { "type": ty },
+                "namespace": ["analytics"],
+                "table": "events"
+            }));
+            assert!(cfg.validate().is_err(), "{ty} without uri should fail");
+        }
+    }
+
+    #[test]
+    fn glue_catalog_without_uri_is_allowed() {
+        // Glue resolves its endpoint from AWS config, so no uri is required.
+        let cfg = parse(serde_json::json!({
+            "catalog": { "type": "glue", "warehouse": "s3://lake/wh" },
+            "namespace": ["analytics"],
+            "table": "events"
+        }));
+        assert!(cfg.validate().is_ok());
     }
 
     // ── batch_size bounds ─────────────────────────────────────────────────────
