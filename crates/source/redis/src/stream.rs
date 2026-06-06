@@ -384,6 +384,16 @@ impl faucet_core::Source for RedisSource {
         serde_json::to_value(faucet_core::schema_for!(RedisSourceConfig))
             .expect("schema serialization")
     }
+
+    fn dataset_uri(&self) -> String {
+        use crate::config::RedisSourceType;
+        let base = faucet_core::redact_uri_credentials(&self.config.url);
+        match &self.config.source_type {
+            RedisSourceType::List { key } => format!("{base}?key={key}"),
+            RedisSourceType::Stream { key, .. } => format!("{base}?stream={key}"),
+            RedisSourceType::Keys { pattern } => format!("{base}?key={pattern}"),
+        }
+    }
 }
 
 /// Stream a Redis list via `LRANGE start stop`, sliding the window by
@@ -633,6 +643,33 @@ mod tests {
             RedisSourceType::List { key: "test".into() },
         );
         let _source = RedisSource::new(config).unwrap();
+    }
+
+    #[test]
+    fn dataset_uri_list_source() {
+        use faucet_core::Source;
+        let source = RedisSource::new(RedisSourceConfig::new(
+            "redis://u:p@localhost:6379/0",
+            RedisSourceType::List { key: "my-list".into() },
+        ))
+        .unwrap();
+        assert_eq!(source.dataset_uri(), "redis://localhost:6379/0?key=my-list");
+    }
+
+    #[test]
+    fn dataset_uri_stream_source() {
+        use faucet_core::Source;
+        let config = RedisSourceConfig::new(
+            "redis://localhost",
+            RedisSourceType::Stream {
+                key: "events".into(),
+                group: None,
+                consumer: None,
+                count: None,
+            },
+        );
+        let source = RedisSource::new(config).unwrap();
+        assert_eq!(source.dataset_uri(), "redis://localhost?stream=events");
     }
 
     #[test]

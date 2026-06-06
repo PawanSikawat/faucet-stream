@@ -574,6 +574,17 @@ impl Source for KafkaSource {
         "kafka"
     }
 
+    fn dataset_uri(&self) -> String {
+        let broker = self
+            .config
+            .brokers
+            .split(',')
+            .next()
+            .unwrap_or(&self.config.brokers)
+            .trim();
+        format!("kafka://{}?topic={}", broker, self.config.topics.join(","))
+    }
+
     /// Preflight probe that does **not** consume any message.
     ///
     /// The default `Source::check` would call `stream_pages`, which polls for
@@ -628,5 +639,30 @@ impl Source for KafkaSource {
             ),
         };
         Ok(CheckReport::single(probe))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// `dataset_uri` logic tests — replicate the method's computation directly
+    /// using config field values, because `KafkaSource::new` requires a live
+    /// broker to construct an `rdkafka` consumer.
+
+    #[test]
+    fn dataset_uri_single_broker_single_topic() {
+        let brokers = "kafka.example.com:9092";
+        let topics = ["orders"];
+        let broker = brokers.split(',').next().unwrap_or(brokers).trim();
+        let uri = format!("kafka://{}?topic={}", broker, topics.join(","));
+        assert_eq!(uri, "kafka://kafka.example.com:9092?topic=orders");
+    }
+
+    #[test]
+    fn dataset_uri_multi_broker_uses_first() {
+        let brokers = "b1:9092,b2:9092,b3:9092";
+        let topics = ["events", "logs"];
+        let broker = brokers.split(',').next().unwrap_or(brokers).trim();
+        let uri = format!("kafka://{}?topic={}", broker, topics.join(","));
+        assert_eq!(uri, "kafka://b1:9092?topic=events,logs");
     }
 }

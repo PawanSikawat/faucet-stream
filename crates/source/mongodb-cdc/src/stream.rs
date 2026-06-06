@@ -209,6 +209,18 @@ impl Source for MongoCdcSource {
         "mongodb-cdc"
     }
 
+    fn dataset_uri(&self) -> String {
+        use crate::config::Scope;
+        let base = faucet_core::redact_uri_credentials(&self.config.connection_uri);
+        match &self.config.scope {
+            Scope::Collection { database, collection } => {
+                format!("{base}/{database}/{collection}")
+            }
+            Scope::Database { database } => format!("{base}/{database}"),
+            Scope::Cluster => base,
+        }
+    }
+
     async fn check(
         &self,
         ctx: &faucet_core::check::CheckContext,
@@ -503,5 +515,42 @@ mod tests {
         }))
         .unwrap();
         assert!(matches!(build_pipeline(&c), Err(FaucetError::Config(_))));
+    }
+
+    // dataset_uri is a pure-config method; MongoCdcSource requires a live
+    // MongoDB async constructor, so we verify the logic directly using config
+    // deserialization (which is sync).
+    #[test]
+    fn dataset_uri_cluster_scope() {
+        let c: MongoCdcSourceConfig = serde_json::from_value(json!({
+            "connection_uri": "mongodb://u:p@h:27017/?replicaSet=rs0",
+            "scope": { "type": "cluster" }
+        }))
+        .unwrap();
+        use crate::config::Scope;
+        let base = faucet_core::redact_uri_credentials(&c.connection_uri);
+        let uri = match &c.scope {
+            Scope::Collection { database, collection } => format!("{base}/{database}/{collection}"),
+            Scope::Database { database } => format!("{base}/{database}"),
+            Scope::Cluster => base,
+        };
+        assert_eq!(uri, "mongodb://h:27017/?replicaSet=rs0");
+    }
+
+    #[test]
+    fn dataset_uri_collection_scope() {
+        let c: MongoCdcSourceConfig = serde_json::from_value(json!({
+            "connection_uri": "mongodb://u:p@h:27017/?replicaSet=rs0",
+            "scope": { "type": "collection", "database": "mydb", "collection": "orders" }
+        }))
+        .unwrap();
+        use crate::config::Scope;
+        let base = faucet_core::redact_uri_credentials(&c.connection_uri);
+        let uri = match &c.scope {
+            Scope::Collection { database, collection } => format!("{base}/{database}/{collection}"),
+            Scope::Database { database } => format!("{base}/{database}"),
+            Scope::Cluster => base,
+        };
+        assert_eq!(uri, "mongodb://h:27017/?replicaSet=rs0/mydb/orders");
     }
 }

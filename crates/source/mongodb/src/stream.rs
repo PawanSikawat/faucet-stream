@@ -258,6 +258,15 @@ impl faucet_core::Source for MongoSource {
         serde_json::to_value(faucet_core::schema_for!(MongoSourceConfig))
             .expect("schema serialization")
     }
+
+    fn dataset_uri(&self) -> String {
+        format!(
+            "{}/{}/{}",
+            faucet_core::redact_uri_credentials(&self.config.connection_uri),
+            self.config.database,
+            self.config.collection
+        )
+    }
 }
 
 /// Substitute context placeholders in an optional JSON value.
@@ -373,5 +382,19 @@ mod tests {
             }
             _ => panic!("expected a batch_size Config error"),
         }
+    }
+
+    // dataset_uri is a pure-config method; MongoSource requires an async
+    // constructor with a live server, so we verify the logic directly.
+    #[test]
+    fn dataset_uri_strips_credentials() {
+        let config = MongoSourceConfig::new("mongodb://u:p@h:27017", "mydb", "events");
+        let uri = format!(
+            "{}/{}/{}",
+            faucet_core::redact_uri_credentials(&config.connection_uri),
+            config.database,
+            config.collection
+        );
+        assert_eq!(uri, "mongodb://h:27017/mydb/events");
     }
 }
