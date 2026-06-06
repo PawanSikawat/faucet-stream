@@ -56,7 +56,9 @@ version: 1
 source:
   type: mysql-cdc
   config:
-    connection_url: mysql://repl:repl@localhost:3306/appdb
+    # No default database: the binlog is global; mysql-cdc reads all databases
+    # and filters client-side via include_tables/exclude_tables.
+    connection_url: mysql://repl:repl@localhost:3306
     server_id: 1001
     start_position:
       type: current

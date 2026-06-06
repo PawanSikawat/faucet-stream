@@ -4,7 +4,10 @@ pipeline:
   source:
     type: mysql-cdc
     config:
-      connection_url: "mysql://repl:repl@localhost:3306/appdb"
+      # No default database — the binlog is global; the mysql-cdc source reads
+      # all databases and filters client-side via include_tables/exclude_tables.
+      # This also keeps the `repl` user minimal (replication grants only).
+      connection_url: "mysql://repl:repl@localhost:3306"
       server_id: 1001
       start_position:
         type: current

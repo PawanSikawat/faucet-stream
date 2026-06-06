@@ -11,5 +11,5 @@ mod state;
 mod stream;
 
 pub use config::{CdcTls, MysqlCdcSourceConfig, StartPosition};
-pub use state::{state_key, Bookmark};
+pub use state::{Bookmark, state_key};
 pub use stream::MysqlCdcSource;

@@ -87,11 +87,9 @@ fn build_config(url: &str) -> MysqlCdcSourceConfig {
 
 /// Open a fresh `mysql_async` connection to the given URL.
 async fn connect(url: &str) -> Conn {
-    Conn::new(
-        Opts::from_url(url).expect("parse URL"),
-    )
-    .await
-    .expect("connect")
+    Conn::new(Opts::from_url(url).expect("parse URL"))
+        .await
+        .expect("connect")
 }
 
 /// Drain a single binlog fetch cycle into a flat `Vec` of records plus the
@@ -120,11 +118,9 @@ async fn cdc_captures_crud_then_resumes_without_replay() {
     // current` is positioned after the DDL and won't capture it.
     {
         let mut conn = connect(&url).await;
-        conn.query_drop(
-            "CREATE TABLE test.users (id INT PRIMARY KEY, name VARCHAR(64))",
-        )
-        .await
-        .expect("create table");
+        conn.query_drop("CREATE TABLE test.users (id INT PRIMARY KEY, name VARCHAR(64))")
+            .await
+            .expect("create table");
     }
 
     // Build the source — opens a throwaway connection for preflight checks and
@@ -209,11 +205,7 @@ async fn cdc_captures_crud_then_resumes_without_replay() {
     );
     for r in &records2 {
         let id = &r["after"]["id"];
-        assert_eq!(
-            id,
-            &json!(2),
-            "resume replayed a pre-bookmark event: {r:?}"
-        );
+        assert_eq!(id, &json!(2), "resume replayed a pre-bookmark event: {r:?}");
     }
     assert!(
         records2.iter().any(|r| r["op"] == "c"),

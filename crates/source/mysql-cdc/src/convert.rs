@@ -2,9 +2,9 @@
 
 use base64::Engine as _;
 use faucet_core::FaucetError;
+use mysql_async::Value;
 use mysql_async::binlog::row::BinlogRow;
 use mysql_async::binlog::value::BinlogValue;
-use mysql_async::Value;
 use serde_json::{Map, Value as Json};
 
 /// Convert a single MySQL protocol `Value` to JSON.
@@ -29,9 +29,7 @@ pub fn value_to_json(v: &Value) -> Json {
         Value::Bytes(b) => match std::str::from_utf8(b) {
             // Text-like columns decode as UTF-8 strings; binary falls back to base64.
             Ok(s) => Json::String(s.to_owned()),
-            Err(_) => Json::String(
-                base64::engine::general_purpose::STANDARD.encode(b),
-            ),
+            Err(_) => Json::String(base64::engine::general_purpose::STANDARD.encode(b)),
         },
         // Date(year, month, day, hour, minute, second, microsecond)
         Value::Date(y, mo, d, h, mi, s, micro) => Json::String(format!(
@@ -43,9 +41,7 @@ pub fn value_to_json(v: &Value) -> Json {
             // `days` is already u32; widen to u64 so an out-of-range value from a
             // malformed binlog can't overflow (real MySQL caps TIME at 838:59:59).
             let total_hours = u64::from(*days) * 24 + u64::from(*h);
-            Json::String(format!(
-                "{sign}{total_hours:02}:{mi:02}:{s:02}.{micro:06}"
-            ))
+            Json::String(format!("{sign}{total_hours:02}:{mi:02}:{s:02}.{micro:06}"))
         }
     }
 }

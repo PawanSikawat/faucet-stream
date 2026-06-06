@@ -555,9 +555,7 @@ async fn resolve_current(
     let row: Option<Row> = conn
         .query_first("SHOW MASTER STATUS")
         .await
-        .map_err(|e| {
-            FaucetError::Source(format!("mysql-cdc: SHOW MASTER STATUS failed: {e}"))
-        })?;
+        .map_err(|e| FaucetError::Source(format!("mysql-cdc: SHOW MASTER STATUS failed: {e}")))?;
     let row = row.ok_or_else(|| {
         FaucetError::Source(
             "mysql-cdc: SHOW MASTER STATUS returned no rows; \
@@ -590,9 +588,7 @@ fn build_request<'r>(
     match resolved {
         // resolve_current() converts Current → FilePos before we get here;
         // this arm is only hit if a caller skips that step (defensive).
-        ResolvedStart::Current { .. } => {
-            Ok(BinlogStreamRequest::new(server_id))
-        }
+        ResolvedStart::Current { .. } => Ok(BinlogStreamRequest::new(server_id)),
         ResolvedStart::Earliest => {
             // No filename/pos — server starts from the oldest available binlog.
             Ok(BinlogStreamRequest::new(server_id))
@@ -614,9 +610,7 @@ fn build_request<'r>(
                 .map(|part| {
                     let trimmed = part.trim();
                     Sid::from_str(trimmed).map_err(|e| {
-                        FaucetError::Source(format!(
-                            "mysql-cdc: invalid GTID set '{trimmed}': {e}"
-                        ))
+                        FaucetError::Source(format!("mysql-cdc: invalid GTID set '{trimmed}': {e}"))
                     })
                 })
                 .collect::<Result<Vec<_>, _>>()?;
@@ -734,9 +728,7 @@ async fn run_preflight_probes(
             ));
         }
         None => {
-            return Err(
-                "binlog_format variable not found. Is binary logging enabled?".into(),
-            );
+            return Err("binlog_format variable not found. Is binary logging enabled?".into());
         }
         _ => {}
     }
@@ -935,7 +927,16 @@ mod tests {
     fn envelope_shape_insert() {
         let lsn = json!({ "file": "binlog.000001", "pos": 4567_u64 });
         let after = json!({ "id": 1, "name": "alice" });
-        let env = build_envelope("c", 1_000, "mydb", "users", Value::Null, after.clone(), lsn.clone(), 0);
+        let env = build_envelope(
+            "c",
+            1_000,
+            "mydb",
+            "users",
+            Value::Null,
+            after.clone(),
+            lsn.clone(),
+            0,
+        );
 
         assert_eq!(env["op"], "c");
         assert_eq!(env["ts_ms"], 1_000_u64);
@@ -952,7 +953,16 @@ mod tests {
         let before = json!({ "id": 1, "name": "alice" });
         let after = json!({ "id": 1, "name": "bob" });
         let lsn = json!({ "file": "binlog.000002", "pos": 9999_u64 });
-        let env = build_envelope("u", 2_000, "db", "tbl", before.clone(), after.clone(), lsn, 3);
+        let env = build_envelope(
+            "u",
+            2_000,
+            "db",
+            "tbl",
+            before.clone(),
+            after.clone(),
+            lsn,
+            3,
+        );
 
         assert_eq!(env["op"], "u");
         assert_eq!(env["before"], before);
@@ -974,11 +984,19 @@ mod tests {
     #[test]
     fn envelope_has_all_expected_keys() {
         let env = build_envelope(
-            "c", 0, "s", "t", Value::Null, Value::Null,
-            json!({ "file": "f", "pos": 0_u64 }), 0,
+            "c",
+            0,
+            "s",
+            "t",
+            Value::Null,
+            Value::Null,
+            json!({ "file": "f", "pos": 0_u64 }),
+            0,
         );
         let obj = env.as_object().unwrap();
-        for key in &["op", "ts_ms", "schema", "table", "before", "after", "lsn", "txid"] {
+        for key in &[
+            "op", "ts_ms", "schema", "table", "before", "after", "lsn", "txid",
+        ] {
             assert!(obj.contains_key(*key), "missing key: {key}");
         }
     }
