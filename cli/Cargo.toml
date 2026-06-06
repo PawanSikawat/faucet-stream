@@ -26,7 +26,7 @@ default = ["observability", "source", "sink", "state", "transforms", "compressio
 
 # Everything the default build ships, plus the long-running runtime modes:
 # `schedule` (cron scheduler) and `serve` (HTTP control plane).
-full = ["default", "schedule", "serve", "serve-history-postgres", "serve-history-sqlite"]
+full = ["default", "schedule", "serve", "serve-history-postgres", "serve-history-sqlite", "lineage", "lineage-kafka"]
 
 # Data-quality checks (`quality:` config block). `quality-jsonschema` adds the
 # `json_schema` record check via a JSON Schema validator. Forwarded to
@@ -154,6 +154,9 @@ secrets-azure-kv = ["dep:azure_security_keyvault_secrets", "dep:azure_identity",
 state-redis = ["dep:faucet-state-redis"]
 state-postgres = ["dep:faucet-state-postgres"]
 
+lineage = ["dep:faucet-lineage"]
+lineage-kafka = ["lineage", "faucet-lineage/transport-kafka"]
+
 # Enables the `faucet init --interactive` prompt UI (`dialoguer`-driven Select
 # prompts for source / sink kind). Off by default so minimal builds don't pull
 # in the TTY-prompt dep tree.
@@ -236,6 +239,7 @@ faucet-sink-parquet = { workspace = true, optional = true }
 faucet-sink-gcs = { workspace = true, optional = true }
 faucet-state-redis = { workspace = true, optional = true }
 faucet-state-postgres = { workspace = true, optional = true }
+faucet-lineage = { workspace = true, optional = true }
 
 clap = { version = "4", features = ["derive", "env"] }
 dotenvy = "0.15"
