@@ -1,0 +1,238 @@
+//! Sink/source wrappers that sample records for schema inference and count
+//! throughput for RUNNING heartbeats. Installed only when the corresponding
+//! lineage facets/events are enabled, so they add zero overhead otherwise.
+
+use async_trait::async_trait;
+use faucet_core::{FaucetError, RowOutcome, Sink, Source, StreamPage};
+use futures::{Stream, StreamExt};
+use serde_json::Value;
+use std::collections::HashMap;
+use std::pin::Pin;
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+use crate::lifecycle::InferredSchema;
+
+/// Shared sampling/counter state for one dataset side.
+pub struct SampleState {
+    cap: usize,
+    count: AtomicU64,
+    sample: Mutex<Vec<Value>>,
+}
+
+impl SampleState {
+    pub fn new(cap: usize) -> Self {
+        Self { cap, count: AtomicU64::new(0), sample: Mutex::new(Vec::new()) }
+    }
+    pub fn count(&self) -> u64 {
+        self.count.load(Ordering::Relaxed)
+    }
+    fn observe(&self, records: &[Value]) {
+        self.count.fetch_add(records.len() as u64, Ordering::Relaxed);
+        if self.cap == 0 {
+            return;
+        }
+        let mut s = self.sample.lock().unwrap();
+        for r in records {
+            if s.len() >= self.cap {
+                break;
+            }
+            s.push(r.clone());
+        }
+    }
+    /// Infer an ordered (name, OL-type) schema from the sampled records.
+    pub fn inferred_schema(&self) -> InferredSchema {
+        let sample = self.sample.lock().unwrap();
+        if sample.is_empty() {
+            return InferredSchema::default();
+        }
+        // Preserve first-seen field order across the sample.
+        let mut order: Vec<String> = Vec::new();
+        let mut types: HashMap<String, String> = HashMap::new();
+        for rec in sample.iter() {
+            if let Value::Object(map) = rec {
+                for (k, v) in map {
+                    if !types.contains_key(k) {
+                        order.push(k.clone());
+                    }
+                    types.entry(k.clone()).or_insert_with(|| ol_type_of(v).to_string());
+                }
+            }
+        }
+        InferredSchema {
+            fields: order
+                .into_iter()
+                .map(|k| {
+                    let t = types.remove(&k).unwrap_or_else(|| "string".into());
+                    (k, t)
+                })
+                .collect(),
+        }
+    }
+}
+
+fn ol_type_of(v: &Value) -> &'static str {
+    match v {
+        Value::Null => "null",
+        Value::Bool(_) => "boolean",
+        Value::Number(n) if n.is_i64() || n.is_u64() => "integer",
+        Value::Number(_) => "number",
+        Value::String(_) => "string",
+        Value::Array(_) => "array",
+        Value::Object(_) => "object",
+    }
+}
+
+/// Wraps a sink, sampling written records and counting throughput.
+pub struct SamplingSink {
+    inner: Box<dyn Sink>,
+    state: std::sync::Arc<SampleState>,
+}
+
+impl SamplingSink {
+    pub fn new(inner: Box<dyn Sink>, state: std::sync::Arc<SampleState>) -> Self {
+        Self { inner, state }
+    }
+}
+
+#[async_trait]
+impl Sink for SamplingSink {
+    async fn write_batch(&self, records: &[Value]) -> Result<usize, FaucetError> {
+        let n = self.inner.write_batch(records).await?;
+        self.state.observe(records);
+        Ok(n)
+    }
+    async fn write_batch_partial(&self, records: &[Value]) -> Result<Vec<RowOutcome>, FaucetError> {
+        let outcomes = self.inner.write_batch_partial(records).await?;
+        self.state.observe(records);
+        Ok(outcomes)
+    }
+    async fn flush(&self) -> Result<(), FaucetError> {
+        self.inner.flush().await
+    }
+    fn connector_name(&self) -> &'static str {
+        self.inner.connector_name()
+    }
+    fn dataset_uri(&self) -> String {
+        self.inner.dataset_uri()
+    }
+}
+
+/// Wraps a source, sampling the records it yields (pre-transform input schema).
+pub struct SamplingSource {
+    inner: Box<dyn Source>,
+    state: std::sync::Arc<SampleState>,
+}
+
+impl SamplingSource {
+    pub fn new(inner: Box<dyn Source>, state: std::sync::Arc<SampleState>) -> Self {
+        Self { inner, state }
+    }
+}
+
+#[async_trait]
+impl Source for SamplingSource {
+    async fn fetch_with_context(
+        &self,
+        ctx: &HashMap<String, Value>,
+    ) -> Result<Vec<Value>, FaucetError> {
+        // Required method; sampling happens in `stream_pages` (the path the
+        // pipeline actually drives). Delegate so the trait is complete.
+        self.inner.fetch_with_context(ctx).await
+    }
+    /// Override `stream_pages` (NOT `fetch_*`) so native-streaming sources keep
+    /// their bounded-memory page stream — we tap the pages as they flow rather
+    /// than forcing the buffering default path.
+    fn stream_pages<'a>(
+        &'a self,
+        ctx: &'a HashMap<String, Value>,
+        batch_size: usize,
+    ) -> Pin<Box<dyn Stream<Item = Result<StreamPage, FaucetError>> + Send + 'a>> {
+        let state = std::sync::Arc::clone(&self.state);
+        let inner = self.inner.stream_pages(ctx, batch_size);
+        Box::pin(faucet_core::async_stream::try_stream! {
+            let mut inner = inner;
+            while let Some(page) = inner.next().await {
+                let page = page?;
+                state.observe(&page.records);
+                yield page;
+            }
+        })
+    }
+    fn connector_name(&self) -> &'static str {
+        self.inner.connector_name()
+    }
+    fn dataset_uri(&self) -> String {
+        self.inner.dataset_uri()
+    }
+    fn state_key(&self) -> Option<String> {
+        self.inner.state_key()
+    }
+    async fn apply_start_bookmark(&self, bookmark: Value) -> Result<(), FaucetError> {
+        self.inner.apply_start_bookmark(bookmark).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use async_trait::async_trait;
+    use faucet_core::{FaucetError, Sink};
+    use serde_json::{Value, json};
+    use std::sync::Arc;
+
+    struct CollectSink(std::sync::Mutex<Vec<Value>>);
+    #[async_trait]
+    impl Sink for CollectSink {
+        async fn write_batch(&self, records: &[Value]) -> Result<usize, FaucetError> {
+            self.0.lock().unwrap().extend(records.iter().cloned());
+            Ok(records.len())
+        }
+        fn connector_name(&self) -> &'static str { "collect" }
+    }
+
+    #[tokio::test]
+    async fn sink_counts_and_samples_first_n() {
+        let shared = Arc::new(SampleState::new(2));
+        let inner: Box<dyn Sink> = Box::new(CollectSink(Default::default()));
+        let s = SamplingSink::new(inner, Arc::clone(&shared));
+        s.write_batch(&[json!({"id":1,"name":"a"})]).await.unwrap();
+        s.write_batch(&[json!({"id":2}), json!({"id":3})]).await.unwrap();
+        assert_eq!(shared.count(), 3);
+        // only the first 2 records were retained for schema inference
+        let schema = shared.inferred_schema();
+        let names: Vec<&str> = schema.fields.iter().map(|(n, _)| n.as_str()).collect();
+        assert!(names.contains(&"id"));
+        assert!(names.contains(&"name"));
+    }
+
+    struct TwoRowSource;
+    #[async_trait]
+    impl faucet_core::Source for TwoRowSource {
+        async fn fetch_with_context(
+            &self,
+            _: &std::collections::HashMap<String, Value>,
+        ) -> Result<Vec<Value>, FaucetError> {
+            Ok(vec![json!({"id": 1}), json!({"id": 2})])
+        }
+        fn connector_name(&self) -> &'static str { "tworow" }
+    }
+
+    #[tokio::test]
+    async fn source_samples_streamed_pages_without_buffering_override() {
+        use faucet_core::Source as _;
+        use futures::StreamExt as _;
+        let shared = Arc::new(SampleState::new(10));
+        let s = SamplingSource::new(Box::new(TwoRowSource), Arc::clone(&shared));
+        let ctx = std::collections::HashMap::new();
+        let mut pages = s.stream_pages(&ctx, 1000);
+        while let Some(p) = pages.next().await {
+            let _ = p.unwrap();
+        }
+        assert_eq!(shared.count(), 2);
+        let schema = shared.inferred_schema();
+        let names: Vec<&str> =
+            schema.fields.iter().map(|(n, _)| n.as_str()).collect();
+        assert!(names.contains(&"id"));
+    }
+}
