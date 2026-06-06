@@ -167,6 +167,10 @@ impl faucet_core::Source for CsvSource {
         serde_json::to_value(faucet_core::schema_for!(CsvSourceConfig))
             .expect("schema serialization")
     }
+
+    fn dataset_uri(&self) -> String {
+        format!("file://{}", self.config.path)
+    }
 }
 
 #[cfg(test)]
@@ -315,5 +319,12 @@ mod tests {
         let records = source.fetch_all().await.unwrap();
         assert_eq!(records.len(), 1);
         assert_eq!(records[0]["name"], "Carol");
+    }
+
+    #[test]
+    fn dataset_uri_reflects_path() {
+        // CsvSource::new is sync — construct directly.
+        let source = CsvSource::new(CsvSourceConfig::new("/data/input.csv"));
+        assert_eq!(source.dataset_uri(), "file:///data/input.csv");
     }
 }

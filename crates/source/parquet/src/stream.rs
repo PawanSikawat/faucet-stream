@@ -372,6 +372,19 @@ impl faucet_core::Source for ParquetSource {
         serde_json::to_value(faucet_core::schema_for!(ParquetSourceConfig))
             .expect("schema serialization")
     }
+
+    fn dataset_uri(&self) -> String {
+        use crate::config::ParquetLocation;
+        match &self.config.source {
+            ParquetLocation::LocalPath { path } => format!("file://{path}"),
+            ParquetLocation::Glob { pattern } => format!("file://{pattern}"),
+            ParquetLocation::S3(s3) => match (&s3.key, &s3.prefix) {
+                (Some(k), _) => format!("s3://{}/{}", s3.bucket, k),
+                (_, Some(p)) => format!("s3://{}/{}", s3.bucket, p),
+                _ => format!("s3://{}", s3.bucket),
+            },
+        }
+    }
 }
 
 /// Per-file decode output, kept around long enough to validate cross-file
@@ -562,6 +575,7 @@ fn schema_mismatch_message_pair(
 mod tests {
     use super::*;
     use crate::config::ParquetSourceConfig;
+    use faucet_core::Source;
 
     #[test]
     fn substitute_passes_through_when_context_empty() {
@@ -630,5 +644,27 @@ mod tests {
         let s3 = ParquetS3Config::object("", "k.parquet");
         let err = build_s3_store(&s3).unwrap_err();
         assert!(matches!(err, FaucetError::Config(_)));
+    }
+
+    #[tokio::test]
+    async fn dataset_uri_local_path() {
+        let cfg = ParquetSourceConfig::local("/tmp/data.parquet");
+        let source = ParquetSource::new(cfg).await.unwrap();
+        assert_eq!(source.dataset_uri(), "file:///tmp/data.parquet");
+    }
+
+    #[tokio::test]
+    async fn dataset_uri_glob() {
+        let cfg = ParquetSourceConfig::glob("/tmp/data/*.parquet");
+        let source = ParquetSource::new(cfg).await.unwrap();
+        assert_eq!(source.dataset_uri(), "file:///tmp/data/*.parquet");
+    }
+
+    #[tokio::test]
+    async fn dataset_uri_s3_with_key() {
+        let s3 = ParquetS3Config::object("my-bucket", "path/to/file.parquet");
+        let cfg = ParquetSourceConfig::s3(s3);
+        let source = ParquetSource::new(cfg).await.unwrap();
+        assert_eq!(source.dataset_uri(), "s3://my-bucket/path/to/file.parquet");
     }
 }

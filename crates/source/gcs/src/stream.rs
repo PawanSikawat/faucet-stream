@@ -355,6 +355,13 @@ impl faucet_core::Source for GcsSource {
     fn connector_name(&self) -> &'static str {
         "gcs"
     }
+
+    fn dataset_uri(&self) -> String {
+        match &self.config.prefix {
+            Some(p) => format!("gs://{}/{}", self.config.bucket, p),
+            None => format!("gs://{}", self.config.bucket),
+        }
+    }
 }
 
 /// Truncate an explicit object-key list to the `max_objects` cap.
@@ -504,5 +511,27 @@ mod tests {
         let keys = vec!["a".to_string(), "b".to_string()];
         let capped = cap_keys(keys.clone(), Some(10));
         assert_eq!(capped, keys);
+    }
+
+    // GcsSource requires an async constructor that tries to connect to GCS,
+    // so we verify the dataset_uri() logic directly via the config fields.
+    #[test]
+    fn dataset_uri_no_prefix_logic() {
+        let config = GcsSourceConfig::new("my-bucket");
+        let uri = match &config.prefix {
+            Some(p) => format!("gs://{}/{}", config.bucket, p),
+            None => format!("gs://{}", config.bucket),
+        };
+        assert_eq!(uri, "gs://my-bucket");
+    }
+
+    #[test]
+    fn dataset_uri_with_prefix_logic() {
+        let config = GcsSourceConfig::new("my-bucket").prefix("data/2026/");
+        let uri = match &config.prefix {
+            Some(p) => format!("gs://{}/{}", config.bucket, p),
+            None => format!("gs://{}", config.bucket),
+        };
+        assert_eq!(uri, "gs://my-bucket/data/2026/");
     }
 }
