@@ -3,6 +3,7 @@ resolver = "3"
 members = [
     "crates/core",
     "crates/auth",
+    "crates/lineage",
     "crates/common/bigquery",
     "crates/common/elasticsearch",
     "crates/common/gcs",

@@ -1,0 +1,40 @@
+[package]
+name = "faucet-lineage"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "OpenLineage event emission for faucet-stream pipelines"
+readme = "README.md"
+keywords = ["openlineage", "lineage", "etl", "pipeline", "observability"]
+categories.workspace = true
+
+[dependencies]
+faucet-core.workspace = true
+async-trait.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+schemars.workspace = true
+reqwest.workspace = true
+uuid.workspace = true
+chrono.workspace = true
+metrics.workspace = true
+tracing.workspace = true
+tokio = { workspace = true, features = ["sync", "time", "rt"] }
+indexmap = "2"
+futures = { workspace = true }
+rdkafka = { workspace = true, optional = true }
+
+[dev-dependencies]
+wiremock = "0.6"
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+tempfile = "3"
+
+[features]
+default = []
+transport-kafka = ["dep:rdkafka"]
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
