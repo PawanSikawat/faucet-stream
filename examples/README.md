@@ -55,6 +55,7 @@ The service column lists what each example touches; all are provided by
 |---------|----------|
 | `postgres_cdc_to_jsonl.yaml` | postgres (logical replication preconfigured) |
 | `mongodb_cdc_to_jsonl.yaml` | mongodb (single-node replica set preconfigured; Change Streams) |
+| `mysql_cdc_to_jsonl.yaml` | mysql (binlog enabled; `repl` user with replication grants preconfigured) |
 | `rest_to_postgres.yaml`, `rest_to_postgres_with_quality.yaml`, `mongodb_to_postgres.yaml`, `graphql_to_postgres.yaml`, `webhook_to_postgres.yaml` | postgres (+ source) |
 | `mysql_to_postgres.yaml` | mysql, postgres |
 | `csv_to_mysql.yaml`, `redis_to_mysql.yaml` | mysql (+ source) |
