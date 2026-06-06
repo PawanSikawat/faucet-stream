@@ -18,7 +18,7 @@ fn default_batch_size() -> usize {
 }
 
 /// Which change stream to open.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Scope {
     /// Watch one collection.
@@ -26,20 +26,16 @@ pub enum Scope {
     /// Watch every collection in one database.
     Database { database: String },
     /// Watch the whole deployment.
+    #[default]
     Cluster,
 }
 
-impl Default for Scope {
-    fn default() -> Self {
-        Scope::Cluster
-    }
-}
-
 /// Where to start the change stream on a fresh run (no persisted bookmark).
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum StartFrom {
     /// Start at the current cluster time (default — do not replay history).
+    #[default]
     Now,
     /// Start at the earliest retained oplog entry (errors if it has rolled).
     Earliest,
@@ -47,12 +43,6 @@ pub enum StartFrom {
     ResumeToken { token: Value },
     /// Start at a wall-clock second. Overrides a persisted bookmark.
     Timestamp { timestamp_secs: u32 },
-}
-
-impl Default for StartFrom {
-    fn default() -> Self {
-        StartFrom::Now
-    }
 }
 
 /// Post-image inclusion mode (maps to the driver `FullDocumentType`).
@@ -245,6 +235,23 @@ mod tests {
         }))
         .unwrap();
         assert!(c.validate().is_err());
+    }
+
+    #[test]
+    fn validate_rejects_empty_database_scope() {
+        let c: MongoCdcSourceConfig = serde_json::from_value(json!({
+            "connection_uri": "mongodb://h/?replicaSet=rs0",
+            "scope": { "type": "database", "database": "" }
+        }))
+        .unwrap();
+        assert!(c.validate().is_err());
+    }
+
+    #[test]
+    fn validate_accepts_batch_size_zero_sentinel() {
+        let mut c = minimal();
+        c.batch_size = 0;
+        assert!(c.validate().is_ok());
     }
 
     #[test]
