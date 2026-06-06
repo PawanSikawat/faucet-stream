@@ -109,6 +109,17 @@ pub async fn build_source(
                 faucet_source_mongodb::MongoSource::new(cfg).await?,
             ))
         }
+        #[cfg(feature = "source-mongodb-cdc")]
+        "mongodb-cdc" => {
+            let cfg = decode::<faucet_source_mongodb_cdc::MongoCdcSourceConfig>(
+                "source",
+                "mongodb-cdc",
+                config,
+            )?;
+            Ok(Box::new(
+                faucet_source_mongodb_cdc::MongoCdcSource::new(cfg).await?,
+            ))
+        }
         #[cfg(feature = "source-redis")]
         "redis" => {
             let cfg = decode::<faucet_source_redis::RedisSourceConfig>("source", "redis", config)?;
@@ -338,6 +349,8 @@ pub fn source_schema(kind: &str) -> CliResult<Value> {
         "s3" => Ok(schema::<faucet_source_s3::S3SourceConfig>()),
         #[cfg(feature = "source-mongodb")]
         "mongodb" => Ok(schema::<faucet_source_mongodb::MongoSourceConfig>()),
+        #[cfg(feature = "source-mongodb-cdc")]
+        "mongodb-cdc" => Ok(schema::<faucet_source_mongodb_cdc::MongoCdcSourceConfig>()),
         #[cfg(feature = "source-redis")]
         "redis" => Ok(schema::<faucet_source_redis::RedisSourceConfig>()),
         #[cfg(feature = "source-webhook")]
@@ -444,6 +457,8 @@ pub fn source_descriptions() -> Vec<(&'static str, &'static str)> {
     v.push(("s3", "AWS S3 object source"));
     #[cfg(feature = "source-mongodb")]
     v.push(("mongodb", "MongoDB query source"));
+    #[cfg(feature = "source-mongodb-cdc")]
+    v.push(("mongodb-cdc", "MongoDB CDC source (Change Streams)"));
     #[cfg(feature = "source-redis")]
     v.push(("redis", "Redis (streams, lists, keys) source"));
     #[cfg(feature = "source-webhook")]

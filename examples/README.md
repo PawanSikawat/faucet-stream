@@ -54,6 +54,7 @@ The service column lists what each example touches; all are provided by
 | Example | Services |
 |---------|----------|
 | `postgres_cdc_to_jsonl.yaml` | postgres (logical replication preconfigured) |
+| `mongodb_cdc_to_jsonl.yaml` | mongodb (single-node replica set preconfigured; Change Streams) |
 | `rest_to_postgres.yaml`, `rest_to_postgres_with_quality.yaml`, `mongodb_to_postgres.yaml`, `graphql_to_postgres.yaml`, `webhook_to_postgres.yaml` | postgres (+ source) |
 | `mysql_to_postgres.yaml` | mysql, postgres |
 | `csv_to_mysql.yaml`, `redis_to_mysql.yaml` | mysql (+ source) |
@@ -65,7 +66,7 @@ The service column lists what each example touches; all are provided by
 | `mongodb_to_elasticsearch.yaml`, `postgres_to_elasticsearch.yaml`, `grpc_to_elasticsearch.yaml` | elasticsearch (+ source) |
 | `elasticsearch_to_s3.yaml`, `postgres_to_s3.yaml`, `rest_to_s3.yaml`, `xml_to_s3.yaml` | minio (S3) (+ source) |
 | `s3_to_postgres.yaml`, `s3_to_mongodb.yaml` | minio (S3), target |
-| `mongodb_to_redis.yaml`, `xml_to_mongodb.yaml` | mongodb (+ source) |
+| `mongodb_to_redis.yaml`, `xml_to_mongodb.yaml` | mongodb (single-node replica set; query mode connects to the primary) |
 | `webhook_to_csv.yaml`, `webhook_to_http.yaml`, `grpc_to_http.yaml` | none external beyond the source/HTTP target |
 | `dag_users_posts.yaml`, `rest_users_posts_dag.yaml`, `rest_to_bigquery_matrix.yaml`, `templates_*.yaml` | demonstrate matrix / DAG / template syntax (REST source) |
 

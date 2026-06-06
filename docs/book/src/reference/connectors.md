@@ -1,6 +1,6 @@
 # Connector catalog
 
-faucet-stream ships **21 sources** and **17 sinks**. Each is a Cargo feature
+faucet-stream ships **22 sources** and **17 sinks**. Each is a Cargo feature
 (`source-<name>` / `sink-<name>`) and an independently published crate. Full API
 docs are on [docs.rs](https://docs.rs/faucet-stream).
 
@@ -27,6 +27,7 @@ Legend: ✓ supported · ✗ not applicable.
 | AWS S3 | `source-s3` | ✓⁴ | ✗ | ✓ | object reader: JSONL, JSON array, raw text |
 | Google Cloud Storage | `source-gcs` | ✓⁴ | ✗ | ✓ | object reader: JSONL, JSON array, raw text |
 | MongoDB | `source-mongodb` | ✓ | ✗ | ✗ | `find()` with filter/projection/sort |
+| MongoDB CDC | `source-mongodb-cdc` | ✓ | ✓ | ✗ | Change Streams, resumeToken bookmarks |
 | Redis | `source-redis` | ✓ | ✗ | ✗ | streams, lists, key patterns |
 | Webhook | `source-webhook` | ✗⁵ | ✗ | ✗ | temporary HTTP server collecting POSTs |
 | WebSocket | `source-websocket` | ✓ | ✗ | ✗ | live push feed; subscribe frames, reconnect, ping keepalive |
