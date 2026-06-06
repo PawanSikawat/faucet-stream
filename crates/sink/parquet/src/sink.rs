@@ -281,6 +281,14 @@ impl faucet_core::Sink for ParquetSink {
             .expect("schema serialization")
     }
 
+    fn dataset_uri(&self) -> String {
+        use crate::config::ParquetDestination;
+        match &self.config.destination {
+            ParquetDestination::LocalPath { path } => format!("file://{path}"),
+            ParquetDestination::S3(s3) => format!("s3://{}/{}", s3.bucket, s3.prefix),
+        }
+    }
+
     async fn write_batch(&self, records: &[Value]) -> Result<usize, FaucetError> {
         if records.is_empty() {
             return Ok(0);
@@ -563,6 +571,15 @@ mod tests {
 
     fn cfg(path: &std::path::Path) -> ParquetSinkConfig {
         ParquetSinkConfig::local(path.to_string_lossy().to_string())
+    }
+
+    #[tokio::test]
+    async fn dataset_uri_local_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sink = ParquetSink::new(cfg(tmp.path())).await.unwrap();
+        let uri = sink.dataset_uri();
+        assert!(uri.starts_with("file://"), "expected file:// URI, got: {uri}");
+        assert!(uri.contains(tmp.path().to_str().unwrap()), "URI should contain the path");
     }
 
     #[tokio::test]

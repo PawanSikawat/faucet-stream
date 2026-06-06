@@ -105,6 +105,14 @@ impl faucet_core::Sink for StdoutSink {
             .expect("schema serialization")
     }
 
+    fn dataset_uri(&self) -> String {
+        use crate::config::StdStream;
+        match self.config.destination {
+            StdStream::Stdout => "stdout://".to_string(),
+            StdStream::Stderr => "stderr://".to_string(),
+        }
+    }
+
     async fn write_batch(&self, records: &[Value]) -> Result<usize, FaucetError> {
         if records.is_empty() {
             return Ok(0);
@@ -183,6 +191,19 @@ mod tests {
     use std::sync::Mutex as StdMutex;
     use std::task::{Context, Poll};
     use tokio::io::AsyncWrite;
+
+    #[test]
+    fn dataset_uri_stdout() {
+        let sink = StdoutSink::new(StdoutSinkConfig::new());
+        assert_eq!(sink.dataset_uri(), "stdout://");
+    }
+
+    #[test]
+    fn dataset_uri_stderr() {
+        use crate::config::StdStream;
+        let sink = StdoutSink::new(StdoutSinkConfig::new().destination(StdStream::Stderr));
+        assert_eq!(sink.dataset_uri(), "stderr://");
+    }
 
     /// In-memory async writer that records bytes for assertions and can
     /// optionally simulate a broken-pipe error after a fixed number of writes.

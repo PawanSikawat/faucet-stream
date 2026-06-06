@@ -75,6 +75,10 @@ impl faucet_core::Sink for CsvSink {
         serde_json::to_value(faucet_core::schema_for!(CsvSinkConfig)).expect("schema serialization")
     }
 
+    fn dataset_uri(&self) -> String {
+        format!("file://{}", self.config.path)
+    }
+
     async fn write_batch(&self, records: &[Value]) -> Result<usize, FaucetError> {
         if records.is_empty() {
             return Ok(0);
@@ -301,6 +305,12 @@ mod tests {
     use faucet_core::Sink;
     use serde_json::json;
     use tempfile::NamedTempFile;
+
+    #[test]
+    fn dataset_uri_returns_file_scheme() {
+        let sink = CsvSink::new(CsvSinkConfig::new("/tmp/output.csv"));
+        assert_eq!(sink.dataset_uri(), "file:///tmp/output.csv");
+    }
 
     #[tokio::test]
     async fn writes_csv_records() {

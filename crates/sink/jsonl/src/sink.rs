@@ -118,6 +118,10 @@ impl faucet_core::Sink for JsonlSink {
             .expect("schema serialization")
     }
 
+    fn dataset_uri(&self) -> String {
+        format!("file://{}", self.config.path.display())
+    }
+
     async fn write_batch(&self, records: &[Value]) -> Result<usize, FaucetError> {
         if records.is_empty() {
             return Ok(0);
@@ -181,6 +185,12 @@ mod tests {
     use faucet_core::Sink;
     use serde_json::json;
     use tempfile::NamedTempFile;
+
+    #[test]
+    fn dataset_uri_uses_display_on_pathbuf() {
+        let sink = JsonlSink::new(JsonlSinkConfig::new("/tmp/output.jsonl"));
+        assert_eq!(sink.dataset_uri(), "file:///tmp/output.jsonl");
+    }
 
     #[tokio::test]
     async fn writes_jsonl_records() {
