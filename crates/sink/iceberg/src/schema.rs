@@ -66,21 +66,29 @@ pub fn infer_arrow_schema(records: &[Value], sample: usize) -> Result<SchemaRef,
 /// 3. `decoder.flush()?.ok_or(...)`
 ///
 /// Returns `FaucetError::Sink` on any conversion failure.
-pub fn json_to_record_batch(records: &[Value], schema: &SchemaRef) -> Result<RecordBatch, FaucetError> {
+pub fn json_to_record_batch(
+    records: &[Value],
+    schema: &SchemaRef,
+) -> Result<RecordBatch, FaucetError> {
     let mut decoder = ReaderBuilder::new(schema.clone())
         .build_decoder()
         .map_err(|e| FaucetError::Sink(format!("iceberg: failed to build JSON decoder: {e}")))?;
 
-    decoder
-        .serialize(records)
-        .map_err(|e| FaucetError::Sink(format!("iceberg: failed to serialize records to Arrow: {e}")))?;
+    decoder.serialize(records).map_err(|e| {
+        FaucetError::Sink(format!(
+            "iceberg: failed to serialize records to Arrow: {e}"
+        ))
+    })?;
 
     decoder
         .flush()
         .map_err(|e| FaucetError::Sink(format!("iceberg: Arrow decoder flush failed: {e}")))?
-        .ok_or_else(|| FaucetError::Sink(
-            "iceberg: Arrow decoder returned no batch after serializing non-empty records".to_string(),
-        ))
+        .ok_or_else(|| {
+            FaucetError::Sink(
+                "iceberg: Arrow decoder returned no batch after serializing non-empty records"
+                    .to_string(),
+            )
+        })
 }
 
 /// Convert an Arrow `SchemaRef` to an Iceberg `Schema`, auto-assigning field IDs.
@@ -92,8 +100,11 @@ pub fn json_to_record_batch(records: &[Value], schema: &SchemaRef) -> Result<Rec
 /// Returns `FaucetError::Config` on type-mapping failures (e.g. unsupported
 /// Arrow types).
 pub fn arrow_to_iceberg_schema(schema: &SchemaRef) -> Result<iceberg::spec::Schema, FaucetError> {
-    iceberg::arrow::arrow_schema_to_schema_auto_assign_ids(schema)
-        .map_err(|e| FaucetError::Config(format!("iceberg: Arrow→Iceberg schema conversion failed: {e}")))
+    iceberg::arrow::arrow_schema_to_schema_auto_assign_ids(schema).map_err(|e| {
+        FaucetError::Config(format!(
+            "iceberg: Arrow→Iceberg schema conversion failed: {e}"
+        ))
+    })
 }
 
 /// Convert an Iceberg `Schema` to an Arrow `SchemaRef`.
@@ -105,7 +116,11 @@ pub fn arrow_to_iceberg_schema(schema: &SchemaRef) -> Result<iceberg::spec::Sche
 pub fn iceberg_to_arrow_schema(schema: &iceberg::spec::Schema) -> Result<SchemaRef, FaucetError> {
     iceberg::arrow::schema_to_arrow_schema(schema)
         .map(Arc::new)
-        .map_err(|e| FaucetError::Config(format!("iceberg: Iceberg→Arrow schema conversion failed: {e}")))
+        .map_err(|e| {
+            FaucetError::Config(format!(
+                "iceberg: Iceberg→Arrow schema conversion failed: {e}"
+            ))
+        })
 }
 
 // ── Internal helpers ──────────────────────────────────────────────────────────
@@ -124,10 +139,8 @@ fn force_nullable(schema: Schema) -> Schema {
 fn make_nullable(field: &Field) -> Field {
     let data_type = match field.data_type() {
         DataType::Struct(fields) => {
-            let nullable_fields: Vec<Field> = fields
-                .iter()
-                .map(|f| make_nullable(f.as_ref()))
-                .collect();
+            let nullable_fields: Vec<Field> =
+                fields.iter().map(|f| make_nullable(f.as_ref())).collect();
             DataType::Struct(nullable_fields.into())
         }
         DataType::List(inner) => DataType::List(Arc::new(make_nullable(inner.as_ref()))),
@@ -159,10 +172,10 @@ mod tests {
             .iter()
             .map(|f| (f.name().clone(), f.data_type().clone()))
             .collect();
-        assert_eq!(fields.get("id"),     Some(&DataType::Int64));
-        assert_eq!(fields.get("name"),   Some(&DataType::Utf8));
+        assert_eq!(fields.get("id"), Some(&DataType::Int64));
+        assert_eq!(fields.get("name"), Some(&DataType::Utf8));
         assert_eq!(fields.get("active"), Some(&DataType::Boolean));
-        assert_eq!(fields.get("score"),  Some(&DataType::Float64));
+        assert_eq!(fields.get("score"), Some(&DataType::Float64));
         for f in schema.fields() {
             assert!(f.is_nullable(), "{} should be nullable", f.name());
         }
@@ -238,9 +251,7 @@ mod tests {
 
     #[test]
     fn arrow_to_iceberg_assigns_field_ids() {
-        let records = vec![
-            json!({"id": 1, "name": "alice"}),
-        ];
+        let records = vec![json!({"id": 1, "name": "alice"})];
         let arrow_schema = infer_arrow_schema(&records, 10).unwrap();
         let iceberg_schema = arrow_to_iceberg_schema(&arrow_schema).unwrap();
 
@@ -284,7 +295,8 @@ mod tests {
         let iceberg_schema = arrow_to_iceberg_schema(&arrow_schema).unwrap();
         let back = iceberg_to_arrow_schema(&iceberg_schema).unwrap();
 
-        let names: std::collections::HashSet<_> = back.fields().iter().map(|f| f.name().clone()).collect();
+        let names: std::collections::HashSet<_> =
+            back.fields().iter().map(|f| f.name().clone()).collect();
         assert!(names.contains("col_a"), "col_a must survive round-trip");
         assert!(names.contains("col_b"), "col_b must survive round-trip");
     }

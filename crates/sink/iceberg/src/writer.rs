@@ -36,9 +36,9 @@ use parquet::file::properties::WriterProperties;
 pub(crate) fn compression_from_str(s: &str) -> Result<Compression, FaucetError> {
     match s.to_ascii_lowercase().as_str() {
         "snappy" => Ok(Compression::SNAPPY),
-        "zstd"   => Ok(Compression::ZSTD(Default::default())),
-        "gzip"   => Ok(Compression::GZIP(Default::default())),
-        "lz4"    => Ok(Compression::LZ4),
+        "zstd" => Ok(Compression::ZSTD(Default::default())),
+        "gzip" => Ok(Compression::GZIP(Default::default())),
+        "lz4" => Ok(Compression::LZ4),
         "none" | "uncompressed" => Ok(Compression::UNCOMPRESSED),
         other => Err(FaucetError::Config(format!(
             "iceberg: unknown parquet compression codec {other:?}; \
@@ -69,11 +69,8 @@ impl TableWriter {
         let loc_gen = DefaultLocationGenerator::new(table.metadata().clone())
             .map_err(|e| FaucetError::Sink(format!("iceberg: location generator failed: {e}")))?;
 
-        let name_gen = DefaultFileNameGenerator::new(
-            "part".to_string(),
-            None,
-            DataFileFormat::Parquet,
-        );
+        let name_gen =
+            DefaultFileNameGenerator::new("part".to_string(), None, DataFileFormat::Parquet);
 
         let props = WriterProperties::builder()
             .set_compression(compression)
@@ -82,10 +79,8 @@ impl TableWriter {
         // `ParquetWriterBuilder::new` takes an iceberg `SchemaRef`, NOT an
         // Arrow `SchemaRef`. The iceberg 0.9.1 API uses the table's current
         // schema as returned by `Table::metadata().current_schema()`.
-        let parquet_builder = ParquetWriterBuilder::new(
-            props,
-            table.metadata().current_schema().clone(),
-        );
+        let parquet_builder =
+            ParquetWriterBuilder::new(props, table.metadata().current_schema().clone());
 
         let target_bytes = (target_file_size_mb as usize).saturating_mul(1024 * 1024);
 

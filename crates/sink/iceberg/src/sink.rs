@@ -47,7 +47,9 @@ use tokio::sync::Mutex;
 
 use crate::catalog::build_catalog;
 use crate::config::{IcebergSinkConfig, PartitionField};
-use crate::schema::{arrow_to_iceberg_schema, iceberg_to_arrow_schema, infer_arrow_schema, json_to_record_batch};
+use crate::schema::{
+    arrow_to_iceberg_schema, iceberg_to_arrow_schema, infer_arrow_schema, json_to_record_batch,
+};
 use crate::writer::{TableWriter, compression_from_str};
 
 // ── Interior state ────────────────────────────────────────────────────────────
@@ -114,15 +116,12 @@ impl IcebergSink {
             let ns = NamespaceIdent::from_strs(config.namespace.iter().map(String::as_str))
                 .map_err(|e| FaucetError::Sink(format!("iceberg: invalid namespace: {e}")))?;
             let tid = TableIdent::new(ns, config.table.clone());
-            let table = catalog
-                .load_table(&tid)
-                .await
-                .map_err(|e| {
-                    FaucetError::Sink(format!(
-                        "iceberg: table '{}' does not exist and create_if_missing is false: {e}",
-                        config.table
-                    ))
-                })?;
+            let table = catalog.load_table(&tid).await.map_err(|e| {
+                FaucetError::Sink(format!(
+                    "iceberg: table '{}' does not exist and create_if_missing is false: {e}",
+                    config.table
+                ))
+            })?;
             Some(table)
         } else {
             None
@@ -153,14 +152,12 @@ impl IcebergSink {
 
         for pf in pfs {
             // Look up the source field ID from the iceberg schema by name.
-            let field_ref = struct_type
-                .field_by_name(&pf.source)
-                .ok_or_else(|| {
-                    FaucetError::Config(format!(
-                        "iceberg: partition source column {:?} not found in schema",
-                        pf.source
-                    ))
-                })?;
+            let field_ref = struct_type.field_by_name(&pf.source).ok_or_else(|| {
+                FaucetError::Config(format!(
+                    "iceberg: partition source column {:?} not found in schema",
+                    pf.source
+                ))
+            })?;
 
             let transform = Transform::from_str(&pf.transform).map_err(|e| {
                 FaucetError::Config(format!(
@@ -206,43 +203,44 @@ impl IcebergSink {
 
         let table_ident = TableIdent::new(ns.clone(), table_name.clone());
 
-        let table = if self.catalog.table_exists(&table_ident).await.map_err(|e| {
-            FaucetError::Sink(format!("iceberg: table_exists check failed: {e}"))
-        })? {
-            // Table was created between `new()` and first write — just load it.
-            self.catalog
-                .load_table(&table_ident)
-                .await
-                .map_err(|e| FaucetError::Sink(format!("iceberg: load_table failed: {e}")))?
-        } else {
-            // Build partition spec from config, resolving source column IDs.
-            let partition_spec =
-                Self::build_partition_spec(&self.config.partition_spec, &iceberg_schema)?;
-
-            // The `TableCreation` TypedBuilder uses type-state, so the two
-            // branches (with/without partition_spec) produce different builder
-            // types. We fully build in each arm rather than trying to hold a
-            // partially-built builder in a variable.
-            let creation = if let Some(ps) = partition_spec {
-                TableCreation::builder()
-                    .name(table_name)
-                    .schema(iceberg_schema)
-                    .partition_spec(ps)
-                    .properties(self.config.snapshot_properties.clone())
-                    .build()
+        let table =
+            if self.catalog.table_exists(&table_ident).await.map_err(|e| {
+                FaucetError::Sink(format!("iceberg: table_exists check failed: {e}"))
+            })? {
+                // Table was created between `new()` and first write — just load it.
+                self.catalog
+                    .load_table(&table_ident)
+                    .await
+                    .map_err(|e| FaucetError::Sink(format!("iceberg: load_table failed: {e}")))?
             } else {
-                TableCreation::builder()
-                    .name(table_name)
-                    .schema(iceberg_schema)
-                    .properties(self.config.snapshot_properties.clone())
-                    .build()
-            };
+                // Build partition spec from config, resolving source column IDs.
+                let partition_spec =
+                    Self::build_partition_spec(&self.config.partition_spec, &iceberg_schema)?;
 
-            self.catalog
-                .create_table(&ns, creation)
-                .await
-                .map_err(|e| FaucetError::Sink(format!("iceberg: create_table failed: {e}")))?
-        };
+                // The `TableCreation` TypedBuilder uses type-state, so the two
+                // branches (with/without partition_spec) produce different builder
+                // types. We fully build in each arm rather than trying to hold a
+                // partially-built builder in a variable.
+                let creation = if let Some(ps) = partition_spec {
+                    TableCreation::builder()
+                        .name(table_name)
+                        .schema(iceberg_schema)
+                        .partition_spec(ps)
+                        .properties(self.config.snapshot_properties.clone())
+                        .build()
+                } else {
+                    TableCreation::builder()
+                        .name(table_name)
+                        .schema(iceberg_schema)
+                        .properties(self.config.snapshot_properties.clone())
+                        .build()
+                };
+
+                self.catalog
+                    .create_table(&ns, creation)
+                    .await
+                    .map_err(|e| FaucetError::Sink(format!("iceberg: create_table failed: {e}")))?
+            };
 
         state.table = Some(table.clone());
         Ok(table)
@@ -250,15 +248,11 @@ impl IcebergSink {
 
     /// Ensure the writer in `state` is open for `table`. Opens a new
     /// `TableWriter` if none is currently open.
-    async fn ensure_writer(
-        &self,
-        state: &mut SinkState,
-        table: &Table,
-    ) -> Result<(), FaucetError> {
+    async fn ensure_writer(&self, state: &mut SinkState, table: &Table) -> Result<(), FaucetError> {
         if state.writer.is_none() {
             let compression = compression_from_str(&self.config.parquet.compression)?;
-            let writer = TableWriter::new(table, compression, self.config.target_file_size_mb)
-                .await?;
+            let writer =
+                TableWriter::new(table, compression, self.config.target_file_size_mb).await?;
             state.writer = Some(writer);
         }
         Ok(())
@@ -306,10 +300,7 @@ impl IcebergSink {
     /// `Transaction::commit` in iceberg 0.9.1 already includes an internal
     /// retry loop (exponential back-off on retryable commit conflicts), so we
     /// do not add an outer retry.  Returns `Ok(())` when the commit succeeds.
-    async fn commit_pending(
-        &self,
-        state: &mut SinkState,
-    ) -> Result<(), FaucetError> {
+    async fn commit_pending(&self, state: &mut SinkState) -> Result<(), FaucetError> {
         let files = std::mem::take(&mut state.pending_files);
 
         if files.is_empty() {
@@ -334,9 +325,9 @@ impl IcebergSink {
             action = action.set_snapshot_properties(self.config.snapshot_properties.clone());
         }
 
-        let tx = action.apply(tx).map_err(|e| {
-            FaucetError::Sink(format!("iceberg: fast_append apply failed: {e}"))
-        })?;
+        let tx = action
+            .apply(tx)
+            .map_err(|e| FaucetError::Sink(format!("iceberg: fast_append apply failed: {e}")))?;
 
         let updated_table = tx
             .commit(self.catalog.as_ref())
@@ -376,12 +367,8 @@ impl faucet_core::Sink for IcebergSink {
 
         let started = std::time::Instant::now();
 
-        let ns_result = NamespaceIdent::from_strs(
-            self.config.namespace.iter().map(String::as_str),
-        );
-        let tid_result = ns_result.map(|ns| {
-            TableIdent::new(ns, self.config.table.clone())
-        });
+        let ns_result = NamespaceIdent::from_strs(self.config.namespace.iter().map(String::as_str));
+        let tid_result = ns_result.map(|ns| TableIdent::new(ns, self.config.table.clone()));
 
         let tid = match tid_result {
             Err(e) => {
@@ -394,8 +381,7 @@ impl faucet_core::Sink for IcebergSink {
             Ok(t) => t,
         };
 
-        let probe_result =
-            tokio::time::timeout(ctx.timeout, self.catalog.table_exists(&tid)).await;
+        let probe_result = tokio::time::timeout(ctx.timeout, self.catalog.table_exists(&tid)).await;
 
         let probe = match probe_result {
             Ok(Ok(exists)) => {
@@ -404,8 +390,7 @@ impl faucet_core::Sink for IcebergSink {
                 } else {
                     format!(
                         "table '{}' not found (create_if_missing={})",
-                        self.config.table,
-                        self.config.create_if_missing
+                        self.config.table, self.config.create_if_missing
                     )
                 };
                 let _ = msg; // pass regardless — catalog is reachable
@@ -420,10 +405,7 @@ impl faucet_core::Sink for IcebergSink {
             Err(_elapsed) => Probe::fail_hint(
                 "catalog",
                 started.elapsed(),
-                format!(
-                    "iceberg catalog probe timed out after {:?}",
-                    ctx.timeout
-                ),
+                format!("iceberg catalog probe timed out after {:?}", ctx.timeout),
                 "Check network reachability to the catalog endpoint.",
             ),
         };

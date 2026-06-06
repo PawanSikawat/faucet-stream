@@ -142,7 +142,9 @@ async fn build_sql(_inner: &CatalogInner) -> Result<Arc<dyn Catalog>, FaucetErro
 #[cfg(feature = "catalog-hms")]
 async fn build_hms(inner: &CatalogInner) -> Result<Arc<dyn Catalog>, FaucetError> {
     use iceberg::CatalogBuilder;
-    use iceberg_catalog_hms::{HMS_CATALOG_PROP_URI, HMS_CATALOG_PROP_WAREHOUSE, HmsCatalogBuilder};
+    use iceberg_catalog_hms::{
+        HMS_CATALOG_PROP_URI, HMS_CATALOG_PROP_WAREHOUSE, HmsCatalogBuilder,
+    };
 
     let mut props: HashMap<String, String> = inner.properties.clone();
 
@@ -212,7 +214,10 @@ mod tests {
         let err = build_catalog(&cfg).await.unwrap_err();
         assert!(matches!(err, FaucetError::Config(_)));
         let msg = err.to_string();
-        assert!(msg.contains("catalog-sql"), "should mention catalog-sql: {msg}");
+        assert!(
+            msg.contains("catalog-sql"),
+            "should mention catalog-sql: {msg}"
+        );
     }
 
     /// Same guard for HMS.
@@ -223,7 +228,10 @@ mod tests {
         let err = build_catalog(&cfg).await.unwrap_err();
         assert!(matches!(err, FaucetError::Config(_)));
         let msg = err.to_string();
-        assert!(msg.contains("catalog-hms"), "should mention catalog-hms: {msg}");
+        assert!(
+            msg.contains("catalog-hms"),
+            "should mention catalog-hms: {msg}"
+        );
     }
 
     /// With the default features (catalog-rest only), Glue/SQL/HMS all return

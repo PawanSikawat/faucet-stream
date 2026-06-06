@@ -101,11 +101,7 @@ impl fmt::Debug for CatalogConfig {
         };
         let inner = self.inner();
         // Redact the credential field entirely, and the uri (may contain userinfo/token).
-        let uri_display = inner
-            .uri
-            .as_deref()
-            .map(|_| "***")
-            .unwrap_or("<none>");
+        let uri_display = inner.uri.as_deref().map(|_| "***").unwrap_or("<none>");
         let cred_display = inner
             .credential
             .as_deref()
@@ -116,7 +112,10 @@ impl fmt::Debug for CatalogConfig {
             .field("uri", &uri_display)
             .field("warehouse", &inner.warehouse)
             .field("credential", &cred_display)
-            .field("properties_keys", &inner.properties.keys().collect::<Vec<_>>())
+            .field(
+                "properties_keys",
+                &inner.properties.keys().collect::<Vec<_>>(),
+            )
             .finish()
     }
 }
@@ -417,7 +416,10 @@ mod tests {
         let inner = cat.inner();
         assert_eq!(inner.uri.as_deref(), Some("https://catalog.example.com"));
         assert_eq!(inner.credential.as_deref(), Some("my-token"));
-        assert_eq!(inner.properties.get("region").map(String::as_str), Some("us-east-1"));
+        assert_eq!(
+            inner.properties.get("region").map(String::as_str),
+            Some("us-east-1")
+        );
 
         // Re-serialize and re-parse.
         let json = serde_json::to_value(&cat).unwrap();
@@ -483,7 +485,17 @@ mod tests {
 
     #[test]
     fn valid_transforms_accepted() {
-        let transforms = ["identity", "year", "month", "day", "hour", "void", "bucket[5]", "bucket[16]", "truncate[8]"];
+        let transforms = [
+            "identity",
+            "year",
+            "month",
+            "day",
+            "hour",
+            "void",
+            "bucket[5]",
+            "bucket[16]",
+            "truncate[8]",
+        ];
         for t in transforms {
             assert!(is_valid_transform(t), "{t} should be valid");
         }
@@ -497,7 +509,10 @@ mod tests {
         let err = cfg.validate().unwrap_err();
         assert!(matches!(err, FaucetError::Config(_)));
         let msg = err.to_string();
-        assert!(msg.contains("frobnicate"), "error should mention the bad transform: {msg}");
+        assert!(
+            msg.contains("frobnicate"),
+            "error should mention the bad transform: {msg}"
+        );
     }
 
     #[test]
@@ -628,7 +643,8 @@ mod tests {
         let mut v = minimal_config_json();
         v["batch_size"] = serde_json::json!(0usize);
         let cfg = parse(v);
-        cfg.validate().expect("batch_size=0 sentinel should be accepted");
+        cfg.validate()
+            .expect("batch_size=0 sentinel should be accepted");
     }
 
     // ── Debug redacts credential ──────────────────────────────────────────────

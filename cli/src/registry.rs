@@ -233,11 +233,8 @@ pub async fn build_sink(kind: &str, config: Value, auth: &AuthCatalog) -> CliRes
         }
         #[cfg(feature = "sink-iceberg")]
         "iceberg" => {
-            let cfg =
-                decode::<faucet_sink_iceberg::IcebergSinkConfig>("sink", "iceberg", config)?;
-            Ok(Box::new(
-                faucet_sink_iceberg::IcebergSink::new(cfg).await?,
-            ))
+            let cfg = decode::<faucet_sink_iceberg::IcebergSinkConfig>("sink", "iceberg", config)?;
+            Ok(Box::new(faucet_sink_iceberg::IcebergSink::new(cfg).await?))
         }
         #[cfg(feature = "sink-postgres")]
         "postgres" => {
@@ -526,7 +523,10 @@ pub fn sink_descriptions() -> Vec<(&'static str, &'static str)> {
     #[cfg(feature = "sink-bigquery")]
     v.push(("bigquery", "Google BigQuery streaming-insert sink"));
     #[cfg(feature = "sink-iceberg")]
-    v.push(("iceberg", "Apache Iceberg sink (append, REST/Glue/SQL/HMS catalogs)"));
+    v.push((
+        "iceberg",
+        "Apache Iceberg sink (append, REST/Glue/SQL/HMS catalogs)",
+    ));
     #[cfg(feature = "sink-postgres")]
     v.push(("postgres", "PostgreSQL sink (JSONB or auto-mapped columns)"));
     #[cfg(feature = "sink-jsonl")]

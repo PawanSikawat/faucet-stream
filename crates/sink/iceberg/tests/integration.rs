@@ -39,8 +39,8 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
-use faucet_sink_iceberg::{IcebergSink, IcebergSinkConfig};
 use faucet_core::Sink;
+use faucet_sink_iceberg::{IcebergSink, IcebergSinkConfig};
 use iceberg::{Catalog, CatalogBuilder, NamespaceIdent, TableIdent};
 use iceberg_catalog_rest::{
     REST_CATALOG_PROP_URI, REST_CATALOG_PROP_WAREHOUSE, RestCatalogBuilder,
@@ -81,9 +81,9 @@ async fn start_minio() -> (ContainerAsync<GenericImage>, u16) {
         .with_cmd(["server", "/data"])
         .with_startup_timeout(Duration::from_secs(60))
         // Wait for the MinIO "ready" log line.
-        .with_ready_conditions(vec![
-            testcontainers::core::WaitFor::message_on_stdout("S3-API:"),
-        ]);
+        .with_ready_conditions(vec![testcontainers::core::WaitFor::message_on_stdout(
+            "S3-API:",
+        )]);
 
     let container = image.start().await.expect("MinIO container start");
     let host_port = container
@@ -132,12 +132,15 @@ async fn start_iceberg_rest(minio_host_port: u16) -> (ContainerAsync<GenericImag
         // metadata (irrelevant in a local test container, but can slow startup).
         .with_env_var("AWS_EC2_METADATA_DISABLED", "true")
         // Suppress warning: the catalog runs as root in the container.
-        .with_env_var("CATALOG_CATALOG__IMPL", "org.apache.iceberg.rest.RESTCatalog")
+        .with_env_var(
+            "CATALOG_CATALOG__IMPL",
+            "org.apache.iceberg.rest.RESTCatalog",
+        )
         .with_startup_timeout(Duration::from_secs(90))
         // Wait for the REST catalog's "Started" log line.
-        .with_ready_conditions(vec![
-            testcontainers::core::WaitFor::message_on_stdout("REST catalog server started"),
-        ]);
+        .with_ready_conditions(vec![testcontainers::core::WaitFor::message_on_stdout(
+            "REST catalog server started",
+        )]);
 
     // Silence unused-variable warning; `minio_host_port` is only used by the
     // test process (not the container) but is passed here for clarity.
@@ -201,10 +204,7 @@ fn sink_config(rest_port: u16, minio_port: u16, table: &str) -> IcebergSinkConfi
 /// the REST server (HTTP), not MinIO directly (table metadata is in the REST
 /// catalog; data files are in MinIO but we assert on snapshot count, not file
 /// content).
-async fn open_reader_catalog(
-    rest_port: u16,
-    minio_port: u16,
-) -> iceberg_catalog_rest::RestCatalog {
+async fn open_reader_catalog(rest_port: u16, minio_port: u16) -> iceberg_catalog_rest::RestCatalog {
     let catalog_uri = format!("http://127.0.0.1:{rest_port}");
     let minio_endpoint = format!("http://127.0.0.1:{minio_port}");
 
@@ -267,7 +267,10 @@ async fn write_and_flush_creates_iceberg_snapshots() {
     let ns = NamespaceIdent::from_strs(["db"]).expect("namespace ident");
     let tid = TableIdent::new(ns.clone(), "events".to_string());
 
-    let table1 = reader.load_table(&tid).await.expect("load_table after flush 1");
+    let table1 = reader
+        .load_table(&tid)
+        .await
+        .expect("load_table after flush 1");
     let meta1 = table1.metadata();
 
     let snapshot_count_1 = meta1.snapshots().count();
@@ -292,7 +295,10 @@ async fn write_and_flush_creates_iceberg_snapshots() {
 
     // ── Assert snapshot 2 ─────────────────────────────────────────────────────
 
-    let table2 = reader.load_table(&tid).await.expect("load_table after flush 2");
+    let table2 = reader
+        .load_table(&tid)
+        .await
+        .expect("load_table after flush 2");
     let meta2 = table2.metadata();
 
     let snapshot_count_2 = meta2.snapshots().count();
@@ -314,7 +320,10 @@ async fn write_and_flush_creates_iceberg_snapshots() {
 
     sink.flush().await.expect("flush 3 (empty)");
 
-    let table3 = reader.load_table(&tid).await.expect("load_table after empty flush");
+    let table3 = reader
+        .load_table(&tid)
+        .await
+        .expect("load_table after empty flush");
     assert_eq!(
         table3.metadata().snapshots().count(),
         2,
