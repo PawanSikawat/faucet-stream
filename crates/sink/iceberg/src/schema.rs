@@ -185,6 +185,20 @@ mod tests {
     }
 
     #[test]
+    fn infers_list_with_nullable_element() {
+        let records = vec![json!({"tags": ["a", "b"]})];
+        let schema = infer_arrow_schema(&records, 10).unwrap();
+        let tags = schema.field_with_name("tags").unwrap();
+        assert!(tags.is_nullable(), "list field must be nullable");
+        match tags.data_type() {
+            DataType::List(inner) | DataType::LargeList(inner) => {
+                assert!(inner.is_nullable(), "list element must be forced nullable");
+            }
+            other => panic!("expected List, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn empty_sample_errors() {
         let err = infer_arrow_schema(&[], 10).unwrap_err();
         assert!(matches!(err, FaucetError::Sink(_)));
@@ -256,6 +270,7 @@ mod tests {
             .map(|f| f.id)
             .collect();
         let before = ids.len();
+        ids.sort_unstable();
         ids.dedup();
         assert_eq!(ids.len(), before, "field IDs must be unique");
     }

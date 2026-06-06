@@ -273,10 +273,10 @@ fn is_valid_transform(t: &str) -> bool {
     }
     // bucket[N] or truncate[N]
     for prefix in &["bucket[", "truncate["] {
-        if let Some(rest) = t.strip_prefix(prefix) {
-            if let Some(n_str) = rest.strip_suffix(']') {
-                return n_str.parse::<u64>().map(|n| n > 0).unwrap_or(false);
-            }
+        if let Some(rest) = t.strip_prefix(prefix)
+            && let Some(n_str) = rest.strip_suffix(']')
+        {
+            return n_str.parse::<u64>().map(|n| n > 0).unwrap_or(false);
         }
     }
     false
@@ -566,6 +566,16 @@ mod tests {
             }));
             assert!(cfg.validate().is_err(), "{ty} without uri should fail");
         }
+    }
+
+    #[test]
+    fn rest_catalog_with_whitespace_uri_is_rejected() {
+        let cfg = parse(serde_json::json!({
+            "catalog": { "type": "rest", "uri": "   " },
+            "namespace": ["analytics"],
+            "table": "events"
+        }));
+        assert!(cfg.validate().is_err(), "whitespace-only uri should fail");
     }
 
     #[test]
