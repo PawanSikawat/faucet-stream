@@ -28,6 +28,7 @@ tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync", "ti
 testcontainers = "0.27"
 testcontainers-modules = { version = "0.15", features = ["mysql"] }
 futures.workspace = true
+mysql_async = { workspace = true }
 
 [package.metadata.docs.rs]
 all-features = true
