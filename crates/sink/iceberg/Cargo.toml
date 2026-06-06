@@ -40,6 +40,8 @@ iceberg-catalog-hms  = { version = "0.9.1", optional = true }
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync", "time", "test-util"] }
 testcontainers = "0.27"
+iceberg-catalog-rest = "0.9.1"
+serde_json.workspace = true
 
 [package.metadata.docs.rs]
 all-features = true
