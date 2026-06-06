@@ -69,6 +69,9 @@ pub async fn run(args: RunArgs) -> CliResult<()> {
     });
 
     let auth = crate::auth_catalog::build_auth_catalog(cfg.auth.as_ref())?;
+    #[cfg(feature = "lineage")]
+    let lineage = crate::lineage_glue::build_emitter(cfg.lineage.as_ref())
+        .map_err(|e| CliError::Config(format!("lineage: {e}")))?;
     let nodes = expand(&cfg)?;
     let summary = run_expanded(
         nodes,
@@ -83,12 +86,10 @@ pub async fn run(args: RunArgs) -> CliResult<()> {
             // `faucet run` has no external cancel signal; the executor still
             // cooperatively cancels in-flight rows on `on_error: stop`.
             cancel: None,
-            // Lineage emitter is wired in Task 27 (`faucet run`); `None` here so
-            // the literal compiles under the `lineage` feature meanwhile.
             #[cfg(feature = "lineage")]
-            lineage: None,
+            lineage,
             #[cfg(feature = "lineage")]
-            lineage_cfg: None,
+            lineage_cfg: cfg.lineage.clone(),
         },
     )
     .await?;
