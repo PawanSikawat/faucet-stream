@@ -1,0 +1,169 @@
+//! Integration tests for `MongoCdcSource` against a real MongoDB single-node
+//! replica set via testcontainers.
+//!
+//! These tests require Docker (matching the kafka / postgres-cdc convention).
+//! Change Streams require a replica set, so the container is started with
+//! `Mongo::repl_set()`, which boots `mongod --replSet rs`, runs
+//! `rs.initiate()`, and waits for the primary to be elected. We connect with
+//! `directConnection=true`.
+//!
+//! The test opens a change stream, then a concurrent writer performs
+//! insert / update / delete after a warm-up delay (so the stream is open and
+//! `start_from = now` captures the writes), and asserts the emitted CDC
+//! envelopes. It then resumes from the captured bookmark and asserts that a
+//! subsequent write — and only that write — is delivered (no replay).
+
+use faucet_core::Source;
+use faucet_source_mongodb_cdc::{MongoCdcSource, MongoCdcSourceConfig};
+use futures::StreamExt;
+use mongodb::Client;
+use mongodb::bson::{Document, doc};
+use serde_json::{Value, json};
+use std::collections::HashMap;
+use std::time::Duration;
+use testcontainers::ContainerAsync;
+use testcontainers::runners::AsyncRunner;
+use testcontainers_modules::mongo::Mongo;
+
+const DB: &str = "app";
+const COLL: &str = "users";
+
+/// Start a single-node replica set and return the container handle + URI.
+async fn start_repl_set() -> (ContainerAsync<Mongo>, String) {
+    let container = Mongo::repl_set()
+        .start()
+        .await
+        .expect("mongo replica-set container start");
+    let port = container
+        .get_host_port_ipv4(27017)
+        .await
+        .expect("mongo port");
+    let uri = format!("mongodb://127.0.0.1:{port}/?directConnection=true");
+    (container, uri)
+}
+
+fn config(uri: &str) -> MongoCdcSourceConfig {
+    serde_json::from_value(json!({
+        "connection_uri": uri,
+        "scope": { "type": "collection", "database": DB, "collection": COLL },
+        "full_document": "update_lookup",
+        "start_from": { "type": "now" },
+        "idle_timeout_secs": 5,
+        "max_await_time_ms": 500,
+        "batch_size": 0
+    }))
+    .expect("config")
+}
+
+/// Drain a single fetch cycle into a flat `Vec` of records plus the bookmark of
+/// the last page that carried one. The cycle ends after `idle_timeout` of quiet.
+async fn drain(source: &MongoCdcSource) -> (Vec<Value>, Option<Value>) {
+    let ctx: HashMap<String, Value> = HashMap::new();
+    let mut pages = source.stream_pages(&ctx, 0);
+    let mut records = Vec::new();
+    let mut bookmark = None;
+    while let Some(page) = pages.next().await {
+        let page = page.expect("page");
+        records.extend(page.records);
+        if page.bookmark.is_some() {
+            bookmark = page.bookmark;
+        }
+    }
+    (records, bookmark)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cdc_captures_crud_then_resumes_without_replay() {
+    let (_container, uri) = start_repl_set().await;
+
+    // Create the collection up front (before the change stream opens) so the
+    // single-collection watch has an existing namespace. This seed insert
+    // happens before `start_from = now`, so it is not captured.
+    {
+        let client = Client::with_uri_str(&uri).await.expect("seed client");
+        client
+            .database(DB)
+            .collection::<Document>(COLL)
+            .insert_one(doc! { "_id": 0, "seed": true })
+            .await
+            .expect("seed insert");
+    }
+
+    let source = MongoCdcSource::new(config(&uri)).await.expect("source");
+
+    // Concurrent writer: wait for the stream to open, then c / u / d on _id=1.
+    let writer_uri = uri.clone();
+    let writer = tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        let client = Client::with_uri_str(&writer_uri).await.expect("writer client");
+        let coll = client.database(DB).collection::<Document>(COLL);
+        coll.insert_one(doc! { "_id": 1, "name": "alice" })
+            .await
+            .expect("insert");
+        coll.update_one(doc! { "_id": 1 }, doc! { "$set": { "name": "bob" } })
+            .await
+            .expect("update");
+        coll.delete_one(doc! { "_id": 1 }).await.expect("delete");
+    });
+
+    let (records, bookmark) = drain(&source).await;
+    writer.await.expect("writer task");
+
+    // We must have observed the create, update, and delete for _id=1.
+    let ops: Vec<&str> = records
+        .iter()
+        .map(|r| r["op"].as_str().unwrap_or(""))
+        .collect();
+    assert!(ops.contains(&"c"), "expected a create op, got {ops:?}");
+    assert!(ops.contains(&"u"), "expected an update op, got {ops:?}");
+    assert!(ops.contains(&"d"), "expected a delete op, got {ops:?}");
+
+    // The create envelope should carry the full document (update_lookup) and
+    // the correct namespace.
+    let create = records
+        .iter()
+        .find(|r| r["op"] == "c")
+        .expect("create record");
+    assert_eq!(create["namespace"]["db"], DB);
+    assert_eq!(create["namespace"]["coll"], COLL);
+    assert_eq!(create["after"]["name"], "alice");
+    assert!(create["resume_token"]["_data"].is_string());
+
+    let bookmark = bookmark.expect("cycle 1 produced a bookmark");
+
+    // Resume after the last event of cycle 1, then write a NEW document.
+    source
+        .apply_start_bookmark(bookmark)
+        .await
+        .expect("apply bookmark");
+
+    let writer_uri = uri.clone();
+    let writer2 = tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        let client = Client::with_uri_str(&writer_uri).await.expect("writer2 client");
+        client
+            .database(DB)
+            .collection::<Document>(COLL)
+            .insert_one(doc! { "_id": 2, "name": "carol" })
+            .await
+            .expect("insert2");
+    });
+
+    let (records2, _bm2) = drain(&source).await;
+    writer2.await.expect("writer2 task");
+
+    // Resume must not replay _id=1's events; only the _id=2 insert appears.
+    assert!(
+        !records2.is_empty(),
+        "expected the post-bookmark insert to be delivered"
+    );
+    for r in &records2 {
+        let key = &r["document_key"]["_id"];
+        assert_eq!(
+            key,
+            &json!(2),
+            "resume replayed a pre-bookmark event: {r:?}"
+        );
+    }
+    assert!(records2.iter().any(|r| r["op"] == "c"));
+}
