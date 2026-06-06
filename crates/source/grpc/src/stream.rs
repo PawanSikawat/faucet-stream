@@ -491,6 +491,15 @@ impl faucet_core::Source for GrpcStream {
         serde_json::to_value(faucet_core::schema_for!(GrpcStreamConfig))
             .expect("schema serialization")
     }
+
+    fn dataset_uri(&self) -> String {
+        format!(
+            "{}/{}/{}",
+            faucet_core::redact_uri_credentials(&self.config.endpoint),
+            self.config.service_name,
+            self.config.method_name
+        )
+    }
 }
 
 impl GrpcStream {
@@ -1036,5 +1045,15 @@ mod tests {
             .to_str()
             .expect("ascii");
         assert_eq!(auth_header, "Bearer MYTOKEN");
+    }
+
+    #[test]
+    fn dataset_uri_combines_endpoint_service_method() {
+        use faucet_core::Source;
+        let stream = make_dummy_stream();
+        assert_eq!(
+            stream.dataset_uri(),
+            "http://localhost:50051/dummy.Svc/Call"
+        );
     }
 }

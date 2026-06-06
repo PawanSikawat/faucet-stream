@@ -449,4 +449,34 @@ impl faucet_core::Source for XmlStream {
         serde_json::to_value(faucet_core::schema_for!(XmlStreamConfig))
             .expect("schema serialization")
     }
+
+    fn dataset_uri(&self) -> String {
+        format!(
+            "{}{}",
+            faucet_core::redact_uri_credentials(&self.config.base_url),
+            self.config.path
+        )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use faucet_core::Source;
+
+    #[test]
+    fn dataset_uri_combines_base_and_path() {
+        let source = XmlStream::new(
+            XmlStreamConfig::new("https://soap.example.com", "/api/v1/service")
+        );
+        assert_eq!(source.dataset_uri(), "https://soap.example.com/api/v1/service");
+    }
+
+    #[test]
+    fn dataset_uri_redacts_credentials() {
+        let source = XmlStream::new(
+            XmlStreamConfig::new("https://user:pass@soap.example.com", "/svc")
+        );
+        assert_eq!(source.dataset_uri(), "https://soap.example.com/svc");
+    }
 }

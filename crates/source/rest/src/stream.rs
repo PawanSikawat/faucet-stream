@@ -724,6 +724,14 @@ impl faucet_core::Source for RestStream {
             .expect("schema serialization")
     }
 
+    fn dataset_uri(&self) -> String {
+        format!(
+            "{}{}",
+            faucet_core::redact_uri_credentials(&self.config.base_url),
+            self.config.path
+        )
+    }
+
     fn state_key(&self) -> Option<String> {
         self.config.state_key.clone()
     }
@@ -923,5 +931,28 @@ mod tests {
         let source = RestStream::new(RestStreamConfig::new("https://example.com", "/data"))
             .expect("minimal RestStream construction");
         assert_eq!(source.connector_name(), "rest");
+    }
+
+    #[test]
+    fn dataset_uri_combines_base_and_path() {
+        use faucet_core::Source;
+        let source =
+            RestStream::new(RestStreamConfig::new("https://api.example.com", "/v1/users"))
+                .unwrap();
+        assert_eq!(source.dataset_uri(), "https://api.example.com/v1/users");
+    }
+
+    #[test]
+    fn dataset_uri_redacts_credentials() {
+        use faucet_core::Source;
+        let source = RestStream::new(RestStreamConfig::new(
+            "https://user:secret@api.example.com",
+            "/v1/data",
+        ))
+        .unwrap();
+        assert_eq!(
+            source.dataset_uri(),
+            "https://api.example.com/v1/data"
+        );
     }
 }

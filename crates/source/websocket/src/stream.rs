@@ -395,6 +395,10 @@ impl Source for WebsocketSource {
         "websocket"
     }
 
+    fn dataset_uri(&self) -> String {
+        faucet_core::redact_uri_credentials(&self.config.url)
+    }
+
     /// Preflight probe that does **not** open the WebSocket stream.
     ///
     /// The default `Source::check` would call `stream_pages`, which connects,
@@ -623,5 +627,39 @@ mod tests {
             report.probes[0].status
         );
         assert_eq!(report.failed_count(), 1);
+    }
+
+    fn make_config(url: &str) -> WebsocketSourceConfig {
+        WebsocketSourceConfig {
+            url: url.into(),
+            auth: faucet_core::AuthSpec::Inline(crate::config::WebsocketAuth::None),
+            subscribe_messages: vec![],
+            message_format: crate::config::WsMessageFormat::Json,
+            on_parse_error: crate::config::OnParseError::Fail,
+            envelope: false,
+            ping_interval: None,
+            max_messages: Some(1),
+            idle_timeout: None,
+            reconnect: false,
+            reconnect_backoff: Duration::from_secs(1),
+            max_reconnect_attempts: None,
+            max_message_bytes: None,
+            batch_size: faucet_core::DEFAULT_BATCH_SIZE,
+        }
+    }
+
+    #[test]
+    fn dataset_uri_returns_url() {
+        use faucet_core::Source;
+        let source = WebsocketSource::new(make_config("wss://stream.example.com/feed")).unwrap();
+        assert_eq!(source.dataset_uri(), "wss://stream.example.com/feed");
+    }
+
+    #[test]
+    fn dataset_uri_redacts_credentials() {
+        use faucet_core::Source;
+        let source =
+            WebsocketSource::new(make_config("wss://user:pass@stream.example.com/feed")).unwrap();
+        assert_eq!(source.dataset_uri(), "wss://stream.example.com/feed");
     }
 }
