@@ -40,7 +40,9 @@ pub fn value_to_json(v: &Value) -> Json {
         // Time(is_negative, days, hours, minutes, seconds, microseconds)
         Value::Time(neg, days, h, mi, s, micro) => {
             let sign = if *neg { "-" } else { "" };
-            let total_hours = u32::from(*days) * 24 + u32::from(*h);
+            // `days` is already u32; widen to u64 so an out-of-range value from a
+            // malformed binlog can't overflow (real MySQL caps TIME at 838:59:59).
+            let total_hours = u64::from(*days) * 24 + u64::from(*h);
             Json::String(format!(
                 "{sign}{total_hours:02}:{mi:02}:{s:02}.{micro:06}"
             ))
@@ -52,18 +54,32 @@ pub fn value_to_json(v: &Value) -> Json {
 ///
 /// - `Value(val)` → delegates to [`value_to_json`]
 /// - `Jsonb(x)` → converts the MySQL JSONB representation to `serde_json::Value`
-///   (falls back to `null` if conversion fails, e.g. opaque types)
 /// - `JsonDiff(diffs)` → `"<JsonDiff>"` placeholder (refined in the stream loop)
+///
+/// **JSONB fallback:** `mysql_common`'s `TryFrom<jsonb::Value> for serde_json::Value`
+/// fails only when the document contains an *opaque* scalar — a MySQL type with no
+/// JSON representation stored inside a JSON column (e.g. a `DECIMAL`/`DATE`/`TIME`
+/// embedded via `CAST(... AS JSON)`). Rather than corrupt the value silently, we
+/// emit `null` for the whole column **and log a `tracing::warn!`** so the loss is
+/// observable. Ordinary JSON content (objects, arrays, strings, numbers, bools,
+/// null) converts losslessly; the opaque-scalar case is rare and documented in the
+/// crate README.
 pub fn binlog_value_to_json(v: &BinlogValue<'_>) -> Json {
     match v {
         BinlogValue::Value(val) => value_to_json(val),
         BinlogValue::Jsonb(jsonb_val) => {
-            // mysql_common provides TryFrom<jsonb::Value<'_>> for serde_json::Value.
-            // We clone-via-into_owned because we hold a borrow; the clone is
-            // unavoidable here but JSONB columns are rare enough it doesn't matter.
+            // We clone-via-into_owned because we hold a borrow; JSONB columns are
+            // rare enough that the clone cost doesn't matter.
             match serde_json::Value::try_from(jsonb_val.clone().into_owned()) {
                 Ok(j) => j,
-                Err(_) => Json::Null,
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        "mysql-cdc: JSON column holds an opaque value with no JSON \
+                         representation; emitting null for this column"
+                    );
+                    Json::Null
+                }
             }
         }
         BinlogValue::JsonDiff(_) => Json::String("<JsonDiff>".into()),
@@ -150,8 +166,21 @@ mod tests {
     }
 
     #[test]
+    fn time_with_days_accumulates_hours() {
+        // Time(neg=false, days=1, h=2, ...) → 1*24 + 2 = 26 hours.
+        let v = value_to_json(&Value::Time(false, 1, 2, 3, 4, 0));
+        assert_eq!(v, Json::String("26:03:04.000000".into()));
+    }
+
+    #[test]
     fn float_nan_is_null() {
         let v = value_to_json(&Value::Float(f32::NAN));
         assert_eq!(v, Json::Null);
+    }
+
+    #[test]
+    fn double_infinity_is_null() {
+        assert_eq!(value_to_json(&Value::Double(f64::INFINITY)), Json::Null);
+        assert_eq!(value_to_json(&Value::Double(f64::NEG_INFINITY)), Json::Null);
     }
 }
