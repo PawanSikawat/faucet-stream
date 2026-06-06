@@ -175,6 +175,7 @@ mod tests {
     use super::*;
     use crate::config::CatalogInner;
 
+    #[allow(dead_code)]
     fn empty_inner() -> CatalogInner {
         CatalogInner {
             uri: None,

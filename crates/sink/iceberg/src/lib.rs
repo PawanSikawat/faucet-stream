@@ -3,6 +3,8 @@
 pub mod config;
 pub(crate) mod catalog;
 pub(crate) mod schema;
-mod spike;
+pub(crate) mod writer;
+pub mod sink;
 
 pub use config::{CatalogConfig, IcebergSinkConfig, ParquetOpts, PartitionField, WriteMode};
+pub use sink::IcebergSink;
