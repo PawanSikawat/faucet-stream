@@ -87,8 +87,12 @@ auth = ["dep:faucet-auth"]
 ## `faucet-core`.
 quality = ["faucet-core/quality"]
 quality-jsonschema = ["quality", "faucet-core/quality-jsonschema"]
+## OpenLineage emission (`lineage:` config block). `lineage-kafka` adds the
+## Kafka transport. Forwarded to `faucet-lineage`.
+lineage = ["dep:faucet-lineage"]
+lineage-kafka = ["lineage", "faucet-lineage/transport-kafka"]
 ## Every connector and state backend.
-full = ["source", "sink", "state", "auth", "kafka-schema-registry", "compression", "quality", "quality-jsonschema"]
+full = ["source", "sink", "state", "auth", "kafka-schema-registry", "compression", "quality", "quality-jsonschema", "lineage", "lineage-kafka"]
 
 ## Individual source connectors.
 source-rest = ["dep:faucet-source-rest"]
@@ -219,6 +223,8 @@ faucet-sink-gcs = { workspace = true, optional = true }
 
 faucet-state-redis = { workspace = true, optional = true }
 faucet-state-postgres = { workspace = true, optional = true }
+
+faucet-lineage = { workspace = true, optional = true }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

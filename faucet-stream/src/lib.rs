@@ -413,3 +413,11 @@ pub mod state {
         pub use faucet_state_postgres::*;
     }
 }
+
+// ── Lineage (OpenLineage emission) ───────────────────────────────────────────
+/// OpenLineage event emission for pipeline runs (enable the `lineage` feature;
+/// `lineage-kafka` adds the Kafka transport). The CLI wires this automatically
+/// from a `lineage:` config block; library callers can build a
+/// [`lineage::LineageEmitter`] directly.
+#[cfg(feature = "lineage")]
+pub use faucet_lineage as lineage;
