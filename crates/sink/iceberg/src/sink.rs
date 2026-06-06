@@ -384,18 +384,10 @@ impl faucet_core::Sink for IcebergSink {
         let probe_result = tokio::time::timeout(ctx.timeout, self.catalog.table_exists(&tid)).await;
 
         let probe = match probe_result {
-            Ok(Ok(exists)) => {
-                let msg = if exists {
-                    format!("table '{}' exists", self.config.table)
-                } else {
-                    format!(
-                        "table '{}' not found (create_if_missing={})",
-                        self.config.table, self.config.create_if_missing
-                    )
-                };
-                let _ = msg; // pass regardless — catalog is reachable
-                Probe::pass("catalog", started.elapsed())
-            }
+            // The catalog responded — it's reachable, so the probe passes
+            // whether or not the target table exists yet (create_if_missing
+            // handles a missing table at run time).
+            Ok(Ok(_exists)) => Probe::pass("catalog", started.elapsed()),
             Ok(Err(e)) => Probe::fail_hint(
                 "catalog",
                 started.elapsed(),

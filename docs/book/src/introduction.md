@@ -6,7 +6,7 @@
 
 **The fast, config-driven way to move data in Rust.**
 
-faucet-stream wires **21 source** and **17 sink** connectors together with a single
+faucet-stream wires **23 source** and **18 sink** connectors together with a single
 `faucet` binary that runs pipelines declaratively from a YAML/JSON file — no Rust
 code required. Or skip the binary and embed the same engine in your own service
 through the typed `Source` / `Sink` traits.

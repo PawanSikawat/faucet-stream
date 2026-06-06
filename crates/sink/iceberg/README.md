@@ -50,25 +50,24 @@ faucet-stream = { version = "1.0", features = ["sink-iceberg", "sink-iceberg-glu
 ## Quick start
 
 ```rust
-use faucet_sink_iceberg::{IcebergSink, IcebergSinkConfig, CatalogConfig, CatalogInner};
+use faucet_sink_iceberg::{IcebergSink, IcebergSinkConfig};
 use faucet_core::Sink;
 use serde_json::json;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let config = IcebergSinkConfig {
-        catalog: CatalogConfig::Rest(CatalogInner {
-            uri: Some("http://localhost:8181".to_string()),
-            warehouse: Some("s3://warehouse/".to_string()),
-            credential: None,
-            properties: Default::default(),
-        }),
-        namespace: vec!["analytics".to_string()],
-        table: "events".to_string(),
-        create_if_missing: true,
-        batch_size: 10_000,
-        ..Default::default()
-    };
+    // Configs are normally loaded from YAML/JSON; deserialize one here.
+    let config: IcebergSinkConfig = serde_json::from_value(json!({
+        "catalog": {
+            "type": "rest",
+            "uri": "http://localhost:8181",
+            "warehouse": "s3://warehouse/"
+        },
+        "namespace": ["analytics"],
+        "table": "events",
+        "create_if_missing": true,
+        "batch_size": 10000
+    }))?;
 
     let sink = IcebergSink::new(config).await?;
 

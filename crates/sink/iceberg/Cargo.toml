@@ -27,8 +27,7 @@ tracing.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync", "time"] }
 futures.workspace = true
 iceberg = "0.9.1"
-# arrow/arrow-json/parquet pinned to iceberg 0.9.1's arrow major (NOT workspace 58):
-# We default to 57 here; Step 1 verification will confirm/correct this.
+# arrow/arrow-json/parquet pinned to iceberg 0.9.1's arrow major (57, NOT workspace 58):
 arrow = "57"
 arrow-json = "57"
 parquet = { version = "57", features = ["async"] }
