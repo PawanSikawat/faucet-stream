@@ -25,6 +25,7 @@ use iceberg::writer::file_writer::location_generator::{
 use iceberg::writer::file_writer::rolling_writer::RollingFileWriterBuilder;
 use parquet::basic::Compression;
 use parquet::file::properties::WriterProperties;
+use uuid::Uuid;
 
 // ── Compression mapping ───────────────────────────────────────────────────────
 
@@ -69,8 +70,17 @@ impl TableWriter {
         let loc_gen = DefaultLocationGenerator::new(table.metadata().clone())
             .map_err(|e| FaucetError::Sink(format!("iceberg: location generator failed: {e}")))?;
 
-        let name_gen =
-            DefaultFileNameGenerator::new("part".to_string(), None, DataFileFormat::Parquet);
+        // Include a per-writer UUID suffix so that each `TableWriter` instance
+        // produces uniquely-named files (e.g. `part-00000-<uuid>.parquet`).
+        // Without this, successive writers all generate `part-00000.parquet`
+        // and the second `fast_append` commit is rejected by the iceberg SDK
+        // with "Cannot add files that are already referenced by table".
+        let writer_id = Uuid::new_v4();
+        let name_gen = DefaultFileNameGenerator::new(
+            "part".to_string(),
+            Some(writer_id.to_string()),
+            DataFileFormat::Parquet,
+        );
 
         let props = WriterProperties::builder()
             .set_compression(compression)

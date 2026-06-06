@@ -109,8 +109,10 @@ async fn build_glue(_inner: &CatalogInner) -> Result<Arc<dyn Catalog>, FaucetErr
 #[cfg(feature = "catalog-sql")]
 async fn build_sql(inner: &CatalogInner) -> Result<Arc<dyn Catalog>, FaucetError> {
     use iceberg::CatalogBuilder;
+    use iceberg::io::LocalFsStorageFactory;
     use iceberg_catalog_sql::{
-        SQL_CATALOG_PROP_URI, SQL_CATALOG_PROP_WAREHOUSE, SqlCatalogBuilder,
+        SQL_CATALOG_PROP_BIND_STYLE, SQL_CATALOG_PROP_URI, SQL_CATALOG_PROP_WAREHOUSE,
+        SqlBindStyle, SqlCatalogBuilder,
     };
 
     let mut props: HashMap<String, String> = inner.properties.clone();
@@ -122,7 +124,40 @@ async fn build_sql(inner: &CatalogInner) -> Result<Arc<dyn Catalog>, FaucetError
         props.insert(SQL_CATALOG_PROP_WAREHOUSE.to_string(), warehouse.clone());
     }
 
+    // Infer the SQL bind style from the catalog URI when not explicitly
+    // overridden by the user.  SQLite uses `?` placeholders (QMark); other
+    // databases (Postgres, MySQL) use `$N` (DollarNumeric).
+    if !props.contains_key(SQL_CATALOG_PROP_BIND_STYLE) {
+        let catalog_uri = props
+            .get(SQL_CATALOG_PROP_URI)
+            .map(String::as_str)
+            .unwrap_or("");
+        let bind_style = if catalog_uri.starts_with("sqlite:") {
+            SqlBindStyle::QMark
+        } else {
+            SqlBindStyle::DollarNumeric
+        };
+        props.insert(
+            SQL_CATALOG_PROP_BIND_STYLE.to_string(),
+            bind_style.to_string(),
+        );
+    }
+
+    // The SQL catalog requires a `StorageFactory` to perform object-storage I/O
+    // for table metadata and data files.
+    //
+    // `LocalFsStorageFactory` handles `file://` and bare absolute paths.
+    // Cloud warehouses (s3://, gcs://, etc.) need `iceberg-storage-opendal`;
+    // users with a cloud warehouse + SQL catalog must pass an opendal-backed
+    // factory via `properties` until first-class support is added.  For now
+    // we always supply `LocalFsStorageFactory`; cloud-scheme users will get a
+    // clear error from the iceberg SDK at I/O time rather than a cryptic
+    // "StorageFactory must be provided" panic.
+    let storage_factory: Arc<dyn iceberg::io::StorageFactory> =
+        Arc::new(LocalFsStorageFactory);
+
     let catalog = SqlCatalogBuilder::default()
+        .with_storage_factory(storage_factory)
         .load("faucet-iceberg", props)
         .await
         .map_err(|e| FaucetError::Config(format!("iceberg: SQL catalog init failed: {e}")))?;

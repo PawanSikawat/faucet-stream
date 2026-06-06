@@ -213,6 +213,27 @@ impl IcebergSink {
                     .await
                     .map_err(|e| FaucetError::Sink(format!("iceberg: load_table failed: {e}")))?
             } else {
+                // Ensure the namespace exists before creating the table.
+                // Some catalogs (e.g. REST when pre-configured, Glue) auto-create
+                // namespaces; others (SQL, HMS) require an explicit
+                // `create_namespace` call.  We call it unconditionally when
+                // `create_if_missing: true` and swallow `AlreadyExists` errors so
+                // the sink is idempotent whether or not the namespace pre-exists.
+                let ns_exists = self.catalog.namespace_exists(&ns).await.map_err(|e| {
+                    FaucetError::Sink(format!("iceberg: namespace_exists check failed: {e}"))
+                })?;
+                if !ns_exists {
+                    self.catalog
+                        .create_namespace(&ns, std::collections::HashMap::new())
+                        .await
+                        .map_err(|e| {
+                            FaucetError::Sink(format!(
+                                "iceberg: create_namespace {:?} failed: {e}",
+                                self.config.namespace
+                            ))
+                        })?;
+                }
+
                 // Build partition spec from config, resolving source column IDs.
                 let partition_spec =
                     Self::build_partition_spec(&self.config.partition_spec, &iceberg_schema)?;
