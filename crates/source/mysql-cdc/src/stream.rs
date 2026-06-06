@@ -5,6 +5,11 @@
 //! in memory (BEGIN → ROWS → COMMIT) and emitted atomically as one
 //! [`StreamPage`] per commit, matching the postgres-cdc durability contract.
 //!
+//! **Target engine:** primarily InnoDB / transactional tables, where commits
+//! arrive as `XidEvent`.  Explicit `COMMIT` statements (emitted by
+//! non-transactional / mixed-engine workloads as `QueryEvent("COMMIT")`) are
+//! also handled as commit boundaries with identical durability semantics.
+//!
 //! **Bookmark strategy:** all persisted bookmarks use `{file, pos}` (the
 //! end-position of the commit event).  Even when `start_position` is
 //! `GtidSet`, the session resume is via file/pos after the first commit.
@@ -201,7 +206,10 @@ impl MysqlCdcSource {
                 .await
                 .map_err(|e| FaucetError::Source(format!("mysql-cdc: connect failed: {e}")))?;
 
-            let req = build_request(&mut conn, self.config.server_id, &resolved).await?;
+            // Resolve Current → FilePos by querying SHOW MASTER STATUS (fills in the
+            // actual file/pos before we build the request that borrows from `resolved`).
+            let resolved = resolve_current(resolved, &mut conn).await?;
+            let req = build_request(self.config.server_id, &resolved)?;
 
             // 3. Start the binlog stream.
             let binlog_stream = conn
@@ -222,6 +230,43 @@ impl MysqlCdcSource {
             let mut last_commit_bookmark: Option<Bookmark> = None;
             // Aggregate buffer used when batch_size == 0.
             let mut agg_records: Vec<Value> = Vec::new();
+
+            // commit_buffer!($bm) — factors out the emit/accumulate logic shared by
+            // XidEvent (InnoDB), QueryEvent("COMMIT") (non-transactional/mixed), and
+            // the desync-guard flush that runs when a new transaction starts while the
+            // buffer is unexpectedly non-empty.
+            //
+            // The macro does NOT update `in_txn` or `txid`; the caller is responsible
+            // for those so that desync-guard callers (which immediately set `in_txn =
+            // true` afterward) don't trigger a dead-assignment lint.
+            //
+            // Behaviour:
+            //  - per_transaction mode: yields one StreamPage per commit (even if the
+            //    buffer is empty, so the bookmark still advances).
+            //  - aggregate mode (batch_size == 0): extends agg_records and records the
+            //    bookmark for the trailing flush at stream end; skips empty buffers.
+            //
+            // Must be a macro (not a closure) because it needs to `yield` inside the
+            // async_stream::try_stream! block and capture locals by mutable reference.
+            macro_rules! commit_buffer {
+                ($bm:expr) => {{
+                    let bm: Bookmark = $bm;
+                    if per_transaction {
+                        // Always yield — even an empty page advances the bookmark.
+                        yield StreamPage {
+                            records: std::mem::take(&mut buffer),
+                            bookmark: Some(bm.to_value()?),
+                        };
+                    } else if !buffer.is_empty() {
+                        // Aggregate mode: accumulate; last_commit_bookmark records
+                        // the bookmark for the trailing flush at stream end.
+                        // Only guard assignment in aggregate mode — per_transaction
+                        // already yields the bookmark directly.
+                        last_commit_bookmark = Some(bm);
+                        agg_records.extend(std::mem::take(&mut buffer));
+                    }
+                }};
+            }
 
             // 5. Drain loop.
             loop {
@@ -245,13 +290,47 @@ impl MysqlCdcSource {
                                 // A GtidEvent precedes BEGIN in GTID mode.
                                 // We don't need the SID/GNO here because we
                                 // bookmark with file/pos on commit (see module note).
+                                //
+                                // Desync guard: if the buffer is non-empty when a new
+                                // transaction starts, the previous transaction ended
+                                // without an explicit commit boundary event — flush it
+                                // now to prevent silent conflation into the next txid.
+                                if !buffer.is_empty() {
+                                    let bm = Bookmark::FilePos {
+                                        file: current_file.clone(),
+                                        pos: log_pos,
+                                    };
+                                    commit_buffer!(bm);
+                                    txid = txid.wrapping_add(1);
+                                }
                                 in_txn = true;
                             }
                             Some(EventData::QueryEvent(qe)) => {
                                 let q = qe.query();
-                                if q.eq_ignore_ascii_case("BEGIN") {
+                                let q_upper = q.trim().to_ascii_uppercase();
+                                if q_upper == "BEGIN" {
+                                    // Desync guard: same reasoning as GtidEvent.
+                                    if !buffer.is_empty() {
+                                        let bm = Bookmark::FilePos {
+                                            file: current_file.clone(),
+                                            pos: log_pos,
+                                        };
+                                        commit_buffer!(bm);
+                                        txid = txid.wrapping_add(1);
+                                    }
                                     in_txn = true;
-                                } else if !q.eq_ignore_ascii_case("COMMIT") {
+                                } else if q_upper == "COMMIT" {
+                                    // Non-transactional / mixed-engine explicit COMMIT.
+                                    // MySQL emits QueryEvent("COMMIT") instead of XidEvent
+                                    // for non-InnoDB engines; treat it identically.
+                                    let bm = Bookmark::FilePos {
+                                        file: current_file.clone(),
+                                        pos: log_pos,
+                                    };
+                                    commit_buffer!(bm);
+                                    in_txn = false;
+                                    txid = txid.wrapping_add(1);
+                                } else {
                                     // DDL statement — auto-commits implicitly.
                                     if self.config.emit_schema_changes {
                                         let envelope = build_ddl_envelope(
@@ -264,13 +343,13 @@ impl MysqlCdcSource {
                                             file: current_file.clone(),
                                             pos: log_pos,
                                         };
-                                        last_commit_bookmark = Some(bm.clone());
                                         if per_transaction {
                                             yield StreamPage {
                                                 records: vec![envelope],
                                                 bookmark: Some(bm.to_value()?),
                                             };
                                         } else {
+                                            last_commit_bookmark = Some(bm);
                                             agg_records.push(envelope);
                                         }
                                     }
@@ -322,8 +401,10 @@ impl MysqlCdcSource {
                                         lsn.clone(), txid,
                                     );
 
-                                    if self.config.max_staged_records.is_some_and(|max| buffer.len() >= max) {
-                                        let max = self.config.max_staged_records.unwrap();
+                                    // Fix 4: use let-chain (stable in edition 2024).
+                                    if let Some(max) = self.config.max_staged_records
+                                        && buffer.len() >= max
+                                    {
                                         Err(FaucetError::Source(format!(
                                             "mysql-cdc: in-progress transaction exceeded \
                                              max_staged_records ({max}); aborting to avoid \
@@ -335,22 +416,12 @@ impl MysqlCdcSource {
                                 }
                             }
                             Some(EventData::XidEvent(_xid)) => {
-                                // COMMIT — emit the buffered transaction.
+                                // InnoDB COMMIT — emit the buffered transaction.
                                 let bm = Bookmark::FilePos {
                                     file: current_file.clone(),
                                     pos: log_pos,
                                 };
-                                last_commit_bookmark = Some(bm.clone());
-
-                                if per_transaction {
-                                    yield StreamPage {
-                                        records: std::mem::take(&mut buffer),
-                                        bookmark: Some(bm.to_value()?),
-                                    };
-                                } else {
-                                    agg_records.extend(std::mem::take(&mut buffer));
-                                }
-
+                                commit_buffer!(bm);
                                 in_txn = false;
                                 txid = txid.wrapping_add(1);
                             }
@@ -368,6 +439,12 @@ impl MysqlCdcSource {
                         // redeliver it from the last persisted bookmark on the next run.
                         let _ = in_txn;
 
+                        // Aggregate mode: emit one trailing page with all accumulated
+                        // records across the fetch window.  If every transaction was
+                        // filtered (all rows excluded by table_included), agg_records
+                        // stays empty and last_commit_bookmark is None, so the bookmark
+                        // is not advanced — those transactions are harmlessly re-scanned
+                        // on the next cycle (aggregate mode is for test/snapshot use only).
                         if !per_transaction
                             && let Some(bm) = last_commit_bookmark.take()
                             && !agg_records.is_empty()
@@ -461,73 +538,85 @@ pub(crate) fn resolve_start(
     }
 }
 
+/// If `resolved` is `Current`, query the server for its current binlog
+/// position and return a `FilePos` variant with the real coordinates.
+/// All other variants pass through unchanged.
+///
+/// Splitting this out of `build_request` ensures `resolved` is fully owned
+/// before we build a request that borrows from it, avoiding the need to leak
+/// any byte buffers.
+async fn resolve_current(
+    resolved: ResolvedStart,
+    conn: &mut Conn,
+) -> Result<ResolvedStart, FaucetError> {
+    if !matches!(resolved, ResolvedStart::Current { .. }) {
+        return Ok(resolved);
+    }
+    let row: Option<Row> = conn
+        .query_first("SHOW MASTER STATUS")
+        .await
+        .map_err(|e| {
+            FaucetError::Source(format!("mysql-cdc: SHOW MASTER STATUS failed: {e}"))
+        })?;
+    let row = row.ok_or_else(|| {
+        FaucetError::Source(
+            "mysql-cdc: SHOW MASTER STATUS returned no rows; \
+             is binary logging enabled?"
+                .into(),
+        )
+    })?;
+    let file: String = row.get(0).ok_or_else(|| {
+        FaucetError::Source("mysql-cdc: SHOW MASTER STATUS: missing File column".into())
+    })?;
+    let pos: u64 = row.get(1).ok_or_else(|| {
+        FaucetError::Source("mysql-cdc: SHOW MASTER STATUS: missing Position column".into())
+    })?;
+    Ok(ResolvedStart::FilePos { file, pos })
+}
+
 /// Build a `BinlogStreamRequest` from the resolved start position.
 ///
-/// For `Current`, runs `SHOW MASTER STATUS` to get the live file/pos.
-async fn build_request(
-    conn: &mut Conn,
+/// No heap memory is leaked: filenames borrow from `resolved` (which the
+/// caller holds for the duration of the call), and GTID SIDs are parsed into
+/// fully-owned data structures — `Sid::from_str` produces `Sid<'static>`
+/// because all internal fields (`Seq` / `Tag`) are stored as `Cow::Owned`.
+fn build_request<'r>(
     server_id: u32,
-    resolved: &ResolvedStart,
-) -> Result<BinlogStreamRequest<'static>, FaucetError> {
-    use mysql_async::prelude::Queryable;
+    resolved: &'r ResolvedStart,
+) -> Result<BinlogStreamRequest<'r>, FaucetError> {
+    use mysql_async::Sid;
+    use std::str::FromStr;
 
     match resolved {
+        // resolve_current() converts Current → FilePos before we get here;
+        // this arm is only hit if a caller skips that step (defensive).
         ResolvedStart::Current { .. } => {
-            // Query the server for its current binlog position.
-            let row: Option<Row> = conn
-                .query_first("SHOW MASTER STATUS")
-                .await
-                .map_err(|e| {
-                    FaucetError::Source(format!("mysql-cdc: SHOW MASTER STATUS failed: {e}"))
-                })?;
-            let row = row.ok_or_else(|| {
-                FaucetError::Source(
-                    "mysql-cdc: SHOW MASTER STATUS returned no rows; \
-                     is binary logging enabled?"
-                        .into(),
-                )
-            })?;
-            let file: String = row.get(0).ok_or_else(|| {
-                FaucetError::Source(
-                    "mysql-cdc: SHOW MASTER STATUS: missing File column".into(),
-                )
-            })?;
-            let pos: u64 = row.get(1).ok_or_else(|| {
-                FaucetError::Source(
-                    "mysql-cdc: SHOW MASTER STATUS: missing Position column".into(),
-                )
-            })?;
-            Ok(BinlogStreamRequest::new(server_id)
-                .with_filename(file.into_bytes().leak())
-                .with_pos(pos))
+            Ok(BinlogStreamRequest::new(server_id))
         }
         ResolvedStart::Earliest => {
             // No filename/pos — server starts from the oldest available binlog.
             Ok(BinlogStreamRequest::new(server_id))
         }
         ResolvedStart::FilePos { file, pos } => {
-            let filename: &'static [u8] = file.clone().into_bytes().leak();
+            // Borrow the filename bytes directly from the owned `String` in
+            // `resolved` — no copy, no leak.
             Ok(BinlogStreamRequest::new(server_id)
-                .with_filename(filename)
+                .with_filename(file.as_bytes())
                 .with_pos(*pos))
         }
         ResolvedStart::GtidSet { value } => {
-            use mysql_async::Sid;
-            use std::str::FromStr;
-
-            // Parse the GTID set string (e.g. "uuid1:1-100,uuid2:1-50") into Sids.
-            // We leak the per-entry strings so the resulting Sid<'static>s live long
-            // enough for the BinlogStreamRequest.  A handful of bytes leaked at
-            // connection-setup time is acceptable.
+            // `Sid::from_str` parses into fully-owned data (intervals as
+            // `Cow::Owned`, tag as `Tag<'static>` via `to_owned()`), so the
+            // resulting `Sid<'static>` does not borrow the input string.
+            // No leaking required.
             let sids: Vec<Sid<'static>> = value
                 .split(',')
                 .map(|part| {
-                    // `Sid<'a>` borrows its source string, so leak the (trimmed)
-                    // entry to get a `'static` lifetime, then parse it ONCE.
-                    // Parse errors propagate (no silent fallback).
-                    let leaked: &'static str = Box::leak(part.trim().to_owned().into_boxed_str());
-                    Sid::from_str(leaked).map_err(|e| {
-                        FaucetError::Source(format!("mysql-cdc: invalid GTID set '{leaked}': {e}"))
+                    let trimmed = part.trim();
+                    Sid::from_str(trimmed).map_err(|e| {
+                        FaucetError::Source(format!(
+                            "mysql-cdc: invalid GTID set '{trimmed}': {e}"
+                        ))
                     })
                 })
                 .collect::<Result<Vec<_>, _>>()?;
