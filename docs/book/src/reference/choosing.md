@@ -123,6 +123,23 @@ query with SQL → mapped columns.
 **Rule of thumb:** machine-to-machine JSON → JSONL; tabular for humans → CSV;
 analytics at scale → Parquet.
 
+## Parquet sink vs. Iceberg sink
+
+Both write columnar Parquet files, but they serve different use cases:
+
+- **`sink-parquet`** — writes raw Parquet files to a local path or S3 prefix.
+  Simple, zero catalog dependency, compatible with any Parquet reader. Use it
+  when you want portable files and don't need schema evolution, time-travel, or
+  ACID snapshot isolation.
+- **`sink-iceberg`** — writes Parquet data files and registers them in an Iceberg
+  catalog (REST, AWS Glue, SQL-backed, or Hive Metastore). The catalog tracks
+  schema, partitioning, and snapshot history, enabling time-travel queries,
+  schema evolution, and atomic reads across concurrent writers. Requires a
+  running catalog service.
+
+**Rule of thumb:** portable raw files with no catalog → `sink-parquet`; managed
+lakehouse table with snapshots, time-travel, and catalog-aware readers → `sink-iceberg`.
+
 ## Still unsure?
 
 Run `faucet list` to see what's installed, `faucet schema source <name>` to

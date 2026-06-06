@@ -17,7 +17,7 @@
 
 **The fast, config-driven way to move data in Rust.**
 
-faucet-stream wires **23 source** and **17 sink** connectors together with a single
+faucet-stream wires **23 source** and **18 sink** connectors together with a single
 `faucet` binary that runs pipelines declaratively from a YAML/JSON file — no Rust
 code required. Or skip the binary and embed the same engine in your own service
 through the typed `Source` / `Sink` traits. One toolkit, whether you want a CLI you
@@ -157,7 +157,7 @@ flowchart LR
     P -.->|metrics + spans| O
 ```
 
-faucet-stream is a Cargo workspace with 52 crates — 23 sources, 17 sinks, 6 shared connector libraries, the shared auth-provider library, 2 state-store backends, the shared core, the umbrella crate, and the CLI binary:
+faucet-stream is a Cargo workspace with 53 crates — 23 sources, 18 sinks, 6 shared connector libraries, the shared auth-provider library, 2 state-store backends, the shared core, the umbrella crate, and the CLI binary:
 
 | Crate | Description |
 |-------|-------------|
@@ -189,6 +189,7 @@ faucet-stream is a Cargo workspace with 52 crates — 23 sources, 17 sinks, 6 sh
 | [`faucet-source-snowflake`](crates/source/snowflake) | Snowflake — SQL REST API with server-side partition pagination, JWT / OAuth |
 | **Sinks** | |
 | [`faucet-sink-bigquery`](crates/sink/bigquery) | Google BigQuery — streaming inserts |
+| [`faucet-sink-iceberg`](crates/sink/iceberg) | Apache Iceberg — append snapshots via REST/Glue/SQL/HMS catalogs |
 | [`faucet-sink-postgres`](crates/sink/postgres) | PostgreSQL — JSONB or auto-mapped columns |
 | [`faucet-sink-jsonl`](crates/sink/jsonl) | JSON Lines — file output with append/truncate |
 | [`faucet-sink-snowflake`](crates/sink/snowflake) | Snowflake — SQL REST API with JWT/OAuth |
@@ -926,6 +927,7 @@ Every pagination style has a termination/loop guard. `Cursor`, `LinkHeader`, and
 | `source-bigquery` | no | Google BigQuery query source |
 | `source-snowflake` | no | Snowflake query source |
 | `sink-bigquery` | no | Google BigQuery sink |
+| `sink-iceberg` | no | Apache Iceberg sink (append, REST/Glue/SQL/HMS catalogs) |
 | `sink-postgres` | no | PostgreSQL sink |
 | `sink-jsonl` | no | JSON Lines file sink |
 | `sink-snowflake` | no | Snowflake sink |
@@ -1134,6 +1136,7 @@ crates/
     stdout/                   — Stdout / stderr (JSON Lines, pretty JSON, TSV)
     kafka/                    — Apache Kafka producer
     parquet/                  — Apache Parquet writer (local, S3)
+    iceberg/                  — Apache Iceberg (append snapshots)
   common/
     bigquery/                 — faucet-common-bigquery: shared BigQueryCredentials + build_client
     elasticsearch/            — faucet-common-elasticsearch: shared ElasticsearchAuth enum
