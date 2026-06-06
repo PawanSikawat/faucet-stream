@@ -48,7 +48,7 @@ fn config(uri: &str) -> MongoCdcSourceConfig {
         "scope": { "type": "collection", "database": DB, "collection": COLL },
         "full_document": "update_lookup",
         "start_from": { "type": "now" },
-        "idle_timeout_secs": 5,
+        "idle_timeout": 5,
         "max_await_time_ms": 500,
         "batch_size": 0
     }))
