@@ -7,6 +7,8 @@
 mod config;
 mod envelope;
 mod state;
+mod stream;
 
 pub use config::{FullDocument, FullDocumentBeforeChange, MongoCdcSourceConfig, Scope, StartFrom};
 pub use state::{state_key, Bookmark};
+pub use stream::MongoCdcSource;
