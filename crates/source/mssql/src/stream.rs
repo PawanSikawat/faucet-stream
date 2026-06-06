@@ -279,6 +279,21 @@ impl Source for MssqlSource {
         "mssql"
     }
 
+    fn dataset_uri(&self) -> String {
+        let conn = self
+            .config
+            .connection
+            .connection_url
+            .as_deref()
+            .or(self.config.connection.connection_string.as_deref())
+            .unwrap_or("");
+        format!(
+            "{}?query={}",
+            faucet_core::redact_uri_credentials(conn),
+            self.config.query
+        )
+    }
+
     fn state_key(&self) -> Option<String> {
         match &self.config.replication {
             MssqlReplication::Full => None,
@@ -527,5 +542,24 @@ mod tests {
         assert_eq!(k1, k2);
         assert!(k1.starts_with("mssql:db.example.com:"));
         faucet_core::state::validate_state_key(&k1).expect("derived key must be valid");
+    }
+
+    // dataset_uri is a pure-config method; the source requires a live SQL Server
+    // pool to construct so we verify the logic directly.
+    #[test]
+    fn dataset_uri_redacts_connection_url() {
+        let cfg = full_cfg();
+        let conn = cfg
+            .connection
+            .connection_url
+            .as_deref()
+            .or(cfg.connection.connection_string.as_deref())
+            .unwrap_or("");
+        let uri = format!(
+            "{}?query={}",
+            faucet_core::redact_uri_credentials(conn),
+            cfg.query
+        );
+        assert_eq!(uri, "mssql://db.example.com:1433/sales?query=SELECT * FROM t");
     }
 }

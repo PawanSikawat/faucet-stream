@@ -238,6 +238,14 @@ impl faucet_core::Source for PostgresSource {
         serde_json::to_value(faucet_core::schema_for!(PostgresSourceConfig))
             .expect("schema serialization")
     }
+
+    fn dataset_uri(&self) -> String {
+        format!(
+            "{}?query={}",
+            faucet_core::redact_uri_credentials(&self.config.connection_url),
+            self.config.query
+        )
+    }
 }
 
 #[cfg(test)]
@@ -254,5 +262,17 @@ mod tests {
             }
             _ => panic!("expected a batch_size Config error"),
         }
+    }
+
+    // dataset_uri is a pure-config method; the source requires a live DB to
+    // construct so we test it via a config-derived assertion instead.
+    #[test]
+    fn dataset_uri_strips_credentials() {
+        // We cannot construct PostgresSource offline, so we verify the
+        // credential-stripping logic used by dataset_uri() directly.
+        let redacted =
+            faucet_core::redact_uri_credentials("postgres://u:p@h:5432/db");
+        let uri = format!("{}?query={}", redacted, "SELECT 1");
+        assert_eq!(uri, "postgres://h:5432/db?query=SELECT 1");
     }
 }

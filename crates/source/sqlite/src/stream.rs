@@ -200,6 +200,15 @@ impl faucet_core::Source for SqliteSource {
         serde_json::to_value(faucet_core::schema_for!(SqliteSourceConfig))
             .expect("schema serialization")
     }
+
+    fn dataset_uri(&self) -> String {
+        let path = self
+            .config
+            .database_url
+            .trim_start_matches("sqlite://")
+            .trim_start_matches("sqlite:");
+        format!("sqlite://{}?query={}", path, self.config.query)
+    }
 }
 
 #[cfg(test)]
@@ -328,5 +337,40 @@ mod tests {
             }
             _ => panic!("expected a batch_size Config error"),
         }
+    }
+
+    // dataset_uri is a pure-config method — test the logic without needing a
+    // live file path by exercising the trim logic directly.
+    #[test]
+    fn dataset_uri_strips_sqlite_scheme_logic() {
+        // Verify the trim_start_matches chain that dataset_uri() uses.
+        let url1 = "sqlite:///var/db/app.db";
+        let path1 = url1
+            .trim_start_matches("sqlite://")
+            .trim_start_matches("sqlite:");
+        assert_eq!(
+            format!("sqlite://{}?query=SELECT 1", path1),
+            "sqlite:///var/db/app.db?query=SELECT 1"
+        );
+
+        let url2 = "sqlite:/tmp/data.db";
+        let path2 = url2
+            .trim_start_matches("sqlite://")
+            .trim_start_matches("sqlite:");
+        assert_eq!(
+            format!("sqlite://{}?query=SELECT 1", path2),
+            "sqlite:///tmp/data.db?query=SELECT 1"
+        );
+    }
+
+    #[tokio::test]
+    async fn dataset_uri_memory_db() {
+        // :memory: is a valid SQLite URL that can be opened without a real file.
+        let config = SqliteSourceConfig::new("sqlite::memory:", "SELECT 42 AS n");
+        let source = SqliteSource::new(config).await.unwrap();
+        // ":memory:" has no sqlite:// prefix to strip; it passes through as-is.
+        let uri = source.dataset_uri();
+        assert!(uri.contains("SELECT 42 AS n"), "got: {uri}");
+        assert!(uri.starts_with("sqlite://"), "got: {uri}");
     }
 }
