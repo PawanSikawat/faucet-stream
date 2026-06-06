@@ -207,41 +207,54 @@ impl Source for MongoCdcSource {
     ) -> Result<faucet_core::check::CheckReport, FaucetError> {
         use faucet_core::check::{CheckReport, Probe};
         let start = std::time::Instant::now();
-        let probe = async {
-            let hello = self
-                .client
+
+        // Run `hello` once under the probe timeout, then derive two probes from
+        // the outcome: `connection` (could we reach + auth to the server?) and
+        // `topology` (does it support change streams?). On a connection
+        // failure/timeout the topology probe cannot run, so only `connection`
+        // is reported.
+        let hello = tokio::time::timeout(
+            ctx.timeout,
+            self.client
                 .database("admin")
-                .run_command(bson::doc! { "hello": 1 })
-                .await
-                .map_err(|e| {
-                    Probe::fail_hint(
-                        "connection",
-                        start.elapsed(),
-                        format!("could not run hello: {e}"),
-                        "verify the URI is reachable and credentials are valid",
-                    )
-                })?;
-            Ok::<Probe, Probe>(if is_changestream_topology(&hello) {
-                Probe::pass("topology", start.elapsed())
-            } else {
-                Probe::fail_hint(
-                    "topology",
+                .run_command(bson::doc! { "hello": 1 }),
+        )
+        .await;
+
+        let hello = match hello {
+            Ok(Ok(doc)) => doc,
+            Ok(Err(e)) => {
+                return Ok(CheckReport::single(Probe::fail_hint(
+                    "connection",
                     start.elapsed(),
-                    "target is a standalone mongod",
-                    "Change Streams require a replica set or sharded cluster",
-                )
-            })
+                    format!("could not run hello: {e}"),
+                    "verify the URI is reachable and credentials are valid",
+                )));
+            }
+            Err(_elapsed) => {
+                return Ok(CheckReport::single(Probe::fail_hint(
+                    "connection",
+                    start.elapsed(),
+                    "connection timed out",
+                    "the server did not respond within the check timeout",
+                )));
+            }
         };
-        let probe = match tokio::time::timeout(ctx.timeout, probe).await {
-            Ok(Ok(p)) | Ok(Err(p)) => p,
-            Err(_) => Probe::fail_hint(
-                "connection",
+
+        let connection = Probe::pass("connection", start.elapsed());
+        let topology = if is_changestream_topology(&hello) {
+            Probe::pass("topology", start.elapsed())
+        } else {
+            Probe::fail_hint(
+                "topology",
                 start.elapsed(),
-                "connection timed out",
-                "the server did not respond within the check timeout",
-            ),
+                "target is a standalone mongod",
+                "Change Streams require a replica set or sharded cluster",
+            )
         };
-        Ok(CheckReport::single(probe))
+        Ok(CheckReport {
+            probes: vec![connection, topology],
+        })
     }
 }
 
@@ -438,5 +451,16 @@ mod tests {
         let p = build_pipeline(&c).unwrap();
         assert_eq!(p.len(), 1);
         assert!(p[0].contains_key("$match"));
+    }
+
+    #[test]
+    fn pipeline_rejects_non_object_stage() {
+        let c: MongoCdcSourceConfig = serde_json::from_value(json!({
+            "connection_uri": "mongodb://h/?replicaSet=rs0",
+            "scope": { "type": "cluster" },
+            "aggregation_pipeline": [[1, 2, 3]]
+        }))
+        .unwrap();
+        assert!(matches!(build_pipeline(&c), Err(FaucetError::Config(_))));
     }
 }
