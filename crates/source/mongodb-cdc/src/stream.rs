@@ -352,43 +352,55 @@ impl MongoCdcSource {
 
             let chunk = if per_batch { batch_size } else { usize::MAX };
             let mut buffer: Vec<Value> = Vec::new();
-            let mut last_token: Option<ResumeToken> = None;
+            // Bookmark of the last record currently in `buffer`. `None` only when
+            // the buffer is empty (no events seen this cycle).
+            let mut last_bookmark: Option<Value> = None;
 
+            // Graceful shutdown is handled one layer up: `run_stream`'s page loop
+            // `biased`-`select!`s the pipeline cancel token (Pipeline::with_cancel,
+            // #146) against polling this stream for its next page, so a cancel
+            // mid-idle-wait stops at the page boundary and flushes the sinks — no
+            // source-side signal handling needed. Nothing is persisted until a
+            // page yields, so a dropped in-flight buffer is simply re-fetched
+            // (the resume token has not advanced).
             loop {
                 match tokio::time::timeout(idle_timeout, change_stream.next()).await {
                     Ok(Some(Ok(event))) => {
-                        let token = event.id.clone();
-                        let bookmark = Bookmark::from_token(&token)?;
+                        let bookmark = Bookmark::from_token(&event.id)?;
                         let is_invalidate = matches!(
                             event.operation_type,
                             mongodb::change_stream::event::OperationType::Invalidate
                         );
                         buffer.push(to_envelope(&event, &bookmark)?);
-                        last_token = Some(token);
+                        last_bookmark = Some(bookmark.to_value()?);
 
+                        // An invalidate closes the stream server-side: flush the
+                        // page (including the invalidate event) and end.
                         if is_invalidate {
-                            // Safe unwrap: we just set last_token = Some(...) above.
-                            let tok = last_token.as_ref().expect("last_token set above");
-                            let bm = Bookmark::from_token(tok)?.to_value()?;
-                            yield StreamPage { records: std::mem::take(&mut buffer), bookmark: Some(bm) };
+                            yield StreamPage {
+                                records: std::mem::take(&mut buffer),
+                                bookmark: last_bookmark.take(),
+                            };
                             break;
                         }
                         if per_batch && buffer.len() >= chunk {
-                            let tok = last_token.as_ref().expect("last_token set above");
-                            let bm = Bookmark::from_token(tok)?.to_value()?;
-                            yield StreamPage { records: std::mem::take(&mut buffer), bookmark: Some(bm) };
+                            yield StreamPage {
+                                records: std::mem::take(&mut buffer),
+                                bookmark: last_bookmark.take(),
+                            };
                         }
                     }
                     Ok(Some(Err(e))) => {
                         Err(FaucetError::Source(format!("mongodb-cdc stream error: {e}")))?;
                     }
+                    // Idle (timeout) or cursor closed: flush whatever we have and
+                    // end this fetch cycle.
                     Ok(None) | Err(_) => {
                         if !buffer.is_empty() {
-                            let bm = match last_token.as_ref() {
-                                Some(t) => Some(Bookmark::from_token(t)?.to_value()?),
-                                None => None,
+                            yield StreamPage {
+                                records: std::mem::take(&mut buffer),
+                                bookmark: last_bookmark.take(),
                             };
-                            yield StreamPage { records: std::mem::take(&mut buffer), bookmark: bm };
                         }
                         break;
                     }
