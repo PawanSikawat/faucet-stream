@@ -22,6 +22,8 @@ pub mod executor;
 pub mod expand;
 pub mod init_template;
 pub mod interpolate;
+#[cfg(feature = "lineage")]
+pub mod lineage_glue;
 pub mod merge;
 pub mod obs;
 pub mod registry;
