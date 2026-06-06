@@ -51,6 +51,7 @@ members = [
     "crates/sink/kafka",
     "crates/sink/stdout",
     "crates/sink/parquet",
+    "crates/sink/iceberg",
     "crates/state/redis",
     "crates/state/postgres",
     "faucet-stream",
@@ -120,6 +121,7 @@ faucet-sink-http = { path = "crates/sink/http", version = "1.0.0" }
 faucet-sink-kafka = { path = "crates/sink/kafka", version = "1.0.1" }
 faucet-sink-stdout = { path = "crates/sink/stdout", version = "1.0.0" }
 faucet-sink-parquet = { path = "crates/sink/parquet", version = "1.0.0" }
+faucet-sink-iceberg = { path = "crates/sink/iceberg", version = "1.0.0" }
 faucet-state-redis = { path = "crates/state/redis", version = "1.0.0" }
 faucet-state-postgres = { path = "crates/state/postgres", version = "1.0.0" }
 faucet-cli = { path = "cli", version = "1.0.1" }

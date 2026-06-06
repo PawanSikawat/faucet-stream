@@ -33,6 +33,7 @@
 //! | `source-kafka` | Apache Kafka consumer source |
 //! | `source-parquet` | Apache Parquet file source (local, glob, S3) |
 //! | `sink-bigquery` | Google BigQuery streaming insert sink |
+//! | `sink-iceberg` | Apache Iceberg sink (append-only, REST/Glue/SQL/HMS catalogs) |
 //! | `sink-postgres` | PostgreSQL sink (jsonb or auto-mapped columns) |
 //! | `sink-jsonl` | JSON Lines file sink |
 //! | `sink-snowflake` | Snowflake SQL REST API sink |
@@ -297,6 +298,11 @@ pub mod sink {
     #[cfg(feature = "sink-bigquery")]
     pub mod bigquery {
         pub use faucet_sink_bigquery::*;
+    }
+
+    #[cfg(feature = "sink-iceberg")]
+    pub mod iceberg {
+        pub use faucet_sink_iceberg::*;
     }
 
     #[cfg(feature = "sink-postgres")]

@@ -59,6 +59,7 @@ sink = [
     "sink-stdout",
     "sink-parquet",
     "sink-gcs",
+    "sink-iceberg",
 ]
 ## All state-store backends (file backend is exposed via `faucet-core` directly).
 state = [
@@ -116,6 +117,11 @@ source-snowflake = ["dep:faucet-source-snowflake", "dep:faucet-common-snowflake"
 
 ## Individual sink connectors.
 sink-bigquery = ["dep:faucet-sink-bigquery"]
+sink-iceberg = ["dep:faucet-sink-iceberg"]
+## Forward optional catalog features to the iceberg sink via optional-dep syntax.
+sink-iceberg-glue = ["faucet-sink-iceberg?/catalog-glue"]
+sink-iceberg-sql  = ["faucet-sink-iceberg?/catalog-sql"]
+sink-iceberg-hms  = ["faucet-sink-iceberg?/catalog-hms"]
 sink-postgres = ["dep:faucet-sink-postgres"]
 sink-jsonl = ["dep:faucet-sink-jsonl"]
 sink-snowflake = ["dep:faucet-sink-snowflake"]
@@ -192,6 +198,7 @@ faucet-source-gcs = { workspace = true, optional = true }
 faucet-source-bigquery = { workspace = true, optional = true }
 faucet-source-snowflake = { workspace = true, optional = true }
 faucet-sink-bigquery = { workspace = true, optional = true }
+faucet-sink-iceberg = { workspace = true, optional = true }
 faucet-sink-postgres = { workspace = true, optional = true }
 faucet-sink-jsonl = { workspace = true, optional = true }
 faucet-sink-snowflake = { workspace = true, optional = true }

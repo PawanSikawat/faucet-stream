@@ -1,6 +1,6 @@
 # Connector catalog
 
-faucet-stream ships **23 sources** and **17 sinks**. Each is a Cargo feature
+faucet-stream ships **23 sources** and **18 sinks**. Each is a Cargo feature
 (`source-<name>` / `sink-<name>`) and an independently published crate. Full API
 docs are on [docs.rs](https://docs.rs/faucet-stream).
 
@@ -72,9 +72,10 @@ file/append sinks (`jsonl`, `csv`, `stdout`) it's a no-op — they write per rec
 | Stdout | `sink-stdout` | no-op | ✗ | JSON Lines / pretty JSON / TSV |
 | Apache Kafka | `sink-kafka` | ✓ | ✗ | producer, batched sends, multi-topic routing |
 | Apache Parquet | `sink-parquet` | ✓ | ✗⁶ | local/S3, schema inference, row/byte rollover |
+| Apache Iceberg | `sink-iceberg` | ✓ | ✗⁶ | REST/Glue/SQL/HMS catalog, `fast_append` snapshot, Parquet data files |
 
-⁶ Parquet has internal columnar compression, so the file-level `compression`
-feature doesn't apply.
+⁶ Parquet and Iceberg both handle compression internally at the Parquet column
+level, so the file-level `compression` feature doesn't apply to either.
 
 ## Authentication at a glance
 
