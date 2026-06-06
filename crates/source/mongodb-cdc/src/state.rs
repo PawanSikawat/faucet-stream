@@ -22,7 +22,10 @@ pub fn state_key(scope: &Scope) -> String {
     match scope {
         Scope::Cluster => "mongodb-cdc:cluster".to_string(),
         Scope::Database { database } => format!("mongodb-cdc:db:{database}"),
-        Scope::Collection { database, collection } => {
+        Scope::Collection {
+            database,
+            collection,
+        } => {
             format!("mongodb-cdc:coll:{database}.{collection}")
         }
     }
@@ -38,9 +41,8 @@ pub struct Bookmark {
 impl Bookmark {
     /// Build a bookmark from a driver `ResumeToken`.
     pub fn from_token(token: &ResumeToken) -> Result<Self, FaucetError> {
-        let bson = bson::to_bson(token).map_err(|e| {
-            FaucetError::State(format!("mongodb-cdc resume token serialize: {e}"))
-        })?;
+        let bson = bson::to_bson(token)
+            .map_err(|e| FaucetError::State(format!("mongodb-cdc resume token serialize: {e}")))?;
         Ok(Self {
             resume_token: bson.into_relaxed_extjson(),
         })
@@ -60,9 +62,8 @@ impl Bookmark {
 
     /// Decode the stored resume token back into a driver `ResumeToken`.
     pub fn to_token(&self) -> Result<ResumeToken, FaucetError> {
-        let bson: Bson = bson::to_bson(&self.resume_token).map_err(|e| {
-            FaucetError::State(format!("mongodb-cdc resume token to bson: {e}"))
-        })?;
+        let bson: Bson = bson::to_bson(&self.resume_token)
+            .map_err(|e| FaucetError::State(format!("mongodb-cdc resume token to bson: {e}")))?;
         bson::from_bson(bson)
             .map_err(|e| FaucetError::State(format!("mongodb-cdc resume token decode: {e}")))
     }
@@ -81,7 +82,9 @@ mod tests {
     #[test]
     fn state_key_database() {
         assert_eq!(
-            state_key(&Scope::Database { database: "app".into() }),
+            state_key(&Scope::Database {
+                database: "app".into()
+            }),
             "mongodb-cdc:db:app"
         );
     }
@@ -99,7 +102,9 @@ mod tests {
 
     #[test]
     fn bookmark_value_round_trip() {
-        let b = Bookmark { resume_token: json!({ "_data": "8264AB" }) };
+        let b = Bookmark {
+            resume_token: json!({ "_data": "8264AB" }),
+        };
         let v = b.to_value().unwrap();
         let parsed = Bookmark::from_value(v).unwrap();
         assert_eq!(parsed, b);
@@ -107,7 +112,9 @@ mod tests {
 
     #[test]
     fn bookmark_token_round_trip() {
-        let b = Bookmark { resume_token: json!({ "_data": "8264AB00" }) };
+        let b = Bookmark {
+            resume_token: json!({ "_data": "8264AB00" }),
+        };
         let token = b.to_token().unwrap();
         let b2 = Bookmark::from_token(&token).unwrap();
         assert_eq!(b2.resume_token["_data"], json!("8264AB00"));

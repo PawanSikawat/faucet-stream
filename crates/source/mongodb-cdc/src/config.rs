@@ -22,7 +22,10 @@ fn default_batch_size() -> usize {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Scope {
     /// Watch one collection.
-    Collection { database: String, collection: String },
+    Collection {
+        database: String,
+        collection: String,
+    },
     /// Watch every collection in one database.
     Database { database: String },
     /// Watch the whole deployment.
@@ -124,7 +127,10 @@ impl MongoCdcSourceConfig {
             ));
         }
         match &self.scope {
-            Scope::Collection { database, collection } => {
+            Scope::Collection {
+                database,
+                collection,
+            } => {
                 if database.trim().is_empty() || collection.trim().is_empty() {
                     return Err(FaucetError::Config(
                         "mongodb-cdc: scope.database and scope.collection must not be empty".into(),
@@ -168,7 +174,10 @@ impl fmt::Debug for MongoCdcSourceConfig {
             .field("scope", &self.scope)
             .field("operation_types", &self.operation_types)
             .field("full_document", &self.full_document)
-            .field("full_document_before_change", &self.full_document_before_change)
+            .field(
+                "full_document_before_change",
+                &self.full_document_before_change,
+            )
             .field("start_from", &self.start_from)
             .field("aggregation_pipeline", &self.aggregation_pipeline)
             .field("idle_timeout", &self.idle_timeout)

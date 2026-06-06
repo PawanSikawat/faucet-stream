@@ -2,7 +2,7 @@
 
 use crate::config::{MongoCdcSourceConfig, StartFrom};
 use crate::envelope::to_envelope;
-use crate::state::{state_key, Bookmark};
+use crate::state::{Bookmark, state_key};
 use async_trait::async_trait;
 use faucet_core::{FaucetError, Source, Stream, StreamPage};
 use mongodb::Client;
@@ -35,7 +35,9 @@ pub(crate) fn resolve_start(
 ) -> Result<StartPosition, FaucetError> {
     match start_from {
         StartFrom::ResumeToken { token } => {
-            let b = Bookmark { resume_token: token.clone() };
+            let b = Bookmark {
+                resume_token: token.clone(),
+            };
             Ok(StartPosition::ResumeAfter(b.to_token()?))
         }
         StartFrom::Timestamp { timestamp_secs } => Ok(StartPosition::AtOperationTime(Timestamp {
@@ -47,7 +49,10 @@ pub(crate) fn resolve_start(
                 Ok(StartPosition::ResumeAfter(b.to_token()?))
             } else if matches!(start_from, StartFrom::Earliest) {
                 // Earliest retained oplog entry (errors at open if rolled).
-                Ok(StartPosition::AtOperationTime(Timestamp { time: 1, increment: 1 }))
+                Ok(StartPosition::AtOperationTime(Timestamp {
+                    time: 1,
+                    increment: 1,
+                }))
             } else {
                 Ok(StartPosition::Now)
             }
@@ -109,7 +114,10 @@ async fn ensure_changestream_capable(client: &Client) -> Result<(), FaucetError>
 /// Classify a `hello` response: replica-set (`setName`) or sharded (`msg=isdbgrid`).
 pub(crate) fn is_changestream_topology(hello: &Document) -> bool {
     hello.get_str("setName").is_ok()
-        || hello.get_str("msg").map(|m| m == "isdbgrid").unwrap_or(false)
+        || hello
+            .get_str("msg")
+            .map(|m| m == "isdbgrid")
+            .unwrap_or(false)
 }
 
 /// Map the config post-image mode to the driver type (`None` = don't request).
@@ -419,29 +427,50 @@ mod tests {
 
     #[test]
     fn explicit_timestamp_overrides_bookmark() {
-        let pending = Bookmark { resume_token: json!({ "_data": "AA" }) };
-        let pos =
-            resolve_start(&StartFrom::Timestamp { timestamp_secs: 100 }, Some(&pending)).unwrap();
-        assert_eq!(pos, StartPosition::AtOperationTime(Timestamp { time: 100, increment: 0 }));
+        let pending = Bookmark {
+            resume_token: json!({ "_data": "AA" }),
+        };
+        let pos = resolve_start(
+            &StartFrom::Timestamp {
+                timestamp_secs: 100,
+            },
+            Some(&pending),
+        )
+        .unwrap();
+        assert_eq!(
+            pos,
+            StartPosition::AtOperationTime(Timestamp {
+                time: 100,
+                increment: 0
+            })
+        );
     }
 
     #[test]
     fn now_yields_to_bookmark() {
-        let pending = Bookmark { resume_token: json!({ "_data": "8264AB00" }) };
+        let pending = Bookmark {
+            resume_token: json!({ "_data": "8264AB00" }),
+        };
         let pos = resolve_start(&StartFrom::Now, Some(&pending)).unwrap();
         assert!(matches!(pos, StartPosition::ResumeAfter(_)));
     }
 
     #[test]
     fn now_without_bookmark_is_now() {
-        assert_eq!(resolve_start(&StartFrom::Now, None).unwrap(), StartPosition::Now);
+        assert_eq!(
+            resolve_start(&StartFrom::Now, None).unwrap(),
+            StartPosition::Now
+        );
     }
 
     #[test]
     fn earliest_without_bookmark_uses_operation_time() {
         assert_eq!(
             resolve_start(&StartFrom::Earliest, None).unwrap(),
-            StartPosition::AtOperationTime(Timestamp { time: 1, increment: 1 })
+            StartPosition::AtOperationTime(Timestamp {
+                time: 1,
+                increment: 1
+            })
         );
     }
 

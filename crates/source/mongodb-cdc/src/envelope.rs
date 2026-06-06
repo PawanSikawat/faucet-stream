@@ -4,7 +4,7 @@ use crate::state::Bookmark;
 use faucet_core::FaucetError;
 use mongodb::bson::{Bson, Document};
 use mongodb::change_stream::event::{ChangeStreamEvent, OperationType};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 /// Map a driver `OperationType` to the envelope `op` string.
 pub fn op_str(op: &OperationType) -> &'static str {
@@ -56,15 +56,27 @@ pub fn to_envelope(
 
     obj.insert(
         "document_key".into(),
-        event.document_key.as_ref().map(doc_to_json).unwrap_or(Value::Null),
+        event
+            .document_key
+            .as_ref()
+            .map(doc_to_json)
+            .unwrap_or(Value::Null),
     );
     obj.insert(
         "before".into(),
-        event.full_document_before_change.as_ref().map(doc_to_json).unwrap_or(Value::Null),
+        event
+            .full_document_before_change
+            .as_ref()
+            .map(doc_to_json)
+            .unwrap_or(Value::Null),
     );
     obj.insert(
         "after".into(),
-        event.full_document.as_ref().map(doc_to_json).unwrap_or(Value::Null),
+        event
+            .full_document
+            .as_ref()
+            .map(doc_to_json)
+            .unwrap_or(Value::Null),
     );
 
     if let Some(ud) = &event.update_description {
@@ -75,9 +87,7 @@ pub fn to_envelope(
             ud_obj.insert(
                 "truncated_arrays".into(),
                 serde_json::to_value(truncated).map_err(|e| {
-                    FaucetError::Source(format!(
-                        "mongodb-cdc: serialize truncated_arrays: {e}"
-                    ))
+                    FaucetError::Source(format!("mongodb-cdc: serialize truncated_arrays: {e}"))
                 })?,
             );
         }
@@ -111,7 +121,9 @@ mod tests {
     }
 
     fn bookmark() -> Bookmark {
-        Bookmark { resume_token: json!({ "_data": "8264AB00" }) }
+        Bookmark {
+            resume_token: json!({ "_data": "8264AB00" }),
+        }
     }
 
     #[test]
@@ -142,7 +154,10 @@ mod tests {
 
     #[test]
     fn replace_and_delete_map() {
-        assert_eq!(to_envelope(&event_from_json(fixture("replace")), &bookmark()).unwrap()["op"], "r");
+        assert_eq!(
+            to_envelope(&event_from_json(fixture("replace")), &bookmark()).unwrap()["op"],
+            "r"
+        );
         let mut del = fixture("delete");
         del.as_object_mut().unwrap().remove("fullDocument");
         let env = to_envelope(&event_from_json(del), &bookmark()).unwrap();

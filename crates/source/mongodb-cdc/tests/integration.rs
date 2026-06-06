@@ -95,7 +95,9 @@ async fn cdc_captures_crud_then_resumes_without_replay() {
     let writer_uri = uri.clone();
     let writer = tokio::spawn(async move {
         tokio::time::sleep(Duration::from_secs(2)).await;
-        let client = Client::with_uri_str(&writer_uri).await.expect("writer client");
+        let client = Client::with_uri_str(&writer_uri)
+            .await
+            .expect("writer client");
         let coll = client.database(DB).collection::<Document>(COLL);
         coll.insert_one(doc! { "_id": 1, "name": "alice" })
             .await
@@ -140,7 +142,9 @@ async fn cdc_captures_crud_then_resumes_without_replay() {
     let writer_uri = uri.clone();
     let writer2 = tokio::spawn(async move {
         tokio::time::sleep(Duration::from_secs(2)).await;
-        let client = Client::with_uri_str(&writer_uri).await.expect("writer2 client");
+        let client = Client::with_uri_str(&writer_uri)
+            .await
+            .expect("writer2 client");
         client
             .database(DB)
             .collection::<Document>(COLL)

@@ -10,5 +10,5 @@ mod state;
 mod stream;
 
 pub use config::{FullDocument, FullDocumentBeforeChange, MongoCdcSourceConfig, Scope, StartFrom};
-pub use state::{state_key, Bookmark};
+pub use state::{Bookmark, state_key};
 pub use stream::MongoCdcSource;
