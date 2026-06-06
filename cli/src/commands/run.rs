@@ -83,6 +83,12 @@ pub async fn run(args: RunArgs) -> CliResult<()> {
             // `faucet run` has no external cancel signal; the executor still
             // cooperatively cancels in-flight rows on `on_error: stop`.
             cancel: None,
+            // Lineage emitter is wired in Task 27 (`faucet run`); `None` here so
+            // the literal compiles under the `lineage` feature meanwhile.
+            #[cfg(feature = "lineage")]
+            lineage: None,
+            #[cfg(feature = "lineage")]
+            lineage_cfg: None,
         },
     )
     .await?;

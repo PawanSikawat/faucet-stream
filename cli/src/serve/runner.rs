@@ -470,6 +470,12 @@ fn spawn_run(
             auth,
             clock,
             cancel: Some(coop.clone()),
+            // Lineage emitter is wired in Task 28 (`faucet serve`); `None` here so
+            // the literal compiles under the `lineage` feature meanwhile.
+            #[cfg(feature = "lineage")]
+            lineage: None,
+            #[cfg(feature = "lineage")]
+            lineage_cfg: None,
         };
         let timeout_secs = req.timeout_secs;
 

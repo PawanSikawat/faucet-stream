@@ -141,6 +141,12 @@ fn make_opts(
         auth: auth.clone(),
         clock,
         cancel: None,
+        // Lineage emitter is wired in Task 28 (`faucet schedule`); `None` here so
+        // the literal compiles under the `lineage` feature meanwhile.
+        #[cfg(feature = "lineage")]
+        lineage: None,
+        #[cfg(feature = "lineage")]
+        lineage_cfg: None,
     }
 }
 

@@ -76,6 +76,10 @@ pub async fn run_from_yaml_str(yaml: &str) -> CliResult<executor::RunSummary> {
             auth,
             clock: chrono::Utc::now().fixed_offset(),
             cancel: None,
+            #[cfg(feature = "lineage")]
+            lineage: None,
+            #[cfg(feature = "lineage")]
+            lineage_cfg: None,
         },
     )
     .await
