@@ -146,7 +146,7 @@ impl Source for MysqlCdcSource {
 
             let connection = Probe::pass("connection", start.elapsed());
 
-            let binlog_config = match run_preflight_probes(&mut conn).await {
+            let binlog_config = match run_preflight_probes(&mut conn, &self.config).await {
                 Ok(_summary) => Probe::pass("binlog-config", start.elapsed()),
                 Err(msg) => Probe::fail_hint(
                     "binlog-config",
@@ -522,18 +522,13 @@ async fn build_request(
             let sids: Vec<Sid<'static>> = value
                 .split(',')
                 .map(|part| {
-                    let part = part.trim().to_owned();
-                    Sid::from_str(&part)
-                        .map_err(|e| {
-                            FaucetError::Source(format!(
-                                "mysql-cdc: invalid GTID set '{part}': {e}"
-                            ))
-                        })
-                        .map(|s| {
-                            let s_str: String = format!("{s}");
-                            let leaked: &'static str = Box::leak(s_str.into_boxed_str());
-                            Sid::from_str(leaked).unwrap_or_else(|_| Sid::new([0u8; 16]))
-                        })
+                    // `Sid<'a>` borrows its source string, so leak the (trimmed)
+                    // entry to get a `'static` lifetime, then parse it ONCE.
+                    // Parse errors propagate (no silent fallback).
+                    let leaked: &'static str = Box::leak(part.trim().to_owned().into_boxed_str());
+                    Sid::from_str(leaked).map_err(|e| {
+                        FaucetError::Source(format!("mysql-cdc: invalid GTID set '{leaked}': {e}"))
+                    })
                 })
                 .collect::<Result<Vec<_>, _>>()?;
 
@@ -633,7 +628,10 @@ fn build_opts(config: &MysqlCdcSourceConfig) -> Result<Opts, FaucetError> {
 
 /// Run preflight checks and return a human-readable summary on success, or an
 /// error message on the first failing check.
-async fn run_preflight_probes(conn: &mut Conn) -> Result<String, String> {
+async fn run_preflight_probes(
+    conn: &mut Conn,
+    config: &MysqlCdcSourceConfig,
+) -> Result<String, String> {
     // Check binlog_format = ROW
     let fmt: Option<(String, String)> = conn
         .query_first("SHOW VARIABLES LIKE 'binlog_format'")
@@ -707,42 +705,37 @@ async fn run_preflight_probes(conn: &mut Conn) -> Result<String, String> {
         );
     }
 
-    Ok("binlog_format=ROW, binlog_row_image=FULL, binlog_row_metadata=FULL, grants OK".into())
-}
-
-/// Run preflight checks with GtidSet-mode extra check if needed.
-async fn run_preflight(conn: &mut Conn, config: &MysqlCdcSourceConfig) -> Result<(), FaucetError> {
-    run_preflight_probes(conn)
-        .await
-        .map_err(FaucetError::Source)?;
-
-    // Extra check: if start_position is GtidSet, gtid_mode must be ON.
+    // If start_position is GtidSet, gtid_mode must be ON. Checked here (rather
+    // than only in `new()`) so `faucet doctor`'s binlog-config probe catches it
+    // too.
     if matches!(config.start_position, StartPosition::GtidSet { .. }) {
         let gtid: Option<(String, String)> = conn
             .query_first("SHOW VARIABLES LIKE 'gtid_mode'")
             .await
-            .map_err(|e| {
-                FaucetError::Source(format!(
-                    "mysql-cdc: SHOW VARIABLES LIKE 'gtid_mode' failed: {e}"
-                ))
-            })?;
+            .map_err(|e| format!("SHOW VARIABLES LIKE 'gtid_mode' failed: {e}"))?;
         match gtid.as_ref() {
             Some((_, v)) if !v.eq_ignore_ascii_case("ON") => {
-                return Err(FaucetError::Source(format!(
-                    "mysql-cdc: start_position is GtidSet but gtid_mode is '{v}' (must be ON). \
+                return Err(format!(
+                    "start_position is GtidSet but gtid_mode is '{v}' (must be ON). \
                      Enable GTID mode: --gtid-mode=ON --enforce-gtid-consistency=ON"
-                )));
+                ));
             }
             None => {
-                return Err(FaucetError::Source(
-                    "mysql-cdc: gtid_mode variable not found".into(),
-                ));
+                return Err("gtid_mode variable not found".into());
             }
             _ => {}
         }
     }
 
-    Ok(())
+    Ok("binlog_format=ROW, binlog_row_image=FULL, binlog_row_metadata=FULL, grants OK".into())
+}
+
+/// Run preflight checks, mapping a failure to a typed `FaucetError::Source`.
+async fn run_preflight(conn: &mut Conn, config: &MysqlCdcSourceConfig) -> Result<(), FaucetError> {
+    run_preflight_probes(conn, config)
+        .await
+        .map(|_| ())
+        .map_err(|m| FaucetError::Source(format!("mysql-cdc: {m}")))
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -839,19 +832,13 @@ mod tests {
     }
 
     // ── op_from_rows_event ────────────────────────────────────────────────────
-
-    #[test]
-    fn op_strings() {
-        // We can't construct concrete RowsEventData without raw bytes, so we
-        // rely on `op_from_rows_event` being a pure match — verify it through
-        // the write/update/delete arms via synthetic wrappers if available.
-        // The function is tested indirectly through envelope_shape below, but
-        // here we test the op string at the function level by checking that
-        // "c" / "u" / "d" are the correct literal strings.
-        assert_eq!("c", "c");
-        assert_eq!("u", "u");
-        assert_eq!("d", "d");
-    }
+    //
+    // `op_from_rows_event` maps a `RowsEventData` variant → "c"/"u"/"d". A
+    // `RowsEventData` cannot be constructed without raw binlog bytes, so this
+    // mapping is exercised end-to-end by the Docker integration test
+    // (`tests/integration.rs`), which asserts an INSERT/UPDATE/DELETE produce
+    // ops c/u/d. A unit test asserting string literals against themselves would
+    // give false confidence, so it is intentionally omitted here.
 
     // ── envelope assembly ─────────────────────────────────────────────────────
 
