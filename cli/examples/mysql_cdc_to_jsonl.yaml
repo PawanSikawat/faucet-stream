@@ -1,0 +1,21 @@
+version: 1
+name: mysql-cdc-to-jsonl
+pipeline:
+  source:
+    type: mysql-cdc
+    config:
+      connection_url: "mysql://repl:repl@localhost:3306/appdb"
+      server_id: 1001
+      start_position:
+        type: current
+      include_columns: true
+      idle_timeout: 30
+      batch_size: 1000
+  sink:
+    type: jsonl
+    config:
+      path: ./out/mysql_cdc.jsonl
+  state:
+    type: file
+    config:
+      path: ./state/mysql_cdc.json
