@@ -119,6 +119,7 @@ jobs:
           - source-sqlite
           - source-s3
           - source-mongodb
+          - source-mongodb-cdc
           - source-redis
           - source-webhook
           - source-websocket

@@ -23,6 +23,7 @@
 
 //! | `source-s3` | AWS S3 file source |
 //! | `source-mongodb` | MongoDB query source |
+//! | `source-mongodb-cdc` | MongoDB CDC source (Change Streams) |
 //! | `source-redis` | Redis source (streams, lists, keys) |
 //! | `source-webhook` | Webhook HTTP receiver source |
 //! | `source-websocket` | WebSocket streaming source |
@@ -126,6 +127,11 @@ pub mod source {
         pub use faucet_source_mongodb::*;
     }
 
+    #[cfg(feature = "source-mongodb-cdc")]
+    pub mod mongodb_cdc {
+        pub use faucet_source_mongodb_cdc::*;
+    }
+
     #[cfg(feature = "source-redis")]
     pub mod redis {
         pub use faucet_source_redis::*;
@@ -218,6 +224,11 @@ pub mod source {
     #[cfg(feature = "source-mongodb")]
     pub mod mongodb {
         pub use faucet_source_mongodb::*;
+    }
+
+    #[cfg(feature = "source-mongodb-cdc")]
+    pub mod mongodb_cdc {
+        pub use faucet_source_mongodb_cdc::*;
     }
 
     #[cfg(feature = "source-redis")]
