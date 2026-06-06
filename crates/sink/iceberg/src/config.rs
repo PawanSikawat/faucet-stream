@@ -354,6 +354,14 @@ impl IcebergSinkConfig {
             )));
         }
 
+        // Target file size: 0 would make iceberg's rolling writer roll a new
+        // (tiny) data file on every batch — almost certainly a misconfiguration.
+        if self.target_file_size_mb == 0 {
+            return Err(FaucetError::Config(
+                "iceberg: `target_file_size_mb` must be > 0".to_string(),
+            ));
+        }
+
         // Batch size
         faucet_core::validate_batch_size(self.batch_size)?;
 
@@ -576,6 +584,13 @@ mod tests {
             "table": "events"
         }));
         assert!(cfg.validate().is_err(), "whitespace-only uri should fail");
+    }
+
+    #[test]
+    fn zero_target_file_size_is_rejected() {
+        let mut v = minimal_config_json();
+        v["target_file_size_mb"] = serde_json::json!(0);
+        assert!(parse(v).validate().is_err());
     }
 
     #[test]

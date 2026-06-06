@@ -11,6 +11,17 @@
 //! as an Iceberg snapshot. The pipeline (via `faucet-core`) calls `flush()`
 //! automatically at the end of each `StreamPage`.
 //!
+//! ## Commit failure
+//!
+//! If the snapshot commit itself fails (after iceberg's internal retry of
+//! retryable conflicts), the already-uploaded data files are orphaned — written
+//! to object storage but never referenced by any snapshot. The error
+//! propagates so the run aborts without advancing the bookmark; the re-run
+//! writes fresh files and commits them. Orphaned files accumulate until you run
+//! Iceberg's standard `remove_orphan_files` maintenance (e.g. via Spark /
+//! pyiceberg). The sink does **not** auto-delete on failure (re-committing
+//! after an ambiguous commit could duplicate data).
+//!
 //! ## Schema management
 //!
 //! When `create_if_missing: true` (the default) and no table exists yet, the
