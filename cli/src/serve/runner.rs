@@ -461,6 +461,27 @@ fn spawn_run(
         // page boundary on cancel / timeout / shutdown — instead of having its
         // future hard-dropped, which flushes nothing (#146 H16).
         let coop = CancellationToken::new();
+        // Build the per-run OpenLineage emitter from the (merged) submitted
+        // config. A malformed `lineage:` block finalizes the run as Failed,
+        // mirroring the auth/clock failure handling above.
+        #[cfg(feature = "lineage")]
+        let lineage = match crate::lineage_glue::build_emitter(cfg.lineage.as_ref()) {
+            Ok(l) => l,
+            Err(e) => {
+                finalize(
+                    &state,
+                    &run_id,
+                    started,
+                    Terminal::Failed {
+                        reason: format!("lineage: {e}"),
+                        records: 0,
+                        invs: Vec::new(),
+                    },
+                )
+                .await;
+                return;
+            }
+        };
         let opts = ExecuteOptions {
             pipeline_name,
             execution: cfg.execution.clone(),
@@ -470,12 +491,10 @@ fn spawn_run(
             auth,
             clock,
             cancel: Some(coop.clone()),
-            // Lineage emitter is wired in Task 28 (`faucet serve`); `None` here so
-            // the literal compiles under the `lineage` feature meanwhile.
             #[cfg(feature = "lineage")]
-            lineage: None,
+            lineage,
             #[cfg(feature = "lineage")]
-            lineage_cfg: None,
+            lineage_cfg: cfg.lineage.clone(),
         };
         let timeout_secs = req.timeout_secs;
 
