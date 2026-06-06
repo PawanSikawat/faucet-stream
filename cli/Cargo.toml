@@ -154,7 +154,10 @@ secrets-azure-kv = ["dep:azure_security_keyvault_secrets", "dep:azure_identity",
 state-redis = ["dep:faucet-state-redis"]
 state-postgres = ["dep:faucet-state-postgres"]
 
-lineage = ["dep:faucet-lineage"]
+# `dep:reqwest` is needed by `lineage_glue::check_transport` (the validate /
+# doctor HTTP reachability probe), so the feature-isolation CI build of
+# `--features lineage` alone compiles.
+lineage = ["dep:faucet-lineage", "dep:reqwest"]
 lineage-kafka = ["lineage", "faucet-lineage/transport-kafka"]
 
 # Enables the `faucet init --interactive` prompt UI (`dialoguer`-driven Select

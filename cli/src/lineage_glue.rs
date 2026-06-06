@@ -15,6 +15,31 @@ pub fn build_emitter(cfg: Option<&LineageConfig>) -> Result<Option<Arc<LineageEm
     }
 }
 
+/// Best-effort transport reachability check (used by validate + doctor).
+/// Never fails a run — returns a human-readable Ok/Err string.
+pub async fn check_transport(cfg: &LineageConfig) -> Result<String, String> {
+    match &cfg.transport {
+        faucet_lineage::Transport::File { path } => {
+            let parent = path.parent().unwrap_or_else(|| std::path::Path::new("."));
+            if parent.exists() || tokio::fs::create_dir_all(parent).await.is_ok() {
+                Ok(format!("file path writable: {}", path.display()))
+            } else {
+                Err(format!("cannot create parent dir for {}", path.display()))
+            }
+        }
+        faucet_lineage::Transport::Http { url, .. } => {
+            match reqwest::Client::new().head(url).send().await {
+                Ok(_) => Ok(format!("http endpoint reachable: {url}")),
+                Err(e) => Err(format!("http endpoint unreachable: {e}")),
+            }
+        }
+        #[cfg(feature = "lineage-kafka")]
+        faucet_lineage::Transport::Kafka { brokers, .. } => {
+            Ok(format!("kafka brokers configured: {brokers} (not probed)"))
+        }
+    }
+}
+
 /// Map the resolved transform chain onto column-lineage ops. Transforms that
 /// change structure or rewrite keys (`flatten`, `explode`, `keys_case`,
 /// `rename_keys`) and any unknown transform become `Opaque`, which makes
