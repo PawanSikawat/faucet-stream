@@ -115,6 +115,7 @@ jobs:
           - source-postgres
           - source-postgres-cdc
           - source-mysql
+          - source-mysql-cdc
           - source-mssql
           - source-sqlite
           - source-s3

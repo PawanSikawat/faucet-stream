@@ -120,6 +120,17 @@ pub async fn build_source(
                 faucet_source_mongodb_cdc::MongoCdcSource::new(cfg).await?,
             ))
         }
+        #[cfg(feature = "source-mysql-cdc")]
+        "mysql-cdc" => {
+            let cfg = decode::<faucet_source_mysql_cdc::MysqlCdcSourceConfig>(
+                "source",
+                "mysql-cdc",
+                config,
+            )?;
+            Ok(Box::new(
+                faucet_source_mysql_cdc::MysqlCdcSource::new(cfg).await?,
+            ))
+        }
         #[cfg(feature = "source-redis")]
         "redis" => {
             let cfg = decode::<faucet_source_redis::RedisSourceConfig>("source", "redis", config)?;
@@ -351,6 +362,8 @@ pub fn source_schema(kind: &str) -> CliResult<Value> {
         "mongodb" => Ok(schema::<faucet_source_mongodb::MongoSourceConfig>()),
         #[cfg(feature = "source-mongodb-cdc")]
         "mongodb-cdc" => Ok(schema::<faucet_source_mongodb_cdc::MongoCdcSourceConfig>()),
+        #[cfg(feature = "source-mysql-cdc")]
+        "mysql-cdc" => Ok(schema::<faucet_source_mysql_cdc::MysqlCdcSourceConfig>()),
         #[cfg(feature = "source-redis")]
         "redis" => Ok(schema::<faucet_source_redis::RedisSourceConfig>()),
         #[cfg(feature = "source-webhook")]
@@ -459,6 +472,8 @@ pub fn source_descriptions() -> Vec<(&'static str, &'static str)> {
     v.push(("mongodb", "MongoDB query source"));
     #[cfg(feature = "source-mongodb-cdc")]
     v.push(("mongodb-cdc", "MongoDB CDC source (Change Streams)"));
+    #[cfg(feature = "source-mysql-cdc")]
+    v.push(("mysql-cdc", "MySQL CDC source (binlog replication)"));
     #[cfg(feature = "source-redis")]
     v.push(("redis", "Redis (streams, lists, keys) source"));
     #[cfg(feature = "source-webhook")]

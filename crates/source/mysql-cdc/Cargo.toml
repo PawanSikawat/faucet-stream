@@ -1,0 +1,35 @@
+[package]
+name = "faucet-source-mysql-cdc"
+version = "1.0.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "MySQL binlog (CDC) source for the faucet-stream ecosystem"
+readme = "README.md"
+keywords = ["mysql", "cdc", "binlog", "etl", "pipeline"]
+categories.workspace = true
+
+[dependencies]
+faucet-core.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+schemars.workspace = true
+async-trait.workspace = true
+tracing.workspace = true
+mysql_async = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync", "time"] }
+futures.workspace = true
+async-stream = { workspace = true }
+base64.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync", "time", "test-util"] }
+testcontainers = "0.27"
+testcontainers-modules = { version = "0.15", features = ["mysql"] }
+futures.workspace = true
+mysql_async = { workspace = true }
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

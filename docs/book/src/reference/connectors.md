@@ -1,6 +1,6 @@
 # Connector catalog
 
-faucet-stream ships **22 sources** and **17 sinks**. Each is a Cargo feature
+faucet-stream ships **23 sources** and **17 sinks**. Each is a Cargo feature
 (`source-<name>` / `sink-<name>`) and an independently published crate. Full API
 docs are on [docs.rs](https://docs.rs/faucet-stream).
 
@@ -22,6 +22,7 @@ Legend: ✓ supported · ✗ not applicable.
 | PostgreSQL | `source-postgres` | ✓ | ✗ | ✗ | SQL query, rows as JSON |
 | PostgreSQL CDC | `source-postgres-cdc` | ✓ | ✓ | ✗ | logical replication (pgoutput), LSN bookmarks |
 | MySQL | `source-mysql` | ✓ | ✗ | ✗ | SQL query, rows as JSON |
+| MySQL CDC | `source-mysql-cdc` | ✓ | ✓ | ✗ | binlog row events, file/pos or GTID bookmarks |
 | Microsoft SQL Server | `source-mssql` | ✓ | ✓⁷ | ✗ | SQL query (tiberius), rows as JSON |
 | SQLite | `source-sqlite` | ✓ | ✗ | ✗ | SQL query, rows as JSON |
 | AWS S3 | `source-s3` | ✓⁴ | ✗ | ✓ | object reader: JSONL, JSON array, raw text |

@@ -17,7 +17,7 @@
 
 **The fast, config-driven way to move data in Rust.**
 
-faucet-stream wires **22 source** and **17 sink** connectors together with a single
+faucet-stream wires **23 source** and **17 sink** connectors together with a single
 `faucet` binary that runs pipelines declaratively from a YAML/JSON file — no Rust
 code required. Or skip the binary and embed the same engine in your own service
 through the typed `Source` / `Sink` traits. One toolkit, whether you want a CLI you
@@ -157,7 +157,7 @@ flowchart LR
     P -.->|metrics + spans| O
 ```
 
-faucet-stream is a Cargo workspace with 51 crates — 22 sources, 17 sinks, 6 shared connector libraries, the shared auth-provider library, 2 state-store backends, the shared core, the umbrella crate, and the CLI binary:
+faucet-stream is a Cargo workspace with 52 crates — 23 sources, 17 sinks, 6 shared connector libraries, the shared auth-provider library, 2 state-store backends, the shared core, the umbrella crate, and the CLI binary:
 
 | Crate | Description |
 |-------|-------------|
@@ -171,6 +171,7 @@ faucet-stream is a Cargo workspace with 51 crates — 22 sources, 17 sinks, 6 sh
 | [`faucet-source-postgres`](crates/source/postgres) | PostgreSQL — run SQL queries, return rows as JSON |
 | [`faucet-source-postgres-cdc`](crates/source/postgres-cdc) | PostgreSQL CDC — logical replication via pgoutput, resumable with any StateStore |
 | [`faucet-source-mongodb-cdc`](crates/source/mongodb-cdc) | MongoDB CDC — Change Streams, resumable via resumeToken bookmarks |
+| [`faucet-source-mysql-cdc`](crates/source/mysql-cdc) | MySQL CDC — binlog row events, resumable via file/pos or GTID bookmarks |
 | [`faucet-source-mysql`](crates/source/mysql) | MySQL — run SQL queries, return rows as JSON |
 | [`faucet-source-mssql`](crates/source/mssql) | Microsoft SQL Server — run SQL queries (streaming, incremental), rows as JSON |
 | [`faucet-source-sqlite`](crates/source/sqlite) | SQLite — run SQL queries, return rows as JSON |
@@ -908,6 +909,7 @@ Every pagination style has a termination/loop guard. `Cursor`, `LinkHeader`, and
 | `source-postgres` | no | PostgreSQL query source |
 | `source-postgres-cdc` | no | PostgreSQL CDC source (logical replication) |
 | `source-mongodb-cdc` | no | MongoDB CDC source (Change Streams) |
+| `source-mysql-cdc` | no | MySQL CDC source (binlog replication) |
 | `source-mysql` | no | MySQL query source |
 | `source-mssql` | no | Microsoft SQL Server query source |
 | `source-sqlite` | no | SQLite query source |
@@ -1098,6 +1100,7 @@ crates/
     postgres/                 — PostgreSQL queries
     postgres-cdc/             — PostgreSQL CDC (logical replication)
     mongodb-cdc/              — MongoDB CDC (Change Streams)
+    mysql-cdc/                — MySQL CDC (binlog replication)
     mysql/                    — MySQL queries
     mssql/                    — Microsoft SQL Server queries (streaming, incremental)
     sqlite/                   — SQLite queries

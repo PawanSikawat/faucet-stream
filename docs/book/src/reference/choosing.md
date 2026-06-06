@@ -16,6 +16,29 @@ For the full feature grid see the [connector catalog](./connectors.md).
 
 **Rule of thumb:** periodic snapshot → query source; continuous change feed → CDC.
 
+## MySQL: query source vs. CDC
+
+- **`source-mysql`** runs a SQL query and returns the rows — one-shot extracts,
+  snapshots, or `updated_at`-driven incremental pulls you parameterize yourself.
+  Simple, no special MySQL config.
+- **`source-mysql-cdc`** streams every `INSERT`/`UPDATE`/`DELETE` from the binary
+  log via row-based replication. Use it when you need **every change** (including
+  deletes), low-latency capture, or resumability without a cursor column. Requires
+  `binlog_format=ROW`, `binlog_row_image=FULL`, `binlog_row_metadata=FULL` (for
+  column names), a unique `server_id`, and `REPLICATION SLAVE`/`REPLICATION CLIENT`
+  grants; resumes from a `{file,pos}` (or GTID) bookmark. Targets transactional
+  (InnoDB) tables. See the [connector reference](connectors.md).
+
+**Rule of thumb (MySQL too):** periodic snapshot → query source; continuous change feed → CDC.
+
+## MongoDB: query source vs. Change Streams (CDC)
+
+- **`source-mongodb`** runs a `find()` with filter/projection/sort — snapshots and
+  bounded extracts.
+- **`source-mongodb-cdc`** tails MongoDB Change Streams for every document change,
+  resumable via the opaque `resumeToken`. Requires a replica set or sharded
+  cluster. See the [connector reference](connectors.md).
+
 ## Object storage: S3/GCS source vs. Parquet source
 
 - **`source-s3` / `source-gcs`** read objects as JSONL, a JSON array, or raw

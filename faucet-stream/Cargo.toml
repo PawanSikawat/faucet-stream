@@ -29,6 +29,7 @@ source = [
     "source-s3",
     "source-mongodb",
     "source-mongodb-cdc",
+    "source-mysql-cdc",
     "source-redis",
     "source-webhook",
     "source-websocket",
@@ -101,6 +102,7 @@ source-sqlite = ["dep:faucet-source-sqlite"]
 source-s3 = ["dep:faucet-source-s3"]
 source-mongodb = ["dep:faucet-source-mongodb"]
 source-mongodb-cdc = ["dep:faucet-source-mongodb-cdc"]
+source-mysql-cdc = ["dep:faucet-source-mysql-cdc"]
 source-redis = ["dep:faucet-source-redis"]
 source-webhook = ["dep:faucet-source-webhook"]
 source-websocket = ["dep:faucet-source-websocket"]
@@ -179,6 +181,7 @@ faucet-source-sqlite = { workspace = true, optional = true }
 faucet-source-s3 = { workspace = true, optional = true }
 faucet-source-mongodb = { workspace = true, optional = true }
 faucet-source-mongodb-cdc = { workspace = true, optional = true }
+faucet-source-mysql-cdc = { workspace = true, optional = true }
 faucet-source-redis = { workspace = true, optional = true }
 faucet-source-webhook = { workspace = true, optional = true }
 faucet-source-websocket = { workspace = true, optional = true }

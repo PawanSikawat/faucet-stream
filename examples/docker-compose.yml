@@ -41,8 +41,16 @@ services:
       timeout: 5s
       retries: 10
 
+  # MySQL configured for binlog-based CDC so the mysql-cdc source works out of
+  # the box. The init script creates the `repl` user with replication grants.
   mysql:
     image: mysql:8
+    command:
+      - "--server-id=1"
+      - "--log-bin=mysql-bin"
+      - "--binlog-format=ROW"
+      - "--binlog-row-image=FULL"
+      - "--binlog-row-metadata=FULL"
     environment:
       MYSQL_ROOT_PASSWORD: faucet
       MYSQL_DATABASE: appdb
@@ -50,6 +58,8 @@ services:
       MYSQL_PASSWORD: faucet
     ports:
       - "3306:3306"
+    volumes:
+      - ./infra/mysql-init.sql:/docker-entrypoint-initdb.d/init.sql:ro
     healthcheck:
       test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-pfaucet"]
       interval: 5s
