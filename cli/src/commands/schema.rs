@@ -27,6 +27,8 @@ pub async fn run(args: SchemaArgs) -> CliResult<()> {
             let s = faucet_core::schema_for!(crate::schedule::spec::ScheduleSpec);
             serde_json::to_value(s).unwrap_or_else(|_| serde_json::json!({"type": "object"}))
         }
+        #[cfg(feature = "lineage")]
+        SchemaTarget::Lineage => lineage_schema(),
         SchemaTarget::Secrets => serde_json::json!({
             "title": "Secrets-manager interpolation grammar",
             "schemes": {
@@ -45,4 +47,23 @@ pub async fn run(args: SchemaArgs) -> CliResult<()> {
     let body = serde_json::to_string_pretty(&schema).unwrap_or_else(|_| schema.to_string());
     println!("{body}");
     Ok(())
+}
+
+/// JSON Schema for the `lineage:` config block (`faucet schema lineage`).
+#[cfg(feature = "lineage")]
+pub fn lineage_schema() -> serde_json::Value {
+    serde_json::to_value(faucet_lineage::schemars_schema())
+        .unwrap_or_else(|_| serde_json::json!({"type": "object"}))
+}
+
+#[cfg(test)]
+mod tests {
+    #[cfg(feature = "lineage")]
+    #[test]
+    fn schema_lineage_returns_object_schema() {
+        let v = super::lineage_schema();
+        assert_eq!(v["type"], "object");
+        assert!(v["properties"].get("transport").is_some());
+        assert!(v["properties"].get("namespace").is_some());
+    }
 }

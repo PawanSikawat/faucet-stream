@@ -21,3 +21,8 @@ pub use emitter::LineageEmitter;
 pub use event::{EventType, RunEvent};
 pub use lifecycle::{DatasetRef, InferredSchema, RunLifecycle};
 pub use sampling::{SampleState, SamplingSink, SamplingSource};
+
+/// JSON Schema for the `lineage:` config block (for `faucet schema lineage`).
+pub fn schemars_schema() -> schemars::Schema {
+    schemars::schema_for!(config::LineageConfig)
+}
