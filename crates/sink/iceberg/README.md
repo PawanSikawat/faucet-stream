@@ -27,6 +27,13 @@ transaction action.
 | SQL-backed (Postgres, SQLite, …) | `sql` | `catalog-sql` | no |
 | Hive Metastore | `hms` | `catalog-hms` | no |
 
+**Warehouse storage (v1):** the **REST** catalog supports both cloud object stores
+(S3/GCS — the catalog server resolves FileIO from the catalog config + `s3.*`
+properties) and local filesystems. The **SQL / Glue / HMS** catalogs currently
+write to a **local-filesystem warehouse** (`file://…`); cloud-warehouse support
+for those catalogs (via an OpenDAL storage factory) is tracked as a follow-up.
+For an S3/GCS lakehouse today, use the REST catalog.
+
 Install only what you need:
 
 ```toml
