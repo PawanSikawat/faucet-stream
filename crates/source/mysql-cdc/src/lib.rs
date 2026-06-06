@@ -8,6 +8,8 @@
 mod config;
 mod convert;
 mod state;
+mod stream;
 
 pub use config::{CdcTls, MysqlCdcSourceConfig, StartPosition};
 pub use state::{state_key, Bookmark};
+pub use stream::MysqlCdcSource;
