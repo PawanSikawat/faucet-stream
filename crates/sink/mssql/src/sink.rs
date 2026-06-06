@@ -374,6 +374,13 @@ impl Sink for MssqlSink {
         "mssql"
     }
 
+    fn dataset_uri(&self) -> String {
+        let conn = self.config.connection.connection_url.as_deref()
+            .or(self.config.connection.connection_string.as_deref())
+            .unwrap_or("");
+        format!("{}?table={}", faucet_core::redact_uri_credentials(conn), self.config.table)
+    }
+
     async fn check(&self, ctx: &CheckContext) -> Result<CheckReport, FaucetError> {
         let started = std::time::Instant::now();
         let probe = match tokio::time::timeout(ctx.timeout, self.pool.get()).await {
@@ -398,6 +405,9 @@ impl Sink for MssqlSink {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // dataset_uri test is skipped: MssqlSink::new() requires a live pool
+    // (connects to SQL Server in new()), and no offline constructor exists.
 
     #[test]
     fn quote_table_handles_schema_qualified() {

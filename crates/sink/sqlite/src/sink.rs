@@ -236,6 +236,12 @@ impl faucet_core::Sink for SqliteSink {
             .expect("schema serialization")
     }
 
+    fn dataset_uri(&self) -> String {
+        let path = self.config.database_url
+            .trim_start_matches("sqlite://").trim_start_matches("sqlite:");
+        format!("sqlite://{}?table={}", path, self.config.table_name)
+    }
+
     /// Preflight connectivity probe (`faucet doctor`).
     ///
     /// Acquires a connection from the existing pool and runs `SELECT 1`. This
@@ -299,5 +305,26 @@ impl faucet_core::Sink for SqliteSink {
             "SQLite write complete"
         );
         Ok(total)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::SqliteSinkConfig;
+    use faucet_core::Sink as _;
+
+    #[tokio::test]
+    async fn dataset_uri_strips_sqlite_prefix_and_includes_table() {
+        let config = SqliteSinkConfig::new("sqlite:///tmp/test.db", "events");
+        let sink = SqliteSink::new(config).await.unwrap();
+        assert_eq!(sink.dataset_uri(), "sqlite:///tmp/test.db?table=events");
+    }
+
+    #[tokio::test]
+    async fn dataset_uri_with_memory_db() {
+        let config = SqliteSinkConfig::new("sqlite::memory:", "logs");
+        let sink = SqliteSink::new(config).await.unwrap();
+        assert_eq!(sink.dataset_uri(), "sqlite://:memory:?table=logs");
     }
 }

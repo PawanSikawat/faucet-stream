@@ -269,6 +269,14 @@ impl faucet_core::Sink for PostgresSink {
             .expect("schema serialization")
     }
 
+    fn dataset_uri(&self) -> String {
+        let table = match &self.config.schema {
+            Some(s) => format!("{}.{}", s, self.config.table_name),
+            None => self.config.table_name.clone(),
+        };
+        format!("{}?table={}", faucet_core::redact_uri_credentials(&self.config.connection_url), table)
+    }
+
     /// Preflight connectivity probe (`faucet doctor`).
     ///
     /// Acquires a connection from the existing pool and runs `SELECT 1`. This
@@ -346,6 +354,10 @@ impl faucet_core::Sink for PostgresSink {
 mod tests {
     use super::{pg_bind_text, qualified_table_ref};
     use serde_json::json;
+
+    // dataset_uri test is skipped: PostgresSink::new() requires a live pool
+    // (connects to PostgreSQL in new()), and no offline constructor exists.
+    // The URI format is covered by unit tests in faucet-core's redact tests.
 
     #[test]
     fn qualified_table_ref_unqualified_is_bare_quoted_table() {
