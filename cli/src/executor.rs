@@ -911,6 +911,8 @@ mod tests {
             observability: None,
             #[cfg(feature = "schedule")]
             schedule: None,
+            #[cfg(feature = "lineage")]
+            lineage: None,
         }
     }
 
