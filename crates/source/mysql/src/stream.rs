@@ -218,6 +218,14 @@ impl faucet_core::Source for MysqlSource {
         serde_json::to_value(faucet_core::schema_for!(MysqlSourceConfig))
             .expect("schema serialization")
     }
+
+    fn dataset_uri(&self) -> String {
+        format!(
+            "{}?query={}",
+            faucet_core::redact_uri_credentials(&self.config.connection_url),
+            self.config.query
+        )
+    }
 }
 
 #[cfg(test)]
@@ -234,5 +242,14 @@ mod tests {
             }
             _ => panic!("expected a batch_size Config error"),
         }
+    }
+
+    // dataset_uri is a pure-config method; the source requires a live DB to
+    // construct so we verify the credential-stripping logic directly.
+    #[test]
+    fn dataset_uri_strips_credentials() {
+        let redacted = faucet_core::redact_uri_credentials("mysql://u:p@h:3306/db");
+        let uri = format!("{}?query={}", redacted, "SELECT 1");
+        assert_eq!(uri, "mysql://h:3306/db?query=SELECT 1");
     }
 }

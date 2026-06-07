@@ -678,6 +678,14 @@ fn lookup_template_path(
     out
 }
 
+/// Resolve `${name}` and `${row_id}` in a lineage job-name template. `${now.*}`
+/// tokens are resolved earlier by the run-clock pass over the config.
+pub fn resolve_lineage_job_name(template: &str, name: &str, row_id: &str) -> String {
+    template
+        .replace("${name}", name)
+        .replace("${row_id}", row_id)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1282,6 +1290,18 @@ pipeline:
         assert_eq!(
             resolve_now("${env:VAR}/${users.id}/${now.date}", c).unwrap(),
             "${env:VAR}/${users.id}/2026-03-08"
+        );
+    }
+
+    #[test]
+    fn resolves_lineage_job_name_tokens() {
+        assert_eq!(
+            resolve_lineage_job_name("${name}::${row_id}", "orders", "users"),
+            "orders::users"
+        );
+        assert_eq!(
+            resolve_lineage_job_name("static", "orders", "users"),
+            "static"
         );
     }
 }

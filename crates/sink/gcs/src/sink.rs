@@ -74,6 +74,10 @@ impl GcsSink {
 
 #[async_trait]
 impl faucet_core::Sink for GcsSink {
+    fn dataset_uri(&self) -> String {
+        format!("gs://{}/{}", self.config.bucket, self.config.prefix)
+    }
+
     async fn write_batch(&self, records: &[Value]) -> Result<usize, FaucetError> {
         if records.is_empty() {
             return Ok(0);
@@ -185,6 +189,10 @@ fn generate_object_key(prefix: &str, file_extension: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // dataset_uri test is skipped: GcsSink::new() requires Google Cloud
+    // credentials (build_storage errors without auth), and no offline
+    // constructor exists.
 
     #[tokio::test]
     async fn new_rejects_out_of_range_batch_size() {

@@ -400,6 +400,14 @@ impl faucet_core::Source for ElasticsearchSource {
         serde_json::to_value(faucet_core::schema_for!(ElasticsearchSourceConfig))
             .expect("schema serialization")
     }
+
+    fn dataset_uri(&self) -> String {
+        format!(
+            "{}/{}",
+            faucet_core::redact_uri_credentials(&self.config.base_url),
+            self.config.index
+        )
+    }
 }
 
 /// RAII guard that owns the active scroll id and clears it on drop.
@@ -492,6 +500,7 @@ fn apply_auth_to(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use faucet_core::Source;
 
     #[test]
     fn new_rejects_out_of_range_batch_size() {
@@ -501,5 +510,20 @@ mod tests {
             Err(FaucetError::Config(m)) => assert!(m.contains("batch_size"), "got: {m}"),
             _ => panic!("expected a batch_size Config error"),
         }
+    }
+
+    #[test]
+    fn dataset_uri_returns_base_url_slash_index() {
+        let config = ElasticsearchSourceConfig::new("http://localhost:9200", "my_index");
+        let source = ElasticsearchSource::new(config).unwrap();
+        assert_eq!(source.dataset_uri(), "http://localhost:9200/my_index");
+    }
+
+    #[test]
+    fn dataset_uri_strips_credentials() {
+        let config =
+            ElasticsearchSourceConfig::new("http://user:secret@es.example.com:9200", "logs");
+        let source = ElasticsearchSource::new(config).unwrap();
+        assert_eq!(source.dataset_uri(), "http://es.example.com:9200/logs");
     }
 }

@@ -88,6 +88,10 @@ impl faucet_core::Sink for S3Sink {
         serde_json::to_value(faucet_core::schema_for!(S3SinkConfig)).expect("schema serialization")
     }
 
+    fn dataset_uri(&self) -> String {
+        format!("s3://{}/{}", self.config.bucket, self.config.prefix)
+    }
+
     /// Preflight probe: confirm the configured bucket is reachable and the
     /// credentials work via a non-mutating `HeadBucket` call. Uploads nothing.
     async fn check(
@@ -170,6 +174,7 @@ impl faucet_core::Sink for S3Sink {
 mod tests {
     use super::*;
     use crate::config::S3SinkConfig;
+    use faucet_core::Sink as _;
     use serde_json::json;
 
     /// Helper to build an S3Sink synchronously for tests that never make network calls.
@@ -179,6 +184,12 @@ mod tests {
             .build();
         let client = Client::new(&sdk_config);
         S3Sink { config, client }
+    }
+
+    #[test]
+    fn dataset_uri_includes_bucket_and_prefix() {
+        let sink = test_sink(S3SinkConfig::new("my-bucket").prefix("data/events/"));
+        assert_eq!(sink.dataset_uri(), "s3://my-bucket/data/events/");
     }
 
     #[test]

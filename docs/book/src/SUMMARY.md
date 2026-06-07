@@ -28,6 +28,7 @@
 - [Adaptive batching](./cookbook/adaptive-batching.md)
 - [Scheduling](./cookbook/scheduling.md)
 - [Running faucet as a service](./cookbook/serve.md)
+- [Lineage (OpenLineage)](./cookbook/lineage.md)
 - [Troubleshooting with faucet doctor](./cookbook/troubleshooting.md)
 
 # Reference

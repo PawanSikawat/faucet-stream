@@ -241,6 +241,10 @@ config:
 
 The codec resolves per object key, so a single source can read a mix of compressed and uncompressed objects in one run.
 
+## Lineage dataset URI
+
+`s3://<bucket>` or `s3://<bucket>/<prefix>` — e.g. `s3://my-bucket/data/2026/`.
+
 ## License
 
 Licensed under MIT or Apache-2.0.

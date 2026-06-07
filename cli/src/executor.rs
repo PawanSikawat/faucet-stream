@@ -71,6 +71,15 @@ pub struct ExecuteOptions {
     /// hard-dropped (#146 H16). `faucet serve` wires this to run-cancel /
     /// timeout / shutdown; `faucet run` leaves it `None`.
     pub cancel: Option<CancellationToken>,
+    /// Shared OpenLineage emitter, built once from the `lineage:` block. `None`
+    /// disables lineage (and adds zero overhead). Gated on the `lineage` feature.
+    #[cfg(feature = "lineage")]
+    pub lineage: Option<std::sync::Arc<faucet_lineage::LineageEmitter>>,
+    /// The resolved `lineage:` config block (facet/event toggles, sampling, job
+    /// name template). Carried alongside the emitter so `run_one_invocation`
+    /// knows which facets/events to assemble. Gated on the `lineage` feature.
+    #[cfg(feature = "lineage")]
+    pub lineage_cfg: Option<faucet_lineage::LineageConfig>,
 }
 
 /// Grace window granted to in-flight invocations to flush cooperatively after
@@ -540,6 +549,10 @@ async fn run_one_invocation(
     let run_id = uuid::Uuid::now_v7().to_string();
     let pipeline_name = opts.pipeline_name.clone();
     let row_id = node.id.clone();
+    #[cfg(feature = "lineage")]
+    let lineage = opts.lineage.clone();
+    #[cfg(feature = "lineage")]
+    let lineage_cfg = opts.lineage_cfg.clone();
     let obs_labels = Labels::new(pipeline_name.clone(), row_id.clone(), run_id.clone());
     // 1) Resolve `${parent.path}` in the per-row source + sink configs.
     let mut source_cfg = node.source.config.clone();
@@ -574,6 +587,43 @@ async fn run_one_invocation(
         raw_sink
     };
 
+    // ── Lineage: sampling wrappers (only for requested facets) ───────────────
+    // `in_sample` taps the source's pre-transform records (input schema /
+    // column lineage); `out_sample` taps the sink's written records (output
+    // schema / RUNNING-heartbeat throughput counter). Both stay `None` when no
+    // facet/event needs them, so lineage adds zero per-record overhead.
+    #[cfg(feature = "lineage")]
+    let (in_sample, out_sample) = {
+        use std::sync::Arc as StdArc;
+        match (&lineage, &lineage_cfg) {
+            (Some(_), Some(lc)) => {
+                let want_schema = lc.include_schema_facet || lc.include_column_lineage;
+                let cap = if want_schema { lc.sample_records } else { 0 };
+                let need_counter = lc.emit_on.running;
+                if want_schema || need_counter {
+                    (
+                        Some(StdArc::new(faucet_lineage::SampleState::new(cap))),
+                        Some(StdArc::new(faucet_lineage::SampleState::new(cap))),
+                    )
+                } else {
+                    (None, None)
+                }
+            }
+            _ => (None, None),
+        }
+    };
+
+    // Wrap the raw source so it samples PRE-transform input records — this must
+    // sit between `build_source` and `TransformingSource`.
+    #[cfg(feature = "lineage")]
+    let source: Box<dyn Source> = match &in_sample {
+        Some(state) => Box::new(faucet_lineage::SamplingSource::new(
+            source,
+            std::sync::Arc::clone(state),
+        )),
+        None => source,
+    };
+
     // 3) Compile transforms.
     let stages = compile_transforms(&node.transforms)?;
     let source: Box<dyn Source> = if stages.is_empty() {
@@ -599,7 +649,27 @@ async fn run_one_invocation(
         source
     };
 
+    // Wrap the sink so it samples written records — outermost, immediately
+    // before the pipeline is constructed (after capture/limit wrappers).
+    #[cfg(feature = "lineage")]
+    let sink: Box<dyn Sink> = match &out_sample {
+        Some(state) => Box::new(faucet_lineage::SamplingSink::new(
+            sink,
+            std::sync::Arc::clone(state),
+        )),
+        None => sink,
+    };
+
     // 5) Run.
+    // When lineage is enabled the START/terminal lifecycle below still needs
+    // `pipeline_name` / `row_id` / `run_id`, so hand the builder clones; the
+    // non-lineage build moves them straight in (byte-identical to before).
+    #[cfg(feature = "lineage")]
+    let pipeline = Pipeline::new(source.as_ref(), sink.as_ref())
+        .with_name(pipeline_name.clone())
+        .with_row(row_id.clone())
+        .with_run_id(run_id.clone());
+    #[cfg(not(feature = "lineage"))]
     let pipeline = Pipeline::new(source.as_ref(), sink.as_ref())
         .with_name(pipeline_name)
         .with_row(row_id)
@@ -615,7 +685,12 @@ async fn run_one_invocation(
         pipeline
     };
     // Cooperative cancellation: a cancelled token makes the streaming loop stop
-    // at the next page boundary and flush the sink (#146 H16).
+    // at the next page boundary and flush the sink (#146 H16). Under lineage we
+    // hand the pipeline a clone so the terminal-event classification below can
+    // still read `cancel.is_cancelled()` (cheap — the token is an `Arc`).
+    #[cfg(feature = "lineage")]
+    let pipeline = pipeline.with_cancel(cancel.clone());
+    #[cfg(not(feature = "lineage"))]
     let pipeline = pipeline.with_cancel(cancel);
     // Pipeline-level quality checks (v1: no matrix-row override). `expand`
     // already validated this spec, but compile again here to obtain the
@@ -642,8 +717,131 @@ async fn run_one_invocation(
     } else {
         pipeline
     };
-    let result = pipeline.run().await?;
-    sink.flush().await?;
+    // ── Lineage: START + heartbeat + terminal ────────────────────────────────
+    #[cfg(feature = "lineage")]
+    let lineage_ctx = match (&lineage, &lineage_cfg) {
+        (Some(em), Some(lc)) => {
+            let job_name =
+                crate::interpolate::resolve_lineage_job_name(&lc.job_name, &pipeline_name, &row_id);
+            let mut ctx = faucet_lineage::RunLifecycle {
+                job_namespace: lc.namespace.clone(),
+                job_name,
+                run_id: run_id.clone(),
+                parent: lc.parent_job.clone(),
+                input: faucet_lineage::DatasetRef {
+                    namespace: lc.namespace.clone(),
+                    name: source.dataset_uri(),
+                },
+                output: faucet_lineage::DatasetRef {
+                    namespace: lc.namespace.clone(),
+                    name: sink.dataset_uri(),
+                },
+                started_at: chrono::Utc::now(),
+                finished_at: None,
+                records: 0,
+                error: None,
+                input_schema: None,
+                output_schema: None,
+                column_lineage: None,
+                source_code: None,
+            };
+            em.emit(faucet_lineage::EventType::Start, &ctx).await;
+            // Heartbeat task — periodic RUNNING events with the live throughput
+            // count read off the output sampler.
+            let hb_handle = if lc.emit_on.running {
+                let em2 = std::sync::Arc::clone(em);
+                let interval = lc.heartbeat_interval;
+                let mut beat_ctx = ctx.clone();
+                let counter = out_sample.clone();
+                Some(tokio::spawn(async move {
+                    let mut tick = tokio::time::interval(interval);
+                    tick.tick().await; // skip the immediate first tick
+                    loop {
+                        tick.tick().await;
+                        if let Some(c) = &counter {
+                            beat_ctx.records = c.count();
+                        }
+                        em2.emit(faucet_lineage::EventType::Running, &beat_ctx)
+                            .await;
+                    }
+                }))
+            } else {
+                None
+            };
+            ctx.source_code = if lc.include_source_code_facet {
+                Some(serde_json::to_string(&node.source.config).unwrap_or_default())
+            } else {
+                None
+            };
+            Some((std::sync::Arc::clone(em), ctx, hb_handle))
+        }
+        _ => None,
+    };
+
+    // Combine run + final flush into one outcome BEFORE emitting the terminal
+    // lineage event, preserving the original semantics (run error → skip flush;
+    // run ok but flush error → overall error). The terminal event is classified
+    // from this combined `result`, then `?`-propagated below — restoring the
+    // original early-return behaviour while still firing the terminal event on
+    // both success and error.
+    let result: Result<faucet_core::PipelineResult, FaucetError> = match pipeline.run().await {
+        Ok(r) => sink.flush().await.map(|_| r),
+        Err(e) => Err(e),
+    };
+
+    #[cfg(feature = "lineage")]
+    if let Some((em, mut ctx, hb)) = lineage_ctx {
+        if let Some(h) = hb {
+            h.abort();
+        }
+        ctx.finished_at = Some(chrono::Utc::now());
+        if let Some(state) = &out_sample {
+            ctx.records = state.count();
+            if lineage_cfg
+                .as_ref()
+                .map(|l| l.include_schema_facet)
+                .unwrap_or(false)
+            {
+                ctx.output_schema = Some(state.inferred_schema());
+            }
+        }
+        if let Some(state) = &in_sample
+            && lineage_cfg
+                .as_ref()
+                .map(|l| l.include_schema_facet || l.include_column_lineage)
+                .unwrap_or(false)
+        {
+            let in_schema = state.inferred_schema();
+            if lineage_cfg
+                .as_ref()
+                .map(|l| l.include_column_lineage)
+                .unwrap_or(false)
+            {
+                let input_fields: Vec<String> =
+                    in_schema.fields.iter().map(|(n, _)| n.clone()).collect();
+                let ops = crate::lineage_glue::column_ops(&node.transforms);
+                ctx.column_lineage = faucet_lineage::derive_column_lineage(&input_fields, &ops);
+            }
+            if lineage_cfg
+                .as_ref()
+                .map(|l| l.include_schema_facet)
+                .unwrap_or(false)
+            {
+                ctx.input_schema = Some(in_schema);
+            }
+        }
+        let ev = match &result {
+            Err(e) => {
+                ctx.error = Some(e.to_string());
+                faucet_lineage::EventType::Fail
+            }
+            Ok(_) if cancel.is_cancelled() => faucet_lineage::EventType::Abort,
+            Ok(_) => faucet_lineage::EventType::Complete,
+        };
+        em.emit(ev, &ctx).await;
+    }
+
+    let result = result?;
 
     let captured = if needs_capture {
         std::mem::take(&mut *captured.lock().await)
@@ -911,6 +1109,8 @@ mod tests {
             observability: None,
             #[cfg(feature = "schedule")]
             schedule: None,
+            #[cfg(feature = "lineage")]
+            lineage: None,
         }
     }
 
@@ -933,6 +1133,10 @@ mod tests {
                 auth: Default::default(),
                 clock: chrono::Utc::now().fixed_offset(),
                 cancel: None,
+                #[cfg(feature = "lineage")]
+                lineage: None,
+                #[cfg(feature = "lineage")]
+                lineage_cfg: None,
             },
         )
         .await
@@ -984,6 +1188,10 @@ matrix:
                 auth: Default::default(),
                 clock: chrono::Utc::now().fixed_offset(),
                 cancel: None,
+                #[cfg(feature = "lineage")]
+                lineage: None,
+                #[cfg(feature = "lineage")]
+                lineage_cfg: None,
             },
         )
         .await
@@ -1035,6 +1243,10 @@ matrix:
                 auth: Default::default(),
                 clock: chrono::Utc::now().fixed_offset(),
                 cancel: None,
+                #[cfg(feature = "lineage")]
+                lineage: None,
+                #[cfg(feature = "lineage")]
+                lineage_cfg: None,
             },
         )
         .await
@@ -1096,6 +1308,10 @@ execution:
                 auth: Default::default(),
                 clock: chrono::Utc::now().fixed_offset(),
                 cancel: None,
+                #[cfg(feature = "lineage")]
+                lineage: None,
+                #[cfg(feature = "lineage")]
+                lineage_cfg: None,
             },
         )
         .await
@@ -1172,6 +1388,10 @@ pipeline:
                 auth: Default::default(),
                 clock: chrono::Utc::now().fixed_offset(),
                 cancel: None,
+                #[cfg(feature = "lineage")]
+                lineage: None,
+                #[cfg(feature = "lineage")]
+                lineage_cfg: None,
             },
         )
         .await
@@ -1222,6 +1442,10 @@ matrix:
                 auth: Default::default(),
                 clock: chrono::Utc::now().fixed_offset(),
                 cancel: None,
+                #[cfg(feature = "lineage")]
+                lineage: None,
+                #[cfg(feature = "lineage")]
+                lineage_cfg: None,
             },
         )
         .await
@@ -1281,6 +1505,10 @@ execution:
                 auth: Default::default(),
                 clock: chrono::Utc::now().fixed_offset(),
                 cancel: None,
+                #[cfg(feature = "lineage")]
+                lineage: None,
+                #[cfg(feature = "lineage")]
+                lineage_cfg: None,
             },
         )
         .await
@@ -1341,6 +1569,10 @@ matrix:
                 auth: Default::default(),
                 clock: chrono::Utc::now().fixed_offset(),
                 cancel: None,
+                #[cfg(feature = "lineage")]
+                lineage: None,
+                #[cfg(feature = "lineage")]
+                lineage_cfg: None,
             },
         )
         .await

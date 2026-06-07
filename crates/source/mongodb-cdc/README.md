@@ -207,3 +207,11 @@ state:
 - `crates/state/redis/` — Redis-backed `StateStore` for durable resumeToken bookmarks.
 - `crates/state/postgres/` — PostgreSQL-backed `StateStore` alternative.
 - `crates/source/postgres-cdc/` — PostgreSQL CDC for comparison (LSN bookmarks, pgoutput).
+
+## Lineage dataset URI
+
+`mongodb://<host>:<port>/<database>/<collection>` or `/<database>` or just the host (depending on scope), credentials stripped — e.g. `mongodb://host:27017/mydb/orders`.
+
+## License
+
+Licensed under MIT or Apache-2.0.

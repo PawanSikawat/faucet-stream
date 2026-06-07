@@ -194,6 +194,10 @@ let stream = XmlStream::new(config);
 let articles = stream.fetch_all().await?;
 ```
 
+## Lineage dataset URI
+
+`https://<base_url><path>` (credentials stripped) — e.g. `https://soap.example.com/api/v1/service`.
+
 ## License
 
 Licensed under MIT or Apache-2.0.

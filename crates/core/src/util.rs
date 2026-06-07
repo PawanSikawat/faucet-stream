@@ -243,6 +243,50 @@ fn json_escape_string(s: &str) -> String {
     escaped
 }
 
+/// Strip credentials from a connection string so it can be used as a lineage
+/// dataset URI without leaking secrets. Handles two shapes, best-effort:
+///
+/// - **URL userinfo** — `scheme://user:pass@host/...` → `scheme://host/...`
+///   (the `user[:pass]@` between `://` and the authority terminator is removed).
+/// - **Key/value (ADO.NET) connection strings** — any `Password=...` / `Pwd=...`
+///   segment (case-insensitive key) has its value replaced with `***`.
+///
+/// Input with neither shape is returned unchanged.
+pub fn redact_uri_credentials(uri: &str) -> String {
+    let mut out = uri.to_string();
+    // 1) URL userinfo: between "://" and the first '/' or '?' (the authority).
+    if let Some(scheme_end) = out.find("://") {
+        let after = scheme_end + 3;
+        let auth_end = out[after..]
+            .find(['/', '?'])
+            .map(|i| after + i)
+            .unwrap_or(out.len());
+        if let Some(at_rel) = out[after..auth_end].find('@') {
+            // Remove "user:pass@" inclusive of the '@'.
+            out.replace_range(after..after + at_rel + 1, "");
+        }
+    }
+    // 2) ADO.NET-style Password=/Pwd= tokens.
+    if out.contains('=') {
+        out = out
+            .split(';')
+            .map(|seg| match seg.find('=') {
+                Some(eq)
+                    if {
+                        let k = seg[..eq].trim();
+                        k.eq_ignore_ascii_case("password") || k.eq_ignore_ascii_case("pwd")
+                    } =>
+                {
+                    format!("{}=***", &seg[..eq])
+                }
+                _ => seg.to_string(),
+            })
+            .collect::<Vec<_>>()
+            .join(";");
+    }
+    out
+}
+
 /// Extract context values from a record using JSONPath expressions.
 ///
 /// Each entry in `mapping` is `context_key -> json_path`. The function queries
@@ -610,5 +654,51 @@ mod tests {
     #[test]
     fn json_escape_newlines_and_tabs() {
         assert_eq!(json_escape_string("a\nb\tc"), "a\\nb\\tc");
+    }
+
+    // ── redact_uri_credentials ──────────────────────────────────────────
+
+    #[test]
+    fn redact_strips_url_userinfo() {
+        assert_eq!(
+            redact_uri_credentials("postgres://user:pass@host:5432/db"),
+            "postgres://host:5432/db"
+        );
+        assert_eq!(
+            redact_uri_credentials("mongodb://u:p@h/db?x=1"),
+            "mongodb://h/db?x=1"
+        );
+    }
+
+    #[test]
+    fn redact_strips_user_only_userinfo() {
+        assert_eq!(
+            redact_uri_credentials("redis://user@127.0.0.1:6379"),
+            "redis://127.0.0.1:6379"
+        );
+    }
+
+    #[test]
+    fn redact_handles_adonet_password_tokens() {
+        assert_eq!(
+            redact_uri_credentials("Server=tcp:h,1433;Database=db;User Id=sa;Password=secret;"),
+            "Server=tcp:h,1433;Database=db;User Id=sa;Password=***;"
+        );
+        assert_eq!(
+            redact_uri_credentials("server=h;pwd=secret"),
+            "server=h;pwd=***"
+        );
+    }
+
+    #[test]
+    fn redact_passthrough_when_no_credentials() {
+        assert_eq!(
+            redact_uri_credentials("s3://bucket/prefix"),
+            "s3://bucket/prefix"
+        );
+        assert_eq!(
+            redact_uri_credentials("file:///tmp/x.csv"),
+            "file:///tmp/x.csv"
+        );
     }
 }

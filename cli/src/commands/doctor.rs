@@ -93,6 +93,14 @@ pub async fn run(args: DoctorArgs) -> CliResult<()> {
 
     let mut invocations = probe_roots(&nodes, &auth, &ctx).await;
 
+    // Lineage transport reachability — one pipeline-wide probe (the `lineage:`
+    // block is top-level, not per-row), rendered as its own invocation entry so
+    // it isn't duplicated across roots.
+    #[cfg(feature = "lineage")]
+    if let Some(inv) = probe_lineage(cfg.lineage.as_ref()).await {
+        invocations.push(inv);
+    }
+
     redact_invocations(&mut invocations);
     let (_passed, failed, _skipped) = tally(&invocations);
 
@@ -156,6 +164,31 @@ pub async fn probe_invocation(
         source_kind: source.kind,
         sink_kind: sink.kind,
     }
+}
+
+/// Probe the pipeline-wide `lineage:` transport reachability, returning a
+/// single-probe invocation (or `None` when no `lineage:` block is configured).
+/// A failed probe is diagnostic only — lineage emission never blocks a run.
+#[cfg(feature = "lineage")]
+pub async fn probe_lineage(
+    lineage: Option<&faucet_lineage::LineageConfig>,
+) -> Option<InvocationOut> {
+    let lc = lineage?;
+    let start = Instant::now();
+    let probe = match crate::lineage_glue::check_transport(lc).await {
+        Ok(_) => Probe::pass("reachable", start.elapsed()),
+        Err(reason) => Probe::fail("reachable", start.elapsed(), reason),
+    };
+    Some(InvocationOut {
+        id: "lineage".to_string(),
+        probes: vec![ProbeOut::from_probe(
+            "lineage",
+            "openlineage".to_string(),
+            probe,
+        )],
+        source_kind: "—".to_string(),
+        sink_kind: "—".to_string(),
+    })
 }
 
 /// Probe every *root* invocation's source/sink/state concurrently (bounded).

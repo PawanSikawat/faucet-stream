@@ -257,6 +257,10 @@ config:
 
 `flush()` explicitly finalises the compression encoder (writing the gzip/zstd trailer) and propagates any trailer-write I/O error, rather than swallowing it on drop — so a bookmark never advances over a truncated/corrupt file. Subsequent writes append a fresh member. Headers are emitted only on the first open.
 
+## Lineage dataset URI
+
+`file://<path>` — e.g. `file:///tmp/output.csv`.
+
 ## License
 
 Licensed under MIT or Apache-2.0.

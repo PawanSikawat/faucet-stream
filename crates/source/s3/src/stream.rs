@@ -424,6 +424,13 @@ impl faucet_core::Source for S3Source {
         serde_json::to_value(faucet_core::schema_for!(S3SourceConfig))
             .expect("schema serialization")
     }
+
+    fn dataset_uri(&self) -> String {
+        match &self.config.prefix {
+            Some(p) => format!("s3://{}/{}", self.config.bucket, p),
+            None => format!("s3://{}", self.config.bucket),
+        }
+    }
 }
 
 /// Return a human-readable name for a JSON value type.
@@ -442,6 +449,7 @@ fn value_type_name(v: &Value) -> &'static str {
 mod tests {
     use super::*;
     use crate::config::S3SourceConfig;
+    use faucet_core::Source;
     use serde_json::json;
 
     /// Helper to build an S3Source synchronously for parse-only tests.
@@ -527,5 +535,17 @@ mod tests {
     fn compression_default_is_auto() {
         let cfg = S3SourceConfig::new("bucket");
         assert_eq!(cfg.compression, faucet_core::CompressionConfig::Auto);
+    }
+
+    #[test]
+    fn dataset_uri_no_prefix() {
+        let source = test_source(S3SourceConfig::new("my-bucket"));
+        assert_eq!(source.dataset_uri(), "s3://my-bucket");
+    }
+
+    #[test]
+    fn dataset_uri_with_prefix() {
+        let source = test_source(S3SourceConfig::new("my-bucket").prefix("data/2026/"));
+        assert_eq!(source.dataset_uri(), "s3://my-bucket/data/2026/");
     }
 }

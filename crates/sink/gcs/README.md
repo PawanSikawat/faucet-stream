@@ -128,6 +128,10 @@ Same as S3: codec resolves from `file_extension`, no `Content-Encoding` metadata
 - Custom object metadata or user headers.
 - KMS CMEK encryption configuration.
 
+## Lineage dataset URI
+
+`gs://<bucket>/<prefix>` — e.g. `gs://my-bucket/data/events/`.
+
 ## License
 
 Dual-licensed under MIT and Apache-2.0, per the workspace `license` field.

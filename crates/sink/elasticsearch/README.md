@@ -309,6 +309,10 @@ there — already-indexed items stay in the main sink with no duplicates.
 
 > **Deprecation:** the previous name `ElasticsearchSinkAuth` is retained as a deprecated type alias in `0.3.x` and removed in `0.4.0`. Migrate imports to `ElasticsearchAuth` at your convenience.
 
+## Lineage dataset URI
+
+`http://<host>:<port>/<index>` (credentials stripped) — e.g. `http://localhost:9200/my-index`.
+
 ## License
 
 Licensed under MIT or Apache-2.0.

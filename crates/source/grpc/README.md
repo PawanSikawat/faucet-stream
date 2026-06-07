@@ -293,6 +293,10 @@ let stream = GrpcStream::new(config)?;
 let items = stream.fetch_all().await?;
 ```
 
+## Lineage dataset URI
+
+`<endpoint>/<service_name>/<method_name>` (credentials stripped) — e.g. `http://grpc.example.com:50051/example.Service/ListItems`.
+
 ## License
 
 Licensed under MIT or Apache-2.0.

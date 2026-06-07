@@ -158,6 +158,17 @@ pub trait Source: Send + Sync {
         crate::observability::strip_type_name(std::any::type_name::<Self>())
     }
 
+    /// Logical dataset identity for lineage emission, following OpenLineage
+    /// naming conventions (<https://openlineage.io/docs/spec/naming>).
+    ///
+    /// The default returns `"<connector_name>://unknown"`. Built-in connectors
+    /// override with a credential-free URI derived from their config. Strip any
+    /// credentials with [`redact_uri_credentials`](crate::redact_uri_credentials).
+    /// Informational metadata only — never used for I/O.
+    fn dataset_uri(&self) -> String {
+        format!("{}://unknown", self.connector_name())
+    }
+
     /// Run a fast, non-mutating preflight probe (used by `faucet doctor`).
     ///
     /// The default pulls a **single page** via
@@ -240,6 +251,17 @@ pub trait Sink: Send + Sync {
     /// `connector` attribute on spans. See `Source::connector_name`.
     fn connector_name(&self) -> &'static str {
         crate::observability::strip_type_name(std::any::type_name::<Self>())
+    }
+
+    /// Logical dataset identity for lineage emission, following OpenLineage
+    /// naming conventions (<https://openlineage.io/docs/spec/naming>).
+    ///
+    /// The default returns `"<connector_name>://unknown"`. Built-in connectors
+    /// override with a credential-free URI derived from their config. Strip any
+    /// credentials with [`redact_uri_credentials`](crate::redact_uri_credentials).
+    /// Informational metadata only — never used for I/O.
+    fn dataset_uri(&self) -> String {
+        format!("{}://unknown", self.connector_name())
     }
 
     /// Run a fast, non-mutating preflight probe (used by `faucet doctor`).
@@ -590,6 +612,18 @@ mod tests {
     fn sink_default_connector_name_is_stripped_type_name() {
         let sink = MockSink::new();
         assert_eq!(sink.connector_name(), "MockSink");
+    }
+
+    #[test]
+    fn source_default_dataset_uri_uses_connector_name() {
+        let source = MockSource { records: vec![] };
+        assert_eq!(source.dataset_uri(), "MockSource://unknown");
+    }
+
+    #[test]
+    fn sink_default_dataset_uri_uses_connector_name() {
+        let sink = MockSink::new();
+        assert_eq!(sink.dataset_uri(), "MockSink://unknown");
     }
 
     // ── write_batch_partial tests ───────────────────────────────────────────

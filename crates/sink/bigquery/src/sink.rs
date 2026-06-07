@@ -141,6 +141,13 @@ impl faucet_core::Sink for BigQuerySink {
             .expect("schema serialization")
     }
 
+    fn dataset_uri(&self) -> String {
+        format!(
+            "bigquery://{}.{}.{}",
+            self.config.project_id, self.config.dataset_id, self.config.table_id
+        )
+    }
+
     /// Preflight check (`faucet doctor`).
     ///
     /// Runs a single read-only `tables.get` against the configured
@@ -309,4 +316,11 @@ impl faucet_core::Sink for BigQuerySink {
 
         Ok(outcomes)
     }
+}
+
+#[cfg(test)]
+mod tests {
+    // dataset_uri test is skipped: BigQuerySink::new() requires GCP credentials
+    // (build_client fetches auth in new()), and from_parts() requires a
+    // gcp_bigquery_client::Client which cannot be constructed without auth.
 }

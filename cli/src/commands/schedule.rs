@@ -105,11 +105,29 @@ pub async fn run(args: ScheduleArgs) -> CliResult<()> {
     });
 
     let auth = build_auth_catalog(cfg.auth.as_ref())?;
+    // Build the shared OpenLineage emitter once; the `Arc` is cloned into each
+    // tick's `ExecuteOptions` so every run reuses the same transport/client.
+    #[cfg(feature = "lineage")]
+    let lineage = crate::lineage_glue::build_emitter(cfg.lineage.as_ref())
+        .map_err(|e| CliError::Config(format!("lineage: {e}")))?;
+    #[cfg(feature = "lineage")]
+    let lineage_cfg = cfg.lineage.clone();
     let nodes = expand(&cfg)?; // validate once; cloned per tick
     let execution = cfg.execution.clone();
 
     if args.once {
-        return run_once(&nodes, &auth, &execution, &compiled, &pipeline_name).await;
+        return run_once(
+            &nodes,
+            &auth,
+            &execution,
+            &compiled,
+            &pipeline_name,
+            #[cfg(feature = "lineage")]
+            &lineage,
+            #[cfg(feature = "lineage")]
+            &lineage_cfg,
+        )
+        .await;
     }
 
     run_loop(
@@ -120,6 +138,10 @@ pub async fn run(args: ScheduleArgs) -> CliResult<()> {
         pipeline_name,
         cron,
         timezone,
+        #[cfg(feature = "lineage")]
+        lineage,
+        #[cfg(feature = "lineage")]
+        lineage_cfg,
     )
     .await
 }
@@ -131,6 +153,8 @@ fn make_opts(
     execution: &Option<crate::config::ExecutionSpec>,
     auth: &AuthCatalog,
     clock: chrono::DateTime<chrono::FixedOffset>,
+    #[cfg(feature = "lineage")] lineage: &Option<std::sync::Arc<faucet_lineage::LineageEmitter>>,
+    #[cfg(feature = "lineage")] lineage_cfg: &Option<faucet_lineage::LineageConfig>,
 ) -> ExecuteOptions {
     ExecuteOptions {
         pipeline_name: pipeline_name.to_string(),
@@ -141,6 +165,10 @@ fn make_opts(
         auth: auth.clone(),
         clock,
         cancel: None,
+        #[cfg(feature = "lineage")]
+        lineage: lineage.clone(),
+        #[cfg(feature = "lineage")]
+        lineage_cfg: lineage_cfg.clone(),
     }
 }
 
@@ -203,16 +231,28 @@ fn classify(joined: Result<CliResult<RunSummary>, tokio::task::JoinError>) -> Ru
 }
 
 /// `--once`: run exactly one pipeline run now and map its result to an exit.
+#[allow(clippy::too_many_arguments)]
 async fn run_once(
     nodes: &[ExpandedNode],
     auth: &AuthCatalog,
     execution: &Option<crate::config::ExecutionSpec>,
     compiled: &CompiledSchedule,
     pipeline_name: &str,
+    #[cfg(feature = "lineage")] lineage: &Option<std::sync::Arc<faucet_lineage::LineageEmitter>>,
+    #[cfg(feature = "lineage")] lineage_cfg: &Option<faucet_lineage::LineageConfig>,
 ) -> CliResult<()> {
     tracing::info!(pipeline = %pipeline_name, "schedule --once: running one pipeline now");
     let now = chrono::Utc::now();
-    let opts = make_opts(pipeline_name, execution, auth, compiled.clock_at(now));
+    let opts = make_opts(
+        pipeline_name,
+        execution,
+        auth,
+        compiled.clock_at(now),
+        #[cfg(feature = "lineage")]
+        lineage,
+        #[cfg(feature = "lineage")]
+        lineage_cfg,
+    );
     let span = run_span(1, now, now);
     let fut = run_expanded(nodes.to_vec(), opts).instrument(span);
     let summary = match compiled.run_timeout {
@@ -242,6 +282,8 @@ async fn run_loop(
     pipeline_name: String,
     cron: String,
     timezone: String,
+    #[cfg(feature = "lineage")] lineage: Option<std::sync::Arc<faucet_lineage::LineageEmitter>>,
+    #[cfg(feature = "lineage")] lineage_cfg: Option<faucet_lineage::LineageConfig>,
 ) -> CliResult<()> {
     let mut state = SchedulerState::new(&compiled);
     let mut shutdown = Shutdown::new()?;
@@ -302,6 +344,10 @@ async fn run_loop(
                         &execution,
                         &auth,
                         compiled.clock_at(next_due),
+                        #[cfg(feature = "lineage")]
+                        &lineage,
+                        #[cfg(feature = "lineage")]
+                        &lineage_cfg,
                     );
                     let span = run_span(run_ordinal, next_due, now);
                     let handle = spawn_run(nodes.clone(), opts, compiled.run_timeout, span);
@@ -402,7 +448,16 @@ async fn run_loop(
                         if dispatch_pending {
                             run_ordinal += 1;
                             let sched_for = pending_scheduled_for.take().unwrap_or(done_at);
-                            let opts = make_opts(&pipeline_name, &execution, &auth, compiled.clock_at(sched_for));
+                            let opts = make_opts(
+                                &pipeline_name,
+                                &execution,
+                                &auth,
+                                compiled.clock_at(sched_for),
+                                #[cfg(feature = "lineage")]
+                                &lineage,
+                                #[cfg(feature = "lineage")]
+                                &lineage_cfg,
+                            );
                             let span = run_span(run_ordinal, sched_for, done_at);
                             let handle = spawn_run(nodes.clone(), opts, compiled.run_timeout, span);
                             m::in_flight(&pipeline_name, 1);

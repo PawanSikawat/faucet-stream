@@ -22,6 +22,8 @@ pub mod executor;
 pub mod expand;
 pub mod init_template;
 pub mod interpolate;
+#[cfg(feature = "lineage")]
+pub mod lineage_glue;
 pub mod merge;
 pub mod obs;
 pub mod registry;
@@ -74,6 +76,10 @@ pub async fn run_from_yaml_str(yaml: &str) -> CliResult<executor::RunSummary> {
             auth,
             clock: chrono::Utc::now().fixed_offset(),
             cancel: None,
+            #[cfg(feature = "lineage")]
+            lineage: None,
+            #[cfg(feature = "lineage")]
+            lineage_cfg: None,
         },
     )
     .await

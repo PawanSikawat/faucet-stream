@@ -169,6 +169,10 @@ impl faucet_core::Sink for HttpSink {
             .expect("schema serialization")
     }
 
+    fn dataset_uri(&self) -> String {
+        faucet_core::redact_uri_credentials(&self.config.url)
+    }
+
     /// Non-mutating preflight probe (probe name `"network"`).
     ///
     /// Issues a lightweight `HEAD` request to the configured endpoint over the
@@ -356,6 +360,14 @@ impl faucet_core::Sink for HttpSink {
 mod tests {
     use super::*;
     use crate::config::HttpSinkConfig;
+    use faucet_core::Sink as _;
+
+    #[test]
+    fn dataset_uri_redacts_credentials() {
+        let config = HttpSinkConfig::new("https://user:secret@api.example.com/ingest");
+        let sink = HttpSink::new(config);
+        assert_eq!(sink.dataset_uri(), "https://api.example.com/ingest");
+    }
 
     #[test]
     fn creates_sink() {

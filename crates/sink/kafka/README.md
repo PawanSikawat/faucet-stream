@@ -267,6 +267,10 @@ A complete working example is in [`cli/examples/rest_to_kafka.yaml`](../../cli/e
 
 ---
 
+## Lineage dataset URI
+
+`kafka://<brokers>?topic=<topic>` or `kafka://<brokers>?topic=(from_path:<path>)` for dynamic routing — e.g. `kafka://kafka.example.com:9092?topic=orders`.
+
 ## License
 
 Dual-licensed under MIT and Apache-2.0, matching the workspace `license` field.

@@ -270,6 +270,10 @@ Configure a DLQ at the pipeline level (see [cli/README.md — dlq:](../../../cli
 and only the rows BigQuery actually rejected will be routed there —
 already-committed rows stay in the main sink with no duplicates.
 
+## Lineage dataset URI
+
+`bigquery://<project_id>.<dataset_id>.<table_id>` — e.g. `bigquery://my-project.warehouse.orders`.
+
 ## License
 
 Licensed under MIT or Apache-2.0.

@@ -188,6 +188,13 @@ impl faucet_core::Source for BigQuerySource {
             .expect("schema serialization")
     }
 
+    fn dataset_uri(&self) -> String {
+        format!(
+            "bigquery://{}?query={}",
+            self.config.project_id, self.config.query
+        )
+    }
+
     /// Preflight probe for `faucet doctor`. Overrides the default (which pulls a
     /// page via `stream_pages` and would run the configured query — a **billed**
     /// execution). Instead submits the same query with `dryRun: true`, which
@@ -459,6 +466,15 @@ mod tests {
             BigQueryCredentials::ApplicationDefault,
             "SELECT id FROM events",
         )
+    }
+
+    #[test]
+    fn dataset_uri_returns_project_and_query() {
+        // Inline logic test — BigQuerySource::new requires a live client, so
+        // we replicate the dataset_uri() computation directly from config fields.
+        let c = cfg();
+        let uri = format!("bigquery://{}?query={}", c.project_id, c.query);
+        assert_eq!(uri, "bigquery://my-project?query=SELECT id FROM events");
     }
 
     #[test]

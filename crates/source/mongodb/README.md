@@ -216,6 +216,10 @@ let pipeline = Pipeline::new(Box::new(source), Box::new(my_sink));
 let result = pipeline.run().await?;
 ```
 
+## Lineage dataset URI
+
+`mongodb://<host>:<port>/<database>/<collection>` (credentials stripped) — e.g. `mongodb://host:27017/mydb/events`.
+
 ## License
 
 Licensed under MIT or Apache-2.0.

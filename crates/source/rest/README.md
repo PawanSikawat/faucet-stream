@@ -318,6 +318,10 @@ let all_members = stream.fetch_all().await?;
 | `transform-spell-symbols` | no | Enable the `SpellSymbols` transform (spell out `%`, `#`, `$`, … in keys) |
 | `transforms` | no | Enable every transform feature |
 
+## Lineage dataset URI
+
+`https://<base_url><path>` (credentials stripped) — e.g. `https://api.example.com/v1/users`.
+
 ## License
 
 Licensed under MIT or Apache-2.0.

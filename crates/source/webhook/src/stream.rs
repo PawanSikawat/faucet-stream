@@ -271,6 +271,10 @@ impl faucet_core::Source for WebhookSource {
         "webhook"
     }
 
+    fn dataset_uri(&self) -> String {
+        format!("webhook://{}{}", self.config.listen_addr, self.config.path)
+    }
+
     /// Preflight probe that does **not** start the receive loop.
     ///
     /// The default `Source::check` would call `stream_pages`, which boots the
@@ -607,5 +611,19 @@ mod tests {
         let records = state.records.lock().await;
         assert_eq!(records.len(), 1);
         assert_eq!(records[0], Value::String("plain text body".into()));
+    }
+
+    #[test]
+    fn dataset_uri_combines_addr_and_path() {
+        use faucet_core::Source;
+        let source = WebhookSource::new(
+            WebhookSourceConfig::new()
+                .listen_addr("127.0.0.1:8080")
+                .path("/hooks/incoming"),
+        );
+        assert_eq!(
+            source.dataset_uri(),
+            "webhook://127.0.0.1:8080/hooks/incoming"
+        );
     }
 }

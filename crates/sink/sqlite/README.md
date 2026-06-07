@@ -254,6 +254,10 @@ let sink = SqliteSink::new(config).await?;
 - All identifiers (table names, column names) are quoted using `quote_ident()` (double-quote escaping) to prevent SQL injection.
 - Transaction wrapping ensures that either all rows in a batch are committed or none are, providing atomicity per batch.
 
+## Lineage dataset URI
+
+`sqlite://<path>?table=<table>` — e.g. `sqlite:///tmp/test.db?table=events`.
+
 ## License
 
 Licensed under MIT or Apache-2.0.

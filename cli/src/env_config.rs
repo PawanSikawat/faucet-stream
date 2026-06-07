@@ -323,6 +323,8 @@ pub fn build_pipeline_config(env: &HashMap<String, String>) -> CliResult<Pipelin
         observability: None,
         #[cfg(feature = "schedule")]
         schedule: None,
+        #[cfg(feature = "lineage")]
+        lineage: None,
     })
 }
 

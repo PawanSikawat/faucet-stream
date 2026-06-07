@@ -47,6 +47,16 @@ pub async fn run(args: ValidateArgs) -> CliResult<()> {
         );
     }
 
+    // Lineage transport reachability — best-effort. A failure here is only a
+    // warning: lineage emission never blocks a pipeline run.
+    #[cfg(feature = "lineage")]
+    if let Some(lc) = cfg.lineage.as_ref() {
+        match crate::lineage_glue::check_transport(lc).await {
+            Ok(msg) => println!("lineage: {msg}"),
+            Err(msg) => println!("lineage: WARNING — {msg} (lineage never blocks a run)"),
+        }
+    }
+
     for node in &nodes {
         // Verifying the schema lookup also catches unknown connector kinds.
         source_schema(&node.source.kind)?;

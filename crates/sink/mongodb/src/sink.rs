@@ -49,6 +49,15 @@ impl faucet_core::Sink for MongoSink {
             .expect("schema serialization")
     }
 
+    fn dataset_uri(&self) -> String {
+        format!(
+            "{}/{}/{}",
+            faucet_core::redact_uri_credentials(&self.config.connection_uri),
+            self.config.database,
+            self.config.collection
+        )
+    }
+
     /// Non-mutating preflight probe: run the `ping` admin command against the
     /// configured database via the existing client (probe name `"ping"`).
     async fn check(
@@ -133,6 +142,10 @@ impl faucet_core::Sink for MongoSink {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    // dataset_uri test is skipped: MongoSink::new() requires a live MongoDB
+    // connection (Client::with_uri_str connects in new()), and no offline
+    // constructor exists.
 
     #[test]
     fn value_to_document_object() {

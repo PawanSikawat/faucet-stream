@@ -407,6 +407,13 @@ impl faucet_core::Source for SnowflakeSource {
             .expect("schema serialization")
     }
 
+    fn dataset_uri(&self) -> String {
+        format!(
+            "snowflake://{}/{}/{}?query={}",
+            self.config.account, self.config.database, self.config.schema, self.config.query
+        )
+    }
+
     /// Preflight probe for `faucet doctor`. Overrides the default (which pulls a
     /// page via `stream_pages` and would **execute the configured query**).
     /// Instead submits a cheap `SELECT 1` so doctor validates auth, warehouse,
@@ -778,5 +785,15 @@ mod tests {
         let (q, binds) = src.resolve_query(&ctx);
         assert_eq!(q, "SELECT * FROM t WHERE id = ?");
         assert_eq!(binds, vec![json!(7)]);
+    }
+
+    #[test]
+    fn dataset_uri_includes_account_db_schema_and_query() {
+        use faucet_core::Source;
+        let src = SnowflakeSource::new(cfg()).unwrap();
+        assert_eq!(
+            src.dataset_uri(),
+            "snowflake://xy12345.us-east-1/DB/PUBLIC?query=SELECT 1"
+        );
     }
 }

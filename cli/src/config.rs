@@ -82,6 +82,11 @@ pub struct PipelineConfig {
     #[cfg(feature = "schedule")]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub schedule: Option<crate::schedule::spec::ScheduleSpec>,
+
+    /// Optional OpenLineage emission. Consumed by `faucet run`/`schedule`/`serve`.
+    #[cfg(feature = "lineage")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lineage: Option<faucet_lineage::LineageConfig>,
 }
 
 /// The base pipeline definition. Each matrix row is resolved against the
@@ -1067,5 +1072,22 @@ pipeline:
         .unwrap();
         let cfg = PipelineConfig::from_path_async(&path).await.unwrap();
         assert_eq!(cfg.version, 1);
+    }
+
+    #[cfg(feature = "lineage")]
+    #[test]
+    fn parses_lineage_block() {
+        let yaml = r#"
+version: 1
+lineage:
+  namespace: prod
+  transport: { type: file, path: /tmp/ol.jsonl }
+pipeline:
+  source: { type: rest, config: {} }
+  sink:   { type: jsonl, config: { path: ./o.jsonl } }
+"#;
+        let cfg = parse_with_extension(yaml, "yaml").unwrap();
+        let l = cfg.lineage.expect("lineage parsed");
+        assert_eq!(l.namespace, "prod");
     }
 }

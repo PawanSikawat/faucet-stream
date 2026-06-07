@@ -176,6 +176,10 @@ println!("Processed {} webhook events", result.records_written);
 - **Plain text bodies** (non-JSON) are stored as JSON strings
 - **Non-UTF-8 bodies** receive a `400 Bad Request` response and are not stored
 
+## Lineage dataset URI
+
+`webhook://<listen_addr><path>` — e.g. `webhook://0.0.0.0:8080/hooks/incoming`.
+
 ## License
 
 Licensed under MIT or Apache-2.0.

@@ -69,6 +69,10 @@ println!("got {} rows", rows.len());
 # }
 ```
 
+## Lineage dataset URI
+
+`snowflake://<account>/<database>/<schema>?query=<sql>` — e.g. `snowflake://xy12345.us-east-1/DB/PUBLIC?query=SELECT id FROM orders`.
+
 ## License
 
 MIT OR Apache-2.0

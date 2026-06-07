@@ -284,6 +284,10 @@ let sink = SnowflakeSink::new(config)?;
 - The Snowflake SQL REST API endpoint is `https://{account}.snowflakecomputing.com/api/v2/statements`.
 - Successful execution is validated by checking for the `090001` response code ("Statement executed successfully").
 
+## Lineage dataset URI
+
+`snowflake://<account>/<database>/<schema>?table=<table>` — e.g. `snowflake://myacct.us-east-1/mydb/PUBLIC?table=events`.
+
 ## License
 
 Licensed under MIT or Apache-2.0.

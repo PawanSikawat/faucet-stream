@@ -314,6 +314,13 @@ impl faucet_core::Sink for SnowflakeSink {
             .expect("schema serialization")
     }
 
+    fn dataset_uri(&self) -> String {
+        format!(
+            "snowflake://{}/{}/{}?table={}",
+            self.config.account, self.config.database, self.config.schema, self.config.table
+        )
+    }
+
     /// Preflight check (`faucet doctor`).
     ///
     /// Runs a single read-only `SELECT 1` through the existing SQL REST API
@@ -395,6 +402,24 @@ impl faucet_core::Sink for SnowflakeSink {
 mod tests {
     use super::*;
     use crate::config::SnowflakeAuth;
+    use faucet_core::Sink as _;
+
+    #[test]
+    fn dataset_uri_includes_account_db_schema_table() {
+        let config = SnowflakeSinkConfig::new(
+            "myacct.us-east-1",
+            "wh",
+            "mydb",
+            "PUBLIC",
+            "events",
+            SnowflakeAuth::OAuth { token: "t".into() },
+        );
+        let sink = SnowflakeSink::new(config).unwrap();
+        assert_eq!(
+            sink.dataset_uri(),
+            "snowflake://myacct.us-east-1/mydb/PUBLIC?table=events"
+        );
+    }
 
     #[test]
     fn new_rejects_oversized_batch_size() {

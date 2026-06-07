@@ -262,6 +262,36 @@ a clear `config error: schedule: …` message before any run starts.
 See the [scheduling cookbook](../cookbook/scheduling.md) for worked examples, the DST/timezone
 details, the overlap-policy decision tree, and the full Prometheus metric set.
 
+## `lineage`
+
+Optional. When present, every pipeline run emits [OpenLineage](https://openlineage.io/) `RunEvent`s
+describing the job, its input/output datasets, inferred schemas, and column-level lineage. Emission
+**never fails a run** — transport errors are logged and counted but do not propagate.
+
+```yaml
+lineage:
+  namespace: prod.warehouse      # REQUIRED. Logical namespace for all jobs and datasets.
+  transport:                     # REQUIRED. Where to send events.
+    type: http                   # http | file | kafka (kafka requires lineage-kafka feature)
+    url: ${env:MARQUEZ_URL}
+  job_name: ${name}::${row_id}   # Default. Resolved per matrix row at run time.
+  include_schema_facet: false    # Emit DatasetFacets.schema (inferred from a sample).
+  include_column_lineage: false  # Emit column-level lineage where statically derivable.
+  include_source_code_facet: false  # Emit resolved config as a sourceCode job facet (warns; may expose secrets).
+  emit_on:
+    start: true
+    running: false               # RUNNING heartbeats; see heartbeat_interval.
+    complete: true
+    fail: true
+    abort: true
+  sample_records: 100            # Max records sampled for schema/column facets.
+  heartbeat_interval: 30         # Seconds between RUNNING heartbeats (when emit_on.running is true).
+```
+
+See the [Lineage cookbook](../cookbook/lineage.md) for the full field reference, the three
+transports (HTTP, file, Kafka), the column-lineage support matrix, schema-facet behavior, and
+the Prometheus metrics (`faucet_lineage_events_total`, etc.).
+
 ## Discovery & env files
 
 `run` / `validate` / `preview` / `schedule` auto-discover `faucet.yaml` → `.yml` → `.json` in

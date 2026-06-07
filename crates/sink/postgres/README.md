@@ -276,6 +276,10 @@ let sink = PostgresSink::new(config).await?;
 - In AutoMap mode, each column's name **and underlying type** (`udt_name`) are queried from the PostgreSQL catalog, scoped via `to_regclass` to exactly the relation the `INSERT` targets (the configured `schema`, else the `search_path`-resolved table) — so a same-named table in another schema can't pollute the column set. A multi-row `INSERT INTO ... VALUES ($1::int4, $2::timestamptz), ...` is built dynamically with a per-column cast, and each value is bound as text so the destination column's input function parses it — numbers, booleans, timestamps, uuids land in their native column types, and `json`/`jsonb` columns receive JSON text. (Values are **not** bound as `jsonb` regardless of column type — doing so previously made the typed-column example above fail at runtime.) The column set is the **union** of record keys across the batch (in declared table order), so a field present only in a later record is still written; a row missing a column binds SQL `NULL`.
 - All identifiers (table names, column names) are quoted using `quote_ident()` to prevent SQL injection.
 
+## Lineage dataset URI
+
+`postgres://<host>:<port>/<db>?table=<schema.table>` (credentials stripped) — e.g. `postgres://host:5432/app?table=public.orders`.
+
 ## License
 
 Licensed under MIT or Apache-2.0.

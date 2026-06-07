@@ -191,6 +191,15 @@ fn build_sr_client(
 
 #[async_trait]
 impl Sink for KafkaSink {
+    fn dataset_uri(&self) -> String {
+        use crate::config::KafkaSinkTopic;
+        let topic = match &self.config.topic {
+            KafkaSinkTopic::Fixed { name } => name.clone(),
+            KafkaSinkTopic::FromPath { path } => format!("(from_path:{path})"),
+        };
+        format!("kafka://{}?topic={}", self.config.brokers, topic)
+    }
+
     async fn write_batch(&self, records: &[Value]) -> Result<usize, FaucetError> {
         let mut in_flight: FuturesUnordered<_> = FuturesUnordered::new();
         let mut produced = 0usize;
@@ -410,4 +419,11 @@ async fn send_with_queue_full_retry(
             }
         }
     }
+}
+
+#[cfg(test)]
+mod tests {
+    // dataset_uri test is skipped: KafkaSink::new() requires a live Kafka
+    // broker (creates a FutureProducer in new()), and no offline constructor
+    // exists.
 }

@@ -74,6 +74,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 - **Termination:** `max_messages`, `idle_timeout`, Ctrl-C, or a clean `1000`
   close with `reconnect=false`.
 
+## Lineage dataset URI
+
+`wss://<host><path>` or `ws://<host><path>` (credentials stripped) — e.g. `wss://stream.example.com/feed`.
+
 ## License
 
 MIT OR Apache-2.0

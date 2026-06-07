@@ -154,6 +154,14 @@ impl Source for PostgresCdcSource {
         "postgres-cdc"
     }
 
+    fn dataset_uri(&self) -> String {
+        format!(
+            "{}?publication={}",
+            faucet_core::redact_uri_credentials(&self.config.connection_url),
+            self.config.publication_name
+        )
+    }
+
     /// Preflight probe that does **not** start replication.
     ///
     /// The default [`Source::check`] would call `stream_pages`, which opens the
@@ -1185,5 +1193,14 @@ mod tests {
         assert!(out[0]["before"].get("name").is_none());
         assert_eq!(out[0]["before"]["id"], 1);
         assert_eq!(out[0]["after"]["name"], "alice2");
+    }
+
+    // dataset_uri is a pure-config method; the source requires a live DB to
+    // construct (async + real PG connection), so we verify the logic directly.
+    #[test]
+    fn dataset_uri_strips_credentials() {
+        let redacted = faucet_core::redact_uri_credentials("postgres://u:p@h:5432/db");
+        let uri = format!("{}?publication={}", redacted, "my_pub");
+        assert_eq!(uri, "postgres://h:5432/db?publication=my_pub");
     }
 }

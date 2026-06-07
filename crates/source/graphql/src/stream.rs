@@ -437,6 +437,10 @@ impl faucet_core::Source for GraphqlStream {
         serde_json::to_value(faucet_core::schema_for!(GraphqlStreamConfig))
             .expect("schema serialization")
     }
+
+    fn dataset_uri(&self) -> String {
+        faucet_core::redact_uri_credentials(&self.config.endpoint)
+    }
 }
 
 fn extract_string(body: &Value, path: &str) -> Option<String> {
@@ -526,5 +530,25 @@ mod tests {
             records.is_empty(),
             "expected empty Vec when `data` is absent, got {records:?}"
         );
+    }
+
+    #[test]
+    fn dataset_uri_returns_endpoint() {
+        use faucet_core::Source;
+        let stream = GraphqlStream::new(GraphqlStreamConfig::new(
+            "https://api.example.com/graphql",
+            "query { id }",
+        ));
+        assert_eq!(stream.dataset_uri(), "https://api.example.com/graphql");
+    }
+
+    #[test]
+    fn dataset_uri_redacts_credentials() {
+        use faucet_core::Source;
+        let stream = GraphqlStream::new(GraphqlStreamConfig::new(
+            "https://user:pw@api.example.com/graphql",
+            "query { id }",
+        ));
+        assert_eq!(stream.dataset_uri(), "https://api.example.com/graphql");
     }
 }

@@ -209,6 +209,14 @@ impl faucet_core::Sink for MysqlSink {
             .expect("schema serialization")
     }
 
+    fn dataset_uri(&self) -> String {
+        format!(
+            "{}?table={}",
+            faucet_core::redact_uri_credentials(&self.config.connection_url),
+            self.config.table_name
+        )
+    }
+
     /// Preflight connectivity probe (`faucet doctor`).
     ///
     /// Acquires a connection from the existing pool and runs `SELECT 1`. This
@@ -284,6 +292,9 @@ impl faucet_core::Sink for MysqlSink {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // dataset_uri test is skipped: MysqlSink::new() requires a live pool
+    // (connects to MySQL in new()), and no offline constructor exists.
 
     #[test]
     fn quote_ident_mysql_simple() {

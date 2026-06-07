@@ -236,6 +236,9 @@ pub enum SchemaTarget {
     /// JSON Schema for the `schedule:` block.
     #[cfg(feature = "schedule")]
     Schedule,
+    /// JSON Schema for the `lineage:` (OpenLineage) block.
+    #[cfg(feature = "lineage")]
+    Lineage,
 }
 
 /// `faucet preview` arguments.

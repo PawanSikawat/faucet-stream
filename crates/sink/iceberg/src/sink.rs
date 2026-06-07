@@ -375,6 +375,22 @@ impl faucet_core::Sink for IcebergSink {
             .expect("schema serialization infallible")
     }
 
+    fn dataset_uri(&self) -> String {
+        use crate::config::CatalogConfig;
+        let kind = match &self.config.catalog {
+            CatalogConfig::Rest(_) => "rest",
+            CatalogConfig::Glue(_) => "glue",
+            CatalogConfig::Sql(_) => "sql",
+            CatalogConfig::Hms(_) => "hms",
+        };
+        format!(
+            "iceberg://{}/{}.{}",
+            kind,
+            self.config.namespace.join("."),
+            self.config.table
+        )
+    }
+
     /// Preflight check (`faucet doctor`).
     ///
     /// Probes catalog connectivity and table existence without writing any data.
@@ -543,6 +559,9 @@ impl faucet_core::Sink for IcebergSink {
 mod tests {
     use super::*;
     use faucet_core::FaucetError;
+
+    // dataset_uri test is skipped: IcebergSink::new() requires a live catalog
+    // connection (build_catalog in new()), and no offline constructor exists.
 
     fn minimal_config() -> IcebergSinkConfig {
         serde_json::from_value(serde_json::json!({

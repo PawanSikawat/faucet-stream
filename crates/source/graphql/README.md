@@ -215,6 +215,10 @@ let result = pipeline.run().await?;
 println!("Transferred {} records", result.records_written);
 ```
 
+## Lineage dataset URI
+
+`https://<endpoint>` (credentials stripped) — e.g. `https://api.example.com/graphql`.
+
 ## License
 
 Licensed under MIT or Apache-2.0.

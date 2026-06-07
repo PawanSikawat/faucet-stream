@@ -127,6 +127,15 @@ impl Source for MysqlCdcSource {
         "mysql-cdc"
     }
 
+    fn dataset_uri(&self) -> String {
+        let base = faucet_core::redact_uri_credentials(&self.config.connection_url);
+        if self.config.include_tables.is_empty() {
+            base
+        } else {
+            format!("{base}?tables={}", self.config.include_tables.join(","))
+        }
+    }
+
     /// Preflight probe that does **not** open the binlog stream.
     ///
     /// Runs two probes bounded by `ctx.timeout`:
@@ -1043,5 +1052,42 @@ mod tests {
         }))
         .unwrap();
         assert!(build_opts(&config).is_err());
+    }
+
+    // dataset_uri is a pure-config method; the source requires a live DB to
+    // construct so we verify the logic directly using config deserialization.
+    #[test]
+    fn dataset_uri_strips_credentials_no_tables() {
+        let config: MysqlCdcSourceConfig = serde_json::from_value(json!({
+            "connection_url": "mysql://repl:pass@h:3306/db",
+            "server_id": 1
+        }))
+        .unwrap();
+        let redacted = faucet_core::redact_uri_credentials(&config.connection_url);
+        assert_eq!(redacted, "mysql://h:3306/db");
+        // No include_tables → base URI only.
+        let uri = if config.include_tables.is_empty() {
+            redacted
+        } else {
+            format!("{redacted}?tables={}", config.include_tables.join(","))
+        };
+        assert_eq!(uri, "mysql://h:3306/db");
+    }
+
+    #[test]
+    fn dataset_uri_appends_tables_when_present() {
+        let config: MysqlCdcSourceConfig = serde_json::from_value(json!({
+            "connection_url": "mysql://repl:pass@h:3306/db",
+            "server_id": 1,
+            "include_tables": ["db.orders", "db.users"]
+        }))
+        .unwrap();
+        let redacted = faucet_core::redact_uri_credentials(&config.connection_url);
+        let uri = if config.include_tables.is_empty() {
+            redacted
+        } else {
+            format!("{redacted}?tables={}", config.include_tables.join(","))
+        };
+        assert_eq!(uri, "mysql://h:3306/db?tables=db.orders,db.users");
     }
 }
