@@ -21,9 +21,6 @@ use serde::{Deserialize, Serialize};
 /// The set of recognised schemes is intentionally small and feature-independent:
 /// it is the set faucet's storage-factory selector understands. REST catalogs
 /// resolve FileIO server-side and are exempt from this classification.
-// `select_storage_factory` (the sole consumer) is gated on `storage-opendal`,
-// so this is dead code in non-`storage-opendal` builds.
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum WarehouseScheme {
     /// No scheme, a bare path, or `file://` — local filesystem.
@@ -41,8 +38,6 @@ pub(crate) enum WarehouseScheme {
 ///
 /// A URI with no `://` (empty, bare path, or relative path) is treated as a
 /// local-filesystem warehouse. Scheme matching is case-insensitive.
-// Consumed by `select_storage_factory`, which is gated on `storage-opendal`.
-#[allow(dead_code)]
 pub(crate) fn warehouse_scheme(warehouse: &str) -> WarehouseScheme {
     let scheme = match warehouse.trim().split_once("://") {
         Some((s, _)) => s.to_ascii_lowercase(),
@@ -397,6 +392,20 @@ impl IcebergSinkConfig {
             )));
         }
 
+        // Warehouse scheme: the non-REST catalogs build FileIO in-process, so
+        // faucet must have a storage factory for the scheme. REST resolves
+        // FileIO server-side and may use any scheme. (#181)
+        if !matches!(self.catalog, CatalogConfig::Rest(_)) {
+            let warehouse = self.catalog.inner().warehouse.as_deref().unwrap_or("");
+            if let WarehouseScheme::Unsupported(s) = warehouse_scheme(warehouse) {
+                return Err(FaucetError::Config(format!(
+                    "iceberg: warehouse scheme '{s}://' is not supported for the \
+                     '{kind}' catalog; use file://, s3://, s3a://, or gs:// (or the \
+                     REST catalog for other object stores)"
+                )));
+            }
+        }
+
         // Target file size: 0 would make iceberg's rolling writer roll a new
         // (tiny) data file on every batch — almost certainly a misconfiguration.
         if self.target_file_size_mb == 0 {
@@ -661,6 +670,43 @@ mod tests {
             "table": "events"
         }));
         assert!(cfg.validate().is_ok());
+    }
+
+    // ── warehouse scheme validation ───────────────────────────────────────────
+
+    #[test]
+    fn sql_catalog_rejects_unsupported_warehouse_scheme() {
+        let cfg = parse(serde_json::json!({
+            "catalog": { "type": "sql", "uri": "sqlite::memory:", "warehouse": "oss://bucket/wh" },
+            "namespace": ["analytics"],
+            "table": "events"
+        }));
+        let err = cfg.validate().unwrap_err();
+        assert!(matches!(err, FaucetError::Config(_)));
+        let msg = err.to_string();
+        assert!(msg.contains("oss"), "should name the bad scheme: {msg}");
+    }
+
+    #[test]
+    fn sql_catalog_accepts_cloud_and_local_warehouses() {
+        for w in ["s3://bucket/wh", "s3a://bucket/wh", "gs://bucket/wh", "file:///tmp/wh", "/tmp/wh"] {
+            let cfg = parse(serde_json::json!({
+                "catalog": { "type": "sql", "uri": "sqlite::memory:", "warehouse": w },
+                "namespace": ["analytics"],
+                "table": "events"
+            }));
+            cfg.validate().unwrap_or_else(|e| panic!("{w} should validate: {e}"));
+        }
+    }
+
+    #[test]
+    fn rest_catalog_allows_any_warehouse_scheme() {
+        let cfg = parse(serde_json::json!({
+            "catalog": { "type": "rest", "uri": "http://localhost:8181", "warehouse": "oss://bucket/wh" },
+            "namespace": ["analytics"],
+            "table": "events"
+        }));
+        cfg.validate().expect("REST should accept any warehouse scheme");
     }
 
     // ── batch_size bounds ─────────────────────────────────────────────────────
