@@ -13,11 +13,6 @@
 //! storage layer. The wrapper re-supplies them, letting the catalog-threaded
 //! props (Glue/HMS) overlay on top.
 
-// `select_storage_factory` and its helpers are consumed by the catalog/sink
-// wiring (landed in a follow-up task); until then they are dead code in a
-// non-test build.
-#![allow(dead_code)]
-
 use std::collections::HashMap;
 use std::sync::Arc;
 

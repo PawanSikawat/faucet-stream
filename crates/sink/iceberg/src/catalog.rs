@@ -89,7 +89,10 @@ async fn build_glue(inner: &CatalogInner) -> Result<Arc<dyn Catalog>, FaucetErro
         props.insert("uri".to_string(), uri.clone());
     }
 
+    let storage_factory = crate::storage_factory::select_storage_factory(inner)?;
+
     let catalog = GlueCatalogBuilder::default()
+        .with_storage_factory(storage_factory)
         .load("faucet-iceberg", props)
         .await
         .map_err(|e| FaucetError::Config(format!("iceberg: Glue catalog init failed: {e}")))?;
@@ -109,7 +112,6 @@ async fn build_glue(_inner: &CatalogInner) -> Result<Arc<dyn Catalog>, FaucetErr
 #[cfg(feature = "catalog-sql")]
 async fn build_sql(inner: &CatalogInner) -> Result<Arc<dyn Catalog>, FaucetError> {
     use iceberg::CatalogBuilder;
-    use iceberg::io::LocalFsStorageFactory;
     use iceberg_catalog_sql::{
         SQL_CATALOG_PROP_BIND_STYLE, SQL_CATALOG_PROP_URI, SQL_CATALOG_PROP_WAREHOUSE,
         SqlBindStyle, SqlCatalogBuilder,
@@ -143,17 +145,9 @@ async fn build_sql(inner: &CatalogInner) -> Result<Arc<dyn Catalog>, FaucetError
         );
     }
 
-    // The SQL catalog requires a `StorageFactory` to perform object-storage I/O
-    // for table metadata and data files.
-    //
-    // `LocalFsStorageFactory` handles `file://` and bare absolute paths.
-    // Cloud warehouses (s3://, gcs://, etc.) need `iceberg-storage-opendal`;
-    // users with a cloud warehouse + SQL catalog must pass an opendal-backed
-    // factory via `properties` until first-class support is added.  For now
-    // we always supply `LocalFsStorageFactory`; cloud-scheme users will get a
-    // clear error from the iceberg SDK at I/O time rather than a cryptic
-    // "StorageFactory must be provided" panic.
-    let storage_factory: Arc<dyn iceberg::io::StorageFactory> = Arc::new(LocalFsStorageFactory);
+    // Select the storage factory from the warehouse URI scheme: local FS for
+    // file:// / bare paths, OpenDAL S3/GCS for cloud warehouses. (#181)
+    let storage_factory = crate::storage_factory::select_storage_factory(inner)?;
 
     let catalog = SqlCatalogBuilder::default()
         .with_storage_factory(storage_factory)
@@ -189,7 +183,10 @@ async fn build_hms(inner: &CatalogInner) -> Result<Arc<dyn Catalog>, FaucetError
         props.insert(HMS_CATALOG_PROP_WAREHOUSE.to_string(), warehouse.clone());
     }
 
+    let storage_factory = crate::storage_factory::select_storage_factory(inner)?;
+
     let catalog = HmsCatalogBuilder::default()
+        .with_storage_factory(storage_factory)
         .load("faucet-iceberg", props)
         .await
         .map_err(|e| FaucetError::Config(format!("iceberg: HMS catalog init failed: {e}")))?;
