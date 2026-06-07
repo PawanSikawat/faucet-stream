@@ -444,6 +444,8 @@ fn shipped_example_yamls_pass_validate() {
         ("INGEST_TOKEN", "x"),
         ("INGEST_USER", "x"),
         ("INGEST_PASS", "x"),
+        // postgres_to_bigquery_with_lineage.yaml (OpenLineage HTTP transport).
+        ("MARQUEZ_URL", "http://localhost:5000/api/v1/lineage"),
         ("PG_URL", "postgres://u:p@localhost/db"),
         ("SNOWFLAKE_OAUTH_TOKEN", "x"),
         ("SOAP_USER", "x"),

@@ -1,0 +1,76 @@
+# PostgreSQL → BigQuery with OpenLineage emission.
+#
+# Every run emits OpenLineage RunEvents (START/COMPLETE, plus ABORT/FAIL on
+# failure) describing the job, the input/output datasets, their inferred
+# schemas, and column-level lineage derived from the transform chain — to a
+# Marquez (or any OpenLineage-compatible) HTTP endpoint.
+#
+# Run with:
+#   faucet run cli/examples/postgres_to_bigquery_with_lineage.yaml
+# Requires the `lineage` CLI feature plus the postgres + bigquery connectors:
+#   cargo install --path cli --features "lineage source-postgres sink-bigquery transforms"
+version: 1
+name: postgres_to_bigquery_with_lineage
+
+# ── OpenLineage emission ──────────────────────────────────────────────────────
+lineage:
+  namespace: prod.warehouse
+  # Job name resolves ${name} / ${row_id} / ${now.*} per matrix row at run time.
+  job_name: ${name}::${row_id}
+  # Emit dataset schema facets (inferred from a sample of records).
+  include_schema_facet: true
+  # Emit column-level lineage where the transform chain is deterministically
+  # mappable (rename_field / select / drop / cast / redact / value_case /
+  # spell_symbols / set). Structure-changing transforms omit the facet.
+  include_column_lineage: true
+  transport:
+    type: http
+    url: ${env:MARQUEZ_URL}   # e.g. http://localhost:5000/api/v1/lineage
+    # Optional bearer auth for the lineage endpoint. Inject the token from the
+    # environment with an env directive (dollar-brace env:MARQUEZ_TOKEN):
+    # auth:
+    #   type: bearer
+    #   token: <marquez-api-token>
+  # Local-testing alternative — append each event as one JSON line to a file:
+  # transport:
+  #   type: file
+  #   path: ./out/lineage.jsonl
+
+pipeline:
+  source:
+    type: postgres
+    config:
+      connection_url: postgres://user:pass@localhost/app
+      query: SELECT id, created_at, customer_email, payload FROM orders WHERE created_at > $1 AND status = $2
+      params:
+        - "2026-01-01T00:00:00Z"
+        - completed
+      max_connections: 16
+      batch_size: 1000
+
+  # Transforms shape the records before the sink. The lineage column-lineage
+  # facet is derived from this chain: `rename_field` rekeys an output column to
+  # its source column, and `select` keeps only the listed columns.
+  transforms:
+    - type: rename_field
+      config:
+        fields:
+          customer_email: contact_email
+    - type: select
+      config:
+        fields:
+          - id
+          - created_at
+          - contact_email
+
+  sink:
+    type: bigquery
+    config:
+      project_id: my-gcp-project
+      dataset_id: warehouse
+      table_id: orders
+      auth:
+        type: service_account_key
+        config:
+          json: ${env:GCP_KEY_JSON}
+      batch_size: 1000

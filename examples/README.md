@@ -81,6 +81,12 @@ files as each config shows:
 `postgres_to_bigquery.yaml`, `rest_to_bigquery.yaml`, `s3_to_bigquery.yaml`,
 `mysql_to_snowflake.yaml`, `postgres_to_snowflake.yaml`, `s3_to_snowflake.yaml`.
 
+## OpenLineage emission
+
+| Example | Notes |
+|---------|-------|
+| `postgres_to_bigquery_with_lineage.yaml` | Postgres → BigQuery with a top-level `lineage:` block — emits OpenLineage RunEvents (schema + column-lineage facets) to a Marquez HTTP endpoint. Needs `--features lineage`, a BigQuery project (`GCP_KEY_JSON`), and `MARQUEZ_URL` (or swap in the commented `transport: { type: file }` for local testing) |
+
 ## Tips
 
 - `faucet validate <config>` checks any config without running it (and without
