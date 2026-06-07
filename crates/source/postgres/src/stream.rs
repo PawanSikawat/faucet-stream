@@ -270,8 +270,7 @@ mod tests {
     fn dataset_uri_strips_credentials() {
         // We cannot construct PostgresSource offline, so we verify the
         // credential-stripping logic used by dataset_uri() directly.
-        let redacted =
-            faucet_core::redact_uri_credentials("postgres://u:p@h:5432/db");
+        let redacted = faucet_core::redact_uri_credentials("postgres://u:p@h:5432/db");
         let uri = format!("{}?query={}", redacted, "SELECT 1");
         assert_eq!(uri, "postgres://h:5432/db?query=SELECT 1");
     }

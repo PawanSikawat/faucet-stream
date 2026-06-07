@@ -271,10 +271,11 @@ pub fn redact_uri_credentials(uri: &str) -> String {
         out = out
             .split(';')
             .map(|seg| match seg.find('=') {
-                Some(eq) if {
-                    let k = seg[..eq].trim();
-                    k.eq_ignore_ascii_case("password") || k.eq_ignore_ascii_case("pwd")
-                } =>
+                Some(eq)
+                    if {
+                        let k = seg[..eq].trim();
+                        k.eq_ignore_ascii_case("password") || k.eq_ignore_ascii_case("pwd")
+                    } =>
                 {
                     format!("{}=***", &seg[..eq])
                 }
@@ -691,7 +692,13 @@ mod tests {
 
     #[test]
     fn redact_passthrough_when_no_credentials() {
-        assert_eq!(redact_uri_credentials("s3://bucket/prefix"), "s3://bucket/prefix");
-        assert_eq!(redact_uri_credentials("file:///tmp/x.csv"), "file:///tmp/x.csv");
+        assert_eq!(
+            redact_uri_credentials("s3://bucket/prefix"),
+            "s3://bucket/prefix"
+        );
+        assert_eq!(
+            redact_uri_credentials("file:///tmp/x.csv"),
+            "file:///tmp/x.csv"
+        );
     }
 }

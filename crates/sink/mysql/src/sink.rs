@@ -210,8 +210,11 @@ impl faucet_core::Sink for MysqlSink {
     }
 
     fn dataset_uri(&self) -> String {
-        format!("{}?table={}",
-            faucet_core::redact_uri_credentials(&self.config.connection_url), self.config.table_name)
+        format!(
+            "{}?table={}",
+            faucet_core::redact_uri_credentials(&self.config.connection_url),
+            self.config.table_name
+        )
     }
 
     /// Preflight connectivity probe (`faucet doctor`).

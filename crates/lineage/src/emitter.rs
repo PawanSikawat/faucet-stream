@@ -25,14 +25,20 @@ impl LineageEmitter {
             );
         }
         let transport: Arc<dyn TransportTrait> = match &cfg.transport {
-            Transport::Http { url, timeout_secs, auth } => {
-                Arc::new(HttpTransport::new(url.clone(), *timeout_secs, auth.clone())?)
-            }
+            Transport::Http {
+                url,
+                timeout_secs,
+                auth,
+            } => Arc::new(HttpTransport::new(
+                url.clone(),
+                *timeout_secs,
+                auth.clone(),
+            )?),
             Transport::File { path } => Arc::new(FileTransport::new(path.clone())),
             #[cfg(feature = "transport-kafka")]
-            Transport::Kafka { brokers, topic } => {
-                Arc::new(crate::transport::kafka::KafkaTransport::new(brokers, topic.clone())?)
-            }
+            Transport::Kafka { brokers, topic } => Arc::new(
+                crate::transport::kafka::KafkaTransport::new(brokers, topic.clone())?,
+            ),
         };
         Ok(Arc::new(Self { cfg, transport }))
     }
@@ -60,7 +66,8 @@ impl LineageEmitter {
             Ok(b) => b,
             Err(e) => {
                 tracing::warn!(error = %e, "lineage event serialization failed; dropping");
-                counter!("faucet_lineage_dropped_total", "reason" => "transport_error").increment(1);
+                counter!("faucet_lineage_dropped_total", "reason" => "transport_error")
+                    .increment(1);
                 return;
             }
         };
@@ -78,7 +85,8 @@ impl LineageEmitter {
                 tracing::warn!(error = %e, event_type = label, "lineage emission failed; dropping");
                 counter!("faucet_lineage_events_total", "event_type" => label, "outcome" => "err")
                     .increment(1);
-                counter!("faucet_lineage_dropped_total", "reason" => "transport_error").increment(1);
+                counter!("faucet_lineage_dropped_total", "reason" => "transport_error")
+                    .increment(1);
             }
         }
     }
@@ -90,8 +98,13 @@ impl LineageEmitter {
         let parent = ctx.parent.as_ref().map(|p| ParentRunFacet {
             producer: PRODUCER.into(),
             schema_url: OL_SCHEMA_URL.into(),
-            run: ParentRunRef { run_id: p.run_id.clone().unwrap_or_else(|| ctx.run_id.clone()) },
-            job: ParentJobRef { namespace: p.namespace.clone(), name: p.name.clone() },
+            run: ParentRunRef {
+                run_id: p.run_id.clone().unwrap_or_else(|| ctx.run_id.clone()),
+            },
+            job: ParentJobRef {
+                namespace: p.namespace.clone(),
+                name: p.name.clone(),
+            },
         });
         let nominal_time = Some(NominalTimeRunFacet {
             producer: PRODUCER.into(),
@@ -138,7 +151,10 @@ impl LineageEmitter {
             event_time: ctx.finished_at.unwrap_or(ctx.started_at).to_rfc3339(),
             run: Run {
                 run_id: ctx.run_id.clone(),
-                facets: RunFacets { parent, nominal_time },
+                facets: RunFacets {
+                    parent,
+                    nominal_time,
+                },
             },
             job: Job {
                 namespace: ctx.job_namespace.clone(),
@@ -155,7 +171,13 @@ impl LineageEmitter {
 
 fn schema_facet(s: &InferredSchema) -> SchemaDatasetFacet {
     SchemaDatasetFacet::new(
-        s.fields.iter().map(|(n, t)| SchemaField { name: n.clone(), type_: t.clone() }).collect(),
+        s.fields
+            .iter()
+            .map(|(n, t)| SchemaField {
+                name: n.clone(),
+                type_: t.clone(),
+            })
+            .collect(),
     )
 }
 
@@ -227,8 +249,14 @@ mod tests {
             job_name: "j".into(),
             run_id: "r1".into(),
             parent: None,
-            input: DatasetRef { namespace: "ns".into(), name: "postgres://h/db".into() },
-            output: DatasetRef { namespace: "ns".into(), name: "bigquery://p.d.t".into() },
+            input: DatasetRef {
+                namespace: "ns".into(),
+                name: "postgres://h/db".into(),
+            },
+            output: DatasetRef {
+                namespace: "ns".into(),
+                name: "bigquery://p.d.t".into(),
+            },
             started_at: Utc::now(),
             finished_at: None,
             records: 0,

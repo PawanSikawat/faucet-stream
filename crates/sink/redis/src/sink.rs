@@ -45,7 +45,11 @@ impl faucet_core::Sink for RedisSink {
             RedisSinkType::List { key } | RedisSinkType::Stream { key } => format!("?key={key}"),
             RedisSinkType::KeyValue { key_field } => format!("?key_field={key_field}"),
         };
-        format!("{}{}", faucet_core::redact_uri_credentials(&self.config.url), key)
+        format!(
+            "{}{}",
+            faucet_core::redact_uri_credentials(&self.config.url),
+            key
+        )
     }
 
     /// Non-mutating preflight probe: issue a Redis `PING` over the existing

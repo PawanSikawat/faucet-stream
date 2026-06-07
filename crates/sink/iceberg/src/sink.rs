@@ -383,7 +383,12 @@ impl faucet_core::Sink for IcebergSink {
             CatalogConfig::Sql(_) => "sql",
             CatalogConfig::Hms(_) => "hms",
         };
-        format!("iceberg://{}/{}.{}", kind, self.config.namespace.join("."), self.config.table)
+        format!(
+            "iceberg://{}/{}.{}",
+            kind,
+            self.config.namespace.join("."),
+            self.config.table
+        )
     }
 
     /// Preflight check (`faucet doctor`).

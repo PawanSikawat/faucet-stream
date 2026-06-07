@@ -650,7 +650,9 @@ mod tests {
         use faucet_core::Source;
         let source = RedisSource::new(RedisSourceConfig::new(
             "redis://u:p@localhost:6379/0",
-            RedisSourceType::List { key: "my-list".into() },
+            RedisSourceType::List {
+                key: "my-list".into(),
+            },
         ))
         .unwrap();
         assert_eq!(source.dataset_uri(), "redis://localhost:6379/0?key=my-list");

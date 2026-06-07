@@ -213,7 +213,10 @@ impl Source for MongoCdcSource {
         use crate::config::Scope;
         let base = faucet_core::redact_uri_credentials(&self.config.connection_uri);
         match &self.config.scope {
-            Scope::Collection { database, collection } => {
+            Scope::Collection {
+                database,
+                collection,
+            } => {
                 format!("{base}/{database}/{collection}")
             }
             Scope::Database { database } => format!("{base}/{database}"),
@@ -530,7 +533,10 @@ mod tests {
         use crate::config::Scope;
         let base = faucet_core::redact_uri_credentials(&c.connection_uri);
         let uri = match &c.scope {
-            Scope::Collection { database, collection } => format!("{base}/{database}/{collection}"),
+            Scope::Collection {
+                database,
+                collection,
+            } => format!("{base}/{database}/{collection}"),
             Scope::Database { database } => format!("{base}/{database}"),
             Scope::Cluster => base,
         };
@@ -547,7 +553,10 @@ mod tests {
         use crate::config::Scope;
         let base = faucet_core::redact_uri_credentials(&c.connection_uri);
         let uri = match &c.scope {
-            Scope::Collection { database, collection } => format!("{base}/{database}/{collection}"),
+            Scope::Collection {
+                database,
+                collection,
+            } => format!("{base}/{database}/{collection}"),
             Scope::Database { database } => format!("{base}/{database}"),
             Scope::Cluster => base,
         };

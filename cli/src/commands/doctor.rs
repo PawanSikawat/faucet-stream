@@ -181,7 +181,11 @@ pub async fn probe_lineage(
     };
     Some(InvocationOut {
         id: "lineage".to_string(),
-        probes: vec![ProbeOut::from_probe("lineage", "openlineage".to_string(), probe)],
+        probes: vec![ProbeOut::from_probe(
+            "lineage",
+            "openlineage".to_string(),
+            probe,
+        )],
         source_kind: "—".to_string(),
         sink_kind: "—".to_string(),
     })

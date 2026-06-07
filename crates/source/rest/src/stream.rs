@@ -936,9 +936,11 @@ mod tests {
     #[test]
     fn dataset_uri_combines_base_and_path() {
         use faucet_core::Source;
-        let source =
-            RestStream::new(RestStreamConfig::new("https://api.example.com", "/v1/users"))
-                .unwrap();
+        let source = RestStream::new(RestStreamConfig::new(
+            "https://api.example.com",
+            "/v1/users",
+        ))
+        .unwrap();
         assert_eq!(source.dataset_uri(), "https://api.example.com/v1/users");
     }
 
@@ -950,9 +952,6 @@ mod tests {
             "/v1/data",
         ))
         .unwrap();
-        assert_eq!(
-            source.dataset_uri(),
-            "https://api.example.com/v1/data"
-        );
+        assert_eq!(source.dataset_uri(), "https://api.example.com/v1/data");
     }
 }

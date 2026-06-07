@@ -26,8 +26,7 @@ impl KafkaTransport {
 #[async_trait]
 impl Transport for KafkaTransport {
     async fn send(&self, event_json: Vec<u8>) -> Result<(), FaucetError> {
-        let record: FutureRecord<'_, (), [u8]> =
-            FutureRecord::to(&self.topic).payload(&event_json);
+        let record: FutureRecord<'_, (), [u8]> = FutureRecord::to(&self.topic).payload(&event_json);
         self.producer
             .send(record, Duration::from_secs(10))
             .await

@@ -1199,8 +1199,7 @@ mod tests {
     // construct (async + real PG connection), so we verify the logic directly.
     #[test]
     fn dataset_uri_strips_credentials() {
-        let redacted =
-            faucet_core::redact_uri_credentials("postgres://u:p@h:5432/db");
+        let redacted = faucet_core::redact_uri_credentials("postgres://u:p@h:5432/db");
         let uri = format!("{}?publication={}", redacted, "my_pub");
         assert_eq!(uri, "postgres://h:5432/db?publication=my_pub");
     }

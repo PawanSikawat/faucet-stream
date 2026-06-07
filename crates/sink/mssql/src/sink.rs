@@ -375,10 +375,18 @@ impl Sink for MssqlSink {
     }
 
     fn dataset_uri(&self) -> String {
-        let conn = self.config.connection.connection_url.as_deref()
+        let conn = self
+            .config
+            .connection
+            .connection_url
+            .as_deref()
             .or(self.config.connection.connection_string.as_deref())
             .unwrap_or("");
-        format!("{}?table={}", faucet_core::redact_uri_credentials(conn), self.config.table)
+        format!(
+            "{}?table={}",
+            faucet_core::redact_uri_credentials(conn),
+            self.config.table
+        )
     }
 
     async fn check(&self, ctx: &CheckContext) -> Result<CheckReport, FaucetError> {

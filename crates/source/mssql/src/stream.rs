@@ -560,6 +560,9 @@ mod tests {
             faucet_core::redact_uri_credentials(conn),
             cfg.query
         );
-        assert_eq!(uri, "mssql://db.example.com:1433/sales?query=SELECT * FROM t");
+        assert_eq!(
+            uri,
+            "mssql://db.example.com:1433/sales?query=SELECT * FROM t"
+        );
     }
 }

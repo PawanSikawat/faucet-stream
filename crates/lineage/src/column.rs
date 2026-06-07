@@ -104,7 +104,10 @@ mod tests {
     #[test]
     fn select_retains_only_listed() {
         let cl = derive(&inputs(), &[ColumnOp::Select(vec!["id".into()])]).unwrap();
-        assert_eq!(cl.edges.keys().cloned().collect::<Vec<_>>(), vec!["id".to_string()]);
+        assert_eq!(
+            cl.edges.keys().cloned().collect::<Vec<_>>(),
+            vec!["id".to_string()]
+        );
     }
 
     #[test]

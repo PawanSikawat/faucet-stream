@@ -466,17 +466,22 @@ mod tests {
 
     #[test]
     fn dataset_uri_combines_base_and_path() {
-        let source = XmlStream::new(
-            XmlStreamConfig::new("https://soap.example.com", "/api/v1/service")
+        let source = XmlStream::new(XmlStreamConfig::new(
+            "https://soap.example.com",
+            "/api/v1/service",
+        ));
+        assert_eq!(
+            source.dataset_uri(),
+            "https://soap.example.com/api/v1/service"
         );
-        assert_eq!(source.dataset_uri(), "https://soap.example.com/api/v1/service");
     }
 
     #[test]
     fn dataset_uri_redacts_credentials() {
-        let source = XmlStream::new(
-            XmlStreamConfig::new("https://user:pass@soap.example.com", "/svc")
-        );
+        let source = XmlStream::new(XmlStreamConfig::new(
+            "https://user:pass@soap.example.com",
+            "/svc",
+        ));
         assert_eq!(source.dataset_uri(), "https://soap.example.com/svc");
     }
 }

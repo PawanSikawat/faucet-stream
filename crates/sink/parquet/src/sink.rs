@@ -578,8 +578,14 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let sink = ParquetSink::new(cfg(tmp.path())).await.unwrap();
         let uri = sink.dataset_uri();
-        assert!(uri.starts_with("file://"), "expected file:// URI, got: {uri}");
-        assert!(uri.contains(tmp.path().to_str().unwrap()), "URI should contain the path");
+        assert!(
+            uri.starts_with("file://"),
+            "expected file:// URI, got: {uri}"
+        );
+        assert!(
+            uri.contains(tmp.path().to_str().unwrap()),
+            "URI should contain the path"
+        );
     }
 
     #[tokio::test]

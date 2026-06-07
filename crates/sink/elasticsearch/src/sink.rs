@@ -194,8 +194,11 @@ impl faucet_core::Sink for ElasticsearchSink {
     }
 
     fn dataset_uri(&self) -> String {
-        format!("{}/{}",
-            faucet_core::redact_uri_credentials(&self.config.base_url), self.config.index)
+        format!(
+            "{}/{}",
+            faucet_core::redact_uri_credentials(&self.config.base_url),
+            self.config.index
+        )
     }
 
     /// Non-mutating preflight probe.

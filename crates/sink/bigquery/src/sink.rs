@@ -142,8 +142,10 @@ impl faucet_core::Sink for BigQuerySink {
     }
 
     fn dataset_uri(&self) -> String {
-        format!("bigquery://{}.{}.{}",
-            self.config.project_id, self.config.dataset_id, self.config.table_id)
+        format!(
+            "bigquery://{}.{}.{}",
+            self.config.project_id, self.config.dataset_id, self.config.table_id
+        )
     }
 
     /// Preflight check (`faucet doctor`).

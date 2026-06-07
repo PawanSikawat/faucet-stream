@@ -13,7 +13,11 @@ pub struct HttpTransport {
 }
 
 impl HttpTransport {
-    pub fn new(url: String, timeout: Duration, auth: Option<HttpAuth>) -> Result<Self, FaucetError> {
+    pub fn new(
+        url: String,
+        timeout: Duration,
+        auth: Option<HttpAuth>,
+    ) -> Result<Self, FaucetError> {
         let client = reqwest::Client::builder()
             .timeout(timeout)
             .build()
@@ -33,7 +37,10 @@ impl Transport for HttpTransport {
         if let Some(HttpAuth::Bearer { token }) = &self.auth {
             req = req.bearer_auth(token);
         }
-        let resp = req.send().await.map_err(|e| FaucetError::Custom(Box::new(e)))?;
+        let resp = req
+            .send()
+            .await
+            .map_err(|e| FaucetError::Custom(Box::new(e)))?;
         let status = resp.status();
         if !status.is_success() {
             return Err(FaucetError::HttpStatus {
@@ -66,7 +73,9 @@ mod tests {
         let t = HttpTransport::new(
             format!("{}/api/v1/lineage", server.uri()),
             std::time::Duration::from_secs(5),
-            Some(HttpAuth::Bearer { token: "tok".into() }),
+            Some(HttpAuth::Bearer {
+                token: "tok".into(),
+            }),
         )
         .unwrap();
         t.send(b"{\"eventType\":\"START\"}".to_vec()).await.unwrap();

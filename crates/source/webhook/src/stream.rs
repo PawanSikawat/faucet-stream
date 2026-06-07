@@ -621,6 +621,9 @@ mod tests {
                 .listen_addr("127.0.0.1:8080")
                 .path("/hooks/incoming"),
         );
-        assert_eq!(source.dataset_uri(), "webhook://127.0.0.1:8080/hooks/incoming");
+        assert_eq!(
+            source.dataset_uri(),
+            "webhook://127.0.0.1:8080/hooks/incoming"
+        );
     }
 }

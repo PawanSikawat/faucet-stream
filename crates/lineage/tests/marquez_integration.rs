@@ -58,12 +58,11 @@ async fn emits_to_marquez() {
     let base = std::env::var("FAUCET_MARQUEZ_URL")
         .unwrap()
         .replace("/api/v1/lineage", "");
-    let jobs: serde_json::Value =
-        reqwest::get(format!("{base}/api/v1/namespaces/faucet-it/jobs"))
-            .await
-            .unwrap()
-            .json()
-            .await
-            .unwrap();
+    let jobs: serde_json::Value = reqwest::get(format!("{base}/api/v1/namespaces/faucet-it/jobs"))
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
     assert!(jobs.to_string().contains("it-job"));
 }

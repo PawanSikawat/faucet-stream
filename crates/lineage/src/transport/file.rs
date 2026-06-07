@@ -14,7 +14,10 @@ pub struct FileTransport {
 
 impl FileTransport {
     pub fn new(path: PathBuf) -> Self {
-        Self { path, lock: Mutex::new(()) }
+        Self {
+            path,
+            lock: Mutex::new(()),
+        }
     }
 }
 
@@ -35,7 +38,9 @@ impl Transport for FileTransport {
             .map_err(|e| FaucetError::Custom(Box::new(e)))?;
         let mut line = event_json;
         line.push(b'\n');
-        f.write_all(&line).await.map_err(|e| FaucetError::Custom(Box::new(e)))?;
+        f.write_all(&line)
+            .await
+            .map_err(|e| FaucetError::Custom(Box::new(e)))?;
         Ok(())
     }
 }
@@ -60,7 +65,10 @@ mod tests {
     async fn creates_parent_dirs() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("nested/deep/ol.jsonl");
-        FileTransport::new(path.clone()).send(b"{}".to_vec()).await.unwrap();
+        FileTransport::new(path.clone())
+            .send(b"{}".to_vec())
+            .await
+            .unwrap();
         assert!(path.exists());
     }
 }

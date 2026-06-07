@@ -315,8 +315,10 @@ impl faucet_core::Sink for SnowflakeSink {
     }
 
     fn dataset_uri(&self) -> String {
-        format!("snowflake://{}/{}/{}?table={}",
-            self.config.account, self.config.database, self.config.schema, self.config.table)
+        format!(
+            "snowflake://{}/{}/{}?table={}",
+            self.config.account, self.config.database, self.config.schema, self.config.table
+        )
     }
 
     /// Preflight check (`faucet doctor`).

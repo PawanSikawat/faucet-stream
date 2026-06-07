@@ -2,13 +2,15 @@
 //! and maps resolved transform specs onto column-lineage ops.
 
 use crate::config::TransformSpec;
-use faucet_lineage::{ColumnOp, LineageConfig, LineageEmitter};
 use faucet_core::FaucetError;
+use faucet_lineage::{ColumnOp, LineageConfig, LineageEmitter};
 use std::sync::Arc;
 
 /// Build the shared emitter from the parsed config. Returns `Ok(None)` when no
 /// `lineage:` block is present.
-pub fn build_emitter(cfg: Option<&LineageConfig>) -> Result<Option<Arc<LineageEmitter>>, FaucetError> {
+pub fn build_emitter(
+    cfg: Option<&LineageConfig>,
+) -> Result<Option<Arc<LineageEmitter>>, FaucetError> {
     match cfg {
         Some(c) => Ok(Some(LineageEmitter::new(c.clone())?)),
         None => Ok(None),
@@ -61,21 +63,35 @@ fn map_one(s: &TransformSpec) -> ColumnOp {
 }
 
 fn string_array(config: &serde_json::Value, key: &str) -> Vec<String> {
-    config.get(key).and_then(|v| v.as_array()).map(|a| {
-        a.iter().filter_map(|x| x.as_str().map(String::from)).collect()
-    }).unwrap_or_default()
+    config
+        .get(key)
+        .and_then(|v| v.as_array())
+        .map(|a| {
+            a.iter()
+                .filter_map(|x| x.as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 fn object_keys(config: &serde_json::Value, key: &str) -> Vec<String> {
-    config.get(key).and_then(|v| v.as_object()).map(|m| {
-        m.keys().cloned().collect()
-    }).unwrap_or_default()
+    config
+        .get(key)
+        .and_then(|v| v.as_object())
+        .map(|m| m.keys().cloned().collect())
+        .unwrap_or_default()
 }
 
 fn string_pairs(config: &serde_json::Value, key: &str) -> Vec<(String, String)> {
-    config.get(key).and_then(|v| v.as_object()).map(|m| {
-        m.iter().filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string()))).collect()
-    }).unwrap_or_default()
+    config
+        .get(key)
+        .and_then(|v| v.as_object())
+        .map(|m| {
+            m.iter()
+                .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -85,7 +101,10 @@ mod tests {
     use serde_json::json;
 
     fn spec(kind: &str, config: serde_json::Value) -> TransformSpec {
-        TransformSpec { kind: kind.into(), config }
+        TransformSpec {
+            kind: kind.into(),
+            config,
+        }
     }
 
     #[test]
@@ -103,7 +122,13 @@ mod tests {
 
     #[test]
     fn maps_structure_changing_to_opaque() {
-        for k in ["flatten", "explode", "keys_case", "rename_keys", "weird_custom"] {
+        for k in [
+            "flatten",
+            "explode",
+            "keys_case",
+            "rename_keys",
+            "weird_custom",
+        ] {
             let ops = column_ops(&[spec(k, json!({}))]);
             assert!(matches!(ops[0], faucet_lineage::ColumnOp::Opaque), "{k}");
         }

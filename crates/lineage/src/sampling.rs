@@ -22,13 +22,18 @@ pub struct SampleState {
 
 impl SampleState {
     pub fn new(cap: usize) -> Self {
-        Self { cap, count: AtomicU64::new(0), sample: Mutex::new(Vec::new()) }
+        Self {
+            cap,
+            count: AtomicU64::new(0),
+            sample: Mutex::new(Vec::new()),
+        }
     }
     pub fn count(&self) -> u64 {
         self.count.load(Ordering::Relaxed)
     }
     fn observe(&self, records: &[Value]) {
-        self.count.fetch_add(records.len() as u64, Ordering::Relaxed);
+        self.count
+            .fetch_add(records.len() as u64, Ordering::Relaxed);
         if self.cap == 0 {
             return;
         }
@@ -55,7 +60,9 @@ impl SampleState {
                     if !types.contains_key(k) {
                         order.push(k.clone());
                     }
-                    types.entry(k.clone()).or_insert_with(|| ol_type_of(v).to_string());
+                    types
+                        .entry(k.clone())
+                        .or_insert_with(|| ol_type_of(v).to_string());
                 }
             }
         }
@@ -188,7 +195,9 @@ mod tests {
             self.0.lock().unwrap().extend(records.iter().cloned());
             Ok(records.len())
         }
-        fn connector_name(&self) -> &'static str { "collect" }
+        fn connector_name(&self) -> &'static str {
+            "collect"
+        }
     }
 
     #[tokio::test]
@@ -197,7 +206,9 @@ mod tests {
         let inner: Box<dyn Sink> = Box::new(CollectSink(Default::default()));
         let s = SamplingSink::new(inner, Arc::clone(&shared));
         s.write_batch(&[json!({"id":1,"name":"a"})]).await.unwrap();
-        s.write_batch(&[json!({"id":2}), json!({"id":3})]).await.unwrap();
+        s.write_batch(&[json!({"id":2}), json!({"id":3})])
+            .await
+            .unwrap();
         assert_eq!(shared.count(), 3);
         // only the first 2 records were retained for schema inference
         let schema = shared.inferred_schema();
@@ -215,7 +226,9 @@ mod tests {
         ) -> Result<Vec<Value>, FaucetError> {
             Ok(vec![json!({"id": 1}), json!({"id": 2})])
         }
-        fn connector_name(&self) -> &'static str { "tworow" }
+        fn connector_name(&self) -> &'static str {
+            "tworow"
+        }
     }
 
     #[tokio::test]
@@ -231,8 +244,7 @@ mod tests {
         }
         assert_eq!(shared.count(), 2);
         let schema = shared.inferred_schema();
-        let names: Vec<&str> =
-            schema.fields.iter().map(|(n, _)| n.as_str()).collect();
+        let names: Vec<&str> = schema.fields.iter().map(|(n, _)| n.as_str()).collect();
         assert!(names.contains(&"id"));
     }
 }

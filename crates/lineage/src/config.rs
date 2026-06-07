@@ -40,7 +40,10 @@ pub struct LineageConfig {
     #[serde(default = "default_sample")]
     pub sample_records: usize,
     /// RUNNING heartbeat interval. Default 30s; only used when `emit_on.running`.
-    #[serde(with = "faucet_core::config::duration_secs", default = "default_heartbeat")]
+    #[serde(
+        with = "faucet_core::config::duration_secs",
+        default = "default_heartbeat"
+    )]
     #[schemars(with = "u64")]
     pub heartbeat_interval: Duration,
 }
@@ -59,7 +62,10 @@ pub enum Transport {
     /// POST each event to an OpenLineage HTTP endpoint (e.g. Marquez).
     Http {
         url: String,
-        #[serde(with = "faucet_core::config::duration_secs", default = "default_http_timeout")]
+        #[serde(
+            with = "faucet_core::config::duration_secs",
+            default = "default_http_timeout"
+        )]
         #[schemars(with = "u64")]
         timeout_secs: Duration,
         #[serde(default)]
@@ -107,15 +113,31 @@ pub struct EmitOn {
 
 impl Default for EmitOn {
     fn default() -> Self {
-        Self { start: true, running: false, complete: true, fail: true, abort: true }
+        Self {
+            start: true,
+            running: false,
+            complete: true,
+            fail: true,
+            abort: true,
+        }
     }
 }
 
-fn default_true() -> bool { true }
-fn default_job_name() -> String { "${name}::${row_id}".to_string() }
-fn default_sample() -> usize { 100 }
-fn default_heartbeat() -> Duration { Duration::from_secs(30) }
-fn default_http_timeout() -> Duration { Duration::from_secs(10) }
+fn default_true() -> bool {
+    true
+}
+fn default_job_name() -> String {
+    "${name}::${row_id}".to_string()
+}
+fn default_sample() -> usize {
+    100
+}
+fn default_heartbeat() -> Duration {
+    Duration::from_secs(30)
+}
+fn default_http_timeout() -> Duration {
+    Duration::from_secs(10)
+}
 
 #[cfg(test)]
 mod tests {

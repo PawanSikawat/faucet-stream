@@ -721,11 +721,8 @@ async fn run_one_invocation(
     #[cfg(feature = "lineage")]
     let lineage_ctx = match (&lineage, &lineage_cfg) {
         (Some(em), Some(lc)) => {
-            let job_name = crate::interpolate::resolve_lineage_job_name(
-                &lc.job_name,
-                &pipeline_name,
-                &row_id,
-            );
+            let job_name =
+                crate::interpolate::resolve_lineage_job_name(&lc.job_name, &pipeline_name, &row_id);
             let mut ctx = faucet_lineage::RunLifecycle {
                 job_namespace: lc.namespace.clone(),
                 job_name,
@@ -764,7 +761,8 @@ async fn run_one_invocation(
                         if let Some(c) = &counter {
                             beat_ctx.records = c.count();
                         }
-                        em2.emit(faucet_lineage::EventType::Running, &beat_ctx).await;
+                        em2.emit(faucet_lineage::EventType::Running, &beat_ctx)
+                            .await;
                     }
                 }))
             } else {

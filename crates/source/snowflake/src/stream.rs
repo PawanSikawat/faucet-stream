@@ -410,10 +410,7 @@ impl faucet_core::Source for SnowflakeSource {
     fn dataset_uri(&self) -> String {
         format!(
             "snowflake://{}/{}/{}?query={}",
-            self.config.account,
-            self.config.database,
-            self.config.schema,
-            self.config.query
+            self.config.account, self.config.database, self.config.schema, self.config.query
         )
     }
 

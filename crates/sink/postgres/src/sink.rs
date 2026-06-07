@@ -274,7 +274,11 @@ impl faucet_core::Sink for PostgresSink {
             Some(s) => format!("{}.{}", s, self.config.table_name),
             None => self.config.table_name.clone(),
         };
-        format!("{}?table={}", faucet_core::redact_uri_credentials(&self.config.connection_url), table)
+        format!(
+            "{}?table={}",
+            faucet_core::redact_uri_credentials(&self.config.connection_url),
+            table
+        )
     }
 
     /// Preflight connectivity probe (`faucet doctor`).

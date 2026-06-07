@@ -248,8 +248,7 @@ mod tests {
     // construct so we verify the credential-stripping logic directly.
     #[test]
     fn dataset_uri_strips_credentials() {
-        let redacted =
-            faucet_core::redact_uri_credentials("mysql://u:p@h:3306/db");
+        let redacted = faucet_core::redact_uri_credentials("mysql://u:p@h:3306/db");
         let uri = format!("{}?query={}", redacted, "SELECT 1");
         assert_eq!(uri, "mysql://h:3306/db?query=SELECT 1");
     }

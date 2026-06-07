@@ -50,9 +50,12 @@ impl faucet_core::Sink for MongoSink {
     }
 
     fn dataset_uri(&self) -> String {
-        format!("{}/{}/{}",
+        format!(
+            "{}/{}/{}",
             faucet_core::redact_uri_credentials(&self.config.connection_uri),
-            self.config.database, self.config.collection)
+            self.config.database,
+            self.config.collection
+        )
     }
 
     /// Non-mutating preflight probe: run the `ping` admin command against the

@@ -153,9 +153,7 @@ fn make_opts(
     execution: &Option<crate::config::ExecutionSpec>,
     auth: &AuthCatalog,
     clock: chrono::DateTime<chrono::FixedOffset>,
-    #[cfg(feature = "lineage")] lineage: &Option<
-        std::sync::Arc<faucet_lineage::LineageEmitter>,
-    >,
+    #[cfg(feature = "lineage")] lineage: &Option<std::sync::Arc<faucet_lineage::LineageEmitter>>,
     #[cfg(feature = "lineage")] lineage_cfg: &Option<faucet_lineage::LineageConfig>,
 ) -> ExecuteOptions {
     ExecuteOptions {

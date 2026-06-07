@@ -237,8 +237,11 @@ impl faucet_core::Sink for SqliteSink {
     }
 
     fn dataset_uri(&self) -> String {
-        let path = self.config.database_url
-            .trim_start_matches("sqlite://").trim_start_matches("sqlite:");
+        let path = self
+            .config
+            .database_url
+            .trim_start_matches("sqlite://")
+            .trim_start_matches("sqlite:");
         format!("sqlite://{}?table={}", path, self.config.table_name)
     }
 

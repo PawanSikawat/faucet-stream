@@ -7,12 +7,20 @@ pub const OL_SCHEMA_URL: &str =
     "https://openlineage.io/spec/2-0-2/OpenLineage.json#/$defs/RunEvent";
 
 /// Producer identifier embedded in every event.
-pub const PRODUCER: &str =
-    concat!("https://github.com/PawanSikawat/faucet-stream/tree/v", env!("CARGO_PKG_VERSION"));
+pub const PRODUCER: &str = concat!(
+    "https://github.com/PawanSikawat/faucet-stream/tree/v",
+    env!("CARGO_PKG_VERSION")
+);
 
 #[derive(Debug, Clone, Copy, Serialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
-pub enum EventType { Start, Running, Complete, Abort, Fail }
+pub enum EventType {
+    Start,
+    Running,
+    Complete,
+    Abort,
+    Fail,
+}
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -64,10 +72,15 @@ pub struct ParentRunFacet {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ParentRunRef { pub run_id: String }
+pub struct ParentRunRef {
+    pub run_id: String,
+}
 
 #[derive(Debug, Clone, Serialize)]
-pub struct ParentJobRef { pub namespace: String, pub name: String }
+pub struct ParentJobRef {
+    pub namespace: String,
+    pub name: String,
+}
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -97,7 +110,9 @@ pub struct JobFacets {
 }
 
 impl JobFacets {
-    fn is_empty(&self) -> bool { self.source_code.is_none() }
+    fn is_empty(&self) -> bool {
+        self.source_code.is_none()
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -121,7 +136,11 @@ pub struct Dataset {
 
 impl Dataset {
     pub fn new(namespace: impl Into<String>, name: impl Into<String>) -> Self {
-        Self { namespace: namespace.into(), name: name.into(), facets: DatasetFacets::default() }
+        Self {
+            namespace: namespace.into(),
+            name: name.into(),
+            facets: DatasetFacets::default(),
+        }
     }
 }
 
@@ -135,7 +154,9 @@ pub struct DatasetFacets {
 }
 
 impl DatasetFacets {
-    fn is_empty(&self) -> bool { self.schema.is_none() && self.column_lineage.is_none() }
+    fn is_empty(&self) -> bool {
+        self.schema.is_none() && self.column_lineage.is_none()
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -150,7 +171,11 @@ pub struct SchemaDatasetFacet {
 
 impl SchemaDatasetFacet {
     pub fn new(fields: Vec<SchemaField>) -> Self {
-        Self { producer: PRODUCER.into(), schema_url: OL_SCHEMA_URL.into(), fields }
+        Self {
+            producer: PRODUCER.into(),
+            schema_url: OL_SCHEMA_URL.into(),
+            fields,
+        }
     }
 }
 
@@ -192,8 +217,15 @@ mod tests {
         let ev = RunEvent {
             event_type: EventType::Start,
             event_time: "2026-06-07T00:00:00Z".into(),
-            run: Run { run_id: "r1".into(), facets: RunFacets::default() },
-            job: Job { namespace: "ns".into(), name: "job1".into(), facets: JobFacets::default() },
+            run: Run {
+                run_id: "r1".into(),
+                facets: RunFacets::default(),
+            },
+            job: Job {
+                namespace: "ns".into(),
+                name: "job1".into(),
+                facets: JobFacets::default(),
+            },
             inputs: vec![Dataset::new("ns", "postgres://h/db?table=t")],
             outputs: vec![Dataset::new("ns", "bigquery://p.d.t")],
             producer: PRODUCER.into(),
@@ -213,9 +245,10 @@ mod tests {
     #[test]
     fn schema_facet_round_trips() {
         let mut ds = Dataset::new("ns", "file:///x");
-        ds.facets.schema = Some(SchemaDatasetFacet::new(
-            vec![SchemaField { name: "id".into(), type_: "integer".into() }],
-        ));
+        ds.facets.schema = Some(SchemaDatasetFacet::new(vec![SchemaField {
+            name: "id".into(),
+            type_: "integer".into(),
+        }]));
         let v = serde_json::to_value(&ds).unwrap();
         assert_eq!(v["facets"]["schema"]["fields"][0]["name"], "id");
         assert_eq!(v["facets"]["schema"]["fields"][0]["type"], "integer");
