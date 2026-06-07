@@ -41,6 +41,13 @@ impl Transport for FileTransport {
         f.write_all(&line)
             .await
             .map_err(|e| FaucetError::Custom(Box::new(e)))?;
+        // `tokio::fs::File` buffers writes and does NOT guarantee they reach the
+        // OS when the handle is dropped — without this flush the last event(s)
+        // can be lost (and a subsequent read sees a short file). Flush
+        // explicitly so each appended line is durable before `f` drops.
+        f.flush()
+            .await
+            .map_err(|e| FaucetError::Custom(Box::new(e)))?;
         Ok(())
     }
 }
