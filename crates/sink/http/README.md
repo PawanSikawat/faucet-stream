@@ -274,6 +274,10 @@ let sink = HttpSink::new(config);
 - Authentication and custom headers are applied to every request.
 - HTTP responses are validated using `check_http_response()` from `faucet-core`, which checks status codes and returns structured errors.
 
+## Lineage dataset URI
+
+`https://<host><path>` (credentials stripped) — e.g. `https://api.example.com/ingest`.
+
 ## License
 
 Licensed under MIT or Apache-2.0.

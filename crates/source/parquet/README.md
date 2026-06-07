@@ -182,6 +182,14 @@ medium; benchmark with your own data.
 | Different Arrow schema across globbed / prefixed files | `FaucetError::Source` (names both paths + first diverging field) |
 | Parquet decode error | `FaucetError::Source` |
 
+## Lineage dataset URI
+
+`file://<path>` (local/glob), `s3://<bucket>/<key>` or `s3://<bucket>/<prefix>` — e.g. `file:///tmp/data.parquet` or `s3://my-bucket/path/to/file.parquet`.
+
 ## Status
 
 Issue [#28](https://github.com/PawanSikawat/faucet-stream/issues/28).
+
+## License
+
+Licensed under MIT or Apache-2.0.

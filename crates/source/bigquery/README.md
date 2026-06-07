@@ -69,6 +69,10 @@ println!("rows: {rows:?}");
 # }
 ```
 
+## Lineage dataset URI
+
+`bigquery://<project_id>?query=<sql>` — e.g. `bigquery://my-project?query=SELECT id FROM events`.
+
 ## License
 
 MIT OR Apache-2.0

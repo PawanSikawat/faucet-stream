@@ -83,6 +83,10 @@ Unit tests run with `cargo test -p faucet-source-mssql --lib`. The integration
 tests (`--test integration`) require Docker (the `mcr.microsoft.com/mssql/server`
 image).
 
+## Lineage dataset URI
+
+`mssql://<host>,<port>/<db>?query=<sql>` (credentials/password stripped from connection string) — e.g. `Server=tcp:host,1433;Database=db;User Id=sa;Password=***;?query=SELECT id FROM orders`.
+
 ## License
 
 MIT OR Apache-2.0.

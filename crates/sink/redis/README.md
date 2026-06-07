@@ -250,6 +250,10 @@ sink.write_batch(&records).await?;
 - For `Stream` mode: each record's top-level fields are flattened into stream entry fields for `XADD`. Auto-generated stream IDs (`*`) are used.
 - For `KeyValue` mode: the specified `key_field` is extracted from each record to use as the Redis key. The entire record (serialized as JSON) is the value for `SET`. Records missing the key field produce an error.
 
+## Lineage dataset URI
+
+`redis://<host>:<port>?key=<key>` or `?key_field=<field>` (credentials stripped) — e.g. `redis://localhost:6379?key=events`.
+
 ## License
 
 Licensed under MIT or Apache-2.0.

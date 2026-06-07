@@ -267,6 +267,10 @@ config:
 
 The codec resolves from `file_extension`. Append `.gz` / `.zst` to `file_extension` so consumers can detect the codec from the object key. The S3 `Content-Encoding` header is deliberately unset — consumers must decompress explicitly.
 
+## Lineage dataset URI
+
+`s3://<bucket>/<prefix>` — e.g. `s3://my-bucket/data/events/`.
+
 ## License
 
 Licensed under MIT or Apache-2.0.

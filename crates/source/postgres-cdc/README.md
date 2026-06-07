@@ -218,3 +218,11 @@ output record shape stays under our control.
 - `crates/source/postgres/` — query-mode Postgres source (snapshots, not CDC).
 - `crates/state/postgres/` — Postgres-backed `StateStore` you can pair with this source.
 - `cli/examples/postgres_cdc_to_jsonl.yaml` — end-to-end demo configuration.
+
+## Lineage dataset URI
+
+`postgres://<host>:<port>/<db>?publication=<publication_name>` (credentials stripped) — e.g. `postgres://host:5432/app?publication=my_publication`.
+
+## License
+
+Licensed under MIT or Apache-2.0.

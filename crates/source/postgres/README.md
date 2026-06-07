@@ -188,6 +188,10 @@ let source = PostgresSource::new(config).await?;
 let records = source.fetch_all().await?;
 ```
 
+## Lineage dataset URI
+
+`postgres://<host>:<port>/<db>?query=<sql>` (credentials stripped) — e.g. `postgres://host:5432/app?query=SELECT id FROM orders`.
+
 ## License
 
 Licensed under MIT or Apache-2.0.

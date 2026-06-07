@@ -180,6 +180,10 @@ let source = SqliteSource::new(config).await?;
 let records = source.fetch_all().await?;
 ```
 
+## Lineage dataset URI
+
+`sqlite://<path>?query=<sql>` — e.g. `sqlite:///var/db/app.db?query=SELECT id FROM events`.
+
 ## License
 
 Licensed under MIT or Apache-2.0.

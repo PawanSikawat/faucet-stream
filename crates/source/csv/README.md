@@ -204,6 +204,10 @@ config:
 
 Compression is detected from the file path. Multi-line quoted fields (records with embedded newlines inside quotes) are parsed correctly on both the streaming and `fetch_all` paths, regardless of compression.
 
+## Lineage dataset URI
+
+`file://<path>` — e.g. `file:///data/input.csv`.
+
 ## License
 
 Licensed under MIT or Apache-2.0.

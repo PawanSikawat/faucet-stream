@@ -247,6 +247,10 @@ A complete working example is in [`cli/examples/kafka_to_jsonl.yaml`](../../cli/
 
 ---
 
+## Lineage dataset URI
+
+`kafka://<first_broker>?topic=<topic1>,<topic2>` — e.g. `kafka://kafka.example.com:9092?topic=orders`.
+
 ## License
 
 Dual-licensed under MIT and Apache-2.0, matching the workspace `license` field.

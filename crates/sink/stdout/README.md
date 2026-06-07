@@ -66,6 +66,10 @@ This sink writes each record to the chosen standard stream one at a time via a b
 - `flush()` flushes the underlying writer; the default `Sink` impl does not flush on `Drop`, so call it explicitly if you need durability of buffered output.
 - `StdoutSink::with_writer(config, writer)` accepts any `Box<dyn AsyncWrite + Unpin + Send>`. Useful in tests and when redirecting into log files or in-memory buffers.
 
+## Lineage dataset URI
+
+`stdout://` or `stderr://` depending on the configured destination.
+
 ## License
 
 Licensed under either of MIT or Apache-2.0 at your option.

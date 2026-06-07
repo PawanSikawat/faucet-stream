@@ -182,6 +182,10 @@ let pipeline = Pipeline::new(Box::new(source), Box::new(my_sink));
 let result = pipeline.run().await?;
 ```
 
+## Lineage dataset URI
+
+`mysql://<host>:<port>/<db>?query=<sql>` (credentials stripped) — e.g. `mysql://host:3306/app?query=SELECT id FROM orders`.
+
 ## License
 
 Licensed under MIT or Apache-2.0.

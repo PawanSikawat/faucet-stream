@@ -159,6 +159,10 @@ The codec resolves per object key, so a single source can read a mix of compress
 - KMS CMEK encryption configuration.
 - Server-streaming gRPC reads.
 
+## Lineage dataset URI
+
+`gs://<bucket>` or `gs://<bucket>/<prefix>` — e.g. `gs://my-bucket/data/2026/`.
+
 ## License
 
 Dual-licensed under MIT and Apache-2.0, per the workspace `license` field.

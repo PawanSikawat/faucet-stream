@@ -202,6 +202,10 @@ pipeline:
       batch_size: 10000
 ```
 
+## Lineage dataset URI
+
+`iceberg://<catalog_type>/<namespace>.<table>` — e.g. `iceberg://rest/prod.events` (catalog type is `rest`, `glue`, `sql`, or `hms`).
+
 ## License
 
 Licensed under MIT or Apache-2.0.

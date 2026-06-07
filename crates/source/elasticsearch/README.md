@@ -222,6 +222,10 @@ let metrics = source.fetch_all().await?;
 
 `ElasticsearchAuth` lives in [`faucet-common-elasticsearch`](../../common/elasticsearch) and is shared with `faucet-sink-elasticsearch`. The source re-exports it for convenience, so `faucet_source_elasticsearch::ElasticsearchAuth` continues to work unchanged.
 
+## Lineage dataset URI
+
+`http://<host>:<port>/<index>` (credentials stripped) — e.g. `http://localhost:9200/my_index`.
+
 ## License
 
 Licensed under MIT or Apache-2.0.

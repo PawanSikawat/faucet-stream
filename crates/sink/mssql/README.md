@@ -93,6 +93,10 @@ authentication and Azure AD / Managed Identity are out of scope.
 Unit tests run with `cargo test -p faucet-sink-mssql --lib`. The integration
 tests (`--test integration`) require Docker.
 
+## Lineage dataset URI
+
+`<connection_url_or_string>?table=<table>` (password redacted) — e.g. `Server=tcp:host,1433;Database=db;User Id=sa;Password=***;?table=orders`.
+
 ## License
 
 MIT OR Apache-2.0.

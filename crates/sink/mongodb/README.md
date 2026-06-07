@@ -226,6 +226,10 @@ sink.write_batch(&records).await?;
 - Nested JSON objects, arrays, and all JSON types are correctly converted to their BSON equivalents.
 - The MongoDB driver handles connection pooling and automatic reconnection internally.
 
+## Lineage dataset URI
+
+`mongodb://<host>:<port>/<database>/<collection>` (credentials stripped) — e.g. `mongodb://host:27017/mydb/events`.
+
 ## License
 
 Licensed under MIT or Apache-2.0.

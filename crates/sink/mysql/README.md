@@ -269,6 +269,10 @@ let sink = MysqlSink::new(config).await?;
 - In AutoMap mode, column names are queried from `INFORMATION_SCHEMA.COLUMNS` for the current database. A multi-row INSERT is built dynamically with `?` placeholders. Column values are bound as **native MySQL types** (#78/#4). The column set is the **union** of record keys across the batch, so a field present only in a later record is still written; a row missing a column binds SQL `NULL`. The INSERT is sub-chunked so `rows × columns` never exceeds MySQL's 65,535-placeholder limit.
 - All identifiers (table names, column names) are quoted with backticks using MySQL-safe escaping (embedded backticks are doubled).
 
+## Lineage dataset URI
+
+`mysql://<host>:<port>/<db>?table=<table>` (credentials stripped) — e.g. `mysql://host:3306/app?table=orders`.
+
 ## License
 
 Licensed under MIT or Apache-2.0.

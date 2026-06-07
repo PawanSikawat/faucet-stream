@@ -188,6 +188,10 @@ against `object_store::memory::InMemory` to avoid a network dependency on
 CI; running against a real LocalStack instance is straightforward and
 documented here for callers who want to verify the wire-level behavior.
 
+## Lineage dataset URI
+
+`file://<path>` (local) or `s3://<bucket>/<prefix>` (S3) — e.g. `file:///tmp/output/` or `s3://my-bucket/data/`.
+
 ## License
 
 MIT

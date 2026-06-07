@@ -269,6 +269,10 @@ for user in &users {
 }
 ```
 
+## Lineage dataset URI
+
+`redis://<host>:<port>/<db>?key=<key>` or `?stream=<stream>` (credentials stripped) — e.g. `redis://localhost:6379/0?key=my-list`.
+
 ## License
 
 Licensed under MIT or Apache-2.0.

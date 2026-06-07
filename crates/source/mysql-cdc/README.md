@@ -262,3 +262,11 @@ state:
 - `crates/state/postgres/` — PostgreSQL-backed `StateStore` alternative.
 - `crates/source/postgres-cdc/` — PostgreSQL CDC for comparison (LSN bookmarks, pgoutput).
 - `crates/source/mongodb-cdc/` — MongoDB CDC (Change Streams, resumeToken bookmarks).
+
+## Lineage dataset URI
+
+`mysql://<host>:<port>/<db>` or `mysql://<host>:<port>/<db>?tables=<t1>,<t2>` (credentials stripped) — e.g. `mysql://host:3306/app?tables=db.orders,db.users`.
+
+## License
+
+Licensed under MIT or Apache-2.0.

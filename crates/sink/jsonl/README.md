@@ -211,6 +211,10 @@ config:
 
 `flush()` finalises the encoder; subsequent writes append a fresh gzip / zstd member (multi-member-decoder compatible).
 
+## Lineage dataset URI
+
+`file://<path>` — e.g. `file:///tmp/output.jsonl`.
+
 ## License
 
 Licensed under MIT or Apache-2.0.

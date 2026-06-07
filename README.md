@@ -35,7 +35,7 @@ can drop on any box or a library you compile in.
   write batch size from sink latency and error rate), secrets-manager interpolation
   (`${vault:…}`, `${aws-sm:…}`, `${gcp-sm:…}`, `${azure-kv:…}`), cron scheduling
   (`faucet schedule`), an HTTP control plane (`faucet serve` — submit/poll/cancel
-  runs over REST), and built-in Prometheus metrics + `tracing` spans, all with
+  runs over REST), OpenLineage event emission (`lineage:` block — HTTP/file/Kafka transports, schema facets, column-level lineage), and built-in Prometheus metrics + `tracing` spans, all with
   zero per-connector code.
 - **Pay only for what you use** — every connector is a Cargo feature, so a slim
   build can be just REST + JSONL, or pull in all 38 connectors with `--features full`.
@@ -157,7 +157,7 @@ flowchart LR
     P -.->|metrics + spans| O
 ```
 
-faucet-stream is a Cargo workspace with 53 crates — 23 sources, 18 sinks, 6 shared connector libraries, the shared auth-provider library, 2 state-store backends, the shared core, the umbrella crate, and the CLI binary:
+faucet-stream is a Cargo workspace with 54 crates — 23 sources, 18 sinks, 6 shared connector libraries, the shared auth-provider library, 2 state-store backends, the lineage crate, the shared core, the umbrella crate, and the CLI binary:
 
 | Crate | Description |
 |-------|-------------|
@@ -216,6 +216,8 @@ faucet-stream is a Cargo workspace with 53 crates — 23 sources, 18 sinks, 6 sh
 | **State stores** | |
 | [`faucet-state-redis`](crates/state/redis) | Redis-backed `StateStore` for persistent bookmarks |
 | [`faucet-state-postgres`](crates/state/postgres) | PostgreSQL-backed `StateStore` for persistent bookmarks |
+| **Lineage** | |
+| [`faucet-lineage`](crates/lineage) | OpenLineage event emission — HTTP/file/Kafka transports, schema facets, column-lineage analysis |
 | [`faucet-stream`](faucet-stream) | Umbrella crate — feature-gated re-exports of all connectors and state backends |
 | **CLI** | |
 | [`faucet-cli`](cli) | `faucet` binary — YAML/JSON config-driven pipeline runner (`run`, `validate`, `schema`, `list`, `preview`, `init`, `doctor`, `schedule`, `serve`) |
