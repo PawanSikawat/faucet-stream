@@ -13,6 +13,11 @@
 //! storage layer. The wrapper re-supplies them, letting the catalog-threaded
 //! props (Glue/HMS) overlay on top.
 
+// `select_storage_factory` and its helpers are consumed by the catalog/sink
+// wiring (landed in a follow-up task); until then they are dead code in a
+// non-test build.
+#![allow(dead_code)]
+
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -58,6 +63,51 @@ impl StorageFactory for OpendalPropInjector {
     }
 }
 
+/// Build an S3 OpenDAL factory for the given scheme ("s3" or "s3a"), threading
+/// faucet's `catalog.properties`.
+fn cloud_factory_s3(
+    scheme: &'static str,
+    props: &HashMap<String, String>,
+) -> Arc<dyn StorageFactory> {
+    Arc::new(OpendalPropInjector::new(
+        OpenDalStorageFactory::S3 {
+            configured_scheme: scheme.to_string(),
+            customized_credential_load: None,
+        },
+        props.clone(),
+    ))
+}
+
+/// Build a GCS OpenDAL factory, threading faucet's `catalog.properties`.
+fn cloud_factory_gcs(props: &HashMap<String, String>) -> Arc<dyn StorageFactory> {
+    Arc::new(OpendalPropInjector::new(
+        OpenDalStorageFactory::Gcs,
+        props.clone(),
+    ))
+}
+
+/// Select an Iceberg `StorageFactory` from a catalog's warehouse URI scheme.
+///
+/// - local (`file://` / bare path / none) → `LocalFsStorageFactory`
+/// - `s3://` / `s3a://` → OpenDAL S3 (scheme matched to the URI)
+/// - `gs://` → OpenDAL GCS
+/// - anything else → `FaucetError::Config`
+pub(crate) fn select_storage_factory(
+    inner: &CatalogInner,
+) -> Result<Arc<dyn StorageFactory>, FaucetError> {
+    let warehouse = inner.warehouse.as_deref().unwrap_or("");
+    match warehouse_scheme(warehouse) {
+        WarehouseScheme::Local => Ok(Arc::new(LocalFsStorageFactory)),
+        WarehouseScheme::S3(scheme) => Ok(cloud_factory_s3(scheme, &inner.properties)),
+        WarehouseScheme::Gcs => Ok(cloud_factory_gcs(&inner.properties)),
+        WarehouseScheme::Unsupported(s) => Err(FaucetError::Config(format!(
+            "iceberg: warehouse scheme '{s}://' has no storage factory; supported \
+             schemes are file://, s3://, s3a://, gs:// (use the REST catalog for \
+             other object stores)"
+        ))),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -79,5 +129,54 @@ mod tests {
         let base = HashMap::from([("s3.region".to_string(), "eu-west-1".to_string())]);
         let merged = merge_props(&base, &HashMap::new());
         assert_eq!(merged.get("s3.region").unwrap(), "eu-west-1");
+    }
+
+    fn inner_with_warehouse(warehouse: Option<&str>) -> CatalogInner {
+        CatalogInner {
+            uri: None,
+            warehouse: warehouse.map(str::to_string),
+            credential: None,
+            properties: HashMap::from([("s3.region".to_string(), "us-east-1".to_string())]),
+        }
+    }
+
+    #[test]
+    fn select_local_for_file_and_bare_paths() {
+        for w in [None, Some("/tmp/wh"), Some("file:///tmp/wh")] {
+            let f = select_storage_factory(&inner_with_warehouse(w)).expect("ok");
+            assert!(
+                format!("{f:?}").contains("LocalFsStorageFactory"),
+                "expected LocalFs for {w:?}, got {f:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn select_s3_preserves_scheme_and_threads_props() {
+        let f = select_storage_factory(&inner_with_warehouse(Some("s3://bucket/wh"))).expect("ok");
+        let dbg = format!("{f:?}");
+        assert!(dbg.contains("configured_scheme: \"s3\""), "got {dbg}");
+        assert!(dbg.contains("s3.region"), "props must be threaded: {dbg}");
+
+        let f_a = select_storage_factory(&inner_with_warehouse(Some("s3a://bucket/wh"))).expect("ok");
+        assert!(
+            format!("{f_a:?}").contains("configured_scheme: \"s3a\""),
+            "s3a scheme must be preserved (Glue bug fix)"
+        );
+    }
+
+    #[test]
+    fn select_gcs() {
+        let f = select_storage_factory(&inner_with_warehouse(Some("gs://bucket/wh"))).expect("ok");
+        assert!(format!("{f:?}").contains("Gcs"), "got {f:?}");
+    }
+
+    #[test]
+    fn select_unsupported_scheme_errors() {
+        let err = select_storage_factory(&inner_with_warehouse(Some("oss://bucket/wh"))).unwrap_err();
+        assert!(matches!(err, FaucetError::Config(_)));
+        let msg = err.to_string();
+        assert!(msg.contains("oss"), "should name the scheme: {msg}");
+        assert!(msg.contains("s3://"), "should list supported schemes: {msg}");
     }
 }

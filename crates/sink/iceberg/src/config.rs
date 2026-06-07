@@ -21,6 +21,9 @@ use serde::{Deserialize, Serialize};
 /// The set of recognised schemes is intentionally small and feature-independent:
 /// it is the set faucet's storage-factory selector understands. REST catalogs
 /// resolve FileIO server-side and are exempt from this classification.
+// `select_storage_factory` (the sole consumer) is gated on `storage-opendal`,
+// so this is dead code in non-`storage-opendal` builds.
+#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum WarehouseScheme {
     /// No scheme, a bare path, or `file://` — local filesystem.
@@ -38,6 +41,8 @@ pub(crate) enum WarehouseScheme {
 ///
 /// A URI with no `://` (empty, bare path, or relative path) is treated as a
 /// local-filesystem warehouse. Scheme matching is case-insensitive.
+// Consumed by `select_storage_factory`, which is gated on `storage-opendal`.
+#[allow(dead_code)]
 pub(crate) fn warehouse_scheme(warehouse: &str) -> WarehouseScheme {
     let scheme = match warehouse.trim().split_once("://") {
         Some((s, _)) => s.to_ascii_lowercase(),
