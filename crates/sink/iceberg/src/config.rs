@@ -13,6 +13,45 @@ use faucet_core::FaucetError;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+// ── Warehouse scheme classification ─────────────────────────────────────────
+
+/// Classification of a warehouse URI by scheme, used to select an Iceberg
+/// `StorageFactory` (see `crate::storage_factory`) and to validate configs.
+///
+/// The set of recognised schemes is intentionally small and feature-independent:
+/// it is the set faucet's storage-factory selector understands. REST catalogs
+/// resolve FileIO server-side and are exempt from this classification.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum WarehouseScheme {
+    /// No scheme, a bare path, or `file://` — local filesystem.
+    Local,
+    /// `s3://` or `s3a://`. Carries the exact scheme string ("s3" / "s3a"),
+    /// which the OpenDAL S3 operator requires to match the warehouse URI.
+    S3(&'static str),
+    /// `gs://` — Google Cloud Storage.
+    Gcs,
+    /// Any other scheme (e.g. `oss`, `abfss`) — no storage factory available.
+    Unsupported(String),
+}
+
+/// Classify a warehouse URI by its scheme.
+///
+/// A URI with no `://` (empty, bare path, or relative path) is treated as a
+/// local-filesystem warehouse. Scheme matching is case-insensitive.
+pub(crate) fn warehouse_scheme(warehouse: &str) -> WarehouseScheme {
+    let scheme = match warehouse.trim().split_once("://") {
+        Some((s, _)) => s.to_ascii_lowercase(),
+        None => return WarehouseScheme::Local,
+    };
+    match scheme.as_str() {
+        "file" => WarehouseScheme::Local,
+        "s3" => WarehouseScheme::S3("s3"),
+        "s3a" => WarehouseScheme::S3("s3a"),
+        "gs" => WarehouseScheme::Gcs,
+        other => WarehouseScheme::Unsupported(other.to_string()),
+    }
+}
+
 // ── Catalog config ────────────────────────────────────────────────────────────
 
 /// Configuration fields shared by every catalog variant.
@@ -681,5 +720,57 @@ mod tests {
             !debug_str.contains("user:pass"),
             "uri userinfo must be redacted: {debug_str}"
         );
+    }
+
+    // ── warehouse scheme classification ───────────────────────────────────────
+
+    #[test]
+    fn warehouse_scheme_local_variants() {
+        use super::{warehouse_scheme, WarehouseScheme};
+        for w in ["", "/tmp/warehouse", "./wh", "relative/dir", "file:///tmp/wh"] {
+            assert!(
+                matches!(warehouse_scheme(w), WarehouseScheme::Local),
+                "{w:?} should be Local"
+            );
+        }
+    }
+
+    #[test]
+    fn warehouse_scheme_s3_preserves_scheme() {
+        use super::{warehouse_scheme, WarehouseScheme};
+        assert!(matches!(
+            warehouse_scheme("s3://bucket/wh"),
+            WarehouseScheme::S3("s3")
+        ));
+        assert!(matches!(
+            warehouse_scheme("s3a://bucket/wh"),
+            WarehouseScheme::S3("s3a")
+        ));
+        assert!(matches!(
+            warehouse_scheme("S3://bucket/wh"),
+            WarehouseScheme::S3("s3")
+        ));
+    }
+
+    #[test]
+    fn warehouse_scheme_gcs() {
+        use super::{warehouse_scheme, WarehouseScheme};
+        assert!(matches!(
+            warehouse_scheme("gs://bucket/wh"),
+            WarehouseScheme::Gcs
+        ));
+    }
+
+    #[test]
+    fn warehouse_scheme_unsupported() {
+        use super::{warehouse_scheme, WarehouseScheme};
+        match warehouse_scheme("oss://bucket/wh") {
+            WarehouseScheme::Unsupported(s) => assert_eq!(s, "oss"),
+            other => panic!("expected Unsupported, got {other:?}"),
+        }
+        assert!(matches!(
+            warehouse_scheme("abfss://x/y"),
+            WarehouseScheme::Unsupported(_)
+        ));
     }
 }
