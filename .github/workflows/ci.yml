@@ -165,6 +165,9 @@ jobs:
           # Quality checks
           - quality
           - quality-jsonschema
+          # OpenLineage emission
+          - lineage
+          - lineage-kafka
           # Scheduler (CLI-only)
           - schedule
           # HTTP control plane (CLI-only) + its persistent run-history backends
