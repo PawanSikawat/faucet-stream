@@ -45,7 +45,8 @@ lineage:
   namespace: prod.warehouse      # REQUIRED. Logical namespace for all jobs/datasets.
   transport:                     # REQUIRED. Where to send events.
     type: http
-    url: http://marquez:5000/api/v1/lineage
+    config:
+      url: http://marquez:5000/api/v1/lineage
 
 pipeline:
   source: { type: postgres, config: { … } }
@@ -99,11 +100,13 @@ lineage:
   namespace: prod
   transport:
     type: http
-    url: https://lineage.example.com/api/v1/lineage
-    timeout_secs: 10        # request timeout. Default 10.
-    auth:                   # optional bearer auth
-      type: bearer
-      token: ${env:LINEAGE_TOKEN}
+    config:
+      url: https://lineage.example.com/api/v1/lineage
+      timeout_secs: 10        # request timeout. Default 10.
+      auth:                   # optional bearer auth
+        type: bearer
+        config:
+          token: ${env:LINEAGE_TOKEN}
 ```
 
 ### File (local JSON Lines)
@@ -115,7 +118,8 @@ lineage:
   namespace: dev
   transport:
     type: file
-    path: ./out/lineage.jsonl
+    config:
+      path: ./out/lineage.jsonl
 ```
 
 ### Kafka (gated on `lineage-kafka` feature)
@@ -128,8 +132,9 @@ lineage:
   namespace: prod
   transport:
     type: kafka
-    brokers: kafka.example.com:9092
-    topic: openlineage.events
+    config:
+      brokers: kafka.example.com:9092
+      topic: openlineage.events
 ```
 
 ## Schema facets
@@ -192,7 +197,8 @@ lineage:
   include_column_lineage: true
   transport:
     type: http
-    url: ${env:MARQUEZ_URL}
+    config:
+      url: ${env:MARQUEZ_URL}
 
 pipeline:
   source:

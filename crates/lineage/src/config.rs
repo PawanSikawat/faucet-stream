@@ -56,8 +56,13 @@ pub enum LineageKind {
 }
 
 /// Lineage event transport.
+///
+/// Uses the project-wide `{ type, config: { … } }` shape (adjacently tagged),
+/// matching connectors and the shared auth catalog. `deny_unknown_fields` is
+/// intentionally omitted — serde does not honor it on tagged enums (same as
+/// `faucet-core` auth, websocket, grpc).
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+#[serde(tag = "type", content = "config", rename_all = "snake_case")]
 pub enum Transport {
     /// POST each event to an OpenLineage HTTP endpoint (e.g. Marquez).
     Http {
@@ -78,9 +83,10 @@ pub enum Transport {
     Kafka { brokers: String, topic: String },
 }
 
-/// HTTP transport auth.
+/// HTTP transport auth. Same `{ type, config: { … } }` shape as connector auth
+/// (e.g. `{ type: bearer, config: { token: … } }`).
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+#[serde(tag = "type", content = "config", rename_all = "snake_case")]
 pub enum HttpAuth {
     Bearer { token: String },
 }
@@ -148,31 +154,56 @@ mod tests {
         let json = serde_json::json!({
             "type": "openlineage",
             "namespace": "prod.warehouse",
-            "transport": { "type": "http", "url": "https://marquez/api/v1/lineage" }
+            "transport": { "type": "http", "config": { "url": "https://marquez/api/v1/lineage" } }
         });
         let cfg: LineageConfig = serde_json::from_value(json).unwrap();
         assert_eq!(cfg.namespace, "prod.warehouse");
         assert_eq!(cfg.job_name, "${name}::${row_id}");
         assert!(cfg.emit_on.start && cfg.emit_on.complete && !cfg.emit_on.running);
         assert_eq!(cfg.sample_records, 100);
-        matches!(cfg.transport, Transport::Http { .. });
+        assert!(matches!(cfg.transport, Transport::Http { .. }));
     }
 
     #[test]
     fn deserializes_file_transport() {
         let json = serde_json::json!({
             "namespace": "n",
-            "transport": { "type": "file", "path": "/tmp/ol.jsonl" }
+            "transport": { "type": "file", "config": { "path": "/tmp/ol.jsonl" } }
         });
         let cfg: LineageConfig = serde_json::from_value(json).unwrap();
-        matches!(cfg.transport, Transport::File { .. });
+        assert!(matches!(cfg.transport, Transport::File { .. }));
+    }
+
+    #[test]
+    fn deserializes_http_transport_with_bearer_auth() {
+        // The nested auth uses the same { type, config } shape as connector auth.
+        let json = serde_json::json!({
+            "namespace": "n",
+            "transport": {
+                "type": "http",
+                "config": {
+                    "url": "https://marquez/api/v1/lineage",
+                    "auth": { "type": "bearer", "config": { "token": "secret" } }
+                }
+            }
+        });
+        let cfg: LineageConfig = serde_json::from_value(json).unwrap();
+        match cfg.transport {
+            Transport::Http {
+                auth: Some(HttpAuth::Bearer { token }),
+                ..
+            } => {
+                assert_eq!(token, "secret");
+            }
+            _ => panic!("expected http transport with bearer auth"),
+        }
     }
 
     #[test]
     fn rejects_unknown_field() {
         let json = serde_json::json!({
             "namespace": "n",
-            "transport": { "type": "file", "path": "/tmp/ol.jsonl" },
+            "transport": { "type": "file", "config": { "path": "/tmp/ol.jsonl" } },
             "bogus": true
         });
         assert!(serde_json::from_value::<LineageConfig>(json).is_err());

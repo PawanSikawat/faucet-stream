@@ -273,7 +273,8 @@ lineage:
   namespace: prod.warehouse      # REQUIRED. Logical namespace for all jobs and datasets.
   transport:                     # REQUIRED. Where to send events.
     type: http                   # http | file | kafka (kafka requires lineage-kafka feature)
-    url: ${env:MARQUEZ_URL}
+    config:
+      url: ${env:MARQUEZ_URL}
   job_name: ${name}::${row_id}   # Default. Resolved per matrix row at run time.
   include_schema_facet: false    # Emit DatasetFacets.schema (inferred from a sample).
   include_column_lineage: false  # Emit column-level lineage where statically derivable.

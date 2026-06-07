@@ -37,7 +37,7 @@ name: t
 lineage:
   namespace: test
   include_schema_facet: true
-  transport: {{ type: file, path: {ol} }}
+  transport: {{ type: file, config: {{ path: {ol} }} }}
 pipeline:
   source: {{ type: csv, config: {{ path: {input} }} }}
   sink:   {{ type: jsonl, config: {{ path: {output} }} }}
@@ -82,7 +82,7 @@ async fn run_succeeds_even_when_lineage_backend_is_unreachable() {
 name: t
 lineage:
   namespace: test
-  transport: {{ type: http, url: "http://127.0.0.1:1/api/v1/lineage", timeout_secs: 1 }}
+  transport: {{ type: http, config: {{ url: "http://127.0.0.1:1/api/v1/lineage", timeout_secs: 1 }} }}
 pipeline:
   source: {{ type: csv, config: {{ path: {input} }} }}
   sink:   {{ type: jsonl, config: {{ path: {output} }} }}
