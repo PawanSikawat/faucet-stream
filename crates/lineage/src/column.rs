@@ -3,7 +3,7 @@
 //! v1 supports the field-preserving / explicit-mapping transforms exactly.
 //! Any structure-changing or key-rewriting transform (`flatten`, `explode`,
 //! `keys_case`, `rename_keys`) and any `Custom`/unknown transform is
-//! [`ColumnOp::Opaque`]; if the chain contains one, [`derive`] returns `None`
+//! [`ColumnOp::Opaque`]; if the chain contains one, [`derive()`] returns `None`
 //! and **no** column-lineage facet is emitted (never fabricated).
 
 use indexmap::IndexMap;
