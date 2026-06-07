@@ -40,7 +40,10 @@ const BUCKET: &str = "faucet-iceberg-tests";
 /// Start a MinIO container; return the handle + `http://127.0.0.1:port` endpoint.
 async fn start_minio() -> (ContainerAsync<MinIO>, String) {
     let container = MinIO::default().start().await.expect("minio start");
-    let port = container.get_host_port_ipv4(9000).await.expect("minio port");
+    let port = container
+        .get_host_port_ipv4(9000)
+        .await
+        .expect("minio port");
     (container, format!("http://127.0.0.1:{port}"))
 }
 
@@ -108,7 +111,10 @@ async fn open_reader_catalog(
 ) -> impl Catalog {
     let cat_props = HashMap::from([
         (SQL_CATALOG_PROP_URI.to_string(), db_uri.to_string()),
-        (SQL_CATALOG_PROP_WAREHOUSE.to_string(), warehouse.to_string()),
+        (
+            SQL_CATALOG_PROP_WAREHOUSE.to_string(),
+            warehouse.to_string(),
+        ),
         (
             SQL_CATALOG_PROP_BIND_STYLE.to_string(),
             SqlBindStyle::QMark.to_string(),
@@ -164,7 +170,10 @@ async fn sql_catalog_s3_warehouse_commits_snapshot() {
         NamespaceIdent::from_strs(["db"]).unwrap(),
         "events".to_string(),
     );
-    let table = reader.load_table(&tid).await.expect("load_table after flush");
+    let table = reader
+        .load_table(&tid)
+        .await
+        .expect("load_table after flush");
     let meta = table.metadata();
 
     assert_eq!(meta.snapshots().count(), 1, "expected exactly one snapshot");

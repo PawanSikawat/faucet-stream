@@ -21,7 +21,7 @@ use iceberg::io::{LocalFsStorageFactory, Storage, StorageConfig, StorageFactory}
 use iceberg_storage_opendal::OpenDalStorageFactory;
 use serde::{Deserialize, Serialize};
 
-use crate::config::{warehouse_scheme, CatalogInner, WarehouseScheme};
+use crate::config::{CatalogInner, WarehouseScheme, warehouse_scheme};
 
 /// Merge faucet's configured catalog properties (`base`) with the properties
 /// the catalog threads into its `FileIO` (`overlay`). The overlay wins on key
@@ -153,7 +153,8 @@ mod tests {
         assert!(dbg.contains("configured_scheme: \"s3\""), "got {dbg}");
         assert!(dbg.contains("s3.region"), "props must be threaded: {dbg}");
 
-        let f_a = select_storage_factory(&inner_with_warehouse(Some("s3a://bucket/wh"))).expect("ok");
+        let f_a =
+            select_storage_factory(&inner_with_warehouse(Some("s3a://bucket/wh"))).expect("ok");
         assert!(
             format!("{f_a:?}").contains("configured_scheme: \"s3a\""),
             "s3a scheme must be preserved (Glue bug fix)"
@@ -168,10 +169,14 @@ mod tests {
 
     #[test]
     fn select_unsupported_scheme_errors() {
-        let err = select_storage_factory(&inner_with_warehouse(Some("oss://bucket/wh"))).unwrap_err();
+        let err =
+            select_storage_factory(&inner_with_warehouse(Some("oss://bucket/wh"))).unwrap_err();
         assert!(matches!(err, FaucetError::Config(_)));
         let msg = err.to_string();
         assert!(msg.contains("oss"), "should name the scheme: {msg}");
-        assert!(msg.contains("s3://"), "should list supported schemes: {msg}");
+        assert!(
+            msg.contains("s3://"),
+            "should list supported schemes: {msg}"
+        );
     }
 }

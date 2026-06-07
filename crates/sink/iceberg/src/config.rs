@@ -689,13 +689,20 @@ mod tests {
 
     #[test]
     fn sql_catalog_accepts_cloud_and_local_warehouses() {
-        for w in ["s3://bucket/wh", "s3a://bucket/wh", "gs://bucket/wh", "file:///tmp/wh", "/tmp/wh"] {
+        for w in [
+            "s3://bucket/wh",
+            "s3a://bucket/wh",
+            "gs://bucket/wh",
+            "file:///tmp/wh",
+            "/tmp/wh",
+        ] {
             let cfg = parse(serde_json::json!({
                 "catalog": { "type": "sql", "uri": "sqlite::memory:", "warehouse": w },
                 "namespace": ["analytics"],
                 "table": "events"
             }));
-            cfg.validate().unwrap_or_else(|e| panic!("{w} should validate: {e}"));
+            cfg.validate()
+                .unwrap_or_else(|e| panic!("{w} should validate: {e}"));
         }
     }
 
@@ -706,7 +713,8 @@ mod tests {
             "namespace": ["analytics"],
             "table": "events"
         }));
-        cfg.validate().expect("REST should accept any warehouse scheme");
+        cfg.validate()
+            .expect("REST should accept any warehouse scheme");
     }
 
     // ── batch_size bounds ─────────────────────────────────────────────────────
@@ -777,8 +785,14 @@ mod tests {
 
     #[test]
     fn warehouse_scheme_local_variants() {
-        use super::{warehouse_scheme, WarehouseScheme};
-        for w in ["", "/tmp/warehouse", "./wh", "relative/dir", "file:///tmp/wh"] {
+        use super::{WarehouseScheme, warehouse_scheme};
+        for w in [
+            "",
+            "/tmp/warehouse",
+            "./wh",
+            "relative/dir",
+            "file:///tmp/wh",
+        ] {
             assert!(
                 matches!(warehouse_scheme(w), WarehouseScheme::Local),
                 "{w:?} should be Local"
@@ -788,7 +802,7 @@ mod tests {
 
     #[test]
     fn warehouse_scheme_s3_preserves_scheme() {
-        use super::{warehouse_scheme, WarehouseScheme};
+        use super::{WarehouseScheme, warehouse_scheme};
         assert!(matches!(
             warehouse_scheme("s3://bucket/wh"),
             WarehouseScheme::S3("s3")
@@ -805,7 +819,7 @@ mod tests {
 
     #[test]
     fn warehouse_scheme_gcs() {
-        use super::{warehouse_scheme, WarehouseScheme};
+        use super::{WarehouseScheme, warehouse_scheme};
         assert!(matches!(
             warehouse_scheme("gs://bucket/wh"),
             WarehouseScheme::Gcs
@@ -814,7 +828,7 @@ mod tests {
 
     #[test]
     fn warehouse_scheme_unsupported() {
-        use super::{warehouse_scheme, WarehouseScheme};
+        use super::{WarehouseScheme, warehouse_scheme};
         match warehouse_scheme("oss://bucket/wh") {
             WarehouseScheme::Unsupported(s) => assert_eq!(s, "oss"),
             other => panic!("expected Unsupported, got {other:?}"),
