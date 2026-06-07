@@ -1081,7 +1081,7 @@ pipeline:
 version: 1
 lineage:
   namespace: prod
-  transport: { type: file, path: /tmp/ol.jsonl }
+  transport: { type: file, config: { path: /tmp/ol.jsonl } }
 pipeline:
   source: { type: rest, config: {} }
   sink:   { type: jsonl, config: { path: ./o.jsonl } }

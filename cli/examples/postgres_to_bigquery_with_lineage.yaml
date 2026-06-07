@@ -25,16 +25,19 @@ lineage:
   include_column_lineage: true
   transport:
     type: http
-    url: ${env:MARQUEZ_URL}   # e.g. http://localhost:5000/api/v1/lineage
-    # Optional bearer auth for the lineage endpoint. Inject the token from the
-    # environment with an env directive (dollar-brace env:MARQUEZ_TOKEN):
-    # auth:
-    #   type: bearer
-    #   token: <marquez-api-token>
+    config:
+      url: ${env:MARQUEZ_URL}   # e.g. http://localhost:5000/api/v1/lineage
+      # Optional bearer auth for the lineage endpoint. Inject the token from the
+      # environment with an env directive (dollar-brace env:MARQUEZ_TOKEN):
+      # auth:
+      #   type: bearer
+      #   config:
+      #     token: <marquez-api-token>
   # Local-testing alternative — append each event as one JSON line to a file:
   # transport:
   #   type: file
-  #   path: ./out/lineage.jsonl
+  #   config:
+  #     path: ./out/lineage.jsonl
 
 pipeline:
   source:

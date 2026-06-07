@@ -31,11 +31,13 @@ lineage:
   namespace: prod.warehouse      # OpenLineage namespace for job + datasets
   transport:
     type: http                   # http | file | kafka
-    url: https://marquez/api/v1/lineage
-    timeout_secs: 10             # default 10s
-    auth:
-      type: bearer
-      token: ${env:MARQUEZ_TOKEN}
+    config:
+      url: https://marquez/api/v1/lineage
+      timeout_secs: 10           # default 10s
+      auth:
+        type: bearer
+        config:
+          token: ${env:MARQUEZ_TOKEN}
   job_name: "${name}::${row_id}" # template; resolved per matrix row (default)
   parent_job:                    # optional orchestrator linkage
     namespace: airflow
