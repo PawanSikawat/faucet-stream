@@ -97,7 +97,25 @@ jobs:
             target
           key: ${{ runner.os }}-test-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-test-
-      - run: cargo test --workspace --all-features
+      - name: Run workspace tests
+        # Integration tests boot Docker containers via testcontainers, whose
+        # in-process (bollard) image pull intermittently fails with
+        # "bytes remaining on stream". That flake is transient (the same test
+        # passes on a re-run), so retry the suite a few times: a genuine test
+        # failure still fails the job after the retries are exhausted.
+        run: |
+          for attempt in 1 2 3; do
+            echo "::group::cargo test (attempt $attempt)"
+            if cargo test --workspace --all-features; then
+              echo "::endgroup::"
+              exit 0
+            fi
+            echo "::endgroup::"
+            echo "::warning::workspace tests failed on attempt $attempt (often a flaky Docker image pull); retrying in 20s"
+            sleep 20
+          done
+          echo "::error::workspace tests failed after 3 attempts"
+          exit 1
 
   # Verify each feature compiles in isolation (catches accidental cross-feature deps)
   feature-check:
@@ -294,14 +312,38 @@ jobs:
             target
           key: ${{ runner.os }}-kafka-integration-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-kafka-integration-
+      # These steps boot Docker containers (Kafka, Elasticsearch) via
+      # testcontainers, whose in-process (bollard) image pull intermittently
+      # fails with "bytes remaining on stream". The flake is transient, so each
+      # command is retried up to 3 times; a genuine failure still fails the job.
       - name: Run kafka source integration tests
-        run: cargo test -p faucet-source-kafka --test integration -- --test-threads=1
+        run: |
+          for attempt in 1 2 3; do
+            cargo test -p faucet-source-kafka --test integration -- --test-threads=1 && exit 0
+            echo "::warning::attempt $attempt failed (often a flaky Docker image pull); retrying in 20s"; sleep 20
+          done
+          exit 1
       - name: Run kafka sink integration tests
-        run: cargo test -p faucet-sink-kafka --test integration -- --test-threads=1
+        run: |
+          for attempt in 1 2 3; do
+            cargo test -p faucet-sink-kafka --test integration -- --test-threads=1 && exit 0
+            echo "::warning::attempt $attempt failed (often a flaky Docker image pull); retrying in 20s"; sleep 20
+          done
+          exit 1
       - name: Run kafka schema-registry-enabled tests
-        run: cargo test -p faucet-common-kafka --all-features
+        run: |
+          for attempt in 1 2 3; do
+            cargo test -p faucet-common-kafka --all-features && exit 0
+            echo "::warning::attempt $attempt failed (often a flaky Docker image pull); retrying in 20s"; sleep 20
+          done
+          exit 1
       - name: Run faucet-common-elasticsearch tests
-        run: cargo test -p faucet-common-elasticsearch
+        run: |
+          for attempt in 1 2 3; do
+            cargo test -p faucet-common-elasticsearch && exit 0
+            echo "::warning::attempt $attempt failed (often a flaky Docker image pull); retrying in 20s"; sleep 20
+          done
+          exit 1
 
   supply-chain:
     name: Supply chain (cargo-deny)
