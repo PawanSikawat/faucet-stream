@@ -27,12 +27,28 @@ transaction action.
 | SQL-backed (Postgres, SQLite, …) | `sql` | `catalog-sql` | no |
 | Hive Metastore | `hms` | `catalog-hms` | no |
 
-**Warehouse storage (v1):** the **REST** catalog supports both cloud object stores
-(S3/GCS — the catalog server resolves FileIO from the catalog config + `s3.*`
-properties) and local filesystems. The **SQL / Glue / HMS** catalogs currently
-write to a **local-filesystem warehouse** (`file://…`); cloud-warehouse support
-for those catalogs (via an OpenDAL storage factory) is tracked as a follow-up.
-For an S3/GCS lakehouse today, use the REST catalog.
+**Warehouse storage:** all catalogs support both cloud object stores and local
+filesystems. The **REST** catalog resolves FileIO server-side from the catalog
+config + `s3.*` properties. The **SQL / Glue / HMS** catalogs select an
+OpenDAL-backed storage factory from the `warehouse` URI scheme:
+
+| Warehouse scheme | Storage |
+|---|---|
+| `file://…` / bare path | local filesystem |
+| `s3://…` / `s3a://…` | Amazon S3 / S3-compatible (MinIO, …) |
+| `gs://…` | Google Cloud Storage |
+
+Cloud storage is enabled automatically when you enable a non-REST catalog
+feature (each of `catalog-glue` / `catalog-sql` / `catalog-hms` also enables the
+`storage-opendal` feature). Pass storage credentials and options through
+`catalog.properties`:
+
+- **S3:** `s3.region`, `s3.endpoint` (for S3-compatible stores), `s3.access-key-id`,
+  `s3.secret-access-key`, `s3.path-style-access`, `s3.disable-config-load`.
+- **GCS:** `gcs.credentials-json`, `gcs.no-auth`, `gcs.service.path`.
+
+Schemes without a built-in factory (e.g. `oss://`, `abfss://`) are rejected at
+config-load time; use the REST catalog for those object stores.
 
 Install only what you need:
 
@@ -114,6 +130,25 @@ Every catalog variant shares the same inner fields:
 | `warehouse` | Object-storage warehouse root, e.g. `s3://lake/warehouse/` |
 | `credential` | REST bearer token or other catalog-specific credential. Redacted in `Debug` output |
 | `properties` | Arbitrary key-value pairs forwarded to the catalog builder (e.g. `s3.region`, `s3.endpoint`) |
+
+Example — SQL catalog (Postgres metadata) writing to an S3 warehouse:
+
+```yaml
+sink:
+  type: iceberg
+  config:
+    catalog:
+      type: sql
+      uri: "postgres://meta:meta@localhost:5432/iceberg"
+      warehouse: "s3://lake/warehouse"
+      properties:
+        s3.region: "us-east-1"
+        s3.access-key-id: "${env:AWS_ACCESS_KEY_ID}"
+        s3.secret-access-key: "${env:AWS_SECRET_ACCESS_KEY}"
+    namespace: ["analytics"]
+    table: "events"
+    create_if_missing: true
+```
 
 ### Partition transforms
 
