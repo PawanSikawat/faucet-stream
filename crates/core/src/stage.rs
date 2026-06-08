@@ -34,6 +34,11 @@ pub enum TransformStage {
     Explode(ExplodeSpec),
     /// Arbitrary 0..N closure for library callers (not addressable from YAML).
     Custom(Arc<dyn Fn(Value) -> Vec<Value> + Send + Sync>),
+    /// Page-level closure: sees the whole page, returns a new page; fallible.
+    /// The escape hatch for transforms that need the full batch at once (SQL,
+    /// sort, dedup, top-N). Dependency-free; built by connectors/CLI, not
+    /// addressable as a per-record stage.
+    PageFn(Arc<dyn Fn(Vec<Value>) -> Result<Vec<Value>, FaucetError> + Send + Sync>),
 }
 
 impl std::fmt::Debug for TransformStage {
@@ -45,6 +50,7 @@ impl std::fmt::Debug for TransformStage {
             #[cfg(feature = "transform-explode")]
             Self::Explode(s) => f.debug_tuple("Explode").field(s).finish(),
             Self::Custom(_) => write!(f, "Custom(<fn>)"),
+            Self::PageFn(_) => write!(f, "PageFn(<fn>)"),
         }
     }
 }
@@ -58,6 +64,7 @@ impl Clone for TransformStage {
             #[cfg(feature = "transform-explode")]
             Self::Explode(s) => Self::Explode(s.clone()),
             Self::Custom(f) => Self::Custom(Arc::clone(f)),
+            Self::PageFn(f) => Self::PageFn(Arc::clone(f)),
         }
     }
 }
@@ -70,6 +77,7 @@ pub enum CompiledStage {
     #[cfg(feature = "transform-explode")]
     Explode(CompiledExplode),
     Custom(Arc<dyn Fn(Value) -> Vec<Value> + Send + Sync>),
+    PageFn(Arc<dyn Fn(Vec<Value>) -> Result<Vec<Value>, FaucetError> + Send + Sync>),
 }
 
 impl std::fmt::Debug for CompiledStage {
@@ -81,6 +89,7 @@ impl std::fmt::Debug for CompiledStage {
             #[cfg(feature = "transform-explode")]
             Self::Explode(e) => f.debug_tuple("Explode").field(e).finish(),
             Self::Custom(_) => write!(f, "Custom(<fn>)"),
+            Self::PageFn(_) => write!(f, "PageFn(<fn>)"),
         }
     }
 }
@@ -103,6 +112,7 @@ impl Clone for CompiledStage {
                 on_missing: e.on_missing,
             }),
             Self::Custom(f) => Self::Custom(Arc::clone(f)),
+            Self::PageFn(f) => Self::PageFn(Arc::clone(f)),
         }
     }
 }
@@ -610,6 +620,7 @@ pub fn compile_stage(s: &TransformStage) -> Result<CompiledStage, FaucetError> {
             Ok(CompiledStage::Explode(CompiledExplode::compile(spec)?))
         }
         TransformStage::Custom(f) => Ok(CompiledStage::Custom(Arc::clone(f))),
+        TransformStage::PageFn(f) => Ok(CompiledStage::PageFn(Arc::clone(f))),
     }
 }
 
@@ -624,6 +635,30 @@ pub fn apply_stages(rec: Value, stages: &[CompiledStage]) -> Result<Vec<Value>, 
         acc = next;
     }
     Ok(acc)
+}
+
+/// Page-granular stage runner. Per-record stages (`Map`/`Filter`/`Explode`/
+/// `Custom`) flat-map over the current page; `PageFn` stages transform the whole
+/// page at once. Preserves declared order, so `filter → sql → select` works.
+pub fn apply_stages_to_page(
+    mut records: Vec<Value>,
+    stages: &[CompiledStage],
+) -> Result<Vec<Value>, FaucetError> {
+    for stage in stages {
+        match stage {
+            CompiledStage::PageFn(f) => {
+                records = f(records)?;
+            }
+            per_record => {
+                let mut next = Vec::with_capacity(records.len());
+                for r in records {
+                    next.extend(apply_one_stage(r, per_record)?);
+                }
+                records = next;
+            }
+        }
+    }
+    Ok(records)
 }
 
 fn apply_one_stage(rec: Value, stage: &CompiledStage) -> Result<Vec<Value>, FaucetError> {
@@ -643,6 +678,10 @@ fn apply_one_stage(rec: Value, stage: &CompiledStage) -> Result<Vec<Value>, Fauc
         #[cfg(feature = "transform-explode")]
         CompiledStage::Explode(e) => e.apply(rec),
         CompiledStage::Custom(f) => Ok(f(rec)),
+        CompiledStage::PageFn(_) => Err(FaucetError::Transform(
+            "PageFn is a page-level stage and cannot run in a per-record context; \
+             use apply_stages_to_page".to_owned(),
+        )),
     }
 }
 
@@ -1230,5 +1269,74 @@ mod tests {
         });
         let out = apply_stages(rec, &stages).unwrap();
         assert_eq!(out.len(), 3);
+    }
+
+    // ── PageFn ──
+
+    fn page_count_stage() -> CompiledStage {
+        // Collapse the whole page into a single {"n": <count>} record.
+        CompiledStage::PageFn(Arc::new(|recs: Vec<Value>| {
+            Ok(vec![json!({ "n": recs.len() })])
+        }))
+    }
+
+    #[test]
+    fn page_fn_sees_whole_page() {
+        let out = apply_stages_to_page(
+            vec![json!({"a": 1}), json!({"a": 2}), json!({"a": 3})],
+            &[page_count_stage()],
+        )
+        .unwrap();
+        assert_eq!(out, vec![json!({"n": 3})]);
+    }
+
+    #[cfg(feature = "transform-filter")]
+    #[test]
+    fn page_fn_interleaves_with_per_record_stages() {
+        // filter (drop a==2) → page-count → (map identity). Count must see 2 rows.
+        let compiled = compile(&[TransformStage::Filter(FilterSpec {
+            path: "a".into(),
+            op: FilterOp::Ne,
+            value: Some(json!(2)),
+        })]);
+        let mut stages = compiled;
+        stages.push(page_count_stage());
+        let out = apply_stages_to_page(
+            vec![json!({"a": 1}), json!({"a": 2}), json!({"a": 3})],
+            &stages,
+        )
+        .unwrap();
+        assert_eq!(out, vec![json!({"n": 2})]);
+    }
+
+    #[test]
+    fn page_fn_only_per_record_path_matches_flat_map() {
+        // A page of per-record stages routes identically through both runners.
+        let compiled = compile(&[TransformStage::Map(RecordTransform::KeysCase {
+            mode: KeyCaseMode::Snake,
+        })]);
+        let page = vec![json!({"FooBar": 1}), json!({"BazQux": 2})];
+        let via_page = apply_stages_to_page(page.clone(), &compiled).unwrap();
+        let mut via_record = Vec::new();
+        for r in page {
+            via_record.extend(apply_stages(r, &compiled).unwrap());
+        }
+        assert_eq!(via_page, via_record);
+    }
+
+    #[test]
+    fn page_fn_error_propagates() {
+        let boom: CompiledStage = CompiledStage::PageFn(Arc::new(|_| {
+            Err(FaucetError::Transform("boom".into()))
+        }));
+        let err = apply_stages_to_page(vec![json!({})], &[boom]).unwrap_err();
+        assert!(matches!(err, FaucetError::Transform(m) if m == "boom"));
+    }
+
+    #[test]
+    fn page_fn_in_per_record_context_errors() {
+        let err = apply_stages(json!({"a": 1}), &[page_count_stage()]).unwrap_err();
+        assert!(matches!(err, FaucetError::Transform(_)));
+        assert!(format!("{err}").contains("per-record"));
     }
 }
