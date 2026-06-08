@@ -535,6 +535,97 @@ fn resolve_parent_key(record: &Value, parent_key: &str) -> Option<Value> {
     Some(cur.clone())
 }
 
+/// What to keep from each of a parent's records when capturing for fan-out.
+/// Projecting to only the fields children reference bounds orchestrator memory
+/// at O(referenced-fields × N) instead of O(full-record × N) (#160).
+#[derive(Debug, Clone)]
+enum Projection {
+    /// Keep the whole record — a child referenced `${parent}` (the entire record)
+    /// or used an empty `parent_key`, so nothing can be safely dropped.
+    Full,
+    /// Keep only these pre-split, non-overlapping dotted paths.
+    Paths(Vec<Vec<String>>),
+}
+
+/// Split a dotted path into segments.
+fn split_path(path: &str) -> Vec<String> {
+    path.split('.').map(|s| s.to_string()).collect()
+}
+
+/// Reduce a set of segment-paths to a minimal non-overlapping set: drop any path
+/// that has a (segment-wise prefix) ancestor in the set — `["user"]` covers
+/// `["user","name"]`. Sorting puts ancestors before their descendants.
+fn minimal_paths(mut paths: Vec<Vec<String>>) -> Vec<Vec<String>> {
+    paths.sort();
+    paths.dedup();
+    let mut kept: Vec<Vec<String>> = Vec::new();
+    for p in paths {
+        let covered = kept
+            .iter()
+            .any(|anc| p.len() >= anc.len() && p[..anc.len()] == anc[..]);
+        if !covered {
+            kept.push(p);
+        }
+    }
+    kept
+}
+
+/// Resolve a pre-split dotted path against `record`, dispatching on each value's
+/// type exactly like `resolve_parent_key` / `interpolate::resolve_dotted`.
+fn walk_value(record: &Value, segments: &[String]) -> Option<Value> {
+    let mut cur = record;
+    for seg in segments {
+        cur = match cur {
+            Value::Object(m) => m.get(seg)?,
+            Value::Array(a) => a.get(seg.parse::<usize>().ok()?)?,
+            _ => return None,
+        };
+    }
+    Some(cur.clone())
+}
+
+/// Insert `leaf` at `segments` into `out`, creating intermediate `Value::Object`
+/// nodes keyed by the literal segment string. Callers pass non-overlapping
+/// `segments` (see `minimal_paths`), so a node that must be an object is never
+/// already a leaf.
+fn graft_object(out: &mut Value, segments: &[String], leaf: Value) {
+    if segments.is_empty() {
+        return;
+    }
+    let mut cur = out;
+    for seg in &segments[..segments.len() - 1] {
+        let map = match cur {
+            Value::Object(m) => m,
+            _ => return,
+        };
+        cur = map
+            .entry(seg.clone())
+            .or_insert_with(|| Value::Object(serde_json::Map::new()));
+    }
+    if let Value::Object(m) = cur {
+        m.insert(segments[segments.len() - 1].clone(), leaf);
+    }
+}
+
+/// Project `record` down to `projection`, building an all-objects reduced tree.
+/// Because the readers (`resolve_parent_key`, `interpolate_record`) dispatch on
+/// the reduced value's type, an array-index segment like `0` is stored — and
+/// later read — as the object key `"0"`, so resolution matches the original.
+fn project_record(record: &Value, projection: &Projection) -> Value {
+    match projection {
+        Projection::Full => record.clone(),
+        Projection::Paths(paths) => {
+            let mut out = Value::Object(serde_json::Map::new());
+            for segs in paths {
+                if let Some(v) = walk_value(record, segs) {
+                    graft_object(&mut out, segs, v);
+                }
+            }
+            out
+        }
+    }
+}
+
 /// Run one pipeline invocation. Returns (captured records, records_written).
 async fn run_one_invocation(
     node: &ExpandedNode,
@@ -1585,5 +1676,69 @@ matrix:
             .find(|i| i.row_id == "good")
             .unwrap();
         assert!(good_outcome.error.is_none());
+    }
+
+    // ── projection helpers (#160) ─────────────────────────────────────────────
+
+    #[test]
+    fn split_path_splits_on_dots() {
+        assert_eq!(split_path("id"), vec!["id".to_string()]);
+        assert_eq!(split_path("user.name"), vec!["user".to_string(), "name".to_string()]);
+    }
+
+    #[test]
+    fn minimal_paths_drops_descendants_of_kept_ancestors() {
+        let paths = vec![
+            vec!["user".into(), "name".into()],
+            vec!["user".into()],
+            vec!["id".into()],
+            vec!["id".into()],
+        ];
+        let min = minimal_paths(paths);
+        assert!(min.contains(&vec!["user".to_string()]));
+        assert!(min.contains(&vec!["id".to_string()]));
+        assert!(!min.contains(&vec!["user".to_string(), "name".to_string()]),
+            "user.name must be dropped — covered by user");
+        assert_eq!(min.len(), 2);
+    }
+
+    #[test]
+    fn project_full_clones_whole_record() {
+        let r = json!({"a": 1, "b": {"c": 2}});
+        assert_eq!(project_record(&r, &Projection::Full), r);
+    }
+
+    #[test]
+    fn project_keeps_only_referenced_paths() {
+        let r = json!({"id": 7, "user": {"name": "a", "age": 3}, "blob": "<huge>"});
+        let p = Projection::Paths(vec![
+            vec!["id".into()],
+            vec!["user".into(), "name".into()],
+        ]);
+        let got = project_record(&r, &p);
+        assert_eq!(got, json!({"id": 7, "user": {"name": "a"}}));
+        assert!(got.get("blob").is_none());
+        assert!(got["user"].get("age").is_none());
+    }
+
+    #[test]
+    fn project_array_index_path_resolves_same_as_original() {
+        let r = json!({"tags": ["x", "y", "z"]});
+        let p = Projection::Paths(vec![vec!["tags".into(), "0".into()]]);
+        let got = project_record(&r, &p);
+        assert_eq!(got, json!({"tags": {"0": "x"}}));
+        assert_eq!(resolve_parent_key(&got, "tags.0"), Some(json!("x")));
+        assert_eq!(
+            resolve_parent_key(&got, "tags.0"),
+            resolve_parent_key(&r, "tags.0"),
+            "reduced tree must resolve the same value as the original"
+        );
+    }
+
+    #[test]
+    fn project_missing_path_is_omitted() {
+        let r = json!({"id": 1});
+        let p = Projection::Paths(vec![vec!["nope".into()]]);
+        assert_eq!(project_record(&r, &p), json!({}));
     }
 }
