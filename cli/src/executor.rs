@@ -283,10 +283,7 @@ pub async fn run_expanded(nodes: Vec<ExpandedNode>, opts: ExecuteOptions) -> Cli
                     parent_id,
                     parent_key,
                 } => {
-                    let parent_records = level_records
-                        .get(parent_id)
-                        .cloned()
-                        .unwrap_or_default();
+                    let parent_records = level_records.get(parent_id).cloned().unwrap_or_default();
                     if parent_records.is_empty() {
                         tracing::info!(
                             row = %id, parent = %parent_id,
@@ -680,8 +677,10 @@ fn build_projections(
                 }
             }
         }
-        // `raw` is empty only if a child had an empty parent_key (→ full); fall
-        // back to Full so we never project away the state-key path.
+        // Defensive: `raw` is empty only when every child had an empty
+        // parent_key, which already set `full`. The `|| raw.is_empty()` keeps us
+        // on `Full` even if that ever changes, so we never project to an empty
+        // tree that would drop the state-key path.
         let projection = if full || raw.is_empty() {
             Projection::Full
         } else {
@@ -1768,7 +1767,10 @@ matrix:
     #[test]
     fn split_path_splits_on_dots() {
         assert_eq!(split_path("id"), vec!["id".to_string()]);
-        assert_eq!(split_path("user.name"), vec!["user".to_string(), "name".to_string()]);
+        assert_eq!(
+            split_path("user.name"),
+            vec!["user".to_string(), "name".to_string()]
+        );
     }
 
     #[test]
@@ -1782,8 +1784,10 @@ matrix:
         let min = minimal_paths(paths);
         assert!(min.contains(&vec!["user".to_string()]));
         assert!(min.contains(&vec!["id".to_string()]));
-        assert!(!min.contains(&vec!["user".to_string(), "name".to_string()]),
-            "user.name must be dropped — covered by user");
+        assert!(
+            !min.contains(&vec!["user".to_string(), "name".to_string()]),
+            "user.name must be dropped — covered by user"
+        );
         assert_eq!(min.len(), 2);
     }
 
@@ -1796,10 +1800,7 @@ matrix:
     #[test]
     fn project_keeps_only_referenced_paths() {
         let r = json!({"id": 7, "user": {"name": "a", "age": 3}, "blob": "<huge>"});
-        let p = Projection::Paths(vec![
-            vec!["id".into()],
-            vec!["user".into(), "name".into()],
-        ]);
+        let p = Projection::Paths(vec![vec!["id".into()], vec!["user".into(), "name".into()]]);
         let got = project_record(&r, &p);
         assert_eq!(got, json!({"id": 7, "user": {"name": "a"}}));
         assert!(got.get("blob").is_none());
@@ -1821,6 +1822,23 @@ matrix:
     }
 
     #[test]
+    fn project_numeric_object_key_resolves_same_as_original() {
+        // A numeric segment can address an OBJECT key in the original (not an
+        // array index). The reduced all-objects tree stores it under the same
+        // key, so resolution still matches — the parity property the design
+        // relies on, distinct from the array-index case above.
+        let r = json!({"data": {"0": "x", "1": "y"}});
+        let p = Projection::Paths(vec![vec!["data".into(), "0".into()]]);
+        let got = project_record(&r, &p);
+        assert_eq!(got, json!({"data": {"0": "x"}}));
+        assert_eq!(
+            resolve_parent_key(&got, "data.0"),
+            resolve_parent_key(&r, "data.0"),
+            "numeric object-key path must resolve identically on the reduced tree"
+        );
+    }
+
+    #[test]
     fn project_missing_path_is_omitted() {
         let r = json!({"id": 1});
         let p = Projection::Paths(vec![vec!["nope".into()]]);
@@ -1829,33 +1847,50 @@ matrix:
 
     #[test]
     fn build_projections_unions_parent_key_and_refs() {
-        use crate::expand::{DeferredRef, ExpandedNode, NodeRole};
         use crate::config::ConnectorSpec;
+        use crate::expand::{DeferredRef, ExpandedNode, NodeRole};
 
         fn child(id: &str, parent: &str, parent_key: &str, refs: &[(&str, &str)]) -> ExpandedNode {
             ExpandedNode {
                 id: id.into(),
                 row_index: 0,
-                role: NodeRole::Child { parent_id: parent.into(), parent_key: parent_key.into() },
-                source: ConnectorSpec { kind: "csv".into(), config: json!({}), transforms: None, inherit_transforms: true },
-                sink: ConnectorSpec { kind: "jsonl".into(), config: json!({}), transforms: None, inherit_transforms: true },
+                role: NodeRole::Child {
+                    parent_id: parent.into(),
+                    parent_key: parent_key.into(),
+                },
+                source: ConnectorSpec {
+                    kind: "csv".into(),
+                    config: json!({}),
+                    transforms: None,
+                    inherit_transforms: true,
+                },
+                sink: ConnectorSpec {
+                    kind: "jsonl".into(),
+                    config: json!({}),
+                    transforms: None,
+                    inherit_transforms: true,
+                },
                 transforms: Vec::new(),
                 state: None,
                 dlq: None,
                 #[cfg(feature = "quality")]
                 quality: None,
-                deferred_refs: refs.iter().map(|(rid, p)| DeferredRef {
-                    referenced_id: (*rid).into(),
-                    dotted_path: (*p).into(),
-                    token: format!("${{{rid}.{p}}}"),
-                }).collect(),
+                deferred_refs: refs
+                    .iter()
+                    .map(|(rid, p)| DeferredRef {
+                        referenced_id: (*rid).into(),
+                        dotted_path: (*p).into(),
+                        token: format!("${{{rid}.{p}}}"),
+                    })
+                    .collect(),
             }
         }
 
         let c1 = child("c1", "p", "id", &[("p", "user.name")]);
         let c2 = child("c2", "p", "id", &[("p", "email"), ("q", "x")]);
         let nodes_by_id = HashMap::from([("c1".to_string(), c1), ("c2".to_string(), c2)]);
-        let children_of = HashMap::from([("p".to_string(), vec!["c1".to_string(), "c2".to_string()])]);
+        let children_of =
+            HashMap::from([("p".to_string(), vec!["c1".to_string(), "c2".to_string()])]);
 
         let projs = build_projections(&nodes_by_id, &children_of);
         let p = projs.get("p").expect("projection for p");
@@ -1864,8 +1899,10 @@ matrix:
                 assert!(paths.contains(&vec!["id".to_string()]));
                 assert!(paths.contains(&vec!["user".to_string(), "name".to_string()]));
                 assert!(paths.contains(&vec!["email".to_string()]));
-                assert!(!paths.iter().any(|p| p == &vec!["x".to_string()]),
-                    "a ref to a different parent must not be captured under p");
+                assert!(
+                    !paths.iter().any(|p| p == &vec!["x".to_string()]),
+                    "a ref to a different parent must not be captured under p"
+                );
             }
             Projection::Full => panic!("expected Paths, got Full"),
         }
@@ -1873,17 +1910,37 @@ matrix:
 
     #[test]
     fn build_projections_whole_record_ref_is_full() {
-        use crate::expand::{DeferredRef, ExpandedNode, NodeRole};
         use crate::config::ConnectorSpec;
+        use crate::expand::{DeferredRef, ExpandedNode, NodeRole};
         let c = ExpandedNode {
-            id: "c".into(), row_index: 0,
-            role: NodeRole::Child { parent_id: "p".into(), parent_key: "id".into() },
-            source: ConnectorSpec { kind: "csv".into(), config: json!({}), transforms: None, inherit_transforms: true },
-            sink: ConnectorSpec { kind: "jsonl".into(), config: json!({}), transforms: None, inherit_transforms: true },
-            transforms: Vec::new(), state: None, dlq: None,
+            id: "c".into(),
+            row_index: 0,
+            role: NodeRole::Child {
+                parent_id: "p".into(),
+                parent_key: "id".into(),
+            },
+            source: ConnectorSpec {
+                kind: "csv".into(),
+                config: json!({}),
+                transforms: None,
+                inherit_transforms: true,
+            },
+            sink: ConnectorSpec {
+                kind: "jsonl".into(),
+                config: json!({}),
+                transforms: None,
+                inherit_transforms: true,
+            },
+            transforms: Vec::new(),
+            state: None,
+            dlq: None,
             #[cfg(feature = "quality")]
             quality: None,
-            deferred_refs: vec![DeferredRef { referenced_id: "p".into(), dotted_path: "".into(), token: "${p}".into() }],
+            deferred_refs: vec![DeferredRef {
+                referenced_id: "p".into(),
+                dotted_path: "".into(),
+                token: "${p}".into(),
+            }],
         };
         let nodes_by_id = HashMap::from([("c".to_string(), c)]);
         let children_of = HashMap::from([("p".to_string(), vec!["c".to_string()])]);
