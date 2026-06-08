@@ -143,6 +143,29 @@ paths:
           content: { application/json: { schema: { type: object } } }
         "401": { description: Missing or invalid bearer token }
         "404": { description: Unknown kind or name }
+  /v1/doctor:
+    post:
+      summary: Validate and probe a config without running it
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [config]
+              properties:
+                config: { type: string }
+                config_format: { type: string, enum: [yaml, json], default: yaml }
+      responses:
+        "200":
+          description: All probes passed; body is the doctor report
+          content: { application/json: { schema: { type: object } } }
+        "400": { description: Malformed config body }
+        "401": { description: Missing or invalid bearer token }
+        "422":
+          description: One or more probes failed; report in body
+          content: { application/json: { schema: { type: object } } }
   /healthz:
     get:
       summary: Liveness probe (unauthenticated)

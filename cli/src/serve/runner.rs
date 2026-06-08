@@ -183,7 +183,7 @@ pub async fn submit(state: ServerState, req: SubmitRequest) -> Result<SubmitResp
 /// Run the `doctor_first` probes. On success returns the (redacted) report so
 /// the caller can store it on the run record (`doctor_report`); on any probe
 /// failure returns 422 with the same redacted report as `details`.
-async fn run_doctor_first(
+pub(crate) async fn run_doctor_first(
     state: &ServerState,
     loaded: &LoadedSubmission,
 ) -> Result<serde_json::Value, ServeError> {

@@ -126,3 +126,17 @@ async fn schemas_catalog_and_one_schema() {
     let r = client.get(format!("{base}/v1/schemas/source/nope")).send().await.unwrap();
     assert_eq!(r.status(), 404);
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn doctor_rejects_invalid_config() {
+    let port = free_port();
+    let (base, client) = boot(args(port)).await;
+    let r = client
+        .post(format!("{base}/v1/doctor"))
+        .json(&serde_json::json!({ "config": "::: not yaml :::" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 400);
+    assert!(r.text().await.unwrap().contains("\"error\""));
+}
