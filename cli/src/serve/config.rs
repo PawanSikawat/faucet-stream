@@ -65,6 +65,10 @@ pub struct ServeConfig {
     /// Tracing filter directive for serve's own subscriber. Set from the
     /// clap-resolved `--log-level` / `FAUCET_LOG`; defaults to `"info"`.
     pub log_level: String,
+    /// Whether to serve the embedded web console. Built only when the `serve-ui`
+    /// feature is on; this gates serving at runtime (`--no-ui`).
+    #[cfg_attr(not(feature = "serve-ui"), allow(dead_code))]
+    pub ui_enabled: bool,
 }
 
 fn default_max_concurrent() -> usize {
@@ -169,6 +173,7 @@ impl ServeConfig {
             env_file: args.env_file,
             no_env_file: args.no_env_file,
             log_level: "info".to_string(),
+            ui_enabled: !args.no_ui,
         })
     }
 }
@@ -196,6 +201,7 @@ mod tests {
             probe_timeout_secs: 10,
             env_file: None,
             no_env_file: false,
+            no_ui: false,
         }
     }
 

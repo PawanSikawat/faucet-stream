@@ -717,6 +717,7 @@ mod tests {
             env_file: None,
             no_env_file: false,
             log_level: "info".into(),
+            ui_enabled: true,
         };
         let history = Arc::new(MemoryHistory::new(Duration::from_secs(60))) as Arc<dyn RunHistory>;
         let state = ServerState::new(
@@ -781,6 +782,7 @@ mod tests {
             env_file: None,
             no_env_file: false,
             log_level: "info".into(),
+            ui_enabled: true,
         };
         let history = Arc::new(MemoryHistory::new(Duration::from_secs(60))) as Arc<dyn RunHistory>;
         ServerState::new(

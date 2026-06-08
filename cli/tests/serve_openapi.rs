@@ -98,6 +98,7 @@ async fn every_documented_route_is_wired_on_the_live_server() {
         probe_timeout_secs: 5,
         env_file: None,
         no_env_file: true,
+        no_ui: false,
     };
     let mut config = ServeConfig::from_args(args).unwrap();
     config.log_level = "warn".into();

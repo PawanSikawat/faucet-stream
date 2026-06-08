@@ -127,6 +127,7 @@ mod tests {
             env_file: None,
             no_env_file: false,
             log_level: "info".into(),
+            ui_enabled: true,
         }
     }
 

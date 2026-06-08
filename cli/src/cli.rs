@@ -141,6 +141,10 @@ pub struct ServeArgs {
     /// Skip auto-loading `.env` from cwd at startup.
     #[arg(long)]
     pub no_env_file: bool,
+    /// Disable serving the embedded web console (only meaningful in a build that
+    /// includes the `serve-ui` feature; the API is unaffected).
+    #[arg(long)]
+    pub no_ui: bool,
 }
 
 /// `faucet run` arguments.

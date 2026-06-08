@@ -30,6 +30,7 @@ fn args_on(port: u16, token: Option<&str>) -> ServeArgs {
         probe_timeout_secs: 5,
         env_file: None,
         no_env_file: true,
+        no_ui: false,
     }
 }
 
