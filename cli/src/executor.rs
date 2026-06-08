@@ -236,7 +236,26 @@ pub async fn run_expanded(nodes: Vec<ExpandedNode>, opts: ExecuteOptions) -> Cli
         // Build the work units for this level. Each unit is one invocation —
         // a root runs once; a child runs once per parent record.
         let mut units: Vec<Unit> = Vec::new();
-        let captured_snapshot = captured.lock().await.clone();
+        // Move only the captured records of the parents whose children run this
+        // level out of the shared map. This both narrows the snapshot and frees
+        // each parent's buffer the moment its children consume it: all of a
+        // parent's children become ready in the same level, so its records are
+        // needed exactly once. Units hold their own `Arc<Value>` clones, so
+        // removing the map entry here only drops the map's hold (#160).
+        let level_records: HashMap<String, Vec<Arc<Value>>> = {
+            let consumed_parents: HashSet<&str> = ready
+                .iter()
+                .filter_map(|id| match &nodes_by_id[id].role {
+                    NodeRole::Child { parent_id, .. } => Some(parent_id.as_str()),
+                    NodeRole::Root => None,
+                })
+                .collect();
+            let mut cap = captured.lock().await;
+            consumed_parents
+                .iter()
+                .filter_map(|p| cap.remove(*p).map(|v| (p.to_string(), v)))
+                .collect()
+        };
         for id in &ready {
             let node = &nodes_by_id[id];
             // If a parent failed (and on_error=continue), the subtree is
@@ -264,7 +283,7 @@ pub async fn run_expanded(nodes: Vec<ExpandedNode>, opts: ExecuteOptions) -> Cli
                     parent_id,
                     parent_key,
                 } => {
-                    let parent_records = captured_snapshot
+                    let parent_records = level_records
                         .get(parent_id)
                         .cloned()
                         .unwrap_or_default();
@@ -303,7 +322,7 @@ pub async fn run_expanded(nodes: Vec<ExpandedNode>, opts: ExecuteOptions) -> Cli
                 }
             }
         }
-        drop(captured_snapshot);
+        drop(level_records);
 
         let mut had_level_failure = false;
         let mut nodes_with_any_failure: HashSet<String> = HashSet::new();
