@@ -51,8 +51,18 @@ pub fn build_router(state: ServerState, config: &ServeConfig) -> Router {
         CorsLayer::new().allow_origin(AllowOrigin::list(origins))
     };
 
-    public
-        .merge(api)
+    let mut router = public.merge(api);
+
+    #[cfg(feature = "serve-ui")]
+    if config.ui_enabled {
+        use crate::serve::ui_assets;
+        router = router
+            .route("/", axum::routing::get(ui_assets::index))
+            .route("/assets/{*path}", axum::routing::get(ui_assets::asset))
+            .fallback(ui_assets::spa_fallback);
+    }
+
+    router
         .layer(RequestBodyLimitLayer::new(config.body_limit_bytes))
         .layer(axum::middleware::from_fn(metrics::track_metrics))
         .layer(cors)

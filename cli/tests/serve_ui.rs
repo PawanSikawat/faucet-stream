@@ -1,0 +1,110 @@
+//! Embedded web-console serving + auth-boundary tests (serve-ui feature).
+#![cfg(feature = "serve-ui")]
+
+use faucet_cli::cli::ServeArgs;
+use faucet_cli::serve::ServeConfig;
+use std::time::Duration;
+
+fn free_port() -> u16 {
+    std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port()
+}
+
+fn args(port: u16) -> ServeArgs {
+    ServeArgs {
+        listen: format!("127.0.0.1:{port}"),
+        auth_token: None,
+        no_auth: true,
+        max_concurrent_runs: Some(2),
+        max_queued_runs: Some(8),
+        default_config: None,
+        history: None,
+        cors_origin: vec![],
+        body_limit_bytes: 1_048_576,
+        shutdown_grace_secs: 5,
+        retain_terminal_runs_secs: 604_800,
+        idempotency_retention_secs: 86_400,
+        lease_ttl_secs: 30,
+        probe_timeout_secs: 5,
+        env_file: None,
+        no_env_file: true,
+        no_ui: false,
+    }
+}
+
+async fn boot(args: ServeArgs) -> (String, reqwest::Client) {
+    let port = args.listen.rsplit(':').next().unwrap().to_string();
+    let mut config = ServeConfig::from_args(args).unwrap();
+    config.log_level = "warn".into();
+    tokio::spawn(async move {
+        let _ = faucet_cli::serve::run_server(config).await;
+    });
+    let client = reqwest::Client::new();
+    let base = format!("http://127.0.0.1:{port}");
+    for _ in 0..200 {
+        if client
+            .get(format!("{base}/healthz"))
+            .send()
+            .await
+            .map(|r| r.status().is_success())
+            .unwrap_or(false)
+        {
+            return (base, client);
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    panic!("server did not come up");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn serves_shell_assets_and_spa_fallback() {
+    let port = free_port();
+    let (base, client) = boot(args(port)).await;
+
+    let r = client.get(format!("{base}/")).send().await.unwrap();
+    assert_eq!(r.status(), 200);
+    assert!(
+        r.headers()["content-type"].to_str().unwrap().contains("text/html"),
+        "index should be html"
+    );
+
+    let r = client.get(format!("{base}/assets/styles.css")).send().await.unwrap();
+    assert_eq!(r.status(), 200);
+    assert!(r.headers()["content-type"].to_str().unwrap().contains("css"));
+
+    let r = client
+        .get(format!("{base}/runs"))
+        .header("accept", "text/html")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+    assert!(r.headers()["content-type"].to_str().unwrap().contains("text/html"));
+
+    let r = client
+        .get(format!("{base}/nope"))
+        .header("accept", "application/json")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 404);
+    assert!(r.text().await.unwrap().contains("\"error\""));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn ui_is_public_but_api_is_gated() {
+    let port = free_port();
+    let mut a = args(port);
+    a.no_auth = false;
+    a.auth_token = Some("s3cret".into());
+    let (base, client) = boot(a).await;
+
+    let r = client.get(format!("{base}/")).send().await.unwrap();
+    assert_eq!(r.status(), 200);
+
+    let r = client.get(format!("{base}/v1/runs")).send().await.unwrap();
+    assert_eq!(r.status(), 401);
+}
