@@ -1,9 +1,6 @@
 //! JSON ↔ Arrow conversion. `arrow-json` for both directions; `arrow` for
 //! concatenation. All errors surface as `FaucetError::Transform` (or
 //! `FaucetError::Config` for arity mismatches in the inline `values` relation).
-// The public helpers in this module are consumed by `runtime.rs` (Task 4).
-// Until that module is wired in, suppress the dead-code lint.
-#![allow(dead_code)]
 
 use arrow::array::RecordBatch;
 use arrow::datatypes::{Schema, SchemaRef};
@@ -68,9 +65,6 @@ pub fn record_batches_to_json(batches: &[RecordBatch]) -> Result<Vec<Value>, Fau
             writer.write(b).map_err(|e| te("json write", e))?;
         }
         writer.finish().map_err(|e| te("json finish", e))?;
-    }
-    if buf.is_empty() {
-        return Ok(Vec::new());
     }
     let rows: Vec<Value> = serde_json::from_slice(&buf).map_err(|e| te("json parse", e))?;
     Ok(rows)
