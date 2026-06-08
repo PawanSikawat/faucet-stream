@@ -10,9 +10,6 @@ categories.workspace = true
 keywords = ["sql", "duckdb", "transform", "pipeline", "etl"]
 description = "SQL-as-transform for faucet-stream — run DuckDB SQL over each pipeline page (the `batch` relation)."
 
-[lib]
-doctest = false
-
 [dependencies]
 faucet-core.workspace = true
 duckdb = { workspace = true, features = ["bundled", "vtab-arrow"] }
