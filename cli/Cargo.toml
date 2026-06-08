@@ -26,7 +26,7 @@ default = ["observability", "source", "sink", "state", "transforms", "compressio
 
 # Everything the default build ships, plus the long-running runtime modes:
 # `schedule` (cron scheduler) and `serve` (HTTP control plane).
-full = ["default", "schedule", "serve", "serve-history-postgres", "serve-history-sqlite", "lineage", "lineage-kafka", "transform-sql"]
+full = ["default", "schedule", "serve", "serve-ui", "serve-history-postgres", "serve-history-sqlite", "lineage", "lineage-kafka", "transform-sql"]
 
 # Data-quality checks (`quality:` config block). `quality-jsonschema` adds the
 # `json_schema` record check via a JSON Schema validator. Forwarded to
@@ -196,6 +196,9 @@ schedule = ["dep:croner", "dep:chrono-tz"]
 serve = ["observability", "tokio/net", "tokio/time", "dep:axum", "dep:tower-http", "dep:subtle", "dep:dashmap", "dep:sha2", "dep:async-stream"]
 serve-history-postgres = ["serve", "dep:sqlx"]
 serve-history-sqlite = ["serve", "dep:sqlx"]
+# Embedded web console (single-page UI) served by `faucet serve` at `/`.
+# Vanilla assets embedded via rust-embed; no JS build step. Implies `serve`.
+serve-ui = ["serve", "dep:rust-embed"]
 
 [dependencies]
 faucet-core.workspace = true
@@ -287,6 +290,8 @@ sha2 = { workspace = true, optional = true }
 # faucet serve SSE log streaming (Phase 4); only compiled with `serve`.
 async-stream = { workspace = true, optional = true }
 sqlx = { workspace = true, optional = true }
+# faucet serve embedded web console (serve-ui feature): compile-time asset embedding.
+rust-embed = { version = "8", optional = true, features = ["mime-guess"] }
 
 [dev-dependencies]
 tempfile = "3"
