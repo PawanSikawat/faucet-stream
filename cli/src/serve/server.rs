@@ -2,7 +2,7 @@
 
 use crate::error::{CliError, CliResult};
 use crate::serve::config::ServeConfig;
-use crate::serve::handlers::{health, logs, runs};
+use crate::serve::handlers::{doctor, health, logs, runs, schemas};
 use crate::serve::history::RunHistory;
 use crate::serve::state::ServerState;
 use crate::serve::{auth, metrics};
@@ -29,6 +29,9 @@ pub fn build_router(state: ServerState, config: &ServeConfig) -> Router {
         .route("/v1/runs/{id}", get(runs::get_run).delete(runs::delete_run))
         .route("/v1/runs/{id}/cancel", post(runs::cancel_run))
         .route("/v1/runs/{id}/logs", get(logs::stream_logs))
+        .route("/v1/schemas", get(schemas::list_schemas))
+        .route("/v1/schemas/{kind}/{name}", get(schemas::get_schema))
+        .route("/v1/doctor", post(doctor::doctor))
         .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),
             auth::require_auth,
@@ -51,8 +54,18 @@ pub fn build_router(state: ServerState, config: &ServeConfig) -> Router {
         CorsLayer::new().allow_origin(AllowOrigin::list(origins))
     };
 
-    public
-        .merge(api)
+    let mut router = public.merge(api);
+
+    #[cfg(feature = "serve-ui")]
+    if config.ui_enabled {
+        use crate::serve::ui_assets;
+        router = router
+            .route("/", axum::routing::get(ui_assets::index))
+            .route("/assets/{*path}", axum::routing::get(ui_assets::asset))
+            .fallback(ui_assets::spa_fallback);
+    }
+
+    router
         .layer(RequestBodyLimitLayer::new(config.body_limit_bytes))
         .layer(axum::middleware::from_fn(metrics::track_metrics))
         .layer(cors)

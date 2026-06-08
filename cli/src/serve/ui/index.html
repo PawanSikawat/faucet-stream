@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>faucet stream — console</title>
+    <link rel="icon" href="/assets/mark.svg" />
+    <link rel="stylesheet" href="/assets/styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <a class="brand" href="#/runs">
+        <img src="/assets/mark.svg" alt="" class="brand-mark" />
+        <span class="brand-name"><b>faucet</b> stream</span>
+      </a>
+      <nav class="nav">
+        <button id="nav-runs">Runs</button>
+        <button id="nav-submit">Submit</button>
+        <button id="nav-schemas">Schemas</button>
+      </nav>
+      <div class="spacer"></div>
+      <button id="theme-toggle" class="icon-btn" title="Toggle theme">◐</button>
+      <button id="token-btn" class="icon-btn" title="Access token">🔑</button>
+    </header>
+    <main id="view" class="view"><div class="empty">loading…</div></main>
+
+    <div id="token-modal" class="modal">
+      <div class="modal-card">
+        <h2>Access token</h2>
+        <p>This server requires a bearer token for the API.</p>
+        <input id="token-input" type="password" placeholder="paste bearer token" />
+        <div class="modal-actions">
+          <button id="token-clear" class="btn-ghost">Clear</button>
+          <button id="token-save" class="btn-primary">Save</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="toasts" class="toasts"></div>
+    <script type="module" src="/assets/app.js"></script>
+  </body>
+</html>

@@ -191,6 +191,37 @@ Selected flags (`faucet serve --help` for the full list):
 | `--cors-origin <origin>` | Allow-list a browser origin (repeatable; CORS off by default). |
 | `--lease-ttl-secs <n>` | Run-ownership lease TTL (default 30) for multi-instance orphan fencing on a shared persistent backend — set above worst-case stalls. See the [serve cookbook](../cookbook/serve.md#multi-instance-orphan-recovery-run-ownership-leases). |
 | `--body-limit-bytes` / `--shutdown-grace-secs` / `--retain-terminal-runs-secs` / `--idempotency-retention-secs` | Tuning knobs. |
+| `--no-ui` | Disable the embedded web console at runtime even when the binary was built with `serve-ui`. |
+
+### Optional embedded web console (`serve-ui`)
+
+When built with the `serve-ui` Cargo feature, `faucet serve` also serves a
+browser-based web console at `/` (and static assets at `/assets/*`):
+
+```bash
+cargo install faucet-cli --features serve-ui
+FAUCET_SERVE_AUTH_TOKEN=s3cret faucet serve --listen 127.0.0.1:8080
+# Open http://127.0.0.1:8080/ in a browser.
+```
+
+The static shell is public; all `/v1` data is bearer-gated as usual. The
+browser is prompted for the token on first load; it is stored in `localStorage`
+and sent on every `/v1` call. Pass `--no-ui` to disable the console at runtime
+without rebuilding.
+
+`serve-ui` implies `serve` and is included in the `full` aggregate. It ships
+three additional bearer-gated endpoints:
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/v1/schemas` | Catalog of compiled sources, sinks, transforms, and state-store kinds. |
+| `GET` | `/v1/schemas/{kind}/{name}` | JSON Schema for one connector or transform (`kind` ∈ `source`/`sink`/`transform`). 404 for unknown. |
+| `POST` | `/v1/doctor` | Validate + probe a submitted config without running it. 200 (pass) / 422 (fail). Body: `{ "config": "…", "config_format": "yaml" }`. |
+
+These endpoints require `serve` and are available regardless of `--no-ui`. See
+the [web console guide](../cookbook/web-console.md) for the full walkthrough and
+the [HTTP API reference](./http-api.md) for the complete endpoint/schema
+reference.
 
 > ⚠️ `serve` executes arbitrary client-supplied configs with the server's identity (secrets, files,
 > network egress). Run single-tenant, authenticated, behind egress controls. See the

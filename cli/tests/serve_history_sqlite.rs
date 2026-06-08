@@ -317,6 +317,7 @@ async fn server_with_sqlite_history_persists_runs() {
         probe_timeout_secs: 5,
         env_file: None,
         no_env_file: true,
+        no_ui: false,
     };
     let mut config = ServeConfig::from_args(args).unwrap();
     config.log_level = "warn".into();

@@ -113,6 +113,59 @@ paths:
               schema: { type: string }
         "401": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
+  /v1/schemas:
+    get:
+      summary: List compiled connector and transform schemas
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: Catalog of sources, sinks, transforms, and state-store kinds
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  sources: { type: array, items: { type: object, properties: { name: { type: string }, description: { type: string } } } }
+                  sinks: { type: array, items: { type: object, properties: { name: { type: string }, description: { type: string } } } }
+                  transforms: { type: array, items: { type: object, properties: { name: { type: string }, description: { type: string } } } }
+                  state: { type: array, items: { type: string } }
+        "401": { description: Missing or invalid bearer token }
+  /v1/schemas/{kind}/{name}:
+    get:
+      summary: Get the JSON Schema for one connector or transform
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: kind, in: path, required: true, schema: { type: string, enum: [source, sink, transform] } }
+        - { name: name, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: JSON Schema document
+          content: { application/json: { schema: { type: object } } }
+        "401": { description: Missing or invalid bearer token }
+        "404": { description: Unknown kind or name }
+  /v1/doctor:
+    post:
+      summary: Validate and probe a config without running it
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [config]
+              properties:
+                config: { type: string }
+                config_format: { type: string, enum: [yaml, json], default: yaml }
+      responses:
+        "200":
+          description: All probes passed; body is the doctor report
+          content: { application/json: { schema: { type: object } } }
+        "400": { description: Malformed config body }
+        "401": { description: Missing or invalid bearer token }
+        "422":
+          description: One or more probes failed; report in body
+          content: { application/json: { schema: { type: object } } }
   /healthz:
     get:
       summary: Liveness probe (unauthenticated)

@@ -25,6 +25,9 @@ const ROUTES: &[(&str, &str)] = &[
     ("DELETE", "/v1/runs/{id}"),
     ("POST", "/v1/runs/{id}/cancel"),
     ("GET", "/v1/runs/{id}/logs"),
+    ("GET", "/v1/schemas"),
+    ("GET", "/v1/schemas/{kind}/{name}"),
+    ("POST", "/v1/doctor"),
     ("GET", "/healthz"),
     ("GET", "/readyz"),
     ("GET", "/metrics"),
@@ -98,6 +101,7 @@ async fn every_documented_route_is_wired_on_the_live_server() {
         probe_timeout_secs: 5,
         env_file: None,
         no_env_file: true,
+        no_ui: false,
     };
     let mut config = ServeConfig::from_args(args).unwrap();
     config.log_level = "warn".into();
