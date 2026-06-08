@@ -169,7 +169,6 @@ pub async fn run_expanded(nodes: Vec<ExpandedNode>, opts: ExecuteOptions) -> Cli
     // as `Arc<Value>` so the per-level snapshot clone and the per-child-unit
     // hand-off are pointer bumps, not deep clones of the JSON tree (#160).
     let captured: CapturedRecords = Arc::new(Mutex::new(HashMap::new()));
-    let nodes_with_descendants: HashSet<String> = children_of.keys().cloned().collect();
 
     let mut outcomes: Vec<InvocationOutcome> = Vec::new();
     let mut skipped_subtrees: HashSet<String> = HashSet::new();
@@ -188,6 +187,10 @@ pub async fn run_expanded(nodes: Vec<ExpandedNode>, opts: ExecuteOptions) -> Cli
     let mut completed: HashSet<String> = HashSet::new();
     let nodes_by_id: HashMap<String, ExpandedNode> =
         nodes.into_iter().map(|n| (n.id.clone(), n)).collect();
+
+    // Per-parent projection: what to keep from each captured record so the
+    // fan-out buffer holds only the fields children reference (#160).
+    let projections = build_projections(&nodes_by_id, &children_of);
 
     // Sort node ids in their original BFS row order so the executor is
     // deterministic — important for `on_error: stop`, where the first failure
@@ -233,7 +236,26 @@ pub async fn run_expanded(nodes: Vec<ExpandedNode>, opts: ExecuteOptions) -> Cli
         // Build the work units for this level. Each unit is one invocation —
         // a root runs once; a child runs once per parent record.
         let mut units: Vec<Unit> = Vec::new();
-        let captured_snapshot = captured.lock().await.clone();
+        // Move only the captured records of the parents whose children run this
+        // level out of the shared map. This both narrows the snapshot and frees
+        // each parent's buffer the moment its children consume it: all of a
+        // parent's children become ready in the same level, so its records are
+        // needed exactly once. Units hold their own `Arc<Value>` clones, so
+        // removing the map entry here only drops the map's hold (#160).
+        let level_records: HashMap<String, Vec<Arc<Value>>> = {
+            let consumed_parents: HashSet<&str> = ready
+                .iter()
+                .filter_map(|id| match &nodes_by_id[id].role {
+                    NodeRole::Child { parent_id, .. } => Some(parent_id.as_str()),
+                    NodeRole::Root => None,
+                })
+                .collect();
+            let mut cap = captured.lock().await;
+            consumed_parents
+                .iter()
+                .filter_map(|p| cap.remove(*p).map(|v| (p.to_string(), v)))
+                .collect()
+        };
         for id in &ready {
             let node = &nodes_by_id[id];
             // If a parent failed (and on_error=continue), the subtree is
@@ -261,10 +283,7 @@ pub async fn run_expanded(nodes: Vec<ExpandedNode>, opts: ExecuteOptions) -> Cli
                     parent_id,
                     parent_key,
                 } => {
-                    let parent_records = captured_snapshot
-                        .get(parent_id)
-                        .cloned()
-                        .unwrap_or_default();
+                    let parent_records = level_records.get(parent_id).cloned().unwrap_or_default();
                     if parent_records.is_empty() {
                         tracing::info!(
                             row = %id, parent = %parent_id,
@@ -300,7 +319,7 @@ pub async fn run_expanded(nodes: Vec<ExpandedNode>, opts: ExecuteOptions) -> Cli
                 }
             }
         }
-        drop(captured_snapshot);
+        drop(level_records);
 
         let mut had_level_failure = false;
         let mut nodes_with_any_failure: HashSet<String> = HashSet::new();
@@ -326,12 +345,12 @@ pub async fn run_expanded(nodes: Vec<ExpandedNode>, opts: ExecuteOptions) -> Cli
             let sem = Arc::clone(&semaphore);
             let opts2 = Arc::clone(&opts);
             let captured = Arc::clone(&captured);
-            let needs_capture = nodes_with_descendants.contains(&unit.node.id);
+            let capture = projections.get(&unit.node.id).cloned();
             let meta = (unit.node.id.clone(), unit.parent_record_key.clone());
             let unit_cancel = level_cancel.clone();
             let handle = joinset.spawn(async move {
                 let _permit = sem.acquire().await.expect("semaphore not closed");
-                run_unit(&unit, needs_capture, &captured, &opts2, unit_cancel).await
+                run_unit(&unit, capture, &captured, &opts2, unit_cancel).await
             });
             task_meta.insert(handle.id(), meta);
         }
@@ -453,16 +472,17 @@ struct Unit {
 
 async fn run_unit(
     unit: &Unit,
-    needs_capture: bool,
+    capture: Option<Arc<Projection>>,
     captured: &CapturedRecords,
     opts: &ExecuteOptions,
     cancel: CancellationToken,
 ) -> InvocationOutcome {
+    let needs_capture = capture.is_some();
     let result = run_one_invocation(
         &unit.node,
         unit.parent_record.as_deref(),
         &unit.state_key,
-        needs_capture,
+        capture,
         opts,
         cancel,
     )
@@ -535,12 +555,148 @@ fn resolve_parent_key(record: &Value, parent_key: &str) -> Option<Value> {
     Some(cur.clone())
 }
 
+/// What to keep from each of a parent's records when capturing for fan-out.
+/// Projecting to only the fields children reference bounds orchestrator memory
+/// at O(referenced-fields × N) instead of O(full-record × N) (#160).
+#[derive(Debug, Clone)]
+enum Projection {
+    /// Keep the whole record — a child referenced `${parent}` (the entire record)
+    /// or used an empty `parent_key`, so nothing can be safely dropped.
+    Full,
+    /// Keep only these pre-split, non-overlapping dotted paths.
+    Paths(Vec<Vec<String>>),
+}
+
+/// Split a dotted path into segments.
+fn split_path(path: &str) -> Vec<String> {
+    path.split('.').map(|s| s.to_string()).collect()
+}
+
+/// Reduce a set of segment-paths to a minimal non-overlapping set: drop any path
+/// that has a (segment-wise prefix) ancestor in the set — `["user"]` covers
+/// `["user","name"]`. Sorting puts ancestors before their descendants.
+fn minimal_paths(mut paths: Vec<Vec<String>>) -> Vec<Vec<String>> {
+    paths.sort();
+    paths.dedup();
+    let mut kept: Vec<Vec<String>> = Vec::new();
+    for p in paths {
+        let covered = kept
+            .iter()
+            .any(|anc| p.len() >= anc.len() && p[..anc.len()] == anc[..]);
+        if !covered {
+            kept.push(p);
+        }
+    }
+    kept
+}
+
+/// Resolve a pre-split dotted path against `record`, dispatching on each value's
+/// type exactly like `resolve_parent_key` / `interpolate::resolve_dotted`.
+fn walk_value(record: &Value, segments: &[String]) -> Option<Value> {
+    let mut cur = record;
+    for seg in segments {
+        cur = match cur {
+            Value::Object(m) => m.get(seg)?,
+            Value::Array(a) => a.get(seg.parse::<usize>().ok()?)?,
+            _ => return None,
+        };
+    }
+    Some(cur.clone())
+}
+
+/// Insert `leaf` at `segments` into `out`, creating intermediate `Value::Object`
+/// nodes keyed by the literal segment string. Callers pass non-overlapping
+/// `segments` (see `minimal_paths`), so a node that must be an object is never
+/// already a leaf.
+fn graft_object(out: &mut Value, segments: &[String], leaf: Value) {
+    if segments.is_empty() {
+        return;
+    }
+    let mut cur = out;
+    for seg in &segments[..segments.len() - 1] {
+        let map = match cur {
+            Value::Object(m) => m,
+            _ => return,
+        };
+        cur = map
+            .entry(seg.clone())
+            .or_insert_with(|| Value::Object(serde_json::Map::new()));
+    }
+    if let Value::Object(m) = cur {
+        m.insert(segments[segments.len() - 1].clone(), leaf);
+    }
+}
+
+/// Project `record` down to `projection`, building an all-objects reduced tree.
+/// Because the readers (`resolve_parent_key`, `interpolate_record`) dispatch on
+/// the reduced value's type, an array-index segment like `0` is stored — and
+/// later read — as the object key `"0"`, so resolution matches the original.
+fn project_record(record: &Value, projection: &Projection) -> Value {
+    match projection {
+        Projection::Full => record.clone(),
+        Projection::Paths(paths) => {
+            let mut out = Value::Object(serde_json::Map::new());
+            for segs in paths {
+                if let Some(v) = walk_value(record, segs) {
+                    graft_object(&mut out, segs, v);
+                }
+            }
+            out
+        }
+    }
+}
+
+/// Compute, per parent id, what to keep from each of its records: the union of
+/// every child's `parent_key` (the state-key path) and every `${parent.path}`
+/// token the children reference (from their pre-collected `deferred_refs`).
+/// Reused by the level loop to project captured records (#160).
+fn build_projections(
+    nodes_by_id: &HashMap<String, ExpandedNode>,
+    children_of: &HashMap<String, Vec<String>>,
+) -> HashMap<String, Arc<Projection>> {
+    let mut out = HashMap::new();
+    for (parent_id, child_ids) in children_of {
+        let mut raw: Vec<Vec<String>> = Vec::new();
+        let mut full = false;
+        for cid in child_ids {
+            let child = &nodes_by_id[cid];
+            if let NodeRole::Child { parent_key, .. } = &child.role {
+                if parent_key.is_empty() {
+                    full = true;
+                } else {
+                    raw.push(split_path(parent_key));
+                }
+            }
+            for dref in &child.deferred_refs {
+                if dref.referenced_id == *parent_id {
+                    if dref.dotted_path.is_empty() {
+                        full = true; // `${parent}` — whole record
+                    } else {
+                        raw.push(split_path(&dref.dotted_path));
+                    }
+                }
+            }
+        }
+        // Defensive: `raw` is empty only when every child had an empty
+        // parent_key, which already set `full`. The `|| raw.is_empty()` keeps us
+        // on `Full` even if that ever changes, so we never project to an empty
+        // tree that would drop the state-key path.
+        let projection = if full || raw.is_empty() {
+            Projection::Full
+        } else {
+            Projection::Paths(minimal_paths(raw))
+        };
+        out.insert(parent_id.clone(), Arc::new(projection));
+    }
+    out
+}
+
 /// Run one pipeline invocation. Returns (captured records, records_written).
 async fn run_one_invocation(
     node: &ExpandedNode,
     parent_record: Option<&Value>,
     state_key: &str,
-    needs_capture: bool,
+    capture: Option<Arc<Projection>>,
     opts: &ExecuteOptions,
     cancel: CancellationToken,
 ) -> CliResult<(Vec<Value>, usize)> {
@@ -581,10 +737,13 @@ async fn run_one_invocation(
         None => raw_sink,
     };
     let captured = Arc::new(Mutex::new(Vec::<Value>::new()));
-    let sink: Box<dyn Sink> = if needs_capture {
-        Box::new(CapturingSink::wrap(raw_sink, Arc::clone(&captured)))
-    } else {
-        raw_sink
+    let sink: Box<dyn Sink> = match &capture {
+        Some(projection) => Box::new(CapturingSink::wrap(
+            raw_sink,
+            Arc::clone(&captured),
+            Arc::clone(projection),
+        )),
+        None => raw_sink,
     };
 
     // ── Lineage: sampling wrappers (only for requested facets) ───────────────
@@ -843,7 +1002,7 @@ async fn run_one_invocation(
 
     let result = result?;
 
-    let captured = if needs_capture {
+    let captured = if capture.is_some() {
         std::mem::take(&mut *captured.lock().await)
     } else {
         Vec::new()
@@ -967,16 +1126,26 @@ impl Source for StateKeyOverride {
     }
 }
 
-/// Forwards each record to an inner sink while also cloning it into a shared
-/// buffer for descendant rows to consume.
+/// Forwards each record to an inner sink while also capturing a **projected**
+/// copy into a shared buffer for descendant rows to consume. Projecting to only
+/// the fields children reference bounds orchestrator memory (#160).
 struct CapturingSink {
     inner: Box<dyn Sink>,
     captured: Arc<Mutex<Vec<Value>>>,
+    projection: Arc<Projection>,
 }
 
 impl CapturingSink {
-    fn wrap(inner: Box<dyn Sink>, captured: Arc<Mutex<Vec<Value>>>) -> Self {
-        Self { inner, captured }
+    fn wrap(
+        inner: Box<dyn Sink>,
+        captured: Arc<Mutex<Vec<Value>>>,
+        projection: Arc<Projection>,
+    ) -> Self {
+        Self {
+            inner,
+            captured,
+            projection,
+        }
     }
 }
 
@@ -987,10 +1156,16 @@ impl Sink for CapturingSink {
     }
     async fn write_batch(&self, records: &[Value]) -> Result<usize, FaucetError> {
         let written = self.inner.write_batch(records).await?;
-        // Capture only what actually landed (LimitedSink may have dropped some).
+        // Capture only what actually landed (LimitedSink may have dropped some),
+        // projected to the fields children reference (#160).
         let n = written.min(records.len());
         let mut buf = self.captured.lock().await;
-        buf.extend(records.iter().take(n).cloned());
+        buf.extend(
+            records
+                .iter()
+                .take(n)
+                .map(|r| project_record(r, &self.projection)),
+        );
         Ok(written)
     }
     async fn flush(&self) -> Result<(), FaucetError> {
@@ -1585,5 +1760,251 @@ matrix:
             .find(|i| i.row_id == "good")
             .unwrap();
         assert!(good_outcome.error.is_none());
+    }
+
+    // ── projection helpers (#160) ─────────────────────────────────────────────
+
+    #[test]
+    fn split_path_splits_on_dots() {
+        assert_eq!(split_path("id"), vec!["id".to_string()]);
+        assert_eq!(
+            split_path("user.name"),
+            vec!["user".to_string(), "name".to_string()]
+        );
+    }
+
+    #[test]
+    fn minimal_paths_drops_descendants_of_kept_ancestors() {
+        let paths = vec![
+            vec!["user".into(), "name".into()],
+            vec!["user".into()],
+            vec!["id".into()],
+            vec!["id".into()],
+        ];
+        let min = minimal_paths(paths);
+        assert!(min.contains(&vec!["user".to_string()]));
+        assert!(min.contains(&vec!["id".to_string()]));
+        assert!(
+            !min.contains(&vec!["user".to_string(), "name".to_string()]),
+            "user.name must be dropped — covered by user"
+        );
+        assert_eq!(min.len(), 2);
+    }
+
+    #[test]
+    fn project_full_clones_whole_record() {
+        let r = json!({"a": 1, "b": {"c": 2}});
+        assert_eq!(project_record(&r, &Projection::Full), r);
+    }
+
+    #[test]
+    fn project_keeps_only_referenced_paths() {
+        let r = json!({"id": 7, "user": {"name": "a", "age": 3}, "blob": "<huge>"});
+        let p = Projection::Paths(vec![vec!["id".into()], vec!["user".into(), "name".into()]]);
+        let got = project_record(&r, &p);
+        assert_eq!(got, json!({"id": 7, "user": {"name": "a"}}));
+        assert!(got.get("blob").is_none());
+        assert!(got["user"].get("age").is_none());
+    }
+
+    #[test]
+    fn project_array_index_path_resolves_same_as_original() {
+        let r = json!({"tags": ["x", "y", "z"]});
+        let p = Projection::Paths(vec![vec!["tags".into(), "0".into()]]);
+        let got = project_record(&r, &p);
+        assert_eq!(got, json!({"tags": {"0": "x"}}));
+        assert_eq!(resolve_parent_key(&got, "tags.0"), Some(json!("x")));
+        assert_eq!(
+            resolve_parent_key(&got, "tags.0"),
+            resolve_parent_key(&r, "tags.0"),
+            "reduced tree must resolve the same value as the original"
+        );
+    }
+
+    #[test]
+    fn project_numeric_object_key_resolves_same_as_original() {
+        // A numeric segment can address an OBJECT key in the original (not an
+        // array index). The reduced all-objects tree stores it under the same
+        // key, so resolution still matches — the parity property the design
+        // relies on, distinct from the array-index case above.
+        let r = json!({"data": {"0": "x", "1": "y"}});
+        let p = Projection::Paths(vec![vec!["data".into(), "0".into()]]);
+        let got = project_record(&r, &p);
+        assert_eq!(got, json!({"data": {"0": "x"}}));
+        assert_eq!(
+            resolve_parent_key(&got, "data.0"),
+            resolve_parent_key(&r, "data.0"),
+            "numeric object-key path must resolve identically on the reduced tree"
+        );
+    }
+
+    #[test]
+    fn project_missing_path_is_omitted() {
+        let r = json!({"id": 1});
+        let p = Projection::Paths(vec![vec!["nope".into()]]);
+        assert_eq!(project_record(&r, &p), json!({}));
+    }
+
+    #[test]
+    fn build_projections_unions_parent_key_and_refs() {
+        use crate::config::ConnectorSpec;
+        use crate::expand::{DeferredRef, ExpandedNode, NodeRole};
+
+        fn child(id: &str, parent: &str, parent_key: &str, refs: &[(&str, &str)]) -> ExpandedNode {
+            ExpandedNode {
+                id: id.into(),
+                row_index: 0,
+                role: NodeRole::Child {
+                    parent_id: parent.into(),
+                    parent_key: parent_key.into(),
+                },
+                source: ConnectorSpec {
+                    kind: "csv".into(),
+                    config: json!({}),
+                    transforms: None,
+                    inherit_transforms: true,
+                },
+                sink: ConnectorSpec {
+                    kind: "jsonl".into(),
+                    config: json!({}),
+                    transforms: None,
+                    inherit_transforms: true,
+                },
+                transforms: Vec::new(),
+                state: None,
+                dlq: None,
+                #[cfg(feature = "quality")]
+                quality: None,
+                deferred_refs: refs
+                    .iter()
+                    .map(|(rid, p)| DeferredRef {
+                        referenced_id: (*rid).into(),
+                        dotted_path: (*p).into(),
+                        token: format!("${{{rid}.{p}}}"),
+                    })
+                    .collect(),
+            }
+        }
+
+        let c1 = child("c1", "p", "id", &[("p", "user.name")]);
+        let c2 = child("c2", "p", "id", &[("p", "email"), ("q", "x")]);
+        let nodes_by_id = HashMap::from([("c1".to_string(), c1), ("c2".to_string(), c2)]);
+        let children_of =
+            HashMap::from([("p".to_string(), vec!["c1".to_string(), "c2".to_string()])]);
+
+        let projs = build_projections(&nodes_by_id, &children_of);
+        let p = projs.get("p").expect("projection for p");
+        match &**p {
+            Projection::Paths(paths) => {
+                assert!(paths.contains(&vec!["id".to_string()]));
+                assert!(paths.contains(&vec!["user".to_string(), "name".to_string()]));
+                assert!(paths.contains(&vec!["email".to_string()]));
+                assert!(
+                    !paths.iter().any(|p| p == &vec!["x".to_string()]),
+                    "a ref to a different parent must not be captured under p"
+                );
+            }
+            Projection::Full => panic!("expected Paths, got Full"),
+        }
+    }
+
+    #[test]
+    fn build_projections_whole_record_ref_is_full() {
+        use crate::config::ConnectorSpec;
+        use crate::expand::{DeferredRef, ExpandedNode, NodeRole};
+        let c = ExpandedNode {
+            id: "c".into(),
+            row_index: 0,
+            role: NodeRole::Child {
+                parent_id: "p".into(),
+                parent_key: "id".into(),
+            },
+            source: ConnectorSpec {
+                kind: "csv".into(),
+                config: json!({}),
+                transforms: None,
+                inherit_transforms: true,
+            },
+            sink: ConnectorSpec {
+                kind: "jsonl".into(),
+                config: json!({}),
+                transforms: None,
+                inherit_transforms: true,
+            },
+            transforms: Vec::new(),
+            state: None,
+            dlq: None,
+            #[cfg(feature = "quality")]
+            quality: None,
+            deferred_refs: vec![DeferredRef {
+                referenced_id: "p".into(),
+                dotted_path: "".into(),
+                token: "${p}".into(),
+            }],
+        };
+        let nodes_by_id = HashMap::from([("c".to_string(), c)]);
+        let children_of = HashMap::from([("p".to_string(), vec!["c".to_string()])]);
+        let projs = build_projections(&nodes_by_id, &children_of);
+        assert!(matches!(&**projs.get("p").unwrap(), Projection::Full));
+    }
+
+    #[tokio::test]
+    async fn fanout_projects_away_unreferenced_parent_fields() {
+        // Parent CSV has id + a big unreferenced "payload" column. The child only
+        // references ${parents.id} (in its output path), so projection keeps "id"
+        // and the parent_key but drops "payload" — and fan-out still works.
+        let dir = tempfile::tempdir().unwrap();
+        let parent_csv = dir.path().join("parents.csv");
+        let child_csv = dir.path().join("child.csv");
+        std::fs::write(&parent_csv, "id,payload\n1,aaaaaaaaaa\n2,bbbbbbbbbb\n").unwrap();
+        std::fs::write(&child_csv, "x\nA\n").unwrap();
+        let parent_out = dir.path().join("parents.jsonl");
+        let child_out_pattern = dir.path().join("child-${parents.id}.jsonl");
+
+        let yaml = format!(
+            r#"version: 1
+pipeline:
+  source: {{ type: csv, config: {{ path: {parent} }} }}
+  sink:   {{ type: jsonl, config: {{ path: {parent_out} }} }}
+matrix:
+  - id: parents
+  - id: child
+    parent: parents
+    source: {{ config: {{ path: {child} }} }}
+    sink:   {{ config: {{ path: "{child_out}" }} }}
+"#,
+            parent = parent_csv.display(),
+            parent_out = parent_out.display(),
+            child = child_csv.display(),
+            child_out = child_out_pattern.display(),
+        );
+        let cfg = crate::config::parse_with_extension(&yaml, "yaml").unwrap();
+        let nodes = expand(&cfg).unwrap();
+        let summary = run_expanded(
+            nodes,
+            ExecuteOptions {
+                pipeline_name: "projtest".into(),
+                execution: None,
+                dry_run: false,
+                limit: None,
+                state_path_override: None,
+                auth: Default::default(),
+                clock: chrono::Utc::now().fixed_offset(),
+                cancel: None,
+                #[cfg(feature = "lineage")]
+                lineage: None,
+                #[cfg(feature = "lineage")]
+                lineage_cfg: None,
+            },
+        )
+        .await
+        .unwrap();
+
+        // 1 parent + 2 child invocations (one per parent record) — cardinality kept.
+        assert_eq!(summary.invocations.len(), 3, "{summary:?}");
+        assert!(!summary.had_failures(), "{summary:?}");
+        // ${parents.id} resolved correctly for each child despite "payload" being projected away.
+        assert!(dir.path().join("child-1.jsonl").exists());
+        assert!(dir.path().join("child-2.jsonl").exists());
     }
 }
