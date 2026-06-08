@@ -1,4 +1,4 @@
-//! Pipeline-level transform stages. A [`TransformStage`] wraps one of four
+//! Pipeline-level transform stages. A [`TransformStage`] wraps one of five
 //! shapes:
 //!
 //! - [`TransformStage::Map`] holds an unchanged 1→1 [`RecordTransform`].
@@ -8,16 +8,26 @@
 //!   records (added in Task 5).
 //! - [`TransformStage::Custom`] is an `Fn(Value) -> Vec<Value>` closure
 //!   escape hatch for library callers.
+//! - [`TransformStage::PageFn`] is a `Fn(Vec<Value>) -> Result<Vec<Value>,
+//!   FaucetError>` whole-batch closure for transforms that need the full page
+//!   at once (SQL, sort, dedup, top-N). Not addressable from YAML.
 //!
-//! [`apply_stages`] is the per-record runner: it flat-maps stages left to
-//! right, so order matters (a `Filter` after an `Explode` filters children).
+//! [`apply_stages_to_page`] is the page-granular runner: per-record stages
+//! (`Map`/`Filter`/`Explode`/`Custom`) flat-map over each record in order,
+//! while `PageFn` stages receive and return the whole page slice. Declared
+//! order is preserved, so `filter → sql → select` works as expected.
 //! The observability wrapper [`crate::observability::instrumented_apply_stages`]
-//! calls this per record and aggregates the page-level counters.
+//! wraps `apply_stages_to_page` and aggregates per-page metrics.
 
 use crate::error::FaucetError;
 use crate::transform::{CompiledTransform, RecordTransform, compile as compile_record};
 use serde_json::Value;
 use std::sync::Arc;
+
+/// Type alias for the page-level transform closure stored in
+/// [`TransformStage::PageFn`] and [`CompiledStage::PageFn`].
+pub type PageFnBox =
+    Arc<dyn Fn(Vec<Value>) -> Result<Vec<Value>, FaucetError> + Send + Sync>;
 
 /// One stage in a transform pipeline.
 pub enum TransformStage {
@@ -38,7 +48,7 @@ pub enum TransformStage {
     /// The escape hatch for transforms that need the full batch at once (SQL,
     /// sort, dedup, top-N). Dependency-free; built by connectors/CLI, not
     /// addressable as a per-record stage.
-    PageFn(Arc<dyn Fn(Vec<Value>) -> Result<Vec<Value>, FaucetError> + Send + Sync>),
+    PageFn(PageFnBox),
 }
 
 impl std::fmt::Debug for TransformStage {
@@ -77,7 +87,7 @@ pub enum CompiledStage {
     #[cfg(feature = "transform-explode")]
     Explode(CompiledExplode),
     Custom(Arc<dyn Fn(Value) -> Vec<Value> + Send + Sync>),
-    PageFn(Arc<dyn Fn(Vec<Value>) -> Result<Vec<Value>, FaucetError> + Send + Sync>),
+    PageFn(PageFnBox),
 }
 
 impl std::fmt::Debug for CompiledStage {
@@ -1338,5 +1348,13 @@ mod tests {
         let err = apply_stages(json!({"a": 1}), &[page_count_stage()]).unwrap_err();
         assert!(matches!(err, FaucetError::Transform(_)));
         assert!(format!("{err}").contains("per-record"));
+    }
+
+    #[test]
+    fn page_fn_handles_empty_page() {
+        // An empty page through page_count_stage yields vec![{"n": 0}] — no panic,
+        // no error, and the PageFn closure correctly observes a zero-length slice.
+        let out = apply_stages_to_page(vec![], &[page_count_stage()]).unwrap();
+        assert_eq!(out, vec![json!({"n": 0})]);
     }
 }
