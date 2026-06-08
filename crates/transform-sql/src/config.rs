@@ -36,6 +36,7 @@ pub struct RelationSpec {
     pub reload_on_change: bool,
 }
 
+// serde `default = "..."` needs a function, not a literal.
 fn default_true() -> bool {
     true
 }
@@ -46,15 +47,22 @@ fn default_true() -> bool {
 pub enum RelationSource {
     /// Delimited file loaded via DuckDB `read_csv_auto`.
     Csv {
+        /// Filesystem path to the CSV file (absolute, or relative to the working directory).
         path: String,
+        /// Whether the first row is a header row. Default: `true`.
         #[serde(default = "default_true")]
         has_header: bool,
     },
     /// Newline-delimited JSON loaded via DuckDB `read_json_auto`.
-    Jsonl { path: String },
+    Jsonl {
+        /// Filesystem path to the JSONL file (absolute, or relative to the working directory).
+        path: String,
+    },
     /// Inline rows materialized into a table.
     Values {
+        /// Column names, in declaration order.
         columns: Vec<String>,
+        /// Rows of cell values; each inner row must have the same length as `columns`.
         rows: Vec<Vec<Value>>,
     },
 }
