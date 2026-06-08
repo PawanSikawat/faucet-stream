@@ -1890,4 +1890,64 @@ matrix:
         let projs = build_projections(&nodes_by_id, &children_of);
         assert!(matches!(&**projs.get("p").unwrap(), Projection::Full));
     }
+
+    #[tokio::test]
+    async fn fanout_projects_away_unreferenced_parent_fields() {
+        // Parent CSV has id + a big unreferenced "payload" column. The child only
+        // references ${parents.id} (in its output path), so projection keeps "id"
+        // and the parent_key but drops "payload" — and fan-out still works.
+        let dir = tempfile::tempdir().unwrap();
+        let parent_csv = dir.path().join("parents.csv");
+        let child_csv = dir.path().join("child.csv");
+        std::fs::write(&parent_csv, "id,payload\n1,aaaaaaaaaa\n2,bbbbbbbbbb\n").unwrap();
+        std::fs::write(&child_csv, "x\nA\n").unwrap();
+        let parent_out = dir.path().join("parents.jsonl");
+        let child_out_pattern = dir.path().join("child-${parents.id}.jsonl");
+
+        let yaml = format!(
+            r#"version: 1
+pipeline:
+  source: {{ type: csv, config: {{ path: {parent} }} }}
+  sink:   {{ type: jsonl, config: {{ path: {parent_out} }} }}
+matrix:
+  - id: parents
+  - id: child
+    parent: parents
+    source: {{ config: {{ path: {child} }} }}
+    sink:   {{ config: {{ path: "{child_out}" }} }}
+"#,
+            parent = parent_csv.display(),
+            parent_out = parent_out.display(),
+            child = child_csv.display(),
+            child_out = child_out_pattern.display(),
+        );
+        let cfg = crate::config::parse_with_extension(&yaml, "yaml").unwrap();
+        let nodes = expand(&cfg).unwrap();
+        let summary = run_expanded(
+            nodes,
+            ExecuteOptions {
+                pipeline_name: "projtest".into(),
+                execution: None,
+                dry_run: false,
+                limit: None,
+                state_path_override: None,
+                auth: Default::default(),
+                clock: chrono::Utc::now().fixed_offset(),
+                cancel: None,
+                #[cfg(feature = "lineage")]
+                lineage: None,
+                #[cfg(feature = "lineage")]
+                lineage_cfg: None,
+            },
+        )
+        .await
+        .unwrap();
+
+        // 1 parent + 2 child invocations (one per parent record) — cardinality kept.
+        assert_eq!(summary.invocations.len(), 3, "{summary:?}");
+        assert!(!summary.had_failures(), "{summary:?}");
+        // ${parents.id} resolved correctly for each child despite "payload" being projected away.
+        assert!(dir.path().join("child-1.jsonl").exists());
+        assert!(dir.path().join("child-2.jsonl").exists());
+    }
 }
