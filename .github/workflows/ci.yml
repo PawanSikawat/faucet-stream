@@ -123,6 +123,11 @@ jobs:
           done
           echo "::error::workspace tests failed after 3 attempts"
           exit 1
+      - name: Run serve-ui and serve-openapi tests in isolation
+        # Explicitly target the embedded-console tests with serve-ui so the
+        # feature-gated #![cfg(feature = "serve-ui")] gate is exercised and
+        # the OpenAPI two-way sync test runs against the console-enabled router.
+        run: cargo test -p faucet-cli --features serve-ui --test serve_ui --test serve_openapi
 
   # Verify each feature compiles in isolation (catches accidental cross-feature deps)
   feature-check:
@@ -197,10 +202,11 @@ jobs:
           - transform-sql
           # Scheduler (CLI-only)
           - schedule
-          # HTTP control plane (CLI-only) + its persistent run-history backends
+          # HTTP control plane (CLI-only) + its persistent run-history backends + embedded web console
           - serve
           - serve-history-postgres
           - serve-history-sqlite
+          - serve-ui
           # Secrets backends
           - secrets-vault
           - secrets-aws-sm

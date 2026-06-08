@@ -217,6 +217,28 @@ cargo install faucet-cli --features serve
 cargo install faucet-cli --features "serve,serve-history-postgres,serve-history-sqlite"
 ```
 
+#### Optional embedded web console (`serve-ui`)
+
+Build with `serve-ui` to serve a browser-based web console at `/` alongside the
+REST API. The console gives you a Runs dashboard, Run detail with live SSE logs,
+a Submit view (raw YAML/JSON editor + schema-driven wizard), and a Schemas
+explorer — all backed by the same bearer-gated `/v1` API.
+
+```bash
+cargo install faucet-cli --features serve-ui    # serve-ui implies serve
+FAUCET_SERVE_AUTH_TOKEN=s3cret faucet serve --listen 127.0.0.1:8080
+# Open http://127.0.0.1:8080/ in a browser; paste the bearer token when prompted.
+```
+
+Pass `--no-ui` to disable the console at runtime without rebuilding. The `serve-ui`
+feature also adds three bearer-gated endpoints: `GET /v1/schemas` (connector
+catalog), `GET /v1/schemas/{kind}/{name}` (one JSON Schema), and `POST /v1/doctor`
+(validate + probe a config without running it). These endpoints are available
+regardless of `--no-ui`.
+
+See the [web console guide](https://pawansikawat.github.io/faucet-stream/cookbook/web-console.html)
+for the full walkthrough.
+
 ### `faucet init`
 
 `faucet init` writes a starter `pipeline.yaml` by walking each selected connector's JSON Schema. Required fields are surfaced with a `# REQUIRED` comment and a typed placeholder (`""`, `0`, `false`, `[]`, `{}`); optional fields are commented out so connector-level defaults stay in force. Enum-typed fields list valid values in the trailing comment. Tagged-enum blocks (the `#[serde(tag = "type")]` shape used by `auth:`, `pagination:`, BigQuery `credentials:`, etc.) inline the chosen variant and emit every other variant as a commented-out "Alternative variants" block right below it — so users can switch auth modes (or pagination, or credentials) without leaving the file to consult `faucet schema`. Run `faucet init --interactive` (requires `--features cli-interactive`) to be prompted for each variant up front.
