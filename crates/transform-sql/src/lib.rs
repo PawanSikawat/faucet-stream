@@ -8,5 +8,6 @@
 //! per page is added in a later module.
 
 mod config;
+mod shovel;
 
 pub use config::{RelationSource, RelationSpec, SqlTransformConfig};
