@@ -67,13 +67,25 @@ async fn serves_shell_assets_and_spa_fallback() {
     let r = client.get(format!("{base}/")).send().await.unwrap();
     assert_eq!(r.status(), 200);
     assert!(
-        r.headers()["content-type"].to_str().unwrap().contains("text/html"),
+        r.headers()["content-type"]
+            .to_str()
+            .unwrap()
+            .contains("text/html"),
         "index should be html"
     );
 
-    let r = client.get(format!("{base}/assets/styles.css")).send().await.unwrap();
+    let r = client
+        .get(format!("{base}/assets/styles.css"))
+        .send()
+        .await
+        .unwrap();
     assert_eq!(r.status(), 200);
-    assert!(r.headers()["content-type"].to_str().unwrap().contains("css"));
+    assert!(
+        r.headers()["content-type"]
+            .to_str()
+            .unwrap()
+            .contains("css")
+    );
 
     let r = client
         .get(format!("{base}/runs"))
@@ -82,7 +94,12 @@ async fn serves_shell_assets_and_spa_fallback() {
         .await
         .unwrap();
     assert_eq!(r.status(), 200);
-    assert!(r.headers()["content-type"].to_str().unwrap().contains("text/html"));
+    assert!(
+        r.headers()["content-type"]
+            .to_str()
+            .unwrap()
+            .contains("text/html")
+    );
 
     let r = client
         .get(format!("{base}/nope"))
@@ -109,7 +126,11 @@ async fn ui_is_public_but_api_is_gated() {
     assert_eq!(r.status(), 401);
 
     // The new read/probe endpoints sit on the same gated sub-router.
-    let r = client.get(format!("{base}/v1/schemas")).send().await.unwrap();
+    let r = client
+        .get(format!("{base}/v1/schemas"))
+        .send()
+        .await
+        .unwrap();
     assert_eq!(r.status(), 401);
     let r = client
         .post(format!("{base}/v1/doctor"))
@@ -125,16 +146,28 @@ async fn schemas_catalog_and_one_schema() {
     let port = free_port();
     let (base, client) = boot(args(port)).await;
 
-    let r = client.get(format!("{base}/v1/schemas")).send().await.unwrap();
+    let r = client
+        .get(format!("{base}/v1/schemas"))
+        .send()
+        .await
+        .unwrap();
     assert_eq!(r.status(), 200);
     let body: serde_json::Value = r.json().await.unwrap();
     assert!(body["sources"].is_array() && body["sinks"].is_array());
 
-    let r = client.get(format!("{base}/v1/schemas/source/rest")).send().await.unwrap();
+    let r = client
+        .get(format!("{base}/v1/schemas/source/rest"))
+        .send()
+        .await
+        .unwrap();
     assert_eq!(r.status(), 200);
     assert!(r.json::<serde_json::Value>().await.unwrap().is_object());
 
-    let r = client.get(format!("{base}/v1/schemas/source/nope")).send().await.unwrap();
+    let r = client
+        .get(format!("{base}/v1/schemas/source/nope"))
+        .send()
+        .await
+        .unwrap();
     assert_eq!(r.status(), 404);
 }
 
