@@ -23,6 +23,7 @@ them are listed in `faucet list` and dispatchable as `type:` values.
 | `cast` | Coerce per-field types | `fields: {name: type}`, `on_error` |
 | `redact` | Replace listed field values with a mask | `fields: [..]`, `mask` |
 | `value_case` | Lowercase / uppercase / trim string values | `fields: [..]`, `mode` |
+| `sql` | Run DuckDB SQL over the whole page; records are the `batch` relation | `query`, `relations?`, `memory_limit?`, `threads?` · page-level (sees the whole batch) · needs `transform-sql` feature · [cookbook](./sql-transform.md) |
 
 The field-targeting transforms (`select`, `drop`, `set`, `rename_field`,
 `cast`, `redact`, `value_case`) act on **top-level** fields only —

@@ -24,6 +24,7 @@
 - [Data-quality checks](./cookbook/quality.md)
 - [Compression](./cookbook/compression.md)
 - [Record transforms](./cookbook/transforms.md)
+- [SQL transform](./cookbook/sql-transform.md)
 - [Secrets-manager interpolation](./cookbook/secrets.md)
 - [Adaptive batching](./cookbook/adaptive-batching.md)
 - [Scheduling](./cookbook/scheduling.md)
