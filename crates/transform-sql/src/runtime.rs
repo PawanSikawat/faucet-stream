@@ -1,6 +1,6 @@
 //! The compiled SQL transform: owns the DuckDB connection and runs each page.
 
-use crate::compile::{Reloadable, build_connection, validate_query};
+use crate::compile::{Reloadable, build_connection, sql_escape, validate_query};
 use crate::config::SqlTransformConfig;
 use crate::shovel::{infer_schema, json_to_record_batch, record_batches_to_json, schema_eq};
 use arrow::array::RecordBatch;
@@ -72,13 +72,14 @@ fn execute_page(st: &mut State, records: Vec<Value>) -> Result<Vec<Value>, Fauce
     }
     reload_relations(st)?;
 
-    // Schema cache: re-infer only on drift.
+    // Schema cache: infer once per page, reuse the cached schema on a match,
+    // otherwise adopt the freshly inferred one (first page or drift).
+    let fresh = infer_schema(&records)?;
     let schema = match &st.cached_schema {
-        Some(s) if schema_eq(s, &*infer_schema(&records)?) => s.clone(),
+        Some(s) if schema_eq(s, &fresh) => s.clone(),
         _ => {
-            let s = infer_schema(&records)?;
-            st.cached_schema = Some(s.clone());
-            s
+            st.cached_schema = Some(fresh.clone());
+            fresh
         }
     };
     let batch = json_to_record_batch(&records, schema)?;
@@ -126,14 +127,14 @@ fn reload_relations(st: &mut State) -> Result<(), FaucetError> {
                 format!(
                     "CREATE OR REPLACE TABLE \"{}\" AS SELECT * FROM read_csv_auto('{}', header={});",
                     r.name,
-                    r.path.replace('\'', "''"),
+                    sql_escape(&r.path),
                     r.has_header
                 )
             } else {
                 format!(
                     "CREATE OR REPLACE TABLE \"{}\" AS SELECT * FROM read_json_auto('{}', format='newline_delimited');",
                     r.name,
-                    r.path.replace('\'', "''")
+                    sql_escape(&r.path)
                 )
             };
             st.conn.execute_batch(&stmt).map_err(|e| {

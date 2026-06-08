@@ -142,7 +142,9 @@ fn check_exists(path: &str) -> Result<(), FaucetError> {
     }
 }
 
-fn sql_escape(s: &str) -> String {
+/// Escape a string literal for safe interpolation inside a single-quoted SQL
+/// string (e.g. a file path passed to `read_csv_auto('…')`).
+pub(crate) fn sql_escape(s: &str) -> String {
     s.replace('\'', "''")
 }
 
