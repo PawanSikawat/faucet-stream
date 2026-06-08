@@ -26,7 +26,7 @@ default = ["observability", "source", "sink", "state", "transforms", "compressio
 
 # Everything the default build ships, plus the long-running runtime modes:
 # `schedule` (cron scheduler) and `serve` (HTTP control plane).
-full = ["default", "schedule", "serve", "serve-history-postgres", "serve-history-sqlite", "lineage", "lineage-kafka"]
+full = ["default", "schedule", "serve", "serve-history-postgres", "serve-history-sqlite", "lineage", "lineage-kafka", "transform-sql"]
 
 # Data-quality checks (`quality:` config block). `quality-jsonschema` adds the
 # `json_schema` record check via a JSON Schema validator. Forwarded to
@@ -177,6 +177,7 @@ transforms = [
 # asked for. The `transforms` aggregate above enables every transform at once.
 transform-filter = ["faucet-core/transform-filter"]
 transform-explode = ["faucet-core/transform-explode"]
+transform-sql = ["dep:faucet-transform-sql"]
 
 observability = [
     "faucet-core/observability-install",
@@ -243,6 +244,7 @@ faucet-sink-gcs = { workspace = true, optional = true }
 faucet-state-redis = { workspace = true, optional = true }
 faucet-state-postgres = { workspace = true, optional = true }
 faucet-lineage = { workspace = true, optional = true }
+faucet-transform-sql = { workspace = true, optional = true }
 
 clap = { version = "4", features = ["derive", "env"] }
 dotenvy = "0.15"
