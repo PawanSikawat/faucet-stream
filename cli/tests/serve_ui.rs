@@ -107,6 +107,17 @@ async fn ui_is_public_but_api_is_gated() {
 
     let r = client.get(format!("{base}/v1/runs")).send().await.unwrap();
     assert_eq!(r.status(), 401);
+
+    // The new read/probe endpoints sit on the same gated sub-router.
+    let r = client.get(format!("{base}/v1/schemas")).send().await.unwrap();
+    assert_eq!(r.status(), 401);
+    let r = client
+        .post(format!("{base}/v1/doctor"))
+        .json(&serde_json::json!({ "config": "version: 1" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 401);
 }
 
 #[tokio::test(flavor = "multi_thread")]

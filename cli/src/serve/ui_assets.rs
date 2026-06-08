@@ -4,7 +4,7 @@
 
 use crate::serve::error::ServeError;
 use axum::extract::Path;
-use axum::http::{HeaderMap, StatusCode, header};
+use axum::http::{HeaderMap, Method, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 
 #[derive(rust_embed::RustEmbed)]
@@ -54,8 +54,8 @@ pub(crate) fn wants_html(headers: &HeaderMap) -> bool {
 /// Router fallback: an HTML-accepting GET to an unmatched path returns the SPA
 /// shell (enables hash-route deep links); everything else gets the standard JSON
 /// 404 so the API's 404 shape is preserved.
-pub async fn spa_fallback(headers: HeaderMap) -> Response {
-    if wants_html(&headers) {
+pub async fn spa_fallback(method: Method, headers: HeaderMap) -> Response {
+    if method == Method::GET && wants_html(&headers) {
         index().await
     } else {
         ServeError::NotFound.into_response()
