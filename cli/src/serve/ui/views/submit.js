@@ -1,5 +1,6 @@
 import { api, toast } from "../api.js";
 import { renderSchemaForm } from "../schema-form.js";
+import { escapeHtml } from "../utils.js";
 import { navigate } from "../router.js";
 
 export async function renderSubmit(container) {
@@ -18,8 +19,8 @@ export async function renderSubmit(container) {
       <div id="editor" class="submit-mode" hidden>
         <textarea id="cfg" class="code" spellcheck="false" placeholder="version: 1
 pipeline:
-  source: { kind: rest, config: { ... } }
-  sink: { kind: jsonl, config: { ... } }"></textarea>
+  source: { type: rest, config: { ... } }
+  sink: { type: jsonl, config: { ... } }"></textarea>
       </div>
       <fieldset class="submit-opts">
         <label>name <input id="o-name" /></label>
@@ -47,7 +48,7 @@ pipeline:
   const txForms = [];
 
   function selector(label, options) {
-    return `<label>${label}<select>${options.map((o) => `<option value="${o.name}">${o.name}</option>`).join("")}</select></label>`;
+    return `<label>${label}<select>${options.map((o) => `<option value="${escapeHtml(o.name)}">${escapeHtml(o.name)}</option>`).join("")}</select></label>`;
   }
 
   guided.innerHTML = `
@@ -67,7 +68,7 @@ pipeline:
       host.appendChild(form.el);
       set(form);
     } catch (e) {
-      host.innerHTML = `<div class="empty">${e.message}</div>`;
+      host.innerHTML = `<div class="empty">${escapeHtml(e.message)}</div>`;
     }
   }
 
@@ -99,11 +100,11 @@ pipeline:
   // Assemble the canonical config object from the wizard.
   function buildConfig() {
     const cfg = { version: 1, pipeline: {} };
-    if (srcForm) cfg.pipeline.source = { kind: srcSel.value, config: srcForm.read() };
-    if (sinkForm) cfg.pipeline.sink = { kind: sinkSel.value, config: sinkForm.read() };
+    if (srcForm) cfg.pipeline.source = { type: srcSel.value, config: srcForm.read() };
+    if (sinkForm) cfg.pipeline.sink = { type: sinkSel.value, config: sinkForm.read() };
     const tx = txForms
       .filter((t) => t.form)
-      .map((t) => ({ type: t.kind(), ...t.form.read() }));
+      .map((t) => ({ type: t.kind(), config: t.form.read() }));
     if (tx.length) cfg.pipeline.transforms = tx;
     const name = container.querySelector("#o-name").value.trim();
     if (name) cfg.name = name;

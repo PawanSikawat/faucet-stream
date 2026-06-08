@@ -4,8 +4,7 @@
 // "type" discriminator (the {type,config} auth pattern). Anything else falls
 // back to a raw-JSON textarea so no config is ever unreachable.
 
-let uid = 0;
-const nextId = () => `sf-${++uid}`;
+import { escapeHtml } from "./utils.js";
 
 function resolveRef(schema, root) {
   if (schema && schema.$ref) {
@@ -226,13 +225,8 @@ function firstSentence(s) {
   const m = s.split(/\.\s/)[0];
   return (m.length > 120 ? m.slice(0, 117) + "…" : m).replace(/\.$/, "");
 }
-function escapeHtml(s) {
-  return s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
-}
-
 // Public: render a form for `schema`; returns { el, read() } where read() yields
 // the config object.
 export function renderSchemaForm(schema, value) {
-  uid = 0;
   return build(schema, schema, value, true);
 }

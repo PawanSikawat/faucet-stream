@@ -1,4 +1,5 @@
 import { api, toast } from "../api.js";
+import { escapeHtml } from "../utils.js";
 
 export async function renderSchemas(container) {
   let catalog = { sources: [], sinks: [], transforms: [], state: [] };
@@ -6,7 +7,7 @@ export async function renderSchemas(container) {
 
   const group = (title, kind, items) =>
     `<div class="schema-group"><h3>${title}</h3>${items
-      .map((i) => `<button class="schema-item" data-kind="${kind}" data-name="${i.name}" title="${escapeHtml(i.description)}">${i.name}</button>`)
+      .map((i) => `<button class="schema-item" data-kind="${kind}" data-name="${escapeHtml(i.name)}" title="${escapeHtml(i.description)}">${escapeHtml(i.name)}</button>`)
       .join("")}</div>`;
 
   container.innerHTML = `
@@ -15,7 +16,7 @@ export async function renderSchemas(container) {
         ${group("Sources", "source", catalog.sources)}
         ${group("Sinks", "sink", catalog.sinks)}
         ${group("Transforms", "transform", catalog.transforms)}
-        <div class="schema-group"><h3>State stores</h3>${catalog.state.map((s) => `<span class="tag">${s}</span>`).join("")}</div>
+        <div class="schema-group"><h3>State stores</h3>${catalog.state.map((s) => `<span class="tag">${escapeHtml(s)}</span>`).join("")}</div>
       </aside>
       <section id="schema-view" class="schema-view"><div class="empty">Select a connector to view its schema.</div></section>
     </div>`;
@@ -28,10 +29,10 @@ export async function renderSchemas(container) {
       view.innerHTML = `<div class="empty">loading…</div>`;
       try {
         const schema = await api(`/v1/schemas/${btn.dataset.kind}/${encodeURIComponent(btn.dataset.name)}`);
-        view.innerHTML = `<h2>${btn.dataset.kind}: ${btn.dataset.name}</h2>` + fieldTable(schema) +
+        view.innerHTML = `<h2>${escapeHtml(btn.dataset.kind)}: ${escapeHtml(btn.dataset.name)}</h2>` + fieldTable(schema) +
           `<details class="raw"><summary>raw JSON Schema</summary><pre>${escapeHtml(JSON.stringify(schema, null, 2))}</pre></details>`;
       } catch (e) {
-        view.innerHTML = `<div class="empty">${e.message}</div>`;
+        view.innerHTML = `<div class="empty">${escapeHtml(e.message)}</div>`;
       }
     };
   });
@@ -44,13 +45,10 @@ function fieldTable(schema) {
     .map(([name, p]) => {
       const type = p.type || (p.$ref ? p.$ref.split("/").pop() : p.enum ? "enum" : p.oneOf || p.anyOf ? "union" : "object");
       const def = p.default !== undefined ? `<code>${escapeHtml(JSON.stringify(p.default))}</code>` : "";
-      return `<tr><td>${name}${req.has(name) ? " *" : ""}</td><td>${escapeHtml(String(type))}</td><td>${def}</td><td>${escapeHtml(firstSentence(p.description || ""))}</td></tr>`;
+      return `<tr><td>${escapeHtml(name)}${req.has(name) ? " *" : ""}</td><td>${escapeHtml(String(type))}</td><td>${def}</td><td>${escapeHtml(firstSentence(p.description || ""))}</td></tr>`;
     })
     .join("");
   return `<table class="tbl"><thead><tr><th>field</th><th>type</th><th>default</th><th>description</th></tr></thead><tbody>${rows}</tbody></table>`;
 }
 
 function firstSentence(s) { return s ? s.split(/\.\s/)[0].slice(0, 160) : ""; }
-function escapeHtml(s) {
-  return String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
-}

@@ -2,6 +2,7 @@ import { api, toast } from "../api.js";
 import { streamLogs } from "../sse.js";
 import { navigate } from "../router.js";
 import { fmtTime } from "./runs.js";
+import { escapeHtml } from "../utils.js";
 
 const TERMINAL = ["completed", "failed", "cancelled"];
 
@@ -42,7 +43,12 @@ export async function renderDetail(container, { id }) {
     try {
       rec = await api(`/v1/runs/${encodeURIComponent(id)}`);
     } catch (e) {
-      container.querySelector("#detail-head").innerHTML = `<div class="empty">${e.message}</div>`;
+      container.querySelector("#detail-head").innerHTML = `<div class="empty">${escapeHtml(e.message)}</div>`;
+      // Keep polling through a transient (network / 5xx) failure; stop on 4xx (e.g. a deleted run).
+      if (e.status === undefined || e.status >= 500) {
+        clearTimeout(pollTimer);
+        pollTimer = setTimeout(load, 3000);
+      }
       return;
     }
     renderHead(rec);
@@ -60,7 +66,7 @@ export async function renderDetail(container, { id }) {
     container.querySelector("#detail-head").innerHTML = `
       <div class="detail-grid">
         <div><span class="pill pill-${rec.status}">${rec.status}</span></div>
-        <div><b>${rec.name || rec.run_id}</b></div>
+        <div><b>${escapeHtml(rec.name || rec.run_id)}</b></div>
         <div>submitted ${fmtTime(rec.submitted_at)}</div>
         <div>started ${fmtTime(rec.started_at)}</div>
         <div>finished ${fmtTime(rec.finished_at)}</div>
@@ -101,8 +107,4 @@ export async function renderDetail(container, { id }) {
     clearTimeout(pollTimer);
     logCtrl?.abort();
   };
-}
-
-function escapeHtml(s) {
-  return String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 }

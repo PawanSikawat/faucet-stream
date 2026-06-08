@@ -1,5 +1,6 @@
 import { api, toast } from "../api.js";
 import { navigate } from "../router.js";
+import { escapeHtml } from "../utils.js";
 
 const STATUSES = ["", "queued", "running", "completed", "failed", "cancelled"];
 
@@ -84,7 +85,7 @@ function row(r) {
   const elapsed = r.elapsed_secs != null ? `${r.elapsed_secs.toFixed(1)}s` : "—";
   el.innerHTML = `
     <span class="pill pill-${r.status}">${r.status}</span>
-    <span class="run-name">${r.name || r.run_id}</span>
+    <span class="run-name">${escapeHtml(r.name || r.run_id)}</span>
     <span class="run-meta">${elapsed}</span>
     <span class="run-meta">${r.records_written ?? 0} rows</span>
     <span class="run-meta run-time">${fmtTime(r.submitted_at)}</span>`;
@@ -93,5 +94,5 @@ function row(r) {
 
 export function fmtTime(s) {
   if (!s) return "—";
-  try { return new Date(s).toLocaleString(); } catch { return s; }
+  try { return new Date(s).toLocaleString(); } catch { return "—"; }
 }
