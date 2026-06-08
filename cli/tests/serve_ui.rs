@@ -108,3 +108,21 @@ async fn ui_is_public_but_api_is_gated() {
     let r = client.get(format!("{base}/v1/runs")).send().await.unwrap();
     assert_eq!(r.status(), 401);
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn schemas_catalog_and_one_schema() {
+    let port = free_port();
+    let (base, client) = boot(args(port)).await;
+
+    let r = client.get(format!("{base}/v1/schemas")).send().await.unwrap();
+    assert_eq!(r.status(), 200);
+    let body: serde_json::Value = r.json().await.unwrap();
+    assert!(body["sources"].is_array() && body["sinks"].is_array());
+
+    let r = client.get(format!("{base}/v1/schemas/source/rest")).send().await.unwrap();
+    assert_eq!(r.status(), 200);
+    assert!(r.json::<serde_json::Value>().await.unwrap().is_object());
+
+    let r = client.get(format!("{base}/v1/schemas/source/nope")).send().await.unwrap();
+    assert_eq!(r.status(), 404);
+}

@@ -25,6 +25,8 @@ const ROUTES: &[(&str, &str)] = &[
     ("DELETE", "/v1/runs/{id}"),
     ("POST", "/v1/runs/{id}/cancel"),
     ("GET", "/v1/runs/{id}/logs"),
+    ("GET", "/v1/schemas"),
+    ("GET", "/v1/schemas/{kind}/{name}"),
     ("GET", "/healthz"),
     ("GET", "/readyz"),
     ("GET", "/metrics"),
