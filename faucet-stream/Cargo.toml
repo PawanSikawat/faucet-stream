@@ -91,8 +91,10 @@ quality-jsonschema = ["quality", "faucet-core/quality-jsonschema"]
 ## Kafka transport. Forwarded to `faucet-lineage`.
 lineage = ["dep:faucet-lineage"]
 lineage-kafka = ["lineage", "faucet-lineage/transport-kafka"]
+## SQL-as-transform via embedded DuckDB.
+transform-sql = ["dep:faucet-transform-sql"]
 ## Every connector and state backend.
-full = ["source", "sink", "state", "auth", "kafka-schema-registry", "compression", "quality", "quality-jsonschema", "lineage", "lineage-kafka"]
+full = ["source", "sink", "state", "auth", "kafka-schema-registry", "compression", "quality", "quality-jsonschema", "lineage", "lineage-kafka", "transform-sql"]
 
 ## Individual source connectors.
 source-rest = ["dep:faucet-source-rest"]
@@ -225,6 +227,7 @@ faucet-state-redis = { workspace = true, optional = true }
 faucet-state-postgres = { workspace = true, optional = true }
 
 faucet-lineage = { workspace = true, optional = true }
+faucet-transform-sql = { workspace = true, optional = true }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

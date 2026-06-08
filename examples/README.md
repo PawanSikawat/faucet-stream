@@ -32,6 +32,7 @@ These run immediately after installing the CLI — great for a first smoke test:
 | Example | Notes |
 |---------|-------|
 | `csv_to_jsonl.yaml` | the canonical smoke test (`make demo` runs this) |
+| `csv_to_jsonl_sql.yaml` | CSV → SQL GROUP BY + LEFT JOIN (embedded DuckDB) → JSONL; requires `--features transform-sql` |
 | `csv_to_sqlite.yaml` | CSV → local SQLite file |
 | `sqlite_to_jsonl.yaml`, `sqlite_to_csv.yaml` | local SQLite → file |
 | `rest_to_jsonl.yaml`, `rest_streaming.yaml`, `rest_to_stdout_preview.yaml` | point `base_url` at any HTTP API; preview needs no sink setup |

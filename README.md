@@ -143,7 +143,7 @@ runtime (bookmarks, dead-letter routing, metrics) so connectors stay simple:
 ```mermaid
 flowchart LR
     S["<b>Source</b><br/>REST · DB · CDC<br/>Kafka · S3 · Parquet"]
-    T["<b>Transforms</b><br/>flatten · rename · keys_case<br/>select · drop · set · cast<br/>redact · value_case · spell_symbols"]
+    T["<b>Transforms</b><br/>flatten · rename · keys_case<br/>select · drop · set · cast<br/>redact · value_case · spell_symbols<br/>sql (DuckDB, page-level)"]
     P{{"<b>Pipeline</b>"}}
     K["<b>Sink</b><br/>BigQuery · Postgres<br/>Parquet · Kafka · ..."]
     ST[("State store<br/>file · Redis · Postgres")]
@@ -157,7 +157,7 @@ flowchart LR
     P -.->|metrics + spans| O
 ```
 
-faucet-stream is a Cargo workspace with 54 crates — 23 sources, 18 sinks, 6 shared connector libraries, the shared auth-provider library, 2 state-store backends, the lineage crate, the shared core, the umbrella crate, and the CLI binary:
+faucet-stream is a Cargo workspace with 55 crates — 23 sources, 18 sinks, 6 shared connector libraries, the shared auth-provider library, 2 state-store backends, the lineage crate, the SQL transform crate, the shared core, the umbrella crate, and the CLI binary:
 
 | Crate | Description |
 |-------|-------------|
@@ -218,6 +218,8 @@ faucet-stream is a Cargo workspace with 54 crates — 23 sources, 18 sinks, 6 sh
 | [`faucet-state-postgres`](crates/state/postgres) | PostgreSQL-backed `StateStore` for persistent bookmarks |
 | **Lineage** | |
 | [`faucet-lineage`](crates/lineage) | OpenLineage event emission — HTTP/file/Kafka transports, schema facets, column-lineage analysis |
+| **Transforms** | |
+| [`faucet-transform-sql`](crates/transform-sql) | Embedded DuckDB SQL transform — run DuckDB SQL over each page (`batch` relation), reference relations (csv/jsonl/values), per-page semantics + `batch_size: 0` for global aggregation |
 | [`faucet-stream`](faucet-stream) | Umbrella crate — feature-gated re-exports of all connectors and state backends |
 | **CLI** | |
 | [`faucet-cli`](cli) | `faucet` binary — YAML/JSON config-driven pipeline runner (`run`, `validate`, `schema`, `list`, `preview`, `init`, `doctor`, `schedule`, `serve`) |
@@ -304,7 +306,7 @@ Every pipeline emits OTel-compatible `tracing` spans and Prometheus metrics auto
 - **Authentication** — Bearer, Basic, API Key (header or query param), OAuth2 (client credentials), Token Endpoint (fetch from any API), or custom headers
 - **Pagination** — cursor/token (JSONPath), page number, offset/limit, Link header, next-link-in-body
 - **JSONPath extraction** — point at where records live in any JSON response
-- **Record transforms** — flatten, rename keys (regex), `keys_case` (snake / camel / pascal / kebab / screaming_snake), plus config-exposed `select` / `drop` / `set` / `rename_field` / `cast` / `redact` / `value_case` / `spell_symbols`, or custom closures
+- **Record transforms** — flatten, rename keys (regex), `keys_case` (snake / camel / pascal / kebab / screaming_snake), plus config-exposed `select` / `drop` / `set` / `rename_field` / `cast` / `redact` / `value_case` / `spell_symbols` / `sql` (embedded DuckDB, page-level — `batch` relation), or custom closures
 - **Schema inference** — automatically derive a JSON Schema from sampled records
 - **Incremental replication** — bookmark-based filtering so you only fetch new records
 - **Partitions** — run the same stream across multiple contexts (e.g. per-org, per-repo)
@@ -965,6 +967,7 @@ Every pagination style has a termination/loop guard. `Cursor`, `LinkHeader`, and
 | `transform-value-case` | no | Lowercase / uppercase / trim string field values |
 | `transform-spell-symbols` | no | Spell out symbols in keys (`%` → `percent`, `#` → `number`, …) |
 | `transforms` | no | All built-in transforms above |
+| `transform-sql` | no | Embedded DuckDB SQL transform — run any DuckDB SQL query over each pipeline page via the `batch` relation (page-level; `batch_size: 0` for global aggregation) |
 | `compression` | no | gzip / zstd read+write on JSONL/CSV/S3/GCS source and sink connectors |
 
 `RecordTransform::Custom` is always available regardless of feature flags.
@@ -1149,6 +1152,7 @@ crates/
   state/
     redis/                    — Redis-backed StateStore
     postgres/                 — PostgreSQL-backed StateStore
+  transform-sql/              — faucet-transform-sql: embedded DuckDB SQL transform (batch relation, reference relations)
 faucet-stream/                — umbrella crate with feature-gated re-exports
 cli/                          — faucet-cli: `faucet` binary, YAML/JSON pipeline runner
   src/

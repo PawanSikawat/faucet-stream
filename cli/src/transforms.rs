@@ -170,9 +170,11 @@ struct TransformDef {
 /// so each row stays a single self-contained record next to its sibling
 /// entries.
 fn registry() -> Vec<TransformDef> {
+    #[allow(unused_mut)]
+    let mut defs: Vec<TransformDef> = Vec::new();
     #[cfg(feature = "transforms")]
     {
-        vec![
+        defs.extend(vec![
             TransformDef {
                 kind: "flatten",
                 description: "Flatten nested objects into a single level (configurable separator).",
@@ -351,12 +353,32 @@ fn registry() -> Vec<TransformDef> {
                     Ok(stage)
                 },
             },
-        ]
+        ]);
     }
-    #[cfg(not(feature = "transforms"))]
+    #[cfg(feature = "transform-sql")]
     {
-        Vec::new()
+        defs.push(TransformDef {
+            kind: "sql",
+            description: "Run DuckDB SQL over the whole page; records are the `batch` relation.",
+            schema_fn: || schema_sql(),
+            compile_fn: |kind, config| {
+                let cfg: faucet_transform_sql::SqlTransformConfig = decode_sql(kind, config)?;
+                let transform = faucet_transform_sql::SqlTransform::compile(&cfg).map_err(|e| {
+                    let message = match &e {
+                        faucet_core::FaucetError::Transform(m)
+                        | faucet_core::FaucetError::Config(m) => m.clone(),
+                        other => format!("{other}"),
+                    };
+                    CliError::InvalidTransform {
+                        name: kind.to_owned(),
+                        message,
+                    }
+                })?;
+                Ok(transform.into_page_stage())
+            },
+        });
     }
+    defs
 }
 
 /// Compile a list of [`TransformSpec`]s into [`TransformStage`]s in the
@@ -457,6 +479,22 @@ fn schema<T: JsonSchema>() -> Value {
 fn decode<T: serde::de::DeserializeOwned>(name: &str, config: Value) -> CliResult<T> {
     serde_json::from_value(config).map_err(|e| CliError::InvalidTransform {
         name: name.to_owned(),
+        message: e.to_string(),
+    })
+}
+
+#[cfg(feature = "transform-sql")]
+fn schema_sql() -> Value {
+    serde_json::to_value(faucet_core::schema_for!(
+        faucet_transform_sql::SqlTransformConfig
+    ))
+    .unwrap_or(Value::Null)
+}
+
+#[cfg(feature = "transform-sql")]
+fn decode_sql(kind: &str, config: Value) -> CliResult<faucet_transform_sql::SqlTransformConfig> {
+    serde_json::from_value(config).map_err(|e| CliError::InvalidTransform {
+        name: kind.to_owned(),
         message: e.to_string(),
     })
 }
@@ -852,6 +890,39 @@ mod tests {
             CliError::InvalidTransform { name, .. } => assert_eq!(name, "explode"),
             other => panic!("expected InvalidTransform, got {other:?}"),
         }
+    }
+
+    #[cfg(feature = "transform-sql")]
+    #[test]
+    fn compiles_sql_to_page_fn() {
+        let specs = vec![TransformSpec {
+            kind: "sql".into(),
+            config: json!({"query": "SELECT * FROM batch"}),
+        }];
+        let out = compile_transforms(&specs).unwrap();
+        assert_eq!(out.len(), 1);
+        assert!(matches!(out[0], faucet_core::TransformStage::PageFn(_)));
+    }
+
+    #[cfg(feature = "transform-sql")]
+    #[test]
+    fn sql_bad_query_is_invalid_transform() {
+        let specs = vec![TransformSpec {
+            kind: "sql".into(),
+            config: json!({"query": "SELEKT bad"}),
+        }];
+        let err = compile_transforms(&specs).unwrap_err();
+        match err {
+            CliError::InvalidTransform { name, .. } => assert_eq!(name, "sql"),
+            other => panic!("expected InvalidTransform, got {other:?}"),
+        }
+    }
+
+    #[cfg(feature = "transform-sql")]
+    #[test]
+    fn sql_schema_and_listing_present() {
+        assert!(transform_schema("sql").is_ok());
+        assert!(available_transforms().contains(&"sql"));
     }
 
     #[cfg(feature = "quality")]

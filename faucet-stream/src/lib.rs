@@ -421,3 +421,11 @@ pub mod state {
 /// [`lineage::LineageEmitter`] directly.
 #[cfg(feature = "lineage")]
 pub use faucet_lineage as lineage;
+
+// ── SQL transform (embedded DuckDB) ──────────────────────────────────────────
+/// SQL-as-transform: run DuckDB SQL over each pipeline page (the `batch`
+/// relation). Enable the `transform-sql` feature. The CLI wires this via the
+/// `sql` transform; library callers build [`transform_sql::SqlTransform`] and
+/// attach it with [`TransformingSource`].
+#[cfg(feature = "transform-sql")]
+pub use faucet_transform_sql as transform_sql;

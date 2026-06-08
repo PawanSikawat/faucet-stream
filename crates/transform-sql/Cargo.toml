@@ -1,0 +1,33 @@
+[package]
+name = "faucet-transform-sql"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+documentation = "https://docs.rs/faucet-transform-sql"
+categories.workspace = true
+keywords = ["sql", "duckdb", "transform", "pipeline", "etl"]
+description = "SQL-as-transform for faucet-stream — run DuckDB SQL over each pipeline page (the `batch` relation)."
+
+[dependencies]
+faucet-core.workspace = true
+duckdb = { workspace = true, features = ["bundled", "vtab-arrow"] }
+arrow.workspace = true
+arrow-json.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+schemars.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+criterion.workspace = true
+tempfile.workspace = true
+
+[[bench]]
+name = "sql_transform"
+harness = false
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
