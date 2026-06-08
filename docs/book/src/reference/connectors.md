@@ -72,7 +72,7 @@ file/append sinks (`jsonl`, `csv`, `stdout`) it's a no-op — they write per rec
 | Stdout | `sink-stdout` | no-op | ✗ | JSON Lines / pretty JSON / TSV |
 | Apache Kafka | `sink-kafka` | ✓ | ✗ | producer, batched sends, multi-topic routing |
 | Apache Parquet | `sink-parquet` | ✓ | ✗⁶ | local/S3, schema inference, row/byte rollover |
-| Apache Iceberg | `sink-iceberg` | ✓ | ✗⁶ | REST/Glue/SQL/HMS catalog, `fast_append` snapshot, Parquet data files |
+| Apache Iceberg | `sink-iceberg` | ✓ | ✗⁶ | REST/Glue/SQL/HMS catalog, local + cloud (S3/GCS) warehouses, `fast_append` snapshot, Parquet data files |
 
 ⁶ Parquet and Iceberg both handle compression internally at the Parquet column
 level, so the file-level `compression` feature doesn't apply to either.
