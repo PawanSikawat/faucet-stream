@@ -17,6 +17,8 @@ pub mod registry;
 pub mod runner;
 pub mod server;
 pub mod state;
+#[cfg(feature = "serve-ui")]
+pub mod ui_assets;
 
 pub use config::ServeConfig;
 
