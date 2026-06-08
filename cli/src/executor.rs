@@ -169,7 +169,6 @@ pub async fn run_expanded(nodes: Vec<ExpandedNode>, opts: ExecuteOptions) -> Cli
     // as `Arc<Value>` so the per-level snapshot clone and the per-child-unit
     // hand-off are pointer bumps, not deep clones of the JSON tree (#160).
     let captured: CapturedRecords = Arc::new(Mutex::new(HashMap::new()));
-    let nodes_with_descendants: HashSet<String> = children_of.keys().cloned().collect();
 
     let mut outcomes: Vec<InvocationOutcome> = Vec::new();
     let mut skipped_subtrees: HashSet<String> = HashSet::new();
@@ -188,6 +187,10 @@ pub async fn run_expanded(nodes: Vec<ExpandedNode>, opts: ExecuteOptions) -> Cli
     let mut completed: HashSet<String> = HashSet::new();
     let nodes_by_id: HashMap<String, ExpandedNode> =
         nodes.into_iter().map(|n| (n.id.clone(), n)).collect();
+
+    // Per-parent projection: what to keep from each captured record so the
+    // fan-out buffer holds only the fields children reference (#160).
+    let projections = build_projections(&nodes_by_id, &children_of);
 
     // Sort node ids in their original BFS row order so the executor is
     // deterministic — important for `on_error: stop`, where the first failure
@@ -326,12 +329,12 @@ pub async fn run_expanded(nodes: Vec<ExpandedNode>, opts: ExecuteOptions) -> Cli
             let sem = Arc::clone(&semaphore);
             let opts2 = Arc::clone(&opts);
             let captured = Arc::clone(&captured);
-            let needs_capture = nodes_with_descendants.contains(&unit.node.id);
+            let capture = projections.get(&unit.node.id).cloned();
             let meta = (unit.node.id.clone(), unit.parent_record_key.clone());
             let unit_cancel = level_cancel.clone();
             let handle = joinset.spawn(async move {
                 let _permit = sem.acquire().await.expect("semaphore not closed");
-                run_unit(&unit, needs_capture, &captured, &opts2, unit_cancel).await
+                run_unit(&unit, capture, &captured, &opts2, unit_cancel).await
             });
             task_meta.insert(handle.id(), meta);
         }
@@ -453,16 +456,17 @@ struct Unit {
 
 async fn run_unit(
     unit: &Unit,
-    needs_capture: bool,
+    capture: Option<Arc<Projection>>,
     captured: &CapturedRecords,
     opts: &ExecuteOptions,
     cancel: CancellationToken,
 ) -> InvocationOutcome {
+    let needs_capture = capture.is_some();
     let result = run_one_invocation(
         &unit.node,
         unit.parent_record.as_deref(),
         &unit.state_key,
-        needs_capture,
+        capture,
         opts,
         cancel,
     )
@@ -674,7 +678,7 @@ async fn run_one_invocation(
     node: &ExpandedNode,
     parent_record: Option<&Value>,
     state_key: &str,
-    needs_capture: bool,
+    capture: Option<Arc<Projection>>,
     opts: &ExecuteOptions,
     cancel: CancellationToken,
 ) -> CliResult<(Vec<Value>, usize)> {
@@ -715,10 +719,13 @@ async fn run_one_invocation(
         None => raw_sink,
     };
     let captured = Arc::new(Mutex::new(Vec::<Value>::new()));
-    let sink: Box<dyn Sink> = if needs_capture {
-        Box::new(CapturingSink::wrap(raw_sink, Arc::clone(&captured)))
-    } else {
-        raw_sink
+    let sink: Box<dyn Sink> = match &capture {
+        Some(projection) => Box::new(CapturingSink::wrap(
+            raw_sink,
+            Arc::clone(&captured),
+            Arc::clone(projection),
+        )),
+        None => raw_sink,
     };
 
     // ── Lineage: sampling wrappers (only for requested facets) ───────────────
@@ -977,7 +984,7 @@ async fn run_one_invocation(
 
     let result = result?;
 
-    let captured = if needs_capture {
+    let captured = if capture.is_some() {
         std::mem::take(&mut *captured.lock().await)
     } else {
         Vec::new()
@@ -1101,16 +1108,26 @@ impl Source for StateKeyOverride {
     }
 }
 
-/// Forwards each record to an inner sink while also cloning it into a shared
-/// buffer for descendant rows to consume.
+/// Forwards each record to an inner sink while also capturing a **projected**
+/// copy into a shared buffer for descendant rows to consume. Projecting to only
+/// the fields children reference bounds orchestrator memory (#160).
 struct CapturingSink {
     inner: Box<dyn Sink>,
     captured: Arc<Mutex<Vec<Value>>>,
+    projection: Arc<Projection>,
 }
 
 impl CapturingSink {
-    fn wrap(inner: Box<dyn Sink>, captured: Arc<Mutex<Vec<Value>>>) -> Self {
-        Self { inner, captured }
+    fn wrap(
+        inner: Box<dyn Sink>,
+        captured: Arc<Mutex<Vec<Value>>>,
+        projection: Arc<Projection>,
+    ) -> Self {
+        Self {
+            inner,
+            captured,
+            projection,
+        }
     }
 }
 
@@ -1121,10 +1138,16 @@ impl Sink for CapturingSink {
     }
     async fn write_batch(&self, records: &[Value]) -> Result<usize, FaucetError> {
         let written = self.inner.write_batch(records).await?;
-        // Capture only what actually landed (LimitedSink may have dropped some).
+        // Capture only what actually landed (LimitedSink may have dropped some),
+        // projected to the fields children reference (#160).
         let n = written.min(records.len());
         let mut buf = self.captured.lock().await;
-        buf.extend(records.iter().take(n).cloned());
+        buf.extend(
+            records
+                .iter()
+                .take(n)
+                .map(|r| project_record(r, &self.projection)),
+        );
         Ok(written)
     }
     async fn flush(&self) -> Result<(), FaucetError> {
