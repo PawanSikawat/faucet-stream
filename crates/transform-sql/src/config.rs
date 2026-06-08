@@ -82,10 +82,17 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(cfg.relations.len(), 1);
-        assert!(matches!(cfg.relations[0].source, RelationSource::Csv { .. }));
+        assert!(matches!(
+            cfg.relations[0].source,
+            RelationSource::Csv { .. }
+        ));
         // schema_for! must succeed (used by `faucet schema transform sql`).
         let schema = schemars::schema_for!(SqlTransformConfig);
         let json = serde_json::to_value(&schema).unwrap();
-        assert!(json.get("properties").and_then(|p| p.get("query")).is_some());
+        assert!(
+            json.get("properties")
+                .and_then(|p| p.get("query"))
+                .is_some()
+        );
     }
 }

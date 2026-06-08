@@ -14,9 +14,7 @@ fn make_stage(query: &str) -> faucet_core::stage::CompiledStage {
 }
 
 fn page(n: usize) -> Vec<Value> {
-    (0..n)
-        .map(|i| json!({"k": i % 8, "v": i as f64}))
-        .collect()
+    (0..n).map(|i| json!({"k": i % 8, "v": i as f64})).collect()
 }
 
 fn bench(c: &mut Criterion) {
@@ -25,9 +23,7 @@ fn bench(c: &mut Criterion) {
 
         let passthrough = make_stage("SELECT * FROM batch");
         c.bench_function(&format!("passthrough/{n}"), |b| {
-            b.iter(|| {
-                apply_stages_to_page(p.clone(), std::slice::from_ref(&passthrough)).unwrap()
-            })
+            b.iter(|| apply_stages_to_page(p.clone(), std::slice::from_ref(&passthrough)).unwrap())
         });
 
         let agg = make_stage("SELECT k, SUM(v) AS total FROM batch GROUP BY k");

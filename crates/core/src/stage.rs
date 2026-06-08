@@ -26,8 +26,7 @@ use std::sync::Arc;
 
 /// Type alias for the page-level transform closure stored in
 /// [`TransformStage::PageFn`] and [`CompiledStage::PageFn`].
-pub type PageFnBox =
-    Arc<dyn Fn(Vec<Value>) -> Result<Vec<Value>, FaucetError> + Send + Sync>;
+pub type PageFnBox = Arc<dyn Fn(Vec<Value>) -> Result<Vec<Value>, FaucetError> + Send + Sync>;
 
 /// One stage in a transform pipeline.
 pub enum TransformStage {
@@ -690,7 +689,8 @@ fn apply_one_stage(rec: Value, stage: &CompiledStage) -> Result<Vec<Value>, Fauc
         CompiledStage::Custom(f) => Ok(f(rec)),
         CompiledStage::PageFn(_) => Err(FaucetError::Transform(
             "PageFn is a page-level stage and cannot run in a per-record context; \
-             use apply_stages_to_page".to_owned(),
+             use apply_stages_to_page"
+                .to_owned(),
         )),
     }
 }
@@ -1336,9 +1336,8 @@ mod tests {
 
     #[test]
     fn page_fn_error_propagates() {
-        let boom: CompiledStage = CompiledStage::PageFn(Arc::new(|_| {
-            Err(FaucetError::Transform("boom".into()))
-        }));
+        let boom: CompiledStage =
+            CompiledStage::PageFn(Arc::new(|_| Err(FaucetError::Transform("boom".into()))));
         let err = apply_stages_to_page(vec![json!({})], &[boom]).unwrap_err();
         assert!(matches!(err, FaucetError::Transform(m) if m == "boom"));
     }

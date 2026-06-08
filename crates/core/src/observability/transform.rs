@@ -92,9 +92,10 @@ mod tests {
         let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let snap = snapshotter();
         let labels = Labels::new("p", "r", "rid");
-        let collapse = CompiledStage::PageFn(std::sync::Arc::new(|recs: Vec<serde_json::Value>| {
-            Ok(vec![json!({"n": recs.len()})])
-        }));
+        let collapse =
+            CompiledStage::PageFn(std::sync::Arc::new(|recs: Vec<serde_json::Value>| {
+                Ok(vec![json!({"n": recs.len()})])
+            }));
         let out = instrumented_apply_stages(
             vec![json!({"a": 1}), json!({"a": 2}), json!({"a": 3})],
             &[collapse],
@@ -107,6 +108,9 @@ mod tests {
             key.key().name() == "faucet_transform_records_out_total"
                 && matches!(v, DebugValue::Counter(c) if *c >= 1)
         });
-        assert!(out_one, "out counter should record the single collapsed row");
+        assert!(
+            out_one,
+            "out counter should record the single collapsed row"
+        );
     }
 }

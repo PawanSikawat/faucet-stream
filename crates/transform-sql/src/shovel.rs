@@ -37,9 +37,7 @@ pub fn json_to_record_batch(
     let mut decoder = arrow_json::ReaderBuilder::new(schema.clone())
         .build_decoder()
         .map_err(|e| te("decoder build", e))?;
-    decoder
-        .serialize(records)
-        .map_err(|e| te("encode", e))?;
+    decoder.serialize(records).map_err(|e| te("encode", e))?;
     let mut batches = Vec::new();
     while let Some(b) = decoder.flush().map_err(|e| te("flush", e))? {
         batches.push(b);

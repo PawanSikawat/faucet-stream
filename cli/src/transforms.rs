@@ -363,18 +363,17 @@ fn registry() -> Vec<TransformDef> {
             schema_fn: || schema_sql(),
             compile_fn: |kind, config| {
                 let cfg: faucet_transform_sql::SqlTransformConfig = decode_sql(kind, config)?;
-                let transform =
-                    faucet_transform_sql::SqlTransform::compile(&cfg).map_err(|e| {
-                        let message = match &e {
-                            faucet_core::FaucetError::Transform(m)
-                            | faucet_core::FaucetError::Config(m) => m.clone(),
-                            other => format!("{other}"),
-                        };
-                        CliError::InvalidTransform {
-                            name: kind.to_owned(),
-                            message,
-                        }
-                    })?;
+                let transform = faucet_transform_sql::SqlTransform::compile(&cfg).map_err(|e| {
+                    let message = match &e {
+                        faucet_core::FaucetError::Transform(m)
+                        | faucet_core::FaucetError::Config(m) => m.clone(),
+                        other => format!("{other}"),
+                    };
+                    CliError::InvalidTransform {
+                        name: kind.to_owned(),
+                        message,
+                    }
+                })?;
                 Ok(transform.into_page_stage())
             },
         });
@@ -486,15 +485,14 @@ fn decode<T: serde::de::DeserializeOwned>(name: &str, config: Value) -> CliResul
 
 #[cfg(feature = "transform-sql")]
 fn schema_sql() -> Value {
-    serde_json::to_value(faucet_core::schema_for!(faucet_transform_sql::SqlTransformConfig))
-        .unwrap_or(Value::Null)
+    serde_json::to_value(faucet_core::schema_for!(
+        faucet_transform_sql::SqlTransformConfig
+    ))
+    .unwrap_or(Value::Null)
 }
 
 #[cfg(feature = "transform-sql")]
-fn decode_sql(
-    kind: &str,
-    config: Value,
-) -> CliResult<faucet_transform_sql::SqlTransformConfig> {
+fn decode_sql(kind: &str, config: Value) -> CliResult<faucet_transform_sql::SqlTransformConfig> {
     serde_json::from_value(config).map_err(|e| CliError::InvalidTransform {
         name: kind.to_owned(),
         message: e.to_string(),

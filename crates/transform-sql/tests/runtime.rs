@@ -42,10 +42,7 @@ fn group_by_aggregation_within_page() {
     );
     assert_eq!(
         out,
-        vec![
-            json!({"k": "a", "total": 3}),
-            json!({"k": "b", "total": 5})
-        ]
+        vec![json!({"k": "a", "total": 3}), json!({"k": "b", "total": 5})]
     );
 }
 
@@ -90,7 +87,10 @@ fn join_to_csv_reference_relation() {
         threads: None,
     });
     let out = apply_stages_to_page(
-        vec![json!({"id": 1, "code": "US"}), json!({"id": 2, "code": "IN"})],
+        vec![
+            json!({"id": 1, "code": "US"}),
+            json!({"id": 2, "code": "IN"}),
+        ],
         &[s],
     )
     .unwrap();

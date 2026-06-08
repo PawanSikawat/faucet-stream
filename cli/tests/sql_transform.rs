@@ -1,4 +1,8 @@
-#![cfg(all(feature = "transform-sql", feature = "source-csv", feature = "sink-jsonl"))]
+#![cfg(all(
+    feature = "transform-sql",
+    feature = "source-csv",
+    feature = "sink-jsonl"
+))]
 
 use faucet_cli::config::TransformSpec;
 use faucet_cli::transforms::compile_transforms;
