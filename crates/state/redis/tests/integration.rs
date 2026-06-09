@@ -1,0 +1,143 @@
+//! Integration tests for `RedisStateStore` against a real Redis instance via
+//! testcontainers.
+//!
+//! These tests require Docker. Each test boots its own container so they are
+//! fully isolated and safe to run in parallel.
+
+use faucet_core::check::{CheckContext, ProbeStatus};
+use faucet_core::state::StateStore;
+use faucet_state_redis::RedisStateStore;
+use serde_json::json;
+use testcontainers::{ContainerAsync, runners::AsyncRunner};
+use testcontainers_modules::redis::Redis;
+
+/// Start a Redis container and return the handle (keeps it alive) plus a URL.
+async fn start_redis() -> (ContainerAsync<Redis>, String) {
+    let container = Redis::default().start().await.expect("redis container start");
+    let port = container.get_host_port_ipv4(6379).await.expect("redis port");
+    let url = format!("redis://127.0.0.1:{port}");
+    (container, url)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn full_lifecycle_get_put_overwrite_delete() {
+    let (_container, url) = start_redis().await;
+    let store = RedisStateStore::connect(&url, "faucet")
+        .await
+        .expect("connect");
+
+    // A key that was never written reads back as None.
+    assert_eq!(store.get("missing").await.expect("get missing"), None);
+
+    // Write then read back the exact value.
+    let v1 = json!({"page": 1, "cursor": "abc"});
+    store.put("bookmark", &v1).await.expect("put v1");
+    assert_eq!(
+        store.get("bookmark").await.expect("get v1"),
+        Some(v1),
+        "get must return the value that was put"
+    );
+
+    // Overwriting an existing key replaces the value.
+    let v2 = json!({"page": 2, "cursor": "def"});
+    store.put("bookmark", &v2).await.expect("put v2");
+    assert_eq!(
+        store.get("bookmark").await.expect("get v2"),
+        Some(v2),
+        "second put must overwrite the first"
+    );
+
+    // Delete removes the key; subsequent get is None.
+    store.delete("bookmark").await.expect("delete");
+    assert_eq!(
+        store.get("bookmark").await.expect("get after delete"),
+        None,
+        "get after delete must return None"
+    );
+
+    // Deleting an absent key is a no-op (no error).
+    store.delete("bookmark").await.expect("delete idempotent");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn nested_json_value_roundtrips_exactly() {
+    let (_container, url) = start_redis().await;
+    let store = RedisStateStore::connect(&url, "faucet")
+        .await
+        .expect("connect");
+
+    let nested = json!({
+        "offset": 12345,
+        "partitions": [0, 1, 2],
+        "meta": {"done": false, "ratio": 0.5, "note": null}
+    });
+    store.put("kafka", &nested).await.expect("put nested");
+    assert_eq!(
+        store.get("kafka").await.expect("get nested"),
+        Some(nested),
+        "nested JSON must survive the serialize/deserialize round-trip"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn check_probe_passes_against_live_redis() {
+    let (_container, url) = start_redis().await;
+    let store = RedisStateStore::connect(&url, "faucet")
+        .await
+        .expect("connect");
+
+    let report = store
+        .check(&CheckContext::default())
+        .await
+        .expect("check returns Ok");
+    assert_eq!(report.failed_count(), 0, "sentinel probe should pass");
+    assert_eq!(report.probes.len(), 1);
+    assert!(
+        matches!(report.probes[0].status, ProbeStatus::Pass),
+        "expected a passing probe, got {:?}",
+        report.probes[0].status
+    );
+
+    // The sentinel round-trip must leave no residue behind.
+    assert_eq!(
+        store
+            .get(faucet_core::state::DOCTOR_SENTINEL_KEY)
+            .await
+            .expect("get sentinel"),
+        None,
+        "check() must clean up its sentinel key"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn from_connection_and_namespace_isolation() {
+    let (_container, url) = start_redis().await;
+    // Build a raw multiplexed connection and share it across two stores that
+    // use different namespaces.
+    let client = redis::Client::open(url).expect("client open");
+    let conn = client
+        .get_multiplexed_async_connection()
+        .await
+        .expect("multiplexed connection");
+    let team_a = RedisStateStore::from_connection(conn.clone(), "team_a").expect("store a");
+    let team_b = RedisStateStore::from_connection(conn, "team_b").expect("store b");
+
+    // The namespace prefixes the physical Redis key.
+    assert_eq!(team_a.redis_key("cursor"), "team_a:cursor");
+    assert_eq!(team_b.redis_key("cursor"), "team_b:cursor");
+
+    // Writing the same logical key under one namespace does not leak into the
+    // other.
+    let value = json!({"v": 7});
+    team_a.put("cursor", &value).await.expect("put a");
+    assert_eq!(
+        team_a.get("cursor").await.expect("get a"),
+        Some(value),
+        "team_a sees its own value"
+    );
+    assert_eq!(
+        team_b.get("cursor").await.expect("get b"),
+        None,
+        "team_b must not see team_a's namespaced key"
+    );
+}
