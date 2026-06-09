@@ -1,0 +1,23 @@
+# Coverage is measured by the CI `coverage` job (unit + integration tests via
+# cargo-llvm-cov). See .github/workflows/ci.yml.
+coverage:
+  status:
+    project:
+      default:
+        target: 80%
+        threshold: 1%        # tolerate a <=1% drop without flipping the status red
+        informational: true  # report-only for now; a follow-up flips this to false once stably >=80%
+    patch:
+      default:
+        target: 80%
+        informational: true
+
+# Exclude non-library code from the coverage denominator. Mirrors the lcov
+# --ignore-filename-regex in the coverage job, with the umbrella crate added
+# (pure feature-gated `pub use` re-exports — no testable logic).
+ignore:
+  - "faucet-stream/**"
+  - "**/tests/**"
+  - "**/examples/**"
+  - "**/benches/**"
+  - "cli/examples/**"
