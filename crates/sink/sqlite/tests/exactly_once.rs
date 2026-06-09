@@ -17,16 +17,26 @@ struct ReplaySource {
 }
 #[async_trait]
 impl Source for ReplaySource {
-    async fn fetch_with_context(&self, _c: &HashMap<String, Value>) -> Result<Vec<Value>, FaucetError> {
+    async fn fetch_with_context(
+        &self,
+        _c: &HashMap<String, Value>,
+    ) -> Result<Vec<Value>, FaucetError> {
         Ok(self.pages.iter().flat_map(|(r, _)| r.clone()).collect())
     }
-    fn supports_exactly_once(&self) -> bool { true }
+    fn supports_exactly_once(&self) -> bool {
+        true
+    }
 }
 
 fn pages(src: &ReplaySource) -> Vec<Result<StreamPage, FaucetError>> {
     src.pages
         .iter()
-        .map(|(r, b)| Ok(StreamPage { records: r.clone(), bookmark: Some(b.clone()) }))
+        .map(|(r, b)| {
+            Ok(StreamPage {
+                records: r.clone(),
+                bookmark: Some(b.clone()),
+            })
+        })
         .collect()
 }
 
@@ -47,12 +57,19 @@ async fn crash_between_write_and_bookmark_yields_no_duplicates() {
     let url = format!("sqlite://{}", db.display());
 
     {
-        let pool = sqlx::SqlitePool::connect(&format!("{url}?mode=rwc")).await.unwrap();
-        sqlx::query("CREATE TABLE events (data TEXT)").execute(&pool).await.unwrap();
+        let pool = sqlx::SqlitePool::connect(&format!("{url}?mode=rwc"))
+            .await
+            .unwrap();
+        sqlx::query("CREATE TABLE events (data TEXT)")
+            .execute(&pool)
+            .await
+            .unwrap();
     }
 
     let cfg = SqliteSinkConfig {
-        column_mapping: SqliteColumnMapping::Json { column: "data".into() },
+        column_mapping: SqliteColumnMapping::Json {
+            column: "data".into(),
+        },
         ..SqliteSinkConfig::new(&url, "events")
     };
     let sink = SqliteSink::new(cfg).await.unwrap();
@@ -68,16 +85,26 @@ async fn crash_between_write_and_bookmark_yields_no_duplicates() {
     struct DroppingStore;
     #[async_trait]
     impl StateStore for DroppingStore {
-        async fn get(&self, _k: &str) -> Result<Option<Value>, FaucetError> { Ok(None) }
-        async fn put(&self, _k: &str, _v: &Value) -> Result<(), FaucetError> { Ok(()) }
-        async fn delete(&self, _k: &str) -> Result<(), FaucetError> { Ok(()) }
+        async fn get(&self, _k: &str) -> Result<Option<Value>, FaucetError> {
+            Ok(None)
+        }
+        async fn put(&self, _k: &str, _v: &Value) -> Result<(), FaucetError> {
+            Ok(())
+        }
+        async fn delete(&self, _k: &str) -> Result<(), FaucetError> {
+            Ok(())
+        }
     }
     let opts1 = RunStreamOptions::new()
         .with_state(Arc::new(DroppingStore), "events::r1")
         .with_delivery(DeliveryMode::ExactlyOnce);
-    let first_page: Vec<Result<StreamPage, FaucetError>> =
-        vec![Ok(StreamPage { records: vec![json!({"id": 1})], bookmark: Some(json!("b1")) })];
-    run_stream(futures::stream::iter(first_page), &sink, opts1).await.unwrap();
+    let first_page: Vec<Result<StreamPage, FaucetError>> = vec![Ok(StreamPage {
+        records: vec![json!({"id": 1})],
+        bookmark: Some(json!("b1")),
+    })];
+    run_stream(futures::stream::iter(first_page), &sink, opts1)
+        .await
+        .unwrap();
     assert_eq!(count_id(&format!("{url}?mode=rwc"), 1).await, 1);
 
     // Run 2 (resume): fresh state, full replay. Page 1 must be skipped.
@@ -85,8 +112,18 @@ async fn crash_between_write_and_bookmark_yields_no_duplicates() {
     let opts2 = RunStreamOptions::new()
         .with_state(store, "events::r1")
         .with_delivery(DeliveryMode::ExactlyOnce);
-    run_stream(futures::stream::iter(pages(&source)), &sink, opts2).await.unwrap();
+    run_stream(futures::stream::iter(pages(&source)), &sink, opts2)
+        .await
+        .unwrap();
 
-    assert_eq!(count_id(&format!("{url}?mode=rwc"), 1).await, 1, "id=1 must NOT be duplicated");
-    assert_eq!(count_id(&format!("{url}?mode=rwc"), 2).await, 1, "id=2 written once");
+    assert_eq!(
+        count_id(&format!("{url}?mode=rwc"), 1).await,
+        1,
+        "id=1 must NOT be duplicated"
+    );
+    assert_eq!(
+        count_id(&format!("{url}?mode=rwc"), 2).await,
+        1,
+        "id=2 written once"
+    );
 }

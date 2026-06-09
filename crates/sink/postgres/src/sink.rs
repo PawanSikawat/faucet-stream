@@ -289,10 +289,9 @@ impl PostgresSink {
             s = quote_ident(faucet_core::idempotency::COMMIT_TOKEN_SCOPE_COL),
             k = quote_ident(faucet_core::idempotency::COMMIT_TOKEN_TOKEN_COL),
         );
-        sqlx::query(&sql)
-            .execute(&self.pool)
-            .await
-            .map_err(|e| FaucetError::Sink(format!("PostgreSQL commit-table create failed: {e}")))?;
+        sqlx::query(&sql).execute(&self.pool).await.map_err(|e| {
+            FaucetError::Sink(format!("PostgreSQL commit-table create failed: {e}"))
+        })?;
         Ok(())
     }
 }
@@ -431,11 +430,10 @@ impl faucet_core::Sink for PostgresSink {
         token: &str,
     ) -> Result<usize, FaucetError> {
         self.ensure_commit_table().await?;
-        let mut tx = self
-            .pool
-            .begin()
-            .await
-            .map_err(|e| FaucetError::Sink(format!("PostgreSQL transaction begin failed: {e}")))?;
+        let mut tx =
+            self.pool.begin().await.map_err(|e| {
+                FaucetError::Sink(format!("PostgreSQL transaction begin failed: {e}"))
+            })?;
 
         // Data insert(s) and the commit-token upsert share ONE transaction so
         // the page is committed atomically with its watermark: on crash either
@@ -475,7 +473,10 @@ mod tests {
 
     #[test]
     fn commit_token_table_is_the_shared_constant() {
-        assert_eq!(faucet_core::idempotency::COMMIT_TOKEN_TABLE, "_faucet_commit_token");
+        assert_eq!(
+            faucet_core::idempotency::COMMIT_TOKEN_TABLE,
+            "_faucet_commit_token"
+        );
     }
 
     // dataset_uri test is skipped: PostgresSink::new() requires a live pool

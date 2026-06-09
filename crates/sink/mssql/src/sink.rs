@@ -203,7 +203,10 @@ impl MssqlSink {
             let (result, timed_out) = match self.timeout() {
                 Some(t) => match tokio::time::timeout(t, exec).await {
                     Ok(inner) => (inner, false),
-                    Err(_) => (Err(FaucetError::Sink("MSSQL insert timed out".into())), true),
+                    Err(_) => (
+                        Err(FaucetError::Sink("MSSQL insert timed out".into())),
+                        true,
+                    ),
                 },
                 None => (exec.await, false),
             };
@@ -474,17 +477,19 @@ impl Sink for MssqlSink {
         control(&mut conn, "BEGIN TRAN").await?;
 
         let written = match self.prepare_chunk(records).await {
-            Ok(Some((cols, rows))) => match self.insert_rows_no_txn(&mut conn, &cols, &rows).await {
-                Ok(n) => n,
-                Err((e, timed_out)) => {
-                    // Desynced connection on timeout — ROLLBACK would run on a
-                    // corrupt stream (mirrors insert_chunk). Drop the conn instead.
-                    if !timed_out {
-                        let _ = control(&mut conn, "ROLLBACK TRAN").await;
+            Ok(Some((cols, rows))) => {
+                match self.insert_rows_no_txn(&mut conn, &cols, &rows).await {
+                    Ok(n) => n,
+                    Err((e, timed_out)) => {
+                        // Desynced connection on timeout — ROLLBACK would run on a
+                        // corrupt stream (mirrors insert_chunk). Drop the conn instead.
+                        if !timed_out {
+                            let _ = control(&mut conn, "ROLLBACK TRAN").await;
+                        }
+                        return Err(e);
                     }
-                    return Err(e);
                 }
-            },
+            }
             Ok(None) => 0,
             Err(e) => {
                 let _ = control(&mut conn, "ROLLBACK TRAN").await;

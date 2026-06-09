@@ -11,7 +11,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 /// Delivery guarantee for a pipeline run.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum DeliveryMode {
     /// Today's behaviour: a page may be re-delivered after a crash between the
@@ -70,7 +72,11 @@ pub fn unwrap_state(value: &Value) -> (Option<Value>, u64) {
         return (bookmark, seq);
     }
     // Legacy bare bookmark.
-    let bookmark = if value.is_null() { None } else { Some(value.clone()) };
+    let bookmark = if value.is_null() {
+        None
+    } else {
+        Some(value.clone())
+    };
     (bookmark, 0)
 }
 
@@ -153,7 +159,10 @@ mod tests {
     #[test]
     fn delivery_mode_serde_is_snake_case_and_defaults_at_least_once() {
         assert_eq!(DeliveryMode::default(), DeliveryMode::AtLeastOnce);
-        assert_eq!(serde_json::to_string(&DeliveryMode::ExactlyOnce).unwrap(), "\"exactly_once\"");
+        assert_eq!(
+            serde_json::to_string(&DeliveryMode::ExactlyOnce).unwrap(),
+            "\"exactly_once\""
+        );
         let m: DeliveryMode = serde_json::from_str("\"at_least_once\"").unwrap();
         assert_eq!(m, DeliveryMode::AtLeastOnce);
     }

@@ -1523,8 +1523,14 @@ pipeline:
         let err = expand(&cfg).unwrap_err();
         match &err {
             CliError::Config(msg) => {
-                assert!(msg.contains("rest"), "expected source kind in error, got: {msg}");
-                assert!(msg.contains("exactly_once") || msg.contains("not supported"), "got: {msg}");
+                assert!(
+                    msg.contains("rest"),
+                    "expected source kind in error, got: {msg}"
+                );
+                assert!(
+                    msg.contains("exactly_once") || msg.contains("not supported"),
+                    "got: {msg}"
+                );
             }
             other => panic!("expected Config error, got {other:?}"),
         }
@@ -1547,8 +1553,14 @@ pipeline:
         let err = expand(&cfg).unwrap_err();
         match &err {
             CliError::Config(msg) => {
-                assert!(msg.contains("stdout"), "expected sink kind in error, got: {msg}");
-                assert!(msg.contains("exactly_once") || msg.contains("not supported"), "got: {msg}");
+                assert!(
+                    msg.contains("stdout"),
+                    "expected sink kind in error, got: {msg}"
+                );
+                assert!(
+                    msg.contains("exactly_once") || msg.contains("not supported"),
+                    "got: {msg}"
+                );
             }
             other => panic!("expected Config error, got {other:?}"),
         }

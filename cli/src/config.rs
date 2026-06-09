@@ -1139,6 +1139,9 @@ matrix:
 "#;
         let cfg3 = parse_with_extension(yaml3, "yaml").unwrap();
         assert_eq!(cfg3.matrix[0].delivery, None);
-        assert_eq!(cfg3.matrix[1].delivery, Some(faucet_core::DeliveryMode::ExactlyOnce));
+        assert_eq!(
+            cfg3.matrix[1].delivery,
+            Some(faucet_core::DeliveryMode::ExactlyOnce)
+        );
     }
 }

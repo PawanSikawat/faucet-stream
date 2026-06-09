@@ -331,11 +331,10 @@ impl IcebergSink {
             .map_err(|e| FaucetError::Sink(format!("iceberg: invalid namespace: {e}")))?;
         let tid = TableIdent::new(ns, self.config.table.clone());
 
-        let exists = self
-            .catalog
-            .table_exists(&tid)
-            .await
-            .map_err(|e| FaucetError::Sink(format!("iceberg: table_exists check failed: {e}")))?;
+        let exists =
+            self.catalog.table_exists(&tid).await.map_err(|e| {
+                FaucetError::Sink(format!("iceberg: table_exists check failed: {e}"))
+            })?;
 
         if !exists {
             return Ok(None);

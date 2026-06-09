@@ -403,7 +403,10 @@ mod tests {
 
     #[test]
     fn commit_token_table_is_the_shared_constant() {
-        assert_eq!(faucet_core::idempotency::COMMIT_TOKEN_TABLE, "_faucet_commit_token");
+        assert_eq!(
+            faucet_core::idempotency::COMMIT_TOKEN_TABLE,
+            "_faucet_commit_token"
+        );
     }
 
     #[test]

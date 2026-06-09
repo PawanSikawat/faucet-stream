@@ -1299,7 +1299,11 @@ mod tests {
             .unwrap();
         assert_eq!(r.records_written, 1);
         let rows = sink.rows();
-        assert_eq!(rows.len(), 2, "exactly one row per id — no duplicate of id=1");
+        assert_eq!(
+            rows.len(),
+            2,
+            "exactly one row per id — no duplicate of id=1"
+        );
         assert_eq!(rows.iter().filter(|v| v["id"] == 1).count(), 1);
     }
 
