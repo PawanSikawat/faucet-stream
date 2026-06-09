@@ -68,6 +68,10 @@ struct SinkState {
 
     /// `DataFile`s accumulated from closed writers, awaiting the next commit.
     pending_files: Vec<DataFile>,
+
+    /// Exactly-once commit token to stamp onto the next committed snapshot.
+    /// Set by `write_batch_idempotent` and consumed (cleared) by `commit_pending`.
+    pending_commit: Option<(String, String)>,
 }
 
 impl SinkState {
@@ -76,6 +80,7 @@ impl SinkState {
             table: preloaded,
             writer: None,
             pending_files: Vec::new(),
+            pending_commit: None,
         }
     }
 }
@@ -316,6 +321,35 @@ impl IcebergSink {
         Ok(())
     }
 
+    /// Load the table read-only from the catalog, without creating it.
+    ///
+    /// Returns `Ok(None)` if the table does not exist yet (first run before any
+    /// data has been written), `Ok(Some(table))` if it exists, or `Err` on a
+    /// catalog communication failure.
+    async fn load_table_readonly(&self) -> Result<Option<Table>, FaucetError> {
+        let ns = NamespaceIdent::from_strs(self.config.namespace.iter().map(String::as_str))
+            .map_err(|e| FaucetError::Sink(format!("iceberg: invalid namespace: {e}")))?;
+        let tid = TableIdent::new(ns, self.config.table.clone());
+
+        let exists = self
+            .catalog
+            .table_exists(&tid)
+            .await
+            .map_err(|e| FaucetError::Sink(format!("iceberg: table_exists check failed: {e}")))?;
+
+        if !exists {
+            return Ok(None);
+        }
+
+        let table = self
+            .catalog
+            .load_table(&tid)
+            .await
+            .map_err(|e| FaucetError::Sink(format!("iceberg: load_table failed: {e}")))?;
+
+        Ok(Some(table))
+    }
+
     /// Commit all pending data files as a single `fast_append` snapshot.
     ///
     /// `Transaction::commit` in iceberg 0.9.1 already includes an internal
@@ -340,10 +374,25 @@ impl IcebergSink {
             .clone();
 
         let tx = Transaction::new(&table);
-        let mut action = tx.fast_append().add_data_files(files);
 
-        if !self.config.snapshot_properties.is_empty() {
-            action = action.set_snapshot_properties(self.config.snapshot_properties.clone());
+        // Merge config snapshot properties with the exactly-once commit token (if any).
+        // The token is taken out of state so it is stamped exactly once, atomically
+        // with the data files in this fast_append commit.
+        let mut props = self.config.snapshot_properties.clone();
+        if let Some((scope, token)) = state.pending_commit.take() {
+            props.insert(
+                faucet_core::idempotency::ICEBERG_SCOPE_PROP.to_string(),
+                scope,
+            );
+            props.insert(
+                faucet_core::idempotency::ICEBERG_TOKEN_PROP.to_string(),
+                token,
+            );
+        }
+
+        let mut action = tx.fast_append().add_data_files(files);
+        if !props.is_empty() {
+            action = action.set_snapshot_properties(props);
         }
 
         let tx = action
@@ -440,6 +489,65 @@ impl faucet_core::Sink for IcebergSink {
         };
 
         Ok(CheckReport::single(probe))
+    }
+
+    fn supports_idempotent_writes(&self) -> bool {
+        true
+    }
+
+    /// Write `records` and durably record the exactly-once `(scope, token)` in
+    /// the same atomic `fast_append` snapshot commit.
+    ///
+    /// The token is stashed on `SinkState::pending_commit` here and merged into
+    /// the snapshot's summary properties inside `commit_pending` (called from
+    /// `flush`). Both the data files and the token properties land in the same
+    /// `Transaction::fast_append` commit, so they are atomic by Iceberg's
+    /// optimistic-concurrency guarantee.
+    async fn write_batch_idempotent(
+        &self,
+        records: &[Value],
+        scope: &str,
+        token: &str,
+    ) -> Result<usize, FaucetError> {
+        let n = self.write_batch(records).await?;
+        let mut state = self.state.lock().await;
+        state.pending_commit = Some((scope.to_string(), token.to_string()));
+        Ok(n)
+    }
+
+    /// Return the last commit token recorded for `scope` in this table's
+    /// snapshot history, or `None` if no token has been committed yet.
+    ///
+    /// Snapshots are scanned newest-first; the first snapshot whose
+    /// `faucet.commit-scope` property matches `scope` wins.  If the table does
+    /// not yet exist `Ok(None)` is returned immediately.
+    async fn last_committed_token(&self, scope: &str) -> Result<Option<String>, FaucetError> {
+        let table = match self.load_table_readonly().await? {
+            Some(t) => t,
+            None => return Ok(None),
+        };
+
+        let meta = table.metadata();
+        let mut snaps: Vec<_> = meta.snapshots().collect();
+        // Sort newest-first so we return the most recent matching token.
+        snaps.sort_by_key(|s| std::cmp::Reverse(s.timestamp_ms()));
+
+        for snap in snaps {
+            let summary = snap.summary();
+            if summary
+                .additional_properties
+                .get(faucet_core::idempotency::ICEBERG_SCOPE_PROP)
+                .map(String::as_str)
+                == Some(scope)
+            {
+                return Ok(summary
+                    .additional_properties
+                    .get(faucet_core::idempotency::ICEBERG_TOKEN_PROP)
+                    .cloned());
+            }
+        }
+
+        Ok(None)
     }
 
     /// Write a batch of records to the Iceberg table.
