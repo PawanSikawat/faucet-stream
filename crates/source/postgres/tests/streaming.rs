@@ -245,3 +245,109 @@ async fn stream_pages_preserves_row_contents() {
     assert_eq!(all_records[0]["name"], "alpha");
     assert_eq!(all_records[2]["name"], "gamma");
 }
+
+/// Exercises every arm of `pg_value_to_json` by selecting one row whose columns
+/// span the full set of supported Postgres types. Without this, the converter's
+/// integer-width / float / temporal / uuid / numeric / bytea branches were
+/// never executed (the other tests only use BIGINT and TEXT).
+#[tokio::test(flavor = "multi_thread")]
+async fn all_column_types_decode_to_expected_json() {
+    let (_container, url) = start_postgres().await;
+    let pool = sqlx::PgPool::connect(&url).await.expect("pool connect");
+    sqlx::query(
+        "CREATE TABLE types_t (
+            jb JSONB, t TEXT, big BIGINT, i4 INT, sm SMALLINT,
+            dp DOUBLE PRECISION, r REAL, b BOOLEAN,
+            tstz TIMESTAMPTZ, ts TIMESTAMP, d DATE, tm TIME,
+            u UUID, num NUMERIC, by BYTEA
+        )",
+    )
+    .execute(&pool)
+    .await
+    .expect("create table");
+    sqlx::query(
+        "INSERT INTO types_t VALUES (
+            '{\"nested\":[1,2],\"ok\":true}'::jsonb, 'hello',
+            9223372036854775807, 2147483647, 32767,
+            3.5, 1.5, true,
+            '2024-01-02T03:04:05Z'::timestamptz, '2024-01-02 03:04:05'::timestamp,
+            '2024-01-02'::date, '03:04:05'::time,
+            '00000000-0000-0000-0000-000000000001'::uuid, '123.45'::numeric,
+            '\\x68690a'::bytea
+        )",
+    )
+    .execute(&pool)
+    .await
+    .expect("insert");
+    pool.close().await;
+
+    let config = PostgresSourceConfig::new(url, "SELECT * FROM types_t");
+    let source = PostgresSource::new(config).await.expect("source new");
+    let ctx: HashMap<String, serde_json::Value> = HashMap::new();
+    let mut pages = source.stream_pages(&ctx, DEFAULT_BATCH_SIZE);
+    let page = pages.next().await.expect("one page").expect("page ok");
+    assert_eq!(page.records.len(), 1);
+    let row = &page.records[0];
+
+    assert_eq!(row["jb"], serde_json::json!({"nested": [1, 2], "ok": true}));
+    assert_eq!(row["t"], "hello");
+    assert_eq!(row["big"], 9223372036854775807i64);
+    assert_eq!(row["i4"], 2147483647);
+    assert_eq!(row["sm"], 32767);
+    assert_eq!(row["dp"], 3.5);
+    assert_eq!(row["r"], 1.5);
+    assert_eq!(row["b"], true);
+    assert!(
+        row["tstz"]
+            .as_str()
+            .unwrap()
+            .starts_with("2024-01-02T03:04:05"),
+        "timestamptz should render as RFC3339, got {:?}",
+        row["tstz"]
+    );
+    assert_eq!(row["ts"], "2024-01-02 03:04:05");
+    assert_eq!(row["d"], "2024-01-02");
+    assert_eq!(row["tm"], "03:04:05");
+    assert_eq!(row["u"], "00000000-0000-0000-0000-000000000001");
+    // NUMERIC -> string, preserving precision. sqlx's PgNumeric -> BigDecimal
+    // conversion pads the scale to a multiple of 4 ("123.4500"), so assert on
+    // the meaningful prefix rather than an exact rendering.
+    assert!(
+        row["num"].as_str().unwrap().starts_with("123.45"),
+        "NUMERIC should render as a precise decimal string, got {:?}",
+        row["num"]
+    );
+    assert_eq!(row["by"], "aGkK"); // BYTEA 0x68690a ("hi\n") -> base64
+}
+
+/// Context tokens (`{key}`) must become positional bind markers bound as native
+/// scalar types — exercising `resolve_query`'s context branch and the typed
+/// arms of `bind_params` (integer + bool), not a raw jsonb bind.
+#[tokio::test(flavor = "multi_thread")]
+async fn context_tokens_bind_as_typed_params() {
+    let (_container, url) = start_postgres().await;
+    let pool = sqlx::PgPool::connect(&url).await.expect("pool connect");
+    sqlx::query("CREATE TABLE acct (id BIGINT, name TEXT, active BOOLEAN)")
+        .execute(&pool)
+        .await
+        .expect("create table");
+    sqlx::query("INSERT INTO acct VALUES (1, 'alice', true), (2, 'bob', false)")
+        .execute(&pool)
+        .await
+        .expect("insert");
+    pool.close().await;
+
+    let config = PostgresSourceConfig::new(
+        url,
+        "SELECT name FROM acct WHERE id = {id} AND active = {active} ORDER BY name",
+    );
+    let source = PostgresSource::new(config).await.expect("source new");
+    let mut ctx: HashMap<String, serde_json::Value> = HashMap::new();
+    ctx.insert("id".into(), serde_json::json!(1));
+    ctx.insert("active".into(), serde_json::json!(true));
+
+    let mut pages = source.stream_pages(&ctx, DEFAULT_BATCH_SIZE);
+    let page = pages.next().await.expect("one page").expect("page ok");
+    assert_eq!(page.records.len(), 1, "only account id=1 is active");
+    assert_eq!(page.records[0]["name"], "alice");
+}
