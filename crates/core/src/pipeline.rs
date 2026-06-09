@@ -334,10 +334,19 @@ impl<'a, So: Source + ?Sized, Si: Sink + ?Sized> Pipeline<'a, So, Si> {
             // Bookmark resume — goes through the wrapped state store so the
             // get is instrumented too.
             let state_key = self.source.state_key();
+            let mut start_seq = 0u64;
             if let (Some(store), Some(key)) = (wrapped_state_store.as_ref(), state_key.as_ref()) {
                 validate_state_key(key)?;
                 if let Some(prior) = store.get(key).await? {
-                    wrapped_source.apply_start_bookmark(prior).await?;
+                    if self.delivery == crate::idempotency::DeliveryMode::ExactlyOnce {
+                        let (bookmark, seq) = crate::idempotency::unwrap_state(&prior);
+                        start_seq = seq;
+                        if let Some(bm) = bookmark {
+                            wrapped_source.apply_start_bookmark(bm).await?;
+                        }
+                    } else {
+                        wrapped_source.apply_start_bookmark(prior).await?;
+                    }
                 }
             }
 
@@ -364,6 +373,7 @@ impl<'a, So: Source + ?Sized, Si: Sink + ?Sized> Pipeline<'a, So, Si> {
             if let Some(cancel) = self.cancel.clone() {
                 opts = opts.with_cancel(cancel);
             }
+            opts = opts.with_delivery(self.delivery).with_start_seq(start_seq);
 
             run_stream(pages, &wrapped_sink, opts).await
         }
@@ -441,6 +451,37 @@ where
     if let Some(key) = state_key.as_ref() {
         validate_state_key(key)?;
     }
+
+    // ── Exactly-once gates + resume ──────────────────────────────────────────
+    let exactly_once = options.delivery == crate::idempotency::DeliveryMode::ExactlyOnce;
+    if exactly_once {
+        if !sink.supports_idempotent_writes() {
+            return Err(FaucetError::Config(format!(
+                "delivery: exactly_once requires an idempotent sink, but '{}' does not support it",
+                sink.connector_name()
+            )));
+        }
+        if state_store.is_none() || state_key.is_none() {
+            return Err(FaucetError::Config(
+                "delivery: exactly_once requires a state store".into(),
+            ));
+        }
+        if dlq.is_some() {
+            return Err(FaucetError::Config(
+                "delivery: exactly_once is not compatible with a DLQ in this version".into(),
+            ));
+        }
+    }
+    let scope = state_key.clone().unwrap_or_default();
+    let mut next_seq = options.start_seq;
+    let committed_seq = if exactly_once {
+        sink.last_committed_token(&scope)
+            .await?
+            .and_then(|t| crate::idempotency::parse_token(&t))
+            .unwrap_or(0)
+    } else {
+        0
+    };
 
     let mut records_written = 0usize;
     let mut last_bookmark: Option<Value> = None;
@@ -788,6 +829,53 @@ where
                         if let Some(e) = budget_error {
                             return Err(e);
                         }
+                    } else if exactly_once {
+                        // ── Exactly-once path ──────────────────────────────────
+                        // A token is issued only for bookmark-carrying pages, so
+                        // (seq, bookmark) advance together and realign on resume.
+                        if let Some(bookmark) = page.bookmark {
+                            next_seq += 1;
+                            let token = crate::idempotency::format_token(next_seq);
+                            if next_seq <= committed_seq {
+                                // Sink already durably committed this page. Skip
+                                // the write; advance state so a later crash does
+                                // not re-skip it.
+                                use metrics::{Label, SharedString, counter};
+                                let skip_labels: Vec<Label> = vec![
+                                    Label::new(
+                                        "pipeline",
+                                        SharedString::from(pipeline_name.clone()),
+                                    ),
+                                    Label::new("row", SharedString::from(row.clone())),
+                                ];
+                                counter!("faucet_pipeline_pages_skipped_total", skip_labels)
+                                    .increment(1);
+                            } else {
+                                records_written += sink
+                                    .write_batch_idempotent(&page.records, &scope, &token)
+                                    .await?;
+                            }
+                            sink.flush().await?;
+                            let bm_labels =
+                                crate::observability::Labels::new(&*pipeline_name, &*row, &*run_id);
+                            crate::observability::update_bookmark_lag(&bookmark, &bm_labels);
+                            if let (Some(store), Some(key)) =
+                                (state_store.as_ref(), state_key.as_ref())
+                            {
+                                store
+                                    .put(
+                                        key,
+                                        &crate::idempotency::wrap_state(Some(&bookmark), next_seq),
+                                    )
+                                    .await?;
+                            }
+                            last_bookmark = Some(bookmark);
+                        } else if !page.records.is_empty() {
+                            // No bookmark → not individually checkpointed; write
+                            // as-is (rare for EO sources, which bookmark every
+                            // page). Stays at-least-once for this page.
+                            records_written += sink.write_batch(&page.records).await?;
+                        }
                     } else {
                         // ── DLQ-disabled path (today's behaviour) ──────────────
                         debug_assert!(
@@ -1097,6 +1185,149 @@ mod tests {
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             Ok(())
         }
+    }
+
+    // ── Exactly-once test doubles ────────────────────────────────────────────
+
+    /// In-memory sink that commits rows + a per-scope token atomically.
+    struct IdempotentMockSink {
+        rows: std::sync::Mutex<Vec<Value>>,
+        tokens: std::sync::Mutex<std::collections::HashMap<String, String>>,
+    }
+    impl IdempotentMockSink {
+        fn new() -> Self {
+            Self {
+                rows: std::sync::Mutex::new(Vec::new()),
+                tokens: std::sync::Mutex::new(std::collections::HashMap::new()),
+            }
+        }
+        fn rows(&self) -> Vec<Value> {
+            self.rows.lock().unwrap().clone()
+        }
+    }
+    #[async_trait]
+    impl Sink for IdempotentMockSink {
+        async fn write_batch(&self, records: &[Value]) -> Result<usize, FaucetError> {
+            self.rows.lock().unwrap().extend(records.iter().cloned());
+            Ok(records.len())
+        }
+        fn supports_idempotent_writes(&self) -> bool {
+            true
+        }
+        async fn write_batch_idempotent(
+            &self,
+            records: &[Value],
+            scope: &str,
+            token: &str,
+        ) -> Result<usize, FaucetError> {
+            self.rows.lock().unwrap().extend(records.iter().cloned());
+            self.tokens
+                .lock()
+                .unwrap()
+                .insert(scope.to_string(), token.to_string());
+            Ok(records.len())
+        }
+        async fn last_committed_token(&self, scope: &str) -> Result<Option<String>, FaucetError> {
+            Ok(self.tokens.lock().unwrap().get(scope).cloned())
+        }
+    }
+
+    fn eo_opts(store: Arc<dyn StateStore>, key: &str, start_seq: u64) -> RunStreamOptions {
+        RunStreamOptions::new()
+            .with_state(store, key)
+            .with_delivery(crate::idempotency::DeliveryMode::ExactlyOnce)
+            .with_start_seq(start_seq)
+    }
+
+    #[tokio::test]
+    async fn exactly_once_writes_pages_and_persists_wrapped_state() {
+        let pages = vec![
+            Ok(StreamPage {
+                records: vec![json!({"id": 1})],
+                bookmark: Some(json!("b1")),
+            }),
+            Ok(StreamPage {
+                records: vec![json!({"id": 2})],
+                bookmark: Some(json!("b2")),
+            }),
+        ];
+        let sink = IdempotentMockSink::new();
+        let store: Arc<dyn StateStore> = Arc::new(crate::state::MemoryStateStore::new());
+        let r = run_stream(
+            futures::stream::iter(pages),
+            &sink,
+            eo_opts(store.clone(), "k", 0),
+        )
+        .await
+        .unwrap();
+        assert_eq!(r.records_written, 2);
+        let (bm, seq) = crate::idempotency::unwrap_state(&store.get("k").await.unwrap().unwrap());
+        assert_eq!(bm, Some(json!("b2")));
+        assert_eq!(seq, 2);
+        assert_eq!(
+            sink.last_committed_token("k").await.unwrap(),
+            Some(crate::idempotency::format_token(2))
+        );
+    }
+
+    #[tokio::test]
+    async fn exactly_once_skips_already_committed_pages_on_resume() {
+        let sink = IdempotentMockSink::new();
+        // Run 1: commit page seq 1 directly (simulate crash: state lost).
+        sink.write_batch_idempotent(
+            &[json!({"id": 1})],
+            "k",
+            &crate::idempotency::format_token(1),
+        )
+        .await
+        .unwrap();
+        assert_eq!(sink.rows().len(), 1);
+        // Run 2 (resume): fresh state, full replay. Page 1 must be skipped.
+        let pages = vec![
+            Ok(StreamPage {
+                records: vec![json!({"id": 1})],
+                bookmark: Some(json!("b1")),
+            }),
+            Ok(StreamPage {
+                records: vec![json!({"id": 2})],
+                bookmark: Some(json!("b2")),
+            }),
+        ];
+        let store: Arc<dyn StateStore> = Arc::new(crate::state::MemoryStateStore::new());
+        let r = run_stream(futures::stream::iter(pages), &sink, eo_opts(store, "k", 0))
+            .await
+            .unwrap();
+        assert_eq!(r.records_written, 1);
+        let rows = sink.rows();
+        assert_eq!(rows.len(), 2, "exactly one row per id — no duplicate of id=1");
+        assert_eq!(rows.iter().filter(|v| v["id"] == 1).count(), 1);
+    }
+
+    #[tokio::test]
+    async fn exactly_once_rejects_non_idempotent_sink() {
+        let pages: Vec<Result<StreamPage, FaucetError>> = vec![];
+        let store: Arc<dyn StateStore> = Arc::new(crate::state::MemoryStateStore::new());
+        let r = run_stream(
+            futures::stream::iter(pages),
+            &MockSink::new(),
+            eo_opts(store, "k", 0),
+        )
+        .await;
+        assert!(matches!(r, Err(FaucetError::Config(_))));
+    }
+
+    #[tokio::test]
+    async fn exactly_once_rejects_missing_state_store() {
+        let pages: Vec<Result<StreamPage, FaucetError>> = vec![];
+        let opts =
+            RunStreamOptions::new().with_delivery(crate::idempotency::DeliveryMode::ExactlyOnce);
+        let r = run_stream(
+            futures::stream::iter(pages),
+            &IdempotentMockSink::new(),
+            opts,
+        )
+        .await;
+        assert!(matches!(r, Err(FaucetError::Config(_))));
     }
 
     // ── StreamPage / batch_size tests ───────────────────────────────────────
