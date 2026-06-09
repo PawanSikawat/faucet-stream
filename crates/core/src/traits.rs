@@ -147,6 +147,18 @@ pub trait Source: Send + Sync {
         Ok(())
     }
 
+    /// Whether this source **deterministically replays** the same page sequence
+    /// from a given bookmark — the requirement for exactly-once delivery (a
+    /// non-deterministic replay could cause the pipeline to skip a page whose
+    /// contents differ from the one already committed). Default: `false`.
+    ///
+    /// Sources with a durable monotonic position and per-page bookmarks (CDC)
+    /// override this to return `true`. The pipeline rejects
+    /// `DeliveryMode::ExactlyOnce` against a source that returns `false`.
+    fn supports_exactly_once(&self) -> bool {
+        false
+    }
+
     /// Stable identifier used as the `connector` label on metrics and the
     /// `connector` attribute on spans. Defaults to the final segment of
     /// `std::any::type_name::<Self>()`, e.g. `"RestSource"`. Built-in
@@ -234,6 +246,42 @@ pub trait Sink: Send + Sync {
     async fn write_batch_partial(&self, records: &[Value]) -> Result<Vec<RowOutcome>, FaucetError> {
         self.write_batch(records).await?;
         Ok(records.iter().map(|_| Ok(())).collect())
+    }
+
+    /// Whether this sink can durably commit a page's rows **and** a commit token
+    /// in a single atomic transaction. Default: `false` (at-least-once only).
+    ///
+    /// Only return `true` from a sink that genuinely commits both atomically —
+    /// see [`write_batch_idempotent`](Self::write_batch_idempotent). The pipeline
+    /// rejects `DeliveryMode::ExactlyOnce` against a sink that returns `false`.
+    fn supports_idempotent_writes(&self) -> bool {
+        false
+    }
+
+    /// Write `records` AND durably record `token` for `scope`, atomically.
+    ///
+    /// `scope` namespaces the watermark (the pipeline passes the per-row state
+    /// key, e.g. `"{name}::{row_id}"`). `token` is a monotonic, fixed-width
+    /// string (see [`format_token`](crate::format_token)).
+    ///
+    /// The default is **not** idempotent: it ignores the token and delegates to
+    /// [`write_batch`](Self::write_batch). Override only when the commit is
+    /// genuinely atomic (and return `true` from `supports_idempotent_writes`).
+    async fn write_batch_idempotent(
+        &self,
+        records: &[Value],
+        scope: &str,
+        token: &str,
+    ) -> Result<usize, FaucetError> {
+        let _ = (scope, token);
+        self.write_batch(records).await
+    }
+
+    /// The last token durably committed for `scope`, or `None` if this sink has
+    /// never committed under that scope. Default: `None`.
+    async fn last_committed_token(&self, scope: &str) -> Result<Option<String>, FaucetError> {
+        let _ = scope;
+        Ok(None)
     }
 
     /// Return a JSON Schema describing the configuration this sink accepts.
@@ -730,5 +778,27 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(report.failed_count(), 0);
+    }
+
+    // ── idempotent-write / exactly-once capability tests ──────────────────────
+
+    #[tokio::test]
+    async fn sink_default_is_not_idempotent() {
+        let sink = MockSink::new();
+        assert!(!sink.supports_idempotent_writes());
+        // Default write_batch_idempotent ignores the token and delegates.
+        let n = sink
+            .write_batch_idempotent(&[json!({"id": 1})], "scope::a", "00000000000000000001")
+            .await
+            .unwrap();
+        assert_eq!(n, 1);
+        assert_eq!(sink.last_committed_token("scope::a").await.unwrap(), None);
+        assert_eq!(sink.written.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn source_default_does_not_support_exactly_once() {
+        let source = MockSource { records: vec![] };
+        assert!(!source.supports_exactly_once());
     }
 }
