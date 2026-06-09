@@ -426,7 +426,8 @@ mod tests {
 
     #[test]
     fn parse_json_lines() {
-        let r = parse_file_content(&GcsFileFormat::JsonLines, "t", "{\"id\":1}\n{\"id\":2}\n").unwrap();
+        let r =
+            parse_file_content(&GcsFileFormat::JsonLines, "t", "{\"id\":1}\n{\"id\":2}\n").unwrap();
         assert_eq!(r.len(), 2);
         assert_eq!(r[0]["id"], 1);
     }
@@ -444,7 +445,8 @@ mod tests {
 
     #[test]
     fn parse_json_lines_reports_line_number() {
-        let err = parse_file_content(&GcsFileFormat::JsonLines, "t", "{\"id\":1}\nbad-line\n").unwrap_err();
+        let err = parse_file_content(&GcsFileFormat::JsonLines, "t", "{\"id\":1}\nbad-line\n")
+            .unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("line 2"), "unexpected: {msg}");
     }
@@ -462,7 +464,8 @@ mod tests {
 
     #[test]
     fn parse_json_array_rejects_non_array() {
-        let err = parse_file_content(&GcsFileFormat::JsonArray, "t.json", "{\"id\":1}").unwrap_err();
+        let err =
+            parse_file_content(&GcsFileFormat::JsonArray, "t.json", "{\"id\":1}").unwrap_err();
         assert!(err.to_string().contains("expected JSON array"));
     }
 

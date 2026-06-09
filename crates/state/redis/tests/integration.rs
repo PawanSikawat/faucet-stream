@@ -13,8 +13,14 @@ use testcontainers_modules::redis::Redis;
 
 /// Start a Redis container and return the handle (keeps it alive) plus a URL.
 async fn start_redis() -> (ContainerAsync<Redis>, String) {
-    let container = Redis::default().start().await.expect("redis container start");
-    let port = container.get_host_port_ipv4(6379).await.expect("redis port");
+    let container = Redis::default()
+        .start()
+        .await
+        .expect("redis container start");
+    let port = container
+        .get_host_port_ipv4(6379)
+        .await
+        .expect("redis port");
     let url = format!("redis://127.0.0.1:{port}");
     (container, url)
 }

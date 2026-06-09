@@ -216,8 +216,11 @@ mod tests {
         // be the service-account build error, proving the read + parse lines
         // ran successfully first.
         let path = std::env::temp_dir().join(format!("faucet_gcs_sa_{}.json", std::process::id()));
-        std::fs::write(&path, br#"{"type":"service_account","client_email":"x@y.iam"}"#)
-            .expect("write temp sa file");
+        std::fs::write(
+            &path,
+            br#"{"type":"service_account","client_email":"x@y.iam"}"#,
+        )
+        .expect("write temp sa file");
         let creds = GcsCredentials::ServiceAccountJsonFile {
             path: path.to_string_lossy().into_owned(),
         };
