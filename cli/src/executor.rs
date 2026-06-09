@@ -1874,6 +1874,7 @@ matrix:
                 transforms: Vec::new(),
                 state: None,
                 dlq: None,
+                delivery: faucet_core::DeliveryMode::AtLeastOnce,
                 #[cfg(feature = "quality")]
                 quality: None,
                 deferred_refs: refs
@@ -1935,6 +1936,7 @@ matrix:
             transforms: Vec::new(),
             state: None,
             dlq: None,
+            delivery: faucet_core::DeliveryMode::AtLeastOnce,
             #[cfg(feature = "quality")]
             quality: None,
             deferred_refs: vec![DeferredRef {

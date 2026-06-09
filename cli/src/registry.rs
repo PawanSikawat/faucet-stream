@@ -340,6 +340,20 @@ pub async fn build_sink(kind: &str, config: Value, auth: &AuthCatalog) -> CliRes
     }
 }
 
+/// Source connector kinds that deterministically replay (exactly-once-capable).
+/// Mirrors `Source::supports_exactly_once` overrides — keep in sync when a new
+/// source opts in. See docs/superpowers/plans/2026-06-09-exactly-once-delivery.md.
+pub fn source_supports_exactly_once(kind: &str) -> bool {
+    matches!(kind, "postgres-cdc" | "mysql-cdc" | "mongodb-cdc")
+}
+
+/// Sink connector kinds that can durably commit a token atomically with data.
+/// Mirrors `Sink::supports_idempotent_writes` overrides — keep in sync when a
+/// new sink opts in.
+pub fn sink_supports_idempotent_writes(kind: &str) -> bool {
+    matches!(kind, "sqlite" | "postgres" | "mysql" | "mssql" | "iceberg")
+}
+
 /// Return the JSON Schema for the named source's config struct.
 pub fn source_schema(kind: &str) -> CliResult<Value> {
     match kind {
