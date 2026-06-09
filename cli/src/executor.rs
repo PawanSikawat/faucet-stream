@@ -876,6 +876,9 @@ async fn run_one_invocation(
     } else {
         pipeline
     };
+    // Delivery guarantee (exactly-once resume/skip when the node opted in; the
+    // expand gate already verified source/sink/state support).
+    let pipeline = pipeline.with_delivery(node.delivery);
     // ── Lineage: START + heartbeat + terminal ────────────────────────────────
     #[cfg(feature = "lineage")]
     let lineage_ctx = match (&lineage, &lineage_cfg) {
