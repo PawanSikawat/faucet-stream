@@ -402,12 +402,31 @@ jobs:
             target
           key: ${{ runner.os }}-coverage-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-coverage-
-      # Cover library unit tests only (`--lib`). The integration tests in
-      # `tests/` spin up Docker testcontainers (Kafka, etc.) whose image pulls
-      # are flaky and are already exercised by the `test` and `kafka-integration`
-      # jobs — running them here too made coverage non-deterministic.
-      - name: Generate coverage (lcov)
-        run: cargo llvm-cov --workspace --all-features --lib --lcov --output-path lcov.info
+      # Cover unit + integration tests. The integration tests boot Docker
+      # testcontainers whose image pulls intermittently flake, so retry the run
+      # like the `test` job does — the final successful attempt re-runs the whole
+      # suite, so the reported coverage is always complete. Split run
+      # (--no-report) from report so the suite can be retried without
+      # regenerating the report each attempt. (cargo-llvm-cov 0.8.5 forbids
+      # combining --no-report with --no-clean, so the run uses --no-report alone.)
+      - name: Collect coverage (unit + integration)
+        run: |
+          cargo llvm-cov clean --workspace
+          ok=0
+          for attempt in 1 2 3; do
+            echo "::group::instrumented tests (attempt $attempt)"
+            if cargo llvm-cov --no-report --workspace --all-features; then
+              echo "::endgroup::"; ok=1; break
+            fi
+            echo "::endgroup::"
+            echo "::warning::instrumented tests failed on attempt $attempt (often a flaky Docker image pull); retrying in 20s"
+            sleep 20
+          done
+          [ "$ok" = 1 ] || { echo "::error::instrumented tests failed after 3 attempts"; exit 1; }
+      - name: Generate lcov report
+        run: |
+          cargo llvm-cov report --lcov --output-path lcov.info \
+            --ignore-filename-regex '(/tests?/|/examples?/|/benches?/|build\.rs$)'
       - name: Upload to Codecov
         continue-on-error: true
         uses: codecov/codecov-action@v4
