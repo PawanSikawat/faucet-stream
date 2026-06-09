@@ -93,6 +93,41 @@ authentication and Azure AD / Managed Identity are out of scope.
 Unit tests run with `cargo test -p faucet-sink-mssql --lib`. The integration
 tests (`--test integration`) require Docker.
 
+## Exactly-once delivery
+
+`MssqlSink` implements `Sink::supports_idempotent_writes` (returns `true`) and the two companion hooks:
+
+- `write_batch_idempotent(records, scope, token)` — writes `records` and UPSERTs the `token` into a `_faucet_commit_token(scope NVARCHAR, token NVARCHAR)` watermark table inside the **same transaction** (respecting `transaction_per_batch`), so both either commit together or neither does.
+- `last_committed_token(scope)` — reads the current watermark to let the pipeline skip already-committed pages on resume.
+
+To use exactly-once delivery, set `delivery: exactly_once` in your pipeline config and pair this sink with one of the CDC sources (`postgres-cdc`, `mysql-cdc`, `mongodb-cdc`) plus a `state:` block. A DLQ is not permitted in exactly-once mode. All four requirements are validated at config-load time (`faucet validate`) before any run starts.
+
+```yaml
+pipeline:
+  source:
+    type: mongodb-cdc
+    config:
+      connection_uri: "mongodb://localhost:27017/?replicaSet=rs0"
+      scope:
+        type: collection
+        database: appdb
+        collection: orders
+  sink:
+    type: mssql
+    config:
+      connection_url: "mssql://sa:Str0ng%40Pass@localhost:1433/warehouse"
+      table: "dbo.change_events"
+      column_mapping:
+        type: auto_columns
+  state:
+    type: file
+    config:
+      path: ./state
+delivery: exactly_once
+```
+
+See the [Exactly-once delivery cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/state.html#exactly-once-delivery) for full rationale and the supported source/sink set.
+
 ## Lineage dataset URI
 
 `<connection_url_or_string>?table=<table>` (password redacted) — e.g. `Server=tcp:host,1433;Database=db;User Id=sa;Password=***;?table=orders`.

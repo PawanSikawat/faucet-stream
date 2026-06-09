@@ -237,6 +237,42 @@ pipeline:
       batch_size: 10000
 ```
 
+## Exactly-once delivery
+
+`IcebergSink` implements `Sink::supports_idempotent_writes` (returns `true`) and the two companion hooks:
+
+- `write_batch_idempotent(records, scope, token)` — writes `records` and records the `token` as Iceberg **snapshot summary properties** (`faucet.commit-scope` and `faucet.commit-token`) on the committed snapshot, so both are durable in the same atomic catalog operation.
+- `last_committed_token(scope)` — scans recent snapshots for a matching `faucet.commit-scope` entry to let the pipeline skip already-committed pages on resume.
+
+To use exactly-once delivery, set `delivery: exactly_once` in your pipeline config and pair this sink with one of the CDC sources (`postgres-cdc`, `mysql-cdc`, `mongodb-cdc`) plus a `state:` block. A DLQ is not permitted in exactly-once mode. All four requirements are validated at config-load time (`faucet validate`) before any run starts.
+
+```yaml
+pipeline:
+  source:
+    type: postgres-cdc
+    config:
+      connection_url: postgres://faucet:faucet@localhost:5432/appdb
+      slot_name: faucet_slot
+      publication_name: faucet_pub
+  sink:
+    type: iceberg
+    config:
+      catalog:
+        type: rest
+        uri: http://catalog.example.com
+        warehouse: s3://lake/warehouse
+      namespace: ["analytics"]
+      table: change_events
+      create_if_missing: true
+  state:
+    type: file
+    config:
+      path: ./state
+delivery: exactly_once
+```
+
+See the [Exactly-once delivery cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/state.html#exactly-once-delivery) for full rationale and the supported source/sink set.
+
 ## Lineage dataset URI
 
 `iceberg://<catalog_type>/<namespace>.<table>` — e.g. `iceberg://rest/prod.events` (catalog type is `rest`, `glue`, `sql`, or `hms`).

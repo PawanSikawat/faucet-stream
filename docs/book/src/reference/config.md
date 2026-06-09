@@ -178,6 +178,44 @@ auth:
       refresh_token: ${secret:API_REFRESH_TOKEN}
 ```
 
+## `delivery`
+
+Controls the delivery guarantee for every pipeline row.
+
+```yaml
+delivery: at_least_once   # default — no behaviour change
+# or:
+delivery: exactly_once
+```
+
+| Value | Behaviour |
+|-------|-----------|
+| `at_least_once` | Default. A crash between the sink write and the bookmark persist causes the page to be re-delivered on the next run. Downstream must tolerate duplicates. |
+| `exactly_once` | The sink durably records a per-page commit token atomically with the data inside its own transaction. On resume the pipeline reads the sink's last committed token and skips already-committed pages, giving zero duplicates after a crash. |
+
+**Per-row override:** set `delivery:` directly on a matrix row to override the top-level value for that row.
+
+```yaml
+delivery: at_least_once    # top-level default
+
+matrix:
+  - id: critical_row
+    delivery: exactly_once  # this row uses exactly-once
+  - id: best_effort_row
+    # inherits top-level at_least_once
+```
+
+### Requirements for `exactly_once`
+
+All four conditions are validated at config-load time (`faucet validate` and `faucet run`). A violation is a hard `config error` naming the offending row — no run is started.
+
+1. **Deterministic-replay source** — the source must be one of: `postgres-cdc`, `mysql-cdc`, `mongodb-cdc`. Non-CDC sources are rejected because a different page content on replay would cause the pipeline to silently skip records it never wrote.
+2. **Idempotent sink** — the sink must be one of: `sqlite`, `postgres`, `mysql`, `mssql`, `iceberg`. These sinks atomically commit both the data and a watermark token inside the same transaction or snapshot.
+3. **State store** — a `state:` block is required. The pipeline stores the per-page sequence number alongside the bookmark so it can detect already-committed pages on resume.
+4. **No DLQ** — a `dlq:` block is incompatible with `exactly_once` in this version. Per-row error routing and the idempotency watermark interact in ways not yet resolved.
+
+See the [Exactly-once delivery cookbook](../cookbook/state.md#exactly-once-delivery) for a worked example and the full rationale.
+
 ## `execution`
 
 - `max_concurrent` — one shared concurrency budget across roots and child

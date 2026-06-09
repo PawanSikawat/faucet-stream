@@ -254,6 +254,38 @@ let sink = SqliteSink::new(config).await?;
 - All identifiers (table names, column names) are quoted using `quote_ident()` (double-quote escaping) to prevent SQL injection.
 - Transaction wrapping ensures that either all rows in a batch are committed or none are, providing atomicity per batch.
 
+## Exactly-once delivery
+
+`SqliteSink` implements `Sink::supports_idempotent_writes` (returns `true`) and the two companion hooks:
+
+- `write_batch_idempotent(records, scope, token)` — writes `records` and UPSERTs the `token` into a `_faucet_commit_token(scope TEXT, token TEXT)` watermark table inside the **same `BEGIN`/`COMMIT` transaction**, so both either commit together or neither does.
+- `last_committed_token(scope)` — reads the current watermark to let the pipeline skip already-committed pages on resume.
+
+To use exactly-once delivery, set `delivery: exactly_once` in your pipeline config and pair this sink with one of the CDC sources (`postgres-cdc`, `mysql-cdc`, `mongodb-cdc`) plus a `state:` block. A DLQ is not permitted in exactly-once mode. All four requirements are validated at config-load time (`faucet validate`) before any run starts.
+
+```yaml
+pipeline:
+  source:
+    type: postgres-cdc
+    config:
+      connection_url: postgres://faucet:faucet@localhost:5432/appdb
+      slot_name: faucet_slot
+      publication_name: faucet_pub
+  sink:
+    type: sqlite
+    config:
+      database_url: /data/warehouse.db
+      table_name: change_events
+      column_mapping: auto_map
+  state:
+    type: file
+    config:
+      path: ./state
+delivery: exactly_once
+```
+
+See the [Exactly-once delivery cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/state.html#exactly-once-delivery) for full rationale and the supported source/sink set.
+
 ## Lineage dataset URI
 
 `sqlite://<path>?table=<table>` — e.g. `sqlite:///tmp/test.db?table=events`.

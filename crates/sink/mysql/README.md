@@ -269,6 +269,37 @@ let sink = MysqlSink::new(config).await?;
 - In AutoMap mode, column names are queried from `INFORMATION_SCHEMA.COLUMNS` for the current database. A multi-row INSERT is built dynamically with `?` placeholders. Column values are bound as **native MySQL types** (#78/#4). The column set is the **union** of record keys across the batch, so a field present only in a later record is still written; a row missing a column binds SQL `NULL`. The INSERT is sub-chunked so `rows × columns` never exceeds MySQL's 65,535-placeholder limit.
 - All identifiers (table names, column names) are quoted with backticks using MySQL-safe escaping (embedded backticks are doubled).
 
+## Exactly-once delivery
+
+`MysqlSink` implements `Sink::supports_idempotent_writes` (returns `true`) and the two companion hooks:
+
+- `write_batch_idempotent(records, scope, token)` — writes `records` and UPSERTs the `token` into a `_faucet_commit_token(scope VARCHAR, token VARCHAR)` watermark table inside the **same transaction**, so both either commit together or neither does.
+- `last_committed_token(scope)` — reads the current watermark to let the pipeline skip already-committed pages on resume.
+
+To use exactly-once delivery, set `delivery: exactly_once` in your pipeline config and pair this sink with one of the CDC sources (`postgres-cdc`, `mysql-cdc`, `mongodb-cdc`) plus a `state:` block. A DLQ is not permitted in exactly-once mode. All four requirements are validated at config-load time (`faucet validate`) before any run starts.
+
+```yaml
+pipeline:
+  source:
+    type: mysql-cdc
+    config:
+      connection_url: mysql://faucet:faucet@localhost:3306/appdb
+      server_id: 1
+  sink:
+    type: mysql
+    config:
+      connection_url: mysql://writer:pass@localhost:3306/warehouse
+      table_name: change_events
+      column_mapping: auto_map
+  state:
+    type: file
+    config:
+      path: ./state
+delivery: exactly_once
+```
+
+See the [Exactly-once delivery cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/state.html#exactly-once-delivery) for full rationale and the supported source/sink set.
+
 ## Lineage dataset URI
 
 `mysql://<host>:<port>/<db>?table=<table>` (credentials stripped) — e.g. `mysql://host:3306/app?table=orders`.
