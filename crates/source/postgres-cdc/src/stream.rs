@@ -150,6 +150,13 @@ impl Source for PostgresCdcSource {
         Ok(())
     }
 
+    fn supports_exactly_once(&self) -> bool {
+        // Durable monotonic LSN + deterministic replay from it + per-transaction
+        // (per-page) bookmarks persisted only after the sink confirms — the
+        // requirements for exactly-once delivery.
+        true
+    }
+
     fn connector_name(&self) -> &'static str {
         "postgres-cdc"
     }
