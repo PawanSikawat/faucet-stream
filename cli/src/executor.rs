@@ -1282,6 +1282,7 @@ mod tests {
             matrix: Vec::new(),
             execution: None,
             observability: None,
+            delivery: faucet_core::DeliveryMode::default(),
             #[cfg(feature = "schedule")]
             schedule: None,
             #[cfg(feature = "lineage")]

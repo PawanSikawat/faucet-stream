@@ -215,6 +215,7 @@ pub fn expand(cfg: &PipelineConfig) -> CliResult<Vec<ExpandedNode>> {
             inherit_transforms: true,
             state: None,
             dlq: None,
+            delivery: None,
         }];
         &synthetic_row
     } else {
