@@ -206,4 +206,84 @@ mod tests {
         let err = build_credentials(&creds).await.unwrap_err();
         assert!(matches!(err, FaucetError::Auth(_)));
     }
+
+    #[tokio::test]
+    async fn build_credentials_reads_file_and_gets_past_parse() {
+        // A real, readable file containing parseable JSON exercises the
+        // file-read + JSON-parse branch (the missing-file test only covers the
+        // read error). The JSON is a structurally-valid-but-incomplete service
+        // account, so the SDK build may fail — but if it does, the error must
+        // be the service-account build error, proving the read + parse lines
+        // ran successfully first.
+        let path = std::env::temp_dir().join(format!("faucet_gcs_sa_{}.json", std::process::id()));
+        std::fs::write(
+            &path,
+            br#"{"type":"service_account","client_email":"x@y.iam"}"#,
+        )
+        .expect("write temp sa file");
+        let creds = GcsCredentials::ServiceAccountJsonFile {
+            path: path.to_string_lossy().into_owned(),
+        };
+        let result = build_credentials(&creds).await;
+        let _ = std::fs::remove_file(&path);
+        match result {
+            Ok(_) => {} // built a (lazy) credential — read + parse path ran
+            Err(FaucetError::Auth(msg)) => assert!(
+                !msg.contains("could not read") && !msg.contains("not valid JSON"),
+                "read + parse should have succeeded, got: {msg}"
+            ),
+            Err(other) => panic!("unexpected error variant: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn build_credentials_inline_valid_json_gets_past_parse() {
+        // Valid JSON (vs. the rejects_invalid_inline_json case) exercises the
+        // inline parse-success + build branch.
+        let creds = GcsCredentials::ServiceAccountJsonInline {
+            json: r#"{"type":"service_account","client_email":"x@y.iam"}"#.into(),
+        };
+        match build_credentials(&creds).await {
+            Ok(_) => {}
+            Err(FaucetError::Auth(msg)) => assert!(
+                !msg.contains("not valid JSON"),
+                "inline JSON should have parsed, got: {msg}"
+            ),
+            Err(other) => panic!("unexpected error variant: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn build_credentials_application_default_does_not_panic() {
+        // ADC resolution either yields a lazy credential handle or an Auth
+        // error depending on the environment; either is acceptable. The point
+        // is that the ApplicationDefault arm executes and maps any failure to
+        // FaucetError::Auth rather than panicking.
+        match build_credentials(&GcsCredentials::ApplicationDefault).await {
+            Ok(_) | Err(FaucetError::Auth(_)) => {}
+            Err(other) => panic!("unexpected error variant: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn build_storage_constructs_client_with_endpoint_override() {
+        // Anonymous credentials + an endpoint override exercise the data-plane
+        // client builder (including the with_endpoint branch) without needing
+        // GCP credentials or a live connection. The client is constructed
+        // lazily, so success is expected; any failure must still map to Auth.
+        match build_storage(&GcsCredentials::Anonymous, Some("http://localhost:4443")).await {
+            Ok(_) | Err(FaucetError::Auth(_)) => {}
+            Err(other) => panic!("unexpected error variant: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn build_storage_control_constructs_client_with_endpoint_override() {
+        // Same as above for the control-plane client.
+        match build_storage_control(&GcsCredentials::Anonymous, Some("http://localhost:4443")).await
+        {
+            Ok(_) | Err(FaucetError::Auth(_)) => {}
+            Err(other) => panic!("unexpected error variant: {other:?}"),
+        }
+    }
 }

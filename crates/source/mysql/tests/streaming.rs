@@ -276,3 +276,101 @@ async fn stream_pages_preserves_row_contents() {
     assert_eq!(all_records[0]["name"], "alpha");
     assert_eq!(all_records[2]["name"], "gamma");
 }
+
+/// Exercises the type arms of `mysql_value_to_json` by selecting one row whose
+/// columns span the supported MySQL types. Without this, the converter's
+/// float / temporal / decimal / blob / json branches were never executed (the
+/// other tests only use BIGINT and VARCHAR).
+#[tokio::test(flavor = "multi_thread")]
+async fn all_column_types_decode_to_expected_json() {
+    let (_container, url) = start_mysql().await;
+    let pool = sqlx::MySqlPool::connect(&url).await.expect("pool connect");
+    sqlx::query(
+        "CREATE TABLE types_t (
+            jb JSON, t VARCHAR(32), big BIGINT,
+            dp DOUBLE, fl FLOAT,
+            dt DATETIME, d DATE, tm TIME,
+            dec_col DECIMAL(10,2), bl BLOB
+        )",
+    )
+    .execute(&pool)
+    .await
+    .expect("create table");
+    sqlx::query(
+        "INSERT INTO types_t VALUES (
+            '{\"k\": 1}', 'hello', 9223372036854775807,
+            3.5, 1.5,
+            '2024-01-02 03:04:05', '2024-01-02', '03:04:05',
+            123.45, x'68690a'
+        )",
+    )
+    .execute(&pool)
+    .await
+    .expect("insert");
+    pool.close().await;
+
+    let config = MysqlSourceConfig::new(url, "SELECT * FROM types_t");
+    let source = MysqlSource::new(config).await.expect("source new");
+    let ctx: HashMap<String, serde_json::Value> = HashMap::new();
+    let mut pages = source.stream_pages(&ctx, DEFAULT_BATCH_SIZE);
+    let page = pages.next().await.expect("one page").expect("page ok");
+    assert_eq!(page.records.len(), 1);
+    let row = &page.records[0];
+
+    assert_eq!(row["jb"], serde_json::json!({"k": 1}));
+    assert_eq!(row["t"], "hello");
+    assert_eq!(row["big"], 9223372036854775807i64);
+    assert_eq!(row["dp"], 3.5);
+    assert_eq!(row["fl"], 1.5);
+    // MySQL DATETIME decodes via sqlx as DateTime<Utc> -> RFC3339.
+    assert!(
+        row["dt"]
+            .as_str()
+            .unwrap()
+            .starts_with("2024-01-02T03:04:05"),
+        "DATETIME should render as RFC3339, got {:?}",
+        row["dt"]
+    );
+    assert_eq!(row["d"], "2024-01-02");
+    assert_eq!(row["tm"], "03:04:05");
+    // DECIMAL -> string, preserving precision (assert the meaningful prefix to
+    // be robust to any trailing-zero scale padding).
+    assert!(
+        row["dec_col"].as_str().unwrap().starts_with("123.45"),
+        "DECIMAL should render as a precise decimal string, got {:?}",
+        row["dec_col"]
+    );
+    assert_eq!(row["bl"], "aGkK"); // BLOB 0x68690a ("hi\n") -> base64
+}
+
+/// Context tokens (`{key}`) must become `?` bind markers bound as native scalar
+/// types — exercising `resolve_query`'s context branch and the typed arms of
+/// `bind_params` (integer + bool).
+#[tokio::test(flavor = "multi_thread")]
+async fn context_tokens_bind_as_typed_params() {
+    let (_container, url) = start_mysql().await;
+    let pool = sqlx::MySqlPool::connect(&url).await.expect("pool connect");
+    sqlx::query("CREATE TABLE acct (id BIGINT, name VARCHAR(32), active BOOLEAN)")
+        .execute(&pool)
+        .await
+        .expect("create table");
+    sqlx::query("INSERT INTO acct VALUES (1, 'alice', true), (2, 'bob', false)")
+        .execute(&pool)
+        .await
+        .expect("insert");
+    pool.close().await;
+
+    let config = MysqlSourceConfig::new(
+        url,
+        "SELECT name FROM acct WHERE id = {id} AND active = {active} ORDER BY name",
+    );
+    let source = MysqlSource::new(config).await.expect("source new");
+    let mut ctx: HashMap<String, serde_json::Value> = HashMap::new();
+    ctx.insert("id".into(), serde_json::json!(1));
+    ctx.insert("active".into(), serde_json::json!(true));
+
+    let mut pages = source.stream_pages(&ctx, DEFAULT_BATCH_SIZE);
+    let page = pages.next().await.expect("one page").expect("page ok");
+    assert_eq!(page.records.len(), 1, "only account id=1 is active");
+    assert_eq!(page.records[0]["name"], "alice");
+}

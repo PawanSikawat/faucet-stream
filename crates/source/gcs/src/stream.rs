@@ -130,41 +130,55 @@ impl GcsSource {
 
     /// Parse file content into records based on the configured file format.
     fn parse_content(&self, key: &str, text: &str) -> Result<Vec<Value>, FaucetError> {
-        match self.config.file_format {
-            GcsFileFormat::JsonLines => {
-                let mut records = Vec::new();
-                for (line_num, line) in text.lines().enumerate() {
-                    let trimmed = line.trim();
-                    if trimmed.is_empty() {
-                        continue;
-                    }
-                    let value: Value = serde_json::from_str(trimmed).map_err(|e| {
-                        FaucetError::Source(format!(
-                            "GCS JSON parse error in '{key}' at line {}: {e}",
-                            line_num + 1
-                        ))
-                    })?;
-                    records.push(value);
+        parse_file_content(&self.config.file_format, key, text)
+    }
+}
+
+/// Parse file content into records for a given format. Free function (vs. a
+/// `GcsSource` method) so it is unit-testable without a GCS client — the
+/// parsing logic is pure. Previously this logic lived only inside the
+/// `parse_content` method and was duplicated by a copy in the test module;
+/// that copy could silently drift from production since the integration tests
+/// that would have caught it are `#[ignore]`d (no gRPC emulator exists).
+pub(crate) fn parse_file_content(
+    format: &GcsFileFormat,
+    key: &str,
+    text: &str,
+) -> Result<Vec<Value>, FaucetError> {
+    match format {
+        GcsFileFormat::JsonLines => {
+            let mut records = Vec::new();
+            for (line_num, line) in text.lines().enumerate() {
+                let trimmed = line.trim();
+                if trimmed.is_empty() {
+                    continue;
                 }
-                Ok(records)
-            }
-            GcsFileFormat::JsonArray => {
-                let value: Value = serde_json::from_str(text).map_err(|e| {
-                    FaucetError::Source(format!("GCS JSON parse error in '{key}': {e}"))
+                let value: Value = serde_json::from_str(trimmed).map_err(|e| {
+                    FaucetError::Source(format!(
+                        "GCS JSON parse error in '{key}' at line {}: {e}",
+                        line_num + 1
+                    ))
                 })?;
-                match value {
-                    Value::Array(arr) => Ok(arr),
-                    other => Err(FaucetError::Source(format!(
-                        "GCS expected JSON array in '{key}', got {}",
-                        value_type_name(&other)
-                    ))),
-                }
+                records.push(value);
             }
-            GcsFileFormat::RawText => Ok(vec![serde_json::json!({
-                "key": key,
-                "content": text,
-            })]),
+            Ok(records)
         }
+        GcsFileFormat::JsonArray => {
+            let value: Value = serde_json::from_str(text).map_err(|e| {
+                FaucetError::Source(format!("GCS JSON parse error in '{key}': {e}"))
+            })?;
+            match value {
+                Value::Array(arr) => Ok(arr),
+                other => Err(FaucetError::Source(format!(
+                    "GCS expected JSON array in '{key}', got {}",
+                    value_type_name(&other)
+                ))),
+            }
+        }
+        GcsFileFormat::RawText => Ok(vec![serde_json::json!({
+            "key": key,
+            "content": text,
+        })]),
     }
 }
 
@@ -400,61 +414,28 @@ mod tests {
         assert_eq!(cfg.compression, faucet_core::CompressionConfig::Auto);
     }
 
-    /// Construct a parse-only test config — used by tests that don't touch
-    /// the network. We can't easily construct a real `GcsSource` without
-    /// a runtime, so we test `parse_content` via a free helper that
-    /// inlines the same logic with an explicit `format` argument.
-    fn parse(format: GcsFileFormat, key: &str, text: &str) -> Result<Vec<Value>, FaucetError> {
-        // Mirror the implementation in `parse_content`. Kept in sync with
-        // production code via the integration test suite.
-        match format {
-            GcsFileFormat::JsonLines => {
-                let mut records = Vec::new();
-                for (line_num, line) in text.lines().enumerate() {
-                    let trimmed = line.trim();
-                    if trimmed.is_empty() {
-                        continue;
-                    }
-                    let value: Value = serde_json::from_str(trimmed).map_err(|e| {
-                        FaucetError::Source(format!(
-                            "GCS JSON parse error in '{key}' at line {}: {e}",
-                            line_num + 1
-                        ))
-                    })?;
-                    records.push(value);
-                }
-                Ok(records)
-            }
-            GcsFileFormat::JsonArray => {
-                let value: Value = serde_json::from_str(text).map_err(|e| {
-                    FaucetError::Source(format!("GCS JSON parse error in '{key}': {e}"))
-                })?;
-                match value {
-                    Value::Array(arr) => Ok(arr),
-                    other => Err(FaucetError::Source(format!(
-                        "GCS expected JSON array in '{key}', got {}",
-                        value_type_name(&other)
-                    ))),
-                }
-            }
-            GcsFileFormat::RawText => Ok(vec![json!({
-                "key": key,
-                "content": text,
-            })]),
-        }
+    #[test]
+    fn value_type_name_covers_all_json_variants() {
+        assert_eq!(value_type_name(&Value::Null), "null");
+        assert_eq!(value_type_name(&json!(true)), "boolean");
+        assert_eq!(value_type_name(&json!(7)), "number");
+        assert_eq!(value_type_name(&json!("s")), "string");
+        assert_eq!(value_type_name(&json!([1, 2])), "array");
+        assert_eq!(value_type_name(&json!({"k": 1})), "object");
     }
 
     #[test]
     fn parse_json_lines() {
-        let r = parse(GcsFileFormat::JsonLines, "t", "{\"id\":1}\n{\"id\":2}\n").unwrap();
+        let r =
+            parse_file_content(&GcsFileFormat::JsonLines, "t", "{\"id\":1}\n{\"id\":2}\n").unwrap();
         assert_eq!(r.len(), 2);
         assert_eq!(r[0]["id"], 1);
     }
 
     #[test]
     fn parse_json_lines_skips_blanks() {
-        let r = parse(
-            GcsFileFormat::JsonLines,
+        let r = parse_file_content(
+            &GcsFileFormat::JsonLines,
             "t",
             "{\"id\":1}\n\n{\"id\":2}\n\n",
         )
@@ -464,15 +445,16 @@ mod tests {
 
     #[test]
     fn parse_json_lines_reports_line_number() {
-        let err = parse(GcsFileFormat::JsonLines, "t", "{\"id\":1}\nbad-line\n").unwrap_err();
+        let err = parse_file_content(&GcsFileFormat::JsonLines, "t", "{\"id\":1}\nbad-line\n")
+            .unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("line 2"), "unexpected: {msg}");
     }
 
     #[test]
     fn parse_json_array() {
-        let r = parse(
-            GcsFileFormat::JsonArray,
+        let r = parse_file_content(
+            &GcsFileFormat::JsonArray,
             "t.json",
             "[{\"id\":1},{\"id\":2}]",
         )
@@ -482,13 +464,14 @@ mod tests {
 
     #[test]
     fn parse_json_array_rejects_non_array() {
-        let err = parse(GcsFileFormat::JsonArray, "t.json", "{\"id\":1}").unwrap_err();
+        let err =
+            parse_file_content(&GcsFileFormat::JsonArray, "t.json", "{\"id\":1}").unwrap_err();
         assert!(err.to_string().contains("expected JSON array"));
     }
 
     #[test]
     fn parse_raw_text_yields_single_record() {
-        let r = parse(GcsFileFormat::RawText, "p/f.txt", "hello").unwrap();
+        let r = parse_file_content(&GcsFileFormat::RawText, "p/f.txt", "hello").unwrap();
         assert_eq!(r, vec![json!({"key": "p/f.txt", "content": "hello"})]);
     }
 
