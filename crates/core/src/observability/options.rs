@@ -26,6 +26,12 @@ pub struct RunStreamOptions {
     /// orphaning the file), and returns the partial result. Without this, a
     /// dropped run future loses everything written-but-unflushed (#146 H16).
     pub cancel: Option<CancellationToken>,
+    /// Delivery guarantee. `AtLeastOnce` (default) leaves the write path
+    /// unchanged. `ExactlyOnce` enables the resume/skip + atomic-token path.
+    pub delivery: crate::idempotency::DeliveryMode,
+    /// Resume sequence read from the (unwrapped) exactly-once state value.
+    /// Ignored unless `delivery == ExactlyOnce`. Defaults to 0.
+    pub start_seq: u64,
 }
 
 impl RunStreamOptions {
@@ -77,6 +83,19 @@ impl RunStreamOptions {
         quality: std::sync::Arc<crate::quality::CompiledQuality>,
     ) -> Self {
         self.quality = Some(quality);
+        self
+    }
+
+    /// Set the delivery mode.
+    pub fn with_delivery(mut self, mode: crate::idempotency::DeliveryMode) -> Self {
+        self.delivery = mode;
+        self
+    }
+
+    /// Set the resume sequence (exactly-once). Normally derived by
+    /// `Pipeline::run` from the unwrapped state value.
+    pub fn with_start_seq(mut self, seq: u64) -> Self {
+        self.start_seq = seq;
         self
     }
 }

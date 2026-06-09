@@ -42,6 +42,9 @@ pub struct ExpandedNode {
     /// matrix-row override in v1, so this is `cfg.pipeline.quality` verbatim.
     #[cfg(feature = "quality")]
     pub quality: Option<faucet_core::QualitySpec>,
+    /// Delivery guarantee for this row. Resolved from the row's override or
+    /// falls back to the top-level `cfg.delivery`.
+    pub delivery: faucet_core::DeliveryMode,
     /// Every `${id.path}` placeholder that survived load-time interpolation.
     /// Populated by `collect_deferred`; the executor uses this to know
     /// which parent record to feed which row.
@@ -215,6 +218,7 @@ pub fn expand(cfg: &PipelineConfig) -> CliResult<Vec<ExpandedNode>> {
             inherit_transforms: true,
             state: None,
             dlq: None,
+            delivery: None,
         }];
         &synthetic_row
     } else {
@@ -347,6 +351,8 @@ pub fn expand(cfg: &PipelineConfig) -> CliResult<Vec<ExpandedNode>> {
             transforms.extend(row_ts.iter().cloned());
         }
         let state = row.state.clone().or_else(|| cfg.pipeline.state.clone());
+        // Row override wins; fall back to the top-level delivery mode.
+        let delivery = row.delivery.unwrap_or(cfg.delivery);
         // Three-state match: Some(None) = disable, Some(Some(spec)) = replace,
         // None = inherit. The naive `.flatten().or_else()` would conflate
         // disable and absent, silently inheriting on explicit null.
@@ -413,6 +419,38 @@ pub fn expand(cfg: &PipelineConfig) -> CliResult<Vec<ExpandedNode>> {
             }
         }
 
+        // Exactly-once delivery gate: enforce source, sink, state, and DLQ
+        // compatibility at config-load time so `faucet validate` catches
+        // unsupported combinations before any run starts.
+        if delivery == faucet_core::DeliveryMode::ExactlyOnce {
+            if !crate::registry::source_supports_exactly_once(&merged_source.kind) {
+                return Err(CliError::Config(format!(
+                    "row '{}': delivery: exactly_once is not supported by source '{}' \
+                     (deterministic-replay sources only: postgres-cdc, mysql-cdc, mongodb-cdc)",
+                    ids[i], merged_source.kind
+                )));
+            }
+            if !crate::registry::sink_supports_idempotent_writes(&merged_sink.kind) {
+                return Err(CliError::Config(format!(
+                    "row '{}': delivery: exactly_once is not supported by sink '{}' \
+                     (idempotent sinks only: sqlite, postgres, mysql, mssql, iceberg)",
+                    ids[i], merged_sink.kind
+                )));
+            }
+            if state.is_none() {
+                return Err(CliError::Config(format!(
+                    "row '{}': delivery: exactly_once requires a state store",
+                    ids[i]
+                )));
+            }
+            if dlq.is_some() {
+                return Err(CliError::Config(format!(
+                    "row '{}': delivery: exactly_once is not compatible with a DLQ in this version",
+                    ids[i]
+                )));
+            }
+        }
+
         out.push(ExpandedNode {
             id: ids[i].clone(),
             row_index: i,
@@ -422,6 +460,7 @@ pub fn expand(cfg: &PipelineConfig) -> CliResult<Vec<ExpandedNode>> {
             transforms,
             state,
             dlq,
+            delivery,
             #[cfg(feature = "quality")]
             quality,
             deferred_refs: deferred,
@@ -1463,5 +1502,109 @@ execution:
 "#;
         let cfg = parse_with_extension(yaml, "yaml").unwrap();
         assert!(expand(&cfg).is_ok());
+    }
+
+    // --- exactly-once delivery gate tests ---
+
+    #[test]
+    fn exactly_once_rejects_non_cdc_source() {
+        // rest→stdout with exactly_once must fail: rest is not replay-capable.
+        let yaml = r#"
+version: 1
+delivery: exactly_once
+pipeline:
+  source: { type: rest, config: { base_url: https://x } }
+  sink:   { type: stdout, config: {} }
+  state:
+    type: memory
+    config: {}
+"#;
+        let cfg = parse_with_extension(yaml, "yaml").unwrap();
+        let err = expand(&cfg).unwrap_err();
+        match &err {
+            CliError::Config(msg) => {
+                assert!(
+                    msg.contains("rest"),
+                    "expected source kind in error, got: {msg}"
+                );
+                assert!(
+                    msg.contains("exactly_once") || msg.contains("not supported"),
+                    "got: {msg}"
+                );
+            }
+            other => panic!("expected Config error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn exactly_once_rejects_non_idempotent_sink() {
+        // postgres-cdc→stdout: source is OK but stdout is not idempotent.
+        let yaml = r#"
+version: 1
+delivery: exactly_once
+pipeline:
+  source: { type: postgres-cdc, config: {} }
+  sink:   { type: stdout, config: {} }
+  state:
+    type: memory
+    config: {}
+"#;
+        let cfg = parse_with_extension(yaml, "yaml").unwrap();
+        let err = expand(&cfg).unwrap_err();
+        match &err {
+            CliError::Config(msg) => {
+                assert!(
+                    msg.contains("stdout"),
+                    "expected sink kind in error, got: {msg}"
+                );
+                assert!(
+                    msg.contains("exactly_once") || msg.contains("not supported"),
+                    "got: {msg}"
+                );
+            }
+            other => panic!("expected Config error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn exactly_once_accepted_with_cdc_source_idempotent_sink_and_state() {
+        // postgres-cdc → sqlite + state → must expand successfully.
+        let yaml = r#"
+version: 1
+delivery: exactly_once
+pipeline:
+  source: { type: postgres-cdc, config: {} }
+  sink:   { type: sqlite, config: {} }
+  state:
+    type: memory
+    config: {}
+"#;
+        let cfg = parse_with_extension(yaml, "yaml").unwrap();
+        let nodes = expand(&cfg).unwrap();
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(nodes[0].delivery, faucet_core::DeliveryMode::ExactlyOnce);
+    }
+
+    #[test]
+    fn exactly_once_rejects_missing_state_store() {
+        // Valid CDC pair but no state block → must fail with "requires a state store".
+        let yaml = r#"
+version: 1
+delivery: exactly_once
+pipeline:
+  source: { type: postgres-cdc, config: {} }
+  sink:   { type: sqlite, config: {} }
+"#;
+        let cfg = parse_with_extension(yaml, "yaml").unwrap();
+        let err = expand(&cfg).unwrap_err();
+        match &err {
+            CliError::Config(msg) => {
+                assert!(
+                    msg.contains("state store") || msg.contains("state"),
+                    "expected state-store mention in error, got: {msg}"
+                );
+            }
+            other => panic!("expected Config error, got {other:?}"),
+        }
     }
 }

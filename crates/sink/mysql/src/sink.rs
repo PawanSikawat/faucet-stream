@@ -5,7 +5,7 @@ use async_trait::async_trait;
 use faucet_core::FaucetError;
 use serde_json::Value;
 use sqlx::mysql::MySqlPoolOptions;
-use sqlx::{MySqlPool, Row};
+use sqlx::{MySqlConnection, MySqlPool, Row};
 
 /// A sink that writes JSON records to a MySQL table.
 pub struct MysqlSink {
@@ -34,8 +34,16 @@ impl MysqlSink {
     }
 
     /// Insert a batch of records using JSON column mode.
+    ///
+    /// Executes on the provided connection (a bare pool connection for
+    /// `write_batch`, or a `&mut *tx` transaction for `write_batch_idempotent`).
     /// Uses a single multi-row INSERT for efficiency.
-    async fn insert_json(&self, records: &[Value], column: &str) -> Result<usize, FaucetError> {
+    async fn insert_json(
+        &self,
+        conn: &mut MySqlConnection,
+        records: &[Value],
+        column: &str,
+    ) -> Result<usize, FaucetError> {
         if records.is_empty() {
             return Ok(0);
         }
@@ -56,7 +64,7 @@ impl MysqlSink {
             q = q.bind(json_str);
         }
 
-        q.execute(&self.pool)
+        q.execute(&mut *conn)
             .await
             .map_err(|e| FaucetError::Sink(format!("MySQL insert failed: {e}")))?;
 
@@ -65,9 +73,15 @@ impl MysqlSink {
 
     /// Insert a batch of records using auto-mapped columns.
     ///
-    /// Discovers column names from INFORMATION_SCHEMA and maps
-    /// top-level JSON fields to columns. Uses a single multi-row INSERT.
-    async fn insert_auto_map(&self, records: &[Value]) -> Result<usize, FaucetError> {
+    /// Discovers column names from INFORMATION_SCHEMA and maps top-level JSON
+    /// fields to columns. Executes on the provided connection (a bare pool
+    /// connection for `write_batch`, or a `&mut *tx` transaction for
+    /// `write_batch_idempotent`). Uses a single multi-row INSERT.
+    async fn insert_auto_map(
+        &self,
+        conn: &mut MySqlConnection,
+        records: &[Value],
+    ) -> Result<usize, FaucetError> {
         if records.is_empty() {
             return Ok(0);
         }
@@ -77,7 +91,7 @@ impl MysqlSink {
             "SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = ? AND TABLE_SCHEMA = DATABASE() ORDER BY ORDINAL_POSITION"
         )
         .bind(&self.config.table_name)
-        .fetch_all(&self.pool)
+        .fetch_all(&mut *conn)
         .await
         .map_err(|e| FaucetError::Sink(format!("failed to query table columns: {e}")))?
         .iter()
@@ -193,12 +207,31 @@ impl MysqlSink {
                 }
             }
 
-            q.execute(&self.pool)
+            q.execute(&mut *conn)
                 .await
                 .map_err(|e| FaucetError::Sink(format!("MySQL insert failed: {e}")))?;
         }
 
         Ok(num_rows)
+    }
+
+    /// Create the commit-token watermark table if it does not yet exist.
+    ///
+    /// The table holds one row per pipeline scope (state key). MySQL requires a
+    /// fixed-length column as the primary key, so `scope` is `VARCHAR(255)` and
+    /// `token` is `VARCHAR(32)` (tokens are 20-char ulids, 32 chars is ample).
+    async fn ensure_commit_table(&self) -> Result<(), FaucetError> {
+        let sql = format!(
+            "CREATE TABLE IF NOT EXISTS {t} ({s} VARCHAR(255) PRIMARY KEY, {k} VARCHAR(32) NOT NULL, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)",
+            t = quote_ident_mysql(faucet_core::idempotency::COMMIT_TOKEN_TABLE),
+            s = quote_ident_mysql(faucet_core::idempotency::COMMIT_TOKEN_SCOPE_COL),
+            k = quote_ident_mysql(faucet_core::idempotency::COMMIT_TOKEN_TOKEN_COL),
+        );
+        sqlx::query(&sql)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| FaucetError::Sink(format!("MySQL commit-table create failed: {e}")))?;
+        Ok(())
     }
 }
 
@@ -258,10 +291,20 @@ impl faucet_core::Sink for MysqlSink {
     /// `config.batch_size == 0`, the entire slice is sent in a single
     /// multi-row `INSERT` — useful when upstream `StreamPage`s are already
     /// sized for MySQL's `max_allowed_packet` limit.
+    ///
+    /// Acquires a single connection from the pool and sends every chunk
+    /// through it under autocommit (no explicit transaction), preserving the
+    /// pre-refactor observable behaviour.
     async fn write_batch(&self, records: &[Value]) -> Result<usize, FaucetError> {
         if records.is_empty() {
             return Ok(0);
         }
+
+        let mut conn = self
+            .pool
+            .acquire()
+            .await
+            .map_err(|e| FaucetError::Sink(format!("MySQL pool acquire failed: {e}")))?;
 
         let chunks: Vec<&[Value]> = if self.config.batch_size == 0 {
             // Sentinel: pass the entire upstream page through in a single
@@ -275,8 +318,10 @@ impl faucet_core::Sink for MysqlSink {
         let mut total = 0;
         for chunk in chunks {
             total += match &self.config.column_mapping {
-                MysqlColumnMapping::Json { column } => self.insert_json(chunk, column).await?,
-                MysqlColumnMapping::AutoMap => self.insert_auto_map(chunk).await?,
+                MysqlColumnMapping::Json { column } => {
+                    self.insert_json(&mut conn, chunk, column).await?
+                }
+                MysqlColumnMapping::AutoMap => self.insert_auto_map(&mut conn, chunk).await?,
             };
         }
 
@@ -287,6 +332,66 @@ impl faucet_core::Sink for MysqlSink {
         );
         Ok(total)
     }
+
+    fn supports_idempotent_writes(&self) -> bool {
+        true
+    }
+
+    async fn last_committed_token(&self, scope: &str) -> Result<Option<String>, FaucetError> {
+        self.ensure_commit_table().await?;
+        let sql = format!(
+            "SELECT {k} FROM {t} WHERE {s} = ?",
+            t = quote_ident_mysql(faucet_core::idempotency::COMMIT_TOKEN_TABLE),
+            k = quote_ident_mysql(faucet_core::idempotency::COMMIT_TOKEN_TOKEN_COL),
+            s = quote_ident_mysql(faucet_core::idempotency::COMMIT_TOKEN_SCOPE_COL),
+        );
+        let row = sqlx::query(&sql)
+            .bind(scope)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|e| FaucetError::Sink(format!("MySQL token read failed: {e}")))?;
+        Ok(row.map(|r| r.get::<String, _>(0)))
+    }
+
+    async fn write_batch_idempotent(
+        &self,
+        records: &[Value],
+        scope: &str,
+        token: &str,
+    ) -> Result<usize, FaucetError> {
+        self.ensure_commit_table().await?;
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| FaucetError::Sink(format!("MySQL transaction begin failed: {e}")))?;
+
+        let written = match &self.config.column_mapping {
+            MysqlColumnMapping::Json { column } => {
+                self.insert_json(&mut tx, records, column).await?
+            }
+            MysqlColumnMapping::AutoMap => self.insert_auto_map(&mut tx, records).await?,
+        };
+
+        let upsert = format!(
+            "INSERT INTO {t} ({s}, {k}) VALUES (?, ?) ON DUPLICATE KEY UPDATE {k} = VALUES({k})",
+            t = quote_ident_mysql(faucet_core::idempotency::COMMIT_TOKEN_TABLE),
+            s = quote_ident_mysql(faucet_core::idempotency::COMMIT_TOKEN_SCOPE_COL),
+            k = quote_ident_mysql(faucet_core::idempotency::COMMIT_TOKEN_TOKEN_COL),
+        );
+        sqlx::query(&upsert)
+            .bind(scope)
+            .bind(token)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| FaucetError::Sink(format!("MySQL token upsert failed: {e}")))?;
+
+        tx.commit()
+            .await
+            .map_err(|e| FaucetError::Sink(format!("MySQL transaction commit failed: {e}")))?;
+
+        Ok(written)
+    }
 }
 
 #[cfg(test)]
@@ -295,6 +400,14 @@ mod tests {
 
     // dataset_uri test is skipped: MysqlSink::new() requires a live pool
     // (connects to MySQL in new()), and no offline constructor exists.
+
+    #[test]
+    fn commit_token_table_is_the_shared_constant() {
+        assert_eq!(
+            faucet_core::idempotency::COMMIT_TOKEN_TABLE,
+            "_faucet_commit_token"
+        );
+    }
 
     #[test]
     fn quote_ident_mysql_simple() {

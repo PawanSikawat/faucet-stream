@@ -42,44 +42,58 @@ impl SqliteSink {
         Ok(Self { config, pool })
     }
 
+    /// Insert JSON-column records within an existing transaction, sub-chunking
+    /// at SQLite's bind-variable cap. JSON mode binds one variable per row.
+    async fn insert_json_tx(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+        records: &[Value],
+        column: &str,
+    ) -> Result<usize, FaucetError> {
+        if records.is_empty() {
+            return Ok(0);
+        }
+        // SQLite caps bind params per statement at 32766 (>=3.32). JSON mode
+        // binds one variable per row, so chunk at that cap.
+        const MAX_SQLITE_VARS: usize = 32766;
+        for chunk in records.chunks(MAX_SQLITE_VARS) {
+            let placeholders: Vec<&str> = chunk.iter().map(|_| "(?)").collect();
+            let insert_sql = format!(
+                "INSERT INTO {} ({}) VALUES {}",
+                quote_ident(&self.config.table_name),
+                quote_ident(column),
+                placeholders.join(", ")
+            );
+            let mut q = sqlx::query(&insert_sql);
+            for record in chunk {
+                let json_str = serde_json::to_string(record)
+                    .map_err(|e| FaucetError::Sink(format!("failed to serialize record: {e}")))?;
+                q = q.bind(json_str);
+            }
+            q.execute(&mut **tx)
+                .await
+                .map_err(|e| FaucetError::Sink(format!("SQLite insert failed: {e}")))?;
+        }
+        Ok(records.len())
+    }
+
     /// Insert a batch of records using JSON column mode.
-    /// Uses a single multi-row INSERT wrapped in a transaction.
+    /// Opens its own `BEGIN`/`COMMIT` transaction and delegates to
+    /// [`Self::insert_json_tx`], which sub-chunks at SQLite's bind-variable cap.
     async fn insert_json(&self, records: &[Value], column: &str) -> Result<usize, FaucetError> {
         if records.is_empty() {
             return Ok(0);
         }
-
-        // Build multi-row INSERT: INSERT INTO t (col) VALUES (?), (?), ...
-        let placeholders: Vec<&str> = records.iter().map(|_| "(?)").collect();
-        let insert_sql = format!(
-            "INSERT INTO {} ({}) VALUES {}",
-            quote_ident(&self.config.table_name),
-            quote_ident(column),
-            placeholders.join(", ")
-        );
-
         let mut tx = self
             .pool
             .begin()
             .await
             .map_err(|e| FaucetError::Sink(format!("SQLite transaction begin failed: {e}")))?;
-
-        let mut q = sqlx::query(&insert_sql);
-        for record in records {
-            let json_str = serde_json::to_string(record)
-                .map_err(|e| FaucetError::Sink(format!("failed to serialize record: {e}")))?;
-            q = q.bind(json_str);
-        }
-
-        q.execute(&mut *tx)
-            .await
-            .map_err(|e| FaucetError::Sink(format!("SQLite insert failed: {e}")))?;
-
+        let n = self.insert_json_tx(&mut tx, records, column).await?;
         tx.commit()
             .await
             .map_err(|e| FaucetError::Sink(format!("SQLite transaction commit failed: {e}")))?;
-
-        Ok(records.len())
+        Ok(n)
     }
 
     /// Insert a batch of records using auto-mapped columns.
@@ -92,12 +106,46 @@ impl SqliteSink {
             return Ok(0);
         }
 
-        // Get column names from the table using pragma_table_info.
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| FaucetError::Sink(format!("SQLite transaction begin failed: {e}")))?;
+
+        let written = self.insert_auto_map_tx(&mut tx, records).await?;
+
+        tx.commit()
+            .await
+            .map_err(|e| FaucetError::Sink(format!("SQLite transaction commit failed: {e}")))?;
+
+        Ok(written)
+    }
+
+    /// Auto-map insert against an in-progress transaction.
+    ///
+    /// This is the reusable core shared by [`Self::insert_auto_map`] (which
+    /// opens its own `BEGIN`/`COMMIT`) and [`faucet_core::Sink::write_batch_idempotent`]
+    /// (which folds the insert and the commit-token upsert into one
+    /// transaction). The read-only `PRAGMA table_info` column-discovery query
+    /// runs on the transaction's own connection (`&mut **tx`), not on
+    /// `&self.pool` — otherwise, with the default single-connection pool, it
+    /// would deadlock waiting for a connection the open transaction is holding.
+    async fn insert_auto_map_tx(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+        records: &[Value],
+    ) -> Result<usize, FaucetError> {
+        if records.is_empty() {
+            return Ok(0);
+        }
+
+        // Get column names from the table using pragma_table_info. Use the
+        // transaction's connection so a single-connection pool doesn't deadlock.
         let columns: Vec<String> = sqlx::query(&format!(
             "PRAGMA table_info({})",
             quote_ident(&self.config.table_name)
         ))
-        .fetch_all(&self.pool)
+        .fetch_all(&mut **tx)
         .await
         .map_err(|e| FaucetError::Sink(format!("failed to query table columns: {e}")))?
         .iter()
@@ -168,12 +216,6 @@ impl SqliteSink {
         const MAX_SQLITE_VARS: usize = 32766;
         let max_rows_per_insert = (MAX_SQLITE_VARS / num_cols).max(1);
 
-        let mut tx = self
-            .pool
-            .begin()
-            .await
-            .map_err(|e| FaucetError::Sink(format!("SQLite transaction begin failed: {e}")))?;
-
         for sub in matched_rows.chunks(max_rows_per_insert) {
             // Build multi-row VALUES clause: (?, ?), (?, ?), ...
             let row_placeholder = format!("({})", vec!["?"; num_cols].join(", "));
@@ -216,16 +258,27 @@ impl SqliteSink {
                 }
             }
 
-            q.execute(&mut *tx)
+            q.execute(&mut **tx)
                 .await
                 .map_err(|e| FaucetError::Sink(format!("SQLite insert failed: {e}")))?;
         }
 
-        tx.commit()
-            .await
-            .map_err(|e| FaucetError::Sink(format!("SQLite transaction commit failed: {e}")))?;
-
         Ok(num_rows)
+    }
+
+    /// Ensure the commit-token watermark table exists.
+    async fn ensure_commit_table(&self) -> Result<(), FaucetError> {
+        let sql = format!(
+            "CREATE TABLE IF NOT EXISTS {t} ({s} TEXT PRIMARY KEY, {k} TEXT NOT NULL, updated_at TEXT DEFAULT (datetime('now')))",
+            t = quote_ident(faucet_core::idempotency::COMMIT_TOKEN_TABLE),
+            s = quote_ident(faucet_core::idempotency::COMMIT_TOKEN_SCOPE_COL),
+            k = quote_ident(faucet_core::idempotency::COMMIT_TOKEN_TOKEN_COL),
+        );
+        sqlx::query(&sql)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| FaucetError::Sink(format!("SQLite commit-table create failed: {e}")))?;
+        Ok(())
     }
 }
 
@@ -308,6 +361,69 @@ impl faucet_core::Sink for SqliteSink {
             "SQLite write complete"
         );
         Ok(total)
+    }
+
+    fn supports_idempotent_writes(&self) -> bool {
+        true
+    }
+
+    async fn last_committed_token(&self, scope: &str) -> Result<Option<String>, FaucetError> {
+        self.ensure_commit_table().await?;
+        let sql = format!(
+            "SELECT {k} FROM {t} WHERE {s} = ?",
+            t = quote_ident(faucet_core::idempotency::COMMIT_TOKEN_TABLE),
+            k = quote_ident(faucet_core::idempotency::COMMIT_TOKEN_TOKEN_COL),
+            s = quote_ident(faucet_core::idempotency::COMMIT_TOKEN_SCOPE_COL),
+        );
+        let row = sqlx::query(&sql)
+            .bind(scope)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|e| FaucetError::Sink(format!("SQLite token read failed: {e}")))?;
+        Ok(row.map(|r| r.get::<String, _>(0)))
+    }
+
+    async fn write_batch_idempotent(
+        &self,
+        records: &[Value],
+        scope: &str,
+        token: &str,
+    ) -> Result<usize, FaucetError> {
+        self.ensure_commit_table().await?;
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| FaucetError::Sink(format!("SQLite transaction begin failed: {e}")))?;
+
+        // Data insert and the commit-token upsert share ONE transaction so the
+        // page is committed atomically with its watermark: on crash either both
+        // land or neither does, which is what makes a replay skip-on-resume
+        // produce zero duplicates.
+        let written = match &self.config.column_mapping {
+            SqliteColumnMapping::Json { column } => {
+                self.insert_json_tx(&mut tx, records, column).await?
+            }
+            SqliteColumnMapping::AutoMap => self.insert_auto_map_tx(&mut tx, records).await?,
+        };
+
+        let upsert = format!(
+            "INSERT INTO {t} ({s}, {k}) VALUES (?, ?) ON CONFLICT({s}) DO UPDATE SET {k} = excluded.{k}, updated_at = datetime('now')",
+            t = quote_ident(faucet_core::idempotency::COMMIT_TOKEN_TABLE),
+            s = quote_ident(faucet_core::idempotency::COMMIT_TOKEN_SCOPE_COL),
+            k = quote_ident(faucet_core::idempotency::COMMIT_TOKEN_TOKEN_COL),
+        );
+        sqlx::query(&upsert)
+            .bind(scope)
+            .bind(token)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| FaucetError::Sink(format!("SQLite token upsert failed: {e}")))?;
+
+        tx.commit()
+            .await
+            .map_err(|e| FaucetError::Sink(format!("SQLite transaction commit failed: {e}")))?;
+        Ok(written)
     }
 }
 

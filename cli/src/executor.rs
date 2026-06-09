@@ -876,6 +876,9 @@ async fn run_one_invocation(
     } else {
         pipeline
     };
+    // Delivery guarantee (exactly-once resume/skip when the node opted in; the
+    // expand gate already verified source/sink/state support).
+    let pipeline = pipeline.with_delivery(node.delivery);
     // ── Lineage: START + heartbeat + terminal ────────────────────────────────
     #[cfg(feature = "lineage")]
     let lineage_ctx = match (&lineage, &lineage_cfg) {
@@ -1282,6 +1285,7 @@ mod tests {
             matrix: Vec::new(),
             execution: None,
             observability: None,
+            delivery: faucet_core::DeliveryMode::default(),
             #[cfg(feature = "schedule")]
             schedule: None,
             #[cfg(feature = "lineage")]
@@ -1873,6 +1877,7 @@ matrix:
                 transforms: Vec::new(),
                 state: None,
                 dlq: None,
+                delivery: faucet_core::DeliveryMode::AtLeastOnce,
                 #[cfg(feature = "quality")]
                 quality: None,
                 deferred_refs: refs
@@ -1934,6 +1939,7 @@ matrix:
             transforms: Vec::new(),
             state: None,
             dlq: None,
+            delivery: faucet_core::DeliveryMode::AtLeastOnce,
             #[cfg(feature = "quality")]
             quality: None,
             deferred_refs: vec![DeferredRef {

@@ -123,6 +123,13 @@ impl Source for MysqlCdcSource {
         Ok(())
     }
 
+    fn supports_exactly_once(&self) -> bool {
+        // Durable monotonic binlog file/pos + deterministic replay from it +
+        // per-transaction (per-page) bookmarks — the requirements for
+        // exactly-once delivery.
+        true
+    }
+
     fn connector_name(&self) -> &'static str {
         "mysql-cdc"
     }

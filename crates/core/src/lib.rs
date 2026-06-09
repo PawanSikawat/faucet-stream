@@ -19,6 +19,7 @@ pub mod check;
 pub mod config;
 pub mod dlq;
 pub mod error;
+pub mod idempotency;
 pub mod observability;
 pub mod pipeline;
 #[cfg(feature = "quality")]
@@ -43,6 +44,7 @@ pub use auth::{AuthProvider, AuthReference, AuthSpec, Credential, SharedAuthProv
 pub use check::{CheckContext, CheckReport, Probe, ProbeStatus};
 pub use dlq::{DlqConfig, DlqReason, DlqStats, OnBatchError, build_envelope};
 pub use error::FaucetError;
+pub use idempotency::{DeliveryMode, format_token, parse_token, unwrap_state, wrap_state};
 #[cfg(feature = "quality")]
 pub use observability::instrumented_apply_quality;
 pub use observability::{

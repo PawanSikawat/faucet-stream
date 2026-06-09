@@ -77,6 +77,13 @@ pub struct PipelineConfig {
     #[serde(default)]
     pub observability: Option<ObservabilitySpec>,
 
+    /// Delivery guarantee for every row (overridable per matrix row). Default
+    /// `at_least_once` — no behaviour change for existing configs. `exactly_once`
+    /// requires an idempotent sink, a deterministic-replay source, and a state
+    /// store (enforced at expand time).
+    #[serde(default)]
+    pub delivery: faucet_core::DeliveryMode,
+
     /// Optional cron schedule. Only consumed by `faucet schedule`; ignored by
     /// `faucet run`. Presence makes the config runnable on a schedule.
     #[cfg(feature = "schedule")]
@@ -253,6 +260,10 @@ pub struct MatrixRow {
     /// - `dlq: { ... }` → `Some(Some(spec))` — replace base DLQ wholesale
     #[serde(default, deserialize_with = "deserialize_dlq_override")]
     pub dlq: Option<Option<DlqSpec>>,
+
+    /// Per-row delivery override. `None` inherits the top-level `delivery`.
+    #[serde(default)]
+    pub delivery: Option<faucet_core::DeliveryMode>,
 }
 
 /// Execution-time controls.
@@ -1089,5 +1100,48 @@ pipeline:
         let cfg = parse_with_extension(yaml, "yaml").unwrap();
         let l = cfg.lineage.expect("lineage parsed");
         assert_eq!(l.namespace, "prod");
+    }
+
+    #[test]
+    fn delivery_defaults_to_at_least_once_and_parses_exactly_once() {
+        // Default when omitted: top-level delivery should be AtLeastOnce.
+        let yaml = r#"
+version: 1
+pipeline:
+  source: { type: rest, config: {} }
+  sink:   { type: jsonl, config: { path: ./o.jsonl } }
+"#;
+        let cfg = parse_with_extension(yaml, "yaml").unwrap();
+        assert_eq!(cfg.delivery, faucet_core::DeliveryMode::AtLeastOnce);
+
+        // Explicit exactly_once at top level.
+        let yaml2 = r#"
+version: 1
+delivery: exactly_once
+pipeline:
+  source: { type: rest, config: {} }
+  sink:   { type: jsonl, config: { path: ./o.jsonl } }
+"#;
+        let cfg2 = parse_with_extension(yaml2, "yaml").unwrap();
+        assert_eq!(cfg2.delivery, faucet_core::DeliveryMode::ExactlyOnce);
+
+        // Matrix row: absent delivery inherits (None), explicit overrides.
+        let yaml3 = r#"
+version: 1
+delivery: at_least_once
+pipeline:
+  source: { type: rest, config: {} }
+  sink:   { type: jsonl, config: { path: ./o.jsonl } }
+matrix:
+  - id: a
+  - id: b
+    delivery: exactly_once
+"#;
+        let cfg3 = parse_with_extension(yaml3, "yaml").unwrap();
+        assert_eq!(cfg3.matrix[0].delivery, None);
+        assert_eq!(
+            cfg3.matrix[1].delivery,
+            Some(faucet_core::DeliveryMode::ExactlyOnce)
+        );
     }
 }

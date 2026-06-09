@@ -205,6 +205,12 @@ impl Source for MongoCdcSource {
         Ok(())
     }
 
+    fn supports_exactly_once(&self) -> bool {
+        // Durable resumeToken + deterministic replay from it + per-event
+        // (per-page) bookmarks — the requirements for exactly-once delivery.
+        true
+    }
+
     fn connector_name(&self) -> &'static str {
         "mongodb-cdc"
     }
