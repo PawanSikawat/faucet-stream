@@ -21,9 +21,13 @@ sqlx = { workspace = true, features = ["runtime-tokio", "sqlite", "json"] }
 tokio.workspace = true
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["macros", "rt"] }
+tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread"] }
 serde_json.workspace = true
 tempfile = "3"
+futures.workspace = true
+async-trait.workspace = true
+faucet-core.workspace = true
+sqlx = { workspace = true, features = ["runtime-tokio", "sqlite", "json"] }
 
 [package.metadata.docs.rs]
 all-features = true
