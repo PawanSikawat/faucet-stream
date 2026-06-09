@@ -162,6 +162,77 @@ impl MssqlSink {
         }
     }
 
+    /// Insert rows within an **already-open** transaction — caller owns
+    /// `BEGIN TRAN`/`COMMIT TRAN`/`ROLLBACK TRAN`.  Splits into ≤2100-param
+    /// sub-INSERTs but does NOT issue any transaction-control statements.
+    ///
+    /// Used by `write_batch_idempotent` so the data INSERTs and the commit-token
+    /// MERGE share one externally-managed transaction.
+    ///
+    /// Returns `Err((error, timed_out))`. When `timed_out` is `true` the `exec`
+    /// future was dropped mid-TDS, leaving the connection desynced — the caller
+    /// must NOT issue ROLLBACK on it (mirrors `insert_chunk`).
+    async fn insert_rows_no_txn(
+        &self,
+        conn: &mut MssqlPooledConnection<'_>,
+        cols: &[String],
+        rows: &[Vec<BoundParam>],
+    ) -> Result<usize, (FaucetError, bool)> {
+        if rows.is_empty() {
+            return Ok(0);
+        }
+        let cols_quoted: Vec<String> = cols
+            .iter()
+            .map(|c| quote_ident_mssql(c))
+            .collect::<Result<_, _>>()
+            .map_err(|e| (e, false))?;
+        let per_insert = max_rows_per_insert(cols_quoted.len());
+        for sub in rows.chunks(per_insert) {
+            let sql = build_insert_sql(&self.table_quoted, &cols_quoted, sub.len());
+            let owned: Vec<&BoundParam> = sub.iter().flatten().collect();
+            let refs: Vec<&dyn ToSql> = owned.iter().map(|p| p.as_tosql()).collect();
+            let exec = async {
+                conn.execute(sql.as_str(), &refs)
+                    .await
+                    .map(|_| ())
+                    .map_err(|e| FaucetError::Sink(format!("MSSQL insert failed: {e}")))
+            };
+            // On timeout the `exec` future is dropped mid-TDS, desyncing the
+            // connection — the caller must NOT issue ROLLBACK on it (mirrors
+            // `insert_chunk`).
+            let (result, timed_out) = match self.timeout() {
+                Some(t) => match tokio::time::timeout(t, exec).await {
+                    Ok(inner) => (inner, false),
+                    Err(_) => (Err(FaucetError::Sink("MSSQL insert timed out".into())), true),
+                },
+                None => (exec.await, false),
+            };
+            if let Err(e) = result {
+                return Err((e, timed_out));
+            }
+        }
+        Ok(rows.len())
+    }
+
+    /// Ensure the per-sink commit-token watermark table exists.
+    /// Uses `IF OBJECT_ID … IS NULL CREATE TABLE` so it is idempotent.
+    async fn ensure_commit_table(
+        &self,
+        conn: &mut MssqlPooledConnection<'_>,
+    ) -> Result<(), FaucetError> {
+        // NVARCHAR(450) is the maximum SQL Server index key byte budget (900 B /
+        // 2 bytes-per-char = 450 chars). The table / column names are the fixed
+        // constants — no user-controlled input in this string.
+        let sql = format!(
+            "IF OBJECT_ID(N'{tbl}', N'U') IS NULL \
+             CREATE TABLE [{tbl}] ([scope] NVARCHAR(450) PRIMARY KEY, \
+             [token] NVARCHAR(32) NOT NULL, \
+             [updated_at] DATETIME2 DEFAULT SYSUTCDATETIME())",
+            tbl = faucet_core::idempotency::COMMIT_TOKEN_TABLE,
+        );
+        control(conn, &sql).await
+    }
+
     /// Insert one chunk, splitting into ≤2100-parameter sub-INSERTs wrapped in a
     /// single transaction (when `transaction_per_batch`). Returns rows inserted.
     async fn insert_chunk(
@@ -365,6 +436,82 @@ impl Sink for MssqlSink {
         Ok(())
     }
 
+    fn supports_idempotent_writes(&self) -> bool {
+        true
+    }
+
+    async fn last_committed_token(&self, scope: &str) -> Result<Option<String>, FaucetError> {
+        let mut conn = self.checkout().await?;
+        self.ensure_commit_table(&mut conn).await?;
+        let scope_owned = scope.to_string();
+        let rows = conn
+            .query(
+                &format!(
+                    "SELECT [token] FROM [{}] WHERE [scope] = @P1",
+                    faucet_core::idempotency::COMMIT_TOKEN_TABLE
+                ),
+                &[&scope_owned],
+            )
+            .await
+            .map_err(|e| FaucetError::Sink(format!("MSSQL token read failed: {e}")))?
+            .into_first_result()
+            .await
+            .map_err(|e| FaucetError::Sink(format!("MSSQL token read failed: {e}")))?;
+        Ok(rows
+            .first()
+            .and_then(|r| r.get::<&str, _>("token"))
+            .map(str::to_string))
+    }
+
+    async fn write_batch_idempotent(
+        &self,
+        records: &[Value],
+        scope: &str,
+        token: &str,
+    ) -> Result<usize, FaucetError> {
+        let mut conn = self.checkout().await?;
+        self.ensure_commit_table(&mut conn).await?;
+        control(&mut conn, "BEGIN TRAN").await?;
+
+        let written = match self.prepare_chunk(records).await {
+            Ok(Some((cols, rows))) => match self.insert_rows_no_txn(&mut conn, &cols, &rows).await {
+                Ok(n) => n,
+                Err((e, timed_out)) => {
+                    // Desynced connection on timeout — ROLLBACK would run on a
+                    // corrupt stream (mirrors insert_chunk). Drop the conn instead.
+                    if !timed_out {
+                        let _ = control(&mut conn, "ROLLBACK TRAN").await;
+                    }
+                    return Err(e);
+                }
+            },
+            Ok(None) => 0,
+            Err(e) => {
+                let _ = control(&mut conn, "ROLLBACK TRAN").await;
+                return Err(e);
+            }
+        };
+
+        // UPSERT the commit token atomically with the data rows.
+        let merge = format!(
+            "MERGE [{tbl}] AS t \
+             USING (SELECT @P1 AS [scope], @P2 AS [token]) AS s \
+             ON t.[scope] = s.[scope] \
+             WHEN MATCHED THEN UPDATE SET t.[token] = s.[token], t.[updated_at] = SYSUTCDATETIME() \
+             WHEN NOT MATCHED THEN INSERT ([scope], [token]) VALUES (s.[scope], s.[token]);",
+            tbl = faucet_core::idempotency::COMMIT_TOKEN_TABLE,
+        );
+        let (scope_owned, token_owned) = (scope.to_string(), token.to_string());
+        let refs: Vec<&dyn ToSql> = vec![&scope_owned, &token_owned];
+        if let Err(e) = conn.execute(merge.as_str(), &refs).await {
+            let _ = control(&mut conn, "ROLLBACK TRAN").await;
+            return Err(FaucetError::Sink(format!("MSSQL token merge failed: {e}")));
+        }
+
+        control(&mut conn, "COMMIT TRAN").await?;
+        Ok(written)
+    }
+
     fn config_schema(&self) -> Value {
         serde_json::to_value(faucet_core::schema_for!(MssqlSinkConfig))
             .expect("schema serialization")
@@ -424,6 +571,28 @@ mod tests {
         assert_eq!(
             quote_table("my.sales.events").unwrap(),
             "[my].[sales].[events]"
+        );
+    }
+
+    #[test]
+    fn idempotency_constant_names() {
+        // The commit table and column constants used in ensure_commit_table,
+        // last_committed_token, and write_batch_idempotent must match the
+        // canonical values from faucet_core::idempotency.
+        assert_eq!(
+            faucet_core::idempotency::COMMIT_TOKEN_TABLE,
+            "_faucet_commit_token",
+            "COMMIT_TOKEN_TABLE name changed — update DDL and queries"
+        );
+        assert_eq!(
+            faucet_core::idempotency::COMMIT_TOKEN_SCOPE_COL,
+            "scope",
+            "COMMIT_TOKEN_SCOPE_COL name changed — update DDL and queries"
+        );
+        assert_eq!(
+            faucet_core::idempotency::COMMIT_TOKEN_TOKEN_COL,
+            "token",
+            "COMMIT_TOKEN_TOKEN_COL name changed — update DDL and queries"
         );
     }
 
