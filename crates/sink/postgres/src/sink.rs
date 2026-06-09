@@ -80,8 +80,18 @@ impl PostgresSink {
         Ok(Self { config, pool })
     }
 
-    /// Insert a batch of records using JSONB column mode.
-    async fn insert_jsonb(&self, records: &[Value], column: &str) -> Result<usize, FaucetError> {
+    /// Insert a batch of records using JSONB column mode, on the given connection.
+    ///
+    /// Accepts `&mut sqlx::PgConnection` so the same logic runs both standalone
+    /// (via a pool-acquired connection, autocommit) and inside the idempotent
+    /// transaction (where `&mut *tx` is passed — `Transaction<'_, Postgres>`
+    /// derefs to `PgConnection`).
+    async fn insert_jsonb(
+        &self,
+        conn: &mut sqlx::PgConnection,
+        records: &[Value],
+        column: &str,
+    ) -> Result<usize, FaucetError> {
         if records.is_empty() {
             return Ok(0);
         }
@@ -96,14 +106,20 @@ impl PostgresSink {
 
         sqlx::query(&query)
             .bind(json_values)
-            .execute(&self.pool)
+            .execute(&mut *conn)
             .await
             .map_err(|e| FaucetError::Sink(format!("PostgreSQL insert failed: {e}")))?;
 
         Ok(records.len())
     }
 
-    /// Insert a batch of records using auto-mapped columns.
+    /// Insert a batch of records using auto-mapped columns, on the given connection.
+    ///
+    /// Accepts `&mut sqlx::PgConnection` so the same logic runs both standalone
+    /// (via a pool-acquired connection, autocommit) and inside the idempotent
+    /// transaction (where `&mut *tx` is passed — `Transaction<'_, Postgres>`
+    /// derefs to `PgConnection`). Running the column-discovery query on the same
+    /// connection is harmless and avoids any cross-connection visibility surprise.
     ///
     /// Discovers each column's name *and* underlying type (`udt_name`) from the
     /// table schema and maps top-level JSON fields to columns. Each placeholder
@@ -114,7 +130,11 @@ impl PostgresSink {
     /// which sqlx encodes as `jsonb`, so an insert into any non-`jsonb` column
     /// failed at runtime — audit #146 C1.) Uses a single multi-row INSERT
     /// (sub-chunked at the 65535-parameter cap) for efficiency.
-    async fn insert_auto_map(&self, records: &[Value]) -> Result<usize, FaucetError> {
+    async fn insert_auto_map(
+        &self,
+        conn: &mut sqlx::PgConnection,
+        records: &[Value],
+    ) -> Result<usize, FaucetError> {
         if records.is_empty() {
             return Ok(0);
         }
@@ -143,7 +163,7 @@ impl PostgresSink {
              ORDER BY a.attnum",
         )
         .bind(&table_ref)
-        .fetch_all(&self.pool)
+        .fetch_all(&mut *conn)
         .await
         .map_err(|e| FaucetError::Sink(format!("failed to query table columns: {e}")))?
         .iter()
@@ -253,12 +273,27 @@ impl PostgresSink {
                 }
             }
 
-            q.execute(&self.pool)
+            q.execute(&mut *conn)
                 .await
                 .map_err(|e| FaucetError::Sink(format!("PostgreSQL insert failed: {e}")))?;
         }
 
         Ok(num_rows)
+    }
+
+    /// Ensure the commit-token watermark table exists.
+    async fn ensure_commit_table(&self) -> Result<(), FaucetError> {
+        let sql = format!(
+            "CREATE TABLE IF NOT EXISTS {t} ({s} TEXT PRIMARY KEY, {k} TEXT NOT NULL, updated_at TIMESTAMPTZ DEFAULT now())",
+            t = quote_ident(faucet_core::idempotency::COMMIT_TOKEN_TABLE),
+            s = quote_ident(faucet_core::idempotency::COMMIT_TOKEN_SCOPE_COL),
+            k = quote_ident(faucet_core::idempotency::COMMIT_TOKEN_TOKEN_COL),
+        );
+        sqlx::query(&sql)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| FaucetError::Sink(format!("PostgreSQL commit-table create failed: {e}")))?;
+        Ok(())
     }
 }
 
@@ -323,6 +358,12 @@ impl faucet_core::Sink for PostgresSink {
     /// `INSERT` — useful when upstream `StreamPage`s are already sized for
     /// Postgres' per-statement bind-parameter limit (~65 535 / num_columns
     /// in AutoMap mode).
+    ///
+    /// Acquires one connection from the pool and routes all chunks through it.
+    /// Each INSERT executes as its own autocommit statement — identical
+    /// observable behaviour to executing directly on the pool, while keeping the
+    /// same connection for the entire call (avoids repeated pool-checkout
+    /// overhead on large batches).
     async fn write_batch(&self, records: &[Value]) -> Result<usize, FaucetError> {
         if records.is_empty() {
             return Ok(0);
@@ -337,11 +378,21 @@ impl faucet_core::Sink for PostgresSink {
             records.chunks(self.config.batch_size).collect()
         };
 
+        // Acquire once; reuse for all chunks (each statement autocommits —
+        // no BEGIN is issued, so behaviour is identical to using the pool).
+        let mut conn = self
+            .pool
+            .acquire()
+            .await
+            .map_err(|e| FaucetError::Sink(format!("PostgreSQL pool acquire failed: {e}")))?;
+
         let mut total = 0;
         for chunk in chunks {
             total += match &self.config.column_mapping {
-                PostgresColumnMapping::Jsonb { column } => self.insert_jsonb(chunk, column).await?,
-                PostgresColumnMapping::AutoMap => self.insert_auto_map(chunk).await?,
+                PostgresColumnMapping::Jsonb { column } => {
+                    self.insert_jsonb(&mut conn, chunk, column).await?
+                }
+                PostgresColumnMapping::AutoMap => self.insert_auto_map(&mut conn, chunk).await?,
             };
         }
 
@@ -352,12 +403,80 @@ impl faucet_core::Sink for PostgresSink {
         );
         Ok(total)
     }
+
+    fn supports_idempotent_writes(&self) -> bool {
+        true
+    }
+
+    async fn last_committed_token(&self, scope: &str) -> Result<Option<String>, FaucetError> {
+        self.ensure_commit_table().await?;
+        let sql = format!(
+            "SELECT {k} FROM {t} WHERE {s} = $1",
+            t = quote_ident(faucet_core::idempotency::COMMIT_TOKEN_TABLE),
+            k = quote_ident(faucet_core::idempotency::COMMIT_TOKEN_TOKEN_COL),
+            s = quote_ident(faucet_core::idempotency::COMMIT_TOKEN_SCOPE_COL),
+        );
+        let row = sqlx::query(&sql)
+            .bind(scope)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|e| FaucetError::Sink(format!("PostgreSQL token read failed: {e}")))?;
+        Ok(row.map(|r| r.get::<String, _>(0)))
+    }
+
+    async fn write_batch_idempotent(
+        &self,
+        records: &[Value],
+        scope: &str,
+        token: &str,
+    ) -> Result<usize, FaucetError> {
+        self.ensure_commit_table().await?;
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| FaucetError::Sink(format!("PostgreSQL transaction begin failed: {e}")))?;
+
+        // Data insert(s) and the commit-token upsert share ONE transaction so
+        // the page is committed atomically with its watermark: on crash either
+        // both land or neither does, which is what makes a replay skip-on-resume
+        // produce zero duplicates.
+        let written = match &self.config.column_mapping {
+            PostgresColumnMapping::Jsonb { column } => {
+                self.insert_jsonb(&mut tx, records, column).await?
+            }
+            PostgresColumnMapping::AutoMap => self.insert_auto_map(&mut tx, records).await?,
+        };
+
+        let upsert = format!(
+            "INSERT INTO {t} ({s}, {k}) VALUES ($1, $2) ON CONFLICT ({s}) DO UPDATE SET {k} = EXCLUDED.{k}, updated_at = now()",
+            t = quote_ident(faucet_core::idempotency::COMMIT_TOKEN_TABLE),
+            s = quote_ident(faucet_core::idempotency::COMMIT_TOKEN_SCOPE_COL),
+            k = quote_ident(faucet_core::idempotency::COMMIT_TOKEN_TOKEN_COL),
+        );
+        sqlx::query(&upsert)
+            .bind(scope)
+            .bind(token)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| FaucetError::Sink(format!("PostgreSQL token upsert failed: {e}")))?;
+
+        tx.commit()
+            .await
+            .map_err(|e| FaucetError::Sink(format!("PostgreSQL transaction commit failed: {e}")))?;
+        Ok(written)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::{pg_bind_text, qualified_table_ref};
     use serde_json::json;
+
+    #[test]
+    fn commit_token_table_is_the_shared_constant() {
+        assert_eq!(faucet_core::idempotency::COMMIT_TOKEN_TABLE, "_faucet_commit_token");
+    }
 
     // dataset_uri test is skipped: PostgresSink::new() requires a live pool
     // (connects to PostgreSQL in new()), and no offline constructor exists.
