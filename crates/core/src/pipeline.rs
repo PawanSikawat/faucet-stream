@@ -133,6 +133,7 @@ pub struct Pipeline<'a, So: Source + ?Sized, Si: Sink + ?Sized> {
     quality: Option<Arc<crate::quality::CompiledQuality>>,
     adaptive: Option<crate::adaptive::AdaptiveBatchConfig>,
     cancel: Option<tokio_util::sync::CancellationToken>,
+    delivery: crate::idempotency::DeliveryMode,
 }
 
 impl<'a, So: Source + ?Sized, Si: Sink + ?Sized> Pipeline<'a, So, Si> {
@@ -150,6 +151,7 @@ impl<'a, So: Source + ?Sized, Si: Sink + ?Sized> Pipeline<'a, So, Si> {
             quality: None,
             adaptive: None,
             cancel: None,
+            delivery: crate::idempotency::DeliveryMode::AtLeastOnce,
         }
     }
 
@@ -221,6 +223,15 @@ impl<'a, So: Source + ?Sized, Si: Sink + ?Sized> Pipeline<'a, So, Si> {
     /// instead of leaving the file unreadable (#146 H16).
     pub fn with_cancel(mut self, cancel: tokio_util::sync::CancellationToken) -> Self {
         self.cancel = Some(cancel);
+        self
+    }
+
+    /// Set the delivery guarantee. `ExactlyOnce` requires a state store, an
+    /// idempotent sink (`Sink::supports_idempotent_writes`), and a
+    /// deterministic-replay source — otherwise `run` returns
+    /// `FaucetError::Config`.
+    pub fn with_delivery(mut self, mode: crate::idempotency::DeliveryMode) -> Self {
+        self.delivery = mode;
         self
     }
 
