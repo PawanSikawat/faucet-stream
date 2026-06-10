@@ -217,7 +217,7 @@ impl Default for ParquetOpts {
 /// Only `write_mode: append` is supported at runtime. The `write_mode` field
 /// accepts the shared [`faucet_core::WriteMode`] enum, so `upsert` and
 /// `delete` deserialise without error but are rejected by
-/// [`IcebergSink::new`] with a `FaucetError::Config`. Configuring
+/// [`IcebergSink::new`](crate::sink::IcebergSink::new) with a `FaucetError::Config`. Configuring
 /// `write_mode: overwrite` still produces a deserialization error (it is not
 /// a recognised variant). Equality-delete upsert is tracked in #179.
 ///
@@ -252,7 +252,7 @@ pub struct IcebergSinkConfig {
 
     /// Write semantics. Uses the shared [`faucet_core::WriteMode`] enum
     /// (`append` | `upsert` | `delete`). Only `append` is supported at
-    /// runtime; non-append modes are rejected by [`IcebergSink::new`] with a
+    /// runtime; non-append modes are rejected by [`IcebergSink::new`](crate::sink::IcebergSink::new) with a
     /// `FaucetError::Config`. Upsert via equality-delete is tracked in #179.
     #[serde(default)]
     pub write_mode: WriteMode,

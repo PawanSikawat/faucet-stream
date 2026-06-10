@@ -503,7 +503,7 @@ impl faucet_core::Sink for MysqlSink {
 
     /// Write a batch and report per-row outcomes.
     ///
-    /// In append mode this delegates to [`write_batch`](Self::write_batch) and
+    /// In append mode this delegates to [`write_batch`](faucet_core::Sink::write_batch) and
     /// maps a single success onto an all-`Ok(())` vector (the trait default).
     /// In upsert/delete mode the good rows are applied (upserts + deletes), and
     /// only the rows whose key could not be extracted (missing / null key) are

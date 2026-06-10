@@ -219,7 +219,7 @@ impl ElasticsearchSink {
         Ok(body)
     }
 
-    /// Build the NDJSON bulk body for an upsert/delete [`WritePlan`].
+    /// Build the NDJSON bulk body for an upsert/delete [`WritePlan`](faucet_core::WritePlan).
     ///
     /// Each `plan.upserts` row becomes an `{"index":{"_id":…}}` action (an
     /// idempotent overwrite) whose `_id` is derived from the row's `key`
