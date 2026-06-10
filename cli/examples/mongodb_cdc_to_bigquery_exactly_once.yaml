@@ -1,0 +1,38 @@
+# Exactly-once delivery: MongoDB CDC (Change Streams) → BigQuery.
+#
+# The BigQuery sink commits each page's rows and a per-page commit token in one
+# atomic multi-statement transaction (INSERT … SELECT FROM
+# UNNEST(JSON_QUERY_ARRAY(@payload)) + a MERGE into the `_faucet_commit_token`
+# watermark table). On crash/resume the pipeline reads the watermark and skips
+# already-committed pages, so the target table never sees duplicates.
+#
+# Exactly-once requires all four: a deterministic-replay CDC source, an
+# idempotent sink (bigquery), a state store, and NO dlq block. These are
+# validated at config-load time — run `faucet validate` first.
+version: 1
+name: mongo-cdc-to-bigquery
+
+pipeline:
+  source:
+    type: mongodb-cdc
+    config:
+      connection_url: ${env:MONGODB_URI}
+      database: app
+      collection: orders
+  sink:
+    type: bigquery
+    config:
+      project_id: my-gcp-project
+      dataset_id: analytics
+      # The target table must already exist with a defined schema — the sink
+      # reads it to generate the typed INSERT. Keep pages within BigQuery's
+      # ~10 MB jobs.query request limit.
+      table_id: orders
+      auth:
+        type: application_default
+  state:
+    type: file
+    config:
+      path: ./state
+
+delivery: exactly_once
