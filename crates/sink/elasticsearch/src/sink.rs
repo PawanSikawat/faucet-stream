@@ -40,6 +40,9 @@ impl ElasticsearchSink {
     /// `MAX_BATCH_SIZE` (#78/#44).
     pub fn new(config: ElasticsearchSinkConfig) -> Result<Self, FaucetError> {
         faucet_core::validate_batch_size(config.batch_size)?;
+        // Schemaless target: upsert/delete only need a non-empty `key` (no
+        // column-mapping guard like the SQL sinks).
+        config.write.validate()?;
         Ok(Self {
             config,
             client: Client::new(),
@@ -108,6 +111,18 @@ impl ElasticsearchSink {
         auth: &ElasticsearchAuth,
     ) -> Result<Value, FaucetError> {
         let body = self.build_bulk_body(chunk)?;
+        self.send_bulk_body(body, auth).await
+    }
+
+    /// Send a pre-built NDJSON `_bulk` body and return the parsed response.
+    ///
+    /// Shared by the append path ([`send_bulk_raw`](Self::send_bulk_raw)) and
+    /// the upsert/delete path ([`build_plan_body`](Self::build_plan_body)).
+    async fn send_bulk_body(
+        &self,
+        body: String,
+        auth: &ElasticsearchAuth,
+    ) -> Result<Value, FaucetError> {
         let url = format!("{}/_bulk", self.config.base_url);
         let req = self
             .client
@@ -121,7 +136,68 @@ impl ElasticsearchSink {
         Ok(resp_body)
     }
 
-    /// Build the NDJSON bulk request body for a slice of records.
+    /// Check a `_bulk` response body for item-level errors and return an outer
+    /// `Err` matching the append path's behaviour (#78/#32). `Ok(())` when the
+    /// bulk request reports no errors.
+    fn check_bulk_errors(resp_body: &Value) -> Result<(), FaucetError> {
+        if resp_body
+            .get("errors")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+        {
+            let error_items = extract_bulk_error_messages(resp_body);
+            if let Some(first) = error_items.first() {
+                return Err(FaucetError::Sink(format!(
+                    "Elasticsearch bulk request had {} errors: {first}",
+                    error_items.len(),
+                )));
+            }
+            return Err(FaucetError::Sink(
+                "Elasticsearch bulk request reported errors:true but no per-item error \
+                 could be extracted from the response — treating as a hard failure to \
+                 avoid silently dropping records"
+                    .into(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Build the action-metadata map for a `_bulk` action line, seeded with the
+    /// configured `_index` and an optional explicit `_id`.
+    fn action_meta(&self, id: Option<String>) -> serde_json::Map<String, Value> {
+        let mut action_meta = serde_json::Map::new();
+        action_meta.insert(
+            "_index".to_string(),
+            Value::String(self.config.index.clone()),
+        );
+        if let Some(id) = id {
+            action_meta.insert("_id".to_string(), Value::String(id));
+        }
+        action_meta
+    }
+
+    /// Append an `{ "<action>": {...} }` line followed by an optional doc line
+    /// to the NDJSON `body`.
+    fn push_bulk_line(
+        body: &mut String,
+        action: &str,
+        meta: serde_json::Map<String, Value>,
+        doc: Option<&Value>,
+    ) -> Result<(), FaucetError> {
+        let action_line = serde_json::to_string(&serde_json::json!({ action: meta }))
+            .map_err(|e| FaucetError::Sink(format!("failed to serialize bulk action: {e}")))?;
+        body.push_str(&action_line);
+        body.push('\n');
+        if let Some(doc) = doc {
+            let doc_line = serde_json::to_string(doc)
+                .map_err(|e| FaucetError::Sink(format!("failed to serialize record: {e}")))?;
+            body.push_str(&doc_line);
+            body.push('\n');
+        }
+        Ok(())
+    }
+
+    /// Build the NDJSON bulk request body for a slice of records (append mode).
     ///
     /// Each record is preceded by an `{"index": {...}}` action line.
     /// If `id_field` is configured, the corresponding value from each record
@@ -130,36 +206,64 @@ impl ElasticsearchSink {
         let mut body = String::new();
 
         for record in records {
-            // Build the action metadata.
-            let mut action_meta = serde_json::Map::new();
-            action_meta.insert(
-                "_index".to_string(),
-                Value::String(self.config.index.clone()),
-            );
-
-            if let Some(ref id_field) = self.config.id_field
-                && let Some(id_val) = record.get(id_field)
-            {
-                let id_str = match id_val {
+            let id = self.config.id_field.as_ref().and_then(|id_field| {
+                record.get(id_field).map(|id_val| match id_val {
                     Value::String(s) => s.clone(),
                     other => other.to_string(),
-                };
-                action_meta.insert("_id".to_string(), Value::String(id_str));
-            }
-
-            let action_line = serde_json::to_string(&serde_json::json!({"index": action_meta}))
-                .map_err(|e| FaucetError::Sink(format!("failed to serialize bulk action: {e}")))?;
-            body.push_str(&action_line);
-            body.push('\n');
-
-            let record_line = serde_json::to_string(record)
-                .map_err(|e| FaucetError::Sink(format!("failed to serialize record: {e}")))?;
-            body.push_str(&record_line);
-            body.push('\n');
+                })
+            });
+            let meta = self.action_meta(id);
+            Self::push_bulk_line(&mut body, "index", meta, Some(record))?;
         }
 
         Ok(body)
     }
+
+    /// Build the NDJSON bulk body for an upsert/delete [`WritePlan`].
+    ///
+    /// Each `plan.upserts` row becomes an `{"index":{"_id":…}}` action (an
+    /// idempotent overwrite) whose `_id` is derived from the row's `key`
+    /// columns — this **overrides** any `id_field`. The row itself (already
+    /// marker-stripped by the planner) is the doc line.
+    ///
+    /// Each `plan.deletes` key tuple becomes a `{"delete":{"_id":…}}` action
+    /// with **no** doc line.
+    fn build_plan_body(&self, plan: &faucet_core::WritePlan) -> Result<String, FaucetError> {
+        let key = &self.config.write.key;
+        let mut body = String::new();
+
+        for row in &plan.upserts {
+            let id = doc_id_from_row(row, key);
+            let meta = self.action_meta(Some(id));
+            Self::push_bulk_line(&mut body, "index", meta, Some(row))?;
+        }
+        for kt in &plan.deletes {
+            let id = faucet_core::key_to_doc_id(kt, ":");
+            let meta = self.action_meta(Some(id));
+            Self::push_bulk_line(&mut body, "delete", meta, None)?;
+        }
+
+        Ok(body)
+    }
+}
+
+/// Build a document `_id` from an upsert row's `key` columns, in `key` order,
+/// using the same join (`:`) and rendering (string→as-is, else `to_string()`)
+/// as [`faucet_core::key_to_doc_id`].
+///
+/// Key columns are guaranteed present — [`faucet_core::plan_writes`] validated
+/// them before the row reached `plan.upserts`. A missing column would only
+/// occur on a planner contract violation, so it renders as an empty segment
+/// rather than panicking.
+fn doc_id_from_row(row: &Value, key: &[String]) -> String {
+    key.iter()
+        .map(|col| match row.get(col) {
+            Some(Value::String(s)) => s.clone(),
+            Some(other) => other.to_string(),
+            None => String::new(),
+        })
+        .collect::<Vec<_>>()
+        .join(":")
 }
 
 /// Extract per-item error messages from a `_bulk` response body.
@@ -199,6 +303,18 @@ impl faucet_core::Sink for ElasticsearchSink {
             faucet_core::redact_uri_credentials(&self.config.base_url),
             self.config.index
         )
+    }
+
+    /// Elasticsearch is schemaless and `_id`-addressable, so all three write
+    /// modes are supported: upsert and delete derive the document `_id` from
+    /// the configured `key`, and the `_bulk` `index` / `delete` actions are
+    /// idempotent overwrites / removals by `_id`.
+    fn supported_write_modes(&self) -> &'static [faucet_core::WriteMode] {
+        &[
+            faucet_core::WriteMode::Append,
+            faucet_core::WriteMode::Upsert,
+            faucet_core::WriteMode::Delete,
+        ]
     }
 
     /// Non-mutating preflight probe.
@@ -308,6 +424,34 @@ impl faucet_core::Sink for ElasticsearchSink {
 
         // Resolve auth once per write_batch call; reuse across chunks.
         let auth = self.resolve_auth().await?;
+
+        // Upsert / delete routing: plan the page (dedup last-write-wins, strip
+        // the delete marker) and emit `index` / `delete` bulk actions whose
+        // `_id` derives from `key`. Append falls through to the existing
+        // chunked `index` fast path below.
+        if !matches!(self.config.write.write_mode, faucet_core::WriteMode::Append) {
+            let plan = faucet_core::plan_writes(records, &self.config.write);
+            if let Some((idx, msg)) = plan.failed.first() {
+                return Err(FaucetError::Sink(format!(
+                    "elasticsearch {}: row {idx}: {msg}",
+                    self.config.write.write_mode.as_str()
+                )));
+            }
+            let body = self.build_plan_body(&plan)?;
+            let written = plan.upserts.len() + plan.deletes.len();
+            if written == 0 {
+                return Ok(0);
+            }
+            let resp_body = self.send_bulk_body(body, &auth).await?;
+            Self::check_bulk_errors(&resp_body)?;
+            tracing::debug!(
+                upserts = plan.upserts.len(),
+                deletes = plan.deletes.len(),
+                "Elasticsearch upsert/delete bulk written"
+            );
+            return Ok(written);
+        }
+
         let mut total_written = 0;
 
         let chunks: Vec<&[Value]> = if self.config.batch_size == 0 {
@@ -339,30 +483,10 @@ impl faucet_core::Sink for ElasticsearchSink {
         for chunk in chunks {
             let resp_body = self.send_bulk_raw(chunk, &auth).await?;
 
-            // Check for item-level errors in the bulk response.
-            if resp_body
-                .get("errors")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false)
-            {
-                let error_items = extract_bulk_error_messages(&resp_body);
-                if let Some(first) = error_items.first() {
-                    return Err(FaucetError::Sink(format!(
-                        "Elasticsearch bulk request had {} errors: {first}",
-                        error_items.len(),
-                    )));
-                }
-                // `errors: true` but no per-item error could be extracted (an
-                // items shape the parser doesn't recognise). Treat as a hard
-                // failure rather than counting the chunk as written — otherwise
-                // failed rows are silently dropped (#78/#32).
-                return Err(FaucetError::Sink(
-                    "Elasticsearch bulk request reported errors:true but no per-item error \
-                     could be extracted from the response — treating as a hard failure to \
-                     avoid silently dropping records"
-                        .into(),
-                ));
-            }
+            // Check for item-level errors in the bulk response. `errors: true`
+            // with no extractable per-item error is treated as a hard failure
+            // rather than silently dropping the chunk (#78/#32).
+            Self::check_bulk_errors(&resp_body)?;
 
             total_written += chunk.len();
             tracing::debug!(records = chunk.len(), "Elasticsearch bulk batch written");
@@ -399,6 +523,35 @@ impl faucet_core::Sink for ElasticsearchSink {
 
         // Resolve auth once per write_batch_partial call; reuse across chunks.
         let auth = self.resolve_auth().await?;
+
+        // Upsert / delete routing. Per-row DLQ in these modes covers the
+        // missing/null-key case: `plan_writes` reports those rows in
+        // `plan.failed` with their original page index, and we mark exactly
+        // those indices `Err`. The deduped index/delete bulk is then sent in
+        // one call. Because the planner dedups by key (last-write-wins), an
+        // item-level bulk error can't be mapped back to a specific original
+        // record index, so per-item rejections aren't routed per-row here — a
+        // transport/bulk failure surfaces as an outer batch `Err` instead. This
+        // is the realistic DLQ case for upsert/delete (the missing-key route).
+        if !matches!(self.config.write.write_mode, faucet_core::WriteMode::Append) {
+            let plan = faucet_core::plan_writes(records, &self.config.write);
+            let mut outcomes: Vec<faucet_core::RowOutcome> =
+                (0..records.len()).map(|_| Ok(())).collect();
+            for (idx, msg) in &plan.failed {
+                outcomes[*idx] = Err(FaucetError::Sink(format!(
+                    "elasticsearch {}: row {idx}: {msg}",
+                    self.config.write.write_mode.as_str()
+                )));
+            }
+            if !plan.upserts.is_empty() || !plan.deletes.is_empty() {
+                let body = self.build_plan_body(&plan)?;
+                // A transport/HTTP failure aborts the batch (outer Err); the
+                // non-failed indices otherwise stay Ok.
+                let resp_body = self.send_bulk_body(body, &auth).await?;
+                Self::check_bulk_errors(&resp_body)?;
+            }
+            return Ok(outcomes);
+        }
 
         let chunks: Vec<&[Value]> = if self.config.batch_size == 0 {
             vec![records]
@@ -567,5 +720,71 @@ mod tests {
         // Third record: no id field, so no _id in action.
         let action2: Value = serde_json::from_str(lines[4]).unwrap();
         assert!(action2["index"].get("_id").is_none());
+    }
+
+    #[test]
+    fn doc_id_joins_composite_key() {
+        let kt = faucet_core::KeyTuple(vec![
+            ("tenant".to_string(), serde_json::json!("acme")),
+            ("id".to_string(), serde_json::json!(7)),
+        ]);
+        assert_eq!(faucet_core::key_to_doc_id(&kt, ":"), "acme:7");
+    }
+
+    #[test]
+    fn doc_id_from_row_joins_key_columns_in_order() {
+        // Composite key: string rendered as-is, number via to_string(), joined
+        // with ":" in `key` declaration order.
+        let row = json!({"id": 7, "tenant": "acme", "v": "x"});
+        let key = vec!["tenant".to_string(), "id".to_string()];
+        assert_eq!(doc_id_from_row(&row, &key), "acme:7");
+
+        // Single string key column → rendered as-is.
+        let row = json!({"id": "abc-123"});
+        assert_eq!(doc_id_from_row(&row, &["id".to_string()]), "abc-123");
+    }
+
+    #[test]
+    fn plan_body_upsert_uses_key_id_and_strips_marker() {
+        use faucet_core::{DeleteMarker, WriteMode, WriteSpec};
+
+        let config = ElasticsearchSinkConfig {
+            id_field: Some("ignored".to_string()),
+            write: WriteSpec {
+                write_mode: WriteMode::Upsert,
+                key: vec!["id".to_string()],
+                delete_marker: Some(DeleteMarker {
+                    field: "__op".to_string(),
+                    values: vec!["d".to_string()],
+                }),
+            },
+            ..ElasticsearchSinkConfig::new("http://localhost:9200", "idx")
+        };
+        let sink = ElasticsearchSink::new(config).unwrap();
+
+        let records = vec![
+            json!({"id": 1, "v": "a"}),
+            json!({"id": 2, "v": "x", "__op": "d"}),
+        ];
+        let plan = faucet_core::plan_writes(&records, &sink.config.write);
+        let body = sink.build_plan_body(&plan).unwrap();
+        let lines: Vec<&str> = body.trim().split('\n').collect();
+
+        // 1 upsert (action + doc) + 1 delete (action only) = 3 lines.
+        assert_eq!(lines.len(), 3, "{lines:?}");
+
+        // Upsert action: `_id` derived from the key (overrides id_field).
+        let action0: Value = serde_json::from_str(lines[0]).unwrap();
+        assert_eq!(action0["index"]["_id"], "1");
+        assert_eq!(action0["index"]["_index"], "idx");
+        // Doc line: the marker field is stripped.
+        let doc0: Value = serde_json::from_str(lines[1]).unwrap();
+        assert_eq!(doc0["v"], "a");
+        assert!(doc0.get("__op").is_none());
+
+        // Delete action: key-derived `_id`, NO doc line follows.
+        let action1: Value = serde_json::from_str(lines[2]).unwrap();
+        assert_eq!(action1["delete"]["_id"], "2");
+        assert_eq!(action1["delete"]["_index"], "idx");
     }
 }
