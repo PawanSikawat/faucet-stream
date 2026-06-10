@@ -433,7 +433,7 @@ pub fn expand(cfg: &PipelineConfig) -> CliResult<Vec<ExpandedNode>> {
             if !crate::registry::sink_supports_idempotent_writes(&merged_sink.kind) {
                 return Err(CliError::Config(format!(
                     "row '{}': delivery: exactly_once is not supported by sink '{}' \
-                     (idempotent sinks only: sqlite, postgres, mysql, mssql, iceberg)",
+                     (idempotent sinks only: sqlite, postgres, mysql, mssql, iceberg, bigquery)",
                     ids[i], merged_sink.kind
                 )));
             }
