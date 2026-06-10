@@ -5,8 +5,10 @@
 //! `INSERT … SELECT FROM UNNEST(JSON_QUERY_ARRAY(@payload))` + watermark `MERGE`
 //! transaction that makes a page's rows and its commit token land atomically.
 //! See `docs/superpowers/specs/2026-06-10-bigquery-exactly-once-design.md`.
+// Builder functions are wired into sink.rs in a later task; suppress dead_code
+// until they are called from the write path.
+#![allow(dead_code)]
 
-#[allow(unused_imports)]
 use faucet_core::idempotency::{
     COMMIT_TOKEN_SCOPE_COL, COMMIT_TOKEN_TABLE, COMMIT_TOKEN_TOKEN_COL,
 };
@@ -74,7 +76,6 @@ impl BqType {
 
     /// The BigQuery SQL type keyword used in a `CAST(... AS <kw>)` / array
     /// element type.
-    #[allow(dead_code)]
     fn sql_keyword(&self) -> &'static str {
         match self {
             BqType::String => "STRING",
@@ -123,7 +124,6 @@ fn sql_str(s: &str) -> String {
 
 /// Backtick-quoted identifier. BigQuery identifiers never contain a backtick
 /// (the schema came from BigQuery), so a stray one is stripped defensively.
-#[allow(dead_code)]
 fn quote_ident(name: &str) -> String {
     format!("`{}`", name.replace('`', ""))
 }
@@ -173,9 +173,9 @@ fn struct_field_list(fields: &[FieldSpec], json_var: &str, base_path: &str, dept
 
 /// Generate the SQL extraction expression for one column.
 ///
-/// `json_var` is the SQL expression naming the current JSON value (the row alias
-/// `r` at the top level, or an `UNNEST` element alias deeper down). `path` is
-/// the JSONPath into `json_var` for this field. `depth` keeps nested `UNNEST`
+/// `json_var` is always the UNNEST element alias or the top-level row variable;
+/// `path` is always a JSONPath relative to that variable's JSON root (e.g. `"$.field"`
+/// at top level, `"$.child"` inside a nested struct). `depth` keeps nested `UNNEST`
 /// aliases unique (`e{depth}` for struct elements, `x{depth}` for scalars).
 fn column_expr(field: &FieldSpec, json_var: &str, path: &str, depth: usize) -> String {
     if field.repeated {
@@ -207,6 +207,110 @@ fn column_expr(field: &FieldSpec, json_var: &str, path: &str, depth: usize) -> S
         };
         wrap_scalar(&field.ty, &raw)
     }
+}
+
+/// Backtick-quoted fully-qualified table reference (`` `project.dataset.table` ``).
+///
+/// Inputs are not backtick-stripped (unlike [`quote_ident`]): BigQuery
+/// project/dataset/table names cannot contain a backtick per BQ naming rules,
+/// and these come from admin-controlled config, never from row data.
+fn table_ref(project: &str, dataset: &str, table: &str) -> String {
+    format!("`{project}.{dataset}.{table}`")
+}
+
+/// Reference to the shared commit-token watermark table in the target dataset.
+fn commit_table_ref(project: &str, dataset: &str) -> String {
+    format!("`{project}.{dataset}.{COMMIT_TOKEN_TABLE}`")
+}
+
+/// `CREATE TABLE IF NOT EXISTS` for the watermark table. Run as its own query
+/// job (DDL is kept out of the data transaction, mirroring the SQL sinks).
+pub fn build_create_commit_table(project: &str, dataset: &str) -> String {
+    format!(
+        "CREATE TABLE IF NOT EXISTS {t} ({scope} STRING NOT NULL, {token} STRING NOT NULL, updated_at TIMESTAMP)",
+        t = commit_table_ref(project, dataset),
+        scope = COMMIT_TOKEN_SCOPE_COL,
+        token = COMMIT_TOKEN_TOKEN_COL,
+    )
+}
+
+/// Parameterized read of the last committed token for `@scope`.
+///
+/// `LIMIT 1` has no `ORDER BY`: the `MERGE` below maintains exactly one
+/// watermark row per scope, so there is never more than one row to choose from.
+pub fn build_select_token(project: &str, dataset: &str) -> String {
+    format!(
+        "SELECT {token} FROM {t} WHERE {scope} = @scope LIMIT 1",
+        token = COMMIT_TOKEN_TOKEN_COL,
+        t = commit_table_ref(project, dataset),
+        scope = COMMIT_TOKEN_SCOPE_COL,
+    )
+}
+
+/// Parameterized upsert of the watermark row (one row per `scope`).
+pub fn build_merge_token(project: &str, dataset: &str) -> String {
+    format!(
+        "MERGE {t} T USING (SELECT @scope AS {scope}, @token AS {token}) S ON T.{scope} = S.{scope} \
+WHEN MATCHED THEN UPDATE SET {token} = S.{token}, updated_at = CURRENT_TIMESTAMP() \
+WHEN NOT MATCHED THEN INSERT ({scope}, {token}, updated_at) VALUES (S.{scope}, S.{token}, CURRENT_TIMESTAMP())",
+        t = commit_table_ref(project, dataset),
+        scope = COMMIT_TOKEN_SCOPE_COL,
+        token = COMMIT_TOKEN_TOKEN_COL,
+    )
+}
+
+/// The typed `INSERT … SELECT FROM UNNEST(JSON_QUERY_ARRAY(@payload))` statement.
+fn build_insert_select(columns: &[FieldSpec], project: &str, dataset: &str, table: &str) -> String {
+    let col_list = columns
+        .iter()
+        .map(|f| quote_ident(&f.name))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let exprs = columns
+        .iter()
+        .map(|f| {
+            let path = format!("${}", json_path_segment(&f.name));
+            column_expr(f, "r", &path, 0)
+        })
+        .collect::<Vec<_>>()
+        .join(",\n    ");
+    format!(
+        "INSERT INTO {t} ({col_list})\nSELECT\n    {exprs}\nFROM UNNEST(JSON_QUERY_ARRAY(@payload)) AS r",
+        t = table_ref(project, dataset, table),
+    )
+}
+
+/// The full atomic transaction: typed INSERT of the page + watermark MERGE.
+pub fn build_transaction_sql(columns: &[FieldSpec], project: &str, dataset: &str, table: &str) -> String {
+    format!(
+        "BEGIN TRANSACTION;\n{insert};\n{merge};\nCOMMIT TRANSACTION;",
+        insert = build_insert_select(columns, project, dataset, table),
+        merge = build_merge_token(project, dataset),
+    )
+}
+
+/// Deterministic, sanitized `requestId` for transport-retry dedup. Correctness
+/// does not depend on it (the transaction + core skip logic are authoritative);
+/// it just suppresses duplicate jobs from a retried HTTP request within
+/// BigQuery's stateless-query window.
+///
+/// The scope hash uses FNV-1a rather than `std::hash::DefaultHasher` so the id
+/// is byte-stable across Rust toolchains (`DefaultHasher`'s algorithm is
+/// explicitly allowed to change between releases). The resulting id is bounded
+/// at ~112 chars — well under BigQuery's 1024-char `requestId` limit.
+pub fn build_request_id(scope: &str, token: &str) -> String {
+    // FNV-1a 64-bit over the scope bytes.
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in scope.as_bytes() {
+        h ^= u64::from(*b);
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    let safe_scope: String = scope
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+        .take(64)
+        .collect();
+    format!("faucet_eo_{safe_scope}_{h:016x}_{token}")
 }
 
 #[cfg(test)]
@@ -323,5 +427,57 @@ mod tests {
         assert_eq!(json_path_segment("ok_name"), ".ok_name");
         assert_eq!(json_path_segment("_lead"), "._lead");
         assert_eq!(json_path_segment("1bad"), "['1bad']");
+    }
+
+    #[test]
+    fn create_commit_table_sql() {
+        assert_eq!(build_create_commit_table("p", "d"),
+            "CREATE TABLE IF NOT EXISTS `p.d._faucet_commit_token` (scope STRING NOT NULL, token STRING NOT NULL, updated_at TIMESTAMP)");
+    }
+
+    #[test]
+    fn select_token_sql() {
+        assert_eq!(build_select_token("p", "d"),
+            "SELECT token FROM `p.d._faucet_commit_token` WHERE scope = @scope LIMIT 1");
+    }
+
+    #[test]
+    fn merge_token_sql() {
+        assert_eq!(build_merge_token("p", "d"),
+            "MERGE `p.d._faucet_commit_token` T USING (SELECT @scope AS scope, @token AS token) S ON T.scope = S.scope WHEN MATCHED THEN UPDATE SET token = S.token, updated_at = CURRENT_TIMESTAMP() WHEN NOT MATCHED THEN INSERT (scope, token, updated_at) VALUES (S.scope, S.token, CURRENT_TIMESTAMP())");
+    }
+
+    #[test]
+    fn transaction_sql_wraps_insert_and_merge() {
+        let cols = vec![scalar("id", BqType::Int64), scalar("name", BqType::String)];
+        let sql = build_transaction_sql(&cols, "p", "d", "t");
+        assert!(sql.starts_with("BEGIN TRANSACTION;\n"), "got: {sql}");
+        assert!(sql.contains("INSERT INTO `p.d.t` (`id`, `name`)"), "got: {sql}");
+        assert!(sql.contains("FROM UNNEST(JSON_QUERY_ARRAY(@payload)) AS r"), "got: {sql}");
+        assert!(sql.contains("MERGE `p.d._faucet_commit_token` T"), "got: {sql}");
+        assert!(sql.trim_end().ends_with("COMMIT TRANSACTION;"), "got: {sql}");
+        let i = sql.find("INSERT INTO").unwrap();
+        let m = sql.find("MERGE").unwrap();
+        let c = sql.find("COMMIT TRANSACTION").unwrap();
+        assert!(i < m && m < c, "statement order wrong: {sql}");
+    }
+
+    #[test]
+    fn request_id_is_deterministic_and_sanitized() {
+        let a = build_request_id("pipe::row1", "00000000000000000007");
+        let b = build_request_id("pipe::row1", "00000000000000000007");
+        assert_eq!(a, b, "must be deterministic across calls/processes");
+        assert!(a.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-'),
+            "request_id must be sanitized: {a}");
+        assert!(a.ends_with("_00000000000000000007"), "got: {a}");
+        assert_ne!(a, build_request_id("pipe::row2", "00000000000000000007"));
+    }
+
+    #[test]
+    fn sql_str_escapes_backslash_then_quote() {
+        // The replace order is load-bearing: backslash first, then single-quote.
+        assert_eq!(sql_str("a'b"), "'a\\'b'");
+        assert_eq!(sql_str("a\\b"), "'a\\\\b'");
+        assert_eq!(sql_str("$.ok"), "'$.ok'");
     }
 }
