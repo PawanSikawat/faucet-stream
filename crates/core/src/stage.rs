@@ -752,6 +752,20 @@ impl CompiledCdcUnwrap {
             }
         };
         let Some(Value::Object(mut map)) = row else {
+            if is_delete {
+                tracing::warn!(
+                    op,
+                    key_field = %s.key_field,
+                    before_field = %s.before_field,
+                    "cdc_unwrap: dropping delete event with no usable key (no `before` image and no key_field object)"
+                );
+            } else {
+                tracing::warn!(
+                    op,
+                    after_field = %s.after_field,
+                    "cdc_unwrap: dropping non-delete event with no row image"
+                );
+            }
             return Ok(vec![]);
         };
         let marker = if is_delete { "d" } else { "u" };
@@ -1857,5 +1871,20 @@ mod tests {
         assert!(apply_stages(json!({"op": "insert", "after": null}), &stages)
             .unwrap()
             .is_empty());
+    }
+
+    #[cfg(feature = "transform-cdc-unwrap")]
+    #[test]
+    fn cdc_unwrap_update_ops_emit_after_as_upsert() {
+        let stages = compile(&[cdc_unwrap_default()]);
+        // postgres-cdc long form: update uses the `after` image, not `before`.
+        let pg = apply_stages(
+            json!({"op": "update", "before": {"id": 1, "v": "old"}, "after": {"id": 1, "v": "new"}}),
+            &stages,
+        ).unwrap();
+        assert_eq!(pg, vec![json!({"id": 1, "v": "new", "__op": "u"})]);
+        // mysql/mongo short form.
+        let my = apply_stages(json!({"op": "u", "after": {"id": 2, "v": 9}}), &stages).unwrap();
+        assert_eq!(my, vec![json!({"id": 2, "v": 9, "__op": "u"})]);
     }
 }
