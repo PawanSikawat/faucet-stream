@@ -113,6 +113,14 @@ impl IcebergSink {
     pub async fn new(config: IcebergSinkConfig) -> Result<Self, FaucetError> {
         config.validate()?;
 
+        if config.write_mode != faucet_core::WriteMode::Append {
+            return Err(FaucetError::Config(format!(
+                "iceberg sink: write_mode '{}' is not supported (append only; \
+                 upsert is a version-gated follow-up tracked in #179 / #190)",
+                config.write_mode.as_str()
+            )));
+        }
+
         let catalog = build_catalog(&config.catalog).await?;
 
         let preloaded: Option<Table> = if !config.create_if_missing {
@@ -488,6 +496,12 @@ impl faucet_core::Sink for IcebergSink {
         };
 
         Ok(CheckReport::single(probe))
+    }
+
+    fn supported_write_modes(&self) -> &'static [faucet_core::WriteMode] {
+        // Append only — equality-delete upsert is version-gated on iceberg-rust
+        // (tracked as a follow-up to #190 / #179).
+        &[faucet_core::WriteMode::Append]
     }
 
     fn supports_idempotent_writes(&self) -> bool {
