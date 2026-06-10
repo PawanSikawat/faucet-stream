@@ -172,7 +172,7 @@ transform-keys-case = ["faucet-source-rest?/transform-keys-case"]
 transform-filter = ["faucet-source-rest?/transform-filter"]
 transform-explode = ["faucet-source-rest?/transform-explode"]
 transform-cdc-unwrap = ["faucet-core/transform-cdc-unwrap"]
-transforms = ["faucet-source-rest?/transforms"]
+transforms = ["faucet-source-rest?/transforms", "transform-cdc-unwrap"]
 
 [dependencies]
 faucet-core.workspace = true
