@@ -15,7 +15,8 @@ use faucet_common_mssql::{MssqlPool, MssqlPooledConnection, build_pool, quote_id
 
 use crate::config::{MssqlColumnMapping, MssqlSinkConfig};
 use crate::encode::{
-    BoundParam, auto_row_params, build_insert_sql, max_rows_per_insert, resolve_insert_columns,
+    BoundParam, auto_row_params, build_insert_sql, build_merge, build_merge_delete,
+    max_rows_per_insert, resolve_insert_columns,
 };
 
 /// Microsoft SQL Server sink.
@@ -32,6 +33,16 @@ impl MssqlSink {
     /// mode) create the table if it doesn't exist.
     pub async fn new(config: MssqlSinkConfig) -> Result<Self, FaucetError> {
         config.validate()?;
+        config.write.validate()?;
+        if !matches!(config.write.write_mode, faucet_core::WriteMode::Append)
+            && !matches!(config.column_mapping, MssqlColumnMapping::AutoColumns { .. })
+        {
+            return Err(FaucetError::Config(
+                "mssql sink: write_mode upsert/delete requires column_mapping: auto_columns \
+                 (key columns must be real columns, not inside a JSON column)"
+                    .into(),
+            ));
+        }
         let table_quoted = quote_table(&config.table)?;
         let pool = build_pool(&config.connection, config.max_connections).await?;
 
@@ -305,6 +316,134 @@ impl MssqlSink {
         }
         Ok(rows.len())
     }
+
+    /// Run a single `MERGE`-upsert / `MERGE`-delete statement on an
+    /// already-open connection, honouring the per-statement timeout. Returns
+    /// `Err((error, timed_out))`; on timeout the connection is desynced and the
+    /// caller must NOT issue ROLLBACK on it (mirrors `insert_rows_no_txn`).
+    async fn exec_merge(
+        &self,
+        conn: &mut MssqlPooledConnection<'_>,
+        sql: &str,
+        refs: &[&dyn ToSql],
+    ) -> Result<(), (FaucetError, bool)> {
+        let exec = async {
+            conn.execute(sql, refs)
+                .await
+                .map(|_| ())
+                .map_err(|e| FaucetError::Sink(format!("MSSQL merge failed: {e}")))
+        };
+        match self.timeout() {
+            Some(t) => match tokio::time::timeout(t, exec).await {
+                Ok(Ok(())) => Ok(()),
+                Ok(Err(e)) => Err((e, false)),
+                Err(_) => Err((FaucetError::Sink("MSSQL merge timed out".into()), true)),
+            },
+            None => exec.await.map_err(|e| (e, false)),
+        }
+    }
+
+    /// Upsert `upserts` into the table via `MERGE`, on an already-open
+    /// connection (the caller owns the transaction). Resolves the column set
+    /// via `resolve_insert_columns`, chunks by `max_rows_per_insert`, and binds
+    /// each row's params row-major exactly as `build_merge` numbers them.
+    async fn upsert_rows_no_txn(
+        &self,
+        conn: &mut MssqlPooledConnection<'_>,
+        upserts: &[Value],
+    ) -> Result<usize, (FaucetError, bool)> {
+        if upserts.is_empty() {
+            return Ok(0);
+        }
+        let MssqlColumnMapping::AutoColumns { on_unknown_field } = &self.config.column_mapping
+        else {
+            // Validated in `new()` — upsert requires auto_columns.
+            return Err((
+                FaucetError::Sink(
+                    "MSSQL upsert requires column_mapping: auto_columns".into(),
+                ),
+                false,
+            ));
+        };
+        let insertable = self.insertable_columns().await.map_err(|e| (e, false))?;
+        let cols = resolve_insert_columns(&insertable, upserts, *on_unknown_field)
+            .map_err(|e| (e, false))?;
+        if cols.is_empty() {
+            return Ok(0);
+        }
+        let per_insert = max_rows_per_insert(cols.len());
+        for sub in upserts.chunks(per_insert) {
+            let sql = build_merge(&self.table_quoted, &self.config.write.key, &cols, sub.len())
+                .map_err(|e| (e, false))?;
+            // Bind every row's params concatenated row-major — matches the @PN
+            // numbering build_merge emits.
+            let owned: Vec<BoundParam> = sub
+                .iter()
+                .flat_map(|r| auto_row_params(r, &cols))
+                .collect();
+            let refs: Vec<&dyn ToSql> = owned.iter().map(|p| p.as_tosql()).collect();
+            self.exec_merge(conn, &sql, &refs).await?;
+        }
+        Ok(upserts.len())
+    }
+
+    /// Delete the `deletes` key tuples via `MERGE … WHEN MATCHED THEN DELETE`,
+    /// on an already-open connection. Chunks by `max_rows_per_insert(key.len())`
+    /// and binds each key tuple's values in `key` order, row-major.
+    async fn delete_keys_no_txn(
+        &self,
+        conn: &mut MssqlPooledConnection<'_>,
+        deletes: &[faucet_core::KeyTuple],
+    ) -> Result<usize, (FaucetError, bool)> {
+        if deletes.is_empty() {
+            return Ok(0);
+        }
+        let key = &self.config.write.key;
+        let per = max_rows_per_insert(key.len());
+        for chunk in deletes.chunks(per) {
+            let sql = build_merge_delete(&self.table_quoted, key, chunk.len())
+                .map_err(|e| (e, false))?;
+            // Bind each tuple's values in key order, row-major.
+            let owned: Vec<BoundParam> = chunk
+                .iter()
+                .flat_map(|kt| kt.0.iter().map(|(_, v)| BoundParam::from_value(v)))
+                .collect();
+            let refs: Vec<&dyn ToSql> = owned.iter().map(|p| p.as_tosql()).collect();
+            self.exec_merge(conn, &sql, &refs).await?;
+        }
+        Ok(deletes.len())
+    }
+
+    /// Apply a planned upsert/delete batch atomically: upserts then deletes,
+    /// wrapped in a single `BEGIN TRAN` / `COMMIT TRAN` so they commit together
+    /// (last-write-wins dedup already collapsed conflicting ops in the planner).
+    async fn apply_plan(&self, plan: &faucet_core::WritePlan) -> Result<usize, FaucetError> {
+        let mut conn = self.checkout().await?;
+        control(&mut conn, "BEGIN TRAN").await?;
+
+        let mut affected = 0usize;
+        match self.upsert_rows_no_txn(&mut conn, &plan.upserts).await {
+            Ok(n) => affected += n,
+            Err((e, timed_out)) => {
+                if !timed_out {
+                    let _ = control(&mut conn, "ROLLBACK TRAN").await;
+                }
+                return Err(e);
+            }
+        }
+        match self.delete_keys_no_txn(&mut conn, &plan.deletes).await {
+            Ok(n) => affected += n,
+            Err((e, timed_out)) => {
+                if !timed_out {
+                    let _ = control(&mut conn, "ROLLBACK TRAN").await;
+                }
+                return Err(e);
+            }
+        }
+
+        control(&mut conn, "COMMIT TRAN").await?;
+        Ok(affected)
+    }
 }
 
 /// Run a transaction-control statement and drain its (empty) result.
@@ -348,6 +487,28 @@ impl Sink for MssqlSink {
         if records.is_empty() {
             return Ok(0);
         }
+
+        // Non-append modes: plan the writes and apply upserts + deletes
+        // atomically. (NOTE: write_batch_partial upsert routing is handled in
+        // the DLQ task; write_batch_idempotent in the exactly-once task.)
+        if !matches!(self.config.write.write_mode, faucet_core::WriteMode::Append) {
+            let plan = faucet_core::plan_writes(records, &self.config.write);
+            if let Some((idx, msg)) = plan.failed.first() {
+                return Err(FaucetError::Sink(format!(
+                    "mssql {}: row {idx}: {msg}",
+                    self.config.write.write_mode.as_str()
+                )));
+            }
+            let total = self.apply_plan(&plan).await?;
+            tracing::info!(
+                table = %self.config.table,
+                mode = self.config.write.write_mode.as_str(),
+                rows = total,
+                "MSSQL write complete"
+            );
+            return Ok(total);
+        }
+
         let chunks: Vec<&[Value]> = if self.config.batch_size == 0 {
             vec![records]
         } else {
@@ -441,6 +602,14 @@ impl Sink for MssqlSink {
 
     fn supports_idempotent_writes(&self) -> bool {
         true
+    }
+
+    fn supported_write_modes(&self) -> &'static [faucet_core::WriteMode] {
+        &[
+            faucet_core::WriteMode::Append,
+            faucet_core::WriteMode::Upsert,
+            faucet_core::WriteMode::Delete,
+        ]
     }
 
     async fn last_committed_token(&self, scope: &str) -> Result<Option<String>, FaucetError> {

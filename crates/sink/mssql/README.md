@@ -53,15 +53,57 @@ full connection / TLS reference.
 `auto_columns` + `create_table` is rejected — schema inference for MSSQL types is
 unsafe, so create the table yourself first.
 
+## Write modes (upsert / delete)
+
+In addition to the default append, the sink can **upsert** (insert-or-update by a
+key) or **delete** by key. Both require `column_mapping: auto_columns` — the key
+columns must be real table columns, not buried inside a JSON column (using
+`json_column` with `upsert`/`delete` is rejected at construction).
+
+```yaml
+sink:
+  type: mssql
+  config:
+    connection_url: "mssql://sa:Str0ng%40Pass@localhost:1433/sales"
+    table: "dbo.users"
+    column_mapping:
+      type: auto_columns
+    write_mode: upsert            # append (default) | upsert | delete
+    key: [id]                     # one or more key columns (composite keys supported)
+    # delete_marker:              # upsert only: route marked rows to deletes
+    #   field: __op
+    #   values: [d, delete]
+```
+
+- **`upsert`** — each record is merged into the table via a single T-SQL
+  [`MERGE`](https://learn.microsoft.com/sql/t-sql/statements/merge-transact-sql):
+  matching rows (by `key`) have their non-key columns updated; non-matching rows
+  are inserted. When every column is a key column there is nothing to update, so
+  the `WHEN MATCHED` clause is omitted. Within a single batch, records with the
+  same key are deduplicated **last-write-wins** before the `MERGE` runs (MERGE
+  rejects a source that targets the same key twice).
+- **`delete`** — every record's `key` is collected and deleted. Composite keys
+  use a `MERGE … WHEN MATCHED THEN DELETE` (T-SQL has no row-constructor
+  `IN ((a,b), …)`), so single- and multi-column keys share one code path.
+- **`delete_marker`** (upsert mode only) — rows whose `field` equals one of
+  `values` are routed to a delete instead of an upsert; the marker field is
+  stripped from the upserted record. This lets a CDC stream carrying an
+  operation flag drive inserts, updates, and deletes from one pipeline.
+
+A row missing or null in a key column fails the whole batch with a clear
+`mssql upsert: row <i>: …` error. Upserts and deletes for a batch run inside a
+single `BEGIN TRAN` / `COMMIT TRAN` so they commit atomically.
+
 ## Batching, transactions, and MSSQL's statement limits
 
-MSSQL enforces two caps on a multi-row `INSERT`: at most **2100 parameters** per
+MSSQL enforces two caps on a multi-row statement: at most **2100 parameters** per
 request (and `tiberius` spends 2 of them on its `sp_executesql` wrapper, so the
 usable budget is 2098), and at most **1000 row expressions** in a `VALUES`
-clause. The sink auto-splits a batch into multiple `INSERT` statements that stay
-within *both* limits — `min(2098 / columns, 1000)` rows each — all within one
-transaction when `transaction_per_batch`. `MERGE`/`UPSERT` and bulk-copy (`BCP`)
-are out of scope for v1 — this is an append-only sink.
+clause. Both the append `INSERT` and the `MERGE` upsert/delete paths auto-split a
+batch into multiple statements that stay within *both* limits —
+`min(2098 / columns, 1000)` rows each — all within one transaction when
+`transaction_per_batch` (upsert/delete are always transaction-wrapped). Bulk-copy
+(`BCP`) is out of scope.
 
 ## Partial failures (DLQ)
 

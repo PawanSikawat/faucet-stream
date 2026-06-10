@@ -92,6 +92,11 @@ pub struct MssqlSinkConfig {
     /// `auto_columns` (schema inference is unsafe for MSSQL types). Defaults to false.
     #[serde(default)]
     pub create_table: bool,
+    /// Write mode (`append` / `upsert` / `delete`) + `key` / `delete_marker`.
+    /// `upsert` and `delete` require `column_mapping: auto_columns` (the key
+    /// columns must be real table columns, not buried inside a JSON column).
+    #[serde(flatten)]
+    pub write: faucet_core::WriteSpec,
 }
 
 impl std::fmt::Debug for MssqlSinkConfig {
@@ -106,6 +111,7 @@ impl std::fmt::Debug for MssqlSinkConfig {
             .field("isolate_row_failures", &self.isolate_row_failures)
             .field("statement_timeout_secs", &self.statement_timeout_secs)
             .field("create_table", &self.create_table)
+            .field("write", &self.write)
             .finish()
     }
 }
@@ -126,6 +132,7 @@ impl MssqlSinkConfig {
             isolate_row_failures: true,
             statement_timeout_secs: default_statement_timeout_secs(),
             create_table: false,
+            write: faucet_core::WriteSpec::default(),
         }
     }
 
