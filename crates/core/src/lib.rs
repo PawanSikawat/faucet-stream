@@ -29,11 +29,11 @@ pub mod retry;
 pub mod schema;
 pub mod stage;
 pub mod state;
-pub mod write_mode;
 pub mod traits;
 pub mod transform;
 pub mod transforming_source;
 pub mod util;
+pub mod write_mode;
 
 #[cfg(feature = "compression")]
 pub mod compression;
@@ -75,11 +75,11 @@ pub use transform::ValueCaseMode;
 #[cfg(feature = "transform-cast")]
 pub use transform::{CastOnError, CastType};
 pub use transforming_source::TransformingSource;
+pub use util::redact_uri_credentials;
 pub use write_mode::{
     DeleteMarker, KeyTuple, WriteMode, WritePlan, WriteSpec, key_to_doc_id, key_to_filter,
     plan_writes,
 };
-pub use util::redact_uri_credentials;
 
 // Re-export dependencies that connector authors need, so they only depend on
 // `faucet-core` instead of adding `async-trait` and `serde_json` themselves.

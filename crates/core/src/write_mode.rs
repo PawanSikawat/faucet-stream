@@ -97,6 +97,10 @@ enum Action {
 /// sinks share. `WriteMode::Append` should never reach here (callers route
 /// append separately); if it does, every row is treated as an upsert.
 pub fn plan_writes(page: &[Value], spec: &WriteSpec) -> WritePlan {
+    debug_assert!(
+        spec.write_mode != WriteMode::Append,
+        "plan_writes called with WriteMode::Append — callers must route append separately"
+    );
     let mut plan = WritePlan::default();
     let mut index: HashMap<String, usize> = HashMap::new();
     let mut order: Vec<Action> = Vec::new();
@@ -175,11 +179,15 @@ fn strip_marker(mut rec: Value, marker: Option<&DeleteMarker>) -> Value {
 /// Stable canonical string for a key tuple, for dedup.
 fn canonical(k: &KeyTuple) -> String {
     let arr: Vec<&Value> = k.0.iter().map(|(_, v)| v).collect();
-    serde_json::to_string(&arr).unwrap_or_default()
+    serde_json::to_string(&arr).expect("a Vec<&serde_json::Value> always serializes")
 }
 
 /// Join a key tuple's values into a single document id (Elasticsearch `_id`,
 /// composite keys). Each value rendered as its plain string / JSON form.
+///
+/// Assumes each key column has a consistent JSON type across records (the
+/// normal case for SQL and CDC sources); it does not disambiguate, e.g., the
+/// integer `7` from the string `"7"` in the same column.
 pub fn key_to_doc_id(k: &KeyTuple, separator: &str) -> String {
     k.0.iter()
         .map(|(_, v)| match v {
@@ -318,5 +326,44 @@ mod tests {
     #[test]
     fn validate_allows_append_without_key() {
         assert!(WriteSpec::default().validate().is_ok());
+    }
+
+    #[test]
+    fn last_write_wins_upsert_after_delete_is_an_upsert() {
+        // Inverse of the delete-after-upsert case: [delete, upsert] → upsert wins.
+        let spec = WriteSpec {
+            write_mode: WriteMode::Upsert,
+            key: vec!["id".into()],
+            delete_marker: Some(DeleteMarker {
+                field: "__op".into(),
+                values: vec!["d".into()],
+            }),
+        };
+        let plan = plan_writes(
+            &[json!({"id": 1, "__op": "d"}), json!({"id": 1, "v": 9, "__op": "u"})],
+            &spec,
+        );
+        assert!(plan.deletes.is_empty());
+        assert_eq!(plan.upserts, vec![json!({"id": 1, "v": 9})]);
+    }
+
+    #[test]
+    fn empty_page_produces_empty_plan() {
+        let plan = plan_writes(&[], &upsert_spec(&["id"]));
+        assert!(plan.upserts.is_empty());
+        assert!(plan.deletes.is_empty());
+        assert!(plan.failed.is_empty());
+    }
+
+    #[test]
+    fn delete_mode_dedups_repeated_key() {
+        // Same key deleted twice in one page collapses to a single delete.
+        let spec = WriteSpec {
+            write_mode: WriteMode::Delete,
+            key: vec!["id".into()],
+            delete_marker: None,
+        };
+        let plan = plan_writes(&[json!({"id": 1}), json!({"id": 1})], &spec);
+        assert_eq!(plan.deletes.len(), 1);
     }
 }
