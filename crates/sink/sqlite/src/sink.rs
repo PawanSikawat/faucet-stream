@@ -269,10 +269,7 @@ impl SqliteSink {
                 value_tuples.join(", ")
             );
             let query = match conflict_key {
-                Some(key) => format!(
-                    "{base_query} {}",
-                    on_conflict_clause(key, &insert_columns)
-                ),
+                Some(key) => format!("{base_query} {}", on_conflict_clause(key, &insert_columns)),
                 None => base_query,
             };
 
@@ -395,10 +392,7 @@ impl SqliteSink {
     /// Apply a planned upsert/delete batch inside one `BEGIN`/`COMMIT`
     /// transaction. Upserts and deletes are wrapped together so they commit
     /// atomically.
-    async fn apply_plan(
-        &self,
-        plan: &faucet_core::WritePlan,
-    ) -> Result<usize, FaucetError> {
+    async fn apply_plan(&self, plan: &faucet_core::WritePlan) -> Result<usize, FaucetError> {
         let mut tx = self
             .pool
             .begin()
@@ -694,10 +688,8 @@ mod tests {
 
     #[test]
     fn sqlite_on_conflict_clause() {
-        let clause = on_conflict_clause(
-            &["id".to_string()],
-            &["id".to_string(), "name".to_string()],
-        );
+        let clause =
+            on_conflict_clause(&["id".to_string()], &["id".to_string(), "name".to_string()]);
         assert_eq!(
             clause,
             r#"ON CONFLICT("id") DO UPDATE SET "name" = excluded."name""#

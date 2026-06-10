@@ -35,7 +35,10 @@ impl MssqlSink {
         config.validate()?;
         config.write.validate()?;
         if !matches!(config.write.write_mode, faucet_core::WriteMode::Append)
-            && !matches!(config.column_mapping, MssqlColumnMapping::AutoColumns { .. })
+            && !matches!(
+                config.column_mapping,
+                MssqlColumnMapping::AutoColumns { .. }
+            )
         {
             return Err(FaucetError::Config(
                 "mssql sink: write_mode upsert/delete requires column_mapping: auto_columns \
@@ -359,9 +362,7 @@ impl MssqlSink {
         else {
             // Validated in `new()` — upsert requires auto_columns.
             return Err((
-                FaucetError::Sink(
-                    "MSSQL upsert requires column_mapping: auto_columns".into(),
-                ),
+                FaucetError::Sink("MSSQL upsert requires column_mapping: auto_columns".into()),
                 false,
             ));
         };
@@ -377,10 +378,8 @@ impl MssqlSink {
                 .map_err(|e| (e, false))?;
             // Bind every row's params concatenated row-major — matches the @PN
             // numbering build_merge emits.
-            let owned: Vec<BoundParam> = sub
-                .iter()
-                .flat_map(|r| auto_row_params(r, &cols))
-                .collect();
+            let owned: Vec<BoundParam> =
+                sub.iter().flat_map(|r| auto_row_params(r, &cols)).collect();
             let refs: Vec<&dyn ToSql> = owned.iter().map(|p| p.as_tosql()).collect();
             self.exec_merge(conn, &sql, &refs).await?;
         }
@@ -401,8 +400,8 @@ impl MssqlSink {
         let key = &self.config.write.key;
         let per = max_rows_per_insert(key.len());
         for chunk in deletes.chunks(per) {
-            let sql = build_merge_delete(&self.table_quoted, key, chunk.len())
-                .map_err(|e| (e, false))?;
+            let sql =
+                build_merge_delete(&self.table_quoted, key, chunk.len()).map_err(|e| (e, false))?;
             // Bind each tuple's values in key order, row-major.
             let owned: Vec<BoundParam> = chunk
                 .iter()

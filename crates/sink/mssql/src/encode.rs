@@ -423,7 +423,9 @@ mod tests {
             "{sql}"
         );
         assert!(
-            sql.contains("WHEN NOT MATCHED THEN INSERT ([id], [name]) VALUES (src.[id], src.[name])"),
+            sql.contains(
+                "WHEN NOT MATCHED THEN INSERT ([id], [name]) VALUES (src.[id], src.[name])"
+            ),
             "{sql}"
         );
         assert!(

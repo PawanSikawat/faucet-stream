@@ -6,7 +6,9 @@ use serde_json::{Map, Value};
 use std::collections::HashMap;
 
 /// Write semantics for a sink. Serialized snake_case. Default `Append`.
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, schemars::JsonSchema, PartialEq, Eq)]
+#[derive(
+    Debug, Clone, Copy, Default, Serialize, Deserialize, schemars::JsonSchema, PartialEq, Eq,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum WriteMode {
     /// Insert every record (today's behaviour).
@@ -164,7 +166,9 @@ fn extract_key(rec: &Value, key: &[String]) -> Result<KeyTuple, String> {
 
 fn is_delete_marked(rec: &Value, marker: Option<&DeleteMarker>) -> bool {
     let Some(dm) = marker else { return false };
-    let Some(v) = rec.get(&dm.field) else { return false };
+    let Some(v) = rec.get(&dm.field) else {
+        return false;
+    };
     let Some(s) = v.as_str() else { return false };
     dm.values.iter().any(|m| m == s)
 }
@@ -311,7 +315,10 @@ mod tests {
         );
         assert_eq!(plan.upserts.len(), 1);
         let plan2 = plan_writes(
-            &[json!({"a": 1, "b": 2, "v": "x"}), json!({"a": 1, "b": 3, "v": "y"})],
+            &[
+                json!({"a": 1, "b": 2, "v": "x"}),
+                json!({"a": 1, "b": 3, "v": "y"}),
+            ],
             &upsert_spec(&["a", "b"]),
         );
         assert_eq!(plan2.upserts.len(), 2, "(1,2) and (1,3) are distinct keys");
@@ -319,7 +326,11 @@ mod tests {
 
     #[test]
     fn validate_rejects_upsert_without_key() {
-        let spec = WriteSpec { write_mode: WriteMode::Upsert, key: vec![], delete_marker: None };
+        let spec = WriteSpec {
+            write_mode: WriteMode::Upsert,
+            key: vec![],
+            delete_marker: None,
+        };
         assert!(spec.validate().is_err());
     }
 
@@ -340,7 +351,10 @@ mod tests {
             }),
         };
         let plan = plan_writes(
-            &[json!({"id": 1, "__op": "d"}), json!({"id": 1, "v": 9, "__op": "u"})],
+            &[
+                json!({"id": 1, "__op": "d"}),
+                json!({"id": 1, "v": 9, "__op": "u"}),
+            ],
             &spec,
         );
         assert!(plan.deletes.is_empty());

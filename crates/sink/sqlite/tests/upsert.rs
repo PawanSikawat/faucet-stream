@@ -78,8 +78,7 @@ fn upsert_config(url: &str) -> SqliteSinkConfig {
 // ---------------------------------------------------------------------------
 #[tokio::test]
 async fn upsert_updates_existing_row() {
-    let (_dir, url) =
-        fresh_db("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)").await;
+    let (_dir, url) = fresh_db("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)").await;
 
     let sink = SqliteSink::new(upsert_config(&url)).await.unwrap();
 
@@ -111,8 +110,7 @@ async fn upsert_updates_existing_row() {
 // ---------------------------------------------------------------------------
 #[tokio::test]
 async fn delete_marker_removes_row() {
-    let (_dir, url) =
-        fresh_db("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)").await;
+    let (_dir, url) = fresh_db("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)").await;
 
     let config = SqliteSinkConfig {
         database_url: url.clone(),
@@ -153,8 +151,7 @@ async fn delete_marker_removes_row() {
 // ---------------------------------------------------------------------------
 #[tokio::test]
 async fn single_batch_last_write_wins() {
-    let (_dir, url) =
-        fresh_db("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)").await;
+    let (_dir, url) = fresh_db("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)").await;
 
     let sink = SqliteSink::new(upsert_config(&url)).await.unwrap();
 
@@ -186,7 +183,10 @@ async fn write_batch_partial_routes_missing_key_per_row() {
 
     let sink = SqliteSink::new(upsert_config(&url)).await.unwrap();
 
-    let records: Vec<Value> = vec![json!({"id": 1, "name": "ok"}), json!({"name": "missing-id"})];
+    let records: Vec<Value> = vec![
+        json!({"id": 1, "name": "ok"}),
+        json!({"name": "missing-id"}),
+    ];
     let outcomes = sink.write_batch_partial(&records).await.unwrap();
 
     assert_eq!(outcomes.len(), 2, "one outcome per input row");

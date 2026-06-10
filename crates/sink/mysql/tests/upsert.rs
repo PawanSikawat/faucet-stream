@@ -116,8 +116,7 @@ async fn upsert_with_delete_marker_removes_row() {
     create_upsert_table(&url).await;
 
     // Upsert sink with a delete_marker on __op = "d".
-    let mut config =
-        MysqlSinkConfig::new(&url, "t").column_mapping(MysqlColumnMapping::AutoMap);
+    let mut config = MysqlSinkConfig::new(&url, "t").column_mapping(MysqlColumnMapping::AutoMap);
     config.write = WriteSpec {
         write_mode: WriteMode::Upsert,
         key: vec!["id".to_string()],
@@ -155,7 +154,10 @@ async fn upsert_with_delete_marker_removes_row() {
         .get(0);
     pool.close().await;
 
-    assert_eq!(count_after_delete, 0, "row must be deleted after delete-marker write");
+    assert_eq!(
+        count_after_delete, 0,
+        "row must be deleted after delete-marker write"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -192,7 +194,10 @@ async fn upsert_same_key_twice_in_one_batch_last_write_wins() {
         .get("name");
     pool.close().await;
 
-    assert_eq!(count, 1, "dedup must collapse two records with the same key to one row");
+    assert_eq!(
+        count, 1,
+        "dedup must collapse two records with the same key to one row"
+    );
     assert_eq!(name, "new", "last-write-wins: name must be 'new'");
 }
 
@@ -221,9 +226,8 @@ async fn supported_write_modes_includes_upsert_and_delete() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn new_rejects_upsert_without_key() {
-    let mut config =
-        MysqlSinkConfig::new("mysql://root@127.0.0.1:13306/test", "t")
-            .column_mapping(MysqlColumnMapping::AutoMap);
+    let mut config = MysqlSinkConfig::new("mysql://root@127.0.0.1:13306/test", "t")
+        .column_mapping(MysqlColumnMapping::AutoMap);
     config.write = WriteSpec {
         write_mode: WriteMode::Upsert,
         key: vec![], // missing key → rejected before any connection attempt
@@ -234,10 +238,7 @@ async fn new_rejects_upsert_without_key() {
         .await
         .err()
         .expect("must fail without key");
-    assert!(
-        err.to_string().contains("non-empty `key`"),
-        "got: {err}"
-    );
+    assert!(err.to_string().contains("non-empty `key`"), "got: {err}");
 }
 
 // ---------------------------------------------------------------------------
@@ -277,7 +278,10 @@ async fn write_batch_partial_routes_missing_key_per_row() {
     let config = make_upsert_sink_config(&url, vec!["id".to_string()]);
     let sink = MysqlSink::new(config).await.expect("sink new");
 
-    let records = [json!({"id": 1, "name": "ok"}), json!({"name": "missing-id"})];
+    let records = [
+        json!({"id": 1, "name": "ok"}),
+        json!({"name": "missing-id"}),
+    ];
     let outcomes = sink
         .write_batch_partial(&records)
         .await

@@ -95,7 +95,11 @@ async fn idempotent_upsert_updates_in_place_and_advances_token() {
     let (_c, port) = start_mssql().await;
     let cfg = conn_cfg(port);
     let pool = build_pool(&cfg, 4).await.expect("pool");
-    exec(&pool, "CREATE TABLE dbo.t (id INT PRIMARY KEY, name NVARCHAR(255))").await;
+    exec(
+        &pool,
+        "CREATE TABLE dbo.t (id INT PRIMARY KEY, name NVARCHAR(255))",
+    )
+    .await;
 
     let scfg = upsert_sink_cfg(
         &cfg,

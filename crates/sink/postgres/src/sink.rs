@@ -554,11 +554,10 @@ impl faucet_core::Sink for PostgresSink {
                     self.config.write.write_mode.as_str()
                 )));
             }
-            let mut conn = self
-                .pool
-                .acquire()
-                .await
-                .map_err(|e| FaucetError::Sink(format!("PostgreSQL pool acquire failed: {e}")))?;
+            let mut conn =
+                self.pool.acquire().await.map_err(|e| {
+                    FaucetError::Sink(format!("PostgreSQL pool acquire failed: {e}"))
+                })?;
             return self.apply_plan(&mut conn, &plan).await;
         }
 

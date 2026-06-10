@@ -1845,8 +1845,7 @@ mod tests {
     #[test]
     fn cdc_unwrap_mongo_replace_op_is_upsert() {
         let stages = compile(&[cdc_unwrap_default()]);
-        let out =
-            apply_stages(json!({"op": "r", "after": {"_id": "x", "v": 1}}), &stages).unwrap();
+        let out = apply_stages(json!({"op": "r", "after": {"_id": "x", "v": 1}}), &stages).unwrap();
         assert_eq!(out, vec![json!({"_id": "x", "v": 1, "__op": "u"})]);
     }
 
@@ -1859,18 +1858,22 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
-        assert!(apply_stages(json!({"op": "truncate"}), &stages)
-            .unwrap()
-            .is_empty());
+        assert!(
+            apply_stages(json!({"op": "truncate"}), &stages)
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[cfg(feature = "transform-cdc-unwrap")]
     #[test]
     fn cdc_unwrap_non_object_after_for_insert_is_dropped() {
         let stages = compile(&[cdc_unwrap_default()]);
-        assert!(apply_stages(json!({"op": "insert", "after": null}), &stages)
-            .unwrap()
-            .is_empty());
+        assert!(
+            apply_stages(json!({"op": "insert", "after": null}), &stages)
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[cfg(feature = "transform-cdc-unwrap")]

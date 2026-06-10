@@ -5,10 +5,10 @@
 
 use crate::config::TransformSpec;
 use crate::error::{CliError, CliResult};
-#[cfg(any(feature = "transforms", feature = "transform-cdc-unwrap"))]
-use faucet_core::{JsonSchema, schema_for};
 #[cfg(feature = "transforms")]
 use faucet_core::{CastOnError, CastType, KeyCaseMode, ValueCaseMode};
+#[cfg(any(feature = "transforms", feature = "transform-cdc-unwrap"))]
+use faucet_core::{JsonSchema, schema_for};
 use faucet_core::{RecordTransform, TransformStage};
 #[cfg(any(feature = "transforms", feature = "transform-cdc-unwrap"))]
 use serde::Deserialize;

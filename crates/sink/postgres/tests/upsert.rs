@@ -89,7 +89,11 @@ async fn upsert_insert_then_update_same_key_keeps_one_row_with_latest_value() {
     sink.write_batch(&[json!({"id": 1, "name": "alice2"})])
         .await
         .expect("second upsert");
-    assert_eq!(row_count(&url).await, 1, "same key must not create a new row");
+    assert_eq!(
+        row_count(&url).await,
+        1,
+        "same key must not create a new row"
+    );
     assert_eq!(
         name_for_id(&url, 1).await.as_deref(),
         Some("alice2"),
@@ -126,7 +130,11 @@ async fn upsert_with_delete_marker_removes_the_row() {
     sink.write_batch(&[json!({"id": 1, "__op": "d"})])
         .await
         .expect("delete via marker");
-    assert_eq!(row_count(&url).await, 0, "delete-marker must remove the row");
+    assert_eq!(
+        row_count(&url).await,
+        0,
+        "delete-marker must remove the row"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -169,7 +177,10 @@ async fn write_batch_partial_routes_missing_key_per_row() {
         .await
         .expect("sink new");
 
-    let records = [json!({"id": 1, "name": "ok"}), json!({"name": "missing-id"})];
+    let records = [
+        json!({"id": 1, "name": "ok"}),
+        json!({"name": "missing-id"}),
+    ];
     let outcomes = sink
         .write_batch_partial(&records)
         .await

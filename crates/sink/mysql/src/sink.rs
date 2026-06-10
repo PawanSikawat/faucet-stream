@@ -220,10 +220,7 @@ impl MysqlSink {
                 value_tuples.join(", ")
             );
             let query = match conflict_key {
-                Some(key) => format!(
-                    "{base_query} {}",
-                    on_duplicate_clause(key, &insert_columns)
-                ),
+                Some(key) => format!("{base_query} {}", on_duplicate_clause(key, &insert_columns)),
                 None => base_query,
             };
 
@@ -353,11 +350,7 @@ impl MysqlSink {
         let mut affected = 0usize;
         if !plan.upserts.is_empty() {
             affected += self
-                .insert_auto_map_with_conflict(
-                    &mut tx,
-                    &plan.upserts,
-                    Some(&self.config.write.key),
-                )
+                .insert_auto_map_with_conflict(&mut tx, &plan.upserts, Some(&self.config.write.key))
                 .await?;
         }
         if !plan.deletes.is_empty() {
@@ -674,10 +667,8 @@ mod tests {
 
     #[test]
     fn mysql_on_duplicate_clause() {
-        let clause = on_duplicate_clause(
-            &["id".to_string()],
-            &["id".to_string(), "name".to_string()],
-        );
+        let clause =
+            on_duplicate_clause(&["id".to_string()], &["id".to_string(), "name".to_string()]);
         assert_eq!(clause, "ON DUPLICATE KEY UPDATE `name` = VALUES(`name`)");
     }
 

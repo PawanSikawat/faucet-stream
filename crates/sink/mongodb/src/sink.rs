@@ -53,9 +53,9 @@ impl MongoSink {
     /// column is present and non-null on each upsert row, so a missing column
     /// here is an internal invariant violation rather than user data error.
     fn filter_from_row(row: &Value, key: &[String]) -> Result<Document, FaucetError> {
-        let obj = row.as_object().ok_or_else(|| {
-            FaucetError::Sink("upsert row is not a JSON object".to_string())
-        })?;
+        let obj = row
+            .as_object()
+            .ok_or_else(|| FaucetError::Sink("upsert row is not a JSON object".to_string()))?;
         let mut filter = Map::with_capacity(key.len());
         for col in key {
             match obj.get(col) {
@@ -127,9 +127,7 @@ impl MongoSink {
                         .delete_one(filter)
                         .await
                         .map(|_| ())
-                        .map_err(|e| {
-                            FaucetError::Sink(format!("MongoDB delete_one failed: {e}"))
-                        }),
+                        .map_err(|e| FaucetError::Sink(format!("MongoDB delete_one failed: {e}"))),
                 }
             }
         }))
@@ -343,7 +341,10 @@ mod tests {
         let row = json!({"_id": 5, "name": "a", "extra": true});
         let doc = MongoSink::filter_from_row(&row, &["_id".to_string()]).expect("filter");
         assert_eq!(doc.get_i64("_id").unwrap(), 5);
-        assert!(!doc.contains_key("name"), "filter must contain only key columns");
+        assert!(
+            !doc.contains_key("name"),
+            "filter must contain only key columns"
+        );
         assert!(!doc.contains_key("extra"));
     }
 

@@ -97,7 +97,11 @@ async fn upsert_second_write_updates_existing_row() {
     let (_c, port) = start_mssql().await;
     let cfg = conn_cfg(port);
     let pool = build_pool(&cfg, 4).await.expect("pool");
-    exec(&pool, "CREATE TABLE dbo.t (id INT PRIMARY KEY, name NVARCHAR(255))").await;
+    exec(
+        &pool,
+        "CREATE TABLE dbo.t (id INT PRIMARY KEY, name NVARCHAR(255))",
+    )
+    .await;
 
     let scfg = upsert_sink_cfg(
         &cfg,
@@ -130,7 +134,11 @@ async fn upsert_with_delete_marker_removes_row() {
     let (_c, port) = start_mssql().await;
     let cfg = conn_cfg(port);
     let pool = build_pool(&cfg, 4).await.expect("pool");
-    exec(&pool, "CREATE TABLE dbo.t (id INT PRIMARY KEY, name NVARCHAR(255))").await;
+    exec(
+        &pool,
+        "CREATE TABLE dbo.t (id INT PRIMARY KEY, name NVARCHAR(255))",
+    )
+    .await;
 
     let scfg = upsert_sink_cfg(
         &cfg,
@@ -168,7 +176,11 @@ async fn upsert_same_key_twice_in_one_batch_last_write_wins() {
     let (_c, port) = start_mssql().await;
     let cfg = conn_cfg(port);
     let pool = build_pool(&cfg, 4).await.expect("pool");
-    exec(&pool, "CREATE TABLE dbo.t (id INT PRIMARY KEY, name NVARCHAR(255))").await;
+    exec(
+        &pool,
+        "CREATE TABLE dbo.t (id INT PRIMARY KEY, name NVARCHAR(255))",
+    )
+    .await;
 
     let scfg = upsert_sink_cfg(
         &cfg,
@@ -273,7 +285,11 @@ async fn write_batch_partial_routes_missing_key_per_row() {
     let (_c, port) = start_mssql().await;
     let cfg = conn_cfg(port);
     let pool = build_pool(&cfg, 4).await.expect("pool");
-    exec(&pool, "CREATE TABLE dbo.t (id INT PRIMARY KEY, name NVARCHAR(255))").await;
+    exec(
+        &pool,
+        "CREATE TABLE dbo.t (id INT PRIMARY KEY, name NVARCHAR(255))",
+    )
+    .await;
 
     let scfg = upsert_sink_cfg(
         &cfg,
@@ -285,7 +301,10 @@ async fn write_batch_partial_routes_missing_key_per_row() {
     );
     let sink = MssqlSink::new(scfg).await.expect("sink");
 
-    let records = [json!({"id": 1, "name": "ok"}), json!({"name": "missing-id"})];
+    let records = [
+        json!({"id": 1, "name": "ok"}),
+        json!({"name": "missing-id"}),
+    ];
     let outcomes = sink
         .write_batch_partial(&records)
         .await
@@ -298,6 +317,10 @@ async fn write_batch_partial_routes_missing_key_per_row() {
         "the missing-key row must be Err (routed to the DLQ)"
     );
 
-    assert_eq!(count(&pool, "dbo.t").await, 1, "only the good row is written");
+    assert_eq!(
+        count(&pool, "dbo.t").await,
+        1,
+        "only the good row is written"
+    );
     assert_eq!(name_of(&pool, "dbo.t", 1).await, "ok", "id=1 → name 'ok'");
 }

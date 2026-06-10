@@ -123,7 +123,10 @@ async fn delete_mode_emits_delete_action_by_key() {
     };
     let sink = ElasticsearchSink::new(config).unwrap();
 
-    let written = sink.write_batch(&[json!({"id": 5, "v": "x"})]).await.unwrap();
+    let written = sink
+        .write_batch(&[json!({"id": 5, "v": "x"})])
+        .await
+        .unwrap();
     assert_eq!(written, 1);
 
     let requests = server.received_requests().await.unwrap();
@@ -182,7 +185,10 @@ async fn duplicate_keys_collapse_last_write_wins() {
 
     // Two records for id=1; last write wins.
     let written = sink
-        .write_batch(&[json!({"id": 1, "v": "first"}), json!({"id": 1, "v": "second"})])
+        .write_batch(&[
+            json!({"id": 1, "v": "first"}),
+            json!({"id": 1, "v": "second"}),
+        ])
         .await
         .unwrap();
     // Deduped to one document.
