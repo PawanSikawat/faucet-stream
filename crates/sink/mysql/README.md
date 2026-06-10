@@ -60,6 +60,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 | `column_mapping` | `MysqlColumnMapping` | `Json { column: "data" }` | How to map JSON records to table columns (see below) |
 | `batch_size` | `usize` | `1000` | Maximum rows per multi-row `INSERT`. See [Streaming and batching](#streaming-and-batching) below |
 | `max_connections` | `u32` | `5` | Maximum number of connections in the connection pool |
+| `write_mode` | `"append"` \| `"upsert"` \| `"delete"` | `"append"` | Write semantics. `upsert`/`delete` require `column_mapping: auto_map` and a non-empty `key`. See [Write modes](#write-modes-upsert--delete). |
+| `key` | `[String]` | `[]` | Key columns for `upsert`/`delete`. The table must have a PRIMARY or UNIQUE index on these columns. |
+| `delete_marker` | `{ field, values }` | *(none)* | Upsert-only: rows whose `field` matches one of `values` are treated as deletes; all others are upserts. The marker field is stripped before writing. |
 
 The `Debug` implementation masks the `connection_url` with `***` to prevent credential leakage in logs.
 
@@ -268,6 +271,51 @@ let sink = MysqlSink::new(config).await?;
 - In JSON mode, each record is serialized to a JSON string and inserted as `INSERT INTO t (col) VALUES (?), (?), ...`.
 - In AutoMap mode, column names are queried from `INFORMATION_SCHEMA.COLUMNS` for the current database. A multi-row INSERT is built dynamically with `?` placeholders. Column values are bound as **native MySQL types** (#78/#4). The column set is the **union** of record keys across the batch, so a field present only in a later record is still written; a row missing a column binds SQL `NULL`. The INSERT is sub-chunked so `rows × columns` never exceeds MySQL's 65,535-placeholder limit.
 - All identifiers (table names, column names) are quoted with backticks using MySQL-safe escaping (embedded backticks are doubled).
+
+## Write modes (upsert / delete)
+
+`MysqlSink` supports `write_mode: upsert` and `write_mode: delete` in addition to the default `write_mode: append`.
+
+**Requirements:**
+- `column_mapping` must be `auto_map` — key columns must be real table columns, not packed inside a JSON blob.
+- `key` must be a non-empty list of column names.
+- The target table must have a **PRIMARY or UNIQUE key** on those columns. MySQL's `ON DUPLICATE KEY UPDATE` detects conflicts via that index — the `key` config field drives which columns are updated, not which index is used. All non-key columns in the INSERT are set from `VALUES(col)`.
+
+**`write_mode: upsert`** — each record is INSERT … ON DUPLICATE KEY UPDATE (last-write-wins). Optionally, a `delete_marker` field routes certain records to deletes instead:
+
+```yaml
+pipeline:
+  sink:
+    type: mysql
+    config:
+      connection_url: mysql://writer:pass@localhost:3306/warehouse
+      table_name: products
+      column_mapping: auto_map
+      write_mode: upsert
+      key: [id]
+      delete_marker:
+        field: __op
+        values: [d, delete]
+```
+
+**`write_mode: delete`** — every record in the page is deleted by its key:
+
+```yaml
+pipeline:
+  sink:
+    type: mysql
+    config:
+      connection_url: mysql://writer:pass@localhost:3306/warehouse
+      table_name: products
+      column_mapping: auto_map
+      write_mode: delete
+      key: [id]
+```
+
+**Behaviour:**
+- The planner (`plan_writes`) deduplicates within each page (last-write-wins), so a page that contains the same key twice produces exactly one MySQL statement touching that row.
+- Upserts and deletes within a page are applied inside **one transaction**, so they commit atomically or not at all.
+- The `delete_marker` field is stripped from upsert records before writing.
 
 ## Exactly-once delivery
 

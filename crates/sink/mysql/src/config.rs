@@ -1,6 +1,6 @@
 //! MySQL sink configuration.
 
-use faucet_core::DEFAULT_BATCH_SIZE;
+use faucet_core::{DEFAULT_BATCH_SIZE, WriteSpec};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -51,6 +51,15 @@ pub struct MysqlSinkConfig {
     pub batch_size: usize,
     /// Maximum number of connections in the pool. Defaults to 5.
     pub max_connections: u32,
+    /// Write mode: `append` (default), `upsert`, or `delete`.
+    ///
+    /// `upsert` and `delete` require `column_mapping: auto_map` (key columns
+    /// must be real table columns, not packed inside a JSON blob) and a
+    /// non-empty `key` list. The table must already have a PRIMARY or UNIQUE
+    /// index on the key columns; MySQL's `ON DUPLICATE KEY UPDATE` uses that
+    /// index to detect conflicts.
+    #[serde(flatten)]
+    pub write: WriteSpec,
 }
 
 fn default_batch_size() -> usize {
@@ -78,6 +87,7 @@ impl MysqlSinkConfig {
             column_mapping: MysqlColumnMapping::default(),
             batch_size: DEFAULT_BATCH_SIZE,
             max_connections: 5,
+            write: WriteSpec::default(),
         }
     }
 
