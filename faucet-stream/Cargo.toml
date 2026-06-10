@@ -94,7 +94,7 @@ lineage-kafka = ["lineage", "faucet-lineage/transport-kafka"]
 ## SQL-as-transform via embedded DuckDB.
 transform-sql = ["dep:faucet-transform-sql"]
 ## Every connector and state backend.
-full = ["source", "sink", "state", "auth", "kafka-schema-registry", "compression", "quality", "quality-jsonschema", "lineage", "lineage-kafka", "transform-sql"]
+full = ["source", "sink", "state", "auth", "kafka-schema-registry", "compression", "quality", "quality-jsonschema", "lineage", "lineage-kafka", "transform-sql", "transform-cdc-unwrap"]
 
 ## Individual source connectors.
 source-rest = ["dep:faucet-source-rest"]
@@ -171,6 +171,7 @@ transform-spell-symbols = ["faucet-source-rest?/transform-spell-symbols"]
 transform-keys-case = ["faucet-source-rest?/transform-keys-case"]
 transform-filter = ["faucet-source-rest?/transform-filter"]
 transform-explode = ["faucet-source-rest?/transform-explode"]
+transform-cdc-unwrap = ["faucet-core/transform-cdc-unwrap"]
 transforms = ["faucet-source-rest?/transforms"]
 
 [dependencies]
