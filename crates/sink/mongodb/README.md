@@ -60,6 +60,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 | `collection` | `String` | *(required)* | Collection name |
 | `batch_size` | `usize` | `1000` | Maximum number of documents per `insert_many` call. See [Streaming and batching](#streaming-and-batching) below |
 | `ordered` | `bool` | `false` | Whether `insert_many` is ordered. Default `false` (unordered) so one bad document — duplicate `_id`, validation error — doesn't drop the rest of the batch. Set `true` only if you require strict insertion order and want the batch to abort at the first failure. |
+| `write_mode` | `string` | `append` | `append`, `upsert`, or `delete`. See [Write modes (upsert / delete)](#write-modes-upsert--delete) below |
+| `key` | `[string]` | `[]` | Match-filter fields for `upsert` / `delete`. **Required and non-empty** for those modes; ignored for `append`. Typically `["_id"]` |
+| `delete_marker` | `object` | *(none)* | Upsert only. `{ field, values }` — rows whose `field` matches one of `values` are routed to deletes instead of upserts. The marker field is stripped from upsert rows before writing |
 
 The `Debug` implementation masks the `connection_uri` with `***` to prevent credential leakage in logs.
 
@@ -86,6 +89,56 @@ to the sink. It is unrelated to the MongoDB driver's internal
 `cursor_batch_size` (the wire-level read-side cursor tuning knob used by
 `faucet-source-mongodb`) — the two concerns don't share a value because
 `insert_many` and a query cursor are different operations.
+
+### Write modes (upsert / delete)
+
+By default the sink runs in `append` mode and inserts every record via
+`insert_many`. Set `write_mode: upsert` or `write_mode: delete` to keep a
+collection in sync with a changing source instead of only appending.
+
+MongoDB is schemaless, so unlike the SQL sinks there are no key *columns* —
+the `key` fields become the **match filter** for each document. `key` is
+typically `["_id"]`, but any combination of top-level fields works
+(composite keys are matched on all of them). `key` must be non-empty for
+`upsert` / `delete`; an empty `key` is rejected at config-load time.
+
+- **`upsert`** — each row is committed with a per-document
+  `replace_one(filter, replacement).upsert(true)`. The filter is built from
+  the row's `key` fields and the whole row is the replacement document, so an
+  existing document is **replaced in place** (not field-merged) and a missing
+  one is inserted.
+- **`delete`** — each row is removed with `delete_one(filter)`, where the
+  filter is built from the row's `key` fields.
+- **`delete_marker`** (upsert only) — mix upserts and deletes in one stream:
+  rows whose `delete_marker.field` matches one of `delete_marker.values` are
+  routed to `delete_one`; all others are upserted. The marker field is
+  stripped from the upsert replacement document so it never lands in the
+  collection — handy for CDC streams that carry an operation flag like
+  `__op: "u" | "d"`.
+
+Within a single batch, repeated keys are deduped **last-write-wins** before
+any write is issued, so a page that touches the same `_id` twice results in a
+single `replace_one` / `delete_one` carrying the final value.
+
+Each `replace_one` / `delete_one` is a per-document primitive (not the
+namespaced `Client::bulk_write`) for compatibility with all supported MongoDB
+server versions; the sink recovers throughput by issuing the deduped ops
+concurrently.
+
+```yaml
+sink:
+  type: mongodb
+  config:
+    connection_uri: mongodb://localhost:27017
+    database: analytics
+    collection: users
+    write_mode: upsert
+    key: ["_id"]
+    # Optional: route delete-flagged rows (e.g. from a CDC source) to deletes.
+    delete_marker:
+      field: __op
+      values: ["d", "delete"]
+```
 
 ### Builder Methods
 
