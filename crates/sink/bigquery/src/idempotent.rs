@@ -115,6 +115,100 @@ impl FieldSpec {
     }
 }
 
+/// SQL string literal for a path/value: single-quoted with `\` and `'` escaped
+/// (BigQuery accepts backslash escapes in quoted strings).
+fn sql_str(s: &str) -> String {
+    format!("'{}'", s.replace('\\', "\\\\").replace('\'', "\\'"))
+}
+
+/// Backtick-quoted identifier. BigQuery identifiers never contain a backtick
+/// (the schema came from BigQuery), so a stray one is stripped defensively.
+#[allow(dead_code)]
+fn quote_ident(name: &str) -> String {
+    format!("`{}`", name.replace('`', ""))
+}
+
+/// A single JSONPath member segment. Safe BigQuery identifiers use the `.name`
+/// form; anything else is bracket-quoted (`['weird.name']`).
+fn json_path_segment(name: &str) -> String {
+    let safe = match name.chars().next() {
+        Some(c) if c.is_ascii_alphabetic() || c == '_' => {
+            name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+        }
+        _ => false,
+    };
+    if safe {
+        format!(".{name}")
+    } else {
+        let esc = name.replace('\\', "\\\\").replace('\'', "\\'");
+        format!("['{esc}']")
+    }
+}
+
+/// Wrap a STRING-typed SQL expression `var` into the column's target type.
+/// `Struct` is handled by [`column_expr`], never here.
+fn wrap_scalar(ty: &BqType, var: &str) -> String {
+    match ty {
+        BqType::String => var.to_string(),
+        BqType::Bytes => format!("FROM_BASE64({var})"),
+        BqType::Geography => format!("ST_GEOGFROMTEXT({var})"),
+        BqType::Json => format!("PARSE_JSON({var})"),
+        BqType::Struct => unreachable!("struct is handled by column_expr"),
+        other => format!("CAST({var} AS {})", other.sql_keyword()),
+    }
+}
+
+/// Build the `field AS name, …` list for a STRUCT, recursing into each child.
+fn struct_field_list(fields: &[FieldSpec], json_var: &str, base_path: &str, depth: usize) -> String {
+    fields
+        .iter()
+        .map(|f| {
+            let child_path = format!("{base_path}{}", json_path_segment(&f.name));
+            let expr = column_expr(f, json_var, &child_path, depth);
+            format!("{expr} AS {}", quote_ident(&f.name))
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// Generate the SQL extraction expression for one column.
+///
+/// `json_var` is the SQL expression naming the current JSON value (the row alias
+/// `r` at the top level, or an `UNNEST` element alias deeper down). `path` is
+/// the JSONPath into `json_var` for this field. `depth` keeps nested `UNNEST`
+/// aliases unique (`e{depth}` for struct elements, `x{depth}` for scalars).
+fn column_expr(field: &FieldSpec, json_var: &str, path: &str, depth: usize) -> String {
+    if field.repeated {
+        if field.ty == BqType::Struct {
+            let elem = format!("e{depth}");
+            let fields = struct_field_list(&field.fields, &elem, "$", depth + 1);
+            format!(
+                "ARRAY(SELECT AS STRUCT {fields} FROM UNNEST(JSON_QUERY_ARRAY({json_var}, {p})) AS {elem})",
+                p = sql_str(path)
+            )
+        } else {
+            let x = format!("x{depth}");
+            let src = if field.ty == BqType::Json {
+                format!("JSON_QUERY_ARRAY({json_var}, {p})", p = sql_str(path))
+            } else {
+                format!("JSON_VALUE_ARRAY({json_var}, {p})", p = sql_str(path))
+            };
+            let elem = wrap_scalar(&field.ty, &x);
+            format!("ARRAY(SELECT {elem} FROM UNNEST({src}) AS {x})")
+        }
+    } else if field.ty == BqType::Struct {
+        let fields = struct_field_list(&field.fields, json_var, path, depth + 1);
+        format!("STRUCT({fields})")
+    } else {
+        let raw = if field.ty == BqType::Json {
+            format!("JSON_QUERY({json_var}, {p})", p = sql_str(path))
+        } else {
+            format!("JSON_VALUE({json_var}, {p})", p = sql_str(path))
+        };
+        wrap_scalar(&field.ty, &raw)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -151,5 +245,83 @@ mod tests {
             repeated: true,
             fields: vec![scalar("city", BqType::String)],
         });
+    }
+
+    fn repeated(name: &str, ty: BqType) -> FieldSpec {
+        FieldSpec { name: name.into(), ty, repeated: true, fields: vec![] }
+    }
+    fn record(name: &str, repeated: bool, fields: Vec<FieldSpec>) -> FieldSpec {
+        FieldSpec { name: name.into(), ty: BqType::Struct, repeated, fields }
+    }
+
+    #[test]
+    fn scalar_exprs_per_type() {
+        assert_eq!(column_expr(&scalar("s", BqType::String), "r", "$.s", 0),
+            "JSON_VALUE(r, '$.s')");
+        assert_eq!(column_expr(&scalar("n", BqType::Int64), "r", "$.n", 0),
+            "CAST(JSON_VALUE(r, '$.n') AS INT64)");
+        assert_eq!(column_expr(&scalar("f", BqType::Float64), "r", "$.f", 0),
+            "CAST(JSON_VALUE(r, '$.f') AS FLOAT64)");
+        assert_eq!(column_expr(&scalar("b", BqType::Bool), "r", "$.b", 0),
+            "CAST(JSON_VALUE(r, '$.b') AS BOOL)");
+        assert_eq!(column_expr(&scalar("ts", BqType::Timestamp), "r", "$.ts", 0),
+            "CAST(JSON_VALUE(r, '$.ts') AS TIMESTAMP)");
+        assert_eq!(column_expr(&scalar("by", BqType::Bytes), "r", "$.by", 0),
+            "FROM_BASE64(JSON_VALUE(r, '$.by'))");
+        assert_eq!(column_expr(&scalar("g", BqType::Geography), "r", "$.g", 0),
+            "ST_GEOGFROMTEXT(JSON_VALUE(r, '$.g'))");
+        assert_eq!(column_expr(&scalar("j", BqType::Json), "r", "$.j", 0),
+            "PARSE_JSON(JSON_QUERY(r, '$.j'))");
+    }
+
+    #[test]
+    fn repeated_scalar_exprs() {
+        assert_eq!(column_expr(&repeated("xs", BqType::String), "r", "$.xs", 0),
+            "ARRAY(SELECT x0 FROM UNNEST(JSON_VALUE_ARRAY(r, '$.xs')) AS x0)");
+        assert_eq!(column_expr(&repeated("ns", BqType::Int64), "r", "$.ns", 0),
+            "ARRAY(SELECT CAST(x0 AS INT64) FROM UNNEST(JSON_VALUE_ARRAY(r, '$.ns')) AS x0)");
+        assert_eq!(column_expr(&repeated("js", BqType::Json), "r", "$.js", 0),
+            "ARRAY(SELECT PARSE_JSON(x0) FROM UNNEST(JSON_QUERY_ARRAY(r, '$.js')) AS x0)");
+    }
+
+    #[test]
+    fn nested_struct_expr() {
+        let f = record("addr", false, vec![
+            scalar("city", BqType::String),
+            scalar("zip", BqType::Int64),
+        ]);
+        assert_eq!(column_expr(&f, "r", "$.addr", 0),
+            "STRUCT(JSON_VALUE(r, '$.addr.city') AS `city`, CAST(JSON_VALUE(r, '$.addr.zip') AS INT64) AS `zip`)");
+    }
+
+    #[test]
+    fn repeated_record_expr_uses_unnest_element() {
+        let f = record("items", true, vec![
+            scalar("sku", BqType::String),
+            scalar("qty", BqType::Int64),
+        ]);
+        assert_eq!(column_expr(&f, "r", "$.items", 0),
+            "ARRAY(SELECT AS STRUCT JSON_VALUE(e0, '$.sku') AS `sku`, CAST(JSON_VALUE(e0, '$.qty') AS INT64) AS `qty` FROM UNNEST(JSON_QUERY_ARRAY(r, '$.items')) AS e0)");
+    }
+
+    #[test]
+    fn nested_repeated_record_aliases_are_unique() {
+        // ARRAY<STRUCT<tags ARRAY<STRING>>> nested inside ARRAY<STRUCT<...>>
+        let inner = repeated("tags", BqType::String);
+        let f = record("groups", true, vec![inner]);
+        let sql = column_expr(&f, "r", "$.groups", 0);
+        // Outer element alias e0; the inner repeated scalar uses x1 (depth+1) —
+        // distinct from any outer alias.
+        assert_eq!(sql,
+            "ARRAY(SELECT AS STRUCT ARRAY(SELECT x1 FROM UNNEST(JSON_VALUE_ARRAY(e0, '$.tags')) AS x1) AS `tags` FROM UNNEST(JSON_QUERY_ARRAY(r, '$.groups')) AS e0)");
+    }
+
+    #[test]
+    fn unsafe_member_name_uses_bracket_path() {
+        // A name with a dot would be ambiguous in `$.a.b`; bracket-quote it.
+        assert_eq!(json_path_segment("a.b"), "['a.b']");
+        assert_eq!(json_path_segment("ok_name"), ".ok_name");
+        assert_eq!(json_path_segment("_lead"), "._lead");
+        assert_eq!(json_path_segment("1bad"), "['1bad']");
     }
 }
