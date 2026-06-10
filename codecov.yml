@@ -4,9 +4,9 @@ coverage:
   status:
     project:
       default:
-        target: 80%
+        target: 90%
         threshold: 1%        # tolerate a <=1% drop without flipping the status red
-        informational: true  # report-only for now; a follow-up flips this to false once stably >=80%
+        informational: true  # report-only; project coverage sits ~93%. Flip to false to enforce as a gate.
     patch:
       default:
         target: 80%
