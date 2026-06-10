@@ -519,6 +519,9 @@ fn shipped_example_yamls_pass_validate() {
         // postgres_to_bigquery_with_lineage.yaml (OpenLineage HTTP transport).
         ("MARQUEZ_URL", "http://localhost:5000/api/v1/lineage"),
         ("PG_URL", "postgres://u:p@localhost/db"),
+        // postgres_cdc_to_postgres_upsert.yaml (CDC source + upsert mirror).
+        ("SOURCE_PG_URL", "postgres://u:p@localhost/src"),
+        ("DEST_PG_URL", "postgres://u:p@localhost/dst"),
         ("SNOWFLAKE_OAUTH_TOKEN", "x"),
         ("SOAP_USER", "x"),
         ("SOAP_PASS", "x"),

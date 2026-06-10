@@ -56,32 +56,39 @@ persists a tracking-column bookmark); in `full` mode it is not.
 Every sink exposes a `batch_size` knob for write-side re-chunking. For the
 file/append sinks (`jsonl`, `csv`, `stdout`) it's a no-op — they write per record.
 
-| Connector | Feature | `batch_size` | Compression | Exactly-once⁷ | Write unit |
-|-----------|---------|:---:|:---:|:---:|------------|
-| BigQuery | `sink-bigquery` | ✓ | ✗ | ✗ | `tabledata.insertAll` (per-row DLQ) |
-| PostgreSQL | `sink-postgres` | ✓ | ✗ | **✓** | multi-row `INSERT` (JSONB or mapped cols) |
-| JSON Lines | `sink-jsonl` | no-op | ✓ | ✗ | buffered file append |
-| Snowflake | `sink-snowflake` | ✓ | ✗ | ✗ | SQL REST API |
-| MySQL | `sink-mysql` | ✓ | ✗ | **✓** | multi-row `INSERT` |
-| Microsoft SQL Server | `sink-mssql` | ✓ | ✗ | **✓** | multi-row `INSERT` (2100-param auto-split, per-row DLQ) |
-| SQLite | `sink-sqlite` | ✓ | ✗ | **✓** | transaction-wrapped batch |
-| AWS S3 | `sink-s3` | ✓ | ✓ | ✗ | JSONL objects, parallel uploads |
-| Google Cloud Storage | `sink-gcs` | ✓ | ✓ | ✗ | JSONL objects |
-| MongoDB | `sink-mongodb` | ✓ | ✗ | ✗ | `insert_many` |
-| Redis | `sink-redis` | ✓ | ✗ | ✗ | streams, lists, key-value (pipelined) |
-| CSV | `sink-csv` | no-op | ✓ | ✗ | buffered file rows |
-| Elasticsearch | `sink-elasticsearch` | ✓ | ✗ | ✗ | `_bulk` NDJSON (per-row DLQ) |
-| HTTP | `sink-http` | ✓ | ✗ | ✗ | POST, concurrent under a semaphore |
-| Stdout | `sink-stdout` | no-op | ✗ | ✗ | JSON Lines / pretty JSON / TSV |
-| Apache Kafka | `sink-kafka` | ✓ | ✗ | ✗ | producer, batched sends, multi-topic routing |
-| Apache Parquet | `sink-parquet` | ✓ | ✗⁶ | ✗ | local/S3, schema inference, row/byte rollover |
-| Apache Iceberg | `sink-iceberg` | ✓ | ✗⁶ | **✓** | REST/Glue/SQL/HMS catalog, local + cloud (S3/GCS) warehouses, `fast_append` snapshot, Parquet data files |
+| Connector | Feature | `batch_size` | Compression | Upsert⁸ | Exactly-once⁷ | Write unit |
+|-----------|---------|:---:|:---:|:---:|:---:|------------|
+| BigQuery | `sink-bigquery` | ✓ | ✗ | ✗ | ✗ | `tabledata.insertAll` (per-row DLQ) |
+| PostgreSQL | `sink-postgres` | ✓ | ✗ | **✓** | **✓** | multi-row `INSERT` (JSONB or mapped cols) |
+| JSON Lines | `sink-jsonl` | no-op | ✓ | ✗ | ✗ | buffered file append |
+| Snowflake | `sink-snowflake` | ✓ | ✗ | ✗ | ✗ | SQL REST API |
+| MySQL | `sink-mysql` | ✓ | ✗ | **✓** | **✓** | multi-row `INSERT` |
+| Microsoft SQL Server | `sink-mssql` | ✓ | ✗ | **✓** | **✓** | multi-row `INSERT` (2100-param auto-split, per-row DLQ) |
+| SQLite | `sink-sqlite` | ✓ | ✗ | **✓** | **✓** | transaction-wrapped batch |
+| AWS S3 | `sink-s3` | ✓ | ✓ | ✗ | ✗ | JSONL objects, parallel uploads |
+| Google Cloud Storage | `sink-gcs` | ✓ | ✓ | ✗ | ✗ | JSONL objects |
+| MongoDB | `sink-mongodb` | ✓ | ✗ | **✓** | ✗ | `insert_many` |
+| Redis | `sink-redis` | ✓ | ✗ | ✗ | ✗ | streams, lists, key-value (pipelined) |
+| CSV | `sink-csv` | no-op | ✓ | ✗ | ✗ | buffered file rows |
+| Elasticsearch | `sink-elasticsearch` | ✓ | ✗ | **✓** | ✗ | `_bulk` NDJSON (per-row DLQ) |
+| HTTP | `sink-http` | ✓ | ✗ | ✗ | ✗ | POST, concurrent under a semaphore |
+| Stdout | `sink-stdout` | no-op | ✗ | ✗ | ✗ | JSON Lines / pretty JSON / TSV |
+| Apache Kafka | `sink-kafka` | ✓ | ✗ | ✗ | ✗ | producer, batched sends, multi-topic routing |
+| Apache Parquet | `sink-parquet` | ✓ | ✗⁶ | ✗ | ✗ | local/S3, schema inference, row/byte rollover |
+| Apache Iceberg | `sink-iceberg` | ✓ | ✗⁶ | ✗ | **✓** | REST/Glue/SQL/HMS catalog, local + cloud (S3/GCS) warehouses, `fast_append` snapshot, Parquet data files |
 
 ⁶ Parquet and Iceberg both handle compression internally at the Parquet column
 level, so the file-level `compression` feature doesn't apply to either.
 ⁷ **Exactly-once** = commits data and a watermark token atomically; required for
 `delivery: exactly_once`. BigQuery and Kafka are at-least-once only in this
 version. See [Exactly-once delivery](../cookbook/state.md#exactly-once-delivery).
+⁸ **Upsert** = supports `write_mode: upsert` / `delete` (insert-or-update and
+delete by `key`) in addition to plain `append`. The SQL sinks require
+column-mapping mode (`auto_map`, or `auto_columns` for mssql) and a
+UNIQUE/PRIMARY KEY on `key`; the
+schemaless sinks (MongoDB, Elasticsearch) map `key` to a match filter / `_id`.
+BigQuery and Iceberg upsert are not yet supported (follow-ups). See
+[Upsert / mirror tables](../cookbook/upsert.md).
 
 ## Authentication at a glance
 
