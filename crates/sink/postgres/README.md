@@ -112,6 +112,66 @@ let config = PostgresSinkConfig::new("postgres://localhost/mydb", "events")
     .with_batch_size(250);
 ```
 
+## Write modes (upsert / delete)
+
+By default the sink **appends** every record. Set `write_mode` to `upsert` or
+`delete` to merge or remove rows by a key instead.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `write_mode` | `"append" \| "upsert" \| "delete"` | `"append"` | How records are applied. |
+| `key` | `[String]` | `[]` | Key columns identifying a row. **Required and non-empty** for `upsert`/`delete`. Composite keys are supported. |
+| `delete_marker` | `{ field, values: [String] }` | *(none)* | **Upsert only.** Records whose `field` equals one of `values` are deleted by key; all others are upserts. The marker field is stripped from upserted rows before writing. |
+
+Requirements (validated in `PostgresSink::new`, before any connection is made):
+
+- **`column_mapping: auto_map` is required.** Upsert/delete match on real
+  columns, so the key columns must be table columns — not fields buried inside
+  a JSONB blob.
+- **The `key` columns must carry a `UNIQUE` or `PRIMARY KEY` constraint**, since
+  upsert is implemented with `INSERT … ON CONFLICT (key) DO UPDATE SET …`
+  (non-key columns are set from `EXCLUDED`; if every column is a key column the
+  clause degrades to `DO NOTHING`). Without the constraint Postgres rejects the
+  `ON CONFLICT` target.
+
+Semantics:
+
+- **Last-write-wins within a batch.** When the same key appears multiple times
+  in one `write_batch` call, the records are de-duplicated to a single
+  effective action (the final one), so a single statement never hits the same
+  `ON CONFLICT` target twice. A delete after an upsert (or vice-versa) for the
+  same key resolves to whichever came last.
+- **`write_mode: delete`** routes every record to a delete by key.
+- A record missing a key column (or with a `null` key value) fails the whole
+  batch with a typed `Sink` error naming the offending row index — keys must
+  be present and non-null.
+
+### Example YAML config
+
+```yaml
+pipeline:
+  source:
+    type: postgres-cdc
+    config:
+      connection_url: postgres://faucet:faucet@localhost:5432/appdb
+      slot_name: faucet_slot
+      publication_name: faucet_pub
+  sink:
+    type: postgres
+    config:
+      connection_url: postgres://writer:pass@localhost:5432/warehouse
+      table_name: users
+      column_mapping: auto_map
+      write_mode: upsert
+      key: [id]
+      delete_marker:
+        field: __op
+        values: [d]
+```
+
+The destination table must define the key as a constraint, e.g.
+`CREATE TABLE users (id INT PRIMARY KEY, name TEXT, email TEXT)`.
+
 ## Config Loading
 
 ```rust

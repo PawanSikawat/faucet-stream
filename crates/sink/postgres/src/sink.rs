@@ -62,6 +62,30 @@ fn qualified_table_ref(schema: Option<&str>, table: &str) -> String {
     }
 }
 
+/// Build the `ON CONFLICT (key) DO UPDATE …` tail for an upsert INSERT.
+/// Non-key columns are SET from EXCLUDED. If every column is a key column,
+/// emit `DO NOTHING`.
+fn on_conflict_clause(key: &[String], all_cols: &[String]) -> String {
+    let key_list = key
+        .iter()
+        .map(|k| quote_ident(k))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let updates: Vec<String> = all_cols
+        .iter()
+        .filter(|c| !key.iter().any(|k| k == *c))
+        .map(|c| format!("{q} = EXCLUDED.{q}", q = quote_ident(c)))
+        .collect();
+    if updates.is_empty() {
+        format!("ON CONFLICT ({key_list}) DO NOTHING")
+    } else {
+        format!(
+            "ON CONFLICT ({key_list}) DO UPDATE SET {}",
+            updates.join(", ")
+        )
+    }
+}
+
 /// A sink that writes JSON records to a PostgreSQL table.
 pub struct PostgresSink {
     config: PostgresSinkConfig,
@@ -71,6 +95,17 @@ pub struct PostgresSink {
 impl PostgresSink {
     /// Create a new PostgreSQL sink. Establishes a connection pool.
     pub async fn new(config: PostgresSinkConfig) -> Result<Self, FaucetError> {
+        config.write.validate()?;
+        if !matches!(config.write.write_mode, faucet_core::WriteMode::Append)
+            && !matches!(config.column_mapping, PostgresColumnMapping::AutoMap)
+        {
+            return Err(FaucetError::Config(
+                "postgres sink: write_mode upsert/delete requires column_mapping: auto_map \
+                 (key columns must be real columns, not inside a JSONB blob)"
+                    .into(),
+            ));
+        }
+
         let pool = PgPoolOptions::new()
             .max_connections(config.max_connections)
             .connect(&config.connection_url)
@@ -130,10 +165,16 @@ impl PostgresSink {
     /// which sqlx encodes as `jsonb`, so an insert into any non-`jsonb` column
     /// failed at runtime — audit #146 C1.) Uses a single multi-row INSERT
     /// (sub-chunked at the 65535-parameter cap) for efficiency.
-    async fn insert_auto_map(
+    ///
+    /// When `conflict_key` is `Some(key)`, each sub-chunk's INSERT is given an
+    /// `ON CONFLICT (key) DO UPDATE …` tail so it upserts by the key columns
+    /// (last-write-wins within the batch is already handled by the planner's
+    /// dedup, so a single sub-chunk never double-hits the same conflict target).
+    async fn insert_auto_map_with_conflict(
         &self,
         conn: &mut sqlx::PgConnection,
         records: &[Value],
+        conflict_key: Option<&[String]>,
     ) -> Result<usize, FaucetError> {
         if records.is_empty() {
             return Ok(0);
@@ -258,6 +299,19 @@ impl PostgresSink {
                 col_names.join(", "),
                 value_tuples.join(", ")
             );
+            let query = match conflict_key {
+                Some(key) => format!(
+                    "{query} {}",
+                    on_conflict_clause(
+                        key,
+                        &insert_columns
+                            .iter()
+                            .map(|(c, _)| c.clone())
+                            .collect::<Vec<_>>()
+                    )
+                ),
+                None => query,
+            };
 
             let mut q = sqlx::query(&query);
             for matched in sub {
@@ -281,6 +335,122 @@ impl PostgresSink {
         Ok(num_rows)
     }
 
+    /// Insert a batch of records using auto-mapped columns, on the given
+    /// connection, with plain append semantics (no `ON CONFLICT` tail).
+    ///
+    /// Thin wrapper over [`insert_auto_map_with_conflict`](Self::insert_auto_map_with_conflict)
+    /// so the append path and the idempotent-write path keep their original
+    /// signature.
+    async fn insert_auto_map(
+        &self,
+        conn: &mut sqlx::PgConnection,
+        records: &[Value],
+    ) -> Result<usize, FaucetError> {
+        self.insert_auto_map_with_conflict(conn, records, None)
+            .await
+    }
+
+    /// Delete rows whose key columns match any of `deletes`, using
+    /// `DELETE FROM t WHERE (k1, …) IN ((v1, …), …)` with per-column `::udt`
+    /// casts (the key columns' underlying types), chunked at the param cap.
+    async fn delete_by_keys(
+        &self,
+        conn: &mut sqlx::PgConnection,
+        deletes: &[faucet_core::KeyTuple],
+    ) -> Result<usize, FaucetError> {
+        if deletes.is_empty() {
+            return Ok(0);
+        }
+        let key = &self.config.write.key;
+        let table_ref = qualified_table_ref(self.config.schema.as_deref(), &self.config.table_name);
+
+        // Underlying types for the key columns → drives the ::udt casts, same
+        // source the insert path uses.
+        let udts: std::collections::HashMap<String, String> = sqlx::query(
+            "SELECT a.attname::text AS column_name, t.typname::text AS udt_name \
+             FROM pg_catalog.pg_attribute a \
+             JOIN pg_catalog.pg_type t ON t.oid = a.atttypid \
+             WHERE a.attrelid = to_regclass($1)::oid AND a.attnum > 0 AND NOT a.attisdropped",
+        )
+        .bind(&table_ref)
+        .fetch_all(&mut *conn)
+        .await
+        .map_err(|e| FaucetError::Sink(format!("failed to query table columns: {e}")))?
+        .iter()
+        .map(|row| {
+            (
+                row.get::<String, _>("column_name"),
+                row.get::<String, _>("udt_name"),
+            )
+        })
+        .collect();
+        let key_udts: Vec<String> = key
+            .iter()
+            .map(|k| udts.get(k).cloned().unwrap_or_else(|| "text".to_string()))
+            .collect();
+        let col_list = key
+            .iter()
+            .map(|k| quote_ident(k))
+            .collect::<Vec<_>>()
+            .join(", ");
+
+        const MAX_PG_PARAMS: usize = 65535;
+        let per = (MAX_PG_PARAMS / key.len().max(1)).max(1);
+        let mut total = 0usize;
+        for chunk in deletes.chunks(per) {
+            let mut ph = 1usize;
+            let tuples: Vec<String> = chunk
+                .iter()
+                .map(|_| {
+                    let group = key_udts
+                        .iter()
+                        .map(|udt| {
+                            let p = format!("${ph}::{udt}");
+                            ph += 1;
+                            p
+                        })
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    format!("({group})")
+                })
+                .collect();
+            let sql = format!(
+                "DELETE FROM {table_ref} WHERE ({col_list}) IN ({})",
+                tuples.join(", ")
+            );
+            let mut q = sqlx::query(&sql);
+            for kt in chunk {
+                for ((_, v), udt) in kt.0.iter().zip(key_udts.iter()) {
+                    q = q.bind(pg_bind_text(Some(v), udt));
+                }
+            }
+            let res = q
+                .execute(&mut *conn)
+                .await
+                .map_err(|e| FaucetError::Sink(format!("PostgreSQL delete failed: {e}")))?;
+            total += res.rows_affected() as usize;
+        }
+        Ok(total)
+    }
+
+    /// Apply a planned upsert/delete batch on one connection.
+    async fn apply_plan(
+        &self,
+        conn: &mut sqlx::PgConnection,
+        plan: &faucet_core::WritePlan,
+    ) -> Result<usize, FaucetError> {
+        let mut affected = 0usize;
+        if !plan.upserts.is_empty() {
+            affected += self
+                .insert_auto_map_with_conflict(conn, &plan.upserts, Some(&self.config.write.key))
+                .await?;
+        }
+        if !plan.deletes.is_empty() {
+            affected += self.delete_by_keys(conn, &plan.deletes).await?;
+        }
+        Ok(affected)
+    }
+
     /// Ensure the commit-token watermark table exists.
     async fn ensure_commit_table(&self) -> Result<(), FaucetError> {
         let sql = format!(
@@ -301,6 +471,14 @@ impl faucet_core::Sink for PostgresSink {
     fn config_schema(&self) -> serde_json::Value {
         serde_json::to_value(faucet_core::schema_for!(PostgresSinkConfig))
             .expect("schema serialization")
+    }
+
+    fn supported_write_modes(&self) -> &'static [faucet_core::WriteMode] {
+        &[
+            faucet_core::WriteMode::Append,
+            faucet_core::WriteMode::Upsert,
+            faucet_core::WriteMode::Delete,
+        ]
     }
 
     fn dataset_uri(&self) -> String {
@@ -366,6 +544,22 @@ impl faucet_core::Sink for PostgresSink {
     async fn write_batch(&self, records: &[Value]) -> Result<usize, FaucetError> {
         if records.is_empty() {
             return Ok(0);
+        }
+
+        if !matches!(self.config.write.write_mode, faucet_core::WriteMode::Append) {
+            let plan = faucet_core::plan_writes(records, &self.config.write);
+            if let Some((idx, msg)) = plan.failed.first() {
+                return Err(FaucetError::Sink(format!(
+                    "postgres {}: row {idx}: {msg}",
+                    self.config.write.write_mode.as_str()
+                )));
+            }
+            let mut conn = self
+                .pool
+                .acquire()
+                .await
+                .map_err(|e| FaucetError::Sink(format!("PostgreSQL pool acquire failed: {e}")))?;
+            return self.apply_plan(&mut conn, &plan).await;
         }
 
         let chunks: Vec<&[Value]> = if self.config.batch_size == 0 {
@@ -468,8 +662,26 @@ impl faucet_core::Sink for PostgresSink {
 
 #[cfg(test)]
 mod tests {
-    use super::{pg_bind_text, qualified_table_ref};
+    use super::{on_conflict_clause, pg_bind_text, qualified_table_ref};
     use serde_json::json;
+
+    #[test]
+    fn upsert_on_conflict_clause_for_keys() {
+        let clause = on_conflict_clause(
+            &["id".to_string()],
+            &["id".to_string(), "name".to_string(), "email".to_string()],
+        );
+        assert_eq!(
+            clause,
+            r#"ON CONFLICT ("id") DO UPDATE SET "name" = EXCLUDED."name", "email" = EXCLUDED."email""#
+        );
+    }
+
+    #[test]
+    fn upsert_on_conflict_all_columns_are_key_does_nothing() {
+        let clause = on_conflict_clause(&["id".to_string()], &["id".to_string()]);
+        assert_eq!(clause, r#"ON CONFLICT ("id") DO NOTHING"#);
+    }
 
     #[test]
     fn commit_token_table_is_the_shared_constant() {
