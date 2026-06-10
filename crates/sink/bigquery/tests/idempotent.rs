@@ -25,7 +25,11 @@ struct FakeToken {
 }
 
 fn fake_token() -> FakeToken {
-    FakeToken { access_token: "fake-token", token_type: "bearer", expires_in: 9_999_999 }
+    FakeToken {
+        access_token: "fake-token",
+        token_type: "bearer",
+        expires_in: 9_999_999,
+    }
 }
 
 fn dummy_service_account_json(oauth_server: &str) -> serde_json::Value {
@@ -55,8 +59,11 @@ async fn mount_token_endpoint(server: &MockServer) {
 async fn build_sink(server: &MockServer) -> (BigQuerySink, tempfile::NamedTempFile) {
     let sa_json = dummy_service_account_json(&server.uri());
     let sa_file = tempfile::NamedTempFile::new().expect("create sa tempfile");
-    std::fs::write(sa_file.path(), serde_json::to_string_pretty(&sa_json).unwrap())
-        .expect("write sa tempfile");
+    std::fs::write(
+        sa_file.path(),
+        serde_json::to_string_pretty(&sa_json).unwrap(),
+    )
+    .expect("write sa tempfile");
     let client = ClientBuilder::new()
         .with_auth_base_url(format!("{}{AUTH_SCOPE_BASE}", server.uri()))
         .with_v2_base_url(server.uri())
@@ -64,7 +71,10 @@ async fn build_sink(server: &MockServer) -> (BigQuerySink, tempfile::NamedTempFi
         .await
         .expect("build bigquery client against mock");
     let config = BigQuerySinkConfig::new(
-        PROJECT_ID, DATASET_ID, TABLE_ID, BigQueryCredentials::ApplicationDefault,
+        PROJECT_ID,
+        DATASET_ID,
+        TABLE_ID,
+        BigQueryCredentials::ApplicationDefault,
     );
     (BigQuerySink::from_parts(config, client), sa_file)
 }
@@ -168,20 +178,43 @@ async fn write_batch_idempotent_posts_transaction_with_params() {
     let bodies = captured_query_bodies(&server).await;
     let tx = bodies
         .iter()
-        .find(|b| b["query"].as_str().unwrap_or("").contains("BEGIN TRANSACTION"))
+        .find(|b| {
+            b["query"]
+                .as_str()
+                .unwrap_or("")
+                .contains("BEGIN TRANSACTION")
+        })
         .expect("a transaction query was sent");
     let q = tx["query"].as_str().unwrap();
     assert!(q.contains("INSERT INTO `p.d.t` (`id`, `name`)"), "got: {q}");
-    assert!(q.contains("FROM UNNEST(JSON_QUERY_ARRAY(@payload)) AS r"), "got: {q}");
+    assert!(
+        q.contains("FROM UNNEST(JSON_QUERY_ARRAY(@payload)) AS r"),
+        "got: {q}"
+    );
     assert!(q.contains("MERGE `p.d._faucet_commit_token`"), "got: {q}");
     assert_eq!(tx["parameterMode"], "NAMED");
-    let names: Vec<&str> = tx["queryParameters"].as_array().unwrap()
-        .iter().map(|p| p["name"].as_str().unwrap()).collect();
-    assert!(names.contains(&"payload") && names.contains(&"scope") && names.contains(&"token"),
-        "params: {names:?}");
-    let payload = tx["queryParameters"].as_array().unwrap().iter()
-        .find(|p| p["name"] == "payload").unwrap()["parameterValue"]["value"].as_str().unwrap();
-    assert_eq!(serde_json::from_str::<serde_json::Value>(payload).unwrap(), json!(records));
+    let names: Vec<&str> = tx["queryParameters"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p["name"].as_str().unwrap())
+        .collect();
+    assert!(
+        names.contains(&"payload") && names.contains(&"scope") && names.contains(&"token"),
+        "params: {names:?}"
+    );
+    let payload = tx["queryParameters"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["name"] == "payload")
+        .unwrap()["parameterValue"]["value"]
+        .as_str()
+        .unwrap();
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(payload).unwrap(),
+        json!(records)
+    );
     assert!(tx.get("requestId").is_some(), "requestId must be set");
 }
 
@@ -207,9 +240,13 @@ async fn ensure_commit_table_issues_create() {
     mount_job_done(&server, "job-t").await;
 
     let (sink, _sa) = build_sink(&server).await;
-    sink.write_batch_idempotent(&[json!({"id": 1, "name": "x"})], "s", "00000000000000000001")
-        .await
-        .expect("write");
+    sink.write_batch_idempotent(
+        &[json!({"id": 1, "name": "x"})],
+        "s",
+        "00000000000000000001",
+    )
+    .await
+    .expect("write");
     // The .expect(1..) on the CREATE mock asserts it was issued.
 }
 
@@ -239,7 +276,10 @@ async fn last_committed_token_reads_watermark_row() {
         .await;
 
     let (sink, _sa) = build_sink(&server).await;
-    let got = sink.last_committed_token("pipe::row1").await.expect("read token");
+    let got = sink
+        .last_committed_token("pipe::row1")
+        .await
+        .expect("read token");
     assert_eq!(got.as_deref(), Some("00000000000000000009"));
 }
 
@@ -271,7 +311,10 @@ async fn last_committed_token_none_when_no_row() {
         .await;
 
     let (sink, _sa) = build_sink(&server).await;
-    let got = sink.last_committed_token("never-seen").await.expect("read token");
+    let got = sink
+        .last_committed_token("never-seen")
+        .await
+        .expect("read token");
     assert_eq!(got, None);
 }
 
@@ -298,7 +341,11 @@ async fn write_batch_idempotent_bubbles_job_error() {
 
     let (sink, _sa) = build_sink(&server).await;
     match sink
-        .write_batch_idempotent(&[json!({"id": "notint", "name": "x"})], "s", "00000000000000000001")
+        .write_batch_idempotent(
+            &[json!({"id": "notint", "name": "x"})],
+            "s",
+            "00000000000000000001",
+        )
         .await
     {
         Err(faucet_core::FaucetError::Sink(m)) => assert!(m.contains("type mismatch"), "got: {m}"),
@@ -326,9 +373,23 @@ async fn empty_page_still_commits_token() {
     assert_eq!(written, 0);
 
     let bodies = captured_query_bodies(&server).await;
-    let tx = bodies.iter().find(|b| b["query"].as_str().unwrap_or("").contains("BEGIN TRANSACTION")).unwrap();
-    let payload = tx["queryParameters"].as_array().unwrap().iter()
-        .find(|p| p["name"] == "payload").unwrap()["parameterValue"]["value"].as_str().unwrap();
+    let tx = bodies
+        .iter()
+        .find(|b| {
+            b["query"]
+                .as_str()
+                .unwrap_or("")
+                .contains("BEGIN TRANSACTION")
+        })
+        .unwrap();
+    let payload = tx["queryParameters"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["name"] == "payload")
+        .unwrap()["parameterValue"]["value"]
+        .as_str()
+        .unwrap();
     assert_eq!(payload, "[]");
 }
 
@@ -362,7 +423,10 @@ async fn write_batch_idempotent_errors_on_schemaless_table() {
         .await
     {
         Err(faucet_core::FaucetError::Sink(m)) => {
-            assert!(m.contains("schema fields"), "expected a schema-fields error, got: {m}")
+            assert!(
+                m.contains("schema fields"),
+                "expected a schema-fields error, got: {m}"
+            )
         }
         other => panic!("expected Sink error for a schemaless table, got: {other:?}"),
     }

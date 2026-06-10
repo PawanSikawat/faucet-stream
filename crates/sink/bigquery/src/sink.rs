@@ -5,13 +5,13 @@ use crate::idempotent;
 use async_trait::async_trait;
 use faucet_common_bigquery::build_client;
 use faucet_core::FaucetError;
+use faucet_core::idempotency::COMMIT_TOKEN_TOKEN_COL;
 use gcp_bigquery_client::Client;
 use gcp_bigquery_client::model::get_query_results_parameters::GetQueryResultsParameters;
 use gcp_bigquery_client::model::query_parameter::QueryParameter;
 use gcp_bigquery_client::model::query_parameter_type::QueryParameterType;
 use gcp_bigquery_client::model::query_parameter_value::QueryParameterValue;
 use gcp_bigquery_client::model::query_request::QueryRequest;
-use faucet_core::idempotency::COMMIT_TOKEN_TOKEN_COL;
 use gcp_bigquery_client::model::query_response::{QueryResponse, ResultSet};
 use gcp_bigquery_client::model::table_data_insert_all_request::TableDataInsertAllRequest;
 use gcp_bigquery_client::model::table_data_insert_all_response::TableDataInsertAllResponse;
@@ -202,7 +202,11 @@ impl BigQuerySink {
                     .schema
                     .fields
                     .as_ref()
-                    .map(|fs| fs.iter().map(idempotent::FieldSpec::from_table_field).collect())
+                    .map(|fs| {
+                        fs.iter()
+                            .map(idempotent::FieldSpec::from_table_field)
+                            .collect()
+                    })
                     .unwrap_or_default();
                 if fields.is_empty() {
                     return Err(FaucetError::Sink(format!(
@@ -218,10 +222,8 @@ impl BigQuerySink {
 
     /// Create the commit-token watermark table if it does not exist.
     async fn ensure_commit_table(&self) -> Result<(), FaucetError> {
-        let sql = idempotent::build_create_commit_table(
-            &self.config.project_id,
-            &self.config.dataset_id,
-        );
+        let sql =
+            idempotent::build_create_commit_table(&self.config.project_id, &self.config.dataset_id);
         let mut req = QueryRequest::new(sql);
         req.use_legacy_sql = false;
         let resp = self
@@ -229,9 +231,7 @@ impl BigQuerySink {
             .job()
             .query(&self.config.project_id, req)
             .await
-            .map_err(|e| {
-                FaucetError::Sink(format!("BigQuery commit-table create failed: {e}"))
-            })?;
+            .map_err(|e| FaucetError::Sink(format!("BigQuery commit-table create failed: {e}")))?;
         self.await_query_complete(resp).await
     }
 
@@ -314,9 +314,10 @@ impl BigQuerySink {
         let r = qr.job_reference.as_ref().ok_or_else(|| {
             FaucetError::Sink("BigQuery query response missing jobReference".to_string())
         })?;
-        let job_id = r.job_id.clone().ok_or_else(|| {
-            FaucetError::Sink("BigQuery jobReference missing jobId".to_string())
-        })?;
+        let job_id = r
+            .job_id
+            .clone()
+            .ok_or_else(|| FaucetError::Sink("BigQuery jobReference missing jobId".to_string()))?;
         Ok((job_id, r.location.clone()))
     }
 }
@@ -580,7 +581,9 @@ impl faucet_core::Sink for BigQuerySink {
         let columns = self.target_schema().await?;
 
         let payload = serde_json::to_string(records).map_err(|e| {
-            FaucetError::Sink(format!("BigQuery exactly-once: serialize page payload: {e}"))
+            FaucetError::Sink(format!(
+                "BigQuery exactly-once: serialize page payload: {e}"
+            ))
         })?;
 
         let sql = idempotent::build_transaction_sql(

@@ -156,7 +156,12 @@ fn wrap_scalar(ty: &BqType, var: &str) -> String {
 }
 
 /// Build the `field AS name, …` list for a STRUCT, recursing into each child.
-fn struct_field_list(fields: &[FieldSpec], json_var: &str, base_path: &str, depth: usize) -> String {
+fn struct_field_list(
+    fields: &[FieldSpec],
+    json_var: &str,
+    base_path: &str,
+    depth: usize,
+) -> String {
     fields
         .iter()
         .map(|f| {
@@ -278,7 +283,12 @@ fn build_insert_select(columns: &[FieldSpec], project: &str, dataset: &str, tabl
 }
 
 /// The full atomic transaction: typed INSERT of the page + watermark MERGE.
-pub fn build_transaction_sql(columns: &[FieldSpec], project: &str, dataset: &str, table: &str) -> String {
+pub fn build_transaction_sql(
+    columns: &[FieldSpec],
+    project: &str,
+    dataset: &str,
+    table: &str,
+) -> String {
     format!(
         "BEGIN TRANSACTION;\n{insert};\n{merge};\nCOMMIT TRANSACTION;",
         insert = build_insert_select(columns, project, dataset, table),
@@ -304,7 +314,13 @@ pub fn build_request_id(scope: &str, token: &str) -> String {
     }
     let safe_scope: String = scope
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
         .take(64)
         .collect();
     format!("faucet_eo_{safe_scope}_{h:016x}_{token}")
@@ -315,7 +331,12 @@ mod tests {
     use super::*;
 
     fn scalar(name: &str, ty: BqType) -> FieldSpec {
-        FieldSpec { name: name.into(), ty, repeated: false, fields: vec![] }
+        FieldSpec {
+            name: name.into(),
+            ty,
+            repeated: false,
+            fields: vec![],
+        }
     }
 
     #[test]
@@ -340,69 +361,110 @@ mod tests {
             policy_tags: None,
         };
         let fs = FieldSpec::from_table_field(&tf);
-        assert_eq!(fs, FieldSpec {
-            name: "addr".into(),
-            ty: BqType::Struct,
-            repeated: true,
-            fields: vec![scalar("city", BqType::String)],
-        });
+        assert_eq!(
+            fs,
+            FieldSpec {
+                name: "addr".into(),
+                ty: BqType::Struct,
+                repeated: true,
+                fields: vec![scalar("city", BqType::String)],
+            }
+        );
     }
 
     fn repeated(name: &str, ty: BqType) -> FieldSpec {
-        FieldSpec { name: name.into(), ty, repeated: true, fields: vec![] }
+        FieldSpec {
+            name: name.into(),
+            ty,
+            repeated: true,
+            fields: vec![],
+        }
     }
     fn record(name: &str, repeated: bool, fields: Vec<FieldSpec>) -> FieldSpec {
-        FieldSpec { name: name.into(), ty: BqType::Struct, repeated, fields }
+        FieldSpec {
+            name: name.into(),
+            ty: BqType::Struct,
+            repeated,
+            fields,
+        }
     }
 
     #[test]
     fn scalar_exprs_per_type() {
-        assert_eq!(column_expr(&scalar("s", BqType::String), "r", "$.s", 0),
-            "JSON_VALUE(r, '$.s')");
-        assert_eq!(column_expr(&scalar("n", BqType::Int64), "r", "$.n", 0),
-            "CAST(JSON_VALUE(r, '$.n') AS INT64)");
-        assert_eq!(column_expr(&scalar("f", BqType::Float64), "r", "$.f", 0),
-            "CAST(JSON_VALUE(r, '$.f') AS FLOAT64)");
-        assert_eq!(column_expr(&scalar("b", BqType::Bool), "r", "$.b", 0),
-            "CAST(JSON_VALUE(r, '$.b') AS BOOL)");
-        assert_eq!(column_expr(&scalar("ts", BqType::Timestamp), "r", "$.ts", 0),
-            "CAST(JSON_VALUE(r, '$.ts') AS TIMESTAMP)");
-        assert_eq!(column_expr(&scalar("by", BqType::Bytes), "r", "$.by", 0),
-            "FROM_BASE64(JSON_VALUE(r, '$.by'))");
-        assert_eq!(column_expr(&scalar("g", BqType::Geography), "r", "$.g", 0),
-            "ST_GEOGFROMTEXT(JSON_VALUE(r, '$.g'))");
-        assert_eq!(column_expr(&scalar("j", BqType::Json), "r", "$.j", 0),
-            "PARSE_JSON(JSON_QUERY(r, '$.j'))");
+        assert_eq!(
+            column_expr(&scalar("s", BqType::String), "r", "$.s", 0),
+            "JSON_VALUE(r, '$.s')"
+        );
+        assert_eq!(
+            column_expr(&scalar("n", BqType::Int64), "r", "$.n", 0),
+            "CAST(JSON_VALUE(r, '$.n') AS INT64)"
+        );
+        assert_eq!(
+            column_expr(&scalar("f", BqType::Float64), "r", "$.f", 0),
+            "CAST(JSON_VALUE(r, '$.f') AS FLOAT64)"
+        );
+        assert_eq!(
+            column_expr(&scalar("b", BqType::Bool), "r", "$.b", 0),
+            "CAST(JSON_VALUE(r, '$.b') AS BOOL)"
+        );
+        assert_eq!(
+            column_expr(&scalar("ts", BqType::Timestamp), "r", "$.ts", 0),
+            "CAST(JSON_VALUE(r, '$.ts') AS TIMESTAMP)"
+        );
+        assert_eq!(
+            column_expr(&scalar("by", BqType::Bytes), "r", "$.by", 0),
+            "FROM_BASE64(JSON_VALUE(r, '$.by'))"
+        );
+        assert_eq!(
+            column_expr(&scalar("g", BqType::Geography), "r", "$.g", 0),
+            "ST_GEOGFROMTEXT(JSON_VALUE(r, '$.g'))"
+        );
+        assert_eq!(
+            column_expr(&scalar("j", BqType::Json), "r", "$.j", 0),
+            "PARSE_JSON(JSON_QUERY(r, '$.j'))"
+        );
     }
 
     #[test]
     fn repeated_scalar_exprs() {
-        assert_eq!(column_expr(&repeated("xs", BqType::String), "r", "$.xs", 0),
-            "ARRAY(SELECT x0 FROM UNNEST(JSON_VALUE_ARRAY(r, '$.xs')) AS x0)");
-        assert_eq!(column_expr(&repeated("ns", BqType::Int64), "r", "$.ns", 0),
-            "ARRAY(SELECT CAST(x0 AS INT64) FROM UNNEST(JSON_VALUE_ARRAY(r, '$.ns')) AS x0)");
-        assert_eq!(column_expr(&repeated("js", BqType::Json), "r", "$.js", 0),
-            "ARRAY(SELECT PARSE_JSON(x0) FROM UNNEST(JSON_QUERY_ARRAY(r, '$.js')) AS x0)");
+        assert_eq!(
+            column_expr(&repeated("xs", BqType::String), "r", "$.xs", 0),
+            "ARRAY(SELECT x0 FROM UNNEST(JSON_VALUE_ARRAY(r, '$.xs')) AS x0)"
+        );
+        assert_eq!(
+            column_expr(&repeated("ns", BqType::Int64), "r", "$.ns", 0),
+            "ARRAY(SELECT CAST(x0 AS INT64) FROM UNNEST(JSON_VALUE_ARRAY(r, '$.ns')) AS x0)"
+        );
+        assert_eq!(
+            column_expr(&repeated("js", BqType::Json), "r", "$.js", 0),
+            "ARRAY(SELECT PARSE_JSON(x0) FROM UNNEST(JSON_QUERY_ARRAY(r, '$.js')) AS x0)"
+        );
     }
 
     #[test]
     fn nested_struct_expr() {
-        let f = record("addr", false, vec![
-            scalar("city", BqType::String),
-            scalar("zip", BqType::Int64),
-        ]);
-        assert_eq!(column_expr(&f, "r", "$.addr", 0),
-            "STRUCT(JSON_VALUE(r, '$.addr.city') AS `city`, CAST(JSON_VALUE(r, '$.addr.zip') AS INT64) AS `zip`)");
+        let f = record(
+            "addr",
+            false,
+            vec![scalar("city", BqType::String), scalar("zip", BqType::Int64)],
+        );
+        assert_eq!(
+            column_expr(&f, "r", "$.addr", 0),
+            "STRUCT(JSON_VALUE(r, '$.addr.city') AS `city`, CAST(JSON_VALUE(r, '$.addr.zip') AS INT64) AS `zip`)"
+        );
     }
 
     #[test]
     fn repeated_record_expr_uses_unnest_element() {
-        let f = record("items", true, vec![
-            scalar("sku", BqType::String),
-            scalar("qty", BqType::Int64),
-        ]);
-        assert_eq!(column_expr(&f, "r", "$.items", 0),
-            "ARRAY(SELECT AS STRUCT JSON_VALUE(e0, '$.sku') AS `sku`, CAST(JSON_VALUE(e0, '$.qty') AS INT64) AS `qty` FROM UNNEST(JSON_QUERY_ARRAY(r, '$.items')) AS e0)");
+        let f = record(
+            "items",
+            true,
+            vec![scalar("sku", BqType::String), scalar("qty", BqType::Int64)],
+        );
+        assert_eq!(
+            column_expr(&f, "r", "$.items", 0),
+            "ARRAY(SELECT AS STRUCT JSON_VALUE(e0, '$.sku') AS `sku`, CAST(JSON_VALUE(e0, '$.qty') AS INT64) AS `qty` FROM UNNEST(JSON_QUERY_ARRAY(r, '$.items')) AS e0)"
+        );
     }
 
     #[test]
@@ -413,8 +475,10 @@ mod tests {
         let sql = column_expr(&f, "r", "$.groups", 0);
         // Outer element alias e0; the inner repeated scalar uses x1 (depth+1) —
         // distinct from any outer alias.
-        assert_eq!(sql,
-            "ARRAY(SELECT AS STRUCT ARRAY(SELECT x1 FROM UNNEST(JSON_VALUE_ARRAY(e0, '$.tags')) AS x1) AS `tags` FROM UNNEST(JSON_QUERY_ARRAY(r, '$.groups')) AS e0)");
+        assert_eq!(
+            sql,
+            "ARRAY(SELECT AS STRUCT ARRAY(SELECT x1 FROM UNNEST(JSON_VALUE_ARRAY(e0, '$.tags')) AS x1) AS `tags` FROM UNNEST(JSON_QUERY_ARRAY(r, '$.groups')) AS e0)"
+        );
     }
 
     #[test]
@@ -428,20 +492,26 @@ mod tests {
 
     #[test]
     fn create_commit_table_sql() {
-        assert_eq!(build_create_commit_table("p", "d"),
-            "CREATE TABLE IF NOT EXISTS `p.d._faucet_commit_token` (scope STRING NOT NULL, token STRING NOT NULL, updated_at TIMESTAMP)");
+        assert_eq!(
+            build_create_commit_table("p", "d"),
+            "CREATE TABLE IF NOT EXISTS `p.d._faucet_commit_token` (scope STRING NOT NULL, token STRING NOT NULL, updated_at TIMESTAMP)"
+        );
     }
 
     #[test]
     fn select_token_sql() {
-        assert_eq!(build_select_token("p", "d"),
-            "SELECT token FROM `p.d._faucet_commit_token` WHERE scope = @scope LIMIT 1");
+        assert_eq!(
+            build_select_token("p", "d"),
+            "SELECT token FROM `p.d._faucet_commit_token` WHERE scope = @scope LIMIT 1"
+        );
     }
 
     #[test]
     fn merge_token_sql() {
-        assert_eq!(build_merge_token("p", "d"),
-            "MERGE `p.d._faucet_commit_token` T USING (SELECT @scope AS scope, @token AS token) S ON T.scope = S.scope WHEN MATCHED THEN UPDATE SET token = S.token, updated_at = CURRENT_TIMESTAMP() WHEN NOT MATCHED THEN INSERT (scope, token, updated_at) VALUES (S.scope, S.token, CURRENT_TIMESTAMP())");
+        assert_eq!(
+            build_merge_token("p", "d"),
+            "MERGE `p.d._faucet_commit_token` T USING (SELECT @scope AS scope, @token AS token) S ON T.scope = S.scope WHEN MATCHED THEN UPDATE SET token = S.token, updated_at = CURRENT_TIMESTAMP() WHEN NOT MATCHED THEN INSERT (scope, token, updated_at) VALUES (S.scope, S.token, CURRENT_TIMESTAMP())"
+        );
     }
 
     #[test]
@@ -449,10 +519,22 @@ mod tests {
         let cols = vec![scalar("id", BqType::Int64), scalar("name", BqType::String)];
         let sql = build_transaction_sql(&cols, "p", "d", "t");
         assert!(sql.starts_with("BEGIN TRANSACTION;\n"), "got: {sql}");
-        assert!(sql.contains("INSERT INTO `p.d.t` (`id`, `name`)"), "got: {sql}");
-        assert!(sql.contains("FROM UNNEST(JSON_QUERY_ARRAY(@payload)) AS r"), "got: {sql}");
-        assert!(sql.contains("MERGE `p.d._faucet_commit_token` T"), "got: {sql}");
-        assert!(sql.trim_end().ends_with("COMMIT TRANSACTION;"), "got: {sql}");
+        assert!(
+            sql.contains("INSERT INTO `p.d.t` (`id`, `name`)"),
+            "got: {sql}"
+        );
+        assert!(
+            sql.contains("FROM UNNEST(JSON_QUERY_ARRAY(@payload)) AS r"),
+            "got: {sql}"
+        );
+        assert!(
+            sql.contains("MERGE `p.d._faucet_commit_token` T"),
+            "got: {sql}"
+        );
+        assert!(
+            sql.trim_end().ends_with("COMMIT TRANSACTION;"),
+            "got: {sql}"
+        );
         let i = sql.find("INSERT INTO").unwrap();
         let m = sql.find("MERGE").unwrap();
         let c = sql.find("COMMIT TRANSACTION").unwrap();
@@ -464,8 +546,11 @@ mod tests {
         let a = build_request_id("pipe::row1", "00000000000000000007");
         let b = build_request_id("pipe::row1", "00000000000000000007");
         assert_eq!(a, b, "must be deterministic across calls/processes");
-        assert!(a.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-'),
-            "request_id must be sanitized: {a}");
+        assert!(
+            a.chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-'),
+            "request_id must be sanitized: {a}"
+        );
         assert!(a.ends_with("_00000000000000000007"), "got: {a}");
         assert_ne!(a, build_request_id("pipe::row2", "00000000000000000007"));
     }
