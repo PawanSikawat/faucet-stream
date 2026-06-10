@@ -451,6 +451,50 @@ pub fn expand(cfg: &PipelineConfig) -> CliResult<Vec<ExpandedNode>> {
             }
         }
 
+        // write_mode × sink validation (load-time): reject an unsupported mode
+        // for the sink kind, and upsert/delete without a key, before any run.
+        // Runs for every row; append rows pass trivially.
+        let requested_mode = merged_sink
+            .config
+            .get("write_mode")
+            .and_then(|v| v.as_str())
+            .unwrap_or("append");
+        let mode = match requested_mode {
+            "append" => faucet_core::WriteMode::Append,
+            "upsert" => faucet_core::WriteMode::Upsert,
+            "delete" => faucet_core::WriteMode::Delete,
+            other => {
+                return Err(CliError::Config(format!(
+                    "row '{}': unknown write_mode '{}' (expected append, upsert, or delete)",
+                    ids[i], other
+                )));
+            }
+        };
+        if !crate::registry::sink_supported_write_modes(&merged_sink.kind).contains(&mode) {
+            return Err(CliError::Config(format!(
+                "row '{}': write_mode '{}' is not supported by sink '{}' \
+                 (upsert/delete sinks: postgres, sqlite, mysql, mssql, mongodb, elasticsearch)",
+                ids[i], requested_mode, merged_sink.kind
+            )));
+        }
+        if matches!(
+            mode,
+            faucet_core::WriteMode::Upsert | faucet_core::WriteMode::Delete
+        ) {
+            let key_present = merged_sink
+                .config
+                .get("key")
+                .and_then(|v| v.as_array())
+                .map(|a| !a.is_empty())
+                .unwrap_or(false);
+            if !key_present {
+                return Err(CliError::Config(format!(
+                    "row '{}': write_mode '{}' requires a non-empty `key`",
+                    ids[i], requested_mode
+                )));
+            }
+        }
+
         out.push(ExpandedNode {
             id: ids[i].clone(),
             row_index: i,
@@ -1606,5 +1650,91 @@ pipeline:
             }
             other => panic!("expected Config error, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn rejects_upsert_on_unsupported_sink() {
+        let c = cfg(r#"
+version: 1
+name: t
+pipeline:
+  source: { type: rest, config: { url: "http://x" } }
+  sink:   { type: jsonl, config: { path: "out.jsonl", write_mode: upsert, key: [id] } }
+"#);
+        let err = expand(&c).unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("write_mode") && msg.contains("upsert") && msg.contains("jsonl"),
+            "{msg}"
+        );
+    }
+
+    #[test]
+    fn rejects_upsert_without_key() {
+        let c = cfg(r#"
+version: 1
+name: t
+pipeline:
+  source: { type: rest, config: { url: "http://x" } }
+  sink:   { type: postgres, config: { connection_url: "postgres://x", table_name: t, column_mapping: auto_map, write_mode: upsert } }
+"#);
+        let err = expand(&c).unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("key"), "{msg}");
+    }
+
+    #[test]
+    fn accepts_upsert_on_postgres_with_key() {
+        let c = cfg(r#"
+version: 1
+name: t
+pipeline:
+  source: { type: rest, config: { url: "http://x" } }
+  sink:   { type: postgres, config: { connection_url: "postgres://x", table_name: t, column_mapping: auto_map, write_mode: upsert, key: [id] } }
+"#);
+        assert!(expand(&c).is_ok());
+    }
+
+    #[test]
+    fn accepts_append_by_default_on_any_sink() {
+        let c = cfg(r#"
+version: 1
+name: t
+pipeline:
+  source: { type: rest, config: { url: "http://x" } }
+  sink:   { type: jsonl, config: { path: "out.jsonl" } }
+"#);
+        assert!(expand(&c).is_ok());
+    }
+
+    #[test]
+    fn rejects_delete_without_key() {
+        let c = cfg(r#"
+version: 1
+name: t
+pipeline:
+  source: { type: rest, config: { url: "http://x" } }
+  sink:   { type: mongodb, config: { connection_url: "mongodb://x", database: d, collection: c, write_mode: delete } }
+"#);
+        let err = expand(&c).unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("delete") && msg.contains("key"), "{msg}");
+    }
+
+    #[test]
+    fn rejects_unknown_write_mode() {
+        let c = cfg(r#"
+version: 1
+name: t
+pipeline:
+  source: { type: rest, config: { url: "http://x" } }
+  sink:   { type: postgres, config: { connection_url: "postgres://x", table_name: t, column_mapping: auto_map, write_mode: replace } }
+"#);
+        let err = expand(&c).unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("unknown write_mode") && msg.contains("replace"),
+            "{msg}"
+        );
     }
 }

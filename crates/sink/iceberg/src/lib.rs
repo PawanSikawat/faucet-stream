@@ -12,5 +12,6 @@ pub mod sink;
 pub(crate) mod storage_factory;
 pub(crate) mod writer;
 
-pub use config::{CatalogConfig, IcebergSinkConfig, ParquetOpts, PartitionField, WriteMode};
+pub use config::{CatalogConfig, IcebergSinkConfig, ParquetOpts, PartitionField};
+pub use faucet_core::WriteMode;
 pub use sink::IcebergSink;

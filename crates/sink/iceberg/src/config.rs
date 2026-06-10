@@ -2,14 +2,18 @@
 //!
 //! ## Write mode
 //!
-//! Only `append` is supported in v1. Overwrite support is tracked in
+//! The `write_mode` field accepts the shared [`faucet_core::WriteMode`] enum
+//! (`append` | `upsert` | `delete`). Only `append` is supported at runtime in
+//! v1; `upsert` and `delete` deserialise successfully but are rejected by
+//! [`IcebergSink::new`](crate::sink::IcebergSink::new) with a typed
+//! `FaucetError::Config`. Equality-delete upsert is tracked in
 //! [#179](https://github.com/PawanSikawat/faucet-stream/issues/179) and is
 //! blocked on upstream iceberg-rust adding a replace/overwrite transaction action.
 
 use std::collections::HashMap;
 use std::fmt;
 
-use faucet_core::FaucetError;
+use faucet_core::{FaucetError, WriteMode};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -177,22 +181,6 @@ pub struct PartitionField {
     pub transform: String,
 }
 
-// ── Write mode ────────────────────────────────────────────────────────────────
-
-/// Write semantics for the Iceberg sink.
-///
-/// Only `append` is available in v1. Overwrite is tracked in
-/// [#179](https://github.com/PawanSikawat/faucet-stream/issues/179) and is
-/// blocked on upstream iceberg-rust adding an overwrite/replace transaction
-/// action (not present in 0.9.1).
-#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum WriteMode {
-    /// Append records as a new snapshot. Existing data is never modified.
-    #[default]
-    Append,
-}
-
 // ── Parquet options ───────────────────────────────────────────────────────────
 
 /// Parquet-level compression and encoding options.
@@ -226,9 +214,12 @@ impl Default for ParquetOpts {
 ///
 /// ## Append-only (v1)
 ///
-/// Only `write_mode: append` is supported. Overwrite is tracked in #179 and
-/// is blocked on upstream iceberg-rust. Configuring `write_mode: overwrite`
-/// will produce a deserialization error.
+/// Only `write_mode: append` is supported at runtime. The `write_mode` field
+/// accepts the shared [`faucet_core::WriteMode`] enum, so `upsert` and
+/// `delete` deserialise without error but are rejected by
+/// [`IcebergSink::new`](crate::sink::IcebergSink::new) with a `FaucetError::Config`. Configuring
+/// `write_mode: overwrite` still produces a deserialization error (it is not
+/// a recognised variant). Equality-delete upsert is tracked in #179.
 ///
 /// ## Catalog feature gates
 ///
@@ -259,8 +250,10 @@ pub struct IcebergSinkConfig {
     #[serde(default)]
     pub partition_spec: Vec<PartitionField>,
 
-    /// Write semantics. Only `append` is supported in v1; see crate-level docs
-    /// for the overwrite roadmap item (#179).
+    /// Write semantics. Uses the shared [`faucet_core::WriteMode`] enum
+    /// (`append` | `upsert` | `delete`). Only `append` is supported at
+    /// runtime; non-append modes are rejected by [`IcebergSink::new`](crate::sink::IcebergSink::new) with a
+    /// `FaucetError::Config`. Upsert via equality-delete is tracked in #179.
     #[serde(default)]
     pub write_mode: WriteMode,
 
@@ -715,6 +708,23 @@ mod tests {
         }));
         cfg.validate()
             .expect("REST should accept any warehouse scheme");
+    }
+
+    // ── write_mode core-enum ──────────────────────────────────────────────────
+
+    #[test]
+    fn iceberg_config_parses_upsert_against_core_enum() {
+        // Once the local WriteMode is replaced by faucet_core::WriteMode,
+        // "upsert" must deserialise (the local enum only had Append, so this
+        // would fail with "unknown variant 'upsert'" before the change).
+        let cfg: IcebergSinkConfig = serde_json::from_value(serde_json::json!({
+            "catalog": { "type": "rest", "uri": "http://localhost:8181" },
+            "namespace": ["analytics"],
+            "table": "events",
+            "write_mode": "upsert"
+        }))
+        .expect("upsert parses against the core enum");
+        assert_eq!(cfg.write_mode, faucet_core::WriteMode::Upsert);
     }
 
     // ── batch_size bounds ─────────────────────────────────────────────────────

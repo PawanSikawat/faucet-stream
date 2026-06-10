@@ -60,7 +60,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 | `index` | `String` | *(required)* | Target index name |
 | `auth` | `ElasticsearchAuth` | `None` | Authentication method (see below) |
 | `batch_size` | `usize` | `1000` | Maximum documents per `_bulk` request. See [Streaming and batching](#streaming-and-batching) below |
-| `id_field` | `Option<String>` | `None` | JSON field name to use as the document `_id`. If `None`, Elasticsearch auto-generates IDs. |
+| `id_field` | `Option<String>` | `None` | JSON field name to use as the document `_id`. If `None`, Elasticsearch auto-generates IDs. **Superseded by `key` in `upsert`/`delete` modes.** |
+| `write_mode` | `"append" \| "upsert" \| "delete"` | `"append"` | Write semantics. See [Write modes](#write-modes-upsert--delete) below |
+| `key` | `[String]` | `[]` | Key columns whose values form the document `_id` (joined with `:`). Required and non-empty for `upsert`/`delete` |
+| `delete_marker` | `{ field, values }` | *(none)* | Upsert only: rows whose `field` matches one of `values` are routed to deletes instead of upserts; the marker field is stripped from upserted docs |
 
 ### Streaming and batching
 
@@ -116,6 +119,48 @@ When `id_field` is set, the sink extracts the document `_id` from each record:
 - If the field value is a string, it is used directly.
 - If the field value is a number or other type, it is converted to its string representation.
 - If a record is missing the `id_field`, Elasticsearch auto-generates an ID for that document.
+
+### Write modes (upsert / delete)
+
+Elasticsearch is schemaless and `_id`-addressable, so the sink supports all
+three write modes. The `_bulk` `index` action is already an idempotent
+overwrite by `_id`, so an **upsert is just an `index` keyed on a stable
+document `_id`**, and a **delete is a `delete` action by `_id`**.
+
+- **`append`** (default) — every record is indexed; `_id` comes from `id_field`
+  if set, otherwise Elasticsearch auto-generates one. Unchanged behaviour.
+- **`upsert`** — each record's `_id` is derived from its `key` columns and the
+  document is re-indexed (an idempotent overwrite). This **supersedes
+  `id_field`** — `key` is authoritative for the `_id` in this mode.
+- **`delete`** — each record's `key` columns derive an `_id` and a `delete`
+  action removes that document (no doc body is sent).
+
+Composite keys are joined with `:` — e.g. `key: [tenant, id]` over
+`{tenant: "acme", id: 7}` produces `_id` `"acme:7"`. Within a single batch,
+**duplicate keys collapse last-write-wins** before the bulk request is built.
+
+In `upsert` mode, `delete_marker` lets a single stream carry both writes and
+tombstones: rows whose `field` value matches one of `values` become `delete`
+actions; all other rows are upserted with the marker field stripped from the
+indexed document.
+
+```yaml
+pipeline:
+  sink:
+    kind: elasticsearch
+    config:
+      base_url: http://localhost:9200
+      index: products
+      write_mode: upsert
+      key: [product_id]
+      delete_marker:
+        field: __op
+        values: [d, delete]   # rows with __op in (d, delete) are removed by _id
+```
+
+Missing or null `key` values are per-row failures: `write_batch` aborts the
+page, and the DLQ-aware `write_batch_partial` path routes exactly those rows to
+the dead-letter queue while the rest are written.
 
 ### Builder Methods
 

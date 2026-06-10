@@ -438,3 +438,56 @@ transforms:
   - { type: filter, config: { path: item_status, op: in, value: [active, pending] } }
   - { type: keys_case, config: { mode: snake } }
 ```
+
+## `cdc_unwrap` — normalize CDC change events into flat rows
+
+The CDC sources (`postgres-cdc`, `mysql-cdc`, `mongodb-cdc`) emit change-event
+**envelopes** — a wrapper carrying an operation code and the row's before/after
+images — not the bare rows themselves. `cdc_unwrap` flattens that envelope into a
+single row plus an `__op` marker, so a downstream
+[upsert sink](./upsert.md) can mirror the change without understanding CDC at all.
+It's the standard first transform in a CDC → mirror pipeline:
+
+```yaml
+transforms:
+  - type: cdc_unwrap
+```
+
+For each change event it:
+
+- **drops** DDL / truncate events (`op` ∈ `drop_ops`) — they have no row to mirror;
+- for a **delete** (`op` ∈ `delete_ops`), emits the pre-image (`before`), falling
+  back to `key_field` (MongoDB carries the key in `document_key` when there is no
+  `before`); rows with no usable key are dropped with a `tracing::warn!`;
+- for an **insert / update**, emits the post-image (`after`); events with no row
+  image are dropped with a warning;
+- stamps every emitted row with a `marker_field` (`__op`) set to the normalized
+  value **`"d"`** (delete) or **`"u"`** (upsert) — *not* the raw op code. A
+  downstream sink's `delete_marker` should therefore match `"d"`.
+
+It is a 1→0|1 stage (every input row becomes zero or one output row) and runs in
+declaration order like any other transform.
+
+### Config fields and defaults
+
+| Field | Default | Purpose |
+|-------|---------|---------|
+| `op_field` | `op` | Envelope field holding the operation code |
+| `after_field` | `after` | Envelope field holding the post-image |
+| `before_field` | `before` | Envelope field holding the pre-image |
+| `key_field` | `document_key` | Fallback key for deletes with no `before` (MongoDB) |
+| `marker_field` | `__op` | Field stamped on every emitted row (`"d"` / `"u"`) |
+| `delete_ops` | `["d", "delete"]` | `op` values that mean delete |
+| `drop_ops` | `["ddl", "truncate"]` | `op` values dropped entirely |
+
+The defaults span all three CDC vocabularies seen in the wild — `insert` /
+`update` / `delete` / `truncate`, `c` / `u` / `d` / `ddl`, and `c` / `u` / `r` /
+`d` / `ddl` — so a bare `- type: cdc_unwrap` works for postgres-cdc, mysql-cdc,
+and mongodb-cdc without per-source tuning.
+
+`cdc_unwrap` is a built-in transform gated on the `transform-cdc-unwrap` feature
+(included in the `full` build). It is **opaque** for column-lineage analysis (it
+reshapes the whole envelope), so faucet emits no column-lineage edges for it.
+
+See the [Upsert / mirror tables](./upsert.md) cookbook for the full
+CDC → mirror pipeline.

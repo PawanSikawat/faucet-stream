@@ -67,6 +67,11 @@ pub struct PostgresSinkConfig {
     pub batch_size: usize,
     /// Maximum number of connections in the pool. Defaults to 5.
     pub max_connections: u32,
+    /// Write mode, key columns, and optional delete marker. `write_mode`
+    /// defaults to `append`. Upsert/delete require `column_mapping: auto_map`
+    /// and a UNIQUE/PRIMARY KEY constraint on `key`.
+    #[serde(flatten)]
+    pub write: faucet_core::WriteSpec,
 }
 
 fn default_batch_size() -> usize {
@@ -96,6 +101,7 @@ impl PostgresSinkConfig {
             column_mapping: PostgresColumnMapping::default(),
             batch_size: DEFAULT_BATCH_SIZE,
             max_connections: 5,
+            write: faucet_core::WriteSpec::default(),
         }
     }
 

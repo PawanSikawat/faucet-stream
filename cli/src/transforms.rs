@@ -6,9 +6,11 @@
 use crate::config::TransformSpec;
 use crate::error::{CliError, CliResult};
 #[cfg(feature = "transforms")]
-use faucet_core::{CastOnError, CastType, JsonSchema, KeyCaseMode, ValueCaseMode, schema_for};
+use faucet_core::{CastOnError, CastType, KeyCaseMode, ValueCaseMode};
+#[cfg(any(feature = "transforms", feature = "transform-cdc-unwrap"))]
+use faucet_core::{JsonSchema, schema_for};
 use faucet_core::{RecordTransform, TransformStage};
-#[cfg(feature = "transforms")]
+#[cfg(any(feature = "transforms", feature = "transform-cdc-unwrap"))]
 use serde::Deserialize;
 use serde_json::Value;
 #[cfg(feature = "transforms")]
@@ -149,6 +151,61 @@ struct ExplodeConfig {
 #[cfg(feature = "transform-explode")]
 fn default_explode_separator_cli() -> String {
     "_".to_owned()
+}
+
+#[cfg(feature = "transform-cdc-unwrap")]
+#[derive(Debug, Deserialize, JsonSchema)]
+struct CdcUnwrapConfig {
+    /// Envelope field holding the operation code. Default `"op"`.
+    #[serde(default = "cdc_op_field")]
+    op_field: String,
+    /// Envelope field holding the post-image row. Default `"after"`.
+    #[serde(default = "cdc_after_field")]
+    after_field: String,
+    /// Envelope field holding the pre-image row. Default `"before"`.
+    #[serde(default = "cdc_before_field")]
+    before_field: String,
+    /// Fallback key field for deletes when `before` is absent. Default `"document_key"`.
+    #[serde(default = "cdc_key_field")]
+    key_field: String,
+    /// Field stamped onto every emitted row with the op value. Default `"__op"`.
+    #[serde(default = "cdc_marker_field")]
+    marker_field: String,
+    /// Op values that mean delete. Default `["d", "delete"]`.
+    #[serde(default = "cdc_delete_ops")]
+    delete_ops: Vec<String>,
+    /// Op values that cause the record to be dropped (1→0). Default `["ddl", "truncate"]`.
+    #[serde(default = "cdc_drop_ops")]
+    drop_ops: Vec<String>,
+}
+
+#[cfg(feature = "transform-cdc-unwrap")]
+fn cdc_op_field() -> String {
+    "op".into()
+}
+#[cfg(feature = "transform-cdc-unwrap")]
+fn cdc_after_field() -> String {
+    "after".into()
+}
+#[cfg(feature = "transform-cdc-unwrap")]
+fn cdc_before_field() -> String {
+    "before".into()
+}
+#[cfg(feature = "transform-cdc-unwrap")]
+fn cdc_key_field() -> String {
+    "document_key".into()
+}
+#[cfg(feature = "transform-cdc-unwrap")]
+fn cdc_marker_field() -> String {
+    "__op".into()
+}
+#[cfg(feature = "transform-cdc-unwrap")]
+fn cdc_delete_ops() -> Vec<String> {
+    vec!["d".into(), "delete".into()]
+}
+#[cfg(feature = "transform-cdc-unwrap")]
+fn cdc_drop_ops() -> Vec<String> {
+    vec!["ddl".into(), "truncate".into()]
 }
 
 /// One row in the transform registry — the single source of truth for every
@@ -378,6 +435,26 @@ fn registry() -> Vec<TransformDef> {
             },
         });
     }
+    #[cfg(feature = "transform-cdc-unwrap")]
+    {
+        defs.push(TransformDef {
+            kind: "cdc_unwrap",
+            description: "Normalize a CDC envelope into a flat row + delete marker (for upsert sinks).",
+            schema_fn: || schema::<CdcUnwrapConfig>(),
+            compile_fn: |kind, config| {
+                let cfg = decode::<CdcUnwrapConfig>(kind, config)?;
+                Ok(faucet_core::TransformStage::CdcUnwrap(faucet_core::CdcUnwrapSpec {
+                    op_field: cfg.op_field,
+                    after_field: cfg.after_field,
+                    before_field: cfg.before_field,
+                    key_field: cfg.key_field,
+                    marker_field: cfg.marker_field,
+                    delete_ops: cfg.delete_ops,
+                    drop_ops: cfg.drop_ops,
+                }))
+            },
+        });
+    }
     defs
 }
 
@@ -470,12 +547,12 @@ fn unknown_transform(name: &str) -> CliError {
     }
 }
 
-#[cfg(feature = "transforms")]
+#[cfg(any(feature = "transforms", feature = "transform-cdc-unwrap"))]
 fn schema<T: JsonSchema>() -> Value {
     serde_json::to_value(schema_for!(T)).unwrap_or_else(|_| serde_json::json!({"type": "object"}))
 }
 
-#[cfg(feature = "transforms")]
+#[cfg(any(feature = "transforms", feature = "transform-cdc-unwrap"))]
 fn decode<T: serde::de::DeserializeOwned>(name: &str, config: Value) -> CliResult<T> {
     serde_json::from_value(config).map_err(|e| CliError::InvalidTransform {
         name: name.to_owned(),
@@ -923,6 +1000,25 @@ mod tests {
     fn sql_schema_and_listing_present() {
         assert!(transform_schema("sql").is_ok());
         assert!(available_transforms().contains(&"sql"));
+    }
+
+    #[cfg(feature = "transform-cdc-unwrap")]
+    #[test]
+    fn compiles_cdc_unwrap_with_defaults() {
+        let specs = vec![TransformSpec {
+            kind: "cdc_unwrap".into(),
+            config: json!({}),
+        }];
+        let out = compile_transforms(&specs).unwrap();
+        assert_eq!(out.len(), 1);
+        assert!(matches!(out[0], faucet_core::TransformStage::CdcUnwrap(_)));
+    }
+
+    #[cfg(feature = "transform-cdc-unwrap")]
+    #[test]
+    fn cdc_unwrap_schema_and_listing_present() {
+        assert!(transform_schema("cdc_unwrap").is_ok());
+        assert!(available_transforms().contains(&"cdc_unwrap"));
     }
 
     #[cfg(feature = "quality")]

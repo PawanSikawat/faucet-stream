@@ -59,6 +59,11 @@ pub struct SqliteSinkConfig {
     /// read concurrently with the single writer).
     #[serde(default = "default_max_connections")]
     pub max_connections: u32,
+    /// Write mode, key columns, and optional delete marker. `write_mode`
+    /// defaults to `append`. Upsert/delete require `column_mapping: auto_map`
+    /// and a UNIQUE/PRIMARY KEY constraint on `key`.
+    #[serde(flatten)]
+    pub write: faucet_core::WriteSpec,
 }
 
 fn default_batch_size() -> usize {
@@ -78,6 +83,7 @@ impl SqliteSinkConfig {
             column_mapping: SqliteColumnMapping::default(),
             batch_size: DEFAULT_BATCH_SIZE,
             max_connections: default_max_connections(),
+            write: faucet_core::WriteSpec::default(),
         }
     }
 

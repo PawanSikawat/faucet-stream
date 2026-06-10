@@ -20,6 +20,7 @@
 - [Pagination styles](./cookbook/pagination.md)
 - [Authentication](./cookbook/auth.md)
 - [Incremental replication & state](./cookbook/state.md)
+- [Upsert / mirror tables](./cookbook/upsert.md)
 - [Dead-letter queues](./cookbook/dlq.md)
 - [Data-quality checks](./cookbook/quality.md)
 - [Compression](./cookbook/compression.md)

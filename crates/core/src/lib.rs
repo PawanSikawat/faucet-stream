@@ -33,6 +33,7 @@ pub mod traits;
 pub mod transform;
 pub mod transforming_source;
 pub mod util;
+pub mod write_mode;
 
 #[cfg(feature = "compression")]
 pub mod compression;
@@ -59,6 +60,8 @@ pub use pipeline::{
 };
 pub use replication::ReplicationMethod;
 pub use retry::execute_with_retry;
+#[cfg(feature = "transform-cdc-unwrap")]
+pub use stage::CdcUnwrapSpec;
 #[cfg(feature = "transform-explode")]
 pub use stage::{ExplodeSpec, OnMissing};
 #[cfg(feature = "transform-filter")]
@@ -75,6 +78,10 @@ pub use transform::ValueCaseMode;
 pub use transform::{CastOnError, CastType};
 pub use transforming_source::TransformingSource;
 pub use util::redact_uri_credentials;
+pub use write_mode::{
+    DeleteMarker, KeyTuple, WriteMode, WritePlan, WriteSpec, key_to_doc_id, key_to_filter,
+    plan_writes,
+};
 
 // Re-export dependencies that connector authors need, so they only depend on
 // `faucet-core` instead of adding `async-trait` and `serde_json` themselves.

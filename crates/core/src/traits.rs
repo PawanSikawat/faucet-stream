@@ -258,6 +258,15 @@ pub trait Sink: Send + Sync {
         false
     }
 
+    /// Write modes this sink can apply. Default: append-only. Sinks that
+    /// implement key-based merge override this to include
+    /// [`WriteMode::Upsert`](crate::write_mode::WriteMode) /
+    /// [`WriteMode::Delete`](crate::write_mode::WriteMode). The CLI rejects a
+    /// configured mode that is not in this set at config-load time.
+    fn supported_write_modes(&self) -> &'static [crate::write_mode::WriteMode] {
+        &[crate::write_mode::WriteMode::Append]
+    }
+
     /// Write `records` AND durably record `token` for `scope`, atomically.
     ///
     /// `scope` namespaces the watermark (the pipeline passes the per-row state
@@ -800,5 +809,19 @@ mod tests {
     fn source_default_does_not_support_exactly_once() {
         let source = MockSource { records: vec![] };
         assert!(!source.supports_exactly_once());
+    }
+
+    #[test]
+    fn sink_default_supported_write_modes_is_append_only() {
+        use crate::write_mode::WriteMode;
+        let sink = MockSink::new();
+        assert_eq!(sink.supported_write_modes(), &[WriteMode::Append]);
+    }
+
+    #[test]
+    fn supported_write_modes_callable_through_trait_object() {
+        use crate::write_mode::WriteMode;
+        let sink: Box<dyn Sink> = Box::new(MockSink::new());
+        assert!(sink.supported_write_modes().contains(&WriteMode::Append));
     }
 }

@@ -50,6 +50,16 @@ pub struct ElasticsearchSinkConfig {
     /// recommended setting for resumable pipelines); alternatively, configure a
     /// DLQ, whose per-row `write_batch_partial` path avoids the whole-page re-send.
     pub id_field: Option<String>,
+    /// Write semantics: `append` (default), `upsert`, or `delete`.
+    ///
+    /// In `upsert` / `delete` modes the document `_id` is derived from the
+    /// configured `key` columns (joined with `:` for composite keys) — this
+    /// **supersedes `id_field`**. An `upsert` issues a `_bulk` `index` action
+    /// (an idempotent overwrite by `_id`); a `delete` issues a `_bulk` `delete`
+    /// action by `_id`. Duplicate keys within a single batch collapse
+    /// last-write-wins.
+    #[serde(flatten)]
+    pub write: faucet_core::WriteSpec,
 }
 
 fn default_batch_size() -> usize {
@@ -65,6 +75,7 @@ impl ElasticsearchSinkConfig {
             auth: AuthSpec::Inline(ElasticsearchAuth::None),
             batch_size: DEFAULT_BATCH_SIZE,
             id_field: None,
+            write: faucet_core::WriteSpec::default(),
         }
     }
 

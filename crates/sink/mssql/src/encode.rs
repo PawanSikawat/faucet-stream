@@ -1,7 +1,7 @@
 //! Pure helpers for turning JSON records into MSSQL `INSERT` statements and
 //! bound parameters. No I/O — all unit-testable.
 
-use faucet_common_mssql::PARAM_LIMIT;
+use faucet_common_mssql::{PARAM_LIMIT, quote_ident_mssql};
 use faucet_core::FaucetError;
 use serde_json::Value;
 use tiberius::ToSql;
@@ -158,6 +158,127 @@ pub(crate) fn resolve_insert_columns(
     Ok(columns)
 }
 
+/// Build a parameterized `MERGE` upsert. `table` must already be quoted; the
+/// `key` / `cols` entries are bare identifiers that this function quotes via
+/// [`quote_ident_mssql`].
+///
+/// Emits `n_rows` `VALUES` groups of `cols.len()` `@PN` params each, numbered
+/// row-major so the binding order matches `n_rows` calls of
+/// [`auto_row_params(record, cols)`](auto_row_params) concatenated in record
+/// order. Joins on every `key` column, `UPDATE`s the non-key columns, and
+/// `INSERT`s all columns. When every column is a key there is nothing to
+/// update, so the `WHEN MATCHED` clause is omitted entirely. T-SQL requires a
+/// terminating `;` on `MERGE`, so one is always appended.
+pub(crate) fn build_merge(
+    table: &str,
+    key: &[String],
+    cols: &[String],
+    n_rows: usize,
+) -> Result<String, FaucetError> {
+    let q = |s: &str| quote_ident_mssql(s);
+    let quoted_cols: Vec<String> = cols.iter().map(|c| q(c)).collect::<Result<_, _>>()?;
+    let quoted_keys: Vec<String> = key.iter().map(|k| q(k)).collect::<Result<_, _>>()?;
+    let col_list = quoted_cols.join(", ");
+
+    let mut ph = 1usize;
+    let groups: Vec<String> = (0..n_rows)
+        .map(|_| {
+            let g = cols
+                .iter()
+                .map(|_| {
+                    let p = format!("@P{ph}");
+                    ph += 1;
+                    p
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("({g})")
+        })
+        .collect();
+
+    let on = quoted_keys
+        .iter()
+        .map(|qk| format!("tgt.{qk} = src.{qk}"))
+        .collect::<Vec<_>>()
+        .join(" AND ");
+
+    // Non-key columns get UPDATE assignments; compare on the *bare* names so a
+    // column equal to a key column (after quoting) is correctly excluded.
+    let update_set = cols
+        .iter()
+        .zip(&quoted_cols)
+        .filter(|(c, _)| !key.iter().any(|k| k == *c))
+        .map(|(_, qc)| format!("tgt.{qc} = src.{qc}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    let insert_vals = quoted_cols
+        .iter()
+        .map(|qc| format!("src.{qc}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    let matched = if update_set.is_empty() {
+        String::new()
+    } else {
+        format!(" WHEN MATCHED THEN UPDATE SET {update_set}")
+    };
+
+    Ok(format!(
+        "MERGE {table} AS tgt USING (VALUES {}) AS src ({col_list}) ON {on}{matched} \
+         WHEN NOT MATCHED THEN INSERT ({col_list}) VALUES ({insert_vals});",
+        groups.join(", ")
+    ))
+}
+
+/// Build a parameterized `MERGE … WHEN MATCHED THEN DELETE` for composite-key
+/// deletes. `table` must already be quoted; `key` entries are bare identifiers
+/// quoted here.
+///
+/// T-SQL has no row-constructor `IN ((a,b), …)`, so a composite-key delete is
+/// expressed as a `MERGE` whose source is the `VALUES` list of key tuples.
+/// Params are numbered row-major over the key columns, matching how the caller
+/// binds each [`KeyTuple`](faucet_core::KeyTuple)'s values in `key` order.
+pub(crate) fn build_merge_delete(
+    table: &str,
+    key: &[String],
+    n_rows: usize,
+) -> Result<String, FaucetError> {
+    let quoted_keys: Vec<String> = key
+        .iter()
+        .map(|k| quote_ident_mssql(k))
+        .collect::<Result<_, _>>()?;
+    let key_list = quoted_keys.join(", ");
+
+    let mut ph = 1usize;
+    let groups: Vec<String> = (0..n_rows)
+        .map(|_| {
+            let g = key
+                .iter()
+                .map(|_| {
+                    let p = format!("@P{ph}");
+                    ph += 1;
+                    p
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("({g})")
+        })
+        .collect();
+
+    let on = quoted_keys
+        .iter()
+        .map(|qk| format!("tgt.{qk} = src.{qk}"))
+        .collect::<Vec<_>>()
+        .join(" AND ");
+
+    Ok(format!(
+        "MERGE {table} AS tgt USING (VALUES {}) AS src ({key_list}) ON {on} \
+         WHEN MATCHED THEN DELETE;",
+        groups.join(", ")
+    ))
+}
+
 /// Bind one record's values in `columns` order (SQL NULL for missing keys).
 pub(crate) fn auto_row_params(record: &Value, columns: &[String]) -> Vec<BoundParam> {
     let obj = record.as_object();
@@ -280,6 +401,111 @@ mod tests {
             BoundParam::from_value(&json!({"k":1})),
             BoundParam::Str(_)
         ));
+    }
+
+    #[test]
+    fn mssql_merge_statement_shape() {
+        let sql = build_merge(
+            "[dbo].[t]",
+            &["id".to_string()],
+            &["id".to_string(), "name".to_string()],
+            1,
+        )
+        .unwrap();
+        assert!(sql.contains("MERGE [dbo].[t] AS tgt"), "{sql}");
+        assert!(
+            sql.contains("USING (VALUES (@P1, @P2)) AS src ([id], [name])"),
+            "{sql}"
+        );
+        assert!(sql.contains("ON tgt.[id] = src.[id]"), "{sql}");
+        assert!(
+            sql.contains("WHEN MATCHED THEN UPDATE SET tgt.[name] = src.[name]"),
+            "{sql}"
+        );
+        assert!(
+            sql.contains(
+                "WHEN NOT MATCHED THEN INSERT ([id], [name]) VALUES (src.[id], src.[name])"
+            ),
+            "{sql}"
+        );
+        assert!(
+            sql.trim_end().ends_with(';'),
+            "MERGE needs a terminating semicolon: {sql}"
+        );
+    }
+
+    #[test]
+    fn mssql_merge_all_keys_has_no_update_clause() {
+        // When every column is a key, there is nothing to UPDATE — emit no WHEN
+        // MATCHED clause.
+        let sql = build_merge("[t]", &["id".to_string()], &["id".to_string()], 2).unwrap();
+        assert!(!sql.contains("WHEN MATCHED"), "{sql}");
+        assert!(sql.contains("WHEN NOT MATCHED THEN INSERT"), "{sql}");
+        assert!(sql.contains("(@P1), (@P2)"), "two single-col rows: {sql}");
+    }
+
+    #[test]
+    fn mssql_merge_numbers_params_row_major() {
+        // Two rows of two columns → @P1..@P4 in row-major order, matching how
+        // `auto_row_params` is concatenated per row.
+        let sql = build_merge(
+            "[t]",
+            &["id".to_string()],
+            &["id".to_string(), "name".to_string()],
+            2,
+        )
+        .unwrap();
+        assert!(
+            sql.contains("VALUES (@P1, @P2), (@P3, @P4)"),
+            "row-major param numbering: {sql}"
+        );
+    }
+
+    #[test]
+    fn mssql_merge_composite_key_joins_on_all_key_cols() {
+        let sql = build_merge(
+            "[t]",
+            &["a".to_string(), "b".to_string()],
+            &["a".to_string(), "b".to_string(), "v".to_string()],
+            1,
+        )
+        .unwrap();
+        assert!(
+            sql.contains("ON tgt.[a] = src.[a] AND tgt.[b] = src.[b]"),
+            "{sql}"
+        );
+        // Only the non-key column `v` is updated.
+        assert!(
+            sql.contains("WHEN MATCHED THEN UPDATE SET tgt.[v] = src.[v]"),
+            "{sql}"
+        );
+    }
+
+    #[test]
+    fn mssql_merge_delete_statement_shape() {
+        let sql = build_merge_delete("[dbo].[t]", &["id".to_string()], 2).unwrap();
+        assert!(sql.contains("MERGE [dbo].[t] AS tgt"), "{sql}");
+        assert!(
+            sql.contains("USING (VALUES (@P1), (@P2)) AS src ([id])"),
+            "{sql}"
+        );
+        assert!(sql.contains("ON tgt.[id] = src.[id]"), "{sql}");
+        assert!(sql.contains("WHEN MATCHED THEN DELETE"), "{sql}");
+        assert!(sql.trim_end().ends_with(';'), "{sql}");
+    }
+
+    #[test]
+    fn mssql_merge_delete_composite_key() {
+        let sql = build_merge_delete("[t]", &["a".to_string(), "b".to_string()], 1).unwrap();
+        assert!(
+            sql.contains("USING (VALUES (@P1, @P2)) AS src ([a], [b])"),
+            "{sql}"
+        );
+        assert!(
+            sql.contains("ON tgt.[a] = src.[a] AND tgt.[b] = src.[b]"),
+            "{sql}"
+        );
+        assert!(sql.contains("WHEN MATCHED THEN DELETE"), "{sql}");
     }
 
     #[test]

@@ -21,9 +21,44 @@ fn quote_ident_mysql(name: &str) -> String {
     format!("`{}`", name.replace('`', "``"))
 }
 
+/// Build the `ON DUPLICATE KEY UPDATE …` tail for an upsert INSERT.
+///
+/// MySQL's `ON DUPLICATE KEY UPDATE` does not name a conflict target — it
+/// relies on the table's existing PRIMARY or UNIQUE key. Non-key columns are
+/// set from `VALUES(col)`. If every column is a key column there is nothing to
+/// update, so a self-assignment no-op on the first key column is emitted to
+/// keep the statement syntactically valid.
+fn on_duplicate_clause(key: &[String], all_cols: &[String]) -> String {
+    let updates: Vec<String> = all_cols
+        .iter()
+        .filter(|c| !key.iter().any(|k| k == *c))
+        .map(|c| {
+            let q = quote_ident_mysql(c);
+            format!("{q} = VALUES({q})")
+        })
+        .collect();
+    if updates.is_empty() {
+        let q = quote_ident_mysql(&key[0]);
+        format!("ON DUPLICATE KEY UPDATE {q} = {q}")
+    } else {
+        format!("ON DUPLICATE KEY UPDATE {}", updates.join(", "))
+    }
+}
+
 impl MysqlSink {
     /// Create a new MySQL sink. Establishes a connection pool.
     pub async fn new(config: MysqlSinkConfig) -> Result<Self, FaucetError> {
+        config.write.validate()?;
+        if !matches!(config.write.write_mode, faucet_core::WriteMode::Append)
+            && !matches!(config.column_mapping, MysqlColumnMapping::AutoMap)
+        {
+            return Err(FaucetError::Config(
+                "mysql sink: write_mode upsert/delete requires column_mapping: auto_map \
+                 (key columns must be real columns, not inside a JSON blob)"
+                    .into(),
+            ));
+        }
+
         let pool = MySqlPoolOptions::new()
             .max_connections(config.max_connections)
             .connect(&config.connection_url)
@@ -71,16 +106,24 @@ impl MysqlSink {
         Ok(records.len())
     }
 
-    /// Insert a batch of records using auto-mapped columns.
+    /// Core auto-map insert logic, optionally appending an `ON DUPLICATE KEY
+    /// UPDATE …` clause when `conflict_key` is `Some`.
     ///
-    /// Discovers column names from INFORMATION_SCHEMA and maps top-level JSON
-    /// fields to columns. Executes on the provided connection (a bare pool
-    /// connection for `write_batch`, or a `&mut *tx` transaction for
-    /// `write_batch_idempotent`). Uses a single multi-row INSERT.
-    async fn insert_auto_map(
+    /// Discovers column names from `INFORMATION_SCHEMA.COLUMNS` and maps
+    /// top-level JSON fields to columns. Executes on the provided connection
+    /// (a bare pool connection for `write_batch`, or `&mut *tx` for
+    /// transactional paths). Uses sub-chunked multi-row INSERTs.
+    ///
+    /// When `conflict_key` is `Some(key)`, each sub-chunk's INSERT is given an
+    /// `ON DUPLICATE KEY UPDATE …` tail so it upserts by the existing PRIMARY
+    /// or UNIQUE key (last-write-wins within the batch is handled by the
+    /// planner's dedup, so a single sub-chunk never double-hits the same
+    /// conflict target).
+    async fn insert_auto_map_with_conflict(
         &self,
         conn: &mut MySqlConnection,
         records: &[Value],
+        conflict_key: Option<&[String]>,
     ) -> Result<usize, FaucetError> {
         if records.is_empty() {
             return Ok(0);
@@ -170,13 +213,16 @@ impl MysqlSink {
             let row_placeholder = format!("({})", vec!["?"; num_cols].join(", "));
             let value_tuples: Vec<&str> =
                 (0..sub.len()).map(|_| row_placeholder.as_str()).collect();
-
-            let query = format!(
+            let base_query = format!(
                 "INSERT INTO {} ({}) VALUES {}",
                 quote_ident_mysql(&self.config.table_name),
                 col_names.join(", "),
                 value_tuples.join(", ")
             );
+            let query = match conflict_key {
+                Some(key) => format!("{base_query} {}", on_duplicate_clause(key, &insert_columns)),
+                None => base_query,
+            };
 
             let mut q = sqlx::query(&query);
             for matched in sub {
@@ -213,6 +259,108 @@ impl MysqlSink {
         }
 
         Ok(num_rows)
+    }
+
+    /// Auto-map insert with plain append semantics (no `ON DUPLICATE KEY`
+    /// clause). Thin wrapper over
+    /// [`insert_auto_map_with_conflict`](Self::insert_auto_map_with_conflict)
+    /// so the append path and `write_batch_idempotent` keep their original
+    /// signature.
+    async fn insert_auto_map(
+        &self,
+        conn: &mut MySqlConnection,
+        records: &[Value],
+    ) -> Result<usize, FaucetError> {
+        self.insert_auto_map_with_conflict(conn, records, None)
+            .await
+    }
+
+    /// Delete rows whose key columns match any of `deletes`, using
+    /// `DELETE FROM t WHERE (k1, …) IN ((?, …), …)`, chunked at MySQL's
+    /// 65535-placeholder limit. Runs inside the caller's transaction.
+    async fn delete_by_keys(
+        &self,
+        conn: &mut MySqlConnection,
+        deletes: &[faucet_core::KeyTuple],
+    ) -> Result<usize, FaucetError> {
+        if deletes.is_empty() {
+            return Ok(0);
+        }
+        let key = &self.config.write.key;
+        let table_ref = quote_ident_mysql(&self.config.table_name);
+        let col_list = key
+            .iter()
+            .map(|k| quote_ident_mysql(k))
+            .collect::<Vec<_>>()
+            .join(", ");
+
+        const MAX_MYSQL_PARAMS: usize = 65535;
+        let per = (MAX_MYSQL_PARAMS / key.len().max(1)).max(1);
+        let mut total = 0usize;
+
+        for chunk in deletes.chunks(per) {
+            let tuples: Vec<String> = chunk
+                .iter()
+                .map(|_| format!("({})", vec!["?"; key.len()].join(", ")))
+                .collect();
+            let sql = format!(
+                "DELETE FROM {table_ref} WHERE ({col_list}) IN ({})",
+                tuples.join(", ")
+            );
+            let mut q = sqlx::query(&sql);
+            for kt in chunk {
+                for (_, v) in &kt.0 {
+                    // Bind native MySQL types — same logic as in the INSERT path.
+                    q = match v {
+                        Value::Null => q.bind(None::<String>),
+                        Value::Bool(b) => q.bind(*b),
+                        Value::Number(n) => {
+                            if let Some(i) = n.as_i64() {
+                                q.bind(i)
+                            } else if let Some(f) = n.as_f64() {
+                                q.bind(f)
+                            } else {
+                                q.bind(n.to_string())
+                            }
+                        }
+                        Value::String(s) => q.bind(s.clone()),
+                        other => q.bind(other.to_string()),
+                    };
+                }
+            }
+            let res = q
+                .execute(&mut *conn)
+                .await
+                .map_err(|e| FaucetError::Sink(format!("MySQL delete failed: {e}")))?;
+            total += res.rows_affected() as usize;
+        }
+        Ok(total)
+    }
+
+    /// Apply a planned upsert/delete batch inside one `BEGIN`/`COMMIT`
+    /// transaction. Upserts and deletes are wrapped together so they commit
+    /// atomically.
+    async fn apply_plan(&self, plan: &faucet_core::WritePlan) -> Result<usize, FaucetError> {
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| FaucetError::Sink(format!("MySQL transaction begin failed: {e}")))?;
+
+        let mut affected = 0usize;
+        if !plan.upserts.is_empty() {
+            affected += self
+                .insert_auto_map_with_conflict(&mut tx, &plan.upserts, Some(&self.config.write.key))
+                .await?;
+        }
+        if !plan.deletes.is_empty() {
+            affected += self.delete_by_keys(&mut tx, &plan.deletes).await?;
+        }
+
+        tx.commit()
+            .await
+            .map_err(|e| FaucetError::Sink(format!("MySQL transaction commit failed: {e}")))?;
+        Ok(affected)
     }
 
     /// Create the commit-token watermark table if it does not yet exist.
@@ -283,6 +431,14 @@ impl faucet_core::Sink for MysqlSink {
         Ok(CheckReport::single(probe))
     }
 
+    fn supported_write_modes(&self) -> &'static [faucet_core::WriteMode] {
+        &[
+            faucet_core::WriteMode::Append,
+            faucet_core::WriteMode::Upsert,
+            faucet_core::WriteMode::Delete,
+        ]
+    }
+
     /// Write records to MySQL.
     ///
     /// When `config.batch_size > 0` and the input slice is larger than
@@ -298,6 +454,18 @@ impl faucet_core::Sink for MysqlSink {
     async fn write_batch(&self, records: &[Value]) -> Result<usize, FaucetError> {
         if records.is_empty() {
             return Ok(0);
+        }
+
+        // Non-append modes: plan the writes and apply atomically.
+        if !matches!(self.config.write.write_mode, faucet_core::WriteMode::Append) {
+            let plan = faucet_core::plan_writes(records, &self.config.write);
+            if let Some((idx, msg)) = plan.failed.first() {
+                return Err(FaucetError::Sink(format!(
+                    "mysql {}: row {idx}: {msg}",
+                    self.config.write.write_mode.as_str()
+                )));
+            }
+            return self.apply_plan(&plan).await;
         }
 
         let mut conn = self
@@ -333,6 +501,36 @@ impl faucet_core::Sink for MysqlSink {
         Ok(total)
     }
 
+    /// Write a batch and report per-row outcomes.
+    ///
+    /// In append mode this delegates to [`write_batch`](faucet_core::Sink::write_batch) and
+    /// maps a single success onto an all-`Ok(())` vector (the trait default).
+    /// In upsert/delete mode the good rows are applied (upserts + deletes), and
+    /// only the rows whose key could not be extracted (missing / null key) are
+    /// reported as `Err` so the pipeline routes them to the DLQ per-row instead
+    /// of sending the whole page.
+    async fn write_batch_partial(
+        &self,
+        records: &[Value],
+    ) -> Result<Vec<faucet_core::RowOutcome>, FaucetError> {
+        if matches!(self.config.write.write_mode, faucet_core::WriteMode::Append) {
+            self.write_batch(records).await?;
+            return Ok(records.iter().map(|_| Ok(())).collect());
+        }
+
+        let plan = faucet_core::plan_writes(records, &self.config.write);
+        self.apply_plan(&plan).await?;
+
+        let mut outcomes: Vec<faucet_core::RowOutcome> = records.iter().map(|_| Ok(())).collect();
+        for (idx, msg) in &plan.failed {
+            outcomes[*idx] = Err(FaucetError::Sink(format!(
+                "mysql {}: {msg}",
+                self.config.write.write_mode.as_str()
+            )));
+        }
+        Ok(outcomes)
+    }
+
     fn supports_idempotent_writes(&self) -> bool {
         true
     }
@@ -360,17 +558,55 @@ impl faucet_core::Sink for MysqlSink {
         token: &str,
     ) -> Result<usize, FaucetError> {
         self.ensure_commit_table().await?;
+
+        // For upsert/delete modes, plan the page before opening the transaction
+        // so a key-extraction failure aborts without leaving an open tx.
+        let plan = if matches!(self.config.write.write_mode, faucet_core::WriteMode::Append) {
+            None
+        } else {
+            let plan = faucet_core::plan_writes(records, &self.config.write);
+            if let Some((idx, msg)) = plan.failed.first() {
+                return Err(FaucetError::Sink(format!(
+                    "mysql {}: row {idx}: {msg}",
+                    self.config.write.write_mode.as_str()
+                )));
+            }
+            Some(plan)
+        };
+
         let mut tx = self
             .pool
             .begin()
             .await
             .map_err(|e| FaucetError::Sink(format!("MySQL transaction begin failed: {e}")))?;
 
-        let written = match &self.config.column_mapping {
-            MysqlColumnMapping::Json { column } => {
-                self.insert_json(&mut tx, records, column).await?
+        // Data write and the commit-token upsert share ONE transaction so the
+        // page is committed atomically with its watermark. For upsert/delete the
+        // planned upserts/deletes commit together with the watermark in this same
+        // tx (no nested tx — the helpers run on this transaction's connection).
+        let written = match &plan {
+            Some(plan) => {
+                let mut affected = 0usize;
+                if !plan.upserts.is_empty() {
+                    affected += self
+                        .insert_auto_map_with_conflict(
+                            &mut tx,
+                            &plan.upserts,
+                            Some(&self.config.write.key),
+                        )
+                        .await?;
+                }
+                if !plan.deletes.is_empty() {
+                    affected += self.delete_by_keys(&mut tx, &plan.deletes).await?;
+                }
+                affected
             }
-            MysqlColumnMapping::AutoMap => self.insert_auto_map(&mut tx, records).await?,
+            None => match &self.config.column_mapping {
+                MysqlColumnMapping::Json { column } => {
+                    self.insert_json(&mut tx, records, column).await?
+                }
+                MysqlColumnMapping::AutoMap => self.insert_auto_map(&mut tx, records).await?,
+            },
         };
 
         let upsert = format!(
@@ -427,5 +663,27 @@ mod tests {
     #[test]
     fn quote_ident_mysql_special_chars() {
         assert_eq!(quote_ident_mysql("table; DROP"), "`table; DROP`");
+    }
+
+    #[test]
+    fn mysql_on_duplicate_clause() {
+        let clause =
+            on_duplicate_clause(&["id".to_string()], &["id".to_string(), "name".to_string()]);
+        assert_eq!(clause, "ON DUPLICATE KEY UPDATE `name` = VALUES(`name`)");
+    }
+
+    #[test]
+    fn mysql_on_duplicate_all_keys_self_assign() {
+        let clause = on_duplicate_clause(&["id".to_string()], &["id".to_string()]);
+        assert_eq!(clause, "ON DUPLICATE KEY UPDATE `id` = `id`");
+    }
+
+    #[test]
+    fn mysql_on_duplicate_composite_key_partial_update() {
+        let clause = on_duplicate_clause(
+            &["a".to_string(), "b".to_string()],
+            &["a".to_string(), "b".to_string(), "v".to_string()],
+        );
+        assert_eq!(clause, "ON DUPLICATE KEY UPDATE `v` = VALUES(`v`)");
     }
 }

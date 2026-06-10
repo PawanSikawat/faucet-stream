@@ -49,6 +49,15 @@ pub struct MongoSinkConfig {
     /// rest of the batch (#78/#20).
     #[serde(default)]
     pub ordered: bool,
+    /// Write mode, key columns, and optional delete marker.
+    ///
+    /// `write_mode` defaults to `append` (the `insert_many` fast path). For
+    /// `upsert` / `delete`, `key` must be non-empty — MongoDB being schemaless,
+    /// the key columns become the **match filter** (typically `["_id"]`), not
+    /// table columns. Each upsert is committed with a per-document
+    /// `replace_one(upsert = true)`; each delete with a `delete_one`.
+    #[serde(flatten)]
+    pub write: faucet_core::WriteSpec,
 }
 
 fn default_batch_size() -> usize {
@@ -68,6 +77,7 @@ impl MongoSinkConfig {
             collection: collection.into(),
             batch_size: DEFAULT_BATCH_SIZE,
             ordered: false,
+            write: faucet_core::WriteSpec::default(),
         }
     }
 
@@ -96,6 +106,7 @@ impl fmt::Debug for MongoSinkConfig {
             .field("collection", &self.collection)
             .field("batch_size", &self.batch_size)
             .field("ordered", &self.ordered)
+            .field("write", &self.write)
             .finish()
     }
 }
