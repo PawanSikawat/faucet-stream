@@ -535,17 +535,55 @@ impl faucet_core::Sink for MysqlSink {
         token: &str,
     ) -> Result<usize, FaucetError> {
         self.ensure_commit_table().await?;
+
+        // For upsert/delete modes, plan the page before opening the transaction
+        // so a key-extraction failure aborts without leaving an open tx.
+        let plan = if matches!(self.config.write.write_mode, faucet_core::WriteMode::Append) {
+            None
+        } else {
+            let plan = faucet_core::plan_writes(records, &self.config.write);
+            if let Some((idx, msg)) = plan.failed.first() {
+                return Err(FaucetError::Sink(format!(
+                    "mysql {}: row {idx}: {msg}",
+                    self.config.write.write_mode.as_str()
+                )));
+            }
+            Some(plan)
+        };
+
         let mut tx = self
             .pool
             .begin()
             .await
             .map_err(|e| FaucetError::Sink(format!("MySQL transaction begin failed: {e}")))?;
 
-        let written = match &self.config.column_mapping {
-            MysqlColumnMapping::Json { column } => {
-                self.insert_json(&mut tx, records, column).await?
+        // Data write and the commit-token upsert share ONE transaction so the
+        // page is committed atomically with its watermark. For upsert/delete the
+        // planned upserts/deletes commit together with the watermark in this same
+        // tx (no nested tx — the helpers run on this transaction's connection).
+        let written = match &plan {
+            Some(plan) => {
+                let mut affected = 0usize;
+                if !plan.upserts.is_empty() {
+                    affected += self
+                        .insert_auto_map_with_conflict(
+                            &mut tx,
+                            &plan.upserts,
+                            Some(&self.config.write.key),
+                        )
+                        .await?;
+                }
+                if !plan.deletes.is_empty() {
+                    affected += self.delete_by_keys(&mut tx, &plan.deletes).await?;
+                }
+                affected
             }
-            MysqlColumnMapping::AutoMap => self.insert_auto_map(&mut tx, records).await?,
+            None => match &self.config.column_mapping {
+                MysqlColumnMapping::Json { column } => {
+                    self.insert_json(&mut tx, records, column).await?
+                }
+                MysqlColumnMapping::AutoMap => self.insert_auto_map(&mut tx, records).await?,
+            },
         };
 
         let upsert = format!(

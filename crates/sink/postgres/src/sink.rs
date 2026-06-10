@@ -624,20 +624,40 @@ impl faucet_core::Sink for PostgresSink {
         token: &str,
     ) -> Result<usize, FaucetError> {
         self.ensure_commit_table().await?;
+
+        // For upsert/delete modes, plan the page before opening the transaction
+        // so a key-extraction failure aborts without leaving an open tx.
+        let plan = if matches!(self.config.write.write_mode, faucet_core::WriteMode::Append) {
+            None
+        } else {
+            let plan = faucet_core::plan_writes(records, &self.config.write);
+            if let Some((idx, msg)) = plan.failed.first() {
+                return Err(FaucetError::Sink(format!(
+                    "postgres {}: row {idx}: {msg}",
+                    self.config.write.write_mode.as_str()
+                )));
+            }
+            Some(plan)
+        };
+
         let mut tx =
             self.pool.begin().await.map_err(|e| {
                 FaucetError::Sink(format!("PostgreSQL transaction begin failed: {e}"))
             })?;
 
-        // Data insert(s) and the commit-token upsert share ONE transaction so
+        // Data write(s) and the commit-token upsert share ONE transaction so
         // the page is committed atomically with its watermark: on crash either
         // both land or neither does, which is what makes a replay skip-on-resume
-        // produce zero duplicates.
-        let written = match &self.config.column_mapping {
-            PostgresColumnMapping::Jsonb { column } => {
-                self.insert_jsonb(&mut tx, records, column).await?
-            }
-            PostgresColumnMapping::AutoMap => self.insert_auto_map(&mut tx, records).await?,
+        // produce zero duplicates. For upsert/delete this means the planned
+        // upserts/deletes commit together with the watermark in the same tx.
+        let written = match &plan {
+            Some(plan) => self.apply_plan(&mut tx, plan).await?,
+            None => match &self.config.column_mapping {
+                PostgresColumnMapping::Jsonb { column } => {
+                    self.insert_jsonb(&mut tx, records, column).await?
+                }
+                PostgresColumnMapping::AutoMap => self.insert_auto_map(&mut tx, records).await?,
+            },
         };
 
         let upsert = format!(

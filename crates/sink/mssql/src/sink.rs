@@ -641,29 +641,72 @@ impl Sink for MssqlSink {
         scope: &str,
         token: &str,
     ) -> Result<usize, FaucetError> {
+        // For upsert/delete modes, plan the page before opening the transaction
+        // so a key-extraction failure aborts without leaving an open tx.
+        let plan = if matches!(self.config.write.write_mode, faucet_core::WriteMode::Append) {
+            None
+        } else {
+            let plan = faucet_core::plan_writes(records, &self.config.write);
+            if let Some((idx, msg)) = plan.failed.first() {
+                return Err(FaucetError::Sink(format!(
+                    "mssql {}: row {idx}: {msg}",
+                    self.config.write.write_mode.as_str()
+                )));
+            }
+            Some(plan)
+        };
+
         let mut conn = self.checkout().await?;
         self.ensure_commit_table(&mut conn).await?;
         control(&mut conn, "BEGIN TRAN").await?;
 
-        let written = match self.prepare_chunk(records).await {
-            Ok(Some((cols, rows))) => {
-                match self.insert_rows_no_txn(&mut conn, &cols, &rows).await {
-                    Ok(n) => n,
+        // Data write and the commit-token MERGE share ONE transaction so the
+        // page is committed atomically with its watermark. For upsert/delete the
+        // planned upserts/deletes run via the same no-txn MERGE helpers used by
+        // the append path's INSERTs, inside this same BEGIN TRAN.
+        let written = match &plan {
+            Some(plan) => {
+                let mut affected = 0usize;
+                match self.upsert_rows_no_txn(&mut conn, &plan.upserts).await {
+                    Ok(n) => affected += n,
                     Err((e, timed_out)) => {
-                        // Desynced connection on timeout — ROLLBACK would run on a
-                        // corrupt stream (mirrors insert_chunk). Drop the conn instead.
                         if !timed_out {
                             let _ = control(&mut conn, "ROLLBACK TRAN").await;
                         }
                         return Err(e);
                     }
                 }
+                match self.delete_keys_no_txn(&mut conn, &plan.deletes).await {
+                    Ok(n) => affected += n,
+                    Err((e, timed_out)) => {
+                        if !timed_out {
+                            let _ = control(&mut conn, "ROLLBACK TRAN").await;
+                        }
+                        return Err(e);
+                    }
+                }
+                affected
             }
-            Ok(None) => 0,
-            Err(e) => {
-                let _ = control(&mut conn, "ROLLBACK TRAN").await;
-                return Err(e);
-            }
+            None => match self.prepare_chunk(records).await {
+                Ok(Some((cols, rows))) => {
+                    match self.insert_rows_no_txn(&mut conn, &cols, &rows).await {
+                        Ok(n) => n,
+                        Err((e, timed_out)) => {
+                            // Desynced connection on timeout — ROLLBACK would run on a
+                            // corrupt stream (mirrors insert_chunk). Drop the conn instead.
+                            if !timed_out {
+                                let _ = control(&mut conn, "ROLLBACK TRAN").await;
+                            }
+                            return Err(e);
+                        }
+                    }
+                }
+                Ok(None) => 0,
+                Err(e) => {
+                    let _ = control(&mut conn, "ROLLBACK TRAN").await;
+                    return Err(e);
+                }
+            },
         };
 
         // UPSERT the commit token atomically with the data rows.
