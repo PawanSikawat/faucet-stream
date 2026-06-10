@@ -60,6 +60,8 @@ pub use pipeline::{
 };
 pub use replication::ReplicationMethod;
 pub use retry::execute_with_retry;
+#[cfg(feature = "transform-cdc-unwrap")]
+pub use stage::CdcUnwrapSpec;
 #[cfg(feature = "transform-explode")]
 pub use stage::{ExplodeSpec, OnMissing};
 #[cfg(feature = "transform-filter")]

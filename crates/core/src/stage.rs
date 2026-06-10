@@ -1,11 +1,13 @@
-//! Pipeline-level transform stages. A [`TransformStage`] wraps one of five
+//! Pipeline-level transform stages. A [`TransformStage`] wraps one of six
 //! shapes:
 //!
 //! - [`TransformStage::Map`] holds an unchanged 1→1 [`RecordTransform`].
-//! - [`TransformStage::Filter`] is a predicate-based 1→0|1 stage (added in
-//!   Task 4).
+//! - [`TransformStage::Filter`] is a predicate-based 1→0|1 stage.
 //! - [`TransformStage::Explode`] expands an array field into 1→0..N output
-//!   records (added in Task 5).
+//!   records.
+//! - [`TransformStage::CdcUnwrap`] normalizes a CDC change-event envelope
+//!   (`{op, before, after, …}`) into a flat row plus a marker field; DDL and
+//!   truncate events are dropped (1→0|1).
 //! - [`TransformStage::Custom`] is an `Fn(Value) -> Vec<Value>` closure
 //!   escape hatch for library callers.
 //! - [`TransformStage::PageFn`] is a `Fn(Vec<Value>) -> Result<Vec<Value>,
@@ -41,6 +43,12 @@ pub enum TransformStage {
     /// container with a prefix, scalars/arrays replace the leaf in place.
     #[cfg(feature = "transform-explode")]
     Explode(ExplodeSpec),
+    /// CDC envelope → flat row + marker. 1→0|1.
+    /// Normalizes `{op, before, after, …}` into a flat row stamped with
+    /// `__op: "u"` (upsert) or `__op: "d"` (delete). DDL/truncate events
+    /// are dropped entirely.
+    #[cfg(feature = "transform-cdc-unwrap")]
+    CdcUnwrap(CdcUnwrapSpec),
     /// Arbitrary 0..N closure for library callers (not addressable from YAML).
     Custom(Arc<dyn Fn(Value) -> Vec<Value> + Send + Sync>),
     /// Page-level closure: sees the whole page, returns a new page; fallible.
@@ -58,6 +66,8 @@ impl std::fmt::Debug for TransformStage {
             Self::Filter(s) => f.debug_tuple("Filter").field(s).finish(),
             #[cfg(feature = "transform-explode")]
             Self::Explode(s) => f.debug_tuple("Explode").field(s).finish(),
+            #[cfg(feature = "transform-cdc-unwrap")]
+            Self::CdcUnwrap(s) => f.debug_tuple("CdcUnwrap").field(s).finish(),
             Self::Custom(_) => write!(f, "Custom(<fn>)"),
             Self::PageFn(_) => write!(f, "PageFn(<fn>)"),
         }
@@ -72,6 +82,8 @@ impl Clone for TransformStage {
             Self::Filter(s) => Self::Filter(s.clone()),
             #[cfg(feature = "transform-explode")]
             Self::Explode(s) => Self::Explode(s.clone()),
+            #[cfg(feature = "transform-cdc-unwrap")]
+            Self::CdcUnwrap(s) => Self::CdcUnwrap(s.clone()),
             Self::Custom(f) => Self::Custom(Arc::clone(f)),
             Self::PageFn(f) => Self::PageFn(Arc::clone(f)),
         }
@@ -85,6 +97,8 @@ pub enum CompiledStage {
     Filter(CompiledFilter),
     #[cfg(feature = "transform-explode")]
     Explode(CompiledExplode),
+    #[cfg(feature = "transform-cdc-unwrap")]
+    CdcUnwrap(CompiledCdcUnwrap),
     Custom(Arc<dyn Fn(Value) -> Vec<Value> + Send + Sync>),
     PageFn(PageFnBox),
 }
@@ -97,6 +111,8 @@ impl std::fmt::Debug for CompiledStage {
             Self::Filter(cf) => f.debug_tuple("Filter").field(cf).finish(),
             #[cfg(feature = "transform-explode")]
             Self::Explode(e) => f.debug_tuple("Explode").field(e).finish(),
+            #[cfg(feature = "transform-cdc-unwrap")]
+            Self::CdcUnwrap(c) => f.debug_tuple("CdcUnwrap").field(c).finish(),
             Self::Custom(_) => write!(f, "Custom(<fn>)"),
             Self::PageFn(_) => write!(f, "PageFn(<fn>)"),
         }
@@ -120,6 +136,8 @@ impl Clone for CompiledStage {
                 separator: e.separator.clone(),
                 on_missing: e.on_missing,
             }),
+            #[cfg(feature = "transform-cdc-unwrap")]
+            Self::CdcUnwrap(c) => Self::CdcUnwrap(c.clone()),
             Self::Custom(f) => Self::Custom(Arc::clone(f)),
             Self::PageFn(f) => Self::PageFn(Arc::clone(f)),
         }
@@ -618,6 +636,130 @@ impl CompiledExplode {
     }
 }
 
+// ── CDC unwrap spec ──
+
+/// Spec for [`TransformStage::CdcUnwrap`]. Normalizes a CDC change-event
+/// envelope (`{op, before, after, …}`) into a flat row plus a marker field,
+/// so a downstream upsert sink never needs to understand CDC. A 1→0|1 stage:
+/// DDL/truncate events (and non-delete events with no `after` image) are
+/// dropped.
+#[cfg(feature = "transform-cdc-unwrap")]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+pub struct CdcUnwrapSpec {
+    /// Envelope field holding the operation. Default `"op"`.
+    #[serde(default = "cdc_default_op_field")]
+    pub op_field: String,
+    /// Envelope field holding the post-image. Default `"after"`.
+    #[serde(default = "cdc_default_after_field")]
+    pub after_field: String,
+    /// Envelope field holding the pre-image. Default `"before"`.
+    #[serde(default = "cdc_default_before_field")]
+    pub before_field: String,
+    /// Optional fallback for the delete key when `before` is null (Mongo
+    /// carries the key in `document_key`). Default `"document_key"`.
+    #[serde(default = "cdc_default_key_field")]
+    pub key_field: String,
+    /// Field stamped on every emitted row. Default `"__op"`.
+    #[serde(default = "cdc_default_marker_field")]
+    pub marker_field: String,
+    /// `op` values that mean delete. Default covers all three CDC vocabularies.
+    #[serde(default = "cdc_default_delete_ops")]
+    pub delete_ops: Vec<String>,
+    /// `op` values dropped entirely (1→0). Default `["ddl", "truncate"]`.
+    #[serde(default = "cdc_default_drop_ops")]
+    pub drop_ops: Vec<String>,
+}
+
+#[cfg(feature = "transform-cdc-unwrap")]
+fn cdc_default_op_field() -> String {
+    "op".into()
+}
+#[cfg(feature = "transform-cdc-unwrap")]
+fn cdc_default_after_field() -> String {
+    "after".into()
+}
+#[cfg(feature = "transform-cdc-unwrap")]
+fn cdc_default_before_field() -> String {
+    "before".into()
+}
+#[cfg(feature = "transform-cdc-unwrap")]
+fn cdc_default_key_field() -> String {
+    "document_key".into()
+}
+#[cfg(feature = "transform-cdc-unwrap")]
+fn cdc_default_marker_field() -> String {
+    "__op".into()
+}
+#[cfg(feature = "transform-cdc-unwrap")]
+fn cdc_default_delete_ops() -> Vec<String> {
+    vec!["d".into(), "delete".into()]
+}
+#[cfg(feature = "transform-cdc-unwrap")]
+fn cdc_default_drop_ops() -> Vec<String> {
+    vec!["ddl".into(), "truncate".into()]
+}
+
+#[cfg(feature = "transform-cdc-unwrap")]
+impl Default for CdcUnwrapSpec {
+    fn default() -> Self {
+        Self {
+            op_field: cdc_default_op_field(),
+            after_field: cdc_default_after_field(),
+            before_field: cdc_default_before_field(),
+            key_field: cdc_default_key_field(),
+            marker_field: cdc_default_marker_field(),
+            delete_ops: cdc_default_delete_ops(),
+            drop_ops: cdc_default_drop_ops(),
+        }
+    }
+}
+
+/// Pre-compiled cdc_unwrap. `pub` so it can sit inside the `pub`
+/// [`CompiledStage::CdcUnwrap`] variant without triggering the
+/// `private_interfaces` lint — same shape as the already-`pub`
+/// [`CompiledExplode`] sibling that backs [`CompiledStage::Explode`].
+#[cfg(feature = "transform-cdc-unwrap")]
+#[derive(Debug, Clone)]
+pub struct CompiledCdcUnwrap {
+    spec: CdcUnwrapSpec,
+}
+
+#[cfg(feature = "transform-cdc-unwrap")]
+impl CompiledCdcUnwrap {
+    fn compile(spec: &CdcUnwrapSpec) -> Result<Self, FaucetError> {
+        Ok(Self { spec: spec.clone() })
+    }
+
+    fn apply(&self, rec: Value) -> Result<Vec<Value>, FaucetError> {
+        let s = &self.spec;
+        let op = rec.get(&s.op_field).and_then(Value::as_str).unwrap_or("");
+        if s.drop_ops.iter().any(|d| d == op) {
+            return Ok(vec![]);
+        }
+        let is_delete = s.delete_ops.iter().any(|d| d == op);
+        let row = if is_delete {
+            match rec.get(&s.before_field) {
+                Some(Value::Object(m)) => Some(Value::Object(m.clone())),
+                _ => match rec.get(&s.key_field) {
+                    Some(Value::Object(m)) => Some(Value::Object(m.clone())),
+                    _ => None,
+                },
+            }
+        } else {
+            match rec.get(&s.after_field) {
+                Some(Value::Object(m)) => Some(Value::Object(m.clone())),
+                _ => None,
+            }
+        };
+        let Some(Value::Object(mut map)) = row else {
+            return Ok(vec![]);
+        };
+        let marker = if is_delete { "d" } else { "u" };
+        map.insert(s.marker_field.clone(), Value::String(marker.to_string()));
+        Ok(vec![Value::Object(map)])
+    }
+}
+
 /// Compile a [`TransformStage`] into its [`CompiledStage`] form.
 pub fn compile_stage(s: &TransformStage) -> Result<CompiledStage, FaucetError> {
     match s {
@@ -627,6 +769,10 @@ pub fn compile_stage(s: &TransformStage) -> Result<CompiledStage, FaucetError> {
         #[cfg(feature = "transform-explode")]
         TransformStage::Explode(spec) => {
             Ok(CompiledStage::Explode(CompiledExplode::compile(spec)?))
+        }
+        #[cfg(feature = "transform-cdc-unwrap")]
+        TransformStage::CdcUnwrap(spec) => {
+            Ok(CompiledStage::CdcUnwrap(CompiledCdcUnwrap::compile(spec)?))
         }
         TransformStage::Custom(f) => Ok(CompiledStage::Custom(Arc::clone(f))),
         TransformStage::PageFn(f) => Ok(CompiledStage::PageFn(Arc::clone(f))),
@@ -686,6 +832,8 @@ fn apply_one_stage(rec: Value, stage: &CompiledStage) -> Result<Vec<Value>, Fauc
         }
         #[cfg(feature = "transform-explode")]
         CompiledStage::Explode(e) => e.apply(rec),
+        #[cfg(feature = "transform-cdc-unwrap")]
+        CompiledStage::CdcUnwrap(c) => c.apply(rec),
         CompiledStage::Custom(f) => Ok(f(rec)),
         CompiledStage::PageFn(_) => Err(FaucetError::Transform(
             "PageFn is a page-level stage and cannot run in a per-record context; \
@@ -1638,5 +1786,76 @@ mod tests {
         let mut rec = json!({"name": "scalar"});
         let result = CompiledPath::resolve_segments_mut(&mut rec, p.segments()).unwrap();
         assert!(result.is_none(), "scalar leaf is not an object container");
+    }
+
+    // ── CdcUnwrap ──
+
+    #[cfg(feature = "transform-cdc-unwrap")]
+    fn cdc_unwrap_default() -> TransformStage {
+        TransformStage::CdcUnwrap(CdcUnwrapSpec::default())
+    }
+
+    #[cfg(feature = "transform-cdc-unwrap")]
+    #[test]
+    fn cdc_unwrap_postgres_insert_emits_after_with_marker() {
+        let stages = compile(&[cdc_unwrap_default()]);
+        let env = json!({"op": "insert", "before": null, "after": {"id": 1, "name": "a"}});
+        let out = apply_stages(env, &stages).unwrap();
+        assert_eq!(out, vec![json!({"id": 1, "name": "a", "__op": "u"})]);
+    }
+
+    #[cfg(feature = "transform-cdc-unwrap")]
+    #[test]
+    fn cdc_unwrap_mysql_short_ops() {
+        let stages = compile(&[cdc_unwrap_default()]);
+        let c = apply_stages(json!({"op": "c", "after": {"id": 1}}), &stages).unwrap();
+        assert_eq!(c, vec![json!({"id": 1, "__op": "u"})]);
+        let d = apply_stages(
+            json!({"op": "d", "before": {"id": 2, "name": "x"}, "after": null}),
+            &stages,
+        )
+        .unwrap();
+        assert_eq!(d, vec![json!({"id": 2, "name": "x", "__op": "d"})]);
+    }
+
+    #[cfg(feature = "transform-cdc-unwrap")]
+    #[test]
+    fn cdc_unwrap_mongo_delete_uses_document_key() {
+        let stages = compile(&[cdc_unwrap_default()]);
+        let env = json!({"op": "d", "before": null, "after": null, "document_key": {"_id": "abc"}});
+        let out = apply_stages(env, &stages).unwrap();
+        assert_eq!(out, vec![json!({"_id": "abc", "__op": "d"})]);
+    }
+
+    #[cfg(feature = "transform-cdc-unwrap")]
+    #[test]
+    fn cdc_unwrap_mongo_replace_op_is_upsert() {
+        let stages = compile(&[cdc_unwrap_default()]);
+        let out =
+            apply_stages(json!({"op": "r", "after": {"_id": "x", "v": 1}}), &stages).unwrap();
+        assert_eq!(out, vec![json!({"_id": "x", "v": 1, "__op": "u"})]);
+    }
+
+    #[cfg(feature = "transform-cdc-unwrap")]
+    #[test]
+    fn cdc_unwrap_drops_ddl_and_truncate() {
+        let stages = compile(&[cdc_unwrap_default()]);
+        assert!(
+            apply_stages(json!({"op": "ddl", "statement": "ALTER ..."}), &stages)
+                .unwrap()
+                .is_empty()
+        );
+        assert!(apply_stages(json!({"op": "truncate"}), &stages)
+            .unwrap()
+            .is_empty());
+    }
+
+    #[cfg(feature = "transform-cdc-unwrap")]
+    #[test]
+    fn cdc_unwrap_non_object_after_for_insert_is_dropped() {
+        let stages = compile(&[cdc_unwrap_default()]);
+        assert!(apply_stages(json!({"op": "insert", "after": null}), &stages)
+            .unwrap()
+            .is_empty());
     }
 }
