@@ -292,6 +292,78 @@ fn validate_accepts_csv_to_jsonl_yaml() {
 }
 
 #[test]
+fn validate_accepts_upsert_on_postgres_with_key() {
+    // Upsert on a supported sink with a non-empty key passes load-time
+    // validation. `validate` only expands + reports — no DB connection.
+    let dir = TempDir::new().unwrap();
+    let cfg = dir.path().join("pipeline.yaml");
+    fs::write(
+        &cfg,
+        r#"version: 1
+name: upsert_ok
+pipeline:
+  source:
+    type: rest
+    config:
+      url: http://x
+  sink:
+    type: postgres
+    config:
+      connection_url: postgres://x
+      table_name: t
+      column_mapping: auto_map
+      write_mode: upsert
+      key: [id]
+"#,
+    )
+    .unwrap();
+
+    Command::cargo_bin("faucet")
+        .unwrap()
+        .args(["validate"])
+        .arg(&cfg)
+        .assert()
+        .success()
+        .stdout(contains("sink=postgres"));
+}
+
+#[test]
+fn validate_rejects_upsert_on_jsonl_sink() {
+    // Upsert on an append-only sink fails load-time validation with a clear
+    // message naming the mode and the sink.
+    let dir = TempDir::new().unwrap();
+    let cfg = dir.path().join("pipeline.yaml");
+    fs::write(
+        &cfg,
+        r#"version: 1
+name: upsert_bad
+pipeline:
+  source:
+    type: rest
+    config:
+      url: http://x
+  sink:
+    type: jsonl
+    config:
+      path: out.jsonl
+      write_mode: upsert
+      key: [id]
+"#,
+    )
+    .unwrap();
+
+    Command::cargo_bin("faucet")
+        .unwrap()
+        .args(["validate"])
+        .arg(&cfg)
+        .assert()
+        .failure()
+        .stderr(contains("write_mode"))
+        .stderr(contains("upsert"))
+        .stderr(contains("jsonl"));
+}
+
+#[test]
 fn run_executes_csv_to_jsonl_pipeline() {
     let dir = TempDir::new().unwrap();
     let csv = dir.path().join("in.csv");

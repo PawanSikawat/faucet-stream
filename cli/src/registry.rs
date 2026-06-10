@@ -354,6 +354,18 @@ pub fn sink_supports_idempotent_writes(kind: &str) -> bool {
     matches!(kind, "sqlite" | "postgres" | "mysql" | "mssql" | "iceberg")
 }
 
+/// Write modes each sink kind supports. Kept in sync with each sink's
+/// `Sink::supported_write_modes()` override.
+pub fn sink_supported_write_modes(kind: &str) -> &'static [faucet_core::WriteMode] {
+    use faucet_core::WriteMode;
+    match kind {
+        "postgres" | "sqlite" | "mysql" | "mssql" | "mongodb" | "elasticsearch" => {
+            &[WriteMode::Append, WriteMode::Upsert, WriteMode::Delete]
+        }
+        _ => &[WriteMode::Append],
+    }
+}
+
 /// Return the JSON Schema for the named source's config struct.
 pub fn source_schema(kind: &str) -> CliResult<Value> {
     match kind {
@@ -970,5 +982,15 @@ mod tests {
         assert!(sink_supports_idempotent_writes("postgres"));
         assert!(sink_supports_idempotent_writes("iceberg"));
         assert!(!sink_supports_idempotent_writes("jsonl"));
+    }
+
+    #[test]
+    fn sink_supported_write_modes_allowlist() {
+        use faucet_core::WriteMode;
+        assert!(sink_supported_write_modes("postgres").contains(&WriteMode::Upsert));
+        assert!(sink_supported_write_modes("elasticsearch").contains(&WriteMode::Delete));
+        // a sink without upsert support is append-only
+        assert_eq!(sink_supported_write_modes("jsonl"), &[WriteMode::Append]);
+        assert_eq!(sink_supported_write_modes("kafka"), &[WriteMode::Append]);
     }
 }
