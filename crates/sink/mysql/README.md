@@ -280,6 +280,7 @@ let sink = MysqlSink::new(config).await?;
 - `column_mapping` must be `auto_map` — key columns must be real table columns, not packed inside a JSON blob.
 - `key` must be a non-empty list of column names.
 - The target table must have a **PRIMARY or UNIQUE key** on those columns. MySQL's `ON DUPLICATE KEY UPDATE` detects conflicts via that index — the `key` config field drives which columns are updated, not which index is used. All non-key columns in the INSERT are set from `VALUES(col)`.
+- A row missing or null in a key column fails. When a `dlq:` block is configured the good rows are still written and only the missing/null-key rows are routed to the DLQ per-row; without a DLQ the whole batch fails.
 
 **`write_mode: upsert`** — each record is INSERT … ON DUPLICATE KEY UPDATE (last-write-wins). Optionally, a `delete_marker` field routes certain records to deletes instead:
 

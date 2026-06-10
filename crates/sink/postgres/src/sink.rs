@@ -597,6 +597,41 @@ impl faucet_core::Sink for PostgresSink {
         Ok(total)
     }
 
+    /// Write a batch and report per-row outcomes.
+    ///
+    /// In append mode this delegates to [`write_batch`](Self::write_batch) and
+    /// maps a single success onto an all-`Ok(())` vector (the trait default).
+    /// In upsert/delete mode the good rows are applied (upserts + deletes), and
+    /// only the rows whose key could not be extracted (missing / null key) are
+    /// reported as `Err` so the pipeline routes them to the DLQ per-row instead
+    /// of sending the whole page.
+    async fn write_batch_partial(
+        &self,
+        records: &[Value],
+    ) -> Result<Vec<faucet_core::RowOutcome>, FaucetError> {
+        if matches!(self.config.write.write_mode, faucet_core::WriteMode::Append) {
+            self.write_batch(records).await?;
+            return Ok(records.iter().map(|_| Ok(())).collect());
+        }
+
+        let plan = faucet_core::plan_writes(records, &self.config.write);
+        let mut conn = self
+            .pool
+            .acquire()
+            .await
+            .map_err(|e| FaucetError::Sink(format!("PostgreSQL pool acquire failed: {e}")))?;
+        self.apply_plan(&mut conn, &plan).await?;
+
+        let mut outcomes: Vec<faucet_core::RowOutcome> = records.iter().map(|_| Ok(())).collect();
+        for (idx, msg) in &plan.failed {
+            outcomes[*idx] = Err(FaucetError::Sink(format!(
+                "postgres {}: {msg}",
+                self.config.write.write_mode.as_str()
+            )));
+        }
+        Ok(outcomes)
+    }
+
     fn supports_idempotent_writes(&self) -> bool {
         true
     }

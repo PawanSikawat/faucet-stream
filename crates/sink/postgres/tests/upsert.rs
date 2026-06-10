@@ -156,3 +156,40 @@ async fn upsert_duplicate_keys_in_one_batch_collapse_last_write_wins() {
         "last write within the batch wins"
     );
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn write_batch_partial_routes_missing_key_per_row() {
+    // A page with one good row and one missing-key row: the good row is written
+    // (upsert applied) and only the missing-key row comes back as Err so the
+    // pipeline routes it to the DLQ per-row instead of failing the whole page.
+    let (_container, url) = start_postgres().await;
+    create_kv_table(&url).await;
+
+    let sink = PostgresSink::new(upsert_sink_config(&url))
+        .await
+        .expect("sink new");
+
+    let records = [json!({"id": 1, "name": "ok"}), json!({"name": "missing-id"})];
+    let outcomes = sink
+        .write_batch_partial(&records)
+        .await
+        .expect("partial write");
+
+    assert_eq!(outcomes.len(), 2, "one outcome per input row");
+    assert!(outcomes[0].is_ok(), "the good row must be Ok");
+    assert!(
+        outcomes[1].is_err(),
+        "the missing-key row must be Err (routed to the DLQ)"
+    );
+
+    assert_eq!(
+        row_count(&url).await,
+        1,
+        "only the good row should be written"
+    );
+    assert_eq!(
+        name_for_id(&url, 1).await.as_deref(),
+        Some("ok"),
+        "id=1 must be present with name 'ok'"
+    );
+}

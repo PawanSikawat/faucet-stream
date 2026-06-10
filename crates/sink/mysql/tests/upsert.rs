@@ -264,3 +264,45 @@ async fn new_rejects_upsert_with_json_column_mapping() {
         "error must mention auto_map; got: {err}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Test 7: write_batch_partial routes missing-key rows to the DLQ per-row
+// ---------------------------------------------------------------------------
+
+#[tokio::test(flavor = "multi_thread")]
+async fn write_batch_partial_routes_missing_key_per_row() {
+    let (_container, url) = start_mysql().await;
+    create_upsert_table(&url).await;
+
+    let config = make_upsert_sink_config(&url, vec!["id".to_string()]);
+    let sink = MysqlSink::new(config).await.expect("sink new");
+
+    let records = [json!({"id": 1, "name": "ok"}), json!({"name": "missing-id"})];
+    let outcomes = sink
+        .write_batch_partial(&records)
+        .await
+        .expect("partial write");
+
+    assert_eq!(outcomes.len(), 2, "one outcome per input row");
+    assert!(outcomes[0].is_ok(), "the good row must be Ok");
+    assert!(
+        outcomes[1].is_err(),
+        "the missing-key row must be Err (routed to the DLQ)"
+    );
+
+    let pool = sqlx::MySqlPool::connect(&url).await.expect("pool");
+    let count: i64 = sqlx::query("SELECT COUNT(*) FROM t")
+        .fetch_one(&pool)
+        .await
+        .expect("count")
+        .get(0);
+    let name: String = sqlx::query("SELECT name FROM t WHERE id = 1")
+        .fetch_one(&pool)
+        .await
+        .expect("row")
+        .get("name");
+    pool.close().await;
+
+    assert_eq!(count, 1, "only the good row should be written");
+    assert_eq!(name, "ok", "id=1 must be present with name 'ok'");
+}

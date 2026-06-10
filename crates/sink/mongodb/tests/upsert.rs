@@ -172,3 +172,45 @@ async fn intra_batch_last_write_wins() {
         "the last write in the batch must win"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Test 4: write_batch_partial routes missing-key rows to the DLQ per-row.
+// The good row is upserted; only the missing-`_id` row comes back as Err.
+// ---------------------------------------------------------------------------
+#[tokio::test(flavor = "multi_thread")]
+async fn write_batch_partial_routes_missing_key_per_row() {
+    let (_container, uri) = start_mongo().await;
+    let sink = MongoSink::new(upsert_config(&uri, None))
+        .await
+        .expect("sink new");
+
+    let records = [
+        serde_json::json!({"_id": 1, "name": "ok"}),
+        serde_json::json!({"name": "missing-id"}),
+    ];
+    let outcomes = sink
+        .write_batch_partial(&records)
+        .await
+        .expect("partial write");
+
+    assert_eq!(outcomes.len(), 2, "one outcome per input row");
+    assert!(outcomes[0].is_ok(), "the good row must be Ok");
+    assert!(
+        outcomes[1].is_err(),
+        "the missing-key row must be Err (routed to the DLQ)"
+    );
+
+    assert_eq!(
+        count_docs(&uri, "testdb", "docs").await,
+        1,
+        "only the good row should be written"
+    );
+    let doc = find_one_by_id(&uri, "testdb", "docs", 1)
+        .await
+        .expect("doc present");
+    assert_eq!(
+        doc.get_str("name").unwrap(),
+        "ok",
+        "_id=1 must be present with name 'ok'"
+    );
+}

@@ -90,9 +90,11 @@ sink:
   stripped from the upserted record. This lets a CDC stream carrying an
   operation flag drive inserts, updates, and deletes from one pipeline.
 
-A row missing or null in a key column fails the whole batch with a clear
-`mssql upsert: row <i>: …` error. Upserts and deletes for a batch run inside a
-single `BEGIN TRAN` / `COMMIT TRAN` so they commit atomically.
+A row missing or null in a key column fails with a clear `mssql upsert: …`
+error. When a `dlq:` block is configured the good rows are still applied
+(upserts + deletes) and only the missing/null-key rows are routed to the DLQ
+per-row; without a DLQ the whole batch fails. Upserts and deletes for a batch
+run inside a single `BEGIN TRAN` / `COMMIT TRAN` so they commit atomically.
 
 ## Batching, transactions, and MSSQL's statement limits
 

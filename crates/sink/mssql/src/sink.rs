@@ -547,6 +547,24 @@ impl Sink for MssqlSink {
         if records.is_empty() {
             return Ok(Vec::new());
         }
+
+        // Upsert/delete: apply the good rows (upserts + deletes) and route only
+        // the rows whose key could not be extracted (missing / null key) to the
+        // DLQ per-row. The append path below keeps its row-isolation behaviour.
+        if !matches!(self.config.write.write_mode, faucet_core::WriteMode::Append) {
+            let plan = faucet_core::plan_writes(records, &self.config.write);
+            self.apply_plan(&plan).await?;
+
+            let mut outcomes: Vec<RowOutcome> = records.iter().map(|_| Ok(())).collect();
+            for (idx, msg) in &plan.failed {
+                outcomes[*idx] = Err(FaucetError::Sink(format!(
+                    "mssql {}: {msg}",
+                    self.config.write.write_mode.as_str()
+                )));
+            }
+            return Ok(outcomes);
+        }
+
         let chunks: Vec<&[Value]> = if self.config.batch_size == 0 {
             vec![records]
         } else {

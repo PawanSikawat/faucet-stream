@@ -279,6 +279,7 @@ By default the sink uses `write_mode: append` — every record is inserted as a 
 - `column_mapping` must be `auto_map` — key columns must be real table columns, not embedded inside a JSON blob.
 - The table must have a `UNIQUE` or `PRIMARY KEY` constraint on the `key` column(s) so SQLite's `ON CONFLICT` clause can enforce uniqueness.
 - Upsert/delete rows within a single batch are deduped by key (last-write-wins) before writing, so a single batch never conflicts with itself.
+- A row missing or null in a key column fails. When a `dlq:` block is configured the good rows are still written and only the missing/null-key rows are routed to the DLQ per-row; without a DLQ the whole batch fails.
 
 ### YAML example
 

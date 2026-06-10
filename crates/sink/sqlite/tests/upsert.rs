@@ -176,3 +176,35 @@ async fn single_batch_last_write_wins() {
         "last-write-wins: final value must be 'new'"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Test 4: write_batch_partial routes missing-key rows to the DLQ per-row
+// ---------------------------------------------------------------------------
+#[tokio::test]
+async fn write_batch_partial_routes_missing_key_per_row() {
+    let (_dir, url) = fresh_db("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)").await;
+
+    let sink = SqliteSink::new(upsert_config(&url)).await.unwrap();
+
+    let records: Vec<Value> = vec![json!({"id": 1, "name": "ok"}), json!({"name": "missing-id"})];
+    let outcomes = sink.write_batch_partial(&records).await.unwrap();
+
+    assert_eq!(outcomes.len(), 2, "one outcome per input row");
+    assert!(outcomes[0].is_ok(), "the good row must be Ok");
+    assert!(
+        outcomes[1].is_err(),
+        "the missing-key row must be Err (routed to the DLQ)"
+    );
+
+    // The good row must have been written even though the page had a bad row.
+    assert_eq!(
+        count_rows(&url, "users").await,
+        1,
+        "only the good row should be written"
+    );
+    assert_eq!(
+        fetch_name(&url, 1).await.as_deref(),
+        Some("ok"),
+        "id=1 must be present with name 'ok'"
+    );
+}

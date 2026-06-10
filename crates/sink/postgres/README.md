@@ -142,9 +142,11 @@ Semantics:
   `ON CONFLICT` target twice. A delete after an upsert (or vice-versa) for the
   same key resolves to whichever came last.
 - **`write_mode: delete`** routes every record to a delete by key.
-- A record missing a key column (or with a `null` key value) fails the whole
-  batch with a typed `Sink` error naming the offending row index — keys must
-  be present and non-null.
+- A record missing a key column (or with a `null` key value) fails with a typed
+  `Sink` error. When a `dlq:` block is configured the good rows are still
+  written (upserts + deletes applied) and only the missing/null-key rows are
+  routed to the DLQ per-row; without a DLQ the whole batch fails. Keys should be
+  present and non-null.
 
 ### Example YAML config
 

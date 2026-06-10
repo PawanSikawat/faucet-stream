@@ -120,6 +120,10 @@ Within a single batch, repeated keys are deduped **last-write-wins** before
 any write is issued, so a page that touches the same `_id` twice results in a
 single `replace_one` / `delete_one` carrying the final value.
 
+A document missing or null in a key field fails. When a `dlq:` block is
+configured the good documents are still written and only the missing/null-key
+documents are routed to the DLQ per-row; without a DLQ the whole batch fails.
+
 Each `replace_one` / `delete_one` is a per-document primitive (not the
 namespaced `Client::bulk_write`) for compatibility with all supported MongoDB
 server versions; the sink recovers throughput by issuing the deduped ops

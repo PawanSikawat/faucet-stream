@@ -261,3 +261,43 @@ async fn new_rejects_upsert_with_json_column_mapping() {
         "error must mention auto_columns; got: {err}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Test 7: write_batch_partial routes missing-key rows to the DLQ per-row.
+// The good row is applied (upsert); only the missing-key row comes back Err.
+// ---------------------------------------------------------------------------
+
+#[tokio::test(flavor = "multi_thread")]
+async fn write_batch_partial_routes_missing_key_per_row() {
+    let _serial = SERIAL.lock().await;
+    let (_c, port) = start_mssql().await;
+    let cfg = conn_cfg(port);
+    let pool = build_pool(&cfg, 4).await.expect("pool");
+    exec(&pool, "CREATE TABLE dbo.t (id INT PRIMARY KEY, name NVARCHAR(255))").await;
+
+    let scfg = upsert_sink_cfg(
+        &cfg,
+        WriteSpec {
+            write_mode: WriteMode::Upsert,
+            key: vec!["id".to_string()],
+            delete_marker: None,
+        },
+    );
+    let sink = MssqlSink::new(scfg).await.expect("sink");
+
+    let records = [json!({"id": 1, "name": "ok"}), json!({"name": "missing-id"})];
+    let outcomes = sink
+        .write_batch_partial(&records)
+        .await
+        .expect("partial write");
+
+    assert_eq!(outcomes.len(), 2, "one outcome per input row");
+    assert!(outcomes[0].is_ok(), "the good row must be Ok");
+    assert!(
+        outcomes[1].is_err(),
+        "the missing-key row must be Err (routed to the DLQ)"
+    );
+
+    assert_eq!(count(&pool, "dbo.t").await, 1, "only the good row is written");
+    assert_eq!(name_of(&pool, "dbo.t", 1).await, "ok", "id=1 → name 'ok'");
+}
