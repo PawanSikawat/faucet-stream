@@ -1,19 +1,42 @@
 //! BigQuery streaming insert sink.
 
 use crate::config::BigQuerySinkConfig;
+use crate::idempotent;
 use async_trait::async_trait;
 use faucet_common_bigquery::build_client;
 use faucet_core::FaucetError;
 use gcp_bigquery_client::Client;
+use gcp_bigquery_client::model::get_query_results_parameters::GetQueryResultsParameters;
+use gcp_bigquery_client::model::query_parameter::QueryParameter;
+use gcp_bigquery_client::model::query_parameter_type::QueryParameterType;
+use gcp_bigquery_client::model::query_parameter_value::QueryParameterValue;
+use gcp_bigquery_client::model::query_request::QueryRequest;
+use gcp_bigquery_client::model::query_response::QueryResponse;
 use gcp_bigquery_client::model::table_data_insert_all_request::TableDataInsertAllRequest;
 use gcp_bigquery_client::model::table_data_insert_all_response::TableDataInsertAllResponse;
 use serde_json::Value;
+use std::time::Duration;
+use tokio::sync::OnceCell;
+
+/// Max wall-clock spent polling an idempotent-write / token-read job to
+/// completion before giving up. Exactly-once pages are small, so this is a
+/// generous safety cap, not a steady-state wait.
+#[allow(dead_code)]
+const IDEMPOTENT_JOB_TIMEOUT: Duration = Duration::from_secs(120);
+
+/// Server-side long-poll window per `getQueryResults` completion check —
+/// BigQuery holds the connection open up to this long, so we don't busy-wait.
+#[allow(dead_code)]
+const JOB_POLL_LONG_POLL_MS: i32 = 10_000;
 
 /// A sink that writes JSON records to a BigQuery table using the streaming
 /// insert API (`tabledata.insertAll`).
 pub struct BigQuerySink {
     config: BigQuerySinkConfig,
     client: Client,
+    /// Target table schema, fetched once on the first exactly-once call and
+    /// reused for every page in the run. Empty on the streaming path.
+    schema_cache: OnceCell<Vec<idempotent::FieldSpec>>,
 }
 
 impl BigQuerySink {
@@ -24,7 +47,11 @@ impl BigQuerySink {
     pub async fn new(config: BigQuerySinkConfig) -> Result<Self, FaucetError> {
         faucet_core::validate_batch_size(config.batch_size)?;
         let client = build_client(&config.auth).await?;
-        Ok(Self { config, client })
+        Ok(Self {
+            config,
+            client,
+            schema_cache: OnceCell::new(),
+        })
     }
 
     /// Construct a sink from a pre-built BigQuery client.
@@ -37,7 +64,11 @@ impl BigQuerySink {
     /// prefer [`BigQuerySink::new`], which handles credential loading.
     #[doc(hidden)]
     pub fn from_parts(config: BigQuerySinkConfig, client: Client) -> Self {
-        Self { config, client }
+        Self {
+            config,
+            client,
+            schema_cache: OnceCell::new(),
+        }
     }
 
     /// Issue a single `tabledata.insertAll` call and return the raw response.
@@ -127,6 +158,156 @@ impl BigQuerySink {
         }
 
         Ok(rows.len())
+    }
+
+    // -----------------------------------------------------------------------
+    // Exactly-once helpers (wired into trait hooks in a later task)
+    // -----------------------------------------------------------------------
+
+    /// Build a NAMED STRING query parameter.
+    #[allow(dead_code)]
+    fn string_param(name: &str, value: &str) -> QueryParameter {
+        QueryParameter {
+            name: Some(name.to_string()),
+            parameter_type: Some(QueryParameterType {
+                r#type: "STRING".to_string(),
+                array_type: None,
+                struct_types: None,
+            }),
+            parameter_value: Some(QueryParameterValue {
+                value: Some(value.to_string()),
+                array_values: None,
+                struct_values: None,
+            }),
+        }
+    }
+
+    /// Fetch (once) and cache the target table's schema as [`idempotent::FieldSpec`]s.
+    #[allow(dead_code)]
+    async fn target_schema(&self) -> Result<&Vec<idempotent::FieldSpec>, FaucetError> {
+        self.schema_cache
+            .get_or_try_init(|| async {
+                let table = self
+                    .client
+                    .table()
+                    .get(
+                        &self.config.project_id,
+                        &self.config.dataset_id,
+                        &self.config.table_id,
+                        Some(vec!["schema"]),
+                    )
+                    .await
+                    .map_err(|e| {
+                        FaucetError::Sink(format!("BigQuery tables.get (schema) failed: {e}"))
+                    })?;
+                // Table.schema is TableSchema (not Option); TableSchema.fields is Option<Vec<...>>.
+                let fields: Vec<idempotent::FieldSpec> = table
+                    .schema
+                    .fields
+                    .as_ref()
+                    .map(|fs| fs.iter().map(idempotent::FieldSpec::from_table_field).collect())
+                    .unwrap_or_default();
+                if fields.is_empty() {
+                    return Err(FaucetError::Sink(format!(
+                        "BigQuery target table {}.{}.{} has no schema fields; exactly-once \
+                         delivery requires a table with a defined schema",
+                        self.config.project_id, self.config.dataset_id, self.config.table_id
+                    )));
+                }
+                Ok(fields)
+            })
+            .await
+    }
+
+    /// Create the commit-token watermark table if it does not exist.
+    #[allow(dead_code)]
+    async fn ensure_commit_table(&self) -> Result<(), FaucetError> {
+        let sql = idempotent::build_create_commit_table(
+            &self.config.project_id,
+            &self.config.dataset_id,
+        );
+        let mut req = QueryRequest::new(sql);
+        req.use_legacy_sql = false;
+        let resp = self
+            .client
+            .job()
+            .query(&self.config.project_id, req)
+            .await
+            .map_err(|e| {
+                FaucetError::Sink(format!("BigQuery commit-table create failed: {e}"))
+            })?;
+        self.await_query_complete(resp).await
+    }
+
+    /// Wait for a query/script job to finish, then authoritatively verify it
+    /// succeeded. Returns `Ok(())` only once the job reaches a terminal state
+    /// with no `errorResult`.
+    ///
+    /// Why `get_job` rather than the response `errors` field: the client maps
+    /// only non-2xx HTTP to `Err`, so a job that fails at *runtime* (a CAST
+    /// failure, a NULL into a REQUIRED column, …) comes back as `Ok` with the
+    /// failure recorded in the job body. `Job.status.error_result` is the
+    /// authoritative terminal-failure signal; the `errors` array can also carry
+    /// non-fatal warnings, so it must not be treated as failure on its own.
+    #[allow(dead_code)]
+    async fn await_query_complete(&self, initial: QueryResponse) -> Result<(), FaucetError> {
+        let (job_id, location) = Self::job_reference(&initial)?;
+
+        // Phase 1 — wait for completion via server-side long-poll (not a busy wait).
+        if !initial.job_complete.unwrap_or(false) {
+            let started = std::time::Instant::now();
+            loop {
+                let params = GetQueryResultsParameters {
+                    location: location.clone(),
+                    timeout_ms: Some(JOB_POLL_LONG_POLL_MS),
+                    max_results: Some(0),
+                    ..Default::default()
+                };
+                let resp = self
+                    .client
+                    .job()
+                    .get_query_results(&self.config.project_id, &job_id, params)
+                    .await
+                    .map_err(|e| {
+                        FaucetError::Sink(format!("BigQuery jobs.getQueryResults failed: {e}"))
+                    })?;
+                if resp.job_complete.unwrap_or(false) {
+                    break;
+                }
+                if started.elapsed() >= IDEMPOTENT_JOB_TIMEOUT {
+                    return Err(FaucetError::Sink(format!(
+                        "BigQuery job '{job_id}' did not complete within {}s",
+                        IDEMPOTENT_JOB_TIMEOUT.as_secs()
+                    )));
+                }
+            }
+        }
+
+        // Phase 2 — authoritative success check via the job's errorResult.
+        let job = self
+            .client
+            .job()
+            .get_job(&self.config.project_id, &job_id, location.as_deref())
+            .await
+            .map_err(|e| FaucetError::Sink(format!("BigQuery jobs.get failed: {e}")))?;
+        match job.status.and_then(|s| s.error_result) {
+            Some(err) => Err(FaucetError::Sink(format!(
+                "BigQuery query job '{job_id}' failed: {err}"
+            ))),
+            None => Ok(()),
+        }
+    }
+
+    /// Extract `(job_id, location)` from a query response's job reference.
+    #[allow(dead_code)]
+    fn job_reference(qr: &QueryResponse) -> Result<(String, Option<String>), FaucetError> {
+        let r = qr.job_reference.as_ref().ok_or_else(|| {
+            FaucetError::Sink("BigQuery query response missing jobReference".to_string())
+        })?;
+        let job_id = r.job_id.clone().ok_or_else(|| {
+            FaucetError::Sink("BigQuery jobReference missing jobId".to_string())
+        })?;
+        Ok((job_id, r.location.clone()))
     }
 }
 
