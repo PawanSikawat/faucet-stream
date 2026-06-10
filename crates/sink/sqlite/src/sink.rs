@@ -10,6 +10,30 @@ use sqlx::{Row, SqlitePool};
 use std::str::FromStr;
 use std::time::Duration;
 
+/// Build the `ON CONFLICT(key) DO UPDATE …` tail for an upsert INSERT.
+/// Non-key columns are SET from `excluded`. If every column is a key column,
+/// emit `DO NOTHING`.
+fn on_conflict_clause(key: &[String], all_cols: &[String]) -> String {
+    let key_list = key
+        .iter()
+        .map(|k| quote_ident(k))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let updates: Vec<String> = all_cols
+        .iter()
+        .filter(|c| !key.iter().any(|k| k == *c))
+        .map(|c| format!("{q} = excluded.{q}", q = quote_ident(c)))
+        .collect();
+    if updates.is_empty() {
+        format!("ON CONFLICT({key_list}) DO NOTHING")
+    } else {
+        format!(
+            "ON CONFLICT({key_list}) DO UPDATE SET {}",
+            updates.join(", ")
+        )
+    }
+}
+
 /// A sink that writes JSON records to a SQLite table.
 pub struct SqliteSink {
     config: SqliteSinkConfig,
@@ -27,6 +51,17 @@ impl SqliteSink {
     /// preserves the previous behaviour of creating the database file on first
     /// open. WAL on a `sqlite::memory:` database is a harmless no-op.
     pub async fn new(config: SqliteSinkConfig) -> Result<Self, FaucetError> {
+        config.write.validate()?;
+        if !matches!(config.write.write_mode, faucet_core::WriteMode::Append)
+            && !matches!(config.column_mapping, SqliteColumnMapping::AutoMap)
+        {
+            return Err(FaucetError::Config(
+                "sqlite sink: write_mode upsert/delete requires column_mapping: auto_map \
+                 (key columns must be real columns, not inside a JSON blob)"
+                    .into(),
+            ));
+        }
+
         let options = SqliteConnectOptions::from_str(&config.database_url)
             .map_err(|e| FaucetError::Sink(format!("invalid SQLite database_url: {e}")))?
             .create_if_missing(true)
@@ -130,10 +165,16 @@ impl SqliteSink {
     /// runs on the transaction's own connection (`&mut **tx`), not on
     /// `&self.pool` — otherwise, with the default single-connection pool, it
     /// would deadlock waiting for a connection the open transaction is holding.
-    async fn insert_auto_map_tx(
+    ///
+    /// When `conflict_key` is `Some(key)`, each sub-chunk's INSERT is given an
+    /// `ON CONFLICT(key) DO UPDATE …` tail so it upserts by the key columns
+    /// (last-write-wins within the batch is handled by the planner's dedup,
+    /// so a single sub-chunk never double-hits the same conflict target).
+    async fn insert_auto_map_with_conflict_tx(
         &self,
         tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
         records: &[Value],
+        conflict_key: Option<&[String]>,
     ) -> Result<usize, FaucetError> {
         if records.is_empty() {
             return Ok(0);
@@ -221,12 +262,19 @@ impl SqliteSink {
             let row_placeholder = format!("({})", vec!["?"; num_cols].join(", "));
             let value_tuples: Vec<&str> =
                 (0..sub.len()).map(|_| row_placeholder.as_str()).collect();
-            let query = format!(
+            let base_query = format!(
                 "INSERT INTO {} ({}) VALUES {}",
                 quote_ident(&self.config.table_name),
                 col_names.join(", "),
                 value_tuples.join(", ")
             );
+            let query = match conflict_key {
+                Some(key) => format!(
+                    "{base_query} {}",
+                    on_conflict_clause(key, &insert_columns)
+                ),
+                None => base_query,
+            };
 
             let mut q = sqlx::query(&query);
             for matched in sub {
@@ -264,6 +312,117 @@ impl SqliteSink {
         }
 
         Ok(num_rows)
+    }
+
+    /// Auto-map insert against an in-progress transaction with plain append
+    /// semantics (no `ON CONFLICT` tail).
+    ///
+    /// Thin wrapper over
+    /// [`insert_auto_map_with_conflict_tx`](Self::insert_auto_map_with_conflict_tx)
+    /// so the append path and the idempotent-write path keep their original
+    /// signature.
+    async fn insert_auto_map_tx(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+        records: &[Value],
+    ) -> Result<usize, FaucetError> {
+        self.insert_auto_map_with_conflict_tx(tx, records, None)
+            .await
+    }
+
+    /// Delete rows whose key columns match any of `deletes`, using
+    /// `DELETE FROM t WHERE (k1, …) IN ((?, …), …)`, chunked at
+    /// SQLite's bind-variable cap. Runs inside the caller's transaction.
+    async fn delete_by_keys(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+        deletes: &[faucet_core::KeyTuple],
+    ) -> Result<usize, FaucetError> {
+        if deletes.is_empty() {
+            return Ok(0);
+        }
+        let key = &self.config.write.key;
+        let table_ref = quote_ident(&self.config.table_name);
+        let col_list = key
+            .iter()
+            .map(|k| quote_ident(k))
+            .collect::<Vec<_>>()
+            .join(", ");
+
+        const MAX_SQLITE_VARS: usize = 32766;
+        let per = (MAX_SQLITE_VARS / key.len().max(1)).max(1);
+        let mut total = 0usize;
+
+        for chunk in deletes.chunks(per) {
+            let tuples: Vec<String> = chunk
+                .iter()
+                .map(|_| format!("({})", vec!["?"; key.len()].join(", ")))
+                .collect();
+            let sql = format!(
+                "DELETE FROM {table_ref} WHERE ({col_list}) IN ({})",
+                tuples.join(", ")
+            );
+            let mut q = sqlx::query(&sql);
+            for kt in chunk {
+                for (_, v) in &kt.0 {
+                    // Bind native SQLite types — same logic as in the INSERT path.
+                    q = match v {
+                        Value::Null => q.bind(None::<String>),
+                        Value::Bool(b) => q.bind(*b),
+                        Value::Number(n) => {
+                            if let Some(i) = n.as_i64() {
+                                q.bind(i)
+                            } else if let Some(f) = n.as_f64() {
+                                q.bind(f)
+                            } else {
+                                q.bind(n.to_string())
+                            }
+                        }
+                        Value::String(s) => q.bind(s.clone()),
+                        other => q.bind(other.to_string()),
+                    };
+                }
+            }
+            let res = q
+                .execute(&mut **tx)
+                .await
+                .map_err(|e| FaucetError::Sink(format!("SQLite delete failed: {e}")))?;
+            total += res.rows_affected() as usize;
+        }
+        Ok(total)
+    }
+
+    /// Apply a planned upsert/delete batch inside one `BEGIN`/`COMMIT`
+    /// transaction. Upserts and deletes are wrapped together so they commit
+    /// atomically.
+    async fn apply_plan(
+        &self,
+        plan: &faucet_core::WritePlan,
+    ) -> Result<usize, FaucetError> {
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| FaucetError::Sink(format!("SQLite transaction begin failed: {e}")))?;
+
+        let mut affected = 0usize;
+        if !plan.upserts.is_empty() {
+            affected += self
+                .insert_auto_map_with_conflict_tx(
+                    &mut tx,
+                    &plan.upserts,
+                    Some(&self.config.write.key),
+                )
+                .await?;
+        }
+        if !plan.deletes.is_empty() {
+            affected += self.delete_by_keys(&mut tx, &plan.deletes).await?;
+        }
+
+        tx.commit()
+            .await
+            .map_err(|e| FaucetError::Sink(format!("SQLite transaction commit failed: {e}")))?;
+        Ok(affected)
     }
 
     /// Ensure the commit-token watermark table exists.
@@ -331,9 +490,29 @@ impl faucet_core::Sink for SqliteSink {
         Ok(CheckReport::single(probe))
     }
 
+    fn supported_write_modes(&self) -> &'static [faucet_core::WriteMode] {
+        &[
+            faucet_core::WriteMode::Append,
+            faucet_core::WriteMode::Upsert,
+            faucet_core::WriteMode::Delete,
+        ]
+    }
+
     async fn write_batch(&self, records: &[Value]) -> Result<usize, FaucetError> {
         if records.is_empty() {
             return Ok(0);
+        }
+
+        // Non-append modes: plan the writes and apply atomically.
+        if !matches!(self.config.write.write_mode, faucet_core::WriteMode::Append) {
+            let plan = faucet_core::plan_writes(records, &self.config.write);
+            if let Some((idx, msg)) = plan.failed.first() {
+                return Err(FaucetError::Sink(format!(
+                    "sqlite {}: row {idx}: {msg}",
+                    self.config.write.write_mode.as_str()
+                )));
+            }
+            return self.apply_plan(&plan).await;
         }
 
         // `batch_size = 0` is the "no batching" sentinel: write the entire
@@ -445,5 +624,35 @@ mod tests {
         let config = SqliteSinkConfig::new("sqlite::memory:", "logs");
         let sink = SqliteSink::new(config).await.unwrap();
         assert_eq!(sink.dataset_uri(), "sqlite://:memory:?table=logs");
+    }
+
+    #[test]
+    fn sqlite_on_conflict_clause() {
+        let clause = on_conflict_clause(
+            &["id".to_string()],
+            &["id".to_string(), "name".to_string()],
+        );
+        assert_eq!(
+            clause,
+            r#"ON CONFLICT("id") DO UPDATE SET "name" = excluded."name""#
+        );
+    }
+
+    #[test]
+    fn sqlite_on_conflict_all_keys_does_nothing() {
+        let clause = on_conflict_clause(&["id".to_string()], &["id".to_string()]);
+        assert_eq!(clause, r#"ON CONFLICT("id") DO NOTHING"#);
+    }
+
+    #[test]
+    fn sqlite_on_conflict_composite_key() {
+        let clause = on_conflict_clause(
+            &["a".to_string(), "b".to_string()],
+            &["a".to_string(), "b".to_string(), "v".to_string()],
+        );
+        assert_eq!(
+            clause,
+            r#"ON CONFLICT("a", "b") DO UPDATE SET "v" = excluded."v""#
+        );
     }
 }

@@ -56,6 +56,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 | `column_mapping` | `SqliteColumnMapping` | `Json { column: "data" }` | How to map JSON records to table columns (see below) |
 | `batch_size` | `usize` | `1000` | Maximum number of rows per multi-row INSERT. See [Streaming and batching](#streaming-and-batching) below |
 | `max_connections` | `u32` | `1` | Maximum number of connections in the connection pool. SQLite serializes writers at the file level, so one writer is the safe default — a multi-connection pool against a single file races for the write lock and risks `SQLITE_BUSY`. The pool opens connections in WAL mode with a 5s `busy_timeout`, so raising this lets extra connections read concurrently with the single writer. |
+| `write_mode` | `"append"` \| `"upsert"` \| `"delete"` | `"append"` | Write semantics. Upsert/delete require `column_mapping: auto_map` and a UNIQUE/PRIMARY KEY on `key`. |
+| `key` | `[String]` | `[]` | Key column(s) for upsert/delete. Must be non-empty when `write_mode` is not `append`. |
+| `delete_marker` | object | absent | `upsert` only: identifies delete-flagged rows by field name + value list. |
 
 ### Streaming and batching
 
@@ -253,6 +256,77 @@ let sink = SqliteSink::new(config).await?;
 - In AutoMap mode, column names are discovered using `PRAGMA table_info(table_name)`. A multi-row INSERT is built dynamically. Column values are bound as **native SQLite types** — strings as `TEXT`, JSON numbers as `INTEGER`/`REAL`, booleans as `INTEGER` 0/1 — so column affinity and typed reads round-trip correctly. Arrays and objects (which have no scalar SQL representation) are bound as their JSON text. The INSERT column set is the **union** of record keys across the batch (in table order), so a field present only in a later record is still written; a row missing a column binds SQL `NULL`.
 - All identifiers (table names, column names) are quoted using `quote_ident()` (double-quote escaping) to prevent SQL injection.
 - Transaction wrapping ensures that either all rows in a batch are committed or none are, providing atomicity per batch.
+
+## Write modes (upsert / delete)
+
+By default the sink uses `write_mode: append` — every record is inserted as a new row. Two additional modes are available when `column_mapping: auto_map` is set and the target table has a `UNIQUE` or `PRIMARY KEY` constraint on the key column(s):
+
+| Mode | Behaviour |
+|------|-----------|
+| `append` (default) | Insert every record unconditionally. |
+| `upsert` | Insert-or-update by `key` (last-write-wins via `ON CONFLICT … DO UPDATE`). Optionally route delete-marked rows to `DELETE` via `delete_marker`. |
+| `delete` | Delete every record by `key`. |
+
+### Required fields
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `write_mode` | `"append"` \| `"upsert"` \| `"delete"` | `"append"` | Write semantics. |
+| `key` | `[String]` | `[]` | Key column(s). Required and non-empty for `upsert` / `delete`. |
+| `delete_marker` | `{ field: String, values: [String] }` | absent | `upsert` only: rows whose `field` matches one of `values` are routed to `DELETE`; all others are upserted. The marker field is stripped from upsert rows before writing. |
+
+**Requirements:**
+- `column_mapping` must be `auto_map` — key columns must be real table columns, not embedded inside a JSON blob.
+- The table must have a `UNIQUE` or `PRIMARY KEY` constraint on the `key` column(s) so SQLite's `ON CONFLICT` clause can enforce uniqueness.
+- Upsert/delete rows within a single batch are deduped by key (last-write-wins) before writing, so a single batch never conflicts with itself.
+
+### YAML example
+
+```yaml
+pipeline:
+  source:
+    type: postgres-cdc
+    config:
+      connection_url: postgres://user:pass@localhost/db
+      slot_name: faucet_slot
+      publication_name: faucet_pub
+  sink:
+    type: sqlite
+    config:
+      database_url: /data/warehouse.db
+      table_name: users
+      column_mapping: auto_map
+      write_mode: upsert
+      key: [id]
+      delete_marker:
+        field: __op
+        values: [d, delete]
+  state:
+    type: file
+    config:
+      path: ./state
+```
+
+### Rust example
+
+```rust
+use faucet_sink_sqlite::{SqliteColumnMapping, SqliteSink, SqliteSinkConfig};
+use faucet_core::{WriteMode, WriteSpec};
+
+let config = SqliteSinkConfig {
+    database_url: "sqlite:///data/warehouse.db".into(),
+    table_name: "users".into(),
+    column_mapping: SqliteColumnMapping::AutoMap,
+    batch_size: 1000,
+    max_connections: 1,
+    write: WriteSpec {
+        write_mode: WriteMode::Upsert,
+        key: vec!["id".to_string()],
+        delete_marker: None,
+    },
+};
+let sink = SqliteSink::new(config).await?;
+```
 
 ## Exactly-once delivery
 
