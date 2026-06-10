@@ -298,3 +298,362 @@ async fn submits_positional_bindings_for_params_and_context() {
     assert_eq!(params[1]["parameterValue"]["value"], "100");
     assert_eq!(body["location"], "EU");
 }
+
+#[tokio::test]
+async fn fetch_all_decodes_all_bigquery_types_to_json() {
+    // Type-aware decoding end-to-end through `jobs.query`: INTEGER, FLOAT,
+    // BOOL, STRING, TIMESTAMP, a nested RECORD, and a REPEATED column all
+    // round-trip into the expected JSON shapes.
+    let server = MockServer::start().await;
+    mount_token(&server).await;
+
+    let schema = json!({
+        "fields": [
+            {"name": "id", "type": "INTEGER"},
+            {"name": "ratio", "type": "FLOAT"},
+            {"name": "active", "type": "BOOLEAN"},
+            {"name": "label", "type": "STRING"},
+            {"name": "ts", "type": "TIMESTAMP"},
+            {"name": "tags", "type": "STRING", "mode": "REPEATED"},
+            {
+                "name": "owner",
+                "type": "RECORD",
+                "fields": [
+                    {"name": "uid", "type": "INTEGER"},
+                    {"name": "email", "type": "STRING"}
+                ]
+            }
+        ]
+    });
+    // A single row exercising every cell shape BigQuery returns.
+    let row = json!({"f": [
+        {"v": "42"},
+        {"v": "2.5"},
+        {"v": "true"},
+        {"v": "hello"},
+        {"v": "1.7e9"},
+        {"v": [{"v": "a"}, {"v": "b"}]},
+        {"v": {"f": [{"v": "7"}, {"v": "x@y.z"}]}}
+    ]});
+
+    Mock::given(method("POST"))
+        .and(path(format!("/projects/{PROJECT_ID}/queries")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "jobComplete": true,
+            "schema": schema,
+            "jobReference": {"projectId": PROJECT_ID, "jobId": "job-types"},
+            "rows": [row],
+        })))
+        .mount(&server)
+        .await;
+
+    let (src, _f) = build_source(&server, default_config()).await;
+    let rows = src.fetch_all().await.unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(
+        rows[0],
+        json!({
+            "id": 42,
+            "ratio": 2.5,
+            "active": true,
+            "label": "hello",
+            "ts": "1.7e9",
+            "tags": ["a", "b"],
+            "owner": {"uid": 7, "email": "x@y.z"}
+        })
+    );
+}
+
+#[tokio::test]
+async fn fetch_all_paginates_across_three_pages_via_get_query_results() {
+    // jobs.query → page 1 (+tok-1); getQueryResults → page 2 (+tok-2);
+    // getQueryResults → page 3 (no token, final). All three pages flow
+    // through the getQueryResults polling/paging loop.
+    let server = MockServer::start().await;
+    mount_token(&server).await;
+
+    Mock::given(method("POST"))
+        .and(path(format!("/projects/{PROJECT_ID}/queries")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "jobComplete": true,
+            "schema": schema_two_cols(),
+            "jobReference": {"projectId": PROJECT_ID, "jobId": "job-3pages"},
+            "rows": rows(0, 4),
+            "pageToken": "tok-1",
+        })))
+        .mount(&server)
+        .await;
+
+    // Second page carries a further pageToken so the loop iterates again.
+    Mock::given(method("GET"))
+        .and(path(format!("/projects/{PROJECT_ID}/queries/job-3pages")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "jobComplete": true,
+            "schema": schema_two_cols(),
+            "rows": rows(4, 4),
+            "pageToken": "tok-2",
+        })))
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+    // Final page: no pageToken.
+    Mock::given(method("GET"))
+        .and(path(format!("/projects/{PROJECT_ID}/queries/job-3pages")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "jobComplete": true,
+            "schema": schema_two_cols(),
+            "rows": rows(8, 2),
+        })))
+        .mount(&server)
+        .await;
+
+    let (src, _f) = build_source(&server, default_config()).await;
+    let rows = src.fetch_all().await.unwrap();
+    assert_eq!(rows.len(), 10);
+    assert_eq!(rows[0]["id"], 0);
+    assert_eq!(rows[4]["id"], 4);
+    assert_eq!(rows[9]["id"], 9);
+    assert_eq!(rows[9]["name"], "name-9");
+}
+
+#[tokio::test]
+async fn stream_pages_initial_response_without_rows_then_paginates() {
+    // jobs.query returns a complete-but-rowless first response carrying only a
+    // pageToken (exercises `rows_from_response_owned`'s None branch); the
+    // actual rows arrive via getQueryResults.
+    let server = MockServer::start().await;
+    mount_token(&server).await;
+
+    Mock::given(method("POST"))
+        .and(path(format!("/projects/{PROJECT_ID}/queries")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "jobComplete": true,
+            "schema": schema_two_cols(),
+            "jobReference": {"projectId": PROJECT_ID, "jobId": "job-norows"},
+            "pageToken": "tok-1",
+        })))
+        .mount(&server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path(format!("/projects/{PROJECT_ID}/queries/job-norows")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "jobComplete": true,
+            "schema": schema_two_cols(),
+            "rows": rows(0, 3),
+        })))
+        .mount(&server)
+        .await;
+
+    let (src, _f) = build_source(&server, default_config().with_batch_size(0)).await;
+    let ctx = HashMap::new();
+    let pages: Vec<_> = src.stream_pages(&ctx, 0).collect().await;
+    assert_eq!(pages.len(), 1);
+    let page = pages[0].as_ref().unwrap();
+    assert_eq!(page.records.len(), 3);
+    assert_eq!(page.records[0], json!({"id": 0, "name": "name-0"}));
+}
+
+#[tokio::test]
+async fn fetch_all_errors_when_job_query_returns_non_2xx() {
+    let server = MockServer::start().await;
+    mount_token(&server).await;
+    Mock::given(method("POST"))
+        .and(path(format!("/projects/{PROJECT_ID}/queries")))
+        .respond_with(ResponseTemplate::new(403).set_body_json(json!({
+            "error": {"code": 403, "message": "Access Denied"}
+        })))
+        .mount(&server)
+        .await;
+
+    let (src, _f) = build_source(&server, default_config()).await;
+    match src.fetch_all().await {
+        Err(faucet_core::FaucetError::Source(m)) => {
+            assert!(m.contains("jobs.query failed"), "got: {m}");
+        }
+        other => panic!("expected Source error, got: {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn fetch_all_errors_when_get_query_results_returns_non_2xx() {
+    let server = MockServer::start().await;
+    mount_token(&server).await;
+    // First page completes with a token, forcing a getQueryResults call.
+    Mock::given(method("POST"))
+        .and(path(format!("/projects/{PROJECT_ID}/queries")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "jobComplete": true,
+            "schema": schema_two_cols(),
+            "jobReference": {"projectId": PROJECT_ID, "jobId": "job-getfail"},
+            "rows": rows(0, 1),
+            "pageToken": "tok-1",
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(format!("/projects/{PROJECT_ID}/queries/job-getfail")))
+        .respond_with(ResponseTemplate::new(500).set_body_string("boom"))
+        .mount(&server)
+        .await;
+
+    let (src, _f) = build_source(&server, default_config()).await;
+    match src.fetch_all().await {
+        Err(faucet_core::FaucetError::Source(m)) => {
+            assert!(m.contains("getQueryResults failed"), "got: {m}");
+        }
+        other => panic!("expected Source error, got: {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn fetch_all_errors_when_job_reference_missing() {
+    // A complete 200 response with rows but no jobReference must surface a
+    // typed Source error rather than silently proceeding.
+    let server = MockServer::start().await;
+    mount_token(&server).await;
+    Mock::given(method("POST"))
+        .and(path(format!("/projects/{PROJECT_ID}/queries")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "jobComplete": true,
+            "schema": schema_two_cols(),
+            "rows": rows(0, 1),
+        })))
+        .mount(&server)
+        .await;
+
+    let (src, _f) = build_source(&server, default_config()).await;
+    match src.fetch_all().await {
+        Err(faucet_core::FaucetError::Source(m)) => {
+            assert!(m.contains("missing jobReference"), "got: {m}");
+        }
+        other => panic!("expected Source error, got: {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn submits_typed_bool_and_float_param_types() {
+    // `bq_param_type` infers BOOL / FLOAT64 / INT64 from the JSON value so a
+    // numeric/boolean bind isn't forced to STRING. A JSON null becomes a typed
+    // NULL with the value omitted.
+    let server = MockServer::start().await;
+    mount_token(&server).await;
+    Mock::given(method("POST"))
+        .and(path(format!("/projects/{PROJECT_ID}/queries")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "jobComplete": true,
+            "schema": schema_two_cols(),
+            "jobReference": {"projectId": PROJECT_ID, "jobId": "job-typed"},
+            "rows": rows(0, 1),
+        })))
+        .mount(&server)
+        .await;
+
+    let cfg = default_config().with_params(vec![json!(true), json!(2.5), json!(7), json!(null)]);
+    let (src, _f) = build_source(&server, cfg).await;
+    src.fetch_all().await.unwrap();
+
+    let reqs = server.received_requests().await.unwrap();
+    let query_req = reqs
+        .iter()
+        .find(|r| r.url.path().ends_with("/queries"))
+        .expect("captured jobs.query request");
+    let body: Value = serde_json::from_slice(&query_req.body).unwrap();
+    let params = body["queryParameters"].as_array().unwrap();
+    assert_eq!(params.len(), 4);
+    assert_eq!(params[0]["parameterType"]["type"], "BOOL");
+    assert_eq!(params[0]["parameterValue"]["value"], "true");
+    assert_eq!(params[1]["parameterType"]["type"], "FLOAT64");
+    assert_eq!(params[1]["parameterValue"]["value"], "2.5");
+    assert_eq!(params[2]["parameterType"]["type"], "INT64");
+    assert_eq!(params[2]["parameterValue"]["value"], "7");
+    // JSON null → typed STRING NULL: value omitted from the value object.
+    assert_eq!(params[3]["parameterType"]["type"], "STRING");
+    assert!(
+        params[3]["parameterValue"]["value"].is_null(),
+        "null bind must omit the value: {:?}",
+        params[3]
+    );
+}
+
+#[tokio::test]
+async fn connector_name_schema_and_dataset_uri_are_exposed() {
+    let server = MockServer::start().await;
+    mount_token(&server).await;
+    let mut cfg = default_config();
+    cfg.query = "SELECT 1".into();
+    let (src, _f) = build_source(&server, cfg).await;
+
+    assert_eq!(src.connector_name(), "bigquery");
+    assert_eq!(src.dataset_uri(), "bigquery://test-project?query=SELECT 1");
+    let schema = src.config_schema();
+    // schema_for! emits an object schema describing the config struct.
+    assert!(
+        schema.get("properties").is_some() || schema.get("$ref").is_some(),
+        "config_schema should be a JSON Schema object: {schema}"
+    );
+}
+
+#[tokio::test]
+async fn check_probe_passes_on_successful_dry_run() {
+    use faucet_core::check::{CheckContext, ProbeStatus};
+    let server = MockServer::start().await;
+    mount_token(&server).await;
+    // The doctor probe submits the query with dryRun=true to the same
+    // jobs.query endpoint; a 200 → a passing probe.
+    Mock::given(method("POST"))
+        .and(path(format!("/projects/{PROJECT_ID}/queries")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "jobComplete": true,
+            "jobReference": {"projectId": PROJECT_ID, "jobId": "dry"},
+        })))
+        .mount(&server)
+        .await;
+
+    let (src, _f) = build_source(&server, default_config()).await;
+    let report = src.check(&CheckContext::default()).await.unwrap();
+    assert_eq!(report.probes.len(), 1);
+    assert_eq!(report.probes[0].name, "query");
+    assert!(
+        matches!(report.probes[0].status, ProbeStatus::Pass),
+        "expected Pass, got: {:?}",
+        report.probes[0].status
+    );
+
+    // And the submitted body really did carry dryRun=true.
+    let reqs = server.received_requests().await.unwrap();
+    let query_req = reqs
+        .iter()
+        .find(|r| r.url.path().ends_with("/queries"))
+        .expect("captured dry-run request");
+    let body: Value = serde_json::from_slice(&query_req.body).unwrap();
+    assert_eq!(body["dryRun"], true);
+}
+
+#[tokio::test]
+async fn check_probe_fails_on_dry_run_error() {
+    use faucet_core::check::{CheckContext, ProbeStatus};
+    let server = MockServer::start().await;
+    mount_token(&server).await;
+    Mock::given(method("POST"))
+        .and(path(format!("/projects/{PROJECT_ID}/queries")))
+        .respond_with(ResponseTemplate::new(400).set_body_json(json!({
+            "error": {"code": 400, "message": "Syntax error"}
+        })))
+        .mount(&server)
+        .await;
+
+    let (src, _f) = build_source(&server, default_config()).await;
+    let report = src.check(&CheckContext::default()).await.unwrap();
+    assert_eq!(report.probes.len(), 1);
+    match &report.probes[0].status {
+        ProbeStatus::Fail { reason } => {
+            assert!(reason.contains("dry-run failed"), "got: {reason}");
+        }
+        other => panic!("expected Fail, got: {other:?}"),
+    }
+    assert!(
+        report.probes[0].hint.is_some(),
+        "a failing probe should carry a remediation hint"
+    );
+}

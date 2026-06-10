@@ -598,6 +598,81 @@ mod tests {
     }
 
     #[test]
+    fn check_statement_code_maps_non_success_code_to_sink_error() {
+        // The error branch of `check_statement_code`: any code other than
+        // 090001 surfaces as a `FaucetError::Sink` carrying the code + message.
+        let resp = SnowflakeResponse {
+            message: Some("Object does not exist".into()),
+            code: Some("002003".into()),
+            statement_handle: None,
+        };
+        match check_statement_code(&resp) {
+            Err(FaucetError::Sink(msg)) => {
+                assert!(msg.contains("002003"), "msg: {msg}");
+                assert!(msg.contains("Object does not exist"), "msg: {msg}");
+            }
+            other => panic!("expected a Sink error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn check_statement_code_accepts_success_and_missing_code() {
+        let ok = SnowflakeResponse {
+            message: None,
+            code: Some("090001".into()),
+            statement_handle: None,
+        };
+        assert!(check_statement_code(&ok).is_ok());
+        let no_code = SnowflakeResponse {
+            message: None,
+            code: None,
+            statement_handle: None,
+        };
+        assert!(check_statement_code(&no_code).is_ok());
+    }
+
+    #[test]
+    fn build_insert_rejects_non_object_record() {
+        // A non-object record (here a JSON array) must surface a typed Sink
+        // error rather than panicking.
+        let config = SnowflakeSinkConfig::new(
+            "acct",
+            "wh",
+            "db",
+            "schema",
+            "events",
+            SnowflakeAuth::OAuth { token: "t".into() },
+        );
+        let sink = SnowflakeSink::new(config).unwrap();
+        let records = vec![serde_json::json!([1, 2, 3])];
+        match sink.build_insert(&records) {
+            Err(FaucetError::Sink(msg)) => {
+                assert!(msg.contains("requires JSON object records"), "msg: {msg}")
+            }
+            other => panic!("expected a Sink error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn config_schema_reports_required_fields() {
+        let config = SnowflakeSinkConfig::new(
+            "acct",
+            "wh",
+            "db",
+            "schema",
+            "events",
+            SnowflakeAuth::OAuth { token: "t".into() },
+        );
+        let sink = SnowflakeSink::new(config).unwrap();
+        let schema = sink.config_schema();
+        assert!(schema["properties"]["account"].is_object());
+        assert!(schema["properties"]["table"].is_object());
+        let required = schema["required"].as_array().expect("required array");
+        assert!(required.iter().any(|v| v == "account"));
+        assert!(required.iter().any(|v| v == "table"));
+    }
+
+    #[test]
     fn build_insert_rejects_all_empty_records() {
         let config = SnowflakeSinkConfig::new(
             "acct",

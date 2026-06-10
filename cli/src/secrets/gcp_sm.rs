@@ -124,6 +124,7 @@ impl SecretResolver for GcpSmResolver {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use base64::Engine;
 
     #[test]
@@ -134,5 +135,31 @@ mod tests {
             .decode(&b64)
             .unwrap();
         assert_eq!(String::from_utf8(decoded).unwrap(), "my-secret");
+    }
+
+    #[test]
+    fn scheme_is_gcp_sm() {
+        assert_eq!(GcpSmResolver::new().scheme(), "gcp-sm");
+    }
+
+    #[test]
+    fn new_and_default_construct_a_resolver() {
+        // Both constructors yield an empty (unfetched) credentials cell — no
+        // network I/O happens until the first resolve/token call.
+        let _r1 = GcpSmResolver::new();
+        let _r2 = GcpSmResolver::default();
+    }
+
+    #[test]
+    fn payload_path_extraction_returns_base64_string() {
+        // The `body["payload"]["data"]` shape that resolve() decodes — verify
+        // the as_str() extraction independently of the live token fetch.
+        let b64 = base64::engine::general_purpose::STANDARD.encode("topsecret");
+        let body = serde_json::json!({ "payload": { "data": b64 } });
+        let extracted = body["payload"]["data"].as_str().unwrap();
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(extracted)
+            .unwrap();
+        assert_eq!(String::from_utf8(bytes).unwrap(), "topsecret");
     }
 }

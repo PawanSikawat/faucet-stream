@@ -146,3 +146,178 @@ async fn fetch_oauth2_token_inner_with_client(
     let token_resp: TokenResponse = resp.json().await?;
     Ok((token_resp.access_token, token_resp.expires_in))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use wiremock::matchers::{body_string_contains, method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    #[tokio::test]
+    async fn fetch_oauth2_token_returns_access_token_on_success() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/token"))
+            // The client-credentials grant must POST the form fields.
+            .and(body_string_contains("grant_type=client_credentials"))
+            .and(body_string_contains("scope=read+write"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "access_token": "abc123",
+                "expires_in": 3600,
+                "token_type": "Bearer"
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let url = format!("{}/token", server.uri());
+        let token = fetch_oauth2_token(&url, "id", "secret", &["read".into(), "write".into()])
+            .await
+            .expect("token fetch should succeed");
+        assert_eq!(token, "abc123");
+    }
+
+    #[tokio::test]
+    async fn fetch_oauth2_token_maps_error_status_to_auth_error_with_body() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(401).set_body_string("invalid_client"))
+            .mount(&server)
+            .await;
+        let url = format!("{}/token", server.uri());
+        let err = fetch_oauth2_token(&url, "id", "bad", &[])
+            .await
+            .expect_err("401 must surface as an error");
+        match err {
+            FaucetError::Auth(msg) => {
+                assert!(msg.contains("HTTP 401"), "status must be in message: {msg}");
+                assert!(
+                    msg.contains("invalid_client"),
+                    "error body must be included: {msg}"
+                );
+            }
+            other => panic!("expected FaucetError::Auth, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn get_or_refresh_caches_token_across_calls() {
+        let server = MockServer::start().await;
+        // `.expect(1)` asserts the network is hit exactly once even though
+        // get_or_refresh is called twice — proving the cache-hit branch.
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "access_token": "cached-token",
+                "expires_in": 3600
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let url = format!("{}/token", server.uri());
+        let client = Client::new();
+        let cache = TokenCache::new();
+        let t1 = cache
+            .get_or_refresh(&client, &url, "id", "secret", &[], DEFAULT_EXPIRY_RATIO)
+            .await
+            .unwrap();
+        let t2 = cache
+            .get_or_refresh(&client, &url, "id", "secret", &[], DEFAULT_EXPIRY_RATIO)
+            .await
+            .unwrap();
+        assert_eq!(t1, "cached-token");
+        assert_eq!(t2, "cached-token");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn get_or_refresh_refetches_after_proactive_expiry() {
+        let server = MockServer::start().await;
+        // expires_in=100, ratio=0.9 → token considered expired after 90s.
+        // Two fetches expected: initial, then after the clock advances past 90s.
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "access_token": "rotating",
+                "expires_in": 100
+            })))
+            .expect(2)
+            .mount(&server)
+            .await;
+        let url = format!("{}/token", server.uri());
+        let client = Client::new();
+        let cache = TokenCache::new();
+        cache
+            .get_or_refresh(&client, &url, "id", "s", &[], 0.9)
+            .await
+            .unwrap();
+        tokio::time::advance(std::time::Duration::from_secs(91)).await;
+        cache
+            .get_or_refresh(&client, &url, "id", "s", &[], 0.9)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn get_or_refresh_treats_missing_expiry_as_valid_indefinitely() {
+        let server = MockServer::start().await;
+        // No `expires_in` → expires_at = None → is_valid()'s None arm keeps the
+        // token forever, so the second call must not re-hit the network.
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "access_token": "no-expiry"
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let url = format!("{}/token", server.uri());
+        let client = Client::new();
+        let cache = TokenCache::new();
+        let t1 = cache
+            .get_or_refresh(&client, &url, "i", "s", &[], 0.9)
+            .await
+            .unwrap();
+        let t2 = cache
+            .get_or_refresh(&client, &url, "i", "s", &[], 0.9)
+            .await
+            .unwrap();
+        assert_eq!(t1, "no-expiry");
+        assert_eq!(t2, "no-expiry");
+    }
+
+    #[tokio::test]
+    async fn get_or_refresh_propagates_server_error() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(500).set_body_string("boom"))
+            .mount(&server)
+            .await;
+        let url = format!("{}/token", server.uri());
+        let client = Client::new();
+        let cache = TokenCache::new();
+        let err = cache
+            .get_or_refresh(&client, &url, "i", "s", &[], 0.9)
+            .await
+            .expect_err("5xx must propagate");
+        assert!(matches!(err, FaucetError::Auth(_)));
+    }
+
+    #[test]
+    fn cached_token_without_expiry_is_always_valid() {
+        let token = CachedToken {
+            access_token: "x".into(),
+            expires_at: None,
+        };
+        assert!(token.is_valid());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn cached_token_with_future_expiry_is_valid_until_it_passes() {
+        let token = CachedToken {
+            access_token: "x".into(),
+            expires_at: Some(tokio::time::Instant::now() + std::time::Duration::from_secs(60)),
+        };
+        assert!(token.is_valid(), "still inside the window");
+        tokio::time::advance(std::time::Duration::from_secs(61)).await;
+        assert!(
+            !token.is_valid(),
+            "expired once the clock passes expires_at"
+        );
+    }
+}

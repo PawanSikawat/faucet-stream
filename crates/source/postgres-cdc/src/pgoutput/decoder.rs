@@ -586,4 +586,170 @@ mod tests {
             other => panic!("expected Insert, got {other:?}"),
         }
     }
+
+    #[test]
+    fn xlogdata_header_truncated_errors() {
+        // Only 23 bytes — one short of the 24-byte header.
+        let bytes = vec![0u8; XLogDataHeader::SIZE - 1];
+        let Err(err) = XLogDataHeader::decode(&bytes) else {
+            panic!("a header shorter than SIZE must be rejected");
+        };
+        let msg = err.to_string();
+        assert!(msg.contains("XLogData header truncated"), "{msg}");
+        assert!(msg.contains("23 < 24"), "{msg}");
+    }
+
+    #[test]
+    fn keepalive_truncated_errors() {
+        // Only 16 bytes — one short of the 17-byte keepalive.
+        let bytes = vec![0u8; PrimaryKeepAlive::SIZE - 1];
+        let Err(err) = PrimaryKeepAlive::decode(&bytes) else {
+            panic!("a keepalive shorter than SIZE must be rejected");
+        };
+        let msg = err.to_string();
+        assert!(msg.contains("PrimaryKeepAlive truncated"), "{msg}");
+        assert!(msg.contains("16 < 17"), "{msg}");
+    }
+
+    #[test]
+    fn keepalive_no_reply_requested() {
+        // wal_end=0/16A4F88, ts=750000000000000, reply_requested=0
+        let bytes = hex("00 00 00 00 01 6A 4F 88 \
+             00 02 A4 A6 4A 1B 80 00 \
+             00");
+        let k = PrimaryKeepAlive::decode(&bytes).unwrap();
+        assert_eq!(k.wal_end, 0x0000_0000_016A_4F88);
+        assert_eq!(k.server_ts, 0x0002_A4A6_4A1B_8000);
+        assert!(!k.reply_requested);
+    }
+
+    #[test]
+    fn decode_origin_message_ignored() {
+        // 'O' (0x4F) origin message — accepted and mapped to Message::Origin,
+        // the trailing payload bytes are not parsed in v1.
+        let bytes = hex("4F 00 00 00 00 01 6A 4F A0");
+        assert_eq!(decode_message(&bytes).unwrap(), Message::Origin);
+    }
+
+    #[test]
+    fn decode_type_message_ignored() {
+        // 'Y' (0x59) type-registration message — accepted and ignored in v1.
+        let bytes = hex("59 00 00 40 00");
+        assert_eq!(decode_message(&bytes).unwrap(), Message::Type);
+    }
+
+    #[test]
+    fn decode_insert_rejects_non_n_tuple_tag() {
+        // 'I', relation=16384, but the tuple tag is 'K' (0x4B) instead of 'N'.
+        let bytes = hex("49 00 00 40 00 4B");
+        let Err(err) = decode_message(&bytes) else {
+            panic!("INSERT with a non-'N' tuple tag must be rejected");
+        };
+        let msg = err.to_string();
+        assert!(msg.contains("INSERT"), "{msg}");
+        assert!(msg.contains("expected 'N' tuple tag"), "{msg}");
+        assert!(msg.contains("'K'"), "{msg}");
+    }
+
+    #[test]
+    fn decode_update_rejects_invalid_first_tag() {
+        // 'U', relation=16384, first tag 'Z' (0x5A) — not K/O/N.
+        let bytes = hex("55 00 00 40 00 5A");
+        let Err(err) = decode_message(&bytes) else {
+            panic!("UPDATE with an invalid first tag must be rejected");
+        };
+        let msg = err.to_string();
+        assert!(msg.contains("UPDATE"), "{msg}");
+        assert!(msg.contains("invalid first tag byte"), "{msg}");
+        assert!(msg.contains("0x5A"), "{msg}");
+    }
+
+    #[test]
+    fn decode_update_rejects_missing_n_after_old_tuple() {
+        // 'U', relation=16384, 'K', old{1 cell, t,1,"1"}, then 'X' (0x58)
+        // instead of the required 'N' new-tuple tag.
+        let bytes = hex("55 \
+             00 00 40 00 \
+             4B \
+             00 01 74 00 00 00 01 31 \
+             58");
+        let Err(err) = decode_message(&bytes) else {
+            panic!("UPDATE missing the 'N' new-tuple tag must be rejected");
+        };
+        let msg = err.to_string();
+        assert!(msg.contains("UPDATE"), "{msg}");
+        assert!(
+            msg.contains("expected 'N' new-tuple tag after old tuple"),
+            "{msg}"
+        );
+        assert!(msg.contains("'X'"), "{msg}");
+    }
+
+    #[test]
+    fn decode_delete_rejects_invalid_tag() {
+        // 'D', relation=16384, tag 'N' (0x4E) — DELETE only accepts 'K' or 'O'.
+        let bytes = hex("44 00 00 40 00 4E");
+        let Err(err) = decode_message(&bytes) else {
+            panic!("DELETE with a non-K/O tuple tag must be rejected");
+        };
+        let msg = err.to_string();
+        assert!(msg.contains("DELETE"), "{msg}");
+        assert!(msg.contains("expected 'K' or 'O' tuple tag"), "{msg}");
+        assert!(msg.contains("'N'"), "{msg}");
+    }
+
+    #[test]
+    fn decode_delete_full_old_tuple() {
+        // 'D', relation=16384, 'O', old{2, t,1,"1", t,5,"alice"}
+        let bytes = hex("44 \
+             00 00 40 00 \
+             4F \
+             00 02 74 00 00 00 01 31 74 00 00 00 05 61 6C 69 63 65");
+        match decode_message(&bytes).unwrap() {
+            Message::Delete(d) => {
+                assert_eq!(d.old_kind, DeleteOldKind::Full);
+                assert_eq!(d.old.cells.len(), 2);
+                assert_eq!(d.old.cells[1], TupleCell::Text("alice".into()));
+            }
+            other => panic!("expected Delete, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn decode_tuple_rejects_non_utf8_text() {
+        // n_cells=1, kind 't', len=2, bytes 0xFF 0xFE (an invalid UTF-8 pair).
+        let bytes = hex("00 01 74 00 00 00 02 FF FE");
+        let mut c = Cursor::new(bytes.as_slice());
+        let Err(err) = decode_tuple(&mut c) else {
+            panic!("a non-UTF-8 text cell must be rejected");
+        };
+        assert!(err.to_string().contains("not UTF-8"), "{err}");
+    }
+
+    #[test]
+    fn decode_tuple_rejects_binary_mode_cell() {
+        // n_cells=1, kind 'b' (0x62) — binary-mode cells are unsupported in v1.
+        let bytes = hex("00 01 62");
+        let mut c = Cursor::new(bytes.as_slice());
+        let Err(err) = decode_tuple(&mut c) else {
+            panic!("a binary-mode cell must be rejected");
+        };
+        assert!(
+            err.to_string().contains("binary-mode cells not supported"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn decode_tuple_rejects_unknown_cell_tag() {
+        // n_cells=1, kind 'x' (0x78) — not n/u/t/b.
+        let bytes = hex("00 01 78");
+        let mut c = Cursor::new(bytes.as_slice());
+        let Err(err) = decode_tuple(&mut c) else {
+            panic!("an unknown cell tag must be rejected");
+        };
+        let msg = err.to_string();
+        assert!(msg.contains("unknown cell tag"), "{msg}");
+        assert!(msg.contains("'x'"), "{msg}");
+    }
 }

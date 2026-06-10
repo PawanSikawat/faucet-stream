@@ -326,4 +326,129 @@ mod tests {
             json!("2026-05-17 12:34:56+00")
         );
     }
+
+    #[test]
+    fn int2_and_int8_arrays_decode() {
+        // _int2 (1005) → int2 elements.
+        assert_eq!(text_to_json(1005, "{1,2,3}").unwrap(), json!([1, 2, 3]));
+        // _int8 (1016) is already covered elsewhere; assert _int2 negative too.
+        assert_eq!(text_to_json(1005, "{-7,7}").unwrap(), json!([-7, 7]));
+    }
+
+    #[test]
+    fn float_arrays_decode() {
+        // _float4 (1021) and _float8 (1022) → JSON numbers.
+        assert_eq!(text_to_json(1021, "{1.5,2.5}").unwrap(), json!([1.5, 2.5]));
+        assert_eq!(
+            text_to_json(1022, "{3.25,-4.75}").unwrap(),
+            json!([3.25, -4.75])
+        );
+    }
+
+    #[test]
+    fn numeric_array_keeps_elements_as_strings() {
+        // _numeric (1231) → each element stays a string (NUMERIC is OID_NUMERIC).
+        assert_eq!(
+            text_to_json(1231, "{1.10,2.20}").unwrap(),
+            json!(["1.10", "2.20"])
+        );
+    }
+
+    #[test]
+    fn bytea_array_decodes_to_base64_elements() {
+        // _bytea (1001) → element OID_BYTEA → base64. \xDEADBEEF → "3q2+7w==".
+        assert_eq!(
+            text_to_json(1001, "{\\xDEADBEEF}").unwrap(),
+            json!(["3q2+7w=="])
+        );
+    }
+
+    #[test]
+    fn json_and_jsonb_arrays_decode_elements() {
+        // _json (199) and _jsonb (3807) → element OID_JSON/JSONB → parsed JSON.
+        // The element values are quoted so the embedded braces are not treated
+        // as a nested array by the array parser.
+        assert_eq!(
+            text_to_json(199, r#"{"{\"a\":1}"}"#).unwrap(),
+            json!([{"a": 1}])
+        );
+        assert_eq!(text_to_json(3807, r#"{"[1,2]"}"#).unwrap(), json!([[1, 2]]));
+    }
+
+    #[test]
+    fn varchar_bpchar_uuid_arrays_decode_to_strings() {
+        // _varchar (1015), _bpchar (1014), _uuid (2951) all map to string
+        // element types and pass through verbatim.
+        assert_eq!(text_to_json(1015, "{a,b}").unwrap(), json!(["a", "b"]));
+        assert_eq!(text_to_json(1014, "{x,y}").unwrap(), json!(["x", "y"]));
+        assert_eq!(
+            text_to_json(2951, "{11111111-1111-1111-1111-111111111111}").unwrap(),
+            json!(["11111111-1111-1111-1111-111111111111"])
+        );
+    }
+
+    #[test]
+    fn datetime_arrays_decode_to_strings() {
+        // _timestamp (1115), _timestamptz (1185), _date (1182), _time (1183)
+        // all map to text-passthrough element types. Commas-free literals so
+        // the simple parser splits cleanly.
+        assert_eq!(
+            text_to_json(1115, r#"{"2026-05-17 12:34:56"}"#).unwrap(),
+            json!(["2026-05-17 12:34:56"])
+        );
+        assert_eq!(
+            text_to_json(1185, r#"{"2026-05-17 12:34:56+00"}"#).unwrap(),
+            json!(["2026-05-17 12:34:56+00"])
+        );
+        assert_eq!(
+            text_to_json(1182, "{2026-05-17}").unwrap(),
+            json!(["2026-05-17"])
+        );
+        assert_eq!(
+            text_to_json(1183, "{12:34:56}").unwrap(),
+            json!(["12:34:56"])
+        );
+    }
+
+    #[test]
+    fn float_array_element_parse_error_propagates() {
+        // A float array whose element is not parseable surfaces the float
+        // parse error (lines 90-92) rather than falling back to a string.
+        let err = text_to_json(1022, "{not_a_float}").unwrap_err();
+        assert!(err.to_string().contains("float parse"), "{err}");
+    }
+
+    #[test]
+    fn json_array_element_parse_error_propagates() {
+        // A _json array whose element is not valid JSON surfaces the json
+        // parse error (lines 108-110).
+        let err = text_to_json(199, "{notjson}").unwrap_err();
+        assert!(err.to_string().contains("json/jsonb parse"), "{err}");
+    }
+
+    #[test]
+    fn array_oid_with_non_brace_text_falls_back_to_string() {
+        // An array OID (1007 _int4) whose text is not `{...}`-delimited makes
+        // parse_pg_array return None (line 142), so text_to_json falls back to
+        // wrapping the raw text in a string.
+        assert_eq!(
+            text_to_json(1007, "not-an-array").unwrap(),
+            json!("not-an-array")
+        );
+    }
+
+    #[test]
+    fn array_with_unterminated_quote_falls_back_to_string() {
+        // An unterminated quote makes parse_pg_array return None (line 185),
+        // so the whole literal is kept as a raw string.
+        let raw = r#"{"unterminated}"#;
+        assert_eq!(text_to_json(1009, raw).unwrap(), json!(raw));
+    }
+
+    #[test]
+    fn bytea_odd_length_hex_errors() {
+        // \x followed by an odd number of hex digits is rejected (lines 202-205).
+        let err = text_to_json(OID_BYTEA, "\\xABC").unwrap_err();
+        assert!(err.to_string().contains("odd length"), "{err}");
+    }
 }

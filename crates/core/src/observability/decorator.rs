@@ -625,6 +625,122 @@ pub(crate) mod source_tests {
         assert!(matches!(first, Err(FaucetError::Custom(_))));
         // Process did not abort — implicit by reaching this line.
     }
+
+    // ── error_kind: exhaustive variant → label mapping ───────────────────────
+
+    #[test]
+    fn error_kind_covers_all_variants() {
+        use std::time::Duration;
+        // Build one of every non-`Http` FaucetError variant and assert its
+        // stable label. (`Http` wraps a `reqwest::Error`, which has no public
+        // constructor; it is exercised through the live request paths in the
+        // connector crates' tests.)
+        let cases: Vec<(FaucetError, &str)> = vec![
+            (
+                FaucetError::HttpStatus {
+                    status: 500,
+                    url: "u".into(),
+                    body: "b".into(),
+                },
+                "HttpStatus",
+            ),
+            (
+                FaucetError::Json(serde_json::from_str::<Value>("nope").unwrap_err()),
+                "Json",
+            ),
+            (FaucetError::JsonPath("bad".into()), "JsonPath"),
+            (FaucetError::Auth("a".into()), "Auth"),
+            (
+                FaucetError::RateLimited(Duration::from_secs(1)),
+                "RateLimited",
+            ),
+            (FaucetError::Url("bad url".into()), "Url"),
+            (FaucetError::Transform("t".into()), "Transform"),
+            (FaucetError::Config("c".into()), "Config"),
+            (FaucetError::Source("s".into()), "Source"),
+            (FaucetError::Sink("s".into()), "Sink"),
+            (
+                FaucetError::QualityFailure {
+                    check: "chk".into(),
+                    message: "m".into(),
+                },
+                "QualityFailure",
+            ),
+            (FaucetError::State("st".into()), "State"),
+            (
+                FaucetError::Custom(Box::new(std::io::Error::other("boom"))),
+                "Custom",
+            ),
+        ];
+        for (err, expected) in cases {
+            assert_eq!(error_kind(&err), expected, "mismatch for {err:?}");
+        }
+    }
+
+    // ── Source passthrough methods ───────────────────────────────────────────
+
+    // A source that overrides every passthrough so the instrumented wrapper's
+    // delegating methods (state_key / apply_start_bookmark / fetch_with_context
+    // / fetch_with_context_incremental) are exercised.
+    struct PassthroughSource {
+        seen_bookmark: Mutex<Option<Value>>,
+    }
+    #[async_trait]
+    impl Source for PassthroughSource {
+        async fn fetch_with_context(
+            &self,
+            _: &HashMap<String, Value>,
+        ) -> Result<Vec<Value>, FaucetError> {
+            Ok(vec![json!({"fwc": 1})])
+        }
+        async fn fetch_with_context_incremental(
+            &self,
+            _: &HashMap<String, Value>,
+        ) -> Result<(Vec<Value>, Option<Value>), FaucetError> {
+            Ok((vec![json!({"inc": 1})], Some(json!("bm"))))
+        }
+        fn state_key(&self) -> Option<String> {
+            Some("passthrough_key".into())
+        }
+        async fn apply_start_bookmark(&self, bookmark: Value) -> Result<(), FaucetError> {
+            *self.seen_bookmark.lock().unwrap() = Some(bookmark);
+            Ok(())
+        }
+        fn connector_name(&self) -> &'static str {
+            "passthrough"
+        }
+    }
+
+    #[tokio::test]
+    async fn source_passthroughs_delegate_to_inner() {
+        let inner = PassthroughSource {
+            seen_bookmark: Mutex::new(None),
+        };
+        let wrapped = InstrumentedSource::new(&inner, labels());
+
+        // state_key passthrough
+        assert_eq!(wrapped.state_key(), Some("passthrough_key".to_string()));
+
+        // fetch_with_context passthrough
+        let ctx = HashMap::new();
+        assert_eq!(
+            wrapped.fetch_with_context(&ctx).await.unwrap(),
+            vec![json!({"fwc": 1})]
+        );
+
+        // fetch_with_context_incremental passthrough
+        let (recs, bm) = wrapped.fetch_with_context_incremental(&ctx).await.unwrap();
+        assert_eq!(recs, vec![json!({"inc": 1})]);
+        assert_eq!(bm, Some(json!("bm")));
+
+        // apply_start_bookmark passthrough
+        wrapped.apply_start_bookmark(json!("resume")).await.unwrap();
+        assert_eq!(
+            *inner.seen_bookmark.lock().unwrap(),
+            Some(json!("resume")),
+            "apply_start_bookmark must reach the inner source"
+        );
+    }
 }
 
 #[cfg(test)]
@@ -801,5 +917,122 @@ mod sink_tests {
             records >= 2,
             "expected faucet_sink_records_total{{connector=mixed}} >= 2, got {records}"
         );
+    }
+
+    // ── flush error path ─────────────────────────────────────────────────────
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn flush_error_increments_errors_total_and_propagates() {
+        // A sink whose flush() returns Err must surface the error and emit
+        // faucet_sink_errors_total with the matching kind label.
+        struct FlushFailSink;
+        #[async_trait]
+        impl Sink for FlushFailSink {
+            async fn write_batch(&self, r: &[Value]) -> Result<usize, FaucetError> {
+                Ok(r.len())
+            }
+            async fn flush(&self) -> Result<(), FaucetError> {
+                Err(FaucetError::Sink("flush boom".into()))
+            }
+            fn connector_name(&self) -> &'static str {
+                "flush-fail-sink"
+            }
+        }
+
+        let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let snap = snapshotter();
+        let inner = FlushFailSink;
+        let wrapped = InstrumentedSink::new(&inner, labels());
+        let err = wrapped.flush().await.unwrap_err();
+        assert!(matches!(&err, FaucetError::Sink(m) if m.contains("flush boom")));
+
+        let snapshot = snap.snapshot();
+        let found = snapshot.into_vec().into_iter().any(|(key, _u, _d, v)| {
+            key.key().name() == "faucet_sink_errors_total"
+                && key
+                    .key()
+                    .labels()
+                    .any(|l| l.key() == "connector" && l.value() == "flush-fail-sink")
+                && key
+                    .key()
+                    .labels()
+                    .any(|l| l.key() == "kind" && l.value() == "Sink")
+                && matches!(v, DebugValue::Counter(c) if c >= 1)
+        });
+        assert!(
+            found,
+            "expected sink_errors_total{{connector=flush-fail-sink,kind=Sink}}"
+        );
+    }
+
+    // ── panic isolation on every sink call ───────────────────────────────────
+
+    struct PanickingSink;
+    #[async_trait]
+    impl Sink for PanickingSink {
+        async fn write_batch(&self, _: &[Value]) -> Result<usize, FaucetError> {
+            panic!("write kaboom")
+        }
+        async fn write_batch_partial(
+            &self,
+            _: &[Value],
+        ) -> Result<Vec<crate::traits::RowOutcome>, FaucetError> {
+            panic!("partial kaboom")
+        }
+        async fn flush(&self) -> Result<(), FaucetError> {
+            panic!("flush kaboom")
+        }
+        fn connector_name(&self) -> &'static str {
+            "panic-sink"
+        }
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn write_batch_panic_maps_to_custom_error() {
+        let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _snap = snapshotter();
+        let inner = PanickingSink;
+        let wrapped = InstrumentedSink::new(&inner, labels());
+        let err = wrapped.write_batch(&[json!({})]).await.unwrap_err();
+        match err {
+            FaucetError::Custom(b) => {
+                assert!(b.to_string().contains("panic in sink: write kaboom"))
+            }
+            other => panic!("expected Custom panic error, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn write_batch_partial_panic_maps_to_custom_error() {
+        let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _snap = snapshotter();
+        let inner = PanickingSink;
+        let wrapped = InstrumentedSink::new(&inner, labels());
+        let err = wrapped.write_batch_partial(&[json!({})]).await.unwrap_err();
+        match err {
+            FaucetError::Custom(b) => {
+                assert!(b.to_string().contains("panic in sink: partial kaboom"))
+            }
+            other => panic!("expected Custom panic error, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn flush_panic_maps_to_custom_error() {
+        let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _snap = snapshotter();
+        let inner = PanickingSink;
+        let wrapped = InstrumentedSink::new(&inner, labels());
+        let err = wrapped.flush().await.unwrap_err();
+        match err {
+            FaucetError::Custom(b) => {
+                assert!(b.to_string().contains("panic in flush: flush kaboom"))
+            }
+            other => panic!("expected Custom panic error, got {other:?}"),
+        }
     }
 }

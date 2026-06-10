@@ -208,4 +208,103 @@ mod tests {
         let parsed: D = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed, d);
     }
+
+    // ── load_env ─────────────────────────────────────────────────────────────
+
+    #[derive(Debug, Deserialize, PartialEq)]
+    struct EnvConfig {
+        url: String,
+        #[serde(default)]
+        batch_size: Option<usize>,
+    }
+
+    #[test]
+    fn load_env_reads_prefixed_vars() {
+        // SAFETY: the test sets and reads its own uniquely-prefixed vars; no
+        // other test uses the FAUCETCFGA_ prefix.
+        unsafe {
+            std::env::set_var("FAUCETCFGA_URL", "https://env.example.com");
+            std::env::set_var("FAUCETCFGA_BATCH_SIZE", "55");
+        }
+        let config: EnvConfig = load_env("FAUCETCFGA").unwrap();
+        assert_eq!(config.url, "https://env.example.com");
+        assert_eq!(config.batch_size, Some(55));
+        unsafe {
+            std::env::remove_var("FAUCETCFGA_URL");
+            std::env::remove_var("FAUCETCFGA_BATCH_SIZE");
+        }
+    }
+
+    #[test]
+    fn load_env_missing_required_field_errors() {
+        // No FAUCETCFGB_* vars set → the required `url` field cannot be read.
+        let result = load_env::<EnvConfig>("FAUCETCFGB");
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            FaucetError::Config(msg) => {
+                assert!(msg.contains("failed to load config from env vars"), "{msg}")
+            }
+            other => panic!("expected Config error, got {other:?}"),
+        }
+    }
+
+    // ── load_env_file ────────────────────────────────────────────────────────
+
+    #[test]
+    fn load_env_file_loads_dotenv_then_reads_vars() {
+        let dir = std::env::temp_dir();
+        let path = dir.join("faucet_test_loadenvfile.env");
+        std::fs::write(
+            &path,
+            "FAUCETCFGC_URL=https://dotenv.example.com\nFAUCETCFGC_BATCH_SIZE=12\n",
+        )
+        .unwrap();
+
+        let config: EnvConfig = load_env_file(&path, "FAUCETCFGC").unwrap();
+        assert_eq!(config.url, "https://dotenv.example.com");
+        assert_eq!(config.batch_size, Some(12));
+
+        std::fs::remove_file(&path).ok();
+        unsafe {
+            std::env::remove_var("FAUCETCFGC_URL");
+            std::env::remove_var("FAUCETCFGC_BATCH_SIZE");
+        }
+    }
+
+    #[test]
+    fn load_env_file_missing_file_errors() {
+        let result = load_env_file::<EnvConfig>("/nonexistent/path.env", "FAUCETCFGD");
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            FaucetError::Config(msg) => assert!(msg.contains("failed to load .env file"), "{msg}"),
+            other => panic!("expected Config error, got {other:?}"),
+        }
+    }
+
+    // ── duration_secs_option ─────────────────────────────────────────────────
+
+    #[test]
+    fn duration_secs_option_roundtrip_some_and_none() {
+        use std::time::Duration;
+
+        #[derive(Debug, serde::Serialize, Deserialize, PartialEq)]
+        struct D {
+            #[serde(with = "super::duration_secs_option")]
+            timeout: Option<Duration>,
+        }
+
+        let some = D {
+            timeout: Some(Duration::from_secs(45)),
+        };
+        let json = serde_json::to_string(&some).unwrap();
+        assert_eq!(json, r#"{"timeout":45}"#);
+        let parsed: D = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed, some);
+
+        let none = D { timeout: None };
+        let json = serde_json::to_string(&none).unwrap();
+        assert_eq!(json, r#"{"timeout":null}"#);
+        let parsed: D = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed, none);
+    }
 }

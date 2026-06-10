@@ -15,6 +15,7 @@
 //! replay).
 
 use faucet_core::Source;
+use faucet_core::check::{CheckContext, ProbeStatus};
 use faucet_source_mysql_cdc::{MysqlCdcSource, MysqlCdcSourceConfig};
 use futures::StreamExt;
 use mysql_async::{Conn, Opts, prelude::Queryable};
@@ -210,5 +211,194 @@ async fn cdc_captures_crud_then_resumes_without_replay() {
     assert!(
         records2.iter().any(|r| r["op"] == "c"),
         "expected a create op in cycle 2, got: {records2:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn source_trait_metadata_and_check_against_live_server() {
+    // A live MySQL is required because `MysqlCdcSource::new()` opens a preflight
+    // connection. Once built, exercise the trait metadata accessors and the
+    // non-stream `check()` preflight (which runs the connection + binlog-config
+    // probes without opening the binlog stream).
+    let (_container, url) = start_mysql_cdc().await;
+
+    // include_tables makes `dataset_uri` append the `?tables=` suffix.
+    let config: MysqlCdcSourceConfig = serde_json::from_value(json!({
+        "connection_url": url,
+        "server_id": 2002,
+        "include_tables": ["test.orders"],
+        "start_position": { "type": "current" },
+        "idle_timeout": 5,
+        "batch_size": 0
+    }))
+    .expect("config");
+    let source = MysqlCdcSource::new(config).await.expect("source new");
+
+    // connector_name / supports_exactly_once are pure constants.
+    assert_eq!(source.connector_name(), "mysql-cdc");
+    assert!(
+        source.supports_exactly_once(),
+        "mysql-cdc bookmarks file/pos + per-page → exactly-once capable"
+    );
+
+    // state_key derives from server_id.
+    assert_eq!(source.state_key().as_deref(), Some("mysql-cdc:2002"));
+
+    // dataset_uri redacts credentials and appends the configured tables.
+    let uri = source.dataset_uri();
+    assert!(
+        !uri.contains("root@") && !uri.contains("@127.0.0.1"),
+        "credentials must be stripped from dataset_uri: {uri}"
+    );
+    assert!(
+        uri.ends_with("?tables=test.orders"),
+        "dataset_uri must append include_tables: {uri}"
+    );
+
+    // config_schema is the JSON Schema for the config struct.
+    let schema = source.config_schema();
+    assert!(
+        schema.get("properties").is_some(),
+        "config_schema must be a JSON object schema: {schema}"
+    );
+
+    // check(): the container is configured with ROW/FULL/FULL binlog settings
+    // and the root user has all privileges, so both probes must pass.
+    let report = source
+        .check(&CheckContext::default())
+        .await
+        .expect("check report");
+    assert_eq!(report.failed_count(), 0, "all probes must pass: {report:?}");
+    let names: Vec<&str> = report.probes.iter().map(|p| p.name).collect();
+    assert!(
+        names.contains(&"connection"),
+        "expected a connection probe, got {names:?}"
+    );
+    assert!(
+        names.contains(&"binlog-config"),
+        "expected a binlog-config probe, got {names:?}"
+    );
+    for probe in &report.probes {
+        assert!(
+            matches!(probe.status, ProbeStatus::Pass),
+            "probe {} must pass: {:?}",
+            probe.name,
+            probe.status
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn check_reports_binlog_config_failure_when_row_metadata_minimal() {
+    // Boot MySQL WITHOUT the binlog flags the CDC source requires: the default
+    // `binlog_row_metadata` is MINIMAL, so the binlog-config probe must fail
+    // while the connection probe still passes. (`MysqlCdcSource::new()`'s own
+    // preflight would reject this, so we build via `check()` only — which is the
+    // `faucet doctor` path.)
+    let _permit = startup_limit()
+        .acquire()
+        .await
+        .expect("startup semaphore closed");
+    let container = Mysql::default()
+        .with_cmd(["--server-id=1", "--log-bin=mysql-bin"]) // no row-metadata=FULL
+        .start()
+        .await
+        .expect("mysql start");
+    let port = container
+        .get_host_port_ipv4(3306)
+        .await
+        .expect("mysql port");
+    let url = format!("mysql://root@127.0.0.1:{port}/test");
+
+    // `MysqlCdcSource::new()` runs the same `run_preflight_probes` that the
+    // `check()` binlog-config probe uses, so a server with the default MINIMAL
+    // `binlog_row_metadata` exercises the failing-variable branch and surfaces a
+    // typed error naming the offending variable.
+    let config: MysqlCdcSourceConfig = serde_json::from_value(json!({
+        "connection_url": url,
+        "server_id": 3003,
+        "idle_timeout": 5,
+        "batch_size": 0
+    }))
+    .expect("config");
+    // `MysqlCdcSource` is not `Debug`, so match the `Result` directly rather
+    // than via `expect_err` (which would require `Ok: Debug`).
+    let msg = match MysqlCdcSource::new(config).await {
+        Ok(_) => panic!("new() must reject MINIMAL binlog_row_metadata"),
+        Err(e) => e.to_string(),
+    };
+    assert!(
+        msg.contains("binlog_row_metadata"),
+        "error must name the offending binlog variable; got: {msg}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn fetch_with_context_aggregates_and_emit_schema_changes_yields_ddl() {
+    // Two paths in one container:
+    //  1. `fetch_with_context` drains the stream into a flat Vec (aggregate mode).
+    //  2. `emit_schema_changes = true` turns a DDL `QueryEvent` into an
+    //     `{op:"ddl"}` envelope in the captured stream.
+    let (_container, url) = start_mysql_cdc().await;
+    {
+        let mut conn = connect(&url).await;
+        conn.query_drop("CREATE TABLE test.t (id INT PRIMARY KEY, n VARCHAR(32))")
+            .await
+            .expect("create table");
+    }
+
+    let config: MysqlCdcSourceConfig = serde_json::from_value(json!({
+        "connection_url": url,
+        "server_id": 4004,
+        "start_position": { "type": "current" },
+        "emit_schema_changes": true,
+        "idle_timeout": 5,
+        "batch_size": 0
+    }))
+    .expect("config");
+    let source = MysqlCdcSource::new(config).await.expect("source new");
+
+    let writer_url = url.clone();
+    let writer = tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        let mut conn = connect(&writer_url).await;
+        conn.query_drop("INSERT INTO test.t (id, n) VALUES (1, 'x')")
+            .await
+            .expect("insert");
+        // DDL — auto-commits, must surface as an op:"ddl" envelope.
+        conn.query_drop("ALTER TABLE test.t ADD COLUMN extra INT")
+            .await
+            .expect("alter");
+    });
+
+    // `fetch_with_context` returns every record across the fetch cycle as a
+    // single flat Vec (it drives stream_pages with the batch_size=0 sentinel).
+    let ctx: HashMap<String, Value> = HashMap::new();
+    let records = source.fetch_with_context(&ctx).await.expect("fetch");
+    writer.await.expect("writer");
+
+    let ops: Vec<&str> = records
+        .iter()
+        .map(|r| r["op"].as_str().unwrap_or(""))
+        .collect();
+    assert!(
+        ops.contains(&"c"),
+        "fetch_with_context must aggregate the insert, got {ops:?}"
+    );
+
+    let ddl = records
+        .iter()
+        .find(|r| r["op"] == "ddl")
+        .expect("emit_schema_changes must produce a ddl envelope");
+    assert!(
+        ddl["statement"]
+            .as_str()
+            .unwrap_or("")
+            .contains("ALTER TABLE"),
+        "ddl envelope must carry the statement text: {ddl:?}"
+    );
+    assert!(
+        ddl["lsn"]["file"].is_string() && ddl["lsn"]["pos"].is_number(),
+        "ddl envelope must carry a file/pos lsn: {ddl:?}"
     );
 }

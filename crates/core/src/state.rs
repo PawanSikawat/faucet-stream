@@ -677,6 +677,46 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn file_store_root_returns_configured_directory() {
+        let dir = TempDir::new().unwrap();
+        let s = FileStateStore::new(dir.path());
+        assert_eq!(s.root(), dir.path());
+    }
+
+    #[tokio::test]
+    async fn default_check_reports_not_implemented() {
+        // A StateStore that does not override `check()` falls back to the
+        // trait default, which yields a single not-implemented (skipped) probe.
+        struct BareStore;
+        #[async_trait]
+        impl StateStore for BareStore {
+            async fn get(&self, _key: &str) -> Result<Option<Value>, FaucetError> {
+                Ok(None)
+            }
+            async fn put(&self, _key: &str, _value: &Value) -> Result<(), FaucetError> {
+                Ok(())
+            }
+            async fn delete(&self, _key: &str) -> Result<(), FaucetError> {
+                Ok(())
+            }
+        }
+        let s = BareStore;
+        let report = s
+            .check(&crate::check::CheckContext::default())
+            .await
+            .unwrap();
+        // not_implemented() reports no failures and is not a pass.
+        assert_eq!(report.failed_count(), 0);
+        assert!(
+            report
+                .probes
+                .iter()
+                .any(|p| matches!(p.status, crate::check::ProbeStatus::Skip { .. })),
+            "default check must surface a skipped (not-implemented) probe"
+        );
+    }
+
+    #[tokio::test]
     async fn file_check_fails_when_root_unusable() {
         // Root whose parent is a regular file → create_dir_all fails.
         let dir = TempDir::new().unwrap();

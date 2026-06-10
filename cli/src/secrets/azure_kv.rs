@@ -234,4 +234,78 @@ mod tests {
             "credential chain should be built at most once and reused"
         );
     }
+
+    #[test]
+    fn scheme_is_azure_kv() {
+        assert_eq!(AzureKvResolver::new().scheme(), "azure-kv");
+    }
+
+    #[test]
+    fn default_constructs_a_resolver() {
+        // Exercises the `Default` impl (no panic, fresh OnceCell).
+        let _r = AzureKvResolver::default();
+    }
+
+    #[tokio::test]
+    async fn empty_reference_is_a_parse_error_before_any_network() {
+        // An empty reference yields an empty vault segment → fetch-failed with
+        // the format hint, with no credential build / network call.
+        let resolver = AzureKvResolver::new();
+        match resolver.resolve("").await.unwrap_err() {
+            CliError::SecretFetchFailed {
+                scheme, reference, ..
+            } => {
+                assert_eq!(scheme, "azure-kv");
+                assert_eq!(reference, "");
+            }
+            other => panic!("expected SecretFetchFailed, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn missing_secret_name_segment_is_a_parse_error() {
+        // "<vault>" with no "/<secret>" → the secret-name segment is missing.
+        let resolver = AzureKvResolver::new();
+        match resolver.resolve("myvault").await.unwrap_err() {
+            CliError::SecretFetchFailed {
+                scheme, reference, ..
+            } => {
+                assert_eq!(scheme, "azure-kv");
+                assert_eq!(reference, "myvault");
+            }
+            other => panic!("expected SecretFetchFailed, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn empty_secret_name_segment_is_a_parse_error() {
+        // "<vault>/" → the secret-name segment is present but empty.
+        let resolver = AzureKvResolver::new();
+        match resolver.resolve("myvault/").await.unwrap_err() {
+            CliError::SecretFetchFailed { reference, .. } => {
+                assert_eq!(reference, "myvault/");
+            }
+            other => panic!("expected SecretFetchFailed, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn chained_credential_aggregates_errors_when_all_fail() {
+        // A chain of zero sources fails get_token with the aggregate message.
+        let chain = ChainedCredential::new(Vec::new());
+        let err = chain.get_token(&["scope"], None).await.unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("All Azure credential sources failed"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn chained_credential_debug_reports_source_count() {
+        let chain = ChainedCredential::new(Vec::new());
+        let dbg = format!("{chain:?}");
+        assert!(dbg.contains("ChainedCredential"), "{dbg}");
+        assert!(dbg.contains("sources_len"), "{dbg}");
+    }
 }

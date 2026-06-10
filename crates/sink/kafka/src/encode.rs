@@ -156,4 +156,157 @@ mod tests {
         .unwrap_err();
         assert!(format!("{err}").contains("base64"));
     }
+
+    #[cfg(feature = "schema-registry")]
+    mod schema_registry {
+        use super::*;
+        use faucet_common_kafka::SchemaRegistryConfig;
+        use faucet_common_kafka::schema_registry::client::SchemaRegistryClient;
+
+        fn avro_format() -> KafkaValueFormat {
+            KafkaValueFormat::ConfluentAvro {
+                schema_registry: SchemaRegistryConfig::new("http://localhost:8081"),
+            }
+        }
+
+        fn protobuf_format() -> KafkaValueFormat {
+            KafkaValueFormat::ConfluentProtobuf {
+                schema_registry: SchemaRegistryConfig::new("http://localhost:8081"),
+            }
+        }
+
+        fn json_schema_format() -> KafkaValueFormat {
+            KafkaValueFormat::ConfluentJsonSchema {
+                schema_registry: SchemaRegistryConfig::new("http://localhost:8081"),
+                validate: false,
+            }
+        }
+
+        /// A `SchemaRegistryClient::new` only builds the HTTP client and
+        /// validates the URL — no network I/O — so it is safe to construct
+        /// offline for the "client present but schema_text missing" branch.
+        fn offline_client() -> SchemaRegistryClient {
+            SchemaRegistryClient::new(&SchemaRegistryConfig::new("http://localhost:8081"))
+                .expect("offline client builds")
+        }
+
+        #[tokio::test]
+        async fn encode_confluent_avro_without_client_is_config_error() {
+            let err = encode(
+                &json!({"a": 1}),
+                &avro_format(),
+                None,
+                &SchemaContext::default(),
+            )
+            .await
+            .unwrap_err();
+            match err {
+                FaucetError::Config(msg) => assert!(
+                    msg.contains("ConfluentAvro") && msg.contains("no SchemaRegistryClient"),
+                    "unexpected message: {msg}"
+                ),
+                other => panic!("expected Config error, got {other:?}"),
+            }
+        }
+
+        #[tokio::test]
+        async fn encode_confluent_protobuf_without_client_is_config_error() {
+            let err = encode(
+                &json!({"a": 1}),
+                &protobuf_format(),
+                None,
+                &SchemaContext::default(),
+            )
+            .await
+            .unwrap_err();
+            match err {
+                FaucetError::Config(msg) => assert!(
+                    msg.contains("ConfluentProtobuf") && msg.contains("no SchemaRegistryClient"),
+                    "unexpected message: {msg}"
+                ),
+                other => panic!("expected Config error, got {other:?}"),
+            }
+        }
+
+        #[tokio::test]
+        async fn encode_confluent_json_schema_without_client_is_config_error() {
+            let err = encode(
+                &json!({"a": 1}),
+                &json_schema_format(),
+                None,
+                &SchemaContext::default(),
+            )
+            .await
+            .unwrap_err();
+            match err {
+                FaucetError::Config(msg) => assert!(
+                    msg.contains("ConfluentJsonSchema") && msg.contains("no SchemaRegistryClient"),
+                    "unexpected message: {msg}"
+                ),
+                other => panic!("expected Config error, got {other:?}"),
+            }
+        }
+
+        #[tokio::test]
+        async fn encode_confluent_avro_without_schema_text_is_config_error() {
+            let client = offline_client();
+            // schema_text defaults to None — the schema_text guard fires before
+            // any registry network call.
+            let err = encode(
+                &json!({"a": 1}),
+                &avro_format(),
+                Some(&client),
+                &SchemaContext::default(),
+            )
+            .await
+            .unwrap_err();
+            match err {
+                FaucetError::Config(msg) => assert!(
+                    msg.contains("ConfluentAvro") && msg.contains("schema_text"),
+                    "unexpected message: {msg}"
+                ),
+                other => panic!("expected Config error, got {other:?}"),
+            }
+        }
+
+        #[tokio::test]
+        async fn encode_confluent_protobuf_without_schema_text_is_config_error() {
+            let client = offline_client();
+            let err = encode(
+                &json!({"a": 1}),
+                &protobuf_format(),
+                Some(&client),
+                &SchemaContext::default(),
+            )
+            .await
+            .unwrap_err();
+            match err {
+                FaucetError::Config(msg) => assert!(
+                    msg.contains("ConfluentProtobuf") && msg.contains("schema_text"),
+                    "unexpected message: {msg}"
+                ),
+                other => panic!("expected Config error, got {other:?}"),
+            }
+        }
+
+        #[tokio::test]
+        async fn encode_confluent_json_schema_without_schema_text_is_config_error() {
+            let client = offline_client();
+            let err = encode(
+                &json!({"a": 1}),
+                &json_schema_format(),
+                Some(&client),
+                &SchemaContext::default(),
+            )
+            .await
+            .unwrap_err();
+            match err {
+                FaucetError::Config(msg) => assert!(
+                    msg.contains("ConfluentJsonSchema") && msg.contains("schema_text"),
+                    "unexpected message: {msg}"
+                ),
+                other => panic!("expected Config error, got {other:?}"),
+            }
+        }
+    }
 }

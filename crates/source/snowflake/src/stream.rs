@@ -751,6 +751,39 @@ mod tests {
     }
 
     #[test]
+    fn build_request_body_array_and_object_bindings_fall_back_to_text() {
+        // The catch-all arm (`other => ("TEXT", ...)`) stringifies array/object
+        // JSON values into a TEXT bind so they keep their positional slot.
+        let src = SnowflakeSource::new(cfg()).unwrap();
+        let body = src.build_request_body(&[json!([1, 2, 3]), json!({"k": "v"})]);
+        let b = &body["bindings"];
+        assert_eq!(b["1"]["type"], "TEXT");
+        assert_eq!(b["1"]["value"], "[1,2,3]");
+        assert_eq!(b["2"]["type"], "TEXT");
+        assert_eq!(b["2"]["value"], r#"{"k":"v"}"#);
+    }
+
+    #[test]
+    fn connector_name_is_snowflake() {
+        use faucet_core::Source;
+        let src = SnowflakeSource::new(cfg()).unwrap();
+        assert_eq!(src.connector_name(), "snowflake");
+    }
+
+    #[test]
+    fn config_schema_reports_required_fields() {
+        use faucet_core::Source;
+        let src = SnowflakeSource::new(cfg()).unwrap();
+        let schema = src.config_schema();
+        // The generated JSON Schema should describe the config's properties.
+        assert!(schema["properties"]["account"].is_object());
+        assert!(schema["properties"]["query"].is_object());
+        let required = schema["required"].as_array().expect("required array");
+        assert!(required.iter().any(|v| v == "account"));
+        assert!(required.iter().any(|v| v == "query"));
+    }
+
+    #[test]
     fn build_request_body_null_binding_preserves_positional_alignment() {
         // Regression for #78/#18: a NULL must occupy its positional slot as an
         // explicit null-valued binding, not be skipped (which would shift "42"

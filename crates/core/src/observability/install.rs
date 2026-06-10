@@ -194,4 +194,54 @@ mod tests {
             other => panic!("expected PrometheusBind error, got {other:?}"),
         }
     }
+
+    #[test]
+    fn register_build_info_is_callable_and_idempotent() {
+        let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        // Gauges are idempotent under the metrics model; repeat calls must not
+        // panic regardless of which recorder (if any) is installed.
+        register_build_info();
+        register_build_info();
+    }
+
+    #[test]
+    fn install_prometheus_and_tracing_returns_ok() {
+        // Drive the full prometheus + tracing install path on an ephemeral
+        // port. The recorder + subscriber are process-global: depending on
+        // test ordering, the recorder either installs fresh (Ok path) or is
+        // already installed (idempotent warn path). Either way the call must
+        // return Ok and never panic, and the report must reflect what happened.
+        let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let cfg = ObservabilityConfig {
+            prometheus: Some(PrometheusConfig {
+                listen: "127.0.0.1:0".into(),
+                // Exercise the explicit-buckets branch.
+                buckets: Some(vec![0.01, 0.1, 1.0]),
+            }),
+            tracing: Some(TracingConfig {
+                level: "info".into(),
+            }),
+        };
+        let report = install_observability(&cfg).expect("install must return Ok");
+        // Exactly one of: recorder installed (listen set) OR already installed.
+        assert!(
+            report.prometheus_listen.is_some() || report.prometheus_already_installed,
+            "prometheus install must either bind or report already-installed"
+        );
+    }
+
+    #[test]
+    fn install_tracing_with_invalid_directive_falls_back_to_info() {
+        // An unparseable EnvFilter directive must not error — it silently falls
+        // back to "info". The call returns Ok regardless of subscriber state.
+        let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let cfg = ObservabilityConfig {
+            prometheus: None,
+            tracing: Some(TracingConfig {
+                // Garbage directive → try_new errors → fallback to info.
+                level: "this is !!! not a valid filter".into(),
+            }),
+        };
+        install_observability(&cfg).expect("invalid tracing directive must not fail install");
+    }
 }

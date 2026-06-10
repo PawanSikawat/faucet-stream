@@ -426,4 +426,70 @@ mod tests {
     // dataset_uri test is skipped: KafkaSink::new() requires a live Kafka
     // broker (creates a FutureProducer in new()), and no offline constructor
     // exists.
+
+    #[cfg(feature = "schema-registry")]
+    mod sr_client {
+        use crate::sink::build_sr_client;
+        use faucet_common_kafka::{KafkaValueFormat, SchemaRegistryConfig};
+
+        #[test]
+        fn build_sr_client_none_for_plain_formats() {
+            assert!(
+                build_sr_client(&KafkaValueFormat::Json, None)
+                    .unwrap()
+                    .is_none()
+            );
+            assert!(
+                build_sr_client(&KafkaValueFormat::RawString, Some(&KafkaValueFormat::Bytes))
+                    .unwrap()
+                    .is_none()
+            );
+        }
+
+        #[test]
+        fn build_sr_client_some_for_confluent_avro_value() {
+            let format = KafkaValueFormat::ConfluentAvro {
+                schema_registry: SchemaRegistryConfig::new("http://localhost:8081"),
+            };
+            assert!(build_sr_client(&format, None).unwrap().is_some());
+        }
+
+        #[test]
+        fn build_sr_client_some_for_confluent_protobuf_value() {
+            let format = KafkaValueFormat::ConfluentProtobuf {
+                schema_registry: SchemaRegistryConfig::new("http://localhost:8081"),
+            };
+            assert!(build_sr_client(&format, None).unwrap().is_some());
+        }
+
+        #[test]
+        fn build_sr_client_some_for_confluent_json_schema_value() {
+            let format = KafkaValueFormat::ConfluentJsonSchema {
+                schema_registry: SchemaRegistryConfig::new("http://localhost:8081"),
+                validate: false,
+            };
+            assert!(build_sr_client(&format, None).unwrap().is_some());
+        }
+
+        #[test]
+        fn build_sr_client_falls_back_to_key_format() {
+            let key = KafkaValueFormat::ConfluentProtobuf {
+                schema_registry: SchemaRegistryConfig::new("http://localhost:8081"),
+            };
+            assert!(
+                build_sr_client(&KafkaValueFormat::Json, Some(&key))
+                    .unwrap()
+                    .is_some()
+            );
+        }
+
+        #[test]
+        fn build_sr_client_propagates_invalid_url() {
+            let format = KafkaValueFormat::ConfluentJsonSchema {
+                schema_registry: SchemaRegistryConfig::new("not-a-url"),
+                validate: false,
+            };
+            assert!(build_sr_client(&format, None).is_err());
+        }
+    }
 }

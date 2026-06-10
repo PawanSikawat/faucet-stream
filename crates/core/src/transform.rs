@@ -2211,4 +2211,729 @@ mod tests {
         assert!(key.contains("café"), "key was {key:?}");
         assert!(key.contains("percent"), "key was {key:?}");
     }
+
+    // ── Debug formatting for every RecordTransform variant ─────────────────────
+
+    #[test]
+    fn debug_record_transform_all_variants() {
+        // Custom is always available.
+        let dbg = format!("{:?}", RecordTransform::custom(|v| v));
+        assert_eq!(dbg, "Custom(<fn>)");
+
+        #[cfg(feature = "transform-flatten")]
+        {
+            let dbg = format!(
+                "{:?}",
+                RecordTransform::Flatten {
+                    separator: "__".into()
+                }
+            );
+            assert!(dbg.starts_with("Flatten"), "{dbg}");
+            assert!(dbg.contains("separator"), "{dbg}");
+            assert!(dbg.contains("__"), "{dbg}");
+        }
+        #[cfg(feature = "transform-rename-keys")]
+        {
+            let dbg = format!(
+                "{:?}",
+                RecordTransform::RenameKeys {
+                    pattern: "p".into(),
+                    replacement: "r".into(),
+                }
+            );
+            assert!(dbg.starts_with("RenameKeys"), "{dbg}");
+            assert!(dbg.contains("pattern"), "{dbg}");
+            assert!(dbg.contains("replacement"), "{dbg}");
+        }
+        #[cfg(feature = "transform-keys-case")]
+        {
+            let dbg = format!(
+                "{:?}",
+                RecordTransform::KeysCase {
+                    mode: KeyCaseMode::Snake
+                }
+            );
+            assert!(dbg.starts_with("KeysCase"), "{dbg}");
+            assert!(dbg.contains("Snake"), "{dbg}");
+        }
+        #[cfg(feature = "transform-select")]
+        {
+            let dbg = format!(
+                "{:?}",
+                RecordTransform::Select {
+                    fields: vec!["a".into()]
+                }
+            );
+            assert!(dbg.starts_with("Select"), "{dbg}");
+            assert!(dbg.contains("fields"), "{dbg}");
+        }
+        #[cfg(feature = "transform-drop")]
+        {
+            let dbg = format!(
+                "{:?}",
+                RecordTransform::Drop {
+                    fields: vec!["a".into()]
+                }
+            );
+            assert!(dbg.starts_with("Drop"), "{dbg}");
+        }
+        #[cfg(feature = "transform-set")]
+        {
+            let mut values = Map::new();
+            values.insert("k".into(), json!("v"));
+            let dbg = format!("{:?}", RecordTransform::Set { values });
+            assert!(dbg.starts_with("Set"), "{dbg}");
+            assert!(dbg.contains("values"), "{dbg}");
+        }
+        #[cfg(feature = "transform-rename-field")]
+        {
+            let mut fields = HashMap::new();
+            fields.insert("a".to_owned(), "b".to_owned());
+            let dbg = format!("{:?}", RecordTransform::RenameField { fields });
+            assert!(dbg.starts_with("RenameField"), "{dbg}");
+        }
+        #[cfg(feature = "transform-cast")]
+        {
+            let mut fields = HashMap::new();
+            fields.insert("a".to_owned(), CastType::Int);
+            let dbg = format!(
+                "{:?}",
+                RecordTransform::Cast {
+                    fields,
+                    on_error: CastOnError::Error,
+                }
+            );
+            assert!(dbg.starts_with("Cast"), "{dbg}");
+            assert!(dbg.contains("on_error"), "{dbg}");
+        }
+        #[cfg(feature = "transform-redact")]
+        {
+            let dbg = format!(
+                "{:?}",
+                RecordTransform::Redact {
+                    fields: vec!["a".into()],
+                    mask: json!("***"),
+                }
+            );
+            assert!(dbg.starts_with("Redact"), "{dbg}");
+            assert!(dbg.contains("mask"), "{dbg}");
+        }
+        #[cfg(feature = "transform-value-case")]
+        {
+            let dbg = format!(
+                "{:?}",
+                RecordTransform::ValueCase {
+                    fields: vec!["a".into()],
+                    mode: ValueCaseMode::Lower,
+                }
+            );
+            assert!(dbg.starts_with("ValueCase"), "{dbg}");
+            assert!(dbg.contains("mode"), "{dbg}");
+        }
+        #[cfg(feature = "transform-spell-symbols")]
+        {
+            let dbg = format!(
+                "{:?}",
+                RecordTransform::SpellSymbols {
+                    extra: HashMap::new(),
+                    separator: " ".into(),
+                }
+            );
+            assert!(dbg.starts_with("SpellSymbols"), "{dbg}");
+            assert!(dbg.contains("separator"), "{dbg}");
+        }
+    }
+
+    // ── Clone for every RecordTransform variant (refcount bump on Custom) ──────
+
+    #[test]
+    fn clone_record_transform_custom_preserves_behaviour() {
+        let original = RecordTransform::custom(|mut v| {
+            if let Value::Object(ref mut m) = v {
+                m.insert("cloned".into(), json!(true));
+            }
+            v
+        });
+        let cloned = original.clone();
+        assert_eq!(format!("{cloned:?}"), "Custom(<fn>)");
+        let out = apply_all(json!({"id": 1}), &compiled(&[cloned]));
+        assert_eq!(out["cloned"], true);
+        assert_eq!(out["id"], 1);
+    }
+
+    #[test]
+    // Every push below is #[cfg(feature)]-gated, so a vec![] literal can't
+    // express this; suppress the vec-init-then-push lint for the whole test.
+    #[allow(clippy::vec_init_then_push)]
+    fn clone_record_transform_all_builtin_variants() {
+        let mut variants: Vec<RecordTransform> = Vec::new();
+        #[cfg(feature = "transform-flatten")]
+        variants.push(RecordTransform::Flatten {
+            separator: "__".into(),
+        });
+        #[cfg(feature = "transform-rename-keys")]
+        variants.push(RecordTransform::RenameKeys {
+            pattern: "p".into(),
+            replacement: "r".into(),
+        });
+        #[cfg(feature = "transform-keys-case")]
+        variants.push(RecordTransform::KeysCase {
+            mode: KeyCaseMode::Snake,
+        });
+        #[cfg(feature = "transform-select")]
+        variants.push(RecordTransform::Select {
+            fields: vec!["a".into()],
+        });
+        #[cfg(feature = "transform-drop")]
+        variants.push(RecordTransform::Drop {
+            fields: vec!["a".into()],
+        });
+        #[cfg(feature = "transform-set")]
+        {
+            let mut values = Map::new();
+            values.insert("k".into(), json!("v"));
+            variants.push(RecordTransform::Set { values });
+        }
+        #[cfg(feature = "transform-rename-field")]
+        {
+            let mut fields = HashMap::new();
+            fields.insert("a".to_owned(), "b".to_owned());
+            variants.push(RecordTransform::RenameField { fields });
+        }
+        #[cfg(feature = "transform-cast")]
+        {
+            let mut fields = HashMap::new();
+            fields.insert("a".to_owned(), CastType::Int);
+            variants.push(RecordTransform::Cast {
+                fields,
+                on_error: CastOnError::Error,
+            });
+        }
+        #[cfg(feature = "transform-redact")]
+        variants.push(RecordTransform::Redact {
+            fields: vec!["a".into()],
+            mask: json!("***"),
+        });
+        #[cfg(feature = "transform-value-case")]
+        variants.push(RecordTransform::ValueCase {
+            fields: vec!["a".into()],
+            mode: ValueCaseMode::Lower,
+        });
+        #[cfg(feature = "transform-spell-symbols")]
+        variants.push(RecordTransform::SpellSymbols {
+            extra: HashMap::new(),
+            separator: " ".into(),
+        });
+
+        // The clone's Debug must match the original's Debug exactly.
+        for v in &variants {
+            let cloned = v.clone();
+            assert_eq!(format!("{v:?}"), format!("{cloned:?}"));
+        }
+    }
+
+    #[test]
+    fn clone_compiled_transform_all_variants() {
+        let mut specs: Vec<RecordTransform> = vec![RecordTransform::custom(|v| v)];
+        #[cfg(feature = "transform-flatten")]
+        specs.push(RecordTransform::Flatten {
+            separator: "__".into(),
+        });
+        #[cfg(feature = "transform-rename-keys")]
+        specs.push(RecordTransform::RenameKeys {
+            pattern: "p".into(),
+            replacement: "r".into(),
+        });
+        #[cfg(feature = "transform-keys-case")]
+        specs.push(RecordTransform::KeysCase {
+            mode: KeyCaseMode::Camel,
+        });
+        #[cfg(feature = "transform-select")]
+        specs.push(RecordTransform::Select {
+            fields: vec!["a".into()],
+        });
+        #[cfg(feature = "transform-drop")]
+        specs.push(RecordTransform::Drop {
+            fields: vec!["a".into()],
+        });
+        #[cfg(feature = "transform-set")]
+        {
+            let mut values = Map::new();
+            values.insert("k".into(), json!("v"));
+            specs.push(RecordTransform::Set { values });
+        }
+        #[cfg(feature = "transform-rename-field")]
+        {
+            let mut fields = HashMap::new();
+            fields.insert("a".to_owned(), "b".to_owned());
+            specs.push(RecordTransform::RenameField { fields });
+        }
+        #[cfg(feature = "transform-cast")]
+        {
+            let mut fields = HashMap::new();
+            fields.insert("a".to_owned(), CastType::Int);
+            specs.push(RecordTransform::Cast {
+                fields,
+                on_error: CastOnError::Null,
+            });
+        }
+        #[cfg(feature = "transform-redact")]
+        specs.push(RecordTransform::Redact {
+            fields: vec!["a".into()],
+            mask: json!("***"),
+        });
+        #[cfg(feature = "transform-value-case")]
+        specs.push(RecordTransform::ValueCase {
+            fields: vec!["a".into()],
+            mode: ValueCaseMode::Upper,
+        });
+        #[cfg(feature = "transform-spell-symbols")]
+        specs.push(RecordTransform::SpellSymbols {
+            extra: HashMap::new(),
+            separator: " ".into(),
+        });
+
+        // Compile each, clone the compiled form, and confirm the cloned slice
+        // still transforms a record identically to the original slice.
+        let original = compiled(&specs);
+        let cloned: Vec<CompiledTransform> = original.to_vec();
+        assert_eq!(original.len(), cloned.len());
+        let record = json!({"a": "1", "k": "x"});
+        let out_orig = super::apply_all(record.clone(), &original);
+        let out_clone = super::apply_all(record, &cloned);
+        assert_eq!(
+            out_orig.is_ok(),
+            out_clone.is_ok(),
+            "clone must transform identically"
+        );
+        if let (Ok(a), Ok(b)) = (out_orig, out_clone) {
+            assert_eq!(a, b);
+        }
+    }
+
+    // ── Non-object records pass through every object-only transform ────────────
+
+    #[cfg(feature = "transform-flatten")]
+    #[test]
+    fn flatten_passes_through_non_object() {
+        let record = json!([1, 2, 3]);
+        let result = apply_all(
+            record.clone(),
+            &compiled(&[RecordTransform::Flatten {
+                separator: "__".into(),
+            }]),
+        );
+        assert_eq!(result, record);
+        // A bare scalar too.
+        let scalar = json!(42);
+        let result = apply_all(
+            scalar.clone(),
+            &compiled(&[RecordTransform::Flatten {
+                separator: "__".into(),
+            }]),
+        );
+        assert_eq!(result, scalar);
+    }
+
+    #[cfg(feature = "transform-drop")]
+    #[test]
+    fn drop_passes_through_non_object() {
+        let record = json!([1, 2]);
+        let result = apply_all(
+            record.clone(),
+            &compiled(&[RecordTransform::Drop {
+                fields: vec!["a".into()],
+            }]),
+        );
+        assert_eq!(result, record);
+    }
+
+    #[cfg(feature = "transform-set")]
+    #[test]
+    fn set_passes_through_non_object() {
+        let mut values = Map::new();
+        values.insert("k".into(), json!("v"));
+        let record = json!("scalar");
+        let result = apply_all(
+            record.clone(),
+            &compiled(&[RecordTransform::Set { values }]),
+        );
+        assert_eq!(result, record);
+    }
+
+    #[cfg(feature = "transform-rename-field")]
+    #[test]
+    fn rename_field_passes_through_non_object() {
+        let mut fields = HashMap::new();
+        fields.insert("a".to_owned(), "b".to_owned());
+        let record = json!([1, 2]);
+        let result = apply_all(
+            record.clone(),
+            &compiled(&[RecordTransform::RenameField { fields }]),
+        );
+        assert_eq!(result, record);
+    }
+
+    #[cfg(feature = "transform-rename-field")]
+    #[test]
+    fn rename_field_same_name_is_skipped() {
+        // from == to short-circuits (continue) and leaves the field intact.
+        let mut fields = HashMap::new();
+        fields.insert("a".to_owned(), "a".to_owned());
+        let record = json!({"a": 1});
+        let result = apply_all(
+            record,
+            &compiled(&[RecordTransform::RenameField { fields }]),
+        );
+        assert_eq!(result["a"], 1);
+    }
+
+    #[cfg(feature = "transform-cast")]
+    #[test]
+    fn cast_passes_through_non_object() {
+        let record = json!([1, 2]);
+        let result = apply_all(
+            record.clone(),
+            &compiled(&cast_specs("a", CastType::Int, CastOnError::Error)),
+        );
+        assert_eq!(result, record);
+    }
+
+    #[cfg(feature = "transform-redact")]
+    #[test]
+    fn redact_passes_through_non_object() {
+        let record = json!("scalar");
+        let result = apply_all(
+            record.clone(),
+            &compiled(&[RecordTransform::Redact {
+                fields: vec!["a".into()],
+                mask: json!("***"),
+            }]),
+        );
+        assert_eq!(result, record);
+    }
+
+    #[cfg(feature = "transform-value-case")]
+    #[test]
+    fn value_case_passes_through_non_object() {
+        let record = json!([1, 2]);
+        let result = apply_all(
+            record.clone(),
+            &compiled(&[RecordTransform::ValueCase {
+                fields: vec!["a".into()],
+                mode: ValueCaseMode::Lower,
+            }]),
+        );
+        assert_eq!(result, record);
+    }
+
+    // ── Cast: exhaustive per-type / per-source-value matrix ────────────────────
+
+    #[cfg(feature = "transform-cast")]
+    #[test]
+    fn cast_integer_number_to_int_is_identity() {
+        // Number that is already an i64 takes the `as_i64()` Some branch.
+        let record = json!({"n": 7});
+        let result = apply_all(
+            record,
+            &compiled(&cast_specs("n", CastType::Int, CastOnError::Error)),
+        );
+        assert_eq!(result["n"], 7);
+    }
+
+    #[cfg(feature = "transform-cast")]
+    #[test]
+    fn cast_bool_to_int() {
+        let record = json!({"t": true, "f": false});
+        let mut fields = HashMap::new();
+        fields.insert("t".to_owned(), CastType::Int);
+        fields.insert("f".to_owned(), CastType::Int);
+        let result = apply_all(
+            record,
+            &compiled(&[RecordTransform::Cast {
+                fields,
+                on_error: CastOnError::Error,
+            }]),
+        );
+        assert_eq!(result["t"], 1);
+        assert_eq!(result["f"], 0);
+    }
+
+    #[cfg(feature = "transform-cast")]
+    #[test]
+    fn cast_null_to_int_errors() {
+        let record = json!({"n": null});
+        let err = super::apply_all(
+            record,
+            &compiled(&cast_specs("n", CastType::Int, CastOnError::Error)),
+        )
+        .expect_err("null cannot become int");
+        assert!(
+            format!("{err}").contains("null cannot be cast to int"),
+            "{err}"
+        );
+    }
+
+    #[cfg(feature = "transform-cast")]
+    #[test]
+    fn cast_composite_to_int_errors() {
+        let record = json!({"n": [1, 2]});
+        let err = super::apply_all(
+            record,
+            &compiled(&cast_specs("n", CastType::Int, CastOnError::Error)),
+        )
+        .expect_err("array cannot become int");
+        assert!(format!("{err}").contains("composite"), "{err}");
+    }
+
+    #[cfg(feature = "transform-cast")]
+    #[test]
+    fn cast_number_to_float() {
+        let record = json!({"n": 5});
+        let result = apply_all(
+            record,
+            &compiled(&cast_specs("n", CastType::Float, CastOnError::Error)),
+        );
+        assert_eq!(result["n"], 5.0);
+    }
+
+    #[cfg(feature = "transform-cast")]
+    #[test]
+    fn cast_bool_to_float() {
+        let record = json!({"t": true, "f": false});
+        let mut fields = HashMap::new();
+        fields.insert("t".to_owned(), CastType::Float);
+        fields.insert("f".to_owned(), CastType::Float);
+        let result = apply_all(
+            record,
+            &compiled(&[RecordTransform::Cast {
+                fields,
+                on_error: CastOnError::Error,
+            }]),
+        );
+        assert_eq!(result["t"], 1.0);
+        assert_eq!(result["f"], 0.0);
+    }
+
+    #[cfg(feature = "transform-cast")]
+    #[test]
+    fn cast_null_to_float_errors() {
+        let record = json!({"n": null});
+        let err = super::apply_all(
+            record,
+            &compiled(&cast_specs("n", CastType::Float, CastOnError::Error)),
+        )
+        .expect_err("null cannot become float");
+        assert!(
+            format!("{err}").contains("null cannot be cast to float"),
+            "{err}"
+        );
+    }
+
+    #[cfg(feature = "transform-cast")]
+    #[test]
+    fn cast_composite_to_float_errors() {
+        let record = json!({"n": {"x": 1}});
+        let err = super::apply_all(
+            record,
+            &compiled(&cast_specs("n", CastType::Float, CastOnError::Error)),
+        )
+        .expect_err("object cannot become float");
+        assert!(format!("{err}").contains("composite"), "{err}");
+    }
+
+    #[cfg(feature = "transform-cast")]
+    #[test]
+    fn cast_string_to_float_invalid_errors() {
+        let record = json!({"n": "not a float"});
+        let err = super::apply_all(
+            record,
+            &compiled(&cast_specs("n", CastType::Float, CastOnError::Error)),
+        )
+        .expect_err("non-numeric string cannot become float");
+        assert!(format!("{err}").contains("is not a float"), "{err}");
+    }
+
+    #[cfg(feature = "transform-cast")]
+    #[test]
+    fn cast_bool_to_bool_is_identity() {
+        let record = json!({"b": true});
+        let result = apply_all(
+            record,
+            &compiled(&cast_specs("b", CastType::Bool, CastOnError::Error)),
+        );
+        assert_eq!(result["b"], true);
+    }
+
+    #[cfg(feature = "transform-cast")]
+    #[test]
+    fn cast_number_to_bool() {
+        let record = json!({"on": 1, "off": 0});
+        let mut fields = HashMap::new();
+        fields.insert("on".to_owned(), CastType::Bool);
+        fields.insert("off".to_owned(), CastType::Bool);
+        let result = apply_all(
+            record,
+            &compiled(&[RecordTransform::Cast {
+                fields,
+                on_error: CastOnError::Error,
+            }]),
+        );
+        assert_eq!(result["on"], true);
+        assert_eq!(result["off"], false);
+    }
+
+    #[cfg(feature = "transform-cast")]
+    #[test]
+    fn cast_integer_other_than_zero_one_to_bool_errors() {
+        let record = json!({"n": 7});
+        let err = super::apply_all(
+            record,
+            &compiled(&cast_specs("n", CastType::Bool, CastOnError::Error)),
+        )
+        .expect_err("only 0/1 convert to bool");
+        assert!(format!("{err}").contains("not 0 or 1"), "{err}");
+    }
+
+    #[cfg(feature = "transform-cast")]
+    #[test]
+    fn cast_float_number_to_bool_errors() {
+        // A fractional number takes the non-i64 branch ("number ... is not 0 or 1").
+        let record = json!({"n": 1.5});
+        let err = super::apply_all(
+            record,
+            &compiled(&cast_specs("n", CastType::Bool, CastOnError::Error)),
+        )
+        .expect_err("fractional number cannot become bool");
+        assert!(format!("{err}").contains("not 0 or 1"), "{err}");
+    }
+
+    #[cfg(feature = "transform-cast")]
+    #[test]
+    fn cast_unrecognised_string_to_bool_errors() {
+        let record = json!({"flag": "maybe"});
+        let err = super::apply_all(
+            record,
+            &compiled(&cast_specs("flag", CastType::Bool, CastOnError::Error)),
+        )
+        .expect_err("'maybe' is not a boolean");
+        assert!(
+            format!("{err}").contains("not a recognised boolean"),
+            "{err}"
+        );
+    }
+
+    #[cfg(feature = "transform-cast")]
+    #[test]
+    fn cast_null_to_bool_errors() {
+        let record = json!({"b": null});
+        let err = super::apply_all(
+            record,
+            &compiled(&cast_specs("b", CastType::Bool, CastOnError::Error)),
+        )
+        .expect_err("null cannot become bool");
+        assert!(
+            format!("{err}").contains("null cannot be cast to bool"),
+            "{err}"
+        );
+    }
+
+    #[cfg(feature = "transform-cast")]
+    #[test]
+    fn cast_composite_to_bool_errors() {
+        let record = json!({"b": [true]});
+        let err = super::apply_all(
+            record,
+            &compiled(&cast_specs("b", CastType::Bool, CastOnError::Error)),
+        )
+        .expect_err("array cannot become bool");
+        assert!(format!("{err}").contains("composite"), "{err}");
+    }
+
+    #[cfg(feature = "transform-cast")]
+    #[test]
+    fn cast_string_to_string_is_identity() {
+        let record = json!({"s": "hello"});
+        let result = apply_all(
+            record,
+            &compiled(&cast_specs("s", CastType::String, CastOnError::Error)),
+        );
+        assert_eq!(result["s"], "hello");
+    }
+
+    #[cfg(feature = "transform-cast")]
+    #[test]
+    fn cast_bool_to_string() {
+        let record = json!({"b": true});
+        let result = apply_all(
+            record,
+            &compiled(&cast_specs("b", CastType::String, CastOnError::Error)),
+        );
+        assert_eq!(result["b"], "true");
+    }
+
+    #[cfg(feature = "transform-cast")]
+    #[test]
+    fn cast_null_to_string_errors() {
+        let record = json!({"s": null});
+        let err = super::apply_all(
+            record,
+            &compiled(&cast_specs("s", CastType::String, CastOnError::Error)),
+        )
+        .expect_err("null cannot become string");
+        assert!(
+            format!("{err}").contains("null cannot be cast to string"),
+            "{err}"
+        );
+    }
+
+    #[cfg(feature = "transform-cast")]
+    #[test]
+    fn cast_composite_to_string_errors() {
+        let record = json!({"s": {"a": 1}});
+        let err = super::apply_all(
+            record,
+            &compiled(&cast_specs("s", CastType::String, CastOnError::Error)),
+        )
+        .expect_err("object cannot become string");
+        assert!(format!("{err}").contains("composite"), "{err}");
+    }
+
+    #[cfg(feature = "transform-cast")]
+    #[test]
+    fn cast_invalid_timestamp_string_errors() {
+        let record = json!({"ts": "not a date"});
+        let err = super::apply_all(
+            record,
+            &compiled(&cast_specs("ts", CastType::Timestamp, CastOnError::Error)),
+        )
+        .expect_err("invalid timestamp string");
+        assert!(format!("{err}").contains("RFC 3339"), "{err}");
+    }
+
+    #[cfg(feature = "transform-cast")]
+    #[test]
+    fn cast_non_string_to_timestamp_names_the_type() {
+        // Each non-string source exercises a distinct arm of value_type_name.
+        for (val, ty_name) in [
+            (json!(null), "null"),
+            (json!(true), "bool"),
+            (json!(42), "number"),
+            (json!([1, 2]), "array"),
+            (json!({"a": 1}), "object"),
+        ] {
+            let record = json!({ "ts": val });
+            let err = super::apply_all(
+                record,
+                &compiled(&cast_specs("ts", CastType::Timestamp, CastOnError::Error)),
+            )
+            .expect_err("non-string cannot become timestamp");
+            let msg = format!("{err}");
+            assert!(msg.contains("timestamp"), "{msg}");
+            assert!(
+                msg.contains(ty_name),
+                "expected type name {ty_name:?} in: {msg}"
+            );
+        }
+    }
 }

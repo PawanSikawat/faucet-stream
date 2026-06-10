@@ -90,4 +90,30 @@ mod tests {
         let err = r.get(99999).unwrap_err();
         assert!(format!("{err}").contains("99999"));
     }
+
+    #[test]
+    fn reinsert_with_changed_columns_warns_and_replaces() {
+        use crate::pgoutput::messages::ColumnDesc;
+        let col = |name: &str, oid: u32| ColumnDesc {
+            flags: 0,
+            name: name.into(),
+            type_oid: oid,
+            type_modifier: -1,
+        };
+        let mut rel_v1 = rel(16384, "users");
+        rel_v1.columns = vec![col("id", 23)];
+        let mut rel_v2 = rel(16384, "users");
+        // A different column set (added column) exercises the schema-change
+        // warning branch; subsequent lookups bind against the new descriptor.
+        rel_v2.columns = vec![col("id", 23), col("email", 25)];
+
+        let mut r = RelationRegistry::new();
+        r.insert(rel_v1);
+        r.insert(rel_v2);
+
+        let got = r.get(16384).unwrap();
+        assert_eq!(got.columns.len(), 2);
+        assert_eq!(got.columns[1].name, "email");
+        assert_eq!(got.columns[1].type_oid, 25);
+    }
 }

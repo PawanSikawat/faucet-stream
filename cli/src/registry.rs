@@ -728,4 +728,247 @@ mod tests {
         );
         assert!(scrubbed.ends_with('…'));
     }
+
+    // A `(kind, config)` pair that builds without performing any network/disk
+    // I/O — the CSV source's `new()` only stores config, so we can drive the
+    // real `build_source` dispatch arm and inspect the resulting trait object.
+    #[cfg(feature = "source-csv")]
+    #[tokio::test]
+    async fn build_source_csv_succeeds_without_io() {
+        let src = build_source(
+            "csv",
+            serde_json::json!({ "path": "/tmp/does-not-need-to-exist.csv" }),
+            &AuthCatalog::new(),
+        )
+        .await
+        .expect("csv source should build without I/O");
+        // The CSV source uses the default `connector_name()` (stripped type
+        // name) rather than overriding it with a friendly label.
+        assert_eq!(src.connector_name(), "CsvSource");
+    }
+
+    // The JSONL sink's `new()` is also pure (it opens the file lazily on first
+    // write), so building it exercises the sink dispatch arm with no I/O.
+    #[cfg(feature = "sink-jsonl")]
+    #[tokio::test]
+    async fn build_sink_jsonl_succeeds_without_io() {
+        let sink = build_sink(
+            "jsonl",
+            serde_json::json!({ "path": "/tmp/does-not-need-to-exist.jsonl" }),
+            &AuthCatalog::new(),
+        )
+        .await
+        .expect("jsonl sink should build without I/O");
+        assert_eq!(sink.connector_name(), "jsonl");
+    }
+
+    // The stdout sink builds without any config fields and without I/O.
+    #[cfg(feature = "sink-stdout")]
+    #[tokio::test]
+    async fn build_sink_stdout_succeeds_without_io() {
+        let sink = build_sink("stdout", serde_json::json!({}), &AuthCatalog::new())
+            .await
+            .expect("stdout sink should build without I/O");
+        // The stdout sink uses the default `connector_name()` (stripped type
+        // name) rather than overriding it with a friendly label.
+        assert_eq!(sink.connector_name(), "StdoutSink");
+    }
+
+    // A malformed config for a known connector must surface as a typed
+    // `InvalidConnectorConfig` from the `decode` helper, not a panic.
+    #[cfg(feature = "source-csv")]
+    #[tokio::test]
+    async fn build_source_csv_invalid_config_errors() {
+        // `path` is a required String; supplying an integer is a type error.
+        // `Box<dyn Source>` is not `Debug`, so match the Result directly rather
+        // than using `expect_err`.
+        let res = build_source(
+            "csv",
+            serde_json::json!({ "path": 42 }),
+            &AuthCatalog::new(),
+        )
+        .await;
+        match res {
+            Err(CliError::InvalidConnectorConfig { kind, name, .. }) => {
+                assert_eq!(kind, "source");
+                assert_eq!(name, "csv");
+            }
+            Ok(_) => panic!("expected InvalidConnectorConfig, got Ok"),
+            Err(other) => panic!("expected InvalidConnectorConfig, got {other:?}"),
+        }
+    }
+
+    // `source_schema` must return a JSON object that surfaces the connector's
+    // config fields (here: the required `path`).
+    #[cfg(feature = "source-csv")]
+    #[test]
+    fn source_schema_csv_exposes_path_property() {
+        let schema = source_schema("csv").expect("csv schema");
+        let props = schema
+            .get("properties")
+            .and_then(Value::as_object)
+            .expect("schema should have a properties object");
+        assert!(props.contains_key("path"), "schema props: {props:?}");
+    }
+
+    #[cfg(feature = "sink-jsonl")]
+    #[test]
+    fn sink_schema_jsonl_exposes_path_property() {
+        let schema = sink_schema("jsonl").expect("jsonl schema");
+        let props = schema
+            .get("properties")
+            .and_then(Value::as_object)
+            .expect("schema should have a properties object");
+        assert!(props.contains_key("path"), "schema props: {props:?}");
+    }
+
+    #[test]
+    fn unknown_source_schema_errors_with_available_list() {
+        let err = source_schema("definitely-not-a-source").expect_err("unknown source");
+        match err {
+            CliError::UnknownConnector {
+                kind,
+                name,
+                available,
+            } => {
+                assert_eq!(kind, "source");
+                assert_eq!(name, "definitely-not-a-source");
+                // Under `--all-features` the available list is non-empty.
+                assert!(!available.is_empty());
+            }
+            other => panic!("expected UnknownConnector, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn unknown_sink_schema_errors() {
+        let err = sink_schema("definitely-not-a-sink").expect_err("unknown sink");
+        assert!(matches!(
+            err,
+            CliError::UnknownConnector { kind: "sink", .. }
+        ));
+    }
+
+    #[cfg(feature = "source-csv")]
+    #[test]
+    fn source_exists_is_true_for_known_and_false_for_unknown() {
+        assert!(source_exists("csv"));
+        assert!(!source_exists("definitely-not-a-source"));
+    }
+
+    #[cfg(feature = "sink-jsonl")]
+    #[test]
+    fn sink_exists_is_true_for_known_and_false_for_unknown() {
+        assert!(sink_exists("jsonl"));
+        assert!(!sink_exists("definitely-not-a-sink"));
+    }
+
+    // Descriptions back `faucet list`: non-empty, with a one-line summary, and
+    // each name must resolve to a real schema (no orphan listing).
+    #[test]
+    fn source_descriptions_are_non_empty_and_consistent() {
+        let descs = source_descriptions();
+        assert!(!descs.is_empty());
+        for (name, summary) in &descs {
+            assert!(!name.is_empty(), "empty connector name");
+            assert!(!summary.is_empty(), "empty summary for {name}");
+            assert!(
+                source_schema(name).is_ok(),
+                "listed source `{name}` has no schema"
+            );
+        }
+    }
+
+    #[test]
+    fn sink_descriptions_are_non_empty_and_consistent() {
+        let descs = sink_descriptions();
+        assert!(!descs.is_empty());
+        for (name, summary) in &descs {
+            assert!(!name.is_empty(), "empty connector name");
+            assert!(!summary.is_empty(), "empty summary for {name}");
+            assert!(
+                sink_schema(name).is_ok(),
+                "listed sink `{name}` has no schema"
+            );
+        }
+    }
+
+    // `*_kinds()` is derived from `*_descriptions()`; under `--all-features`
+    // the canonical built-in connectors must be present.
+    #[cfg(all(feature = "source-csv", feature = "source-rest"))]
+    #[test]
+    fn source_kinds_contains_expected_builtins() {
+        let kinds = source_kinds();
+        assert!(kinds.contains(&"csv"));
+        assert!(kinds.contains(&"rest"));
+    }
+
+    #[cfg(all(feature = "sink-jsonl", feature = "sink-stdout"))]
+    #[test]
+    fn sink_kinds_contains_expected_builtins() {
+        let kinds = sink_kinds();
+        assert!(kinds.contains(&"jsonl"));
+        assert!(kinds.contains(&"stdout"));
+    }
+
+    // Build a catalog holding one `static` bearer provider, then build a
+    // connector whose config carries `auth: { ref: "tok" }` — exercising the
+    // `with_auth_provider` injection branch in the dispatch arm.
+    #[cfg(feature = "source-rest")]
+    #[tokio::test]
+    async fn build_source_injects_referenced_auth_provider() {
+        let mut specs = std::collections::HashMap::new();
+        specs.insert(
+            "tok".to_string(),
+            serde_json::json!({"type": "static", "config": {"token": "abc"}}),
+        );
+        let catalog = auth_catalog::build_auth_catalog(Some(&specs)).expect("catalog");
+
+        let src = build_source("rest", rest_config_with_auth_ref("tok"), &catalog)
+            .await
+            .expect("rest source with a resolvable auth ref should build");
+        assert_eq!(src.connector_name(), "rest");
+    }
+
+    // A minimal, fully-valid rest config (built from the real constructor so
+    // every required field is present) carrying an `auth: { ref }` pointer.
+    #[cfg(feature = "source-rest")]
+    fn rest_config_with_auth_ref(name: &str) -> Value {
+        let cfg = faucet_source_rest::RestStreamConfig::new("https://api.example.com", "/v1");
+        let mut v = serde_json::to_value(cfg).expect("serialize rest config");
+        v.as_object_mut()
+            .unwrap()
+            .insert("auth".to_string(), serde_json::json!({ "ref": name }));
+        v
+    }
+
+    // An `auth: { ref }` pointing at a name absent from the catalog must surface
+    // as `UnknownAuthProvider`, not silently build without auth.
+    #[cfg(feature = "source-rest")]
+    #[tokio::test]
+    async fn build_source_unknown_auth_ref_errors() {
+        let res = build_source(
+            "rest",
+            rest_config_with_auth_ref("missing"),
+            &AuthCatalog::new(),
+        )
+        .await;
+        match res {
+            Err(CliError::UnknownAuthProvider { name, .. }) => assert_eq!(name, "missing"),
+            Ok(_) => panic!("expected UnknownAuthProvider, got Ok"),
+            Err(other) => panic!("expected UnknownAuthProvider, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn exactly_once_capability_allowlists() {
+        assert!(source_supports_exactly_once("postgres-cdc"));
+        assert!(source_supports_exactly_once("mysql-cdc"));
+        assert!(source_supports_exactly_once("mongodb-cdc"));
+        assert!(!source_supports_exactly_once("rest"));
+
+        assert!(sink_supports_idempotent_writes("postgres"));
+        assert!(sink_supports_idempotent_writes("iceberg"));
+        assert!(!sink_supports_idempotent_writes("jsonl"));
+    }
 }

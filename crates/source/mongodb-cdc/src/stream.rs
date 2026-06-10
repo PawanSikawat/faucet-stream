@@ -468,6 +468,31 @@ mod tests {
     }
 
     #[test]
+    fn explicit_resume_token_overrides_bookmark() {
+        // An explicit ResumeToken in config must win over any persisted
+        // bookmark and resolve to ResumeAfter(token).
+        let pending = Bookmark {
+            resume_token: json!({ "_data": "PENDING" }),
+        };
+        let pos = resolve_start(
+            &StartFrom::ResumeToken {
+                token: json!({ "_data": "8264AB00" }),
+            },
+            Some(&pending),
+        )
+        .unwrap();
+        // The resolved position must round-trip back to the configured token,
+        // not the pending bookmark's token.
+        match pos {
+            StartPosition::ResumeAfter(tok) => {
+                let b = Bookmark::from_token(&tok).unwrap();
+                assert_eq!(b.resume_token["_data"], json!("8264AB00"));
+            }
+            other => panic!("expected ResumeAfter, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn now_yields_to_bookmark() {
         let pending = Bookmark {
             resume_token: json!({ "_data": "8264AB00" }),
@@ -524,6 +549,79 @@ mod tests {
         }))
         .unwrap();
         assert!(matches!(build_pipeline(&c), Err(FaucetError::Config(_))));
+    }
+
+    #[test]
+    fn pipeline_appends_object_stages_after_match() {
+        // operation_types prepends a $match; each aggregation_pipeline object
+        // stage is appended in order.
+        let c: MongoCdcSourceConfig = serde_json::from_value(json!({
+            "connection_uri": "mongodb://h/?replicaSet=rs0",
+            "scope": { "type": "cluster" },
+            "operation_types": ["insert"],
+            "aggregation_pipeline": [
+                { "$match": { "fullDocument.tier": "gold" } },
+                { "$project": { "fullDocument._id": 1 } }
+            ]
+        }))
+        .unwrap();
+        let p = build_pipeline(&c).unwrap();
+        assert_eq!(p.len(), 3, "operation $match + two user stages");
+        // First is the operation-type $match.
+        assert!(
+            p[0].get_document("$match")
+                .unwrap()
+                .contains_key("operationType")
+        );
+        // User object stages preserved verbatim, in order.
+        assert!(p[1].contains_key("$match"));
+        assert!(p[2].contains_key("$project"));
+    }
+
+    #[test]
+    fn pipeline_object_stages_without_operation_match() {
+        // No operation_types → no leading $match; only the user object stage.
+        let c: MongoCdcSourceConfig = serde_json::from_value(json!({
+            "connection_uri": "mongodb://h/?replicaSet=rs0",
+            "scope": { "type": "cluster" },
+            "aggregation_pipeline": [ { "$project": { "_id": 1 } } ]
+        }))
+        .unwrap();
+        let p = build_pipeline(&c).unwrap();
+        assert_eq!(p.len(), 1);
+        assert!(p[0].contains_key("$project"));
+    }
+
+    #[test]
+    fn full_document_type_mapping() {
+        use crate::config::FullDocument as F;
+        assert!(full_document_type(F::Off).is_none());
+        assert!(matches!(
+            full_document_type(F::WhenAvailable),
+            Some(FullDocumentType::WhenAvailable)
+        ));
+        assert!(matches!(
+            full_document_type(F::Required),
+            Some(FullDocumentType::Required)
+        ));
+        assert!(matches!(
+            full_document_type(F::UpdateLookup),
+            Some(FullDocumentType::UpdateLookup)
+        ));
+    }
+
+    #[test]
+    fn full_document_before_type_mapping() {
+        use crate::config::FullDocumentBeforeChange as F;
+        assert!(full_document_before_type(F::Off).is_none());
+        assert!(matches!(
+            full_document_before_type(F::WhenAvailable),
+            Some(FullDocumentBeforeChangeType::WhenAvailable)
+        ));
+        assert!(matches!(
+            full_document_before_type(F::Required),
+            Some(FullDocumentBeforeChangeType::Required)
+        ));
     }
 
     // dataset_uri is a pure-config method; MongoCdcSource requires a live

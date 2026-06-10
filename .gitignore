@@ -36,3 +36,6 @@ libtest_compile.rlib
 
 # mdBook rendered output (docs site source lives in docs/book/src)
 docs/book/book/
+
+# Coverage instrumentation artifacts (cargo-llvm-cov)
+*.profraw

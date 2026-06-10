@@ -632,4 +632,192 @@ mod tests {
         assert_eq!(streamed.len(), 2);
         assert_eq!(streamed[1]["Name"], "Bob");
     }
+
+    #[test]
+    fn xml_to_json_mixed_text_and_children_keeps_both() {
+        // An element with both text and a child element is NOT flattened to a
+        // bare string (obj.len() != 1), so #text and the child coexist.
+        let xml = r#"<root><p>hello<b>bold</b></p></root>"#;
+        let json = xml_to_json(xml).unwrap();
+        assert_eq!(json["root"]["p"]["#text"], "hello");
+        assert_eq!(json["root"]["p"]["b"], "bold");
+    }
+
+    #[test]
+    fn xml_to_json_text_split_by_entity_is_concatenated() {
+        // An entity reference (&amp;) splits the character data into two
+        // Text events on the same element; the second event hits the
+        // "#text already a String" branch and appends with a space.
+        let xml = r#"<root><msg>foo &amp; bar</msg></root>"#;
+        let json = xml_to_json(xml).unwrap();
+        assert_eq!(json["root"]["msg"], "foo & bar");
+    }
+
+    #[test]
+    fn xml_to_json_text_then_cdata_concatenated() {
+        // Leading plain text followed by a CDATA block on the same element:
+        // the CDATA arm appends to the existing #text String.
+        let xml = r#"<root><note>before <![CDATA[<raw>]]></note></root>"#;
+        let json = xml_to_json(xml).unwrap();
+        assert_eq!(json["root"]["note"], "before <raw>");
+    }
+
+    #[test]
+    fn xml_to_json_repeated_empty_elements_become_array() {
+        // Two self-closing tags with the same name under one parent: the
+        // second Empty event converts the first scalar value into an array.
+        let xml = r#"<root><flag/><flag/></root>"#;
+        let json = xml_to_json(xml).unwrap();
+        let flags = json["root"]["flag"].as_array().expect("repeated empties");
+        assert_eq!(flags.len(), 2);
+        assert!(flags[0].is_null());
+        assert!(flags[1].is_null());
+    }
+
+    #[test]
+    fn xml_to_json_three_repeated_empty_elements_push_onto_array() {
+        // A third same-named empty element pushes onto the already-array
+        // value (the `Some(Value::Array(arr)) => arr.push(value)` arm).
+        let xml = r#"<root><flag a="1"/><flag a="2"/><flag a="3"/></root>"#;
+        let json = xml_to_json(xml).unwrap();
+        let flags = json["root"]["flag"].as_array().expect("repeated empties");
+        assert_eq!(flags.len(), 3);
+        assert_eq!(flags[2]["@a"], "3");
+    }
+
+    #[test]
+    fn xml_to_json_skips_comments_and_processing_instructions() {
+        // Comments and PIs hit the `Ok(_) => {}` skip arm; the surrounding
+        // data must still parse correctly.
+        let xml = r#"<?xml version="1.0"?><root><!-- a comment --><name>X</name></root>"#;
+        let json = xml_to_json(xml).unwrap();
+        assert_eq!(json["root"]["name"], "X");
+    }
+
+    #[test]
+    fn xml_to_json_malformed_returns_parse_error() {
+        // A mismatched end tag is rejected by quick_xml's end-name check,
+        // surfacing as FaucetError::Transform via the `Err(e)` arm.
+        let xml = r#"<root><a></b></root>"#;
+        let err = xml_to_json(xml).unwrap_err();
+        assert!(
+            matches!(&err, FaucetError::Transform(m) if m.contains("XML parse error")),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn extract_at_path_descending_into_scalar_returns_empty() {
+        // The path tries to descend past a scalar leaf, hitting the
+        // `_ => return vec![]` non-object arm.
+        let val = json!({"root": {"name": "Alice"}});
+        let records = extract_at_path(&val, "root.name.first");
+        assert!(records.is_empty());
+    }
+
+    #[test]
+    fn extract_at_path_scalar_root_returns_empty() {
+        // The very first segment lookup is against a non-object value.
+        let val = json!("just a string");
+        let records = extract_at_path(&val, "anything");
+        assert!(records.is_empty());
+    }
+
+    #[test]
+    fn stream_extract_full_doc_mode_self_closing_and_repeats() {
+        // No path => full_doc mode. Exercises the Empty arm under full_doc
+        // (append_child into doc.last_mut), including repetition → array.
+        let xml = r#"<root><flag/><flag/><name>Z</name></root>"#;
+        let streamed = collect_stream_extract(xml, None);
+        let eager = xml_to_json(xml).unwrap();
+        assert_eq!(streamed.len(), 1);
+        assert_eq!(streamed[0], eager);
+        let flags = streamed[0]["root"]["flag"]
+            .as_array()
+            .expect("repeated empties in full-doc mode");
+        assert_eq!(flags.len(), 2);
+        assert_eq!(streamed[0]["root"]["name"], "Z");
+    }
+
+    #[test]
+    fn stream_extract_full_doc_mode_mixed_text_and_cdata() {
+        // full_doc mode: text then CDATA on the same element appends to the
+        // existing #text String (the full_doc Text + CData arms).
+        let xml = r#"<root><note>hi &amp; <![CDATA[<x>]]></note></root>"#;
+        let streamed = collect_stream_extract(xml, None);
+        let eager = xml_to_json(xml).unwrap();
+        assert_eq!(streamed.len(), 1);
+        assert_eq!(streamed[0], eager);
+        assert_eq!(streamed[0]["root"]["note"], "hi & <x>");
+    }
+
+    #[test]
+    fn stream_extract_subtree_self_closing_child_appends() {
+        // A self-closing child inside a matched subtree exercises the
+        // `start_depth.is_some()` Empty append_child branch.
+        let xml = r#"<root>
+            <user id="1"><active/><name>Alice</name></user>
+            <user id="2"><active/><name>Bob</name></user>
+        </root>"#;
+        let streamed = collect_stream_extract(xml, Some("root.user"));
+        let eager = extract_at_path(&xml_to_json(xml).unwrap(), "root.user");
+        assert_eq!(streamed, eager);
+        assert_eq!(streamed.len(), 2);
+        assert!(streamed[0]["active"].is_null());
+        assert_eq!(streamed[0]["name"], "Alice");
+    }
+
+    #[test]
+    fn stream_extract_subtree_text_split_by_entity_concatenated() {
+        // Entity-split text inside a matched subtree hits the subtree
+        // "#text already a String" append branch.
+        let xml = r#"<root><item><msg>a &amp; b</msg></item></root>"#;
+        let streamed = collect_stream_extract(xml, Some("root.item"));
+        assert_eq!(streamed.len(), 1);
+        assert_eq!(streamed[0]["msg"], "a & b");
+    }
+
+    #[test]
+    fn stream_extract_subtree_text_then_cdata_concatenated() {
+        // Text then CDATA inside a matched subtree appends CDATA onto the
+        // existing #text String (subtree CData "already a String" branch).
+        let xml = r#"<root><item><note>start <![CDATA[<end>]]></note></item></root>"#;
+        let streamed = collect_stream_extract(xml, Some("root.item"));
+        assert_eq!(streamed.len(), 1);
+        assert_eq!(streamed[0]["note"], "start <end>");
+    }
+
+    #[test]
+    fn stream_extract_repeated_children_push_onto_existing_array() {
+        // Three same-named children inside a matched element exercise the
+        // append_child `Some(Value::Array(arr)) => arr.push` arm.
+        let xml = r#"<root><order><line>a</line><line>b</line><line>c</line></order></root>"#;
+        let streamed = collect_stream_extract(xml, Some("root.order"));
+        assert_eq!(streamed.len(), 1);
+        let lines = streamed[0]["line"].as_array().expect("repeated children");
+        assert_eq!(lines.len(), 3);
+        assert_eq!(lines[2], "c");
+    }
+
+    #[test]
+    fn stream_extract_malformed_returns_parse_error() {
+        // A mismatched end tag surfaces via the streaming parser's Err arm.
+        let xml = r#"<root><a></b></root>"#;
+        let mut out = Vec::new();
+        let err = stream_extract(xml, Some("root.a"), |v| out.push(v)).unwrap_err();
+        assert!(
+            matches!(&err, FaucetError::Transform(m) if m.contains("XML parse error")),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn stream_extract_skips_comments_outside_match() {
+        // Comments hit the `Ok(_) => {}` arm; surrounding records still emit.
+        let xml = r#"<root><!-- c --><item><v>1</v></item><!-- d --><item><v>2</v></item></root>"#;
+        let streamed = collect_stream_extract(xml, Some("root.item"));
+        assert_eq!(streamed.len(), 2);
+        assert_eq!(streamed[0]["v"], "1");
+        assert_eq!(streamed[1]["v"], "2");
+    }
 }
