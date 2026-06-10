@@ -275,6 +275,10 @@ impl BigQuerySink {
                         IDEMPOTENT_JOB_TIMEOUT.as_secs()
                     )));
                 }
+                // The server long-poll normally blocks until completion, but if
+                // it returns early, back off so a still-running job can't turn
+                // this into a tight request-hammering loop.
+                tokio::time::sleep(Duration::from_millis(250)).await;
             }
         }
 

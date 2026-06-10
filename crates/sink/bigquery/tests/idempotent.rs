@@ -431,3 +431,71 @@ async fn write_batch_idempotent_errors_on_schemaless_table() {
         other => panic!("expected Sink error for a schemaless table, got: {other:?}"),
     }
 }
+
+#[tokio::test]
+async fn last_committed_token_errors_when_select_not_complete() {
+    // Fail-safe guard: a non-synchronous watermark read must NOT be read as
+    // `None` (which would replay committed pages → duplicates) — it must error.
+    let server = MockServer::start().await;
+    mount_token_endpoint(&server).await;
+    Mock::given(method("POST"))
+        .and(path(queries_path()))
+        .and(body_string_contains("CREATE TABLE IF NOT EXISTS"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(done_query("job-c")))
+        .mount(&server)
+        .await;
+    mount_job_done(&server, "job-c").await;
+    // The SELECT comes back still running.
+    Mock::given(method("POST"))
+        .and(path(queries_path()))
+        .and(body_string_contains("SELECT token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "kind": "bigquery#queryResponse",
+            "jobComplete": false,
+            "jobReference": {"projectId": PROJECT_ID, "jobId": "job-sel"}
+        })))
+        .mount(&server)
+        .await;
+
+    let (sink, _sa) = build_sink(&server).await;
+    match sink.last_committed_token("pipe::row1").await {
+        Err(faucet_core::FaucetError::Sink(m)) => {
+            assert!(m.contains("did not complete"), "got: {m}")
+        }
+        other => panic!("expected a fail-safe Sink error, got: {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn last_committed_token_errors_when_select_has_no_schema() {
+    // Fail-safe guard: a completed read with no schema cannot be trusted to
+    // distinguish "no token" from "row present but unreadable" — it must error
+    // rather than return a wrong `None`.
+    let server = MockServer::start().await;
+    mount_token_endpoint(&server).await;
+    Mock::given(method("POST"))
+        .and(path(queries_path()))
+        .and(body_string_contains("CREATE TABLE IF NOT EXISTS"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(done_query("job-c")))
+        .mount(&server)
+        .await;
+    mount_job_done(&server, "job-c").await;
+    // Completed, but the response carries no schema.
+    Mock::given(method("POST"))
+        .and(path(queries_path()))
+        .and(body_string_contains("SELECT token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "kind": "bigquery#queryResponse",
+            "jobComplete": true,
+            "jobReference": {"projectId": PROJECT_ID, "jobId": "job-sel"},
+            "totalRows": "0"
+        })))
+        .mount(&server)
+        .await;
+
+    let (sink, _sa) = build_sink(&server).await;
+    match sink.last_committed_token("pipe::row1").await {
+        Err(faucet_core::FaucetError::Sink(m)) => assert!(m.contains("no schema"), "got: {m}"),
+        other => panic!("expected a fail-safe Sink error, got: {other:?}"),
+    }
+}
