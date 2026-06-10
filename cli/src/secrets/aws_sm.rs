@@ -68,3 +68,34 @@ impl SecretResolver for AwsSmResolver {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn scheme_is_aws_sm() {
+        assert_eq!(AwsSmResolver::new().scheme(), "aws-sm");
+    }
+
+    #[test]
+    fn new_and_default_construct_an_unbuilt_client() {
+        // Both constructors leave the SDK client cell empty — no AWS config is
+        // loaded until the first resolve(), so a config that never references
+        // aws-sm pays nothing.
+        let _r1 = AwsSmResolver::new();
+        let _r2 = AwsSmResolver::default();
+    }
+
+    #[test]
+    fn reference_field_split_drives_extraction_path() {
+        // `split_field` (shared) decides whether resolve() extracts a `#field`
+        // or returns the whole secret string — verify the split the resolver
+        // relies on, independent of the live AWS fetch.
+        assert_eq!(
+            split_field("prod/db#password"),
+            ("prod/db", Some("password"))
+        );
+        assert_eq!(split_field("prod/db"), ("prod/db", None));
+    }
+}

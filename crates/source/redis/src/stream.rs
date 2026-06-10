@@ -675,6 +675,45 @@ mod tests {
     }
 
     #[test]
+    fn dataset_uri_keys_source() {
+        use faucet_core::Source;
+        let source = RedisSource::new(RedisSourceConfig::new(
+            "redis://u:p@localhost:6379/0",
+            RedisSourceType::Keys {
+                pattern: "user:*".into(),
+            },
+        ))
+        .unwrap();
+        assert_eq!(
+            source.dataset_uri(),
+            "redis://localhost:6379/0?key=user:*",
+            "keys variant renders the glob pattern as the key, with credentials redacted"
+        );
+    }
+
+    #[test]
+    fn config_schema_describes_redis_source_config() {
+        use faucet_core::Source;
+        let source = RedisSource::new(RedisSourceConfig::new(
+            "redis://localhost",
+            RedisSourceType::List { key: "k".into() },
+        ))
+        .unwrap();
+        let schema = source.config_schema();
+        // The schema must expose the user-facing config fields.
+        let props = &schema["properties"];
+        assert!(props.get("url").is_some(), "schema exposes 'url'");
+        assert!(
+            props.get("source_type").is_some(),
+            "schema exposes 'source_type'"
+        );
+        assert!(
+            props.get("batch_size").is_some(),
+            "schema exposes 'batch_size'"
+        );
+    }
+
+    #[test]
     fn new_rejects_out_of_range_batch_size() {
         let mut config = RedisSourceConfig::new(
             "redis://localhost",

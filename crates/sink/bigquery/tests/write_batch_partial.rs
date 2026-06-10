@@ -265,6 +265,218 @@ async fn write_batch_partial_sends_skip_invalid_rows_true() {
 }
 
 #[tokio::test]
+async fn insert_request_body_carries_rows_in_json_envelope() {
+    // Assert the exact `tabledata.insertAll` request body shape: a `rows`
+    // array where each entry wraps the record under `json`.
+    let server = MockServer::start().await;
+    mount_token_endpoint(&server).await;
+    Mock::given(method("POST"))
+        .and(path(insert_path()))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({})))
+        .mount(&server)
+        .await;
+
+    let (sink, _sa_file) = build_sink(&server, 0).await;
+    let records = vec![json!({"a": 1, "b": "x"}), json!({"a": 2, "b": "y"})];
+    let written = sink.write_batch(&records).await.expect("write_batch");
+    assert_eq!(written, 2);
+
+    let bodies = captured_insert_bodies(&server).await;
+    assert_eq!(bodies.len(), 1);
+    let rows = bodies[0]["rows"].as_array().expect("rows array");
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0]["json"], json!({"a": 1, "b": "x"}));
+    assert_eq!(rows[1]["json"], json!({"a": 2, "b": "y"}));
+    // No insert_id_field configured → no insertId on any row.
+    assert!(rows[0].get("insertId").is_none());
+    assert!(rows[1].get("insertId").is_none());
+}
+
+#[tokio::test]
+async fn insert_id_field_populates_per_row_insert_id() {
+    // With `insert_id_field` set, each row's `insertId` is the field's value.
+    // A row missing the field is sent without an insertId.
+    let server = MockServer::start().await;
+    mount_token_endpoint(&server).await;
+    Mock::given(method("POST"))
+        .and(path(insert_path()))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({})))
+        .mount(&server)
+        .await;
+
+    let sa_json = dummy_service_account_json(&server.uri());
+    let sa_file = tempfile::NamedTempFile::new().unwrap();
+    std::fs::write(
+        sa_file.path(),
+        serde_json::to_string_pretty(&sa_json).unwrap(),
+    )
+    .unwrap();
+    let client = ClientBuilder::new()
+        .with_auth_base_url(format!("{}{AUTH_SCOPE_BASE}", server.uri()))
+        .with_v2_base_url(server.uri())
+        .build_from_service_account_key_file(sa_file.path().to_str().unwrap())
+        .await
+        .unwrap();
+    let config = BigQuerySinkConfig::new(
+        PROJECT_ID,
+        DATASET_ID,
+        TABLE_ID,
+        BigQueryCredentials::ApplicationDefault,
+    )
+    .with_batch_size(0)
+    .with_insert_id_field("event_id");
+    let sink = BigQuerySink::from_parts(config, client);
+
+    // First row has a string event_id, second a numeric one (stringified),
+    // third lacks the field entirely.
+    let records = vec![
+        json!({"event_id": "evt-1", "v": 1}),
+        json!({"event_id": 99, "v": 2}),
+        json!({"v": 3}),
+    ];
+    let written = sink.write_batch(&records).await.expect("write_batch");
+    assert_eq!(written, 3);
+
+    let bodies = captured_insert_bodies(&server).await;
+    assert_eq!(bodies.len(), 1);
+    let rows = bodies[0]["rows"].as_array().unwrap();
+    assert_eq!(rows.len(), 3);
+    assert_eq!(rows[0]["insertId"], "evt-1");
+    // A non-string field value is stringified.
+    assert_eq!(rows[1]["insertId"], "99");
+    // Missing field → no insertId for that row.
+    assert!(rows[2].get("insertId").is_none(), "row 2: {:?}", rows[2]);
+}
+
+#[tokio::test]
+async fn write_batch_collapses_insert_errors_into_single_err() {
+    // The all-or-nothing `write_batch` path turns any `insertErrors` in the
+    // 200 body into a single FaucetError::Sink (aborting before the bookmark
+    // advances), naming the failing-row count and the first message.
+    let server = MockServer::start().await;
+    mount_token_endpoint(&server).await;
+    Mock::given(method("POST"))
+        .and(path(insert_path()))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "insertErrors": [
+                { "index": 0, "errors": [{ "reason": "invalid", "message": "missing required field foo" }] },
+                { "index": 2, "errors": [{ "reason": "invalid", "message": "bad value" }] }
+            ]
+        })))
+        .mount(&server)
+        .await;
+
+    let (sink, _sa_file) = build_sink(&server, 0).await;
+    let records: Vec<_> = (0..3).map(|i| json!({"i": i})).collect();
+    match sink.write_batch(&records).await {
+        Err(faucet_core::FaucetError::Sink(m)) => {
+            assert!(m.contains("2 row(s) failed"), "got: {m}");
+            assert!(m.contains("missing required field foo"), "got: {m}");
+        }
+        other => panic!("expected Sink error, got: {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn write_batch_http_failure_bubbles_outer_err() {
+    let server = MockServer::start().await;
+    mount_token_endpoint(&server).await;
+    Mock::given(method("POST"))
+        .and(path(insert_path()))
+        .respond_with(ResponseTemplate::new(503).set_body_string("unavailable"))
+        .mount(&server)
+        .await;
+
+    let (sink, _sa_file) = build_sink(&server, 0).await;
+    match sink.write_batch(&[json!({"a": 1})]).await {
+        Err(faucet_core::FaucetError::Sink(m)) => {
+            assert!(m.contains("insertAll failed"), "got: {m}");
+        }
+        other => panic!("expected Sink error, got: {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn connector_name_schema_and_dataset_uri_are_exposed() {
+    let server = MockServer::start().await;
+    mount_token_endpoint(&server).await;
+    let (sink, _sa_file) = build_sink(&server, 0).await;
+
+    assert_eq!(sink.connector_name(), "bigquery");
+    assert_eq!(
+        sink.dataset_uri(),
+        format!("bigquery://{PROJECT_ID}.{DATASET_ID}.{TABLE_ID}")
+    );
+    let schema = sink.config_schema();
+    assert!(
+        schema.get("properties").is_some() || schema.get("$ref").is_some(),
+        "config_schema should be a JSON Schema object: {schema}"
+    );
+}
+
+fn tables_get_path() -> String {
+    format!("/projects/{PROJECT_ID}/datasets/{DATASET_ID}/tables/{TABLE_ID}")
+}
+
+#[tokio::test]
+async fn check_probe_passes_on_successful_tables_get() {
+    use faucet_core::check::{CheckContext, ProbeStatus};
+    let server = MockServer::start().await;
+    mount_token_endpoint(&server).await;
+    // The doctor probe runs a read-only tables.get for table metadata.
+    Mock::given(method("GET"))
+        .and(path(tables_get_path()))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "schema": {},
+            "tableReference": {
+                "projectId": PROJECT_ID,
+                "datasetId": DATASET_ID,
+                "tableId": TABLE_ID
+            }
+        })))
+        .mount(&server)
+        .await;
+
+    let (sink, _sa_file) = build_sink(&server, 0).await;
+    let report = sink.check(&CheckContext::default()).await.unwrap();
+    assert_eq!(report.probes.len(), 1);
+    assert_eq!(report.probes[0].name, "auth");
+    assert!(
+        matches!(report.probes[0].status, ProbeStatus::Pass),
+        "expected Pass, got: {:?}",
+        report.probes[0].status
+    );
+}
+
+#[tokio::test]
+async fn check_probe_fails_on_tables_get_error() {
+    use faucet_core::check::{CheckContext, ProbeStatus};
+    let server = MockServer::start().await;
+    mount_token_endpoint(&server).await;
+    Mock::given(method("GET"))
+        .and(path(tables_get_path()))
+        .respond_with(ResponseTemplate::new(404).set_body_json(json!({
+            "error": {"code": 404, "message": "Not found: Table"}
+        })))
+        .mount(&server)
+        .await;
+
+    let (sink, _sa_file) = build_sink(&server, 0).await;
+    let report = sink.check(&CheckContext::default()).await.unwrap();
+    assert_eq!(report.probes.len(), 1);
+    match &report.probes[0].status {
+        ProbeStatus::Fail { reason } => {
+            assert!(reason.contains("tables.get"), "got: {reason}");
+        }
+        other => panic!("expected Fail, got: {other:?}"),
+    }
+    assert!(
+        report.probes[0].hint.is_some(),
+        "a failing probe must carry a remediation hint"
+    );
+}
+
+#[tokio::test]
 async fn write_batch_keeps_all_or_nothing_skip_invalid_rows_false() {
     // The non-DLQ `write_batch` path stays all-or-nothing: skipInvalidRows=false
     // so a single bad row fails the whole request (no partial commit to resume

@@ -141,4 +141,157 @@ mod tests {
             other => panic!("expected SecretNotFound, got {other:?}"),
         }
     }
+
+    #[test]
+    fn scheme_is_vault() {
+        let r = VaultResolver {
+            addr: "http://x".into(),
+            token: "t".into(),
+            namespace: None,
+            client: reqwest::Client::new(),
+        };
+        assert_eq!(r.scheme(), "vault");
+    }
+
+    #[tokio::test]
+    async fn forbidden_status_maps_to_auth_failed() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/secret/data/secured"))
+            .respond_with(ResponseTemplate::new(403))
+            .mount(&server)
+            .await;
+        let resolver = VaultResolver {
+            addr: server.uri(),
+            token: "bad".into(),
+            namespace: None,
+            client: reqwest::Client::new(),
+        };
+        match resolver.resolve("secret/data/secured#x").await.unwrap_err() {
+            CliError::SecretAuthFailed { scheme, .. } => assert_eq!(scheme, "vault"),
+            other => panic!("expected SecretAuthFailed, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn unauthorized_status_maps_to_auth_failed() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/secret/data/secured"))
+            .respond_with(ResponseTemplate::new(401))
+            .mount(&server)
+            .await;
+        let resolver = VaultResolver {
+            addr: server.uri(),
+            token: "bad".into(),
+            namespace: None,
+            client: reqwest::Client::new(),
+        };
+        match resolver.resolve("secret/data/secured").await.unwrap_err() {
+            CliError::SecretAuthFailed { .. } => {}
+            other => panic!("expected SecretAuthFailed, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn no_field_returns_whole_kv_v2_map_as_json() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/secret/data/all"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "data": { "data": { "a": "1", "b": "2" } }
+            })))
+            .mount(&server)
+            .await;
+        let resolver = VaultResolver {
+            addr: server.uri(),
+            token: "t".into(),
+            namespace: None,
+            client: reqwest::Client::new(),
+        };
+        // No `#field` → the whole `.data.data` map, JSON-serialized.
+        let v = resolver.resolve("secret/data/all").await.unwrap();
+        let parsed: Value = serde_json::from_str(&v).unwrap();
+        assert_eq!(parsed["a"], "1");
+        assert_eq!(parsed["b"], "2");
+    }
+
+    #[tokio::test]
+    async fn namespace_header_is_sent_when_configured() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/secret/data/ns"))
+            .and(header("X-Vault-Namespace", "team-a"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "data": { "data": { "k": "v" } }
+            })))
+            .mount(&server)
+            .await;
+        let resolver = VaultResolver {
+            addr: server.uri(),
+            token: "t".into(),
+            namespace: Some("team-a".into()),
+            client: reqwest::Client::new(),
+        };
+        // The mock only matches when the namespace header is present.
+        let v = resolver.resolve("secret/data/ns#k").await.unwrap();
+        assert_eq!(v, "v");
+    }
+
+    #[test]
+    #[serial_test::serial(vault_env)]
+    fn from_env_reads_addr_token_namespace() {
+        unsafe {
+            std::env::set_var("VAULT_ADDR", "https://vault.example.com:8200/");
+            std::env::set_var("VAULT_TOKEN", "tok-123");
+            std::env::set_var("VAULT_NAMESPACE", "ns1");
+        }
+        let r = VaultResolver::from_env().unwrap();
+        // Trailing slash on the addr must be trimmed.
+        assert_eq!(r.addr, "https://vault.example.com:8200");
+        assert_eq!(r.token, "tok-123");
+        assert_eq!(r.namespace.as_deref(), Some("ns1"));
+        unsafe {
+            std::env::remove_var("VAULT_ADDR");
+            std::env::remove_var("VAULT_TOKEN");
+            std::env::remove_var("VAULT_NAMESPACE");
+        }
+    }
+
+    #[test]
+    #[serial_test::serial(vault_env)]
+    fn from_env_errors_without_addr() {
+        unsafe {
+            std::env::remove_var("VAULT_ADDR");
+            std::env::remove_var("VAULT_TOKEN");
+        }
+        match VaultResolver::from_env() {
+            Err(CliError::SecretAuthFailed { scheme, hint }) => {
+                assert_eq!(scheme, "vault");
+                assert!(hint.contains("VAULT_ADDR"), "{hint}");
+            }
+            Err(other) => panic!("expected SecretAuthFailed, got {other:?}"),
+            Ok(_) => panic!("expected an error when VAULT_ADDR is unset"),
+        }
+    }
+
+    #[test]
+    #[serial_test::serial(vault_env)]
+    fn from_env_errors_without_token() {
+        unsafe {
+            std::env::set_var("VAULT_ADDR", "https://v");
+            std::env::remove_var("VAULT_TOKEN");
+        }
+        match VaultResolver::from_env() {
+            Err(CliError::SecretAuthFailed { scheme, hint }) => {
+                assert_eq!(scheme, "vault");
+                assert!(hint.contains("VAULT_TOKEN"), "{hint}");
+            }
+            Err(other) => panic!("expected SecretAuthFailed, got {other:?}"),
+            Ok(_) => panic!("expected an error when VAULT_TOKEN is unset"),
+        }
+        unsafe {
+            std::env::remove_var("VAULT_ADDR");
+        }
+    }
 }

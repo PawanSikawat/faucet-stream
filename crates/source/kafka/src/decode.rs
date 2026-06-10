@@ -149,4 +149,62 @@ mod tests {
         let m = format!("{err}").to_lowercase();
         assert!(m.contains("utf-8") || m.contains("utf"));
     }
+
+    #[cfg(feature = "schema-registry")]
+    #[tokio::test]
+    async fn decode_confluent_avro_without_client_is_config_error() {
+        use faucet_common_kafka::SchemaRegistryConfig;
+        let format = KafkaValueFormat::ConfluentAvro {
+            schema_registry: SchemaRegistryConfig::new("http://localhost:8081"),
+        };
+        let err = decode(Some(b"\x00\x00\x00\x00\x01"), &format, None)
+            .await
+            .unwrap_err();
+        match err {
+            FaucetError::Config(msg) => assert!(
+                msg.contains("ConfluentAvro") && msg.contains("no SchemaRegistryClient"),
+                "unexpected message: {msg}"
+            ),
+            other => panic!("expected Config error, got {other:?}"),
+        }
+    }
+
+    #[cfg(feature = "schema-registry")]
+    #[tokio::test]
+    async fn decode_confluent_protobuf_without_client_is_config_error() {
+        use faucet_common_kafka::SchemaRegistryConfig;
+        let format = KafkaValueFormat::ConfluentProtobuf {
+            schema_registry: SchemaRegistryConfig::new("http://localhost:8081"),
+        };
+        let err = decode(Some(b"\x00\x00\x00\x00\x01"), &format, None)
+            .await
+            .unwrap_err();
+        match err {
+            FaucetError::Config(msg) => assert!(
+                msg.contains("ConfluentProtobuf") && msg.contains("no SchemaRegistryClient"),
+                "unexpected message: {msg}"
+            ),
+            other => panic!("expected Config error, got {other:?}"),
+        }
+    }
+
+    #[cfg(feature = "schema-registry")]
+    #[tokio::test]
+    async fn decode_confluent_json_schema_without_client_is_config_error() {
+        use faucet_common_kafka::SchemaRegistryConfig;
+        let format = KafkaValueFormat::ConfluentJsonSchema {
+            schema_registry: SchemaRegistryConfig::new("http://localhost:8081"),
+            validate: false,
+        };
+        let err = decode(Some(b"\x00\x00\x00\x00\x01"), &format, None)
+            .await
+            .unwrap_err();
+        match err {
+            FaucetError::Config(msg) => assert!(
+                msg.contains("ConfluentJsonSchema") && msg.contains("no SchemaRegistryClient"),
+                "unexpected message: {msg}"
+            ),
+            other => panic!("expected Config error, got {other:?}"),
+        }
+    }
 }

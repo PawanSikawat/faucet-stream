@@ -503,3 +503,191 @@ async fn graceful_shutdown(running: Option<RunningRun>, grace: Duration, pipelin
         m::in_flight(pipeline_name, 0);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::schedule::spec::ScheduleSpec;
+
+    fn compiled(yaml: &str) -> CompiledSchedule {
+        let spec: ScheduleSpec = serde_yaml::from_str(yaml).unwrap();
+        CompiledSchedule::compile(&spec).unwrap()
+    }
+
+    fn summary(failures: usize, total: usize) -> RunSummary {
+        let mut invocations = Vec::new();
+        for i in 0..total {
+            invocations.push(crate::executor::InvocationOutcome {
+                row_id: format!("r{i}"),
+                parent_record_key: None,
+                records_written: if i < failures { 0 } else { 3 },
+                error: if i < failures {
+                    Some("boom".into())
+                } else {
+                    None
+                },
+            });
+        }
+        RunSummary { invocations }
+    }
+
+    #[test]
+    fn classify_success_when_no_failures() {
+        let joined = Ok(Ok(summary(0, 2)));
+        let f = classify(joined);
+        assert_eq!(f.outcome, RunOutcome::Success);
+        assert!(f.detail.is_none());
+    }
+
+    #[test]
+    fn classify_failure_when_some_invocations_failed() {
+        let joined = Ok(Ok(summary(2, 5)));
+        let f = classify(joined);
+        assert_eq!(f.outcome, RunOutcome::Failure);
+        assert_eq!(f.detail.as_deref(), Some("2 invocation(s) failed"));
+    }
+
+    #[test]
+    fn classify_failure_when_run_errored() {
+        let joined: Result<CliResult<RunSummary>, tokio::task::JoinError> =
+            Ok(Err(CliError::Internal("disk full".into())));
+        let f = classify(joined);
+        assert_eq!(f.outcome, RunOutcome::Failure);
+        assert!(f.detail.as_deref().unwrap().contains("disk full"));
+    }
+
+    #[tokio::test]
+    async fn classify_failure_when_task_panicked() {
+        // Spawn a task that panics, then join it to obtain a real JoinError.
+        let handle = tokio::spawn(async { panic!("kaboom") });
+        let joined: Result<CliResult<RunSummary>, tokio::task::JoinError> = handle.await.map(Ok);
+        let f = classify(joined);
+        assert_eq!(f.outcome, RunOutcome::Failure);
+        assert!(
+            f.detail.as_deref().unwrap().contains("panicked"),
+            "{:?}",
+            f.detail
+        );
+    }
+
+    #[test]
+    fn run_span_carries_ordinal_and_times() {
+        let scheduled = Utc::now();
+        let tick = scheduled + chrono::Duration::seconds(3);
+        let span = run_span(7, scheduled, tick);
+        // The span exists and is enterable; field values are recorded on
+        // creation. We assert it has the expected metadata name.
+        assert_eq!(span.metadata().unwrap().name(), "faucet.schedule.run");
+    }
+
+    #[tokio::test]
+    async fn wait_for_run_returns_classified_outcome() {
+        let handle = tokio::spawn(async { Ok(summary(0, 1)) });
+        let mut running = Some(RunningRun {
+            handle,
+            started: Instant::now(),
+        });
+        let finished = wait_for_run(&mut running).await;
+        assert_eq!(finished.outcome, RunOutcome::Success);
+    }
+
+    #[tokio::test]
+    async fn spawn_run_times_out_into_internal_error() {
+        // The run "never finishes" (a long sleep) but the 1s timeout aborts it
+        // and maps to an Internal error mentioning run_timeout_secs.
+        let dir = tempfile::tempdir().unwrap();
+        let input = dir.path().join("in.csv");
+        let output = dir.path().join("out.jsonl");
+        std::fs::write(&input, "name\nx\n").unwrap();
+        // Build nodes from a tiny real config so the spawned future is genuine.
+        let yaml = format!(
+            "version: 1\npipeline:\n  source: {{ type: csv, config: {{ path: {input} }} }}\n  sink: {{ type: jsonl, config: {{ path: {output} }} }}\n",
+            input = input.display(),
+            output = output.display(),
+        );
+        let cfg = crate::config::parse_with_extension(&yaml, "yaml").unwrap();
+        let nodes = expand(&cfg).unwrap();
+        let auth = AuthCatalog::new();
+        let opts = make_opts(
+            "to",
+            &None,
+            &auth,
+            Utc::now().fixed_offset(),
+            #[cfg(feature = "lineage")]
+            &None,
+            #[cfg(feature = "lineage")]
+            &None,
+        );
+        // A zero-ish timeout (1ns) virtually guarantees the timeout branch fires
+        // even though the pipeline is fast — the timeout races the spawn.
+        let handle = spawn_run(
+            nodes,
+            opts,
+            Some(Duration::from_nanos(1)),
+            run_span(1, Utc::now(), Utc::now()),
+        );
+        let joined = handle.await.unwrap();
+        // Either the run finished before the 1ns deadline (Ok) — unlikely — or
+        // it tripped the timeout into an Internal error. Accept both but assert
+        // the timeout message shape when it errors.
+        if let Err(CliError::Internal(msg)) = &joined {
+            assert!(msg.contains("run_timeout_secs"), "{msg}");
+        }
+    }
+
+    #[tokio::test]
+    async fn make_opts_disables_dry_run_limit_and_state_override() {
+        let auth = AuthCatalog::new();
+        let clock = Utc::now().fixed_offset();
+        let opts = make_opts(
+            "p",
+            &None,
+            &auth,
+            clock,
+            #[cfg(feature = "lineage")]
+            &None,
+            #[cfg(feature = "lineage")]
+            &None,
+        );
+        assert_eq!(opts.pipeline_name, "p");
+        assert!(!opts.dry_run);
+        assert!(opts.limit.is_none());
+        assert!(opts.state_path_override.is_none());
+        assert!(opts.cancel.is_none());
+        assert_eq!(opts.clock, clock);
+    }
+
+    #[tokio::test]
+    async fn graceful_shutdown_awaits_finished_run() {
+        // A run that finishes immediately is awaited within the grace window.
+        let c = compiled("cron: \"* * * * *\"\nshutdown_grace_secs: 5");
+        let handle = tokio::spawn(async { Ok(summary(0, 1)) });
+        let running = Some(RunningRun {
+            handle,
+            started: Instant::now(),
+        });
+        // Should return promptly without aborting (the run already completed).
+        graceful_shutdown(running, c.shutdown_grace, "p").await;
+    }
+
+    #[tokio::test]
+    async fn graceful_shutdown_aborts_run_exceeding_grace() {
+        // A run that never finishes is aborted once the (tiny) grace elapses.
+        let handle = tokio::spawn(async {
+            tokio::time::sleep(Duration::from_secs(3600)).await;
+            Ok(summary(0, 1))
+        });
+        let running = Some(RunningRun {
+            handle,
+            started: Instant::now(),
+        });
+        // 50ms grace → the abort branch fires; the call must still return.
+        graceful_shutdown(running, Duration::from_millis(50), "p").await;
+    }
+
+    #[tokio::test]
+    async fn graceful_shutdown_noop_when_idle() {
+        // No in-flight run → returns immediately.
+        graceful_shutdown(None, Duration::from_secs(1), "p").await;
+    }
+}

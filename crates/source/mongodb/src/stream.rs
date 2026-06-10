@@ -397,4 +397,102 @@ mod tests {
         );
         assert_eq!(uri, "mongodb://h:27017/mydb/events");
     }
+
+    // --- substitute_optional_value (the private context-interpolation helper) ---
+
+    #[test]
+    fn substitute_optional_value_none_passthrough() {
+        let ctx: std::collections::HashMap<String, Value> = std::collections::HashMap::new();
+        let out = substitute_optional_value(&None, &ctx, "filter").unwrap();
+        assert!(out.is_none(), "None input must yield None output");
+    }
+
+    #[test]
+    fn substitute_optional_value_replaces_string_placeholder() {
+        let mut ctx: std::collections::HashMap<String, Value> = std::collections::HashMap::new();
+        // Placeholders use the flat `{key}` syntax over top-level context keys.
+        ctx.insert("user_id".into(), json!("abc-123"));
+        // The placeholder lives inside a JSON string value; substitution must
+        // preserve JSON validity (string stays a string).
+        let filter = Some(json!({"owner": "{user_id}"}));
+        let out = substitute_optional_value(&filter, &ctx, "filter")
+            .unwrap()
+            .expect("Some input yields Some output");
+        assert_eq!(out, json!({"owner": "abc-123"}));
+    }
+
+    #[test]
+    fn substitute_optional_value_no_placeholder_is_identity() {
+        let ctx: std::collections::HashMap<String, Value> = std::collections::HashMap::new();
+        let proj = Some(json!({"_id": 0, "name": 1}));
+        let out = substitute_optional_value(&proj, &ctx, "projection")
+            .unwrap()
+            .unwrap();
+        assert_eq!(out, json!({"_id": 0, "name": 1}));
+    }
+
+    #[test]
+    fn substitute_optional_value_escapes_value_for_json_safety() {
+        // A context value containing a double-quote must be escaped so the
+        // re-parsed JSON is valid and the literal characters survive.
+        let mut ctx: std::collections::HashMap<String, Value> = std::collections::HashMap::new();
+        ctx.insert("name".into(), json!("a\"b"));
+        let filter = Some(json!({"n": "{name}"}));
+        let out = substitute_optional_value(&filter, &ctx, "filter")
+            .unwrap()
+            .unwrap();
+        assert_eq!(out, json!({"n": "a\"b"}));
+    }
+
+    // --- bson_document_to_json_value: relaxed extended-JSON shapes ---
+
+    #[test]
+    fn bson_object_id_converts_to_oid_extjson() {
+        use mongodb::bson::oid::ObjectId;
+        let mut doc = Document::new();
+        let oid = ObjectId::parse_str("64ab00112233445566778899").unwrap();
+        doc.insert("_id", oid);
+        let value = bson_document_to_json_value(&doc).unwrap();
+        // Relaxed extended JSON renders an ObjectId as {"$oid": "<hex>"}.
+        assert_eq!(value["_id"]["$oid"], "64ab00112233445566778899");
+    }
+
+    #[test]
+    fn bson_datetime_converts_to_date_extjson() {
+        use mongodb::bson::DateTime;
+        let mut doc = Document::new();
+        // 1_000_000 ms past the epoch.
+        doc.insert("created_at", DateTime::from_millis(1_000_000));
+        let value = bson_document_to_json_value(&doc).unwrap();
+        // Relaxed extended JSON renders a post-1970 datetime as
+        // {"$date": "<RFC3339>"}.
+        assert!(
+            value["created_at"]["$date"].is_string(),
+            "expected $date string, got {value:?}"
+        );
+    }
+
+    #[test]
+    fn bson_null_and_array_and_nested_convert() {
+        use mongodb::bson::Bson;
+        let mut doc = Document::new();
+        doc.insert("missing", Bson::Null);
+        doc.insert("tags", vec!["a", "b"]);
+        let mut nested = Document::new();
+        nested.insert("k", 7i32);
+        doc.insert("nested", nested);
+        let value = bson_document_to_json_value(&doc).unwrap();
+        assert_eq!(value["missing"], Value::Null);
+        assert_eq!(value["tags"], json!(["a", "b"]));
+        assert_eq!(value["nested"]["k"], 7);
+    }
+
+    #[test]
+    fn bson_int64_converts_to_number() {
+        let mut doc = Document::new();
+        doc.insert("big", 9_000_000_000i64);
+        let value = bson_document_to_json_value(&doc).unwrap();
+        // Relaxed extended JSON renders an i64 as a bare JSON number.
+        assert_eq!(value["big"], json!(9_000_000_000i64));
+    }
 }

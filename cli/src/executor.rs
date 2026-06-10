@@ -1954,6 +1954,368 @@ matrix:
         assert!(matches!(&**projs.get("p").unwrap(), Projection::Full));
     }
 
+    /// Helper: minimal `ExecuteOptions` with all optional knobs cleared.
+    fn opts(name: &str) -> ExecuteOptions {
+        ExecuteOptions {
+            pipeline_name: name.into(),
+            execution: None,
+            dry_run: false,
+            limit: None,
+            state_path_override: None,
+            auth: Default::default(),
+            clock: chrono::Utc::now().fixed_offset(),
+            cancel: None,
+            #[cfg(feature = "lineage")]
+            lineage: None,
+            #[cfg(feature = "lineage")]
+            lineage_cfg: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn dry_run_counts_records_without_writing_sink_file() {
+        // `--dry-run` swaps the real sink for a CountingSink — records flow but
+        // no output file is produced.
+        let dir = tempfile::tempdir().unwrap();
+        let input = dir.path().join("in.csv");
+        let output = dir.path().join("out.jsonl");
+        std::fs::write(&input, "name\nalice\nbob\ncarol\n").unwrap();
+        let cfg = cfg_csv_to_jsonl(&input, &output);
+        let nodes = expand(&cfg).unwrap();
+        let mut o = opts("dry");
+        o.dry_run = true;
+        let summary = run_expanded(nodes, o).await.unwrap();
+        assert_eq!(summary.invocations.len(), 1);
+        assert_eq!(summary.invocations[0].records_written, 3);
+        assert!(!summary.had_failures());
+        assert!(
+            !output.exists(),
+            "dry-run must not create the real sink file"
+        );
+    }
+
+    #[tokio::test]
+    async fn limit_caps_records_written_across_the_run() {
+        // `--limit N` wraps the sink so only the first N records land.
+        let dir = tempfile::tempdir().unwrap();
+        let input = dir.path().join("in.csv");
+        let output = dir.path().join("out.jsonl");
+        std::fs::write(&input, "name\na\nb\nc\nd\ne\n").unwrap();
+        let cfg = cfg_csv_to_jsonl(&input, &output);
+        let nodes = expand(&cfg).unwrap();
+        let mut o = opts("lim");
+        o.limit = Some(2);
+        let summary = run_expanded(nodes, o).await.unwrap();
+        assert_eq!(summary.invocations[0].records_written, 2);
+        let body = std::fs::read_to_string(&output).unwrap();
+        assert_eq!(body.lines().count(), 2, "only the first 2 rows are written");
+    }
+
+    #[tokio::test]
+    async fn duplicate_state_key_among_siblings_is_rejected() {
+        // Two parent records whose `parent_key` value collides (both id="dup")
+        // produce two child units with the SAME state key. With state
+        // configured, that collision must surface as DuplicateStateKey.
+        let dir = tempfile::tempdir().unwrap();
+        let parent_csv = dir.path().join("parents.csv");
+        let child_csv = dir.path().join("child.csv");
+        // Both rows share id="dup" — the per-child state-key suffix collides.
+        std::fs::write(&parent_csv, "id\ndup\ndup\n").unwrap();
+        std::fs::write(&child_csv, "x\nA\n").unwrap();
+        let parent_out = dir.path().join("parents.jsonl");
+        let child_out = dir.path().join("child.jsonl");
+        let yaml = format!(
+            r#"version: 1
+pipeline:
+  source: {{ type: csv, config: {{ path: {parent} }} }}
+  sink:   {{ type: jsonl, config: {{ path: {parent_out} }} }}
+  state:  {{ type: memory }}
+matrix:
+  - id: parents
+  - id: child
+    parent: parents
+    source: {{ config: {{ path: {child} }} }}
+    sink:   {{ config: {{ path: {child_out} }} }}
+"#,
+            parent = parent_csv.display(),
+            parent_out = parent_out.display(),
+            child = child_csv.display(),
+            child_out = child_out.display(),
+        );
+        let cfg = crate::config::parse_with_extension(&yaml, "yaml").unwrap();
+        let nodes = expand(&cfg).unwrap();
+        let err = run_expanded(nodes, opts("dupkey"))
+            .await
+            .expect_err("colliding sibling state keys must be rejected");
+        match err {
+            CliError::DuplicateStateKey { id, state_key } => {
+                assert_eq!(id, "child");
+                assert_eq!(state_key, "dupkey::child::dup");
+            }
+            other => panic!("expected DuplicateStateKey, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn state_path_override_writes_bookmark_file() {
+        // `--state-path` with a node that has no `state:` block wires a
+        // FileStateStore at the override path; running it should create the
+        // bookmark file (REST-less csv source still opts into state via the
+        // override).
+        let dir = tempfile::tempdir().unwrap();
+        let input = dir.path().join("in.csv");
+        let output = dir.path().join("out.jsonl");
+        let state_dir = dir.path().join("state");
+        std::fs::write(&input, "name\nalice\n").unwrap();
+        let cfg = cfg_csv_to_jsonl(&input, &output);
+        let nodes = expand(&cfg).unwrap();
+        let mut o = opts("statepath");
+        o.state_path_override = Some(state_dir.clone());
+        let summary = run_expanded(nodes, o).await.unwrap();
+        assert!(!summary.had_failures());
+        // The csv source has no natural state key, so the StateKeyOverride wrap
+        // is skipped — but build_state_for_node still constructs the store.
+        // The run completing without error exercises the (None, Some(path)) arm.
+        assert_eq!(summary.invocations[0].records_written, 1);
+    }
+
+    #[tokio::test]
+    async fn build_dlq_config_maps_spec_fields() {
+        use crate::config::{ConnectorSpec, DlqSpec, OnBatchErrorSpec};
+        let dir = tempfile::tempdir().unwrap();
+        let dlq_out = dir.path().join("dlq.jsonl");
+        let spec = DlqSpec {
+            sink: ConnectorSpec {
+                kind: "jsonl".into(),
+                config: json!({ "path": dlq_out.to_str().unwrap() }),
+                transforms: None,
+                inherit_transforms: true,
+            },
+            on_batch_error: OnBatchErrorSpec::DlqAll,
+            max_failures_per_page: Some(7),
+            max_failures_total: Some(42),
+            include_original_payload: false,
+        };
+        let cfg = build_dlq_config(&spec).await.unwrap();
+        assert!(matches!(cfg.on_batch_error, OnBatchError::DlqAll));
+        assert_eq!(cfg.max_failures_per_page, Some(7));
+        assert_eq!(cfg.max_failures_total, Some(42));
+        assert!(!cfg.include_original_payload);
+    }
+
+    #[tokio::test]
+    async fn build_state_for_node_arms() {
+        let dir = tempfile::tempdir().unwrap();
+
+        // (None, None) → no store.
+        let node = stub_node(None);
+        assert!(build_state_for_node(&node, None).await.unwrap().is_none());
+
+        // (None, Some(path)) → FileStateStore from override.
+        let p = dir.path().join("s1");
+        assert!(
+            build_state_for_node(&node, Some(&p))
+                .await
+                .unwrap()
+                .is_some()
+        );
+
+        // (Some(memory spec), None) → built from spec.
+        let node_mem = stub_node(Some(crate::config::StateStoreSpec {
+            kind: "memory".into(),
+            config: json!({}),
+        }));
+        assert!(
+            build_state_for_node(&node_mem, None)
+                .await
+                .unwrap()
+                .is_some()
+        );
+
+        // (Some(file spec), Some(path)) → file backend uses the override path.
+        let node_file = stub_node(Some(crate::config::StateStoreSpec {
+            kind: "file".into(),
+            config: json!({ "path": dir.path().join("orig").to_str().unwrap() }),
+        }));
+        let p2 = dir.path().join("override2");
+        assert!(
+            build_state_for_node(&node_file, Some(&p2))
+                .await
+                .unwrap()
+                .is_some()
+        );
+
+        // (Some(memory spec), Some(path)) → non-file backend ignores override,
+        // still builds from spec.
+        let node_mem2 = stub_node(Some(crate::config::StateStoreSpec {
+            kind: "memory".into(),
+            config: json!({}),
+        }));
+        let p3 = dir.path().join("override3");
+        assert!(
+            build_state_for_node(&node_mem2, Some(&p3))
+                .await
+                .unwrap()
+                .is_some()
+        );
+    }
+
+    /// Build a minimal root `ExpandedNode` carrying only an (optional) state spec.
+    fn stub_node(state: Option<crate::config::StateStoreSpec>) -> ExpandedNode {
+        use crate::config::ConnectorSpec;
+        ExpandedNode {
+            id: "n".into(),
+            row_index: 0,
+            role: NodeRole::Root,
+            source: ConnectorSpec {
+                kind: "csv".into(),
+                config: json!({}),
+                transforms: None,
+                inherit_transforms: true,
+            },
+            sink: ConnectorSpec {
+                kind: "jsonl".into(),
+                config: json!({}),
+                transforms: None,
+                inherit_transforms: true,
+            },
+            transforms: Vec::new(),
+            state,
+            dlq: None,
+            delivery: faucet_core::DeliveryMode::AtLeastOnce,
+            #[cfg(feature = "quality")]
+            quality: None,
+            deferred_refs: Vec::new(),
+        }
+    }
+
+    #[tokio::test]
+    async fn state_key_override_delegates_and_overrides_key() {
+        // StateKeyOverride forwards fetch/bookmark to inner and reports its own key.
+        let dir = tempfile::tempdir().unwrap();
+        let input = dir.path().join("in.csv");
+        std::fs::write(&input, "name\nz\n").unwrap();
+        let inner = build_source(
+            "csv",
+            json!({"path": input.to_str().unwrap()}),
+            &AuthCatalog::new(),
+        )
+        .await
+        .unwrap();
+        // The wrapped name must match the inner source's, whatever it reports.
+        let inner_name = inner.connector_name();
+        let ov = StateKeyOverride {
+            inner,
+            key: "my::custom::key".into(),
+        };
+        assert_eq!(ov.state_key(), Some("my::custom::key".to_string()));
+        assert_eq!(ov.connector_name(), inner_name);
+        let rows = ov.fetch_with_context(&HashMap::new()).await.unwrap();
+        assert_eq!(rows.len(), 1);
+        // apply_start_bookmark delegates without error (csv ignores it).
+        ov.apply_start_bookmark(json!({"any": "bookmark"}))
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn orphaned_child_surfaces_executor_deadlock() {
+        // A child node whose parent id is never present among the nodes can
+        // never become ready. `expand` would reject this, but a hand-built node
+        // list exercises the executor's own deadlock guard (lines 227-233).
+        use crate::config::ConnectorSpec;
+        let orphan = ExpandedNode {
+            id: "orphan".into(),
+            row_index: 0,
+            role: NodeRole::Child {
+                parent_id: "missing-parent".into(),
+                parent_key: "id".into(),
+            },
+            source: ConnectorSpec {
+                kind: "csv".into(),
+                config: json!({}),
+                transforms: None,
+                inherit_transforms: true,
+            },
+            sink: ConnectorSpec {
+                kind: "jsonl".into(),
+                config: json!({}),
+                transforms: None,
+                inherit_transforms: true,
+            },
+            transforms: Vec::new(),
+            state: None,
+            dlq: None,
+            delivery: faucet_core::DeliveryMode::AtLeastOnce,
+            #[cfg(feature = "quality")]
+            quality: None,
+            deferred_refs: Vec::new(),
+        };
+        let err = run_expanded(vec![orphan], opts("deadlock"))
+            .await
+            .expect_err("an orphaned child must surface as an executor deadlock");
+        match err {
+            CliError::Internal(msg) => {
+                assert!(msg.contains("executor deadlock"), "{msg}");
+                assert!(msg.contains("orphan"), "{msg}");
+            }
+            other => panic!("expected Internal deadlock error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn value_to_string_brief_unquotes_strings_only() {
+        assert_eq!(value_to_string_brief(&json!("hello")), "hello");
+        assert_eq!(value_to_string_brief(&json!(42)), "42");
+        assert_eq!(value_to_string_brief(&json!(true)), "true");
+        assert_eq!(value_to_string_brief(&json!(null)), "null");
+        assert_eq!(value_to_string_brief(&json!({"a": 1})), "{\"a\":1}");
+    }
+
+    #[test]
+    fn build_state_key_with_and_without_parent() {
+        assert_eq!(build_state_key("pipe", "row", None), "pipe::row");
+        assert_eq!(build_state_key("pipe", "row", Some("k")), "pipe::row::k");
+    }
+
+    #[test]
+    fn resolve_parent_key_walks_objects_arrays_and_misses() {
+        let r = json!({"user": {"name": "ada"}, "tags": ["x", "y"]});
+        assert_eq!(resolve_parent_key(&r, "user.name"), Some(json!("ada")));
+        assert_eq!(resolve_parent_key(&r, "tags.1"), Some(json!("y")));
+        // Missing key → None.
+        assert_eq!(resolve_parent_key(&r, "user.age"), None);
+        // Descending into a scalar → None.
+        assert_eq!(resolve_parent_key(&r, "user.name.deep"), None);
+        // Non-numeric array index → None.
+        assert_eq!(resolve_parent_key(&r, "tags.notanindex"), None);
+    }
+
+    #[tokio::test]
+    async fn cooperative_cancel_returns_partial_ok() {
+        // A pre-cancelled token makes the run stop at the first page boundary
+        // and flush — returning Ok with a partial (possibly empty) result
+        // rather than erroring. Covers the cancel-threading path.
+        let dir = tempfile::tempdir().unwrap();
+        let input = dir.path().join("in.csv");
+        let output = dir.path().join("out.jsonl");
+        std::fs::write(&input, "name\nalice\nbob\n").unwrap();
+        let cfg = cfg_csv_to_jsonl(&input, &output);
+        let nodes = expand(&cfg).unwrap();
+        let token = CancellationToken::new();
+        token.cancel(); // already cancelled before the run starts
+        let mut o = opts("cancel");
+        o.cancel = Some(token);
+        let summary = run_expanded(nodes, o).await.unwrap();
+        // The single root invocation completes (Ok) — it is not reported as a
+        // failure even though it was cancelled.
+        assert_eq!(summary.invocations.len(), 1);
+        assert!(
+            !summary.had_failures(),
+            "a cooperatively-cancelled run is Ok, not a failure: {summary:?}"
+        );
+    }
+
     #[tokio::test]
     async fn fanout_projects_away_unreferenced_parent_fields() {
         // Parent CSV has id + a big unreferenced "payload" column. The child only

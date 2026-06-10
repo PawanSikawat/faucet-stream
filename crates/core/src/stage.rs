@@ -1356,4 +1356,287 @@ mod tests {
         let out = apply_stages_to_page(vec![], &[page_count_stage()]).unwrap();
         assert_eq!(out, vec![json!({"n": 0})]);
     }
+
+    // ── Debug formatting for the stage enums ───────────────────────────────────
+
+    #[test]
+    fn debug_transform_stage_all_variants() {
+        assert_eq!(
+            format!("{:?}", TransformStage::Custom(Arc::new(|v| vec![v]))),
+            "Custom(<fn>)"
+        );
+        assert_eq!(
+            format!("{:?}", TransformStage::PageFn(Arc::new(Ok))),
+            "PageFn(<fn>)"
+        );
+        let dbg = format!(
+            "{:?}",
+            TransformStage::Map(RecordTransform::KeysCase {
+                mode: KeyCaseMode::Snake
+            })
+        );
+        assert!(dbg.starts_with("Map"), "{dbg}");
+
+        #[cfg(feature = "transform-filter")]
+        {
+            let dbg = format!(
+                "{:?}",
+                TransformStage::Filter(FilterSpec {
+                    path: "a".into(),
+                    op: FilterOp::Exists,
+                    value: None,
+                })
+            );
+            assert!(dbg.starts_with("Filter"), "{dbg}");
+        }
+        #[cfg(feature = "transform-explode")]
+        {
+            let dbg = format!("{:?}", explode("items"));
+            assert!(dbg.starts_with("Explode"), "{dbg}");
+        }
+    }
+
+    #[test]
+    fn debug_compiled_stage_all_variants() {
+        assert_eq!(
+            format!("{:?}", CompiledStage::Custom(Arc::new(|v| vec![v]))),
+            "Custom(<fn>)"
+        );
+        assert_eq!(
+            format!("{:?}", CompiledStage::PageFn(Arc::new(Ok))),
+            "PageFn(<fn>)"
+        );
+        let map = compile(&[TransformStage::Map(RecordTransform::KeysCase {
+            mode: KeyCaseMode::Snake,
+        })]);
+        assert_eq!(format!("{:?}", map[0]), "Map(<compiled>)");
+
+        #[cfg(feature = "transform-filter")]
+        {
+            let filter = compile(&[filter("a", FilterOp::Exists, None)]);
+            let dbg = format!("{:?}", filter[0]);
+            assert!(dbg.starts_with("Filter"), "{dbg}");
+        }
+        #[cfg(feature = "transform-explode")]
+        {
+            let exploded = compile(&[explode("items")]);
+            let dbg = format!("{:?}", exploded[0]);
+            assert!(dbg.starts_with("Explode"), "{dbg}");
+        }
+    }
+
+    // ── Clone for the stage enums ──────────────────────────────────────────────
+
+    #[test]
+    fn clone_transform_stage_all_variants() {
+        let mut stages: Vec<TransformStage> = vec![
+            TransformStage::Map(RecordTransform::KeysCase {
+                mode: KeyCaseMode::Snake,
+            }),
+            TransformStage::Custom(Arc::new(|v| vec![v])),
+            TransformStage::PageFn(Arc::new(Ok)),
+        ];
+        #[cfg(feature = "transform-filter")]
+        stages.push(filter("a", FilterOp::Exists, None));
+        #[cfg(feature = "transform-explode")]
+        stages.push(explode("items"));
+
+        for s in &stages {
+            let cloned = s.clone();
+            // Both compile cleanly — proving the clone produced a usable stage.
+            compile_stage(&cloned).expect("cloned stage compiles");
+        }
+
+        // Clone of Custom preserves behaviour (refcount bump, same closure).
+        let custom = TransformStage::Custom(Arc::new(|v| vec![v.clone(), v]));
+        // Clone the stage (the behaviour under test), then compile the clone.
+        let cloned = custom.clone();
+        let compiled_clone = compile(&[cloned]);
+        assert_eq!(
+            apply_stages(json!({"x": 1}), &compiled_clone)
+                .unwrap()
+                .len(),
+            2
+        );
+    }
+
+    #[test]
+    fn clone_compiled_stage_all_variants() {
+        let mut specs: Vec<TransformStage> = vec![
+            TransformStage::Map(RecordTransform::KeysCase {
+                mode: KeyCaseMode::Snake,
+            }),
+            TransformStage::Custom(Arc::new(|v| vec![v])),
+            TransformStage::PageFn(Arc::new(Ok)),
+        ];
+        #[cfg(feature = "transform-filter")]
+        specs.push(filter("status", FilterOp::Eq, Some(json!("active"))));
+        #[cfg(feature = "transform-explode")]
+        specs.push(explode("items"));
+
+        let original = compile(&specs);
+        let cloned: Vec<CompiledStage> = original.to_vec();
+        assert_eq!(original.len(), cloned.len());
+        // Confirm a cloned Map stage still transforms identically.
+        let out = apply_stages(json!({"FooBar": 1}), std::slice::from_ref(&cloned[0])).unwrap();
+        assert_eq!(out, vec![json!({"foo_bar": 1})]);
+    }
+
+    #[cfg(feature = "transform-filter")]
+    #[test]
+    fn clone_compiled_filter_preserves_predicate() {
+        let original = compile(&[filter("status", FilterOp::Eq, Some(json!("active")))]);
+        let cloned = vec![original[0].clone()];
+        assert_eq!(
+            apply_stages(json!({"status": "active"}), &cloned).unwrap(),
+            vec![json!({"status": "active"})]
+        );
+        assert_eq!(
+            apply_stages(json!({"status": "x"}), &cloned).unwrap(),
+            Vec::<Value>::new()
+        );
+    }
+
+    #[cfg(feature = "transform-explode")]
+    #[test]
+    fn clone_compiled_explode_preserves_behaviour() {
+        let original = compile(&[explode("items")]);
+        let cloned = vec![original[0].clone()];
+        let out = apply_stages(json!({"id": 1, "items": [{"sku": "A"}]}), &cloned).unwrap();
+        assert_eq!(out, vec![json!({"id": 1, "items_sku": "A"})]);
+    }
+
+    // ── compile_stage: Custom / PageFn pass-through ────────────────────────────
+
+    #[test]
+    fn compile_stage_custom_and_page_fn() {
+        let custom =
+            compile_stage(&TransformStage::Custom(Arc::new(|v| vec![v]))).expect("custom compiles");
+        assert!(matches!(custom, CompiledStage::Custom(_)));
+        let page = compile_stage(&TransformStage::PageFn(Arc::new(Ok))).expect("page fn compiles");
+        assert!(matches!(page, CompiledStage::PageFn(_)));
+    }
+
+    // ── FilterOp Display ───────────────────────────────────────────────────────
+
+    #[cfg(feature = "transform-filter")]
+    #[test]
+    fn filter_op_display_strings() {
+        assert_eq!(FilterOp::Eq.to_string(), "eq");
+        assert_eq!(FilterOp::Ne.to_string(), "ne");
+        assert_eq!(FilterOp::Exists.to_string(), "exists");
+        assert_eq!(FilterOp::In.to_string(), "in");
+        assert_eq!(FilterOp::NotIn.to_string(), "not_in");
+    }
+
+    // ── CompiledPath::compile error branches ───────────────────────────────────
+
+    #[test]
+    fn path_empty_segment_after_dot_errors() {
+        // "$.a." leaves a trailing empty identifier.
+        let err = CompiledPath::compile("$.a.").expect_err("trailing dot");
+        assert!(matches!(err, FaucetError::Transform(_)));
+        assert!(format!("{err}").contains("empty segment after"), "{err}");
+    }
+
+    #[test]
+    fn path_unterminated_bracket_errors() {
+        let err = CompiledPath::compile("$[").expect_err("dangling open bracket");
+        assert!(format!("{err}").contains("unterminated bracket"), "{err}");
+    }
+
+    #[test]
+    fn path_bracket_requires_quoted_key_errors() {
+        // `[0]` — numeric index isn't supported in the v1 subset.
+        let err = CompiledPath::compile("$[0]").expect_err("unquoted bracket key");
+        assert!(format!("{err}").contains("requires a quoted key"), "{err}");
+    }
+
+    #[test]
+    fn path_unterminated_quoted_key_errors() {
+        let err = CompiledPath::compile("$['oops").expect_err("missing closing quote");
+        assert!(
+            format!("{err}").contains("unterminated quoted key"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn path_missing_closing_bracket_errors() {
+        // Quote closes but the `]` is missing.
+        let err = CompiledPath::compile("$['key'").expect_err("missing closing bracket");
+        assert!(
+            format!("{err}").contains("expected ']' after quoted key"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn path_unexpected_character_errors() {
+        // After `$`, a char that's neither `.` nor `[` is rejected.
+        let err = CompiledPath::compile("$x").expect_err("unexpected char");
+        assert!(format!("{err}").contains("unexpected character"), "{err}");
+    }
+
+    #[test]
+    fn path_empty_must_address_a_key_errors() {
+        // A bare `$` parses to zero segments.
+        let err = CompiledPath::compile("$").expect_err("bare root has no key");
+        assert!(
+            format!("{err}").contains("empty (must address a key)"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn path_bracket_wildcard_and_filter_rejected() {
+        // `[*]` and `[?...]` are caught as v1-syntax errors at the bracket layer.
+        for p in &["$[*]", "$[?(@.x)]"] {
+            let err = CompiledPath::compile(p).expect_err(p);
+            assert!(
+                format!("{err}").contains("not allowed")
+                    || format!("{err}").contains("single-node"),
+                "{p} → {err}"
+            );
+        }
+    }
+
+    // ── resolve_segments_mut branches ──────────────────────────────────────────
+
+    #[test]
+    fn resolve_segments_mut_returns_object_container() {
+        let p = CompiledPath::compile("$.user").unwrap();
+        let mut rec = json!({"user": {"name": "A"}});
+        let map = CompiledPath::resolve_segments_mut(&mut rec, p.segments())
+            .unwrap()
+            .expect("user is an object container");
+        map.insert("added".into(), json!(1));
+        assert_eq!(rec, json!({"user": {"name": "A", "added": 1}}));
+    }
+
+    #[test]
+    fn resolve_segments_mut_missing_intermediate_is_none() {
+        let p = CompiledPath::compile("$.user.profile").unwrap();
+        let mut rec = json!({"other": 1});
+        let result = CompiledPath::resolve_segments_mut(&mut rec, p.segments()).unwrap();
+        assert!(result.is_none(), "missing intermediate key → None");
+    }
+
+    #[test]
+    fn resolve_segments_mut_through_non_object_is_none() {
+        // Walking into a scalar mid-path yields None.
+        let p = CompiledPath::compile("$.user.profile").unwrap();
+        let mut rec = json!({"user": 5});
+        let result = CompiledPath::resolve_segments_mut(&mut rec, p.segments()).unwrap();
+        assert!(result.is_none(), "non-object intermediate → None");
+    }
+
+    #[test]
+    fn resolve_segments_mut_leaf_non_object_is_none() {
+        // The final value exists but isn't an object container.
+        let p = CompiledPath::compile("$.name").unwrap();
+        let mut rec = json!({"name": "scalar"});
+        let result = CompiledPath::resolve_segments_mut(&mut rec, p.segments()).unwrap();
+        assert!(result.is_none(), "scalar leaf is not an object container");
+    }
 }

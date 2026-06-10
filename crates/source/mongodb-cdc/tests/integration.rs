@@ -14,6 +14,7 @@
 //! subsequent write — and only that write — is delivered (no replay).
 
 use faucet_core::Source;
+use faucet_core::check::{CheckContext, ProbeStatus};
 use faucet_source_mongodb_cdc::{MongoCdcSource, MongoCdcSourceConfig};
 use futures::StreamExt;
 use mongodb::Client;
@@ -170,4 +171,197 @@ async fn cdc_captures_crud_then_resumes_without_replay() {
         );
     }
     assert!(records2.iter().any(|r| r["op"] == "c"));
+}
+
+// --- instance trait methods (require a live replica set via new()) ---
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn instance_metadata_methods() {
+    let (_container, uri) = start_repl_set().await;
+    let source = MongoCdcSource::new(config(&uri)).await.expect("source");
+
+    // state_key is derived from the (collection) scope.
+    assert_eq!(
+        source.state_key().as_deref(),
+        Some("mongodb-cdc:coll:app.users"),
+        "collection-scope state key"
+    );
+
+    // CDC supports exactly-once delivery (durable resume token).
+    assert!(source.supports_exactly_once());
+
+    // Stable connector label used for metrics/logging.
+    assert_eq!(source.connector_name(), "mongodb-cdc");
+
+    // dataset_uri for a collection scope appends db/coll after the redacted URI.
+    let ds = source.dataset_uri();
+    assert!(
+        ds.ends_with(&format!("/{DB}/{COLL}")),
+        "collection dataset_uri: {ds}"
+    );
+
+    // config_schema is the JSON Schema for the config struct.
+    let schema = source.config_schema();
+    let props = schema
+        .get("properties")
+        .and_then(|p| p.as_object())
+        .expect("config_schema must be a JSON object schema");
+    assert!(props.contains_key("connection_uri"), "schema: {schema}");
+    assert!(props.contains_key("scope"));
+    assert!(props.contains_key("start_from"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn dataset_uri_database_and_cluster_scopes() {
+    let (_container, uri) = start_repl_set().await;
+    let base = faucet_core::redact_uri_credentials(&uri);
+
+    // Database scope → base/<db>; state key is mongodb-cdc:db:<db>.
+    let db_cfg: MongoCdcSourceConfig = serde_json::from_value(json!({
+        "connection_uri": &uri,
+        "scope": { "type": "database", "database": DB },
+        "idle_timeout": 5,
+        "max_await_time_ms": 500,
+        "batch_size": 0
+    }))
+    .expect("db config");
+    let db_source = MongoCdcSource::new(db_cfg).await.expect("db source");
+    assert_eq!(db_source.dataset_uri(), format!("{base}/{DB}"));
+    assert_eq!(
+        db_source.state_key().as_deref(),
+        Some(format!("mongodb-cdc:db:{DB}").as_str())
+    );
+
+    // Cluster scope → just the redacted base; state key is mongodb-cdc:cluster.
+    let cluster_cfg: MongoCdcSourceConfig = serde_json::from_value(json!({
+        "connection_uri": &uri,
+        "scope": { "type": "cluster" },
+        "idle_timeout": 5,
+        "max_await_time_ms": 500,
+        "batch_size": 0
+    }))
+    .expect("cluster config");
+    let cluster_source = MongoCdcSource::new(cluster_cfg)
+        .await
+        .expect("cluster source");
+    assert_eq!(cluster_source.dataset_uri(), base);
+    assert_eq!(
+        cluster_source.state_key().as_deref(),
+        Some("mongodb-cdc:cluster")
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn check_passes_on_replica_set() {
+    let (_container, uri) = start_repl_set().await;
+    let source = MongoCdcSource::new(config(&uri)).await.expect("source");
+
+    let report = source
+        .check(&CheckContext::default())
+        .await
+        .expect("check report");
+    // Replica set → both connection and topology probes pass.
+    let names: Vec<&str> = report.probes.iter().map(|p| p.name).collect();
+    assert!(names.contains(&"connection"), "probes: {names:?}");
+    assert!(names.contains(&"topology"), "probes: {names:?}");
+    for p in &report.probes {
+        assert!(
+            matches!(p.status, ProbeStatus::Pass),
+            "probe {} must pass on a replica set, got {:?}",
+            p.name,
+            p.status
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn fetch_with_context_drains_into_flat_vec() {
+    let (_container, uri) = start_repl_set().await;
+    {
+        let client = Client::with_uri_str(&uri).await.expect("seed client");
+        client
+            .database(DB)
+            .collection::<Document>(COLL)
+            .insert_one(doc! { "_id": 0, "seed": true })
+            .await
+            .expect("seed insert");
+    }
+    let source = MongoCdcSource::new(config(&uri)).await.expect("source");
+
+    let writer_uri = uri.clone();
+    let writer = tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        let client = Client::with_uri_str(&writer_uri)
+            .await
+            .expect("writer client");
+        client
+            .database(DB)
+            .collection::<Document>(COLL)
+            .insert_one(doc! { "_id": 7, "name": "eve" })
+            .await
+            .expect("insert");
+    });
+
+    // fetch_with_context drains every page of one cycle into a flat Vec.
+    let ctx: HashMap<String, Value> = HashMap::new();
+    let records = source.fetch_with_context(&ctx).await.expect("fetch");
+    writer.await.expect("writer task");
+
+    assert!(
+        records
+            .iter()
+            .any(|r| r["op"] == "c" && r["after"]["name"] == "eve"),
+        "expected the eve insert in the flattened result, got {records:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn new_warns_but_succeeds_with_pre_image_request() {
+    // full_document_before_change != Off triggers the warn branch in new();
+    // construction must still succeed against a replica set (the server only
+    // errors at stream open if pre-images are unavailable, not at connect).
+    let (_container, uri) = start_repl_set().await;
+    let cfg: MongoCdcSourceConfig = serde_json::from_value(json!({
+        "connection_uri": uri,
+        "scope": { "type": "collection", "database": DB, "collection": COLL },
+        "full_document_before_change": "when_available",
+        "idle_timeout": 5,
+        "max_await_time_ms": 500,
+        "batch_size": 0
+    }))
+    .expect("config");
+    let source = MongoCdcSource::new(cfg).await.expect("source new");
+    assert_eq!(source.connector_name(), "mongodb-cdc");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn new_rejects_standalone_topology() {
+    // A standalone mongod (not a replica set) does not support change streams;
+    // new() must fail via ensure_changestream_capable with a Source error.
+    let container = Mongo::default()
+        .start()
+        .await
+        .expect("standalone mongo start");
+    let port = container.get_host_port_ipv4(27017).await.expect("port");
+    let uri = format!("mongodb://127.0.0.1:{port}/?directConnection=true");
+
+    let cfg: MongoCdcSourceConfig = serde_json::from_value(json!({
+        "connection_uri": uri,
+        "scope": { "type": "collection", "database": DB, "collection": COLL },
+        "idle_timeout": 5,
+        "max_await_time_ms": 500,
+        "batch_size": 0
+    }))
+    .expect("config");
+
+    match MongoCdcSource::new(cfg).await {
+        Err(faucet_core::FaucetError::Source(m)) => {
+            assert!(
+                m.contains("replica set") || m.contains("standalone"),
+                "expected a topology rejection, got: {m}"
+            );
+        }
+        Err(other) => panic!("expected a Source topology error, got {other:?}"),
+        Ok(_) => panic!("standalone mongod must be rejected for change streams"),
+    }
 }

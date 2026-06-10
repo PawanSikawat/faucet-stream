@@ -143,4 +143,69 @@ mod tests {
         let b = infer_schema(&[json!({"a": 1, "b": "x"})]).unwrap();
         assert_ne!(a.fields().len(), b.fields().len());
     }
+
+    #[test]
+    fn round_trip_all_json_value_types() {
+        // null, bool, int, float, string, nested object, nested array.
+        let recs = vec![json!({
+            "n": null,
+            "flag": true,
+            "count": 7,
+            "ratio": 2.5,
+            "label": "hello",
+            "nested": {"inner": 1, "deep": {"x": "y"}},
+            "list": [1, 2, 3]
+        })];
+        let schema = infer_schema(&recs).unwrap();
+        let batch = json_to_record_batch(&recs, schema).unwrap();
+        assert_eq!(batch.num_rows(), 1);
+        let back = record_batches_to_json(&[batch]).unwrap();
+        assert_eq!(back[0]["flag"], json!(true));
+        assert_eq!(back[0]["count"], json!(7));
+        assert_eq!(back[0]["ratio"], json!(2.5));
+        assert_eq!(back[0]["label"], json!("hello"));
+        assert_eq!(back[0]["nested"], json!({"inner": 1, "deep": {"x": "y"}}));
+        assert_eq!(back[0]["list"], json!([1, 2, 3]));
+        // A null-valued field is dropped by the arrow-json writer (sparse output).
+        assert!(back[0].get("n").is_none() || back[0]["n"] == json!(null));
+    }
+
+    #[test]
+    fn json_to_record_batch_empty_records_yields_empty_batch() {
+        // No records → the decoder flushes nothing → empty batch built from schema.
+        let schema = infer_schema(&[json!({"a": 1})]).unwrap();
+        let batch = json_to_record_batch(&[], schema).unwrap();
+        assert_eq!(batch.num_rows(), 0);
+        assert_eq!(batch.num_columns(), 1);
+    }
+
+    #[test]
+    fn record_batches_to_json_empty_input_is_empty_vec() {
+        let rows = record_batches_to_json(&[]).unwrap();
+        assert!(rows.is_empty());
+    }
+
+    #[test]
+    fn values_relation_row_arity_mismatch_is_config_error() {
+        // Two columns declared, second row has only one cell → Config error naming
+        // the offending row index and the expected/actual counts.
+        let err = values_to_record_batch(
+            &["id".to_string(), "label".to_string()],
+            &[vec![json!(1), json!("ok")], vec![json!(2)]],
+        )
+        .unwrap_err();
+        assert!(matches!(err, FaucetError::Config(_)), "got: {err:?}");
+        let msg = format!("{err}");
+        assert!(msg.contains("row 1"), "got: {msg}");
+        assert!(msg.contains("1 cells, expected 2"), "got: {msg}");
+    }
+
+    #[test]
+    fn infer_schema_on_non_object_is_transform_error() {
+        // A bare scalar is not a JSON object; arrow-json schema inference rejects
+        // it and the `te` helper wraps it as a Transform error.
+        let err = infer_schema(&[json!(42)]).unwrap_err();
+        assert!(matches!(err, FaucetError::Transform(_)), "got: {err:?}");
+        assert!(format!("{err}").contains("sql transform"), "got: {err}");
+    }
 }

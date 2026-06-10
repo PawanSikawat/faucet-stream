@@ -531,6 +531,123 @@ pipeline:
     }
 
     #[test]
+    fn make_resolver_rejects_unknown_scheme() {
+        match make_resolver("not-a-scheme") {
+            Err(CliError::SecretBackendDisabled { scheme }) => assert_eq!(scheme, "not-a-scheme"),
+            Err(other) => panic!("expected SecretBackendDisabled, got {other:?}"),
+            Ok(_) => panic!("expected SecretBackendDisabled for an unknown scheme"),
+        }
+    }
+
+    #[cfg(feature = "secrets-aws-sm")]
+    #[test]
+    fn make_resolver_builds_compiled_in_aws_backend() {
+        // The constructor is cheap (no network) — it must yield a resolver whose
+        // scheme matches, proving the feature-gated arm is wired.
+        let r = make_resolver("aws-sm").unwrap();
+        assert_eq!(r.scheme(), "aws-sm");
+    }
+
+    #[tokio::test]
+    async fn resolve_secrets_walks_matrix_row_state_dlq_and_transforms() {
+        // A matrix row whose own state/dlq/transforms configs hold secrets must
+        // have them resolved by the mutating visitor (the per-row branches).
+        let mut set = ResolverSet::default();
+        set.insert(Arc::new(FakeResolver {
+            scheme: "vault",
+            value: "R".into(),
+        }));
+        let cfg_yaml = r#"
+version: 1
+pipeline:
+  source: { type: csv, config: { path: ./in.csv } }
+  sink:   { type: jsonl, config: { path: ./o.jsonl } }
+matrix:
+  - id: row1
+    source: { config: { path: "${vault:secret/src}" } }
+    sink:   { config: { path: "${vault:secret/sink}" } }
+    state:  { type: file, config: { path: "${vault:secret/state}" } }
+    transforms:
+      - type: set
+        config: { field: tag, value: "${vault:secret/tf}" }
+    dlq:
+      sink: { type: jsonl, config: { path: "${vault:secret/dlq}" } }
+"#;
+        let mut cfg = PipelineConfig::from_text(cfg_yaml, std::path::Path::new("p.yaml")).unwrap();
+        resolve_secrets_with(&mut cfg, &set).await.unwrap();
+
+        let row = &cfg.matrix[0];
+        assert_eq!(
+            row.source.as_ref().unwrap().config.as_ref().unwrap()["path"],
+            "R"
+        );
+        assert_eq!(
+            row.sink.as_ref().unwrap().config.as_ref().unwrap()["path"],
+            "R"
+        );
+        assert_eq!(row.state.as_ref().unwrap().config["path"], "R");
+        assert_eq!(row.transforms.as_ref().unwrap()[0].config["value"], "R");
+        let dlq = row.dlq.as_ref().unwrap().as_ref().unwrap();
+        assert_eq!(dlq.sink.config["path"], "R");
+    }
+
+    #[test]
+    fn scan_config_collects_refs_from_matrix_row_state_and_dlq() {
+        // The read-only visitor must reach the per-row state/dlq/transforms too.
+        let cfg_yaml = r#"
+version: 1
+pipeline:
+  source: { type: csv, config: { path: ./in.csv } }
+  sink:   { type: jsonl, config: { path: ./o.jsonl } }
+matrix:
+  - id: r
+    state: { type: file, config: { path: "${vault:secret/state}" } }
+    transforms:
+      - type: set
+        config: { field: t, value: "${aws-sm:tf/key}" }
+    dlq:
+      sink: { type: jsonl, config: { path: "${gcp-sm:projects/p/secrets/s/versions/1}" } }
+"#;
+        let cfg = PipelineConfig::from_text(cfg_yaml, std::path::Path::new("p.yaml")).unwrap();
+        let refs = scan_config(&cfg);
+        assert!(refs.contains(&("vault".into(), "secret/state".into())));
+        assert!(refs.contains(&("aws-sm".into(), "tf/key".into())));
+        assert!(refs.contains(&("gcp-sm".into(), "projects/p/secrets/s/versions/1".into())));
+    }
+
+    #[tokio::test]
+    async fn resolve_secrets_noop_when_no_directives() {
+        // No secret directives anywhere → resolve_secrets returns Ok without
+        // building any resolver (the empty-refs early return).
+        let cfg_yaml = r#"
+version: 1
+pipeline:
+  source: { type: csv, config: { path: ./in.csv } }
+  sink:   { type: jsonl, config: { path: ./o.jsonl } }
+"#;
+        let mut cfg = PipelineConfig::from_text(cfg_yaml, std::path::Path::new("p.yaml")).unwrap();
+        resolve_secrets(&mut cfg).await.unwrap();
+    }
+
+    #[test]
+    fn split_field_splits_on_hash() {
+        assert_eq!(split_field("a/b#c"), ("a/b", Some("c")));
+        assert_eq!(split_field("a/b"), ("a/b", None));
+    }
+
+    #[test]
+    fn ensure_no_secret_directives_passes_when_clean() {
+        let cfg_yaml = r#"
+version: 1
+pipeline:
+  source: { type: csv, config: { path: ./in.csv } }
+  sink:   { type: jsonl, config: { path: ./o.jsonl } }
+"#;
+        let cfg = PipelineConfig::from_text(cfg_yaml, std::path::Path::new("p.yaml")).unwrap();
+        assert!(ensure_no_secret_directives(&cfg).is_ok());
+    }
+
+    #[test]
     fn ensure_no_secret_directives_flags_vault() {
         let cfg_yaml = r#"
 version: 1

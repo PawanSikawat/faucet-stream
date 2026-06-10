@@ -1097,4 +1097,92 @@ mod tests {
         };
         assert_eq!(uri, "mysql://h:3306/db?tables=db.orders,db.users");
     }
+
+    // ── build_request ─────────────────────────────────────────────────────────
+    //
+    // `BinlogStreamRequest` exposes no public getters and does not derive
+    // `Debug`, so the only observable outcome of `build_request` for the
+    // non-erroring arms is `Ok` vs `Err` (the builder is side-effect-free).
+    // The GtidSet arm additionally has an observable error path, which is
+    // asserted exactly below.
+
+    #[test]
+    fn build_request_current_arm_succeeds() {
+        // Defensive arm: `resolve_current` normally converts Current → FilePos
+        // before `build_request`, but a caller that skips it must still get a
+        // plain request rather than an error.
+        let resolved = ResolvedStart::Current {
+            file: String::new(),
+            pos: 0,
+        };
+        assert!(build_request(42, &resolved).is_ok());
+    }
+
+    #[test]
+    fn build_request_earliest_arm_succeeds() {
+        let resolved = ResolvedStart::Earliest;
+        assert!(build_request(7, &resolved).is_ok());
+    }
+
+    #[test]
+    fn build_request_file_pos_arm_succeeds() {
+        let resolved = ResolvedStart::FilePos {
+            file: "binlog.000007".into(),
+            pos: 8192,
+        };
+        assert!(build_request(1001, &resolved).is_ok());
+    }
+
+    #[test]
+    fn build_request_valid_gtid_set_succeeds() {
+        // A well-formed `uuid:interval` GTID parses into `Sid`s; multiple
+        // comma-separated entries are each trimmed and parsed.
+        let resolved = ResolvedStart::GtidSet {
+            value: "3E11FA47-71CA-11E1-9E33-C80AA9429562:1-5, \
+                    8a1d3a7c-71ca-11e1-9e33-c80aa9429562:1-10"
+                .into(),
+        };
+        assert!(build_request(1001, &resolved).is_ok());
+    }
+
+    #[test]
+    fn build_request_invalid_gtid_set_errors_with_source_variant() {
+        // A malformed GTID set surfaces as a typed `FaucetError::Source` whose
+        // message names the offending fragment.
+        let resolved = ResolvedStart::GtidSet {
+            value: "totally-not-a-gtid".into(),
+        };
+        // `BinlogStreamRequest` is not `Debug`, so match the `Result` directly
+        // rather than via `expect_err` (which would require `Ok: Debug`).
+        match build_request(1001, &resolved) {
+            Err(FaucetError::Source(msg)) => {
+                assert!(
+                    msg.contains("invalid GTID set 'totally-not-a-gtid'"),
+                    "message must name the bad fragment; got: {msg}"
+                );
+            }
+            Err(other) => panic!("expected FaucetError::Source, got {other:?}"),
+            Ok(_) => panic!("invalid GTID must error"),
+        }
+    }
+
+    // ── build_ddl_envelope ────────────────────────────────────────────────────
+
+    #[test]
+    fn ddl_envelope_shape() {
+        let env = build_ddl_envelope("ALTER TABLE t ADD c INT", 1_700, "binlog.000004", 512);
+        assert_eq!(env["op"], "ddl");
+        assert_eq!(env["ts_ms"], 1_700_u64);
+        assert_eq!(env["statement"], "ALTER TABLE t ADD c INT");
+        assert_eq!(
+            env["lsn"],
+            json!({ "file": "binlog.000004", "pos": 512_u64 })
+        );
+        // DDL envelopes carry no before/after/schema/table keys.
+        let obj = env.as_object().unwrap();
+        assert!(!obj.contains_key("before"));
+        assert!(!obj.contains_key("after"));
+        assert!(!obj.contains_key("schema"));
+        assert!(!obj.contains_key("table"));
+    }
 }

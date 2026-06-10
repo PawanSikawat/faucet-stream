@@ -2985,4 +2985,202 @@ mod tests {
             "expected faucet_pipeline_adaptive_batch_adjustments_total counter with pipeline=p, row=r"
         );
     }
+
+    // ── run_stream: exactly-once + DLQ incompatibility gate ─────────────────
+
+    #[tokio::test]
+    async fn exactly_once_rejects_dlq() {
+        // Exactly-once must reject a configured DLQ (incompatible in this
+        // version): the gate fires before any page is polled.
+        let store: Arc<dyn StateStore> = Arc::new(MemoryStateStore::new());
+        let dlq_sink: Arc<dyn Sink> = Arc::new(MockSink::new());
+        let pages: Vec<Result<StreamPage, FaucetError>> = vec![];
+        let opts = eo_opts(store, "k", 0).with_dlq(DlqConfig::new(dlq_sink));
+        let r = run_stream(
+            futures::stream::iter(pages),
+            &IdempotentMockSink::new(),
+            opts,
+        )
+        .await;
+        assert!(
+            matches!(&r, Err(FaucetError::Config(m)) if m.contains("not compatible with a DLQ")),
+            "got: {r:?}"
+        );
+    }
+
+    // ── run_stream: exactly-once page with records but no bookmark ──────────
+
+    #[tokio::test]
+    async fn exactly_once_writes_unbookmarked_page_at_least_once() {
+        // Under exactly-once, a page that carries records but NO bookmark is
+        // not individually checkpointed: it falls through to a plain
+        // `write_batch` (at-least-once for that page) and is NOT idempotently
+        // tokened.
+        let sink = IdempotentMockSink::new();
+        let store: Arc<dyn StateStore> = Arc::new(MemoryStateStore::new());
+        let pages = vec![Ok(StreamPage {
+            records: vec![json!({"id": 1}), json!({"id": 2})],
+            bookmark: None,
+        })];
+        let r = run_stream(
+            futures::stream::iter(pages),
+            &sink,
+            eo_opts(store.clone(), "k", 0),
+        )
+        .await
+        .unwrap();
+        assert_eq!(r.records_written, 2);
+        assert_eq!(r.bookmark, None);
+        // Rows were written via the plain (non-idempotent) write_batch path, so
+        // no commit token was recorded for the scope.
+        assert_eq!(sink.last_committed_token("k").await.unwrap(), None);
+        // Nothing was persisted to the state store (no bookmark to checkpoint).
+        assert!(store.get("k").await.unwrap().is_none());
+        assert_eq!(sink.rows(), vec![json!({"id": 1}), json!({"id": 2})]);
+    }
+
+    // ── DLQ-with-bookmark success path: persist bookmark after routing ──────
+
+    #[tokio::test]
+    async fn dlq_with_bookmark_persists_after_routing_failures() {
+        // A bookmark-carrying page whose main sink reports one per-row failure:
+        // survivors commit, the failed row reaches the DLQ, the DLQ is flushed,
+        // and the bookmark is persisted to the state store.
+        let main = PartialSink::new(vec![1]); // 2 rows, index 1 fails
+        let dlq = std::sync::Arc::new(MockSink::new());
+        let store: Arc<dyn StateStore> = Arc::new(MemoryStateStore::new());
+        let pages: Vec<Result<StreamPage, FaucetError>> = vec![Ok(StreamPage {
+            records: vec![json!({"i": 0}), json!({"i": 1})],
+            bookmark: Some(json!("ckpt")),
+        })];
+        let result = run_stream(
+            futures::stream::iter(pages),
+            &main,
+            RunStreamOptions::new()
+                .with_dlq(DlqConfig::new(dlq.clone()))
+                .with_state(Arc::clone(&store), "k"),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result.records_written, 1); // row 0 committed
+        assert_eq!(result.bookmark, Some(json!("ckpt")));
+        // Bookmark was persisted after the page was made durable.
+        assert_eq!(store.get("k").await.unwrap(), Some(json!("ckpt")));
+        // The single failed row reached the DLQ.
+        let envelopes = dlq.0.lock().unwrap();
+        assert_eq!(envelopes.len(), 1);
+        assert_eq!(envelopes[0]["payload"]["i"], 1);
+    }
+
+    // ── run_stream drives exactly-once with resume from start_seq ───────────
+
+    #[tokio::test]
+    async fn exactly_once_resumes_sequence_from_start_seq() {
+        // A resume run starts at start_seq (the persisted seq) and continues
+        // numbering tokens from there; the next bookmark-carrying page is
+        // committed at seq = start_seq + 1.
+        let sink = IdempotentMockSink::new();
+        let store: Arc<dyn StateStore> = Arc::new(MemoryStateStore::new());
+        let pages = vec![Ok(StreamPage {
+            records: vec![json!({"id": 9})],
+            bookmark: Some(json!("bm-after-resume")),
+        })];
+        let r = run_stream(
+            futures::stream::iter(pages),
+            &sink,
+            eo_opts(store.clone(), "eo_key", 7),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(r.records_written, 1);
+        let (bm, seq) =
+            crate::idempotency::unwrap_state(&store.get("eo_key").await.unwrap().unwrap());
+        assert_eq!(bm, Some(json!("bm-after-resume")));
+        assert_eq!(seq, 8, "sequence resumes at start_seq + 1");
+        assert_eq!(
+            sink.last_committed_token("eo_key").await.unwrap(),
+            Some(crate::idempotency::format_token(8))
+        );
+    }
+
+    // ── Pipeline::run with quality wired through the builder ────────────────
+
+    #[cfg(feature = "quality")]
+    #[tokio::test]
+    async fn pipeline_run_with_quality_aborts_on_failed_batch_check() {
+        use crate::quality::{BatchCheck, CompiledQuality, OnFailure, QualitySpec};
+        let source = MockSource(vec![json!({"id": 1})]);
+        let main = MockSink::new();
+        let spec = QualitySpec {
+            record: vec![],
+            batch: vec![BatchCheck::RowCount {
+                min: Some(5),
+                max: None,
+                on_failure: OnFailure::Abort,
+            }],
+        };
+        let quality = Arc::new(CompiledQuality::compile(&spec).unwrap());
+        let result = Pipeline::new(&source, &main)
+            .with_quality(quality)
+            .run()
+            .await;
+        assert!(matches!(result, Err(FaucetError::QualityFailure { .. })));
+        // The abort fired before the sink committed.
+        assert!(main.written().is_empty());
+    }
+
+    // ── Pipeline::run with adaptive wired through the builder ───────────────
+
+    #[tokio::test]
+    async fn pipeline_run_with_adaptive_reslices_page() {
+        use crate::adaptive::AdaptiveBatchConfig;
+        let source = MockSource((0..1000).map(|i| json!({ "i": i })).collect());
+        let sink = MockSink::new();
+        let cfg: AdaptiveBatchConfig =
+            serde_json::from_value(json!({"enabled": true, "min": 100, "max": 1000})).unwrap();
+        let result = Pipeline::new(&source, &sink)
+            .with_adaptive(cfg)
+            .run()
+            .await
+            .unwrap();
+        assert_eq!(result.records_written, 1000);
+        assert_eq!(sink.written().len(), 1000);
+    }
+
+    // ── Adaptive no-op warning for per-record sinks (jsonl/csv/stdout) ──────
+
+    #[tokio::test]
+    async fn adaptive_noop_sink_name_is_handled() {
+        use crate::adaptive::AdaptiveBatchConfig;
+
+        // A sink whose connector_name() is one of the per-record names triggers
+        // the one-shot "no-op for this per-record sink" info path.
+        struct JsonlNamedSink(std::sync::Mutex<usize>);
+        #[async_trait]
+        impl Sink for JsonlNamedSink {
+            async fn write_batch(&self, records: &[Value]) -> Result<usize, FaucetError> {
+                *self.0.lock().unwrap() += records.len();
+                Ok(records.len())
+            }
+            fn connector_name(&self) -> &'static str {
+                "jsonl"
+            }
+        }
+
+        let page = StreamPage {
+            records: (0..10).map(|i| json!({ "i": i })).collect(),
+            bookmark: None,
+        };
+        let stream = futures::stream::iter(vec![Ok(page)]);
+        let sink = JsonlNamedSink(std::sync::Mutex::new(0));
+        let cfg: AdaptiveBatchConfig =
+            serde_json::from_value(json!({"enabled": true, "min": 5, "max": 10})).unwrap();
+        let result = run_stream(stream, &sink, RunStreamOptions::new().with_adaptive(cfg))
+            .await
+            .unwrap();
+        assert_eq!(result.records_written, 10);
+        assert_eq!(*sink.0.lock().unwrap(), 10);
+    }
 }
