@@ -11,7 +11,8 @@ use gcp_bigquery_client::model::query_parameter::QueryParameter;
 use gcp_bigquery_client::model::query_parameter_type::QueryParameterType;
 use gcp_bigquery_client::model::query_parameter_value::QueryParameterValue;
 use gcp_bigquery_client::model::query_request::QueryRequest;
-use gcp_bigquery_client::model::query_response::QueryResponse;
+use faucet_core::idempotency::COMMIT_TOKEN_TOKEN_COL;
+use gcp_bigquery_client::model::query_response::{QueryResponse, ResultSet};
 use gcp_bigquery_client::model::table_data_insert_all_request::TableDataInsertAllRequest;
 use gcp_bigquery_client::model::table_data_insert_all_response::TableDataInsertAllResponse;
 use serde_json::Value;
@@ -21,12 +22,10 @@ use tokio::sync::OnceCell;
 /// Max wall-clock spent polling an idempotent-write / token-read job to
 /// completion before giving up. Exactly-once pages are small, so this is a
 /// generous safety cap, not a steady-state wait.
-#[allow(dead_code)]
 const IDEMPOTENT_JOB_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// Server-side long-poll window per `getQueryResults` completion check —
 /// BigQuery holds the connection open up to this long, so we don't busy-wait.
-#[allow(dead_code)]
 const JOB_POLL_LONG_POLL_MS: i32 = 10_000;
 
 /// A sink that writes JSON records to a BigQuery table using the streaming
@@ -161,11 +160,10 @@ impl BigQuerySink {
     }
 
     // -----------------------------------------------------------------------
-    // Exactly-once helpers (wired into trait hooks in a later task)
+    // Exactly-once helpers
     // -----------------------------------------------------------------------
 
     /// Build a NAMED STRING query parameter.
-    #[allow(dead_code)]
     fn string_param(name: &str, value: &str) -> QueryParameter {
         QueryParameter {
             name: Some(name.to_string()),
@@ -183,7 +181,6 @@ impl BigQuerySink {
     }
 
     /// Fetch (once) and cache the target table's schema as [`idempotent::FieldSpec`]s.
-    #[allow(dead_code)]
     async fn target_schema(&self) -> Result<&Vec<idempotent::FieldSpec>, FaucetError> {
         self.schema_cache
             .get_or_try_init(|| async {
@@ -220,7 +217,6 @@ impl BigQuerySink {
     }
 
     /// Create the commit-token watermark table if it does not exist.
-    #[allow(dead_code)]
     async fn ensure_commit_table(&self) -> Result<(), FaucetError> {
         let sql = idempotent::build_create_commit_table(
             &self.config.project_id,
@@ -249,7 +245,6 @@ impl BigQuerySink {
     /// failure recorded in the job body. `Job.status.error_result` is the
     /// authoritative terminal-failure signal; the `errors` array can also carry
     /// non-fatal warnings, so it must not be treated as failure on its own.
-    #[allow(dead_code)]
     async fn await_query_complete(&self, initial: QueryResponse) -> Result<(), FaucetError> {
         let (job_id, location) = Self::job_reference(&initial)?;
 
@@ -284,22 +279,37 @@ impl BigQuerySink {
         }
 
         // Phase 2 — authoritative success check via the job's errorResult.
+        //
+        // We require an explicit terminal `DONE` state with no `errorResult`.
+        // A missing `status`, a non-`DONE` state, or a present `errorResult` all
+        // mean we cannot confirm the transaction durably committed — fail safe
+        // (returning `Ok` here would advance the bookmark over data that may
+        // never have landed, the silent-data-loss failure mode).
         let job = self
             .client
             .job()
             .get_job(&self.config.project_id, &job_id, location.as_deref())
             .await
             .map_err(|e| FaucetError::Sink(format!("BigQuery jobs.get failed: {e}")))?;
-        match job.status.and_then(|s| s.error_result) {
-            Some(err) => Err(FaucetError::Sink(format!(
+        let status = job.status.ok_or_else(|| {
+            FaucetError::Sink(format!(
+                "BigQuery job '{job_id}' returned no status; cannot confirm durable commit"
+            ))
+        })?;
+        if let Some(err) = status.error_result {
+            return Err(FaucetError::Sink(format!(
                 "BigQuery query job '{job_id}' failed: {err}"
+            )));
+        }
+        match status.state.as_deref() {
+            Some("DONE") => Ok(()),
+            other => Err(FaucetError::Sink(format!(
+                "BigQuery job '{job_id}' is in state {other:?}, not DONE; cannot confirm durable commit"
             ))),
-            None => Ok(()),
         }
     }
 
     /// Extract `(job_id, location)` from a query response's job reference.
-    #[allow(dead_code)]
     fn job_reference(qr: &QueryResponse) -> Result<(String, Option<String>), FaucetError> {
         let r = qr.job_reference.as_ref().ok_or_else(|| {
             FaucetError::Sink("BigQuery query response missing jobReference".to_string())
@@ -496,6 +506,117 @@ impl faucet_core::Sink for BigQuerySink {
         }
 
         Ok(outcomes)
+    }
+
+    fn supports_idempotent_writes(&self) -> bool {
+        true
+    }
+
+    /// Read the last durably-committed token for `scope` from the watermark
+    /// table, so the pipeline can skip already-committed pages on resume.
+    async fn last_committed_token(&self, scope: &str) -> Result<Option<String>, FaucetError> {
+        self.ensure_commit_table().await?;
+        let mut req = QueryRequest::new(idempotent::build_select_token(
+            &self.config.project_id,
+            &self.config.dataset_id,
+        ));
+        req.use_legacy_sql = false;
+        req.parameter_mode = Some("NAMED".to_string());
+        req.query_parameters = Some(vec![Self::string_param("scope", scope)]);
+
+        let resp = self
+            .client
+            .job()
+            .query(&self.config.project_id, req)
+            .await
+            .map_err(|e| FaucetError::Sink(format!("BigQuery token read failed: {e}")))?;
+
+        // The watermark is a single tiny row, so `jobs.query` returns it inline.
+        // If BigQuery did not complete the read synchronously, fail safe: a
+        // wrong `None` here would re-run an already-committed page and produce
+        // duplicates, defeating exactly-once.
+        if !resp.job_complete.unwrap_or(false) {
+            return Err(FaucetError::Sink(
+                "BigQuery watermark read did not complete synchronously".to_string(),
+            ));
+        }
+        // `ResultSet` only yields rows when the response carries a schema; a
+        // completed `SELECT` always returns one. If it is somehow absent we
+        // cannot tell "no committed token" from "row present but unreadable",
+        // and a wrong `None` would replay committed pages — fail safe instead.
+        if resp.schema.is_none() {
+            return Err(FaucetError::Sink(
+                "BigQuery watermark read returned no schema; cannot trust the token result"
+                    .to_string(),
+            ));
+        }
+
+        let mut rs = ResultSet::new_from_query_response(resp);
+        if rs.next_row() {
+            rs.get_string_by_name(COMMIT_TOKEN_TOKEN_COL)
+                .map_err(|e| FaucetError::Sink(format!("BigQuery token decode failed: {e}")))
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// Atomically write `records` and record `token` for `scope` in one BigQuery
+    /// multi-statement transaction: a typed `INSERT … SELECT FROM
+    /// UNNEST(JSON_QUERY_ARRAY(@payload))` plus a watermark `MERGE`. Either both
+    /// the rows and the token commit, or neither does — so a crash/resume skips
+    /// the already-committed page (zero duplicates) and a failed page replays
+    /// cleanly.
+    ///
+    /// The entire page is one atomic unit (no `batch_size` re-chunking — core
+    /// issues exactly one token per page), so the page must serialize within
+    /// BigQuery's ~10 MB `jobs.query` request limit.
+    async fn write_batch_idempotent(
+        &self,
+        records: &[Value],
+        scope: &str,
+        token: &str,
+    ) -> Result<usize, FaucetError> {
+        self.ensure_commit_table().await?;
+        let columns = self.target_schema().await?;
+
+        let payload = serde_json::to_string(records).map_err(|e| {
+            FaucetError::Sink(format!("BigQuery exactly-once: serialize page payload: {e}"))
+        })?;
+
+        let sql = idempotent::build_transaction_sql(
+            columns,
+            &self.config.project_id,
+            &self.config.dataset_id,
+            &self.config.table_id,
+        );
+        let mut req = QueryRequest::new(sql);
+        req.use_legacy_sql = false;
+        req.parameter_mode = Some("NAMED".to_string());
+        req.request_id = Some(idempotent::build_request_id(scope, token));
+        req.query_parameters = Some(vec![
+            Self::string_param("payload", &payload),
+            Self::string_param("scope", scope),
+            Self::string_param("token", token),
+        ]);
+
+        let resp = self
+            .client
+            .job()
+            .query(&self.config.project_id, req)
+            .await
+            .map_err(|e| FaucetError::Sink(format!("BigQuery idempotent write failed: {e}")))?;
+        self.await_query_complete(resp).await?;
+
+        tracing::info!(
+            table = %format!(
+                "{}.{}.{}",
+                self.config.project_id, self.config.dataset_id, self.config.table_id
+            ),
+            rows = records.len(),
+            token = %token,
+            "BigQuery exactly-once page committed"
+        );
+        Ok(records.len())
     }
 }
 

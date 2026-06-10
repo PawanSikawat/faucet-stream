@@ -5,9 +5,6 @@
 //! `INSERT … SELECT FROM UNNEST(JSON_QUERY_ARRAY(@payload))` + watermark `MERGE`
 //! transaction that makes a page's rows and its commit token land atomically.
 //! See `docs/superpowers/specs/2026-06-10-bigquery-exactly-once-design.md`.
-// Builder functions are wired into sink.rs in a later task; suppress dead_code
-// until they are called from the write path.
-#![allow(dead_code)]
 
 use faucet_core::idempotency::{
     COMMIT_TOKEN_SCOPE_COL, COMMIT_TOKEN_TABLE, COMMIT_TOKEN_TOKEN_COL,
