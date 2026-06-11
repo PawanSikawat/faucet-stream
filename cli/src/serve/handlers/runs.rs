@@ -286,6 +286,7 @@ mod tests {
             log_level: "info".into(),
             ui_enabled: true,
             cluster,
+            triggers_path: None,
         };
         let history = Arc::new(MemoryHistory::new(Duration::from_secs(60))) as Arc<dyn RunHistory>;
         let state = ServerState::new(

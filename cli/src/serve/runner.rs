@@ -875,6 +875,7 @@ mod tests {
             log_level: "info".into(),
             ui_enabled: true,
             cluster: crate::serve::cluster::ClusterConfig::disabled(),
+            triggers_path: None,
         };
         let history = Arc::new(MemoryHistory::new(Duration::from_secs(60))) as Arc<dyn RunHistory>;
         let state = ServerState::new(
@@ -944,6 +945,7 @@ mod tests {
             log_level: "info".into(),
             ui_enabled: true,
             cluster,
+            triggers_path: None,
         };
         let history = Arc::new(MemoryHistory::new(Duration::from_secs(60))) as Arc<dyn RunHistory>;
         let state = ServerState::new(
@@ -1003,6 +1005,7 @@ mod tests {
             log_level: "info".into(),
             ui_enabled: true,
             cluster: crate::serve::cluster::ClusterConfig::disabled(),
+            triggers_path: None,
         };
         let history = Arc::new(MemoryHistory::new(Duration::from_secs(60))) as Arc<dyn RunHistory>;
         ServerState::new(
@@ -1114,6 +1117,7 @@ mod tests {
             log_level: "info".into(),
             ui_enabled: true,
             cluster,
+            triggers_path: None,
         };
         // A backend that is degraded from startup (primary unreachable).
         let history = Arc::new(FallbackHistory::degraded_at_startup(

@@ -40,6 +40,7 @@ fn args_on(port: u16, token: Option<&str>) -> ServeArgs {
         cluster: false,
         cluster_poll_secs: 2,
         cluster_max_attempts: 3,
+        triggers: None,
     }
 }
 

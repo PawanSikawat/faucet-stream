@@ -192,6 +192,7 @@ mod tests {
             log_level: "info".into(),
             ui_enabled: true,
             cluster: ClusterConfig::disabled(),
+            triggers_path: None,
         };
         let h = ClusterHandle::from_config(&cfg);
         h.kick();

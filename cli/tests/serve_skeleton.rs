@@ -28,6 +28,7 @@ fn test_config(listen: &str) -> ServeConfig {
         cluster: false,
         cluster_poll_secs: 2,
         cluster_max_attempts: 3,
+        triggers: None,
     };
     ServeConfig::from_args(args).unwrap()
 }
