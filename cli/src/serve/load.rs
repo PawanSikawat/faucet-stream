@@ -7,10 +7,12 @@
 use crate::config::PipelineConfig;
 use crate::expand::{ExpandedNode, expand};
 use crate::serve::error::ServeError;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 /// Wire format of a submitted config body.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum ConfigFormat {
     #[default]
     Yaml,

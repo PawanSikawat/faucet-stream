@@ -29,6 +29,7 @@ use std::time::Duration;
 #[serde(rename_all = "snake_case")]
 pub enum RunStatus {
     Queued,
+    Pending,
     Running,
     Completed,
     Failed,
@@ -42,6 +43,7 @@ impl RunStatus {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Queued => "queued",
+            Self::Pending => "pending",
             Self::Running => "running",
             Self::Completed => "completed",
             Self::Failed => "failed",
@@ -87,6 +89,19 @@ pub struct RunRecord {
     pub idempotency_key: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub doctor_report: Option<serde_json::Value>,
+    /// Raw submitted config text — present only for cluster runs so any instance
+    /// can re-resolve + re-run it. `None` for single-instance runs.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub config_body: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub config_format: Option<crate::serve::load::ConfigFormat>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timeout_secs: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub clock: Option<String>,
+    /// Failover re-run count (cluster mode). 0 on first submit.
+    #[serde(default)]
+    pub attempt: u32,
 }
 
 impl RunRecord {
@@ -112,6 +127,11 @@ impl RunRecord {
             error: None,
             idempotency_key,
             doctor_report: None,
+            config_body: None,
+            config_format: None,
+            timeout_secs: None,
+            clock: None,
+            attempt: 0,
         }
     }
 }
@@ -321,6 +341,7 @@ mod tests {
     #[test]
     fn terminal_classification() {
         assert!(!RunStatus::Queued.is_terminal());
+        assert!(!RunStatus::Pending.is_terminal());
         assert!(!RunStatus::Running.is_terminal());
         assert!(RunStatus::Completed.is_terminal());
         assert!(RunStatus::Failed.is_terminal());
@@ -341,5 +362,19 @@ mod tests {
         assert_eq!(v["run_id"], "r1");
         // doctor_report is skipped when None.
         assert!(v.get("doctor_report").is_none());
+    }
+
+    #[test]
+    fn pending_is_non_terminal_and_serializes_snake_case() {
+        assert!(!RunStatus::Pending.is_terminal());
+        assert_eq!(RunStatus::Pending.as_str(), "pending");
+        let mut rec = RunRecord::queued("r".into(), None, Default::default(), None, Utc::now());
+        rec.status = RunStatus::Pending;
+        rec.attempt = 2;
+        let v = serde_json::to_value(&rec).unwrap();
+        assert_eq!(v["status"], "pending");
+        assert_eq!(v["attempt"], 2);
+        // Cluster config fields are skipped when absent.
+        assert!(v.get("config_body").is_none());
     }
 }

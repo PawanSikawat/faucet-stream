@@ -231,6 +231,7 @@ pub fn decode_body(body: &str) -> Result<RunRecord, HistoryError> {
 pub fn parse_status(s: &str) -> RunStatus {
     match s {
         "queued" => RunStatus::Queued,
+        "pending" => RunStatus::Pending,
         "running" => RunStatus::Running,
         "completed" => RunStatus::Completed,
         "cancelled" => RunStatus::Cancelled,
@@ -647,6 +648,7 @@ mod tests {
     fn parse_status_round_trips_known_and_defaults_failed() {
         for s in [
             RunStatus::Queued,
+            RunStatus::Pending,
             RunStatus::Running,
             RunStatus::Completed,
             RunStatus::Failed,
