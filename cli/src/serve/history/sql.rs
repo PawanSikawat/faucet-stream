@@ -740,6 +740,137 @@ macro_rules! impl_sql_history {
                 Ok(renewed)
             }
 
+            async fn claim_pending(
+                &self,
+                limit: usize,
+            ) -> Result<Vec<$crate::serve::history::RunRecord>, $crate::serve::history::HistoryError>
+            {
+                use sqlx::Row as _;
+                use $crate::serve::history::HistoryError;
+                use $crate::serve::history::RunStatus;
+                use $crate::serve::history::sql;
+                let backend = |e: sqlx::Error| HistoryError::Backend(e.to_string());
+                if limit == 0 {
+                    return Ok(Vec::new());
+                }
+                let now = chrono::Utc::now();
+                let lease = sql::fmt_ts(now + self.lease_ttl);
+
+                // 1. Candidate pending runs (oldest first), with their bodies.
+                let rows = sqlx::query(&self.stmts.select_pending)
+                    .bind(limit as i64)
+                    .fetch_all(&self.pool)
+                    .await
+                    .map_err(backend)?;
+
+                // Per-row conditional claim (1 SELECT + N guarded UPDATEs). The
+                // batch is bounded by the caller's free permits (small), and this
+                // is portable across Postgres + SQLite — deliberately NOT a
+                // Postgres-only `FOR UPDATE SKIP LOCKED`.
+                let mut claimed = Vec::new();
+                for row in &rows {
+                    let run_id: String = row.try_get("run_id").map_err(backend)?;
+                    let body: String = row.try_get("body").map_err(backend)?;
+                    // Flip the record to Running and rewrite the body so the column
+                    // and the (source-of-truth) body stay consistent — a GET right
+                    // after the claim must not show a stale `pending`.
+                    let mut r = sql::decode_body(&body)?;
+                    r.status = RunStatus::Running;
+                    let new_body = sql::encode_body(&r)?;
+                    // 2. Conditional claim — only the first committer wins.
+                    let won = sqlx::query(&self.stmts.claim_one)
+                        .bind(&self.instance_id)
+                        .bind(&lease)
+                        .bind(&new_body)
+                        .bind(&run_id)
+                        .execute(&self.pool)
+                        .await
+                        .map_err(backend)?
+                        .rows_affected();
+                    if won == 1 {
+                        claimed.push(r);
+                    }
+                }
+                Ok(claimed)
+            }
+
+            async fn reclaim_orphans(
+                &self,
+                max_attempts: u32,
+            ) -> Result<$crate::serve::history::ReclaimReport, $crate::serve::history::HistoryError>
+            {
+                use sqlx::Row as _;
+                use $crate::serve::history::HistoryError;
+                use $crate::serve::history::ReclaimReport;
+                use $crate::serve::history::RunStatus;
+                use $crate::serve::history::sql;
+                let backend = |e: sqlx::Error| HistoryError::Backend(e.to_string());
+                let now = chrono::Utc::now();
+                let now_s = sql::fmt_ts(now);
+
+                let rows = sqlx::query(&self.stmts.reclaim_select)
+                    .bind(&now_s)
+                    .fetch_all(&self.pool)
+                    .await
+                    .map_err(backend)?;
+
+                let mut report = ReclaimReport::default();
+                for row in &rows {
+                    let body: String = row.try_get("body").map_err(backend)?;
+                    let mut rec = sql::decode_body(&body)?;
+                    let next_attempt = rec.attempt + 1;
+                    // Cap is on the attempts already made: a run that has been
+                    // reclaimed fewer than `max_attempts` times gets another try;
+                    // once it reaches the cap it is poisoned.
+                    if rec.attempt < max_attempts {
+                        // Re-queue for another instance to re-run.
+                        rec.attempt = next_attempt;
+                        rec.status = RunStatus::Pending;
+                        let new_body = sql::encode_body(&rec)?;
+                        let n = sqlx::query(&self.stmts.reclaim_requeue)
+                            .bind(&new_body)
+                            .bind(&rec.run_id)
+                            .bind(&now_s)
+                            .execute(&self.pool)
+                            .await
+                            .map_err(backend)?
+                            .rows_affected();
+                        if n == 1 {
+                            report.requeued += 1;
+                        }
+                    } else {
+                        // Poison: too many attempts.
+                        rec.attempt = next_attempt;
+                        rec.status = RunStatus::Failed;
+                        rec.finished_at = Some(now);
+                        rec.error = Some(format!(
+                            "run reclaimed {next_attempt} times after its owning instance's \
+                             lease expired; giving up (poison run)"
+                        ));
+                        if rec.elapsed_secs.is_none()
+                            && let Some(started) = rec.started_at
+                        {
+                            rec.elapsed_secs =
+                                (now - started).to_std().ok().map(|d| d.as_secs_f64());
+                        }
+                        let new_body = sql::encode_body(&rec)?;
+                        let n = sqlx::query(&self.stmts.reclaim_fail)
+                            .bind(&now_s)
+                            .bind(&new_body)
+                            .bind(&rec.run_id)
+                            .bind(&now_s)
+                            .execute(&self.pool)
+                            .await
+                            .map_err(backend)?
+                            .rows_affected();
+                        if n == 1 {
+                            report.failed += 1;
+                        }
+                    }
+                }
+                Ok(report)
+            }
+
             fn degraded(&self) -> bool {
                 // A live SQL backend is never self-degraded; the FallbackHistory
                 // wrapper owns degradation when the backend becomes unreachable.

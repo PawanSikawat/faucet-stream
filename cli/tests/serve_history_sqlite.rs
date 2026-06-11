@@ -471,3 +471,69 @@ async fn delete_also_removes_matching_idem_claim_at_sql_layer() {
         Claim::Fresh
     );
 }
+
+/// Two instances against one DB never both claim the same pending run.
+#[tokio::test]
+async fn claim_pending_is_exclusive_across_instances() {
+    let dir = tempfile::tempdir().unwrap();
+    let a = store_with(&dir, "claim.db", std::time::Duration::from_secs(30), "inst-a").await;
+    let b = store_with(&dir, "claim.db", std::time::Duration::from_secs(30), "inst-b").await;
+
+    // One pending run. `upsert` writes status='pending' from RunStatus::Pending,
+    // so claim_pending will find it.
+    let mut p = rec("p1", RunStatus::Pending, Utc::now());
+    p.config_body = Some("version: 1".into());
+    a.upsert(&p).await.unwrap();
+
+    // Drive both instances concurrently so the conditional-claim race is actually
+    // exercised (both select the same pending candidate, then race the guarded
+    // UPDATE; SQLite's single writer + the `WHERE status='pending'` guard mean only
+    // one's UPDATE affects the row).
+    let (ra, rb) = tokio::join!(a.claim_pending(8), b.claim_pending(8));
+    let got_a = ra.unwrap();
+    let got_b = rb.unwrap();
+    assert_eq!(got_a.len() + got_b.len(), 1, "exactly one instance claims it");
+    let stored = a.get("p1").await.unwrap().unwrap();
+    assert_eq!(stored.status, RunStatus::Running);
+    // The returned record carries the config body for re-execution.
+    let claimed = got_a.into_iter().chain(got_b).next().unwrap();
+    assert_eq!(claimed.config_body.as_deref(), Some("version: 1"));
+}
+
+/// reclaim re-queues an expired-lease run, bumping attempt; at the cap it fails.
+#[tokio::test]
+async fn reclaim_requeues_then_poisons_at_cap() {
+    let dir = tempfile::tempdir().unwrap();
+    // Zero TTL → the running run's lease is already expired.
+    let h = store_with(&dir, "reclaim.db", std::time::Duration::ZERO, "inst-a").await;
+    let mut r = rec("o1", RunStatus::Running, Utc::now());
+    r.config_body = Some("version: 1".into());
+    h.upsert(&r).await.unwrap();
+
+    // attempt 0 → requeued (attempt becomes 1), status Pending.
+    let rep = h.reclaim_orphans(2).await.unwrap();
+    assert_eq!((rep.requeued, rep.failed), (1, 0));
+    let after = h.get("o1").await.unwrap().unwrap();
+    assert_eq!(after.status, RunStatus::Pending);
+    assert_eq!(after.attempt, 1);
+
+    // Put it back to Running (simulate a re-claim that died again) and reclaim:
+    // attempt 1 → requeued (attempt 2).
+    let mut again = after;
+    again.status = RunStatus::Running;
+    h.upsert(&again).await.unwrap();
+    let rep2 = h.reclaim_orphans(2).await.unwrap();
+    assert_eq!((rep2.requeued, rep2.failed), (1, 0));
+    let after2 = h.get("o1").await.unwrap().unwrap();
+    assert_eq!(after2.attempt, 2);
+
+    // attempt 2 >= cap 2 → poison Failed.
+    let mut again2 = after2;
+    again2.status = RunStatus::Running;
+    h.upsert(&again2).await.unwrap();
+    let rep3 = h.reclaim_orphans(2).await.unwrap();
+    assert_eq!((rep3.requeued, rep3.failed), (0, 1));
+    let dead = h.get("o1").await.unwrap().unwrap();
+    assert_eq!(dead.status, RunStatus::Failed);
+    assert!(dead.error.unwrap().contains("reclaimed"));
+}
