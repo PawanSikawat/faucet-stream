@@ -474,11 +474,19 @@ mod tests {
         use crate::serve::history::memory::MemoryHistory;
         let h = MemoryHistory::new(Duration::from_secs(60));
         assert!(h.claim_pending(8).await.unwrap().is_empty());
-        assert_eq!(h.reclaim_orphans(3).await.unwrap(), ReclaimReport::default());
+        assert_eq!(
+            h.reclaim_orphans(3).await.unwrap(),
+            ReclaimReport::default()
+        );
         assert!(!h.cancel_pending("x").await.unwrap());
         h.request_cancel("x").await.unwrap();
         assert!(h.pending_cancellations().await.unwrap().is_empty());
-        assert!(h.live_instances(Duration::from_secs(60)).await.unwrap().is_empty());
+        assert!(
+            h.live_instances(Duration::from_secs(60))
+                .await
+                .unwrap()
+                .is_empty()
+        );
 
         // finalize_owned's default delegates to upsert (single-process always owns).
         let rec = RunRecord::queued("fo".into(), None, Default::default(), None, Utc::now());

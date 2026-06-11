@@ -107,7 +107,9 @@ mod tests {
         st.cluster().set_members(3);
         let resp = readyz(axum::extract::State(st)).await.into_response();
         assert_eq!(resp.status(), StatusCode::OK);
-        let body = axum::body::to_bytes(resp.into_body(), 64 * 1024).await.unwrap();
+        let body = axum::body::to_bytes(resp.into_body(), 64 * 1024)
+            .await
+            .unwrap();
         let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(v["cluster"]["enabled"], true);
         assert_eq!(v["cluster"]["instances"], 3);
@@ -118,7 +120,9 @@ mod tests {
 
     #[tokio::test]
     async fn readyz_ok_single_instance() {
-        let resp = readyz(axum::extract::State(state(false))).await.into_response();
+        let resp = readyz(axum::extract::State(state(false)))
+            .await
+            .into_response();
         assert_eq!(resp.status(), StatusCode::OK);
     }
 }

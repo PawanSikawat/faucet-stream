@@ -255,14 +255,14 @@ mod tests {
 
     #[tokio::test]
     async fn cancel_pending_run_in_cluster_mode_cancels_it() {
-        use crate::serve::config::{AuthMode, HistoryBackendSpec, ServeConfig};
         use crate::serve::cluster::ClusterConfig;
+        use crate::serve::config::{AuthMode, HistoryBackendSpec, ServeConfig};
         use crate::serve::history::memory::MemoryHistory;
         use crate::serve::history::{RunHistory, RunRecord, RunStatus};
         use crate::serve::state::ServerState;
+        use chrono::Utc;
         use std::sync::Arc;
         use std::time::Duration;
-        use chrono::Utc;
         use tokio_util::sync::CancellationToken;
 
         let mut cluster = ClusterConfig::disabled();
@@ -301,10 +301,13 @@ mod tests {
         rec.status = RunStatus::Pending;
         state.history().upsert(&rec).await.unwrap();
 
-        let resp = cancel_run(axum::extract::State(state.clone()), axum::extract::Path("p1".into()))
-            .await
-            .unwrap()
-            .into_response();
+        let resp = cancel_run(
+            axum::extract::State(state.clone()),
+            axum::extract::Path("p1".into()),
+        )
+        .await
+        .unwrap()
+        .into_response();
         assert_eq!(resp.status(), StatusCode::ACCEPTED);
         assert_eq!(
             state.history().get("p1").await.unwrap().unwrap().status,

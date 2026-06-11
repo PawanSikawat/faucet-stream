@@ -480,8 +480,20 @@ async fn delete_also_removes_matching_idem_claim_at_sql_layer() {
 #[tokio::test]
 async fn claim_pending_is_exclusive_across_instances() {
     let dir = tempfile::tempdir().unwrap();
-    let a = store_with(&dir, "claim.db", std::time::Duration::from_secs(30), "inst-a").await;
-    let b = store_with(&dir, "claim.db", std::time::Duration::from_secs(30), "inst-b").await;
+    let a = store_with(
+        &dir,
+        "claim.db",
+        std::time::Duration::from_secs(30),
+        "inst-a",
+    )
+    .await;
+    let b = store_with(
+        &dir,
+        "claim.db",
+        std::time::Duration::from_secs(30),
+        "inst-b",
+    )
+    .await;
 
     // One pending run. `upsert` writes status='pending' from RunStatus::Pending,
     // so claim_pending will find it.
@@ -496,7 +508,11 @@ async fn claim_pending_is_exclusive_across_instances() {
     let (ra, rb) = tokio::join!(a.claim_pending(8), b.claim_pending(8));
     let got_a = ra.unwrap();
     let got_b = rb.unwrap();
-    assert_eq!(got_a.len() + got_b.len(), 1, "exactly one instance claims it");
+    assert_eq!(
+        got_a.len() + got_b.len(),
+        1,
+        "exactly one instance claims it"
+    );
     let stored = a.get("p1").await.unwrap().unwrap();
     assert_eq!(stored.status, RunStatus::Running);
     // The returned record carries the config body for re-execution.
@@ -545,8 +561,20 @@ async fn reclaim_requeues_then_poisons_at_cap() {
 #[tokio::test]
 async fn membership_heartbeat_and_liveness() {
     let dir = tempfile::tempdir().unwrap();
-    let a = store_with(&dir, "members.db", std::time::Duration::from_secs(30), "inst-a").await;
-    let b = store_with(&dir, "members.db", std::time::Duration::from_secs(30), "inst-b").await;
+    let a = store_with(
+        &dir,
+        "members.db",
+        std::time::Duration::from_secs(30),
+        "inst-a",
+    )
+    .await;
+    let b = store_with(
+        &dir,
+        "members.db",
+        std::time::Duration::from_secs(30),
+        "inst-b",
+    )
+    .await;
     let beat = |n: u32| InstanceHeartbeat {
         started_at: Utc::now(),
         listen: Some("127.0.0.1:8080".into()),
@@ -555,7 +583,10 @@ async fn membership_heartbeat_and_liveness() {
     };
     a.heartbeat_instance(&beat(1)).await.unwrap();
     b.heartbeat_instance(&beat(0)).await.unwrap();
-    let live = a.live_instances(std::time::Duration::from_secs(60)).await.unwrap();
+    let live = a
+        .live_instances(std::time::Duration::from_secs(60))
+        .await
+        .unwrap();
     assert_eq!(live.len(), 2);
     // A zero-window liveness query sees nobody (all heartbeats are "old").
     let none = a.live_instances(std::time::Duration::ZERO).await.unwrap();
@@ -565,37 +596,83 @@ async fn membership_heartbeat_and_liveness() {
 #[tokio::test]
 async fn finalize_owned_is_owner_fenced() {
     let dir = tempfile::tempdir().unwrap();
-    let a = store_with(&dir, "fence.db", std::time::Duration::from_secs(30), "inst-a").await;
-    let b = store_with(&dir, "fence.db", std::time::Duration::from_secs(30), "inst-b").await;
+    let a = store_with(
+        &dir,
+        "fence.db",
+        std::time::Duration::from_secs(30),
+        "inst-a",
+    )
+    .await;
+    let b = store_with(
+        &dir,
+        "fence.db",
+        std::time::Duration::from_secs(30),
+        "inst-b",
+    )
+    .await;
     // a owns the run (upsert stamps owner=inst-a).
     let r = rec("f1", RunStatus::Running, Utc::now());
     a.upsert(&r).await.unwrap();
     // b tries to finalize → fenced out (owner mismatch).
     let mut term = a.get("f1").await.unwrap().unwrap();
     term.status = RunStatus::Completed;
-    assert!(!b.finalize_owned(&term).await.unwrap(), "non-owner is fenced");
-    assert_eq!(a.get("f1").await.unwrap().unwrap().status, RunStatus::Running);
+    assert!(
+        !b.finalize_owned(&term).await.unwrap(),
+        "non-owner is fenced"
+    );
+    assert_eq!(
+        a.get("f1").await.unwrap().unwrap().status,
+        RunStatus::Running
+    );
     // a (the owner) finalizes → lands.
     assert!(a.finalize_owned(&term).await.unwrap());
-    assert_eq!(a.get("f1").await.unwrap().unwrap().status, RunStatus::Completed);
+    assert_eq!(
+        a.get("f1").await.unwrap().unwrap().status,
+        RunStatus::Completed
+    );
 }
 
 #[tokio::test]
 async fn cross_instance_cancel_flag_and_pickup() {
     let dir = tempfile::tempdir().unwrap();
-    let a = store_with(&dir, "cancel.db", std::time::Duration::from_secs(30), "inst-a").await;
-    let b = store_with(&dir, "cancel.db", std::time::Duration::from_secs(30), "inst-b").await;
+    let a = store_with(
+        &dir,
+        "cancel.db",
+        std::time::Duration::from_secs(30),
+        "inst-a",
+    )
+    .await;
+    let b = store_with(
+        &dir,
+        "cancel.db",
+        std::time::Duration::from_secs(30),
+        "inst-b",
+    )
+    .await;
     // a is running r1.
-    a.upsert(&rec("r1", RunStatus::Running, Utc::now())).await.unwrap();
+    a.upsert(&rec("r1", RunStatus::Running, Utc::now()))
+        .await
+        .unwrap();
     // b requests cancel; a sees it via pending_cancellations.
     b.request_cancel("r1").await.unwrap();
-    assert_eq!(a.pending_cancellations().await.unwrap(), vec!["r1".to_string()]);
-    assert!(b.pending_cancellations().await.unwrap().is_empty(), "b owns nothing");
+    assert_eq!(
+        a.pending_cancellations().await.unwrap(),
+        vec!["r1".to_string()]
+    );
+    assert!(
+        b.pending_cancellations().await.unwrap().is_empty(),
+        "b owns nothing"
+    );
 
     // cancel_pending only cancels a still-pending run.
-    a.upsert(&rec("p2", RunStatus::Pending, Utc::now())).await.unwrap();
+    a.upsert(&rec("p2", RunStatus::Pending, Utc::now()))
+        .await
+        .unwrap();
     assert!(a.cancel_pending("p2").await.unwrap());
-    assert_eq!(a.get("p2").await.unwrap().unwrap().status, RunStatus::Cancelled);
+    assert_eq!(
+        a.get("p2").await.unwrap().unwrap().status,
+        RunStatus::Cancelled
+    );
     // A running run is not pending → false.
     assert!(!a.cancel_pending("r1").await.unwrap());
 }

@@ -84,14 +84,18 @@ impl Registry {
     fn dec_queued(&self) {
         let _ = self
             .queued
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |q| Some(q.saturating_sub(1)));
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |q| {
+                Some(q.saturating_sub(1))
+            });
     }
 
     /// Saturating decrement of `in_flight`.
     fn dec_in_flight(&self) {
         let _ = self
             .in_flight
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| Some(n.saturating_sub(1)));
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| {
+                Some(n.saturating_sub(1))
+            });
     }
 
     /// Cancel a live run. Returns `true` if a live token existed.
@@ -164,7 +168,11 @@ mod tests {
         let r = Registry::new(4);
         // No reservation taken (cluster claim path).
         r.mark_running_unqueued();
-        assert_eq!(r.queued(), 0, "queued must NOT be decremented (no slot was held)");
+        assert_eq!(
+            r.queued(),
+            0,
+            "queued must NOT be decremented (no slot was held)"
+        );
         assert_eq!(r.in_flight(), 1);
         r.mark_finished("x");
         assert_eq!(r.in_flight(), 0);
@@ -178,7 +186,10 @@ mod tests {
         // permanently fail try_reserve and wedge backpressure — #228).
         r.mark_running(); // dec_queued() at 0 + in_flight++
         assert_eq!(r.queued(), 0, "saturating: stays 0, never usize::MAX");
-        assert!(r.try_reserve(), "try_reserve still works (queued not wrapped)");
+        assert!(
+            r.try_reserve(),
+            "try_reserve still works (queued not wrapped)"
+        );
     }
 
     #[test]

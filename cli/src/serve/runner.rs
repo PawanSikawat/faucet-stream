@@ -904,8 +904,8 @@ mod tests {
 
     #[tokio::test]
     async fn cluster_submit_writes_pending_with_config_and_does_not_spawn() {
-        use crate::serve::config::{AuthMode, HistoryBackendSpec, ServeConfig};
         use crate::serve::cluster::ClusterConfig;
+        use crate::serve::config::{AuthMode, HistoryBackendSpec, ServeConfig};
         use crate::serve::history::RunHistory;
         use crate::serve::history::memory::MemoryHistory;
         use crate::serve::state::ServerState;

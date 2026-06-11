@@ -8,7 +8,12 @@ use faucet_cli::serve::history::sqlite::SqliteHistory;
 use faucet_cli::serve::history::{RunHistory, RunRecord, RunStatus};
 use std::time::Duration;
 
-async fn backend(dir: &tempfile::TempDir, file: &str, lease: Duration, inst: &str) -> SqliteHistory {
+async fn backend(
+    dir: &tempfile::TempDir,
+    file: &str,
+    lease: Duration,
+    inst: &str,
+) -> SqliteHistory {
     let url = format!("sqlite:{}", dir.path().join(file).display());
     SqliteHistory::connect(&url, Duration::from_secs(3600), lease, inst.to_string())
         .await
@@ -16,7 +21,13 @@ async fn backend(dir: &tempfile::TempDir, file: &str, lease: Duration, inst: &st
 }
 
 fn pending(id: &str) -> RunRecord {
-    let mut r = RunRecord::queued(id.into(), None, Default::default(), None, chrono::Utc::now());
+    let mut r = RunRecord::queued(
+        id.into(),
+        None,
+        Default::default(),
+        None,
+        chrono::Utc::now(),
+    );
     r.status = RunStatus::Pending;
     r.config_body = Some("version: 1".into());
     r
@@ -39,13 +50,19 @@ async fn failover_reassigns_a_dead_instances_run_without_double_claim() {
     let claimed_a = a.claim_pending(4).await.unwrap();
     assert_eq!(claimed_a.len(), 1);
     // inst-b cannot also claim it (it is now Running).
-    assert!(b.claim_pending(4).await.unwrap().is_empty(), "no double-claim");
+    assert!(
+        b.claim_pending(4).await.unwrap().is_empty(),
+        "no double-claim"
+    );
 
     // inst-a "crashes"; inst-b reclaims (a's lease is already expired since a's
     // claim used a zero TTL).
     let report = b.reclaim_orphans(3).await.unwrap();
     assert_eq!((report.requeued, report.failed), (1, 0));
-    assert_eq!(a.get("r1").await.unwrap().unwrap().status, RunStatus::Pending);
+    assert_eq!(
+        a.get("r1").await.unwrap().unwrap().status,
+        RunStatus::Pending
+    );
 
     // inst-b now claims the re-queued run and finalizes it (owner-fenced).
     let claimed_b = b.claim_pending(4).await.unwrap();
@@ -53,7 +70,10 @@ async fn failover_reassigns_a_dead_instances_run_without_double_claim() {
     let mut term = b.get("r1").await.unwrap().unwrap();
     term.status = RunStatus::Completed;
     assert!(b.finalize_owned(&term).await.unwrap(), "owner b finalizes");
-    assert_eq!(a.get("r1").await.unwrap().unwrap().status, RunStatus::Completed);
+    assert_eq!(
+        a.get("r1").await.unwrap().unwrap().status,
+        RunStatus::Completed
+    );
 }
 
 /// Concurrent claim from two instances over one file never double-claims a batch.
