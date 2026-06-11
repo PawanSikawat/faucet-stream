@@ -271,6 +271,26 @@ pub async fn serve(config: ServeConfig) -> CliResult<()> {
     }
     let default_base = load_default_base(&config).await?;
 
+    // Event-driven triggers (#196): load + validate the file (fail-fast), then
+    // build the shared handle (webhook table + health rows).
+    #[cfg(feature = "triggers")]
+    let triggers = match &config.triggers_path {
+        Some(path) => Some(crate::serve::triggers::load_triggers(path)?),
+        None => None,
+    };
+    #[cfg(feature = "triggers")]
+    let triggers_handle = match &triggers {
+        Some(c) => crate::serve::triggers::health::TriggersHandle::from_compiled(&c.triggers),
+        None => crate::serve::triggers::health::TriggersHandle::empty(),
+    };
+    // A `--triggers` path in a build without the feature is a clear error.
+    #[cfg(not(feature = "triggers"))]
+    if config.triggers_path.is_some() {
+        return Err(CliError::Serve(
+            "--triggers requires a build with the `triggers` feature".into(),
+        ));
+    }
+
     let shutdown = CancellationToken::new();
     let state = ServerState::new(
         &config,
@@ -280,7 +300,7 @@ pub async fn serve(config: ServeConfig) -> CliResult<()> {
         log_hub,
         default_base,
         #[cfg(feature = "triggers")]
-        crate::serve::triggers::health::TriggersHandle::empty(),
+        triggers_handle,
     );
     let app = build_router(state.clone(), &config);
 
@@ -328,6 +348,18 @@ pub async fn serve(config: ServeConfig) -> CliResult<()> {
         None
     };
 
+    // Event-driven trigger watchers (#196): spawn one supervised task per enabled
+    // polling trigger (object_arrival / queue_depth). Webhook triggers are
+    // handled by the router — no watcher task needed for them.
+    #[cfg(feature = "triggers")]
+    let trigger_handles = match &triggers {
+        Some(c) => {
+            tracing::info!(count = c.triggers.len(), "spawning trigger watchers");
+            crate::serve::triggers::spawn_watchers(state.clone(), c, shutdown.clone())
+        }
+        None => Vec::new(),
+    };
+
     // The HTTP graceful-shutdown future resolves on signal and stops accepting
     // new connections / drains in-flight HTTP — it does NOT cancel run tasks.
     axum::serve(listener, app)
@@ -362,6 +394,10 @@ pub async fn serve(config: ServeConfig) -> CliResult<()> {
     }
     maintenance.abort();
     leases.abort();
+    #[cfg(feature = "triggers")]
+    for h in trigger_handles {
+        h.abort();
+    }
     tracing::info!("faucet serve stopped");
     Ok(())
 }
