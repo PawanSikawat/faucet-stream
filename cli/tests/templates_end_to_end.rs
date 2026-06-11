@@ -57,7 +57,7 @@ matrix:
     )
     .unwrap();
 
-    let cfg = PipelineConfig::from_path(&path).unwrap();
+    let cfg = PipelineConfig::from_path(&path, None).unwrap();
     // Vars resolved.
     assert_eq!(
         cfg.pipeline.sources["users_api"].config["base_url"],

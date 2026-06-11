@@ -153,4 +153,28 @@ schedule:
             .unwrap_err();
         assert!(matches!(err, ServeError::BadConfig(_)));
     }
+
+    #[tokio::test]
+    async fn submitted_extends_is_rejected_with_composition_hint() {
+        // Composition must NOT run for HTTP-submitted bodies — otherwise a client
+        // could read arbitrary server files via `extends`. `deny_unknown_fields`
+        // rejects the key during `from_value` (no I/O), and `friendly_parse_error`
+        // attaches the composition hint.
+        let body = "version: 1\nextends: /etc/passwd\npipeline:\n  source: { type: csv, config: { path: x.csv } }\n  sink: { type: jsonl, config: { path: o.jsonl } }\n";
+        let err = load_submission(body, ConfigFormat::Yaml, None)
+            .await
+            .unwrap_err();
+        // ServeError doesn't implement Display; pull the inner message directly.
+        let msg = match &err {
+            ServeError::Unprocessable { message, .. } => message.clone(),
+            ServeError::BadConfig(m) => m.clone(),
+            other => format!("{other:?}"),
+        };
+        // Assert the hint fired (not merely that serde named the field) so a
+        // regression in `friendly_parse_error` is caught.
+        assert!(
+            msg.contains("composition"),
+            "submitted extends must be rejected with the composition hint, got: {msg}"
+        );
+    }
 }

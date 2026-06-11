@@ -79,7 +79,10 @@ async fn load_default_base(config: &ServeConfig) -> CliResult<Option<Value>> {
     match &config.default_config_path {
         None => Ok(None),
         Some(path) => {
-            let cfg = crate::config::PipelineConfig::from_path_async(path).await?;
+            // `serve` has no --profile flag; honour FAUCET_PROFILE from the environment directly.
+            let profile = std::env::var("FAUCET_PROFILE").ok();
+            let cfg =
+                crate::config::PipelineConfig::from_path_async(path, profile.as_deref()).await?;
             Ok(Some(serde_json::to_value(&cfg).map_err(|e| {
                 CliError::Serve(format!("serializing --default-config: {e}"))
             })?))

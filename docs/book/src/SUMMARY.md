@@ -27,6 +27,7 @@
 - [Record transforms](./cookbook/transforms.md)
 - [SQL transform](./cookbook/sql-transform.md)
 - [Secrets-manager interpolation](./cookbook/secrets.md)
+- [Config composition](./cookbook/composition.md)
 - [Adaptive batching](./cookbook/adaptive-batching.md)
 - [Scheduling](./cookbook/scheduling.md)
 - [Running faucet as a service](./cookbook/serve.md)

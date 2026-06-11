@@ -67,7 +67,7 @@ fn every_example_loads_and_expands() {
             }
         }
         count += 1;
-        let cfg = match PipelineConfig::from_path(&path) {
+        let cfg = match PipelineConfig::from_path(&path, None) {
             Ok(c) => c,
             Err(ref e) if is_credential_error(e) => {
                 // Credential not available in this environment — skip.
@@ -102,6 +102,6 @@ fn every_example_loads_and_expands() {
 #[test]
 fn serve_minimal_default_config_parses() {
     let path = examples_dir().join("serve_minimal.yaml");
-    PipelineConfig::from_path(&path)
+    PipelineConfig::from_path(&path, None)
         .expect("serve_minimal.yaml must parse as a valid PipelineConfig");
 }

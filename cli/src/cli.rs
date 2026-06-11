@@ -60,6 +60,10 @@ pub struct DoctorArgs {
     /// Emit machine-readable JSON instead of the human checklist.
     #[arg(long)]
     pub json: bool,
+    /// Select a named overlay from the config's `profiles:` block and deep-merge
+    /// it over the composed base. Overrides the `FAUCET_PROFILE` env var.
+    #[arg(long, env = "FAUCET_PROFILE")]
+    pub profile: Option<String>,
 }
 
 /// `faucet schedule` arguments.
@@ -80,6 +84,10 @@ pub struct ScheduleArgs {
     /// Useful for platform-driven invocation (k8s CronJob / systemd OnCalendar).
     #[arg(long)]
     pub once: bool,
+    /// Select a named overlay from the config's `profiles:` block and deep-merge
+    /// it over the composed base. Overrides the `FAUCET_PROFILE` env var.
+    #[arg(long, env = "FAUCET_PROFILE")]
+    pub profile: Option<String>,
 }
 
 /// `faucet serve` arguments.
@@ -196,6 +204,11 @@ pub struct RunArgs {
     /// Use for backfills.
     #[arg(long)]
     pub clock: Option<String>,
+    /// Select a named overlay from the config's `profiles:` block and deep-merge
+    /// it over the composed base. Overrides the `FAUCET_PROFILE` env var.
+    /// Not applicable in `--from-env` mode (no config file to compose).
+    #[arg(long, env = "FAUCET_PROFILE")]
+    pub profile: Option<String>,
 }
 
 /// `faucet validate` arguments.
@@ -215,6 +228,15 @@ pub struct ValidateArgs {
     /// managers (no network / credentials needed).
     #[arg(long)]
     pub no_secrets: bool,
+    /// Select a named overlay from the config's `profiles:` block and deep-merge
+    /// it over the composed base. Overrides the `FAUCET_PROFILE` env var.
+    #[arg(long, env = "FAUCET_PROFILE")]
+    pub profile: Option<String>,
+    /// Print the fully-composed config (after extends/!include/profile, before
+    /// `${...}` interpolation) and exit. For debugging composition precedence.
+    /// `--no-secrets` is redundant here (no interpolation or secret fetch occurs).
+    #[arg(long)]
+    pub show_composed: bool,
 }
 
 /// `faucet schema` arguments.
@@ -274,6 +296,10 @@ pub struct PreviewArgs {
     /// Skip auto-loading `.env` from cwd.
     #[arg(long)]
     pub no_env_file: bool,
+    /// Select a named overlay from the config's `profiles:` block and deep-merge
+    /// it over the composed base. Overrides the `FAUCET_PROFILE` env var.
+    #[arg(long, env = "FAUCET_PROFILE")]
+    pub profile: Option<String>,
 }
 
 /// `faucet init` arguments.

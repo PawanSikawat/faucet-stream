@@ -14,6 +14,7 @@
 pub mod auth_catalog;
 pub mod cli;
 pub mod commands;
+pub mod compose;
 pub mod config;
 pub mod env_config;
 pub mod env_loader;

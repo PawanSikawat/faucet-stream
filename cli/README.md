@@ -370,6 +370,43 @@ See [`examples/templates_dry_rest.yaml`](examples/templates_dry_rest.yaml) and
 [`examples/templates_users_posts.yaml`](examples/templates_users_posts.yaml) for
 end-to-end examples of this pattern.
 
+## Config composition
+
+Factor shared connection / sink / transform pieces out of each file and
+recombine them at load time. Three mechanisms, all resolved when the file is
+read (**before** any `${...}` interpolation):
+
+| Mechanism | Form | Effect |
+|-----------|------|--------|
+| `extends:` | `extends: ./base.yaml` (or a list) | Inherit one or more base files; the child deep-merges on top. |
+| `profiles:` | `profiles: { dev: {…}, prod: {…} }` | Named overlays, selected with `--profile NAME` / `FAUCET_PROFILE` (flag wins). |
+| `!include` | `key: !include ./frag.yaml` | Substitute a YAML fragment at any node (**YAML only**). |
+
+```yaml
+# app.yaml — inherits a base, then pulls in a reusable transform chain.
+extends: ./base.yaml
+pipeline:
+  transforms: !include ./transforms.yaml
+```
+
+```bash
+faucet run app.yaml --profile prod                 # select an overlay
+faucet validate app.yaml --show-composed --profile prod   # print the merged config
+```
+
+Precedence (last wins): `extended base → child document → profile → matrix row`,
+all via the same deep-merge as `matrix` rows. `faucet validate --show-composed`
+prints the fully composed document (bases merged, profile applied, fragments
+substituted, `extends:`/`profiles:` metadata stripped) before interpolation.
+
+**Composition is file-loads-only** — `extends`/`profiles`/`!include` apply to
+configs read from disk (`run`/`validate`/`preview`/`doctor`/`schedule`), **not**
+to configs submitted to `faucet serve` over HTTP (a submitted body is a single
+self-contained document with no filesystem access). See
+[`examples/compose/`](examples/compose/) for an end-to-end example, and the
+[docs-site composition cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/composition.html)
+for the full walkthrough.
+
 ## Config shape
 
 ```yaml

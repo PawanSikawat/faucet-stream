@@ -23,7 +23,7 @@ pipeline:
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("p.yaml");
     std::fs::write(&path, yaml).unwrap();
-    let cfg = PipelineConfig::from_path_async(&path).await.unwrap();
+    let cfg = PipelineConfig::from_path_async(&path, None).await.unwrap();
     let token = &cfg.pipeline.source.unwrap().config["auth"]["config"]["token"];
     assert_eq!(token, "aws-live-token");
 }

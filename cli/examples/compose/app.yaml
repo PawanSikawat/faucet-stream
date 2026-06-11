@@ -1,0 +1,4 @@
+# Inherits the shared base, then pulls in a reusable transform chain.
+extends: ./base.yaml
+pipeline:
+  transforms: !include ./transforms.yaml

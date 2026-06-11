@@ -753,7 +753,7 @@ fn init_output_loads_and_expands() {
         .assert()
         .success();
 
-    let cfg = faucet_cli::config::PipelineConfig::from_path(&path)
+    let cfg = faucet_cli::config::PipelineConfig::from_path(&path, None)
         .expect("init output must load via PipelineConfig::from_path");
     let nodes = faucet_cli::expand::expand(&cfg).expect("init output must expand cleanly");
     assert_eq!(nodes.len(), 1, "expected exactly one expanded node");

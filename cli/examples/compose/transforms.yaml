@@ -1,0 +1,5 @@
+# A reusable transform chain, pulled into pipelines via `!include`.
+- type: flatten
+  config: { separator: "__" }
+- type: keys_case
+  config: { mode: snake }

@@ -76,7 +76,7 @@ pub async fn run(args: DoctorArgs) -> CliResult<()> {
     };
 
     let t_cfg = Instant::now();
-    let cfg = PipelineConfig::from_path_async(&path).await?;
+    let cfg = PipelineConfig::from_path_async(&path, args.profile.as_deref()).await?;
     let cfg_ms = t_cfg.elapsed().as_millis();
 
     let nodes = expand(&cfg)?;
