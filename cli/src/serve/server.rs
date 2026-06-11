@@ -54,6 +54,7 @@ pub fn build_router(state: ServerState, config: &ServeConfig) -> Router {
         CorsLayer::new().allow_origin(AllowOrigin::list(origins))
     };
 
+    #[cfg_attr(not(feature = "serve-ui"), allow(unused_mut))]
     let mut router = public.merge(api);
 
     #[cfg(feature = "serve-ui")]

@@ -121,6 +121,17 @@ async fn two_process_cluster_reassigns_on_kill() {
         out.display(),
     );
 
+    fn free_port() -> u16 {
+        std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port()
+    }
+
+    let port_a = free_port();
+    let port_b = free_port();
+
     let spawn = |port: u16| {
         Killer(
             Command::new(bin)
@@ -163,12 +174,12 @@ async fn two_process_cluster_reassigns_on_kill() {
         }
     };
 
-    let mut a = spawn(18197);
-    let b = spawn(18198);
+    let mut a = spawn(port_a);
+    let b = spawn(port_b);
     // Poll /healthz rather than sleeping a fixed interval — a debug-build binary
     // can take well over a second to bind its listener under load.
-    assert!(wait_healthy(18197).await, "instance A became healthy");
-    assert!(wait_healthy(18198).await, "instance B became healthy");
+    assert!(wait_healthy(port_a).await, "instance A became healthy");
+    assert!(wait_healthy(port_b).await, "instance B became healthy");
 
     let mut run_ids = Vec::new();
     for _ in 0..5 {
@@ -178,7 +189,7 @@ async fn two_process_cluster_reassigns_on_kill() {
         let mut v = None;
         for _ in 0..40 {
             let resp = client
-                .post("http://127.0.0.1:18197/v1/runs")
+                .post(format!("http://127.0.0.1:{port_a}/v1/runs"))
                 .json(&serde_json::json!({ "config": config, "config_format": "yaml" }))
                 .send()
                 .await
@@ -205,7 +216,7 @@ async fn two_process_cluster_reassigns_on_kill() {
         let mut all_done = true;
         for id in &run_ids {
             let v: serde_json::Value = client
-                .get(format!("http://127.0.0.1:18198/v1/runs/{id}"))
+                .get(format!("http://127.0.0.1:{port_b}/v1/runs/{id}"))
                 .send()
                 .await
                 .unwrap()
@@ -229,7 +240,7 @@ async fn two_process_cluster_reassigns_on_kill() {
     let mut terminal = 0;
     for id in &run_ids {
         let v: serde_json::Value = client
-            .get(format!("http://127.0.0.1:18198/v1/runs/{id}"))
+            .get(format!("http://127.0.0.1:{port_b}/v1/runs/{id}"))
             .send()
             .await
             .unwrap()
