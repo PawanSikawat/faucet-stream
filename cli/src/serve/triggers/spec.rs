@@ -190,7 +190,12 @@ triggers:
         assert!(t.enabled);
         assert!(matches!(t.config, PipelineRef::Path(ref p) if p == "./pipelines/load.yaml"));
         match &t.kind {
-            TriggerKind::ObjectArrival { poll_interval_secs, mode, start_at, .. } => {
+            TriggerKind::ObjectArrival {
+                poll_interval_secs,
+                mode,
+                start_at,
+                ..
+            } => {
                 assert_eq!(*poll_interval_secs, 30);
                 assert!(matches!(mode, ArrivalMode::PerObject));
                 assert!(matches!(start_at, StartAt::Now));
@@ -217,16 +222,27 @@ triggers:
         let f: TriggersFile = serde_yaml::from_str(yaml).unwrap();
         assert!(matches!(f.triggers[0].config, PipelineRef::Inline(_)));
         match &f.triggers[0].kind {
-            TriggerKind::Webhook { methods, dedupe_header } => {
+            TriggerKind::Webhook {
+                methods,
+                dedupe_header,
+            } => {
                 assert_eq!(methods, &vec!["POST".to_string()]);
                 assert_eq!(dedupe_header.as_deref(), Some("Idempotency-Key"));
             }
             _ => panic!("wrong kind"),
         }
         match &f.triggers[1].kind {
-            TriggerKind::QueueDepth { threshold, queue, .. } => {
+            TriggerKind::QueueDepth {
+                threshold, queue, ..
+            } => {
                 assert_eq!(*threshold, 5);
-                assert!(matches!(queue, QueueSpec::Redis { kind: RedisQueueKind::Stream, .. }));
+                assert!(matches!(
+                    queue,
+                    QueueSpec::Redis {
+                        kind: RedisQueueKind::Stream,
+                        ..
+                    }
+                ));
             }
             _ => panic!("wrong kind"),
         }

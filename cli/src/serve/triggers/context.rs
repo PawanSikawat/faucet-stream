@@ -55,7 +55,12 @@ impl TriggerEvent {
             _ => {}
         }
         match self {
-            TriggerEvent::Object { bucket, key, size, last_modified } => match token {
+            TriggerEvent::Object {
+                bucket,
+                key,
+                size,
+                last_modified,
+            } => match token {
                 "object_key" => Some(key.clone()),
                 "bucket" => Some(bucket.clone()),
                 "size" => Some(size.to_string()),
@@ -67,7 +72,13 @@ impl TriggerEvent {
                 "object_count" => Some(count.to_string()),
                 _ => None,
             },
-            TriggerEvent::Webhook { method, body, headers, query, .. } => {
+            TriggerEvent::Webhook {
+                method,
+                body,
+                headers,
+                query,
+                ..
+            } => {
                 // HTTP header names are case-insensitive (looked up lowercased); URI query
                 // keys are case-sensitive per the URI spec and matched verbatim.
                 if let Some(h) = token.strip_prefix("header.") {
@@ -140,7 +151,12 @@ fn yaml_escape(v: &str) -> String {
 /// Deterministic idempotency key for the event (see spec §9).
 pub fn idempotency_key(name: &str, event: &TriggerEvent) -> String {
     match event {
-        TriggerEvent::Object { bucket, key, last_modified, .. } => {
+        TriggerEvent::Object {
+            bucket,
+            key,
+            last_modified,
+            ..
+        } => {
             format!("trig:{name}:{bucket}:{key}:{last_modified}")
         }
         TriggerEvent::ObjectBatch { watermark, .. } => format!("trig:{name}:{watermark}"),
@@ -209,7 +225,13 @@ mod tests {
 
     #[test]
     fn substitutes_object_key_with_yaml_escaping() {
-        let out = substitute("key: ${trigger.object_key}", &obj(), "t", "2026-06-12T10:00:01Z").unwrap();
+        let out = substitute(
+            "key: ${trigger.object_key}",
+            &obj(),
+            "t",
+            "2026-06-12T10:00:01Z",
+        )
+        .unwrap();
         // The ':' in the key must be quoted so YAML stays valid.
         assert_eq!(out, "key: \"incoming/2026/data:set.json\"");
     }
@@ -233,14 +255,27 @@ mod tests {
             query,
             idem: "k1".into(),
         };
-        let out = substitute("t: ${trigger.header.X-Tenant} m: ${trigger.query.mode}", &e, "h", "now").unwrap();
+        let out = substitute(
+            "t: ${trigger.header.X-Tenant} m: ${trigger.query.mode}",
+            &e,
+            "h",
+            "now",
+        )
+        .unwrap();
         assert_eq!(out, "t: \"acme\" m: \"full\"");
     }
 
     #[test]
     fn idempotency_keys_are_deterministic() {
-        assert_eq!(idempotency_key("t", &obj()), "trig:t:b:incoming/2026/data:set.json:2026-06-12T10:00:00Z");
-        let q = TriggerEvent::QueueDepth { queue: "jobs".into(), depth: 9, edge: 3 };
+        assert_eq!(
+            idempotency_key("t", &obj()),
+            "trig:t:b:incoming/2026/data:set.json:2026-06-12T10:00:00Z"
+        );
+        let q = TriggerEvent::QueueDepth {
+            queue: "jobs".into(),
+            depth: 9,
+            edge: 3,
+        };
         assert_eq!(idempotency_key("d", &q), "trig:d:edge:3");
     }
 

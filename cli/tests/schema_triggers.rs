@@ -13,7 +13,6 @@ fn schema_triggers_prints_json_schema() {
         .assert()
         .success()
         .stdout(
-            predicates::str::contains("object_arrival")
-                .and(predicates::str::contains("webhook")),
+            predicates::str::contains("object_arrival").and(predicates::str::contains("webhook")),
         );
 }

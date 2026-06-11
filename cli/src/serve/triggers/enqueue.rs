@@ -37,7 +37,8 @@ pub async fn resolve_config_text(
     fired_at: &str,
 ) -> Result<String, String> {
     let raw = match config {
-        PipelineRef::Path(p) => tokio::fs::read_to_string(p).await
+        PipelineRef::Path(p) => tokio::fs::read_to_string(p)
+            .await
             .map_err(|e| format!("reading pipeline config '{p}': {e}"))?,
         PipelineRef::Inline(v) => {
             serde_yaml::to_string(v).map_err(|e| format!("serializing inline pipeline: {e}"))?
@@ -85,13 +86,14 @@ pub async fn fire(
     let kind = compiled.kind_label();
     metrics::fired(compiled.name(), kind);
 
-    let text = match resolve_config_text(&compiled.spec.config, &event, compiled.name(), fired_at).await {
-        Ok(t) => t,
-        Err(e) => {
-            metrics::error(compiled.name(), kind);
-            return FireOutcome::Error(e);
-        }
-    };
+    let text =
+        match resolve_config_text(&compiled.spec.config, &event, compiled.name(), fired_at).await {
+            Ok(t) => t,
+            Err(e) => {
+                metrics::error(compiled.name(), kind);
+                return FireOutcome::Error(e);
+            }
+        };
     let req = build_submit_request(compiled, &event, text, fired_at);
     // True idempotency replays (same key + same payload) return Ok from submit
     // and are counted as Enqueued here; the serve-layer
@@ -157,8 +159,14 @@ mod tests {
         let req = build_submit_request(&compiled_webhook(), &event, "version: 1".into(), "now");
         assert_eq!(req.name.as_deref(), Some("hook:k"));
         assert_eq!(req.timeout_secs, Some(60));
-        assert_eq!(req.idempotency_key.as_deref(), Some("trig:hook:b:k:2026-06-12T00:00:00Z"));
-        assert_eq!(req.labels.get("faucet.trigger.name").map(String::as_str), Some("hook"));
+        assert_eq!(
+            req.idempotency_key.as_deref(),
+            Some("trig:hook:b:k:2026-06-12T00:00:00Z")
+        );
+        assert_eq!(
+            req.labels.get("faucet.trigger.name").map(String::as_str),
+            Some("hook")
+        );
         assert!(!req.doctor_first);
     }
 }

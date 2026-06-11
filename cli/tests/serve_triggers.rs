@@ -70,7 +70,10 @@ async fn wait_for_runs(state: &ServerState, want: usize) {
     for _ in 0..200 {
         let page = state
             .history()
-            .list(&ListFilter { limit: 1_000, ..Default::default() })
+            .list(&ListFilter {
+                limit: 1_000,
+                ..Default::default()
+            })
             .await
             .unwrap();
         let terminal = page
@@ -90,7 +93,10 @@ async fn wait_for_runs(state: &ServerState, want: usize) {
     }
     let page = state
         .history()
-        .list(&ListFilter { limit: 1_000, ..Default::default() })
+        .list(&ListFilter {
+            limit: 1_000,
+            ..Default::default()
+        })
         .await
         .unwrap();
     let statuses: Vec<_> = page
@@ -144,10 +150,18 @@ async fn webhook_trigger_enqueues_exactly_one_run() {
     wait_for_runs(&state, 1).await;
     let page = state
         .history()
-        .list(&ListFilter { limit: 1_000, ..Default::default() })
+        .list(&ListFilter {
+            limit: 1_000,
+            ..Default::default()
+        })
         .await
         .unwrap();
-    assert_eq!(page.runs.len(), 1, "expected exactly 1 run, got {}", page.runs.len());
+    assert_eq!(
+        page.runs.len(),
+        1,
+        "expected exactly 1 run, got {}",
+        page.runs.len()
+    );
 
     // A second fire with the SAME idempotency key must NOT create a second run.
     let event2 = faucet_cli::serve::triggers::context::TriggerEvent::Webhook {
@@ -157,13 +171,15 @@ async fn webhook_trigger_enqueues_exactly_one_run() {
         query: Default::default(),
         idem: "evt-1".into(),
     };
-    let _ =
-        faucet_cli::serve::triggers::enqueue::fire(&state, &compiled.triggers[0], event2, &now)
-            .await;
+    let _ = faucet_cli::serve::triggers::enqueue::fire(&state, &compiled.triggers[0], event2, &now)
+        .await;
     tokio::time::sleep(Duration::from_millis(200)).await;
     let page2 = state
         .history()
-        .list(&ListFilter { limit: 1_000, ..Default::default() })
+        .list(&ListFilter {
+            limit: 1_000,
+            ..Default::default()
+        })
         .await
         .unwrap();
     assert_eq!(
@@ -202,10 +218,7 @@ async fn object_arrival_enqueues_one_run_per_object_and_dedupes() {
     // InMemory object store with one object.
     let store = InMemory::new();
     store
-        .put(
-            &OPath::from("incoming/a.json"),
-            b"{}".to_vec().into(),
-        )
+        .put(&OPath::from("incoming/a.json"), b"{}".to_vec().into())
         .await
         .unwrap();
     let store: Arc<dyn ObjectStore> = Arc::new(store);
@@ -227,18 +240,27 @@ async fn object_arrival_enqueues_one_run_per_object_and_dedupes() {
     wait_for_runs(&state, 1).await;
     let page = state
         .history()
-        .list(&ListFilter { limit: 1_000, ..Default::default() })
+        .list(&ListFilter {
+            limit: 1_000,
+            ..Default::default()
+        })
         .await
         .unwrap();
     assert_eq!(page.runs.len(), 1, "expected 1 run after first poll");
 
     // Second poll with same object → cursor committed → no new run.
     let fired2 = watcher.poll(&state).await.unwrap();
-    assert!(!fired2, "expected second poll to be idle (cursor committed)");
+    assert!(
+        !fired2,
+        "expected second poll to be idle (cursor committed)"
+    );
     tokio::time::sleep(Duration::from_millis(150)).await;
     let page2 = state
         .history()
-        .list(&ListFilter { limit: 1_000, ..Default::default() })
+        .list(&ListFilter {
+            limit: 1_000,
+            ..Default::default()
+        })
         .await
         .unwrap();
     assert_eq!(
@@ -313,12 +335,18 @@ async fn queue_depth_fires_once_on_rising_edge() {
         assert!(w.poll(&state).await.unwrap(), "depth 9: rising edge fires");
         assert!(!w.poll(&state).await.unwrap(), "depth 9 again: suppressed");
         assert!(!w.poll(&state).await.unwrap(), "depth 0: re-arm, no fire");
-        assert!(w.poll(&state).await.unwrap(), "depth 7: second rising edge fires");
+        assert!(
+            w.poll(&state).await.unwrap(),
+            "depth 7: second rising edge fires"
+        );
 
         wait_for_runs(&state, 2).await;
         let page = state
             .history()
-            .list(&ListFilter { limit: 1_000, ..Default::default() })
+            .list(&ListFilter {
+                limit: 1_000,
+                ..Default::default()
+            })
             .await
             .unwrap();
         assert_eq!(

@@ -13,7 +13,7 @@ pub struct TriggerHealth {
     pub kind: String,
     pub healthy: bool,
     pub consecutive_failures: u64,
-    pub last_fire: Option<String>,  // RFC3339
+    pub last_fire: Option<String>, // RFC3339
     pub last_error: Option<String>,
 }
 
@@ -94,7 +94,12 @@ impl TriggersHandle {
 
     /// Snapshot for `/readyz`, sorted by name for stable output.
     pub fn snapshot(&self) -> Vec<TriggerHealth> {
-        let mut v: Vec<_> = self.inner.health.iter().map(|e| e.value().clone()).collect();
+        let mut v: Vec<_> = self
+            .inner
+            .health
+            .iter()
+            .map(|e| e.value().clone())
+            .collect();
         v.sort_by(|a, b| a.name.cmp(&b.name));
         v
     }
@@ -107,8 +112,8 @@ impl TriggersHandle {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::serve::triggers::spec::{RunTemplate, TriggerKind, TriggerSpec};
     use crate::serve::triggers::spec::PipelineRef;
+    use crate::serve::triggers::spec::{RunTemplate, TriggerKind, TriggerSpec};
 
     fn webhook(name: &str) -> CompiledTrigger {
         CompiledTrigger {
@@ -118,7 +123,10 @@ mod tests {
                 config: PipelineRef::Path("x.yaml".into()),
                 run: RunTemplate::default(),
                 debounce_secs: 0,
-                kind: TriggerKind::Webhook { methods: vec!["POST".into()], dedupe_header: None },
+                kind: TriggerKind::Webhook {
+                    methods: vec!["POST".into()],
+                    dedupe_header: None,
+                },
             },
             webhook_path: Some(format!("/v1/triggers/{name}")),
         }

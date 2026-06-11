@@ -24,9 +24,17 @@ use crate::error::{CliError, CliResult};
 use crate::serve::state::ServerState;
 #[allow(unused_imports)]
 use compiled::{CompiledTrigger, CompiledTriggers};
-#[cfg(any(feature = "triggers-object-store", feature = "triggers-redis", feature = "triggers-kafka"))]
+#[cfg(any(
+    feature = "triggers-object-store",
+    feature = "triggers-redis",
+    feature = "triggers-kafka"
+))]
 use std::sync::Arc;
-#[cfg(any(feature = "triggers-object-store", feature = "triggers-redis", feature = "triggers-kafka"))]
+#[cfg(any(
+    feature = "triggers-object-store",
+    feature = "triggers-redis",
+    feature = "triggers-kafka"
+))]
 use std::time::Duration;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
@@ -41,14 +49,17 @@ pub async fn load_triggers(path: &std::path::Path) -> CliResult<CompiledTriggers
     let text = tokio::fs::read_to_string(path)
         .await
         .map_err(|e| CliError::Serve(format!("reading triggers file {}: {e}", path.display())))?;
-    let mut file: spec::TriggersFile =
-        if path.extension().map(|e| e.eq_ignore_ascii_case("json")).unwrap_or(false) {
-            serde_json::from_str(&text)
-                .map_err(|e| CliError::Serve(format!("parsing triggers JSON: {e}")))?
-        } else {
-            serde_yaml::from_str(&text)
-                .map_err(|e| CliError::Serve(format!("parsing triggers YAML: {e}")))?
-        };
+    let mut file: spec::TriggersFile = if path
+        .extension()
+        .map(|e| e.eq_ignore_ascii_case("json"))
+        .unwrap_or(false)
+    {
+        serde_json::from_str(&text)
+            .map_err(|e| CliError::Serve(format!("parsing triggers JSON: {e}")))?
+    } else {
+        serde_yaml::from_str(&text)
+            .map_err(|e| CliError::Serve(format!("parsing triggers YAML: {e}")))?
+    };
 
     // Resolve relative `config: <path>` entries relative to the triggers file's
     // directory. This makes `config: ../pipelines/load.yaml` work regardless of
@@ -59,7 +70,8 @@ pub async fn load_triggers(path: &std::path::Path) -> CliResult<CompiledTriggers
                 let p_path = std::path::Path::new(p);
                 if p_path.is_relative() {
                     let resolved = base_dir.join(p_path);
-                    trigger.config = spec::PipelineRef::Path(resolved.to_string_lossy().into_owned());
+                    trigger.config =
+                        spec::PipelineRef::Path(resolved.to_string_lossy().into_owned());
                 }
             }
         }
@@ -97,7 +109,9 @@ mod tests {
             f.write_all(yaml.as_bytes()).unwrap();
         }
 
-        let compiled = load_triggers(&triggers_path).await.expect("load_triggers failed");
+        let compiled = load_triggers(&triggers_path)
+            .await
+            .expect("load_triggers failed");
         assert_eq!(compiled.triggers.len(), 1);
 
         // The compiled trigger's config path must be absolute (starts with base_dir).
@@ -123,18 +137,30 @@ pub fn spawn_watchers(
     state: ServerState,
     compiled: &CompiledTriggers,
     #[cfg_attr(
-        not(any(feature = "triggers-object-store", feature = "triggers-redis", feature = "triggers-kafka")),
+        not(any(
+            feature = "triggers-object-store",
+            feature = "triggers-redis",
+            feature = "triggers-kafka"
+        )),
         allow(unused_variables)
     )]
     shutdown: CancellationToken,
 ) -> Vec<JoinHandle<()>> {
     #[cfg_attr(
-        not(any(feature = "triggers-object-store", feature = "triggers-redis", feature = "triggers-kafka")),
+        not(any(
+            feature = "triggers-object-store",
+            feature = "triggers-redis",
+            feature = "triggers-kafka"
+        )),
         allow(unused_mut)
     )]
     let mut handles = Vec::new();
     #[cfg_attr(
-        not(any(feature = "triggers-object-store", feature = "triggers-redis", feature = "triggers-kafka")),
+        not(any(
+            feature = "triggers-object-store",
+            feature = "triggers-redis",
+            feature = "triggers-kafka"
+        )),
         allow(unused_variables)
     )]
     let health = state.triggers().clone();
@@ -150,51 +176,60 @@ pub fn spawn_watchers(
                 tracing::info!(trigger = t.name(), path = ?t.webhook_path, "webhook trigger registered");
             }
             #[cfg(feature = "triggers-object-store")]
-            spec::TriggerKind::ObjectArrival { store, poll_interval_secs, mode, start_at } => {
-                match object_arrival::ObjectArrivalWatcher::build_store(store) {
-                    Ok((s, bucket, prefix)) => {
-                        let w = object_arrival::ObjectArrivalWatcher::new(
-                            Arc::new(t.clone()),
-                            s,
-                            bucket,
-                            prefix,
-                            *mode,
-                            Duration::from_secs(*poll_interval_secs),
-                            *start_at,
-                            chrono::Utc::now(),
-                        );
-                        handles.push(tokio::spawn(watcher::run_supervised(
-                            w,
-                            state.clone(),
-                            health.clone(),
-                            shutdown.clone(),
-                        )));
-                        active += 1;
-                    }
-                    Err(e) => tracing::error!(trigger = t.name(), error = %e, "failed to build object store; skipping watcher"),
+            spec::TriggerKind::ObjectArrival {
+                store,
+                poll_interval_secs,
+                mode,
+                start_at,
+            } => match object_arrival::ObjectArrivalWatcher::build_store(store) {
+                Ok((s, bucket, prefix)) => {
+                    let w = object_arrival::ObjectArrivalWatcher::new(
+                        Arc::new(t.clone()),
+                        s,
+                        bucket,
+                        prefix,
+                        *mode,
+                        Duration::from_secs(*poll_interval_secs),
+                        *start_at,
+                        chrono::Utc::now(),
+                    );
+                    handles.push(tokio::spawn(watcher::run_supervised(
+                        w,
+                        state.clone(),
+                        health.clone(),
+                        shutdown.clone(),
+                    )));
+                    active += 1;
                 }
-            }
+                Err(e) => {
+                    tracing::error!(trigger = t.name(), error = %e, "failed to build object store; skipping watcher")
+                }
+            },
             #[cfg(any(feature = "triggers-redis", feature = "triggers-kafka"))]
-            spec::TriggerKind::QueueDepth { queue, threshold, poll_interval_secs } => {
-                match queue_depth::build_probe(queue) {
-                    Ok(probe) => {
-                        let w = queue_depth::QueueDepthWatcher::new(
-                            Arc::new(t.clone()),
-                            probe,
-                            *threshold,
-                            Duration::from_secs(*poll_interval_secs),
-                        );
-                        handles.push(tokio::spawn(watcher::run_supervised(
-                            w,
-                            state.clone(),
-                            health.clone(),
-                            shutdown.clone(),
-                        )));
-                        active += 1;
-                    }
-                    Err(e) => tracing::error!(trigger = t.name(), error = %e, "failed to build queue probe; skipping watcher"),
+            spec::TriggerKind::QueueDepth {
+                queue,
+                threshold,
+                poll_interval_secs,
+            } => match queue_depth::build_probe(queue) {
+                Ok(probe) => {
+                    let w = queue_depth::QueueDepthWatcher::new(
+                        Arc::new(t.clone()),
+                        probe,
+                        *threshold,
+                        Duration::from_secs(*poll_interval_secs),
+                    );
+                    handles.push(tokio::spawn(watcher::run_supervised(
+                        w,
+                        state.clone(),
+                        health.clone(),
+                        shutdown.clone(),
+                    )));
+                    active += 1;
                 }
-            }
+                Err(e) => {
+                    tracing::error!(trigger = t.name(), error = %e, "failed to build queue probe; skipping watcher")
+                }
+            },
             // Backends not compiled in were already rejected by `compile`, but the
             // match must be exhaustive when their features are off.
             #[cfg(not(feature = "triggers-object-store"))]

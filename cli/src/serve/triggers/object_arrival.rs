@@ -170,8 +170,7 @@ impl ObjectArrivalWatcher {
                 region,
                 endpoint,
             } => {
-                let mut b = object_store::aws::AmazonS3Builder::from_env()
-                    .with_bucket_name(bucket);
+                let mut b = object_store::aws::AmazonS3Builder::from_env().with_bucket_name(bucket);
                 if let Some(r) = region {
                     b = b.with_region(r);
                 }
@@ -219,10 +218,7 @@ impl ObjectArrivalWatcher {
     }
 
     async fn list(&self) -> Result<Vec<ListedObject>, String> {
-        let prefix_path = self
-            .prefix
-            .as_deref()
-            .map(object_store::path::Path::from);
+        let prefix_path = self.prefix.as_deref().map(object_store::path::Path::from);
         let mut stream = self.store.list(prefix_path.as_ref());
         let mut out = Vec::new();
         while let Some(meta) = stream.next().await {

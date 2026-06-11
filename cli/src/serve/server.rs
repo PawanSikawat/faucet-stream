@@ -37,7 +37,8 @@ pub fn build_router(state: ServerState, config: &ServeConfig) -> Router {
     {
         api = api.route(
             "/v1/triggers/{name}",
-            post(crate::serve::triggers::webhook::handle).put(crate::serve::triggers::webhook::handle),
+            post(crate::serve::triggers::webhook::handle)
+                .put(crate::serve::triggers::webhook::handle),
         );
     }
     let api = api.route_layer(axum::middleware::from_fn_with_state(

@@ -26,7 +26,8 @@ pub async fn readyz(State(state): State<ServerState>) -> impl IntoResponse {
         StatusCode::SERVICE_UNAVAILABLE
     };
     #[cfg(feature = "triggers")]
-    let triggers = serde_json::to_value(state.triggers().snapshot()).unwrap_or(serde_json::Value::Null);
+    let triggers =
+        serde_json::to_value(state.triggers().snapshot()).unwrap_or(serde_json::Value::Null);
     #[cfg(not(feature = "triggers"))]
     let triggers = serde_json::Value::Array(vec![]);
     let body = json!({

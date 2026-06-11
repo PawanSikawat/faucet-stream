@@ -52,7 +52,11 @@ impl CompiledTriggers {
             if t.name.trim().is_empty() {
                 return Err("triggers: a trigger has an empty `name`".into());
             }
-            if !t.name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
+            if !t
+                .name
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+            {
                 return Err(format!(
                     "triggers: invalid trigger name '{}' (letters, digits, '_' and '-' only)",
                     t.name
@@ -93,10 +97,7 @@ impl CompiledTriggers {
                 }
                 TriggerKind::Webhook { methods, .. } => {
                     if methods.is_empty() {
-                        return Err(format!(
-                            "triggers: '{}' methods must not be empty",
-                            t.name
-                        ));
+                        return Err(format!("triggers: '{}' methods must not be empty", t.name));
                     }
                     for m in methods {
                         let mu = m.to_ascii_uppercase();
@@ -123,10 +124,7 @@ impl CompiledTriggers {
                         ));
                     }
                     if *threshold == 0 {
-                        return Err(format!(
-                            "triggers: '{}' threshold must be >= 1",
-                            t.name
-                        ));
+                        return Err(format!("triggers: '{}' threshold must be >= 1", t.name));
                     }
                     require_feature(&t.name, queue_feature(queue))?;
                     validate_queue(&t.name, queue)?;
@@ -139,15 +137,11 @@ impl CompiledTriggers {
                 webhook_path,
             });
         }
-        Ok(Self {
-            triggers: compiled,
-        })
+        Ok(Self { triggers: compiled })
     }
 
     pub fn webhooks(&self) -> impl Iterator<Item = &CompiledTrigger> {
-        self.triggers
-            .iter()
-            .filter(|t| t.webhook_path.is_some())
+        self.triggers.iter().filter(|t| t.webhook_path.is_some())
     }
 }
 
@@ -198,7 +192,9 @@ fn validate_queue(name: &str, queue: &QueueSpec) -> Result<(), String> {
             group,
         } => {
             if brokers.trim().is_empty() {
-                return Err(format!("triggers: '{name}' queue brokers must not be empty"));
+                return Err(format!(
+                    "triggers: '{name}' queue brokers must not be empty"
+                ));
             }
             if topic.trim().is_empty() {
                 return Err(format!("triggers: '{name}' queue topic must not be empty"));
@@ -249,7 +245,11 @@ mod tests {
     #[test]
     fn rejects_bad_version() {
         let f = file("version: 2\ntriggers: []\n");
-        assert!(CompiledTriggers::compile(f).unwrap_err().contains("version"));
+        assert!(
+            CompiledTriggers::compile(f)
+                .unwrap_err()
+                .contains("version")
+        );
     }
 
     #[test]
@@ -260,8 +260,14 @@ mod tests {
         );
         let c = CompiledTriggers::compile(f).unwrap();
         assert_eq!(c.webhooks().count(), 2);
-        assert_eq!(c.triggers[0].webhook_path.as_deref(), Some("/v1/triggers/a"));
-        assert_eq!(c.triggers[1].webhook_path.as_deref(), Some("/v1/triggers/b"));
+        assert_eq!(
+            c.triggers[0].webhook_path.as_deref(),
+            Some("/v1/triggers/a")
+        );
+        assert_eq!(
+            c.triggers[1].webhook_path.as_deref(),
+            Some("/v1/triggers/b")
+        );
     }
 
     #[test]
@@ -272,7 +278,10 @@ mod tests {
         // Only assert the threshold check when the redis backend is compiled;
         // otherwise the missing-feature error fires first (also acceptable).
         let err = CompiledTriggers::compile(f).unwrap_err();
-        assert!(err.contains("threshold must be >= 1") || err.contains("triggers-redis"), "{err}");
+        assert!(
+            err.contains("threshold must be >= 1") || err.contains("triggers-redis"),
+            "{err}"
+        );
     }
 
     #[test]

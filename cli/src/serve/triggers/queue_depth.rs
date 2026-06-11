@@ -21,7 +21,11 @@ pub struct Edge {
 
 impl Edge {
     pub fn new(threshold: u64) -> Self {
-        Self { threshold, armed: true, edge_ordinal: 0 }
+        Self {
+            threshold,
+            armed: true,
+            edge_ordinal: 0,
+        }
     }
 
     /// Feed a depth reading. Returns `Some(edge_ordinal)` if this reading is a
@@ -116,15 +120,23 @@ pub fn build_probe(queue: &QueueSpec) -> Result<Box<dyn DepthProbe>, String> {
             *kind,
         ))),
         #[cfg(not(feature = "triggers-redis"))]
-        QueueSpec::Redis { .. } => Err("queue_depth redis requires the `triggers-redis` feature".into()),
+        QueueSpec::Redis { .. } => {
+            Err("queue_depth redis requires the `triggers-redis` feature".into())
+        }
         #[cfg(feature = "triggers-kafka")]
-        QueueSpec::Kafka { brokers, topic, group } => Ok(Box::new(kafka_probe::KafkaProbe::new(
+        QueueSpec::Kafka {
+            brokers,
+            topic,
+            group,
+        } => Ok(Box::new(kafka_probe::KafkaProbe::new(
             brokers.clone(),
             topic.clone(),
             group.clone(),
         ))),
         #[cfg(not(feature = "triggers-kafka"))]
-        QueueSpec::Kafka { .. } => Err("queue_depth kafka requires the `triggers-kafka` feature".into()),
+        QueueSpec::Kafka { .. } => {
+            Err("queue_depth kafka requires the `triggers-kafka` feature".into())
+        }
     }
 }
 
@@ -157,8 +169,14 @@ mod redis_probe {
                 .await
                 .map_err(|e| format!("Redis connect: {e}"))?;
             let n: i64 = match self.kind {
-                RedisQueueKind::List => conn.llen(&self.key).await.map_err(|e| format!("LLEN: {e}"))?,
-                RedisQueueKind::Stream => conn.xlen(&self.key).await.map_err(|e| format!("XLEN: {e}"))?,
+                RedisQueueKind::List => conn
+                    .llen(&self.key)
+                    .await
+                    .map_err(|e| format!("LLEN: {e}"))?,
+                RedisQueueKind::Stream => conn
+                    .xlen(&self.key)
+                    .await
+                    .map_err(|e| format!("XLEN: {e}"))?,
             };
             Ok(n.max(0) as u64)
         }
@@ -183,7 +201,11 @@ mod kafka_probe {
     }
     impl KafkaProbe {
         pub fn new(brokers: String, topic: String, group: String) -> Self {
-            Self { brokers, topic, group }
+            Self {
+                brokers,
+                topic,
+                group,
+            }
         }
     }
     #[async_trait]

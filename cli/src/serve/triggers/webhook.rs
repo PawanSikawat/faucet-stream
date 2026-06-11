@@ -28,11 +28,17 @@ pub async fn handle(
         .ok_or(ServeError::NotFound)?;
 
     let (methods, dedupe_header) = match &compiled.spec.kind {
-        TriggerKind::Webhook { methods, dedupe_header } => (methods, dedupe_header),
+        TriggerKind::Webhook {
+            methods,
+            dedupe_header,
+        } => (methods, dedupe_header),
         _ => return Err(ServeError::NotFound),
     };
     let m = method.as_str().to_ascii_uppercase();
-    if !methods.iter().any(|allowed| allowed.to_ascii_uppercase() == m) {
+    if !methods
+        .iter()
+        .any(|allowed| allowed.to_ascii_uppercase() == m)
+    {
         return Err(ServeError::BadConfig(format!(
             "method {m} not allowed for webhook trigger '{name}'"
         )));
@@ -48,7 +54,11 @@ pub async fn handle(
 
     let header_map: BTreeMap<String, String> = headers
         .iter()
-        .filter_map(|(k, v)| v.to_str().ok().map(|val| (k.as_str().to_ascii_lowercase(), val.to_string())))
+        .filter_map(|(k, v)| {
+            v.to_str()
+                .ok()
+                .map(|val| (k.as_str().to_ascii_lowercase(), val.to_string()))
+        })
         .collect();
     let query_map = parse_query(raw_query.as_deref());
 
@@ -73,7 +83,9 @@ pub async fn handle(
             })
         }
         FireOutcome::Error(msg) => {
-            state.triggers().record_err(&name, msg.clone(), super::watcher::UNHEALTHY_THRESHOLD);
+            state
+                .triggers()
+                .record_err(&name, msg.clone(), super::watcher::UNHEALTHY_THRESHOLD);
             Err(ServeError::Internal(msg))
         }
     }
