@@ -84,8 +84,7 @@ pub async fn run(args: ScheduleArgs) -> CliResult<()> {
         None => crate::env_loader::discover_config_path(&cwd).ok_or(CliError::NoConfigOrFromEnv)?,
     };
 
-    // TODO(Task 5): thread --profile
-    let cfg = PipelineConfig::from_path_async(&path, None).await?;
+    let cfg = PipelineConfig::from_path_async(&path, args.profile.as_deref()).await?;
     let spec = cfg.schedule.as_ref().ok_or_else(|| {
         CliError::Config(
             "no `schedule:` block in config — use `faucet run` for a one-shot run, or add a `schedule:` block"

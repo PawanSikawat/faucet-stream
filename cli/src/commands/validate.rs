@@ -24,14 +24,11 @@ pub async fn run(args: ValidateArgs) -> CliResult<()> {
     };
     let cfg = if args.no_secrets {
         // Grammar / structure only — never touch the network.
-        // TODO(Task 5): thread --profile
-        PipelineConfig::from_path_tolerating_secrets(&path, None)?
+        PipelineConfig::from_path_tolerating_secrets(&path, args.profile.as_deref())?
     } else {
         // Real preflight: report each secret reference, then resolve.
-        // TODO(Task 5): thread --profile
-        let refs = crate::secrets::scan_path_refs(&path, None)?;
-        // TODO(Task 5): thread --profile
-        let cfg = PipelineConfig::from_path_async(&path, None).await?;
+        let refs = crate::secrets::scan_path_refs(&path, args.profile.as_deref())?;
+        let cfg = PipelineConfig::from_path_async(&path, args.profile.as_deref()).await?;
         for (scheme, reference) in &refs {
             println!("secret: {scheme}:{reference} → resolved");
         }

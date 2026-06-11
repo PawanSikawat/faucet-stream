@@ -28,8 +28,7 @@ pub async fn run(args: PreviewArgs) -> CliResult<()> {
         Some(p) => p,
         None => crate::env_loader::discover_config_path(&cwd).ok_or(CliError::NoConfigOrFromEnv)?,
     };
-    // TODO(Task 5): thread --profile
-    let cfg = PipelineConfig::from_path_async(&path, None).await?;
+    let cfg = PipelineConfig::from_path_async(&path, args.profile.as_deref()).await?;
     let auth = crate::auth_catalog::build_auth_catalog(cfg.auth.as_ref())?;
     let nodes = expand(&cfg)?;
     let first_root = nodes

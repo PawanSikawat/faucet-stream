@@ -47,14 +47,18 @@ pub async fn run(args: RunArgs) -> CliResult<()> {
     };
 
     let cfg = if args.from_env {
+        if args.profile.is_some() {
+            tracing::warn!(
+                "--profile / FAUCET_PROFILE has no effect in --from-env mode (no config file to compose); ignoring"
+            );
+        }
         crate::env_config::from_process_env()?
     } else {
-        // TODO(Task 5): thread --profile
         PipelineConfig::from_path_async(
             resolved_config_path
                 .as_ref()
                 .expect("YAML mode always resolves a path above"),
-            None,
+            args.profile.as_deref(),
         )
         .await?
     };
