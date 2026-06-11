@@ -46,8 +46,8 @@ pub enum PipelineRef {
     Inline(serde_json::Value),
 }
 
-/// Trigger type + its settings. Adjacently-tagged on `type` to match the
-/// project-wide `{ type, … }` convention.
+/// Trigger type + its settings. Internally-tagged on `type` — variant fields
+/// sit flat alongside `type` in the serialized form.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum TriggerKind {
@@ -92,7 +92,8 @@ pub enum StartAt {
     Beginning,
 }
 
-/// Object-store connection for `object_arrival`.
+/// Object-store connection for `object_arrival`. Internally-tagged on `type`;
+/// variant fields sit flat alongside `type`.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum StoreSpec {
@@ -112,7 +113,8 @@ pub enum StoreSpec {
     },
 }
 
-/// Queue connection for `queue_depth`.
+/// Queue connection for `queue_depth`. Internally-tagged on `type`;
+/// variant fields sit flat alongside `type`.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum QueueSpec {
