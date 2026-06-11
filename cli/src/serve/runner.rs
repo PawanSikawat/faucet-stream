@@ -70,6 +70,12 @@ pub struct SubmitResponse {
     pub submitted_at: DateTime<Utc>,
 }
 
+/// Stub — replaced in the cluster runner task (Task 8). Re-runs a claimed
+/// Pending run on this instance.
+pub fn resume_claimed_run(state: ServerState, rec: RunRecord) {
+    let _ = (state, rec);
+}
+
 /// Validate, idempotency-claim, queue, and spawn a submission.
 pub async fn submit(state: ServerState, req: SubmitRequest) -> Result<SubmitResponse, ServeError> {
     let format: ConfigFormat = req.config_format.into();

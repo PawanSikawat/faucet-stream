@@ -69,6 +69,11 @@ pub fn set_history_degraded(degraded: bool) {
     metrics::gauge!("faucet_serve_history_degraded").set(if degraded { 1.0 } else { 0.0 });
 }
 
+/// Count runs claimed by this instance's claim loop. (Body added in Task 11.)
+pub fn record_runs_claimed(n: usize) {
+    let _ = n;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

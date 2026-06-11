@@ -30,6 +30,7 @@ struct Inner {
     default_base: Option<Value>,
     idempotency_retention: Duration,
     probe_timeout: Duration,
+    cluster: crate::serve::cluster::ClusterHandle,
 }
 
 impl ServerState {
@@ -54,6 +55,7 @@ impl ServerState {
                 default_base,
                 idempotency_retention: config.idempotency_retention,
                 probe_timeout: config.probe_timeout,
+                cluster: crate::serve::cluster::ClusterHandle::from_config(config),
             }),
         }
     }
@@ -100,6 +102,10 @@ impl ServerState {
 
     pub fn probe_timeout(&self) -> Duration {
         self.inner.probe_timeout
+    }
+
+    pub fn cluster(&self) -> &crate::serve::cluster::ClusterHandle {
+        &self.inner.cluster
     }
 }
 
