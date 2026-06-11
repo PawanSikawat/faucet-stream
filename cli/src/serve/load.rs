@@ -161,7 +161,9 @@ schedule:
         // rejects the key during `from_value` (no I/O), and `friendly_parse_error`
         // attaches the composition hint.
         let body = "version: 1\nextends: /etc/passwd\npipeline:\n  source: { type: csv, config: { path: x.csv } }\n  sink: { type: jsonl, config: { path: o.jsonl } }\n";
-        let err = load_submission(body, ConfigFormat::Yaml, None).await.unwrap_err();
+        let err = load_submission(body, ConfigFormat::Yaml, None)
+            .await
+            .unwrap_err();
         // ServeError doesn't implement Display; pull the inner message directly.
         let msg = match &err {
             ServeError::Unprocessable { message, .. } => message.clone(),

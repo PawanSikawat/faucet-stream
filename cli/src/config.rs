@@ -416,10 +416,7 @@ impl PipelineConfig {
     /// Async load path: like [`Self::from_path`] but resolves secret-manager
     /// directives (`${vault:…}`, `${aws-sm:…}`, …) as a final stage. Composition
     /// (extends/profiles/`!include`) runs first via [`crate::compose::compose`].
-    pub async fn from_path_async(
-        path: impl AsRef<Path>,
-        profile: Option<&str>,
-    ) -> CliResult<Self> {
+    pub async fn from_path_async(path: impl AsRef<Path>, profile: Option<&str>) -> CliResult<Self> {
         let path = path.as_ref();
         let composed = crate::compose::compose(path, profile)?;
         let interpolated = interpolate(&composed)?;
@@ -1124,11 +1121,17 @@ pipeline:
 
         // No profile → base sink path.
         let cfg = PipelineConfig::from_path(&app, None).unwrap();
-        assert_eq!(cfg.pipeline.sink.as_ref().unwrap().config["path"], "base.jsonl");
+        assert_eq!(
+            cfg.pipeline.sink.as_ref().unwrap().config["path"],
+            "base.jsonl"
+        );
 
         // --profile prod → overridden sink path.
         let cfg = PipelineConfig::from_path(&app, Some("prod")).unwrap();
-        assert_eq!(cfg.pipeline.sink.as_ref().unwrap().config["path"], "prod.jsonl");
+        assert_eq!(
+            cfg.pipeline.sink.as_ref().unwrap().config["path"],
+            "prod.jsonl"
+        );
     }
 
     #[test]
@@ -1141,7 +1144,10 @@ pipeline:
         });
         let err = PipelineConfig::from_value(v).unwrap_err();
         let msg = err.to_string();
-        assert!(msg.contains("composition"), "expected composition hint, got: {msg}");
+        assert!(
+            msg.contains("composition"),
+            "expected composition hint, got: {msg}"
+        );
     }
 
     #[test]

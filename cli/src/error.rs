@@ -230,10 +230,15 @@ pub enum CliError {
         path.display(),
         referenced_by.display()
     )]
-    IncludeNotFound { path: PathBuf, referenced_by: PathBuf },
+    IncludeNotFound {
+        path: PathBuf,
+        referenced_by: PathBuf,
+    },
 
     /// Composition nesting exceeded the safety cap (extends/!include loop guard).
-    #[error("config composition nested deeper than {max} levels — check for an extends/!include loop")]
+    #[error(
+        "config composition nested deeper than {max} levels — check for an extends/!include loop"
+    )]
     CompositionDepthExceeded { max: usize },
 
     /// An `!include` tag had a non-string payload, an unsupported tag, or its
@@ -535,7 +540,10 @@ mod tests {
         let msg = e.to_string();
         assert!(msg.contains("staging") && msg.contains("dev") && msg.contains("prod"));
 
-        let none = CliError::UnknownProfile { name: "x".into(), known: vec![] };
+        let none = CliError::UnknownProfile {
+            name: "x".into(),
+            known: vec![],
+        };
         assert!(none.to_string().contains("no `profiles:` block"));
     }
 
@@ -551,7 +559,11 @@ mod tests {
 
     #[test]
     fn composition_depth_exceeds_renders_max() {
-        assert!(CliError::CompositionDepthExceeded { max: 32 }.to_string().contains("32"));
+        assert!(
+            CliError::CompositionDepthExceeded { max: 32 }
+                .to_string()
+                .contains("32")
+        );
     }
 
     #[test]

@@ -158,7 +158,9 @@ fn load_value(path: &Path) -> CliResult<JsonValue> {
 fn yaml_to_json(yv: serde_yaml::Value, path: &Path) -> CliResult<JsonValue> {
     serde_json::to_value(yv).map_err(|e| CliError::ParseConfig {
         path: path.to_path_buf(),
-        message: format!("could not convert YAML to JSON (non-string keys or unsupported tag?): {e}"),
+        message: format!(
+            "could not convert YAML to JSON (non-string keys or unsupported tag?): {e}"
+        ),
     })
 }
 
@@ -285,7 +287,11 @@ fn resolve_includes(
 /// through as literal data (not stripped, not followed); if such a fragment is
 /// spliced where `PipelineConfig` is parsed, the leftover key surfaces as a
 /// `deny_unknown_fields` error downstream.
-fn load_fragment(path: &Path, visited: &mut Vec<PathBuf>, depth: usize) -> CliResult<serde_yaml::Value> {
+fn load_fragment(
+    path: &Path,
+    visited: &mut Vec<PathBuf>,
+    depth: usize,
+) -> CliResult<serde_yaml::Value> {
     if depth > MAX_COMPOSE_DEPTH {
         return Err(CliError::CompositionDepthExceeded {
             max: MAX_COMPOSE_DEPTH,
@@ -342,7 +348,10 @@ mod tests {
         let body = "version: 1\npipeline:\n  source: { type: csv, config: { path: x.csv } }\n  sink: { type: jsonl, config: { path: o.jsonl } }\n";
         let p = write(dir.path(), "p.yaml", body);
         let out = compose(&p, None).unwrap();
-        assert_eq!(out, body, "no directives + no profile must be byte-identical");
+        assert_eq!(
+            out, body,
+            "no directives + no profile must be byte-identical"
+        );
     }
 
     #[test]
@@ -368,20 +377,35 @@ mod tests {
     #[test]
     fn extends_list_merges_left_to_right() {
         let dir = tempfile::tempdir().unwrap();
-        write(dir.path(), "a.yaml", "version: 1\npipeline: { transforms: [] }\nshared: { a: 1, both: \"from-a\" }\n");
+        write(
+            dir.path(),
+            "a.yaml",
+            "version: 1\npipeline: { transforms: [] }\nshared: { a: 1, both: \"from-a\" }\n",
+        );
         write(dir.path(), "b.yaml", "shared: { b: 2, both: \"from-b\" }\n");
-        let app = write(dir.path(), "app.yaml", "extends: [./a.yaml, ./b.yaml]\nshared: { c: 3 }\n");
+        let app = write(
+            dir.path(),
+            "app.yaml",
+            "extends: [./a.yaml, ./b.yaml]\nshared: { c: 3 }\n",
+        );
         let v: JsonValue = serde_yaml::from_str(&compose(&app, None).unwrap()).unwrap();
         assert_eq!(v["shared"]["a"], 1);
         assert_eq!(v["shared"]["b"], 2);
         assert_eq!(v["shared"]["c"], 3);
-        assert_eq!(v["shared"]["both"], "from-b", "later base wins over earlier");
+        assert_eq!(
+            v["shared"]["both"], "from-b",
+            "later base wins over earlier"
+        );
     }
 
     #[test]
     fn profile_overlay_beats_extended_base() {
         let dir = tempfile::tempdir().unwrap();
-        write(dir.path(), "base.yaml", "version: 1\npipeline:\n  sink: { type: jsonl, config: { path: base.jsonl } }\n");
+        write(
+            dir.path(),
+            "base.yaml",
+            "version: 1\npipeline:\n  sink: { type: jsonl, config: { path: base.jsonl } }\n",
+        );
         let app = write(
             dir.path(),
             "app.yaml",
@@ -408,7 +432,11 @@ mod tests {
     #[test]
     fn unknown_profile_errors_with_known_list() {
         let dir = tempfile::tempdir().unwrap();
-        let p = write(dir.path(), "p.yaml", "version: 1\nprofiles:\n  dev: {}\n  prod: {}\npipeline: {}\n");
+        let p = write(
+            dir.path(),
+            "p.yaml",
+            "version: 1\nprofiles:\n  dev: {}\n  prod: {}\npipeline: {}\n",
+        );
         match compose(&p, Some("staging")).unwrap_err() {
             CliError::UnknownProfile { name, known } => {
                 assert_eq!(name, "staging");
@@ -445,9 +473,21 @@ mod tests {
         // app extends [b, c]; both b and c extend d. d is reached twice on
         // different branches — that is NOT a cycle.
         let dir = tempfile::tempdir().unwrap();
-        write(dir.path(), "d.yaml", "version: 1\nshared: { from_d: true }\n");
-        write(dir.path(), "b.yaml", "extends: ./d.yaml\nshared: { from_b: true }\n");
-        write(dir.path(), "c.yaml", "extends: ./d.yaml\nshared: { from_c: true }\n");
+        write(
+            dir.path(),
+            "d.yaml",
+            "version: 1\nshared: { from_d: true }\n",
+        );
+        write(
+            dir.path(),
+            "b.yaml",
+            "extends: ./d.yaml\nshared: { from_b: true }\n",
+        );
+        write(
+            dir.path(),
+            "c.yaml",
+            "extends: ./d.yaml\nshared: { from_c: true }\n",
+        );
         let app = write(
             dir.path(),
             "app.yaml",
@@ -464,7 +504,11 @@ mod tests {
     fn missing_base_after_successful_base_errors() {
         let dir = tempfile::tempdir().unwrap();
         write(dir.path(), "good.yaml", "version: 1\n");
-        let app = write(dir.path(), "app.yaml", "extends: [./good.yaml, ./nope.yaml]\n");
+        let app = write(
+            dir.path(),
+            "app.yaml",
+            "extends: [./good.yaml, ./nope.yaml]\n",
+        );
         assert!(matches!(
             compose(&app, None).unwrap_err(),
             CliError::IncludeNotFound { .. }
@@ -484,8 +528,16 @@ mod tests {
     #[test]
     fn yaml_can_extend_json_base() {
         let dir = tempfile::tempdir().unwrap();
-        write(dir.path(), "base.json", "{ \"version\": 1, \"pipeline\": { \"sink\": { \"type\": \"jsonl\", \"config\": { \"path\": \"base.jsonl\" } } } }");
-        let app = write(dir.path(), "app.yaml", "extends: ./base.json\npipeline:\n  source: { type: csv, config: { path: a.csv } }\n");
+        write(
+            dir.path(),
+            "base.json",
+            "{ \"version\": 1, \"pipeline\": { \"sink\": { \"type\": \"jsonl\", \"config\": { \"path\": \"base.jsonl\" } } } }",
+        );
+        let app = write(
+            dir.path(),
+            "app.yaml",
+            "extends: ./base.json\npipeline:\n  source: { type: csv, config: { path: a.csv } }\n",
+        );
         let v: JsonValue = serde_yaml::from_str(&compose(&app, None).unwrap()).unwrap();
         assert_eq!(v["pipeline"]["sink"]["config"]["path"], "base.jsonl");
         assert_eq!(v["pipeline"]["source"]["config"]["path"], "a.csv");
@@ -494,7 +546,11 @@ mod tests {
     #[test]
     fn include_substitutes_at_nested_map_position() {
         let dir = tempfile::tempdir().unwrap();
-        write(dir.path(), "auth.yaml", "type: bearer\nconfig: { token: T }\n");
+        write(
+            dir.path(),
+            "auth.yaml",
+            "type: bearer\nconfig: { token: T }\n",
+        );
         let app = write(
             dir.path(),
             "app.yaml",
@@ -508,7 +564,11 @@ mod tests {
     #[test]
     fn include_substitutes_a_sequence_fragment() {
         let dir = tempfile::tempdir().unwrap();
-        write(dir.path(), "tx.yaml", "- { type: flatten }\n- { type: redact, config: { fields: [ssn] } }\n");
+        write(
+            dir.path(),
+            "tx.yaml",
+            "- { type: flatten }\n- { type: redact, config: { fields: [ssn] } }\n",
+        );
         let app = write(
             dir.path(),
             "app.yaml",
@@ -522,22 +582,37 @@ mod tests {
     #[test]
     fn include_combined_with_extends() {
         let dir = tempfile::tempdir().unwrap();
-        write(dir.path(), "base.yaml", "version: 1\npipeline:\n  sink: { type: jsonl, config: { path: base.jsonl } }\n");
-        write(dir.path(), "src.yaml", "type: csv\nconfig: { path: from-include.csv }\n");
+        write(
+            dir.path(),
+            "base.yaml",
+            "version: 1\npipeline:\n  sink: { type: jsonl, config: { path: base.jsonl } }\n",
+        );
+        write(
+            dir.path(),
+            "src.yaml",
+            "type: csv\nconfig: { path: from-include.csv }\n",
+        );
         let app = write(
             dir.path(),
             "app.yaml",
             "extends: ./base.yaml\npipeline:\n  source: !include ./src.yaml\n",
         );
         let v: JsonValue = serde_yaml::from_str(&compose(&app, None).unwrap()).unwrap();
-        assert_eq!(v["pipeline"]["source"]["config"]["path"], "from-include.csv");
+        assert_eq!(
+            v["pipeline"]["source"]["config"]["path"],
+            "from-include.csv"
+        );
         assert_eq!(v["pipeline"]["sink"]["config"]["path"], "base.jsonl");
     }
 
     #[test]
     fn include_non_string_payload_errors() {
         let dir = tempfile::tempdir().unwrap();
-        let app = write(dir.path(), "app.yaml", "version: 1\nbad: !include { not: a-path }\n");
+        let app = write(
+            dir.path(),
+            "app.yaml",
+            "version: 1\nbad: !include { not: a-path }\n",
+        );
         assert!(matches!(
             compose(&app, None).unwrap_err(),
             CliError::BadInclude { .. }
@@ -547,7 +622,11 @@ mod tests {
     #[test]
     fn include_missing_file_errors() {
         let dir = tempfile::tempdir().unwrap();
-        let app = write(dir.path(), "app.yaml", "version: 1\nx: !include ./nope.yaml\n");
+        let app = write(
+            dir.path(),
+            "app.yaml",
+            "version: 1\nx: !include ./nope.yaml\n",
+        );
         assert!(matches!(
             compose(&app, None).unwrap_err(),
             CliError::IncludeNotFound { .. }

@@ -33,8 +33,14 @@ fn run_with_profile_selects_overlay_sink() {
         .assert()
         .success();
 
-    assert!(dir.path().join("prod.jsonl").exists(), "prod overlay sink must be written");
-    assert!(!dir.path().join("dev.jsonl").exists(), "base sink must NOT be written when prod selected");
+    assert!(
+        dir.path().join("prod.jsonl").exists(),
+        "prod overlay sink must be written"
+    );
+    assert!(
+        !dir.path().join("dev.jsonl").exists(),
+        "base sink must NOT be written when prod selected"
+    );
 }
 
 #[test]
@@ -56,7 +62,11 @@ fn env_profile_is_honored_and_flag_overrides_it() {
     let p = dir.path().join("p.yaml");
 
     // FAUCET_PROFILE=dev (no flag) → dev.jsonl
-    faucet().args(["run", p.to_str().unwrap()]).env("FAUCET_PROFILE", "dev").assert().success();
+    faucet()
+        .args(["run", p.to_str().unwrap()])
+        .env("FAUCET_PROFILE", "dev")
+        .assert()
+        .success();
     assert!(dir.path().join("dev.jsonl").exists());
 
     // --profile prod overrides FAUCET_PROFILE=dev → prod.jsonl, NOT dev.jsonl.
@@ -67,7 +77,10 @@ fn env_profile_is_honored_and_flag_overrides_it() {
         .env("FAUCET_PROFILE", "dev")
         .assert()
         .success();
-    assert!(dir.path().join("prod.jsonl").exists(), "prod overlay must be written");
+    assert!(
+        dir.path().join("prod.jsonl").exists(),
+        "prod overlay must be written"
+    );
     assert!(
         !dir.path().join("dev.jsonl").exists(),
         "dev sink must NOT be written — --profile prod overrides FAUCET_PROFILE=dev"
@@ -86,12 +99,19 @@ fn show_composed_prints_merged_config_with_profile_applied() {
     fs::write(&app, "extends: ./base.yaml\n").unwrap();
 
     faucet()
-        .args(["validate", app.to_str().unwrap(), "--profile", "prod", "--show-composed", "--no-secrets"])
+        .args([
+            "validate",
+            app.to_str().unwrap(),
+            "--profile",
+            "prod",
+            "--show-composed",
+            "--no-secrets",
+        ])
         .assert()
         .success()
-        .stdout(predicates::str::contains("prod.jsonl"))      // profile applied
+        .stdout(predicates::str::contains("prod.jsonl")) // profile applied
         .stdout(predicates::str::contains("base.jsonl").not()) // base sink overridden
-        .stdout(predicates::str::contains("profiles:").not())  // metadata stripped
+        .stdout(predicates::str::contains("profiles:").not()) // metadata stripped
         .stdout(predicates::str::contains("extends:").not());
 }
 
@@ -100,7 +120,13 @@ fn shipped_compose_example_validates_under_each_profile() {
     let app = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/compose/app.yaml");
     for profile in ["dev", "prod"] {
         faucet()
-            .args(["validate", app.to_str().unwrap(), "--profile", profile, "--no-secrets"])
+            .args([
+                "validate",
+                app.to_str().unwrap(),
+                "--profile",
+                profile,
+                "--no-secrets",
+            ])
             .assert()
             .success();
     }
@@ -115,7 +141,13 @@ fn unknown_profile_fails_clearly() {
     )
     .unwrap();
     faucet()
-        .args(["validate", dir.path().join("p.yaml").to_str().unwrap(), "--profile", "staging", "--no-secrets"])
+        .args([
+            "validate",
+            dir.path().join("p.yaml").to_str().unwrap(),
+            "--profile",
+            "staging",
+            "--no-secrets",
+        ])
         .assert()
         .failure()
         .stderr(predicates::str::contains("unknown profile 'staging'"));
