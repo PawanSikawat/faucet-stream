@@ -148,6 +148,8 @@ mod redis_probe {
     #[async_trait]
     impl DepthProbe for RedisProbe {
         async fn depth(&self) -> Result<u64, String> {
+            // A fresh connection per poll is intentional: depth polling is low-frequency
+            // (poll_interval_secs, default 30s), so a pooled/cached client isn't worth it.
             let client = redis::Client::open(self.url.as_str())
                 .map_err(|e| format!("invalid Redis URL: {e}"))?;
             let mut conn = client
@@ -207,6 +209,11 @@ mod kafka_probe {
                     .find(|t| t.name() == topic)
                     .map(|t| t.partitions().iter().map(|p| p.id()).collect())
                     .unwrap_or_default();
+                if parts.is_empty() {
+                    return Err(format!(
+                        "kafka topic '{topic}' has no partitions in metadata (check the topic name / broker permissions)"
+                    ));
+                }
                 // Sum (high watermark - committed) across partitions = consumer lag.
                 let mut tpl = TopicPartitionList::new();
                 for p in &parts {
