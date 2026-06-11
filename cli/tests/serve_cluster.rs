@@ -115,6 +115,19 @@ async fn concurrent_claims_partition_the_pending_set() {
 #[cfg(unix)]
 #[tokio::test]
 async fn two_process_cluster_reassigns_on_kill() {
+    // cargo-llvm-cov instruments the spawned `faucet serve` binaries, which slows
+    // them past this test's lease/timing windows on CI runners (it passes
+    // uninstrumented in the `Test` job, and the in-process failover tests above
+    // cover the claim/reclaim/fence logic under coverage). Skip only under
+    // llvm-cov, which sets CARGO_LLVM_COV in the test environment.
+    if std::env::var_os("CARGO_LLVM_COV").is_some() {
+        eprintln!(
+            "skipping two_process_cluster_reassigns_on_kill under cargo-llvm-cov \
+             (instrumented spawned binaries break the lease timing; the Test job runs it)"
+        );
+        return;
+    }
+
     use std::process::{Child, Command};
     use tokio::time::sleep;
 
