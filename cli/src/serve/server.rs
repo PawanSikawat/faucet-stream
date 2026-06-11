@@ -79,7 +79,8 @@ async fn load_default_base(config: &ServeConfig) -> CliResult<Option<Value>> {
     match &config.default_config_path {
         None => Ok(None),
         Some(path) => {
-            let cfg = crate::config::PipelineConfig::from_path_async(path).await?;
+            // TODO(Task 5): thread --profile
+            let cfg = crate::config::PipelineConfig::from_path_async(path, None).await?;
             Ok(Some(serde_json::to_value(&cfg).map_err(|e| {
                 CliError::Serve(format!("serializing --default-config: {e}"))
             })?))

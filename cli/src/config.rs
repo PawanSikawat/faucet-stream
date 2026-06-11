@@ -381,16 +381,18 @@ impl PipelineConfig {
     /// parser: `.yaml` / `.yml` → YAML, `.json` → JSON. Other extensions are
     /// rejected.
     ///
+    /// Composition runs first via [`crate::compose::compose`]: `extends` (base
+    /// inheritance), `profiles` (the named overlay selected by `profile`), and
+    /// `!include` (YAML fragment substitution) are resolved into a single
+    /// merged document before `${...}` interpolation and parsing.
+    ///
     /// Secret directives (`${vault:…}`, `${aws-sm:…}`, etc.) are **not**
     /// resolved by this path. If any are present the call returns
     /// `CliError::SecretsRequireAsyncLoad` — use [`Self::from_path_async`] instead.
-    pub fn from_path(path: impl AsRef<Path>) -> CliResult<Self> {
+    pub fn from_path(path: impl AsRef<Path>, profile: Option<&str>) -> CliResult<Self> {
         let path = path.as_ref();
-        let raw = std::fs::read_to_string(path).map_err(|source| CliError::ReadConfig {
-            path: path.to_path_buf(),
-            source,
-        })?;
-        let interpolated = interpolate(&raw)?;
+        let composed = crate::compose::compose(path, profile)?;
+        let interpolated = interpolate(&composed)?;
         let cfg = Self::from_text(&interpolated, path)?;
         // Secret directives need the async resolver path; never let them survive
         // into a connector config as literal `${vault:…}` text.
@@ -399,26 +401,28 @@ impl PipelineConfig {
     }
 
     /// Like [`Self::from_path`] but does not reject secret directives — they are
-    /// left unresolved. Used by `validate --no-secrets`.
-    pub fn from_path_tolerating_secrets(path: impl AsRef<Path>) -> CliResult<Self> {
+    /// left unresolved. Used by `validate --no-secrets`. Composition
+    /// (extends/profiles/`!include`) runs first via [`crate::compose::compose`].
+    pub fn from_path_tolerating_secrets(
+        path: impl AsRef<Path>,
+        profile: Option<&str>,
+    ) -> CliResult<Self> {
         let path = path.as_ref();
-        let raw = std::fs::read_to_string(path).map_err(|source| CliError::ReadConfig {
-            path: path.to_path_buf(),
-            source,
-        })?;
-        let interpolated = interpolate(&raw)?;
+        let composed = crate::compose::compose(path, profile)?;
+        let interpolated = interpolate(&composed)?;
         Self::from_text(&interpolated, path)
     }
 
     /// Async load path: like [`Self::from_path`] but resolves secret-manager
-    /// directives (`${vault:…}`, `${aws-sm:…}`, …) as a final stage.
-    pub async fn from_path_async(path: impl AsRef<Path>) -> CliResult<Self> {
+    /// directives (`${vault:…}`, `${aws-sm:…}`, …) as a final stage. Composition
+    /// (extends/profiles/`!include`) runs first via [`crate::compose::compose`].
+    pub async fn from_path_async(
+        path: impl AsRef<Path>,
+        profile: Option<&str>,
+    ) -> CliResult<Self> {
         let path = path.as_ref();
-        let raw = std::fs::read_to_string(path).map_err(|source| CliError::ReadConfig {
-            path: path.to_path_buf(),
-            source,
-        })?;
-        let interpolated = interpolate(&raw)?;
+        let composed = crate::compose::compose(path, profile)?;
+        let interpolated = interpolate(&composed)?;
         let mut cfg = Self::from_text(&interpolated, path)?;
         crate::secrets::resolve_secrets(&mut cfg).await?;
         Ok(cfg)
@@ -706,7 +710,7 @@ pipeline:
 "#,
         )
         .unwrap();
-        let cfg = PipelineConfig::from_path(&path).unwrap();
+        let cfg = PipelineConfig::from_path(&path, None).unwrap();
         assert_eq!(
             cfg.pipeline.source.as_ref().unwrap().config["base_url"],
             "https://x.example"
@@ -760,7 +764,7 @@ pipeline:
 "#,
         )
         .unwrap();
-        let cfg = PipelineConfig::from_path(&path).unwrap();
+        let cfg = PipelineConfig::from_path(&path, None).unwrap();
         assert_eq!(
             cfg.pipeline.source.as_ref().unwrap().config["path"],
             "/v1/users/${users.id}/posts"
@@ -1013,7 +1017,7 @@ pipeline:
 "#,
         )
         .unwrap();
-        let cfg = PipelineConfig::from_path(&path).unwrap();
+        let cfg = PipelineConfig::from_path(&path, None).unwrap();
         assert_eq!(
             cfg.pipeline.source.as_ref().unwrap().config["url"],
             "https://api.example.com/v1"
@@ -1034,7 +1038,7 @@ pipeline:
 "#,
         )
         .unwrap();
-        match PipelineConfig::from_path(&path).unwrap_err() {
+        match PipelineConfig::from_path(&path, None).unwrap_err() {
             CliError::SecretsRequireAsyncLoad => {}
             other => panic!("expected SecretsRequireAsyncLoad, got {other:?}"),
         }
@@ -1081,7 +1085,7 @@ pipeline:
 "#,
         )
         .unwrap();
-        let cfg = PipelineConfig::from_path_async(&path).await.unwrap();
+        let cfg = PipelineConfig::from_path_async(&path, None).await.unwrap();
         assert_eq!(cfg.version, 1);
     }
 
@@ -1100,6 +1104,26 @@ pipeline:
         let cfg = parse_with_extension(yaml, "yaml").unwrap();
         let l = cfg.lineage.expect("lineage parsed");
         assert_eq!(l.namespace, "prod");
+    }
+
+    #[test]
+    fn from_path_resolves_extends_and_profile() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("base.yaml"),
+            "version: 1\npipeline:\n  source: { type: csv, config: { path: x.csv } }\n  sink: { type: jsonl, config: { path: base.jsonl } }\nprofiles:\n  prod:\n    pipeline:\n      sink: { config: { path: prod.jsonl } }\n",
+        )
+        .unwrap();
+        let app = dir.path().join("app.yaml");
+        std::fs::write(&app, "extends: ./base.yaml\n").unwrap();
+
+        // No profile → base sink path.
+        let cfg = PipelineConfig::from_path(&app, None).unwrap();
+        assert_eq!(cfg.pipeline.sink.as_ref().unwrap().config["path"], "base.jsonl");
+
+        // --profile prod → overridden sink path.
+        let cfg = PipelineConfig::from_path(&app, Some("prod")).unwrap();
+        assert_eq!(cfg.pipeline.sink.as_ref().unwrap().config["path"], "prod.jsonl");
     }
 
     #[test]

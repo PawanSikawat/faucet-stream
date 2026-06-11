@@ -302,8 +302,11 @@ pub(crate) fn scan_config(cfg: &PipelineConfig) -> BTreeSet<SecretRef> {
 }
 
 /// Parse `path` (tolerating secret directives) and return its unique secret refs.
-pub fn scan_path_refs(path: &std::path::Path) -> CliResult<BTreeSet<SecretRef>> {
-    let cfg = PipelineConfig::from_path_tolerating_secrets(path)?;
+pub fn scan_path_refs(
+    path: &std::path::Path,
+    profile: Option<&str>,
+) -> CliResult<BTreeSet<SecretRef>> {
+    let cfg = PipelineConfig::from_path_tolerating_secrets(path, profile)?;
     Ok(scan_config(&cfg))
 }
 
