@@ -25,6 +25,10 @@ pub async fn readyz(State(state): State<ServerState>) -> impl IntoResponse {
     } else {
         StatusCode::SERVICE_UNAVAILABLE
     };
+    #[cfg(feature = "triggers")]
+    let triggers = serde_json::to_value(state.triggers().snapshot()).unwrap_or(serde_json::Value::Null);
+    #[cfg(not(feature = "triggers"))]
+    let triggers = serde_json::Value::Array(vec![]);
     let body = json!({
         "status": if code == StatusCode::OK { "ready" } else { "not_ready" },
         "history_ok": history_ok,
@@ -33,6 +37,7 @@ pub async fn readyz(State(state): State<ServerState>) -> impl IntoResponse {
             "enabled": state.cluster().enabled(),
             "instances": state.cluster().members(),
         },
+        "triggers": triggers,
     });
     (code, Json(body))
 }

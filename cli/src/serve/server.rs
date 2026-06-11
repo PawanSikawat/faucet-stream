@@ -24,18 +24,26 @@ pub fn build_router(state: ServerState, config: &ServeConfig) -> Router {
 
     // `/v1` routes guarded by the bearer middleware via `route_layer` (only runs
     // for matched routes; OPTIONS preflight is allowed through inside the layer).
-    let api = Router::new()
+    #[cfg_attr(not(feature = "triggers"), allow(unused_mut))]
+    let mut api = Router::new()
         .route("/v1/runs", post(runs::submit_run).get(runs::list_runs))
         .route("/v1/runs/{id}", get(runs::get_run).delete(runs::delete_run))
         .route("/v1/runs/{id}/cancel", post(runs::cancel_run))
         .route("/v1/runs/{id}/logs", get(logs::stream_logs))
         .route("/v1/schemas", get(schemas::list_schemas))
         .route("/v1/schemas/{kind}/{name}", get(schemas::get_schema))
-        .route("/v1/doctor", post(doctor::doctor))
-        .route_layer(axum::middleware::from_fn_with_state(
-            state.clone(),
-            auth::require_auth,
-        ));
+        .route("/v1/doctor", post(doctor::doctor));
+    #[cfg(feature = "triggers")]
+    {
+        api = api.route(
+            "/v1/triggers/{name}",
+            post(crate::serve::triggers::webhook::handle).put(crate::serve::triggers::webhook::handle),
+        );
+    }
+    let api = api.route_layer(axum::middleware::from_fn_with_state(
+        state.clone(),
+        auth::require_auth,
+    ));
 
     let cors = if config.cors_origins.is_empty() {
         CorsLayer::new()
