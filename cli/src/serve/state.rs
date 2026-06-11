@@ -135,6 +135,7 @@ mod tests {
             log_level: "info".into(),
             ui_enabled: true,
             cluster: crate::serve::cluster::ClusterConfig::disabled(),
+            triggers_path: None,
         }
     }
 

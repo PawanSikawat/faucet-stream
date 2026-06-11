@@ -18,6 +18,8 @@ pub mod registry;
 pub mod runner;
 pub mod server;
 pub mod state;
+#[cfg(feature = "triggers")]
+pub mod triggers;
 #[cfg(feature = "serve-ui")]
 pub mod ui_assets;
 

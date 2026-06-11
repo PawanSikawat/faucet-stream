@@ -166,6 +166,11 @@ pub struct ServeArgs {
     /// (poison). Must be > 0.
     #[arg(long, default_value_t = 3)]
     pub cluster_max_attempts: u32,
+    /// Path to a triggers file (YAML/JSON) defining event-driven pipeline
+    /// triggers (object-arrival / webhook / queue-depth). Requires a build with
+    /// the `triggers` feature. See `faucet schema triggers`.
+    #[arg(long)]
+    pub triggers: Option<std::path::PathBuf>,
 }
 
 /// `faucet run` arguments.
