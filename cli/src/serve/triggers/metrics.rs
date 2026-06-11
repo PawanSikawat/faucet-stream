@@ -9,7 +9,7 @@ pub fn describe() {
     describe_counter!("faucet_serve_trigger_runs_coalesced_total", "Fires deduped/coalesced (idempotency/debounce)");
     describe_counter!("faucet_serve_trigger_runs_dropped_total", "Fires dropped (e.g. queue_full)");
     describe_counter!("faucet_serve_trigger_errors_total", "Watcher poll/serve/fire errors");
-    describe_gauge!("faucet_serve_triggers_active", "Number of spawned watchers");
+    describe_gauge!("faucet_serve_triggers_active", "Number of active triggers (including webhook routes, which spawn no watcher task)");
     describe_gauge!("faucet_serve_trigger_healthy", "1 if the watcher is healthy, else 0");
     describe_gauge!("faucet_serve_trigger_last_fire_unix_seconds", "Unix time of the watcher's last fire");
 }

@@ -33,16 +33,18 @@ use tokio_util::sync::CancellationToken;
 
 /// Load + validate a triggers file. Surfaces a clear `CliError::Serve` on any
 /// parse/validation failure (fail-fast at startup).
-pub fn load_triggers(path: &std::path::Path) -> CliResult<CompiledTriggers> {
-    let text = std::fs::read_to_string(path)
+pub async fn load_triggers(path: &std::path::Path) -> CliResult<CompiledTriggers> {
+    let text = tokio::fs::read_to_string(path)
+        .await
         .map_err(|e| CliError::Serve(format!("reading triggers file {}: {e}", path.display())))?;
-    let file: spec::TriggersFile = if path.extension().and_then(|e| e.to_str()) == Some("json") {
-        serde_json::from_str(&text)
-            .map_err(|e| CliError::Serve(format!("parsing triggers JSON: {e}")))?
-    } else {
-        serde_yaml::from_str(&text)
-            .map_err(|e| CliError::Serve(format!("parsing triggers YAML: {e}")))?
-    };
+    let file: spec::TriggersFile =
+        if path.extension().map(|e| e.eq_ignore_ascii_case("json")).unwrap_or(false) {
+            serde_json::from_str(&text)
+                .map_err(|e| CliError::Serve(format!("parsing triggers JSON: {e}")))?
+        } else {
+            serde_yaml::from_str(&text)
+                .map_err(|e| CliError::Serve(format!("parsing triggers YAML: {e}")))?
+        };
     CompiledTriggers::compile(file).map_err(CliError::Serve)
 }
 
