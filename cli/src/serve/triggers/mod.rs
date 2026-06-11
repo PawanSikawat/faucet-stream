@@ -33,11 +33,15 @@ use tokio_util::sync::CancellationToken;
 
 /// Load + validate a triggers file. Surfaces a clear `CliError::Serve` on any
 /// parse/validation failure (fail-fast at startup).
+///
+/// Relative `config:` paths in the parsed triggers are resolved relative to the
+/// triggers file's parent directory (not the process CWD), matching the
+/// behaviour of `!include`/`extends` in pipeline configs.
 pub async fn load_triggers(path: &std::path::Path) -> CliResult<CompiledTriggers> {
     let text = tokio::fs::read_to_string(path)
         .await
         .map_err(|e| CliError::Serve(format!("reading triggers file {}: {e}", path.display())))?;
-    let file: spec::TriggersFile =
+    let mut file: spec::TriggersFile =
         if path.extension().map(|e| e.eq_ignore_ascii_case("json")).unwrap_or(false) {
             serde_json::from_str(&text)
                 .map_err(|e| CliError::Serve(format!("parsing triggers JSON: {e}")))?
@@ -45,7 +49,71 @@ pub async fn load_triggers(path: &std::path::Path) -> CliResult<CompiledTriggers
             serde_yaml::from_str(&text)
                 .map_err(|e| CliError::Serve(format!("parsing triggers YAML: {e}")))?
         };
+
+    // Resolve relative `config: <path>` entries relative to the triggers file's
+    // directory. This makes `config: ../pipelines/load.yaml` work regardless of
+    // the process CWD, consistent with `!include`/`extends` path semantics.
+    if let Some(base_dir) = path.parent() {
+        for trigger in &mut file.triggers {
+            if let spec::PipelineRef::Path(ref p) = trigger.config {
+                let p_path = std::path::Path::new(p);
+                if p_path.is_relative() {
+                    let resolved = base_dir.join(p_path);
+                    trigger.config = spec::PipelineRef::Path(resolved.to_string_lossy().into_owned());
+                }
+            }
+        }
+    }
+
     CompiledTriggers::compile(file).map_err(CliError::Serve)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    #[tokio::test]
+    async fn load_triggers_resolves_relative_config_path() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let base = dir.path();
+
+        // Create a minimal pipeline file that `CompiledTriggers::compile` won't
+        // reject for being absent (compile only checks the spec, not the file).
+        let pipeline_path = base.join("inner.yaml");
+        std::fs::write(
+            &pipeline_path,
+            "version: 1\npipeline:\n  source:\n    type: rest\n    config: {url: 'http://x'}\n  sink:\n    type: stdout\n    config: {}\n",
+        )
+        .unwrap();
+
+        // Triggers file lives in the temp dir and references inner.yaml relatively.
+        let triggers_path = base.join("triggers.yaml");
+        let yaml = format!(
+            "version: 1\ntriggers:\n  - name: t1\n    type: webhook\n    config: ./inner.yaml\n    methods: [POST]\n"
+        );
+        {
+            let mut f = std::fs::File::create(&triggers_path).unwrap();
+            f.write_all(yaml.as_bytes()).unwrap();
+        }
+
+        let compiled = load_triggers(&triggers_path).await.expect("load_triggers failed");
+        assert_eq!(compiled.triggers.len(), 1);
+
+        // The compiled trigger's config path must be absolute (starts with base_dir).
+        match &compiled.triggers[0].spec.config {
+            crate::serve::triggers::spec::PipelineRef::Path(p) => {
+                let abs = std::path::Path::new(p);
+                assert!(abs.is_absolute(), "expected absolute path, got: {p}");
+                assert!(
+                    abs.starts_with(base),
+                    "expected path under temp dir {}, got: {p}",
+                    base.display()
+                );
+            }
+            _ => panic!("expected PipelineRef::Path"),
+        }
+    }
 }
 
 /// Spawn supervised watcher tasks for every enabled polling trigger. Webhook

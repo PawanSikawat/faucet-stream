@@ -1,7 +1,10 @@
 # Event-driven triggers for `faucet serve` (#196).
 #
-# Run with:
+# Run with (from the repo root):
 #   faucet serve --no-auth --triggers cli/examples/triggers/triggers.yaml
+#
+# config: paths are relative to this file, so `../s3_to_postgres.yaml` resolves
+# to cli/examples/s3_to_postgres.yaml regardless of the process CWD.
 #
 # Requires: `--features triggers` (object_arrival also needs
 # `triggers-object-store`; queue_depth with Redis needs `triggers-redis`).
@@ -14,7 +17,7 @@ triggers:
   #    (start_at: now); set `start_at: beginning` to reprocess existing objects.
   - name: load-dropped-files
     type: object_arrival
-    config: ./cli/examples/s3_to_postgres.yaml
+    config: ../s3_to_postgres.yaml
     store:
       type: s3
       bucket: my-bucket
@@ -35,7 +38,7 @@ triggers:
   #    is verified upstream (e.g. by a gateway or HMAC).
   - name: sync-hook
     type: webhook
-    config: ./cli/examples/csv_to_jsonl.yaml
+    config: ../csv_to_jsonl.yaml
     methods: [POST]
     dedupe_header: Idempotency-Key
 
@@ -44,7 +47,7 @@ triggers:
   #    not on every poll while the queue is non-empty.
   - name: drain-jobs
     type: queue_depth
-    config: ./cli/examples/redis_to_sqlite.yaml
+    config: ../redis_to_sqlite.yaml
     queue:
       type: redis
       url: redis://localhost:6379
