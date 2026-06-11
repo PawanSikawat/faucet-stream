@@ -198,7 +198,38 @@ Auth is mandatory: without `--auth-token`/`FAUCET_SERVE_AUTH_TOKEN` **and** with
 | `--history <url>` | `postgres://…` / `sqlite:…` for durable history (`serve-history-postgres` / `serve-history-sqlite`; default in-memory). |
 | `--default-config <path>` | Workspace defaults merged **under** every submitted run. |
 | `--cors-origin <o>` | Allow-list a browser origin (repeatable; CORS off by default). |
+| `--lease-ttl-secs <n>` | Run-ownership lease TTL (default `30`). Set above your worst-case GC/IO stall to avoid false-reclaim of paused instances. |
+| `--cluster` | Enable clustered execution: all instances sharing the same `--history` DB pull-balance `pending` runs and provide crash-failover. Requires a persistent `--history` backend. See the [cluster cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/cluster.html). |
+| `--cluster-poll-secs <n>` | Claim-loop poll interval in seconds (default `2`). Also the maximum cross-instance cancel propagation lag. |
+| `--cluster-max-attempts <n>` | Maximum attempts per run (including crash-failovers) before it is poisoned as `failed` (default `3`). |
 | `--body-limit-bytes`, `--shutdown-grace-secs`, `--retain-terminal-runs-secs`, `--idempotency-retention-secs`, `--probe-timeout-secs` | Tuning knobs. |
+
+#### Clustered execution (`--cluster`)
+
+`--cluster` turns a fleet of `faucet serve` processes into a pull-balanced, self-healing
+cluster. Instances share a single Postgres or SQLite history database; submissions are written
+as `pending` in the shared DB and any instance with spare capacity atomically claims and runs
+them. If an instance crashes, a survivor's lease loop detects the expired-lease run and
+re-queues it (up to `--cluster-max-attempts`). All instances must be **homogeneous** — same
+container image, env vars, and secrets access — because the claiming instance re-resolves
+`${env:…}`/`${secret:…}` directives with its own credentials at execution time.
+
+```bash
+# Node A
+FAUCET_SERVE_AUTH_TOKEN=s3cret \
+faucet serve --cluster \
+             --history 'postgres://faucet:pw@db/faucet' \
+             --listen 0.0.0.0:8080
+
+# Node B (same DB)
+FAUCET_SERVE_AUTH_TOKEN=s3cret \
+faucet serve --cluster \
+             --history 'postgres://faucet:pw@db/faucet' \
+             --listen 0.0.0.0:8081
+```
+
+See the [cluster cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/cluster.html)
+for the full lifecycle, delivery guarantees, and Kubernetes deployment notes.
 
 Submit a run:
 

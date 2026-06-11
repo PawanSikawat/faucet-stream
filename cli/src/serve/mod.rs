@@ -4,6 +4,7 @@
 //! `docs/superpowers/specs/2026-05-30-faucet-serve-design.md`.
 
 pub mod auth;
+pub mod cluster;
 pub mod config;
 pub mod error;
 pub mod handlers;

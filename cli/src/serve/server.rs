@@ -54,6 +54,7 @@ pub fn build_router(state: ServerState, config: &ServeConfig) -> Router {
         CorsLayer::new().allow_origin(AllowOrigin::list(origins))
     };
 
+    #[cfg_attr(not(feature = "serve-ui"), allow(unused_mut))]
     let mut router = public.merge(api);
 
     #[cfg(feature = "serve-ui")]
@@ -142,11 +143,16 @@ fn lease_interval(lease_ttl: Duration) -> Duration {
 ///
 /// Renew runs *before* recover so this instance's leases are fresh when the
 /// expiry scan runs. For the in-memory backend both calls are no-ops.
-pub(crate) async fn lease_loop(
-    history: Arc<dyn RunHistory>,
-    period: Duration,
-    shutdown: CancellationToken,
-) {
+///
+/// In cluster mode (#197) the recover step is replaced by: a membership
+/// heartbeat, a live-member refresh (`member_ttl = period * 3`), and a
+/// failover `reclaim_orphans` that re-queues an expired-lease peer's runs
+/// (capped at `max_attempts`) rather than failing them outright.
+pub(crate) async fn lease_loop(state: ServerState, period: Duration, shutdown: CancellationToken) {
+    let cluster = state.cluster().clone();
+    // Member-liveness window ≈ the real lease TTL (period == lease_ttl/3), so a
+    // member must miss ~3 heartbeats before peers treat it as gone.
+    let member_ttl = period.saturating_mul(3);
     let mut tick = tokio::time::interval(period);
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     tick.tick().await; // consume the immediate first tick
@@ -154,16 +160,49 @@ pub(crate) async fn lease_loop(
         tokio::select! {
             _ = shutdown.cancelled() => break,
             _ = tick.tick() => {
-                if let Err(e) = history.renew_leases().await {
+                if let Err(e) = state.history().renew_leases().await {
                     tracing::warn!(error = %e, "lease heartbeat (renew_leases) failed");
                 }
-                match history.recover_orphans().await {
-                    Ok(n) if n > 0 => tracing::warn!(
-                        recovered = n,
-                        "recovered orphaned runs from an expired-lease instance"
-                    ),
-                    Ok(_) => {}
-                    Err(e) => tracing::warn!(error = %e, "orphan recovery failed"),
+                if cluster.enabled() {
+                    // Membership heartbeat.
+                    let beat = crate::serve::history::InstanceHeartbeat {
+                        started_at: cluster.started_at(),
+                        listen: Some(cluster.listen().to_string()),
+                        max_concurrent: cluster.max_concurrent(),
+                        in_flight: state.registry().in_flight() as u32,
+                    };
+                    if let Err(e) = state.history().heartbeat_instance(&beat).await {
+                        tracing::warn!(error = %e, "cluster: heartbeat_instance failed");
+                    }
+                    match state.history().live_instances(member_ttl).await {
+                        Ok(members) => {
+                            cluster.set_members(members.len());
+                            crate::serve::metrics::set_cluster_instances(members.len());
+                        }
+                        Err(e) => tracing::warn!(error = %e, "cluster: live_instances failed"),
+                    }
+                    // Failover reclaim (re-run orphans).
+                    match state.history().reclaim_orphans(cluster.max_attempts()).await {
+                        Ok(r) if r.requeued > 0 || r.failed > 0 => {
+                            crate::serve::metrics::record_runs_reclaimed(r.requeued, r.failed);
+                            tracing::warn!(
+                                requeued = r.requeued, failed = r.failed,
+                                "cluster: reclaimed orphaned runs from an expired-lease instance"
+                            );
+                        }
+                        Ok(_) => {}
+                        Err(e) => tracing::warn!(error = %e, "cluster: reclaim_orphans failed"),
+                    }
+                } else {
+                    // Single-instance: mark orphans failed (today's behavior).
+                    match state.history().recover_orphans().await {
+                        Ok(n) if n > 0 => tracing::warn!(
+                            recovered = n,
+                            "recovered orphaned runs from an expired-lease instance"
+                        ),
+                        Ok(_) => {}
+                        Err(e) => tracing::warn!(error = %e, "orphan recovery failed"),
+                    }
                 }
             }
         }
@@ -174,6 +213,7 @@ pub(crate) async fn lease_loop(
 /// until SIGTERM/SIGINT, then drain in-flight runs up to the grace window.
 pub async fn serve(config: ServeConfig) -> CliResult<()> {
     let (prom, log_hub) = crate::serve::observability::install(&config.log_level);
+    crate::serve::metrics::set_cluster_enabled(config.cluster.enabled);
 
     // This process's identity for run-ownership leases (#146 H7). A fresh id per
     // process, so a restarted instance recovers its prior incarnation's runs only
@@ -192,15 +232,31 @@ pub async fn serve(config: ServeConfig) -> CliResult<()> {
         &instance_id,
     )
     .await?;
-    let recovered = history
-        .recover_orphans()
-        .await
-        .map_err(|e| CliError::Serve(format!("history recovery: {e}")))?;
-    if recovered > 0 {
-        tracing::warn!(
-            recovered,
-            "marked orphaned non-terminal runs (expired owner lease) as failed"
-        );
+    if config.cluster.enabled {
+        // Cluster mode: a restarting instance re-queues its prior incarnation's
+        // in-flight runs (capped) rather than failing them.
+        let report = history
+            .reclaim_orphans(config.cluster.max_attempts)
+            .await
+            .map_err(|e| CliError::Serve(format!("history recovery: {e}")))?;
+        if report.requeued > 0 || report.failed > 0 {
+            tracing::warn!(
+                requeued = report.requeued,
+                failed = report.failed,
+                "startup reclaim of orphaned runs from an expired-lease instance"
+            );
+        }
+    } else {
+        let recovered = history
+            .recover_orphans()
+            .await
+            .map_err(|e| CliError::Serve(format!("history recovery: {e}")))?;
+        if recovered > 0 {
+            tracing::warn!(
+                recovered,
+                "marked orphaned non-terminal runs (expired owner lease) as failed"
+            );
+        }
     }
     let default_base = load_default_base(&config).await?;
 
@@ -242,7 +298,22 @@ pub async fn serve(config: ServeConfig) -> CliResult<()> {
     // instance's run leases and reclaims runs whose owning instance's lease has
     // expired. A no-op for the in-memory backend.
     let lease_period = lease_interval(config.lease_ttl);
-    let leases = tokio::spawn(lease_loop(state.history(), lease_period, shutdown.clone()));
+    let leases = tokio::spawn(lease_loop(state.clone(), lease_period, shutdown.clone()));
+
+    // Cluster claim loop: pulls Pending runs from the shared DB (cluster only).
+    let claim = if config.cluster.enabled {
+        tracing::info!(
+            poll_secs = config.cluster.poll.as_secs(),
+            max_attempts = config.cluster.max_attempts,
+            "cluster mode enabled; starting claim loop"
+        );
+        Some(tokio::spawn(crate::serve::cluster::claim_loop(
+            state.clone(),
+            shutdown.clone(),
+        )))
+    } else {
+        None
+    };
 
     // The HTTP graceful-shutdown future resolves on signal and stops accepting
     // new connections / drains in-flight HTTP — it does NOT cancel run tasks.
@@ -253,6 +324,14 @@ pub async fn serve(config: ServeConfig) -> CliResult<()> {
         })
         .await
         .map_err(|e| CliError::Serve(format!("server error: {e}")))?;
+
+    // Stop pulling NEW work the moment we begin draining: abort the claim loop so
+    // a shutting-down instance drains its in-flight runs rather than claiming more.
+    // The lease loop keeps heartbeating in-flight runs during the drain so peers
+    // don't reclaim them mid-shutdown.
+    if let Some(claim) = claim {
+        claim.abort();
+    }
 
     // Now drain run tasks: wait up to the grace window, then cancel the rest.
     let drained =

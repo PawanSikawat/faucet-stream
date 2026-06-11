@@ -5,6 +5,7 @@
 #![cfg(feature = "serve-history-sqlite")]
 
 use chrono::{Duration as ChronoDuration, Utc};
+use faucet_cli::serve::history::InstanceHeartbeat;
 use faucet_cli::serve::history::sqlite::SqliteHistory;
 use faucet_cli::serve::history::{
     Claim, DeleteOutcome, ListFilter, RunHistory, RunRecord, RunStatus,
@@ -318,6 +319,9 @@ async fn server_with_sqlite_history_persists_runs() {
         env_file: None,
         no_env_file: true,
         no_ui: false,
+        cluster: false,
+        cluster_poll_secs: 2,
+        cluster_max_attempts: 3,
     };
     let mut config = ServeConfig::from_args(args).unwrap();
     config.log_level = "warn".into();
@@ -470,4 +474,205 @@ async fn delete_also_removes_matching_idem_claim_at_sql_layer() {
         h.claim_idempotency("k", "fp", "r2", w).await.unwrap(),
         Claim::Fresh
     );
+}
+
+/// Two instances against one DB never both claim the same pending run.
+#[tokio::test]
+async fn claim_pending_is_exclusive_across_instances() {
+    let dir = tempfile::tempdir().unwrap();
+    let a = store_with(
+        &dir,
+        "claim.db",
+        std::time::Duration::from_secs(30),
+        "inst-a",
+    )
+    .await;
+    let b = store_with(
+        &dir,
+        "claim.db",
+        std::time::Duration::from_secs(30),
+        "inst-b",
+    )
+    .await;
+
+    // One pending run. `upsert` writes status='pending' from RunStatus::Pending,
+    // so claim_pending will find it.
+    let mut p = rec("p1", RunStatus::Pending, Utc::now());
+    p.config_body = Some("version: 1".into());
+    a.upsert(&p).await.unwrap();
+
+    // Drive both instances concurrently so the conditional-claim race is actually
+    // exercised (both select the same pending candidate, then race the guarded
+    // UPDATE; SQLite's single writer + the `WHERE status='pending'` guard mean only
+    // one's UPDATE affects the row).
+    let (ra, rb) = tokio::join!(a.claim_pending(8), b.claim_pending(8));
+    let got_a = ra.unwrap();
+    let got_b = rb.unwrap();
+    assert_eq!(
+        got_a.len() + got_b.len(),
+        1,
+        "exactly one instance claims it"
+    );
+    let stored = a.get("p1").await.unwrap().unwrap();
+    assert_eq!(stored.status, RunStatus::Running);
+    // The returned record carries the config body for re-execution.
+    let claimed = got_a.into_iter().chain(got_b).next().unwrap();
+    assert_eq!(claimed.config_body.as_deref(), Some("version: 1"));
+}
+
+/// reclaim re-queues an expired-lease run, bumping attempt; at the cap it fails.
+#[tokio::test]
+async fn reclaim_requeues_then_poisons_at_cap() {
+    let dir = tempfile::tempdir().unwrap();
+    // Zero TTL → the running run's lease is already expired.
+    let h = store_with(&dir, "reclaim.db", std::time::Duration::ZERO, "inst-a").await;
+    let mut r = rec("o1", RunStatus::Running, Utc::now());
+    r.config_body = Some("version: 1".into());
+    h.upsert(&r).await.unwrap();
+
+    // attempt 0 → requeued (attempt becomes 1), status Pending.
+    let rep = h.reclaim_orphans(2).await.unwrap();
+    assert_eq!((rep.requeued, rep.failed), (1, 0));
+    let after = h.get("o1").await.unwrap().unwrap();
+    assert_eq!(after.status, RunStatus::Pending);
+    assert_eq!(after.attempt, 1);
+
+    // Put it back to Running (simulate a re-claim that died again) and reclaim:
+    // attempt 1 → requeued (attempt 2).
+    let mut again = after;
+    again.status = RunStatus::Running;
+    h.upsert(&again).await.unwrap();
+    let rep2 = h.reclaim_orphans(2).await.unwrap();
+    assert_eq!((rep2.requeued, rep2.failed), (1, 0));
+    let after2 = h.get("o1").await.unwrap().unwrap();
+    assert_eq!(after2.attempt, 2);
+
+    // attempt 2 >= cap 2 → poison Failed.
+    let mut again2 = after2;
+    again2.status = RunStatus::Running;
+    h.upsert(&again2).await.unwrap();
+    let rep3 = h.reclaim_orphans(2).await.unwrap();
+    assert_eq!((rep3.requeued, rep3.failed), (0, 1));
+    let dead = h.get("o1").await.unwrap().unwrap();
+    assert_eq!(dead.status, RunStatus::Failed);
+    assert!(dead.error.unwrap().contains("reclaimed"));
+}
+
+#[tokio::test]
+async fn membership_heartbeat_and_liveness() {
+    let dir = tempfile::tempdir().unwrap();
+    let a = store_with(
+        &dir,
+        "members.db",
+        std::time::Duration::from_secs(30),
+        "inst-a",
+    )
+    .await;
+    let b = store_with(
+        &dir,
+        "members.db",
+        std::time::Duration::from_secs(30),
+        "inst-b",
+    )
+    .await;
+    let beat = |n: u32| InstanceHeartbeat {
+        started_at: Utc::now(),
+        listen: Some("127.0.0.1:8080".into()),
+        max_concurrent: 4,
+        in_flight: n,
+    };
+    a.heartbeat_instance(&beat(1)).await.unwrap();
+    b.heartbeat_instance(&beat(0)).await.unwrap();
+    let live = a
+        .live_instances(std::time::Duration::from_secs(60))
+        .await
+        .unwrap();
+    assert_eq!(live.len(), 2);
+    // A zero-window liveness query sees nobody (all heartbeats are "old").
+    let none = a.live_instances(std::time::Duration::ZERO).await.unwrap();
+    assert_eq!(none.len(), 0);
+}
+
+#[tokio::test]
+async fn finalize_owned_is_owner_fenced() {
+    let dir = tempfile::tempdir().unwrap();
+    let a = store_with(
+        &dir,
+        "fence.db",
+        std::time::Duration::from_secs(30),
+        "inst-a",
+    )
+    .await;
+    let b = store_with(
+        &dir,
+        "fence.db",
+        std::time::Duration::from_secs(30),
+        "inst-b",
+    )
+    .await;
+    // a owns the run (upsert stamps owner=inst-a).
+    let r = rec("f1", RunStatus::Running, Utc::now());
+    a.upsert(&r).await.unwrap();
+    // b tries to finalize → fenced out (owner mismatch).
+    let mut term = a.get("f1").await.unwrap().unwrap();
+    term.status = RunStatus::Completed;
+    assert!(
+        !b.finalize_owned(&term).await.unwrap(),
+        "non-owner is fenced"
+    );
+    assert_eq!(
+        a.get("f1").await.unwrap().unwrap().status,
+        RunStatus::Running
+    );
+    // a (the owner) finalizes → lands.
+    assert!(a.finalize_owned(&term).await.unwrap());
+    assert_eq!(
+        a.get("f1").await.unwrap().unwrap().status,
+        RunStatus::Completed
+    );
+}
+
+#[tokio::test]
+async fn cross_instance_cancel_flag_and_pickup() {
+    let dir = tempfile::tempdir().unwrap();
+    let a = store_with(
+        &dir,
+        "cancel.db",
+        std::time::Duration::from_secs(30),
+        "inst-a",
+    )
+    .await;
+    let b = store_with(
+        &dir,
+        "cancel.db",
+        std::time::Duration::from_secs(30),
+        "inst-b",
+    )
+    .await;
+    // a is running r1.
+    a.upsert(&rec("r1", RunStatus::Running, Utc::now()))
+        .await
+        .unwrap();
+    // b requests cancel; a sees it via pending_cancellations.
+    b.request_cancel("r1").await.unwrap();
+    assert_eq!(
+        a.pending_cancellations().await.unwrap(),
+        vec!["r1".to_string()]
+    );
+    assert!(
+        b.pending_cancellations().await.unwrap().is_empty(),
+        "b owns nothing"
+    );
+
+    // cancel_pending only cancels a still-pending run.
+    a.upsert(&rec("p2", RunStatus::Pending, Utc::now()))
+        .await
+        .unwrap();
+    assert!(a.cancel_pending("p2").await.unwrap());
+    assert_eq!(
+        a.get("p2").await.unwrap().unwrap().status,
+        RunStatus::Cancelled
+    );
+    // A running run is not pending → false.
+    assert!(!a.cancel_pending("r1").await.unwrap());
 }

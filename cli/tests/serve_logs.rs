@@ -34,6 +34,9 @@ fn args_on(port: u16) -> ServeArgs {
         env_file: None,
         no_env_file: true,
         no_ui: false,
+        cluster: false,
+        cluster_poll_secs: 2,
+        cluster_max_attempts: 3,
     }
 }
 

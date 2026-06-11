@@ -1,0 +1,246 @@
+# Running a cluster
+
+`faucet serve --cluster` turns a fleet of identical `faucet serve` processes
+into a **pull-balanced, self-healing cluster**. Each instance monitors a shared
+SQL history database for `pending` runs, claims them exclusively, and executes
+them locally. When a node crashes, a survivor reclaims its runs and re-executes
+them up to a configurable attempt cap.
+
+This is **Mode A** — a simple, coordinator-free design where any node can run
+any submitted pipeline. Mode B (source-shard rebalancing, dedicated coordinator)
+is a future follow-up ([#197](https://github.com/PawanSikawat/faucet-stream/issues/197)).
+
+> **Use clustered serve when:** you have more concurrent pipeline runs than one
+> node can handle, or when you need resilience against single-node failure.
+> Single-node deployments do **not** need `--cluster` — the default `faucet serve`
+> already handles orphan recovery on restart via the existing lease mechanism.
+
+## Requirements
+
+### 1. Shared persistent SQL history backend
+
+All cluster instances must point `--history` at the **same** database:
+
+```bash
+faucet serve --cluster --history 'postgres://user:pw@db/faucet' \
+             --listen 0.0.0.0:8080
+
+# Second instance (same DB, different port / host)
+faucet serve --cluster --history 'postgres://user:pw@db/faucet' \
+             --listen 0.0.0.0:8081
+```
+
+Cluster mode is rejected if `--history` is omitted (in-memory store) or
+not a persistent SQL URL:
+
+```
+--cluster requires a persistent --history backend (postgres://… or sqlite:…); the in-memory store is single-process
+```
+
+Requires the matching SQL history feature:
+```bash
+cargo install faucet-cli --features "serve,serve-history-postgres"
+# or
+cargo install faucet-cli --features "serve,serve-history-sqlite"
+```
+
+### 2. Homogeneous deployment (shared env + secrets)
+
+When a run is submitted, the config is stored **verbatim** (with `${env:…}`,
+`${secret:…}`, `${vault:…}` directives unresolved) in the shared DB. The
+instance that **claims** the run re-resolves those directives with its own
+environment and credential chain at execution time.
+
+**This means every cluster instance must have the same env vars, secrets-manager
+access, and `--default-config` workspace defaults** — the same container image,
+the same `.env` file, the same IAM role, etc. An instance that cannot resolve a
+directive will fail the run with a config error rather than silently producing
+wrong results.
+
+## Flags
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--cluster` | (disabled) | Enable cluster mode. Requires a persistent `--history` backend. |
+| `--cluster-poll-secs` | `2` | How often (seconds) each instance polls for pending runs and propagates cross-instance cancels. Also the maximum cancel-propagation lag between instances. |
+| `--cluster-max-attempts` | `3` | Maximum number of times a run will be attempted across all instances. After `max-attempts` failures (including crash-failovers) the run is marked `failed` (poisoned). |
+| `--lease-ttl-secs` | `30` | Run-ownership lease TTL. An instance heartbeats its own in-flight runs at ~⅓ of this interval. A run whose owner's lease expires is eligible for reclaim. Tune this above your worst-case GC/IO stall — a longer TTL is safer but increases the time before a dead node's runs are requeued. |
+
+## Run lifecycle in cluster mode
+
+Cluster mode adds one state before execution: **`pending`**. A run lives in
+`pending` in the shared DB until an instance claims it.
+
+```
+submit → pending → [claim] → running → completed
+                           ↘ failed
+                           ↘ cancelled
+```
+
+Step by step:
+
+1. **Submit** (`POST /v1/runs`) — any instance validates and interpolates the
+   config synchronously, writes the run as `pending` (raw config stored), and
+   kicks the local claim loop. Returns immediately with `status: pending`.
+2. **Claim** — the claim loop on each instance polls every `--cluster-poll-secs`
+   seconds. It atomically claims up to `available_capacity` pending runs
+   (Pending → Running, exclusive). Only one instance can claim a given run.
+3. **Execute** — the claiming instance re-resolves `${env:…}` / `${secret:…}`
+   directives with its own credentials, then runs the pipeline via the same
+   executor as `faucet run`. The run record is heartbeated (lease renewed) while
+   in flight.
+4. **Complete / fail** — the run is marked `completed` or `failed`. The attempt
+   count is incremented.
+5. **Failover** — if the owner's lease expires (the instance crashed or stopped
+   heartbeating), a survivor's next lease tick calls `reclaim_orphans`:
+   - If `attempt_count < --cluster-max-attempts` → requeued back to `pending`.
+   - If `attempt_count >= --cluster-max-attempts` → marked `failed` (poisoned).
+
+## Cross-instance cancel
+
+`POST /v1/runs/{id}/cancel` works correctly regardless of which instance receives
+the request:
+
+- **Pending run** (not yet claimed): the run is cancelled directly in the DB —
+  no coordination needed.
+- **Running on the same instance**: the local cancel token fires immediately;
+  flush-completing cancel behaviour (page boundary + sink flush) applies as
+  normal.
+- **Running on a peer instance**: the cancel flag is written to the DB. The
+  peer's claim loop picks it up on its next `pending_cancellations` poll (latency
+  ≈ `--cluster-poll-secs`, default 2 s) and fires the local cancel token.
+
+## Health check and metrics
+
+### `/readyz` body
+
+In cluster mode, `/readyz` returns a JSON body with the cluster section
+populated:
+
+```json
+{
+  "status": "ready",
+  "history_ok": true,
+  "queue_ok": true,
+  "cluster": {
+    "enabled": true,
+    "instances": 3
+  }
+}
+```
+
+`instances` is the count of live cluster members (those whose membership
+heartbeat has not yet expired). A single-instance deployment returns `1`;
+a node that loses its DB connection may report stale counts.
+
+### Prometheus metrics
+
+| Metric | Type | Description |
+|--------|------|-------------|
+| `faucet_serve_cluster_enabled` | gauge | `1` if this instance started with `--cluster`, `0` otherwise. |
+| `faucet_serve_cluster_instances` | gauge | Count of live cluster members (from last membership heartbeat). Alert on `faucet_serve_cluster_instances < expected_count`. |
+| `faucet_serve_runs_claimed_total` | counter | Total runs claimed (transitioned from `pending` to `running`) by this instance. |
+| `faucet_serve_runs_reclaimed_total{outcome="requeued"}` | counter | Orphaned runs requeued by this instance after a peer's lease expired. |
+| `faucet_serve_runs_reclaimed_total{outcome="failed"}` | counter | Orphaned runs poisoned after reaching `--cluster-max-attempts`. |
+
+Useful alert expressions:
+
+- `faucet_serve_cluster_instances < N` — fewer nodes alive than expected.
+- `increase(faucet_serve_runs_reclaimed_total{outcome="failed"}[5m]) > 0` — a
+  run was poisoned; investigate the per-run error.
+- `faucet_serve_history_degraded == 1` — history backend is down; cluster
+  coordination is impaired (instances continue locally but cannot share runs).
+
+## Delivery guarantees and double-run boundary
+
+### What is guaranteed
+
+- **Claim exclusivity:** at most one instance ever *starts* executing a given
+  `pending` run. The atomic SQL claim (`UPDATE … WHERE status = 'pending' LIMIT
+  N … RETURNING`) ensures two instances never both transition the same run to
+  `running`.
+- **Crash-failover is clean:** if an instance crashes after claiming a run but
+  before writing output, a survivor re-queues the run and a fresh instance
+  executes it from scratch. No partial results from the crashed run pollute the
+  destination (assuming the pipeline had not yet flushed a page to the sink).
+
+### What is NOT guaranteed without exactly-once delivery
+
+An instance that was **paused** (e.g. a long GC pause, network partition, heavy
+I/O stall) longer than `--lease-ttl-secs` may have its run stolen by a survivor
+while the original instance is still alive. The original instance is
+**owner-fenced** — it cannot update the run *record* after its lease expires —
+but any sink *writes* already issued before the fencing cannot be recalled.
+
+The survivor then re-runs the pipeline from the last persisted bookmark, which
+may overlap with writes the paused instance already made. This means a run can
+be **executed twice** (partial overlap) if the original instance was paused-not-crashed.
+
+**To fully close this window,** pair the pipeline with
+[exactly-once delivery](./state.md#exactly-once-delivery): a CDC source
+(`postgres-cdc`, `mysql-cdc`, `mongodb-cdc`) plus an idempotent SQL or Iceberg
+sink. The sink's atomic commit token deduplicates replayed pages regardless of
+how many instances attempted them.
+
+**Practical sizing advice:** set `--lease-ttl-secs` comfortably above your
+worst-case GC/IO stall. A 30-second default is appropriate for most JVM-free
+workloads; bump to 60–120 s if you observe false-reclaim events in the metrics.
+
+## Two-instance example
+
+Terminal 1 (node A):
+
+```bash
+export FAUCET_SERVE_AUTH_TOKEN=s3cret
+faucet serve \
+  --cluster \
+  --history 'postgres://faucet:pw@db:5432/faucet' \
+  --listen 0.0.0.0:8080 \
+  --max-concurrent-runs 8
+```
+
+Terminal 2 (node B — same DB, different port/host):
+
+```bash
+export FAUCET_SERVE_AUTH_TOKEN=s3cret
+faucet serve \
+  --cluster \
+  --history 'postgres://faucet:pw@db:5432/faucet' \
+  --listen 0.0.0.0:8081 \
+  --max-concurrent-runs 8
+```
+
+Both instances now compete to claim submitted runs. Submit a run to either
+endpoint — whichever instance has capacity first will pick it up:
+
+```bash
+curl -XPOST http://node-a:8080/v1/runs \
+  -H "Authorization: Bearer s3cret" \
+  -H 'content-type: application/json' \
+  -d '{"config":"version: 1\npipeline:\n  source: {type: csv, config: {path: in.csv}}\n  sink: {type: jsonl, config: {path: out.jsonl}}\n","name":"my-pipeline"}'
+```
+
+Check cluster membership via `/readyz`:
+
+```bash
+curl http://node-a:8080/readyz | jq .cluster
+# { "enabled": true, "instances": 2 }
+```
+
+## Kubernetes / Helm deployment
+
+Deploy N replicas behind a Service; all replicas share the same `--history`
+connection string and the same environment (ConfigMap + Secret). The Service
+load-balances submissions across replicas; each replica independently claims
+from the shared DB.
+
+See the operator/Helm chart for faucet — TBD (#197).
+
+## Related pages
+
+- [Running faucet as a service](./serve.md) — `faucet serve` fundamentals,
+  security model, idempotency, concurrency, and the orphan-recovery lease
+  mechanism that cluster mode extends.
+- [Incremental replication and exactly-once delivery](./state.md) — use a CDC
+  source + idempotent sink to close the double-run window.
+- [Observability](../operations/observability.md) — all `faucet_serve_*` metrics.

@@ -36,6 +36,7 @@ pub const DDL: &[&str] = &[
         idempotency_key TEXT,\
         owner TEXT,\
         lease_expires_at TEXT,\
+        cancel_requested TEXT,\
         body TEXT NOT NULL)",
     "CREATE INDEX IF NOT EXISTS faucet_serve_runs_submitted_idx \
         ON faucet_serve_runs (submitted_at)",
@@ -43,6 +44,18 @@ pub const DDL: &[&str] = &[
     // (status, owner, lease_expires_at).
     "CREATE INDEX IF NOT EXISTS faucet_serve_runs_status_lease_idx \
         ON faucet_serve_runs (status, lease_expires_at)",
+    // Speeds the cluster dispatcher's pending-run query (ordered by submitted_at).
+    "CREATE INDEX IF NOT EXISTS faucet_serve_runs_pending_idx \
+        ON faucet_serve_runs (status, submitted_at)",
+    "CREATE TABLE IF NOT EXISTS faucet_serve_instances (\
+        instance_id TEXT PRIMARY KEY,\
+        started_at TEXT NOT NULL,\
+        last_heartbeat TEXT NOT NULL,\
+        listen TEXT,\
+        max_concurrent TEXT,\
+        in_flight TEXT)",
+    "CREATE INDEX IF NOT EXISTS faucet_serve_instances_hb_idx \
+        ON faucet_serve_instances (last_heartbeat)",
     "CREATE TABLE IF NOT EXISTS faucet_serve_idem (\
         key TEXT PRIMARY KEY,\
         run_id TEXT NOT NULL,\
@@ -59,6 +72,9 @@ pub enum Dialect {
 
 /// Prepared-statement text for a backend, built once per dialect at connect time.
 pub struct Stmts {
+    /// (`cancel_requested` is intentionally NOT written by `upsert` — it is set
+    /// only via `request_cancel` and cleared by `reclaim_requeue`; it defaults to
+    /// NULL on insert.)
     pub upsert: String,
     pub select_body: String,
     pub select_status: String,
@@ -81,6 +97,32 @@ pub struct Stmts {
     /// on the missing record (#146 M8). Scoped by `run_id`, so a newer run that
     /// re-claimed the same key keeps its claim.
     pub delete_idem_by_run: String,
+    /// Cluster dispatcher: fetch oldest pending runs up to a given limit.
+    pub select_pending: String,
+    /// Cluster dispatcher: atomically claim a pending run (set owner + running).
+    pub claim_one: String,
+    /// Cluster reclaimer: select expired running runs for requeue/fail evaluation.
+    /// NOTE: `'queued'` is the single-instance status; cluster runs flow
+    /// `pending → running`, so the failover reclaimer covers `'running'` only.
+    pub reclaim_select: String,
+    /// Cluster reclaimer: requeue an expired running run back to pending.
+    pub reclaim_requeue: String,
+    /// Cluster reclaimer: fail an expired running run that cannot be requeued.
+    pub reclaim_fail: String,
+    /// Finalize a run owned by this instance (terminal status update).
+    pub finalize_owned: String,
+    /// Cancel a pending run directly (transition pending → cancelled).
+    pub cancel_pending: String,
+    /// Request cancellation of an in-flight run owned by another instance.
+    pub request_cancel: String,
+    /// List run IDs owned by this instance that have a pending cancellation request.
+    pub pending_cancellations: String,
+    /// Upsert this instance's membership heartbeat into `faucet_serve_instances`.
+    pub heartbeat_instance: String,
+    /// List instances whose last heartbeat is at or after a given threshold.
+    pub live_instances: String,
+    /// Prune instances whose last heartbeat is before a given threshold.
+    pub prune_instances: String,
 }
 
 impl Stmts {
@@ -138,6 +180,54 @@ impl Stmts {
                 SET run_id=$1,fingerprint=$2,claimed_at=$3 WHERE key=$4 AND claimed_at=$5"
                 .into(),
             delete_idem_by_run: "DELETE FROM faucet_serve_idem WHERE run_id=$1".into(),
+            select_pending: "SELECT run_id, body FROM faucet_serve_runs \
+                WHERE status = 'pending' ORDER BY submitted_at ASC LIMIT $1"
+                .into(),
+            claim_one: "UPDATE faucet_serve_runs \
+                SET owner = $1, status = 'running', lease_expires_at = $2, body = $3 \
+                WHERE run_id = $4 AND status = 'pending'"
+                .into(),
+            reclaim_select: "SELECT body FROM faucet_serve_runs \
+                WHERE status = 'running' \
+                AND (lease_expires_at IS NULL OR lease_expires_at < $1)"
+                .into(),
+            reclaim_requeue: "UPDATE faucet_serve_runs \
+                SET status = 'pending', owner = NULL, lease_expires_at = NULL, \
+                    cancel_requested = NULL, body = $1 \
+                WHERE run_id = $2 AND status = 'running' \
+                AND (lease_expires_at IS NULL OR lease_expires_at < $3)"
+                .into(),
+            reclaim_fail: "UPDATE faucet_serve_runs \
+                SET status = 'failed', finished_at = $1, body = $2, owner = NULL \
+                WHERE run_id = $3 AND status = 'running' \
+                AND (lease_expires_at IS NULL OR lease_expires_at < $4)"
+                .into(),
+            finalize_owned: "UPDATE faucet_serve_runs \
+                SET status = $1, finished_at = $2, lease_expires_at = $3, body = $4 \
+                WHERE run_id = $5 AND owner = $6"
+                .into(),
+            cancel_pending: "UPDATE faucet_serve_runs \
+                SET status = 'cancelled', finished_at = $1, body = $2 \
+                WHERE run_id = $3 AND status = 'pending'"
+                .into(),
+            request_cancel: "UPDATE faucet_serve_runs \
+                SET cancel_requested = $1 WHERE run_id = $2 AND status = 'running'"
+                .into(),
+            pending_cancellations: "SELECT run_id FROM faucet_serve_runs \
+                WHERE status = 'running' AND owner = $1 AND cancel_requested IS NOT NULL"
+                .into(),
+            heartbeat_instance: "INSERT INTO faucet_serve_instances \
+                (instance_id, started_at, last_heartbeat, listen, max_concurrent, in_flight) \
+                VALUES ($1,$2,$3,$4,$5,$6) \
+                ON CONFLICT (instance_id) DO UPDATE SET \
+                last_heartbeat = excluded.last_heartbeat, listen = excluded.listen, \
+                max_concurrent = excluded.max_concurrent, in_flight = excluded.in_flight"
+                .into(),
+            live_instances: "SELECT instance_id, started_at, last_heartbeat, listen, \
+                max_concurrent, in_flight FROM faucet_serve_instances \
+                WHERE last_heartbeat >= $1"
+                .into(),
+            prune_instances: "DELETE FROM faucet_serve_instances WHERE last_heartbeat < $1".into(),
         }
     }
 
@@ -186,6 +276,54 @@ impl Stmts {
                 SET run_id=?,fingerprint=?,claimed_at=? WHERE key=? AND claimed_at=?"
                 .into(),
             delete_idem_by_run: "DELETE FROM faucet_serve_idem WHERE run_id=?".into(),
+            select_pending: "SELECT run_id, body FROM faucet_serve_runs \
+                WHERE status = 'pending' ORDER BY submitted_at ASC LIMIT ?"
+                .into(),
+            claim_one: "UPDATE faucet_serve_runs \
+                SET owner = ?, status = 'running', lease_expires_at = ?, body = ? \
+                WHERE run_id = ? AND status = 'pending'"
+                .into(),
+            reclaim_select: "SELECT body FROM faucet_serve_runs \
+                WHERE status = 'running' \
+                AND (lease_expires_at IS NULL OR lease_expires_at < ?)"
+                .into(),
+            reclaim_requeue: "UPDATE faucet_serve_runs \
+                SET status = 'pending', owner = NULL, lease_expires_at = NULL, \
+                    cancel_requested = NULL, body = ? \
+                WHERE run_id = ? AND status = 'running' \
+                AND (lease_expires_at IS NULL OR lease_expires_at < ?)"
+                .into(),
+            reclaim_fail: "UPDATE faucet_serve_runs \
+                SET status = 'failed', finished_at = ?, body = ?, owner = NULL \
+                WHERE run_id = ? AND status = 'running' \
+                AND (lease_expires_at IS NULL OR lease_expires_at < ?)"
+                .into(),
+            finalize_owned: "UPDATE faucet_serve_runs \
+                SET status = ?, finished_at = ?, lease_expires_at = ?, body = ? \
+                WHERE run_id = ? AND owner = ?"
+                .into(),
+            cancel_pending: "UPDATE faucet_serve_runs \
+                SET status = 'cancelled', finished_at = ?, body = ? \
+                WHERE run_id = ? AND status = 'pending'"
+                .into(),
+            request_cancel: "UPDATE faucet_serve_runs \
+                SET cancel_requested = ? WHERE run_id = ? AND status = 'running'"
+                .into(),
+            pending_cancellations: "SELECT run_id FROM faucet_serve_runs \
+                WHERE status = 'running' AND owner = ? AND cancel_requested IS NOT NULL"
+                .into(),
+            heartbeat_instance: "INSERT INTO faucet_serve_instances \
+                (instance_id, started_at, last_heartbeat, listen, max_concurrent, in_flight) \
+                VALUES (?,?,?,?,?,?) \
+                ON CONFLICT (instance_id) DO UPDATE SET \
+                last_heartbeat = excluded.last_heartbeat, listen = excluded.listen, \
+                max_concurrent = excluded.max_concurrent, in_flight = excluded.in_flight"
+                .into(),
+            live_instances: "SELECT instance_id, started_at, last_heartbeat, listen, \
+                max_concurrent, in_flight FROM faucet_serve_instances \
+                WHERE last_heartbeat >= ?"
+                .into(),
+            prune_instances: "DELETE FROM faucet_serve_instances WHERE last_heartbeat < ?".into(),
         }
     }
 }
@@ -231,6 +369,7 @@ pub fn decode_body(body: &str) -> Result<RunRecord, HistoryError> {
 pub fn parse_status(s: &str) -> RunStatus {
     match s {
         "queued" => RunStatus::Queued,
+        "pending" => RunStatus::Pending,
         "running" => RunStatus::Running,
         "completed" => RunStatus::Completed,
         "cancelled" => RunStatus::Cancelled,
@@ -547,6 +686,13 @@ macro_rules! impl_sql_history {
                     .bind(sql::threshold(now, self.idem_retention))
                     .execute(&self.pool)
                     .await;
+                // Drop membership rows that have not heartbeated within the
+                // run-retention window (far longer than the lease, so this never
+                // prunes a live member — that's `live_instances(ttl)`'s job).
+                let _ = sqlx::query(&self.stmts.prune_instances)
+                    .bind(sql::threshold(now, retain_for))
+                    .execute(&self.pool)
+                    .await;
                 Ok(removed)
             }
 
@@ -601,6 +747,301 @@ macro_rules! impl_sql_history {
                 Ok(renewed)
             }
 
+            async fn claim_pending(
+                &self,
+                limit: usize,
+            ) -> Result<Vec<$crate::serve::history::RunRecord>, $crate::serve::history::HistoryError>
+            {
+                use sqlx::Row as _;
+                use $crate::serve::history::HistoryError;
+                use $crate::serve::history::RunStatus;
+                use $crate::serve::history::sql;
+                let backend = |e: sqlx::Error| HistoryError::Backend(e.to_string());
+                if limit == 0 {
+                    return Ok(Vec::new());
+                }
+                let now = chrono::Utc::now();
+                let lease = sql::fmt_ts(now + self.lease_ttl);
+
+                // 1. Candidate pending runs (oldest first), with their bodies.
+                let rows = sqlx::query(&self.stmts.select_pending)
+                    .bind(limit as i64)
+                    .fetch_all(&self.pool)
+                    .await
+                    .map_err(backend)?;
+
+                // Per-row conditional claim (1 SELECT + N guarded UPDATEs). The
+                // batch is bounded by the caller's free permits (small), and this
+                // is portable across Postgres + SQLite — deliberately NOT a
+                // Postgres-only `FOR UPDATE SKIP LOCKED`.
+                let mut claimed = Vec::new();
+                for row in &rows {
+                    let run_id: String = row.try_get("run_id").map_err(backend)?;
+                    let body: String = row.try_get("body").map_err(backend)?;
+                    // Flip the record to Running and rewrite the body so the column
+                    // and the (source-of-truth) body stay consistent — a GET right
+                    // after the claim must not show a stale `pending`.
+                    let mut r = sql::decode_body(&body)?;
+                    r.status = RunStatus::Running;
+                    let new_body = sql::encode_body(&r)?;
+                    // 2. Conditional claim — only the first committer wins.
+                    let won = sqlx::query(&self.stmts.claim_one)
+                        .bind(&self.instance_id)
+                        .bind(&lease)
+                        .bind(&new_body)
+                        .bind(&run_id)
+                        .execute(&self.pool)
+                        .await
+                        .map_err(backend)?
+                        .rows_affected();
+                    if won == 1 {
+                        claimed.push(r);
+                    }
+                }
+                Ok(claimed)
+            }
+
+            async fn reclaim_orphans(
+                &self,
+                max_attempts: u32,
+            ) -> Result<$crate::serve::history::ReclaimReport, $crate::serve::history::HistoryError>
+            {
+                use sqlx::Row as _;
+                use $crate::serve::history::HistoryError;
+                use $crate::serve::history::ReclaimReport;
+                use $crate::serve::history::RunStatus;
+                use $crate::serve::history::sql;
+                let backend = |e: sqlx::Error| HistoryError::Backend(e.to_string());
+                let now = chrono::Utc::now();
+                let now_s = sql::fmt_ts(now);
+
+                let rows = sqlx::query(&self.stmts.reclaim_select)
+                    .bind(&now_s)
+                    .fetch_all(&self.pool)
+                    .await
+                    .map_err(backend)?;
+
+                let mut report = ReclaimReport::default();
+                for row in &rows {
+                    let body: String = row.try_get("body").map_err(backend)?;
+                    let mut rec = sql::decode_body(&body)?;
+                    let next_attempt = rec.attempt + 1;
+                    // Cap is on the attempts already made: a run that has been
+                    // reclaimed fewer than `max_attempts` times gets another try;
+                    // once it reaches the cap it is poisoned.
+                    if rec.attempt < max_attempts {
+                        // Re-queue for another instance to re-run.
+                        rec.attempt = next_attempt;
+                        rec.status = RunStatus::Pending;
+                        let new_body = sql::encode_body(&rec)?;
+                        let n = sqlx::query(&self.stmts.reclaim_requeue)
+                            .bind(&new_body)
+                            .bind(&rec.run_id)
+                            .bind(&now_s)
+                            .execute(&self.pool)
+                            .await
+                            .map_err(backend)?
+                            .rows_affected();
+                        if n == 1 {
+                            report.requeued += 1;
+                        }
+                    } else {
+                        // Poison: too many attempts.
+                        rec.attempt = next_attempt;
+                        rec.status = RunStatus::Failed;
+                        rec.finished_at = Some(now);
+                        rec.error = Some(format!(
+                            "run reclaimed {next_attempt} times after its owning instance's \
+                             lease expired; giving up (poison run)"
+                        ));
+                        if rec.elapsed_secs.is_none()
+                            && let Some(started) = rec.started_at
+                        {
+                            rec.elapsed_secs =
+                                (now - started).to_std().ok().map(|d| d.as_secs_f64());
+                        }
+                        let new_body = sql::encode_body(&rec)?;
+                        let n = sqlx::query(&self.stmts.reclaim_fail)
+                            .bind(&now_s)
+                            .bind(&new_body)
+                            .bind(&rec.run_id)
+                            .bind(&now_s)
+                            .execute(&self.pool)
+                            .await
+                            .map_err(backend)?
+                            .rows_affected();
+                        if n == 1 {
+                            report.failed += 1;
+                        }
+                    }
+                }
+                Ok(report)
+            }
+
+            async fn finalize_owned(
+                &self,
+                rec: &$crate::serve::history::RunRecord,
+            ) -> Result<bool, $crate::serve::history::HistoryError> {
+                use $crate::serve::history::HistoryError;
+                use $crate::serve::history::sql;
+                let backend = |e: sqlx::Error| HistoryError::Backend(e.to_string());
+                // Defensive: a terminal record must carry finished_at, or
+                // purge_runs (which requires finished_at IS NOT NULL) can never
+                // reclaim it. Stamp it if a caller left it unset.
+                let mut rec = rec.clone();
+                if rec.status.is_terminal() && rec.finished_at.is_none() {
+                    rec.finished_at = Some(chrono::Utc::now());
+                }
+                let body = sql::encode_body(&rec)?;
+                let finished = rec.finished_at.map(sql::fmt_ts);
+                let lease = sql::fmt_ts(chrono::Utc::now() + self.lease_ttl);
+                let n = sqlx::query(&self.stmts.finalize_owned)
+                    .bind(rec.status.as_str())
+                    .bind(finished.as_deref())
+                    .bind(&lease)
+                    .bind(&body)
+                    .bind(&rec.run_id)
+                    .bind(&self.instance_id)
+                    .execute(&self.pool)
+                    .await
+                    .map_err(backend)?
+                    .rows_affected();
+                Ok(n == 1)
+            }
+
+            async fn cancel_pending(
+                &self,
+                run_id: &str,
+            ) -> Result<bool, $crate::serve::history::HistoryError> {
+                use sqlx::Row as _;
+                use $crate::serve::history::HistoryError;
+                use $crate::serve::history::RunStatus;
+                use $crate::serve::history::sql;
+                let backend = |e: sqlx::Error| HistoryError::Backend(e.to_string());
+                // Read the pending run's body, flip it to Cancelled, and write back
+                // conditional on it still being pending (loses the race to a claim).
+                let Some(row) = sqlx::query(&self.stmts.select_body)
+                    .bind(run_id)
+                    .fetch_optional(&self.pool)
+                    .await
+                    .map_err(backend)?
+                else {
+                    return Ok(false);
+                };
+                let body: String = row.try_get("body").map_err(backend)?;
+                let mut rec = sql::decode_body(&body)?;
+                if rec.status != RunStatus::Pending {
+                    return Ok(false);
+                }
+                let now = chrono::Utc::now();
+                rec.status = RunStatus::Cancelled;
+                rec.finished_at = Some(now);
+                let new_body = sql::encode_body(&rec)?;
+                let n = sqlx::query(&self.stmts.cancel_pending)
+                    .bind(sql::fmt_ts(now))
+                    .bind(&new_body)
+                    .bind(run_id)
+                    .execute(&self.pool)
+                    .await
+                    .map_err(backend)?
+                    .rows_affected();
+                Ok(n == 1)
+            }
+
+            async fn request_cancel(
+                &self,
+                run_id: &str,
+            ) -> Result<(), $crate::serve::history::HistoryError> {
+                use $crate::serve::history::HistoryError;
+                use $crate::serve::history::sql;
+                let backend = |e: sqlx::Error| HistoryError::Backend(e.to_string());
+                sqlx::query(&self.stmts.request_cancel)
+                    .bind(sql::fmt_ts(chrono::Utc::now()))
+                    .bind(run_id)
+                    .execute(&self.pool)
+                    .await
+                    .map_err(backend)?;
+                Ok(())
+            }
+
+            async fn pending_cancellations(
+                &self,
+            ) -> Result<Vec<String>, $crate::serve::history::HistoryError> {
+                use sqlx::Row as _;
+                use $crate::serve::history::HistoryError;
+                let backend = |e: sqlx::Error| HistoryError::Backend(e.to_string());
+                let rows = sqlx::query(&self.stmts.pending_cancellations)
+                    .bind(&self.instance_id)
+                    .fetch_all(&self.pool)
+                    .await
+                    .map_err(backend)?;
+                let mut ids = Vec::with_capacity(rows.len());
+                for r in &rows {
+                    ids.push(r.try_get::<String, _>("run_id").map_err(backend)?);
+                }
+                Ok(ids)
+            }
+
+            async fn heartbeat_instance(
+                &self,
+                beat: &$crate::serve::history::InstanceHeartbeat,
+            ) -> Result<(), $crate::serve::history::HistoryError> {
+                use $crate::serve::history::HistoryError;
+                use $crate::serve::history::sql;
+                let backend = |e: sqlx::Error| HistoryError::Backend(e.to_string());
+                let now = sql::fmt_ts(chrono::Utc::now());
+                sqlx::query(&self.stmts.heartbeat_instance)
+                    .bind(&self.instance_id)
+                    .bind(sql::fmt_ts(beat.started_at))
+                    .bind(&now)
+                    .bind(beat.listen.as_deref())
+                    .bind(beat.max_concurrent.to_string())
+                    .bind(beat.in_flight.to_string())
+                    .execute(&self.pool)
+                    .await
+                    .map_err(backend)?;
+                Ok(())
+            }
+
+            async fn live_instances(
+                &self,
+                ttl: std::time::Duration,
+            ) -> Result<Vec<$crate::serve::history::InstanceRecord>, $crate::serve::history::HistoryError>
+            {
+                use sqlx::Row as _;
+                use $crate::serve::history::HistoryError;
+                use $crate::serve::history::InstanceRecord;
+                use $crate::serve::history::sql;
+                let backend = |e: sqlx::Error| HistoryError::Backend(e.to_string());
+                let now = chrono::Utc::now();
+                let rows = sqlx::query(&self.stmts.live_instances)
+                    .bind(sql::threshold(now, ttl))
+                    .fetch_all(&self.pool)
+                    .await
+                    .map_err(backend)?;
+                let parse_dt = |s: &str| {
+                    chrono::DateTime::parse_from_rfc3339(s)
+                        .map(|d| d.to_utc())
+                        .unwrap_or(now)
+                };
+                let mut out = Vec::with_capacity(rows.len());
+                for r in &rows {
+                    let started: String = r.try_get("started_at").map_err(backend)?;
+                    let hb: String = r.try_get("last_heartbeat").map_err(backend)?;
+                    let mc: Option<String> = r.try_get("max_concurrent").map_err(backend)?;
+                    let inf: Option<String> = r.try_get("in_flight").map_err(backend)?;
+                    out.push(InstanceRecord {
+                        instance_id: r.try_get("instance_id").map_err(backend)?,
+                        started_at: parse_dt(&started),
+                        last_heartbeat: parse_dt(&hb),
+                        listen: r.try_get("listen").map_err(backend)?,
+                        max_concurrent: mc.and_then(|s| s.parse().ok()).unwrap_or(0),
+                        in_flight: inf.and_then(|s| s.parse().ok()).unwrap_or(0),
+                    });
+                }
+                Ok(out)
+            }
+
             fn degraded(&self) -> bool {
                 // A live SQL backend is never self-degraded; the FallbackHistory
                 // wrapper owns degradation when the backend becomes unreachable.
@@ -647,6 +1088,7 @@ mod tests {
     fn parse_status_round_trips_known_and_defaults_failed() {
         for s in [
             RunStatus::Queued,
+            RunStatus::Pending,
             RunStatus::Running,
             RunStatus::Completed,
             RunStatus::Failed,
@@ -681,5 +1123,8 @@ mod tests {
         // Both target the same tables / conflict targets.
         assert!(pg.insert_idem.contains("ON CONFLICT (key) DO NOTHING"));
         assert!(lite.insert_idem.contains("ON CONFLICT (key) DO NOTHING"));
+        assert!(pg.claim_one.contains("$3") && lite.claim_one.contains('?'));
+        assert!(pg.heartbeat_instance.contains("faucet_serve_instances"));
+        assert!(lite.heartbeat_instance.contains("faucet_serve_instances"));
     }
 }

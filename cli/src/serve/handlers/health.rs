@@ -4,25 +4,37 @@
 //! later phases.
 
 use crate::serve::state::ServerState;
+use axum::Json;
 use axum::extract::State;
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
+use serde_json::json;
 
 /// Liveness: a responding handler means the process is alive.
 pub async fn healthz() -> impl IntoResponse {
     StatusCode::OK
 }
 
-/// Readiness: 503 if the history backend is degraded or the queue is full
-/// (cannot accept new work), else 200.
+/// Readiness: 503 if the history backend is degraded or the queue is full,
+/// else 200. The JSON body surfaces history/queue health and cluster membership.
 pub async fn readyz(State(state): State<ServerState>) -> impl IntoResponse {
     let history_ok = !state.history().degraded();
     let queue_ok = !state.registry().is_full();
-    if history_ok && queue_ok {
+    let code = if history_ok && queue_ok {
         StatusCode::OK
     } else {
         StatusCode::SERVICE_UNAVAILABLE
-    }
+    };
+    let body = json!({
+        "status": if code == StatusCode::OK { "ready" } else { "not_ready" },
+        "history_ok": history_ok,
+        "queue_ok": queue_ok,
+        "cluster": {
+            "enabled": state.cluster().enabled(),
+            "instances": state.cluster().members(),
+        },
+    });
+    (code, Json(body))
 }
 
 /// Prometheus exposition rendered from serve's own recorder handle.
@@ -39,5 +51,78 @@ pub async fn metrics(State(state): State<ServerState>) -> Response {
             "# metrics recorder not installed in this process\n",
         )
             .into_response(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::serve::cluster::ClusterConfig;
+    use crate::serve::config::{AuthMode, HistoryBackendSpec, ServeConfig};
+    use crate::serve::history::RunHistory;
+    use crate::serve::history::memory::MemoryHistory;
+    use crate::serve::state::ServerState;
+    use axum::response::IntoResponse;
+    use std::sync::Arc;
+    use std::time::Duration;
+    use tokio_util::sync::CancellationToken;
+
+    fn state(cluster_enabled: bool) -> ServerState {
+        let mut cluster = ClusterConfig::disabled();
+        cluster.enabled = cluster_enabled;
+        let cfg = ServeConfig {
+            listen: "127.0.0.1:0".parse().unwrap(),
+            auth: AuthMode::None,
+            max_concurrent_runs: 4,
+            max_queued_runs: 4,
+            default_config_path: None,
+            history: HistoryBackendSpec::Memory,
+            cors_origins: vec![],
+            body_limit_bytes: 1_048_576,
+            shutdown_grace: Duration::from_secs(60),
+            retain_terminal_runs: Duration::from_secs(60),
+            idempotency_retention: Duration::from_secs(60),
+            lease_ttl: Duration::from_secs(30),
+            probe_timeout: Duration::from_secs(10),
+            env_file: None,
+            no_env_file: false,
+            log_level: "info".into(),
+            ui_enabled: true,
+            cluster,
+        };
+        let history = Arc::new(MemoryHistory::new(Duration::from_secs(60))) as Arc<dyn RunHistory>;
+        ServerState::new(
+            &cfg,
+            None,
+            CancellationToken::new(),
+            history,
+            crate::serve::logs::LogHub::new(),
+            None,
+        )
+    }
+
+    #[tokio::test]
+    async fn readyz_reports_cluster_membership() {
+        let st = state(true);
+        st.cluster().set_members(3);
+        let resp = readyz(axum::extract::State(st)).await.into_response();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), 64 * 1024)
+            .await
+            .unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(v["cluster"]["enabled"], true);
+        assert_eq!(v["cluster"]["instances"], 3);
+        assert_eq!(v["status"], "ready");
+        assert_eq!(v["history_ok"], true);
+        assert_eq!(v["queue_ok"], true);
+    }
+
+    #[tokio::test]
+    async fn readyz_ok_single_instance() {
+        let resp = readyz(axum::extract::State(state(false)))
+            .await
+            .into_response();
+        assert_eq!(resp.status(), StatusCode::OK);
     }
 }

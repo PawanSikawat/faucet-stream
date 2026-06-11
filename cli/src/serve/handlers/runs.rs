@@ -59,25 +59,58 @@ pub async fn get_run(
     Ok(Json(rec))
 }
 
-/// `POST /v1/runs/{id}/cancel` → 202 (in-flight) / 200 (terminal no-op) / 404.
+/// `POST /v1/runs/{id}/cancel` → 202 (cancel requested) / 200 (terminal no-op) / 404.
+/// In cluster mode, cancel is best-effort: the run may complete on its owning
+/// instance before that instance processes the flag.
 pub async fn cancel_run(
     State(state): State<ServerState>,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, ServeError> {
-    // A live (queued/running) token → request cancellation.
+    // 1. A live local token (this instance is running/queued it) → cancel now.
     if state.registry().cancel(&id) {
         return Ok(StatusCode::ACCEPTED);
     }
-    // Otherwise: terminal no-op if the record exists, else 404.
-    match state
+
+    // 2. Look up the record.
+    let rec = match state
         .history()
         .get(&id)
         .await
         .map_err(|e| ServeError::Internal(e.to_string()))?
     {
-        Some(_) => Ok(StatusCode::OK),
-        None => Err(ServeError::NotFound),
+        Some(r) => r,
+        None => return Err(ServeError::NotFound),
+    };
+
+    if rec.status.is_terminal() {
+        return Ok(StatusCode::OK); // already done — no-op.
     }
+
+    // 3. Cluster mode: the run is owned by another instance (or unclaimed).
+    if state.cluster().enabled() {
+        // Unclaimed (Pending) → cancel it directly.
+        if state
+            .history()
+            .cancel_pending(&id)
+            .await
+            .map_err(|e| ServeError::Internal(e.to_string()))?
+        {
+            return Ok(StatusCode::ACCEPTED);
+        }
+        // Otherwise it is running on a peer → flag it; the peer cancels on its
+        // next claim-loop tick.
+        state
+            .history()
+            .request_cancel(&id)
+            .await
+            .map_err(|e| ServeError::Internal(e.to_string()))?;
+        return Ok(StatusCode::ACCEPTED);
+    }
+
+    // Single-instance, non-terminal, no local token: a transient race (the token
+    // was removed between the registry check and the history read as the run
+    // completes). Treat as a no-op — the run is finishing or just finished.
+    Ok(StatusCode::OK)
 }
 
 /// `DELETE /v1/runs/{id}` → 204 / 404 / 409 (still running).
@@ -218,5 +251,67 @@ mod tests {
         let f = q.into_filter();
         assert_eq!(f.limit, DEFAULT_LIMIT);
         assert_eq!(f.status, Some(RunStatus::Failed));
+    }
+
+    #[tokio::test]
+    async fn cancel_pending_run_in_cluster_mode_cancels_it() {
+        use crate::serve::cluster::ClusterConfig;
+        use crate::serve::config::{AuthMode, HistoryBackendSpec, ServeConfig};
+        use crate::serve::history::memory::MemoryHistory;
+        use crate::serve::history::{RunHistory, RunRecord, RunStatus};
+        use crate::serve::state::ServerState;
+        use chrono::Utc;
+        use std::sync::Arc;
+        use std::time::Duration;
+        use tokio_util::sync::CancellationToken;
+
+        let mut cluster = ClusterConfig::disabled();
+        cluster.enabled = true;
+        let cfg = ServeConfig {
+            listen: "127.0.0.1:0".parse().unwrap(),
+            auth: AuthMode::None,
+            max_concurrent_runs: 4,
+            max_queued_runs: 4,
+            default_config_path: None,
+            history: HistoryBackendSpec::Memory,
+            cors_origins: vec![],
+            body_limit_bytes: 1_048_576,
+            shutdown_grace: Duration::from_secs(60),
+            retain_terminal_runs: Duration::from_secs(60),
+            idempotency_retention: Duration::from_secs(60),
+            lease_ttl: Duration::from_secs(30),
+            probe_timeout: Duration::from_secs(10),
+            env_file: None,
+            no_env_file: false,
+            log_level: "info".into(),
+            ui_enabled: true,
+            cluster,
+        };
+        let history = Arc::new(MemoryHistory::new(Duration::from_secs(60))) as Arc<dyn RunHistory>;
+        let state = ServerState::new(
+            &cfg,
+            None,
+            CancellationToken::new(),
+            history,
+            crate::serve::logs::LogHub::new(),
+            None,
+        );
+        // A pending run with no local token (simulating an unclaimed cluster run).
+        let mut rec = RunRecord::queued("p1".into(), None, Default::default(), None, Utc::now());
+        rec.status = RunStatus::Pending;
+        state.history().upsert(&rec).await.unwrap();
+
+        let resp = cancel_run(
+            axum::extract::State(state.clone()),
+            axum::extract::Path("p1".into()),
+        )
+        .await
+        .unwrap()
+        .into_response();
+        assert_eq!(resp.status(), StatusCode::ACCEPTED);
+        assert_eq!(
+            state.history().get("p1").await.unwrap().unwrap().status,
+            RunStatus::Cancelled
+        );
     }
 }

@@ -165,6 +165,18 @@ impl RunHistory for MemoryHistory {
         Ok(0)
     }
 
+    async fn cancel_pending(&self, run_id: &str) -> Result<bool, HistoryError> {
+        use crate::serve::history::RunStatus;
+        if let Some(mut r) = self.runs.get_mut(run_id)
+            && r.status == RunStatus::Pending
+        {
+            r.status = RunStatus::Cancelled;
+            r.finished_at = Some(Utc::now());
+            return Ok(true);
+        }
+        Ok(false)
+    }
+
     fn degraded(&self) -> bool {
         false
     }

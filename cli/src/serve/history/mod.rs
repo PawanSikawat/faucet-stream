@@ -29,6 +29,7 @@ use std::time::Duration;
 #[serde(rename_all = "snake_case")]
 pub enum RunStatus {
     Queued,
+    Pending,
     Running,
     Completed,
     Failed,
@@ -42,6 +43,7 @@ impl RunStatus {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Queued => "queued",
+            Self::Pending => "pending",
             Self::Running => "running",
             Self::Completed => "completed",
             Self::Failed => "failed",
@@ -87,6 +89,19 @@ pub struct RunRecord {
     pub idempotency_key: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub doctor_report: Option<serde_json::Value>,
+    /// Raw submitted config text — present only for cluster runs so any instance
+    /// can re-resolve + re-run it. `None` for single-instance runs.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub config_body: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub config_format: Option<crate::serve::load::ConfigFormat>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timeout_secs: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub clock: Option<String>,
+    /// Failover re-run count (cluster mode). 0 on first submit.
+    #[serde(default)]
+    pub attempt: u32,
 }
 
 impl RunRecord {
@@ -112,6 +127,11 @@ impl RunRecord {
             error: None,
             idempotency_key,
             doctor_report: None,
+            config_body: None,
+            config_format: None,
+            timeout_secs: None,
+            clock: None,
+            attempt: 0,
         }
     }
 }
@@ -133,6 +153,37 @@ pub enum DeleteOutcome {
     Deleted,
     NotFound,
     StillRunning,
+}
+
+/// Result of a failover reclaim pass.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ReclaimReport {
+    /// Orphans re-queued to `Pending` for another instance to re-run.
+    pub requeued: usize,
+    /// Orphans that hit the attempt cap and were marked `Failed` (poison).
+    pub failed: usize,
+}
+
+/// Fields a serve instance heartbeats into the membership table. The
+/// `instance_id` is the backend's own id (stamped server-side), so it is not
+/// carried here.
+#[derive(Debug, Clone)]
+pub struct InstanceHeartbeat {
+    pub started_at: DateTime<Utc>,
+    pub listen: Option<String>,
+    pub max_concurrent: u32,
+    pub in_flight: u32,
+}
+
+/// One live cluster member (for `/readyz` + metrics).
+#[derive(Debug, Clone, Serialize)]
+pub struct InstanceRecord {
+    pub instance_id: String,
+    pub started_at: DateTime<Utc>,
+    pub last_heartbeat: DateTime<Utc>,
+    pub listen: Option<String>,
+    pub max_concurrent: u32,
+    pub in_flight: u32,
 }
 
 /// Filter + pagination for `list`. `limit`/`cursor` are resolved by the handler.
@@ -204,6 +255,66 @@ pub trait RunHistory: Send + Sync {
     /// unshared) is a no-op returning 0.
     async fn renew_leases(&self) -> Result<usize, HistoryError> {
         Ok(0)
+    }
+
+    /// Atomically claim up to `limit` oldest `Pending` runs for *this* instance,
+    /// moving them `Pending` → `Running` with a fresh lease, and return the
+    /// claimed records (with `config_body`) for the caller to execute. Exclusive:
+    /// a run claimed by one caller is never returned to another. Default: none
+    /// (memory is single-process and never writes `Pending`).
+    async fn claim_pending(&self, limit: usize) -> Result<Vec<RunRecord>, HistoryError> {
+        let _ = limit;
+        Ok(Vec::new())
+    }
+
+    /// Cluster failover: expired-lease `Running` runs whose `attempt < max_attempts`
+    /// go back to `Pending` (owner/lease cleared, `attempt++`); the rest are
+    /// `Failed` (poison). Returns the counts. Default: nothing to reclaim.
+    async fn reclaim_orphans(&self, max_attempts: u32) -> Result<ReclaimReport, HistoryError> {
+        let _ = max_attempts;
+        Ok(ReclaimReport::default())
+    }
+
+    /// Owner-fenced terminal write: persist `rec` only if this instance still owns
+    /// the run. Returns `true` if the write landed, `false` if another instance
+    /// reclaimed it (the caller should discard its result). Default: delegate to
+    /// `upsert` (memory/single-process always owns its runs).
+    async fn finalize_owned(&self, rec: &RunRecord) -> Result<bool, HistoryError> {
+        self.upsert(rec).await.map(|_| true)
+    }
+
+    /// Cancel a still-`Pending` (unclaimed) run directly. Returns `true` if it was
+    /// pending and is now `Cancelled`; `false` if it had already been claimed (the
+    /// caller should fall back to [`request_cancel`](Self::request_cancel)).
+    /// Default: `false`.
+    async fn cancel_pending(&self, run_id: &str) -> Result<bool, HistoryError> {
+        let _ = run_id;
+        Ok(false)
+    }
+
+    /// Flag a `Running` run for cross-instance cancellation; its owning instance
+    /// fires the local cancel on its next claim-loop tick. Default: no-op.
+    async fn request_cancel(&self, run_id: &str) -> Result<(), HistoryError> {
+        let _ = run_id;
+        Ok(())
+    }
+
+    /// This instance's own `Running` runs that have a pending cancel request.
+    /// Default: none.
+    async fn pending_cancellations(&self) -> Result<Vec<String>, HistoryError> {
+        Ok(Vec::new())
+    }
+
+    /// Membership heartbeat: upsert this instance's liveness row. Default: no-op.
+    async fn heartbeat_instance(&self, beat: &InstanceHeartbeat) -> Result<(), HistoryError> {
+        let _ = beat;
+        Ok(())
+    }
+
+    /// Live cluster members (last heartbeat within `ttl`). Default: none.
+    async fn live_instances(&self, ttl: Duration) -> Result<Vec<InstanceRecord>, HistoryError> {
+        let _ = ttl;
+        Ok(Vec::new())
     }
 
     /// True when the backend is in fallback mode (drives `/readyz`). Always false
@@ -321,6 +432,7 @@ mod tests {
     #[test]
     fn terminal_classification() {
         assert!(!RunStatus::Queued.is_terminal());
+        assert!(!RunStatus::Pending.is_terminal());
         assert!(!RunStatus::Running.is_terminal());
         assert!(RunStatus::Completed.is_terminal());
         assert!(RunStatus::Failed.is_terminal());
@@ -341,5 +453,44 @@ mod tests {
         assert_eq!(v["run_id"], "r1");
         // doctor_report is skipped when None.
         assert!(v.get("doctor_report").is_none());
+    }
+
+    #[test]
+    fn pending_is_non_terminal_and_serializes_snake_case() {
+        assert!(!RunStatus::Pending.is_terminal());
+        assert_eq!(RunStatus::Pending.as_str(), "pending");
+        let mut rec = RunRecord::queued("r".into(), None, Default::default(), None, Utc::now());
+        rec.status = RunStatus::Pending;
+        rec.attempt = 2;
+        let v = serde_json::to_value(&rec).unwrap();
+        assert_eq!(v["status"], "pending");
+        assert_eq!(v["attempt"], 2);
+        // Cluster config fields are skipped when absent.
+        assert!(v.get("config_body").is_none());
+    }
+
+    #[tokio::test]
+    async fn memory_backend_cluster_methods_are_inert() {
+        use crate::serve::history::memory::MemoryHistory;
+        let h = MemoryHistory::new(Duration::from_secs(60));
+        assert!(h.claim_pending(8).await.unwrap().is_empty());
+        assert_eq!(
+            h.reclaim_orphans(3).await.unwrap(),
+            ReclaimReport::default()
+        );
+        assert!(!h.cancel_pending("x").await.unwrap());
+        h.request_cancel("x").await.unwrap();
+        assert!(h.pending_cancellations().await.unwrap().is_empty());
+        assert!(
+            h.live_instances(Duration::from_secs(60))
+                .await
+                .unwrap()
+                .is_empty()
+        );
+
+        // finalize_owned's default delegates to upsert (single-process always owns).
+        let rec = RunRecord::queued("fo".into(), None, Default::default(), None, Utc::now());
+        assert!(h.finalize_owned(&rec).await.unwrap());
+        assert_eq!(h.get("fo").await.unwrap().unwrap().run_id, "fo");
     }
 }

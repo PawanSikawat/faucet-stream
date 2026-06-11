@@ -69,6 +69,33 @@ pub fn set_history_degraded(degraded: bool) {
     metrics::gauge!("faucet_serve_history_degraded").set(if degraded { 1.0 } else { 0.0 });
 }
 
+/// Count runs claimed by this instance's claim loop.
+pub fn record_runs_claimed(n: usize) {
+    metrics::counter!("faucet_serve_runs_claimed_total").increment(n as u64);
+}
+
+/// `1` when clustered execution is enabled for this instance, else `0`.
+pub fn set_cluster_enabled(on: bool) {
+    metrics::gauge!("faucet_serve_cluster_enabled").set(if on { 1.0 } else { 0.0 });
+}
+
+/// Live cluster member count (refreshed each lease-loop tick).
+pub fn set_cluster_instances(n: usize) {
+    metrics::gauge!("faucet_serve_cluster_instances").set(n as f64);
+}
+
+/// Count failover reclaims, split by outcome.
+pub fn record_runs_reclaimed(requeued: usize, failed: usize) {
+    // Emit both label series unconditionally (increment(0) is a no-op that still
+    // registers the series), so `outcome="requeued"`/`"failed"` exist from the
+    // first call — consistent with the other counters here and friendlier to
+    // `absent()`/`rate()` alerting.
+    metrics::counter!("faucet_serve_runs_reclaimed_total", "outcome" => "requeued")
+        .increment(requeued as u64);
+    metrics::counter!("faucet_serve_runs_reclaimed_total", "outcome" => "failed")
+        .increment(failed as u64);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

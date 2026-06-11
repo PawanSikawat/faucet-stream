@@ -176,12 +176,43 @@ paths:
   /readyz:
     get:
       summary: Readiness probe (unauthenticated)
-      description: 503 when the history backend is degraded or the run queue is full.
+      description: >
+        503 when the history backend is degraded or the run queue is full.
+        Always returns a JSON body with `status`, `history_ok`, `queue_ok`, and
+        a `cluster` object (`enabled` bool + `instances` live-member count).
       operationId: readyz
       security: []
       responses:
-        "200": { description: Ready to accept work. }
-        "503": { description: Not ready (history degraded or queue full). }
+        "200":
+          description: Ready to accept work.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: ready }
+                  history_ok: { type: boolean }
+                  queue_ok: { type: boolean }
+                  cluster:
+                    type: object
+                    properties:
+                      enabled: { type: boolean, description: "true when --cluster was set." }
+                      instances: { type: integer, description: "Live cluster member count (from last membership heartbeat)." }
+        "503":
+          description: Not ready (history degraded or queue full).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: not_ready }
+                  history_ok: { type: boolean }
+                  queue_ok: { type: boolean }
+                  cluster:
+                    type: object
+                    properties:
+                      enabled: { type: boolean }
+                      instances: { type: integer }
   /metrics:
     get:
       summary: Prometheus metrics (unauthenticated)
@@ -213,7 +244,12 @@ components:
   schemas:
     RunStatus:
       type: string
-      enum: [queued, running, completed, failed, cancelled]
+      enum: [pending, queued, running, completed, failed, cancelled]
+      description: >
+        `pending` — cluster mode only; stored in the shared DB awaiting a claim by any instance.
+        `queued` — claimed/admitted to the local execution queue.
+        `running` — actively executing.
+        `completed` / `failed` / `cancelled` — terminal states.
     SubmitRequest:
       type: object
       required: [config]

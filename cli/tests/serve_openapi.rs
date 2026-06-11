@@ -102,6 +102,9 @@ async fn every_documented_route_is_wired_on_the_live_server() {
         env_file: None,
         no_env_file: true,
         no_ui: false,
+        cluster: false,
+        cluster_poll_secs: 2,
+        cluster_max_attempts: 3,
     };
     let mut config = ServeConfig::from_args(args).unwrap();
     config.log_level = "warn".into();

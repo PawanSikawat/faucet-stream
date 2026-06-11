@@ -8,7 +8,10 @@
 //! migrated — degraded mode is a stay-alive fallback, not a replica.
 
 use super::memory::MemoryHistory;
-use super::{Claim, DeleteOutcome, HistoryError, ListFilter, ListPage, RunHistory, RunRecord};
+use super::{
+    Claim, DeleteOutcome, HistoryError, InstanceHeartbeat, InstanceRecord, ListFilter, ListPage,
+    ReclaimReport, RunHistory, RunRecord,
+};
 use async_trait::async_trait;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -150,6 +153,31 @@ impl RunHistory for FallbackHistory {
 
     async fn renew_leases(&self) -> Result<usize, HistoryError> {
         via!(self, p => p.renew_leases(), f => f.renew_leases())
+    }
+
+    async fn claim_pending(&self, limit: usize) -> Result<Vec<RunRecord>, HistoryError> {
+        via!(self, p => p.claim_pending(limit), f => f.claim_pending(limit))
+    }
+    async fn reclaim_orphans(&self, max_attempts: u32) -> Result<ReclaimReport, HistoryError> {
+        via!(self, p => p.reclaim_orphans(max_attempts), f => f.reclaim_orphans(max_attempts))
+    }
+    async fn finalize_owned(&self, rec: &RunRecord) -> Result<bool, HistoryError> {
+        via!(self, p => p.finalize_owned(rec), f => f.finalize_owned(rec))
+    }
+    async fn cancel_pending(&self, run_id: &str) -> Result<bool, HistoryError> {
+        via!(self, p => p.cancel_pending(run_id), f => f.cancel_pending(run_id))
+    }
+    async fn request_cancel(&self, run_id: &str) -> Result<(), HistoryError> {
+        via!(self, p => p.request_cancel(run_id), f => f.request_cancel(run_id))
+    }
+    async fn pending_cancellations(&self) -> Result<Vec<String>, HistoryError> {
+        via!(self, p => p.pending_cancellations(), f => f.pending_cancellations())
+    }
+    async fn heartbeat_instance(&self, beat: &InstanceHeartbeat) -> Result<(), HistoryError> {
+        via!(self, p => p.heartbeat_instance(beat), f => f.heartbeat_instance(beat))
+    }
+    async fn live_instances(&self, ttl: Duration) -> Result<Vec<InstanceRecord>, HistoryError> {
+        via!(self, p => p.live_instances(ttl), f => f.live_instances(ttl))
     }
 
     fn degraded(&self) -> bool {
