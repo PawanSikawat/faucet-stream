@@ -128,8 +128,8 @@ fn compose_document(path: &Path, visited: &mut Vec<PathBuf>, depth: usize) -> Cl
     Ok(result)
 }
 
-/// Parse one file into a `serde_json::Value`. (No `!include` resolution yet —
-/// added in the next task.)
+/// Parse one file into a `serde_json::Value`, resolving any `!include` tags
+/// (YAML only) before conversion.
 fn load_value(path: &Path) -> CliResult<JsonValue> {
     let text = std::fs::read_to_string(path).map_err(|source| CliError::ReadConfig {
         path: path.to_path_buf(),
@@ -137,11 +137,13 @@ fn load_value(path: &Path) -> CliResult<JsonValue> {
     })?;
     match format_of(path)? {
         Format::Yaml => {
-            let yv: serde_yaml::Value =
+            let mut yv: serde_yaml::Value =
                 serde_yaml::from_str(&text).map_err(|e| CliError::ParseConfig {
                     path: path.to_path_buf(),
                     message: e.to_string(),
                 })?;
+            let mut visited: Vec<PathBuf> = Vec::new();
+            resolve_includes(&mut yv, path, &mut visited, 0)?;
             yaml_to_json(yv, path)
         }
         Format::Json => serde_json::from_str(&text).map_err(|e| CliError::ParseConfig {
@@ -222,6 +224,104 @@ fn serialize_for(entry: &Path, merged: &JsonValue) -> CliResult<String> {
         Format::Json => serde_json::to_string_pretty(merged)
             .map_err(|e| CliError::Internal(format!("re-serialize composed config to JSON: {e}"))),
     }
+}
+
+/// Resolve `!include <path>` tags throughout a YAML value in place. Each tag's
+/// payload must be a string path, resolved relative to `including`'s directory.
+/// Recurses into the included fragment (which may itself contain `!include`s).
+fn resolve_includes(
+    yv: &mut serde_yaml::Value,
+    including: &Path,
+    visited: &mut Vec<PathBuf>,
+    depth: usize,
+) -> CliResult<()> {
+    use serde_yaml::Value as Y;
+    match yv {
+        Y::Tagged(tagged) => {
+            if tagged.tag == "include" {
+                let Y::String(rel) = &tagged.value else {
+                    return Err(CliError::BadInclude {
+                        path: including.to_path_buf(),
+                        reason: "`!include` payload must be a string path".into(),
+                    });
+                };
+                let dir = including.parent().unwrap_or_else(|| Path::new("."));
+                let target = resolve_rel(dir, rel);
+                if !target.exists() {
+                    return Err(CliError::IncludeNotFound {
+                        path: target,
+                        referenced_by: including.to_path_buf(),
+                    });
+                }
+                *yv = load_fragment(&target, visited, depth + 1)?;
+            } else {
+                return Err(CliError::BadInclude {
+                    path: including.to_path_buf(),
+                    reason: format!(
+                        "unsupported YAML tag '{}' (only `!include` is supported)",
+                        tagged.tag
+                    ),
+                });
+            }
+        }
+        Y::Mapping(map) => {
+            for v in map.values_mut() {
+                resolve_includes(v, including, visited, depth)?;
+            }
+        }
+        Y::Sequence(seq) => {
+            for v in seq.iter_mut() {
+                resolve_includes(v, including, visited, depth)?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+/// Load an `!include` target into a YAML value, resolving its own nested
+/// includes. Fragments are raw nodes — `extends`/`profiles` are NOT processed.
+/// A fragment's own top-level `extends`/`profiles` keys are therefore passed
+/// through as literal data (not stripped, not followed); if such a fragment is
+/// spliced where `PipelineConfig` is parsed, the leftover key surfaces as a
+/// `deny_unknown_fields` error downstream.
+fn load_fragment(path: &Path, visited: &mut Vec<PathBuf>, depth: usize) -> CliResult<serde_yaml::Value> {
+    if depth > MAX_COMPOSE_DEPTH {
+        return Err(CliError::CompositionDepthExceeded {
+            max: MAX_COMPOSE_DEPTH,
+        });
+    }
+    let key = cycle_key(path);
+    if visited.contains(&key) {
+        let mut chain: Vec<String> = visited.iter().map(|p| p.display().to_string()).collect();
+        chain.push(key.display().to_string());
+        return Err(CliError::CompositionCycle { chain });
+    }
+    visited.push(key);
+
+    let text = std::fs::read_to_string(path).map_err(|source| CliError::ReadConfig {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    let mut yv: serde_yaml::Value = match format_of(path)? {
+        Format::Yaml => serde_yaml::from_str(&text).map_err(|e| CliError::ParseConfig {
+            path: path.to_path_buf(),
+            message: e.to_string(),
+        })?,
+        Format::Json => {
+            let jv: JsonValue = serde_json::from_str(&text).map_err(|e| CliError::ParseConfig {
+                path: path.to_path_buf(),
+                message: e.to_string(),
+            })?;
+            serde_yaml::to_value(jv).map_err(|e| CliError::ParseConfig {
+                path: path.to_path_buf(),
+                message: format!("could not convert JSON fragment to YAML: {e}"),
+            })?
+        }
+    };
+    resolve_includes(&mut yv, path, visited, depth)?;
+    visited.pop();
+    Ok(yv)
 }
 
 #[cfg(test)]
@@ -389,5 +489,80 @@ mod tests {
         let v: JsonValue = serde_yaml::from_str(&compose(&app, None).unwrap()).unwrap();
         assert_eq!(v["pipeline"]["sink"]["config"]["path"], "base.jsonl");
         assert_eq!(v["pipeline"]["source"]["config"]["path"], "a.csv");
+    }
+
+    #[test]
+    fn include_substitutes_at_nested_map_position() {
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), "auth.yaml", "type: bearer\nconfig: { token: T }\n");
+        let app = write(
+            dir.path(),
+            "app.yaml",
+            "version: 1\npipeline:\n  source:\n    type: rest\n    config: { base_url: https://x }\n    auth: !include ./auth.yaml\n",
+        );
+        let v: JsonValue = serde_yaml::from_str(&compose(&app, None).unwrap()).unwrap();
+        assert_eq!(v["pipeline"]["source"]["auth"]["type"], "bearer");
+        assert_eq!(v["pipeline"]["source"]["auth"]["config"]["token"], "T");
+    }
+
+    #[test]
+    fn include_substitutes_a_sequence_fragment() {
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), "tx.yaml", "- { type: flatten }\n- { type: redact, config: { fields: [ssn] } }\n");
+        let app = write(
+            dir.path(),
+            "app.yaml",
+            "version: 1\npipeline:\n  source: { type: csv, config: { path: x.csv } }\n  sink: { type: jsonl, config: { path: o.jsonl } }\n  transforms: !include ./tx.yaml\n",
+        );
+        let v: JsonValue = serde_yaml::from_str(&compose(&app, None).unwrap()).unwrap();
+        assert_eq!(v["pipeline"]["transforms"][0]["type"], "flatten");
+        assert_eq!(v["pipeline"]["transforms"][1]["type"], "redact");
+    }
+
+    #[test]
+    fn include_combined_with_extends() {
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), "base.yaml", "version: 1\npipeline:\n  sink: { type: jsonl, config: { path: base.jsonl } }\n");
+        write(dir.path(), "src.yaml", "type: csv\nconfig: { path: from-include.csv }\n");
+        let app = write(
+            dir.path(),
+            "app.yaml",
+            "extends: ./base.yaml\npipeline:\n  source: !include ./src.yaml\n",
+        );
+        let v: JsonValue = serde_yaml::from_str(&compose(&app, None).unwrap()).unwrap();
+        assert_eq!(v["pipeline"]["source"]["config"]["path"], "from-include.csv");
+        assert_eq!(v["pipeline"]["sink"]["config"]["path"], "base.jsonl");
+    }
+
+    #[test]
+    fn include_non_string_payload_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let app = write(dir.path(), "app.yaml", "version: 1\nbad: !include { not: a-path }\n");
+        assert!(matches!(
+            compose(&app, None).unwrap_err(),
+            CliError::BadInclude { .. }
+        ));
+    }
+
+    #[test]
+    fn include_missing_file_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let app = write(dir.path(), "app.yaml", "version: 1\nx: !include ./nope.yaml\n");
+        assert!(matches!(
+            compose(&app, None).unwrap_err(),
+            CliError::IncludeNotFound { .. }
+        ));
+    }
+
+    #[test]
+    fn include_cycle_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), "a.yaml", "x: !include ./b.yaml\n");
+        write(dir.path(), "b.yaml", "y: !include ./a.yaml\n");
+        let a = dir.path().join("a.yaml");
+        assert!(matches!(
+            compose(&a, None).unwrap_err(),
+            CliError::CompositionCycle { .. }
+        ));
     }
 }
