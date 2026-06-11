@@ -1116,9 +1116,10 @@ mod tests {
             cluster,
         };
         // A backend that is degraded from startup (primary unreachable).
-        let history =
-            Arc::new(FallbackHistory::degraded_at_startup(Duration::from_secs(60), "test"))
-                as Arc<dyn RunHistory>;
+        let history = Arc::new(FallbackHistory::degraded_at_startup(
+            Duration::from_secs(60),
+            "test",
+        )) as Arc<dyn RunHistory>;
         assert!(history.degraded());
         let state = ServerState::new(
             &cfg,
