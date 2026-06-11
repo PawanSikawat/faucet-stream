@@ -1,0 +1,236 @@
+# Event-driven triggers (`faucet serve`)
+
+`faucet serve --triggers <file>` loads a static triggers file at startup and
+spawns long-lived watcher tasks. When a watcher fires, it enqueues a run
+through the same `runner::submit` pipeline as a normal `POST /v1/runs`,
+inheriting the full queue/semaphore/idempotency/history machinery.
+
+Requires the `triggers` Cargo feature (included in `full`):
+
+```bash
+cargo install faucet-cli --features triggers                   # framework + webhook only
+cargo install faucet-cli --features "triggers,triggers-object-store"   # + S3/GCS
+cargo install faucet-cli --features "triggers,triggers-redis"          # + Redis queue-depth
+cargo install faucet-cli --features full                               # everything
+```
+
+## Triggers file grammar
+
+```yaml
+version: 1          # required; must be 1
+triggers:
+  - name: <string>          # unique; used in metrics, idempotency keys, webhook path
+    enabled: true           # optional; default true — set false to disable without deleting
+    config: <path|inline>   # pipeline config: a file path string OR an inline pipeline doc
+    run:                    # optional run-shaping
+      name: <template>      # run name; supports {trigger_name}, {object_key}, {bucket}, etc.
+      labels: {}            # static labels merged with the auto-derived trigger labels
+      timeout_secs: null    # per-run timeout in seconds
+    debounce_secs: 0        # coalesce events within N seconds into one fire (default 0)
+    type: <trigger type>    # required; one of object_arrival, webhook, queue_depth
+    # … type-specific fields below
+```
+
+The `config:` field accepts either a **path string** (loaded relative to the
+triggers file at runtime) or an **inline pipeline document** (`{ pipeline: … }`).
+
+## Trigger types
+
+### `object_arrival`
+
+Polls an object store (S3 or GCS) for new objects under a prefix.
+
+Requires the `triggers-object-store` Cargo feature.
+
+```yaml
+type: object_arrival
+store:
+  type: s3                  # s3 | gcs
+  bucket: my-bucket         # required
+  prefix: incoming/         # key prefix to watch (optional; defaults to root)
+  region: us-east-1         # S3 only (optional)
+  endpoint: null            # S3 only — override endpoint URL for S3-compatible stores
+poll_interval_secs: 30      # how often to list the prefix (default 30)
+mode: per_object            # per_object (one run per new object) | batch (one run for all new objects)
+start_at: now               # now (only objects seen after startup) | beginning (all objects, incl. existing)
+```
+
+**`${trigger.*}` tokens injected into the run config:**
+
+| Token | Value |
+|-------|-------|
+| `${trigger.name}` | The trigger's `name` field |
+| `${trigger.type}` | `object_arrival` |
+| `${trigger.fired_at}` | ISO 8601 timestamp when the trigger fired |
+| `${trigger.object_key}` | The S3/GCS object key |
+| `${trigger.bucket}` | The S3/GCS bucket name |
+| `${trigger.size}` | Object size in bytes |
+| `${trigger.last_modified}` | RFC 3339 last-modified timestamp of the object |
+
+**Idempotency key:** `trigger:<name>:obj:<object_key>:<last_modified>` — deterministic per
+object version; re-listing a processed object does not enqueue a duplicate run.
+
+**`start_at: now` behaviour:** on first startup the watcher records the current set of keys as
+its cursor; only keys seen in subsequent polls are treated as new. Set `start_at: beginning` to
+fire for all objects currently in the prefix (use `mode: batch` to coalesce them into one run).
+
+### `webhook`
+
+Exposes `POST /v1/triggers/{name}` on the `faucet serve` listener. The
+endpoint is bearer-authenticated (same token as `/v1/runs`). Returns 202 on
+success, 404 for an unknown trigger name, and 400 when the HTTP method is not
+in the configured `methods` list.
+
+No additional Cargo features are required (the route is part of the base
+`triggers` feature, which implies `serve`).
+
+```yaml
+type: webhook
+methods: [POST]             # allowed HTTP methods (default [POST]); PUT also supported
+dedupe_header: null         # header used as idempotency key (optional; else a per-request UUID)
+```
+
+> **`dedupe_header` trust boundary:** the caller-supplied header value is used
+> verbatim as the run's idempotency key. A caller who controls this value can
+> suppress a legitimate run by reusing a key from a prior run. Only set
+> `dedupe_header` when callers are trusted or the header value is verified
+> upstream (e.g. by a gateway signing scheme or HMAC validation).
+
+> **Disallowed methods:** a request whose HTTP method is not in `methods` returns
+> 400 in v1 (not 405). This is intentional: the route itself exists for all
+> methods; the 400 carries a descriptive message.
+
+**`${trigger.*}` tokens:**
+
+| Token | Value |
+|-------|-------|
+| `${trigger.name}` | The trigger's `name` field |
+| `${trigger.type}` | `webhook` |
+| `${trigger.fired_at}` | ISO 8601 timestamp when the trigger fired |
+| `${trigger.method}` | HTTP method of the request (`POST`, `PUT`, …) |
+| `${trigger.body}` | Raw request body (string) |
+| `${trigger.header.<name>}` | Value of HTTP request header `<name>` |
+| `${trigger.query.<name>}` | Value of query parameter `<name>` |
+
+**Idempotency key:** `trigger:<name>:webhook:<dedupe_header_value>` when
+`dedupe_header` is set; otherwise `trigger:<name>:webhook:<random_uuid>`.
+
+Fire the webhook with `curl`:
+
+```bash
+curl -XPOST http://127.0.0.1:8080/v1/triggers/sync-hook \
+     -H "Authorization: Bearer s3cret" \
+     -H "Idempotency-Key: run-20260612-001" \
+     -H "Content-Type: application/json" \
+     -d '{}'
+```
+
+### `queue_depth`
+
+Polls a Redis list/stream or a Kafka consumer group lag metric. When the
+observed depth crosses `threshold`, the watcher fires once (edge-triggered).
+It will not fire again until the depth drops below the threshold and rises back.
+
+```yaml
+type: queue_depth
+queue:
+  type: redis               # redis | kafka
+  # Redis fields:
+  url: redis://localhost:6379
+  key: jobs                 # list key or stream name
+  kind: list                # list | stream (default list)
+  # Kafka fields:
+  # brokers: localhost:9092
+  # topic: events
+  # group: my-consumer-group
+threshold: 1                # fire when depth >= threshold (default 1)
+poll_interval_secs: 30      # polling interval (default 30)
+```
+
+Redis requires the `triggers-redis` feature; Kafka requires `triggers-kafka`.
+
+**`${trigger.*}` tokens:**
+
+| Token | Value |
+|-------|-------|
+| `${trigger.name}` | The trigger's `name` field |
+| `${trigger.type}` | `queue_depth` |
+| `${trigger.fired_at}` | ISO 8601 timestamp when the trigger fired |
+| `${trigger.queue}` | The queue key / topic name |
+| `${trigger.depth}` | Observed depth (as a string) that crossed the threshold |
+
+**Idempotency key:** `trigger:<name>:queue:<monotonic_edge_ordinal>` — the
+ordinal increments on each rising edge, producing a unique key per fire.
+
+## Labels on enqueued runs
+
+Every trigger-fired run receives these automatic labels (visible in
+`GET /v1/runs` responses and Prometheus metrics):
+
+| Label | Value |
+|-------|-------|
+| `faucet.trigger.name` | Trigger name |
+| `faucet.trigger.type` | Trigger type (`object_arrival`, `webhook`, `queue_depth`) |
+
+Additional labels can be added per trigger via `run.labels:`.
+
+## `/readyz` — trigger health
+
+`GET /readyz` includes a `triggers` array when `--triggers` is active:
+
+```json
+{
+  "status": "ready",
+  "history_ok": true,
+  "queue_ok": true,
+  "cluster": { "enabled": false, "instances": 0 },
+  "triggers": [
+    { "name": "load-dropped-files", "healthy": true },
+    { "name": "sync-hook",          "healthy": true },
+    { "name": "drain-jobs",         "healthy": true }
+  ]
+}
+```
+
+A degraded watcher (crashed and backing off) sets its `healthy` flag to `false`
+but does **not** flip the top-level `status` to `not_ready` — the server keeps
+accepting runs from the other trigger paths.
+
+## Schema introspection
+
+```bash
+faucet schema triggers     # print the JSON Schema for the triggers file
+```
+
+## Metrics
+
+| Metric | Type | Labels | Description |
+|--------|------|--------|-------------|
+| `faucet_serve_triggers_active` | Gauge | — | Number of enabled, running trigger watchers |
+| `faucet_serve_trigger_healthy` | Gauge | `trigger`, `type` | 1 = healthy, 0 = in error backoff |
+| `faucet_serve_trigger_last_fire_unix_seconds` | Gauge | `trigger`, `type` | Unix timestamp of last fire |
+| `faucet_serve_triggers_fired_total` | Counter | `trigger`, `type` | Total trigger fires |
+| `faucet_serve_trigger_runs_enqueued_total` | Counter | `trigger` | Runs successfully enqueued |
+| `faucet_serve_trigger_runs_coalesced_total` | Counter | `trigger` | Fires suppressed by debounce |
+| `faucet_serve_trigger_runs_dropped_total` | Counter | `trigger`, `reason` | Fires dropped (idempotency hit, queue full, etc.) |
+| `faucet_serve_trigger_errors_total` | Counter | `trigger`, `type` | Watcher errors (poll failures, etc.) |
+
+## Cluster note
+
+When running a cluster (`--cluster` + shared `--history` DB), every instance
+loads the same `--triggers` file and spawns independent watchers. Idempotency
+keys are deterministic (derived from object key + last_modified, the
+dedupe header value, or a rising-edge ordinal), so concurrent fires from
+multiple instances resolve to a single run via the shared idempotency claim.
+No additional coordination is required.
+
+## Feature flags
+
+| Feature | Contents |
+|---------|----------|
+| `triggers` | Framework, supervisor, webhook trigger (implies `serve`) |
+| `triggers-object-store` | `object_arrival` watcher (S3/GCS listing) |
+| `triggers-redis` | `queue_depth` watcher backed by Redis |
+| `triggers-kafka` | `queue_depth` watcher backed by Kafka consumer-group lag |
+
+All four are included in `full` and none are in `default`.
