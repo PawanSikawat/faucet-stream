@@ -202,7 +202,79 @@ Auth is mandatory: without `--auth-token`/`FAUCET_SERVE_AUTH_TOKEN` **and** with
 | `--cluster` | Enable clustered execution: all instances sharing the same `--history` DB pull-balance `pending` runs and provide crash-failover. Requires a persistent `--history` backend. See the [cluster cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/cluster.html). |
 | `--cluster-poll-secs <n>` | Claim-loop poll interval in seconds (default `2`). Also the maximum cross-instance cancel propagation lag. |
 | `--cluster-max-attempts <n>` | Maximum attempts per run (including crash-failovers) before it is poisoned as `failed` (default `3`). |
+| `--triggers <path>` | Path to a triggers file (YAML) defining event-driven watchers. Requires the `triggers` Cargo feature. See [Event-driven triggers](#event-driven-triggers-triggers). |
 | `--body-limit-bytes`, `--shutdown-grace-secs`, `--retain-terminal-runs-secs`, `--idempotency-retention-secs`, `--probe-timeout-secs` | Tuning knobs. |
+
+#### Event-driven triggers (`--triggers`)
+
+`--triggers <file>` loads a static triggers file at startup and spawns long-lived watcher tasks.
+When a watcher fires, it enqueues a run through the same pipeline as `POST /v1/runs`, reusing the
+full queue / idempotency / history / metrics machinery.
+
+Three trigger types are available:
+
+| Type | What it watches | Requires feature |
+|------|----------------|-----------------|
+| `object_arrival` | New S3 or GCS objects under a prefix | `triggers-object-store` |
+| `webhook` | `POST /v1/triggers/{name}` (bearer-gated) | `triggers` |
+| `queue_depth` | Redis list/stream depth or Kafka consumer-group lag | `triggers-redis` / `triggers-kafka` |
+
+```yaml
+# triggers.yaml
+version: 1
+triggers:
+  # Fire for every new S3 object; ${trigger.object_key} is injected into the run config
+  - name: load-files
+    type: object_arrival
+    config: ./my_pipeline.yaml
+    store: { type: s3, bucket: my-bucket, prefix: incoming/, region: us-east-1 }
+    poll_interval_secs: 30
+    mode: per_object
+    start_at: now
+
+  # Fire when POST /v1/triggers/sync-hook is called
+  - name: sync-hook
+    type: webhook
+    config: ./csv_to_jsonl.yaml
+    dedupe_header: Idempotency-Key
+
+  # Fire when a Redis list depth reaches >= 1
+  - name: drain-jobs
+    type: queue_depth
+    config: ./redis_to_sqlite.yaml
+    queue: { type: redis, url: redis://localhost:6379, key: jobs, kind: list }
+    threshold: 1
+    poll_interval_secs: 15
+```
+
+```bash
+# Start with event-driven triggers
+FAUCET_SERVE_AUTH_TOKEN=s3cret \
+faucet serve --listen 0.0.0.0:8080 --triggers triggers.yaml
+
+# Fire the webhook trigger manually
+curl -XPOST http://localhost:8080/v1/triggers/sync-hook \
+     -H "Authorization: Bearer s3cret" \
+     -H "Idempotency-Key: run-001" -d '{}'
+
+# Print the JSON Schema for the triggers file format
+faucet schema triggers
+```
+
+Each trigger emits `faucet_serve_triggers_fired_total{trigger,type}`,
+`faucet_serve_trigger_healthy{trigger,type}`, and related Prometheus metrics.
+`GET /readyz` includes a `triggers` array showing per-watcher health.
+
+See the [triggers cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/triggers.html)
+for detailed walkthroughs and the [triggers reference](https://pawansikawat.github.io/faucet-stream/reference/triggers.html)
+for the full field reference.
+
+Requires the `triggers` feature family (included in `full`):
+
+```bash
+cargo install faucet-cli --features "triggers,triggers-object-store,triggers-redis,triggers-kafka"
+cargo install faucet-cli --features full    # all features
+```
 
 #### Clustered execution (`--cluster`)
 

@@ -17,8 +17,8 @@ use faucet_cli::serve::ServeConfig;
 use std::collections::BTreeSet;
 use std::time::Duration;
 
-/// Canonical (METHOD, path-template) set — mirrors `serve::server::build_router`.
-const ROUTES: &[(&str, &str)] = &[
+/// Base (METHOD, path-template) set — always-present routes in `serve::server::build_router`.
+const ROUTES_BASE: &[(&str, &str)] = &[
     ("POST", "/v1/runs"),
     ("GET", "/v1/runs"),
     ("GET", "/v1/runs/{id}"),
@@ -33,6 +33,24 @@ const ROUTES: &[(&str, &str)] = &[
     ("GET", "/metrics"),
 ];
 
+/// Routes that are only registered when the `triggers` feature is compiled in.
+#[cfg(feature = "triggers")]
+const ROUTES_TRIGGERS: &[(&str, &str)] = &[("POST", "/v1/triggers/{name}")];
+
+/// Returns the full canonical route set for the current feature configuration.
+fn canonical_routes() -> BTreeSet<(String, String)> {
+    #[allow(unused_mut)]
+    let mut set: BTreeSet<(String, String)> = ROUTES_BASE
+        .iter()
+        .map(|(m, p)| (m.to_string(), p.to_string()))
+        .collect();
+    #[cfg(feature = "triggers")]
+    for (m, p) in ROUTES_TRIGGERS {
+        set.insert((m.to_string(), p.to_string()));
+    }
+    set
+}
+
 fn openapi_routes() -> BTreeSet<(String, String)> {
     let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../docs/openapi.yaml");
     let text = std::fs::read_to_string(path).expect("read docs/openapi.yaml");
@@ -42,6 +60,13 @@ fn openapi_routes() -> BTreeSet<(String, String)> {
     let paths = doc["paths"].as_mapping().expect("paths mapping");
     for (path, ops) in paths {
         let path = path.as_str().unwrap().to_string();
+        // Skip trigger routes when the `triggers` feature is not compiled in —
+        // the openapi spec documents all routes, but only a subset are wired
+        // for a given feature combination.
+        #[cfg(not(feature = "triggers"))]
+        if path.starts_with("/v1/triggers") {
+            continue;
+        }
         let ops = ops.as_mapping().unwrap();
         for (method, _) in ops {
             let m = method.as_str().unwrap().to_ascii_lowercase();
@@ -56,10 +81,7 @@ fn openapi_routes() -> BTreeSet<(String, String)> {
 #[test]
 fn openapi_paths_match_canonical_routes() {
     let documented = openapi_routes();
-    let canonical: BTreeSet<(String, String)> = ROUTES
-        .iter()
-        .map(|(m, p)| (m.to_string(), p.to_string()))
-        .collect();
+    let canonical = canonical_routes();
 
     let undocumented: Vec<_> = canonical.difference(&documented).collect();
     let unrouted: Vec<_> = documented.difference(&canonical).collect();
@@ -131,7 +153,17 @@ async fn every_documented_route_is_wired_on_the_live_server() {
     }
     assert!(up, "server did not come up");
 
-    for (method, template) in ROUTES {
+    // The webhook trigger route is only wired when --triggers is active; the
+    // test server starts with triggers_path: None so we probe only base routes.
+    #[cfg(not(feature = "triggers"))]
+    let routes = canonical_routes();
+    #[cfg(feature = "triggers")]
+    let routes: BTreeSet<(String, String)> = canonical_routes()
+        .into_iter()
+        .filter(|(_, p)| !p.starts_with("/v1/triggers"))
+        .collect();
+
+    for (method, template) in &routes {
         // Unknown id so {id} routes hit their handler's NotFound, not bare 404.
         let path = template.replace("{id}", "probe-missing-run");
         let url = format!("{base}{path}");
