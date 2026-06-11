@@ -41,7 +41,7 @@ impl Registry {
     /// Release a slot reserved by `try_reserve` that will not be spawned
     /// (idempotency replay/conflict).
     pub fn release_reservation(&self) {
-        self.queued.fetch_sub(1, Ordering::AcqRel);
+        self.dec_queued();
     }
 
     pub fn register(&self, run_id: String, token: CancellationToken) {
@@ -50,13 +50,20 @@ impl Registry {
 
     /// Queued → running: the run acquired its execution permit.
     pub fn mark_running(&self) {
-        self.queued.fetch_sub(1, Ordering::AcqRel);
+        self.dec_queued();
+        self.in_flight.fetch_add(1, Ordering::AcqRel);
+    }
+
+    /// Running transition for a run that never occupied a local queue slot (the
+    /// cluster claim path: `submit` writes Pending + releases its reservation, so
+    /// no queued slot exists to consume). Only bumps `in_flight`.
+    pub fn mark_running_unqueued(&self) {
         self.in_flight.fetch_add(1, Ordering::AcqRel);
     }
 
     /// Running → terminal: drop the token and wake any shutdown drain waiter.
     pub fn mark_finished(&self, run_id: &str) {
-        self.in_flight.fetch_sub(1, Ordering::AcqRel);
+        self.dec_in_flight();
         self.tokens.remove(run_id);
         self.drained.notify_waiters();
     }
@@ -67,9 +74,24 @@ impl Registry {
     /// drain waiter. Distinct from [`Self::mark_finished`], which decrements
     /// `in_flight` (#146 R: a cancel on a queued run now takes effect at once).
     pub fn mark_queued_cancelled(&self, run_id: &str) {
-        self.queued.fetch_sub(1, Ordering::AcqRel);
+        self.dec_queued();
         self.tokens.remove(run_id);
         self.drained.notify_waiters();
+    }
+
+    /// Saturating decrement of `queued` (never wraps below 0 — a wrap to
+    /// usize::MAX would permanently fail `try_reserve` and wedge the server).
+    fn dec_queued(&self) {
+        let _ = self
+            .queued
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |q| Some(q.saturating_sub(1)));
+    }
+
+    /// Saturating decrement of `in_flight`.
+    fn dec_in_flight(&self) {
+        let _ = self
+            .in_flight
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| Some(n.saturating_sub(1)));
     }
 
     /// Cancel a live run. Returns `true` if a live token existed.
@@ -135,6 +157,28 @@ mod tests {
         assert_eq!(r.in_flight(), 1);
         r.mark_finished("x");
         assert_eq!(r.in_flight(), 0);
+    }
+
+    #[test]
+    fn mark_running_unqueued_only_bumps_in_flight() {
+        let r = Registry::new(4);
+        // No reservation taken (cluster claim path).
+        r.mark_running_unqueued();
+        assert_eq!(r.queued(), 0, "queued must NOT be decremented (no slot was held)");
+        assert_eq!(r.in_flight(), 1);
+        r.mark_finished("x");
+        assert_eq!(r.in_flight(), 0);
+        assert_eq!(r.queued(), 0);
+    }
+
+    #[test]
+    fn queued_decrement_saturates_at_zero() {
+        let r = Registry::new(4);
+        // A spurious decrement at 0 must NOT wrap to usize::MAX (that would
+        // permanently fail try_reserve and wedge backpressure — #228).
+        r.mark_running(); // dec_queued() at 0 + in_flight++
+        assert_eq!(r.queued(), 0, "saturating: stays 0, never usize::MAX");
+        assert!(r.try_reserve(), "try_reserve still works (queued not wrapped)");
     }
 
     #[test]

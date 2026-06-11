@@ -81,21 +81,19 @@ async fn concurrent_claims_partition_the_pending_set() {
 // finish every run. The assertion confirms all runs reach a terminal state on
 // the survivor (proving cross-instance reassignment).
 //
-// CURRENTLY BLOCKED ON A REAL BUG (#228): the first cluster run an instance
-// executes underflows the `queued` backpressure counter in serve/registry.rs to
-// usize::MAX (execute_run calls mark_running()'s queued-=1, but a cluster run
-// never reserved a local queue slot), which panics the worker threads in debug
-// and wedges backpressure (permanent 429) in release. This test surfaces that
-// bug; un-`#[ignore]` it once #228 is fixed. The deterministic in-process
-// failover tests above are unaffected (they don't drive execute_run).
+// This test caught bug #228: the first cluster run an instance executed
+// underflowed the `queued` backpressure counter in serve/registry.rs to
+// usize::MAX (execute_run called mark_running()'s queued-=1, but a cluster run
+// never reserved a local queue slot), which panicked the worker threads in
+// debug and wedged backpressure (permanent 429) in release. Fixed by
+// `mark_running_unqueued` on the claim path + saturating counter decrements.
 //
-// To run manually (against a build that has fixed #228):
+// To run explicitly:
 //   cargo test -p faucet-cli \
 //     --features serve,serve-history-sqlite,source-csv,sink-jsonl \
-//     --test serve_cluster two_process_cluster -- --ignored --nocapture
+//     --test serve_cluster two_process_cluster -- --nocapture
 #[cfg(unix)]
 #[tokio::test]
-#[ignore = "two-process SQLite cluster test; blocked on bug #228 (queued-counter underflow on first claimed run) + cross-process orchestration sensitivity. The in-process tests cover claim/reclaim/fence deterministically. Run manually with --ignored once #228 is fixed."]
 async fn two_process_cluster_reassigns_on_kill() {
     use std::process::{Child, Command};
     use tokio::time::sleep;

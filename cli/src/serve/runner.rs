@@ -132,6 +132,7 @@ pub fn resume_claimed_run(state: ServerState, rec: RunRecord) {
             rec.submitted_at,
             rec.timeout_secs,
             rec.clock.clone(),
+            false,
         )
         .await;
     });
@@ -502,6 +503,7 @@ fn spawn_run(
             submitted_at,
             req.timeout_secs,
             req.clock,
+            true,
         )
         .await;
         // `_permit` drops here.
@@ -511,6 +513,8 @@ fn spawn_run(
 /// The queued→running→finalize execution tail, shared by the submit path
 /// (`spawn_run`) and the cluster claim path (`resume_claimed_run`). Assumes the
 /// caller already holds an execution permit and has registered `run_token`.
+/// `from_queue` is `true` when the run consumed a local queue slot (submit path)
+/// and `false` for a cluster claim-path run that never reserved one (#228).
 #[allow(clippy::too_many_arguments)]
 async fn execute_run(
     state: ServerState,
@@ -520,13 +524,20 @@ async fn execute_run(
     submitted_at: DateTime<Utc>,
     timeout_secs: Option<u64>,
     clock_flag: Option<String>,
+    from_queue: bool,
 ) {
     let server_shutdown = state.shutdown_token();
     let LoadedSubmission { cfg, nodes } = loaded;
 
     // Queued → running. From here the guard guarantees `mark_finished` (and a
     // gauge refresh) on EVERY exit, including early returns and panics.
-    state.registry().mark_running();
+    // A submit-path run consumed a local queue slot (Queued→Running); a cluster
+    // claim-path run never did (#228) — only bump in_flight for it.
+    if from_queue {
+        state.registry().mark_running();
+    } else {
+        state.registry().mark_running_unqueued();
+    }
     let _guard = InFlightGuard {
         state: state.clone(),
         run_id: run_id.clone(),
