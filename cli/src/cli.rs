@@ -283,6 +283,9 @@ pub enum SchemaTarget {
     /// JSON Schema for the `lineage:` (OpenLineage) block.
     #[cfg(feature = "lineage")]
     Lineage,
+    /// JSON Schema for the `--triggers` file (event-driven pipeline triggers).
+    #[cfg(feature = "triggers")]
+    Triggers,
 }
 
 /// `faucet preview` arguments.
