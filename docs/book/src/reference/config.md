@@ -67,6 +67,74 @@ each. Highlights:
 - `filter` — keep records where a JSONPath predicate is true. See the cookbook for the operator set and path syntax.
 - `explode` — expand an array field into one record per element. See the cookbook for the merge rule and `on_missing` semantics.
 
+## Config composition
+
+Three top-level mechanisms let a config be assembled from reusable pieces.
+They are resolved when the file is read, **before** any `${...}` interpolation.
+
+| Mechanism | Form | Effect |
+|-----------|------|--------|
+| `extends:` | `extends: ./base.yaml` or a list | Inherit one or more base files; the child deep-merges on top. |
+| `profiles:` | `profiles: { dev: {…}, prod: {…} }` | Named overlays, selected at run time with `--profile NAME` / `FAUCET_PROFILE`. |
+| `!include` | `key: !include ./frag.yaml` | Substitute a YAML fragment at any node (**YAML only**). |
+
+```yaml
+# app.yaml — inherits a base and pulls in a transform fragment.
+extends: ./base.yaml          # single path, or a list (merged left-to-right)
+pipeline:
+  transforms: !include ./transforms.yaml
+```
+
+```yaml
+# base.yaml — shared connection + sink, with named per-environment overlays.
+version: 1
+name: composed-pipeline
+pipeline:
+  source: { type: csv,   config: { path: ./data/input.csv } }
+  sink:   { type: jsonl, config: { path: ./out/dev.jsonl } }
+profiles:
+  dev:  { pipeline: { sink: { config: { path: ./out/dev.jsonl } } } }
+  prod: { pipeline: { sink: { config: { path: ./out/prod.jsonl } } } }
+```
+
+- **`extends`** — relative paths resolve against the directory of the file that
+  declares them. A list of bases merges left-to-right; the child document
+  overrides them all. Bases may themselves `extends:` further files (depth-capped,
+  cycle-detected).
+- **`profiles`** — nothing is applied unless a profile is selected. Select with
+  `--profile prod` or `FAUCET_PROFILE=prod`; **the flag overrides the env var**.
+  An undeclared name is a load-time error.
+- **`!include`** — a YAML tag (no JSON equivalent) that replaces the tagged node
+  with the parsed contents of another YAML file (sequence, mapping, or scalar).
+  Paths resolve against the including file's directory.
+
+**Merge rule and precedence.** Everything composes with the same deep-merge used
+by `matrix` rows (objects merge recursively, arrays replace wholesale, scalars
+replace). Lowest-to-highest priority (last wins):
+
+```
+extended base(s)  →  child document  →  selected profile  →  matrix row
+```
+
+**Load-time ordering.** Composition runs first, then interpolation:
+
+1. **Composition** — `extends` / `!include` stitched, then the selected
+   `profile` overlaid; the `extends:` / `profiles:` metadata keys are stripped.
+2. `${env:…}` / `${file:…}` / `${secret:…}`, then `${vars.X}` and
+   `${sources.X}` / `${sinks.X}` (see [Interpolation](#interpolation)).
+3. Secrets-manager directives (`${vault:…}` etc.).
+4. `matrix` expansion.
+
+**Inspect the result** with `faucet validate --show-composed` — it prints the
+fully composed document (bases merged, profile applied, fragments substituted,
+metadata stripped) before interpolation.
+
+> **Composition is file-loads-only.** `extends` / `profiles` / `!include` apply
+> to configs faucet reads from disk (`run`, `validate`, `preview`, `doctor`,
+> `schedule`). They are **not** honored for configs submitted to `faucet serve`
+> over HTTP — a submitted body is a single self-contained document with no
+> filesystem access. See the [config-composition cookbook](../cookbook/composition.md).
+
 ## Interpolation
 
 Three stages resolve placeholders:

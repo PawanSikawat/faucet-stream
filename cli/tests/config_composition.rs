@@ -96,6 +96,17 @@ fn show_composed_prints_merged_config_with_profile_applied() {
 }
 
 #[test]
+fn shipped_compose_example_validates_under_each_profile() {
+    let app = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/compose/app.yaml");
+    for profile in ["dev", "prod"] {
+        faucet()
+            .args(["validate", app.to_str().unwrap(), "--profile", profile, "--no-secrets"])
+            .assert()
+            .success();
+    }
+}
+
+#[test]
 fn unknown_profile_fails_clearly() {
     let dir = tempfile::tempdir().unwrap();
     fs::write(

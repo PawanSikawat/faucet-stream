@@ -1,0 +1,28 @@
+# Shared base — connection + sink target reused across pipelines.
+# Select an environment overlay at run time, e.g. (from the repo root):
+#   faucet run cli/examples/compose/app.yaml --profile prod
+version: 1
+name: composed-pipeline
+pipeline:
+  source:
+    type: csv
+    config:
+      path: ./data/input.csv
+  sink:
+    type: jsonl
+    config:
+      path: ./out/output.jsonl   # neutral default — overridden per-env by the profiles below
+
+# Named overlays selected at run time via --profile / FAUCET_PROFILE.
+# Each profile points the sink at an environment-specific file.
+profiles:
+  dev:
+    pipeline:
+      sink:
+        config:
+          path: ./out/dev.jsonl
+  prod:
+    pipeline:
+      sink:
+        config:
+          path: ./out/prod.jsonl

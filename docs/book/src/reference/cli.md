@@ -35,6 +35,7 @@ Flags:
 | Flag | Purpose |
 |------|---------|
 | `--clock <value>` | Override the clock used by `${now.*}` tokens. Accepts an RFC 3339 timestamp (`2026-03-01T00:00:00Z`) or a bare date (`2026-03-01`, treated as midnight UTC). Default: process start time in UTC. Use this for backfills — run the same config with a different date without changing the file. |
+| `--profile <name>` | Select a named overlay from the config's `profiles:` block (see [Config composition](config.md#config-composition)). Overrides `FAUCET_PROFILE`. |
 | `--env-file <path>` / `--no-env-file` | Same `.env` handling as `validate` / `preview`. |
 | `--from-env` | Build the pipeline entirely from `FAUCET_*` environment variables; mutually exclusive with a positional config path. |
 
@@ -65,6 +66,23 @@ development before vault access is available:
 faucet validate --no-secrets pipeline.yaml
 ```
 
+### Composition flags
+
+When a config uses [composition](config.md#config-composition) (`extends:` /
+`profiles:` / `!include`), `validate` resolves it like `run` does:
+
+```bash
+faucet validate app.yaml --profile prod        # select a named overlay
+faucet validate app.yaml --show-composed       # print the fully merged config
+```
+
+- `--profile <name>` selects a named overlay from `profiles:` (also settable via
+  `FAUCET_PROFILE`; the flag wins). An undeclared name is a clear load-time error.
+- `--show-composed` prints the fully composed document — bases merged, the
+  selected profile applied, `!include` fragments substituted, and the
+  `extends:` / `profiles:` metadata stripped — *before* `${...}` interpolation.
+  It's the fastest way to confirm a multi-file setup resolves to what you expect.
+
 ## `preview`
 
 Runs the first root row's source and prints records (via the stdout sink).
@@ -73,7 +91,11 @@ Children aren't previewed because they need parent records to resolve
 
 ```bash
 faucet preview pipeline.yaml --limit 10
+faucet preview app.yaml --profile dev --limit 5   # preview with a named profile overlay
 ```
+
+`--profile <name>` / `FAUCET_PROFILE` selects a named overlay from `profiles:` before
+previewing. Same semantics as `run` and `validate`.
 
 ## `schema`
 
@@ -109,6 +131,7 @@ mode (`--interactive`) is gated behind the `cli-interactive` feature.
 faucet doctor pipeline.yaml                  # checklist; exit code = # of failed probes
 faucet doctor pipeline.yaml --timeout-secs 5 # per-probe timeout (default 10)
 faucet doctor pipeline.yaml --json           # machine-readable, for CI gating
+faucet doctor app.yaml --profile prod        # probe with a named profile overlay applied
 ```
 
 Runs a fast, **non-mutating** preflight against every connector in the config so
@@ -129,6 +152,9 @@ Child invocations (parent/child matrix rows) are listed but not probed — their
 configs depend on parent records that only exist at run time. Probe messages are
 scrubbed for resolved secrets before printing.
 
+`--profile <name>` / `FAUCET_PROFILE` selects a named overlay from `profiles:` before
+probing (same semantics as `run` and `validate`).
+
 See the [Troubleshooting](../cookbook/troubleshooting.md) cookbook page for
 reading the output and common failures.
 
@@ -139,6 +165,7 @@ faucet schedule pipeline.yaml                  # run on cron schedule, foregroun
 faucet schedule pipeline.yaml --once           # run exactly once now, then exit
 faucet schedule pipeline.yaml --env-file prod.env
 faucet schedule pipeline.yaml --no-env-file
+faucet schedule app.yaml --profile prod        # schedule with a named profile overlay applied
 ```
 
 Runs a pipeline on a recurring cron schedule in a **long-running foreground process**. The config
@@ -157,6 +184,7 @@ Flags:
 | Flag | Purpose |
 |------|---------|
 | `--once` | Run exactly once now, then exit. Ignores cron timing. |
+| `--profile <name>` | Select a named overlay from `profiles:` (also settable via `FAUCET_PROFILE`; the flag wins). Same semantics as `run` / `validate`. |
 | `--env-file <path>` / `--no-env-file` | Same `.env` handling as `run` / `validate`. |
 
 See the [scheduling cookbook](../cookbook/scheduling.md) for worked examples, the overlap-policy
