@@ -74,6 +74,19 @@ pub fn record_runs_claimed(n: usize) {
     let _ = n;
 }
 
+/// (Body added in Task 11.) `1` when clustered execution is enabled, else `0`.
+pub fn set_cluster_enabled(on: bool) {
+    let _ = on;
+}
+/// (Body added in Task 11.) Live cluster member count.
+pub fn set_cluster_instances(n: usize) {
+    let _ = n;
+}
+/// (Body added in Task 11.) Count failover reclaims by outcome.
+pub fn record_runs_reclaimed(requeued: usize, failed: usize) {
+    let _ = (requeued, failed);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
