@@ -497,6 +497,11 @@ fn friendly_parse_error(raw: &str) -> String {
             "{raw}\n\nhint: top-level `source:` / `sink:` is no longer supported. Wrap them in a `pipeline:` block — see `faucet init` for the new shape."
         );
     }
+    if lower.contains("unknown field `extends`") || lower.contains("unknown field `profiles`") {
+        return format!(
+            "{raw}\n\nhint: config composition (`extends` / `profiles` / `!include`) is resolved only for file-based loads, not for configs submitted to `faucet serve` — resolve composition before submitting."
+        );
+    }
     raw.to_owned()
 }
 
@@ -1124,6 +1129,19 @@ pipeline:
         // --profile prod → overridden sink path.
         let cfg = PipelineConfig::from_path(&app, Some("prod")).unwrap();
         assert_eq!(cfg.pipeline.sink.as_ref().unwrap().config["path"], "prod.jsonl");
+    }
+
+    #[test]
+    fn from_value_rejects_extends_with_composition_hint() {
+        // A submitted body (serve path) must not silently accept `extends`.
+        let v = serde_json::json!({
+            "version": 1,
+            "extends": "base.yaml",
+            "pipeline": { "source": { "type": "csv", "config": {} }, "sink": { "type": "jsonl", "config": {} } }
+        });
+        let err = PipelineConfig::from_value(v).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("composition"), "expected composition hint, got: {msg}");
     }
 
     #[test]
