@@ -18,6 +18,7 @@ fn run_args(config: PathBuf) -> faucet_cli::cli::RunArgs {
         limit: None,
         state_path: None,
         clock: None,
+        profile: None,
     }
 }
 
