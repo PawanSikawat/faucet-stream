@@ -2,6 +2,7 @@
 //! `faucet` binary.
 
 use assert_cmd::Command;
+use predicates::prelude::*;
 use std::fs;
 
 fn faucet() -> Command {
@@ -71,6 +72,27 @@ fn env_profile_is_honored_and_flag_overrides_it() {
         !dir.path().join("dev.jsonl").exists(),
         "dev sink must NOT be written — --profile prod overrides FAUCET_PROFILE=dev"
     );
+}
+
+#[test]
+fn show_composed_prints_merged_config_with_profile_applied() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::write(
+        dir.path().join("base.yaml"),
+        "version: 1\npipeline:\n  source: { type: csv, config: { path: x.csv } }\n  sink: { type: jsonl, config: { path: base.jsonl } }\nprofiles:\n  prod:\n    pipeline:\n      sink: { config: { path: prod.jsonl } }\n",
+    )
+    .unwrap();
+    let app = dir.path().join("app.yaml");
+    fs::write(&app, "extends: ./base.yaml\n").unwrap();
+
+    faucet()
+        .args(["validate", app.to_str().unwrap(), "--profile", "prod", "--show-composed", "--no-secrets"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("prod.jsonl"))      // profile applied
+        .stdout(predicates::str::contains("base.jsonl").not()) // base sink overridden
+        .stdout(predicates::str::contains("profiles:").not())  // metadata stripped
+        .stdout(predicates::str::contains("extends:").not());
 }
 
 #[test]

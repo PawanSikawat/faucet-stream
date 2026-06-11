@@ -232,6 +232,11 @@ pub struct ValidateArgs {
     /// it over the composed base. Overrides the `FAUCET_PROFILE` env var.
     #[arg(long, env = "FAUCET_PROFILE")]
     pub profile: Option<String>,
+    /// Print the fully-composed config (after extends/!include/profile, before
+    /// `${...}` interpolation) and exit. For debugging composition precedence.
+    /// `--no-secrets` is redundant here (no interpolation or secret fetch occurs).
+    #[arg(long)]
+    pub show_composed: bool,
 }
 
 /// `faucet schema` arguments.

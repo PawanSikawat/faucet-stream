@@ -22,6 +22,17 @@ pub async fn run(args: ValidateArgs) -> CliResult<()> {
         Some(p) => p,
         None => crate::env_loader::discover_config_path(&cwd).ok_or(CliError::NoConfigOrFromEnv)?,
     };
+
+    if args.show_composed {
+        let composed = crate::compose::compose(&path, args.profile.as_deref())?;
+        // Normalize to exactly one trailing newline: the YAML serializer appends
+        // one but `serde_json::to_string_pretty` (JSON-format configs) does not,
+        // and the fast path echoes the file verbatim. A single `\n` keeps
+        // `faucet validate … --show-composed > out.{yaml,json}` well-formed.
+        println!("{}", composed.trim_end_matches('\n'));
+        return Ok(());
+    }
+
     let cfg = if args.no_secrets {
         // Grammar / structure only — never touch the network.
         PipelineConfig::from_path_tolerating_secrets(&path, args.profile.as_deref())?
