@@ -31,6 +31,8 @@ struct Inner {
     idempotency_retention: Duration,
     probe_timeout: Duration,
     cluster: crate::serve::cluster::ClusterHandle,
+    #[cfg(feature = "triggers")]
+    triggers: crate::serve::triggers::health::TriggersHandle,
 }
 
 impl ServerState {
@@ -42,6 +44,7 @@ impl ServerState {
         history: Arc<dyn RunHistory>,
         log_hub: LogHub,
         default_base: Option<Value>,
+        #[cfg(feature = "triggers")] triggers: crate::serve::triggers::health::TriggersHandle,
     ) -> Self {
         Self {
             inner: Arc::new(Inner {
@@ -56,6 +59,8 @@ impl ServerState {
                 idempotency_retention: config.idempotency_retention,
                 probe_timeout: config.probe_timeout,
                 cluster: crate::serve::cluster::ClusterHandle::from_config(config),
+                #[cfg(feature = "triggers")]
+                triggers,
             }),
         }
     }
@@ -107,6 +112,11 @@ impl ServerState {
     pub fn cluster(&self) -> &crate::serve::cluster::ClusterHandle {
         &self.inner.cluster
     }
+
+    #[cfg(feature = "triggers")]
+    pub fn triggers(&self) -> &crate::serve::triggers::health::TriggersHandle {
+        &self.inner.triggers
+    }
 }
 
 #[cfg(test)]
@@ -149,6 +159,8 @@ mod tests {
             history,
             LogHub::new(),
             None,
+            #[cfg(feature = "triggers")]
+            crate::serve::triggers::health::TriggersHandle::empty(),
         )
     }
 

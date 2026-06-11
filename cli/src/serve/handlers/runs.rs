@@ -296,6 +296,8 @@ mod tests {
             history,
             crate::serve::logs::LogHub::new(),
             None,
+            #[cfg(feature = "triggers")]
+            crate::serve::triggers::health::TriggersHandle::empty(),
         );
         // A pending run with no local token (simulating an unclaimed cluster run).
         let mut rec = RunRecord::queued("p1".into(), None, Default::default(), None, Utc::now());

@@ -885,6 +885,8 @@ mod tests {
             history,
             crate::serve::logs::LogHub::new(),
             None,
+            #[cfg(feature = "triggers")]
+            crate::serve::triggers::health::TriggersHandle::empty(),
         );
 
         // Pre-claim the key with a DIFFERENT fingerprint so submit() hits Conflict.
@@ -955,6 +957,8 @@ mod tests {
             history,
             crate::serve::logs::LogHub::new(),
             None,
+            #[cfg(feature = "triggers")]
+            crate::serve::triggers::health::TriggersHandle::empty(),
         );
 
         let req = SubmitRequest {
@@ -1015,6 +1019,8 @@ mod tests {
             history,
             crate::serve::logs::LogHub::new(),
             None,
+            #[cfg(feature = "triggers")]
+            crate::serve::triggers::health::TriggersHandle::empty(),
         )
     }
 
@@ -1132,6 +1138,8 @@ mod tests {
             history,
             crate::serve::logs::LogHub::new(),
             None,
+            #[cfg(feature = "triggers")]
+            crate::serve::triggers::health::TriggersHandle::empty(),
         );
         let req = SubmitRequest {
             config: "version: 1\npipeline:\n  source: { type: csv, config: { path: x.csv } }\n  sink: { type: jsonl, config: { path: out.jsonl } }\n".into(),

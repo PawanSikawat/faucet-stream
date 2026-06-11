@@ -99,6 +99,8 @@ mod tests {
             history,
             crate::serve::logs::LogHub::new(),
             None,
+            #[cfg(feature = "triggers")]
+            crate::serve::triggers::health::TriggersHandle::empty(),
         )
     }
 

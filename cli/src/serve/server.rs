@@ -271,6 +271,8 @@ pub async fn serve(config: ServeConfig) -> CliResult<()> {
         history,
         log_hub,
         default_base,
+        #[cfg(feature = "triggers")]
+        crate::serve::triggers::health::TriggersHandle::empty(),
     );
     let app = build_router(state.clone(), &config);
 
