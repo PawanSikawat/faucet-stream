@@ -99,7 +99,7 @@ fn compose_document(path: &Path, visited: &mut Vec<PathBuf>, depth: usize) -> Cl
     }
     visited.push(key);
 
-    let mut doc = load_value(path)?;
+    let mut doc = load_value(path, visited, depth)?;
     let bases = take_extends(&mut doc, path)?;
     let result = if bases.is_empty() {
         doc
@@ -129,8 +129,10 @@ fn compose_document(path: &Path, visited: &mut Vec<PathBuf>, depth: usize) -> Cl
 }
 
 /// Parse one file into a `serde_json::Value`, resolving any `!include` tags
-/// (YAML only) before conversion.
-fn load_value(path: &Path) -> CliResult<JsonValue> {
+/// (YAML only) before conversion. Shares the caller's `visited`/`depth` cycle
+/// stack so a mixed `extends`+`!include` loop is caught as a `CompositionCycle`
+/// rather than terminating with a confusing leftover-key error.
+fn load_value(path: &Path, visited: &mut Vec<PathBuf>, depth: usize) -> CliResult<JsonValue> {
     let text = std::fs::read_to_string(path).map_err(|source| CliError::ReadConfig {
         path: path.to_path_buf(),
         source,
@@ -142,8 +144,7 @@ fn load_value(path: &Path) -> CliResult<JsonValue> {
                     path: path.to_path_buf(),
                     message: e.to_string(),
                 })?;
-            let mut visited: Vec<PathBuf> = Vec::new();
-            resolve_includes(&mut yv, path, &mut visited, 0)?;
+            resolve_includes(&mut yv, path, visited, depth)?;
             yaml_to_json(yv, path)
         }
         Format::Json => serde_json::from_str(&text).map_err(|e| CliError::ParseConfig {
@@ -638,6 +639,21 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         write(dir.path(), "a.yaml", "x: !include ./b.yaml\n");
         write(dir.path(), "b.yaml", "y: !include ./a.yaml\n");
+        let a = dir.path().join("a.yaml");
+        assert!(matches!(
+            compose(&a, None).unwrap_err(),
+            CliError::CompositionCycle { .. }
+        ));
+    }
+
+    #[test]
+    fn cross_mechanism_extends_include_cycle_errors() {
+        // `a extends b`, `b !includes a` — the extends and include stacks are
+        // shared, so the loop surfaces as a CompositionCycle (not a confusing
+        // leftover-key parse error or an infinite loop).
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), "a.yaml", "extends: ./b.yaml\nversion: 1\n");
+        write(dir.path(), "b.yaml", "x: !include ./a.yaml\n");
         let a = dir.path().join("a.yaml");
         assert!(matches!(
             compose(&a, None).unwrap_err(),
