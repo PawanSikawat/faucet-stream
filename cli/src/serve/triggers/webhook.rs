@@ -66,13 +66,12 @@ pub async fn handle(
             Ok(Json(json!({ "run_id": run_id, "status": "queued" })))
         }
         FireOutcome::Coalesced => Ok(Json(json!({ "status": "coalesced" }))),
-        FireOutcome::Dropped(reason) => Err(ServeError::QueueFull {
-            retry_after_secs: 5,
-        })
-        .map_err(|e: ServeError| {
+        FireOutcome::Dropped(reason) => {
             tracing::warn!(trigger = %name, %reason, "webhook fire dropped");
-            e
-        }),
+            Err(ServeError::QueueFull {
+                retry_after_secs: 5,
+            })
+        }
         FireOutcome::Error(msg) => {
             state.triggers().record_err(&name, msg.clone(), super::watcher::UNHEALTHY_THRESHOLD);
             Err(ServeError::Internal(msg))

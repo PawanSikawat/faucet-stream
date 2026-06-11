@@ -1,6 +1,17 @@
 //! `object_arrival` trigger: incremental S3/GCS prefix listing. The pure
 //! `Cursor` decides which listed objects are new; the watcher (Task 13) does IO.
 
+use super::context::TriggerEvent;
+use super::enqueue::{self, FireOutcome};
+use super::spec::{ArrivalMode, StartAt, StoreSpec};
+use super::watcher::Watcher;
+use crate::serve::state::ServerState;
+use async_trait::async_trait;
+use futures::StreamExt;
+use object_store::ObjectStore;
+use std::sync::Arc;
+use std::time::Duration;
+
 /// One listed object, decoupled from `object_store::ObjectMeta` so the cursor is
 /// pure and testable.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -131,5 +142,169 @@ mod cursor_tests {
         assert_eq!(c.new_objects(&[a.clone()]).len(), 1);
         c.commit(&a);
         assert!(c.new_objects(&[a]).is_empty());
+    }
+}
+
+/// Return type of [`ObjectArrivalWatcher::build_store`]: the constructed
+/// store, the bucket name, and an optional key prefix.
+type StoreTriple = (Arc<dyn ObjectStore>, String, Option<String>);
+
+pub struct ObjectArrivalWatcher {
+    name: String,
+    store: Arc<dyn ObjectStore>,
+    bucket: String,
+    prefix: Option<String>,
+    mode: ArrivalMode,
+    poll: Duration,
+    cursor: Cursor,
+    compiled: Arc<super::compiled::CompiledTrigger>,
+}
+
+impl ObjectArrivalWatcher {
+    /// Build the object_store client for the configured store.
+    pub fn build_store(store: &StoreSpec) -> Result<StoreTriple, String> {
+        match store {
+            StoreSpec::S3 {
+                bucket,
+                prefix,
+                region,
+                endpoint,
+            } => {
+                let mut b = object_store::aws::AmazonS3Builder::from_env()
+                    .with_bucket_name(bucket);
+                if let Some(r) = region {
+                    b = b.with_region(r);
+                }
+                if let Some(e) = endpoint {
+                    b = b.with_endpoint(e).with_allow_http(true);
+                }
+                let s = b.build().map_err(|e| format!("building S3 client: {e}"))?;
+                Ok((Arc::new(s), bucket.clone(), prefix.clone()))
+            }
+            StoreSpec::Gcs { bucket, prefix } => {
+                let s = object_store::gcp::GoogleCloudStorageBuilder::from_env()
+                    .with_bucket_name(bucket)
+                    .build()
+                    .map_err(|e| format!("building GCS client: {e}"))?;
+                Ok((Arc::new(s), bucket.clone(), prefix.clone()))
+            }
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        compiled: Arc<super::compiled::CompiledTrigger>,
+        store: Arc<dyn ObjectStore>,
+        bucket: String,
+        prefix: Option<String>,
+        mode: ArrivalMode,
+        poll: Duration,
+        start_at: StartAt,
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> Self {
+        let cursor = match start_at {
+            StartAt::Now => Cursor::starting_now(now),
+            StartAt::Beginning => Cursor::starting_beginning(),
+        };
+        Self {
+            name: compiled.name().to_string(),
+            store,
+            bucket,
+            prefix,
+            mode,
+            poll,
+            cursor,
+            compiled,
+        }
+    }
+
+    async fn list(&self) -> Result<Vec<ListedObject>, String> {
+        let prefix_path = self
+            .prefix
+            .as_deref()
+            .map(object_store::path::Path::from);
+        let mut stream = self.store.list(prefix_path.as_ref());
+        let mut out = Vec::new();
+        while let Some(meta) = stream.next().await {
+            let meta = meta.map_err(|e| format!("listing objects: {e}"))?;
+            out.push(ListedObject {
+                key: meta.location.to_string(),
+                last_modified: meta.last_modified,
+                size: meta.size,
+                etag: meta.e_tag,
+            });
+        }
+        Ok(out)
+    }
+}
+
+#[async_trait]
+impl Watcher for ObjectArrivalWatcher {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn kind(&self) -> &'static str {
+        "object_arrival"
+    }
+
+    fn poll_interval(&self) -> Duration {
+        self.poll
+    }
+
+    async fn poll(&mut self, state: &ServerState) -> Result<bool, String> {
+        let listing = self.list().await?;
+        let mut new = self.cursor.new_objects(&listing);
+        if new.is_empty() {
+            return Ok(false);
+        }
+        // Deterministic order: oldest first so the watermark advances monotonically.
+        new.sort_by(|a, b| {
+            a.last_modified
+                .cmp(&b.last_modified)
+                .then(a.key.cmp(&b.key))
+        });
+        let fired_at = chrono::Utc::now().to_rfc3339();
+        let mut fired = false;
+
+        match self.mode {
+            ArrivalMode::PerObject => {
+                for o in new {
+                    let event = TriggerEvent::Object {
+                        bucket: self.bucket.clone(),
+                        key: o.key.clone(),
+                        size: o.size,
+                        last_modified: o.last_modified.to_rfc3339(),
+                    };
+                    match enqueue::fire(state, &self.compiled, event, &fired_at).await {
+                        outcome if outcome.committed() => {
+                            self.cursor.commit(&o);
+                            fired = true;
+                        }
+                        FireOutcome::Dropped(_) => break, // backpressure: stop; retry next poll
+                        FireOutcome::Error(_) => break,
+                        _ => {}
+                    }
+                }
+            }
+            ArrivalMode::Batch => {
+                let watermark = new.iter().map(|o| o.last_modified).max().unwrap();
+                let event = TriggerEvent::ObjectBatch {
+                    bucket: self.bucket.clone(),
+                    count: new.len(),
+                    watermark: watermark.to_rfc3339(),
+                };
+                match enqueue::fire(state, &self.compiled, event, &fired_at).await {
+                    outcome if outcome.committed() => {
+                        for o in &new {
+                            self.cursor.commit(o);
+                        }
+                        fired = true;
+                    }
+                    _ => {} // dropped/error: cursor unchanged, retry next poll
+                }
+            }
+        }
+        Ok(fired)
     }
 }
