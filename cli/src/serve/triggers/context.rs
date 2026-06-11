@@ -68,6 +68,8 @@ impl TriggerEvent {
                 _ => None,
             },
             TriggerEvent::Webhook { method, body, headers, query, .. } => {
+                // HTTP header names are case-insensitive (looked up lowercased); URI query
+                // keys are case-sensitive per the URI spec and matched verbatim.
                 if let Some(h) = token.strip_prefix("header.") {
                     return headers.get(&h.to_ascii_lowercase()).cloned();
                 }
@@ -125,7 +127,14 @@ pub fn substitute(
 
 /// Quote a value for safe scalar substitution into YAML.
 fn yaml_escape(v: &str) -> String {
-    format!("\"{}\"", v.replace('\\', "\\\\").replace('"', "\\\""))
+    format!(
+        "\"{}\"",
+        v.replace('\\', "\\\\")
+            .replace('"', "\\\"")
+            .replace('\n', "\\n")
+            .replace('\r', "\\r")
+            .replace('\t', "\\t")
+    )
 }
 
 /// Deterministic idempotency key for the event (see spec §9).
@@ -239,5 +248,24 @@ mod tests {
     fn renders_name_template() {
         let n = render_name("{name}:{object_key}", &obj(), "t", "now");
         assert_eq!(n, "t:incoming/2026/data:set.json");
+    }
+
+    #[test]
+    fn substitutes_multiline_value_escapes_newline() {
+        let mut headers = BTreeMap::new();
+        let mut query = BTreeMap::new();
+        headers.insert("x-h".into(), "v".into());
+        query.insert("q".into(), "v".into());
+        let e = TriggerEvent::Webhook {
+            method: "POST".into(),
+            body: "line1\nline2".into(),
+            headers,
+            query,
+            idem: "k".into(),
+        };
+        let out = substitute("b: ${trigger.body}", &e, "h", "now").unwrap();
+        // Must contain literal backslash-n, not a raw newline.
+        assert_eq!(out, r#"b: "line1\nline2""#);
+        assert!(!out.contains('\n'), "raw newline must not appear in output");
     }
 }

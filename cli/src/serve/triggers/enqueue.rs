@@ -12,8 +12,9 @@ use crate::serve::state::ServerState;
 pub enum FireOutcome {
     /// A new run was enqueued / a Pending record written (cluster).
     Enqueued(String),
-    /// Idempotency replay — same event already produced a run; no new work.
-    Replayed,
+    /// Same idempotency key with a conflicting payload hash — treated as a
+    /// committed no-op so a polling watcher does not retry the same event forever.
+    Coalesced,
     /// Dropped without enqueuing (e.g. queue full); polling watchers must NOT
     /// advance their cursor/edge on this outcome.
     Dropped(&'static str),
@@ -24,19 +25,19 @@ pub enum FireOutcome {
 impl FireOutcome {
     /// Whether the watcher may advance its cursor/edge past this event.
     pub fn committed(&self) -> bool {
-        matches!(self, FireOutcome::Enqueued(_) | FireOutcome::Replayed)
+        matches!(self, FireOutcome::Enqueued(_) | FireOutcome::Coalesced)
     }
 }
 
 /// Resolve the pipeline ref to config text and substitute `${trigger.*}`.
-pub fn resolve_config_text(
+pub async fn resolve_config_text(
     config: &PipelineRef,
     event: &TriggerEvent,
     name: &str,
     fired_at: &str,
 ) -> Result<String, String> {
     let raw = match config {
-        PipelineRef::Path(p) => std::fs::read_to_string(p)
+        PipelineRef::Path(p) => tokio::fs::read_to_string(p).await
             .map_err(|e| format!("reading pipeline config '{p}': {e}"))?,
         PipelineRef::Inline(v) => {
             serde_yaml::to_string(v).map_err(|e| format!("serializing inline pipeline: {e}"))?
@@ -84,7 +85,7 @@ pub async fn fire(
     let kind = compiled.kind_label();
     metrics::fired(compiled.name(), kind);
 
-    let text = match resolve_config_text(&compiled.spec.config, &event, compiled.name(), fired_at) {
+    let text = match resolve_config_text(&compiled.spec.config, &event, compiled.name(), fired_at).await {
         Ok(t) => t,
         Err(e) => {
             metrics::error(compiled.name(), kind);
@@ -92,10 +93,11 @@ pub async fn fire(
         }
     };
     let req = build_submit_request(compiled, &event, text, fired_at);
-    // Detect replay: if the idempotency claim already exists, submit returns the
-    // existing run's status. We treat any Ok as success; the metric distinction
-    // (enqueued vs coalesced) is approximated by comparing the returned run_id is
-    // unnecessary here — submit increments idempotency_hits_total on replay.
+    // True idempotency replays (same key + same payload) return Ok from submit
+    // and are counted as Enqueued here; the serve-layer
+    // faucet_serve_idempotency_hits_total captures them. A Conflict (same key,
+    // different payload hash) is treated as a committed no-op (Coalesced) so a
+    // polling watcher does not retry the same event forever.
     match runner::submit(state.clone(), req).await {
         Ok(resp) => {
             metrics::enqueued(compiled.name());
@@ -109,7 +111,7 @@ pub async fn fire(
             // Idempotency conflict (same key, different payload) — treat as a
             // committed no-op so a poll doesn't retry forever.
             metrics::coalesced(compiled.name());
-            FireOutcome::Replayed
+            FireOutcome::Coalesced
         }
         Err(e) => {
             metrics::error(compiled.name(), kind);
