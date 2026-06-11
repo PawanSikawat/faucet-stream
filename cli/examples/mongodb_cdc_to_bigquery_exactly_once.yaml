@@ -10,15 +10,21 @@
 # idempotent sink (bigquery), a state store, and NO dlq block. These are
 # validated at config-load time — run `faucet validate` first.
 version: 1
-name: mongo-cdc-to-bigquery
-
+name: mongodb-cdc-to-bigquery
 pipeline:
   source:
     type: mongodb-cdc
     config:
-      connection_url: ${env:MONGODB_URI}
-      database: app
-      collection: orders
+      connection_uri: "mongodb://localhost:27017/?replicaSet=rs0"
+      scope:
+        type: collection
+        database: app
+        collection: orders
+      full_document: when_available
+      start_from:
+        type: now
+      idle_timeout: 30
+      batch_size: 1000
   sink:
     type: bigquery
     config:
@@ -33,6 +39,6 @@ pipeline:
   state:
     type: file
     config:
-      path: ./state
+      path: ./state/mongodb_cdc_bigquery.json
 
 delivery: exactly_once

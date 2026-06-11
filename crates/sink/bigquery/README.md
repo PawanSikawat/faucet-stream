@@ -280,9 +280,13 @@ pipeline:
   source:
     type: mongodb-cdc
     config:
-      connection_url: mongodb://localhost:27017
-      database: app
-      collection: orders
+      connection_uri: "mongodb://localhost:27017/?replicaSet=rs0"
+      scope:
+        type: collection
+        database: app
+        collection: orders
+      start_from:
+        type: now
   sink:
     type: bigquery
     config:
