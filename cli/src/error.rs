@@ -220,6 +220,34 @@ pub enum CliError {
     #[error("interpolation cycle: {}", chain.join(" -> "))]
     InterpolationCycle { chain: Vec<String> },
 
+    /// A config-composition include/extends chain contains a cycle.
+    #[error("config composition cycle: {}", chain.join(" -> "))]
+    CompositionCycle { chain: Vec<String> },
+
+    /// An `extends`/`!include` target file does not exist.
+    #[error(
+        "config composition: file '{}' referenced by '{}' not found",
+        path.display(),
+        referenced_by.display()
+    )]
+    IncludeNotFound { path: PathBuf, referenced_by: PathBuf },
+
+    /// Composition nesting exceeded the safety cap (extends/!include loop guard).
+    #[error("config composition nested deeper than {max} levels — check for an extends/!include loop")]
+    CompositionDepthExceeded { max: usize },
+
+    /// An `!include` tag had a non-string payload, an unsupported tag, or its
+    /// target failed structural checks.
+    #[error("invalid `!include` in '{}': {reason}", path.display())]
+    BadInclude { path: PathBuf, reason: String },
+
+    /// `--profile NAME` (or FAUCET_PROFILE) named a profile not declared under `profiles:`.
+    #[error(
+        "unknown profile '{name}'. Declared profiles: {}",
+        if known.is_empty() { String::from("(none — no `profiles:` block)") } else { known.join(", ") }
+    )]
+    UnknownProfile { name: String, known: Vec<String> },
+
     /// A `${vars.X}` token referenced an undefined var.
     #[error(
         "interpolation '{token}' references unknown var '{name}' (define it under top-level `vars:`)"
@@ -486,5 +514,52 @@ mod tests {
         let msg = e.to_string();
         assert!(msg.contains("vars.a"));
         assert!(msg.contains("vars.b"));
+    }
+
+    #[test]
+    fn composition_cycle_renders_chain() {
+        let e = CliError::CompositionCycle {
+            chain: vec!["a.yaml".into(), "b.yaml".into(), "a.yaml".into()],
+        };
+        let msg = e.to_string();
+        assert!(msg.contains("a.yaml") && msg.contains("b.yaml"));
+        assert!(msg.contains(" -> "));
+    }
+
+    #[test]
+    fn unknown_profile_lists_known() {
+        let e = CliError::UnknownProfile {
+            name: "staging".into(),
+            known: vec!["dev".into(), "prod".into()],
+        };
+        let msg = e.to_string();
+        assert!(msg.contains("staging") && msg.contains("dev") && msg.contains("prod"));
+
+        let none = CliError::UnknownProfile { name: "x".into(), known: vec![] };
+        assert!(none.to_string().contains("no `profiles:` block"));
+    }
+
+    #[test]
+    fn include_not_found_names_both_paths() {
+        let e = CliError::IncludeNotFound {
+            path: std::path::PathBuf::from("base.yaml"),
+            referenced_by: std::path::PathBuf::from("app.yaml"),
+        };
+        let msg = e.to_string();
+        assert!(msg.contains("base.yaml") && msg.contains("app.yaml"));
+    }
+
+    #[test]
+    fn composition_depth_exceeds_renders_max() {
+        assert!(CliError::CompositionDepthExceeded { max: 32 }.to_string().contains("32"));
+    }
+
+    #[test]
+    fn bad_include_names_path_and_reason() {
+        let e = CliError::BadInclude {
+            path: std::path::PathBuf::from("f.yaml"),
+            reason: "!include payload must be a string path".into(),
+        };
+        assert!(e.to_string().contains("f.yaml") && e.to_string().contains("string path"));
     }
 }
