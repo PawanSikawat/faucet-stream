@@ -351,7 +351,10 @@ pub fn source_supports_exactly_once(kind: &str) -> bool {
 /// Mirrors `Sink::supports_idempotent_writes` overrides — keep in sync when a
 /// new sink opts in.
 pub fn sink_supports_idempotent_writes(kind: &str) -> bool {
-    matches!(kind, "sqlite" | "postgres" | "mysql" | "mssql" | "iceberg")
+    matches!(
+        kind,
+        "sqlite" | "postgres" | "mysql" | "mssql" | "iceberg" | "bigquery"
+    )
 }
 
 /// Write modes each sink kind supports. Kept in sync with each sink's
@@ -981,6 +984,7 @@ mod tests {
 
         assert!(sink_supports_idempotent_writes("postgres"));
         assert!(sink_supports_idempotent_writes("iceberg"));
+        assert!(sink_supports_idempotent_writes("bigquery"));
         assert!(!sink_supports_idempotent_writes("jsonl"));
     }
 

@@ -262,6 +262,48 @@ let sink = BigQuerySink::new(config).await?;
 - Per-row errors in the BigQuery response are detected and reported. If any rows fail, the entire batch returns an error with details about the first failure.
 - The client is reused across all `write_batch()` calls -- no re-authentication per request.
 
+## Exactly-once delivery
+
+`BigQuerySink` implements `Sink::supports_idempotent_writes` (returns `true`) and the two companion hooks:
+
+- `write_batch_idempotent(records, scope, token)` — writes the page **and** records the `token` for `scope` in **one BigQuery multi-statement transaction**: a typed `INSERT INTO <target> SELECT … FROM UNNEST(JSON_QUERY_ARRAY(@payload))` (the page ships as a single bound JSON parameter; each column is cast per the target table's schema, fetched once via `tables.get`) followed by a `MERGE` into the `_faucet_commit_token` watermark table in the target dataset. Either both commit or neither does. Success is verified authoritatively via the job's `errorResult`, so a runtime failure (a bad `CAST`, a `NULL` into a `REQUIRED` column) aborts the page rather than advancing the bookmark over data that never landed.
+- `last_committed_token(scope)` — reads the watermark row for `scope` so the pipeline can skip already-committed pages on resume.
+
+On crash/resume the pipeline reads `last_committed_token` and skips any page whose token is already committed, so the target table never sees duplicates. This is **append-with-idempotency**, distinct from the default streaming `insertAll` path and from key-based upsert (`write_mode`), which BigQuery does not support.
+
+**Requirements & limits.** The target table must already exist with a defined schema (the sink reads it to build the typed INSERT — a schemaless table is rejected with a clear error). Because each page commits as one atomic transaction (one token per page, no `batch_size` re-chunking on this path), the page must serialize within BigQuery's ~10 MB `jobs.query` request limit — keep the CDC source's per-page size modest. A scalar column whose JSON value is an object/array is coerced to `NULL` (or, for a `REQUIRED` column, fails the INSERT). This path uses BigQuery DML, which has concurrency limits; it is intended for the opt-in exactly-once mode, not high-rate streaming (use the default streaming `insertAll` path for that).
+
+To use exactly-once delivery, set `delivery: exactly_once` in your pipeline config and pair this sink with one of the CDC sources (`postgres-cdc`, `mysql-cdc`, `mongodb-cdc`) plus a `state:` block. A DLQ is not permitted in exactly-once mode. All four requirements are validated at config-load time (`faucet validate`) before any run starts.
+
+```yaml
+pipeline:
+  source:
+    type: mongodb-cdc
+    config:
+      connection_uri: "mongodb://localhost:27017/?replicaSet=rs0"
+      scope:
+        type: collection
+        database: app
+        collection: orders
+      start_from:
+        type: now
+  sink:
+    type: bigquery
+    config:
+      project_id: my-gcp-project
+      dataset_id: analytics
+      table_id: orders
+      auth:
+        type: application_default
+  state:
+    type: file
+    config:
+      path: ./state
+delivery: exactly_once
+```
+
+See the [Exactly-once delivery cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/state.html#exactly-once-delivery) for full rationale and the supported source/sink set.
+
 ## Dead-letter queue support
 
 This sink overrides `Sink::write_batch_partial` to surface per-row

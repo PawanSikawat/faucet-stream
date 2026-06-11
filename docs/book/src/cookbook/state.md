@@ -95,6 +95,11 @@ records and the token atomically inside its own transaction:
   into a `_faucet_commit_token(scope TEXT, token TEXT)` watermark table.
 - **Iceberg sink** — the token is written as snapshot summary properties
   `faucet.commit-scope` and `faucet.commit-token` on the committed snapshot.
+- **BigQuery sink** — the rows and the token are written in one BigQuery
+  multi-statement transaction (a typed `INSERT … SELECT FROM
+  UNNEST(JSON_QUERY_ARRAY(@payload))` plus a `MERGE` into the
+  `_faucet_commit_token` watermark table in the target dataset), so both land
+  atomically.
 
 On the *next run*, before writing each page, the pipeline reads the sink's
 `last_committed_token` for the current scope. If the stored token is greater
@@ -109,7 +114,7 @@ Only certain connectors are allowed in an exactly-once pipeline:
 | Role | Allowed connectors | Why others are excluded |
 |------|--------------------|------------------------|
 | Source | `postgres-cdc`, `mysql-cdc`, `mongodb-cdc` | The source must deterministically replay the same pages from a given bookmark. Non-CDC / batch sources (REST, SQL query, etc.) do not replay deterministically — a different page on resume would cause the pipeline to silently skip records it never wrote. |
-| Sink | `sqlite`, `postgres`, `mysql`, `mssql`, `iceberg` | The sink must be able to commit data and a watermark token atomically in a single transaction or snapshot. Sinks without transaction support cannot provide this guarantee. |
+| Sink | `sqlite`, `postgres`, `mysql`, `mssql`, `iceberg`, `bigquery` | The sink must be able to commit data and a watermark token atomically in a single transaction or snapshot. Sinks without transaction support cannot provide this guarantee. |
 
 A DLQ (`dlq:` block) is incompatible with `exactly_once` in this version.
 

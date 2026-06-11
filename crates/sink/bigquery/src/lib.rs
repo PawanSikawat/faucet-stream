@@ -8,6 +8,7 @@
 //! the BigQuery streaming insert API.
 
 pub mod config;
+mod idempotent;
 pub mod sink;
 
 // Re-export core types.

@@ -58,7 +58,7 @@ file/append sinks (`jsonl`, `csv`, `stdout`) it's a no-op — they write per rec
 
 | Connector | Feature | `batch_size` | Compression | Upsert⁸ | Exactly-once⁷ | Write unit |
 |-----------|---------|:---:|:---:|:---:|:---:|------------|
-| BigQuery | `sink-bigquery` | ✓ | ✗ | ✗ | ✗ | `tabledata.insertAll` (per-row DLQ) |
+| BigQuery | `sink-bigquery` | ✓ | ✗ | ✗ | **✓** | `tabledata.insertAll` streaming; `MERGE`-transaction write for exactly-once |
 | PostgreSQL | `sink-postgres` | ✓ | ✗ | **✓** | **✓** | multi-row `INSERT` (JSONB or mapped cols) |
 | JSON Lines | `sink-jsonl` | no-op | ✓ | ✗ | ✗ | buffered file append |
 | Snowflake | `sink-snowflake` | ✓ | ✗ | ✗ | ✗ | SQL REST API |
@@ -80,8 +80,10 @@ file/append sinks (`jsonl`, `csv`, `stdout`) it's a no-op — they write per rec
 ⁶ Parquet and Iceberg both handle compression internally at the Parquet column
 level, so the file-level `compression` feature doesn't apply to either.
 ⁷ **Exactly-once** = commits data and a watermark token atomically; required for
-`delivery: exactly_once`. BigQuery and Kafka are at-least-once only in this
-version. See [Exactly-once delivery](../cookbook/state.md#exactly-once-delivery).
+`delivery: exactly_once`. The BigQuery sink does this via a multi-statement
+`MERGE` transaction (distinct from its default streaming `insertAll` path);
+Kafka is at-least-once only in this version. See
+[Exactly-once delivery](../cookbook/state.md#exactly-once-delivery).
 ⁸ **Upsert** = supports `write_mode: upsert` / `delete` (insert-or-update and
 delete by `key`) in addition to plain `append`. The SQL sinks require
 column-mapping mode (`auto_map`, or `auto_columns` for mssql) and a

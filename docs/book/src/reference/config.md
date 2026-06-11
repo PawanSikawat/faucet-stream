@@ -210,7 +210,7 @@ matrix:
 All four conditions are validated at config-load time (`faucet validate` and `faucet run`). A violation is a hard `config error` naming the offending row — no run is started.
 
 1. **Deterministic-replay source** — the source must be one of: `postgres-cdc`, `mysql-cdc`, `mongodb-cdc`. Non-CDC sources are rejected because a different page content on replay would cause the pipeline to silently skip records it never wrote.
-2. **Idempotent sink** — the sink must be one of: `sqlite`, `postgres`, `mysql`, `mssql`, `iceberg`. These sinks atomically commit both the data and a watermark token inside the same transaction or snapshot.
+2. **Idempotent sink** — the sink must be one of: `sqlite`, `postgres`, `mysql`, `mssql`, `iceberg`, `bigquery`. These sinks atomically commit both the data and a watermark token inside the same transaction or snapshot.
 3. **State store** — a `state:` block is required. The pipeline stores the per-page sequence number alongside the bookmark so it can detect already-committed pages on resume.
 4. **No DLQ** — a `dlq:` block is incompatible with `exactly_once` in this version. Per-row error routing and the idempotency watermark interact in ways not yet resolved.
 
