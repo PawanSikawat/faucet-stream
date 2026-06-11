@@ -686,6 +686,13 @@ macro_rules! impl_sql_history {
                     .bind(sql::threshold(now, self.idem_retention))
                     .execute(&self.pool)
                     .await;
+                // Drop membership rows that have not heartbeated within the
+                // run-retention window (far longer than the lease, so this never
+                // prunes a live member — that's `live_instances(ttl)`'s job).
+                let _ = sqlx::query(&self.stmts.prune_instances)
+                    .bind(sql::threshold(now, retain_for))
+                    .execute(&self.pool)
+                    .await;
                 Ok(removed)
             }
 
@@ -869,6 +876,170 @@ macro_rules! impl_sql_history {
                     }
                 }
                 Ok(report)
+            }
+
+            async fn finalize_owned(
+                &self,
+                rec: &$crate::serve::history::RunRecord,
+            ) -> Result<bool, $crate::serve::history::HistoryError> {
+                use $crate::serve::history::HistoryError;
+                use $crate::serve::history::sql;
+                let backend = |e: sqlx::Error| HistoryError::Backend(e.to_string());
+                // Defensive: a terminal record must carry finished_at, or
+                // purge_runs (which requires finished_at IS NOT NULL) can never
+                // reclaim it. Stamp it if a caller left it unset.
+                let mut rec = rec.clone();
+                if rec.status.is_terminal() && rec.finished_at.is_none() {
+                    rec.finished_at = Some(chrono::Utc::now());
+                }
+                let body = sql::encode_body(&rec)?;
+                let finished = rec.finished_at.map(sql::fmt_ts);
+                let lease = sql::fmt_ts(chrono::Utc::now() + self.lease_ttl);
+                let n = sqlx::query(&self.stmts.finalize_owned)
+                    .bind(rec.status.as_str())
+                    .bind(finished.as_deref())
+                    .bind(&lease)
+                    .bind(&body)
+                    .bind(&rec.run_id)
+                    .bind(&self.instance_id)
+                    .execute(&self.pool)
+                    .await
+                    .map_err(backend)?
+                    .rows_affected();
+                Ok(n == 1)
+            }
+
+            async fn cancel_pending(
+                &self,
+                run_id: &str,
+            ) -> Result<bool, $crate::serve::history::HistoryError> {
+                use sqlx::Row as _;
+                use $crate::serve::history::HistoryError;
+                use $crate::serve::history::RunStatus;
+                use $crate::serve::history::sql;
+                let backend = |e: sqlx::Error| HistoryError::Backend(e.to_string());
+                // Read the pending run's body, flip it to Cancelled, and write back
+                // conditional on it still being pending (loses the race to a claim).
+                let Some(row) = sqlx::query(&self.stmts.select_body)
+                    .bind(run_id)
+                    .fetch_optional(&self.pool)
+                    .await
+                    .map_err(backend)?
+                else {
+                    return Ok(false);
+                };
+                let body: String = row.try_get("body").map_err(backend)?;
+                let mut rec = sql::decode_body(&body)?;
+                if rec.status != RunStatus::Pending {
+                    return Ok(false);
+                }
+                let now = chrono::Utc::now();
+                rec.status = RunStatus::Cancelled;
+                rec.finished_at = Some(now);
+                let new_body = sql::encode_body(&rec)?;
+                let n = sqlx::query(&self.stmts.cancel_pending)
+                    .bind(sql::fmt_ts(now))
+                    .bind(&new_body)
+                    .bind(run_id)
+                    .execute(&self.pool)
+                    .await
+                    .map_err(backend)?
+                    .rows_affected();
+                Ok(n == 1)
+            }
+
+            async fn request_cancel(
+                &self,
+                run_id: &str,
+            ) -> Result<(), $crate::serve::history::HistoryError> {
+                use $crate::serve::history::HistoryError;
+                use $crate::serve::history::sql;
+                let backend = |e: sqlx::Error| HistoryError::Backend(e.to_string());
+                sqlx::query(&self.stmts.request_cancel)
+                    .bind(sql::fmt_ts(chrono::Utc::now()))
+                    .bind(run_id)
+                    .execute(&self.pool)
+                    .await
+                    .map_err(backend)?;
+                Ok(())
+            }
+
+            async fn pending_cancellations(
+                &self,
+            ) -> Result<Vec<String>, $crate::serve::history::HistoryError> {
+                use sqlx::Row as _;
+                use $crate::serve::history::HistoryError;
+                let backend = |e: sqlx::Error| HistoryError::Backend(e.to_string());
+                let rows = sqlx::query(&self.stmts.pending_cancellations)
+                    .bind(&self.instance_id)
+                    .fetch_all(&self.pool)
+                    .await
+                    .map_err(backend)?;
+                let mut ids = Vec::with_capacity(rows.len());
+                for r in &rows {
+                    ids.push(r.try_get::<String, _>("run_id").map_err(backend)?);
+                }
+                Ok(ids)
+            }
+
+            async fn heartbeat_instance(
+                &self,
+                beat: &$crate::serve::history::InstanceHeartbeat,
+            ) -> Result<(), $crate::serve::history::HistoryError> {
+                use $crate::serve::history::HistoryError;
+                use $crate::serve::history::sql;
+                let backend = |e: sqlx::Error| HistoryError::Backend(e.to_string());
+                let now = sql::fmt_ts(chrono::Utc::now());
+                sqlx::query(&self.stmts.heartbeat_instance)
+                    .bind(&self.instance_id)
+                    .bind(sql::fmt_ts(beat.started_at))
+                    .bind(&now)
+                    .bind(beat.listen.as_deref())
+                    .bind(beat.max_concurrent.to_string())
+                    .bind(beat.in_flight.to_string())
+                    .execute(&self.pool)
+                    .await
+                    .map_err(backend)?;
+                Ok(())
+            }
+
+            async fn live_instances(
+                &self,
+                ttl: std::time::Duration,
+            ) -> Result<Vec<$crate::serve::history::InstanceRecord>, $crate::serve::history::HistoryError>
+            {
+                use sqlx::Row as _;
+                use $crate::serve::history::HistoryError;
+                use $crate::serve::history::InstanceRecord;
+                use $crate::serve::history::sql;
+                let backend = |e: sqlx::Error| HistoryError::Backend(e.to_string());
+                let now = chrono::Utc::now();
+                let rows = sqlx::query(&self.stmts.live_instances)
+                    .bind(sql::threshold(now, ttl))
+                    .fetch_all(&self.pool)
+                    .await
+                    .map_err(backend)?;
+                let parse_dt = |s: &str| {
+                    chrono::DateTime::parse_from_rfc3339(s)
+                        .map(|d| d.to_utc())
+                        .unwrap_or(now)
+                };
+                let mut out = Vec::with_capacity(rows.len());
+                for r in &rows {
+                    let started: String = r.try_get("started_at").map_err(backend)?;
+                    let hb: String = r.try_get("last_heartbeat").map_err(backend)?;
+                    let mc: Option<String> = r.try_get("max_concurrent").map_err(backend)?;
+                    let inf: Option<String> = r.try_get("in_flight").map_err(backend)?;
+                    out.push(InstanceRecord {
+                        instance_id: r.try_get("instance_id").map_err(backend)?,
+                        started_at: parse_dt(&started),
+                        last_heartbeat: parse_dt(&hb),
+                        listen: r.try_get("listen").map_err(backend)?,
+                        max_concurrent: mc.and_then(|s| s.parse().ok()).unwrap_or(0),
+                        in_flight: inf.and_then(|s| s.parse().ok()).unwrap_or(0),
+                    });
+                }
+                Ok(out)
             }
 
             fn degraded(&self) -> bool {

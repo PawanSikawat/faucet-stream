@@ -5,6 +5,7 @@
 #![cfg(feature = "serve-history-sqlite")]
 
 use chrono::{Duration as ChronoDuration, Utc};
+use faucet_cli::serve::history::InstanceHeartbeat;
 use faucet_cli::serve::history::sqlite::SqliteHistory;
 use faucet_cli::serve::history::{
     Claim, DeleteOutcome, ListFilter, RunHistory, RunRecord, RunStatus,
@@ -536,4 +537,62 @@ async fn reclaim_requeues_then_poisons_at_cap() {
     let dead = h.get("o1").await.unwrap().unwrap();
     assert_eq!(dead.status, RunStatus::Failed);
     assert!(dead.error.unwrap().contains("reclaimed"));
+}
+
+#[tokio::test]
+async fn membership_heartbeat_and_liveness() {
+    let dir = tempfile::tempdir().unwrap();
+    let a = store_with(&dir, "members.db", std::time::Duration::from_secs(30), "inst-a").await;
+    let b = store_with(&dir, "members.db", std::time::Duration::from_secs(30), "inst-b").await;
+    let beat = |n: u32| InstanceHeartbeat {
+        started_at: Utc::now(),
+        listen: Some("127.0.0.1:8080".into()),
+        max_concurrent: 4,
+        in_flight: n,
+    };
+    a.heartbeat_instance(&beat(1)).await.unwrap();
+    b.heartbeat_instance(&beat(0)).await.unwrap();
+    let live = a.live_instances(std::time::Duration::from_secs(60)).await.unwrap();
+    assert_eq!(live.len(), 2);
+    // A zero-window liveness query sees nobody (all heartbeats are "old").
+    let none = a.live_instances(std::time::Duration::ZERO).await.unwrap();
+    assert_eq!(none.len(), 0);
+}
+
+#[tokio::test]
+async fn finalize_owned_is_owner_fenced() {
+    let dir = tempfile::tempdir().unwrap();
+    let a = store_with(&dir, "fence.db", std::time::Duration::from_secs(30), "inst-a").await;
+    let b = store_with(&dir, "fence.db", std::time::Duration::from_secs(30), "inst-b").await;
+    // a owns the run (upsert stamps owner=inst-a).
+    let r = rec("f1", RunStatus::Running, Utc::now());
+    a.upsert(&r).await.unwrap();
+    // b tries to finalize → fenced out (owner mismatch).
+    let mut term = a.get("f1").await.unwrap().unwrap();
+    term.status = RunStatus::Completed;
+    assert!(!b.finalize_owned(&term).await.unwrap(), "non-owner is fenced");
+    assert_eq!(a.get("f1").await.unwrap().unwrap().status, RunStatus::Running);
+    // a (the owner) finalizes → lands.
+    assert!(a.finalize_owned(&term).await.unwrap());
+    assert_eq!(a.get("f1").await.unwrap().unwrap().status, RunStatus::Completed);
+}
+
+#[tokio::test]
+async fn cross_instance_cancel_flag_and_pickup() {
+    let dir = tempfile::tempdir().unwrap();
+    let a = store_with(&dir, "cancel.db", std::time::Duration::from_secs(30), "inst-a").await;
+    let b = store_with(&dir, "cancel.db", std::time::Duration::from_secs(30), "inst-b").await;
+    // a is running r1.
+    a.upsert(&rec("r1", RunStatus::Running, Utc::now())).await.unwrap();
+    // b requests cancel; a sees it via pending_cancellations.
+    b.request_cancel("r1").await.unwrap();
+    assert_eq!(a.pending_cancellations().await.unwrap(), vec!["r1".to_string()]);
+    assert!(b.pending_cancellations().await.unwrap().is_empty(), "b owns nothing");
+
+    // cancel_pending only cancels a still-pending run.
+    a.upsert(&rec("p2", RunStatus::Pending, Utc::now())).await.unwrap();
+    assert!(a.cancel_pending("p2").await.unwrap());
+    assert_eq!(a.get("p2").await.unwrap().unwrap().status, RunStatus::Cancelled);
+    // A running run is not pending → false.
+    assert!(!a.cancel_pending("r1").await.unwrap());
 }
