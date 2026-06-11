@@ -221,6 +221,17 @@ pub async fn submit(state: ServerState, req: SubmitRequest) -> Result<SubmitResp
     rec.doctor_report = doctor_report;
 
     if state.cluster().enabled() {
+        // A degraded (DB-unreachable) backend can't coordinate a cluster: the
+        // claim loop's claim_pending is a no-op on the in-memory fallback, so a
+        // Pending run would never be claimed. Fail closed with a retryable 503
+        // rather than silently orphaning the run (#197 spec §9).
+        if state.history().degraded() {
+            return Err(ServeError::Unavailable(
+                "clustered run-history backend is degraded; runs cannot be claimed \
+                 by any instance — retry once it recovers"
+                    .into(),
+            ));
+        }
         // Cluster mode: persist the RAW config so any instance can re-resolve +
         // run it, mark the run Pending, and wake the local claim loop. No local
         // queue slot / spawn — the claim loop owns execution.
@@ -1067,5 +1078,72 @@ mod tests {
         assert_eq!(got.records_written, 5);
         assert_eq!(got.name.as_deref(), Some("nightly"));
         assert_eq!(got.idempotency_key.as_deref(), Some("idem-k"));
+    }
+
+    #[cfg(any(feature = "serve-history-sqlite", feature = "serve-history-postgres"))]
+    #[tokio::test]
+    async fn cluster_submit_503s_when_history_degraded() {
+        // #197 spec §9: a degraded backend can't coordinate a cluster, so submit
+        // must fail closed with 503 rather than orphan a never-claimable Pending run.
+        use crate::serve::cluster::ClusterConfig;
+        use crate::serve::config::{AuthMode, HistoryBackendSpec, ServeConfig};
+        use crate::serve::history::RunHistory;
+        use crate::serve::history::fallback::FallbackHistory;
+        use crate::serve::state::ServerState;
+        use std::sync::Arc;
+        use tokio_util::sync::CancellationToken;
+
+        let mut cluster = ClusterConfig::disabled();
+        cluster.enabled = true;
+        let cfg = ServeConfig {
+            listen: "127.0.0.1:0".parse().unwrap(),
+            auth: AuthMode::None,
+            max_concurrent_runs: 4,
+            max_queued_runs: 4,
+            default_config_path: None,
+            history: HistoryBackendSpec::Memory,
+            cors_origins: vec![],
+            body_limit_bytes: 1_048_576,
+            shutdown_grace: Duration::from_secs(60),
+            retain_terminal_runs: Duration::from_secs(60),
+            idempotency_retention: Duration::from_secs(60),
+            lease_ttl: Duration::from_secs(30),
+            probe_timeout: Duration::from_secs(10),
+            env_file: None,
+            no_env_file: false,
+            log_level: "info".into(),
+            ui_enabled: true,
+            cluster,
+        };
+        // A backend that is degraded from startup (primary unreachable).
+        let history =
+            Arc::new(FallbackHistory::degraded_at_startup(Duration::from_secs(60), "test"))
+                as Arc<dyn RunHistory>;
+        assert!(history.degraded());
+        let state = ServerState::new(
+            &cfg,
+            None,
+            CancellationToken::new(),
+            history,
+            crate::serve::logs::LogHub::new(),
+            None,
+        );
+        let req = SubmitRequest {
+            config: "version: 1\npipeline:\n  source: { type: csv, config: { path: x.csv } }\n  sink: { type: jsonl, config: { path: out.jsonl } }\n".into(),
+            config_format: ConfigFormatWire::Yaml,
+            name: None,
+            labels: BTreeMap::new(),
+            timeout_secs: None,
+            doctor_first: false,
+            idempotency_key: None,
+            clock: None,
+        };
+        let err = submit(state.clone(), req).await.unwrap_err();
+        assert!(
+            matches!(err, ServeError::Unavailable(_)),
+            "expected 503 Unavailable, got {err:?}"
+        );
+        // The queue reservation must have been released (no leak).
+        assert_eq!(state.registry().queued(), 0);
     }
 }

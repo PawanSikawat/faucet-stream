@@ -198,7 +198,7 @@ impl Stmts {
                 AND (lease_expires_at IS NULL OR lease_expires_at < $3)"
                 .into(),
             reclaim_fail: "UPDATE faucet_serve_runs \
-                SET status = 'failed', finished_at = $1, body = $2 \
+                SET status = 'failed', finished_at = $1, body = $2, owner = NULL \
                 WHERE run_id = $3 AND status = 'running' \
                 AND (lease_expires_at IS NULL OR lease_expires_at < $4)"
                 .into(),
@@ -294,7 +294,7 @@ impl Stmts {
                 AND (lease_expires_at IS NULL OR lease_expires_at < ?)"
                 .into(),
             reclaim_fail: "UPDATE faucet_serve_runs \
-                SET status = 'failed', finished_at = ?, body = ? \
+                SET status = 'failed', finished_at = ?, body = ?, owner = NULL \
                 WHERE run_id = ? AND status = 'running' \
                 AND (lease_expires_at IS NULL OR lease_expires_at < ?)"
                 .into(),
