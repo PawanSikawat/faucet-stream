@@ -70,10 +70,71 @@ pub struct SubmitResponse {
     pub submitted_at: DateTime<Utc>,
 }
 
-/// Stub — replaced in the cluster runner task (Task 8). Re-runs a claimed
-/// Pending run on this instance.
+/// Re-run a claimed Pending run on this instance (cluster mode). Reconstructs the
+/// execution inputs from the persisted record (re-resolving config with this
+/// instance's own env/credentials), acquires a permit, and runs the shared tail.
 pub fn resume_claimed_run(state: ServerState, rec: RunRecord) {
-    let _ = (state, rec);
+    tokio::spawn(async move {
+        let run_id = rec.run_id.clone();
+        let Some(body) = rec.config_body.as_deref() else {
+            tracing::error!(run_id, "claimed run has no stored config; failing it");
+            finalize(
+                &state,
+                &run_id,
+                rec.submitted_at,
+                Terminal::Failed {
+                    reason: "claimed run record missing config_body".into(),
+                    records: 0,
+                    invs: Vec::new(),
+                },
+            )
+            .await;
+            return;
+        };
+        let format = rec.config_format.unwrap_or_default();
+        let loaded = match load_submission(body, format, state.default_base()).await {
+            Ok(l) => l,
+            Err(e) => {
+                finalize(
+                    &state,
+                    &run_id,
+                    rec.submitted_at,
+                    Terminal::Failed {
+                        reason: format!(
+                            "re-loading claimed config: {}",
+                            e.api_error().error.message
+                        ),
+                        records: 0,
+                        invs: Vec::new(),
+                    },
+                )
+                .await;
+                return;
+            }
+        };
+
+        // The claim loop only claims up to available_permits and is the sole
+        // permit consumer, so this acquire returns immediately.
+        let _permit = state
+            .semaphore()
+            .acquire_owned()
+            .await
+            .expect("semaphore not closed");
+        // Register a local cancel token so a cross-instance cancel (the claim loop
+        // calling registry.cancel) reaches this run.
+        let run_token = CancellationToken::new();
+        state.registry().register(run_id.clone(), run_token.clone());
+        execute_run(
+            state.clone(),
+            loaded,
+            run_id,
+            run_token,
+            rec.submitted_at,
+            rec.timeout_secs,
+            rec.clock.clone(),
+        )
+        .await;
+    });
 }
 
 /// Validate, idempotency-claim, queue, and spawn a submission.
@@ -157,6 +218,32 @@ pub async fn submit(state: ServerState, req: SubmitRequest) -> Result<SubmitResp
         submitted_at,
     );
     rec.doctor_report = doctor_report;
+
+    if state.cluster().enabled() {
+        // Cluster mode: persist the RAW config so any instance can re-resolve +
+        // run it, mark the run Pending, and wake the local claim loop. No local
+        // queue slot / spawn — the claim loop owns execution.
+        rec.status = RunStatus::Pending;
+        rec.config_body = Some(req.config.clone());
+        rec.config_format = Some(req.config_format.into());
+        rec.timeout_secs = req.timeout_secs;
+        rec.clock = req.clock.clone();
+        state
+            .history()
+            .upsert(&rec)
+            .await
+            .map_err(|e| ServeError::Internal(e.to_string()))?;
+        // Release the local queue reservation (cluster runs are bounded by the
+        // claim loop + semaphore, not the submit-side queue).
+        drop(reservation);
+        state.cluster().kick();
+        return Ok(SubmitResponse {
+            run_id,
+            status: RunStatus::Pending,
+            submitted_at,
+        });
+    }
+
     state
         .history()
         .upsert(&rec)
@@ -389,8 +476,6 @@ fn spawn_run(
     submitted_at: DateTime<Utc>,
 ) {
     let server_shutdown = state.shutdown_token();
-    let LoadedSubmission { cfg, nodes } = loaded;
-
     tokio::spawn(async move {
         // Race the permit acquisition against cancel / shutdown so a run
         // cancelled while STILL QUEUED (before any permit frees) is finalized
@@ -409,163 +494,190 @@ fn spawn_run(
             }
             permit = state.semaphore().acquire_owned() => permit.expect("semaphore not closed"),
         };
-
-        // Queued → running. From here the guard guarantees `mark_finished` (and a
-        // gauge refresh) on EVERY exit, including early returns and panics.
-        state.registry().mark_running();
-        let _guard = InFlightGuard {
-            state: state.clone(),
-            run_id: run_id.clone(),
-        };
-        let started = Utc::now();
-        if let Ok(Some(mut rec)) = state.history().get(&run_id).await {
-            rec.status = RunStatus::Running;
-            rec.started_at = Some(started);
-            let _ = state.history().upsert(&rec).await;
-        }
-        metrics::set_run_gauges(&state);
-
-        // Build execution options (auth/clock failures finalize as Failed).
-        let pipeline_name = cfg.name.clone().unwrap_or_else(|| "serve".to_string());
-        let auth = match build_auth_catalog(cfg.auth.as_ref()) {
-            Ok(a) => a,
-            Err(e) => {
-                finalize(
-                    &state,
-                    &run_id,
-                    started,
-                    Terminal::Failed {
-                        reason: format!("auth catalog: {e}"),
-                        records: 0,
-                        invs: Vec::new(),
-                    },
-                )
-                .await;
-                return;
-            }
-        };
-        let clock = match resolve_clock(req.clock.as_deref(), submitted_at) {
-            Ok(c) => c,
-            Err(e) => {
-                finalize(
-                    &state,
-                    &run_id,
-                    started,
-                    Terminal::Failed {
-                        reason: e.api_error().error.message,
-                        records: 0,
-                        invs: Vec::new(),
-                    },
-                )
-                .await;
-                return;
-            }
-        };
-
-        // Cooperative-cancel token the pipeline observes so it flushes buffered
-        // output (e.g. a Parquet footer, an S3 multipart upload) at its next
-        // page boundary on cancel / timeout / shutdown — instead of having its
-        // future hard-dropped, which flushes nothing (#146 H16).
-        let coop = CancellationToken::new();
-        // Build the per-run OpenLineage emitter from the (merged) submitted
-        // config. A malformed `lineage:` block finalizes the run as Failed,
-        // mirroring the auth/clock failure handling above.
-        #[cfg(feature = "lineage")]
-        let lineage = match crate::lineage_glue::build_emitter(cfg.lineage.as_ref()) {
-            Ok(l) => l,
-            Err(e) => {
-                finalize(
-                    &state,
-                    &run_id,
-                    started,
-                    Terminal::Failed {
-                        reason: format!("lineage: {e}"),
-                        records: 0,
-                        invs: Vec::new(),
-                    },
-                )
-                .await;
-                return;
-            }
-        };
-        let opts = ExecuteOptions {
-            pipeline_name,
-            execution: cfg.execution.clone(),
-            dry_run: false,
-            limit: None,
-            state_path_override: None,
-            auth,
-            clock,
-            cancel: Some(coop.clone()),
-            #[cfg(feature = "lineage")]
-            lineage,
-            #[cfg(feature = "lineage")]
-            lineage_cfg: cfg.lineage.clone(),
-        };
-        let timeout_secs = req.timeout_secs;
-
-        let span = tracing::info_span!("faucet.serve.run", serve_run_id = %run_id);
-        let work = async move {
-            // Emitted inside the run span so it is captured by the SSE log layer
-            // (and gives every `/logs` reader at least one line to anchor on).
-            tracing::info!("pipeline run starting");
-            classify_run(run_expanded(nodes, opts).await)
-        }
-        .instrument(span);
-        tokio::pin!(work);
-
-        // The run timeout is modelled as a cancel trigger (not a hard
-        // `tokio::time::timeout` drop) so a timed-out run still flushes.
-        let timeout_fut = async {
-            match timeout_secs {
-                Some(s) => tokio::time::sleep(Duration::from_secs(s)).await,
-                None => std::future::pending::<()>().await,
-            }
-        };
-        tokio::pin!(timeout_fut);
-
-        enum Trigger {
-            Done(Terminal),
-            Cancel,
-            Shutdown,
-            Timeout(u64),
-        }
-
-        // Phase 1: run to natural completion, or until a cancel trigger fires.
-        // `biased` prefers a just-completed run over a simultaneous trigger.
-        let trigger = tokio::select! {
-            biased;
-            t = &mut work => Trigger::Done(t),
-            _ = run_token.cancelled() => Trigger::Cancel,
-            _ = server_shutdown.cancelled() => Trigger::Shutdown,
-            _ = &mut timeout_fut => Trigger::Timeout(timeout_secs.unwrap_or(0)),
-        };
-
-        let terminal = match trigger {
-            Trigger::Done(t) => t,
-            triggered => {
-                // Phase 2: a trigger fired. Cancel cooperatively and give the
-                // pipeline a bounded grace to flush at its next page boundary,
-                // then hard-drop it (drops the JoinSet, aborting any pipeline
-                // genuinely stuck mid-write) so a hung run can't wedge shutdown.
-                coop.cancel();
-                let _ = tokio::time::timeout(RUN_FLUSH_GRACE, &mut work).await;
-                match triggered {
-                    Trigger::Cancel => Terminal::Cancelled,
-                    Trigger::Shutdown => Terminal::ShutdownFailed,
-                    Trigger::Timeout(secs) => Terminal::Timeout { secs },
-                    Trigger::Done(_) => unreachable!("matched in the outer arm"),
-                }
-            }
-        };
-
-        finalize(&state, &run_id, started, terminal).await;
-        // Signal `/logs` readers the run is done, then drop the buffer after a
-        // drain window so a late fetcher can still replay it (spec §12).
-        state.log_hub().finish(&run_id);
-        schedule_log_drop(state.clone(), run_id.clone());
-        // `_guard` drops here → mark_finished + gauge refresh.
+        execute_run(
+            state,
+            loaded,
+            run_id,
+            run_token,
+            submitted_at,
+            req.timeout_secs,
+            req.clock,
+        )
+        .await;
+        // `_permit` drops here.
     });
+}
+
+/// The queued→running→finalize execution tail, shared by the submit path
+/// (`spawn_run`) and the cluster claim path (`resume_claimed_run`). Assumes the
+/// caller already holds an execution permit and has registered `run_token`.
+#[allow(clippy::too_many_arguments)]
+async fn execute_run(
+    state: ServerState,
+    loaded: LoadedSubmission,
+    run_id: String,
+    run_token: CancellationToken,
+    submitted_at: DateTime<Utc>,
+    timeout_secs: Option<u64>,
+    clock_flag: Option<String>,
+) {
+    let server_shutdown = state.shutdown_token();
+    let LoadedSubmission { cfg, nodes } = loaded;
+
+    // Queued → running. From here the guard guarantees `mark_finished` (and a
+    // gauge refresh) on EVERY exit, including early returns and panics.
+    state.registry().mark_running();
+    let _guard = InFlightGuard {
+        state: state.clone(),
+        run_id: run_id.clone(),
+    };
+    let started = Utc::now();
+    if let Ok(Some(mut rec)) = state.history().get(&run_id).await {
+        rec.status = RunStatus::Running;
+        rec.started_at = Some(started);
+        let _ = state.history().upsert(&rec).await;
+    }
+    metrics::set_run_gauges(&state);
+
+    // Build execution options (auth/clock failures finalize as Failed).
+    let pipeline_name = cfg.name.clone().unwrap_or_else(|| "serve".to_string());
+    let auth = match build_auth_catalog(cfg.auth.as_ref()) {
+        Ok(a) => a,
+        Err(e) => {
+            finalize(
+                &state,
+                &run_id,
+                started,
+                Terminal::Failed {
+                    reason: format!("auth catalog: {e}"),
+                    records: 0,
+                    invs: Vec::new(),
+                },
+            )
+            .await;
+            return;
+        }
+    };
+    let clock = match resolve_clock(clock_flag.as_deref(), submitted_at) {
+        Ok(c) => c,
+        Err(e) => {
+            finalize(
+                &state,
+                &run_id,
+                started,
+                Terminal::Failed {
+                    reason: e.api_error().error.message,
+                    records: 0,
+                    invs: Vec::new(),
+                },
+            )
+            .await;
+            return;
+        }
+    };
+
+    // Cooperative-cancel token the pipeline observes so it flushes buffered
+    // output (e.g. a Parquet footer, an S3 multipart upload) at its next
+    // page boundary on cancel / timeout / shutdown — instead of having its
+    // future hard-dropped, which flushes nothing (#146 H16).
+    let coop = CancellationToken::new();
+    // Build the per-run OpenLineage emitter from the (merged) submitted
+    // config. A malformed `lineage:` block finalizes the run as Failed,
+    // mirroring the auth/clock failure handling above.
+    #[cfg(feature = "lineage")]
+    let lineage = match crate::lineage_glue::build_emitter(cfg.lineage.as_ref()) {
+        Ok(l) => l,
+        Err(e) => {
+            finalize(
+                &state,
+                &run_id,
+                started,
+                Terminal::Failed {
+                    reason: format!("lineage: {e}"),
+                    records: 0,
+                    invs: Vec::new(),
+                },
+            )
+            .await;
+            return;
+        }
+    };
+    let opts = ExecuteOptions {
+        pipeline_name,
+        execution: cfg.execution.clone(),
+        dry_run: false,
+        limit: None,
+        state_path_override: None,
+        auth,
+        clock,
+        cancel: Some(coop.clone()),
+        #[cfg(feature = "lineage")]
+        lineage,
+        #[cfg(feature = "lineage")]
+        lineage_cfg: cfg.lineage.clone(),
+    };
+
+    let span = tracing::info_span!("faucet.serve.run", serve_run_id = %run_id);
+    let work = async move {
+        // Emitted inside the run span so it is captured by the SSE log layer
+        // (and gives every `/logs` reader at least one line to anchor on).
+        tracing::info!("pipeline run starting");
+        classify_run(run_expanded(nodes, opts).await)
+    }
+    .instrument(span);
+    tokio::pin!(work);
+
+    // The run timeout is modelled as a cancel trigger (not a hard
+    // `tokio::time::timeout` drop) so a timed-out run still flushes.
+    let timeout_fut = async {
+        match timeout_secs {
+            Some(s) => tokio::time::sleep(Duration::from_secs(s)).await,
+            None => std::future::pending::<()>().await,
+        }
+    };
+    tokio::pin!(timeout_fut);
+
+    enum Trigger {
+        Done(Terminal),
+        Cancel,
+        Shutdown,
+        Timeout(u64),
+    }
+
+    // Phase 1: run to natural completion, or until a cancel trigger fires.
+    // `biased` prefers a just-completed run over a simultaneous trigger.
+    let trigger = tokio::select! {
+        biased;
+        t = &mut work => Trigger::Done(t),
+        _ = run_token.cancelled() => Trigger::Cancel,
+        _ = server_shutdown.cancelled() => Trigger::Shutdown,
+        _ = &mut timeout_fut => Trigger::Timeout(timeout_secs.unwrap_or(0)),
+    };
+
+    let terminal = match trigger {
+        Trigger::Done(t) => t,
+        triggered => {
+            // Phase 2: a trigger fired. Cancel cooperatively and give the
+            // pipeline a bounded grace to flush at its next page boundary,
+            // then hard-drop it (drops the JoinSet, aborting any pipeline
+            // genuinely stuck mid-write) so a hung run can't wedge shutdown.
+            coop.cancel();
+            let _ = tokio::time::timeout(RUN_FLUSH_GRACE, &mut work).await;
+            match triggered {
+                Trigger::Cancel => Terminal::Cancelled,
+                Trigger::Shutdown => Terminal::ShutdownFailed,
+                Trigger::Timeout(secs) => Terminal::Timeout { secs },
+                Trigger::Done(_) => unreachable!("matched in the outer arm"),
+            }
+        }
+    };
+
+    finalize(&state, &run_id, started, terminal).await;
+    // Signal `/logs` readers the run is done, then drop the buffer after a
+    // drain window so a late fetcher can still replay it (spec §12).
+    state.log_hub().finish(&run_id);
+    schedule_log_drop(state.clone(), run_id.clone());
+    // `_guard` drops here → mark_finished + gauge refresh.
 }
 
 /// Write the authoritative terminal record + the run-finished metric.
@@ -604,14 +716,30 @@ async fn finalize(state: &ServerState, run_id: &str, started: DateTime<Utc>, ter
     rec.records_written = records;
     rec.invocations = invs;
     rec.error = error;
-    if let Err(e) = state.history().upsert(&rec).await {
-        tracing::error!(
-            run_id,
-            error = %e,
-            "finalize: failed to persist terminal run record"
-        );
+    if state.cluster().enabled() {
+        // Owner-fenced: if another instance reclaimed this run (lease expired),
+        // our write is a no-op and we discard our result — the reclaimer is now
+        // authoritative (#197).
+        match state.history().finalize_owned(&rec).await {
+            Ok(true) => metrics::record_run_finished(status, reason),
+            Ok(false) => tracing::warn!(
+                run_id,
+                "finalize: run was reclaimed by another instance; discarding result"
+            ),
+            Err(e) => {
+                tracing::error!(run_id, error = %e, "finalize: owner-fenced write failed")
+            }
+        }
+    } else {
+        if let Err(e) = state.history().upsert(&rec).await {
+            tracing::error!(
+                run_id,
+                error = %e,
+                "finalize: failed to persist terminal run record"
+            );
+        }
+        metrics::record_run_finished(status, reason);
     }
-    metrics::record_run_finished(status, reason);
 }
 
 /// Finalize a run that was cancelled / hit shutdown while still QUEUED (before
@@ -761,6 +889,68 @@ mod tests {
         );
         // The reservation taken before the claim must have been released by the guard.
         assert_eq!(state.registry().queued(), 0);
+    }
+
+    #[tokio::test]
+    async fn cluster_submit_writes_pending_with_config_and_does_not_spawn() {
+        use crate::serve::config::{AuthMode, HistoryBackendSpec, ServeConfig};
+        use crate::serve::cluster::ClusterConfig;
+        use crate::serve::history::RunHistory;
+        use crate::serve::history::memory::MemoryHistory;
+        use crate::serve::state::ServerState;
+        use std::sync::Arc;
+        use tokio_util::sync::CancellationToken;
+
+        let mut cluster = ClusterConfig::disabled();
+        cluster.enabled = true;
+        let cfg = ServeConfig {
+            listen: "127.0.0.1:0".parse().unwrap(),
+            auth: AuthMode::None,
+            max_concurrent_runs: 4,
+            max_queued_runs: 4,
+            default_config_path: None,
+            history: HistoryBackendSpec::Memory,
+            cors_origins: vec![],
+            body_limit_bytes: 1_048_576,
+            shutdown_grace: Duration::from_secs(60),
+            retain_terminal_runs: Duration::from_secs(60),
+            idempotency_retention: Duration::from_secs(60),
+            lease_ttl: Duration::from_secs(30),
+            probe_timeout: Duration::from_secs(10),
+            env_file: None,
+            no_env_file: false,
+            log_level: "info".into(),
+            ui_enabled: true,
+            cluster,
+        };
+        let history = Arc::new(MemoryHistory::new(Duration::from_secs(60))) as Arc<dyn RunHistory>;
+        let state = ServerState::new(
+            &cfg,
+            None,
+            CancellationToken::new(),
+            history,
+            crate::serve::logs::LogHub::new(),
+            None,
+        );
+
+        let req = SubmitRequest {
+            config: "version: 1\npipeline:\n  source: { type: csv, config: { path: x.csv } }\n  sink: { type: jsonl, config: { path: out.jsonl } }\n".into(),
+            config_format: ConfigFormatWire::Yaml,
+            name: Some("n".into()),
+            labels: BTreeMap::new(),
+            timeout_secs: Some(99),
+            doctor_first: false,
+            idempotency_key: None,
+            clock: None,
+        };
+        let resp = submit(state.clone(), req).await.unwrap();
+        assert_eq!(resp.status, RunStatus::Pending);
+        // No local queue slot was consumed (cluster runs don't queue locally).
+        assert_eq!(state.registry().queued(), 0);
+        let rec = state.history().get(&resp.run_id).await.unwrap().unwrap();
+        assert_eq!(rec.status, RunStatus::Pending);
+        assert!(rec.config_body.as_deref().unwrap().contains("version: 1"));
+        assert_eq!(rec.timeout_secs, Some(99));
     }
 
     /// A `ServerState` backed by an in-memory history, for finalize tests.
