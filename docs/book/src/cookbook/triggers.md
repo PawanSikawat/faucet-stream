@@ -72,7 +72,7 @@ cargo run -p faucet-cli --features "triggers,triggers-object-store" -- \
 
 Drop a file into the bucket (or use `aws s3 cp`) — within
 `poll_interval_secs` the watcher detects it, creates a deterministic
-idempotency key (`trigger:load-dropped-files:obj:<key>:<last_modified>`),
+idempotency key (`trig:load-dropped-files:<bucket>:<key>:<last_modified>`),
 and enqueues a run. Re-listing the same object version never enqueues a
 duplicate.
 
@@ -96,7 +96,7 @@ version: 1
 triggers:
   - name: sync-hook
     type: webhook
-    config: ./cli/examples/csv_to_jsonl.yaml
+    config: ./pipelines/sync.yaml   # path relative to this triggers file
     methods: [POST]
     dedupe_header: Idempotency-Key
 ```
@@ -167,7 +167,7 @@ version: 1
 triggers:
   - name: drain-jobs
     type: queue_depth
-    config: ./cli/examples/redis_to_sqlite.yaml
+    config: ./pipelines/drain.yaml   # path relative to this triggers file
     queue:
       type: redis
       url: redis://localhost:6379
@@ -217,9 +217,9 @@ Key signals:
 | What | Metric |
 |------|--------|
 | Fire rate | `faucet_serve_triggers_fired_total{trigger,type}` |
-| Watcher health | `faucet_serve_trigger_healthy{trigger,type}` (0 = in backoff) |
+| Watcher health | `faucet_serve_trigger_healthy{trigger}` (0 = in backoff) |
 | Dropped fires | `faucet_serve_trigger_runs_dropped_total{trigger,reason}` |
-| Last fire time | `faucet_serve_trigger_last_fire_unix_seconds{trigger,type}` |
+| Last fire time | `faucet_serve_trigger_last_fire_unix_seconds{trigger}` |
 
 Set up an alert on `faucet_serve_trigger_healthy == 0` or on
 `time() - faucet_serve_trigger_last_fire_unix_seconds > <expected_interval * 3>`

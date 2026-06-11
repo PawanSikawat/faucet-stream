@@ -31,8 +31,9 @@ triggers:
     # … type-specific fields below
 ```
 
-The `config:` field accepts either a **path string** (loaded relative to the
-triggers file at runtime) or an **inline pipeline document** (`{ pipeline: … }`).
+The `config:` field accepts either a **path string** (resolved **relative to the
+triggers file**, not the process CWD) or an **inline pipeline document**
+(`{ pipeline: … }`).
 
 ## Trigger types
 
@@ -57,6 +58,8 @@ start_at: now               # now (only objects seen after startup) | beginning 
 
 **`${trigger.*}` tokens injected into the run config:**
 
+*`mode: per_object` — one token set per object:*
+
 | Token | Value |
 |-------|-------|
 | `${trigger.name}` | The trigger's `name` field |
@@ -67,8 +70,24 @@ start_at: now               # now (only objects seen after startup) | beginning 
 | `${trigger.size}` | Object size in bytes |
 | `${trigger.last_modified}` | RFC 3339 last-modified timestamp of the object |
 
-**Idempotency key:** `trigger:<name>:obj:<object_key>:<last_modified>` — deterministic per
-object version; re-listing a processed object does not enqueue a duplicate run.
+*`mode: batch` — one token set for the entire batch of new objects:*
+
+| Token | Value |
+|-------|-------|
+| `${trigger.name}` | The trigger's `name` field |
+| `${trigger.type}` | `object_arrival` |
+| `${trigger.fired_at}` | ISO 8601 timestamp when the trigger fired |
+| `${trigger.bucket}` | The S3/GCS bucket name |
+| `${trigger.object_count}` | Number of new objects in the batch |
+
+> `${trigger.object_key}`, `${trigger.size}`, and `${trigger.last_modified}` are
+> **not available** in `mode: batch` (they are per-object fields).
+
+**Idempotency key:**
+- `mode: per_object`: `trig:<name>:<bucket>:<object_key>:<last_modified>` — deterministic per
+  object version; re-listing a processed object does not enqueue a duplicate run.
+- `mode: batch`: `trig:<name>:<watermark>` where `<watermark>` is the maximum
+  `last_modified` timestamp across the batch.
 
 **`start_at: now` behaviour:** on first startup the watcher records the current set of keys as
 its cursor; only keys seen in subsequent polls are treated as new. Set `start_at: beginning` to
@@ -112,8 +131,9 @@ dedupe_header: null         # header used as idempotency key (optional; else a p
 | `${trigger.header.<name>}` | Value of HTTP request header `<name>` |
 | `${trigger.query.<name>}` | Value of query parameter `<name>` |
 
-**Idempotency key:** `trigger:<name>:webhook:<dedupe_header_value>` when
-`dedupe_header` is set; otherwise `trigger:<name>:webhook:<random_uuid>`.
+**Idempotency key:** the raw value of the `dedupe_header` when configured and
+present in the request (no prefix or name segment — the header value is used
+verbatim); otherwise a fresh per-request UUID (also bare, no prefix).
 
 Fire the webhook with `curl`:
 
@@ -159,7 +179,7 @@ Redis requires the `triggers-redis` feature; Kafka requires `triggers-kafka`.
 | `${trigger.queue}` | The queue key / topic name |
 | `${trigger.depth}` | Observed depth (as a string) that crossed the threshold |
 
-**Idempotency key:** `trigger:<name>:queue:<monotonic_edge_ordinal>` — the
+**Idempotency key:** `trig:<name>:edge:<monotonic_edge_ordinal>` — the
 ordinal increments on each rising edge, producing a unique key per fire.
 
 ## Labels on enqueued runs
@@ -207,8 +227,8 @@ faucet schema triggers     # print the JSON Schema for the triggers file
 | Metric | Type | Labels | Description |
 |--------|------|--------|-------------|
 | `faucet_serve_triggers_active` | Gauge | — | Number of enabled, running trigger watchers |
-| `faucet_serve_trigger_healthy` | Gauge | `trigger`, `type` | 1 = healthy, 0 = in error backoff |
-| `faucet_serve_trigger_last_fire_unix_seconds` | Gauge | `trigger`, `type` | Unix timestamp of last fire |
+| `faucet_serve_trigger_healthy` | Gauge | `trigger` | 1 = healthy, 0 = in error backoff |
+| `faucet_serve_trigger_last_fire_unix_seconds` | Gauge | `trigger` | Unix timestamp of last fire |
 | `faucet_serve_triggers_fired_total` | Counter | `trigger`, `type` | Total trigger fires |
 | `faucet_serve_trigger_runs_enqueued_total` | Counter | `trigger` | Runs successfully enqueued |
 | `faucet_serve_trigger_runs_coalesced_total` | Counter | `trigger` | Fires suppressed by debounce |
