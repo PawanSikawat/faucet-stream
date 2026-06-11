@@ -145,6 +145,19 @@ pub struct ServeArgs {
     /// includes the `serve-ui` feature; the API is unaffected).
     #[arg(long)]
     pub no_ui: bool,
+    /// Enable clustered execution: run a claim loop that pulls Pending runs from
+    /// the shared history DB so N instances pull-balance and fail over. Requires
+    /// a postgres/sqlite --history backend.
+    #[arg(long)]
+    pub cluster: bool,
+    /// Claim-loop poll interval (seconds) in cluster mode. Also the
+    /// cross-instance cancel-propagation lag. Must be > 0.
+    #[arg(long, default_value_t = 2)]
+    pub cluster_poll_secs: u64,
+    /// Max failover re-runs of an orphaned run before it is marked Failed
+    /// (poison). Must be > 0.
+    #[arg(long, default_value_t = 3)]
+    pub cluster_max_attempts: u32,
 }
 
 /// `faucet run` arguments.

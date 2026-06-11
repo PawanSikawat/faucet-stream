@@ -25,6 +25,9 @@ fn test_config(listen: &str) -> ServeConfig {
         env_file: None,
         no_env_file: true,
         no_ui: false,
+        cluster: false,
+        cluster_poll_secs: 2,
+        cluster_max_attempts: 3,
     };
     ServeConfig::from_args(args).unwrap()
 }

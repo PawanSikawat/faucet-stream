@@ -128,6 +128,7 @@ mod tests {
             no_env_file: false,
             log_level: "info".into(),
             ui_enabled: true,
+            cluster: crate::serve::cluster::ClusterConfig::disabled(),
         }
     }
 

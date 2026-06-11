@@ -4,6 +4,7 @@
 
 use crate::cli::ServeArgs;
 use crate::error::{CliError, CliResult};
+use crate::serve::cluster::ClusterConfig;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -69,6 +70,8 @@ pub struct ServeConfig {
     /// feature is on; this gates serving at runtime (`--no-ui`).
     #[cfg_attr(not(feature = "serve-ui"), allow(dead_code))]
     pub ui_enabled: bool,
+    /// Clustered-execution settings (`--cluster*`). Disabled by default.
+    pub cluster: ClusterConfig,
 }
 
 fn default_max_concurrent() -> usize {
@@ -147,6 +150,37 @@ impl ServeConfig {
             ));
         }
 
+        let cluster = if args.cluster {
+            if matches!(history, HistoryBackendSpec::Memory) {
+                return Err(CliError::Serve(
+                    "--cluster requires a persistent --history backend \
+                     (postgres://… or sqlite:…); the in-memory store is single-process"
+                        .into(),
+                ));
+            }
+            if args.cluster_poll_secs == 0 {
+                return Err(CliError::Serve(
+                    "--cluster-poll-secs must be > 0 (0 would spin the claim loop \
+                     with no back-off, saturating the history DB)"
+                        .into(),
+                ));
+            }
+            if args.cluster_max_attempts == 0 {
+                return Err(CliError::Serve(
+                    "--cluster-max-attempts must be > 0 (0 would never re-run \
+                     orphaned runs, defeating failover)"
+                        .into(),
+                ));
+            }
+            ClusterConfig {
+                enabled: true,
+                poll: Duration::from_secs(args.cluster_poll_secs),
+                max_attempts: args.cluster_max_attempts,
+            }
+        } else {
+            ClusterConfig::disabled()
+        };
+
         let max_concurrent_runs = args
             .max_concurrent_runs
             .unwrap_or_else(default_max_concurrent)
@@ -174,6 +208,7 @@ impl ServeConfig {
             no_env_file: args.no_env_file,
             log_level: "info".to_string(),
             ui_enabled: !args.no_ui,
+            cluster,
         })
     }
 }
@@ -202,6 +237,9 @@ mod tests {
             env_file: None,
             no_env_file: false,
             no_ui: false,
+            cluster: false,
+            cluster_poll_secs: 2,
+            cluster_max_attempts: 3,
         }
     }
 
@@ -359,5 +397,32 @@ mod tests {
         a.idempotency_retention_secs = 0;
         let cfg = ServeConfig::from_args(a).unwrap();
         assert_eq!(cfg.idempotency_retention, Duration::ZERO);
+    }
+
+    #[test]
+    fn cluster_requires_persistent_history() {
+        let mut a = base_args();
+        a.no_auth = true;
+        a.cluster = true; // history defaults to memory
+        let err = ServeConfig::from_args(a).unwrap_err();
+        assert!(err.to_string().contains("--cluster requires"), "{err}");
+    }
+
+    #[test]
+    fn cluster_with_sqlite_is_enabled() {
+        let mut a = base_args();
+        a.no_auth = true;
+        a.cluster = true;
+        a.history = Some("sqlite:runs.db".into());
+        let cfg = ServeConfig::from_args(a).unwrap();
+        assert!(cfg.cluster.enabled);
+        assert_eq!(cfg.cluster.max_attempts, 3);
+    }
+
+    #[test]
+    fn cluster_disabled_by_default() {
+        let mut a = base_args();
+        a.no_auth = true;
+        assert!(!ServeConfig::from_args(a).unwrap().cluster.enabled);
     }
 }

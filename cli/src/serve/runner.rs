@@ -718,6 +718,7 @@ mod tests {
             no_env_file: false,
             log_level: "info".into(),
             ui_enabled: true,
+            cluster: crate::serve::cluster::ClusterConfig::disabled(),
         };
         let history = Arc::new(MemoryHistory::new(Duration::from_secs(60))) as Arc<dyn RunHistory>;
         let state = ServerState::new(
@@ -783,6 +784,7 @@ mod tests {
             no_env_file: false,
             log_level: "info".into(),
             ui_enabled: true,
+            cluster: crate::serve::cluster::ClusterConfig::disabled(),
         };
         let history = Arc::new(MemoryHistory::new(Duration::from_secs(60))) as Arc<dyn RunHistory>;
         ServerState::new(
