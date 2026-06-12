@@ -83,68 +83,6 @@ impl Cursor {
     }
 }
 
-#[cfg(test)]
-mod cursor_tests {
-    use super::*;
-    use chrono::TimeZone;
-
-    fn obj(key: &str, secs: i64) -> ListedObject {
-        ListedObject {
-            key: key.into(),
-            last_modified: chrono::Utc.timestamp_opt(secs, 0).unwrap(),
-            size: 1,
-            etag: None,
-        }
-    }
-
-    #[test]
-    fn starting_now_ignores_existing() {
-        let now = chrono::Utc.timestamp_opt(1000, 0).unwrap();
-        let c = Cursor::starting_now(now);
-        // Existing object at t=900 is older → not new.
-        assert!(c.new_objects(&[obj("a", 900)]).is_empty());
-        // Newer object at t=1100 → new.
-        assert_eq!(c.new_objects(&[obj("b", 1100)]).len(), 1);
-    }
-
-    #[test]
-    fn starting_beginning_emits_all_then_commits() {
-        let mut c = Cursor::starting_beginning();
-        let listing = vec![obj("a", 100), obj("b", 200)];
-        let new = c.new_objects(&listing);
-        assert_eq!(new.len(), 2);
-        for o in &new {
-            c.commit(o);
-        }
-        // After commit, none are new.
-        assert!(c.new_objects(&listing).is_empty());
-    }
-
-    #[test]
-    fn handles_ties_at_watermark() {
-        let mut c = Cursor::starting_beginning();
-        let a = obj("a", 100);
-        c.commit(&c.new_objects(&[a.clone()])[0].clone());
-        // A second object at the SAME timestamp is still new (unseen key).
-        let b = obj("b", 100);
-        let new = c.new_objects(&[a.clone(), b.clone()]);
-        assert_eq!(new, vec![b.clone()]);
-        c.commit(&b);
-        assert!(c.new_objects(&[a, b]).is_empty());
-    }
-
-    #[test]
-    fn dropped_fire_is_retried_until_committed() {
-        let mut c = Cursor::starting_beginning();
-        let a = obj("a", 100);
-        // new_objects without commit → still new next time (simulating a drop).
-        assert_eq!(c.new_objects(&[a.clone()]).len(), 1);
-        assert_eq!(c.new_objects(&[a.clone()]).len(), 1);
-        c.commit(&a);
-        assert!(c.new_objects(&[a]).is_empty());
-    }
-}
-
 /// Return type of [`ObjectArrivalWatcher::build_store`]: the constructed
 /// store, the bucket name, and an optional key prefix.
 type StoreTriple = (Arc<dyn ObjectStore>, String, Option<String>);
@@ -302,5 +240,67 @@ impl Watcher for ObjectArrivalWatcher {
             }
         }
         Ok(fired)
+    }
+}
+
+#[cfg(test)]
+mod cursor_tests {
+    use super::*;
+    use chrono::TimeZone;
+
+    fn obj(key: &str, secs: i64) -> ListedObject {
+        ListedObject {
+            key: key.into(),
+            last_modified: chrono::Utc.timestamp_opt(secs, 0).unwrap(),
+            size: 1,
+            etag: None,
+        }
+    }
+
+    #[test]
+    fn starting_now_ignores_existing() {
+        let now = chrono::Utc.timestamp_opt(1000, 0).unwrap();
+        let c = Cursor::starting_now(now);
+        // Existing object at t=900 is older → not new.
+        assert!(c.new_objects(&[obj("a", 900)]).is_empty());
+        // Newer object at t=1100 → new.
+        assert_eq!(c.new_objects(&[obj("b", 1100)]).len(), 1);
+    }
+
+    #[test]
+    fn starting_beginning_emits_all_then_commits() {
+        let mut c = Cursor::starting_beginning();
+        let listing = vec![obj("a", 100), obj("b", 200)];
+        let new = c.new_objects(&listing);
+        assert_eq!(new.len(), 2);
+        for o in &new {
+            c.commit(o);
+        }
+        // After commit, none are new.
+        assert!(c.new_objects(&listing).is_empty());
+    }
+
+    #[test]
+    fn handles_ties_at_watermark() {
+        let mut c = Cursor::starting_beginning();
+        let a = obj("a", 100);
+        c.commit(&c.new_objects(std::slice::from_ref(&a))[0].clone());
+        // A second object at the SAME timestamp is still new (unseen key).
+        let b = obj("b", 100);
+        let new = c.new_objects(&[a.clone(), b.clone()]);
+        assert_eq!(new, vec![b.clone()]);
+        c.commit(&b);
+        assert!(c.new_objects(&[a, b]).is_empty());
+    }
+
+    #[test]
+    fn dropped_fire_is_retried_until_committed() {
+        let mut c = Cursor::starting_beginning();
+        let a = obj("a", 100);
+        // new_objects without commit → still new next time (simulating a drop).
+        assert_eq!(c.new_objects(std::slice::from_ref(&a)).len(), 1);
+        assert_eq!(c.new_objects(std::slice::from_ref(&a)).len(), 1);
+        c.commit(&a);
+        assert!(c.new_objects(&[a]).is_empty());
     }
 }

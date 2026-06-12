@@ -80,56 +80,6 @@ pub async fn load_triggers(path: &std::path::Path) -> CliResult<CompiledTriggers
     CompiledTriggers::compile(file).map_err(CliError::Serve)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::io::Write;
-
-    #[tokio::test]
-    async fn load_triggers_resolves_relative_config_path() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let base = dir.path();
-
-        // Create a minimal pipeline file that `CompiledTriggers::compile` won't
-        // reject for being absent (compile only checks the spec, not the file).
-        let pipeline_path = base.join("inner.yaml");
-        std::fs::write(
-            &pipeline_path,
-            "version: 1\npipeline:\n  source:\n    type: rest\n    config: {url: 'http://x'}\n  sink:\n    type: stdout\n    config: {}\n",
-        )
-        .unwrap();
-
-        // Triggers file lives in the temp dir and references inner.yaml relatively.
-        let triggers_path = base.join("triggers.yaml");
-        let yaml = format!(
-            "version: 1\ntriggers:\n  - name: t1\n    type: webhook\n    config: ./inner.yaml\n    methods: [POST]\n"
-        );
-        {
-            let mut f = std::fs::File::create(&triggers_path).unwrap();
-            f.write_all(yaml.as_bytes()).unwrap();
-        }
-
-        let compiled = load_triggers(&triggers_path)
-            .await
-            .expect("load_triggers failed");
-        assert_eq!(compiled.triggers.len(), 1);
-
-        // The compiled trigger's config path must be absolute (starts with base_dir).
-        match &compiled.triggers[0].spec.config {
-            crate::serve::triggers::spec::PipelineRef::Path(p) => {
-                let abs = std::path::Path::new(p);
-                assert!(abs.is_absolute(), "expected absolute path, got: {p}");
-                assert!(
-                    abs.starts_with(base),
-                    "expected path under temp dir {}, got: {p}",
-                    base.display()
-                );
-            }
-            _ => panic!("expected PipelineRef::Path"),
-        }
-    }
-}
-
 /// Spawn supervised watcher tasks for every enabled polling trigger. Webhook
 /// triggers need no task (they are served by the route). Returns the join handles
 /// (the caller aborts them on shutdown, like the maintenance/lease loops).
@@ -244,3 +194,51 @@ pub fn spawn_watchers(
 
 // Bring the compiled types into the public surface for `server.rs`.
 pub use compiled::CompiledTriggers as Compiled;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    #[tokio::test]
+    async fn load_triggers_resolves_relative_config_path() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let base = dir.path();
+
+        // Create a minimal pipeline file that `CompiledTriggers::compile` won't
+        // reject for being absent (compile only checks the spec, not the file).
+        let pipeline_path = base.join("inner.yaml");
+        std::fs::write(
+            &pipeline_path,
+            "version: 1\npipeline:\n  source:\n    type: rest\n    config: {url: 'http://x'}\n  sink:\n    type: stdout\n    config: {}\n",
+        )
+        .unwrap();
+
+        // Triggers file lives in the temp dir and references inner.yaml relatively.
+        let triggers_path = base.join("triggers.yaml");
+        let yaml = "version: 1\ntriggers:\n  - name: t1\n    type: webhook\n    config: ./inner.yaml\n    methods: [POST]\n".to_string();
+        {
+            let mut f = std::fs::File::create(&triggers_path).unwrap();
+            f.write_all(yaml.as_bytes()).unwrap();
+        }
+
+        let compiled = load_triggers(&triggers_path)
+            .await
+            .expect("load_triggers failed");
+        assert_eq!(compiled.triggers.len(), 1);
+
+        // The compiled trigger's config path must be absolute (starts with base_dir).
+        match &compiled.triggers[0].spec.config {
+            crate::serve::triggers::spec::PipelineRef::Path(p) => {
+                let abs = std::path::Path::new(p);
+                assert!(abs.is_absolute(), "expected absolute path, got: {p}");
+                assert!(
+                    abs.starts_with(base),
+                    "expected path under temp dir {}, got: {p}",
+                    base.display()
+                );
+            }
+            _ => panic!("expected PipelineRef::Path"),
+        }
+    }
+}
