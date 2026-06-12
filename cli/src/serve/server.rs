@@ -24,18 +24,27 @@ pub fn build_router(state: ServerState, config: &ServeConfig) -> Router {
 
     // `/v1` routes guarded by the bearer middleware via `route_layer` (only runs
     // for matched routes; OPTIONS preflight is allowed through inside the layer).
-    let api = Router::new()
+    #[cfg_attr(not(feature = "triggers"), allow(unused_mut))]
+    let mut api = Router::new()
         .route("/v1/runs", post(runs::submit_run).get(runs::list_runs))
         .route("/v1/runs/{id}", get(runs::get_run).delete(runs::delete_run))
         .route("/v1/runs/{id}/cancel", post(runs::cancel_run))
         .route("/v1/runs/{id}/logs", get(logs::stream_logs))
         .route("/v1/schemas", get(schemas::list_schemas))
         .route("/v1/schemas/{kind}/{name}", get(schemas::get_schema))
-        .route("/v1/doctor", post(doctor::doctor))
-        .route_layer(axum::middleware::from_fn_with_state(
-            state.clone(),
-            auth::require_auth,
-        ));
+        .route("/v1/doctor", post(doctor::doctor));
+    #[cfg(feature = "triggers")]
+    {
+        api = api.route(
+            "/v1/triggers/{name}",
+            post(crate::serve::triggers::webhook::handle)
+                .put(crate::serve::triggers::webhook::handle),
+        );
+    }
+    let api = api.route_layer(axum::middleware::from_fn_with_state(
+        state.clone(),
+        auth::require_auth,
+    ));
 
     let cors = if config.cors_origins.is_empty() {
         CorsLayer::new()
@@ -263,6 +272,31 @@ pub async fn serve(config: ServeConfig) -> CliResult<()> {
     }
     let default_base = load_default_base(&config).await?;
 
+    // Event-driven triggers (#196): load + validate the file (fail-fast), then
+    // build the shared handle (webhook table + health rows).
+    #[cfg(feature = "triggers")]
+    let triggers = match &config.triggers_path {
+        Some(path) => {
+            // Register HELP text for the trigger metric family once at startup so
+            // the series carry descriptions in `/metrics` (mirrors schedule).
+            crate::serve::triggers::metrics::describe();
+            Some(crate::serve::triggers::load_triggers(path).await?)
+        }
+        None => None,
+    };
+    #[cfg(feature = "triggers")]
+    let triggers_handle = match &triggers {
+        Some(c) => crate::serve::triggers::health::TriggersHandle::from_compiled(&c.triggers),
+        None => crate::serve::triggers::health::TriggersHandle::empty(),
+    };
+    // A `--triggers` path in a build without the feature is a clear error.
+    #[cfg(not(feature = "triggers"))]
+    if config.triggers_path.is_some() {
+        return Err(CliError::Serve(
+            "--triggers requires a build with the `triggers` feature".into(),
+        ));
+    }
+
     let shutdown = CancellationToken::new();
     let state = ServerState::new(
         &config,
@@ -271,6 +305,8 @@ pub async fn serve(config: ServeConfig) -> CliResult<()> {
         history,
         log_hub,
         default_base,
+        #[cfg(feature = "triggers")]
+        triggers_handle,
     );
     let app = build_router(state.clone(), &config);
 
@@ -318,6 +354,18 @@ pub async fn serve(config: ServeConfig) -> CliResult<()> {
         None
     };
 
+    // Event-driven trigger watchers (#196): spawn one supervised task per enabled
+    // polling trigger (object_arrival / queue_depth). Webhook triggers are
+    // handled by the router — no watcher task needed for them.
+    #[cfg(feature = "triggers")]
+    let trigger_handles = match &triggers {
+        Some(c) => {
+            tracing::info!(count = c.triggers.len(), "spawning trigger watchers");
+            crate::serve::triggers::spawn_watchers(state.clone(), c, shutdown.clone())
+        }
+        None => Vec::new(),
+    };
+
     // The HTTP graceful-shutdown future resolves on signal and stops accepting
     // new connections / drains in-flight HTTP — it does NOT cancel run tasks.
     axum::serve(listener, app)
@@ -352,6 +400,10 @@ pub async fn serve(config: ServeConfig) -> CliResult<()> {
     }
     maintenance.abort();
     leases.abort();
+    #[cfg(feature = "triggers")]
+    for h in trigger_handles {
+        h.abort();
+    }
     tracing::info!("faucet serve stopped");
     Ok(())
 }

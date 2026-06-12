@@ -105,6 +105,7 @@ faucet schema sink bigquery
 faucet schema transform keys_case
 faucet schema dlq
 faucet schema secrets
+faucet schema triggers
 ```
 
 `faucet schema transform <name>` prints the inline config schema for a
@@ -114,6 +115,10 @@ transform (e.g. `keys_case` lists the valid `mode:` values). Run
 `faucet schema secrets` prints the directive grammar and auth requirements for
 all four secrets-manager backends in machine-readable JSON — useful for tooling
 that needs to understand the interpolation syntax without reading the docs.
+
+`faucet schema triggers` prints the JSON Schema for the `--triggers` file format
+(the `TriggersFile` / `TriggerSpec` / `TriggerKind` types). Requires the
+`triggers` Cargo feature.
 
 ## `init`
 
@@ -223,6 +228,7 @@ Selected flags (`faucet serve --help` for the full list):
 | `--cluster-max-attempts <n>` | Maximum total attempts (including crash-failovers) before a run is poisoned and marked `failed` (default `3`). |
 | `--body-limit-bytes` / `--shutdown-grace-secs` / `--retain-terminal-runs-secs` / `--idempotency-retention-secs` | Tuning knobs. |
 | `--no-ui` | Disable the embedded web console at runtime even when the binary was built with `serve-ui`. |
+| `--triggers <path>` | Path to a YAML triggers file that defines event-driven watchers (object-arrival / webhook / queue-depth). Requires the `triggers` Cargo feature. See [Triggers reference](./triggers.md). |
 
 ### Optional embedded web console (`serve-ui`)
 

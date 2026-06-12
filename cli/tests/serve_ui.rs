@@ -35,6 +35,7 @@ fn args(port: u16) -> ServeArgs {
         cluster: false,
         cluster_poll_secs: 2,
         cluster_max_attempts: 3,
+        triggers: None,
     }
 }
 

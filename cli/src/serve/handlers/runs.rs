@@ -286,6 +286,7 @@ mod tests {
             log_level: "info".into(),
             ui_enabled: true,
             cluster,
+            triggers_path: None,
         };
         let history = Arc::new(MemoryHistory::new(Duration::from_secs(60))) as Arc<dyn RunHistory>;
         let state = ServerState::new(
@@ -295,6 +296,8 @@ mod tests {
             history,
             crate::serve::logs::LogHub::new(),
             None,
+            #[cfg(feature = "triggers")]
+            crate::serve::triggers::health::TriggersHandle::empty(),
         );
         // A pending run with no local token (simulating an unclaimed cluster run).
         let mut rec = RunRecord::queued("p1".into(), None, Default::default(), None, Utc::now());

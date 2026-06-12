@@ -26,7 +26,7 @@ default = ["observability", "source", "sink", "state", "transforms", "compressio
 
 # Everything the default build ships, plus the long-running runtime modes:
 # `schedule` (cron scheduler) and `serve` (HTTP control plane).
-full = ["default", "schedule", "serve", "serve-ui", "serve-history-postgres", "serve-history-sqlite", "lineage", "lineage-kafka", "transform-sql"]
+full = ["default", "schedule", "serve", "serve-ui", "serve-history-postgres", "serve-history-sqlite", "lineage", "lineage-kafka", "transform-sql", "triggers", "triggers-object-store", "triggers-redis", "triggers-kafka"]
 
 # Data-quality checks (`quality:` config block). `quality-jsonschema` adds the
 # `json_schema` record check via a JSON Schema validator. Forwarded to
@@ -202,6 +202,14 @@ serve-history-sqlite = ["serve", "dep:sqlx"]
 # Vanilla assets embedded via rust-embed; no JS build step. Implies `serve`.
 serve-ui = ["serve", "dep:rust-embed"]
 
+# Event-driven pipeline triggers for `faucet serve` (#196). Base = framework +
+# webhook trigger (reuses serve's axum). Per-backend sub-features add the polling
+# watchers + their client deps. Implies `serve`. CLI-only.
+triggers = ["serve"]
+triggers-object-store = ["triggers", "dep:object_store"]
+triggers-redis = ["triggers", "dep:redis"]
+triggers-kafka = ["triggers", "dep:rdkafka"]
+
 [dependencies]
 faucet-core.workspace = true
 faucet-auth.workspace = true
@@ -294,6 +302,12 @@ async-stream = { workspace = true, optional = true }
 sqlx = { workspace = true, optional = true }
 # faucet serve embedded web console (serve-ui feature): compile-time asset embedding.
 rust-embed = { version = "8", optional = true, features = ["mime-guess"] }
+# faucet serve event-driven triggers (#196). object_store lists S3/GCS prefixes
+# for the object_arrival trigger; redis/rdkafka poll queue depth. All optional,
+# pulled only by the matching `triggers-*` feature.
+object_store = { workspace = true, optional = true, features = ["aws", "gcp"] }
+redis = { workspace = true, optional = true }
+rdkafka = { workspace = true, optional = true }
 
 [dev-dependencies]
 tempfile = "3"

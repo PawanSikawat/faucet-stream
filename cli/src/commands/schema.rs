@@ -29,6 +29,11 @@ pub async fn run(args: SchemaArgs) -> CliResult<()> {
         }
         #[cfg(feature = "lineage")]
         SchemaTarget::Lineage => lineage_schema(),
+        #[cfg(feature = "triggers")]
+        SchemaTarget::Triggers => {
+            let s = faucet_core::schema_for!(crate::serve::triggers::spec::TriggersFile);
+            serde_json::to_value(s).unwrap_or_else(|_| serde_json::json!({"type": "object"}))
+        }
         SchemaTarget::Secrets => serde_json::json!({
             "title": "Secrets-manager interpolation grammar",
             "schemes": {

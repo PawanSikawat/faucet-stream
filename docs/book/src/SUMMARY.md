@@ -33,6 +33,7 @@
 - [Running faucet as a service](./cookbook/serve.md)
 - [Web console (`serve-ui`)](./cookbook/web-console.md)
 - [Running a cluster](./cookbook/cluster.md)
+- [Event-driven triggers](./cookbook/triggers.md)
 - [Lineage (OpenLineage)](./cookbook/lineage.md)
 - [Troubleshooting with faucet doctor](./cookbook/troubleshooting.md)
 
@@ -43,6 +44,7 @@
 - [CLI commands](./reference/cli.md)
 - [Configuration file format](./reference/config.md)
 - [HTTP API (`faucet serve`)](./reference/http-api.md)
+- [Triggers](./reference/triggers.md)
 
 # Operations
 

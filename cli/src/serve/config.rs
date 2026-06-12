@@ -72,6 +72,9 @@ pub struct ServeConfig {
     pub ui_enabled: bool,
     /// Clustered-execution settings (`--cluster*`). Disabled by default.
     pub cluster: ClusterConfig,
+    /// Path to a `--triggers` file. `None` = no event-driven triggers. The file
+    /// is loaded + validated at startup (gated on the `triggers` feature).
+    pub triggers_path: Option<PathBuf>,
 }
 
 fn default_max_concurrent() -> usize {
@@ -209,6 +212,7 @@ impl ServeConfig {
             log_level: "info".to_string(),
             ui_enabled: !args.no_ui,
             cluster,
+            triggers_path: args.triggers,
         })
     }
 }
@@ -240,6 +244,7 @@ mod tests {
             cluster: false,
             cluster_poll_secs: 2,
             cluster_max_attempts: 3,
+            triggers: None,
         }
     }
 

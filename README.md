@@ -35,7 +35,9 @@ can drop on any box or a library you compile in.
   write batch size from sink latency and error rate), secrets-manager interpolation
   (`${vault:…}`, `${aws-sm:…}`, `${gcp-sm:…}`, `${azure-kv:…}`), cron scheduling
   (`faucet schedule`), an HTTP control plane (`faucet serve` — submit/poll/cancel
-  runs over REST, optional embedded web console via `serve-ui`), OpenLineage event emission (`lineage:` block — HTTP/file/Kafka transports, schema facets, column-level lineage), and built-in Prometheus metrics + `tracing` spans, all with
+  runs over REST, optional embedded web console via `serve-ui`, and event-driven
+  pipeline triggers via `--triggers` — object-arrival / webhook / queue-depth watchers
+  that automatically enqueue runs), OpenLineage event emission (`lineage:` block — HTTP/file/Kafka transports, schema facets, column-level lineage), and built-in Prometheus metrics + `tracing` spans, all with
   zero per-connector code.
 - **Pay only for what you use** — every connector is a Cargo feature, so a slim
   build can be just REST + JSONL, or pull in all 38 connectors with `--features full`.

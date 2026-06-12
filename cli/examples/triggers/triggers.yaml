@@ -1,0 +1,57 @@
+# Event-driven triggers for `faucet serve` (#196).
+#
+# Run with (from the repo root):
+#   faucet serve --no-auth --triggers cli/examples/triggers/triggers.yaml
+#
+# config: paths are relative to this file, so `../s3_to_postgres.yaml` resolves
+# to cli/examples/s3_to_postgres.yaml regardless of the process CWD.
+#
+# Requires: `--features triggers` (object_arrival also needs
+# `triggers-object-store`; queue_depth with Redis needs `triggers-redis`).
+# All four features are included in `--features full`.
+version: 1
+triggers:
+  # 1. An object landing under s3://my-bucket/incoming/ enqueues one run that
+  #    loads exactly that object (the S3 key is injected via
+  #    ${trigger.object_key}). Only new objects seen after startup are fired
+  #    (start_at: now); set `start_at: beginning` to reprocess existing objects.
+  - name: load-dropped-files
+    type: object_arrival
+    config: ../s3_to_postgres.yaml
+    store:
+      type: s3
+      bucket: my-bucket
+      prefix: incoming/
+      region: us-east-1
+    poll_interval_secs: 30
+    mode: per_object
+    start_at: now
+    run:
+      name: "load:{name}:{object_key}"
+
+  # 2. POST /v1/triggers/sync-hook  (bearer-authenticated) enqueues a sync run.
+  #    The optional `Idempotency-Key` header is used as the dedup key — a caller
+  #    that supplies the same key twice gets one run, not two.
+  #
+  #    Security note: dedupe_header trusts the caller-supplied value as the
+  #    idempotency key; only set it when callers are trusted or the header
+  #    is verified upstream (e.g. by a gateway or HMAC).
+  - name: sync-hook
+    type: webhook
+    config: ../csv_to_jsonl.yaml
+    methods: [POST]
+    dedupe_header: Idempotency-Key
+
+  # 3. When the Redis list `jobs` reaches >= 1 entry, drain it once.
+  #    Edge-triggered: fires once on the rising edge (depth crosses threshold),
+  #    not on every poll while the queue is non-empty.
+  - name: drain-jobs
+    type: queue_depth
+    config: ../redis_to_sqlite.yaml
+    queue:
+      type: redis
+      url: redis://localhost:6379
+      key: jobs
+      kind: list
+    threshold: 1
+    poll_interval_secs: 15
