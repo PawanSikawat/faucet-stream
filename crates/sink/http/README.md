@@ -9,16 +9,15 @@ Sends JSON records to an HTTP endpoint. Supports two batch modes: Individual (on
 
 ## Installation
 
-```toml
-[dependencies]
-faucet-sink-http = "1.0"
-tokio = { version = "1", features = ["full"] }
+```bash
+cargo add faucet-sink-http
+cargo add tokio --features full
 ```
 
 Or via the umbrella crate:
 
-```toml
-faucet-stream = { version = "1.0", features = ["sink-http"] }
+```bash
+cargo add faucet-stream --features sink-http
 ```
 
 ## Quick Start

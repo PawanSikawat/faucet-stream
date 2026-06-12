@@ -9,16 +9,15 @@ Writes JSON records to Redis data structures: lists (`RPUSH`), streams (`XADD`),
 
 ## Installation
 
-```toml
-[dependencies]
-faucet-sink-redis = "1.0"
-tokio = { version = "1", features = ["full"] }
+```bash
+cargo add faucet-sink-redis
+cargo add tokio --features full
 ```
 
 Or via the umbrella crate:
 
-```toml
-faucet-stream = { version = "1.0", features = ["sink-redis"] }
+```bash
+cargo add faucet-stream --features sink-redis
 ```
 
 ## Quick Start

@@ -4,10 +4,9 @@ PostgreSQL-backed [`StateStore`](https://docs.rs/faucet-core/latest/faucet_core/
 
 ## Install
 
-```toml
-[dependencies]
-faucet-core = "1.0"
-faucet-state-postgres = "1.0"
+```bash
+cargo add faucet-core
+cargo add faucet-state-postgres
 ```
 
 ## Usage

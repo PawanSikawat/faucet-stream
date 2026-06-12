@@ -125,10 +125,9 @@ every common source→sink combination.
 
 Embed the same engine in a Rust service:
 
-```toml
-[dependencies]
-faucet-stream = { version = "1.0", features = ["sink-jsonl"] }  # default already has the REST source
-tokio = { version = "1", features = ["full"] }
+```bash
+cargo add faucet-stream --features sink-jsonl   # default already has the REST source
+cargo add tokio --features full
 ```
 
 ```rust
@@ -265,21 +264,21 @@ for help picking between overlapping connectors (Postgres query vs CDC, S3 vs Pa
 
 ### Install
 
-```toml
+```bash
 # Everything (default includes the REST source)
-faucet-stream = "1.0"
+cargo add faucet-stream
 
 # All sources / all sinks / all connectors
-faucet-stream = { version = "1.0", features = ["source"] }
-faucet-stream = { version = "1.0", features = ["sink"] }
-faucet-stream = { version = "1.0", features = ["full"] }
+cargo add faucet-stream --features source
+cargo add faucet-stream --features sink
+cargo add faucet-stream --features full
 
 # Pick individual connectors
-faucet-stream = { version = "1.0", features = ["source-rest", "sink-postgres", "sink-s3"] }
+cargo add faucet-stream --features source-rest,sink-postgres,sink-s3
 
 # Or depend on individual connector crates directly
-faucet-source-rest = "1.0"
-faucet-source-mongodb = "1.0"
+cargo add faucet-source-rest
+cargo add faucet-source-mongodb
 ```
 
 ## How it compares

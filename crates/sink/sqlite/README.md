@@ -11,16 +11,15 @@ Writes JSON records to a SQLite table using either JSON column mode (storing eac
 
 ## Installation
 
-```toml
-[dependencies]
-faucet-sink-sqlite = "1.0"
-tokio = { version = "1", features = ["full"] }
+```bash
+cargo add faucet-sink-sqlite
+cargo add tokio --features full
 ```
 
 Or via the umbrella crate:
 
-```toml
-faucet-stream = { version = "1.0", features = ["sink-sqlite"] }
+```bash
+cargo add faucet-stream --features sink-sqlite
 ```
 
 ## Quick Start

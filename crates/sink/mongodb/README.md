@@ -9,16 +9,15 @@ Inserts JSON records into a MongoDB collection using `insert_many` for efficient
 
 ## Installation
 
-```toml
-[dependencies]
-faucet-sink-mongodb = "1.0"
-tokio = { version = "1", features = ["full"] }
+```bash
+cargo add faucet-sink-mongodb
+cargo add tokio --features full
 ```
 
 Or via the umbrella crate:
 
-```toml
-faucet-stream = { version = "1.0", features = ["sink-mongodb"] }
+```bash
+cargo add faucet-stream --features sink-mongodb
 ```
 
 ## Quick Start

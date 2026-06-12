@@ -9,16 +9,15 @@ Writes JSON records to a Snowflake table using the Snowflake SQL REST API. Suppo
 
 ## Installation
 
-```toml
-[dependencies]
-faucet-sink-snowflake = "1.0"
-tokio = { version = "1", features = ["full"] }
+```bash
+cargo add faucet-sink-snowflake
+cargo add tokio --features full
 ```
 
 Or via the umbrella crate:
 
-```toml
-faucet-stream = { version = "1.0", features = ["sink-snowflake"] }
+```bash
+cargo add faucet-stream --features sink-snowflake
 ```
 
 ## Quick Start

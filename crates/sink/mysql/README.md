@@ -11,16 +11,15 @@ Writes JSON records to a MySQL table using either JSON column mode (storing each
 
 ## Installation
 
-```toml
-[dependencies]
-faucet-sink-mysql = "1.0"
-tokio = { version = "1", features = ["full"] }
+```bash
+cargo add faucet-sink-mysql
+cargo add tokio --features full
 ```
 
 Or via the umbrella crate:
 
-```toml
-faucet-stream = { version = "1.0", features = ["sink-mysql"] }
+```bash
+cargo add faucet-stream --features sink-mysql
 ```
 
 ## Quick Start

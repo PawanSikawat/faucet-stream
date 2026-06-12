@@ -9,16 +9,15 @@ Writes JSON records to S3 as JSON Lines (NDJSON) files. Each file is keyed with 
 
 ## Installation
 
-```toml
-[dependencies]
-faucet-sink-s3 = "1.0"
-tokio = { version = "1", features = ["full"] }
+```bash
+cargo add faucet-sink-s3
+cargo add tokio --features full
 ```
 
 Or via the umbrella crate:
 
-```toml
-faucet-stream = { version = "1.0", features = ["sink-s3"] }
+```bash
+cargo add faucet-stream --features sink-s3
 ```
 
 ## Quick Start

@@ -11,16 +11,15 @@ Writes JSON records to a BigQuery table using the `tabledata.insertAll` streamin
 
 ## Installation
 
-```toml
-[dependencies]
-faucet-sink-bigquery = "1.0"
-tokio = { version = "1", features = ["full"] }
+```bash
+cargo add faucet-sink-bigquery
+cargo add tokio --features full
 ```
 
 Or via the umbrella crate:
 
-```toml
-faucet-stream = { version = "1.0", features = ["sink-bigquery"] }
+```bash
+cargo add faucet-stream --features sink-bigquery
 ```
 
 ## Quick Start

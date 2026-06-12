@@ -115,9 +115,8 @@ Configured via `value_format` (and optionally `key_format`). All formats use a `
 
 The three Confluent formats require building with the `schema-registry` feature flag:
 
-```toml
-[dependencies]
-faucet-source-kafka = { version = "...", features = ["schema-registry"] }
+```bash
+cargo add faucet-source-kafka --features schema-registry
 ```
 
 Each Confluent format takes a `schema_registry` block — see the `faucet-common-kafka` README for the full `SchemaRegistryConfig` options (URL, basic auth, cache capacity, request timeout).

@@ -9,16 +9,15 @@ Writes JSON records to a CSV file. Column order is the union of keys across the 
 
 ## Installation
 
-```toml
-[dependencies]
-faucet-sink-csv = "1.0"
-tokio = { version = "1", features = ["full"] }
+```bash
+cargo add faucet-sink-csv
+cargo add tokio --features full
 ```
 
 Or via the umbrella crate:
 
-```toml
-faucet-stream = { version = "1.0", features = ["sink-csv"] }
+```bash
+cargo add faucet-stream --features sink-csv
 ```
 
 ## Quick Start

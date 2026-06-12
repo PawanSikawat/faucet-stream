@@ -3,15 +3,14 @@
 SQL-as-transform for faucet-stream — run DuckDB SQL over each pipeline page. The
 page's records are exposed as the relation `batch`; the result set replaces the page.
 
-```toml
-[dependencies]
-faucet-transform-sql = "1.0"
+```bash
+cargo add faucet-transform-sql
 ```
 
 Enable in the umbrella crate or CLI:
 
-```toml
-faucet-stream = { version = "1.0", features = ["transform-sql"] }
+```bash
+cargo add faucet-stream --features transform-sql
 ```
 
 ## What it does
@@ -234,15 +233,15 @@ Output rows look like:
 
 `transform-sql` — not in the default build; included in `full`.
 
-```toml
+```bash
 # Enable only the SQL transform
-faucet-stream = { version = "1.0", features = ["transform-sql"] }
+cargo add faucet-stream --features transform-sql
 
 # Enable together with specific connectors
-faucet-stream = { version = "1.0", features = ["source-csv", "sink-jsonl", "transform-sql"] }
+cargo add faucet-stream --features source-csv,sink-jsonl,transform-sql
 
 # Enable everything
-faucet-stream = { version = "1.0", features = ["full"] }
+cargo add faucet-stream --features full
 ```
 
 CLI:

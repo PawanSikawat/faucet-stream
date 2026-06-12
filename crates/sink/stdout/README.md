@@ -4,17 +4,15 @@ Stdout/stderr sink for the [faucet-stream](https://crates.io/crates/faucet-strea
 
 ## Install
 
-```toml
-[dependencies]
-faucet-core = "1.0"
-faucet-sink-stdout = "1.0"
+```bash
+cargo add faucet-core
+cargo add faucet-sink-stdout
 ```
 
 Or via the umbrella crate with the `sink-stdout` feature:
 
-```toml
-[dependencies]
-faucet-stream = { version = "1.0", features = ["sink-stdout"] }
+```bash
+cargo add faucet-stream --features sink-stdout
 ```
 
 ## Usage

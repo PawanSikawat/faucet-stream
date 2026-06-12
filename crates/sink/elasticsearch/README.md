@@ -11,16 +11,15 @@ Indexes JSON records into an Elasticsearch index using the bulk API (`_bulk` end
 
 ## Installation
 
-```toml
-[dependencies]
-faucet-sink-elasticsearch = "1.0"
-tokio = { version = "1", features = ["full"] }
+```bash
+cargo add faucet-sink-elasticsearch
+cargo add tokio --features full
 ```
 
 Or via the umbrella crate:
 
-```toml
-faucet-stream = { version = "1.0", features = ["sink-elasticsearch"] }
+```bash
+cargo add faucet-stream --features sink-elasticsearch
 ```
 
 ## Quick Start
