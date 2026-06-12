@@ -8,6 +8,89 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 independently).
 ## [Unreleased]
 
+## `faucet-cli` — [1.1.0](https://github.com/PawanSikawat/faucet-stream/compare/faucet-cli-v1.0.1...faucet-cli-v1.1.0) - 2026-06-12
+
+### Bug Fixes
+
+- *(serve)* Retry transient run-history connect before degrading ([#236](https://github.com/PawanSikawat/faucet-stream/pull/236))
+- *(lineage)* Standard { type, config } shape for transport + auth
+
+### CI & Build
+
+- Migrate to Rust 1.96 ([#175](https://github.com/PawanSikawat/faucet-stream/pull/175))
+
+### Features
+
+- *(serve)* Event-driven pipeline triggers (object-arrival / webhook / queue-depth) ([#196](https://github.com/PawanSikawat/faucet-stream/pull/196))
+- *(cli)* Config composition — extends / profiles / !include ([#231](https://github.com/PawanSikawat/faucet-stream/pull/231))
+- *(serve)* Distributed / clustered execution (Mode A) ([#197](https://github.com/PawanSikawat/faucet-stream/pull/197))
+- *(bigquery-sink)* Exactly-once delivery via MERGE transaction ([#215](https://github.com/PawanSikawat/faucet-stream/pull/215))
+- Unified write_mode upsert/delete (merge by key) across SQL/Mongo/ES sinks ([#226](https://github.com/PawanSikawat/faucet-stream/pull/226))
+- Exactly-once / idempotent delivery mode ([#217](https://github.com/PawanSikawat/faucet-stream/pull/217))
+- *(serve)* Embedded web console (serve-ui) ([#214](https://github.com/PawanSikawat/faucet-stream/pull/214))
+- *(transform-sql)* SQL-as-transform via embedded DuckDB ([#129](https://github.com/PawanSikawat/faucet-stream/pull/129))
+- OpenLineage event emission for pipeline runs ([#123](https://github.com/PawanSikawat/faucet-stream/pull/123))
+- Add Apache Iceberg sink connector (append-only) ([#180](https://github.com/PawanSikawat/faucet-stream/pull/180))
+- Add MySQL binlog (CDC) source connector ([#178](https://github.com/PawanSikawat/faucet-stream/pull/178))
+- Add MongoDB Change Streams (CDC) source connector ([#176](https://github.com/PawanSikawat/faucet-stream/pull/176))
+
+### Miscellaneous
+
+- Release ([#177](https://github.com/PawanSikawat/faucet-stream/pull/177))
+
+### Performance
+
+- *(cli)* Bound matrix fan-out memory by projecting captured parent records ([#186](https://github.com/PawanSikawat/faucet-stream/pull/186))
+
+### Testing
+
+- Raise workspace coverage to ~94% ([#222](https://github.com/PawanSikawat/faucet-stream/pull/222))
+
+## `faucet-stream` — [1.1.0](https://github.com/PawanSikawat/faucet-stream/compare/faucet-stream-v1.0.2...faucet-stream-v1.1.0) - 2026-06-12
+
+### Bug Fixes
+
+- *(serve)* Retry transient run-history connect before degrading ([#236](https://github.com/PawanSikawat/faucet-stream/pull/236))
+
+### Features
+
+- *(serve)* Event-driven pipeline triggers (object-arrival / webhook / queue-depth) ([#196](https://github.com/PawanSikawat/faucet-stream/pull/196))
+- Unified write_mode upsert/delete (merge by key) across SQL/Mongo/ES sinks ([#226](https://github.com/PawanSikawat/faucet-stream/pull/226))
+- *(serve)* Embedded web console (serve-ui) ([#214](https://github.com/PawanSikawat/faucet-stream/pull/214))
+- *(transform-sql)* SQL-as-transform via embedded DuckDB ([#129](https://github.com/PawanSikawat/faucet-stream/pull/129))
+- OpenLineage event emission for pipeline runs ([#123](https://github.com/PawanSikawat/faucet-stream/pull/123))
+- Add Apache Iceberg sink connector (append-only) ([#180](https://github.com/PawanSikawat/faucet-stream/pull/180))
+- Add MySQL binlog (CDC) source connector ([#178](https://github.com/PawanSikawat/faucet-stream/pull/178))
+- Add MongoDB Change Streams (CDC) source connector ([#176](https://github.com/PawanSikawat/faucet-stream/pull/176))
+
+### Miscellaneous
+
+- Release ([#177](https://github.com/PawanSikawat/faucet-stream/pull/177))
+
+## `faucet-sink-iceberg` — [1.0.0](https://github.com/PawanSikawat/faucet-stream/releases/tag/faucet-sink-iceberg-v1.0.0) - 2026-06-12
+
+### Features
+
+- Unified write_mode upsert/delete (merge by key) across SQL/Mongo/ES sinks ([#226](https://github.com/PawanSikawat/faucet-stream/pull/226))
+- Exactly-once / idempotent delivery mode ([#217](https://github.com/PawanSikawat/faucet-stream/pull/217))
+- *(iceberg)* Cloud-warehouse (S3/GCS) storage for SQL/Glue/HMS catalogs ([#185](https://github.com/PawanSikawat/faucet-stream/pull/185))
+- OpenLineage event emission for pipeline runs ([#123](https://github.com/PawanSikawat/faucet-stream/pull/123))
+- Add Apache Iceberg sink connector (append-only) ([#180](https://github.com/PawanSikawat/faucet-stream/pull/180))
+
+## `faucet-sink-parquet` — [1.1.0](https://github.com/PawanSikawat/faucet-stream/compare/faucet-sink-parquet-v1.0.1...faucet-sink-parquet-v1.1.0) - 2026-06-12
+
+### Features
+
+- OpenLineage event emission for pipeline runs ([#123](https://github.com/PawanSikawat/faucet-stream/pull/123))
+
+### Miscellaneous
+
+- Release ([#177](https://github.com/PawanSikawat/faucet-stream/pull/177))
+
+### Testing
+
+- Raise workspace coverage to ~94% ([#222](https://github.com/PawanSikawat/faucet-stream/pull/222))
+
 ## `faucet-state-postgres` — [1.0.2](https://github.com/PawanSikawat/faucet-stream/compare/faucet-state-postgres-v1.0.1...faucet-state-postgres-v1.0.2) - 2026-06-12
 
 ### Miscellaneous
