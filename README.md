@@ -17,49 +17,78 @@
 
 **The fast, config-driven way to move data in Rust.**
 
-faucet-stream wires **23 source** and **18 sink** connectors together with a single
-`faucet` binary that runs pipelines declaratively from a YAML/JSON file — no Rust
-code required. Or skip the binary and embed the same engine in your own service
-through the typed `Source` / `Sink` traits. One toolkit, whether you want a CLI you
-can drop on any box or a library you compile in.
+faucet-stream wires **23 source** and **18 sink** connectors (**41 in total**) together
+with a single `faucet` binary that runs pipelines declaratively from a YAML/JSON file —
+no Rust code required. Or skip the binary and embed the same engine in your own service
+through the typed `Source` / `Sink` traits. One toolkit, whether you want a CLI you can
+drop on any box or a library you compile in.
 
-- **Fast and reliable by default** — native streaming with bounded memory,
-  connection pooling, multi-row inserts, bulk APIs, and parallel I/O. Every
-  connector is built to be the fastest way to move its data in Rust.
-- **Config-driven _or_ embeddable** — run `faucet run pipeline.yaml`, or call
+A single native binary **and** an embeddable Rust library: config-driven pipelines with
+no Python runtime, no platform to stand up, no daemon to babysit — plus a typed API when
+you'd rather compile data movement straight into your own service.
+
+```bash
+cargo install faucet-cli          # the CLI
+# — or —
+cargo add faucet-stream           # the library
+```
+
+### Why faucet-stream
+
+- **🚀 Fast and reliable by default** — native streaming with bounded memory, connection
+  pooling, multi-row inserts, bulk APIs, and parallel I/O. Every connector is built to be
+  the fastest way to move its data in Rust.
+- **🧩 Config-driven _or_ embeddable** — run `faucet run pipeline.yaml`, or call
   `Pipeline::new(&source, &sink).run().await?` from Rust. Same orchestration either way.
-- **A runtime, not just connectors** — incremental + resumable replication,
-  PostgreSQL change-data-capture, built-in data-quality checks (13 per-record and
-  per-batch assertions with quarantine routing and abort policies), dead-letter
-  queues, automatic retries, adaptive batch sizing (AIMD controller that tunes
-  write batch size from sink latency and error rate), secrets-manager interpolation
-  (`${vault:…}`, `${aws-sm:…}`, `${gcp-sm:…}`, `${azure-kv:…}`), cron scheduling
-  (`faucet schedule`), an HTTP control plane (`faucet serve` — submit/poll/cancel
-  runs over REST, optional embedded web console via `serve-ui`, and event-driven
-  pipeline triggers via `--triggers` — object-arrival / webhook / queue-depth watchers
-  that automatically enqueue runs), OpenLineage event emission (`lineage:` block — HTTP/file/Kafka transports, schema facets, column-level lineage), and built-in Prometheus metrics + `tracing` spans, all with
-  zero per-connector code.
-- **Pay only for what you use** — every connector is a Cargo feature, so a slim
-  build can be just REST + JSONL, or pull in all 38 connectors with `--features full`.
-
-Inspired by [Meltano's Singer SDK](https://sdk.meltano.com/) — reimagined for Rust
-as both a reusable library and a standalone CLI.
+- **⚙️ A runtime, not just connectors** — incremental + resumable replication, change-data-capture,
+  exactly-once delivery, upsert/delete write modes, data-quality checks, dead-letter queues,
+  automatic retries, adaptive batch sizing, secrets-manager interpolation, cron scheduling,
+  an HTTP control plane with event-driven triggers, OpenLineage emission, and built-in
+  Prometheus metrics + `tracing` spans — all with zero per-connector code.
+- **📦 Pay only for what you use** — every connector is a Cargo feature, so a slim build can
+  be just REST + JSONL, or pull in all 41 connectors with `--features full`.
 
 **Documentation:** the [faucet-stream guide](https://pawansikawat.github.io/faucet-stream/)
 (getting started, tutorials, cookbook, operations) · API reference on
 [docs.rs](https://docs.rs/faucet-stream) · [`cli/README.md`](cli/README.md) for the full config grammar.
 
-## Run a pipeline from a YAML file (no Rust required)
+---
+
+## Table of contents
+
+- [Quickstart — the CLI](#quickstart--the-cli)
+- [Quickstart — the library](#quickstart--the-library)
+- [What's in the box](#whats-in-the-box)
+- [Connectors](#connectors)
+- [How it compares](#how-it-compares)
+- [When to use faucet-stream](#when-to-use-faucet-stream)
+- [Architecture](#architecture)
+- [Performance](#performance)
+- [Observability](#observability)
+- [Feature flags](#feature-flags)
+- [Using faucet-stream as a Rust library](#using-faucet-stream-as-a-rust-library)
+- [Building custom connectors](#building-custom-connectors)
+- [Project structure](#project-structure)
+- [Contributing](#contributing)
+- [License](#license)
+
+---
+
+## Quickstart — the CLI
+
+Move data without writing any Rust:
 
 ```bash
 cargo install faucet-cli
 faucet init my_pipeline --source postgres --sink bigquery   # scaffold pipeline.yaml from schemas
-faucet validate pipeline.yaml
-faucet doctor pipeline.yaml                                  # preflight: probe auth/network/permissions
-faucet run pipeline.yaml
-faucet schedule pipeline.yaml                               # run on cron schedule (add a schedule: block)
+faucet validate pipeline.yaml                               # parse + resolve secrets, no run
+faucet doctor pipeline.yaml                                 # preflight: probe auth/network/permissions
+faucet run pipeline.yaml                                    # one-shot run to completion
+faucet schedule pipeline.yaml                               # run on a cron schedule (add a schedule: block)
 faucet serve --no-auth                                      # HTTP control plane: submit/poll/cancel runs over REST
 ```
+
+A minimal config — fetch open GitHub issues and write them to JSON Lines:
 
 ```yaml
 # faucet.yaml — `faucet run` auto-discovers this file (and a sibling `.env`) in cwd
@@ -75,28 +104,189 @@ pipeline:
       query_params: { state: open }
       pagination: { type: LinkHeader }
       max_retries: 3
-      retry_backoff: 1
-      tolerated_http_errors: []
-      replication_method: { type: FullTable }
-      primary_keys: ["id"]
-      partitions: []
-      schema_sample_size: 100
   transforms:
-    - type: snake_case
+    - type: keys_case          # re-case every key: snake / camel / pascal / kebab / screaming_snake
+      config: { mode: snake }
   sink:
     type: jsonl
     config:
       path: ./out/issues.jsonl
 ```
 
-Add a `matrix:` block to run many invocations from one config (independent fan-out or parent/child DAG), and `execution:` to bound concurrency. See [`cli/README.md`](cli/README.md) for the full grammar, [`cli/examples/rest_to_bigquery_matrix.yaml`](cli/examples/rest_to_bigquery_matrix.yaml) for independent matrix fan-out, and [`cli/examples/rest_users_posts_dag.yaml`](cli/examples/rest_users_posts_dag.yaml) for the DAG pattern.
+Run many invocations from one config with a `matrix:` block (independent fan-out **or** a
+parent/child DAG), and bound concurrency with `execution:`. See [`cli/README.md`](cli/README.md)
+for the full grammar, [`cli/examples/rest_to_bigquery_matrix.yaml`](cli/examples/rest_to_bigquery_matrix.yaml)
+for matrix fan-out, and [`cli/examples/rest_users_posts_dag.yaml`](cli/examples/rest_users_posts_dag.yaml)
+for the DAG pattern. The [`cli/examples/`](cli/examples) directory has runnable configs for
+every common source→sink combination.
+
+## Quickstart — the library
+
+Embed the same engine in a Rust service:
+
+```toml
+[dependencies]
+faucet-stream = { version = "1.0", features = ["sink-jsonl"] }  # default already has the REST source
+tokio = { version = "1", features = ["full"] }
+```
+
+```rust
+use faucet_stream::{Pipeline, RestStream, RestStreamConfig, PaginationStyle};
+use faucet_stream::sink::jsonl::{JsonlSink, JsonlSinkConfig};
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let source = RestStream::new(
+        RestStreamConfig::new("https://api.example.com", "/v1/users")
+            .records_path("$.data[*]")
+            .pagination(PaginationStyle::Cursor {
+                next_token_path: "$.meta.next_cursor".into(),
+                param_name: "cursor".into(),
+            }),
+    )?;
+    let sink = JsonlSink::new(JsonlSinkConfig::new("./users.jsonl"));
+
+    let result = Pipeline::new(&source, &sink).run().await?;
+    println!("Wrote {} records", result.records_written);
+    Ok(())
+}
+```
+
+More library recipes — pagination styles, OAuth2, streaming, incremental replication,
+partitions, transforms, and custom connectors — are in
+[Using faucet-stream as a Rust library](#using-faucet-stream-as-a-rust-library) below and the
+[library tutorial](https://pawansikawat.github.io/faucet-stream/tutorials/library.html).
+
+## What's in the box
+
+faucet-stream is a full data-movement **runtime**, not just a bag of connectors. Every
+capability below works across all connectors with zero per-connector code, and each is a
+one-block addition to your YAML:
+
+| Capability | What it does | Learn more |
+|---|---|---|
+| **Streaming, bounded memory** | Sources stream page-by-page; sinks write each page as it arrives — memory stays at one `batch_size` regardless of total volume. | [concepts](https://pawansikawat.github.io/faucet-stream/getting-started/concepts.html) |
+| **Incremental + resumable** | Bookmark-based replication: only fetch what changed, resume mid-run from a durable state store (file / Redis / Postgres). | [state](https://pawansikawat.github.io/faucet-stream/cookbook/state.html) |
+| **Change data capture** | Streaming row-level CDC for **PostgreSQL** (logical replication), **MySQL** (binlog), and **MongoDB** (change streams) — resumable. | [CDC guide](https://pawansikawat.github.io/faucet-stream/reference/connectors.html) |
+| **Exactly-once delivery** | Monotonic per-page commit tokens committed atomically with the data (SQL sinks, Iceberg, BigQuery) — no duplicates on resume. | [state](https://pawansikawat.github.io/faucet-stream/cookbook/state.html) |
+| **Upsert / delete write modes** | `write_mode: upsert \| delete` with a `key` + `delete_marker` — merge by key on Postgres / MySQL / SQL Server / SQLite / Mongo / Elasticsearch. | [upsert](https://pawansikawat.github.io/faucet-stream/cookbook/upsert.html) |
+| **Data-quality checks** | 13 per-record and per-batch assertions (not-null, regex, ranges, uniqueness, row-count, JSON Schema, …) with quarantine routing or abort policies. | [quality](https://pawansikawat.github.io/faucet-stream/cookbook/quality.html) |
+| **Dead-letter queue** | Route failed rows to any sink instead of aborting the run, with a fixed envelope and reason. | [DLQ](https://pawansikawat.github.io/faucet-stream/cookbook/dlq.html) |
+| **Adaptive batch sizing** | Opt-in AIMD controller that tunes write batch size from observed sink latency and error rate. | [tuning](https://pawansikawat.github.io/faucet-stream/) |
+| **Secrets-manager interpolation** | `${vault:…}`, `${aws-sm:…}`, `${gcp-sm:…}`, `${azure-kv:…}` resolved at load time, redacted from logs. | [secrets](https://pawansikawat.github.io/faucet-stream/cookbook/secrets.html) |
+| **Cron scheduling** | `faucet schedule` — DST-correct cron, overlap policies, run timeouts, graceful drain. | [scheduling](https://pawansikawat.github.io/faucet-stream/) |
+| **HTTP control plane** | `faucet serve` — submit / poll / cancel runs over REST, idempotency keys, run history, optional embedded web console (`serve-ui`), clustered execution. | [serve](https://pawansikawat.github.io/faucet-stream/) |
+| **Event-driven triggers** | `faucet serve --triggers` — auto-enqueue runs on object-arrival (S3/GCS), webhook, or queue-depth (Redis/Kafka). | [triggers](https://pawansikawat.github.io/faucet-stream/reference/triggers.html) |
+| **OpenLineage emission** | Emit START/RUNNING/COMPLETE/FAIL events with schema facets and column-level lineage over HTTP / file / Kafka. | [lineage](https://pawansikawat.github.io/faucet-stream/cookbook/lineage.html) |
+| **Observability** | Automatic Prometheus metrics + `tracing` spans for every source, sink, transform, and state op — labelled by pipeline / row / connector. | [observability](cli/README.md#observability-prometheus--tracing) |
+| **Transforms** | `flatten`, `rename_keys`, `keys_case`, `select`, `drop`, `set`, `rename_field`, `cast`, `redact`, `value_case`, `spell_symbols`, `cdc_unwrap`, and `sql` (embedded DuckDB, page-level). | [transforms](https://pawansikawat.github.io/faucet-stream/cookbook/transforms.html) |
+
+## Connectors
+
+All connector crates depend only on `faucet-core`, so any source pairs with any sink. See
+the [connector capability matrix](https://pawansikawat.github.io/faucet-stream/reference/connectors.html)
+(streaming, resumable state, compression, auth per connector) and the
+[choosing-a-connector guide](https://pawansikawat.github.io/faucet-stream/reference/choosing.html)
+for help picking between overlapping connectors (Postgres query vs CDC, S3 vs Parquet, Redis vs Kafka, …).
+
+### Sources (23)
+
+| Crate | Description |
+|-------|-------------|
+| [`faucet-source-rest`](crates/source/rest) | REST API — auth, pagination, extraction, schema inference |
+| [`faucet-source-graphql`](crates/source/graphql) | GraphQL API — cursor-based pagination, variable injection |
+| [`faucet-source-xml`](crates/source/xml) | XML/SOAP API — XML-to-JSON conversion, dot-path extraction |
+| [`faucet-source-grpc`](crates/source/grpc) | gRPC — dynamic protobuf via `prost-reflect`, unary + server-streaming |
+| [`faucet-source-postgres`](crates/source/postgres) | PostgreSQL — run SQL queries, return rows as JSON |
+| [`faucet-source-postgres-cdc`](crates/source/postgres-cdc) | PostgreSQL CDC — logical replication via pgoutput, resumable |
+| [`faucet-source-mysql`](crates/source/mysql) | MySQL — run SQL queries, return rows as JSON |
+| [`faucet-source-mysql-cdc`](crates/source/mysql-cdc) | MySQL CDC — binlog row events, resumable via file/pos or GTID |
+| [`faucet-source-mssql`](crates/source/mssql) | Microsoft SQL Server — streaming queries, incremental replication |
+| [`faucet-source-sqlite`](crates/source/sqlite) | SQLite — run SQL queries, return rows as JSON |
+| [`faucet-source-mongodb`](crates/source/mongodb) | MongoDB — find() with filter, projection, sort |
+| [`faucet-source-mongodb-cdc`](crates/source/mongodb-cdc) | MongoDB CDC — Change Streams, resumable via resumeToken |
+| [`faucet-source-redis`](crates/source/redis) | Redis — read from streams, lists, or key patterns |
+| [`faucet-source-kafka`](crates/source/kafka) | Apache Kafka — consumer with idle/max-messages termination |
+| [`faucet-source-s3`](crates/source/s3) | AWS S3 — read objects as JSONL, JSON array, or raw text |
+| [`faucet-source-gcs`](crates/source/gcs) | Google Cloud Storage — read objects as JSONL, JSON array, or raw text |
+| [`faucet-source-parquet`](crates/source/parquet) | Apache Parquet — local file, glob, or S3; vectorized Arrow reader, projection |
+| [`faucet-source-elasticsearch`](crates/source/elasticsearch) | Elasticsearch — search/scroll API |
+| [`faucet-source-bigquery`](crates/source/bigquery) | Google BigQuery — `jobs.query` + `getQueryResults`, type-aware decoding |
+| [`faucet-source-snowflake`](crates/source/snowflake) | Snowflake — SQL REST API, server-side partition pagination, JWT / OAuth |
+| [`faucet-source-webhook`](crates/source/webhook) | Webhook — temporary HTTP server collecting POST payloads |
+| [`faucet-source-websocket`](crates/source/websocket) | WebSocket — live streaming feed; subscribe frames, reconnect, keepalive |
+| [`faucet-source-csv`](crates/source/csv) | CSV — read CSV files as JSON objects |
+
+### Sinks (18)
+
+| Crate | Description |
+|-------|-------------|
+| [`faucet-sink-bigquery`](crates/sink/bigquery) | Google BigQuery — streaming inserts; exactly-once via MERGE |
+| [`faucet-sink-iceberg`](crates/sink/iceberg) | Apache Iceberg — append snapshots via REST/Glue/SQL/HMS catalogs |
+| [`faucet-sink-postgres`](crates/sink/postgres) | PostgreSQL — JSONB or auto-mapped columns; upsert/delete |
+| [`faucet-sink-mysql`](crates/sink/mysql) | MySQL — JSON column or auto-mapped columns; upsert/delete |
+| [`faucet-sink-mssql`](crates/sink/mssql) | Microsoft SQL Server — JSON or auto-mapped columns, 2100-param split |
+| [`faucet-sink-sqlite`](crates/sink/sqlite) | SQLite — JSON column or auto-mapped columns; upsert/delete |
+| [`faucet-sink-snowflake`](crates/sink/snowflake) | Snowflake — SQL REST API with JWT/OAuth |
+| [`faucet-sink-mongodb`](crates/sink/mongodb) | MongoDB — insert_many; upsert/delete by key |
+| [`faucet-sink-redis`](crates/sink/redis) | Redis — write to streams, lists, or key-value |
+| [`faucet-sink-kafka`](crates/sink/kafka) | Apache Kafka — producer with batching, multi-topic routing |
+| [`faucet-sink-elasticsearch`](crates/sink/elasticsearch) | Elasticsearch — bulk index API; upsert/delete by `_id` |
+| [`faucet-sink-s3`](crates/sink/s3) | AWS S3 — write JSONL files to bucket |
+| [`faucet-sink-gcs`](crates/sink/gcs) | Google Cloud Storage — write JSONL files to bucket |
+| [`faucet-sink-parquet`](crates/sink/parquet) | Apache Parquet — local file or S3; schema inference, row/byte rollover |
+| [`faucet-sink-jsonl`](crates/sink/jsonl) | JSON Lines — file output with append/truncate |
+| [`faucet-sink-csv`](crates/sink/csv) | CSV — write JSON records as CSV rows |
+| [`faucet-sink-http`](crates/sink/http) | HTTP — POST records to any endpoint |
+| [`faucet-sink-stdout`](crates/sink/stdout) | Stdout/stderr — JSON Lines, pretty JSON, or TSV |
+
+<details>
+<summary><b>Supporting crates</b> — core, shared connector libraries, state stores, lineage, transforms, umbrella, CLI</summary>
+
+| Crate | Description |
+|-------|-------------|
+| [`faucet-core`](crates/core) | Shared types, traits (`Source`, `Sink`, `AuthProvider`), pipeline orchestration, transforms, error types |
+| [`faucet-auth`](crates/auth) | Shared single-flight auth providers (OAuth2, token-endpoint) for `auth: { ref }` |
+| [`faucet-common-bigquery`](crates/common/bigquery) | Shared BigQuery types — `BigQueryCredentials` enum and `build_client` helper |
+| [`faucet-common-elasticsearch`](crates/common/elasticsearch) | Shared `ElasticsearchAuth` enum for Elasticsearch source/sink |
+| [`faucet-common-gcs`](crates/common/gcs) | Shared GCS types — credentials enum, Storage/StorageControl client builders |
+| [`faucet-common-kafka`](crates/common/kafka) | Shared Kafka types — auth, value formats, Schema Registry client |
+| [`faucet-common-snowflake`](crates/common/snowflake) | Shared Snowflake types — `SnowflakeAuth` enum + auth header helpers |
+| [`faucet-common-mssql`](crates/common/mssql) | Shared MSSQL types — connection/TLS config, `tiberius`+`bb8` pool builder, identifier quoting |
+| [`faucet-state-redis`](crates/state/redis) | Redis-backed `StateStore` for persistent bookmarks |
+| [`faucet-state-postgres`](crates/state/postgres) | PostgreSQL-backed `StateStore` for persistent bookmarks |
+| [`faucet-lineage`](crates/lineage) | OpenLineage event emission — HTTP/file/Kafka transports, schema facets, column-lineage analysis |
+| [`faucet-transform-sql`](crates/transform-sql) | Embedded DuckDB SQL transform — run DuckDB SQL over each page (`batch` relation) |
+| [`faucet-stream`](faucet-stream) | Umbrella crate — feature-gated re-exports of all connectors and state backends |
+| [`faucet-cli`](cli) | `faucet` binary — YAML/JSON config-driven pipeline runner (`run`, `validate`, `schema`, `list`, `preview`, `init`, `doctor`, `schedule`, `serve`) |
+
+</details>
+
+### Install
+
+```toml
+# Everything (default includes the REST source)
+faucet-stream = "1.0"
+
+# All sources / all sinks / all connectors
+faucet-stream = { version = "1.0", features = ["source"] }
+faucet-stream = { version = "1.0", features = ["sink"] }
+faucet-stream = { version = "1.0", features = ["full"] }
+
+# Pick individual connectors
+faucet-stream = { version = "1.0", features = ["source-rest", "sink-postgres", "sink-s3"] }
+
+# Or depend on individual connector crates directly
+faucet-source-rest = "1.0"
+faucet-source-mongodb = "1.0"
+```
 
 ## How it compares
 
-There are many great data-movement tools. faucet-stream's niche is being **a single
-fast native binary _and_ an embeddable Rust library** — config-driven like Meltano or
-Benthos, but with no Python runtime, no platform to operate, and a typed library API
-when you want to compile pipelines into your own service.
+There are many great data-movement tools. faucet-stream's niche is being **a single fast
+native binary _and_ an embeddable Rust library** — config-driven, with no Python runtime, no
+platform to operate, and a typed library API when you want to compile pipelines into your
+own service.
 
 | | **faucet-stream** | Meltano (Singer) | Airbyte | Benthos / Redpanda Connect | Vector | Fivetran |
 |---|---|---|---|---|---|---|
@@ -104,9 +294,10 @@ when you want to compile pipelines into your own service.
 | Single static binary | ✓ | ✗ | ✗ | ✓ | ✓ | n/a |
 | Config-driven (YAML/JSON) | ✓ | ✓ | via UI/API | ✓ | ✓ | via UI |
 | Embeddable as a library | ✓ (Rust) | ✗ | ✗ | ✓ (Go) | ✗ | ✗ |
-| Connector count | 38, growing | 600+ taps | 350+ | dozens | dozens | 500+ |
-| Change data capture | ✓ PostgreSQL | partial¹ | ✓ | partial | ✗ | ✓ |
+| Connector count | 41, growing | 600+ taps | 350+ | dozens | dozens | 500+ |
+| Change data capture | ✓ Postgres / MySQL / Mongo | partial¹ | ✓ | partial | ✗ | ✓ |
 | Incremental + resumable state | ✓ | ✓ | ✓ | partial | n/a | ✓ |
+| Exactly-once delivery | ✓ (SQL / Iceberg / BigQuery) | ✗ | partial | ✗ | ✗ | ✓ |
 | Built-in data-quality checks | ✓ native | ✗ | paywalled add-on | ✗ | ✗ | paywalled add-on |
 | Built-in metrics + tracing | ✓ Prometheus + `tracing` | partial | ✓ (platform) | ✓ | ✓ | ✓ (hosted) |
 | Self-hosted, no daemon | ✓ run-to-completion | ✓ | ✗ needs platform | usually a service | agent | ✗ SaaS |
@@ -114,10 +305,10 @@ when you want to compile pipelines into your own service.
 
 ¹ Singer CDC depends on the individual tap. ² The original Benthos is Apache-2.0; Redpanda Connect's maintained build is source-available. *Comparison reflects the general shape of each tool as of 2026-05 — check each project for current details.*
 
-**[dbt](https://www.getdbt.com/) is complementary, not a competitor:** it transforms
-data already in your warehouse (the "T" in ELT); faucet-stream handles the "EL" of
-getting data in and out. **[Singer](https://www.singer.io/) is a spec**, and Meltano
-is its most common runtime.
+For reference: **[Singer](https://www.singer.io/)** is a connector spec and **[Meltano](https://meltano.com/)**
+is its most common runtime; both appear above. **[dbt](https://www.getdbt.com/) is complementary,
+not a competitor** — it transforms data already in your warehouse (the "T" in ELT), while
+faucet-stream handles the "EL" of getting data in and out.
 
 ## When to use faucet-stream
 
@@ -125,7 +316,7 @@ is its most common runtime.
 
 - You want **one fast static binary** (or a Rust library) to move data between APIs, databases, object stores, and warehouses — without standing up a platform, scheduler, or Python environment.
 - You want **version-controlled, config-driven pipelines** you can run anywhere: locally, in CI, behind cron, or inside another service.
-- You need **streaming with bounded memory, incremental/resumable replication, CDC, data-quality assertions, retries, dead-letter queues, and metrics** without hand-writing that plumbing.
+- You need **streaming with bounded memory, incremental/resumable replication, CDC, exactly-once delivery, data-quality assertions, retries, dead-letter queues, and metrics** without hand-writing that plumbing.
 - You're **already in Rust** and want typed `Source`/`Sink` traits you can embed and extend.
 
 **Look elsewhere (for now) when:**
@@ -138,9 +329,9 @@ is its most common runtime.
 ## Architecture
 
 A `Source` streams batches of records, optional `Transform`s reshape them, and the
-`Pipeline` writes each batch to a `Sink` — bounding memory at one batch on both
-sides regardless of total volume. The pipeline also drives the cross-cutting
-runtime (bookmarks, dead-letter routing, metrics) so connectors stay simple:
+`Pipeline` writes each batch to a `Sink` — bounding memory at one batch on both sides
+regardless of total volume. The pipeline also drives the cross-cutting runtime (bookmarks,
+dead-letter routing, quality checks, metrics) so connectors stay simple:
 
 ```mermaid
 flowchart LR
@@ -159,417 +350,142 @@ flowchart LR
     P -.->|metrics + spans| O
 ```
 
-faucet-stream is a Cargo workspace with 55 crates — 23 sources, 18 sinks, 6 shared connector libraries, the shared auth-provider library, 2 state-store backends, the lineage crate, the SQL transform crate, the shared core, the umbrella crate, and the CLI binary:
-
-| Crate | Description |
-|-------|-------------|
-| [`faucet-core`](crates/core) | Shared types, traits (`Source`, `Sink`, `AuthProvider`), pipeline orchestration, transforms, error types |
-| [`faucet-auth`](crates/auth) | Shared single-flight auth providers (OAuth2, token-endpoint) for `auth: { ref }` |
-| **Sources** | |
-| [`faucet-source-rest`](crates/source/rest) | REST API — auth, pagination, extraction, schema inference |
-| [`faucet-source-graphql`](crates/source/graphql) | GraphQL API — cursor-based pagination, variable injection |
-| [`faucet-source-xml`](crates/source/xml) | XML/SOAP API — XML-to-JSON conversion, dot-path extraction |
-| [`faucet-source-grpc`](crates/source/grpc) | gRPC — dynamic protobuf via `prost-reflect`, TLS support |
-| [`faucet-source-postgres`](crates/source/postgres) | PostgreSQL — run SQL queries, return rows as JSON |
-| [`faucet-source-postgres-cdc`](crates/source/postgres-cdc) | PostgreSQL CDC — logical replication via pgoutput, resumable with any StateStore |
-| [`faucet-source-mongodb-cdc`](crates/source/mongodb-cdc) | MongoDB CDC — Change Streams, resumable via resumeToken bookmarks |
-| [`faucet-source-mysql-cdc`](crates/source/mysql-cdc) | MySQL CDC — binlog row events, resumable via file/pos or GTID bookmarks |
-| [`faucet-source-mysql`](crates/source/mysql) | MySQL — run SQL queries, return rows as JSON |
-| [`faucet-source-mssql`](crates/source/mssql) | Microsoft SQL Server — run SQL queries (streaming, incremental), rows as JSON |
-| [`faucet-source-sqlite`](crates/source/sqlite) | SQLite — run SQL queries, return rows as JSON |
-| [`faucet-source-s3`](crates/source/s3) | AWS S3 — read objects as JSONL, JSON array, or raw text |
-| [`faucet-source-gcs`](crates/source/gcs) | Google Cloud Storage — read objects as JSONL, JSON array, or raw text |
-| [`faucet-source-mongodb`](crates/source/mongodb) | MongoDB — find() with filter, projection, sort |
-| [`faucet-source-redis`](crates/source/redis) | Redis — read from streams, lists, or key patterns |
-| [`faucet-source-webhook`](crates/source/webhook) | Webhook — temporary HTTP server collecting POST payloads |
-| [`faucet-source-websocket`](crates/source/websocket) | WebSocket — live streaming feed; subscribe frames, reconnect, ping keepalive |
-| [`faucet-source-csv`](crates/source/csv) | CSV — read CSV files as JSON objects |
-| [`faucet-source-elasticsearch`](crates/source/elasticsearch) | Elasticsearch — search/scroll API |
-| [`faucet-source-kafka`](crates/source/kafka) | Apache Kafka — consumer with idle/max-messages termination |
-| [`faucet-source-parquet`](crates/source/parquet) | Apache Parquet — local file, glob, or S3; vectorized Arrow async reader, column projection |
-| [`faucet-source-bigquery`](crates/source/bigquery) | Google BigQuery — `jobs.query` + `jobs.getQueryResults`, type-aware row decoding |
-| [`faucet-source-snowflake`](crates/source/snowflake) | Snowflake — SQL REST API with server-side partition pagination, JWT / OAuth |
-| **Sinks** | |
-| [`faucet-sink-bigquery`](crates/sink/bigquery) | Google BigQuery — streaming inserts |
-| [`faucet-sink-iceberg`](crates/sink/iceberg) | Apache Iceberg — append snapshots via REST/Glue/SQL/HMS catalogs |
-| [`faucet-sink-postgres`](crates/sink/postgres) | PostgreSQL — JSONB or auto-mapped columns |
-| [`faucet-sink-jsonl`](crates/sink/jsonl) | JSON Lines — file output with append/truncate |
-| [`faucet-sink-snowflake`](crates/sink/snowflake) | Snowflake — SQL REST API with JWT/OAuth |
-| [`faucet-sink-mysql`](crates/sink/mysql) | MySQL — JSON column or auto-mapped columns |
-| [`faucet-sink-mssql`](crates/sink/mssql) | Microsoft SQL Server — JSON column or auto-mapped columns |
-| [`faucet-sink-sqlite`](crates/sink/sqlite) | SQLite — JSON column or auto-mapped columns |
-| [`faucet-sink-s3`](crates/sink/s3) | AWS S3 — write JSONL files to bucket |
-| [`faucet-sink-gcs`](crates/sink/gcs) | Google Cloud Storage — write JSONL files to bucket |
-| [`faucet-sink-mongodb`](crates/sink/mongodb) | MongoDB — insert_many documents |
-| [`faucet-sink-redis`](crates/sink/redis) | Redis — write to streams, lists, or key-value |
-| [`faucet-sink-csv`](crates/sink/csv) | CSV — write JSON records as CSV rows |
-| [`faucet-sink-elasticsearch`](crates/sink/elasticsearch) | Elasticsearch — bulk index API |
-| [`faucet-sink-http`](crates/sink/http) | HTTP — POST records to any endpoint |
-| [`faucet-sink-stdout`](crates/sink/stdout) | Stdout/stderr — JSON Lines, pretty JSON, or TSV |
-| [`faucet-sink-kafka`](crates/sink/kafka) | Apache Kafka — producer with FuturesUnordered batching, multi-topic routing |
-| [`faucet-sink-parquet`](crates/sink/parquet) | Apache Parquet — local file or S3; schema inference, compression, row/byte rollover |
-| **Shared libraries** | |
-| [`faucet-common-bigquery`](crates/common/bigquery) | Shared BigQuery types — `BigQueryCredentials` enum and `build_client` helper |
-| [`faucet-common-elasticsearch`](crates/common/elasticsearch) | Shared `ElasticsearchAuth` enum for Elasticsearch source/sink |
-| [`faucet-common-gcs`](crates/common/gcs) | Shared GCS types — credentials enum, Storage/StorageControl client builders |
-| [`faucet-common-kafka`](crates/common/kafka) | Shared Kafka types — auth, value formats, Schema Registry client |
-| [`faucet-common-snowflake`](crates/common/snowflake) | Shared Snowflake types — `SnowflakeAuth` enum + auth header helpers |
-| [`faucet-common-mssql`](crates/common/mssql) | Shared MSSQL types — connection/TLS config, `tiberius`+`bb8` pool builder, identifier quoting |
-| **State stores** | |
-| [`faucet-state-redis`](crates/state/redis) | Redis-backed `StateStore` for persistent bookmarks |
-| [`faucet-state-postgres`](crates/state/postgres) | PostgreSQL-backed `StateStore` for persistent bookmarks |
-| **Lineage** | |
-| [`faucet-lineage`](crates/lineage) | OpenLineage event emission — HTTP/file/Kafka transports, schema facets, column-lineage analysis |
-| **Transforms** | |
-| [`faucet-transform-sql`](crates/transform-sql) | Embedded DuckDB SQL transform — run DuckDB SQL over each page (`batch` relation), reference relations (csv/jsonl/values), per-page semantics + `batch_size: 0` for global aggregation |
-| [`faucet-stream`](faucet-stream) | Umbrella crate — feature-gated re-exports of all connectors and state backends |
-| **CLI** | |
-| [`faucet-cli`](cli) | `faucet` binary — YAML/JSON config-driven pipeline runner (`run`, `validate`, `schema`, `list`, `preview`, `init`, `doctor`, `schedule`, `serve`) |
-
-See the [connector capability matrix](https://pawansikawat.github.io/faucet-stream/reference/connectors.html)
-(streaming, resumable state, compression, auth per connector) and the
-[choosing-a-connector guide](https://pawansikawat.github.io/faucet-stream/reference/choosing.html)
-for help picking between overlapping connectors (Postgres query vs CDC, S3 vs Parquet, Redis vs Kafka, …).
-
-Install only what you need:
-
-```toml
-# Everything (default includes REST source)
-faucet-stream = "1.0"
-
-# All sources
-faucet-stream = { version = "1.0", features = ["source"] }
-
-# All sinks
-faucet-stream = { version = "1.0", features = ["sink"] }
-
-# All connectors
-faucet-stream = { version = "1.0", features = ["full"] }
-
-# Pick individual connectors
-faucet-stream = { version = "1.0", features = ["source-rest", "sink-postgres", "sink-s3"] }
-
-# Or use individual crates directly
-faucet-source-rest = "1.0"
-
-faucet-source-mongodb = "1.0"
-```
+faucet-stream is a Cargo workspace with **55 crates** — 23 sources, 18 sinks, 6 shared
+connector libraries, the shared auth-provider library, 2 state-store backends, the lineage
+crate, the SQL transform crate, the shared core, the umbrella crate, and the CLI binary. See
+the [Connectors](#connectors) table above and the
+[architecture guide](https://pawansikawat.github.io/faucet-stream/getting-started/concepts.html).
 
 ## Performance
 
-Every connector is optimised for throughput out of the box:
+> **Performance and reliability are why this library exists.** Every connector is optimised
+> for throughput out of the box — there are no "slow defaults" to tune away.
 
 | Technique | Where |
 |-----------|-------|
-| **Parallel I/O** | S3 reads/writes objects concurrently (configurable `concurrency`); HTTP sink sends requests in parallel; REST source processes partitions concurrently |
+| **Parallel I/O** | S3/GCS read/write objects concurrently (configurable `concurrency`); HTTP sink sends requests in parallel; REST source processes partitions concurrently |
 | **Multi-row INSERT** | PostgreSQL, MySQL, SQLite, and SQL Server sinks batch records into single INSERT statements instead of one per row (MSSQL auto-splits at the 2100-parameter limit) |
-| **Transaction wrapping** | SQLite sink wraps batches in `BEGIN`/`COMMIT` for 10-50x write speedup |
-| **Connection pooling** | All database connectors (PostgreSQL, MySQL, SQLite, SQL Server) use connection pools with configurable `max_connections` |
-| **Connection reuse** | S3, MongoDB, Redis, Elasticsearch, and HTTP connectors create clients once and reuse across all operations |
+| **Transaction wrapping** | SQLite sink wraps batches in `BEGIN`/`COMMIT` for a large write speedup |
+| **Connection pooling** | All database connectors use connection pools with configurable `max_connections` |
+| **Connection reuse** | S3, MongoDB, Redis, Elasticsearch, and HTTP connectors create clients once and reuse them across all operations |
 | **Redis pipelining** | Redis sink batches commands with `pipe()`; Redis source uses `MGET` for bulk key reads |
 | **Bulk APIs** | Elasticsearch uses the bulk NDJSON API; BigQuery uses `insertAll`; MongoDB uses `insert_many` |
 | **Buffered I/O** | JSONL sink uses `BufWriter`; CSV uses buffered readers/writers in blocking threads |
-| **Streaming pagination** | REST, GraphQL, XML, and Elasticsearch sources stream pages one at a time via `stream_pages()` to bound memory |
-
-## Streaming by default
-
-`Pipeline::run` drives sources via `stream_pages` and writes each page to the sink as it arrives, keeping sink-side memory bounded at the configured `batch_size`.
-
-### Tuning
-
-Most connectors expose configuration knobs for throughput:
-
-```rust
-// S3: parallel object reads
-let config = S3SourceConfig::new("my-bucket")
-    .with_concurrency(20);  // default: 10
-
-// PostgreSQL: connection pool size
-let config = PostgresSourceConfig::new("postgres://...", "SELECT ...")
-    .with_max_connections(20);  // default: 10
-
-// HTTP sink: parallel requests
-let config = HttpSinkConfig::new("https://api.example.com/ingest")
-    .with_concurrency(20);  // default: 10
-
-// REST: parallel partition processing
-let config = RestStreamConfig::new("https://api.example.com")
-    .partition_concurrency(Some(5));  // default: sequential
-```
+| **Streaming pagination** | Sources stream pages one at a time via `stream_pages()` to bound memory |
+| **Adaptive batch sizing** | Opt-in AIMD controller tunes the effective write batch size from observed sink latency and error rate |
 
 ## Observability
 
-Every pipeline emits OTel-compatible `tracing` spans and Prometheus metrics automatically — labelled by `pipeline`, `row` (matrix row id), and `connector`. The CLI exposes a `/metrics` endpoint via the optional `observability:` block in `faucet.yaml`. See [CLI README](cli/README.md#observability-prometheus--tracing) for the YAML grammar and the OpenTelemetry bridge snippet.
-
-## Features
-
-### Source: REST API (`faucet-source-rest`)
-
-- **Authentication** — Bearer, Basic, API Key (header or query param), OAuth2 (client credentials), Token Endpoint (fetch from any API), or custom headers
-- **Pagination** — cursor/token (JSONPath), page number, offset/limit, Link header, next-link-in-body
-- **JSONPath extraction** — point at where records live in any JSON response
-- **Record transforms** — flatten, rename keys (regex), `keys_case` (snake / camel / pascal / kebab / screaming_snake), plus config-exposed `select` / `drop` / `set` / `rename_field` / `cast` / `redact` / `value_case` / `spell_symbols` / `sql` (embedded DuckDB, page-level — `batch` relation), or custom closures
-- **Schema inference** — automatically derive a JSON Schema from sampled records
-- **Incremental replication** — bookmark-based filtering so you only fetch new records
-- **Partitions** — run the same stream across multiple contexts (e.g. per-org, per-repo)
-- **Retries with backoff** — exponential backoff with configurable limits and 429 rate-limit handling
-- **Typed deserialization** — get `Vec<Value>` or deserialize directly into your structs
-
-### Source: GraphQL API (`faucet-source-graphql`)
-
-- **Cursor-based pagination** — Relay-style with configurable `hasNextPage` and `endCursor` JSONPaths
-- **Variable injection** — cursor and page size automatically injected into GraphQL variables
-- **JSONPath extraction** — extract records from nested GraphQL response structures
-- **Authentication** — Bearer token or custom headers
-- **GraphQL error handling** — detects and reports errors from the `errors` array
-
-### Source: XML/SOAP API (`faucet-source-xml`)
-
-- **XML-to-JSON conversion** — automatic conversion using `quick-xml` with attribute (`@`), text (`#text`), and repeated-element (array) handling
-- **SOAP support** — handles namespace-prefixed elements (e.g. `soap:Envelope`)
-- **Dot-path extraction** — extract records from nested XML structures (e.g. `Envelope.Body.Response.Items.Item`)
-- **Pagination** — page-number and offset/limit styles
-- **Authentication** — Bearer, Basic, or custom headers
-- **POST bodies** — supports SOAP request bodies for POST-based APIs
-
-### Source: gRPC (`faucet-source-grpc`)
-
-- **Dynamic protobuf** — call any gRPC method at runtime using a compiled `FileDescriptorSet` (no code generation)
-- **Unary + server-streaming RPCs** — `rpc_kind` selects between one-shot calls and long-lived server-driven streams; streaming mode flushes pages as messages arrive, with reconnect-on-transient-error and exponential backoff
-- **JSON request/response** — send requests as JSON, receive responses as JSON via `prost-reflect`
-- **TLS support** — automatic TLS detection from `https://` endpoint, or explicit override
-- **Authentication** — Bearer token or custom metadata key-value pairs
-- **JSONPath extraction** — extract records from the response using JSONPath
-
-### Sink: BigQuery (`faucet-sink-bigquery`)
-
-- **Streaming inserts** — write `Vec<Value>` records via the BigQuery `insertAll` API
-- **Batch control** — configurable batch size (default 500 rows per request)
-- **Authentication** — service account key file, inline JSON key, or application default credentials
-- **Error reporting** — per-row error details from BigQuery
-- **Async-first** — built on `reqwest` + `tokio`
-
-### Sink: PostgreSQL (`faucet-sink-postgres`)
-
-- **JSONB mode** — insert entire records as JSONB values into a single column
-- **Auto-map mode** — discover table columns from `information_schema` and map JSON fields to columns automatically
-- **Connection pooling** — built on `sqlx` with `PgPool` for efficient async connections
-- **Batch inserts** — uses `UNNEST` for efficient multi-row inserts
-
-### Sink: JSON Lines (`faucet-sink-jsonl`)
-
-- **File output** — write records as one-JSON-per-line to a local file
-- **Append/truncate modes** — append to existing files or overwrite
-- **Pretty printing** — optional pretty-printed JSON output
-- **Buffered async I/O** — uses `tokio::io::BufWriter` for efficient writes
-- **Lazy file opening** — file is created on first write, not at construction
-
-### Sink: Snowflake (`faucet-sink-snowflake`)
-
-- **SQL REST API** — uses Snowflake's SQL REST API for INSERT operations
-- **Authentication** — JWT (key-pair) with RSA private key, or OAuth token
-- **Batch inserts** — wraps records in `PARSE_JSON()` for VARIANT column insertion
-- **Configurable** — account, warehouse, database, schema, role all configurable
-
-### Source: PostgreSQL (`faucet-source-postgres`)
-
-- **SQL queries** — run any SQL query and get results as JSON records
-- **Connection pooling** — built on `sqlx` with `PgPool`
-- **Type conversion** — automatic row-to-JSON conversion (strings, numbers, booleans, JSON/JSONB columns)
-- **Parameterised queries** — bind parameters to prevent SQL injection
-
-### Source: MySQL (`faucet-source-mysql`)
-
-- **SQL queries** — run any SQL query and get results as JSON records
-- **Connection pooling** — built on `sqlx` with `MySqlPool`
-
-### Source: Microsoft SQL Server (`faucet-source-mssql`)
-
-- **SQL queries** — run any SQL query and get results as JSON records
-- **Streaming + connection pooling** — built on `tiberius` + `bb8`, streams rows page-by-page
-- **Incremental replication** — tracking-column bookmark with an `@bookmark` token for server-side pushdown
-- **Type-aware decoding** — DECIMAL/MONEY → precision-preserving strings, DATETIMEOFFSET keeps its offset, binary → base64
-
-### Source: SQLite (`faucet-source-sqlite`)
-
-- **SQL queries** — run any SQL query and get results as JSON records
-- **Connection pooling** — built on `sqlx` with `SqlitePool`
-- **Dynamic typing** — automatic type probing (JSON, string, integer, float, boolean) for SQLite's flexible type system
-- **In-memory support** — works with `sqlite::memory:` for testing and ephemeral use cases
-
-### Source: AWS S3 (`faucet-source-s3`)
-
-- **Object listing** — list and read objects from a bucket with optional prefix filter
-- **Multiple formats** — JSONL (one record per line), JSON array, or raw text mode
-- **S3-compatible** — custom endpoint URL for MinIO, LocalStack, etc.
-
-### Source: MongoDB (`faucet-source-mongodb`)
-
-- **Find queries** — configurable filter, projection, sort, limit, batch size
-- **BSON conversion** — automatic JSON ↔ BSON document conversion
-
-### Source: Redis (`faucet-source-redis`)
-
-- **Multiple data types** — read from lists (LRANGE), streams (XREAD/XREADGROUP), or key patterns (SCAN+GET)
-- **JSON parsing** — automatic JSON deserialization; non-JSON values wrapped as strings
-
-### Source: Webhook (`faucet-source-webhook`)
-
-- **HTTP receiver** — starts a temporary axum HTTP server to collect incoming POST payloads
-- **Configurable** — listen address, path, timeout, max payloads
-
-### Source: CSV (`faucet-source-csv`)
-
-- **File reading** — read CSV files with configurable delimiter, quote character, headers
-- **JSON mapping** — each row becomes a JSON object keyed by header names
-
-### Source: Elasticsearch (`faucet-source-elasticsearch`)
-
-- **Scroll API** — efficient pagination through large result sets
-- **Query DSL** — pass any Elasticsearch query as JSON
-- **Authentication** — None, Basic, Bearer, or API key
-
-### Sink: MySQL (`faucet-sink-mysql`)
-
-- **JSON mode** — insert records as JSON strings into a column
-- **Auto-map mode** — discover columns from INFORMATION_SCHEMA, map JSON fields automatically
-- **Connection pooling** — built on `sqlx` with `MySqlPool`
-
-### Sink: Microsoft SQL Server (`faucet-sink-mssql`)
-
-- **JSON mode** — insert records as JSON strings into a single column (optionally auto-creating the table)
-- **Auto-map mode** — discover columns from `sys.columns` (IDENTITY columns skipped), map JSON fields automatically
-- **2100-parameter auto-split** — multi-row INSERTs split to stay within MSSQL's per-request limit, wrapped in a transaction
-- **Row-isolation DLQ** — on batch failure, retries row-by-row so only the offending row is dead-lettered
-
-### Sink: SQLite (`faucet-sink-sqlite`)
-
-- **JSON mode** — insert records as JSON text
-- **Auto-map mode** — discover columns from PRAGMA table_info
-- **File or in-memory** — supports file paths or `:memory:` databases
-
-### Sink: AWS S3 (`faucet-sink-s3`)
-
-- **JSONL output** — write records as JSON Lines files to S3
-- **UUID file names** — unique object keys with configurable prefix and extension
-- **File splitting** — optionally limit records per file
-
-### Sink: MongoDB (`faucet-sink-mongodb`)
-
-- **Bulk inserts** — `insert_many` with configurable batch size
-- **BSON conversion** — automatic JSON-to-BSON document conversion
-
-### Sink: Redis (`faucet-sink-redis`)
-
-- **Multiple modes** — write to lists (RPUSH), streams (XADD), or key-value (SET)
-- **Pipeline batching** — efficient Redis pipeline execution
-
-### Sink: CSV (`faucet-sink-csv`)
-
-- **File output** — write JSON records as CSV rows
-- **Auto headers** — column order derived from first record's keys
-- **Append mode** — append to existing files or overwrite
-
-### Sink: Elasticsearch (`faucet-sink-elasticsearch`)
-
-- **Bulk API** — NDJSON bulk index with configurable batch size
-- **Document IDs** — optionally extract `_id` from a record field
-- **Error checking** — per-item error detection in bulk responses
-
-### Sink: HTTP (`faucet-sink-http`)
-
-- **POST records** — send records to any HTTP endpoint
-- **Batch modes** — individual (one request per record) or array (single request)
-- **Authentication** — Bearer, Basic, or custom headers
-- **Retries** — configurable retry with retriable status detection
-
-### Pipeline (`faucet-core`)
-
-- **Source → Sink orchestration** — connect any source to any sink with `Pipeline::new(&source, &sink).run()`
-- **Batch mode** — fetch all records, then write; supports incremental replication bookmarks
-- **Streaming mode** — write page-by-page as records arrive, keeping memory bounded
-- **Plug-and-play** — implement `Source` or `Sink` for your own connectors and they work with everything
-
-## Config Loading
-
-All connector configs support loading from JSON files, environment variables, or `.env` files:
-
-```rust
-use faucet_core::config::{load_json, load_env, load_env_file};
-use faucet_source_rest::RestStreamConfig;
-use faucet_sink_bigquery::BigQuerySinkConfig;
-
-// From a JSON file
-let source: RestStreamConfig = load_json("source_config.json")?;
-
-// From environment variables (reads REST_BASE_URL, REST_PATH, etc.)
-let source: RestStreamConfig = load_env("REST")?;
-
-// From a .env file + environment variables
-let sink: BigQuerySinkConfig = load_env_file(".env", "BQ")?;
-```
-
-### Config Schema Introspection
-
-Every source and sink can tell you exactly what configuration it needs via `config_schema()`:
-
-```rust
-let source = RestStream::new(config)?;
-let schema = source.config_schema();
-println!("{}", serde_json::to_string_pretty(&schema)?);
-// Prints a full JSON Schema with field names, types, required/optional, defaults
-```
-
-This is auto-generated from the config struct — it always stays in sync with the code.
-
-## Quick Start
-
-Add to your `Cargo.toml`:
-
-```toml
-[dependencies]
-faucet-stream = "1.0"
-tokio = { version = "1", features = ["full"] }
-serde = { version = "1", features = ["derive"] }
-```
-
-### Cursor-based pagination with Bearer auth
+Every pipeline emits OTel-compatible `tracing` spans and Prometheus metrics automatically —
+labelled by `pipeline`, `row` (matrix row id), and `connector`, with **zero per-connector
+code**. The CLI exposes a `/metrics` endpoint via the optional `observability:` block in
+`faucet.yaml`. See the [CLI README](cli/README.md#observability-prometheus--tracing) for the
+YAML grammar and the OpenTelemetry bridge snippet.
+
+## Feature flags
+
+Default features: `source-rest`, `transform-flatten`, `transform-rename-keys`,
+`transform-keys-case`. Every connector and capability is an opt-in Cargo feature.
+
+<details>
+<summary><b>Full feature-flag table (umbrella crate)</b></summary>
+
+| Feature | Default | Description |
+|---------|---------|-------------|
+| `source-rest` | yes | REST API source |
+| `source-graphql` | no | GraphQL API source |
+| `source-xml` | no | XML/SOAP API source |
+| `source-grpc` | no | gRPC source |
+| `source-postgres` | no | PostgreSQL query source |
+| `source-postgres-cdc` | no | PostgreSQL CDC source (logical replication) |
+| `source-mysql` | no | MySQL query source |
+| `source-mysql-cdc` | no | MySQL CDC source (binlog replication) |
+| `source-mssql` | no | Microsoft SQL Server query source |
+| `source-sqlite` | no | SQLite query source |
+| `source-mongodb` | no | MongoDB query source |
+| `source-mongodb-cdc` | no | MongoDB CDC source (Change Streams) |
+| `source-redis` | no | Redis source |
+| `source-kafka` | no | Apache Kafka consumer source |
+| `source-s3` | no | AWS S3 file source |
+| `source-gcs` | no | Google Cloud Storage file source |
+| `source-parquet` | no | Apache Parquet file source (local, glob, S3) |
+| `source-elasticsearch` | no | Elasticsearch source |
+| `source-bigquery` | no | Google BigQuery query source |
+| `source-snowflake` | no | Snowflake query source |
+| `source-webhook` | no | Webhook HTTP receiver |
+| `source-websocket` | no | WebSocket live streaming source |
+| `source-csv` | no | CSV file source |
+| `sink-bigquery` | no | Google BigQuery sink |
+| `sink-iceberg` | no | Apache Iceberg sink (append, REST/Glue/SQL/HMS catalogs) |
+| `sink-postgres` | no | PostgreSQL sink |
+| `sink-mysql` | no | MySQL sink |
+| `sink-mssql` | no | Microsoft SQL Server sink |
+| `sink-sqlite` | no | SQLite sink |
+| `sink-snowflake` | no | Snowflake sink |
+| `sink-mongodb` | no | MongoDB sink |
+| `sink-redis` | no | Redis sink |
+| `sink-kafka` | no | Apache Kafka producer sink |
+| `sink-elasticsearch` | no | Elasticsearch bulk index sink |
+| `sink-s3` | no | AWS S3 file sink |
+| `sink-gcs` | no | Google Cloud Storage file sink |
+| `sink-parquet` | no | Apache Parquet file sink (local, S3) |
+| `sink-jsonl` | no | JSON Lines file sink |
+| `sink-csv` | no | CSV file sink |
+| `sink-http` | no | HTTP POST sink |
+| `sink-stdout` | no | Stdout/stderr sink (JSON Lines, pretty JSON, TSV) |
+| `kafka-schema-registry` | no | Confluent Schema Registry support for the Kafka pair (Avro, Protobuf, JSON Schema) |
+| `state-redis` | no | Redis-backed `StateStore` backend |
+| `state-postgres` | no | PostgreSQL-backed `StateStore` backend |
+| `source` / `sink` / `state` | no | All sources / all sinks / all state backends |
+| `auth` | no | Shared OAuth2 / token-endpoint auth providers |
+| `full` | no | Every connector, state backend, and capability |
+| `transform-flatten` | yes | Flatten nested objects |
+| `transform-rename-keys` | yes | Regex key renaming |
+| `transform-keys-case` | yes | Re-case every key — snake / camel / pascal / kebab / screaming_snake |
+| `transform-select` / `transform-drop` / `transform-set` | no | Keep / remove / add top-level fields |
+| `transform-rename-field` | no | Exact-name field rename (single or batch) |
+| `transform-cast` | no | Per-field type coercion with `on_error` policy |
+| `transform-redact` | no | Replace listed field values with a mask |
+| `transform-value-case` | no | Lowercase / uppercase / trim string field values |
+| `transform-spell-symbols` | no | Spell out symbols in keys (`%` → `percent`, `#` → `number`, …) |
+| `transform-cdc-unwrap` | no | Normalize a CDC envelope into a flat row + `__op` marker (pairs with upsert sinks) |
+| `transforms` | no | All built-in transforms above |
+| `transform-sql` | no | Embedded DuckDB SQL transform — run DuckDB SQL over each page (`batch` relation; `batch_size: 0` for global aggregation) |
+| `compression` | no | gzip / zstd read+write on JSONL/CSV/S3/GCS source and sink connectors |
+
+`RecordTransform::Custom` is always available regardless of feature flags. CLI-only features
+(`schedule`, `serve`, `serve-ui`, `serve-history-*`, `triggers*`, `lineage`, `quality`,
+`secrets-*`) live in `faucet-cli`, not the umbrella crate — see [`cli/README.md`](cli/README.md).
+
+</details>
+
+## Using faucet-stream as a Rust library
+
+The CLI is just one consumer of the engine. Everything it does is available as a typed API.
+
+<details>
+<summary><b>Pagination styles</b> — cursor, page-number, offset, Link header, next-link-in-body</summary>
 
 ```rust
 use faucet_stream::{RestStream, RestStreamConfig, Auth, PaginationStyle};
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let stream = RestStream::new(
-        RestStreamConfig::new("https://api.example.com", "/v1/users")
-            .auth(Auth::Bearer {
-                token: "my-token".into(),
-            })
-            .records_path("$.data[*]")
-            .pagination(PaginationStyle::Cursor {
-                next_token_path: "$.meta.next_cursor".into(),
-                param_name: "cursor".into(),
-            })
-            .max_pages(50),
-    )?;
+// Cursor-based pagination with Bearer auth
+let stream = RestStream::new(
+    RestStreamConfig::new("https://api.example.com", "/v1/users")
+        .auth(Auth::Bearer { token: "my-token".into() })
+        .records_path("$.data[*]")
+        .pagination(PaginationStyle::Cursor {
+            next_token_path: "$.meta.next_cursor".into(),
+            param_name: "cursor".into(),
+        })
+        .max_pages(50),
+)?;
+let users: Vec<serde_json::Value> = stream.fetch_all().await?;
 
-    let users: Vec<serde_json::Value> = stream.fetch_all().await?;
-    println!("Fetched {} users", users.len());
-    Ok(())
-}
-```
-
-### Page-number pagination with API key
-
-```rust
-use faucet_stream::{RestStream, RestStreamConfig, Auth, PaginationStyle};
-
+// Page-number pagination with an API key
 let stream = RestStream::new(
     RestStreamConfig::new("https://api.example.com", "/v2/orders")
-        .auth(Auth::ApiKey {
-            header: "X-Api-Key".into(),
-            value: "secret".into(),
-        })
+        .auth(Auth::ApiKey { header: "X-Api-Key".into(), value: "secret".into() })
         .records_path("$.results[*]")
         .pagination(PaginationStyle::PageNumber {
             param_name: "page".into(),
@@ -580,147 +496,103 @@ let stream = RestStream::new(
 )?;
 ```
 
-### Offset pagination with Basic auth
+| Style | Use when |
+|-------|----------|
+| `Cursor` | API returns a next-page token in the response body |
+| `PageNumber` | API uses `?page=1&per_page=100` style |
+| `Offset` | API uses `?offset=0&limit=50` style |
+| `LinkHeader` | API returns pagination in the `Link` HTTP header (GitHub-style) |
+| `NextLinkInBody` | API returns the full next-page URL in the response body |
 
-```rust
-use faucet_stream::{RestStream, RestStreamConfig, Auth, PaginationStyle};
-use std::time::Duration;
+Every pagination style has a termination/loop guard. `Cursor`, `LinkHeader`, and
+`NextLinkInBody` stop when the same token/link repeats; `PageNumber` stops on a zero-record
+page or a repeated page body (content-fingerprint detection); `Offset` stops when the offset
+reaches `total` or a page returns fewer records than the limit. `max_pages` is a hard cap
+across all styles.
 
-let stream = RestStream::new(
-    RestStreamConfig::new("https://api.example.com", "/records")
-        .auth(Auth::Basic {
-            username: "user".into(),
-            password: "pass".into(),
-        })
-        .records_path("$.items[*]")
-        .pagination(PaginationStyle::Offset {
-            offset_param: "offset".into(),
-            limit_param: "limit".into(),
-            limit: 50,
-            total_path: Some("$.total_count".into()),
-        })
-        .request_delay(Duration::from_millis(200)),
-)?;
-```
+</details>
 
-### OAuth2 client credentials
+<details>
+<summary><b>Authentication</b> — Bearer, Basic, API key, OAuth2, token endpoint, custom</summary>
+
+| Method | Description |
+|--------|-------------|
+| `Bearer` | `Authorization: Bearer <token>` header |
+| `Basic` | `Authorization: Basic <base64>` header |
+| `ApiKey` | Custom header (e.g. `X-Api-Key: secret`) |
+| `ApiKeyQuery` | API key as a query parameter (e.g. `?api_key=secret`) |
+| `OAuth2` | Client-credentials flow with automatic token caching and refresh |
+| `TokenEndpoint` | Fetch a token from any HTTP API via JSONPath, with caching and refresh |
+| `Custom` | Arbitrary headers |
 
 ```rust
 use faucet_stream::{Auth, fetch_oauth2_token};
 
+// OAuth2 client credentials
 let token = fetch_oauth2_token(
     "https://auth.example.com/oauth/token",
     "client-id",
     "client-secret",
     &["read:data".into()],
 ).await?;
-
 let config = RestStreamConfig::new("https://api.example.com", "/data")
     .auth(Auth::Bearer { token });
 ```
 
-### Token endpoint (fetch credentials from an API)
+`Auth::TokenEndpoint` fetches a token from an external API (a login endpoint, secrets
+manager, or custom auth service) via a JSONPath, caches it across pages, and refreshes it at
+`expiry_ratio` of the reported lifetime (default 90%). See the
+[auth cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/auth.html) for the full
+shape and `ResponseValidator` customization.
 
-When your auth token comes from an external API (e.g. a login endpoint, a secrets
-manager, or a custom auth service), use `Auth::TokenEndpoint` to fetch and cache
-it automatically:
+</details>
+
+<details>
+<summary><b>Streaming, incremental replication, partitions, and typed deserialization</b></summary>
 
 ```rust
-use faucet_stream::{Auth, RestStream, RestStreamConfig, ResponseValidator, DEFAULT_TOKEN_ENDPOINT_EXPIRY_RATIO};
-use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
+use faucet_stream::{RestStream, RestStreamConfig, ReplicationMethod, PaginationStyle};
+use futures::StreamExt;
+use serde::Deserialize;
 use serde_json::json;
 
-let mut token_headers = HeaderMap::new();
-token_headers.insert(
-    HeaderName::from_static("x-api-key"),
-    HeaderValue::from_static("bootstrap-key"),
-);
-
-let config = RestStreamConfig::new("https://api.example.com", "/data")
-    .auth(Auth::TokenEndpoint {
-        url: "https://auth.example.com/token".into(),
-        method: reqwest::Method::POST,
-        headers: token_headers,
-        body: Some(json!({"grant_type": "api_key"})),
-        token_path: "$.access_token".into(),           // JSONPath to extract the token
-        expiry_path: Some("$.expires_in".into()),       // optional: seconds until expiry
-        expiry_ratio: DEFAULT_TOKEN_ENDPOINT_EXPIRY_RATIO,
-        response_validator: None,                       // None = default 2xx check
-    });
-
-let stream = RestStream::new(config)?;
-let records = stream.fetch_all().await?;
-```
-
-The token is cached across pages and automatically refreshed when the expiry is
-reached (at `expiry_ratio` of the reported lifetime, default 90%).
-
-Pass a `ResponseValidator` to customize which HTTP status codes are considered
-successful for the token endpoint:
-
-```rust
-// Accept 200 and 202 as success:
-response_validator: Some(ResponseValidator::new(|status| status == 200 || status == 202)),
-
-// Accept anything below 400:
-response_validator: Some(ResponseValidator::new(|status| status < 400)),
-```
-
-### Streaming page-by-page
-
-Process records as each page arrives without waiting for all pages to complete:
-
-```rust
-use faucet_stream::{RestStream, RestStreamConfig, PaginationStyle};
-use futures::StreamExt;
-
-let stream = RestStream::new(
-    RestStreamConfig::new("https://api.example.com", "/v1/events")
-        .records_path("$.events[*]")
-        .pagination(PaginationStyle::Cursor {
-            next_token_path: "$.next_cursor".into(),
-            param_name: "cursor".into(),
-        }),
-)?;
-
+// Stream page-by-page (bounded memory)
 let mut pages = stream.stream_pages();
 while let Some(result) = pages.next().await {
     let records = result?;
     println!("processing page of {} records", records.len());
 }
-```
 
-### Typed deserialization
-
-```rust
-use serde::Deserialize;
-use faucet_stream::{RestStream, RestStreamConfig};
-
-#[derive(Debug, Deserialize)]
-struct User {
-    id: u64,
-    name: String,
-    email: String,
-}
-
+// Incremental replication — only fetch records newer than a stored bookmark
 let stream = RestStream::new(
-    RestStreamConfig::new("https://api.example.com", "/users")
-        .records_path("$.data[*]"),
+    RestStreamConfig::new("https://api.example.com", "/events")
+        .records_path("$.data[*]")
+        .replication_method(ReplicationMethod::Incremental)
+        .replication_key("updated_at")
+        .start_replication_value(json!("2024-06-01T00:00:00Z")),
 )?;
+let (records, bookmark) = stream.fetch_all_incremental().await?;  // persist `bookmark` for next run
 
+// Typed deserialization straight into your structs
+#[derive(Debug, Deserialize)]
+struct User { id: u64, name: String, email: String }
 let users: Vec<User> = stream.fetch_all_as::<User>().await?;
 ```
 
-### Record transforms
+`add_partition(...)` runs the same stream config across multiple contexts (e.g. per-org,
+per-repo) and concatenates the results.
 
-Transform every record as it's extracted by wrapping any `Source` with
-`TransformingSource`. Built-in transforms are feature-gated (all enabled by
-default):
+</details>
+
+<details>
+<summary><b>Transforms</b> — reshape records as they're extracted</summary>
+
+Wrap any `Source` with `TransformingSource`. Built-in transforms are feature-gated (the
+three case/flatten/rename ones are on by default):
 
 ```rust
 use faucet_stream::{
-    KeyCaseMode, Labels, RecordTransform, RestStream, RestStreamConfig, Source,
-    TransformingSource,
+    KeyCaseMode, Labels, RecordTransform, RestStream, RestStreamConfig, Source, TransformingSource,
 };
 
 let inner = RestStream::new(
@@ -729,17 +601,10 @@ let inner = RestStream::new(
 let stream = TransformingSource::new(
     Box::new(inner) as Box<dyn Source>,
     vec![
-        // Flatten nested objects: {"user": {"id": 1}} -> {"user__id": 1}
-        RecordTransform::Flatten { separator: "__".into() },
-        // Re-case every key — snake / camel / pascal / kebab / screaming_snake
-        RecordTransform::KeysCase { mode: KeyCaseMode::Snake },
-        // Regex-based key renaming
-        RecordTransform::RenameKeys {
-            pattern: r"^_sdc_".into(),
-            replacement: "".into(),
-        },
-        // Custom closure
-        RecordTransform::custom(|mut record| {
+        RecordTransform::Flatten { separator: "__".into() },         // {"user":{"id":1}} -> {"user__id":1}
+        RecordTransform::KeysCase { mode: KeyCaseMode::Snake },        // re-case every key
+        RecordTransform::RenameKeys { pattern: r"^_sdc_".into(), replacement: "".into() },
+        RecordTransform::custom(|mut record| {                         // arbitrary closure
             if let serde_json::Value::Object(ref mut map) = record {
                 map.insert("_source".to_string(), serde_json::json!("my-api"));
             }
@@ -750,437 +615,97 @@ let stream = TransformingSource::new(
 )?;
 ```
 
-Disable transforms you don't need:
+</details>
 
-```toml
-[dependencies]
-faucet-stream = { version = "1.0", default-features = false, features = ["transform-flatten"] }
-```
+<details>
+<summary><b>Config loading and schema introspection</b></summary>
 
-### Schema inference
-
-Automatically derive a JSON Schema from sampled records:
+All connector configs load from JSON files, environment variables, or `.env` files, and can
+describe themselves:
 
 ```rust
-use faucet_stream::{RestStream, RestStreamConfig};
+use faucet_core::config::{load_json, load_env, load_env_file};
+use faucet_source_rest::RestStreamConfig;
 
-let stream = RestStream::new(
-    RestStreamConfig::new("https://api.example.com", "/users")
-        .records_path("$.data[*]")
-        .schema_sample_size(50),  // sample up to 50 records (default: 100)
-)?;
+let source: RestStreamConfig = load_json("source_config.json")?;       // from a JSON file
+let source: RestStreamConfig = load_env("REST")?;                       // from REST_* env vars
+let source: RestStreamConfig = load_env_file(".env", "REST")?;          // from a .env file
 
-let schema = stream.infer_schema().await?;
-// Returns a JSON Schema object with inferred types, nullable fields, etc.
+// Every source/sink can print a full JSON Schema of its config — always in sync with the code
+let schema = RestStream::new(source)?.config_schema();
+println!("{}", serde_json::to_string_pretty(&schema)?);
 ```
 
-### Incremental replication
+</details>
 
-Only fetch records newer than a stored bookmark:
+## Building custom connectors
+
+faucet-stream is a **marketplace ecosystem** — third-party developers can publish their own
+`faucet-source-*` / `faucet-sink-*` crates with minimal friction. The only dependency you
+need is `faucet-core`; it re-exports everything required (`async_trait`, `serde_json`,
+`Value`, `json!`, `JsonSchema`, `schema_for!`).
 
 ```rust
-use faucet_stream::{RestStream, RestStreamConfig, ReplicationMethod};
-use serde_json::json;
-
-let stream = RestStream::new(
-    RestStreamConfig::new("https://api.example.com", "/events")
-        .records_path("$.data[*]")
-        .replication_method(ReplicationMethod::Incremental)
-        .replication_key("updated_at")
-        .start_replication_value(json!("2024-06-01T00:00:00Z")),
-)?;
-
-// fetch_all_incremental returns records + the new bookmark to persist
-let (records, bookmark) = stream.fetch_all_incremental().await?;
-// Save `bookmark` for the next run
-```
-
-### Partitions
-
-Run the same stream config across multiple contexts:
-
-```rust
-use faucet_stream::{RestStream, RestStreamConfig};
-use serde_json::json;
-use std::collections::HashMap;
-
-let stream = RestStream::new(
-    RestStreamConfig::new("https://api.github.com", "/orgs/{org}/repos")
-        .records_path("$[*]")
-        .add_partition(HashMap::from([("org".into(), json!("rust-lang"))]))
-        .add_partition(HashMap::from([("org".into(), json!("tokio-rs"))])),
-)?;
-
-// Fetches repos for both orgs and concatenates the results
-let repos = stream.fetch_all().await?;
-```
-
-### Pipeline: Source → Sink
-
-Connect any source to any sink — the pipeline handles data transfer automatically:
-
-```rust
-use faucet_stream::{Pipeline, RestStream, RestStreamConfig, PaginationStyle};
-// Assume `bigquery_sink` is a configured BigQuerySink
-
-// Batch mode: fetch all, then write
-let source = RestStream::new(
-    RestStreamConfig::new("https://api.example.com", "/v1/users")
-        .records_path("$.data[*]")
-        .pagination(PaginationStyle::Cursor {
-            next_token_path: "$.meta.next_cursor".into(),
-            param_name: "cursor".into(),
-        }),
-)?;
-
-let result = Pipeline::new(&source, &bigquery_sink).run().await?;
-println!("Wrote {} records", result.records_written);
-// result.bookmark contains the incremental replication bookmark
-```
-
-For large datasets, use streaming mode to write page-by-page (bounded memory):
-
-```rust
-use faucet_stream::run_stream;
-use futures::StreamExt;
-
-let result = run_stream(source.stream_pages(), &bigquery_sink).await?;
-```
-
-### Custom connectors
-
-Implement `Source` or `Sink` to build your own connectors — they plug into the
-pipeline and work with every existing connector automatically:
-
-```rust
-use faucet_stream::{Source, Sink, FaucetError, Pipeline};
-use async_trait::async_trait;
-use serde_json::Value;
-
-struct MyCustomSource { /* ... */ }
-
-#[async_trait]
-impl Source for MyCustomSource {
-    async fn fetch_all(&self) -> Result<Vec<Value>, FaucetError> {
-        // Fetch records from your custom system
-        todo!()
-    }
-}
-
-struct MyCustomSink { /* ... */ }
-
-#[async_trait]
-impl Sink for MyCustomSink {
-    async fn write_batch(&self, records: &[Value]) -> Result<usize, FaucetError> {
-        // Write records to your custom system
-        todo!()
-    }
-}
-
-// Any source works with any sink
-// Pipeline::new(&MyCustomSource { .. }, &MyCustomSink { .. }).run().await?;
-```
-
-## Authentication Methods
-
-| Method | Description |
-|--------|-------------|
-| `Bearer` | `Authorization: Bearer <token>` header |
-| `Basic` | `Authorization: Basic <base64>` header |
-| `ApiKey` | Custom header (e.g. `X-Api-Key: secret`) |
-| `ApiKeyQuery` | API key as a query parameter (e.g. `?api_key=secret`) |
-| `OAuth2` | Client credentials flow with automatic token caching and refresh |
-| `TokenEndpoint` | Fetch token from any HTTP API via JSONPath, with caching and refresh |
-| `Custom` | Arbitrary headers |
-
-## Pagination Styles
-
-| Style | Use When |
-|-------|----------|
-| `Cursor` | API returns a next-page token in the response body |
-| `PageNumber` | API uses `?page=1&per_page=100` style |
-| `Offset` | API uses `?offset=0&limit=50` style |
-| `LinkHeader` | API returns pagination in `Link` HTTP header (GitHub-style) |
-| `NextLinkInBody` | API returns the full next-page URL in the response body |
-
-Every pagination style has a termination/loop guard. `Cursor`, `LinkHeader`, and `NextLinkInBody` stop when the same token/link repeats; `PageNumber` stops on a zero-record page or when an identical page body is returned twice (content-fingerprint detection); `Offset` stops when the offset reaches `total` or a page returns fewer records than the limit. `max_pages` is a hard cap across all styles.
-
-## Feature Flags (umbrella crate)
-
-| Feature | Default | Description |
-|---------|---------|-------------|
-| `source-rest` | yes | REST API source |
-| `source-graphql` | no | GraphQL API source |
-| `source-xml` | no | XML/SOAP API source |
-| `source-grpc` | no | gRPC source |
-| `source-postgres` | no | PostgreSQL query source |
-| `source-postgres-cdc` | no | PostgreSQL CDC source (logical replication) |
-| `source-mongodb-cdc` | no | MongoDB CDC source (Change Streams) |
-| `source-mysql-cdc` | no | MySQL CDC source (binlog replication) |
-| `source-mysql` | no | MySQL query source |
-| `source-mssql` | no | Microsoft SQL Server query source |
-| `source-sqlite` | no | SQLite query source |
-| `source-s3` | no | AWS S3 file source |
-| `source-gcs` | no | Google Cloud Storage file source |
-| `source-mongodb` | no | MongoDB query source |
-| `source-redis` | no | Redis source |
-| `source-webhook` | no | Webhook HTTP receiver |
-| `source-websocket` | no | WebSocket live streaming source |
-| `source-csv` | no | CSV file source |
-| `source-elasticsearch` | no | Elasticsearch source |
-| `source-kafka` | no | Apache Kafka consumer source |
-| `source-parquet` | no | Apache Parquet file source (local, glob, S3) |
-| `source-bigquery` | no | Google BigQuery query source |
-| `source-snowflake` | no | Snowflake query source |
-| `sink-bigquery` | no | Google BigQuery sink |
-| `sink-iceberg` | no | Apache Iceberg sink (append, REST/Glue/SQL/HMS catalogs) |
-| `sink-postgres` | no | PostgreSQL sink |
-| `sink-jsonl` | no | JSON Lines file sink |
-| `sink-snowflake` | no | Snowflake sink |
-| `sink-mysql` | no | MySQL sink |
-| `sink-mssql` | no | Microsoft SQL Server sink |
-| `sink-sqlite` | no | SQLite sink |
-| `sink-s3` | no | AWS S3 file sink |
-| `sink-gcs` | no | Google Cloud Storage file sink |
-| `sink-mongodb` | no | MongoDB sink |
-| `sink-redis` | no | Redis sink |
-| `sink-csv` | no | CSV file sink |
-| `sink-elasticsearch` | no | Elasticsearch bulk index sink |
-| `sink-http` | no | HTTP POST sink |
-| `sink-stdout` | no | Stdout/stderr sink (JSON Lines, pretty JSON, TSV) |
-| `sink-kafka` | no | Apache Kafka producer sink |
-| `sink-parquet` | no | Apache Parquet file sink (local, S3) |
-| `kafka-schema-registry` | no | Confluent Schema Registry support for the Kafka pair (Avro, Protobuf, JSON Schema) |
-| `state-redis` | no | Redis-backed `StateStore` backend |
-| `state-postgres` | no | PostgreSQL-backed `StateStore` backend |
-| `source` | no | All source connectors |
-| `sink` | no | All sink connectors |
-| `state` | no | All state-store backends (file backend lives in `faucet-core` directly) |
-| `full` | no | Every connector and state backend |
-| `transform-flatten` | yes | Flatten nested objects (forwarded to source-rest) |
-| `transform-rename-keys` | yes | Regex key renaming (forwarded to source-rest) |
-| `transform-keys-case` | yes | Re-case every key — snake / camel / pascal / kebab / screaming_snake (forwarded to source-rest) |
-| `transform-select` | no | Keep only listed top-level fields |
-| `transform-drop` | no | Remove listed top-level fields |
-| `transform-set` | no | Add/overwrite top-level fields with constants |
-| `transform-rename-field` | no | Exact-name field rename (single or batch) |
-| `transform-cast` | no | Per-field type coercion (`int`/`float`/`bool`/`string`/`timestamp`) with `on_error` policy |
-| `transform-redact` | no | Replace listed field values with a mask |
-| `transform-value-case` | no | Lowercase / uppercase / trim string field values |
-| `transform-spell-symbols` | no | Spell out symbols in keys (`%` → `percent`, `#` → `number`, …) |
-| `transforms` | no | All built-in transforms above |
-| `transform-sql` | no | Embedded DuckDB SQL transform — run any DuckDB SQL query over each pipeline page via the `batch` relation (page-level; `batch_size: 0` for global aggregation) |
-| `compression` | no | gzip / zstd read+write on JSONL/CSV/S3/GCS source and sink connectors |
-
-`RecordTransform::Custom` is always available regardless of feature flags.
-
-## Compression
-
-**Compression**: read/write `.gz` and `.zst` directly on the file-shaped connectors (JSONL/CSV/S3/GCS source and sink) — enable with the `compression` feature.
-
-## Building Custom Connectors
-
-You can build your own source or sink connector as a standalone crate. The only
-dependency you need is `faucet-core` — it re-exports everything required
-(`async_trait`, `serde_json`, `Value`, `json!`, `JsonSchema`, `schema_for!`):
-
-```toml
-[dependencies]
-faucet-core = "1.0"
-serde = { version = "1", features = ["derive"] }
-tokio = { version = "1", features = ["rt"] }
-```
-
-### Custom Source
-
-```rust
-use faucet_core::{async_trait, FaucetError, Source, Value, json, JsonSchema, schema_for};
-use serde::{Deserialize, Serialize};
-
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-pub struct MySourceConfig {
-    pub api_url: String,
-    pub api_key: String,
-    #[serde(default = "default_batch")]
-    pub batch_size: usize,
-}
-fn default_batch() -> usize { 100 }
-
-pub struct MySource {
-    config: MySourceConfig,
-}
+use faucet_core::{async_trait, FaucetError, Source, Sink, Value, json, JsonSchema, schema_for};
 
 #[async_trait]
 impl Source for MySource {
     async fn fetch_all(&self) -> Result<Vec<Value>, FaucetError> {
-        // Your logic here — fetch from an API, database, file, etc.
         Ok(vec![json!({"id": 1, "name": "example"})])
     }
-
     fn config_schema(&self) -> Value {
         serde_json::to_value(schema_for!(MySourceConfig)).expect("schema serialization")
     }
-}
-```
-
-### Custom Sink
-
-```rust
-use faucet_core::{async_trait, FaucetError, Sink, Value, JsonSchema, schema_for};
-use serde::{Deserialize, Serialize};
-
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-pub struct MySinkConfig {
-    pub output_path: String,
-}
-
-pub struct MySink {
-    config: MySinkConfig,
 }
 
 #[async_trait]
 impl Sink for MySink {
     async fn write_batch(&self, records: &[Value]) -> Result<usize, FaucetError> {
-        // Your logic here — write to a database, file, API, etc.
         Ok(records.len())
     }
-
     fn config_schema(&self) -> Value {
         serde_json::to_value(schema_for!(MySinkConfig)).expect("schema serialization")
     }
 }
 ```
 
-### Error Handling
+Any `Source` works with any `Sink` via `Pipeline::new(&source, &sink).run().await?`. Map your
+own failures to `FaucetError` variants (`Source` / `Sink` / `Config`, or `Custom(boxed_err)`
+to wrap any `std::error::Error` without losing the chain). Publish under the naming
+convention `faucet-source-<name>` / `faucet-sink-<name>`. Full walkthrough:
+[authoring connectors](https://pawansikawat.github.io/faucet-stream/extending/authoring-connectors.html).
 
-Map your errors to `FaucetError` variants:
-
-- `FaucetError::Source("...")` — source-specific failures (query errors, connection issues)
-- `FaucetError::Sink("...")` — sink-specific failures (write errors, insert failures)
-- `FaucetError::Config("...")` — configuration or validation errors
-- `FaucetError::Custom(boxed_err)` — wrap any `std::error::Error` without losing the error chain
-
-```rust
-use faucet_core::FaucetError;
-
-// Wrap a custom error type
-let err: FaucetError = Box::new(my_lib::Error::ConnectionFailed).into();
-
-// Or use a string variant
-let err = FaucetError::Source("query returned invalid data".into());
-```
-
-### Using with Pipeline
-
-Custom connectors work seamlessly with the built-in pipeline and all existing connectors:
-
-```rust
-use faucet_core::Pipeline;
-
-let source = MySource { api_url: "https://api.example.com".into() };
-let sink = faucet_sink_jsonl::JsonlSink::new(
-    faucet_sink_jsonl::JsonlSinkConfig::new("/tmp/output.jsonl")
-);
-
-let result = Pipeline::new(&source, &sink).run().await?;
-println!("Wrote {} records", result.records_written);
-```
-
-### Naming Convention
-
-If you publish your connector to crates.io, use the naming convention:
-- Sources: `faucet-source-<name>` (e.g. `faucet-source-dynamodb`)
-- Sinks: `faucet-sink-<name>` (e.g. `faucet-sink-kafka`)
-
-## Project Structure
+## Project structure
 
 ```
-Cargo.toml                    — workspace manifest
+Cargo.toml                    — workspace manifest (55 crates)
 crates/
-  core/                       — faucet-core: shared types, traits, pipeline, config loading
-    src/
-      lib.rs, error.rs, traits.rs, pipeline.rs, config.rs,
-      transform.rs, replication.rs, schema.rs, util.rs
-  source/
-    rest/                     — REST API (auth, pagination, extraction, retry, serde_helpers)
-    graphql/                  — GraphQL API (cursor pagination)
-    xml/                      — XML/SOAP API (XML-to-JSON conversion)
-    grpc/                     — gRPC (dynamic protobuf)
-    postgres/                 — PostgreSQL queries
-    postgres-cdc/             — PostgreSQL CDC (logical replication)
-    mongodb-cdc/              — MongoDB CDC (Change Streams)
-    mysql-cdc/                — MySQL CDC (binlog replication)
-    mysql/                    — MySQL queries
-    mssql/                    — Microsoft SQL Server queries (streaming, incremental)
-    sqlite/                   — SQLite queries
-
-    s3/                       — AWS S3 object reader
-    mongodb/                  — MongoDB find()
-    redis/                    — Redis streams/lists/keys
-    webhook/                  — HTTP webhook receiver
-    websocket/                — WebSocket live streaming source
-    csv/                      — CSV file reader
-    elasticsearch/            — Elasticsearch search/scroll
-    kafka/                    — Apache Kafka consumer
-    parquet/                  — Apache Parquet reader (local, glob, S3)
-    bigquery/                 — Google BigQuery query source
-    snowflake/                — Snowflake query source (SQL REST API)
-  sink/
-    bigquery/                 — Google BigQuery streaming inserts
-    postgres/                 — PostgreSQL (JSONB or auto-map)
-    jsonl/                    — JSON Lines file output
-    snowflake/                — Snowflake SQL REST API
-    mysql/                    — MySQL (JSON or auto-map)
-    mssql/                    — Microsoft SQL Server (JSON or auto-map, 2100-param split)
-    sqlite/                   — SQLite (JSON or auto-map)
-
-    s3/                       — AWS S3 JSONL writer
-    mongodb/                  — MongoDB insert_many
-    redis/                    — Redis streams/lists/key-value
-    csv/                      — CSV file writer
-    elasticsearch/            — Elasticsearch bulk index
-    http/                     — HTTP POST
-    stdout/                   — Stdout / stderr (JSON Lines, pretty JSON, TSV)
-    kafka/                    — Apache Kafka producer
-    parquet/                  — Apache Parquet writer (local, S3)
-    iceberg/                  — Apache Iceberg (append snapshots)
-  common/
-    bigquery/                 — faucet-common-bigquery: shared BigQueryCredentials + build_client
-    elasticsearch/            — faucet-common-elasticsearch: shared ElasticsearchAuth enum
-    gcs/                      — faucet-common-gcs: shared GCS credentials + client builders
-    kafka/                    — faucet-common-kafka: shared Kafka auth, formats, Schema Registry
-    snowflake/                — faucet-common-snowflake: shared SnowflakeAuth + JWT/OAuth header helpers
-    mssql/                    — faucet-common-mssql: shared MSSQL connection/TLS config + tiberius/bb8 pool
-  state/
-    redis/                    — Redis-backed StateStore
-    postgres/                 — PostgreSQL-backed StateStore
-  transform-sql/              — faucet-transform-sql: embedded DuckDB SQL transform (batch relation, reference relations)
+  core/                       — faucet-core: shared types, traits, pipeline, transforms, config
+  auth/                       — faucet-auth: shared OAuth2 / token-endpoint providers
+  source/                     — 23 source connectors (rest, graphql, xml, grpc, *-cdc, kafka, s3, …)
+  sink/                       — 18 sink connectors (bigquery, iceberg, postgres, parquet, kafka, …)
+  common/                     — 6 shared connector libraries (bigquery, elasticsearch, gcs, kafka, snowflake, mssql)
+  state/                      — Redis- and Postgres-backed StateStore backends
+  lineage/                    — faucet-lineage: OpenLineage event emission
+  transform-sql/              — faucet-transform-sql: embedded DuckDB SQL transform
 faucet-stream/                — umbrella crate with feature-gated re-exports
 cli/                          — faucet-cli: `faucet` binary, YAML/JSON pipeline runner
-  src/
-    main.rs, lib.rs, cli.rs, config.rs, interpolate.rs,
-    registry.rs, state.rs, transforms.rs, error.rs,
-    init_template.rs,
-    commands/{run, validate, schema, list, preview, init}.rs
   examples/                   — ready-to-run pipeline YAMLs
   tests/                      — assert_cmd + wiremock integration tests
 examples/                     — repo-level examples: docker-compose infra stack + run index
-docs/
-  book/                       — mdBook documentation site (source under docs/book/src)
-  launch/                     — launch kit: blog draft + checklist/ready-to-post copy
-.github/workflows/            — ci.yml, release.yml, docs.yml (mdBook → GitHub Pages)
-.github/assets/               — brand assets: logo tile, transparent mark, mono mark, wordmark, social-preview banner, favicon
+docs/book/                    — mdBook documentation site (source under docs/book/src)
+.github/workflows/            — ci.yml, release-plz.yml, docs.yml (mdBook → GitHub Pages)
+.github/assets/               — brand assets: logo, wordmark, social-preview banner, favicon
 ```
 
 ## Contributing
 
 Contributions — core changes and third-party connectors alike — are welcome. See
-[CONTRIBUTING.md](CONTRIBUTING.md) for setup, the checks CI runs, and the
-add-a-connector checklist, and the
+[CONTRIBUTING.md](CONTRIBUTING.md) for setup, the checks CI runs, and the add-a-connector
+checklist, and the
 [authoring guide](https://pawansikawat.github.io/faucet-stream/extending/authoring-connectors.html)
 for building your own `faucet-source-*` / `faucet-sink-*` crate. Please review our
-[Code of Conduct](CODE_OF_CONDUCT.md). To report a vulnerability, see
-[SECURITY.md](SECURITY.md).
+[Code of Conduct](CODE_OF_CONDUCT.md). To report a vulnerability, see [SECURITY.md](SECURITY.md).
 
 ## License
 
@@ -1191,8 +716,6 @@ Licensed under either of
 
 at your option.
 
-## Contribution
-
-Unless you explicitly state otherwise, any contribution intentionally submitted
-for inclusion in the work by you, as defined in the Apache-2.0 license, shall be
-dual licensed as above, without any additional terms or conditions.
+Unless you explicitly state otherwise, any contribution intentionally submitted for inclusion
+in the work by you, as defined in the Apache-2.0 license, shall be dual licensed as above,
+without any additional terms or conditions.
