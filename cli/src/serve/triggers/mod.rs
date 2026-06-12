@@ -120,6 +120,9 @@ pub fn spawn_watchers(
             tracing::info!(trigger = t.name(), "trigger disabled; not spawning");
             continue;
         }
+        // Pre-emit this trigger's per-trigger series at zero so they exist in
+        // `/metrics` from startup (including webhooks, which spawn no task).
+        metrics::preinit(t.name(), t.kind_label());
         match &t.spec.kind {
             spec::TriggerKind::Webhook { .. } => {
                 active += 1; // served by the route, no task

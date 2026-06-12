@@ -41,6 +41,26 @@ pub fn describe() {
 pub fn active(n: usize) {
     gauge!("faucet_serve_triggers_active").set(n as f64);
 }
+
+/// Pre-emit every per-trigger series at zero so they exist in `/metrics` from
+/// startup — the `metrics` exporter only renders a series after its first
+/// emission, so otherwise a pre-first-fire scrape shows "no data" for the
+/// trigger. Mirrors `schedule::metrics`' pre-emit step. Called once per enabled
+/// trigger from `spawn_watchers` (including webhooks, which spawn no task).
+/// `last_fire` is intentionally NOT pre-emitted — there has been no fire yet.
+pub fn preinit(trigger: &str, kind: &'static str) {
+    counter!("faucet_serve_triggers_fired_total", "trigger" => trigger.to_string(), "type" => kind)
+        .increment(0);
+    counter!("faucet_serve_trigger_runs_enqueued_total", "trigger" => trigger.to_string())
+        .increment(0);
+    counter!("faucet_serve_trigger_runs_coalesced_total", "trigger" => trigger.to_string())
+        .increment(0);
+    counter!("faucet_serve_trigger_runs_dropped_total", "trigger" => trigger.to_string(), "reason" => "queue_full")
+        .increment(0);
+    counter!("faucet_serve_trigger_errors_total", "trigger" => trigger.to_string(), "type" => kind)
+        .increment(0);
+    healthy(trigger, true);
+}
 pub fn fired(trigger: &str, kind: &'static str) {
     counter!("faucet_serve_triggers_fired_total", "trigger" => trigger.to_string(), "type" => kind)
         .increment(1);
@@ -91,6 +111,33 @@ mod tests {
                 .iter()
                 .any(|(k, _, _, _)| k.key().name() == "faucet_serve_triggers_fired_total"),
             "fired counter not emitted"
+        );
+    }
+
+    #[test]
+    fn preinit_emits_every_per_trigger_series_at_zero() {
+        let recorder = DebuggingRecorder::new();
+        let snap: Snapshotter = recorder.snapshotter();
+        with_local_recorder(&recorder, || {
+            preinit("t", "webhook");
+        });
+        let metrics = snap.snapshot().into_vec();
+        let names: std::collections::BTreeSet<_> =
+            metrics.iter().map(|(k, _, _, _)| k.key().name()).collect();
+        for expected in [
+            "faucet_serve_triggers_fired_total",
+            "faucet_serve_trigger_runs_enqueued_total",
+            "faucet_serve_trigger_runs_coalesced_total",
+            "faucet_serve_trigger_runs_dropped_total",
+            "faucet_serve_trigger_errors_total",
+            "faucet_serve_trigger_healthy",
+        ] {
+            assert!(names.contains(expected), "preinit missing series {expected}");
+        }
+        // last_fire must NOT be pre-emitted (no fire yet).
+        assert!(
+            !names.contains("faucet_serve_trigger_last_fire_unix_seconds"),
+            "last_fire must not be pre-emitted"
         );
     }
 }

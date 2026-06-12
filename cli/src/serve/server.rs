@@ -276,7 +276,12 @@ pub async fn serve(config: ServeConfig) -> CliResult<()> {
     // build the shared handle (webhook table + health rows).
     #[cfg(feature = "triggers")]
     let triggers = match &config.triggers_path {
-        Some(path) => Some(crate::serve::triggers::load_triggers(path).await?),
+        Some(path) => {
+            // Register HELP text for the trigger metric family once at startup so
+            // the series carry descriptions in `/metrics` (mirrors schedule).
+            crate::serve::triggers::metrics::describe();
+            Some(crate::serve::triggers::load_triggers(path).await?)
+        }
         None => None,
     };
     #[cfg(feature = "triggers")]
