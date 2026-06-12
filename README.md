@@ -17,11 +17,12 @@
 
 **The fast, config-driven way to move data in Rust.**
 
-faucet-stream wires **23 source** and **18 sink** connectors (**41 in total**) together
-with a single `faucet` binary that runs pipelines declaratively from a YAML/JSON file —
-no Rust code required. Or skip the binary and embed the same engine in your own service
-through the typed `Source` / `Sink` traits. One toolkit, whether you want a CLI you can
-drop on any box or a library you compile in.
+faucet-stream is a complete **ETL** toolkit: **23 source** and **18 sink** connectors
+(**41 in total**) plus in-flight transforms — including a page-level embedded-DuckDB `sql`
+transform — wired together by a single `faucet` binary that runs pipelines declaratively
+from a YAML/JSON file, no Rust code required. Or skip the binary and embed the same engine
+in your own service through the typed `Source` / `Sink` traits. One toolkit, whether you
+want a CLI you can drop on any box or a library you compile in.
 
 A single native binary **and** an embeddable Rust library: config-driven pipelines with
 no Python runtime, no platform to stand up, no daemon to babysit — plus a typed API when
@@ -306,9 +307,13 @@ own service.
 ¹ Singer CDC depends on the individual tap. ² The original Benthos is Apache-2.0; Redpanda Connect's maintained build is source-available. *Comparison reflects the general shape of each tool as of 2026-05 — check each project for current details.*
 
 For reference: **[Singer](https://www.singer.io/)** is a connector spec and **[Meltano](https://meltano.com/)**
-is its most common runtime; both appear above. **[dbt](https://www.getdbt.com/) is complementary,
-not a competitor** — it transforms data already in your warehouse (the "T" in ELT), while
-faucet-stream handles the "EL" of getting data in and out.
+is its most common runtime; both appear above. faucet-stream is a full **ETL** tool — it
+transforms data *in flight* as it moves (13 record transforms plus a page-level
+embedded-DuckDB `sql` transform for aggregation, joins, and filtering), not just
+extract-and-load. **[dbt](https://www.getdbt.com/) is complementary, not a competitor:**
+it models transformations *in the warehouse* on data already loaded (the "T" of ELT, at
+warehouse scale) — pair the two when you need heavy in-warehouse modeling on top of what
+faucet extracts, transforms, and loads.
 
 ## When to use faucet-stream
 
@@ -323,7 +328,7 @@ faucet-stream handles the "EL" of getting data in and out.
 
 - You need a connector faucet-stream **doesn't ship yet and can't write** — [Meltano](https://meltano.com/) (600+ Singer taps) and [Airbyte](https://airbyte.com/) (350+) have far broader catalogs today.
 - You want a **fully-managed, hosted service** with a UI and a team operating it — Fivetran or Airbyte Cloud.
-- Your job is **in-warehouse transformation** — use dbt, and pair it with faucet-stream for the extract/load.
+- Your job is **heavy in-warehouse transformation modeling** — a tested, version-controlled SQL DAG built on data already in the warehouse, at warehouse scale. That's dbt's domain; pair it with faucet-stream, which extracts, transforms in-flight, and loads.
 - You need a **continuous record-by-record streaming processor** — [Benthos / Redpanda Connect](https://www.redpanda.com/connect) and [Vector](https://vector.dev/) are purpose-built for that. faucet-stream runs discrete pipelines to completion; even the long-running modes (`faucet schedule`, `faucet serve`) orchestrate complete runs rather than a never-ending stream.
 
 ## Architecture
