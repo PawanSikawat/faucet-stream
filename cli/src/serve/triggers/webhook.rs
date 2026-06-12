@@ -11,7 +11,7 @@ use crate::serve::state::ServerState;
 use crate::serve::triggers::spec::TriggerKind;
 use axum::Json;
 use axum::extract::{Path, RawQuery, State};
-use axum::http::{HeaderMap, Method};
+use axum::http::{HeaderMap, Method, StatusCode};
 use serde_json::json;
 use std::collections::BTreeMap;
 
@@ -22,7 +22,7 @@ pub async fn handle(
     headers: HeaderMap,
     RawQuery(raw_query): RawQuery,
     body: String,
-) -> Result<Json<serde_json::Value>, ServeError> {
+) -> Result<(StatusCode, Json<serde_json::Value>), ServeError> {
     let compiled = state
         .triggers()
         .webhook(&name)
@@ -56,7 +56,7 @@ pub async fn handle(
             .allow_fire(&name, (debounce_secs as i64) * 1000, now_ms)
         {
             crate::serve::triggers::metrics::coalesced(&name);
-            return Ok(Json(json!({ "status": "coalesced" })));
+            return Ok((StatusCode::OK, Json(json!({ "status": "coalesced" }))));
         }
     }
 
@@ -89,9 +89,12 @@ pub async fn handle(
     match enqueue::fire(&state, &compiled, event, &fired_at).await {
         FireOutcome::Enqueued(run_id) => {
             state.triggers().record_ok(&name, Some(fired_at));
-            Ok(Json(json!({ "run_id": run_id, "status": "queued" })))
+            Ok((
+                StatusCode::ACCEPTED,
+                Json(json!({ "run_id": run_id, "status": "queued" })),
+            ))
         }
-        FireOutcome::Coalesced => Ok(Json(json!({ "status": "coalesced" }))),
+        FireOutcome::Coalesced => Ok((StatusCode::OK, Json(json!({ "status": "coalesced" })))),
         FireOutcome::Dropped(reason) => {
             tracing::warn!(trigger = %name, %reason, "webhook fire dropped");
             Err(ServeError::QueueFull {

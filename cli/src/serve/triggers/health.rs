@@ -85,7 +85,11 @@ impl TriggersHandle {
         if window_ms <= 0 {
             return true;
         }
-        let mut e = self.inner.debounce.entry(name.to_string()).or_insert(i64::MIN);
+        let mut e = self
+            .inner
+            .debounce
+            .entry(name.to_string())
+            .or_insert(i64::MIN);
         if now_ms.saturating_sub(*e) >= window_ms {
             *e = now_ms;
             true

@@ -488,7 +488,7 @@ async fn webhook_http_boundary_enforces_bearer_auth_and_enqueues() {
         "missing bearer token must yield 401"
     );
 
-    // With the correct token → 200 and a run is enqueued.
+    // With the correct token → 202 and a run is enqueued.
     let ok = client
         .post(&url)
         .bearer_auth(token)
@@ -496,7 +496,7 @@ async fn webhook_http_boundary_enforces_bearer_auth_and_enqueues() {
         .send()
         .await
         .unwrap();
-    assert_eq!(ok.status(), 200, "authorized fire must yield 200");
+    assert_eq!(ok.status(), 202, "authorized fire must yield 202");
     let body: serde_json::Value = ok.json().await.unwrap();
     assert_eq!(body["status"].as_str(), Some("queued"));
     assert!(body["run_id"].is_string(), "response must carry a run_id");
@@ -529,7 +529,7 @@ async fn webhook_debounce_coalesces_second_fire() {
     let client = reqwest::Client::new();
     let url = format!("{base}/v1/triggers/hook");
 
-    // First fire is accepted (leading edge).
+    // First fire is accepted (leading edge) → 202.
     let first = client
         .post(&url)
         .bearer_auth(token)
@@ -537,7 +537,7 @@ async fn webhook_debounce_coalesces_second_fire() {
         .send()
         .await
         .unwrap();
-    assert_eq!(first.status(), 200);
+    assert_eq!(first.status(), 202, "first fire (enqueued) must yield 202");
     let first_body: serde_json::Value = first.json().await.unwrap();
     assert_eq!(
         first_body["status"].as_str(),
@@ -545,7 +545,7 @@ async fn webhook_debounce_coalesces_second_fire() {
         "first fire must enqueue: {first_body}"
     );
 
-    // Second fire within the window is coalesced (no second run).
+    // Second fire within the window is coalesced (no second run) → 200.
     let second = client
         .post(&url)
         .bearer_auth(token)
@@ -553,7 +553,7 @@ async fn webhook_debounce_coalesces_second_fire() {
         .send()
         .await
         .unwrap();
-    assert_eq!(second.status(), 200);
+    assert_eq!(second.status(), 200, "coalesced fire must yield 200");
     let second_body: serde_json::Value = second.json().await.unwrap();
     assert_eq!(
         second_body["status"].as_str(),

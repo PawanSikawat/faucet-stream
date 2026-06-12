@@ -132,7 +132,10 @@ mod tests {
             "faucet_serve_trigger_errors_total",
             "faucet_serve_trigger_healthy",
         ] {
-            assert!(names.contains(expected), "preinit missing series {expected}");
+            assert!(
+                names.contains(expected),
+                "preinit missing series {expected}"
+            );
         }
         // last_fire must NOT be pre-emitted (no fire yet).
         assert!(

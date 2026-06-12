@@ -166,6 +166,14 @@ paths:
               type: object
               description: Optional JSON body; available as ${trigger.body} in the pipeline config.
       responses:
+        "200":
+          description: Fire coalesced by debounce; no new run enqueued.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: coalesced }
         "202":
           description: Run enqueued (or an idempotency replay).
           content:
@@ -197,6 +205,14 @@ paths:
               type: object
               description: Optional JSON body; available as ${trigger.body} in the pipeline config.
       responses:
+        "200":
+          description: Fire coalesced by debounce; no new run enqueued.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: coalesced }
         "202":
           description: Run enqueued (or an idempotency replay).
           content:
