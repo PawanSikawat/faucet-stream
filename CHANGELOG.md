@@ -8,6 +8,60 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 independently).
 ## [Unreleased]
 
+## `faucet-state-postgres` — [1.0.2](https://github.com/PawanSikawat/faucet-stream/compare/faucet-state-postgres-v1.0.1...faucet-state-postgres-v1.0.2) - 2026-06-12
+
+### Miscellaneous
+
+- Updated the following local packages: faucet-core
+
+## `faucet-state-redis` — [1.0.2](https://github.com/PawanSikawat/faucet-stream/compare/faucet-state-redis-v1.0.1...faucet-state-redis-v1.0.2) - 2026-06-12
+
+### Miscellaneous
+
+- Updated the following local packages: faucet-core
+
+## `faucet-common-mssql` — [1.0.2](https://github.com/PawanSikawat/faucet-stream/compare/faucet-common-mssql-v1.0.1...faucet-common-mssql-v1.0.2) - 2026-06-12
+
+### Miscellaneous
+
+- Updated the following local packages: faucet-core
+
+## `faucet-common-snowflake` — [1.0.1](https://github.com/PawanSikawat/faucet-stream/compare/faucet-common-snowflake-v1.0.0...faucet-common-snowflake-v1.0.1) - 2026-06-12
+
+### Miscellaneous
+
+- Updated the following local packages: faucet-core
+
+## `faucet-common-kafka` — [1.0.1](https://github.com/PawanSikawat/faucet-stream/compare/faucet-common-kafka-v1.0.0...faucet-common-kafka-v1.0.1) - 2026-06-12
+
+### Miscellaneous
+
+- Updated the following local packages: faucet-core
+
+## `faucet-common-gcs` — [1.0.1](https://github.com/PawanSikawat/faucet-stream/compare/faucet-common-gcs-v1.0.0...faucet-common-gcs-v1.0.1) - 2026-06-12
+
+### Miscellaneous
+
+- Updated the following local packages: faucet-core
+
+## `faucet-common-elasticsearch` — [1.0.1](https://github.com/PawanSikawat/faucet-stream/compare/faucet-common-elasticsearch-v1.0.0...faucet-common-elasticsearch-v1.0.1) - 2026-06-12
+
+### Miscellaneous
+
+- Updated the following local packages: faucet-core
+
+## `faucet-common-bigquery` — [1.0.1](https://github.com/PawanSikawat/faucet-stream/compare/faucet-common-bigquery-v1.0.0...faucet-common-bigquery-v1.0.1) - 2026-06-12
+
+### Miscellaneous
+
+- Updated the following local packages: faucet-core
+
+## `faucet-auth` — [1.0.1](https://github.com/PawanSikawat/faucet-stream/compare/faucet-auth-v1.0.0...faucet-auth-v1.0.1) - 2026-06-12
+
+### Miscellaneous
+
+- Updated the following local packages: faucet-core
+
 ## `faucet-stream` — [1.0.2](https://github.com/PawanSikawat/faucet-stream/compare/faucet-stream-v1.0.1...faucet-stream-v1.0.2) - 2026-06-02
 
 ### Bug Fixes
