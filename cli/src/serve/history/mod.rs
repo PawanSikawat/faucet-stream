@@ -352,11 +352,11 @@ async fn connect_postgres(
     lease_ttl: Duration,
     instance_id: &str,
 ) -> CliResult<Arc<dyn RunHistory>> {
-    Ok(into_history(
-        postgres::PostgresHistory::connect(url, idem, lease_ttl, instance_id.to_string()).await,
-        idem,
-        "postgres",
-    ))
+    let result = connect_with_retry("postgres", || {
+        postgres::PostgresHistory::connect(url, idem, lease_ttl, instance_id.to_string())
+    })
+    .await;
+    Ok(into_history(result, idem, "postgres"))
 }
 
 #[cfg(not(feature = "serve-history-postgres"))]
@@ -380,11 +380,11 @@ async fn connect_sqlite(
     lease_ttl: Duration,
     instance_id: &str,
 ) -> CliResult<Arc<dyn RunHistory>> {
-    Ok(into_history(
-        sqlite::SqliteHistory::connect(url, idem, lease_ttl, instance_id.to_string()).await,
-        idem,
-        "sqlite",
-    ))
+    let result = connect_with_retry("sqlite", || {
+        sqlite::SqliteHistory::connect(url, idem, lease_ttl, instance_id.to_string())
+    })
+    .await;
+    Ok(into_history(result, idem, "sqlite"))
 }
 
 #[cfg(not(feature = "serve-history-sqlite"))]
@@ -399,6 +399,68 @@ async fn connect_sqlite(
          `serve-history-sqlite` feature"
             .into(),
     ))
+}
+
+/// How many times `connect_with_retry` attempts a transient backend connect
+/// before giving up and degrading. Eight attempts with capped exponential
+/// backoff span a few seconds — long enough for two clustered instances to get
+/// past the WAL/DDL startup race on a shared SQLite file, short enough not to
+/// stall startup against a genuinely-down backend.
+#[cfg(any(feature = "serve-history-postgres", feature = "serve-history-sqlite"))]
+const CONNECT_ATTEMPTS: usize = 8;
+
+/// Retry a *transient* backend-connect failure before falling back to degraded
+/// mode. Two clustered instances opening the same SQLite file at startup briefly
+/// race the WAL/DDL setup and surface `database is locked`; a freshly-booting
+/// Postgres can refuse connections for a moment. Both are self-resolving — but
+/// degrading permanently on the *first* blip strands a cluster instance on the
+/// in-memory store, which cannot serve cluster submits and returns `503` for
+/// every request (#235). A genuinely unreachable backend still degrades once the
+/// attempt budget is spent, preserving the stay-alive fallback.
+#[cfg(any(feature = "serve-history-postgres", feature = "serve-history-sqlite"))]
+async fn connect_with_retry<H, F, Fut>(label: &str, mut make: F) -> Result<H, HistoryError>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<H, HistoryError>>,
+{
+    let mut delay = Duration::from_millis(100);
+    for attempt in 1..=CONNECT_ATTEMPTS {
+        match make().await {
+            Ok(backend) => return Ok(backend),
+            Err(e) if attempt < CONNECT_ATTEMPTS && is_transient_connect_error(&e) => {
+                tracing::warn!(
+                    backend = label,
+                    attempt,
+                    error = %e,
+                    "run-history backend connect failed transiently; retrying before degrading"
+                );
+                tokio::time::sleep(delay).await;
+                delay = (delay * 2).min(Duration::from_secs(1));
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    unreachable!("the final attempt returns Ok or Err rather than looping")
+}
+
+/// Whether a connect error is worth retrying: transient contention or a
+/// still-booting backend, as opposed to a permanent misconfiguration (e.g. a
+/// malformed URL) that no amount of retrying will fix.
+#[cfg(any(feature = "serve-history-postgres", feature = "serve-history-sqlite"))]
+fn is_transient_connect_error(e: &HistoryError) -> bool {
+    let msg = e.to_string().to_ascii_lowercase();
+    [
+        "database is locked", // SQLite: two cluster instances race WAL/DDL at startup
+        "busy",               // SQLITE_BUSY
+        "connection refused", // backend still binding its listener
+        "connection reset",
+        "timed out",
+        "timeout",
+        "starting up",          // Postgres: "the database system is starting up"
+        "too many connections", // transient connection saturation
+    ]
+    .iter()
+    .any(|needle| msg.contains(needle))
 }
 
 /// Wrap a SQL backend in `FallbackHistory`: healthy on success; degraded-on-
@@ -492,5 +554,71 @@ mod tests {
         let rec = RunRecord::queued("fo".into(), None, Default::default(), None, Utc::now());
         assert!(h.finalize_owned(&rec).await.unwrap());
         assert_eq!(h.get("fo").await.unwrap().unwrap().run_id, "fo");
+    }
+}
+
+#[cfg(all(
+    test,
+    any(feature = "serve-history-postgres", feature = "serve-history-sqlite")
+))]
+mod connect_retry_tests {
+    use super::*;
+    use std::cell::Cell;
+
+    #[test]
+    fn classifies_transient_vs_permanent_connect_errors() {
+        // SQLite concurrent-startup contention (#235) — retryable.
+        assert!(is_transient_connect_error(&HistoryError::Backend(
+            "SQLite connection failed: error returned from database: (code: 5) \
+             database is locked"
+                .into()
+        )));
+        // Booting Postgres — retryable.
+        assert!(is_transient_connect_error(&HistoryError::Backend(
+            "connection refused (os error 111)".into()
+        )));
+        // Permanent misconfiguration — not worth retrying.
+        assert!(!is_transient_connect_error(&HistoryError::Backend(
+            "invalid sqlite url 'sqlite::nonsense': ParseError".into()
+        )));
+    }
+
+    #[tokio::test]
+    async fn retries_a_transient_failure_then_succeeds() {
+        let calls = Cell::new(0usize);
+        let result: Result<u32, HistoryError> = connect_with_retry("test", || {
+            let n = calls.get() + 1;
+            calls.set(n);
+            async move {
+                if n < 3 {
+                    Err(HistoryError::Backend("database is locked".into()))
+                } else {
+                    Ok(42u32)
+                }
+            }
+        })
+        .await;
+        assert_eq!(result.unwrap(), 42);
+        assert_eq!(
+            calls.get(),
+            3,
+            "two transient failures retried, third succeeds"
+        );
+    }
+
+    #[tokio::test]
+    async fn does_not_retry_a_permanent_error() {
+        let calls = Cell::new(0usize);
+        let result: Result<u32, HistoryError> = connect_with_retry("test", || {
+            calls.set(calls.get() + 1);
+            async move { Err::<u32, _>(HistoryError::Backend("invalid sqlite url 'x'".into())) }
+        })
+        .await;
+        assert!(result.is_err());
+        assert_eq!(
+            calls.get(),
+            1,
+            "a permanent error degrades immediately, no retry"
+        );
     }
 }
