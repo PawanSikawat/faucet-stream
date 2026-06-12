@@ -357,3 +357,221 @@ async fn queue_depth_fires_once_on_rising_edge() {
         );
     }
 }
+
+// ── HTTP-boundary tests ───────────────────────────────────────────────────────
+//
+// These drive the REAL `faucet serve` HTTP listener (spawned via `run_server`,
+// modelled on `cli/tests/serve_lifecycle.rs`) so the request flows through the
+// bearer-auth middleware and the actual `webhook::handle` route — not the
+// `enqueue::fire` helper directly. The `triggers` file is written to a temp path
+// (inline csv→jsonl pipeline) and passed via `ServeArgs.triggers`.
+
+use faucet_cli::cli::ServeArgs;
+
+fn free_port() -> u16 {
+    std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port()
+}
+
+/// Spawn a real `faucet serve` instance with the given triggers file and bearer
+/// token, then wait for `/healthz`. Returns the base URL.
+async fn spawn_serve_with_triggers(
+    port: u16,
+    token: Option<&str>,
+    triggers_path: &std::path::Path,
+) -> String {
+    let args = ServeArgs {
+        listen: format!("127.0.0.1:{port}"),
+        auth_token: token.map(|t| t.to_string()),
+        no_auth: token.is_none(),
+        max_concurrent_runs: Some(4),
+        max_queued_runs: Some(16),
+        default_config: None,
+        history: None,
+        cors_origin: vec![],
+        body_limit_bytes: 1_048_576,
+        shutdown_grace_secs: 5,
+        retain_terminal_runs_secs: 604_800,
+        idempotency_retention_secs: 86_400,
+        lease_ttl_secs: 30,
+        probe_timeout_secs: 5,
+        env_file: None,
+        no_env_file: true,
+        no_ui: false,
+        cluster: false,
+        cluster_poll_secs: 2,
+        cluster_max_attempts: 3,
+        triggers: Some(triggers_path.to_path_buf()),
+    };
+    let mut config = ServeConfig::from_args(args).unwrap();
+    config.log_level = "warn".into();
+    tokio::spawn(async move {
+        let _ = faucet_cli::serve::run_server(config).await;
+    });
+    let base = format!("http://127.0.0.1:{port}");
+    let client = reqwest::Client::new();
+    for _ in 0..200 {
+        if client
+            .get(format!("{base}/healthz"))
+            .send()
+            .await
+            .map(|r| r.status().is_success())
+            .unwrap_or(false)
+        {
+            return base;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    panic!("server did not become healthy on port {port}");
+}
+
+/// Count the runs currently in history via the public `GET /v1/runs` API.
+async fn http_run_count(base: &str, token: &str) -> usize {
+    let client = reqwest::Client::new();
+    let resp = client
+        .get(format!("{base}/v1/runs?limit=1000"))
+        .bearer_auth(token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200, "GET /v1/runs must succeed");
+    let body: serde_json::Value = resp.json().await.unwrap();
+    body["runs"].as_array().map(|a| a.len()).unwrap_or(0)
+}
+
+/// Write a triggers file with a single inline-pipeline webhook trigger. `extra`
+/// is injected as additional trigger-level YAML (e.g. `    debounce_secs: 60\n`).
+fn write_triggers_file(
+    dir: &std::path::Path,
+    name: &str,
+    csv: &std::path::Path,
+    out: &std::path::Path,
+    extra: &str,
+) -> std::path::PathBuf {
+    let inline = inline_pipeline(csv.to_str().unwrap(), out.to_str().unwrap());
+    let yaml = format!(
+        "version: 1\ntriggers:\n  - name: {name}\n    type: webhook\n    methods: [POST]\n{extra}    config: {}\n",
+        serde_json::to_string(&inline).unwrap()
+    );
+    let path = dir.join("triggers.yaml");
+    std::fs::write(&path, yaml).unwrap();
+    path
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn webhook_http_boundary_enforces_bearer_auth_and_enqueues() {
+    let dir = tempfile::tempdir().unwrap();
+    let csv = dir.path().join("in.csv");
+    std::fs::write(&csv, "a,b\n1,2\n").unwrap();
+    let out = dir.path().join("out.jsonl");
+    let triggers = write_triggers_file(dir.path(), "hook", &csv, &out, "");
+
+    let token = "test-token";
+    let port = free_port();
+    let base = spawn_serve_with_triggers(port, Some(token), &triggers).await;
+    let client = reqwest::Client::new();
+    let url = format!("{base}/v1/triggers/hook");
+
+    // Without the bearer token → 401 (auth middleware rejects before the handler).
+    let unauthorized = client
+        .post(&url)
+        .json(&serde_json::json!({}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        unauthorized.status(),
+        401,
+        "missing bearer token must yield 401"
+    );
+
+    // With the correct token → 200 and a run is enqueued.
+    let ok = client
+        .post(&url)
+        .bearer_auth(token)
+        .json(&serde_json::json!({}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(ok.status(), 200, "authorized fire must yield 200");
+    let body: serde_json::Value = ok.json().await.unwrap();
+    assert_eq!(body["status"].as_str(), Some("queued"));
+    assert!(body["run_id"].is_string(), "response must carry a run_id");
+
+    // The run lands in history (poll until it appears).
+    let mut count = 0;
+    for _ in 0..200 {
+        count = http_run_count(&base, token).await;
+        if count >= 1 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert_eq!(count, 1, "exactly one run must be enqueued by the fire");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn webhook_debounce_coalesces_second_fire() {
+    let dir = tempfile::tempdir().unwrap();
+    let csv = dir.path().join("in.csv");
+    std::fs::write(&csv, "a,b\n1,2\n").unwrap();
+    let out = dir.path().join("out.jsonl");
+    // 60 s leading-edge debounce; no dedupe_header so each request gets a fresh
+    // UUID idempotency key — proving the coalesce is debounce, not idempotency.
+    let triggers = write_triggers_file(dir.path(), "hook", &csv, &out, "    debounce_secs: 60\n");
+
+    let token = "test-token";
+    let port = free_port();
+    let base = spawn_serve_with_triggers(port, Some(token), &triggers).await;
+    let client = reqwest::Client::new();
+    let url = format!("{base}/v1/triggers/hook");
+
+    // First fire is accepted (leading edge).
+    let first = client
+        .post(&url)
+        .bearer_auth(token)
+        .json(&serde_json::json!({}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(first.status(), 200);
+    let first_body: serde_json::Value = first.json().await.unwrap();
+    assert_eq!(
+        first_body["status"].as_str(),
+        Some("queued"),
+        "first fire must enqueue: {first_body}"
+    );
+
+    // Second fire within the window is coalesced (no second run).
+    let second = client
+        .post(&url)
+        .bearer_auth(token)
+        .json(&serde_json::json!({}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(second.status(), 200);
+    let second_body: serde_json::Value = second.json().await.unwrap();
+    assert_eq!(
+        second_body["status"].as_str(),
+        Some("coalesced"),
+        "second fire within debounce window must coalesce: {second_body}"
+    );
+
+    // Give the first run time to land, then confirm the count stays at 1.
+    for _ in 0..200 {
+        if http_run_count(&base, token).await >= 1 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(
+        http_run_count(&base, token).await,
+        1,
+        "debounce must coalesce the second fire — exactly one run expected"
+    );
+}
