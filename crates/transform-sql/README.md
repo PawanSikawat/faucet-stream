@@ -5,7 +5,7 @@ page's records are exposed as the relation `batch`; the result set replaces the 
 
 ```toml
 [dependencies]
-faucet-transform-sql = "0.1"
+faucet-transform-sql = "1.0"
 ```
 
 Enable in the umbrella crate or CLI:
