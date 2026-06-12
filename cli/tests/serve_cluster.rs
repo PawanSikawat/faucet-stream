@@ -176,8 +176,12 @@ async fn two_process_cluster_reassigns_on_kill() {
                     &db,
                     "--listen",
                     &format!("127.0.0.1:{port}"),
+                    // 10s, not 2s: under heavy CI load a debug-build process can be
+                    // descheduled past a short lease, falsely expiring it so the peer
+                    // reclaims its still-live runs and the cluster thrashes (#235).
+                    // Failover after a real kill is still well within the 90s budget.
                     "--lease-ttl-secs",
-                    "2",
+                    "10",
                     "--cluster-poll-secs",
                     "1",
                 ])
@@ -217,10 +221,11 @@ async fn two_process_cluster_reassigns_on_kill() {
     let mut run_ids = Vec::new();
     for _ in 0..5 {
         // The submit-side queue applies backpressure (429 + Retry-After) while the
-        // local reservation is briefly held during the Pending upsert; a real
-        // client retries. Bounded retry keeps the test deterministic.
+        // local reservation is briefly held during the Pending upsert; startup
+        // SQLite contention can also surface a transient 503. A real client retries;
+        // a generous bounded budget keeps the test deterministic under CI load (#235).
         let mut v = None;
-        for _ in 0..40 {
+        for _ in 0..100 {
             let resp = client
                 .post(format!("http://127.0.0.1:{port_a}/v1/runs"))
                 .json(&serde_json::json!({ "config": config, "config_format": "yaml" }))
