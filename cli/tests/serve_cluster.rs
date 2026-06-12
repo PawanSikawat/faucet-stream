@@ -255,7 +255,7 @@ async fn two_process_cluster_reassigns_on_kill() {
     // Poll B until every run is terminal. Exits early when all are done; the cap is
     // generous (≤ ~90s) so a slow/contended CI runner has time for B to reclaim the
     // expired-lease runs and execute them — failover detection itself is fast
-    // (2s lease + 1s poll), but debug-build execution under load is not (#235).
+    // (10s lease + 1s poll), but debug-build execution under load is not (#235).
     let deadline = std::time::Instant::now() + Duration::from_secs(90);
     loop {
         let mut all_done = true;
