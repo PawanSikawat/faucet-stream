@@ -152,9 +152,41 @@ paths:
         Returns 202 on success or an idempotency replay. Returns 404 for an
         unknown trigger name or if the server was started without `--triggers`.
         Returns 400 when the HTTP method is not in the trigger's configured
-        `methods` list, or when `debounce_secs` suppresses the fire.
-        Requires the `triggers` Cargo feature.
+        `methods` list. A fire coalesced by the trigger's leading-edge
+        `debounce_secs` returns 200 with `{ "status": "coalesced" }` and enqueues
+        no run. Requires the `triggers` Cargo feature.
       operationId: fireTrigger
+      parameters:
+        - { name: name, in: path, required: true, schema: { type: string }, description: "Trigger name from the triggers file." }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              description: Optional JSON body; available as ${trigger.body} in the pipeline config.
+      responses:
+        "202":
+          description: Run enqueued (or an idempotency replay).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SubmitResponse" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/Error" }
+    put:
+      summary: Fire a named webhook trigger (PUT)
+      description: >
+        Identical to `POST /v1/triggers/{name}` — fires the named `webhook`
+        trigger. Accepted only when the trigger's configured `methods` list
+        includes `PUT`. Bearer-authenticated (same token as `/v1/runs`). Returns
+        202 on success or an idempotency replay; 404 for an unknown trigger name
+        or if the server was started without `--triggers`; 400 when `PUT` is not
+        in the trigger's `methods` list. A fire coalesced by the trigger's
+        leading-edge `debounce_secs` returns 200 with `{ "status": "coalesced" }`
+        and enqueues no run. Requires the `triggers` Cargo feature.
+      operationId: fireTriggerPut
       parameters:
         - { name: name, in: path, required: true, schema: { type: string }, description: "Trigger name from the triggers file." }
       requestBody:

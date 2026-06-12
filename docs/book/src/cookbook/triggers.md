@@ -34,7 +34,7 @@ triggers:
     mode: per_object    # one run per new object (use `batch` for one run for all)
     start_at: now       # ignore objects already in the prefix at startup
     run:
-      name: "load:{trigger_name}:{object_key}"
+      name: "load:{name}:{object_key}"
 ```
 
 ### Pipeline template (`pipelines/s3_load.yaml`)
@@ -218,7 +218,8 @@ Key signals:
 |------|--------|
 | Fire rate | `faucet_serve_triggers_fired_total{trigger,type}` |
 | Watcher health | `faucet_serve_trigger_healthy{trigger}` (0 = in backoff) |
-| Dropped fires | `faucet_serve_trigger_runs_dropped_total{trigger,reason}` |
+| Coalesced fires | `faucet_serve_trigger_runs_coalesced_total{trigger}` (webhook debounce / idempotency-conflict no-op) |
+| Dropped fires | `faucet_serve_trigger_runs_dropped_total{trigger,reason}` (run queue full, `reason="queue_full"`) |
 | Last fire time | `faucet_serve_trigger_last_fire_unix_seconds{trigger}` |
 
 Set up an alert on `faucet_serve_trigger_healthy == 0` or on

@@ -27,7 +27,7 @@ triggers:
     mode: per_object
     start_at: now
     run:
-      name: "load:{trigger_name}:{object_key}"
+      name: "load:{name}:{object_key}"
 
   # 2. POST /v1/triggers/sync-hook  (bearer-authenticated) enqueues a sync run.
   #    The optional `Idempotency-Key` header is used as the dedup key — a caller

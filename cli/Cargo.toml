@@ -206,9 +206,9 @@ serve-ui = ["serve", "dep:rust-embed"]
 # webhook trigger (reuses serve's axum). Per-backend sub-features add the polling
 # watchers + their client deps. Implies `serve`. CLI-only.
 triggers = ["serve"]
-triggers-object-store = ["triggers", "dep:object_store", "dep:faucet-common-gcs"]
+triggers-object-store = ["triggers", "dep:object_store"]
 triggers-redis = ["triggers", "dep:redis"]
-triggers-kafka = ["triggers", "dep:rdkafka", "dep:faucet-common-kafka"]
+triggers-kafka = ["triggers", "dep:rdkafka"]
 
 [dependencies]
 faucet-core.workspace = true
@@ -308,8 +308,6 @@ rust-embed = { version = "8", optional = true, features = ["mime-guess"] }
 object_store = { workspace = true, optional = true, features = ["aws", "gcp"] }
 redis = { workspace = true, optional = true }
 rdkafka = { workspace = true, optional = true }
-faucet-common-gcs = { workspace = true, optional = true }
-faucet-common-kafka = { workspace = true, optional = true }
 
 [dev-dependencies]
 tempfile = "3"

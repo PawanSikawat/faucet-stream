@@ -35,7 +35,10 @@ const ROUTES_BASE: &[(&str, &str)] = &[
 
 /// Routes that are only registered when the `triggers` feature is compiled in.
 #[cfg(feature = "triggers")]
-const ROUTES_TRIGGERS: &[(&str, &str)] = &[("POST", "/v1/triggers/{name}")];
+const ROUTES_TRIGGERS: &[(&str, &str)] = &[
+    ("POST", "/v1/triggers/{name}"),
+    ("PUT", "/v1/triggers/{name}"),
+];
 
 /// Returns the full canonical route set for the current feature configuration.
 fn canonical_routes() -> BTreeSet<(String, String)> {

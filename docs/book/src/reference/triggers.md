@@ -23,10 +23,9 @@ triggers:
     enabled: true           # optional; default true — set false to disable without deleting
     config: <path|inline>   # pipeline config: a file path string OR an inline pipeline doc
     run:                    # optional run-shaping
-      name: <template>      # run name; supports {trigger_name}, {object_key}, {bucket}, etc.
+      name: <template>      # run name; supports {name}, {object_key}, {bucket}, etc.
       labels: {}            # static labels merged with the auto-derived trigger labels
       timeout_secs: null    # per-run timeout in seconds
-    debounce_secs: 0        # coalesce events within N seconds into one fire (default 0)
     type: <trigger type>    # required; one of object_arrival, webhook, queue_depth
     # … type-specific fields below
 ```
@@ -107,7 +106,15 @@ No additional Cargo features are required (the route is part of the base
 type: webhook
 methods: [POST]             # allowed HTTP methods (default [POST]); PUT also supported
 dedupe_header: null         # header used as idempotency key (optional; else a per-request UUID)
+debounce_secs: 0            # leading-edge debounce window in seconds (default 0 = off)
 ```
+
+> **Leading-edge debounce:** when `debounce_secs > 0`, the first request is
+> accepted and any further requests that arrive within `debounce_secs` of that
+> accepted fire are coalesced — they return `200 { "status": "coalesced" }` and
+> enqueue no run. The window re-arms once `debounce_secs` have fully elapsed
+> since the last accepted fire. Debounce is webhook-only; polling triggers
+> (`object_arrival`, `queue_depth`) pace themselves via `poll_interval_secs`.
 
 > **`dedupe_header` trust boundary:** the caller-supplied header value is used
 > verbatim as the run's idempotency key. A caller who controls this value can
@@ -231,8 +238,8 @@ faucet schema triggers     # print the JSON Schema for the triggers file
 | `faucet_serve_trigger_last_fire_unix_seconds` | Gauge | `trigger` | Unix timestamp of last fire |
 | `faucet_serve_triggers_fired_total` | Counter | `trigger`, `type` | Total trigger fires |
 | `faucet_serve_trigger_runs_enqueued_total` | Counter | `trigger` | Runs successfully enqueued |
-| `faucet_serve_trigger_runs_coalesced_total` | Counter | `trigger` | Fires suppressed by debounce |
-| `faucet_serve_trigger_runs_dropped_total` | Counter | `trigger`, `reason` | Fires dropped (idempotency hit, queue full, etc.) |
+| `faucet_serve_trigger_runs_coalesced_total` | Counter | `trigger` | Fires coalesced — webhook debounce, or an idempotency-conflict no-op |
+| `faucet_serve_trigger_runs_dropped_total` | Counter | `trigger`, `reason` | Fires dropped because the run queue was full (`reason="queue_full"`) |
 | `faucet_serve_trigger_errors_total` | Counter | `trigger`, `type` | Watcher errors (poll failures, etc.) |
 
 ## Cluster note
