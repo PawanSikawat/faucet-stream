@@ -21,6 +21,8 @@ struct Inner {
     health: DashMap<String, TriggerHealth>,
     /// name → compiled webhook trigger (for the webhook route handler).
     webhooks: std::collections::HashMap<String, Arc<CompiledTrigger>>,
+    /// Webhook leading-edge debounce: trigger name → last-accepted-fire epoch millis.
+    debounce: DashMap<String, i64>,
 }
 
 #[derive(Clone)]
@@ -35,6 +37,7 @@ impl TriggersHandle {
             inner: Arc::new(Inner {
                 health: DashMap::new(),
                 webhooks: std::collections::HashMap::new(),
+                debounce: DashMap::new(),
             }),
         }
     }
@@ -63,12 +66,32 @@ impl TriggersHandle {
             }
         }
         Self {
-            inner: Arc::new(Inner { health, webhooks }),
+            inner: Arc::new(Inner {
+                health,
+                webhooks,
+                debounce: DashMap::new(),
+            }),
         }
     }
 
     pub fn webhook(&self, name: &str) -> Option<Arc<CompiledTrigger>> {
         self.inner.webhooks.get(name).cloned()
+    }
+
+    /// Leading-edge debounce: returns true (and records `now_ms`) if this trigger
+    /// may fire now — i.e. it has never fired or `>= window_ms` elapsed since its
+    /// last accepted fire. Returns false (coalesce) otherwise. window_ms == 0 always allows.
+    pub fn allow_fire(&self, name: &str, window_ms: i64, now_ms: i64) -> bool {
+        if window_ms <= 0 {
+            return true;
+        }
+        let mut e = self.inner.debounce.entry(name.to_string()).or_insert(i64::MIN);
+        if now_ms.saturating_sub(*e) >= window_ms {
+            *e = now_ms;
+            true
+        } else {
+            false
+        }
     }
 
     pub fn record_ok(&self, name: &str, fired_at: Option<String>) {
@@ -122,10 +145,10 @@ mod tests {
                 enabled: true,
                 config: PipelineRef::Path("x.yaml".into()),
                 run: RunTemplate::default(),
-                debounce_secs: 0,
                 kind: TriggerKind::Webhook {
                     methods: vec!["POST".into()],
                     dedupe_header: None,
+                    debounce_secs: 0,
                 },
             },
             webhook_path: Some(format!("/v1/triggers/{name}")),
@@ -155,5 +178,26 @@ mod tests {
         assert!(s[0].healthy);
         assert_eq!(s[0].consecutive_failures, 0);
         assert_eq!(s[0].last_fire.as_deref(), Some("2026-06-12T00:00:00Z"));
+    }
+
+    #[test]
+    fn allow_fire_leading_edge_debounce() {
+        let h = TriggersHandle::from_compiled(&[webhook("a")]);
+        let window = 60_000; // 60 s in millis
+
+        // First fire (never fired) is always allowed.
+        assert!(h.allow_fire("a", window, 1_000));
+        // A second fire within the window coalesces.
+        assert!(!h.allow_fire("a", window, 30_000));
+        assert!(!h.allow_fire("a", window, 60_999));
+        // Once the window has fully elapsed, the next fire is allowed and re-arms.
+        assert!(h.allow_fire("a", window, 61_000));
+        assert!(!h.allow_fire("a", window, 90_000));
+
+        // window == 0 always allows (debounce off), regardless of prior fires.
+        assert!(h.allow_fire("b", 0, 1));
+        assert!(h.allow_fire("b", 0, 1));
+        // A negative window also always allows.
+        assert!(h.allow_fire("c", -5, 1));
     }
 }

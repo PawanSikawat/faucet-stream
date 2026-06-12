@@ -29,9 +29,6 @@ pub struct TriggerSpec {
     /// Optional run-shaping.
     #[serde(default)]
     pub run: RunTemplate,
-    /// Coalesce events within this many seconds into one fire. Default 0.
-    #[serde(default)]
-    pub debounce_secs: u64,
     /// Type-specific settings.
     #[serde(flatten)]
     pub kind: TriggerKind,
@@ -66,6 +63,10 @@ pub enum TriggerKind {
         /// Header whose value is used as the idempotency key (else per-request UUID).
         #[serde(default)]
         dedupe_header: Option<String>,
+        /// Leading-edge debounce window in seconds: coalesce fires that arrive
+        /// within this many seconds of the last accepted fire. Default 0 (off).
+        #[serde(default)]
+        debounce_secs: u64,
     },
     QueueDepth {
         queue: QueueSpec,
@@ -213,6 +214,7 @@ triggers:
     type: webhook
     config: { pipeline: { sources: {}, sinks: {} } }
     dedupe_header: Idempotency-Key
+    debounce_secs: 30
   - name: drain
     type: queue_depth
     config: ./drain.yaml
@@ -225,9 +227,11 @@ triggers:
             TriggerKind::Webhook {
                 methods,
                 dedupe_header,
+                debounce_secs,
             } => {
                 assert_eq!(methods, &vec!["POST".to_string()]);
                 assert_eq!(dedupe_header.as_deref(), Some("Idempotency-Key"));
+                assert_eq!(*debounce_secs, 30);
             }
             _ => panic!("wrong kind"),
         }

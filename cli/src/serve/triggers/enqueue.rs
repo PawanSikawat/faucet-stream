@@ -138,10 +138,10 @@ mod tests {
                     labels: Default::default(),
                     timeout_secs: Some(60),
                 },
-                debounce_secs: 0,
                 kind: TriggerKind::Webhook {
                     methods: vec!["POST".into()],
                     dedupe_header: None,
+                    debounce_secs: 0,
                 },
             },
             webhook_path: Some("/v1/triggers/hook".into()),

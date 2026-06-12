@@ -1,7 +1,8 @@
 //! `POST/PUT /v1/triggers/{name}` — the webhook trigger endpoint. Looks the name
-//! up in the `TriggersHandle` webhook table, builds a `TriggerEvent::Webhook`,
-//! applies debounce, and fires. Bearer auth is inherited from the `/v1`
-//! route_layer.
+//! up in the `TriggersHandle` webhook table, checks the method allowlist, applies
+//! a leading-edge debounce (coalesce fires that arrive within `debounce_secs` of
+//! the last accepted fire), builds a `TriggerEvent::Webhook`, and fires. Bearer
+//! auth is inherited from the `/v1` route_layer.
 
 use super::context::TriggerEvent;
 use super::enqueue::{self, FireOutcome};
@@ -27,11 +28,12 @@ pub async fn handle(
         .webhook(&name)
         .ok_or(ServeError::NotFound)?;
 
-    let (methods, dedupe_header) = match &compiled.spec.kind {
+    let (methods, dedupe_header, debounce_secs) = match &compiled.spec.kind {
         TriggerKind::Webhook {
             methods,
             dedupe_header,
-        } => (methods, dedupe_header),
+            debounce_secs,
+        } => (methods, dedupe_header, *debounce_secs),
         _ => return Err(ServeError::NotFound),
     };
     let m = method.as_str().to_ascii_uppercase();
@@ -42,6 +44,20 @@ pub async fn handle(
         return Err(ServeError::BadConfig(format!(
             "method {m} not allowed for webhook trigger '{name}'"
         )));
+    }
+
+    // Leading-edge debounce: coalesce fires that arrive within `debounce_secs` of
+    // the last accepted fire for this trigger. The first fire (and any after the
+    // window has fully elapsed) is accepted; the rest return `coalesced`.
+    if debounce_secs > 0 {
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        if !state
+            .triggers()
+            .allow_fire(&name, (debounce_secs as i64) * 1000, now_ms)
+        {
+            crate::serve::triggers::metrics::coalesced(&name);
+            return Ok(Json(json!({ "status": "coalesced" })));
+        }
     }
 
     // Idempotency key: dedupe header value, else a per-request UUID.
