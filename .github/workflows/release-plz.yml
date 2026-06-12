@@ -22,6 +22,14 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  # Harden against transient crates.io connectivity drops on GitHub-hosted
+  # runners — "Error in the HTTP2 framing layer (Connection reset by peer)" /
+  # "curl failed" / "SSL_read: unexpected eof" — that abort `cargo publish`
+  # mid-release (hit during the 1.1.0 release: faucet-sink-parquet failed on an
+  # HTTP2 reset). Retry more, and disable HTTP/2 multiplexing to force HTTP/1.1
+  # against the registry. Mirrors the same guards in .github/workflows/ci.yml.
+  CARGO_NET_RETRY: "10"
+  CARGO_HTTP_MULTIPLEXING: "false"
 
 jobs:
   release-plz-pr:
