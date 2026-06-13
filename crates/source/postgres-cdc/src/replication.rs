@@ -355,15 +355,23 @@ pub async fn ensure_slot_and_current_lsn(
     // `ensure_slot`'s `_client` arg is unused; `Client` is constructible here
     // (same module). This reuses the existing slot existence/create logic.
     let client = Client { _private: () };
-    ensure_slot(&client, connection_url, slot_name, create_if_missing, slot_type).await?;
+    ensure_slot(
+        &client,
+        connection_url,
+        slot_name,
+        create_if_missing,
+        slot_type,
+    )
+    .await?;
 
     let opts: PgConnectOptions = connection_url
         .parse()
         .map_err(|e| FaucetError::Config(format!("postgres-cdc: invalid connection URL: {e}")))?;
     use sqlx::ConnectOptions as _;
-    let mut conn: PgConnection = opts.connect().await.map_err(|e| {
-        FaucetError::Source(format!("postgres-cdc capture_position connect: {e}"))
-    })?;
+    let mut conn: PgConnection = opts
+        .connect()
+        .await
+        .map_err(|e| FaucetError::Source(format!("postgres-cdc capture_position connect: {e}")))?;
     let (lsn_text,): (String,) = sqlx::query_as("SELECT pg_current_wal_lsn()::text")
         .fetch_one(&mut conn)
         .await

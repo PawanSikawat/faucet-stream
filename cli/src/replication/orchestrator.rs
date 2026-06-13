@@ -118,17 +118,18 @@ pub async fn run_replication(
 
     // ── Bootstrap: capture the CDC position before the snapshot ──────────────
     if plan_from_marker(marker.as_ref()) == Plan::Bootstrap {
-        let cdc_source =
-            build_source(&cdc_node.source.kind, cdc_node.source.config.clone(), &opts.auth).await?;
-        let position = cdc_source
-            .capture_resume_position()
-            .await?
-            .ok_or_else(|| {
-                CliError::Config(format!(
-                    "replication: source '{}' does not support position capture",
-                    cdc_node.source.kind
-                ))
-            })?;
+        let cdc_source = build_source(
+            &cdc_node.source.kind,
+            cdc_node.source.config.clone(),
+            &opts.auth,
+        )
+        .await?;
+        let position = cdc_source.capture_resume_position().await?.ok_or_else(|| {
+            CliError::Config(format!(
+                "replication: source '{}' does not support position capture",
+                cdc_node.source.kind
+            ))
+        })?;
         // Seed the CDC bookmark (bare value — exactly-once's unwrap_state reads a
         // bare value as seq=0, so this works for both delivery modes) and record
         // the phase marker.
@@ -187,8 +188,11 @@ pub async fn run_replication(
         tracing::info!(pipeline = %opts.pipeline_name, "replication: streaming CDC (Ctrl-C / SIGTERM to stop)");
     }
     loop {
-        let summary =
-            run_expanded(vec![cdc_node.clone()], make_opts(&opts, Some(cancel.clone()))).await?;
+        let summary = run_expanded(
+            vec![cdc_node.clone()],
+            make_opts(&opts, Some(cancel.clone())),
+        )
+        .await?;
         if summary.had_failures() {
             return Err(CliError::PipelineHadFailures {
                 count: summary.failure_count(),

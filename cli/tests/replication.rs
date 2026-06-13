@@ -148,7 +148,11 @@ async fn snapshot_then_cdc_mirrors_with_concurrent_writes() {
     // CDC drained once (continuous:false, idle_timeout 4s). The writes above all
     // committed before the CDC phase, so they are replayed. Final mirror must
     // equal the final source state: {1:111, 3:300}, no row 2.
-    let mut mirror = rows(&url, "SELECT id, amount FROM public.orders_mirror ORDER BY id").await;
+    let mut mirror = rows(
+        &url,
+        "SELECT id, amount FROM public.orders_mirror ORDER BY id",
+    )
+    .await;
     let mut source = rows(&url, "SELECT id, amount FROM public.orders ORDER BY id").await;
     mirror.sort();
     source.sort();
@@ -173,7 +177,11 @@ async fn resume_skips_snapshot_and_continues_cdc() {
 
     run_once(&url, state_dir).await; // snapshot_done = true persisted
     assert_eq!(
-        rows(&url, "SELECT id, amount FROM public.orders_mirror ORDER BY id").await,
+        rows(
+            &url,
+            "SELECT id, amount FROM public.orders_mirror ORDER BY id"
+        )
+        .await,
         vec![(1, 100)]
     );
 
@@ -186,7 +194,11 @@ async fn resume_skips_snapshot_and_continues_cdc() {
     .await;
     run_once(&url, state_dir).await;
 
-    let mut mirror = rows(&url, "SELECT id, amount FROM public.orders_mirror ORDER BY id").await;
+    let mut mirror = rows(
+        &url,
+        "SELECT id, amount FROM public.orders_mirror ORDER BY id",
+    )
+    .await;
     mirror.sort();
     assert_eq!(mirror, vec![(1, 150), (2, 200)]);
 }

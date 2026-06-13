@@ -455,27 +455,36 @@ impl MongoCdcSource {
         let cs: mongodb::change_stream::ChangeStream<
             mongodb::change_stream::event::ChangeStreamEvent<Document>,
         > = match &self.config.scope {
-            Scope::Collection { database, collection } => self
+            Scope::Collection {
+                database,
+                collection,
+            } => self
                 .client
                 .database(database)
                 .collection::<Document>(collection)
                 .watch()
                 .max_await_time(max_await)
                 .await
-                .map_err(|e| FaucetError::Source(format!("mongodb-cdc capture watch failed: {e}")))?,
+                .map_err(|e| {
+                    FaucetError::Source(format!("mongodb-cdc capture watch failed: {e}"))
+                })?,
             Scope::Database { database } => self
                 .client
                 .database(database)
                 .watch()
                 .max_await_time(max_await)
                 .await
-                .map_err(|e| FaucetError::Source(format!("mongodb-cdc capture watch failed: {e}")))?,
+                .map_err(|e| {
+                    FaucetError::Source(format!("mongodb-cdc capture watch failed: {e}"))
+                })?,
             Scope::Cluster => self
                 .client
                 .watch()
                 .max_await_time(max_await)
                 .await
-                .map_err(|e| FaucetError::Source(format!("mongodb-cdc capture watch failed: {e}")))?,
+                .map_err(|e| {
+                    FaucetError::Source(format!("mongodb-cdc capture watch failed: {e}"))
+                })?,
         };
         let mut cs = std::pin::pin!(cs);
         // The initial aggregate response usually carries a postBatchResumeToken.

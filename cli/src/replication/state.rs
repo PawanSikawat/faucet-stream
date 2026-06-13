@@ -91,9 +91,17 @@ mod tests {
     #[test]
     fn plan_decisions() {
         assert_eq!(plan_from_marker(None), Plan::Bootstrap);
-        let snap = ReplicationState { phase: Phase::Snapshot, snapshot_done: false, position: json!(null) };
+        let snap = ReplicationState {
+            phase: Phase::Snapshot,
+            snapshot_done: false,
+            position: json!(null),
+        };
         assert_eq!(plan_from_marker(Some(&snap)), Plan::ResumeSnapshot);
-        let done = ReplicationState { phase: Phase::Cdc, snapshot_done: true, position: json!(null) };
+        let done = ReplicationState {
+            phase: Phase::Cdc,
+            snapshot_done: true,
+            position: json!(null),
+        };
         assert_eq!(plan_from_marker(Some(&done)), Plan::ResumeCdc);
     }
 

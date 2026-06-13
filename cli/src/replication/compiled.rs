@@ -61,7 +61,9 @@ impl CompiledReplication {
         // read them back. `memory` is per-instance (not shared) and would also
         // lose the phase marker on restart, defeating resumability.
         let state = cfg.pipeline.state.as_ref().ok_or_else(|| {
-            CliError::Config("replication requires a `state:` store (for the phase + bookmark)".into())
+            CliError::Config(
+                "replication requires a `state:` store (for the phase + bookmark)".into(),
+            )
         })?;
         if state.kind == "memory" {
             return Err(CliError::Config(
@@ -129,7 +131,10 @@ replication:
 
     #[test]
     fn rejects_memory_state() {
-        let c = cfg(&GOOD.replace("type: file, config: { path: ./st }", "type: memory, config: {}"));
+        let c = cfg(&GOOD.replace(
+            "type: file, config: { path: ./st }",
+            "type: memory, config: {}",
+        ));
         let err = CompiledReplication::compile(c.replication.as_ref().unwrap(), &c).unwrap_err();
         assert!(format!("{err}").contains("durable state"), "{err}");
     }

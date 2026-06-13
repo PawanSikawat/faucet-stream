@@ -518,7 +518,11 @@ async fn run_unit(
 }
 
 /// Produce `{pipeline_name}::{row_id}` or `{pipeline_name}::{row_id}::{key}`.
-pub(crate) fn build_state_key(pipeline_name: &str, row_id: &str, parent_key: Option<&str>) -> String {
+pub(crate) fn build_state_key(
+    pipeline_name: &str,
+    row_id: &str,
+    parent_key: Option<&str>,
+) -> String {
     match parent_key {
         None => format!("{pipeline_name}::{row_id}"),
         Some(k) => format!("{pipeline_name}::{row_id}::{k}"),

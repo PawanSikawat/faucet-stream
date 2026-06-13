@@ -394,7 +394,10 @@ async fn capture_resume_position_returns_current_lsn_and_creates_slot() {
         .expect("capture")
         .expect("postgres-cdc must support capture");
     // Shape: { "last_lsn": "X/Y" }
-    let lsn = pos.get("last_lsn").and_then(|v| v.as_str()).expect("last_lsn");
+    let lsn = pos
+        .get("last_lsn")
+        .and_then(|v| v.as_str())
+        .expect("last_lsn");
     assert!(lsn.contains('/'), "expected an LSN like X/Y, got {lsn}");
 
     // The slot was created as a side effect (so WAL from `pos` is retained).
