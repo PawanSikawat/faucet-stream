@@ -84,6 +84,11 @@ pub struct PipelineConfig {
     #[serde(default)]
     pub delivery: faucet_core::DeliveryMode,
 
+    /// Optional snapshot→CDC replication block. Consumed only by
+    /// `faucet replicate`; ignored by `faucet run` (like `schedule:`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replication: Option<crate::replication::spec::ReplicationSpec>,
+
     /// Optional cron schedule. Only consumed by `faucet schedule`; ignored by
     /// `faucet run`. Presence makes the config runnable on a schedule.
     #[cfg(feature = "schedule")]
@@ -535,6 +540,24 @@ pipeline:
         assert!(cfg.execution.is_none());
         assert!(cfg.pipeline.transforms.is_empty());
         assert!(cfg.pipeline.state.is_none());
+    }
+
+    #[test]
+    fn parses_replication_block() {
+        let yaml = r#"
+version: 1
+pipeline:
+  source: { type: postgres-cdc, config: { connection_url: "postgres://x", slot_name: s, publication_name: p } }
+  sink:   { type: postgres, config: { connection_url: "postgres://y", table_name: t, column_mapping: auto_map, write_mode: upsert, key: [id] } }
+  state:  { type: file, config: { path: ./st } }
+replication:
+  mode: snapshot_then_cdc
+  snapshot:
+    source: { type: postgres, config: { connection_url: "postgres://x", query: "SELECT * FROM t" } }
+"#;
+        let cfg = parse_with_extension(yaml, "yaml").unwrap();
+        let r = cfg.replication.expect("replication parsed");
+        assert_eq!(r.snapshot.source.kind, "postgres");
     }
 
     #[test]
