@@ -1,0 +1,155 @@
+//! Load-time validation of the `replication:` block against the pipeline.
+
+use crate::config::{ConnectorSpec, PipelineConfig};
+use crate::error::{CliError, CliResult};
+use crate::replication::spec::ReplicationSpec;
+
+/// Validated replication config, ready for the orchestrator.
+#[derive(Debug, Clone)]
+pub struct CompiledReplication {
+    /// The bulk-read snapshot source (phase 1).
+    pub snapshot_source: ConnectorSpec,
+    /// Keep streaming CDC after the snapshot completes.
+    pub continuous: bool,
+}
+
+impl CompiledReplication {
+    /// Validate every replication-specific requirement up front so
+    /// `faucet validate` / `faucet replicate` fail fast with a clear message.
+    /// The generic per-row gates (exactly-once, write_mode×sink) are enforced
+    /// separately by [`crate::expand::expand`].
+    pub fn compile(spec: &ReplicationSpec, cfg: &PipelineConfig) -> CliResult<Self> {
+        // No matrix fan-out in v1 — replication is a single pipeline.
+        if !cfg.matrix.is_empty() {
+            return Err(CliError::Config(
+                "replication does not support a `matrix:` — define a single CDC \
+                 pipeline (pipeline.source + pipeline.sink) plus replication.snapshot"
+                    .into(),
+            ));
+        }
+        // The main pipeline.source must be a capture-capable CDC source.
+        let cdc = cfg.pipeline.source.as_ref().ok_or_else(|| {
+            CliError::Config(
+                "replication requires `pipeline.source` to be the CDC source \
+                 (postgres-cdc / mysql-cdc / mongodb-cdc)"
+                    .into(),
+            )
+        })?;
+        if !crate::registry::source_supports_exactly_once(&cdc.kind) {
+            return Err(CliError::Config(format!(
+                "replication `pipeline.source` must be a CDC source \
+                 (postgres-cdc / mysql-cdc / mongodb-cdc); got '{}'",
+                cdc.kind
+            )));
+        }
+        // The snapshot source must be a non-CDC bulk reader, and must exist.
+        let snap = &spec.snapshot.source;
+        if crate::registry::source_supports_exactly_once(&snap.kind) {
+            return Err(CliError::Config(format!(
+                "replication.snapshot.source must be a non-CDC bulk source \
+                 (e.g. postgres / mysql / mongodb); got CDC source '{}'",
+                snap.kind
+            )));
+        }
+        crate::registry::source_schema(&snap.kind)?; // typed UnknownConnector if absent
+        // A destination sink is required.
+        let sink = cfg.pipeline.sink.as_ref().ok_or_else(|| {
+            CliError::Config("replication requires `pipeline.sink` (the destination)".into())
+        })?;
+        // A durable, shared state backend is required: the orchestrator seeds
+        // the CDC bookmark and persists the phase marker, and the executor must
+        // read them back. `memory` is per-instance (not shared) and would also
+        // lose the phase marker on restart, defeating resumability.
+        let state = cfg.pipeline.state.as_ref().ok_or_else(|| {
+            CliError::Config("replication requires a `state:` store (for the phase + bookmark)".into())
+        })?;
+        if state.kind == "memory" {
+            return Err(CliError::Config(
+                "replication requires a durable state backend (file / redis / postgres), \
+                 not `memory` — the snapshot→CDC handoff and resume depend on it"
+                    .into(),
+            ));
+        }
+        // Recommend upsert for a true mirror; warn (don't fail) otherwise.
+        let write_mode = sink
+            .config
+            .get("write_mode")
+            .and_then(|v| v.as_str())
+            .unwrap_or("append");
+        if write_mode != "upsert" {
+            tracing::warn!(
+                write_mode,
+                "replication sink is not in upsert mode — the snapshot↔CDC boundary may \
+                 produce duplicate rows; use write_mode: upsert (with a key) for a true mirror"
+            );
+        }
+        Ok(Self {
+            snapshot_source: snap.clone(),
+            continuous: spec.continuous,
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::parse_with_extension;
+
+    fn cfg(yaml: &str) -> PipelineConfig {
+        parse_with_extension(yaml, "yaml").unwrap()
+    }
+
+    const GOOD: &str = r#"
+version: 1
+name: mirror
+pipeline:
+  source: { type: postgres-cdc, config: { connection_url: "postgres://x", slot_name: s, publication_name: p } }
+  sink:   { type: postgres, config: { connection_url: "postgres://y", table_name: t, column_mapping: auto_map, write_mode: upsert, key: [id] } }
+  state:  { type: file, config: { path: ./st } }
+replication:
+  mode: snapshot_then_cdc
+  snapshot:
+    source: { type: postgres, config: { connection_url: "postgres://x", query: "SELECT * FROM t" } }
+"#;
+
+    #[test]
+    fn accepts_valid_config() {
+        let c = cfg(GOOD);
+        let r = CompiledReplication::compile(c.replication.as_ref().unwrap(), &c).unwrap();
+        assert_eq!(r.snapshot_source.kind, "postgres");
+        assert!(r.continuous);
+    }
+
+    #[test]
+    fn rejects_non_cdc_pipeline_source() {
+        let c = cfg(&GOOD.replace("postgres-cdc", "postgres"));
+        let err = CompiledReplication::compile(c.replication.as_ref().unwrap(), &c).unwrap_err();
+        assert!(format!("{err}").contains("CDC source"), "{err}");
+    }
+
+    #[test]
+    fn rejects_memory_state() {
+        let c = cfg(&GOOD.replace("type: file, config: { path: ./st }", "type: memory, config: {}"));
+        let err = CompiledReplication::compile(c.replication.as_ref().unwrap(), &c).unwrap_err();
+        assert!(format!("{err}").contains("durable state"), "{err}");
+    }
+
+    #[test]
+    fn rejects_cdc_snapshot_source() {
+        let bad = GOOD.replace(
+            "source: { type: postgres, config: { connection_url: \"postgres://x\", query: \"SELECT * FROM t\" } }",
+            "source: { type: postgres-cdc, config: {} }",
+        );
+        let c = cfg(&bad);
+        let err = CompiledReplication::compile(c.replication.as_ref().unwrap(), &c).unwrap_err();
+        assert!(format!("{err}").contains("non-CDC"), "{err}");
+    }
+
+    #[test]
+    fn rejects_matrix() {
+        let bad = format!("{GOOD}matrix:\n  - id: a\n");
+        let c = cfg(&bad);
+        let err = CompiledReplication::compile(c.replication.as_ref().unwrap(), &c).unwrap_err();
+        assert!(format!("{err}").contains("matrix"), "{err}");
+    }
+}

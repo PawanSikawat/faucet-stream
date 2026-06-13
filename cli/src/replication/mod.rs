@@ -4,4 +4,5 @@
 //! `expand` + `executor::run_expanded`. See
 //! `docs/superpowers/specs/2026-06-13-replication-snapshot-cdc-handoff-design.md`.
 
+pub mod compiled;
 pub mod spec;
