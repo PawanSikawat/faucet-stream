@@ -306,7 +306,10 @@ pipeline:
         assert!(matches!(err, CliError::Internal(_)), "{err:?}");
         let msg = format!("{err}");
         assert!(msg.contains("snapshot"), "phase named: {msg}");
-        assert!(msg.contains("connection refused"), "underlying error: {msg}");
+        assert!(
+            msg.contains("connection refused"),
+            "underlying error: {msg}"
+        );
     }
 
     #[test]
