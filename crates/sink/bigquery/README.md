@@ -96,6 +96,84 @@ reporting and the sink's "first row that failed" error message are
 unchanged. Per-call retry is delegated to `gcp_bigquery_client`'s built-in
 retry middleware.
 
+### Write modes (`upsert` / `delete`)
+
+In addition to the default `append` mode (streaming `insertAll`), the BigQuery
+sink supports `write_mode: upsert` and `write_mode: delete`. These use an
+in-place `MERGE … USING (SELECT … FROM UNNEST(JSON_QUERY_ARRAY(@payload)))` over
+the target table — **no staging table required**.
+
+Three flattened fields appear at the sink `config` top level:
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `write_mode` | `append` | `append`, `upsert`, or `delete` |
+| `key` | `[]` | Key column(s). **Required and non-empty** for `upsert`/`delete`; must be real columns of the target table |
+| `delete_marker` | (none) | `upsert` only — `{ field: <name>, values: [<str>, …] }`; rows whose `field` matches one of `values` become deletes instead of upserts |
+
+**`upsert`** — insert-or-update by `key` via an in-place `MERGE`. If
+`delete_marker` is set (the standard CDC pattern), rows whose marker field
+matches are routed to a keyed `DELETE` instead; the marker field is stripped from
+upserted rows.
+
+**`delete`** — delete by `key` for every record in the batch (direct keyed
+`DELETE`, no MERGE).
+
+The `key` columns must be real columns of the target BigQuery table (they are
+validated against the table schema via `tables.get` at write time). The target
+table must already exist with a defined schema.
+
+**Page-size limit.** The whole page is sent as one `jobs.query` request — BigQuery's
+~10 MB body limit applies. The default `batch_size: 1000` is appropriate for most
+schemas; lower it for very wide rows.
+
+**Exactly-once composition.** `delivery: exactly_once` composes with
+`write_mode: upsert`: the data `MERGE` and the watermark `MERGE` (into
+`_faucet_commit_token`) commit inside a single BigQuery transaction. See the
+[Exactly-once delivery cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/state.html#exactly-once-delivery)
+for the full requirements (CDC source + state + no DLQ).
+
+**Example (Postgres CDC → BigQuery upsert mirror, exactly-once):**
+
+```yaml
+version: 1
+name: pg_cdc_to_bq_mirror
+delivery: exactly_once
+
+pipeline:
+  source:
+    type: postgres-cdc
+    config:
+      connection_url: ${env:SOURCE_PG_URL}
+      slot_name: faucet_bq_mirror
+      publication_name: faucet_pub
+      create_slot_if_missing: true
+      idle_timeout: 30
+
+  transforms:
+    - type: cdc_unwrap
+
+  sink:
+    type: bigquery
+    config:
+      project_id: myproject
+      dataset_id: warehouse
+      table_id: users_mirror
+      auth:
+        type: application_default
+      write_mode: upsert
+      key: [id]
+      delete_marker: { field: __op, values: [d] }
+
+  state:
+    type: file
+    config:
+      path: ./state
+```
+
+See the full runnable config at
+[`cli/examples/postgres_cdc_to_bigquery_upsert.yaml`](../../../cli/examples/postgres_cdc_to_bigquery_upsert.yaml).
+
 ### Authentication (`BigQueryCredentials`)
 
 | Variant | Description |

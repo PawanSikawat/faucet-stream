@@ -58,7 +58,7 @@ file/append sinks (`jsonl`, `csv`, `stdout`) it's a no-op — they write per rec
 
 | Connector | Feature | `batch_size` | Compression | Upsert⁸ | Exactly-once⁷ | Write unit |
 |-----------|---------|:---:|:---:|:---:|:---:|------------|
-| BigQuery | `sink-bigquery` | ✓ | ✗ | ✗ | **✓** | `tabledata.insertAll` streaming; `MERGE`-transaction write for exactly-once |
+| BigQuery | `sink-bigquery` | ✓ | ✗ | **✓** | **✓** | `tabledata.insertAll` streaming; in-place `MERGE` for upsert + exactly-once |
 | PostgreSQL | `sink-postgres` | ✓ | ✗ | **✓** | **✓** | multi-row `INSERT` (JSONB or mapped cols) |
 | JSON Lines | `sink-jsonl` | no-op | ✓ | ✗ | ✗ | buffered file append |
 | Snowflake | `sink-snowflake` | ✓ | ✗ | ✗ | ✗ | SQL REST API |
@@ -89,7 +89,7 @@ delete by `key`) in addition to plain `append`. The SQL sinks require
 column-mapping mode (`auto_map`, or `auto_columns` for mssql) and a
 UNIQUE/PRIMARY KEY on `key`; the
 schemaless sinks (MongoDB, Elasticsearch) map `key` to a match filter / `_id`.
-BigQuery and Iceberg upsert are not yet supported (follow-ups). See
+Iceberg upsert is not yet supported (a follow-up, blocked on `iceberg-rust`). See
 [Upsert / mirror tables](../cookbook/upsert.md).
 
 ## Authentication at a glance

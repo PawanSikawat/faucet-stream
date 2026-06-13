@@ -29,7 +29,7 @@ the top level of the sink's `config`, alongside `table_name` etc.):
 
 ## Supported sinks and their native primitives
 
-Six sinks support `upsert`/`delete`; every other sink is append-only.
+Seven sinks support `upsert`/`delete`; every other sink is append-only.
 
 | Sink | Requires | Native primitive |
 |------|----------|------------------|
@@ -39,6 +39,7 @@ Six sinks support `upsert`/`delete`; every other sink is append-only.
 | `mssql` | `column_mapping: auto_columns` + UNIQUE/PK on `key` | `MERGE` |
 | `mongodb` | — (schemaless) | `replace_one(upsert)` / `delete_one`, `key` → match filter |
 | `elasticsearch` | — (schemaless) | `_bulk` `index` / `delete`, `key` → `_id` |
+| `bigquery` | a defined table schema + `key` columns | in-place `MERGE … USING UNNEST(@payload)` (no staging table) |
 
 The **SQL sinks require column-mapping mode** — `column_mapping: auto_map`
 (postgres/mysql/sqlite) or `auto_columns` (mssql). The single-JSONB-column blob
@@ -52,10 +53,8 @@ The **schemaless sinks** (MongoDB, Elasticsearch) have no such requirement: the
 `key` columns are joined into a document filter / `_id`, so the same record both
 inserts and replaces.
 
-> **Not yet supported:** BigQuery and Iceberg are append-only today. BigQuery
-> upsert needs a staging-table + `MERGE` design (and a quota/cost model), and
-> Iceberg upsert is blocked on equality-delete writer support in `iceberg-rust`.
-> Both are tracked as follow-ups.
+> **Not yet supported:** Iceberg is append-only today — Iceberg upsert is blocked
+> on equality-delete writer support in `iceberg-rust` (#225).
 
 ## Last-write-wins within a batch
 
@@ -139,11 +138,11 @@ faucet validate cli/examples/postgres_cdc_to_postgres_upsert.yaml
 ## Composing with exactly-once delivery
 
 `write_mode: upsert` composes with [`delivery: exactly_once`](./state.md#exactly-once-delivery)
-on the four SQL sinks (`postgres`, `mysql`, `mssql`, `sqlite`). The same four
-hard requirements apply, checked at config-load time:
+on the four SQL sinks (`postgres`, `mysql`, `mssql`, `sqlite`) and on **BigQuery**.
+The same four hard requirements apply, checked at config-load time:
 
 1. a CDC source (`postgres-cdc` / `mysql-cdc` / `mongodb-cdc`),
-2. an idempotent SQL sink (`postgres` / `mysql` / `mssql` / `sqlite`),
+2. an idempotent sink (`postgres` / `mysql` / `mssql` / `sqlite` / `bigquery`),
 3. a `state:` block, and
 4. **no** `dlq:` block (incompatible with exactly-once in this version).
 
@@ -152,6 +151,10 @@ monotonic commit token in a single transaction, so a crash-and-resume never
 re-applies or skips a batch — the mirror stays exactly consistent with the source
 even across restarts. (Because exactly-once forbids a DLQ, a missing/null-key row
 fails the batch rather than being routed aside.)
+
+For BigQuery, the whole page is merged as one `jobs.query` request (~10 MB limit);
+keep the CDC source's `batch_size` modest (the default 1 000 rows is fine for most
+schemas; lower it for very wide rows that approach the limit).
 
 MongoDB and Elasticsearch support upsert but **not** exactly-once (their bulk
 APIs cannot commit a watermark atomically), so an upsert mirror into those sinks
