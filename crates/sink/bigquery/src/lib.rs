@@ -9,6 +9,7 @@
 
 pub mod config;
 mod idempotent;
+mod merge;
 pub mod sink;
 
 // Re-export core types.
