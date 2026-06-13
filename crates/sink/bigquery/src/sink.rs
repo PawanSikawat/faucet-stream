@@ -711,6 +711,18 @@ impl faucet_core::Sink for BigQuerySink {
         token: &str,
     ) -> Result<usize, FaucetError> {
         self.ensure_commit_table().await?;
+
+        if !matches!(self.config.write.write_mode, faucet_core::WriteMode::Append) {
+            let plan = faucet_core::plan_writes(records, &self.config.write);
+            if let Some((idx, msg)) = plan.failed.first() {
+                return Err(FaucetError::Sink(format!(
+                    "bigquery {}: row {idx}: {msg}",
+                    self.config.write.write_mode.as_str()
+                )));
+            }
+            return self.run_upsert_script(&plan, Some((scope, token))).await;
+        }
+
         let columns = self.target_schema().await?;
 
         let payload = serde_json::to_string(records).map_err(|e| {

@@ -222,6 +222,42 @@ async fn write_batch_upsert_missing_key_errors() {
 }
 
 #[tokio::test]
+async fn write_batch_idempotent_upsert_composes_merge_and_watermark() {
+    let server = MockServer::start().await;
+    mount_token_endpoint(&server).await;
+    mount_table_schema(&server).await;
+    // CREATE commit-table + the transaction both resolve to job-eo.
+    mount_query_done(&server, "job-eo").await;
+    mount_job_done(&server, "job-eo").await;
+
+    let cfg = config_with(|c| {
+        c.write.write_mode = faucet_core::WriteMode::Upsert;
+        c.write.key = vec!["id".into()];
+    });
+    let (sink, _sa) = build_sink(&server, cfg).await;
+    let n = sink
+        .write_batch_idempotent(&[json!({"id": 1, "name": "a"})], "pipe::row1", "00000000000000000005")
+        .await
+        .expect("eo upsert");
+    assert_eq!(n, 1);
+
+    let bodies = captured_query_bodies(&server).await;
+    let tx = bodies
+        .iter()
+        .find(|b| {
+            let q = b["query"].as_str().unwrap_or("");
+            q.contains("MERGE INTO `p.d.t`") && q.contains("MERGE `p.d._faucet_commit_token`")
+        })
+        .expect("transaction with data MERGE + watermark MERGE");
+    let q = tx["query"].as_str().unwrap();
+    let data = q.find("MERGE INTO `p.d.t`").unwrap();
+    let wm = q.find("MERGE `p.d._faucet_commit_token`").unwrap();
+    assert!(data < wm, "data merge must precede watermark: {q}");
+    let pnames: Vec<&str> = tx["queryParameters"].as_array().unwrap().iter().map(|p| p["name"].as_str().unwrap()).collect();
+    assert!(pnames.contains(&"payload") && pnames.contains(&"scope") && pnames.contains(&"token"), "got: {pnames:?}");
+}
+
+#[tokio::test]
 async fn write_batch_partial_upsert_routes_missing_key_to_dlq() {
     let server = MockServer::start().await;
     mount_token_endpoint(&server).await;
