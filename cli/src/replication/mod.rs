@@ -5,5 +5,8 @@
 //! `docs/superpowers/specs/2026-06-13-replication-snapshot-cdc-handoff-design.md`.
 
 pub mod compiled;
+pub mod orchestrator;
 pub mod spec;
 pub mod state;
+
+pub use orchestrator::{ReplicationOptions, run_replication};
