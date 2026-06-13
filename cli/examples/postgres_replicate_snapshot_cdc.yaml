@@ -1,0 +1,38 @@
+# Mirror public.orders → public.orders_mirror: bulk snapshot, then CDC.
+# Run with:  faucet replicate cli/examples/postgres_replicate_snapshot_cdc.yaml
+# Pair write_mode: upsert (+ cdc_unwrap) so the snapshot↔CDC boundary is idempotent.
+version: 1
+name: orders_mirror
+
+pipeline:
+  source:
+    type: postgres-cdc
+    config:
+      connection_url: ${env:SOURCE_PG_URL}
+      slot_name: orders_repl_slot
+      publication_name: orders_pub      # CREATE PUBLICATION orders_pub FOR TABLE public.orders;
+  transforms:
+    - type: cdc_unwrap                   # {op,before,after} → flat row + __op marker
+      config: {}
+  sink:
+    type: postgres
+    config:
+      connection_url: ${env:DEST_PG_URL}
+      table_name: orders_mirror
+      column_mapping: auto_map
+      write_mode: upsert
+      key: [id]
+      delete_marker: { field: __op, values: [d] }
+  state:
+    type: file
+    config: { path: ./.faucet-state }
+
+replication:
+  mode: snapshot_then_cdc
+  continuous: true                       # keep streaming after the snapshot
+  snapshot:
+    source:
+      type: postgres
+      config:
+        connection_url: ${env:SOURCE_PG_URL}
+        query: "SELECT * FROM public.orders"
