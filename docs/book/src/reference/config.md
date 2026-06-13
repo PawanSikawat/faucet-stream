@@ -330,6 +330,49 @@ See the [Adaptive batching cookbook](../cookbook/adaptive-batching.md) for a
 full worked example, the AIMD trajectory, and the four Prometheus metrics
 (`faucet_pipeline_adaptive_batch_*`).
 
+## `replication`
+
+Present only when you run [`faucet replicate`](cli.md#replicate). It turns the
+main `pipeline` (whose `source` is a CDC connector) into a snapshot→CDC mirror by
+adding a one-time bulk-read snapshot source. `faucet run` ignores this block, the
+same way it ignores `schedule:`.
+
+```yaml
+replication:
+  mode: snapshot_then_cdc          # REQUIRED. Only mode in v1.
+  continuous: true                 # After the snapshot, keep streaming CDC until SIGTERM. Default true.
+  snapshot:                        # REQUIRED. The one-time bulk-read source.
+    source:
+      type: postgres               # A non-CDC query reader of the same upstream DB.
+      config:
+        connection_url: ${env:SOURCE_PG_URL}
+        query: "SELECT * FROM public.orders"
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `mode` | `snapshot_then_cdc` | **required** | Replication strategy. Only `snapshot_then_cdc` exists in v1: capture the CDC position, bulk-snapshot the table, then stream CDC from that position. |
+| `snapshot.source` | connector | **required** | A **non-CDC** bulk-read source (e.g. `postgres` / `mysql` / `mongodb` running a query) pointing at the same upstream database. Back-fills the destination through `pipeline.sink` before CDC starts. |
+| `continuous` | bool | `true` | When `true`, keep streaming CDC after the snapshot completes until Ctrl-C / SIGTERM. When `false`, drain CDC once and exit. |
+
+**Requirements** (enforced at config-load time, also reported by `faucet validate`):
+
+- `pipeline.source` must be a CDC connector — `postgres-cdc`, `mysql-cdc`, or
+  `mongodb-cdc` (the capture-capable set).
+- `pipeline.sink` should use [`write_mode: upsert`](../cookbook/upsert.md) with a
+  `key` for a true mirror; an append sink validates with a warning (boundary
+  duplicates are possible).
+- A durable [`state:`](../cookbook/state.md#state-stores) backend is required
+  (`file` / `redis` / `postgres`) — `memory` is rejected, since the snapshot→CDC
+  handoff and resume depend on the persisted phase marker and bookmark.
+- No `matrix:` — replication is a single pipeline in v1.
+- For `postgres-cdc`, a **permanent** replication slot (`slot_type: permanent`,
+  the default) is required so WAL is retained across the snapshot.
+
+See the [replication cookbook](../cookbook/replication.md) for the correctness
+model (capture-before-snapshot + upsert idempotency), the resume behaviour, and
+the per-database log-retention caveats.
+
 ## `schedule`
 
 Present only when you run `faucet schedule`. Absent configs are rejected by that

@@ -255,6 +255,24 @@ state:
 
 ---
 
+## Snapshot → CDC handoff
+
+This source implements `capture_resume_position()`, which reads the server's
+**current binlog coordinates** (`{ file, pos }` via `SHOW MASTER STATUS`) as a
+resume bookmark — without consuming any changes. The `faucet replicate` command
+uses it to anchor the binlog stream at-or-before a bulk snapshot of the table,
+so the combined snapshot+CDC result is a gap-free, duplicate-free mirror when
+paired with a `write_mode: upsert` sink.
+
+There is no slot to pin; binlog retention is **time-based**, so keep your binlog
+retention window comfortably larger than the expected snapshot duration — if the
+captured position is purged before CDC starts, the stream errors that its start
+position is unavailable. See the [replication
+cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/replication.html)
+for the full handoff model.
+
+---
+
 ## See also
 
 - `crates/source/mysql/` — query-mode MySQL source (snapshots via SQL queries).

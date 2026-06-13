@@ -201,6 +201,24 @@ state:
 
 ---
 
+## Snapshot → CDC handoff
+
+This source implements `capture_resume_position()`, which opens a change stream
+against the configured scope and reads its `postBatchResumeToken` (present after
+the first server round-trip even with no events) as a resume bookmark — without
+consuming any changes. The `faucet replicate` command uses it to anchor the
+change stream at-or-before a bulk snapshot of the collection, so the combined
+snapshot+CDC result is a gap-free, duplicate-free mirror when paired with a
+`write_mode: upsert` sink.
+
+There is no slot to pin; the **oplog window** is the retention risk — keep it
+comfortably larger than the expected snapshot duration, or the captured token may
+roll off before CDC starts and the stream will error. See the [replication
+cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/replication.html)
+for the full handoff model.
+
+---
+
 ## See also
 
 - `crates/source/mongodb/` — query-mode MongoDB source (snapshots via `find()`).

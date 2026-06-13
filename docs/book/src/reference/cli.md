@@ -12,11 +12,12 @@ The `faucet` binary exposes these commands. Pass `--log-level <level>` (or set
 | `faucet list` | List every compiled-in source, sink, and transform with a one-line description. |
 | `faucet init [name]` | Scaffold a commented config skeleton from connector schemas. |
 | `faucet doctor [config]` | Probe every connector (auth/network/permissions) and print a checklist. |
+| `faucet replicate [config]` | Bulk-snapshot a table, then hand off to CDC for a gap-free mirror. |
 | `faucet schedule [config]` | Run a pipeline on a cron schedule (long-running foreground process). |
 | `faucet serve` | Run a long-running HTTP control plane: submit / poll / cancel pipeline runs over REST. |
 
-`[config]` is optional for `run` / `validate` / `preview` / `doctor` / `schedule`: if omitted,
-faucet auto-discovers `faucet.yaml` → `.yml` → `.json` in the current directory.
+`[config]` is optional for `run` / `validate` / `preview` / `doctor` / `replicate` / `schedule`: if
+omitted, faucet auto-discovers `faucet.yaml` → `.yml` → `.json` in the current directory.
 
 ## `run`
 
@@ -162,6 +163,46 @@ probing (same semantics as `run` and `validate`).
 
 See the [Troubleshooting](../cookbook/troubleshooting.md) cookbook page for
 reading the output and common failures.
+
+## `replicate`
+
+```bash
+faucet replicate pipeline.yaml                 # bulk snapshot, then stream CDC; Ctrl-C to stop
+faucet replicate                               # auto-discover faucet.yaml in cwd
+faucet replicate pipeline.yaml --env-file prod.env
+faucet replicate pipeline.yaml --no-env-file
+faucet replicate app.yaml --profile prod       # apply a named profile overlay
+```
+
+Bulk-snapshots a database table and then hands off to **change-data-capture from
+a position captured *before* the snapshot**, producing a true mirror (no gap, no
+duplicate rows) when paired with `write_mode: upsert`. The config must contain a
+top-level `replication:` block (see [config reference](config.md#replication));
+`faucet run` ignores that block, exactly as it ignores `schedule:`.
+
+It runs two phases in order:
+
+1. **Bulk snapshot** — the `replication.snapshot.source` (a non-CDC query reader)
+   back-fills the destination through the same sink and pipeline-level transforms.
+2. **CDC handoff** — the `pipeline.source` CDC connector streams every change
+   committed after the captured position over the snapshot baseline.
+
+When `replication.continuous` is `true` (the default) the CDC phase is a
+**long-running foreground process** — stop it with Ctrl-C or SIGTERM; the
+in-flight page flushes at the next page boundary before the process exits. With
+`continuous: false` it drains CDC once and exits. A [durable state
+backend](../cookbook/state.md#state-stores) (`file` / `redis` / `postgres`, not
+`memory`) is required so an interrupted run resumes correctly.
+
+Flags:
+
+| Flag | Purpose |
+|------|---------|
+| `--profile <name>` | Select a named overlay from `profiles:` (also settable via `FAUCET_PROFILE`; the flag wins). Same semantics as `run` / `validate`. |
+| `--env-file <path>` / `--no-env-file` | Same `.env` handling as `run` / `validate`. |
+
+See the [replication cookbook](../cookbook/replication.md) for the correctness
+model, the resume behaviour, and the per-database retention caveats.
 
 ## `schedule`
 

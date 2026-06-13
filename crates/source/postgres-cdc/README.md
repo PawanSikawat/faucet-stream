@@ -213,6 +213,24 @@ output record shape stays under our control.
 
 ---
 
+## Snapshot → CDC handoff
+
+This source implements `capture_resume_position()`, which ensures the
+replication slot exists and then reads the server's **current WAL LSN**
+(`pg_current_wal_lsn`) as a resume bookmark — without consuming any changes. The
+`faucet replicate` command uses it to anchor the CDC stream at-or-before a bulk
+snapshot of the table, so the combined snapshot+CDC result is a gap-free,
+duplicate-free mirror when paired with a `write_mode: upsert` sink.
+
+Capture **requires a permanent slot** (`slot_type: permanent`, the default): a
+temporary slot is dropped when the short-lived capture connection closes, so it
+cannot retain WAL across the snapshot. Capture rejects a temporary slot with a
+typed error. See the [replication
+cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/replication.html)
+for the full handoff model.
+
+---
+
 ## See also
 
 - `crates/source/postgres/` — query-mode Postgres source (snapshots, not CDC).
