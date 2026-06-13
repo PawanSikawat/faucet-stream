@@ -365,3 +365,19 @@ async fn new_rejects_standalone_topology() {
         Ok(_) => panic!("standalone mongod must be rejected for change streams"),
     }
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn capture_resume_position_returns_resume_token() {
+    let (_container, uri) = start_repl_set().await;
+    let source = MongoCdcSource::new(config(&uri)).await.expect("source");
+    let pos = source
+        .capture_resume_position()
+        .await
+        .expect("capture")
+        .expect("mongodb-cdc must support capture");
+    // Shape: { "resume_token": { "_data": "..." } }
+    assert!(
+        pos.get("resume_token").is_some(),
+        "resume_token present: {pos}"
+    );
+}
