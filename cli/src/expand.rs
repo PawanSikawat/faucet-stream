@@ -1696,6 +1696,18 @@ pipeline:
     }
 
     #[test]
+    fn bigquery_upsert_passes_write_mode_gate() {
+        let c = cfg(r#"
+version: 1
+name: t
+pipeline:
+  source: { type: rest, config: { url: "http://x" } }
+  sink:   { type: bigquery, config: { project_id: p, dataset_id: d, table_id: t, auth: { type: application_default }, write_mode: upsert, key: [id] } }
+"#);
+        assert!(expand(&c).is_ok());
+    }
+
+    #[test]
     fn accepts_append_by_default_on_any_sink() {
         let c = cfg(r#"
 version: 1
