@@ -770,7 +770,42 @@ impl faucet_core::Sink for BigQuerySink {
 
 #[cfg(test)]
 mod tests {
+    use super::deletes_to_payload;
+    use faucet_core::KeyTuple;
+    use serde_json::json;
+
     // dataset_uri test is skipped: BigQuerySink::new() requires GCP credentials
     // (build_client fetches auth in new()), and from_parts() requires a
     // gcp_bigquery_client::Client which cannot be constructed without auth.
+
+    #[test]
+    fn deletes_to_payload_preserves_number_type() {
+        // The delete payload must keep an integer key as a JSON number (not the
+        // string "2"), so the matching `CAST(JSON_VALUE(d, '$.id') AS INT64)`
+        // semi-join compares like-for-like.
+        let p = deletes_to_payload(&[KeyTuple(vec![("id".into(), json!(2))])]);
+        let v: serde_json::Value = serde_json::from_str(&p).expect("valid JSON");
+        assert_eq!(v, json!([{"id": 2}]));
+        assert!(v[0]["id"].is_number(), "id must serialize as a number: {p}");
+    }
+
+    #[test]
+    fn deletes_to_payload_composite_key_roundtrips() {
+        let p = deletes_to_payload(&[KeyTuple(vec![
+            ("tenant".into(), json!("acme")),
+            ("id".into(), json!(7)),
+        ])]);
+        let v: serde_json::Value = serde_json::from_str(&p).expect("valid JSON");
+        assert_eq!(v, json!([{"tenant": "acme", "id": 7}]));
+    }
+
+    #[test]
+    fn deletes_to_payload_multiple_rows() {
+        let p = deletes_to_payload(&[
+            KeyTuple(vec![("id".into(), json!(1))]),
+            KeyTuple(vec![("id".into(), json!(2))]),
+        ]);
+        let v: serde_json::Value = serde_json::from_str(&p).expect("valid JSON");
+        assert_eq!(v, json!([{"id": 1}, {"id": 2}]));
+    }
 }

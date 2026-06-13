@@ -279,3 +279,71 @@ async fn write_batch_partial_upsert_routes_missing_key_to_dlq() {
     assert!(outcomes[0].is_ok(), "row 0 should be Ok");
     assert!(outcomes[1].is_err(), "row 1 (missing key) should be Err");
 }
+
+#[tokio::test]
+async fn write_batch_delete_only_posts_delete_without_merge() {
+    let server = MockServer::start().await;
+    mount_token_endpoint(&server).await;
+    mount_table_schema(&server).await;
+    mount_query_done(&server, "job-del").await;
+    mount_job_done(&server, "job-del").await;
+
+    // write_mode: delete routes every keyed row to a DELETE — no upserts, so
+    // the transaction must bind only @deletes and emit no data MERGE.
+    let cfg = config_with(|c| {
+        c.write.write_mode = faucet_core::WriteMode::Delete;
+        c.write.key = vec!["id".into()];
+    });
+    let (sink, _sa) = build_sink(&server, cfg).await;
+    let n = sink
+        .write_batch(&[json!({"id": 1}), json!({"id": 2})])
+        .await
+        .expect("delete write");
+    assert_eq!(n, 2);
+
+    let bodies = captured_query_bodies(&server).await;
+    let tx = bodies
+        .iter()
+        .find(|b| b["query"].as_str().unwrap_or("").contains("DELETE FROM `p.d.t`"))
+        .expect("delete query");
+    let q = tx["query"].as_str().unwrap();
+    assert!(q.contains("DELETE FROM `p.d.t` T WHERE EXISTS"), "got: {q}");
+    assert!(!q.contains("MERGE INTO `p.d.t`"), "delete-only must not emit a data MERGE: {q}");
+    let pnames: Vec<&str> = tx["queryParameters"].as_array().unwrap().iter().map(|p| p["name"].as_str().unwrap()).collect();
+    assert!(pnames.contains(&"deletes"), "got: {pnames:?}");
+    assert!(!pnames.contains(&"payload"), "delete-only must not bind @payload: {pnames:?}");
+}
+
+#[tokio::test]
+async fn write_batch_idempotent_zero_rows_posts_watermark_only() {
+    let server = MockServer::start().await;
+    mount_token_endpoint(&server).await;
+    mount_table_schema(&server).await;
+    mount_query_done(&server, "job-wm").await;
+    mount_job_done(&server, "job-wm").await;
+
+    let cfg = config_with(|c| {
+        c.write.write_mode = faucet_core::WriteMode::Upsert;
+        c.write.key = vec!["id".into()];
+    });
+    let (sink, _sa) = build_sink(&server, cfg).await;
+    // An empty exactly-once page must still advance the watermark: the
+    // transaction posts the token MERGE alone, with no data MERGE/DELETE.
+    let n = sink
+        .write_batch_idempotent(&[], "pipe::row1", "00000000000000000009")
+        .await
+        .expect("zero-row eo upsert");
+    assert_eq!(n, 0);
+
+    let bodies = captured_query_bodies(&server).await;
+    let tx = bodies
+        .iter()
+        .find(|b| b["query"].as_str().unwrap_or("").contains("MERGE `p.d._faucet_commit_token`"))
+        .expect("watermark merge query");
+    let q = tx["query"].as_str().unwrap();
+    assert!(!q.contains("MERGE INTO `p.d.t`"), "zero-row page must not emit a data MERGE: {q}");
+    assert!(!q.contains("DELETE FROM `p.d.t`"), "zero-row page must not emit a DELETE: {q}");
+    let pnames: Vec<&str> = tx["queryParameters"].as_array().unwrap().iter().map(|p| p["name"].as_str().unwrap()).collect();
+    assert!(pnames.contains(&"scope") && pnames.contains(&"token"), "got: {pnames:?}");
+    assert!(!pnames.contains(&"payload") && !pnames.contains(&"deletes"), "no data params for a zero-row page: {pnames:?}");
+}
