@@ -28,6 +28,13 @@ pub struct ReplicationOptions {
 /// Build the snapshot-phase node by cloning the CDC node and swapping in the
 /// bulk-read source. The snapshot always runs at-least-once (the query source
 /// is not exactly-once-capable; upsert makes re-runs idempotent).
+///
+/// The `cdc_unwrap` transform is dropped from the snapshot node: it normalizes a
+/// CDC change-event envelope (`{op, before, after, …}`) and would silently drop
+/// the snapshot's plain table rows (no `after`/`op` image). The snapshot source
+/// already yields destination-shaped rows, so it must reach the sink directly;
+/// any other (non-`cdc_unwrap`) transforms are kept so common shaping still
+/// applies to both phases.
 pub(crate) fn build_snapshot_node(
     cdc_node: &ExpandedNode,
     snapshot_source: crate::config::ConnectorSpec,
@@ -36,7 +43,23 @@ pub(crate) fn build_snapshot_node(
     n.id = "snapshot".to_string();
     n.source = snapshot_source;
     n.delivery = faucet_core::DeliveryMode::AtLeastOnce;
+    n.transforms.retain(|t| t.kind != "cdc_unwrap");
     n
+}
+
+/// Build a descriptive error from a failed phase, surfacing the first
+/// underlying invocation error. The executor only emits that error via
+/// `tracing::error!`, which a caller without a subscriber (e.g. a test, or a
+/// `faucet validate`-style path) would otherwise lose — collapsing the failure
+/// to an opaque count. Naming the phase + the real error makes replication
+/// failures diagnosable.
+fn phase_failure(summary: &crate::executor::RunSummary, phase: &str) -> CliError {
+    let detail = summary
+        .invocations
+        .iter()
+        .find_map(|i| i.error.clone())
+        .unwrap_or_else(|| "unknown error".to_string());
+    CliError::Internal(format!("replication {phase} phase failed: {detail}"))
 }
 
 /// Build a fresh `ExecuteOptions` for one phase run.
@@ -163,9 +186,7 @@ pub async fn run_replication(
         tracing::info!(pipeline = %opts.pipeline_name, "replication: running snapshot phase");
         let summary = run_expanded(vec![snapshot_node.clone()], make_opts(&opts, None)).await?;
         if summary.had_failures() {
-            return Err(CliError::PipelineHadFailures {
-                count: summary.failure_count(),
-            });
+            return Err(phase_failure(&summary, "snapshot"));
         }
         store
             .put(
@@ -194,9 +215,7 @@ pub async fn run_replication(
         )
         .await?;
         if summary.had_failures() {
-            return Err(CliError::PipelineHadFailures {
-                count: summary.failure_count(),
-            });
+            return Err(phase_failure(&summary, "CDC"));
         }
         if !compiled.continuous || cancel.is_cancelled() {
             break;
@@ -242,5 +261,34 @@ pipeline:
         assert_eq!(node.source.kind, "postgres");
         assert_eq!(node.sink.kind, "postgres"); // sink preserved
         assert_eq!(node.delivery, faucet_core::DeliveryMode::AtLeastOnce);
+    }
+
+    #[test]
+    fn snapshot_node_strips_cdc_unwrap_but_keeps_other_transforms() {
+        // The CDC pipeline normalizes envelopes with `cdc_unwrap` and then maybe
+        // shapes further (e.g. `flatten`). The snapshot source yields plain table
+        // rows, so `cdc_unwrap` (which would drop them) must be dropped while the
+        // other transforms are preserved.
+        let mut cdc = cdc_node();
+        cdc.id = "cdc".into();
+        cdc.transforms = vec![
+            crate::config::TransformSpec {
+                kind: "cdc_unwrap".into(),
+                config: serde_json::json!({}),
+            },
+            crate::config::TransformSpec {
+                kind: "flatten".into(),
+                config: serde_json::json!({ "separator": "_" }),
+            },
+        ];
+        let snap_src = ConnectorSpec {
+            kind: "postgres".into(),
+            config: serde_json::json!({ "connection_url": "postgres://x", "query": "SELECT * FROM t" }),
+            transforms: None,
+            inherit_transforms: true,
+        };
+        let node = build_snapshot_node(&cdc, snap_src);
+        let kinds: Vec<&str> = node.transforms.iter().map(|t| t.kind.as_str()).collect();
+        assert_eq!(kinds, vec!["flatten"], "cdc_unwrap dropped, flatten kept");
     }
 }
