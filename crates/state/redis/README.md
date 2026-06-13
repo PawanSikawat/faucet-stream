@@ -4,10 +4,9 @@ Redis-backed [`StateStore`](https://docs.rs/faucet-core/latest/faucet_core/state
 
 ## Install
 
-```toml
-[dependencies]
-faucet-core = "1.0"
-faucet-state-redis = "1.0"
+```bash
+cargo add faucet-core
+cargo add faucet-state-redis
 ```
 
 ## Usage

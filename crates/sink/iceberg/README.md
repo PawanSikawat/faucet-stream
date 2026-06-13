@@ -52,22 +52,22 @@ config-load time; use the REST catalog for those object stores.
 
 Install only what you need:
 
-```toml
+```bash
 # REST catalog (default):
-faucet-sink-iceberg = "1.0"
+cargo add faucet-sink-iceberg
 
 # Glue catalog:
-faucet-sink-iceberg = { version = "1.0", features = ["catalog-glue"] }
+cargo add faucet-sink-iceberg --features catalog-glue
 
 # All catalogs:
-faucet-sink-iceberg = { version = "1.0", features = ["catalog-glue", "catalog-sql", "catalog-hms"] }
+cargo add faucet-sink-iceberg --features catalog-glue,catalog-sql,catalog-hms
 ```
 
 Via the umbrella crate, catalog forwarding features are available:
 
-```toml
-faucet-stream = { version = "1.0", features = ["sink-iceberg"] }                      # REST only
-faucet-stream = { version = "1.0", features = ["sink-iceberg", "sink-iceberg-glue"] } # REST + Glue
+```bash
+cargo add faucet-stream --features sink-iceberg                    # REST only
+cargo add faucet-stream --features sink-iceberg,sink-iceberg-glue  # REST + Glue
 ```
 
 ## Quick start

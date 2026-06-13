@@ -9,10 +9,9 @@ This is the foundation crate that all faucet source and sink connectors depend o
 
 ## Installation
 
-```toml
-[dependencies]
-faucet-core = "1.0"
-tokio = { version = "1", features = ["rt"] }
+```bash
+cargo add faucet-core
+cargo add tokio --features rt
 ```
 
 ## What's Inside

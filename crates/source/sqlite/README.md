@@ -9,15 +9,14 @@ Part of the [faucet-stream](https://github.com/PawanSikawat/faucet-stream) ecosy
 
 ## Installation
 
-```toml
-[dependencies]
-faucet-source-sqlite = "1.0"
-tokio = { version = "1", features = ["full"] }
+```bash
+cargo add faucet-source-sqlite
+cargo add tokio --features full
 ```
 
 Or via the umbrella crate:
-```toml
-faucet-stream = { version = "1.0", features = ["source-sqlite"] }
+```bash
+cargo add faucet-stream --features source-sqlite
 ```
 
 ## Quick Start

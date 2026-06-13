@@ -9,16 +9,15 @@ Writes JSON records to a file in [JSON Lines](https://jsonlines.org/) format (on
 
 ## Installation
 
-```toml
-[dependencies]
-faucet-sink-jsonl = "1.0"
-tokio = { version = "1", features = ["full"] }
+```bash
+cargo add faucet-sink-jsonl
+cargo add tokio --features full
 ```
 
 Or via the umbrella crate:
 
-```toml
-faucet-stream = { version = "1.0", features = ["sink-jsonl"] }
+```bash
+cargo add faucet-stream --features sink-jsonl
 ```
 
 ## Quick Start
