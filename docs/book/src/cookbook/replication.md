@@ -104,9 +104,12 @@ A few things to note:
 - The CDC source emits change-event **envelopes** (`{op, before, after, …}`), so a
   [`cdc_unwrap`](./transforms.md#cdc_unwrap--normalize-cdc-change-events-into-flat-rows)
   transform flattens them into rows and stamps an `__op` marker that the sink's
-  `delete_marker` routes to deletes. The snapshot source already produces flat
-  rows, so `cdc_unwrap` is a no-op on the snapshot page — the same pipeline-level
-  transform serves both phases.
+  `delete_marker` routes to deletes. The snapshot source instead produces flat
+  table rows directly (no envelope), so **`faucet replicate` automatically strips
+  `cdc_unwrap` from the snapshot phase** — running it there would drop every
+  snapshot row (no `after`/`op` image). Any *other* pipeline-level transforms are
+  kept for both phases, so write your snapshot `query` to yield rows in the
+  destination's shape (the same shape `cdc_unwrap` produces for the CDC phase).
 - The destination table needs a UNIQUE/PRIMARY KEY on the `key` columns before
   the first run (the same requirement as any [upsert sink](./upsert.md#supported-sinks-and-their-native-primitives)):
 
