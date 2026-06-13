@@ -269,8 +269,9 @@ boundary. In particular:
 ## Secrets in the `auth:` catalog and `vars:` block
 
 Secret directives are resolved **everywhere** config interpolation runs:
-connector configs, transforms, state, dlq, matrix rows, the top-level
-**`auth:`** shared-provider catalog, and the top-level **`vars:`** block.
+connector configs, transforms, state, dlq, matrix rows, the
+`replication.snapshot.source` config, the top-level **`auth:`**
+shared-provider catalog, and the top-level **`vars:`** block.
 
 Putting a secret in the shared `auth:` catalog is often the cleanest option — a
 single bearer token resolved once and shared across every matrix row that
