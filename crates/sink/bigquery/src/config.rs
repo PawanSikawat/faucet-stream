@@ -45,6 +45,14 @@ pub struct BigQuerySinkConfig {
     /// inserted without an `insertId` (no dedup for that row).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub insert_id_field: Option<String>,
+    /// Write mode (append / upsert / delete) plus the `key` columns and optional
+    /// `delete_marker`. Flattened, so `write_mode` / `key` / `delete_marker`
+    /// appear at the config top level. Defaults to append (every existing
+    /// config keeps working). Upsert/delete merge by `key` in place via a
+    /// BigQuery `MERGE` over the page (no staging table); `key` must be real
+    /// column(s) of the target table.
+    #[serde(flatten)]
+    pub write: faucet_core::WriteSpec,
 }
 
 fn default_batch_size() -> usize {
@@ -66,6 +74,7 @@ impl BigQuerySinkConfig {
             auth: credentials,
             batch_size: DEFAULT_BATCH_SIZE,
             insert_id_field: None,
+            write: faucet_core::WriteSpec::default(),
         }
     }
 
@@ -227,5 +236,32 @@ mod tests {
         }"#;
         let config: BigQuerySinkConfig = serde_json::from_str(json).unwrap();
         assert_eq!(config.batch_size, faucet_core::DEFAULT_BATCH_SIZE);
+    }
+
+    #[test]
+    fn write_mode_defaults_to_append() {
+        let config =
+            BigQuerySinkConfig::new("p", "d", "t", BigQueryCredentials::ApplicationDefault);
+        assert_eq!(config.write.write_mode, faucet_core::WriteMode::Append);
+        assert!(config.write.key.is_empty());
+    }
+
+    #[test]
+    fn write_spec_deserializes_flattened() {
+        let json = r#"{
+            "project_id": "p",
+            "dataset_id": "d",
+            "table_id": "t",
+            "auth": {"type": "application_default"},
+            "write_mode": "upsert",
+            "key": ["id"],
+            "delete_marker": {"field": "__op", "values": ["d"]}
+        }"#;
+        let config: BigQuerySinkConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(config.write.write_mode, faucet_core::WriteMode::Upsert);
+        assert_eq!(config.write.key, vec!["id".to_string()]);
+        let dm = config.write.delete_marker.expect("delete_marker");
+        assert_eq!(dm.field, "__op");
+        assert_eq!(dm.values, vec!["d".to_string()]);
     }
 }

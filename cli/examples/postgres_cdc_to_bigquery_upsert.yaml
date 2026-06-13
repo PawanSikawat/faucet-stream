@@ -1,0 +1,63 @@
+# End-to-end Postgres CDC -> BigQuery upsert mirror, exactly-once.
+#
+# Streams logical-replication change events from a source database, normalizes
+# the CDC envelope with `cdc_unwrap`, and mirrors them into a BigQuery table
+# with `write_mode: upsert` — inserts/updates become MERGE UPSERTs and deletes
+# become row deletes, so the BigQuery table stays an exact replica of the
+# source. The whole page is merged in place (no staging table).
+#
+# Prerequisites:
+#   - Logical replication enabled on the SOURCE database + a publication:
+#       psql "$SOURCE_PG_URL" -c "CREATE PUBLICATION faucet_pub FOR TABLE users;"
+#   - A BigQuery table matching the source columns (key column(s) included):
+#       bq mk --table myproject:warehouse.users_mirror id:INTEGER,name:STRING
+#   - GOOGLE_APPLICATION_CREDENTIALS pointing at a service-account key with
+#     bigquery.dataEditor + bigquery.jobUser on the dataset.
+#
+# Then:
+#   export SOURCE_PG_URL=postgres://faucet:faucet@localhost:5432/appdb
+#   faucet run cli/examples/postgres_cdc_to_bigquery_upsert.yaml
+
+version: 1
+name: pg_cdc_to_bq_mirror
+
+# Exactly-once: CDC source + idempotent BigQuery sink + state store, no DLQ.
+# Each committed page's MERGE and its commit token land in one BigQuery
+# transaction, so a crash/resume never re-applies or skips a page.
+delivery: exactly_once
+
+pipeline:
+  source:
+    type: postgres-cdc
+    config:
+      connection_url: ${env:SOURCE_PG_URL}
+      slot_name: faucet_bq_mirror
+      publication_name: faucet_pub
+      create_slot_if_missing: true
+      idle_timeout: 30
+
+  # Normalize the CDC envelope ({op, before, after}) into a flat row plus a
+  # `__op` marker. Inserts/updates emit the post-image; deletes emit the key.
+  transforms:
+    - type: cdc_unwrap
+
+  sink:
+    type: bigquery
+    config:
+      project_id: myproject
+      dataset_id: warehouse
+      table_id: users_mirror
+      auth:
+        type: application_default
+      # Insert-or-update by `id` via in-place MERGE; rows whose `__op` is "d"
+      # are routed to a keyed DELETE instead. `key` must be real BigQuery
+      # column(s). The whole page is one MERGE request (~10MB jobs.query limit;
+      # lower batch_size for very large pages).
+      write_mode: upsert
+      key: [id]
+      delete_marker: { field: __op, values: [d] }
+
+  state:
+    type: file
+    config:
+      path: ./state
