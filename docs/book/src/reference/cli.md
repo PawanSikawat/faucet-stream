@@ -105,6 +105,7 @@ faucet schema source rest
 faucet schema sink bigquery
 faucet schema transform keys_case
 faucet schema dlq
+faucet schema execution
 faucet schema secrets
 faucet schema triggers
 ```
@@ -112,6 +113,9 @@ faucet schema triggers
 `faucet schema transform <name>` prints the inline config schema for a
 transform (e.g. `keys_case` lists the valid `mode:` values). Run
 `faucet list` to see which transforms are compiled into your binary.
+
+`faucet schema execution` prints the schema for the top-level `execution:`
+block, including concurrency, error handling, and adaptive batch sizing.
 
 `faucet schema secrets` prints the directive grammar and auth requirements for
 all four secrets-manager backends in machine-readable JSON — useful for tooling

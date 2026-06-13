@@ -20,6 +20,10 @@ pub async fn run(args: SchemaArgs) -> CliResult<()> {
             let s = faucet_core::schema_for!(crate::replication::spec::ReplicationSpec);
             serde_json::to_value(s).unwrap_or_else(|_| serde_json::json!({"type": "object"}))
         }
+        SchemaTarget::Execution => {
+            let s = faucet_core::schema_for!(crate::config::ExecutionSpec);
+            serde_json::to_value(s).unwrap_or_else(|_| serde_json::json!({"type": "object"}))
+        }
         #[cfg(feature = "quality")]
         SchemaTarget::Quality => {
             let quality_schema = faucet_core::schema_for!(faucet_core::QualitySpec);
@@ -87,5 +91,12 @@ mod tests {
         })
         .await;
         assert!(r.is_ok(), "{r:?}");
+    }
+
+    #[test]
+    fn execution_schema_includes_adaptive_batch_size() {
+        let schema = faucet_core::schema_for!(crate::config::ExecutionSpec);
+        let value = serde_json::to_value(schema).expect("execution schema serializes");
+        assert!(value["properties"].get("adaptive_batch_size").is_some());
     }
 }
