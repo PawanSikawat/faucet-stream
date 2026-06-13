@@ -296,6 +296,8 @@ pub enum SchemaTarget {
     },
     /// JSON Schema for the DLQ (Dead Letter Queue) specification.
     Dlq,
+    /// JSON Schema for the `replication:` (snapshot→CDC) block.
+    Replication,
     /// JSON Schema for the `quality:` block.
     #[cfg(feature = "quality")]
     Quality,
