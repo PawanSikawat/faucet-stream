@@ -402,3 +402,24 @@ async fn fetch_with_context_aggregates_and_emit_schema_changes_yields_ddl() {
         "ddl envelope must carry a file/pos lsn: {ddl:?}"
     );
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn capture_resume_position_returns_file_and_pos() {
+    let (_container, url) = start_mysql_cdc().await;
+    let source = MysqlCdcSource::new(build_config(&url))
+        .await
+        .expect("source");
+    let pos = source
+        .capture_resume_position()
+        .await
+        .expect("capture")
+        .expect("mysql-cdc must support capture");
+    assert!(
+        pos.get("file").and_then(|v| v.as_str()).is_some(),
+        "file present: {pos}"
+    );
+    assert!(
+        pos.get("pos").and_then(|v| v.as_u64()).is_some(),
+        "pos present: {pos}"
+    );
+}
