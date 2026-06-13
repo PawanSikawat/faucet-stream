@@ -339,6 +339,38 @@ pub async fn advance_slot(
     Ok(())
 }
 
+/// Ensure the slot exists, then read the server's current WAL insert position
+/// (`pg_current_wal_lsn`) on a normal (non-replication) connection.
+///
+/// Ensuring the slot **first** guarantees the server retains WAL from the
+/// returned LSN onward, so a later `START_REPLICATION` from this position has
+/// no gap. Used by the replication snapshot→CDC handoff
+/// ([`Source::capture_resume_position`](faucet_core::Source::capture_resume_position)).
+pub async fn ensure_slot_and_current_lsn(
+    connection_url: &str,
+    slot_name: &str,
+    create_if_missing: bool,
+    slot_type: crate::config::SlotType,
+) -> Result<u64, FaucetError> {
+    // `ensure_slot`'s `_client` arg is unused; `Client` is constructible here
+    // (same module). This reuses the existing slot existence/create logic.
+    let client = Client { _private: () };
+    ensure_slot(&client, connection_url, slot_name, create_if_missing, slot_type).await?;
+
+    let opts: PgConnectOptions = connection_url
+        .parse()
+        .map_err(|e| FaucetError::Config(format!("postgres-cdc: invalid connection URL: {e}")))?;
+    use sqlx::ConnectOptions as _;
+    let mut conn: PgConnection = opts.connect().await.map_err(|e| {
+        FaucetError::Source(format!("postgres-cdc capture_position connect: {e}"))
+    })?;
+    let (lsn_text,): (String,) = sqlx::query_as("SELECT pg_current_wal_lsn()::text")
+        .fetch_one(&mut conn)
+        .await
+        .map_err(|e| FaucetError::Source(format!("postgres-cdc pg_current_wal_lsn: {e}")))?;
+    crate::state::parse_lsn(&lsn_text)
+}
+
 /// Open a logical replication stream and return a [`Duplex`] handle.
 ///
 /// Internally this calls `pgwire_replication::ReplicationClient::connect`
