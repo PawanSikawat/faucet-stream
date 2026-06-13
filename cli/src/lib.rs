@@ -28,6 +28,7 @@ pub mod lineage_glue;
 pub mod merge;
 pub mod obs;
 pub mod registry;
+pub mod replication;
 #[cfg(feature = "schedule")]
 pub mod schedule;
 pub mod secrets;

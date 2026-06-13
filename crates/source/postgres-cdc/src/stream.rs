@@ -150,6 +150,27 @@ impl Source for PostgresCdcSource {
         Ok(())
     }
 
+    async fn capture_resume_position(&self) -> Result<Option<Value>, FaucetError> {
+        // A temporary slot is dropped when the capture connection closes, so it
+        // cannot retain WAL across the snapshot — require a permanent slot.
+        if matches!(self.config.slot_type, crate::config::SlotType::Temporary) {
+            return Err(FaucetError::Config(
+                "postgres-cdc: replication snapshot handoff requires a permanent slot \
+                 (slot_type: permanent) so WAL is retained across the snapshot — a \
+                 temporary slot is dropped when the capture connection closes"
+                    .into(),
+            ));
+        }
+        let lsn = replication::ensure_slot_and_current_lsn(
+            &self.config.connection_url,
+            &self.config.slot_name,
+            self.config.create_slot_if_missing,
+            self.config.slot_type,
+        )
+        .await?;
+        Ok(Some(crate::state::Bookmark::from_u64(lsn).to_value()?))
+    }
+
     fn supports_exactly_once(&self) -> bool {
         // Durable monotonic LSN + deterministic replay from it + per-transaction
         // (per-page) bookmarks persisted only after the sink confirms — the

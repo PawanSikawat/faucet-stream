@@ -205,6 +205,11 @@ impl Source for MongoCdcSource {
         Ok(())
     }
 
+    async fn capture_resume_position(&self) -> Result<Option<Value>, FaucetError> {
+        let token = self.capture_now_token().await?;
+        Ok(Some(Bookmark::from_token(&token)?.to_value()?))
+    }
+
     fn supports_exactly_once(&self) -> bool {
         // Durable resumeToken + deterministic replay from it + per-event
         // (per-page) bookmarks — the requirements for exactly-once delivery.
@@ -437,6 +442,67 @@ impl MongoCdcSource {
             }
 
             tracing::info!(connector = "mongodb-cdc", "change stream fetch cycle complete");
+        })
+    }
+
+    /// Open a change stream at "now", read its `postBatchResumeToken` without
+    /// consuming any events, then drop the stream. Used by the replication
+    /// snapshot→CDC handoff to anchor the stream before the bulk snapshot.
+    async fn capture_now_token(&self) -> Result<ResumeToken, FaucetError> {
+        use crate::config::Scope;
+        use futures::StreamExt;
+        let max_await = std::time::Duration::from_millis(self.config.max_await_time_ms);
+        let cs: mongodb::change_stream::ChangeStream<
+            mongodb::change_stream::event::ChangeStreamEvent<Document>,
+        > = match &self.config.scope {
+            Scope::Collection {
+                database,
+                collection,
+            } => self
+                .client
+                .database(database)
+                .collection::<Document>(collection)
+                .watch()
+                .max_await_time(max_await)
+                .await
+                .map_err(|e| {
+                    FaucetError::Source(format!("mongodb-cdc capture watch failed: {e}"))
+                })?,
+            Scope::Database { database } => self
+                .client
+                .database(database)
+                .watch()
+                .max_await_time(max_await)
+                .await
+                .map_err(|e| {
+                    FaucetError::Source(format!("mongodb-cdc capture watch failed: {e}"))
+                })?,
+            Scope::Cluster => self
+                .client
+                .watch()
+                .max_await_time(max_await)
+                .await
+                .map_err(|e| {
+                    FaucetError::Source(format!("mongodb-cdc capture watch failed: {e}"))
+                })?,
+        };
+        let mut cs = std::pin::pin!(cs);
+        // The initial aggregate response usually carries a postBatchResumeToken.
+        // If the driver hasn't cached one yet, one short poll forces a getMore
+        // that returns it.
+        if let Some(tok) = cs.resume_token() {
+            return Ok(tok);
+        }
+        let _ = tokio::time::timeout(
+            max_await.max(std::time::Duration::from_millis(500)),
+            cs.next(),
+        )
+        .await;
+        cs.resume_token().ok_or_else(|| {
+            FaucetError::Source(
+                "mongodb-cdc: could not capture a resume token (no postBatchResumeToken returned)"
+                    .into(),
+            )
         })
     }
 }

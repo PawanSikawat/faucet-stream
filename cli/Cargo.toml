@@ -321,6 +321,11 @@ async-stream.workspace = true
 futures-core.workspace = true
 reqwest = { workspace = true, features = ["json"] }
 tower = { version = "0.5", features = ["util"] }
+# faucet replicate snapshot→CDC integration tests (#189): real Postgres via
+# testcontainers; versions match crates/source/postgres-cdc/Cargo.toml.
+testcontainers = "0.27"
+testcontainers-modules = { version = "0.15", features = ["postgres"] }
+tokio-postgres = "0.7"
 
 [package.metadata.docs.rs]
 all-features = true

@@ -365,3 +365,73 @@ async fn new_rejects_standalone_topology() {
         Ok(_) => panic!("standalone mongod must be rejected for change streams"),
     }
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn capture_resume_position_returns_resume_token() {
+    // `config(&uri)` uses Collection scope, so this exercises the
+    // `Scope::Collection` arm of `capture_now_token`.
+    let (_container, uri) = start_repl_set().await;
+    let source = MongoCdcSource::new(config(&uri)).await.expect("source");
+    let pos = source
+        .capture_resume_position()
+        .await
+        .expect("capture")
+        .expect("mongodb-cdc must support capture");
+    // Shape: { "resume_token": { "_data": "..." } }
+    assert!(
+        pos.get("resume_token").is_some(),
+        "resume_token present: {pos}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn capture_resume_position_database_scope() {
+    // Exercises the `Scope::Database` arm of `capture_now_token` —
+    // `client.database(db).watch()`.
+    let (_container, uri) = start_repl_set().await;
+    let cfg: MongoCdcSourceConfig = serde_json::from_value(json!({
+        "connection_uri": &uri,
+        "scope": { "type": "database", "database": DB },
+        "start_from": { "type": "now" },
+        "idle_timeout": 5,
+        "max_await_time_ms": 500,
+        "batch_size": 0
+    }))
+    .expect("database-scope config");
+    let source = MongoCdcSource::new(cfg).await.expect("source");
+    let pos = source
+        .capture_resume_position()
+        .await
+        .expect("capture")
+        .expect("mongodb-cdc must support capture");
+    assert!(
+        pos.get("resume_token").is_some(),
+        "resume_token present: {pos}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn capture_resume_position_cluster_scope() {
+    // Exercises the `Scope::Cluster` arm of `capture_now_token` —
+    // the deployment-wide `client.watch()`.
+    let (_container, uri) = start_repl_set().await;
+    let cfg: MongoCdcSourceConfig = serde_json::from_value(json!({
+        "connection_uri": &uri,
+        "scope": { "type": "cluster" },
+        "start_from": { "type": "now" },
+        "idle_timeout": 5,
+        "max_await_time_ms": 500,
+        "batch_size": 0
+    }))
+    .expect("cluster-scope config");
+    let source = MongoCdcSource::new(cfg).await.expect("source");
+    let pos = source
+        .capture_resume_position()
+        .await
+        .expect("capture")
+        .expect("mongodb-cdc must support capture");
+    assert!(
+        pos.get("resume_token").is_some(),
+        "resume_token present: {pos}"
+    );
+}

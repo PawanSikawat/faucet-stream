@@ -372,6 +372,12 @@ pub fn resolve_config_refs(cfg: &mut crate::config::PipelineConfig) -> CliResult
             resolve_value_full(spec, vars_ref, &snapshot)?;
         }
     }
+    // The replication snapshot source config is a first-class connector config
+    // (like `pipeline.source.config`); `${vars.X}` / `${sources.X.PATH}` refs
+    // there must resolve too.
+    if let Some(r) = cfg.replication.as_mut() {
+        resolve_value_full(&mut r.snapshot.source.config, vars_ref, &snapshot)?;
+    }
     for (i, row) in cfg.matrix.iter_mut().enumerate() {
         let _row_owner = row.id.clone().unwrap_or_else(|| format!("row-{i}"));
         if let Some(p) = row.source.as_mut()
@@ -959,6 +965,32 @@ pipeline:
         assert_eq!(
             cfg.pipeline.source.as_ref().unwrap().config["base_url"],
             "https://api.example.com"
+        );
+    }
+
+    #[test]
+    fn resolves_vars_in_replication_snapshot_source_config() {
+        // `${vars.X}` in the replication snapshot source config must resolve at
+        // load time, just like in `pipeline.source.config`.
+        let cfg = load(
+            r#"
+version: 1
+vars:
+  base: postgres://db/orders
+pipeline:
+  source: { type: postgres-cdc, config: {} }
+  sink:   { type: jsonl, config: { path: ./o.jsonl } }
+replication:
+  mode: snapshot_then_cdc
+  snapshot:
+    source:
+      type: postgres
+      config: { connection_url: "${vars.base}", query: "SELECT 1" }
+"#,
+        );
+        assert_eq!(
+            cfg.replication.as_ref().unwrap().snapshot.source.config["connection_url"],
+            "postgres://db/orders"
         );
     }
 

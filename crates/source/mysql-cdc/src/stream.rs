@@ -123,6 +123,15 @@ impl Source for MysqlCdcSource {
         Ok(())
     }
 
+    async fn capture_resume_position(&self) -> Result<Option<Value>, FaucetError> {
+        let mut conn = Conn::new(self.opts.clone()).await.map_err(|e| {
+            FaucetError::Source(format!("mysql-cdc: capture_position connect: {e}"))
+        })?;
+        let (file, pos) = current_binlog_position(&mut conn).await?;
+        drop(conn);
+        Ok(Some(Bookmark::FilePos { file, pos }.to_value()?))
+    }
+
     fn supports_exactly_once(&self) -> bool {
         // Durable monotonic binlog file/pos + deterministic replay from it +
         // per-transaction (per-page) bookmarks — the requirements for
@@ -568,15 +577,19 @@ async fn resolve_current(
     if !matches!(resolved, ResolvedStart::Current { .. }) {
         return Ok(resolved);
     }
+    let (file, pos) = current_binlog_position(conn).await?;
+    Ok(ResolvedStart::FilePos { file, pos })
+}
+
+/// Read the server's current binlog coordinates via `SHOW MASTER STATUS`.
+async fn current_binlog_position(conn: &mut Conn) -> Result<(String, u64), FaucetError> {
     let row: Option<Row> = conn
         .query_first("SHOW MASTER STATUS")
         .await
         .map_err(|e| FaucetError::Source(format!("mysql-cdc: SHOW MASTER STATUS failed: {e}")))?;
     let row = row.ok_or_else(|| {
         FaucetError::Source(
-            "mysql-cdc: SHOW MASTER STATUS returned no rows; \
-             is binary logging enabled?"
-                .into(),
+            "mysql-cdc: SHOW MASTER STATUS returned no rows; is binary logging enabled?".into(),
         )
     })?;
     let file: String = row.get(0).ok_or_else(|| {
@@ -585,7 +598,7 @@ async fn resolve_current(
     let pos: u64 = row.get(1).ok_or_else(|| {
         FaucetError::Source("mysql-cdc: SHOW MASTER STATUS: missing Position column".into())
     })?;
-    Ok(ResolvedStart::FilePos { file, pos })
+    Ok((file, pos))
 }
 
 /// Build a `BinlogStreamRequest` from the resolved start position.

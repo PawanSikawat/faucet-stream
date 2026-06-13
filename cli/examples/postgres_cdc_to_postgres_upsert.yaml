@@ -55,6 +55,7 @@ pipeline:
       table_name: users_mirror
       # Upsert/delete require column-mapping mode (not the JSONB blob mode).
       column_mapping: auto_map
+      max_connections: 5
       # Insert-or-update by `id` (the mirror table needs a UNIQUE/PRIMARY KEY on
       # it); rows whose `__op` is "d" are routed to DELETE instead.
       write_mode: upsert

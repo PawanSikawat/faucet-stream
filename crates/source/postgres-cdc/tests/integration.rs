@@ -373,3 +373,60 @@ async fn resume_from_bookmark_skips_already_consumed() {
         "resume must skip 1 and 2; got {second_ids:?} from records {second:?}"
     );
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn capture_resume_position_returns_current_lsn_and_creates_slot() {
+    let (_pg, url) = start_postgres().await;
+    ddl(
+        &url,
+        "CREATE TABLE public.users (id int4 PRIMARY KEY, name text); \
+         CREATE PUBLICATION faucet_pub FOR TABLE public.users;",
+    )
+    .await;
+
+    let source = PostgresCdcSource::new(cfg(&url, "cap_slot", "faucet_pub"))
+        .await
+        .expect("source");
+
+    let pos = source
+        .capture_resume_position()
+        .await
+        .expect("capture")
+        .expect("postgres-cdc must support capture");
+    // Shape: { "last_lsn": "X/Y" }
+    let lsn = pos
+        .get("last_lsn")
+        .and_then(|v| v.as_str())
+        .expect("last_lsn");
+    assert!(lsn.contains('/'), "expected an LSN like X/Y, got {lsn}");
+
+    // The slot was created as a side effect (so WAL from `pos` is retained).
+    let (client, conn) = tokio_postgres::connect(&url, tokio_postgres::NoTls)
+        .await
+        .expect("connect");
+    tokio::spawn(async move {
+        let _ = conn.await;
+    });
+    let row = client
+        .query_one(
+            "SELECT count(*)::int4 FROM pg_replication_slots WHERE slot_name = $1",
+            &[&"cap_slot"],
+        )
+        .await
+        .expect("slot query");
+    let n: i32 = row.get(0);
+    assert_eq!(n, 1, "capture must have created the slot");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn capture_resume_position_rejects_temporary_slot() {
+    let (_pg, url) = start_postgres().await;
+    let mut c = cfg(&url, "temp_slot", "faucet_pub");
+    c.slot_type = faucet_source_postgres_cdc::SlotType::Temporary;
+    let source = PostgresCdcSource::new(c).await.expect("source");
+    let err = source.capture_resume_position().await.unwrap_err();
+    assert!(
+        err.to_string().contains("permanent slot"),
+        "expected a permanent-slot error, got: {err}"
+    );
+}

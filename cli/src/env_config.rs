@@ -322,6 +322,7 @@ pub fn build_pipeline_config(env: &HashMap<String, String>) -> CliResult<Pipelin
         execution: None,
         observability: None,
         delivery: faucet_core::DeliveryMode::default(),
+        replication: None,
         #[cfg(feature = "schedule")]
         schedule: None,
         #[cfg(feature = "lineage")]
