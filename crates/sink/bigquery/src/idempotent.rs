@@ -115,19 +115,19 @@ impl FieldSpec {
 
 /// SQL string literal for a path/value: single-quoted with `\` and `'` escaped
 /// (BigQuery accepts backslash escapes in quoted strings).
-fn sql_str(s: &str) -> String {
+pub(crate) fn sql_str(s: &str) -> String {
     format!("'{}'", s.replace('\\', "\\\\").replace('\'', "\\'"))
 }
 
 /// Backtick-quoted identifier. BigQuery identifiers never contain a backtick
 /// (the schema came from BigQuery), so a stray one is stripped defensively.
-fn quote_ident(name: &str) -> String {
+pub(crate) fn quote_ident(name: &str) -> String {
     format!("`{}`", name.replace('`', ""))
 }
 
 /// A single JSONPath member segment. Safe BigQuery identifiers use the `.name`
 /// form; anything else is bracket-quoted (`['weird.name']`).
-fn json_path_segment(name: &str) -> String {
+pub(crate) fn json_path_segment(name: &str) -> String {
     let safe = match name.chars().next() {
         Some(c) if c.is_ascii_alphabetic() || c == '_' => {
             name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
@@ -144,7 +144,7 @@ fn json_path_segment(name: &str) -> String {
 
 /// Wrap a STRING-typed SQL expression `var` into the column's target type.
 /// `Struct` is handled by [`column_expr`], never here.
-fn wrap_scalar(ty: &BqType, var: &str) -> String {
+pub(crate) fn wrap_scalar(ty: &BqType, var: &str) -> String {
     match ty {
         BqType::String => var.to_string(),
         BqType::Bytes => format!("FROM_BASE64({var})"),
@@ -179,7 +179,7 @@ fn struct_field_list(
 /// `path` is always a JSONPath relative to that variable's JSON root (e.g. `"$.field"`
 /// at top level, `"$.child"` inside a nested struct). `depth` keeps nested `UNNEST`
 /// aliases unique (`e{depth}` for struct elements, `x{depth}` for scalars).
-fn column_expr(field: &FieldSpec, json_var: &str, path: &str, depth: usize) -> String {
+pub(crate) fn column_expr(field: &FieldSpec, json_var: &str, path: &str, depth: usize) -> String {
     if field.repeated {
         if field.ty == BqType::Struct {
             let elem = format!("e{depth}");
@@ -216,7 +216,7 @@ fn column_expr(field: &FieldSpec, json_var: &str, path: &str, depth: usize) -> S
 /// Inputs are not backtick-stripped (unlike [`quote_ident`]): BigQuery
 /// project/dataset/table names cannot contain a backtick per BQ naming rules,
 /// and these come from admin-controlled config, never from row data.
-fn table_ref(project: &str, dataset: &str, table: &str) -> String {
+pub(crate) fn table_ref(project: &str, dataset: &str, table: &str) -> String {
     format!("`{project}.{dataset}.{table}`")
 }
 
