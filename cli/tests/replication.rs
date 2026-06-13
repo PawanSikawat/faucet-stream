@@ -79,6 +79,7 @@ pipeline:
       connection_url: "{url}"
       table_name: orders_mirror
       column_mapping: auto_map
+      max_connections: 2
       write_mode: upsert
       key: [id]
       delete_marker: {{ field: __op, values: [d] }}
