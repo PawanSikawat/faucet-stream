@@ -2,6 +2,7 @@
 
 use crate::config::BigQuerySinkConfig;
 use crate::idempotent;
+use crate::merge;
 use async_trait::async_trait;
 use faucet_common_bigquery::build_client;
 use faucet_core::FaucetError;
@@ -28,6 +29,22 @@ const IDEMPOTENT_JOB_TIMEOUT: Duration = Duration::from_secs(120);
 /// BigQuery holds the connection open up to this long, so we don't busy-wait.
 const JOB_POLL_LONG_POLL_MS: i32 = 10_000;
 
+/// Serialize planned delete key tuples into a JSON array of `{key_col: value}`
+/// objects for the `@deletes` parameter consumed by the semi-join `DELETE`.
+fn deletes_to_payload(deletes: &[faucet_core::KeyTuple]) -> String {
+    let arr: Vec<Value> = deletes
+        .iter()
+        .map(|kt| {
+            let mut obj = serde_json::Map::new();
+            for (k, v) in &kt.0 {
+                obj.insert(k.clone(), v.clone());
+            }
+            Value::Object(obj)
+        })
+        .collect();
+    Value::Array(arr).to_string()
+}
+
 /// A sink that writes JSON records to a BigQuery table using the streaming
 /// insert API (`tabledata.insertAll`).
 pub struct BigQuerySink {
@@ -45,6 +62,7 @@ impl BigQuerySink {
     /// Returns a [`FaucetError::Auth`] if authentication fails.
     pub async fn new(config: BigQuerySinkConfig) -> Result<Self, FaucetError> {
         faucet_core::validate_batch_size(config.batch_size)?;
+        config.write.validate()?;
         let client = build_client(&config.auth).await?;
         Ok(Self {
             config,
@@ -324,6 +342,84 @@ impl BigQuerySink {
             .ok_or_else(|| FaucetError::Sink("BigQuery jobReference missing jobId".to_string()))?;
         Ok((job_id, r.location.clone()))
     }
+
+    /// Run a planned upsert/delete page as one BigQuery multi-statement
+    /// transaction. When `token` is `Some((scope, tok))` the watermark `MERGE`
+    /// is appended inside the same transaction (exactly-once + upsert).
+    ///
+    /// The caller must have already validated `plan.failed` is empty (and, for
+    /// the exactly-once path, ensured the commit table exists). Returns the
+    /// number of rows applied (upserts + deletes).
+    async fn run_upsert_script(
+        &self,
+        plan: &faucet_core::WritePlan,
+        token: Option<(&str, &str)>,
+    ) -> Result<usize, FaucetError> {
+        let columns = self.target_schema().await?;
+        merge::validate_keys_present(columns, &self.config.write.key)?;
+
+        let has_upserts = !plan.upserts.is_empty();
+        let has_deletes = !plan.deletes.is_empty();
+        if !has_upserts && !has_deletes {
+            // Nothing planned; for the exactly-once path the bookmark still
+            // needs its token, so emit the watermark MERGE alone.
+            if token.is_none() {
+                return Ok(0);
+            }
+        }
+
+        let key = &self.config.write.key;
+        let (project, dataset, table) = (
+            &self.config.project_id,
+            &self.config.dataset_id,
+            &self.config.table_id,
+        );
+        let sql = match token {
+            Some(_) => merge::build_upsert_idempotent_sql(
+                columns, key, has_upserts, has_deletes, project, dataset, table,
+            ),
+            None => merge::build_upsert_transaction_sql(
+                columns, key, has_upserts, has_deletes, project, dataset, table,
+            ),
+        };
+
+        let mut params = Vec::new();
+        if has_upserts {
+            let payload = serde_json::to_string(&plan.upserts).map_err(|e| {
+                FaucetError::Sink(format!("bigquery upsert: serialize payload: {e}"))
+            })?;
+            params.push(Self::string_param("payload", &payload));
+        }
+        if has_deletes {
+            let deletes = deletes_to_payload(&plan.deletes);
+            params.push(Self::string_param("deletes", &deletes));
+        }
+        if let Some((scope, tok)) = token {
+            params.push(Self::string_param("scope", scope));
+            params.push(Self::string_param("token", tok));
+        }
+
+        let mut req = QueryRequest::new(sql);
+        req.use_legacy_sql = false;
+        req.parameter_mode = Some("NAMED".to_string());
+        // MERGE-by-key is idempotent, so a retried request is harmless; for the
+        // exactly-once path a deterministic request_id additionally suppresses
+        // duplicate jobs from a retried HTTP request within BigQuery's window.
+        if let Some((scope, tok)) = token {
+            req.request_id = Some(idempotent::build_request_id(scope, tok));
+        }
+        req.query_parameters = Some(params);
+
+        let resp = self
+            .client
+            .job()
+            .query(&self.config.project_id, req)
+            .await
+            .map_err(|e| FaucetError::Sink(format!("bigquery upsert write failed: {e}")))?;
+        self.await_query_complete(resp).await?;
+
+        Ok(plan.upserts.len() + plan.deletes.len())
+    }
 }
 
 #[async_trait]
@@ -413,6 +509,17 @@ impl faucet_core::Sink for BigQuerySink {
     async fn write_batch(&self, records: &[Value]) -> Result<usize, FaucetError> {
         if records.is_empty() {
             return Ok(0);
+        }
+
+        if !matches!(self.config.write.write_mode, faucet_core::WriteMode::Append) {
+            let plan = faucet_core::plan_writes(records, &self.config.write);
+            if let Some((idx, msg)) = plan.failed.first() {
+                return Err(FaucetError::Sink(format!(
+                    "bigquery {}: row {idx}: {msg}",
+                    self.config.write.write_mode.as_str()
+                )));
+            }
+            return self.run_upsert_script(&plan, None).await;
         }
 
         let chunks: Vec<&[Value]> = if self.config.batch_size == 0 {
@@ -511,6 +618,14 @@ impl faucet_core::Sink for BigQuerySink {
         }
 
         Ok(outcomes)
+    }
+
+    fn supported_write_modes(&self) -> &'static [faucet_core::WriteMode] {
+        &[
+            faucet_core::WriteMode::Append,
+            faucet_core::WriteMode::Upsert,
+            faucet_core::WriteMode::Delete,
+        ]
     }
 
     fn supports_idempotent_writes(&self) -> bool {
