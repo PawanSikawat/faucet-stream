@@ -147,6 +147,21 @@ pub trait Source: Send + Sync {
         Ok(())
     }
 
+    /// Capture the source's current replication position **without consuming
+    /// any changes**, ensuring any server-side resource (e.g. a logical
+    /// replication slot) needed to later resume from that position exists.
+    ///
+    /// Returns the position as a bookmark [`Value`] — the same shape
+    /// [`apply_start_bookmark`](Self::apply_start_bookmark) accepts — or `None`
+    /// if this source does not support position capture.
+    ///
+    /// Used by the snapshot→CDC replication orchestrator (`faucet replicate`)
+    /// to anchor the CDC stream at-or-before the bulk snapshot's read point so
+    /// the handoff has no gap. The default returns `None`.
+    async fn capture_resume_position(&self) -> Result<Option<Value>, FaucetError> {
+        Ok(None)
+    }
+
     /// Whether this source **deterministically replays** the same page sequence
     /// from a given bookmark — the requirement for exactly-once delivery (a
     /// non-deterministic replay could cause the pipeline to skip a page whose
@@ -823,5 +838,17 @@ mod tests {
         use crate::write_mode::WriteMode;
         let sink: Box<dyn Sink> = Box::new(MockSink::new());
         assert!(sink.supported_write_modes().contains(&WriteMode::Append));
+    }
+
+    #[tokio::test]
+    async fn source_default_capture_resume_position_is_none() {
+        let source = MockSource { records: vec![] };
+        assert_eq!(source.capture_resume_position().await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn capture_resume_position_callable_through_trait_object() {
+        let source: Box<dyn Source> = Box::new(MockSource { records: vec![] });
+        assert!(source.capture_resume_position().await.unwrap().is_none());
     }
 }
