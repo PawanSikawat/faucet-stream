@@ -376,10 +376,22 @@ impl BigQuerySink {
         );
         let sql = match token {
             Some(_) => merge::build_upsert_idempotent_sql(
-                columns, key, has_upserts, has_deletes, project, dataset, table,
+                columns,
+                key,
+                has_upserts,
+                has_deletes,
+                project,
+                dataset,
+                table,
             ),
             None => merge::build_upsert_transaction_sql(
-                columns, key, has_upserts, has_deletes, project, dataset, table,
+                columns,
+                key,
+                has_upserts,
+                has_deletes,
+                project,
+                dataset,
+                table,
             ),
         };
 

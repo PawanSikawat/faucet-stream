@@ -26,7 +26,11 @@ pub(crate) fn build_source_select(columns: &[FieldSpec], payload_param: &str) ->
         .iter()
         .map(|f| {
             let path = format!("${}", json_path_segment(&f.name));
-            format!("{} AS {}", column_expr(f, "r", &path, 0), quote_ident(&f.name))
+            format!(
+                "{} AS {}",
+                column_expr(f, "r", &path, 0),
+                quote_ident(&f.name)
+            )
         })
         .collect::<Vec<_>>()
         .join(", ");
@@ -89,8 +93,9 @@ pub(crate) fn build_delete_by_keys(
             let path = format!("${}", json_path_segment(k));
             // Callers run `validate_keys_present` before building any SQL, so
             // every key is guaranteed to be a real column here.
-            let fs = key_field(columns, k)
-                .unwrap_or_else(|| unreachable!("validate_keys_present runs before build_delete_by_keys"));
+            let fs = key_field(columns, k).unwrap_or_else(|| {
+                unreachable!("validate_keys_present runs before build_delete_by_keys")
+            });
             let rhs = column_expr(fs, "d", &path, 0);
             format!("T.{} = {}", quote_ident(k), rhs)
         })
@@ -103,7 +108,10 @@ pub(crate) fn build_delete_by_keys(
 }
 
 fn wrap_transaction(stmts: &[String]) -> String {
-    format!("BEGIN TRANSACTION;\n{};\nCOMMIT TRANSACTION;", stmts.join(";\n"))
+    format!(
+        "BEGIN TRANSACTION;\n{};\nCOMMIT TRANSACTION;",
+        stmts.join(";\n")
+    )
 }
 
 /// `BEGIN; [MERGE upsert]; [DELETE]; COMMIT;` — the at-least-once upsert/delete path.
@@ -170,7 +178,12 @@ mod tests {
     use crate::idempotent::{BqType, FieldSpec};
 
     fn scalar(name: &str, ty: BqType) -> FieldSpec {
-        FieldSpec { name: name.into(), ty, repeated: false, fields: vec![] }
+        FieldSpec {
+            name: name.into(),
+            ty,
+            repeated: false,
+            fields: vec![],
+        }
     }
 
     fn id_name_cols() -> Vec<FieldSpec> {
@@ -203,17 +216,35 @@ mod tests {
             scalar("name", BqType::String),
         ];
         let sql = build_merge_upsert(&cols, &["tenant".into(), "id".into()], "p", "d", "t");
-        assert!(sql.contains("ON T.`tenant` = S.`tenant` AND T.`id` = S.`id`"), "got: {sql}");
-        assert!(sql.contains("WHEN MATCHED THEN UPDATE SET `name` = S.`name`"), "got: {sql}");
-        assert!(sql.contains("INSERT (`tenant`, `id`, `name`) VALUES (S.`tenant`, S.`id`, S.`name`)"), "got: {sql}");
+        assert!(
+            sql.contains("ON T.`tenant` = S.`tenant` AND T.`id` = S.`id`"),
+            "got: {sql}"
+        );
+        assert!(
+            sql.contains("WHEN MATCHED THEN UPDATE SET `name` = S.`name`"),
+            "got: {sql}"
+        );
+        assert!(
+            sql.contains("INSERT (`tenant`, `id`, `name`) VALUES (S.`tenant`, S.`id`, S.`name`)"),
+            "got: {sql}"
+        );
     }
 
     #[test]
     fn merge_upsert_all_columns_are_key_omits_update() {
         // Only a key column: no non-key columns to SET, so emit INSERT-only.
-        let sql = build_merge_upsert(&[scalar("id", BqType::Int64)], &["id".into()], "p", "d", "t");
+        let sql = build_merge_upsert(
+            &[scalar("id", BqType::Int64)],
+            &["id".into()],
+            "p",
+            "d",
+            "t",
+        );
         assert!(!sql.contains("WHEN MATCHED"), "got: {sql}");
-        assert!(sql.contains("ON T.`id` = S.`id` WHEN NOT MATCHED THEN INSERT (`id`) VALUES (S.`id`)"), "got: {sql}");
+        assert!(
+            sql.contains("ON T.`id` = S.`id` WHEN NOT MATCHED THEN INSERT (`id`) VALUES (S.`id`)"),
+            "got: {sql}"
+        );
     }
 
     #[test]
@@ -227,7 +258,10 @@ mod tests {
 
     #[test]
     fn delete_by_keys_composite() {
-        let cols = vec![scalar("tenant", BqType::String), scalar("id", BqType::Int64)];
+        let cols = vec![
+            scalar("tenant", BqType::String),
+            scalar("id", BqType::Int64),
+        ];
         let sql = build_delete_by_keys(&cols, &["tenant".into(), "id".into()], "p", "d", "t");
         assert!(
             sql.contains("WHERE T.`tenant` = JSON_VALUE(d, '$.tenant') AND T.`id` = CAST(JSON_VALUE(d, '$.id') AS INT64)"),
@@ -237,26 +271,49 @@ mod tests {
 
     #[test]
     fn transaction_upserts_and_deletes() {
-        let sql = build_upsert_transaction_sql(&id_name_cols(), &["id".into()], true, true, "p", "d", "t");
+        let sql = build_upsert_transaction_sql(
+            &id_name_cols(),
+            &["id".into()],
+            true,
+            true,
+            "p",
+            "d",
+            "t",
+        );
         assert!(sql.starts_with("BEGIN TRANSACTION;\n"), "got: {sql}");
-        assert!(sql.trim_end().ends_with("COMMIT TRANSACTION;"), "got: {sql}");
+        assert!(
+            sql.trim_end().ends_with("COMMIT TRANSACTION;"),
+            "got: {sql}"
+        );
         let m = sql.find("MERGE INTO").unwrap();
         let d = sql.find("DELETE FROM").unwrap();
         let c = sql.find("COMMIT TRANSACTION").unwrap();
         assert!(m < d && d < c, "order wrong: {sql}");
-        assert!(!sql.contains("_faucet_commit_token"), "no watermark in non-EO path: {sql}");
+        assert!(
+            !sql.contains("_faucet_commit_token"),
+            "no watermark in non-EO path: {sql}"
+        );
     }
 
     #[test]
     fn transaction_upserts_only() {
-        let sql = build_upsert_transaction_sql(&id_name_cols(), &["id".into()], true, false, "p", "d", "t");
+        let sql = build_upsert_transaction_sql(
+            &id_name_cols(),
+            &["id".into()],
+            true,
+            false,
+            "p",
+            "d",
+            "t",
+        );
         assert!(sql.contains("MERGE INTO"), "got: {sql}");
         assert!(!sql.contains("DELETE FROM"), "got: {sql}");
     }
 
     #[test]
     fn idempotent_transaction_appends_watermark_merge() {
-        let sql = build_upsert_idempotent_sql(&id_name_cols(), &["id".into()], true, true, "p", "d", "t");
+        let sql =
+            build_upsert_idempotent_sql(&id_name_cols(), &["id".into()], true, true, "p", "d", "t");
         let m = sql.find("MERGE INTO `p.d.t`").unwrap();
         let d = sql.find("DELETE FROM").unwrap();
         let w = sql.find("MERGE `p.d._faucet_commit_token`").unwrap();

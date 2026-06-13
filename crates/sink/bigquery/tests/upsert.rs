@@ -24,7 +24,11 @@ struct FakeToken {
 }
 
 fn fake_token() -> FakeToken {
-    FakeToken { access_token: "fake-token", token_type: "bearer", expires_in: 9_999_999 }
+    FakeToken {
+        access_token: "fake-token",
+        token_type: "bearer",
+        expires_in: 9_999_999,
+    }
 }
 
 fn dummy_service_account_json(oauth_server: &str) -> serde_json::Value {
@@ -52,16 +56,27 @@ async fn mount_token_endpoint(server: &MockServer) {
 }
 
 fn config_with<F: FnOnce(&mut BigQuerySinkConfig)>(f: F) -> BigQuerySinkConfig {
-    let mut c =
-        BigQuerySinkConfig::new(PROJECT_ID, DATASET_ID, TABLE_ID, BigQueryCredentials::ApplicationDefault);
+    let mut c = BigQuerySinkConfig::new(
+        PROJECT_ID,
+        DATASET_ID,
+        TABLE_ID,
+        BigQueryCredentials::ApplicationDefault,
+    );
     f(&mut c);
     c
 }
 
-async fn build_sink(server: &MockServer, config: BigQuerySinkConfig) -> (BigQuerySink, tempfile::NamedTempFile) {
+async fn build_sink(
+    server: &MockServer,
+    config: BigQuerySinkConfig,
+) -> (BigQuerySink, tempfile::NamedTempFile) {
     let sa_json = dummy_service_account_json(&server.uri());
     let sa_file = tempfile::NamedTempFile::new().expect("create sa tempfile");
-    std::fs::write(sa_file.path(), serde_json::to_string_pretty(&sa_json).unwrap()).expect("write sa");
+    std::fs::write(
+        sa_file.path(),
+        serde_json::to_string_pretty(&sa_json).unwrap(),
+    )
+    .expect("write sa");
     let client = ClientBuilder::new()
         .with_auth_base_url(format!("{}{AUTH_SCOPE_BASE}", server.uri()))
         .with_v2_base_url(server.uri())
@@ -160,13 +175,32 @@ async fn write_batch_upsert_posts_merge() {
     assert_eq!(n, 2);
 
     let bodies = captured_query_bodies(&server).await;
-    let tx = bodies.iter().find(|b| b["query"].as_str().unwrap_or("").contains("MERGE INTO `p.d.t`")).expect("merge query");
+    let tx = bodies
+        .iter()
+        .find(|b| {
+            b["query"]
+                .as_str()
+                .unwrap_or("")
+                .contains("MERGE INTO `p.d.t`")
+        })
+        .expect("merge query");
     let q = tx["query"].as_str().unwrap();
-    assert!(q.contains("USING (SELECT CAST(JSON_VALUE(r, '$.id') AS INT64) AS `id`"), "got: {q}");
+    assert!(
+        q.contains("USING (SELECT CAST(JSON_VALUE(r, '$.id') AS INT64) AS `id`"),
+        "got: {q}"
+    );
     assert!(q.contains("ON T.`id` = S.`id`"), "got: {q}");
-    assert!(q.contains("WHEN MATCHED THEN UPDATE SET `name` = S.`name`"), "got: {q}");
+    assert!(
+        q.contains("WHEN MATCHED THEN UPDATE SET `name` = S.`name`"),
+        "got: {q}"
+    );
     assert_eq!(tx["parameterMode"], "NAMED");
-    let pnames: Vec<&str> = tx["queryParameters"].as_array().unwrap().iter().map(|p| p["name"].as_str().unwrap()).collect();
+    let pnames: Vec<&str> = tx["queryParameters"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p["name"].as_str().unwrap())
+        .collect();
     assert!(pnames.contains(&"payload"), "got: {pnames:?}");
 }
 
@@ -181,23 +215,45 @@ async fn write_batch_delete_marker_routes_to_delete() {
     let cfg = config_with(|c| {
         c.write.write_mode = faucet_core::WriteMode::Upsert;
         c.write.key = vec!["id".into()];
-        c.write.delete_marker = Some(faucet_core::DeleteMarker { field: "__op".into(), values: vec!["d".into()] });
+        c.write.delete_marker = Some(faucet_core::DeleteMarker {
+            field: "__op".into(),
+            values: vec!["d".into()],
+        });
     });
     let (sink, _sa) = build_sink(&server, cfg).await;
     // One upsert (id=1), one delete (id=2 marked __op=d).
     let n = sink
-        .write_batch(&[json!({"id": 1, "name": "a", "__op": "u"}), json!({"id": 2, "__op": "d"})])
+        .write_batch(&[
+            json!({"id": 1, "name": "a", "__op": "u"}),
+            json!({"id": 2, "__op": "d"}),
+        ])
         .await
         .expect("upsert+delete write");
     assert_eq!(n, 2);
 
     let bodies = captured_query_bodies(&server).await;
-    let tx = bodies.iter().find(|b| b["query"].as_str().unwrap_or("").contains("BEGIN TRANSACTION")).expect("tx");
+    let tx = bodies
+        .iter()
+        .find(|b| {
+            b["query"]
+                .as_str()
+                .unwrap_or("")
+                .contains("BEGIN TRANSACTION")
+        })
+        .expect("tx");
     let q = tx["query"].as_str().unwrap();
     assert!(q.contains("MERGE INTO `p.d.t`"), "got: {q}");
     assert!(q.contains("DELETE FROM `p.d.t` T WHERE EXISTS"), "got: {q}");
-    let pnames: Vec<&str> = tx["queryParameters"].as_array().unwrap().iter().map(|p| p["name"].as_str().unwrap()).collect();
-    assert!(pnames.contains(&"payload") && pnames.contains(&"deletes"), "got: {pnames:?}");
+    let pnames: Vec<&str> = tx["queryParameters"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p["name"].as_str().unwrap())
+        .collect();
+    assert!(
+        pnames.contains(&"payload") && pnames.contains(&"deletes"),
+        "got: {pnames:?}"
+    );
 }
 
 #[tokio::test]
@@ -236,7 +292,11 @@ async fn write_batch_idempotent_upsert_composes_merge_and_watermark() {
     });
     let (sink, _sa) = build_sink(&server, cfg).await;
     let n = sink
-        .write_batch_idempotent(&[json!({"id": 1, "name": "a"})], "pipe::row1", "00000000000000000005")
+        .write_batch_idempotent(
+            &[json!({"id": 1, "name": "a"})],
+            "pipe::row1",
+            "00000000000000000005",
+        )
         .await
         .expect("eo upsert");
     assert_eq!(n, 1);
@@ -253,8 +313,16 @@ async fn write_batch_idempotent_upsert_composes_merge_and_watermark() {
     let data = q.find("MERGE INTO `p.d.t`").unwrap();
     let wm = q.find("MERGE `p.d._faucet_commit_token`").unwrap();
     assert!(data < wm, "data merge must precede watermark: {q}");
-    let pnames: Vec<&str> = tx["queryParameters"].as_array().unwrap().iter().map(|p| p["name"].as_str().unwrap()).collect();
-    assert!(pnames.contains(&"payload") && pnames.contains(&"scope") && pnames.contains(&"token"), "got: {pnames:?}");
+    let pnames: Vec<&str> = tx["queryParameters"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p["name"].as_str().unwrap())
+        .collect();
+    assert!(
+        pnames.contains(&"payload") && pnames.contains(&"scope") && pnames.contains(&"token"),
+        "got: {pnames:?}"
+    );
 }
 
 #[tokio::test]
@@ -304,14 +372,30 @@ async fn write_batch_delete_only_posts_delete_without_merge() {
     let bodies = captured_query_bodies(&server).await;
     let tx = bodies
         .iter()
-        .find(|b| b["query"].as_str().unwrap_or("").contains("DELETE FROM `p.d.t`"))
+        .find(|b| {
+            b["query"]
+                .as_str()
+                .unwrap_or("")
+                .contains("DELETE FROM `p.d.t`")
+        })
         .expect("delete query");
     let q = tx["query"].as_str().unwrap();
     assert!(q.contains("DELETE FROM `p.d.t` T WHERE EXISTS"), "got: {q}");
-    assert!(!q.contains("MERGE INTO `p.d.t`"), "delete-only must not emit a data MERGE: {q}");
-    let pnames: Vec<&str> = tx["queryParameters"].as_array().unwrap().iter().map(|p| p["name"].as_str().unwrap()).collect();
+    assert!(
+        !q.contains("MERGE INTO `p.d.t`"),
+        "delete-only must not emit a data MERGE: {q}"
+    );
+    let pnames: Vec<&str> = tx["queryParameters"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p["name"].as_str().unwrap())
+        .collect();
     assert!(pnames.contains(&"deletes"), "got: {pnames:?}");
-    assert!(!pnames.contains(&"payload"), "delete-only must not bind @payload: {pnames:?}");
+    assert!(
+        !pnames.contains(&"payload"),
+        "delete-only must not bind @payload: {pnames:?}"
+    );
 }
 
 #[tokio::test]
@@ -338,12 +422,34 @@ async fn write_batch_idempotent_zero_rows_posts_watermark_only() {
     let bodies = captured_query_bodies(&server).await;
     let tx = bodies
         .iter()
-        .find(|b| b["query"].as_str().unwrap_or("").contains("MERGE `p.d._faucet_commit_token`"))
+        .find(|b| {
+            b["query"]
+                .as_str()
+                .unwrap_or("")
+                .contains("MERGE `p.d._faucet_commit_token`")
+        })
         .expect("watermark merge query");
     let q = tx["query"].as_str().unwrap();
-    assert!(!q.contains("MERGE INTO `p.d.t`"), "zero-row page must not emit a data MERGE: {q}");
-    assert!(!q.contains("DELETE FROM `p.d.t`"), "zero-row page must not emit a DELETE: {q}");
-    let pnames: Vec<&str> = tx["queryParameters"].as_array().unwrap().iter().map(|p| p["name"].as_str().unwrap()).collect();
-    assert!(pnames.contains(&"scope") && pnames.contains(&"token"), "got: {pnames:?}");
-    assert!(!pnames.contains(&"payload") && !pnames.contains(&"deletes"), "no data params for a zero-row page: {pnames:?}");
+    assert!(
+        !q.contains("MERGE INTO `p.d.t`"),
+        "zero-row page must not emit a data MERGE: {q}"
+    );
+    assert!(
+        !q.contains("DELETE FROM `p.d.t`"),
+        "zero-row page must not emit a DELETE: {q}"
+    );
+    let pnames: Vec<&str> = tx["queryParameters"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p["name"].as_str().unwrap())
+        .collect();
+    assert!(
+        pnames.contains(&"scope") && pnames.contains(&"token"),
+        "got: {pnames:?}"
+    );
+    assert!(
+        !pnames.contains(&"payload") && !pnames.contains(&"deletes"),
+        "no data params for a zero-row page: {pnames:?}"
+    );
 }
