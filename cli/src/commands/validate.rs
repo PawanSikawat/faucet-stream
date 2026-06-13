@@ -47,6 +47,13 @@ pub async fn run(args: ValidateArgs) -> CliResult<()> {
     };
     let nodes = expand(&cfg)?;
 
+    // Validate the replication block (snapshot source / CDC source / state) so
+    // `faucet validate` catches misconfiguration without running.
+    if let Some(spec) = &cfg.replication {
+        crate::replication::compiled::CompiledReplication::compile(spec, &cfg)?;
+        println!("replication: mode={:?} — valid", spec.mode);
+    }
+
     // Validate the schedule block (cron / timezone / bounds) so `faucet validate`
     // catches schedule misconfiguration in CI without running. Offline-safe.
     #[cfg(feature = "schedule")]
