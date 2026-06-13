@@ -56,3 +56,86 @@ pub async fn run(args: ReplicateArgs) -> CliResult<()> {
     println!("replication finished");
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    /// Write `yaml` to a `faucet.yaml` inside a fresh temp dir and return the
+    /// path (the dir is leaked so the file outlives the call — fine for a test).
+    fn write_config(yaml: &str) -> std::path::PathBuf {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("repl.yaml");
+        let mut f = std::fs::File::create(&path).expect("create config");
+        f.write_all(yaml.as_bytes()).expect("write config");
+        f.flush().expect("flush");
+        // Keep the dir alive for the duration of the test process.
+        std::mem::forget(dir);
+        path
+    }
+
+    fn args(path: std::path::PathBuf) -> ReplicateArgs {
+        ReplicateArgs {
+            config: Some(path),
+            env_file: None,
+            no_env_file: true,
+            profile: None,
+        }
+    }
+
+    /// A valid pipeline config with NO `replication:` block must error out before
+    /// any orchestration runs (no Docker / network reached). Works under default
+    /// features (rest source + jsonl sink are always present).
+    #[tokio::test]
+    async fn errors_when_no_replication_block() {
+        let path = write_config(
+            r#"
+version: 1
+name: plain
+pipeline:
+  source: { type: rest, config: { url: "https://example.com/api" } }
+  sink:   { type: jsonl, config: { path: ./out.jsonl } }
+"#,
+        );
+        let err = run(args(path)).await.unwrap_err();
+        assert!(
+            format!("{err}").contains("replication"),
+            "should mention the missing replication block: {err}"
+        );
+    }
+
+    /// A config WITH a `replication:` block that fails `CompiledReplication::compile`
+    /// (here: `state: memory`, which the durable-state rule rejects) must error
+    /// before `run_replication` — so no Docker is needed. Gated on the connector
+    /// kinds being compiled in so `source_supports_exactly_once` / `source_schema`
+    /// resolve (otherwise compile would fail earlier on an unknown-kind error,
+    /// which is a different, also-acceptable failure but not the branch under test).
+    #[cfg(all(
+        feature = "source-postgres-cdc",
+        feature = "source-postgres",
+        feature = "sink-postgres"
+    ))]
+    #[tokio::test]
+    async fn errors_when_replication_spec_invalid() {
+        let path = write_config(
+            r#"
+version: 1
+name: mirror
+pipeline:
+  source: { type: postgres-cdc, config: { connection_url: "postgres://x", slot_name: s, publication_name: p } }
+  sink:   { type: postgres, config: { connection_url: "postgres://y", table_name: t, column_mapping: auto_map, write_mode: upsert, key: [id] } }
+  state:  { type: memory, config: {} }
+replication:
+  mode: snapshot_then_cdc
+  snapshot:
+    source: { type: postgres, config: { connection_url: "postgres://x", query: "SELECT * FROM t" } }
+"#,
+        );
+        let err = run(args(path)).await.unwrap_err();
+        assert!(
+            format!("{err}").contains("durable state"),
+            "should reject memory state at compile time: {err}"
+        );
+    }
+}

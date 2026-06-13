@@ -291,4 +291,39 @@ pipeline:
         let kinds: Vec<&str> = node.transforms.iter().map(|t| t.kind.as_str()).collect();
         assert_eq!(kinds, vec!["flatten"], "cdc_unwrap dropped, flatten kept");
     }
+
+    #[test]
+    fn phase_failure_surfaces_phase_and_underlying_error() {
+        let summary = crate::executor::RunSummary {
+            invocations: vec![crate::executor::InvocationOutcome {
+                row_id: "snapshot".into(),
+                parent_record_key: None,
+                records_written: 0,
+                error: Some("connection refused".into()),
+            }],
+        };
+        let err = phase_failure(&summary, "snapshot");
+        assert!(matches!(err, CliError::Internal(_)), "{err:?}");
+        let msg = format!("{err}");
+        assert!(msg.contains("snapshot"), "phase named: {msg}");
+        assert!(msg.contains("connection refused"), "underlying error: {msg}");
+    }
+
+    #[test]
+    fn phase_failure_falls_back_to_unknown_error() {
+        // A failed run whose invocation carries no error string still produces a
+        // descriptive error (the count-only failure case).
+        let summary = crate::executor::RunSummary {
+            invocations: vec![crate::executor::InvocationOutcome {
+                row_id: "cdc".into(),
+                parent_record_key: None,
+                records_written: 0,
+                error: None,
+            }],
+        };
+        let err = phase_failure(&summary, "CDC");
+        let msg = format!("{err}");
+        assert!(msg.contains("CDC"), "phase named: {msg}");
+        assert!(msg.contains("unknown error"), "fallback used: {msg}");
+    }
 }

@@ -157,4 +157,69 @@ replication:
         let err = CompiledReplication::compile(c.replication.as_ref().unwrap(), &c).unwrap_err();
         assert!(format!("{err}").contains("matrix"), "{err}");
     }
+
+    #[test]
+    fn rejects_missing_sink() {
+        // Drop the `sink:` line entirely — `pipeline.sink` is then `None`.
+        let bad = GOOD
+            .lines()
+            .filter(|l| !l.trim_start().starts_with("sink:"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let c = cfg(&bad);
+        let err = CompiledReplication::compile(c.replication.as_ref().unwrap(), &c).unwrap_err();
+        assert!(format!("{err}").contains("sink"), "{err}");
+    }
+
+    #[test]
+    fn rejects_missing_source() {
+        // Drop the `source:` line — `pipeline.source` is then `None`.
+        let bad = GOOD
+            .lines()
+            .filter(|l| !l.trim_start().starts_with("source: { type: postgres-cdc"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let c = cfg(&bad);
+        let err = CompiledReplication::compile(c.replication.as_ref().unwrap(), &c).unwrap_err();
+        // The CDC-source error message names the CDC source requirement.
+        assert!(format!("{err}").contains("CDC source"), "{err}");
+    }
+
+    #[test]
+    fn rejects_unknown_snapshot_source_kind() {
+        // A snapshot source kind that isn't a registered connector is rejected by
+        // `registry::source_schema` (typed UnknownConnector).
+        let bad = GOOD.replace(
+            "source: { type: postgres, config: { connection_url: \"postgres://x\", query: \"SELECT * FROM t\" } }",
+            "source: { type: not_a_source, config: {} }",
+        );
+        let c = cfg(&bad);
+        let err = CompiledReplication::compile(c.replication.as_ref().unwrap(), &c).unwrap_err();
+        assert!(format!("{err}").contains("not_a_source"), "{err}");
+    }
+
+    #[test]
+    fn rejects_missing_state() {
+        // Drop the `state:` line — `pipeline.state` is then `None`.
+        let bad = GOOD
+            .lines()
+            .filter(|l| !l.trim_start().starts_with("state:"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let c = cfg(&bad);
+        let err = CompiledReplication::compile(c.replication.as_ref().unwrap(), &c).unwrap_err();
+        assert!(format!("{err}").contains("state"), "{err}");
+    }
+
+    #[test]
+    fn non_upsert_sink_compiles_ok_with_warning() {
+        // A sink with `write_mode: append` (or no write_mode) still compiles —
+        // `compile` only warns (it does not fail) so a non-mirror replication is
+        // allowed. This exercises the warn branch.
+        let appendish = GOOD.replace(", write_mode: upsert, key: [id]", "");
+        let c = cfg(&appendish);
+        let r = CompiledReplication::compile(c.replication.as_ref().unwrap(), &c)
+            .expect("non-upsert sink should still compile (warn, not fail)");
+        assert_eq!(r.snapshot_source.kind, "postgres");
+    }
 }

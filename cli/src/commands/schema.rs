@@ -67,6 +67,8 @@ pub fn lineage_schema() -> serde_json::Value {
 
 #[cfg(test)]
 mod tests {
+    use crate::cli::{SchemaArgs, SchemaTarget};
+
     #[cfg(feature = "lineage")]
     #[test]
     fn schema_lineage_returns_object_schema() {
@@ -74,5 +76,16 @@ mod tests {
         assert_eq!(v["type"], "object");
         assert!(v["properties"].get("transport").is_some());
         assert!(v["properties"].get("namespace").is_some());
+    }
+
+    #[tokio::test]
+    async fn schema_replication_target_ok() {
+        // Covers the `SchemaTarget::Replication` arm — it serializes the
+        // ReplicationSpec JSON Schema to stdout and returns Ok.
+        let r = super::run(SchemaArgs {
+            target: SchemaTarget::Replication,
+        })
+        .await;
+        assert!(r.is_ok(), "{r:?}");
     }
 }
