@@ -20,6 +20,10 @@ pub struct Cli {
 pub enum Command {
     /// Execute a pipeline config end-to-end.
     Run(RunArgs),
+    /// Bulk-snapshot a database table, then stream CDC from a position captured
+    /// before the snapshot (a true mirror with `write_mode: upsert`).
+    /// Long-running when `replication.continuous` is true (Ctrl-C / SIGTERM to stop).
+    Replicate(ReplicateArgs),
     /// Parse + validate a pipeline config without running it.
     Validate(ValidateArgs),
     /// Print the JSON Schema for a specific connector.
@@ -212,6 +216,26 @@ pub struct RunArgs {
     /// Select a named overlay from the config's `profiles:` block and deep-merge
     /// it over the composed base. Overrides the `FAUCET_PROFILE` env var.
     /// Not applicable in `--from-env` mode (no config file to compose).
+    #[arg(long, env = "FAUCET_PROFILE")]
+    pub profile: Option<String>,
+}
+
+/// `faucet replicate` arguments.
+#[derive(Debug, Parser)]
+pub struct ReplicateArgs {
+    /// Path to a `.yaml`, `.yml`, or `.json` pipeline config with a
+    /// `replication:` block. If omitted, auto-discover
+    /// `faucet.yaml` / `.yml` / `.json` in cwd.
+    pub config: Option<PathBuf>,
+    /// Path to a `.env` file to load for `${env:VAR}` interpolation.
+    /// Defaults to `.env` in cwd if present.
+    #[arg(long, conflicts_with = "no_env_file")]
+    pub env_file: Option<PathBuf>,
+    /// Skip auto-loading `.env` from cwd.
+    #[arg(long)]
+    pub no_env_file: bool,
+    /// Select a named overlay from the config's `profiles:` block and deep-merge
+    /// it over the composed base. Overrides the `FAUCET_PROFILE` env var.
     #[arg(long, env = "FAUCET_PROFILE")]
     pub profile: Option<String>,
 }

@@ -5,6 +5,7 @@ pub mod doctor;
 pub mod init;
 pub mod list;
 pub mod preview;
+pub mod replicate;
 pub mod run;
 #[cfg(feature = "schedule")]
 pub mod schedule;

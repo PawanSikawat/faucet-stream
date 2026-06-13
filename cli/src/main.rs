@@ -22,6 +22,7 @@ async fn main() {
 
     let result = match cli.command {
         Command::Run(args) => commands::run::run(args).await,
+        Command::Replicate(args) => commands::replicate::run(args).await,
         Command::Validate(args) => commands::validate::run(args).await,
         Command::Schema(args) => commands::schema::run(args).await,
         Command::List => commands::list::run().await,
