@@ -26,9 +26,12 @@ pub async fn run(args: ReplicateArgs) -> CliResult<()> {
                 .into(),
         )
     })?;
-    let compiled = CompiledReplication::compile(spec, &cfg)?;
-
+    // Install observability before compiling the replication spec so the
+    // tracing subscriber is live and `CompiledReplication::compile`'s
+    // non-upsert-sink warning is actually emitted (it would be lost otherwise).
     crate::obs::install(&cfg)?;
+
+    let compiled = CompiledReplication::compile(spec, &cfg)?;
 
     let pipeline_name = cfg.name.clone().unwrap_or_else(|| {
         path.file_stem()
