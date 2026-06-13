@@ -184,6 +184,11 @@ fn visit_config_values<F: FnMut(&Value)>(cfg: &PipelineConfig, mut f: F) {
             f(v);
         }
     }
+    // The replication snapshot source config is a first-class connector config
+    // (like `pipeline.source.config`); secrets placed there must resolve too.
+    if let Some(r) = cfg.replication.as_ref() {
+        f(&r.snapshot.source.config);
+    }
     for spec in cfg.pipeline.sources.values() {
         f(&spec.config);
     }
@@ -246,6 +251,11 @@ fn visit_config_values_mut<F: FnMut(&mut Value) -> CliResult<()>>(
         for v in vars.values_mut() {
             f(v)?;
         }
+    }
+    // The replication snapshot source config is a first-class connector config
+    // (like `pipeline.source.config`); secrets placed there must resolve too.
+    if let Some(r) = cfg.replication.as_mut() {
+        f(&mut r.snapshot.source.config)?;
     }
     for spec in cfg.pipeline.sources.values_mut() {
         f(&mut spec.config)?;
@@ -616,6 +626,27 @@ matrix:
         assert!(refs.contains(&("vault".into(), "secret/state".into())));
         assert!(refs.contains(&("aws-sm".into(), "tf/key".into())));
         assert!(refs.contains(&("gcp-sm".into(), "projects/p/secrets/s/versions/1".into())));
+    }
+
+    #[test]
+    fn scan_config_collects_refs_from_replication_snapshot_source() {
+        // A secret directive in the replication snapshot source config must be
+        // discovered by the scan, just like one in `pipeline.source`.
+        let cfg_yaml = r#"
+version: 1
+pipeline:
+  source: { type: postgres-cdc, config: {} }
+  sink:   { type: jsonl, config: { path: ./o.jsonl } }
+replication:
+  mode: snapshot_then_cdc
+  snapshot:
+    source:
+      type: postgres
+      config: { connection_url: "${vault:secret/data/db#url}", query: "SELECT 1" }
+"#;
+        let cfg = PipelineConfig::from_text(cfg_yaml, std::path::Path::new("p.yaml")).unwrap();
+        let refs = scan_config(&cfg);
+        assert!(refs.contains(&("vault".into(), "secret/data/db#url".into())));
     }
 
     #[tokio::test]
