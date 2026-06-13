@@ -573,6 +573,20 @@ impl faucet_core::Sink for BigQuerySink {
             return Ok(Vec::new());
         }
 
+        if !matches!(self.config.write.write_mode, faucet_core::WriteMode::Append) {
+            let plan = faucet_core::plan_writes(records, &self.config.write);
+            self.run_upsert_script(&plan, None).await?;
+            let mut outcomes: Vec<faucet_core::RowOutcome> =
+                records.iter().map(|_| Ok(())).collect();
+            for (idx, msg) in &plan.failed {
+                outcomes[*idx] = Err(FaucetError::Sink(format!(
+                    "bigquery {}: {msg}",
+                    self.config.write.write_mode.as_str()
+                )));
+            }
+            return Ok(outcomes);
+        }
+
         let chunks: Vec<&[Value]> = if self.config.batch_size == 0 {
             vec![records]
         } else {

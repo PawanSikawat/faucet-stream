@@ -220,3 +220,26 @@ async fn write_batch_upsert_missing_key_errors() {
         .unwrap_err();
     assert!(format!("{err}").contains("bigquery upsert"), "got: {err}");
 }
+
+#[tokio::test]
+async fn write_batch_partial_upsert_routes_missing_key_to_dlq() {
+    let server = MockServer::start().await;
+    mount_token_endpoint(&server).await;
+    mount_table_schema(&server).await;
+    mount_query_done(&server, "job-p").await;
+    mount_job_done(&server, "job-p").await;
+
+    let cfg = config_with(|c| {
+        c.write.write_mode = faucet_core::WriteMode::Upsert;
+        c.write.key = vec!["id".into()];
+    });
+    let (sink, _sa) = build_sink(&server, cfg).await;
+    // Row 0 good, row 1 missing key → row 1 must come back Err, row 0 Ok.
+    let outcomes = sink
+        .write_batch_partial(&[json!({"id": 1, "name": "a"}), json!({"name": "no key"})])
+        .await
+        .expect("partial write");
+    assert_eq!(outcomes.len(), 2);
+    assert!(outcomes[0].is_ok(), "row 0 should be Ok");
+    assert!(outcomes[1].is_err(), "row 1 (missing key) should be Err");
+}
