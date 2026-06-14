@@ -93,6 +93,15 @@ mod tests {
         assert!(r.is_ok(), "{r:?}");
     }
 
+    #[tokio::test]
+    async fn schema_execution_target_ok() {
+        let r = super::run(SchemaArgs {
+            target: SchemaTarget::Execution,
+        })
+        .await;
+        assert!(r.is_ok(), "{r:?}");
+    }
+
     #[test]
     fn execution_schema_includes_adaptive_batch_size() {
         let schema = faucet_core::schema_for!(crate::config::ExecutionSpec);
