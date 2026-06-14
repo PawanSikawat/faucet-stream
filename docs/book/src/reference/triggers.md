@@ -34,6 +34,12 @@ The `config:` field accepts either a **path string** (resolved **relative to the
 triggers file**, not the process CWD) or an **inline pipeline document**
 (`{ pipeline: … }`).
 
+The triggers file is **validated strictly at load time**: an unknown or
+misspelled field on a trigger entry (e.g. `debounce_sec` for `debounce_secs`) or
+inside its nested `store:` / `queue:` block fails fast with an error naming the
+field and the trigger, rather than being silently dropped. Keys inside an inline
+`config:` pipeline document are validated by the pipeline loader, not here.
+
 ## Trigger types
 
 ### `object_arrival`

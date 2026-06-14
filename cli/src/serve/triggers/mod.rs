@@ -49,17 +49,35 @@ pub async fn load_triggers(path: &std::path::Path) -> CliResult<CompiledTriggers
     let text = tokio::fs::read_to_string(path)
         .await
         .map_err(|e| CliError::Serve(format!("reading triggers file {}: {e}", path.display())))?;
-    let mut file: spec::TriggersFile = if path
+    let is_json = path
         .extension()
         .map(|e| e.eq_ignore_ascii_case("json"))
-        .unwrap_or(false)
-    {
+        .unwrap_or(false);
+    let mut file: spec::TriggersFile = if is_json {
         serde_json::from_str(&text)
             .map_err(|e| CliError::Serve(format!("parsing triggers JSON: {e}")))?
     } else {
         serde_yaml::from_str(&text)
             .map_err(|e| CliError::Serve(format!("parsing triggers YAML: {e}")))?
     };
+
+    // Reject unknown fields on a trigger entry. `TriggerSpec` cannot use
+    // `deny_unknown_fields` because it carries a `#[serde(flatten)]` kind, so a
+    // typo like `debounce_sec` (for `debounce_secs`) would otherwise be silently
+    // dropped (#232). Diff the raw document against the typed re-serialization.
+    let raw: serde_json::Value = if is_json {
+        serde_json::from_str(&text)
+            .map_err(|e| CliError::Serve(format!("parsing triggers JSON: {e}")))?
+    } else {
+        serde_yaml::from_str(&text)
+            .map_err(|e| CliError::Serve(format!("parsing triggers YAML: {e}")))?
+    };
+    if let Some((trigger, field)) = spec::unknown_trigger_fields(&raw, &file).into_iter().next() {
+        return Err(CliError::Serve(format!(
+            "triggers: unknown field `{field}` in trigger `{trigger}` \
+             (check for a typo; run `faucet schema triggers` for the valid fields)"
+        )));
+    }
 
     // Resolve relative `config: <path>` entries relative to the triggers file's
     // directory. This makes `config: ../pipelines/load.yaml` work regardless of
@@ -243,5 +261,25 @@ mod tests {
             }
             _ => panic!("expected PipelineRef::Path"),
         }
+    }
+
+    #[tokio::test]
+    async fn load_triggers_rejects_unknown_field() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let triggers_path = dir.path().join("triggers.yaml");
+        // `debounce_sec` is a typo for `debounce_secs` — a flatten-bearing
+        // `TriggerSpec` would silently drop it without the explicit check.
+        let yaml = "version: 1\ntriggers:\n  - name: hook\n    type: webhook\n    config: ./inner.yaml\n    methods: [POST]\n    debounce_sec: 5\n";
+        std::fs::write(&triggers_path, yaml).unwrap();
+
+        let err = load_triggers(&triggers_path)
+            .await
+            .expect_err("expected unknown-field rejection");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("debounce_sec"),
+            "error must name the field: {msg}"
+        );
+        assert!(msg.contains("hook"), "error must name the trigger: {msg}");
     }
 }
