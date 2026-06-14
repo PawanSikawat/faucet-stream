@@ -231,8 +231,9 @@ impl MysqlCdcSource {
                 .await
                 .map_err(|e| FaucetError::Source(format!("mysql-cdc: connect failed: {e}")))?;
 
-            // Resolve Current → FilePos by querying SHOW MASTER STATUS (fills in the
-            // actual file/pos before we build the request that borrows from `resolved`).
+            // Resolve Current → FilePos by querying the server's current binlog
+            // position (fills in the actual file/pos before we build the request
+            // that borrows from `resolved`).
             let resolved = resolve_current(resolved, &mut conn).await?;
             let req = build_request(self.config.server_id, &resolved)?;
 
@@ -546,7 +547,7 @@ pub(crate) fn resolve_start(
     // No persisted bookmark — use the config.
     match start_position {
         StartPosition::Current => {
-            // Placeholder; real file/pos filled in by `build_request` via SHOW MASTER STATUS.
+            // Placeholder; real file/pos filled in later by `current_binlog_position`.
             ResolvedStart::Current {
                 file: String::new(),
                 pos: 0,
@@ -581,22 +582,40 @@ async fn resolve_current(
     Ok(ResolvedStart::FilePos { file, pos })
 }
 
-/// Read the server's current binlog coordinates via `SHOW MASTER STATUS`.
+/// Read the server's current binlog coordinates.
+///
+/// MySQL 8.4 removed `SHOW MASTER STATUS` in favour of `SHOW BINARY LOG STATUS`
+/// (same `File` / `Position` columns). We try the 8.4+ spelling first and fall
+/// back to the legacy statement when the server rejects it (5.7 / 8.0 raise a
+/// parse error), so one code path works across 5.7 / 8.0 / 8.4+ without version
+/// parsing. Only invoked at start/capture time, never on the per-event hot path.
+///
+/// A statement that *runs* but returns no rows means binary logging is disabled
+/// — that is a definitive answer, so we surface it rather than falling back.
 async fn current_binlog_position(conn: &mut Conn) -> Result<(String, u64), FaucetError> {
-    let row: Option<Row> = conn
-        .query_first("SHOW MASTER STATUS")
-        .await
-        .map_err(|e| FaucetError::Source(format!("mysql-cdc: SHOW MASTER STATUS failed: {e}")))?;
+    let (row, stmt): (Option<Row>, &str) = match conn.query_first("SHOW BINARY LOG STATUS").await {
+        Ok(row) => (row, "SHOW BINARY LOG STATUS"),
+        // The 8.4+ spelling was rejected (older server) — fall back.
+        Err(new_err) => match conn.query_first("SHOW MASTER STATUS").await {
+            Ok(row) => (row, "SHOW MASTER STATUS"),
+            Err(old_err) => {
+                return Err(FaucetError::Source(format!(
+                    "mysql-cdc: reading current binlog position failed — \
+                         `SHOW BINARY LOG STATUS`: {new_err}; `SHOW MASTER STATUS`: {old_err}"
+                )));
+            }
+        },
+    };
     let row = row.ok_or_else(|| {
-        FaucetError::Source(
-            "mysql-cdc: SHOW MASTER STATUS returned no rows; is binary logging enabled?".into(),
-        )
+        FaucetError::Source(format!(
+            "mysql-cdc: {stmt} returned no rows; is binary logging enabled?"
+        ))
     })?;
-    let file: String = row.get(0).ok_or_else(|| {
-        FaucetError::Source("mysql-cdc: SHOW MASTER STATUS: missing File column".into())
-    })?;
+    let file: String = row
+        .get(0)
+        .ok_or_else(|| FaucetError::Source(format!("mysql-cdc: {stmt}: missing File column")))?;
     let pos: u64 = row.get(1).ok_or_else(|| {
-        FaucetError::Source("mysql-cdc: SHOW MASTER STATUS: missing Position column".into())
+        FaucetError::Source(format!("mysql-cdc: {stmt}: missing Position column"))
     })?;
     Ok((file, pos))
 }
