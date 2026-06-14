@@ -16,7 +16,9 @@ pub struct TriggersFile {
 
 /// One configured trigger.
 // Note: `deny_unknown_fields` is intentionally absent here — serde does not
-// support it on structs that contain a `#[serde(flatten)]` field.
+// support it on structs that contain a `#[serde(flatten)]` field. Unknown fields
+// are instead rejected at load time by [`unknown_trigger_fields`] (see #232),
+// which diffs the raw document against this type's re-serialization.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct TriggerSpec {
     /// Unique name; used in metrics, idempotency keys, and the webhook path.
@@ -156,6 +158,81 @@ pub struct RunTemplate {
     pub timeout_secs: Option<u64>,
 }
 
+/// Detect fields in the raw triggers document that the typed parse silently
+/// dropped. Returns `(trigger_label, dotted_field_path)` pairs — empty when the
+/// document has no unknown fields.
+///
+/// This works around serde's inability to combine `#[serde(flatten)]` (carried
+/// by `TriggerSpec.kind`) with `#[serde(deny_unknown_fields)]`: a misspelled
+/// top-level trigger field such as `debounce_sec` (for `debounce_secs`) would
+/// otherwise deserialize to its default with no error. We round-trip each parsed
+/// `TriggerSpec` back to JSON and report any raw key absent from that
+/// serialization, so the allow-list is derived from the types themselves and can
+/// never drift. Nested objects (`store`, `queue`, `run`) are checked too; the
+/// opaque inline pipeline `config:` sub-document is deliberately not descended
+/// into (its keys belong to a full pipeline config validated elsewhere).
+pub fn unknown_trigger_fields(
+    raw: &serde_json::Value,
+    file: &TriggersFile,
+) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    let Some(raw_triggers) = raw.get("triggers").and_then(|v| v.as_array()) else {
+        return out;
+    };
+    for (i, trigger) in file.triggers.iter().enumerate() {
+        let Some(raw_trigger) = raw_triggers.get(i) else {
+            continue;
+        };
+        let Ok(known) = serde_json::to_value(trigger) else {
+            continue;
+        };
+        let label = if trigger.name.trim().is_empty() {
+            format!("#{i}")
+        } else {
+            trigger.name.clone()
+        };
+        let mut fields = Vec::new();
+        collect_unknown_keys(raw_trigger, &known, "", true, &mut fields);
+        for f in fields {
+            out.push((label.clone(), f));
+        }
+    }
+    out
+}
+
+/// Recursively collect keys present in `raw` but absent from `known` (the typed
+/// re-serialization). `at_trigger_root` suppresses descent into the opaque
+/// `config:` sub-document at the trigger top level.
+fn collect_unknown_keys(
+    raw: &serde_json::Value,
+    known: &serde_json::Value,
+    path: &str,
+    at_trigger_root: bool,
+    out: &mut Vec<String>,
+) {
+    let (Some(raw_obj), Some(known_obj)) = (raw.as_object(), known.as_object()) else {
+        return;
+    };
+    for (key, raw_val) in raw_obj {
+        let child_path = if path.is_empty() {
+            key.clone()
+        } else {
+            format!("{path}.{key}")
+        };
+        match known_obj.get(key) {
+            None => out.push(child_path),
+            Some(known_val) => {
+                // The inline pipeline document is opaque here — its keys are a
+                // full pipeline config, validated by the pipeline loader.
+                if at_trigger_root && key == "config" {
+                    continue;
+                }
+                collect_unknown_keys(raw_val, known_val, &child_path, false, out);
+            }
+        }
+    }
+}
+
 fn default_true() -> bool {
     true
 }
@@ -256,5 +333,112 @@ triggers:
     fn rejects_unknown_top_level_field() {
         let yaml = "version: 1\ntriggers: []\nbogus: 1\n";
         assert!(serde_yaml::from_str::<TriggersFile>(yaml).is_err());
+    }
+
+    /// Parse the same text both ways: the typed form and a raw JSON `Value`.
+    fn parse_both(yaml: &str) -> (TriggersFile, serde_json::Value) {
+        let file: TriggersFile = serde_yaml::from_str(yaml).expect("typed parse");
+        let raw: serde_json::Value = serde_yaml::from_str(yaml).expect("raw parse");
+        (file, raw)
+    }
+
+    #[test]
+    fn detects_unknown_top_level_trigger_field() {
+        // `debounce_sec` is a typo for `debounce_secs` — silently dropped by the
+        // flatten-bearing TriggerSpec, so the typed parse alone would accept it.
+        let yaml = "\
+version: 1
+triggers:
+  - name: hook
+    type: webhook
+    config: ./x.yaml
+    debounce_sec: 5
+";
+        let (file, raw) = parse_both(yaml);
+        // The bug: the typed parse accepts the typo silently.
+        assert_eq!(file.triggers.len(), 1);
+        // The fix: the diff surfaces it.
+        let unknown = unknown_trigger_fields(&raw, &file);
+        assert_eq!(
+            unknown,
+            vec![("hook".to_string(), "debounce_sec".to_string())]
+        );
+    }
+
+    #[test]
+    fn accepts_all_known_fields_for_every_type() {
+        let yaml = "\
+version: 1
+triggers:
+  - name: obj
+    type: object_arrival
+    enabled: true
+    config: ./load.yaml
+    run: { name: r, timeout_secs: 10 }
+    store: { type: s3, bucket: b, prefix: in/, region: us-east-1, endpoint: http://x }
+    poll_interval_secs: 15
+    mode: batch
+    start_at: beginning
+  - name: hook
+    type: webhook
+    config: { pipeline: { sources: {}, sinks: {} } }
+    methods: [POST, PUT]
+    dedupe_header: Idempotency-Key
+    debounce_secs: 5
+  - name: drain
+    type: queue_depth
+    config: ./drain.yaml
+    queue: { type: kafka, brokers: b, topic: t, group: g }
+    threshold: 3
+    poll_interval_secs: 20
+";
+        let (file, raw) = parse_both(yaml);
+        let unknown = unknown_trigger_fields(&raw, &file);
+        assert!(
+            unknown.is_empty(),
+            "expected no unknown fields, got {unknown:?}"
+        );
+    }
+
+    #[test]
+    fn detects_unknown_nested_store_field() {
+        // A typo in an optional nested field (`prefx` for `prefix`) is also
+        // silently dropped by the internally-tagged StoreSpec enum.
+        let yaml = "\
+version: 1
+triggers:
+  - name: obj
+    type: object_arrival
+    config: ./load.yaml
+    store: { type: s3, bucket: b, prefx: in/ }
+";
+        let (file, raw) = parse_both(yaml);
+        let unknown = unknown_trigger_fields(&raw, &file);
+        assert_eq!(
+            unknown,
+            vec![("obj".to_string(), "store.prefx".to_string())]
+        );
+    }
+
+    #[test]
+    fn ignores_keys_inside_inline_pipeline_config() {
+        // The inline `config:` document is a full pipeline config validated
+        // elsewhere; its arbitrary keys must not be flagged as unknown.
+        let yaml = "\
+version: 1
+triggers:
+  - name: hook
+    type: webhook
+    config:
+      version: 1
+      pipeline: { sources: {}, sinks: {} }
+      anything_goes_here: true
+";
+        let (file, raw) = parse_both(yaml);
+        let unknown = unknown_trigger_fields(&raw, &file);
+        assert!(
+            unknown.is_empty(),
+            "inline config keys must be ignored, got {unknown:?}"
+        );
     }
 }
