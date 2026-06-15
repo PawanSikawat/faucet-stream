@@ -272,7 +272,7 @@ pub struct MatrixRow {
 }
 
 /// Execution-time controls.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ExecutionSpec {
     /// Maximum concurrent pipeline invocations (root + per-parent-record
@@ -291,7 +291,7 @@ pub struct ExecutionSpec {
 }
 
 /// Failure-handling policy across the matrix.
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum OnError {
     /// Skip the failed invocation's subtree but keep running siblings (default).

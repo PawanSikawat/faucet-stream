@@ -298,6 +298,8 @@ pub enum SchemaTarget {
     Dlq,
     /// JSON Schema for the `replication:` (snapshot→CDC) block.
     Replication,
+    /// JSON Schema for the top-level `execution:` block.
+    Execution,
     /// JSON Schema for the `quality:` block.
     #[cfg(feature = "quality")]
     Quality,
