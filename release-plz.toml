@@ -28,12 +28,19 @@ git_tag_name = "{{ package }}-v{{ version }}"
 # notes use the changelog body template below.
 git_release_enable = true
 
-# Aggregate every bumped crate's changelog entries into the single root
-# CHANGELOG.md (already managed by the project today). Per-crate
-# CHANGELOG.md files in 45 separate locations would be noisy for a
-# marketplace-style workspace; one repo-level file matches the existing
-# layout and CHANGELOG.md badge in the README.
-changelog_path = "./CHANGELOG.md"
+# Per-package changelogs (release-plz default): each crate's entries go to a
+# `CHANGELOG.md` in that crate's own directory (e.g. crates/core/CHANGELOG.md).
+# We do NOT set `changelog_path`, so release-plz uses this default.
+#
+# Why not one shared CHANGELOG.md? release-plz reads the existing changelog
+# with the `parse_changelog` crate, which requires every release heading to
+# LEAD with the version (`## [x.y.z] …`). A single shared file needs the
+# package name in the heading to disambiguate crates (`## `pkg` — [x.y.z]`),
+# which `parse_changelog` cannot parse — so it fell back to the oldest legacy
+# `## [0.2.0]` section and emitted wrong release notes for every release PR
+# (#248). Per-package files keep the version leading the heading, so the
+# parser is happy. The historical aggregated `./CHANGELOG.md` is preserved
+# in the repo as a frozen archive (release-plz no longer touches it).
 
 # Crates.io sparse-index propagation: release-plz publishes in dependency
 # order and polls between dependent publishes until each new version is
@@ -73,11 +80,13 @@ release_always = false
 # desired once the registry is stable.
 semver_check = false
 
-# Changelog body template — mirrors cliff.toml so rendered output looks the
-# same as past entries. release-plz uses git-cliff internally but no longer
-# honours the deprecated `changelog_config = "cliff.toml"` pointer, so the
-# template is inlined here. `cliff.toml` is retained for manual `git cliff`
-# invocations on demand.
+# Changelog body template. The H2 heading MUST lead with the version so
+# release-plz's `parse_changelog`-based reader can recognize each release
+# section (see #248). Because changelogs are now per-package, the file itself
+# is the package context — no package name in the heading is needed. release-plz
+# uses git-cliff internally but no longer honours the deprecated
+# `changelog_config = "cliff.toml"` pointer, so the template is inlined here.
+# `cliff.toml` is retained for manual `git cliff` invocations on demand.
 [changelog]
 header = """# Changelog
 
@@ -90,7 +99,7 @@ independently).
 """
 
 body = """
-## `{{ package }}` — [{{ version }}]{%- if release_link %}({{ release_link }}){% endif %} - {{ timestamp | date(format="%Y-%m-%d") }}
+## [{{ version }}]{%- if release_link %}({{ release_link }}){% endif %} - {{ timestamp | date(format="%Y-%m-%d") }}
 {% for group, commits in commits | group_by(attribute="group") %}
 ### {{ group | upper_first }}
 {% for commit in commits %}

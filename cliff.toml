@@ -1,13 +1,14 @@
 # git-cliff configuration — manual `git cliff` invocations only.
 #
-# As of #97, `CHANGELOG.md` is auto-maintained by release-plz on every
-# release PR (config: /release-plz.toml, [changelog] block). This file is
-# retained for one-off `git cliff` runs (e.g. regenerating the full history
-# from scratch, or previewing the unreleased section locally without going
-# through release-plz):
+# As of #97, changelogs are auto-maintained by release-plz on every release
+# PR (config: /release-plz.toml, [changelog] block). As of #248 they are
+# **per-package** — each crate has its own `CHANGELOG.md`; the root
+# `./CHANGELOG.md` is a frozen historical archive that release-plz no longer
+# touches. This file is retained for one-off `git cliff` runs (e.g. previewing
+# the unreleased section locally without going through release-plz):
 #
-#   git cliff -o CHANGELOG.md                       # regenerate the whole file
-#   git cliff --unreleased --prepend CHANGELOG.md   # preview unreleased section
+#   git cliff --unreleased                          # preview unreleased section
+#   git cliff -o CHANGELOG.md                       # regenerate a consolidated view
 #
 # See https://git-cliff.org
 
