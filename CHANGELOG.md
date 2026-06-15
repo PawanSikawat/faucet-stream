@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 (see the versioning policy in CONTRIBUTING.md — connector crates version
 independently).
+
+> [!NOTE]
+> **This file is a frozen historical archive.** As of #248, releases are
+> tracked in **per-package changelogs** — each crate has its own
+> `CHANGELOG.md` in its directory (e.g. `crates/core/CHANGELOG.md`,
+> `cli/CHANGELOG.md`, `faucet-stream/CHANGELOG.md`), maintained automatically
+> by release-plz. This root file preserves the consolidated history up to and
+> including the 1.1.0 release; new entries are **not** added here.
+
 ## [Unreleased]
 
 ## `faucet-cli` — [1.1.0](https://github.com/PawanSikawat/faucet-stream/compare/faucet-cli-v1.0.1...faucet-cli-v1.1.0) - 2026-06-12
