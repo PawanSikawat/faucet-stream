@@ -598,23 +598,46 @@ async fn current_binlog_position(conn: &mut Conn) -> Result<(String, u64), Fauce
         // The 8.4+ spelling was rejected (older server) — fall back.
         Err(new_err) => match conn.query_first("SHOW MASTER STATUS").await {
             Ok(row) => (row, "SHOW MASTER STATUS"),
-            Err(old_err) => {
-                return Err(FaucetError::Source(format!(
-                    "mysql-cdc: reading current binlog position failed — \
-                         `SHOW BINARY LOG STATUS`: {new_err}; `SHOW MASTER STATUS`: {old_err}"
-                )));
-            }
+            Err(old_err) => return Err(binlog_position_error(new_err, old_err)),
         },
     };
-    let row = row.ok_or_else(|| {
+    // Pull the raw `File` / `Position` columns out of the row (the only
+    // server-dependent step), then hand the pure optionals to a unit-testable
+    // decoder so the no-rows / missing-column branches need no live server.
+    let extracted = row.map(|r| (r.get::<String, _>(0), r.get::<u64, _>(1)));
+    finalize_binlog_position(extracted, stmt)
+}
+
+/// Error returned when *both* binlog-status statements are rejected — which
+/// should never happen on a connected server, since at least one spelling is
+/// valid for any supported version. Pulled out so its message is unit-testable.
+fn binlog_position_error(
+    new_err: impl std::fmt::Display,
+    old_err: impl std::fmt::Display,
+) -> FaucetError {
+    FaucetError::Source(format!(
+        "mysql-cdc: reading current binlog position failed — \
+         `SHOW BINARY LOG STATUS`: {new_err}; `SHOW MASTER STATUS`: {old_err}"
+    ))
+}
+
+/// Turn the raw `(File, Position)` columns of a binlog-status row into binlog
+/// coordinates. `extracted` is `None` when the statement returned no rows
+/// (binary logging disabled); the inner options are `None` when a column is
+/// absent. Pure (no I/O) so every branch — no-rows, missing-column, success —
+/// is unit-testable without a live server. `stmt` names the statement for errors.
+fn finalize_binlog_position(
+    extracted: Option<(Option<String>, Option<u64>)>,
+    stmt: &str,
+) -> Result<(String, u64), FaucetError> {
+    let (file, pos) = extracted.ok_or_else(|| {
         FaucetError::Source(format!(
             "mysql-cdc: {stmt} returned no rows; is binary logging enabled?"
         ))
     })?;
-    let file: String = row
-        .get(0)
-        .ok_or_else(|| FaucetError::Source(format!("mysql-cdc: {stmt}: missing File column")))?;
-    let pos: u64 = row.get(1).ok_or_else(|| {
+    let file =
+        file.ok_or_else(|| FaucetError::Source(format!("mysql-cdc: {stmt}: missing File column")))?;
+    let pos = pos.ok_or_else(|| {
         FaucetError::Source(format!("mysql-cdc: {stmt}: missing Position column"))
     })?;
     Ok((file, pos))
@@ -876,6 +899,54 @@ mod tests {
     use super::*;
     use crate::state::Bookmark;
     use serde_json::json;
+
+    // ── binlog position decoding (MySQL 8.4 fallback, #242) ───────────────────
+
+    #[test]
+    fn finalize_binlog_position_returns_file_and_pos() {
+        let got = finalize_binlog_position(Some((Some("mysql-bin.000007".into()), Some(154))), "S")
+            .expect("valid row decodes");
+        assert_eq!(got, ("mysql-bin.000007".to_string(), 154));
+    }
+
+    #[test]
+    fn finalize_binlog_position_no_rows_means_binlogging_disabled() {
+        let err = finalize_binlog_position(None, "SHOW BINARY LOG STATUS")
+            .expect_err("no rows must error");
+        let msg = err.to_string();
+        assert!(msg.contains("returned no rows"), "{msg}");
+        assert!(msg.contains("SHOW BINARY LOG STATUS"), "{msg}");
+    }
+
+    #[test]
+    fn finalize_binlog_position_missing_file_column() {
+        let err = finalize_binlog_position(Some((None, Some(4))), "SHOW MASTER STATUS")
+            .expect_err("missing File must error");
+        assert!(err.to_string().contains("missing File column"), "{err}");
+    }
+
+    #[test]
+    fn finalize_binlog_position_missing_position_column() {
+        let err = finalize_binlog_position(
+            Some((Some("mysql-bin.1".into()), None)),
+            "SHOW MASTER STATUS",
+        )
+        .expect_err("missing Position must error");
+        assert!(err.to_string().contains("missing Position column"), "{err}");
+    }
+
+    #[test]
+    fn binlog_position_error_names_both_statements() {
+        let msg = binlog_position_error("parse error NEW", "parse error OLD").to_string();
+        assert!(
+            msg.contains("SHOW BINARY LOG STATUS") && msg.contains("parse error NEW"),
+            "{msg}"
+        );
+        assert!(
+            msg.contains("SHOW MASTER STATUS") && msg.contains("parse error OLD"),
+            "{msg}"
+        );
+    }
 
     // ── resolve_start precedence ──────────────────────────────────────────────
 
