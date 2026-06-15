@@ -187,6 +187,7 @@ Example: `server_id: 1001` → state key `mysql-cdc:1001`.
 - **`start_position: earliest` may error.** If binlogs have been purged (via `expire_logs_days` or `PURGE BINARY LOGS`), MySQL returns an error when the requested position no longer exists. Keep your binlog retention window large enough for your expected downtime.
 - **Per-transaction durability.** The bookmark advances once per committed transaction. A crash mid-transaction replays at most the events since the last persisted bookmark (the incomplete transaction is re-delivered from the last commit boundary).
 - **`max_staged_records` guards against OOM.** Very large transactions (bulk INSERTs of millions of rows) buffer all rows in memory before the commit event arrives. Set `max_staged_records` to a safe upper bound for your workload.
+- **MySQL 5.7 / 8.0 / 8.4+ are all supported.** Capturing the current binlog position (`start_position: current` and `capture_resume_position()`) tries `SHOW BINARY LOG STATUS` (MySQL 8.4+) and falls back to `SHOW MASTER STATUS` (5.7 / 8.0), so the connector works against the 8.4 LTS — which removed `SHOW MASTER STATUS` — out of the box.
 
 ---
 
@@ -258,8 +259,8 @@ state:
 ## Snapshot → CDC handoff
 
 This source implements `capture_resume_position()`, which reads the server's
-**current binlog coordinates** (`{ file, pos }` via `SHOW MASTER STATUS`) as a
-resume bookmark — without consuming any changes. The `faucet replicate` command
+**current binlog coordinates** (`{ file, pos }`) as a resume bookmark — without
+consuming any changes. The `faucet replicate` command
 uses it to anchor the binlog stream at-or-before a bulk snapshot of the table,
 so the combined snapshot+CDC result is a gap-free, duplicate-free mirror when
 paired with a `write_mode: upsert` sink.

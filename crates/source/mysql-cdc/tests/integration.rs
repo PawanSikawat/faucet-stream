@@ -48,12 +48,22 @@ fn startup_limit() -> &'static tokio::sync::Semaphore {
 /// having no password, so the connection URL is
 /// `mysql://root@127.0.0.1:<port>/test`.
 async fn start_mysql_cdc() -> (ContainerAsync<Mysql>, String) {
+    // The `Mysql` module's default tag is 8.1; pin it explicitly so this and the
+    // 8.4-specific test below differ only by version.
+    start_mysql_cdc_tagged("8.1").await
+}
+
+/// Start a MySQL container at a specific image tag with the binlog options
+/// required for CDC. Lets a test pick the server version (e.g. `8.4`, where
+/// `SHOW MASTER STATUS` was removed in favour of `SHOW BINARY LOG STATUS`).
+async fn start_mysql_cdc_tagged(tag: &str) -> (ContainerAsync<Mysql>, String) {
     let _permit = startup_limit()
         .acquire()
         .await
         .expect("startup semaphore closed");
 
     let container = Mysql::default()
+        .with_tag(tag)
         .with_cmd([
             "--server-id=1",
             "--log-bin=mysql-bin",
@@ -421,5 +431,32 @@ async fn capture_resume_position_returns_file_and_pos() {
     assert!(
         pos.get("pos").and_then(|v| v.as_u64()).is_some(),
         "pos present: {pos}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn capture_resume_position_works_on_mysql_8_4() {
+    // MySQL 8.4 removed `SHOW MASTER STATUS` (replaced by `SHOW BINARY LOG
+    // STATUS`). The CDC source must capture the current binlog coordinates on
+    // 8.4 too — both for `start_position: current` and for `faucet replicate`'s
+    // pre-snapshot position capture (#189). Regression guard for #242.
+    let (_container, url) = start_mysql_cdc_tagged("8.4").await;
+    let source = MysqlCdcSource::new(build_config(&url))
+        .await
+        .expect("source new on MySQL 8.4");
+    let pos = source
+        .capture_resume_position()
+        .await
+        .expect("capture_resume_position must succeed on MySQL 8.4")
+        .expect("mysql-cdc must capture a position");
+    assert!(
+        pos.get("file")
+            .and_then(|v| v.as_str())
+            .is_some_and(|f| !f.is_empty()),
+        "binlog file present: {pos}"
+    );
+    assert!(
+        pos.get("pos").and_then(|v| v.as_u64()).is_some(),
+        "binlog pos present: {pos}"
     );
 }
