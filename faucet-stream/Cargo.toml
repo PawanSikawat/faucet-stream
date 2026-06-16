@@ -8,7 +8,7 @@ repository.workspace = true
 description = "A declarative, config-driven data pipeline with pluggable source and sink connectors"
 readme = "../README.md"
 keywords = ["rest", "api", "meltano", "bigquery", "streaming"]
-categories = ["web-programming::http-client"]
+categories = ["database", "asynchronous", "encoding"]
 exclude = [".trunk/"]
 
 [features]
