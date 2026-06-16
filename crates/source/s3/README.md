@@ -2,6 +2,8 @@
 
 [![Crates.io](https://img.shields.io/crates/v/faucet-source-s3.svg)](https://crates.io/crates/faucet-source-s3)
 [![Docs.rs](https://docs.rs/faucet-source-s3/badge.svg)](https://docs.rs/faucet-source-s3)
+[![MSRV](https://img.shields.io/crates/msrv/faucet-source-s3.svg)](https://github.com/PawanSikawat/faucet-stream/blob/main/rust-toolchain.toml)
+[![License](https://img.shields.io/crates/l/faucet-source-s3.svg)](https://github.com/PawanSikawat/faucet-stream#license)
 
 An AWS S3 source that reads objects from a bucket and parses them as JSON Lines, JSON arrays, or raw text, with concurrent object reads via `buffer_unordered`.
 

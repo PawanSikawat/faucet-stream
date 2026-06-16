@@ -2,6 +2,8 @@
 
 [![Crates.io](https://img.shields.io/crates/v/faucet-stream.svg)](https://crates.io/crates/faucet-stream)
 [![Docs.rs](https://docs.rs/faucet-stream/badge.svg)](https://docs.rs/faucet-stream)
+[![MSRV](https://img.shields.io/crates/msrv/faucet-stream.svg)](https://github.com/PawanSikawat/faucet-stream/blob/main/rust-toolchain.toml)
+[![License](https://img.shields.io/crates/l/faucet-stream.svg)](https://github.com/PawanSikawat/faucet-stream#license)
 
 Umbrella crate for the [faucet-stream](https://github.com/PawanSikawat/faucet-stream) ecosystem. Provides feature-gated access to all source and sink connectors through a single dependency.
 

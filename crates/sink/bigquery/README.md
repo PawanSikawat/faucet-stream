@@ -2,6 +2,8 @@
 
 [![Crates.io](https://img.shields.io/crates/v/faucet-sink-bigquery.svg)](https://crates.io/crates/faucet-sink-bigquery)
 [![Docs.rs](https://docs.rs/faucet-sink-bigquery/badge.svg)](https://docs.rs/faucet-sink-bigquery)
+[![MSRV](https://img.shields.io/crates/msrv/faucet-sink-bigquery.svg)](https://github.com/PawanSikawat/faucet-stream/blob/main/rust-toolchain.toml)
+[![License](https://img.shields.io/crates/l/faucet-sink-bigquery.svg)](https://github.com/PawanSikawat/faucet-stream#license)
 
 Google BigQuery streaming insert sink for the [faucet-stream](https://github.com/PawanSikawat/faucet-stream) ecosystem.
 

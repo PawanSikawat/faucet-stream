@@ -2,6 +2,8 @@
 
 [![Crates.io](https://img.shields.io/crates/v/faucet-sink-snowflake.svg)](https://crates.io/crates/faucet-sink-snowflake)
 [![Docs.rs](https://docs.rs/faucet-sink-snowflake/badge.svg)](https://docs.rs/faucet-sink-snowflake)
+[![MSRV](https://img.shields.io/crates/msrv/faucet-sink-snowflake.svg)](https://github.com/PawanSikawat/faucet-stream/blob/main/rust-toolchain.toml)
+[![License](https://img.shields.io/crates/l/faucet-sink-snowflake.svg)](https://github.com/PawanSikawat/faucet-stream#license)
 
 Snowflake sink connector for the [faucet-stream](https://github.com/PawanSikawat/faucet-stream) ecosystem.
 

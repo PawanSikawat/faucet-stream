@@ -2,6 +2,8 @@
 
 [![Crates.io](https://img.shields.io/crates/v/faucet-core.svg)](https://crates.io/crates/faucet-core)
 [![Docs.rs](https://docs.rs/faucet-core/badge.svg)](https://docs.rs/faucet-core)
+[![MSRV](https://img.shields.io/crates/msrv/faucet-core.svg)](https://github.com/PawanSikawat/faucet-stream/blob/main/rust-toolchain.toml)
+[![License](https://img.shields.io/crates/l/faucet-core.svg)](https://github.com/PawanSikawat/faucet-stream#license)
 
 Shared types, traits, and utilities for the [faucet-stream](https://github.com/PawanSikawat/faucet-stream) ecosystem.
 

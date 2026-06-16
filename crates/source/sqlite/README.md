@@ -2,6 +2,8 @@
 
 [![Crates.io](https://img.shields.io/crates/v/faucet-source-sqlite.svg)](https://crates.io/crates/faucet-source-sqlite)
 [![Docs.rs](https://docs.rs/faucet-source-sqlite/badge.svg)](https://docs.rs/faucet-source-sqlite)
+[![MSRV](https://img.shields.io/crates/msrv/faucet-source-sqlite.svg)](https://github.com/PawanSikawat/faucet-stream/blob/main/rust-toolchain.toml)
+[![License](https://img.shields.io/crates/l/faucet-source-sqlite.svg)](https://github.com/PawanSikawat/faucet-stream#license)
 
 A SQLite query source that executes SQL queries and returns rows as JSON records, with connection pooling and dynamic type probing via sqlx.
 

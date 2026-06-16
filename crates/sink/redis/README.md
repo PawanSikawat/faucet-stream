@@ -2,6 +2,8 @@
 
 [![Crates.io](https://img.shields.io/crates/v/faucet-sink-redis.svg)](https://crates.io/crates/faucet-sink-redis)
 [![Docs.rs](https://docs.rs/faucet-sink-redis/badge.svg)](https://docs.rs/faucet-sink-redis)
+[![MSRV](https://img.shields.io/crates/msrv/faucet-sink-redis.svg)](https://github.com/PawanSikawat/faucet-stream/blob/main/rust-toolchain.toml)
+[![License](https://img.shields.io/crates/l/faucet-sink-redis.svg)](https://github.com/PawanSikawat/faucet-stream#license)
 
 Redis sink connector for the [faucet-stream](https://github.com/PawanSikawat/faucet-stream) ecosystem.
 

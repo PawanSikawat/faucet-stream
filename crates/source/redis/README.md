@@ -2,6 +2,8 @@
 
 [![Crates.io](https://img.shields.io/crates/v/faucet-source-redis.svg)](https://crates.io/crates/faucet-source-redis)
 [![Docs.rs](https://docs.rs/faucet-source-redis/badge.svg)](https://docs.rs/faucet-source-redis)
+[![MSRV](https://img.shields.io/crates/msrv/faucet-source-redis.svg)](https://github.com/PawanSikawat/faucet-stream/blob/main/rust-toolchain.toml)
+[![License](https://img.shields.io/crates/l/faucet-source-redis.svg)](https://github.com/PawanSikawat/faucet-stream#license)
 
 A Redis source that reads records from lists, streams, or key patterns, returning them as JSON.
 

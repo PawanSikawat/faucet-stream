@@ -2,6 +2,8 @@
 
 [![Crates.io](https://img.shields.io/crates/v/faucet-sink-sqlite.svg)](https://crates.io/crates/faucet-sink-sqlite)
 [![Docs.rs](https://docs.rs/faucet-sink-sqlite/badge.svg)](https://docs.rs/faucet-sink-sqlite)
+[![MSRV](https://img.shields.io/crates/msrv/faucet-sink-sqlite.svg)](https://github.com/PawanSikawat/faucet-stream/blob/main/rust-toolchain.toml)
+[![License](https://img.shields.io/crates/l/faucet-sink-sqlite.svg)](https://github.com/PawanSikawat/faucet-stream#license)
 
 SQLite sink connector for the [faucet-stream](https://github.com/PawanSikawat/faucet-stream) ecosystem.
 

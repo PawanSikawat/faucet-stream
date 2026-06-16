@@ -2,6 +2,8 @@
 
 [![Crates.io](https://img.shields.io/crates/v/faucet-source-xml.svg)](https://crates.io/crates/faucet-source-xml)
 [![Docs.rs](https://docs.rs/faucet-source-xml/badge.svg)](https://docs.rs/faucet-source-xml)
+[![MSRV](https://img.shields.io/crates/msrv/faucet-source-xml.svg)](https://github.com/PawanSikawat/faucet-stream/blob/main/rust-toolchain.toml)
+[![License](https://img.shields.io/crates/l/faucet-source-xml.svg)](https://github.com/PawanSikawat/faucet-stream#license)
 
 A config-driven XML/SOAP API source with automatic XML-to-JSON conversion, dot-path record extraction, and pluggable authentication. Transient HTTP failures (5xx / connection resets) are retried with exponential backoff.
 

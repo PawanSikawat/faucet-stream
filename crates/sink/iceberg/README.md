@@ -2,6 +2,8 @@
 
 [![Crates.io](https://img.shields.io/crates/v/faucet-sink-iceberg.svg)](https://crates.io/crates/faucet-sink-iceberg)
 [![Docs.rs](https://docs.rs/faucet-sink-iceberg/badge.svg)](https://docs.rs/faucet-sink-iceberg)
+[![MSRV](https://img.shields.io/crates/msrv/faucet-sink-iceberg.svg)](https://github.com/PawanSikawat/faucet-stream/blob/main/rust-toolchain.toml)
+[![License](https://img.shields.io/crates/l/faucet-sink-iceberg.svg)](https://github.com/PawanSikawat/faucet-stream#license)
 
 Apache Iceberg sink connector for the [faucet-stream](https://github.com/PawanSikawat/faucet-stream) ecosystem.
 

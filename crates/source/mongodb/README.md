@@ -2,6 +2,8 @@
 
 [![Crates.io](https://img.shields.io/crates/v/faucet-source-mongodb.svg)](https://crates.io/crates/faucet-source-mongodb)
 [![Docs.rs](https://docs.rs/faucet-source-mongodb/badge.svg)](https://docs.rs/faucet-source-mongodb)
+[![MSRV](https://img.shields.io/crates/msrv/faucet-source-mongodb.svg)](https://github.com/PawanSikawat/faucet-stream/blob/main/rust-toolchain.toml)
+[![License](https://img.shields.io/crates/l/faucet-source-mongodb.svg)](https://github.com/PawanSikawat/faucet-stream#license)
 
 A MongoDB source that executes `find()` queries with filter, projection, sort, and limit, returning documents as JSON records.
 

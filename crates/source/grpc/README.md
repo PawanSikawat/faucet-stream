@@ -2,6 +2,8 @@
 
 [![Crates.io](https://img.shields.io/crates/v/faucet-source-grpc.svg)](https://crates.io/crates/faucet-source-grpc)
 [![Docs.rs](https://docs.rs/faucet-source-grpc/badge.svg)](https://docs.rs/faucet-source-grpc)
+[![MSRV](https://img.shields.io/crates/msrv/faucet-source-grpc.svg)](https://github.com/PawanSikawat/faucet-stream/blob/main/rust-toolchain.toml)
+[![License](https://img.shields.io/crates/l/faucet-source-grpc.svg)](https://github.com/PawanSikawat/faucet-stream#license)
 
 A config-driven gRPC source that uses protobuf reflection to call any gRPC service dynamically and return records as JSON.
 

@@ -2,6 +2,8 @@
 
 [![Crates.io](https://img.shields.io/crates/v/faucet-sink-jsonl.svg)](https://crates.io/crates/faucet-sink-jsonl)
 [![Docs.rs](https://docs.rs/faucet-sink-jsonl/badge.svg)](https://docs.rs/faucet-sink-jsonl)
+[![MSRV](https://img.shields.io/crates/msrv/faucet-sink-jsonl.svg)](https://github.com/PawanSikawat/faucet-stream/blob/main/rust-toolchain.toml)
+[![License](https://img.shields.io/crates/l/faucet-sink-jsonl.svg)](https://github.com/PawanSikawat/faucet-stream#license)
 
 JSON Lines file sink connector for the [faucet-stream](https://github.com/PawanSikawat/faucet-stream) ecosystem.
 

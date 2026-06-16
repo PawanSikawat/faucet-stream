@@ -2,6 +2,8 @@
 
 [![Crates.io](https://img.shields.io/crates/v/faucet-source-websocket.svg)](https://crates.io/crates/faucet-source-websocket)
 [![Docs.rs](https://docs.rs/faucet-source-websocket/badge.svg)](https://docs.rs/faucet-source-websocket)
+[![MSRV](https://img.shields.io/crates/msrv/faucet-source-websocket.svg)](https://github.com/PawanSikawat/faucet-stream/blob/main/rust-toolchain.toml)
+[![License](https://img.shields.io/crates/l/faucet-source-websocket.svg)](https://github.com/PawanSikawat/faucet-stream#license)
 
 A WebSocket streaming source: connects to a `ws://`/`wss://` endpoint,
 optionally sends subscription frames, and streams each incoming message as a

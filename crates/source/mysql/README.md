@@ -2,6 +2,8 @@
 
 [![Crates.io](https://img.shields.io/crates/v/faucet-source-mysql.svg)](https://crates.io/crates/faucet-source-mysql)
 [![Docs.rs](https://docs.rs/faucet-source-mysql/badge.svg)](https://docs.rs/faucet-source-mysql)
+[![MSRV](https://img.shields.io/crates/msrv/faucet-source-mysql.svg)](https://github.com/PawanSikawat/faucet-stream/blob/main/rust-toolchain.toml)
+[![License](https://img.shields.io/crates/l/faucet-source-mysql.svg)](https://github.com/PawanSikawat/faucet-stream#license)
 
 A MySQL query source that executes SQL queries and returns rows as JSON records, with connection pooling via sqlx.
 

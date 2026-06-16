@@ -2,6 +2,8 @@
 
 [![Crates.io](https://img.shields.io/crates/v/faucet-source-postgres.svg)](https://crates.io/crates/faucet-source-postgres)
 [![Docs.rs](https://docs.rs/faucet-source-postgres/badge.svg)](https://docs.rs/faucet-source-postgres)
+[![MSRV](https://img.shields.io/crates/msrv/faucet-source-postgres.svg)](https://github.com/PawanSikawat/faucet-stream/blob/main/rust-toolchain.toml)
+[![License](https://img.shields.io/crates/l/faucet-source-postgres.svg)](https://github.com/PawanSikawat/faucet-stream#license)
 
 A PostgreSQL query source that executes SQL queries and returns rows as JSON records, with connection pooling via sqlx.
 

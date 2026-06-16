@@ -2,6 +2,8 @@
 
 [![Crates.io](https://img.shields.io/crates/v/faucet-sink-s3.svg)](https://crates.io/crates/faucet-sink-s3)
 [![Docs.rs](https://docs.rs/faucet-sink-s3/badge.svg)](https://docs.rs/faucet-sink-s3)
+[![MSRV](https://img.shields.io/crates/msrv/faucet-sink-s3.svg)](https://github.com/PawanSikawat/faucet-stream/blob/main/rust-toolchain.toml)
+[![License](https://img.shields.io/crates/l/faucet-sink-s3.svg)](https://github.com/PawanSikawat/faucet-stream#license)
 
 AWS S3 sink connector for the [faucet-stream](https://github.com/PawanSikawat/faucet-stream) ecosystem.
 
