@@ -1,5 +1,10 @@
 # faucet-cli
 
+[![Crates.io](https://img.shields.io/crates/v/faucet-cli.svg)](https://crates.io/crates/faucet-cli)
+[![Docs.rs](https://docs.rs/faucet-cli/badge.svg)](https://docs.rs/faucet-cli)
+[![MSRV](https://img.shields.io/crates/msrv/faucet-cli.svg)](https://github.com/PawanSikawat/faucet-stream/blob/main/rust-toolchain.toml)
+[![License](https://img.shields.io/crates/l/faucet-cli.svg)](https://github.com/PawanSikawat/faucet-stream#license)
+
 `faucet` — config-driven runner for [`faucet-stream`](https://crates.io/crates/faucet-stream) pipelines.
 
 Write a YAML or JSON file describing a source, optional transforms, a sink, and (optionally) a state store. Run it with the `faucet` binary. No Rust code required.
@@ -955,6 +960,34 @@ tracing_subscriber::registry().with(otel_layer).init();
 
 Faucet does not bundle an OTel exporter — wire your own to keep dependencies minimal.
 
+## Troubleshooting / FAQ
+
+**"No config file found" / wrong file picked up.** With no path argument, `faucet` auto-discovers `faucet.yaml`, then `faucet.yml`, then `faucet.json` in the current directory. Pass the path explicitly (`faucet run path/to/pipeline.yaml`) when the file lives elsewhere or has a different name.
+
+**Environment variables / `.env` not applied.** `faucet` loads a `.env` from the current directory by default; point at another with `--env-file path/.env`, or disable loading entirely with `--no-env-file`. `${env:VAR}` / `${file:PATH}` placeholders resolve at config-load time, so the var must be set (or the `.env` loaded) before the command runs.
+
+**"unknown source/sink type" or a connector seems missing.** Connectors are feature-gated. A slim build (`--no-default-features --features …`) only includes the connectors you compiled in. Run `faucet list` to see exactly which sources, sinks, transforms, and state backends are present in your binary; reinstall with the needed `--features` (or the `full` feature) if one is absent.
+
+**`faucet validate` fails.** Validation parses the config, expands the matrix, and checks every connector/transform spec (plus exactly-once and write-mode gates) without running. The error names the offending matrix row and field. Use `faucet validate --show-composed` to print the fully merged document (after `extends:` / `!include` / profiles) and `faucet schema source|sink|transform <name>` to confirm the expected field shape.
+
+**Secrets not resolving (`${vault:…}` / `${aws-sm:…}` / `${gcp-sm:…}` / `${azure-kv:…}`).** Secrets resolution is feature-gated — install with the matching `secrets-*` feature (or the `secrets` aggregate). Run `faucet validate` (without `--no-secrets`) as a real preflight: it fetches each reference and prints `secret: <scheme>:<reference> → resolved`, surfacing missing credentials (e.g. `VAULT_ADDR`/`VAULT_TOKEN`, the AWS default chain, GCP ADC, Azure env/managed identity) before a run. Use `--no-secrets` to validate offline without contacting any secrets manager.
+
+**Pipeline runs but I see no records / no logs.** Pipeline records and command output go to **stdout**; logs go to **stderr**. Raise verbosity with `--log-level debug` or `FAUCET_LOG=debug`. Never enable debug logging on a pipeline whose connector configs hold resolved secrets — third-party connector debug output is outside faucet's redaction boundary.
+
+## See also
+
+- [`faucet-stream`](https://crates.io/crates/faucet-stream) — the umbrella library this CLI is built on.
+- [`faucet-core`](https://crates.io/crates/faucet-core) — shared traits, pipeline orchestration, and error types.
+- [Documentation site](https://pawansikawat.github.io/faucet-stream/) — guides, the connector capability matrix, and the config-file grammar reference.
+- [GitHub repository](https://github.com/PawanSikawat/faucet-stream) — source, examples (`cli/examples/`), and issue tracker.
+
 ## License
 
-MIT OR Apache-2.0
+Licensed under either of
+
+- Apache License, Version 2.0 ([LICENSE-APACHE](../LICENSE-APACHE) or <https://www.apache.org/licenses/LICENSE-2.0>)
+- MIT license ([LICENSE-MIT](../LICENSE-MIT) or <https://opensource.org/licenses/MIT>)
+
+at your option.
+
+Unless you explicitly state otherwise, any contribution intentionally submitted for inclusion in the work by you, as defined in the Apache-2.0 license, shall be dual licensed as above, without any additional terms or conditions.

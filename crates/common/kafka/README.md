@@ -1,276 +1,163 @@
 # faucet-common-kafka
 
-Shared configuration types for `faucet-source-kafka` and `faucet-sink-kafka`.
+[![Crates.io](https://img.shields.io/crates/v/faucet-common-kafka.svg)](https://crates.io/crates/faucet-common-kafka)
+[![Docs.rs](https://docs.rs/faucet-common-kafka/badge.svg)](https://docs.rs/faucet-common-kafka)
+[![MSRV](https://img.shields.io/crates/msrv/faucet-common-kafka.svg)](https://github.com/PawanSikawat/faucet-stream/blob/main/rust-toolchain.toml)
+[![License](https://img.shields.io/crates/l/faucet-common-kafka.svg)](https://github.com/PawanSikawat/faucet-stream#license)
 
-Most users don't depend on this crate directly — they import from
-`faucet-source-kafka` or `faucet-sink-kafka`, which re-export everything. Third-party
-connector authors building their own Kafka source/sink for the faucet ecosystem should
-depend on this crate to stay interchangeable with the first-party connectors.
+Shared configuration types for the Kafka source and sink connectors. Part of the
+[faucet-stream](https://github.com/PawanSikawat/faucet-stream) ecosystem.
 
----
-
-## Features
-
-### `default`
-
-No features enabled. Provides:
-
-- `KafkaAuth` — all authentication modes
-- `KafkaValueFormat::{Json, RawString, Bytes}` — the three wire-independent formats
-- `CompressionType` — producer-side compression enum
-- `OnDecodeError` — per-message decode failure policy
-- `OnKeyError` — per-record key/partition failure policy
-
-### `schema-registry`
-
-Enables Confluent Schema Registry integration:
-
-- `KafkaValueFormat::{ConfluentAvro, ConfluentProtobuf, ConfluentJsonSchema}` variants
-- `SchemaRegistryConfig` — connection settings for the registry client
-- `schema_registry::client::SchemaRegistryClient` — HTTP client with LRU schema cache
-- Per-format codec modules: `schema_registry::avro`, `schema_registry::protobuf`,
-  `schema_registry::json_schema`, `schema_registry::envelope`
-
-Additional dependencies pulled in: `reqwest`, `lru`, `bytes`, `apache-avro`,
-`prost-reflect`, `prost`, `jsonschema`, `tokio`, `url`, `urlencoding`.
+This crate holds the wire-format config that `faucet-source-kafka` and `faucet-sink-kafka`
+have in common — authentication, value formats, compression, and the Confluent Schema
+Registry client — so the two connectors stay byte-for-byte interchangeable. All types derive
+`Serialize`, `Deserialize`, and `JsonSchema`, so they round-trip through YAML/JSON configs
+and `faucet schema` introspection.
 
 ---
 
-## Auth modes
+## Who should depend on this
 
-Authentication is configured via `KafkaAuth` (`crates/common/kafka/src/auth.rs`).
-The `type` discriminator uses `snake_case` matching the enum variant names.
+- **End users:** you almost never depend on this crate directly. `faucet-source-kafka` and
+  `faucet-sink-kafka` re-export every type below, so importing from those connectors is enough.
+- **Third-party connector authors:** if you build your own Kafka source/sink for the faucet
+  ecosystem, depend on `faucet-common-kafka` and reuse these types so your connector accepts
+  the same `auth:` / `value_format:` config as the first-party ones.
 
-### `none` (default)
+---
 
-```yaml
-auth:
-  type: none
-```
+## Types it provides
 
-Plaintext brokers only. Sets `security.protocol = PLAINTEXT`.
+| Type | Module | Purpose |
+|------|--------|---------|
+| `KafkaAuth` | `auth` | Broker authentication mode (adjacently-tagged enum) |
+| `ScramMechanism` | `auth` | `sha256` / `sha512` selector for SASL/SCRAM |
+| `BasicAuth` | `auth` | Optional username/password for the Schema Registry HTTP client |
+| `KafkaValueFormat` | `format` | Message value serialization format (adjacently-tagged enum) |
+| `OnDecodeError` | `format` | Source policy when a message fails to decode (`fail` / `skip`) |
+| `OnKeyError` | `format` | Sink policy when key/partition extraction fails (`fail` / `skip` / `round_robin`) |
+| `CompressionType` | `format` | Producer-side compression (`none` / `gzip` / `snappy` / `lz4` / `zstd`) |
+| `SchemaRegistryConfig` | `schema_registry` | Confluent Schema Registry client settings (feature `schema-registry`) |
 
-### `sasl_plain`
+The `schema_registry` module also exposes `SchemaRegistryClient` (an `Arc`-cloneable HTTP
+client with an LRU schema cache) and per-format codecs (`avro`, `protobuf`, `json_schema`,
+`envelope`) — all behind the `schema-registry` feature.
 
-```yaml
-auth:
-  type: sasl_plain
-  username: my-user
-  password: my-secret
-```
+### `KafkaAuth` modes
 
-Sets `security.protocol = SASL_PLAINTEXT`, `sasl.mechanism = PLAIN`. Both
-`username` and `password` must be non-empty or the config is rejected.
+Configured as a `{ type, config }`-style **adjacently-tagged** enum — the `type`
+discriminator (`snake_case`) selects the variant and its fields sit alongside it, matching the
+project-wide auth convention (not a flat shape).
 
-### `sasl_scram`
+| `type` | Fields | Effect |
+|--------|--------|--------|
+| `none` (default) | — | `security.protocol = PLAINTEXT` |
+| `sasl_plain` | `username`, `password` | `SASL_PLAINTEXT` + `sasl.mechanism = PLAIN`; both fields must be non-empty |
+| `sasl_scram` | `mechanism` (`sha256`/`sha512`), `username`, `password` | `SASL_PLAINTEXT` + `SCRAM-SHA-256`/`SCRAM-SHA-512` |
+| `ssl` | `ca_path`, `cert_path`, `key_path`, `key_password?` | `SSL`; all three paths validated to exist at config time |
+| `sasl_ssl` | `sasl` (a `sasl_plain`/`sasl_scram`), `ssl` (an `ssl`) | applies `ssl` then `sasl`, then forces `security.protocol = SASL_SSL` |
 
 ```yaml
 auth:
   type: sasl_scram
-  mechanism: sha256   # or sha512
+  mechanism: sha512
   username: my-user
   password: my-secret
 ```
 
-`mechanism` is a `ScramMechanism` enum: `sha256` maps to `SCRAM-SHA-256`,
-`sha512` maps to `SCRAM-SHA-512`. Sets `security.protocol = SASL_PLAINTEXT`.
+### `KafkaValueFormat` formats
 
-### `ssl`
+Same adjacently-tagged shape. The first three are always available; the Confluent variants
+require the `schema-registry` feature.
 
-```yaml
-auth:
-  type: ssl
-  ca_path: /etc/kafka/certs/ca.pem
-  cert_path: /etc/kafka/certs/client.pem
-  key_path: /etc/kafka/certs/client.key
-  key_password: optional-passphrase   # omit if key is unencrypted
-```
-
-All three path fields are validated to exist on the filesystem at config time.
-`key_password` is optional and omitted from serialization when absent.
-Sets `security.protocol = SSL`.
-
-### `sasl_ssl`
-
-```yaml
-auth:
-  type: sasl_ssl
-  sasl:
-    type: sasl_plain
-    username: my-user
-    password: my-secret
-  ssl:
-    type: ssl
-    ca_path: /etc/kafka/certs/ca.pem
-    cert_path: /etc/kafka/certs/client.pem
-    key_path: /etc/kafka/certs/client.key
-```
-
-Combines a SASL mechanism with TLS transport. The `sasl` field must be either
-`sasl_plain` or `sasl_scram`; the `ssl` field must be `ssl`. The inner configs
-are applied in order (`ssl` first, then `sasl`), then `security.protocol` is
-overridden to `SASL_SSL`.
-
----
-
-## Value formats
-
-Configured via `KafkaValueFormat` (`crates/common/kafka/src/format.rs`).
-The `type` discriminator uses `snake_case`.
-
-### `json` (default)
-
-```yaml
-value_format:
-  type: json
-```
-
-Parses message bytes as a JSON document. Invalid JSON fails per `on_decode_error`.
-
-### `raw_string`
-
-```yaml
-value_format:
-  type: raw_string
-```
-
-Treats message bytes as a UTF-8 string. The string becomes the `value` field
-in the JSON record. Invalid UTF-8 fails per `on_decode_error`.
-
-### `bytes`
-
-```yaml
-value_format:
-  type: bytes
-```
-
-Passes message bytes through as a base64-encoded string in the JSON record.
-On the sink side, expects a base64 string in the source record.
-
-### `confluent_avro` (feature: `schema-registry`)
+| `type` | Feature | Behaviour |
+|--------|---------|-----------|
+| `json` (default) | — | Parse bytes as a JSON document |
+| `raw_string` | — | UTF-8 string → `value` field |
+| `bytes` | — | Raw bytes passed through as a base64 string |
+| `confluent_avro` | `schema-registry` | Confluent wire envelope; writer schema fetched by id and cached |
+| `confluent_protobuf` | `schema-registry` | Type present for symmetry; v1 returns `FaucetError::Config` (full descriptor support tracked in #44) |
+| `confluent_json_schema` | `schema-registry` | Confluent wire envelope; optional `validate: true` checks decoded JSON against the schema |
 
 ```yaml
 value_format:
   type: confluent_avro
   schema_registry:
     url: http://localhost:8081
-    auth:                         # optional
+    auth:                  # optional BasicAuth
       username: sr-user
       password: sr-secret
-    cache_capacity: 1024          # default 1024
-    request_timeout: 10           # seconds, default 10
+    cache_capacity: 1024   # default 1024
+    request_timeout: 10    # seconds, default 10
 ```
 
-Decodes messages using the Confluent wire envelope: `[0x00][be u32 schema_id][Avro binary]`.
-The writer schema is fetched from the registry by `schema_id` and cached. On the sink side,
-the subject name is `{topic}-value` (Confluent TopicNameStrategy).
-
-### `confluent_protobuf` (feature: `schema-registry`)
-
-```yaml
-value_format:
-  type: confluent_protobuf
-  schema_registry:
-    url: http://localhost:8081
-```
-
-**Note:** `ConfluentProtobuf` is present in the type system for API symmetry with Avro
-and JSON Schema, but v1 returns a `FaucetError::Config` on both encode and decode.
-Full descriptor support (pre-built `FileDescriptorSet` or `protoc`-based compilation)
-is tracked in issue #44. The wire format expected is:
-`[0x00][be u32 schema_id][message_indexes][protobuf bytes]`, where v1 only supports
-the single-message case (`message_indexes = [0x00]`).
-
-### `confluent_json_schema` (feature: `schema-registry`)
-
-```yaml
-value_format:
-  type: confluent_json_schema
-  schema_registry:
-    url: http://localhost:8081
-    auth:
-      username: sr-user
-      password: sr-secret
-  validate: false   # default false; set true to validate decoded JSON against the schema
-```
-
-Decodes using `[0x00][be u32 schema_id][JSON bytes]`. When `validate: true`, the
-decoded JSON object is validated against the registered JSON Schema; validation
-errors fail per `on_decode_error`.
+The Confluent wire envelope is `[0x00][schema_id: 4-byte big-endian][payload bytes…]`. The
+client caches schema fetches (keyed by id) and registrations (keyed by subject/type/text) in
+two LRUs of `cache_capacity`, so a stream sharing one schema issues a single registry call.
+On the sink side the subject is `{topic}-value` (Confluent TopicNameStrategy).
 
 ---
 
-## Schema Registry
+## Usage
 
-Configuration struct: `SchemaRegistryConfig` (`crates/common/kafka/src/schema_registry/mod.rs`).
+Library callers normally pull these in transitively. To depend on them directly:
 
-**Wire envelope** (`crates/common/kafka/src/schema_registry/envelope.rs`):
-
+```bash
+cargo add faucet-common-kafka
+cargo add faucet-common-kafka --features schema-registry   # for the Confluent variants
 ```
-[0x00] [schema_id: 4 bytes big-endian] [payload bytes...]
+
+```rust
+use faucet_common_kafka::{KafkaAuth, KafkaValueFormat, CompressionType};
+
+// Built straight from a YAML/JSON config, or constructed in code:
+let auth: KafkaAuth = serde_yaml::from_str(
+    "type: sasl_plain\nusername: u\npassword: p",
+)?;
+let format = KafkaValueFormat::default();      // KafkaValueFormat::Json
+let compression = CompressionType::default();  // CompressionType::None
+# Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
-The magic byte `0x00` identifies the Confluent wire format. `envelope::decode` strips
-the header and returns `(schema_id, payload_bytes)`. `envelope::encode` prepends the
-header to a serialized payload.
-
-**Client** (`crates/common/kafka/src/schema_registry/client.rs`):
-
-`SchemaRegistryClient` is `Arc`-cloneable and safe to share across tasks. Schema
-fetches are cached in an LRU bounded by `cache_capacity` (default 1024), keyed by
-the integer schema ID; misses hit `GET /schemas/ids/{id}`. Schema *registrations*
-are cached in a second LRU of the same capacity, keyed by `(subject, schema_type,
-schema_text)` — so encoding a stream of records that share one schema issues a
-single `POST /subjects/{subject}/versions` instead of one per record. Registry auth
-is `BasicAuth` (optional); `request_timeout` applies per HTTP call (default 10 s).
-
-**Subject naming on the sink side**: `{topic}-value` (Confluent TopicNameStrategy).
-The sink registers or looks up the schema under this subject before the first produce call.
-
-**Decoder flow**: read `schema_id` from wire envelope → cache lookup or HTTP fetch →
-parse writer schema → decode payload bytes into `serde_json::Value`.
+End users configure these through the Kafka connectors rather than this crate; see the
+connector READMEs for full pipeline examples.
 
 ---
 
-## Policy enums
+## Feature flags
 
-All three enums are in `crates/common/kafka/src/format.rs` and derive `Serialize`,
-`Deserialize`, `JsonSchema`.
+| Feature | Default | Adds |
+|---------|---------|------|
+| `schema-registry` | off | The Confluent `KafkaValueFormat` variants, `SchemaRegistryConfig`, `SchemaRegistryClient`, and the `avro`/`protobuf`/`json_schema`/`envelope` codec modules. Pulls in `reqwest`, `lru`, `bytes`, `apache-avro`, `prost-reflect`, `prost`, `jsonschema`, `tokio`, `url`, `urlencoding`. |
 
-### `OnDecodeError`
+> In the umbrella `faucet-stream` crate and the `faucet-cli`, this is enabled via the
+> `kafka-schema-registry` feature, which forwards to this crate's `schema-registry` feature.
 
-What the source does when a single message fails to decode. Serializes as `snake_case`.
+---
 
-| Value | Behaviour | Default |
-|-------|-----------|---------|
-| `fail` | Surface `FaucetError::Source` and abort the batch | yes |
-| `skip` | Drop the message and continue (logs a `WARN`) | |
+## Troubleshooting / FAQ
 
-### `OnKeyError`
+| Symptom | Cause & fix |
+|---------|-------------|
+| `confluent_avro` / `confluent_json_schema` rejected as an unknown variant | The `schema-registry` feature is off. Enable it on this crate (or `kafka-schema-registry` on the umbrella / CLI). |
+| `sasl_plain` config rejected at load | `username` and `password` must both be non-empty. |
+| `ssl` config errors on a path | `ca_path`, `cert_path`, and `key_path` are validated to exist on the filesystem at config time. Check the paths and the process's read permissions. |
+| `confluent_protobuf` returns `FaucetError::Config` | Protobuf decode/encode is not yet implemented in v1 (#44). Use `confluent_avro` or `confluent_json_schema`, or decode protobuf upstream. |
+| Schema Registry calls time out | Raise `request_timeout` (seconds, default 10) and verify `url` / `auth` reachability. |
+| Encrypted SSL key fails to load | Supply `key_password`; omit it only for unencrypted keys. |
 
-What the sink does when key or partition extraction fails for a record. Serializes as
-`snake_case`.
+---
 
-| Value | Behaviour | Default |
-|-------|-----------|---------|
-| `fail` | Surface `FaucetError::Sink` and abort the batch | yes |
-| `skip` | Drop the record and continue (logs a `WARN`) | |
-| `round_robin` | Send the record with no key; librdkafka chooses the partition | |
+## See also
 
-### `CompressionType`
-
-Producer-side compression applied to outbound batches. Serializes as `lowercase`.
-
-| Value | librdkafka string | Default |
-|-------|-------------------|---------|
-| `none` | `none` | yes |
-| `gzip` | `gzip` | |
-| `snappy` | `snappy` | |
-| `lz4` | `lz4` | |
-| `zstd` | `zstd` | |
+- [faucet-source-kafka](https://crates.io/crates/faucet-source-kafka) — Kafka consumer source
+- [faucet-sink-kafka](https://crates.io/crates/faucet-sink-kafka) — Kafka producer sink
+- [Connectors reference](https://pawansikawat.github.io/faucet-stream/reference/connectors.html)
+- [Authentication cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/auth.html)
 
 ---
 
 ## License
 
-Dual-licensed under MIT and Apache-2.0, per the workspace `license` field.
+Licensed under either of [Apache License, Version 2.0](https://www.apache.org/licenses/LICENSE-2.0)
+or [MIT license](https://opensource.org/licenses/MIT) at your option.
