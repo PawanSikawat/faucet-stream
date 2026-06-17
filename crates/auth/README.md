@@ -1,43 +1,105 @@
 # faucet-auth
 
-Shared, single-flight authentication providers for
-[`faucet-stream`](https://github.com/PawanSikawat/faucet-stream).
+[![Crates.io](https://img.shields.io/crates/v/faucet-auth.svg)](https://crates.io/crates/faucet-auth)
+[![Docs.rs](https://docs.rs/faucet-auth/badge.svg)](https://docs.rs/faucet-auth)
+[![MSRV](https://img.shields.io/crates/msrv/faucet-auth.svg)](https://github.com/PawanSikawat/faucet-stream/blob/main/rust-toolchain.toml)
+[![License](https://img.shields.io/crates/l/faucet-auth.svg)](https://github.com/PawanSikawat/faucet-stream#license)
 
-These implement [`faucet_core::AuthProvider`] — a live entity that owns a token
-cache and refresh lifecycle. One instance, wrapped in an `Arc`, is shared across
-every connector that references it, so **N connectors hitting one identity
-provider share a single token with single-flight refresh** instead of each
-racing to refresh a single-active / rotating token.
+Shared, single-flight authentication providers for the [faucet-stream](https://github.com/PawanSikawat/faucet-stream) ecosystem. Each provider implements [`faucet_core::AuthProvider`](https://docs.rs/faucet-core/latest/faucet_core/trait.AuthProvider.html) — a live entity that owns a token cache and refresh lifecycle.
 
-## Providers
+The point of this crate is **token sharing**: one provider instance, wrapped in an `Arc`, is handed to every connector that authenticates against the same identity provider. So N connectors (or N matrix rows) hitting one IdP share a **single** token with **single-flight** refresh, instead of each racing to mint or rotate its own. That is the difference between one token request per run and one per connector per refresh window — and, for rotating refresh tokens, the difference between working and invalidating each other.
 
-| `type`           | Provider                          | Notes |
-|------------------|-----------------------------------|-------|
-| `static`         | `StaticProvider`                  | Fixed pre-minted credential (bearer / header / basic). |
-| `oauth2`         | `OAuth2ClientCredentialsProvider` | OAuth2 `client_credentials` grant. |
-| `oauth2_refresh` | `OAuth2RefreshProvider`           | OAuth2 `refresh_token` grant with refresh-token **rotation capture**. |
-| `token_endpoint` | `TokenEndpointProvider`           | Fetch a token from any HTTP endpoint, extract via JSONPath. |
+## Feature highlights
 
-### Token caching & refresh
+- **Four provider types** — a fixed static credential, OAuth2 `client_credentials`, OAuth2 `refresh_token` with **rotation capture**, and a generic JSONPath-extracting token endpoint.
+- **Single-flight refresh** — concurrent callers during a refresh await the one in-flight fetch; they don't stampede the token endpoint.
+- **Force-refresh on rejection** — a connector that gets a `401` calls `invalidate(stale)` and receives a freshly-fetched token. Concurrent invalidations of the same token collapse into one refresh via compare-and-swap.
+- **Refresh-token rotation capture** — `oauth2_refresh` captures a rotated `refresh_token` from each response in place, so a single active access token plus a rotating refresh token can be shared safely across many connectors.
+- **Secret-safe `Debug`** — every provider's `Debug` impl renders secrets (`client_secret`, refresh token, request body, cached access token) as `***`; only non-secret identifiers stay visible.
+- **Bounded fetch timeout** — providers hold a single-flight mutex across the network call, so the internal HTTP client has a 30 s request timeout: a hung IdP fails and releases the lock instead of wedging every connector that shares the provider.
+- **Validated config at load time** — `expiry_ratio` is checked to be a finite number in `(0, 1]`; unknown provider `type`s and missing required fields surface as `FaucetError::Config` before any run starts.
 
-The three fetching providers (`oauth2`, `oauth2_refresh`, `token_endpoint`)
-cache the token until `expires_in × expiry_ratio` has elapsed, then refresh
-single-flight. All three also support **force-refresh on rejection**: a
-connector that gets a `401` calls `invalidate(stale)` and receives a
-freshly-fetched token (concurrent invalidations of the same token collapse into
-one refresh).
+## Installation
 
-`expiry_ratio` (default `0.9`) must be a finite number in `(0, 1]` — it is
-validated at construction. A value `≤ 0` would expire every token immediately
-(defeating the cache); a value `> 1` would use a token past its real expiry
-(causing `401`s mid-use).
+```bash
+# As a library:
+cargo add faucet-auth
 
-## CLI usage
+# In the CLI, the shared `auth:` catalog is always available — no feature flag needed.
+# Library callers who want the umbrella crate to build providers enable the `auth` feature:
+cargo add faucet-stream --features auth
+```
 
-Define a provider once in the top-level `auth:` catalog and reference it from any
-connector via `auth: { ref: <name> }`:
+The `faucet-cli` binary always links `faucet-auth` to power the top-level `auth:` catalog, so config-driven users get every provider type out of the box.
+
+## What it provides
+
+| `type` (config) | Rust type | What it does |
+|-----------------|-----------|--------------|
+| `static` | [`StaticProvider`] | Returns a fixed, pre-minted credential forever — bearer token, custom header, or HTTP Basic. No network calls. |
+| `oauth2` | [`OAuth2ClientCredentialsProvider`] | OAuth2 `client_credentials` grant. Fetches a token from the token endpoint, caches it, refreshes single-flight. |
+| `oauth2_refresh` | [`OAuth2RefreshProvider`] | OAuth2 `refresh_token` grant with refresh-token **rotation capture** (a single active access token + a rotating refresh token, shared safely). |
+| `token_endpoint` | [`TokenEndpointProvider`] | Fetches a token from any HTTP endpoint and extracts it from the JSON response via JSONPath. The escape hatch for non-standard token APIs. |
+
+`build_provider(&Value)` is the entry point: it reads a `{ type, config }` spec and returns a `SharedAuthProvider` (`Arc<dyn AuthProvider>`).
+
+[`StaticProvider`]: https://docs.rs/faucet-auth/latest/faucet_auth/struct.StaticProvider.html
+[`OAuth2ClientCredentialsProvider`]: https://docs.rs/faucet-auth/latest/faucet_auth/struct.OAuth2ClientCredentialsProvider.html
+[`OAuth2RefreshProvider`]: https://docs.rs/faucet-auth/latest/faucet_auth/struct.OAuth2RefreshProvider.html
+[`TokenEndpointProvider`]: https://docs.rs/faucet-auth/latest/faucet_auth/struct.TokenEndpointProvider.html
+
+## Provider configuration reference
+
+Every provider is built from a `{ type, config }` object — the project-wide adjacently-tagged auth shape. The fields below are the keys inside each provider's `config`.
+
+### `static`
+
+A fixed credential. Exactly one of the three shapes below must be present.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `token` | string | — | Bearer token → `Authorization: Bearer <token>`. |
+| `header` + `value` | string + string | — | A custom header credential (e.g. `X-Api-Key`). Both keys required together. |
+| `username` + `password` | string + string | — | HTTP Basic credentials. Both keys required together. |
+
+### `oauth2` (client-credentials)
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `token_url` | string | — *(required)* | OAuth2 token endpoint. |
+| `client_id` | string | — *(required)* | OAuth2 client ID. |
+| `client_secret` | string | — *(required)* | OAuth2 client secret. |
+| `scopes` | array of string | `[]` | Scopes, sent space-joined as the `scope` form field. |
+| `expiry_ratio` | number | `0.9` | Refresh after `expires_in × expiry_ratio` seconds. Must be a finite number in `(0, 1]`. |
+
+### `oauth2_refresh`
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `token_url` | string | — *(required)* | OAuth2 token endpoint. |
+| `client_id` | string | — *(required)* | OAuth2 client ID. |
+| `client_secret` | string | — *(required)* | OAuth2 client secret. |
+| `refresh_token` | string | — *(required)* | Initial refresh token. A rotated token in the response is captured in place for the next refresh. |
+| `expiry_ratio` | number | `0.9` | Refresh after `expires_in × expiry_ratio` seconds. Must be a finite number in `(0, 1]`. |
+
+### `token_endpoint`
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `url` | string | — *(required)* | HTTP endpoint to fetch the token from. |
+| `method` | string | `POST` | HTTP method. |
+| `body` | object | *(none)* | JSON request body (e.g. carrying `client_id` / `client_secret`). Omit for a GET. |
+| `token_path` | string | — *(required)* | JSONPath selecting the token from the response (e.g. `$.auth.access_token`). String and numeric matches are accepted. |
+| `expiry_path` | string | *(none)* | JSONPath selecting `expires_in` (seconds) from the response. When absent, the token is cached without an expiry. |
+| `expiry_ratio` | number | `0.9` | Refresh after `expires_in × expiry_ratio` seconds. Must be a finite number in `(0, 1]`. |
+
+## CLI usage — the top-level `auth:` catalog
+
+Define a provider **once** in the top-level `auth:` catalog, then reference it from any connector via `auth: { ref: <name> }`. The CLI builds each named provider a single time and injects the same `Arc` into every connector that references it, so all the rows that share a `ref` share one token.
 
 ```yaml
+# faucet run pipeline.yaml
+version: 1
 auth:
   sf:
     type: oauth2_refresh
@@ -49,25 +111,117 @@ auth:
 pipeline:
   sources:
     sf_table:
-      kind: snowflake
+      type: snowflake
       config:
         account: ${vars.account}
-        auth: { ref: sf }     # every row sharing this template shares ONE token
+        auth: { ref: sf }      # every row using this template shares ONE token
+  sink:
+    type: jsonl
+    config:
+      path: ./out.jsonl
 ```
+
+Eight connectors consume shared providers via `auth: { ref }`: `rest`, `graphql`, `xml`, `grpc`, `websocket`, `sink-http`, `elasticsearch`, and `snowflake`. (Kafka / BigQuery / GCS keep the same `{ type, config }` wire shape but are not bearer/token-based, so they don't take `auth: { ref }`.)
+
+Provider configs can hold `${env:…}` / `${file:…}` / `${secret:…}` / `${vault:…}` / `${aws-sm:…}` indirection — the secrets pass walks the `auth:` catalog, so a single shared provider can hold a secret-manager reference and be reused across every row.
+
+### Inline auth vs shared provider
+
+A connector's `auth` field accepts **either** an inline `{ type, config }` block **or** a `{ ref: <name> }` pointer. Use a `ref` (and the `auth:` catalog) whenever more than one connector / matrix row authenticates against the same IdP — that's when token sharing and single-flight refresh actually pay off. A one-off connector can keep its auth inline.
 
 ## Library usage
 
+Build a provider, wrap it in an `Arc`, and clone it into every source/sink that should share the token via `with_auth_provider`:
+
 ```rust
 use std::sync::Arc;
-use faucet_auth::OAuth2RefreshProvider;
+use faucet_auth::{build_provider, OAuth2RefreshProvider};
 use faucet_core::SharedAuthProvider;
+use serde_json::json;
 
-let provider: SharedAuthProvider = Arc::new(OAuth2RefreshProvider::from_config(&cfg)?);
-// Clone the Arc into every connector that should share the token:
-let source_a = MySource::new(cfg_a, Some(provider.clone()));
-let source_b = MySource::new(cfg_b, Some(provider.clone()));
+# fn main() -> Result<(), Box<dyn std::error::Error>> {
+// Build directly from a typed config object…
+let provider: SharedAuthProvider = Arc::new(OAuth2RefreshProvider::from_config(&json!({
+    "token_url": "https://idp.example/token",
+    "client_id": "my-client",
+    "client_secret": "s3cr3t",
+    "refresh_token": "initial-rt",
+}))?);
+
+// …or from a `{ type, config }` spec, the same shape the CLI catalog uses:
+let provider2: SharedAuthProvider = build_provider(&json!({
+    "type": "oauth2",
+    "config": {
+        "token_url": "https://idp.example/token",
+        "client_id": "my-client",
+        "client_secret": "s3cr3t",
+        "scopes": ["read"]
+    }
+}))?;
+# let _ = (provider2,);
+
+// Clone the Arc into every connector that should share the one token:
+// let source_a = RestStreamSource::new(cfg_a)?.with_auth_provider(provider.clone());
+// let source_b = RestStreamSource::new(cfg_b)?.with_auth_provider(provider.clone());
+# let _ = provider;
+# Ok(())
+# }
 ```
+
+Asking the provider for a credential is then a one-liner; the cache, refresh, and single-flight coordination are internal:
+
+```rust,no_run
+use faucet_core::{AuthProvider, Credential};
+# async fn use_provider(provider: &dyn AuthProvider) -> Result<(), Box<dyn std::error::Error>> {
+let cred: Credential = provider.credential().await?;     // cached or freshly refreshed
+// On a 401, force a single-flight refresh of exactly this stale token:
+let fresh = provider.invalidate(&cred).await?;
+# let _ = fresh;
+# Ok(())
+# }
+```
+
+## How single-flight refresh works
+
+Each fetching provider (`oauth2`, `oauth2_refresh`, `token_endpoint`) holds a `Mutex`-guarded token cache and performs the token-endpoint call **with the lock held**:
+
+1. **Cache hit** — `credential()` returns the cached token until `expires_in × expiry_ratio` has elapsed.
+2. **Cache miss / expiry** — the first caller takes the lock and fetches; concurrent callers block on the same lock and, when it's released, observe the freshly-cached token. Result: **one** network fetch serves an arbitrary number of concurrent callers.
+3. **Force-refresh on `401`** — a connector whose request was rejected calls `invalidate(stale)`. This is a compare-and-swap: it refetches **only** if the cache still holds the `stale` token. If a concurrent caller already refreshed (the cache now holds a *different* token), the stale caller gets that new token back without a second fetch.
+4. **Rotation capture** (`oauth2_refresh` only) — each refresh response may carry a rotated `refresh_token`; the provider stores it in place, so the next refresh uses the latest rotated token. This is exactly the case that breaks when each connector keeps its own copy of a rotating refresh token.
+
+The internal HTTP client has a bounded 30 s request timeout so a hung or unreachable IdP fails the fetch and releases the single-flight lock, rather than wedging every connector that shares the provider.
+
+`expiry_ratio` (default `0.9`) must be a finite number in `(0, 1]`, validated at construction. A value `≤ 0` (or `NaN`) would expire every token immediately, defeating the cache and single-flight refresh; a value `> 1` would treat the token as valid past its real expiry, causing `401`s mid-use. Both are rejected at config-load time.
+
+## Feature flags
+
+This crate has no optional Cargo features of its own. It is pulled in by:
+
+- the **`faucet-cli`** binary (always — for the top-level `auth:` catalog);
+- the **`faucet-stream`** umbrella crate's `auth` feature, for library callers who want `build_provider` available alongside the connectors.
+
+## Troubleshooting / FAQ
+
+| Symptom | Likely cause & fix |
+|---------|--------------------|
+| `Config: auth provider: unknown type ...` | The `type` isn't one of `static` / `oauth2` / `oauth2_refresh` / `token_endpoint`. Check the spelling. |
+| `Config: ... missing 'type'` | The provider spec has no `type` key. Each `auth:` catalog entry needs `{ type, config }`. |
+| `Config: oauth2 auth provider: missing 'client_id'` (or `token_url` / `client_secret` / `refresh_token`) | A required OAuth2 field is absent. All of `token_url`, `client_id`, `client_secret` are required; `oauth2_refresh` also requires `refresh_token`. |
+| `Config: static auth provider: config must contain ...` | The `static` config didn't match `token`, `header`+`value`, or `username`+`password`. Provide exactly one of those shapes. |
+| `Config: ... 'expiry_ratio' must be a finite number in (0, 1]` | `expiry_ratio` is out of range or non-numeric. Use a value like `0.9`; remove the field to take the default. |
+| `Auth: OAuth2 token request failed (HTTP 401): ...` | The IdP rejected the client credentials / refresh token. Verify `client_id` / `client_secret`, and that the `refresh_token` hasn't already been rotated/revoked by a stale copy elsewhere — share **one** `oauth2_refresh` provider via `auth: { ref }`. |
+| `Auth: token endpoint request failed (HTTP ...)` | The `token_endpoint` `url` returned a non-2xx. Check the URL, `method`, and `body`. |
+| `Auth: token_path '...' did not match a string value` | The `token_path` JSONPath didn't select a string/number in the response. Inspect the real response body and fix the path (e.g. `$.auth.access_token`). |
+| Token endpoint hangs the whole pipeline | A single-flight fetch is blocked. Providers cap each fetch at 30 s, after which the lock is released and the call fails with `FaucetError`; check IdP reachability and the `token_url`. |
+| Every request re-fetches a token | An `expiry_ratio` near 0 (or a missing `expiry_path` on `token_endpoint` combined with no caching expectation) shortens the cache window. Set a sensible `expiry_ratio` and an `expiry_path` that selects the response's TTL. |
+
+## See also
+
+- [Authentication cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/auth.html) — the full `{ type, config }` vs `{ ref }` model, per-connector auth methods, and the shared `auth:` catalog.
+- [Secrets cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/secrets.html) — feeding `${secret:…}` / `${vault:…}` references into provider configs.
+- [`faucet-core`](https://crates.io/crates/faucet-core) — defines the [`AuthProvider`](https://docs.rs/faucet-core/latest/faucet_core/trait.AuthProvider.html) trait, [`Credential`](https://docs.rs/faucet-core/latest/faucet_core/enum.Credential.html) enum, and `SharedAuthProvider` / `AuthSpec` types this crate implements against.
 
 ## License
 
-MIT OR Apache-2.0
+Licensed under either of [Apache License, Version 2.0](https://www.apache.org/licenses/LICENSE-2.0) or [MIT license](https://opensource.org/licenses/MIT) at your option.

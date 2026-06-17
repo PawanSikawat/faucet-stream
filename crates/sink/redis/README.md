@@ -2,16 +2,31 @@
 
 [![Crates.io](https://img.shields.io/crates/v/faucet-sink-redis.svg)](https://crates.io/crates/faucet-sink-redis)
 [![Docs.rs](https://docs.rs/faucet-sink-redis/badge.svg)](https://docs.rs/faucet-sink-redis)
+[![MSRV](https://img.shields.io/crates/msrv/faucet-sink-redis.svg)](https://github.com/PawanSikawat/faucet-stream/blob/main/rust-toolchain.toml)
+[![License](https://img.shields.io/crates/l/faucet-sink-redis.svg)](https://github.com/PawanSikawat/faucet-stream#license)
 
-Redis sink connector for the [faucet-stream](https://github.com/PawanSikawat/faucet-stream) ecosystem.
+**Redis** sink for the [faucet-stream](https://github.com/PawanSikawat/faucet-stream) ecosystem. Writes JSON records into Redis lists (`RPUSH`), streams (`XADD`), or individual keys (`SET`), batching each page of records into a single pipelined round-trip.
 
-Writes JSON records to Redis data structures: lists (`RPUSH`), streams (`XADD`), or key-value pairs (`SET`). Uses Redis pipelines for efficient batched writes and a multiplexed async connection that is reused across all calls.
+Reach for it when you want to land pipeline output in Redis as a work queue, an event stream for consumers, or a cache/lookup table — with one declarative config and no glue code. Redis pipelining keeps the write path fast: every chunk of records ships as one network round-trip over a connection that's opened once and reused.
+
+## Feature highlights
+
+- **Three write targets** — `List` (append via `RPUSH`), `Stream` (append via `XADD` with auto-generated IDs), and `KeyValue` (one key per record via `SET`).
+- **Pipelined batching** — every chunk of records is packed into a single Redis pipeline, so a batch of N writes costs one round-trip instead of N.
+- **Stream field mapping** — for `Stream` mode, each record's top-level JSON object fields become native stream entry fields; non-object records land in a single `_data` field.
+- **Connection reuse** — a multiplexed async connection is opened once in `new()` and shared (cheaply cloned) across every `write_batch` call.
+- **Tunable batch window** — `batch_size` controls how many commands go in one pipeline, with a `0` sentinel that passes the upstream page straight through.
+- **Preflight probe** — `faucet doctor` issues a non-mutating `PING` over the live connection.
+- **Credential-safe logging** — the config's `Debug` impl masks the connection URL, and the lineage dataset URI strips credentials.
 
 ## Installation
 
 ```bash
+# As a library:
 cargo add faucet-sink-redis
-cargo add tokio --features full
+
+# In the CLI (opt-in connector feature):
+cargo install faucet-cli --features sink-redis
 ```
 
 Or via the umbrella crate:
@@ -20,84 +35,161 @@ Or via the umbrella crate:
 cargo add faucet-stream --features sink-redis
 ```
 
-## Quick Start
+## Quick start
 
-```rust
-use faucet_sink_redis::{RedisSink, RedisSinkConfig, RedisSinkType};
-use faucet_core::Sink;
-use serde_json::json;
-
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let config = RedisSinkConfig::new(
-        "redis://127.0.0.1:6379",
-        RedisSinkType::List { key: "events".into() },
-    );
-
-    let sink = RedisSink::new(config).await?;
-
-    let records = vec![
-        json!({"user_id": "u123", "event": "signup"}),
-        json!({"user_id": "u456", "event": "login"}),
-    ];
-
-    let written = sink.write_batch(&records).await?;
-    println!("Wrote {written} records to Redis");
-
-    Ok(())
-}
+```yaml
+# pipeline.yaml — faucet run pipeline.yaml
+version: 1
+pipeline:
+  source:
+    type: rest
+    config:
+      base_url: https://api.example.com
+      endpoint: /v1/events
+  sink:
+    type: redis
+    config:
+      url: redis://127.0.0.1:6379
+      sink_type:
+        type: Stream
+        key: events
 ```
 
-## Configuration
+```bash
+faucet run pipeline.yaml
+```
+
+## Configuration reference
+
+### Core
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `url` | `String` | *(required)* | Redis connection URL (e.g. `redis://127.0.0.1:6379`) |
-| `sink_type` | `RedisSinkType` | *(required)* | The type of Redis data structure to write to (see below) |
-| `batch_size` | `usize` | `DEFAULT_BATCH_SIZE` (1000) | Maximum number of commands packed into a single Redis pipeline. Pass `0` to opt out of re-chunking — see [Streaming and batching](#streaming-and-batching) below. |
+| `url` | string | — *(required)* | Redis connection URL, e.g. `redis://127.0.0.1:6379` or `rediss://host:6380` (TLS). Masked as `***` in `Debug` / log output. |
+| `sink_type` | `RedisSinkType` | — *(required)* | The Redis data structure to write to — see [Sink types](#sink-types). |
 
-The `Debug` implementation masks the `url` with `***` to prevent credential leakage in logs.
+### Batching
 
-### Sink Types (`RedisSinkType`)
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `batch_size` | int | `1000` | Maximum commands packed into one Redis pipeline. When `write_batch` receives a slice larger than this, the sink re-chunks it and issues one pipeline per chunk. **`0` = no batching**: the entire upstream slice is packed into a single pipeline, preserving the source's `StreamPage` framing. Validated against `MAX_BATCH_SIZE` (1,000,000) at construction. |
 
-| Variant | Fields | Description |
-|---------|--------|-------------|
-| `List` | `key: String` | Append each record as a serialized JSON string to a Redis list using `RPUSH`. |
-| `Stream` | `key: String` | Add each record as an entry to a Redis stream using `XADD` with auto-generated IDs (`*`). Top-level JSON fields become stream entry fields. Non-object records are stored as a single `_data` field. |
-| `KeyValue` | `key_field: String` | Store each record as a separate key using `SET`. The Redis key is extracted from the specified field in each record. The entire record is stored as a serialized JSON string value. |
+### Sink types
 
-### Stream Entry Field Mapping
+`sink_type` is an adjacently-tagged enum keyed by `type`:
 
-When using the `Stream` sink type, top-level JSON object fields are flattened into Redis stream entry fields:
+| `type` | Fields | Redis command | Behaviour |
+|--------|--------|---------------|-----------|
+| `List` | `key: string` | `RPUSH` | Append each record, serialized to a JSON string, to the list at `key`. |
+| `Stream` | `key: string` | `XADD` | Append each record as a stream entry at `key` with an auto-generated ID (`*`). Top-level object fields become entry fields; a non-object record is stored as a single `_data` field. |
+| `KeyValue` | `key_field: string` | `SET` | Store each record under a key read from its `key_field`. The full record (serialized JSON) is the value. A record missing `key_field` raises an error. |
 
-- String values are stored as-is
-- Numbers, booleans, and null are converted to their string representation
-- Nested objects and arrays are serialized as JSON strings
+#### Stream entry field mapping
 
-If a record is not a JSON object (e.g. a plain string), it is stored as a single `_data` field containing the serialized record.
+For `Stream` mode, each record's top-level JSON object fields are flattened into Redis stream entry fields:
 
-### Builder Methods
+- String values are stored as-is.
+- Numbers, booleans, and null are converted to their string representation.
+- Nested objects and arrays are serialized as JSON strings.
 
-```rust
-use faucet_sink_redis::{RedisSinkConfig, RedisSinkType};
+If a record is not a JSON object (e.g. a bare string), it is stored as a single `_data` field containing the serialized record. A record that flattens to zero fields also falls back to `_data`, because `XADD` requires at least one field.
 
-let config = RedisSinkConfig::new(
-    "redis://localhost:6379",
-    RedisSinkType::Stream { key: "events".into() },
-)
-.with_batch_size(1000);
+## Examples
+
+### Work queue (List)
+
+Fan records out to consumers reading from one end of a Redis list:
+
+```yaml
+version: 1
+pipeline:
+  source:
+    type: csv
+    config:
+      path: ./jobs.csv
+  sink:
+    type: redis
+    config:
+      url: redis://127.0.0.1:6379
+      sink_type:
+        type: List
+        key: job_queue
+      batch_size: 500
+```
+
+### Event stream (Stream)
+
+Each record becomes a stream entry with native fields, ready for `XREAD` / consumer groups:
+
+```yaml
+version: 1
+pipeline:
+  source:
+    type: rest
+    config:
+      base_url: https://api.example.com
+      endpoint: /v1/user-events
+  sink:
+    type: redis
+    config:
+      url: redis://127.0.0.1:6379
+      sink_type:
+        type: Stream
+        key: user_events
+```
+
+### Cache / lookup table (KeyValue)
+
+Materialize records into individual keys for point lookups:
+
+```yaml
+version: 1
+pipeline:
+  source:
+    type: postgres
+    config:
+      connection_url: ${env:DATABASE_URL}
+      query: SELECT user_id, name, plan FROM users
+  sink:
+    type: redis
+    config:
+      url: ${env:REDIS_URL}
+      sink_type:
+        type: KeyValue
+        key_field: user_id
+```
+
+This writes keys named after each row's `user_id`, with the full JSON record as the value.
+
+### One pipeline per source page (`batch_size: 0`)
+
+When the source already chooses a sensible page size, pass it straight through so each page maps to exactly one Redis pipeline:
+
+```yaml
+sink:
+  type: redis
+  config:
+    url: redis://127.0.0.1:6379
+    sink_type:
+      type: List
+      key: events
+    batch_size: 0
 ```
 
 ## Streaming and batching
 
-The sink fits the workspace's streaming pipeline contract: `Pipeline::run` drives `Source::stream_pages` and writes each `StreamPage` via `Sink::write_batch` as it arrives. `batch_size` controls how those records get packed into Redis pipelines on the way out:
+The sink follows the workspace streaming contract: `Pipeline::run` drives the source's `stream_pages` and writes each emitted `StreamPage` via `Sink::write_batch` as it arrives, so memory stays bounded at one page. `batch_size` controls how those records are packed into Redis pipelines on the way out:
 
 | `batch_size` | Behaviour |
 |--------------|-----------|
-| `1`..`MAX_BATCH_SIZE` (default `1000`) | When `write_batch` receives a slice larger than `batch_size`, the sink re-chunks it into `batch_size` slices and issues one Redis pipeline per chunk. Recommended for high-throughput writes — Redis pipelined commands are cheap, and a 1000-command window comfortably amortises the round-trip without starving other clients. |
-| `0` | "No batching" sentinel — the entire records slice is packed into a single Redis pipeline regardless of size, preserving upstream `StreamPage` framing. Use this when the source has already chosen a sensible page size (e.g. `RedisSourceConfig::batch_size`, or any other source's per-page knob) and you want one pipeline per page. |
+| `1`..`MAX_BATCH_SIZE` (default `1000`) | A slice larger than `batch_size` is re-chunked into `batch_size` slices; one Redis pipeline is issued per chunk. Recommended for high-throughput writes — pipelined commands are cheap, and a 1000-command window amortises the round-trip without starving other clients. |
+| `0` | "No batching" sentinel — the entire records slice is packed into a single pipeline regardless of size, preserving the upstream `StreamPage` framing. Use it when the source has already chosen the page size and you want one pipeline per page. |
 
-## Config Loading
+This sink writes **append/insert-only** (`RPUSH` / `XADD` / `SET`) and does not implement upsert/delete write modes or exactly-once delivery — see [Limitations](#limitations).
+
+## Config loading & schema
+
+Load from YAML/JSON files or environment variables via the helpers in `faucet_core::config`:
 
 ```rust
 use faucet_core::config::{load_json, load_env_file};
@@ -110,46 +202,7 @@ let config: RedisSinkConfig = load_json("config.json")?;
 let config: RedisSinkConfig = load_env_file(".env", "REDIS_SINK")?;
 ```
 
-### Example JSON config (List)
-
-```json
-{
-  "url": "redis://127.0.0.1:6379",
-  "sink_type": {
-    "type": "List",
-    "key": "event_queue"
-  },
-  "batch_size": 1000
-}
-```
-
-### Example JSON config (Stream)
-
-```json
-{
-  "url": "redis://127.0.0.1:6379",
-  "sink_type": {
-    "type": "Stream",
-    "key": "event_stream"
-  },
-  "batch_size": 1000
-}
-```
-
-### Example JSON config (KeyValue)
-
-```json
-{
-  "url": "redis://127.0.0.1:6379",
-  "sink_type": {
-    "type": "KeyValue",
-    "key_field": "id"
-  },
-  "batch_size": 1000
-}
-```
-
-### Example .env file
+Example `.env`:
 
 ```env
 REDIS_SINK_URL=redis://127.0.0.1:6379
@@ -157,102 +210,104 @@ REDIS_SINK_SINK_TYPE='{"type":"List","key":"events"}'
 REDIS_SINK_BATCH_SIZE=1000
 ```
 
-## Config Schema Introspection
+Inspect the full JSON Schema with:
 
-```rust
-use faucet_core::Sink;
-
-let sink = RedisSink::new(config).await?;
-let schema = sink.config_schema();
-println!("{}", serde_json::to_string_pretty(&schema)?);
+```bash
+faucet schema sink redis
 ```
 
-## Pipeline Usage
+## Library usage
+
+```rust
+use faucet_core::{Pipeline, Sink};
+use faucet_sink_redis::{RedisSink, RedisSinkConfig, RedisSinkType};
+use serde_json::json;
+
+# async fn run() -> Result<(), Box<dyn std::error::Error>> {
+let config = RedisSinkConfig::new(
+    "redis://127.0.0.1:6379",
+    RedisSinkType::Stream { key: "events".into() },
+)
+.with_batch_size(1000);
+
+let sink = RedisSink::new(config).await?;
+
+let records = vec![
+    json!({"user_id": "u123", "event": "signup"}),
+    json!({"user_id": "u456", "event": "login"}),
+];
+
+let written = sink.write_batch(&records).await?;
+println!("wrote {written} records to Redis");
+# Ok(())
+# }
+```
+
+Drive it from a full pipeline by pairing it with any source:
 
 ```rust
 use faucet_core::Pipeline;
 use faucet_source_rest::{RestStream, RestStreamConfig};
 use faucet_sink_redis::{RedisSink, RedisSinkConfig, RedisSinkType};
 
+# async fn run() -> Result<(), Box<dyn std::error::Error>> {
 let source = RestStream::new(
-    RestStreamConfig::new("https://api.example.com", "/v1/events")
+    RestStreamConfig::new("https://api.example.com", "/v1/events"),
 );
-
 let sink = RedisSink::new(RedisSinkConfig::new(
-    "redis://localhost:6379",
+    "redis://127.0.0.1:6379",
     RedisSinkType::Stream { key: "api_events".into() },
-)).await?;
+))
+.await?;
 
 let result = Pipeline::new(source, sink).run().await?;
-println!("Transferred {} records", result.records_written);
+println!("transferred {} records", result.records_written);
+# Ok(())
+# }
 ```
 
-## Examples
+## How it works
 
-### Writing to a Redis list (queue pattern)
-
-```rust
-let config = RedisSinkConfig::new(
-    "redis://localhost:6379",
-    RedisSinkType::List { key: "job_queue".into() },
-)
-.with_batch_size(500);
-
-let sink = RedisSink::new(config).await?;
-sink.write_batch(&records).await?;
-// Records are appended to the "job_queue" list via RPUSH
-```
-
-### Writing to a Redis stream (event sourcing)
-
-```rust
-let config = RedisSinkConfig::new(
-    "redis://localhost:6379",
-    RedisSinkType::Stream { key: "user_events".into() },
-);
-
-let sink = RedisSink::new(config).await?;
-
-let records = vec![
-    json!({"user_id": "u1", "action": "login", "ip": "10.0.0.1"}),
-    json!({"user_id": "u2", "action": "purchase", "amount": 99.99}),
-];
-
-sink.write_batch(&records).await?;
-// Each record becomes a stream entry with fields: user_id, action, ip/amount
-```
-
-### Writing to individual keys (cache/lookup pattern)
-
-```rust
-let config = RedisSinkConfig::new(
-    "redis://localhost:6379",
-    RedisSinkType::KeyValue { key_field: "user_id".into() },
-);
-
-let sink = RedisSink::new(config).await?;
-
-let records = vec![
-    json!({"user_id": "u123", "name": "Alice", "plan": "pro"}),
-    json!({"user_id": "u456", "name": "Bob", "plan": "free"}),
-];
-
-sink.write_batch(&records).await?;
-// Creates keys "u123" and "u456" with the full JSON as values
-```
-
-## How It Works
-
-- A multiplexed async connection is opened in `RedisSink::new()` and reused across all `write_batch()` calls. The multiplexed connection is cheaply cloneable.
-- `write_batch()` processes records in chunks of `batch_size`. Each chunk is sent as a Redis pipeline (multiple commands batched in a single round-trip) for maximum throughput. When `batch_size = 0`, the entire records slice is packed into a single pipeline — see [Streaming and batching](#streaming-and-batching).
-- For `List` mode: each record is serialized to JSON and appended with `RPUSH`.
-- For `Stream` mode: each record's top-level fields are flattened into stream entry fields for `XADD`. Auto-generated stream IDs (`*`) are used.
-- For `KeyValue` mode: the specified `key_field` is extracted from each record to use as the Redis key. The entire record (serialized as JSON) is the value for `SET`. Records missing the key field produce an error.
+1. `new()` validates `batch_size`, opens a `redis::Client` from `url`, and establishes a **multiplexed async connection** — once. The connection is cheaply cloneable and shared across every `write_batch` call (it multiplexes commands over a single socket).
+2. `write_batch` chunks the incoming slice by the effective window (`batch_size`, or the whole slice when `batch_size: 0`).
+3. Each chunk is assembled into one `redis::pipe()` — `RPUSH` for `List`, `XADD` for `Stream`, `SET` for `KeyValue` — and executed in a single round-trip via `query_async`.
+4. A failed pipeline surfaces as `FaucetError::Sink`; a record missing its `key_field` (KeyValue) or a JSON-serialization failure does the same.
 
 ## Lineage dataset URI
 
-`redis://<host>:<port>?key=<key>` or `?key_field=<field>` (credentials stripped) — e.g. `redis://localhost:6379?key=events`.
+`redis://<host>:<port>?key=<key>` (List/Stream) or `redis://<host>:<port>?key_field=<field>` (KeyValue), with credentials stripped — e.g. `redis://localhost:6379?key=events`.
+
+## Limitations
+
+- **Append/insert-only.** The sink writes via `RPUSH` / `XADD` / `SET`; it does not implement `write_mode: upsert | delete`. (`SET` on an existing key in `KeyValue` mode overwrites by nature, but there is no keyed upsert/delete planner.)
+- **No exactly-once delivery.** Redis writes are at-least-once; the sink does not implement idempotent commit tokens. On retry after a partial failure, already-written records may be re-applied (a re-pushed list entry / re-added stream entry; a `SET` is naturally idempotent for the same key+value).
+- **No compression.** Not applicable to a Redis protocol sink.
+
+## Feature flags
+
+This crate has no optional features of its own; enable it in the CLI/umbrella via the `sink-redis` feature.
+
+## Troubleshooting / FAQ
+
+| Symptom | Likely cause & fix |
+|---------|--------------------|
+| `Config: invalid Redis URL` | `url` is malformed. Use the `redis://[:password@]host:port[/db]` form (or `rediss://` for TLS). |
+| `Sink: Redis connection failed` | The server is unreachable, refused the connection, or rejected auth. Check the host/port, that Redis is running, and that any password in the URL is correct. `faucet doctor` runs a `PING` probe that surfaces the same error early. |
+| `Config: batch_size ... exceeds maximum` | `batch_size` is above `MAX_BATCH_SIZE` (1,000,000). Lower it; `0` is valid (no batching). |
+| `Sink: record missing key field '<field>'` (KeyValue) | A record has no `key_field`. Ensure every record carries the field, or add a transform to populate/rename it before the sink. |
+| `Sink: Redis pipeline execution failed` | The server rejected a command mid-pipeline (e.g. `WRONGTYPE` — the key already holds a different data type, or `OOM` under `maxmemory`). Use a fresh key per `sink_type`, or free memory / raise `maxmemory`. |
+| Stream entry has only a `_data` field | The record wasn't a JSON object, or flattened to zero fields. `XADD` requires at least one field, so the whole record is stored under `_data`. Emit object records to get native stream fields. |
+| Numbers/booleans arrive as strings in a stream | Intentional — non-string scalars are stringified for `XADD`, and nested objects/arrays are serialized as JSON strings. Parse them on the consumer side. |
+| TLS connection rejected | Use a `rediss://` URL (double `s`) to negotiate TLS against a server configured for it. |
+
+## See also
+
+- [Sinks reference](https://pawansikawat.github.io/faucet-stream/reference/connectors.html) — capability matrix across all connectors.
+- [Configuration grammar](https://pawansikawat.github.io/faucet-stream/reference/config.html) — the full pipeline config shape.
+- [State & resumability cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/state.html).
+- [`faucet-source-redis`](https://crates.io/crates/faucet-source-redis) — the Redis **source** (streams, lists, key patterns).
+- [`faucet-core`](https://crates.io/crates/faucet-core) — traits, pipeline, and error types.
 
 ## License
 
-Licensed under MIT or Apache-2.0.
+Licensed under either of [Apache License, Version 2.0](https://www.apache.org/licenses/LICENSE-2.0) or [MIT license](https://opensource.org/licenses/MIT) at your option.

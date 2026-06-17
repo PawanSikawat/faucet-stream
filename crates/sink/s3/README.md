@@ -2,16 +2,33 @@
 
 [![Crates.io](https://img.shields.io/crates/v/faucet-sink-s3.svg)](https://crates.io/crates/faucet-sink-s3)
 [![Docs.rs](https://docs.rs/faucet-sink-s3/badge.svg)](https://docs.rs/faucet-sink-s3)
+[![MSRV](https://img.shields.io/crates/msrv/faucet-sink-s3.svg)](https://github.com/PawanSikawat/faucet-stream/blob/main/rust-toolchain.toml)
+[![License](https://img.shields.io/crates/l/faucet-sink-s3.svg)](https://github.com/PawanSikawat/faucet-stream#license)
 
-AWS S3 sink connector for the [faucet-stream](https://github.com/PawanSikawat/faucet-stream) ecosystem.
+AWS **S3** sink for the [faucet-stream](https://github.com/PawanSikawat/faucet-stream) ecosystem. Writes JSON records to S3 (or any S3-compatible store) as JSON Lines (NDJSON) objects, one UUID-keyed object per chunk, uploaded concurrently via `buffer_unordered`.
 
-Writes JSON records to S3 as JSON Lines (NDJSON) files. Each file is keyed with a UUID for uniqueness. Supports file splitting by record count, configurable key prefixes and file extensions, concurrent uploads via `buffer_unordered`, and custom S3-compatible endpoints (MinIO, LocalStack, etc.).
+Reach for it to land any faucet-stream source — a REST API, a database, a Kafka topic, a CDC stream — into an S3 data lake as newline-delimited JSON with one declarative config and no glue code. It's tuned to write a small number of large objects rather than a flood of tiny ones, which keeps downstream scans and PUT/LIST costs low.
+
+## Feature highlights
+
+- **JSON Lines (NDJSON) output** — each object is newline-delimited JSON, uploaded with `Content-Type: application/x-ndjson`. Reads back cleanly in Spark, Athena, DuckDB, `jq`, and the [`faucet-source-s3`](https://crates.io/crates/faucet-source-s3) JSONL reader.
+- **Concurrent uploads** — chunks are serialized up front and uploaded in parallel via `futures::stream::buffer_unordered`, bounded by `concurrency` (default 10).
+- **File splitting** — `max_records_per_file` caps records per object; `batch_size` re-chunks each `write_batch` call. The effective per-object cap is the smaller of the two.
+- **S3-compatible endpoints** — point `endpoint_url` at MinIO, LocalStack, Cloudflare R2, Backblaze B2, or any S3 API.
+- **AWS credential chain** — credentials resolve through the standard AWS SDK chain (env vars, shared credentials file, IAM instance/task roles, SSO) — no secrets in the config.
+- **Optional compression** — gzip / zstd / auto behind the crate-local `compression` feature; the codec auto-resolves from the file extension.
+- **Client built once** — the S3 client is constructed eagerly in `new()` and reused for every upload.
+- **Preflight `check()`** — `faucet doctor` issues a non-mutating `HeadBucket` to confirm the bucket is reachable and credentials work, uploading nothing.
 
 ## Installation
 
 ```bash
+# As a library:
 cargo add faucet-sink-s3
 cargo add tokio --features full
+
+# In the CLI (opt-in connector feature):
+cargo install faucet-cli --features sink-s3
 ```
 
 Or via the umbrella crate:
@@ -20,104 +37,169 @@ Or via the umbrella crate:
 cargo add faucet-stream --features sink-s3
 ```
 
-## Quick Start
+## Quick start
 
-```rust
-use faucet_sink_s3::{S3Sink, S3SinkConfig};
-use faucet_core::Sink;
-use serde_json::json;
-
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let config = S3SinkConfig::new("my-data-bucket")
-        .prefix("events/2026/04/02/")
-        .region("us-east-1");
-
-    let sink = S3Sink::new(config).await?;
-
-    let records = vec![
-        json!({"id": 1, "event": "page_view", "user": "alice"}),
-        json!({"id": 2, "event": "click", "user": "bob"}),
-    ];
-
-    let written = sink.write_batch(&records).await?;
-    println!("Wrote {written} records to S3");
-
-    Ok(())
-}
+```yaml
+# pipeline.yaml — faucet run pipeline.yaml
+version: 1
+pipeline:
+  source:
+    type: rest
+    config:
+      base_url: https://api.example.com
+      path: /v1/events
+      records_path: $.events[*]
+  sink:
+    type: s3
+    config:
+      bucket: my-data-lake
+      prefix: events/raw/
+      region: us-east-1
+      max_records_per_file: 10000
 ```
 
-## Configuration
+```bash
+faucet run pipeline.yaml
+```
+
+This writes `s3://my-data-lake/events/raw/<uuid>.jsonl` objects, each holding up to 10,000 records.
+
+## Configuration reference
+
+### Core
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `bucket` | `String` | *(required)* | S3 bucket name |
-| `prefix` | `String` | `""` (empty) | Key prefix for written objects (e.g. `"data/events/"`) |
-| `region` | `Option<String>` | `None` (SDK default) | AWS region |
-| `endpoint_url` | `Option<String>` | `None` | Custom endpoint URL for S3-compatible services (MinIO, LocalStack, etc.) |
-| `file_extension` | `String` | `".jsonl"` | File extension appended to each object key |
-| `max_records_per_file` | `Option<usize>` | `None` (all in one file) | Maximum records per file. When set, records are split across multiple files. |
-| `concurrency` | `usize` | `10` | Maximum number of concurrent file uploads |
-| `batch_size` | `usize` | `1000` ([`DEFAULT_BATCH_SIZE`]) | Records per S3 object written by a single `write_batch` call. `0` opts out of write-side re-chunking — see *Streaming and batching* below. |
+| `bucket` | string | — *(required)* | S3 bucket name. |
+| `prefix` | string | `""` | Key prefix for written objects (e.g. `"data/events/"`). Combined as `{prefix}{uuid}{file_extension}`. |
+| `region` | string | *(SDK default)* | AWS region. When unset, the AWS SDK resolves it from the environment / config. |
+| `endpoint_url` | string | *(unset)* | Custom endpoint for S3-compatible services (MinIO, LocalStack, R2, …). |
+| `file_extension` | string | `".jsonl"` | Extension appended to each object key. Append `.gz` / `.zst` here when using compression so consumers can detect the codec. |
 
-[`DEFAULT_BATCH_SIZE`]: https://docs.rs/faucet-core/latest/faucet_core/constant.DEFAULT_BATCH_SIZE.html
+### Batching & file splitting
 
-### Streaming and batching
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `max_records_per_file` | int | *(unset)* | Maximum records per object. When unset, all records in a `write_batch` call go to one object. |
+| `concurrency` | int | `10` | Maximum number of concurrent object uploads. Bounds peak memory together with object size. |
+| `batch_size` | int | `1000` | Records per object written by a single `write_batch` call (write-side re-chunking). `0` = no re-chunking — see [Streaming & batching](#streaming--batching). **`0` is the recommended value for S3.** |
 
-`batch_size` controls write-side re-chunking inside a single `write_batch`
-call. When the pipeline hands the sink `N` records and `batch_size = M > 0`,
-the sink writes `ceil(N / M)` separate S3 objects (each containing at most
-`M` records, with the final object holding the remainder). When
-`batch_size = 0`, the sink writes whatever upstream hands it as a single
-object — no re-chunking.
+### Format (compression feature)
 
-**Recommended value: `0`.** S3 is the canonical case where one large object
-beats many small ones — per-request overhead, slower downstream scans, and
-LIST/PUT cost all compound when a pipeline produces a flood of tiny objects.
-The source's `batch_size` already sizes each `write_batch` call, and most
-sources expose a `batch_size` field tuned to their native paging primitive
-(REST page, sqlx cursor chunk, Kafka poll, etc.). Leave this at `0` unless
-you explicitly want the sink to subdivide each upstream page further.
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `compression` | `none` \| `gzip` \| `zstd` \| `auto` | `auto` | Object-body codec. `auto` resolves from `file_extension`. Requires the crate-local `compression` feature. See [Compression](#compression). |
 
-When both `batch_size > 0` and `max_records_per_file` are set, the effective
-per-object cap is `min(batch_size, max_records_per_file)`. When both are `0`
-/ unset, the sink writes one object per `write_batch` call.
+## Examples
 
-> **Memory ceiling.** Each object's body is buffered fully in memory (and,
-> with compression enabled, briefly held as both the raw and compressed
-> body) before a single-shot `PutObject`. Up to `concurrency` objects
-> upload at once, so peak memory is roughly **`concurrency` × (object
-> size) × ~2**. A `batch_size = 0` / `max_records_per_file = None` fed by
-> a `fetch_all`-style source produces one potentially huge object per
-> `write_batch` — pair `batch_size = 0` with a streaming source that
-> already sizes its pages, or set `max_records_per_file` / lower
-> `concurrency` to cap peak memory. Streaming multipart upload for very
-> large objects is a future enhancement.
+### Sharded JSONL from a REST API
 
-### Builder Methods
-
-```rust
-use faucet_sink_s3::S3SinkConfig;
-
-let config = S3SinkConfig::new("my-bucket")
-    .prefix("output/events/")
-    .region("eu-west-1")
-    .endpoint_url("http://localhost:9000")
-    .file_extension(".ndjson")
-    .max_records_per_file(10000)
-    .concurrency(20);
+```yaml
+# Adapted from cli/examples/rest_to_s3.yaml
+version: 1
+name: rest_to_s3
+pipeline:
+  source:
+    type: rest
+    config:
+      base_url: https://api.example.com
+      path: /v1/events
+      records_path: $.events[*]
+      pagination:
+        type: Offset
+        offset_param: offset
+        limit_param: limit
+        limit: 500
+        total_path: $.meta.total
+  sink:
+    type: s3
+    config:
+      bucket: my-data-lake
+      prefix: events/raw/
+      region: us-east-1
+      file_extension: .jsonl
+      max_records_per_file: 10000
+      concurrency: 8
 ```
 
-### Object Key Format
+### Dated prefix driven by `${now.*}`
 
-Each file is written with the key: `{prefix}{uuid}{file_extension}`
-
-For example, with `prefix = "events/"` and `file_extension = ".jsonl"`:
+```yaml
+pipeline:
+  sink:
+    type: s3
+    config:
+      bucket: my-data-lake
+      prefix: events/dt=${now.date}/    # e.g. events/dt=2026-06-17/
+      region: us-east-1
+      batch_size: 0                      # let the source size each object
 ```
-events/a1b2c3d4-e5f6-7890-abcd-ef1234567890.jsonl
+
+### Compressed objects (gzip)
+
+```yaml
+pipeline:
+  sink:
+    type: s3
+    config:
+      bucket: my-data-lake
+      prefix: events/raw/
+      file_extension: .jsonl.gz   # auto-resolves to gzip
+      region: us-east-1
 ```
 
-## Config Loading
+### MinIO / LocalStack for local development
+
+```yaml
+pipeline:
+  sink:
+    type: s3
+    config:
+      bucket: test-bucket
+      prefix: dev/
+      endpoint_url: http://localhost:9000
+      region: us-east-1
+```
+
+## Streaming & batching
+
+The pipeline calls `Sink::write_batch` once per upstream page. Inside a call, `batch_size` and `max_records_per_file` together decide how many objects that page becomes:
+
+- The effective per-object cap is `min(batch_size, max_records_per_file)` when both are set, whichever single one is set, or **unbounded** when both are `0` / unset (the whole page becomes one object).
+- With a cap of `M`, a page of `N` records is written as `ceil(N / M)` objects, each holding at most `M` records (the last holds the remainder).
+- **`batch_size = 0` is the "no batching" sentinel:** the sink writes whatever upstream hands it without re-chunking (still honouring `max_records_per_file` if set).
+
+**Recommended: `batch_size: 0`.** S3 is the canonical case where one large object beats many small ones — per-request overhead, slower downstream scans, and LIST/PUT cost all compound with tiny objects. Most sources already size each page via their own `batch_size` (REST page, sqlx cursor chunk, Kafka poll, …), so let that drive object sizing.
+
+> **Memory ceiling.** Each object's body is buffered fully in memory before a single-shot `PutObject` (and, with compression on, briefly held as both raw and compressed). Up to `concurrency` objects upload at once, so peak memory is roughly **`concurrency` × object-size × ~2**. Pair `batch_size: 0` with a *streaming* source that sizes its own pages, or cap memory via `max_records_per_file` / lower `concurrency`. Streaming multipart upload for very large objects is a future enhancement.
+
+## Compression
+
+Behind the crate-local `compression` Cargo feature (`cargo add faucet-sink-s3 --features compression`, or `cargo install faucet-cli --features compression`). Adds the `compression` config field with values `none` / `gzip` / `zstd` / `auto`.
+
+- `auto` (the default) resolves the codec from `file_extension`: `.gz` → gzip, `.zst` → zstd, anything else → none.
+- Append `.gz` / `.zst` to `file_extension` so consumers can detect the codec from the object key.
+- The S3 **`Content-Encoding` header is deliberately unset** — consumers must decompress explicitly (the codec lives in the key suffix, not the HTTP metadata).
+- Resolution runs per-object, so a `${now.*}`- or matrix-driven extension can vary across a run.
+
+```yaml
+pipeline:
+  sink:
+    type: s3
+    config:
+      bucket: my-data-lake
+      prefix: events/raw/
+      file_extension: .jsonl.zst
+      compression: auto    # or 'gzip' | 'zstd' | 'none'
+```
+
+## Config loading & schema
+
+Load from YAML/JSON files or environment variables, and inspect the full JSON Schema:
+
+```bash
+faucet schema sink s3
+```
 
 ```rust
 use faucet_core::config::{load_json, load_env_file};
@@ -130,33 +212,7 @@ let config: S3SinkConfig = load_json("config.json")?;
 let config: S3SinkConfig = load_env_file(".env", "S3_SINK")?;
 ```
 
-### Example JSON config
-
-```json
-{
-  "bucket": "my-data-lake",
-  "prefix": "raw/events/2026/04/",
-  "region": "us-east-1",
-  "file_extension": ".jsonl",
-  "max_records_per_file": 50000,
-  "concurrency": 10
-}
-```
-
-### Example JSON config (S3-compatible endpoint)
-
-```json
-{
-  "bucket": "local-bucket",
-  "prefix": "test/",
-  "endpoint_url": "http://localhost:9000",
-  "region": "us-east-1",
-  "file_extension": ".jsonl",
-  "concurrency": 5
-}
-```
-
-### Example .env file
+Example `.env`:
 
 ```env
 S3_SINK_BUCKET=my-data-lake
@@ -167,109 +223,107 @@ S3_SINK_MAX_RECORDS_PER_FILE=50000
 S3_SINK_CONCURRENCY=10
 ```
 
-## Config Schema Introspection
+## Library usage
 
 ```rust
-use faucet_core::Sink;
+use faucet_core::{Pipeline, Sink};
+use faucet_sink_s3::{S3Sink, S3SinkConfig};
+use serde_json::json;
+
+# async fn run() -> Result<(), Box<dyn std::error::Error>> {
+let config = S3SinkConfig::new("my-data-bucket")
+    .prefix("events/2026/06/")
+    .region("us-east-1")
+    .max_records_per_file(10_000)
+    .concurrency(20);
 
 let sink = S3Sink::new(config).await?;
-let schema = sink.config_schema();
-println!("{}", serde_json::to_string_pretty(&schema)?);
+
+let records = vec![
+    json!({"id": 1, "event": "page_view", "user": "alice"}),
+    json!({"id": 2, "event": "click", "user": "bob"}),
+];
+let written = sink.write_batch(&records).await?;
+println!("Wrote {written} records to S3");
+# Ok(())
+# }
 ```
 
-## Pipeline Usage
+Driven by a `Pipeline`:
 
 ```rust
 use faucet_core::Pipeline;
 use faucet_source_rest::{RestStream, RestStreamConfig};
 use faucet_sink_s3::{S3Sink, S3SinkConfig};
 
-let source = RestStream::new(
-    RestStreamConfig::new("https://api.example.com", "/v1/events")
-);
-
+# async fn run() -> Result<(), Box<dyn std::error::Error>> {
+let source = RestStream::new(RestStreamConfig::new("https://api.example.com", "/v1/events"));
 let sink = S3Sink::new(
     S3SinkConfig::new("my-data-lake")
         .prefix("ingest/events/")
         .region("us-east-1")
-        .max_records_per_file(100000)
-).await?;
+        .max_records_per_file(100_000),
+)
+.await?;
 
 let result = Pipeline::new(source, sink).run().await?;
 println!("Transferred {} records to S3", result.records_written);
+# Ok(())
+# }
 ```
 
-## Examples
+## How it works
 
-### Basic upload to S3
+1. `new()` validates `batch_size` and builds an S3 client **once** via the AWS SDK default credential chain, applying `region` / `endpoint_url` overrides if set.
+2. `write_batch()` computes the effective per-object cap (`min(batch_size, max_records_per_file)`) and splits the page into chunks.
+3. Each chunk is serialized to a JSON Lines body and assigned a UUID-based key (`{prefix}{uuid}{file_extension}`) *before* any upload begins.
+4. Chunks upload concurrently via `buffer_unordered(concurrency)` as single-shot `PutObject` calls with `Content-Type: application/x-ndjson`.
+5. With the `compression` feature, each body is compressed in memory just before upload using the codec resolved from `file_extension`.
 
-```rust
-let config = S3SinkConfig::new("my-bucket")
-    .prefix("data/")
-    .region("us-west-2");
+## Object key format
 
-let sink = S3Sink::new(config).await?;
-sink.write_batch(&records).await?;
-// Writes: s3://my-bucket/data/<uuid>.jsonl
+Each object is keyed `{prefix}{uuid}{file_extension}`. With `prefix = "events/"` and `file_extension = ".jsonl"`:
+
+```
+events/a1b2c3d4-e5f6-7890-abcd-ef1234567890.jsonl
 ```
 
-### Splitting large datasets across multiple files
-
-```rust
-let config = S3SinkConfig::new("data-lake")
-    .prefix("events/daily/")
-    .max_records_per_file(100000)
-    .concurrency(20);
-
-let sink = S3Sink::new(config).await?;
-
-// 500,000 records will be split into 5 files of 100,000 each,
-// uploaded concurrently (up to 20 at a time).
-sink.write_batch(&large_record_set).await?;
-```
-
-### Using MinIO or LocalStack for local development
-
-```rust
-let config = S3SinkConfig::new("test-bucket")
-    .endpoint_url("http://localhost:9000")
-    .region("us-east-1")
-    .prefix("dev/");
-
-let sink = S3Sink::new(config).await?;
-sink.write_batch(&records).await?;
-```
-
-## How It Works
-
-- The S3 client is created eagerly in `S3Sink::new()` using the AWS SDK default credential chain. Custom regions and endpoints are applied if configured.
-- `write_batch()` splits records into chunks based on `max_records_per_file` (or writes all records to a single file if unset).
-- Each chunk is serialized to a JSON Lines string, assigned a UUID-based key, and uploaded to S3.
-- Uploads are performed concurrently using `futures::stream::buffer_unordered` with the configured `concurrency` limit.
-- Objects are uploaded with `Content-Type: application/x-ndjson`.
-- AWS credentials are resolved via the standard AWS SDK credential chain (environment variables, shared credentials file, instance profiles, etc.).
-
-## Compression
-
-Behind the crate-local `compression` Cargo feature. Adds a `compression` config
-field with values `none`, `gzip`, `zstd`, or `auto` (the default — detects
-`.gz` / `.zst` from the file path / object key).
-
-YAML example:
-
-```yaml
-kind: s3
-config:
-  # ... existing fields ...
-  compression: auto  # or 'gzip' | 'zstd' | 'none'
-```
-
-The codec resolves from `file_extension`. Append `.gz` / `.zst` to `file_extension` so consumers can detect the codec from the object key. The S3 `Content-Encoding` header is deliberately unset — consumers must decompress explicitly.
+UUID keys make writes idempotent-safe against collisions but mean re-runs append new objects rather than overwriting — downstream consumers should treat the prefix as append-only.
 
 ## Lineage dataset URI
 
-`s3://<bucket>/<prefix>` — e.g. `s3://my-bucket/data/events/`.
+`s3://<bucket>/<prefix>` — e.g. `s3://my-data-lake/events/raw/`.
+
+## Feature flags
+
+| Feature | Default | Effect |
+|---------|---------|--------|
+| `compression` | off | Adds the `compression` config field (gzip / zstd / auto) and compresses each object body before upload. Pulls in `faucet-core/compression`. |
+
+This is a write-only file sink: it does **not** support exactly-once delivery, upsert/delete write modes, or resumable bookmarks (UUID keys make every run append new objects).
+
+## Troubleshooting / FAQ
+
+| Symptom | Likely cause & fix |
+|---------|--------------------|
+| `S3 put object error … AccessDenied` | The resolved credentials lack `s3:PutObject` on the bucket/prefix. Grant the IAM principal `s3:PutObject` (and `s3:ListBucket` if `faucet doctor` is used) on `arn:aws:s3:::<bucket>/<prefix>*`. |
+| `dispatch failure` / no credentials | The AWS SDK chain found no credentials. Set `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`, configure `~/.aws/credentials`, or run on a host with an instance/task role. |
+| `NoSuchBucket` / `PermanentRedirect` | Bucket doesn't exist, or `region` doesn't match the bucket's region. Set `region` to the bucket's actual region. |
+| Works against AWS but not MinIO/LocalStack | Set `endpoint_url` to the service URL and a non-empty `region` (e.g. `us-east-1`); S3-compatible stores still require a region string. |
+| `Config: batch_size …` at startup | `batch_size` exceeds `MAX_BATCH_SIZE` (1,000,000). Lower it, or set `0` for no re-chunking. |
+| Flood of tiny objects, slow downstream scans | `batch_size`/`max_records_per_file` are too small. Set `batch_size: 0` and let the source size each page, or raise `max_records_per_file`. |
+| OOM / high memory under load | Large pages × `concurrency` are buffered in memory. Lower `concurrency`, set `max_records_per_file`, or feed from a streaming source that sizes its pages. |
+| Compressed objects won't auto-decompress in a consumer | The `Content-Encoding` header is intentionally unset. Decompress by the key suffix (`.gz` / `.zst`), or use [`faucet-source-s3`](https://crates.io/crates/faucet-source-s3) with its `compression` feature. |
+
+## See also
+
+- [Compression cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/compression.html) — codecs, auto-detection, and the `Content-Encoding` note.
+- [Connector reference & capability matrix](https://pawansikawat.github.io/faucet-stream/reference/connectors.html)
+- [CLI & config-file reference](https://pawansikawat.github.io/faucet-stream/reference/cli.html)
+- [`faucet-source-s3`](https://crates.io/crates/faucet-source-s3) — read JSONL / JSON-array / raw-text objects back out of S3.
+- [`faucet-sink-gcs`](https://crates.io/crates/faucet-sink-gcs) — the equivalent sink for Google Cloud Storage.
+- [`faucet-sink-parquet`](https://crates.io/crates/faucet-sink-parquet) — columnar output to local or S3 with internal compression.
 
 ## License
 
-Licensed under MIT or Apache-2.0.
+Licensed under either of [Apache License, Version 2.0](https://www.apache.org/licenses/LICENSE-2.0) or [MIT license](https://opensource.org/licenses/MIT) at your option.

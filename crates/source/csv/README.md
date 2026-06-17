@@ -2,111 +2,191 @@
 
 [![Crates.io](https://img.shields.io/crates/v/faucet-source-csv.svg)](https://crates.io/crates/faucet-source-csv)
 [![Docs.rs](https://docs.rs/faucet-source-csv/badge.svg)](https://docs.rs/faucet-source-csv)
+[![MSRV](https://img.shields.io/crates/msrv/faucet-source-csv.svg)](https://github.com/PawanSikawat/faucet-stream/blob/main/rust-toolchain.toml)
+[![License](https://img.shields.io/crates/l/faucet-source-csv.svg)](https://github.com/PawanSikawat/faucet-stream#license)
 
-A CSV file source that reads rows from CSV files and returns them as JSON objects, with configurable delimiters, headers, and quote characters.
+A **CSV file source** that reads delimited text files and yields each row as a `serde_json::Value` object. Part of the [faucet-stream](https://github.com/PawanSikawat/faucet-stream) ecosystem.
 
-Part of the [faucet-stream](https://github.com/PawanSikawat/faucet-stream) ecosystem.
+Built on the streaming RFC-4180 `csv-async` reader so the file is consumed lazily, line by line, instead of being slurped into memory — a multi-gigabyte export streams through with memory bounded by `batch_size`, not file size. Reach for it to load CSV/TSV/pipe-delimited exports, spreadsheet dumps, or legacy flat files into any faucet-stream sink.
+
+## Feature highlights
+
+- **True streaming reader** — `Source::stream_pages` reads from a `tokio` async reader and emits fixed-size pages; client-side memory is O(`batch_size`), not O(file size).
+- **Configurable dialect** — set the field `delimiter` and `quote` characters (byte values) for CSV, TSV, pipe-delimited, or any single-char-delimited format.
+- **Header or headerless** — with headers, columns are keyed by the header row; without, keys are generated as `column_0`, `column_1`, ….
+- **RFC-4180 correct** — quoted fields containing embedded delimiters *and* embedded newlines parse as a single record, so files written by `faucet-sink-csv` round-trip losslessly.
+- **Transparent compression** — opt-in `compression` feature reads `.gz` / `.zst` files, with auto-detection from the path suffix.
+- **No type inference** — every field is returned as a JSON string; cast downstream with the `cast` transform if you need typed values.
 
 ## Installation
 
 ```bash
+# As a library:
 cargo add faucet-source-csv
 cargo add tokio --features full
-```
 
-Or via the umbrella crate:
-```bash
+# In the CLI (opt-in connector feature):
+cargo install faucet-cli --features source-csv
+
+# Via the umbrella crate:
 cargo add faucet-stream --features source-csv
 ```
 
-## Quick Start
+`source-csv` is not in the CLI default build — enable it explicitly (or use the `source` / `full` aggregate features).
 
-```rust
-use faucet_source_csv::{CsvSource, CsvSourceConfig};
-use faucet_core::Source;
+## Quick start
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let config = CsvSourceConfig::new("/path/to/data.csv");
+```yaml
+# pipeline.yaml — faucet run pipeline.yaml
+version: 1
+name: csv_to_jsonl
 
-    let source = CsvSource::new(config);
-    let records = source.fetch_all().await?;
+pipeline:
+  source:
+    type: csv
+    config:
+      path: ./data/input.csv
 
-    for record in &records {
-        println!("{}", record);
-    }
-    Ok(())
-}
+  sink:
+    type: jsonl
+    config:
+      path: ./out/records.jsonl
 ```
 
-## How It Works
+```bash
+faucet run pipeline.yaml
+```
 
-- If the file has headers, each row becomes a JSON object with header names as keys
-- If the file has no headers, keys are generated as `column_0`, `column_1`, etc.
-- All field values are returned as JSON strings (no type inference)
-- `fetch_all` / `fetch_with_context` read the file via blocking I/O on a `spawn_blocking` task to avoid starving the async runtime
-- `Source::stream_pages` reads the file via async line-streaming on a tokio `BufReader` and parses each line through a single-record `csv::ReaderBuilder` parse
+With a header row of `id,name,email`, the file produces records like
+`{"id": "1", "name": "Alice", "email": "alice@example.com"}`.
 
-## Configuration
+## Configuration reference
 
-### CsvSourceConfig
+### Core
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `path` | `String` | *(required)* | Path to the CSV file |
-| `has_headers` | `bool` | `true` | Whether the file has a header row |
-| `delimiter` | `u8` | `b','` (comma) | Field delimiter byte |
-| `quote` | `u8` | `b'"'` (double quote) | Quote character byte |
-| `batch_size` | `usize` | `DEFAULT_BATCH_SIZE` (1000) | Rows per emitted `StreamPage` in `Source::stream_pages`. `0` is the "no batching" sentinel — emits all rows in a single page |
+| `path` | string | — *(required)* | Path to the CSV file on the local filesystem. |
+| `has_headers` | bool | `true` | Whether the first row is a header. `true` → header names become object keys. `false` → keys are generated `column_0`, `column_1`, …. |
+| `delimiter` | int (byte) | `44` (`,`) | Field delimiter, as a byte value. `9` = tab, `124` = pipe (`\|`), `59` = semicolon. |
+| `quote` | int (byte) | `34` (`"`) | Quote character, as a byte value. `39` = single quote (`'`). |
 
-### Streaming and batching
+### Batching
 
-`CsvSource::stream_pages` is a true client-side stream: it opens the file via
-`tokio::fs::File` + `tokio::io::BufReader`, reads the header line first (if
-`has_headers`), then iterates the remaining lines via
-`AsyncBufReadExt::lines`. Each line is parsed through a single-record
-`csv::ReaderBuilder` so quoted fields containing the delimiter
-(e.g. `"hello, world"`) parse correctly. There is no server-side concern —
-the file is consumed lazily from the local filesystem, so client-side memory
-is bounded at O(`batch_size`) regardless of file size.
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `batch_size` | int | `1000` | Rows per emitted `StreamPage` in `Source::stream_pages`. **`0` = no batching**: the entire file is drained into a single page (handy for small lookup tables or load-job sinks that prefer one large request). Capped at `MAX_BATCH_SIZE` (1,000,000); validated at config-load time. |
 
-`batch_size = 0` is the "no batching" sentinel: the file is fully drained
-and emitted as one page. Useful for small lookup tables or for sinks (SQL
-`COPY`, BigQuery load jobs) that prefer one large request to many small
-ones.
+### Format
 
-#### Multi-line quoted records
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `compression` | enum | `auto` | `none` \| `gzip` \| `zstd` \| `auto`. **Requires the `compression` feature.** `auto` selects the codec from the path suffix (`.gz` → gzip, `.zst` → zstd, otherwise none). |
 
-Parsing uses `csv-async`, a streaming RFC-4180 reader that tracks quote
-state across physical lines. Quoted fields containing embedded newlines
-(and embedded delimiters) are parsed correctly as a single record, so a
-file produced by `faucet-sink-csv` round-trips back losslessly through
-both `fetch_all` and the `stream_pages` streaming path.
+> Byte fields (`delimiter`, `quote`) are integers in JSON/YAML. Common values: `44` comma, `9` tab, `124` pipe, `59` semicolon, `34` double-quote, `39` single-quote.
 
-## Config Loading
+## Examples
+
+### TSV (tab-separated) file
+
+```yaml
+source:
+  type: csv
+  config:
+    path: /data/export.tsv
+    delimiter: 9          # tab
+```
+
+### Headerless, pipe-delimited legacy export
+
+```yaml
+source:
+  type: csv
+  config:
+    path: /data/legacy_export.csv
+    has_headers: false
+    delimiter: 124        # pipe |
+    quote: 39             # single quote '
+```
+
+Rows become `{"column_0": "...", "column_1": "...", ...}`.
+
+### Cast string fields to typed values en route to SQLite
+
+```yaml
+version: 1
+name: csv_to_sqlite
+
+pipeline:
+  source:
+    type: csv
+    config:
+      path: ./data/customers.csv
+
+  transforms:
+    - type: cast
+      config:
+        field: age
+        to: integer
+
+  sink:
+    type: sqlite
+    config:
+      connection_url: sqlite://./customers.db
+      table: customers
+      auto_map: true
+```
+
+### Compressed file (gzip), one page per file
+
+```yaml
+source:
+  type: csv
+  config:
+    path: /data/events.csv.gz
+    compression: auto      # detects .gz; explicit `gzip` also works
+    batch_size: 0          # emit the whole file as one page
+```
+
+## Streaming & batching
+
+`CsvSource` implements `Source::stream_pages` as a real client-side stream. It opens the file through `tokio::fs::File`, wraps it in a `csv_async::AsyncReaderBuilder` configured with the dialect (`delimiter` / `quote` / `has_headers`), and reads records incrementally — buffering up to `batch_size` rows before yielding a page. Because `csv-async` is a streaming RFC-4180 reader, it tracks quote state across physical lines, so quoted fields with embedded newlines and delimiters (e.g. `"hello, world"` or a multi-line cell) parse correctly as a single record.
+
+`batch_size = 0` is the **no-batching sentinel**: the file is fully drained and emitted in one `StreamPage`. Use it for small lookup tables, or for sinks (SQL `COPY`, BigQuery load jobs) that prefer one large request over many small ones.
+
+`fetch_all` / `fetch_with_context` are convenience methods that collect every page into a single `Vec<serde_json::Value>` by draining `stream_pages`.
+
+Every page carries `bookmark: None` — there is no incremental-replication mode for a flat file (the whole file is read on each run).
+
+## Compression
+
+Behind the crate-local `compression` Cargo feature, the source gains a `compression` config field (`none` / `gzip` / `zstd` / `auto`, default `auto`). Auto-detection consults the path suffix at I/O time — `.gz` selects gzip, `.zst` selects zstd, anything else is treated as uncompressed. The streaming reader decompresses on the fly, so memory stays bounded and multi-line quoted records still parse correctly. Enable it with `cargo install faucet-cli --features "source-csv compression"` or `cargo add faucet-source-csv --features compression`.
+
+## Config loading
 
 ```rust
 use faucet_core::config::{load_json, load_env_file};
 use faucet_source_csv::CsvSourceConfig;
 
+# fn example() -> Result<(), Box<dyn std::error::Error>> {
 let config: CsvSourceConfig = load_json("config.json")?;
 let config: CsvSourceConfig = load_env_file(".env", "CSV_SOURCE")?;
+# Ok(()) }
 ```
 
-### Example JSON config
+JSON config:
 
 ```json
 {
   "path": "/data/exports/customers.csv",
   "has_headers": true,
   "delimiter": 44,
-  "quote": 34
+  "quote": 34,
+  "batch_size": 1000
 }
 ```
 
-Note: `delimiter` and `quote` are specified as byte values (44 = comma, 34 = double quote, 9 = tab).
-
-### Example .env file
+`.env` file:
 
 ```env
 CSV_SOURCE_PATH=/data/exports/customers.csv
@@ -115,98 +195,77 @@ CSV_SOURCE_DELIMITER=44
 CSV_SOURCE_QUOTE=34
 ```
 
-## Config Schema Introspection
+## Schema introspection
 
-```rust
-use faucet_core::Source;
-
-let source = CsvSource::new(config);
-let schema = source.config_schema();
-println!("{}", serde_json::to_string_pretty(&schema)?);
+```bash
+faucet schema source csv
 ```
 
-## Examples
+Prints the JSON Schema for `CsvSourceConfig` — the authoritative field list, types, and defaults.
 
-### Reading a standard CSV file
+## Library usage
 
-```rust
+```rust,no_run
 use faucet_source_csv::{CsvSource, CsvSourceConfig};
 use faucet_core::Source;
 
-let config = CsvSourceConfig::new("/data/users.csv");
-let source = CsvSource::new(config);
-let records = source.fetch_all().await?;
-
-// Example record: {"id": "1", "name": "Alice", "email": "alice@example.com"}
-for record in &records {
-    println!("User: {}", record["name"]);
-}
-```
-
-### Reading a TSV (tab-separated) file
-
-```rust
-use faucet_source_csv::{CsvSource, CsvSourceConfig};
-use faucet_core::Source;
-
+# async fn example() -> Result<(), Box<dyn std::error::Error>> {
+// TSV without a header row
 let config = CsvSourceConfig::new("/data/export.tsv")
-    .delimiter(b'\t');
-
-let source = CsvSource::new(config);
-let records = source.fetch_all().await?;
-```
-
-### Reading a file without headers
-
-```rust
-use faucet_source_csv::{CsvSource, CsvSourceConfig};
-use faucet_core::Source;
-
-let config = CsvSourceConfig::new("/data/raw_data.csv")
-    .has_headers(false);
+    .has_headers(false)
+    .delimiter(b'\t')
+    .with_batch_size(5000);
 
 let source = CsvSource::new(config);
 let records = source.fetch_all().await?;
 
-// Keys are generated: column_0, column_1, column_2, ...
-println!("First field: {}", records[0]["column_0"]);
+for record in &records {
+    println!("{record}");
+}
+# Ok(()) }
 ```
 
-### Pipe-delimited file with single-quote quoting
+To run it through a pipeline, pair the source with any sink and drive it via
+`faucet_core::Pipeline` or `faucet_core::run_stream`.
 
-```rust
-use faucet_source_csv::{CsvSource, CsvSourceConfig};
-use faucet_core::Source;
+## How it works
 
-let config = CsvSourceConfig::new("/data/legacy_export.csv")
-    .delimiter(b'|')
-    .quote(b'\'');
-
-let source = CsvSource::new(config);
-let records = source.fetch_all().await?;
-```
-
-## Compression
-
-Behind the crate-local `compression` Cargo feature. Adds a `compression` config
-field with values `none`, `gzip`, `zstd`, or `auto` (the default — detects
-`.gz` / `.zst` from the file path / object key).
-
-YAML example:
-
-```yaml
-kind: csv
-config:
-  # ... existing fields ...
-  compression: auto  # or 'gzip' | 'zstd' | 'none'
-```
-
-Compression is detected from the file path. Multi-line quoted fields (records with embedded newlines inside quotes) are parsed correctly on both the streaming and `fetch_all` paths, regardless of compression.
+- The source holds only the parsed `CsvSourceConfig`; there is no client or pool to reuse, since reads are local-filesystem I/O.
+- `stream_pages` builds one `csv_async::AsyncReader` per run and pulls records through it incrementally, so the whole file is never resident in memory.
+- All values are emitted as JSON strings — the reader does no type inference. Use the `cast` transform to coerce numbers/booleans downstream.
+- Empty rows and the trailing newline are handled by the underlying RFC-4180 reader; an empty file yields zero records (not an error).
 
 ## Lineage dataset URI
 
 `file://<path>` — e.g. `file:///data/input.csv`.
 
+## Feature flags
+
+| Feature | Default | Effect |
+|---------|---------|--------|
+| `compression` | off | Adds the `compression` config field and `.gz` / `.zst` read support (pulls `faucet-core/compression`). |
+
+The connector itself is enabled in the CLI/umbrella via the `source-csv` feature.
+
+## Troubleshooting / FAQ
+
+| Symptom | Likely cause & fix |
+|---------|--------------------|
+| `FaucetError::Source`: file not found / permission denied | `path` is wrong or unreadable. Check the path (relative paths resolve against the process working directory) and file permissions. |
+| Every value is a string, including numbers | Intentional — the CSV reader does no type inference. Add a `cast` transform (`to: integer` / `float` / `boolean`) for fields you need typed. |
+| Columns named `column_0`, `column_1`, … unexpectedly | `has_headers` is `false` (or defaulted off in an env config). Set `has_headers: true` so the first row supplies keys. |
+| Fields split in the wrong place | Wrong `delimiter`. Set the byte value for your format — `9` (tab), `124` (pipe), `59` (semicolon). |
+| Quoted text with commas is being split | The `quote` byte doesn't match the file. Set `quote` to the file's quote character (`34` double, `39` single). |
+| Multi-line cell breaks into several records | The cell isn't actually quoted, so the reader can't tell the embedded newline from a record boundary. Ensure the producer quotes fields containing newlines (faucet-sink-csv does). |
+| `FaucetError::Config` on `batch_size` | `batch_size` exceeds `MAX_BATCH_SIZE` (1,000,000). Lower it, or use `0` for no batching. |
+| `.gz` / `.zst` file read as raw bytes / garbage | The `compression` feature isn't enabled. Rebuild with `--features compression` (or set `compression: gzip` explicitly). |
+| A header name appears as a key but with surrounding whitespace | Header cells are taken verbatim. Trim upstream or rename with the `rename_keys` transform. |
+
+## See also
+
+- [Connector reference](https://pawansikawat.github.io/faucet-stream/reference/connectors.html) · [Compression cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/compression.html) · [Transforms cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/transforms.html)
+- Related crates: [faucet-sink-csv](https://crates.io/crates/faucet-sink-csv) · [faucet-source-parquet](https://crates.io/crates/faucet-source-parquet) · [faucet-source-s3](https://crates.io/crates/faucet-source-s3)
+
 ## License
 
-Licensed under MIT or Apache-2.0.
+Licensed under either of [Apache License, Version 2.0](https://www.apache.org/licenses/LICENSE-2.0) or [MIT license](https://opensource.org/licenses/MIT) at your option.

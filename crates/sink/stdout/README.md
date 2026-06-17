@@ -1,73 +1,226 @@
 # faucet-sink-stdout
 
-Stdout/stderr sink for the [faucet-stream](https://crates.io/crates/faucet-stream) ecosystem. Writes each record to a standard stream in one of three formats — useful for debugging pipelines, building demos, and powering the `faucet preview` CLI workflow.
+[![Crates.io](https://img.shields.io/crates/v/faucet-sink-stdout.svg)](https://crates.io/crates/faucet-sink-stdout)
+[![Docs.rs](https://docs.rs/faucet-sink-stdout/badge.svg)](https://docs.rs/faucet-sink-stdout)
+[![MSRV](https://img.shields.io/crates/msrv/faucet-sink-stdout.svg)](https://github.com/PawanSikawat/faucet-stream/blob/main/rust-toolchain.toml)
+[![License](https://img.shields.io/crates/l/faucet-sink-stdout.svg)](https://github.com/PawanSikawat/faucet-stream#license)
 
-## Install
+Standard-stream (**stdout / stderr**) sink for the [faucet-stream](https://github.com/PawanSikawat/faucet-stream) ecosystem. Writes each record to a standard stream in one of three formats — compact JSON Lines, pretty-printed JSON, or tab-separated values.
+
+Reach for it whenever you want to *see* what a pipeline produces: debugging a new source, eyeballing the shape of records before wiring up a real destination, building a quick demo, sampling the first few rows with `faucet preview`, or piping records into another shell tool (`jq`, `head`, `grep`, `column`). It's the zero-setup sink — no credentials, no connection, no files — so it's almost always the first sink you point a new source at.
+
+## Feature highlights
+
+- **Three output formats** — `json_lines` (one compact object per line, the de-facto debug format), `pretty_json` (indented and readable), and `tsv` (tab-separated, spreadsheet-friendly).
+- **Pick the stream** — write to `stdout` (default, honors shell redirection) or `stderr` (when stdout is reserved for piping the pipeline's own output).
+- **Buffered, async writes** — records go through a buffered `tokio` async writer, so high-volume runs aren't bottlenecked on per-record syscalls.
+- **Live-preview flushing** — `flush_per_record` flushes after every record for low-latency, line-at-a-time output (e.g. tailing a streaming source).
+- **Record cap** — `max_records` stops after *N* records, which is exactly what powers `faucet preview --limit N`.
+- **Pipe-friendly** — a `BrokenPipe` from the consumer (e.g. `… | head`) is treated as a clean stop, not an error, so piping into truncating commands Just Works.
+- **Writer override** — `StdoutSink::with_writer` accepts any `Box<dyn AsyncWrite + Unpin + Send>`, handy for tests, in-memory capture, or redirecting into a log file.
+
+## Installation
 
 ```bash
-cargo add faucet-core
+# As a library:
 cargo add faucet-sink-stdout
+
+# In the CLI (opt-in connector feature):
+cargo install faucet-cli --features sink-stdout
 ```
 
-Or via the umbrella crate with the `sink-stdout` feature:
+The `sink-stdout` feature is **not** in the CLI default build — enable it explicitly (or use a `full` build).
+
+## Quick start
+
+```yaml
+# pipeline.yaml — faucet run pipeline.yaml
+version: 1
+pipeline:
+  source:
+    type: csv
+    config:
+      path: ./users.csv
+  sink:
+    type: stdout
+    config:
+      format: json_lines
+```
 
 ```bash
-cargo add faucet-stream --features sink-stdout
+faucet run pipeline.yaml
 ```
 
-## Usage
+Every row of `users.csv` is printed to stdout as one compact JSON object per line — ready to pipe into `jq`, redirect to a file, or just read.
 
-```rust,no_run
+## Configuration reference
+
+All fields are optional; an empty `config: {}` writes JSON Lines to stdout with no limit.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `destination` | `stdout` \| `stderr` | `stdout` | Which standard stream to write to. `stderr` is useful when stdout is reserved for the pipeline's own structured output. |
+| `format` | `json_lines` \| `pretty_json` \| `tsv` | `json_lines` | How each record is serialized — see [Formats](#formats). |
+| `flush_per_record` | bool | `false` | Flush the underlying writer after every record instead of at batch boundaries. Lower latency for live preview, slightly lower throughput. |
+| `max_records` | int | *(unset → unlimited)* | Stop after this many records. Once reached, subsequent `write_batch` calls become no-ops. Powers `faucet preview --limit N`. |
+| `batch_size` | int | `1000` | Records per upstream `StreamPage`. **No behavioural impact at this sink** — present only for config parity across the workspace. See [Streaming & batching](#streaming--batching). |
+
+### Formats
+
+| `format` | Output |
+|----------|--------|
+| `json_lines` | One compact JSON object per line (newline-delimited). The standard debug / pipe-into-`jq` format. |
+| `pretty_json` | Indented (pretty-printed) JSON, each record separated by a newline. Easier to read by eye; not a single-line format. |
+| `tsv` | Tab-separated values. Each record's keys are sorted alphabetically; scalar values are emitted raw (control characters in strings replaced by spaces), and nested objects/arrays are emitted as compact JSON. **Requires every record to be a JSON object.** |
+
+## Examples
+
+### Tail a streaming source live, line by line
+
+```yaml
+version: 1
+pipeline:
+  source:
+    type: websocket
+    config:
+      url: wss://stream.example.com/ticks
+  sink:
+    type: stdout
+    config:
+      format: json_lines
+      flush_per_record: true   # emit each record the instant it arrives
+```
+
+### Preview just the first few rows on stderr
+
+```yaml
+version: 1
+pipeline:
+  source:
+    type: rest
+    config:
+      url: https://api.example.com/v1/orders
+  sink:
+    type: stdout
+    config:
+      destination: stderr      # keep stdout free for other tooling
+      format: pretty_json
+      max_records: 5           # sample the shape, then stop
+```
+
+### Emit TSV to pipe into spreadsheet-style tools
+
+```yaml
+version: 1
+pipeline:
+  source:
+    type: postgres
+    config:
+      connection_url: ${env:DATABASE_URL}
+      query: SELECT id, name, signup_date FROM users ORDER BY id
+  sink:
+    type: stdout
+    config:
+      format: tsv
+```
+
+```bash
+faucet run pipeline.yaml | column -t -s $'\t'
+```
+
+## Streaming & batching
+
+`Pipeline::run` drives the source's `stream_pages` and hands each emitted `StreamPage` to `Sink::write_batch`. This sink then iterates the page **record by record**, serializing and writing each one through a buffered async writer.
+
+Because the write path is inherently per-record, the `batch_size` config field has **no observable effect** here. `batch_size = 0` (the "no batching" sentinel) and any positive value produce byte-for-byte identical output. The field exists only so every sink in the workspace shares one config shape — sinks like `faucet-sink-postgres` (multi-row INSERTs) or `faucet-sink-bigquery` (streaming-insert request sizing) genuinely use it; a per-record stream sink has nothing to tune.
+
+The per-run memory bound is set by the **source's** `batch_size` (the size of each `StreamPage`), not by this field. To control flush cadence for live preview, use `flush_per_record` — `batch_size` does not influence flushing.
+
+## Config loading & schema
+
+Configs load from YAML/JSON files, environment variables, or `.env` files via the CLI's normal loading path. Inspect the full JSON Schema with:
+
+```bash
+faucet schema sink stdout
+```
+
+## Library usage
+
+```rust
 use faucet_core::Sink;
-use faucet_sink_stdout::{StdoutFormat, StdStream, StdoutSink, StdoutSinkConfig};
+use faucet_sink_stdout::{StdStream, StdoutFormat, StdoutSink, StdoutSinkConfig};
 use serde_json::json;
 
 # async fn run() -> Result<(), faucet_core::FaucetError> {
 let sink = StdoutSink::new(
     StdoutSinkConfig::new()
         .destination(StdStream::Stdout)
-        .format(StdoutFormat::JsonLines),
+        .format(StdoutFormat::JsonLines)
+        .max_records(100),
 );
 
-sink.write_batch(&[json!({"id": 1, "name": "Alice"})]).await?;
+sink.write_batch(&[
+    json!({"id": 1, "name": "Alice"}),
+    json!({"id": 2, "name": "Bob"}),
+])
+.await?;
 sink.flush().await?;
 # Ok(())
 # }
 ```
 
-## Configuration
+Capture output into an in-memory buffer (e.g. in tests) with the writer override:
 
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `destination` | `stdout` \| `stderr` | `stdout` | Which standard stream to write to. |
-| `format` | `json_lines` \| `pretty_json` \| `tsv` | `json_lines` | Output format. |
-| `flush_per_record` | `bool` | `false` | Flush after every record (lower latency, slightly lower throughput). |
-| `max_records` | `usize?` | `None` | Stop after `n` records. Useful for `faucet preview --limit=N`. |
-| `batch_size` | `usize` | `1000` | Records per upstream `StreamPage`. **No behavioural impact** at this sink — present for symmetry. See [Streaming and batching](#streaming-and-batching). |
+```rust
+use faucet_core::Sink;
+use faucet_sink_stdout::{StdoutSink, StdoutSinkConfig};
+use serde_json::json;
 
-## Streaming and batching
+# async fn run() -> Result<(), faucet_core::FaucetError> {
+let buf: Vec<u8> = Vec::new();
+let sink = StdoutSink::with_writer(StdoutSinkConfig::new(), Box::new(buf));
+sink.write_batch(&[json!({"hello": "world"})]).await?;
+sink.flush().await?;
+# Ok(())
+# }
+```
 
-This sink writes each record to the chosen standard stream one at a time via a buffered async writer. The per-page memory bound for the pipeline is set by the **source's** `batch_size` (the size of each `StreamPage` that `Pipeline::run` hands to `Sink::write_batch`); how that page is then iterated record-by-record on the sink side is what determines the bytes written to stdout/stderr, and that path does not depend on `batch_size` at all.
+## How it works
 
-`batch_size` is exposed on this config purely for symmetry across every sink in the workspace — sinks like `faucet-sink-postgres` or `faucet-sink-bigquery` use the field to size their multi-row inserts / streaming-insert requests, but a per-record stream sink has nothing to tune. `batch_size = 0` (the "no batching" sentinel) and any positive value are observably identical for this sink: both produce byte-for-byte the same output. To get per-record flushing for live preview, use `flush_per_record` — `batch_size` does not influence flush cadence.
-
-### Formats
-
-- **`json_lines`** — one compact JSON object per line. The de facto debug format.
-- **`pretty_json`** — indented JSON, each record separated by a newline. Easier on the eyes.
-- **`tsv`** — tab-separated values. Each record's keys are sorted alphabetically; scalar values are emitted raw (with control characters replaced by spaces in strings), and nested objects/arrays are emitted as compact JSON. Requires every record to be a JSON object.
-
-## Behavior notes
-
-- The underlying writer is opened eagerly in `new()`.
-- A `BrokenPipe` from the consumer (e.g. piping into `head`) is treated as a clean termination — subsequent `write_batch` calls return `Ok(0)` rather than erroring.
-- `flush()` flushes the underlying writer; the default `Sink` impl does not flush on `Drop`, so call it explicitly if you need durability of buffered output.
-- `StdoutSink::with_writer(config, writer)` accepts any `Box<dyn AsyncWrite + Unpin + Send>`. Useful in tests and when redirecting into log files or in-memory buffers.
+1. `new()` opens the buffered async writer for the configured `destination` **eagerly** (at construction, not on first write).
+2. `write_batch` iterates the page, serializing each record per the chosen `format` and writing it through the buffer. When `max_records` is set, it stops once the cap is hit and turns further writes into no-ops.
+3. With `flush_per_record`, the buffer is flushed after every record; otherwise it flushes at batch boundaries and on `flush()`.
+4. A `BrokenPipe` error from the consumer is caught and treated as a clean termination — subsequent `write_batch` calls return `Ok(0)` rather than erroring.
+5. The default `Sink` impl does **not** flush on `Drop`, so call `flush()` explicitly if you need buffered output durably written before the program exits.
 
 ## Lineage dataset URI
 
-`stdout://` or `stderr://` depending on the configured destination.
+`stdout://` or `stderr://`, depending on the configured destination.
+
+## Feature flags
+
+This crate has no optional features of its own; enable it in the CLI/umbrella via the `sink-stdout` feature.
+
+## Troubleshooting / FAQ
+
+| Symptom | Likely cause & fix |
+|---------|--------------------|
+| `tsv` format errors on some records | TSV requires every record to be a JSON **object**. A source emitting bare scalars or arrays can't be flattened to columns — switch to `json_lines`, or shape records into objects with a transform first. |
+| Output looks buffered / nothing prints until the run ends | The writer buffers by default. For line-at-a-time output (e.g. tailing a live source), set `flush_per_record: true`. |
+| Setting `batch_size` changes nothing | Expected — `batch_size` is a no-op for this per-record sink (present only for config parity). To bound per-page memory, set the **source's** `batch_size`; to control flush cadence, use `flush_per_record`. |
+| Pipeline stops early when piping into `head` / `sed` | Not an error — the consumer closed the pipe (`BrokenPipe`), which this sink treats as a clean stop. Remove the truncating command, or raise its limit, to see all records. |
+| TSV column order changes between records | Keys are sorted **alphabetically** per record for stable columns. If different records have different key sets, their columns won't line up — normalize the shape upstream (e.g. `select` / `set` transforms). |
+| Want only the first N records | Set `max_records: N` (this is what `faucet preview --limit N` uses), rather than relying on a downstream `head`. |
+| Pretty JSON is hard to pipe into `jq` | Use `format: json_lines` for tooling that expects newline-delimited JSON; reserve `pretty_json` for human reading. |
+
+## See also
+
+- [Sinks reference](https://pawansikawat.github.io/faucet-stream/reference/connectors.html) — the full connector capability matrix.
+- [CLI reference](https://pawansikawat.github.io/faucet-stream/reference/cli.html) — `faucet run`, `faucet preview`, `faucet schema`.
+- [`faucet-sink-jsonl`](https://crates.io/crates/faucet-sink-jsonl) — write the same JSON Lines to a file instead of a stream.
+- [`faucet-sink-csv`](https://crates.io/crates/faucet-sink-csv) — TSV/CSV to a file with full quoting.
+- [`faucet-core`](https://crates.io/crates/faucet-core) — the `Sink` trait this connector implements.
 
 ## License
 
-Licensed under either of MIT or Apache-2.0 at your option.
+Licensed under either of [Apache License, Version 2.0](https://www.apache.org/licenses/LICENSE-2.0) or [MIT license](https://opensource.org/licenses/MIT) at your option.

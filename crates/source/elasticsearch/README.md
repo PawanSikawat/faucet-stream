@@ -2,89 +2,236 @@
 
 [![Crates.io](https://img.shields.io/crates/v/faucet-source-elasticsearch.svg)](https://crates.io/crates/faucet-source-elasticsearch)
 [![Docs.rs](https://docs.rs/faucet-source-elasticsearch/badge.svg)](https://docs.rs/faucet-source-elasticsearch)
+[![MSRV](https://img.shields.io/crates/msrv/faucet-source-elasticsearch.svg)](https://github.com/PawanSikawat/faucet-stream/blob/main/rust-toolchain.toml)
+[![License](https://img.shields.io/crates/l/faucet-source-elasticsearch.svg)](https://github.com/PawanSikawat/faucet-stream#license)
 
-An Elasticsearch source that reads documents using the search/scroll API with query DSL support, automatic scroll context management, and pluggable authentication.
+An **Elasticsearch** search source for the [faucet-stream](https://github.com/PawanSikawat/faucet-stream) ecosystem. Runs a query-DSL search against an index, walks the result set page-by-page via the [scroll API](https://www.elastic.co/guide/en/elasticsearch/reference/current/scroll-api.html), emits each hit's `_source` as a `serde_json::Value`, and streams pages straight into any faucet-stream sink so memory stays bounded no matter how many documents match.
 
-Part of the [faucet-stream](https://github.com/PawanSikawat/faucet-stream) ecosystem.
+Reach for it when you need to export logs, metrics, orders, or any indexed documents out of Elasticsearch — for backup, reindexing, analytics offload, or feeding a database/warehouse/queue — with one declarative config and no glue code.
+
+## Feature highlights
+
+- **Scroll-based streaming** — the source uses the scroll API so an index of any size is drained at `O(batch_size)` client memory; each scroll response becomes exactly one `StreamPage` written to the sink as it lands.
+- **Full query-DSL support** — pass any Elasticsearch query object verbatim (`bool`, `range`, `term`, `match`, …); defaults to `match_all`.
+- **Four auth modes** — none, HTTP Basic, Bearer token, or API key. The shared `ElasticsearchAuth` enum is re-exported from [`faucet-common-elasticsearch`](https://crates.io/crates/faucet-common-elasticsearch) so it matches the Elasticsearch **sink** byte-for-byte; credentials are masked in debug output.
+- **Shared auth providers** — `auth: { ref: <name> }` points at a provider in the CLI's top-level `auth:` catalog, so many sources share one token with single-flight refresh.
+- **Unconditional scroll cleanup** — the open `_scroll_id` is always sent to `DELETE _search/scroll` on every exit path (clean drain, `max_pages` truncation, mid-stream error, or the consumer dropping the stream) via an RAII guard, so the cluster never leaks server-side scroll state.
+- **Matrix-context interpolation** — `${field.path}` placeholders in `index` and `query` resolve against the parent-record context at runtime, so one config can fan out across indices or query values.
+- **`max_pages` cap** — bound the number of scroll responses for previews or partial exports.
+- **No-batching sentinel** — `batch_size: 0` issues a single non-scroll `_search?size=10000` for small lookup indices or sinks that prefer one large request.
+- **Client built once** — the `reqwest` client is constructed in `new()` and reused for every request.
 
 ## Installation
 
 ```bash
+# As a library:
 cargo add faucet-source-elasticsearch
-cargo add tokio --features full
-```
 
-Or via the umbrella crate:
-```bash
+# Or via the umbrella crate:
 cargo add faucet-stream --features source-elasticsearch
+
+# In the CLI (opt-in connector feature):
+cargo install faucet-cli --features source-elasticsearch
 ```
 
-## Quick Start
+`source-elasticsearch` is an opt-in feature — it is not part of the CLI/umbrella default build.
 
-```rust
-use faucet_source_elasticsearch::{ElasticsearchSource, ElasticsearchSourceConfig};
-use faucet_core::Source;
+## Quick start
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let config = ElasticsearchSourceConfig::new(
-        "http://localhost:9200",
-        "my_index",
-    );
-
-    let source = ElasticsearchSource::new(config);
-    let records = source.fetch_all().await?;
-
-    println!("Read {} documents", records.len());
-    Ok(())
-}
+```yaml
+# pipeline.yaml — faucet run pipeline.yaml
+version: 1
+pipeline:
+  source:
+    type: elasticsearch
+    config:
+      base_url: http://localhost:9200
+      index: my_index
+      # query defaults to { match_all: {} }
+  sink:
+    type: jsonl
+    config:
+      path: ./docs.jsonl
 ```
 
-## How It Works
+```bash
+faucet run pipeline.yaml
+```
 
-The source uses the Elasticsearch scroll API for efficient retrieval of large result sets:
-
-1. Sends an initial `POST /{index}/_search?scroll={timeout}&size={batch_size}` with the query
-2. Extracts `_source` from each hit in `hits.hits[*]._source`
-3. Continues scrolling with `POST /_search/scroll` using the `_scroll_id`
-4. Stops when a scroll page returns zero hits, or `max_pages` is reached
-5. Clears the scroll context (best-effort) to free server resources
-
-## Configuration
-
-### ElasticsearchSourceConfig
+## Configuration reference
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `base_url` | `String` | *(required)* | Base URL of the Elasticsearch cluster (e.g. `"http://localhost:9200"`). Trailing slash is trimmed |
-| `index` | `String` | *(required)* | Index name to search |
-| `query` | `Value` | `{"match_all": {}}` | Elasticsearch query DSL |
-| `scroll_timeout` | `String` | `"1m"` | Scroll context timeout (e.g. `"1m"`, `"5m"`) |
-| `auth` | `ElasticsearchAuth` | `ElasticsearchAuth::None` | Authentication method |
-| `max_pages` | `Option<usize>` | `None` | Maximum number of scroll pages to fetch. `None` means no limit |
-| `batch_size` | `usize` | `DEFAULT_BATCH_SIZE` (1000) | Docs per emitted `StreamPage`; also the scroll API `size` parameter. `0` is the "no batching" sentinel — see below |
+| `base_url` | string | — *(required)* | Base URL of the Elasticsearch cluster (e.g. `http://localhost:9200`). A trailing slash is trimmed. |
+| `index` | string | — *(required)* | Index (or pattern, e.g. `metrics-*`) to search. Supports `${field.path}` matrix-context placeholders. |
+| `query` | object | `{ "match_all": {} }` | Elasticsearch query DSL, sent verbatim as the `query` of the search body. Supports `${field.path}` placeholders resolved against the parent-record context. |
+| `scroll_timeout` | string | `"1m"` | Scroll-context keep-alive sent on the initial and every follow-up scroll request (e.g. `"1m"`, `"5m"`). Must exceed the time taken to process one page downstream. |
+| `auth` | `ElasticsearchAuth` | `{ type: none }` | Authentication — inline `{ type, config }` or `{ ref: <name> }`. See [Authentication](#authentication). |
+| `max_pages` | int | *(unset = no limit)* | Maximum number of scroll responses to emit. The cap applies *after* a page is yielded. |
+| `batch_size` | int | `1000` | Docs per emitted `StreamPage`, also the scroll API `size` parameter. **`0` = no batching**: a single non-scroll `_search?size=10000` is issued instead. Validated against `MAX_BATCH_SIZE` (1,000,000) at construction. |
 
-### Authentication (ElasticsearchAuth)
+### Authentication
 
-| Variant | Fields | Description |
-|---------|--------|-------------|
-| `None` | -- | No authentication |
-| `Basic { username, password }` | `String`, `String` | HTTP Basic authentication. Password is masked in debug output |
-| `Bearer { token }` | `String` | Bearer token in the `Authorization` header. Masked in debug output |
-| `ApiKey { key }` | `String` | API key sent as `ApiKey <key>` in the `Authorization` header. Masked in debug output |
+`auth` uses the shared `ElasticsearchAuth` enum (the project-wide `{ type, config }` shape):
 
-## Streaming and batching
+| `type` | `config` | Sent as |
+|--------|----------|---------|
+| `none` | *(none)* | No `Authorization` header. |
+| `basic` | `{ username, password }` | HTTP Basic `Authorization: Basic <base64>`. |
+| `bearer` | `{ token }` | `Authorization: Bearer <token>`. |
+| `api_key` | `{ key }` | `Authorization: ApiKey <key>` (the base64 `id:api_key` value). |
 
-The source overrides [`Source::stream_pages`](https://docs.rs/faucet-core/latest/faucet_core/trait.Source.html#method.stream_pages) so the pipeline writes documents to the sink as each scroll page lands instead of buffering the full result. Client-side memory stays O(batch_size) regardless of the index's total document count.
+```yaml
+# No auth (local dev)
+auth:
+  type: none
+```
 
-- `batch_size` (default `1000`) is passed straight to the scroll API as the `size` parameter on the initial `POST /{index}/_search?scroll={timeout}&size={batch_size}`. Each scroll response — initial and follow-up — becomes exactly one `StreamPage`. The trailing empty scroll page is consumed but not emitted.
-- `batch_size = 0` is the **"no batching" sentinel**: the source skips scroll entirely and issues a single `POST /{index}/_search?size=10000`, then emits one `StreamPage`. Useful for small lookup indices, or for sinks like SQL `COPY` / BigQuery load jobs that prefer one large request to many small ones. The `10000` cap matches Elasticsearch's default `index.max_result_window`; indices with a larger `max_result_window` still receive only `10000` hits — switch back to scroll if you need more.
-- `batch_size = 0` is also honoured by the buffered `fetch_all` / `fetch_with_context` path: it maps to the same `size=10000` initial search (rather than the literal `size=0`, which would return zero hits).
-- `max_pages`, when set, caps the total number of scroll responses emitted. The cap applies *after* the page is yielded.
-- The Elasticsearch search source has no incremental-replication mode today, so every emitted page carries `bookmark: None`.
-- **Scroll-context cleanup is unconditional.** On every exit path — clean drain, `max_pages` truncation, mid-stream HTTP error, or the consumer dropping the stream — the open `_scroll_id` is sent to `DELETE _search/scroll` so the cluster does not leak server-side state.
+```yaml
+# HTTP Basic
+auth:
+  type: basic
+  config:
+    username: elastic
+    password: ${env:ES_PASSWORD}
+```
 
-## Config Loading
+```yaml
+# Bearer token
+auth:
+  type: bearer
+  config:
+    token: ${env:ES_BEARER_TOKEN}
+```
+
+```yaml
+# API key (recommended for Elastic Cloud)
+auth:
+  type: api_key
+  config:
+    key: ${env:ES_API_KEY}
+```
+
+Shared provider via the top-level `auth:` catalog (single token shared across sources):
+
+```yaml
+auth:
+  es_token:
+    type: static
+    config: { token: ${env:ES_BEARER_TOKEN} }
+
+pipeline:
+  source:
+    type: elasticsearch
+    config:
+      base_url: https://es.example.com:9200
+      index: orders
+      auth: { ref: es_token }
+```
+
+A shared provider may only yield a `bearer` or `basic` credential — header- and token-style credentials have no Elasticsearch equivalent and surface as an auth error.
+
+## Examples
+
+### Filtered error-log export to S3
+
+```yaml
+# Elasticsearch (API-key auth) → S3 with sharded parallel uploads.
+version: 1
+name: elasticsearch_to_s3
+pipeline:
+  source:
+    type: elasticsearch
+    config:
+      base_url: https://es.example.com:9200
+      index: logs-2026-05
+      query:
+        match:
+          level: error
+      scroll_timeout: 2m
+      batch_size: 2000
+      auth:
+        type: api_key
+        config:
+          key: ${env:ES_API_KEY}
+  sink:
+    type: s3
+    config:
+      bucket: my-es-backups
+      prefix: logs/2026-05/
+      region: us-east-1
+      file_extension: .jsonl
+      max_records_per_file: 50000
+      concurrency: 16
+```
+
+### Bool query with a time range and Basic auth
+
+```yaml
+source:
+  type: elasticsearch
+  config:
+    base_url: https://elasticsearch.example.com:9200
+    index: application-logs-2026.03
+    query:
+      bool:
+        must:
+          - match: { level: error }
+          - range:
+              "@timestamp": { gte: "2026-03-01", lt: "2026-04-01" }
+    scroll_timeout: 5m
+    batch_size: 5000
+    max_pages: 100
+    auth:
+      type: basic
+      config:
+        username: elastic
+        password: ${env:ES_PASSWORD}
+```
+
+### Small lookup index — one request, no scroll
+
+```yaml
+source:
+  type: elasticsearch
+  config:
+    base_url: http://localhost:9200
+    index: country_codes
+    batch_size: 0      # single _search?size=10000, no scroll context
+```
+
+### Daily metrics window driven by a matrix context
+
+```yaml
+source:
+  type: elasticsearch
+  config:
+    base_url: https://es.example.com:9200
+    index: "metrics-${region.name}"
+    query:
+      range:
+        "@timestamp": { gte: now-1h, lt: now }
+    auth: { ref: es_token }
+```
+
+## Streaming & batching
+
+The source overrides [`Source::stream_pages`](https://docs.rs/faucet-core/latest/faucet_core/trait.Source.html#tymethod.stream_pages): the pipeline writes documents to the sink as each scroll page lands, so client-side memory stays `O(batch_size)` regardless of the index's total document count.
+
+- `batch_size` (default `1000`) is passed straight to the scroll API as the `size` parameter on the initial `POST /{index}/_search?scroll={timeout}&size={batch_size}`. Each scroll response — initial and follow-up — becomes exactly one `StreamPage`. The trailing empty scroll page is the end-of-scroll sentinel and is consumed but not emitted.
+- **`batch_size: 0` is the "no batching" sentinel**: the source skips scroll entirely and issues a single `POST /{index}/_search?size=10000`, emitting one page. The `10000` cap mirrors Elasticsearch's default `index.max_result_window`; indices with a larger window still receive only `10000` hits — switch back to scroll if you need more.
+- `batch_size: 0` is also honoured on the buffered `fetch_all` / `fetch_with_context` path — it maps to the same `size=10000` initial search (not the literal `size=0`, which would return zero hits).
+- `max_pages`, when set, caps the total number of scroll responses emitted; the cap applies *after* the page is yielded.
+- The trait-level `batch_size` argument to `stream_pages` is **ignored** in favour of the config field, so a pipeline-supplied hint never silently overrides an explicit config value.
+- This source has no incremental-replication / resume mode today, so every emitted page carries `bookmark: None` (see [Resume & state](#resume--state)). For incremental loads, encode the watermark in the query (e.g. a `range` on `@timestamp`) and drive it from a matrix context or `${now.*}` token.
+
+## Resume & state
+
+The Elasticsearch search source is **stateless** — it does not implement `state_key()` / `apply_start_bookmark()`, so each run re-executes the full query and there is no durable bookmark. Make runs incremental at the query level: filter on a monotonic field (`@timestamp`, a sequence id) and supply the lower bound via a `${now.*}` token, a matrix-context value, or relative date math (`now-1h`).
+
+## Config loading & schema
+
+Load from YAML/JSON files, environment variables, or a `.env` file via the helpers in `faucet_core::config`:
 
 ```rust
 use faucet_core::config::{load_json, load_env_file};
@@ -94,36 +241,8 @@ let config: ElasticsearchSourceConfig = load_json("config.json")?;
 let config: ElasticsearchSourceConfig = load_env_file(".env", "ES_SOURCE")?;
 ```
 
-### Example JSON config
-
-```json
-{
-  "base_url": "https://elasticsearch.example.com:9200",
-  "index": "application-logs-2025.03",
-  "query": {
-    "bool": {
-      "must": [
-        { "match": { "level": "error" } },
-        { "range": { "@timestamp": { "gte": "2025-03-01", "lt": "2025-04-01" } } }
-      ]
-    }
-  },
-  "scroll_timeout": "2m",
-  "batch_size": 5000,
-  "auth": {
-    "type": "basic",
-    "config": {
-      "username": "elastic",
-      "password": "changeme"
-    }
-  },
-  "max_pages": 100
-}
-```
-
-### Example .env file
-
 ```env
+# .env
 ES_SOURCE_BASE_URL=http://localhost:9200
 ES_SOURCE_INDEX=my_index
 ES_SOURCE_SCROLL_TIMEOUT=1m
@@ -131,100 +250,80 @@ ES_SOURCE_BATCH_SIZE=1000
 ES_SOURCE_MAX_PAGES=50
 ```
 
-## Config Schema Introspection
+Inspect the full JSON Schema with:
+
+```bash
+faucet schema source elasticsearch
+```
+
+## Library usage
 
 ```rust
 use faucet_core::Source;
-
-let source = ElasticsearchSource::new(config);
-let schema = source.config_schema();
-println!("{}", serde_json::to_string_pretty(&schema)?);
-```
-
-## Examples
-
-### Match-all query with defaults
-
-```rust
-use faucet_source_elasticsearch::{ElasticsearchSource, ElasticsearchSourceConfig};
-use faucet_core::Source;
-
-let config = ElasticsearchSourceConfig::new("http://localhost:9200", "products");
-let source = ElasticsearchSource::new(config);
-let products = source.fetch_all().await?;
-```
-
-### Filtered query with bearer auth
-
-```rust
 use faucet_source_elasticsearch::{
     ElasticsearchSource, ElasticsearchSourceConfig, ElasticsearchAuth,
 };
-use faucet_core::Source;
 use serde_json::json;
 
-let config = ElasticsearchSourceConfig::new(
-    "https://es.production.example.com:9200",
-    "orders-2025",
-)
-.query(json!({
-    "bool": {
-        "filter": [
-            { "term": { "status": "completed" } },
-            { "range": { "amount": { "gte": 100 } } }
-        ]
-    }
-}))
-.auth(ElasticsearchAuth::Bearer {
-    token: "your-token".into(),
-})
-.with_batch_size(2000)
-.scroll_timeout("5m")
-.max_pages(50);
+# async fn run() -> Result<(), Box<dyn std::error::Error>> {
+let config = ElasticsearchSourceConfig::new("https://es.example.com:9200", "orders-2026")
+    .query(json!({
+        "bool": { "filter": [ { "term": { "status": "completed" } } ] }
+    }))
+    .auth(ElasticsearchAuth::Bearer { token: "your-token".into() })
+    .scroll_timeout("5m")
+    .with_batch_size(2000)
+    .max_pages(50);
 
-let source = ElasticsearchSource::new(config);
+// `new` validates batch_size and does no I/O.
+let source = ElasticsearchSource::new(config)?;
 let orders = source.fetch_all().await?;
 println!("Found {} matching orders", orders.len());
+# Ok(())
+# }
 ```
 
-### Using API key authentication
+For streaming into a sink, build a `Pipeline` (or call `faucet_core::run_stream`) with this source — it drives `stream_pages` automatically so memory stays bounded.
 
-```rust
-use faucet_source_elasticsearch::{
-    ElasticsearchSource, ElasticsearchSourceConfig, ElasticsearchAuth,
-};
-use faucet_core::Source;
-use serde_json::json;
+## How it works
 
-let config = ElasticsearchSourceConfig::new(
-    "https://my-cluster.es.cloud.example.com:9243",
-    "metrics-*",
-)
-.query(json!({
-    "range": {
-        "@timestamp": {
-            "gte": "now-1h",
-            "lt": "now"
-        }
-    }
-}))
-.auth(ElasticsearchAuth::ApiKey {
-    key: "base64-encoded-api-key".into(),
-})
-.with_batch_size(5000);
-
-let source = ElasticsearchSource::new(config);
-let metrics = source.fetch_all().await?;
-```
-
-## Shared types
-
-`ElasticsearchAuth` lives in [`faucet-common-elasticsearch`](../../common/elasticsearch) and is shared with `faucet-sink-elasticsearch`. The source re-exports it for convenience, so `faucet_source_elasticsearch::ElasticsearchAuth` continues to work unchanged.
+1. `new()` validates `batch_size` and builds a `reqwest::Client` **once** (no I/O on construction).
+2. The effective `index` and `query` are resolved against the matrix context (placeholder substitution), and auth is resolved once per run and reused across every scroll request.
+3. An initial `POST /{index}/_search?scroll={timeout}&size={batch_size}` returns the first page of hits plus a `_scroll_id`.
+4. Each scroll response's `hits.hits[*]._source` is extracted into a `StreamPage` and handed to the sink; the source then `POST /_search/scroll`s the `_scroll_id` for the next page.
+5. The loop stops on an empty hits array (the end-of-scroll sentinel) or when `max_pages` is reached.
+6. An RAII `ScrollGuard` owns the live `_scroll_id` and `DELETE`s the scroll context on **every** exit — clean drain, truncation, error, or drop — by spawning the cleanup so it survives the stream future being cancelled mid-await.
 
 ## Lineage dataset URI
 
-`http://<host>:<port>/<index>` (credentials stripped) — e.g. `http://localhost:9200/my_index`.
+`http://<host>:<port>/<index>` with credentials stripped — e.g. `http://localhost:9200/my_index`.
+
+## Feature flags
+
+This crate has no optional features of its own; enable it in the CLI/umbrella via the `source-elasticsearch` feature. `ElasticsearchAuth` is re-exported from [`faucet-common-elasticsearch`](https://crates.io/crates/faucet-common-elasticsearch), shared with `faucet-sink-elasticsearch` — `faucet_source_elasticsearch::ElasticsearchAuth` continues to work unchanged.
+
+## Troubleshooting / FAQ
+
+| Symptom | Likely cause & fix |
+|---------|--------------------|
+| `401 Unauthorized` / `403` | Missing or wrong credentials. Set `auth` to `basic` / `bearer` / `api_key` with valid values; confirm the user/key has `read` privilege on the index. |
+| `auth references provider '<name>' but no provider was supplied` | The config uses `auth: { ref: <name> }` but no matching entry exists in the top-level `auth:` catalog. Add the provider, or switch to inline `{ type, config }`. |
+| Auth provider error: *"must yield a bearer or basic credential"* | A shared provider returned a `Header`/`Token` credential, which Elasticsearch can't use. Use a provider type that yields a bearer or basic credential, or inline `api_key` auth. |
+| Empty result / `0 documents` with `batch_size: 0` | The index's `max_result_window` is below the matched-doc count, or more than 10,000 docs match. The no-batching path caps at 10,000 hits — switch to scroll (`batch_size: 1000`) to drain everything. |
+| `Search context not found` / scroll expired mid-run | `scroll_timeout` is shorter than the time to process one page downstream. Raise it (e.g. `5m`) so the context outlives each page's sink write. |
+| `index_not_found_exception` | The `index` doesn't exist (after any `${...}` substitution). Verify the index/pattern name; patterns like `metrics-*` need `allow_no_indices` semantics on the cluster. |
+| `parsing_exception` / `400` on the query | The `query` object isn't a valid query-DSL clause. It is sent verbatim as the body's `query` — wrap a single clause directly (e.g. `{ "match": { … } }`), not inside another `query:` key. |
+| Connection refused / TLS error | Wrong `base_url` scheme/port, or a self-signed cert. Use the correct `https://host:9200` and ensure the cert chain is trusted by the host. |
+| Resumes re-read everything | This source is stateless by design — encode an incremental watermark in the `query` (see [Resume & state](#resume--state)). |
+
+## See also
+
+- [Connector reference](https://pawansikawat.github.io/faucet-stream/reference/connectors.html) — the full capability matrix.
+- [Authentication cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/auth.html) — inline vs shared providers.
+- [Configuration grammar](https://pawansikawat.github.io/faucet-stream/reference/config.html) — the YAML/JSON config shape.
+- [`faucet-sink-elasticsearch`](https://crates.io/crates/faucet-sink-elasticsearch) — the matching bulk-index sink.
+- [`faucet-common-elasticsearch`](https://crates.io/crates/faucet-common-elasticsearch) — the shared `ElasticsearchAuth` enum.
 
 ## License
 
-Licensed under MIT or Apache-2.0.
+Licensed under either of [Apache License, Version 2.0](https://www.apache.org/licenses/LICENSE-2.0) or [MIT license](https://opensource.org/licenses/MIT) at your option.

@@ -2,151 +2,155 @@
 
 [![Crates.io](https://img.shields.io/crates/v/faucet-sink-elasticsearch.svg)](https://crates.io/crates/faucet-sink-elasticsearch)
 [![Docs.rs](https://docs.rs/faucet-sink-elasticsearch/badge.svg)](https://docs.rs/faucet-sink-elasticsearch)
+[![MSRV](https://img.shields.io/crates/msrv/faucet-sink-elasticsearch.svg)](https://github.com/PawanSikawat/faucet-stream/blob/main/rust-toolchain.toml)
+[![License](https://img.shields.io/crates/l/faucet-sink-elasticsearch.svg)](https://github.com/PawanSikawat/faucet-stream#license)
 
-Elasticsearch sink connector for the [faucet-stream](https://github.com/PawanSikawat/faucet-stream) ecosystem.
+**Elasticsearch** sink for the [faucet-stream](https://github.com/PawanSikawat/faucet-stream) ecosystem. Indexes JSON records into an Elasticsearch index via the bulk API (`POST /_bulk`, NDJSON body), re-chunking each page into payloads that land in Elasticsearch's per-request sweet spot.
 
-Indexes JSON records into an Elasticsearch index using the bulk API (`_bulk` endpoint) with NDJSON format. Supports optional document ID extraction from record fields, multiple authentication methods, and configurable batch sizes for bulk requests.
+Reach for it when you want to land any faucet-stream source — a database, a queue, a file, a REST API — into Elasticsearch for search and analytics, with one declarative config and no glue code. The `_bulk` `index` action is an idempotent overwrite by `_id`, so the same sink does append, upsert, and delete just by switching `write_mode`.
 
-`write_batch` accepts whatever slice the pipeline hands it. When `batch_size > 0` and the slice is larger than `batch_size`, the sink re-chunks internally and issues one `_bulk` HTTP call per chunk; when `batch_size = 0`, the entire slice is sent in a single bulk request — see [Streaming and batching](#streaming-and-batching) for the tradeoffs.
+## Feature highlights
+
+- **Bulk indexing** — every chunk is a single `POST /_bulk` NDJSON request; the HTTP client is built once in `new()` and reused for every call.
+- **Write modes** — `append` (default), `upsert`, and `delete`. Upsert/delete derive a stable `_id` from `key` columns, so they're idempotent overwrites and keyed removals with no staging.
+- **Four auth methods** — none, HTTP Basic, Bearer token, or API key. The shared `ElasticsearchAuth` enum is re-exported from [`faucet-common-elasticsearch`](https://crates.io/crates/faucet-common-elasticsearch) so it matches the Elasticsearch **source** byte-for-byte, and credentials are masked in `Debug` output.
+- **Shared auth providers** — `auth: { ref: <name> }` points at a provider in the CLI's top-level `auth:` catalog, so many sinks can share one token.
+- **Per-row DLQ** — overrides `write_batch_partial` to read per-item errors from the `_bulk` response, so only the documents Elasticsearch actually rejected go to the dead-letter queue (no duplicates of already-indexed rows).
+- **Tunable batching** — `batch_size` controls documents per `_bulk` call, with a `0` sentinel that forwards each page untouched.
 
 ## Installation
 
 ```bash
+# As a library:
 cargo add faucet-sink-elasticsearch
-cargo add tokio --features full
+
+# In the CLI (opt-in connector feature):
+cargo install faucet-cli --features sink-elasticsearch
 ```
 
-Or via the umbrella crate:
+Or via the umbrella crate: `cargo add faucet-stream --features sink-elasticsearch`.
+
+## Quick start
+
+```yaml
+# pipeline.yaml — faucet run pipeline.yaml
+version: 1
+pipeline:
+  source:
+    type: rest
+    config:
+      base_url: https://api.example.com
+      endpoint: /v1/logs
+  sink:
+    type: elasticsearch
+    config:
+      base_url: http://localhost:9200
+      index: events
+      auth:
+        type: none
+      batch_size: 1000
+      id_field: event_id
+```
 
 ```bash
-cargo add faucet-stream --features sink-elasticsearch
+faucet run pipeline.yaml
 ```
 
-## Quick Start
+## Configuration reference
 
-```rust
-use faucet_sink_elasticsearch::{ElasticsearchSink, ElasticsearchSinkConfig};
-use faucet_core::Sink;
-use serde_json::json;
-
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let config = ElasticsearchSinkConfig::new(
-        "http://localhost:9200",
-        "events",
-    )
-    .with_batch_size(1000);
-
-    let sink = ElasticsearchSink::new(config)?;
-
-    let records = vec![
-        json!({"user_id": "u123", "event": "page_view", "url": "/home"}),
-        json!({"user_id": "u456", "event": "click", "url": "/pricing"}),
-    ];
-
-    let written = sink.write_batch(&records).await?;
-    println!("Indexed {written} documents");
-
-    Ok(())
-}
-```
-
-## Configuration
+### Core
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `base_url` | `String` | *(required)* | Base URL of the Elasticsearch cluster (e.g. `"http://localhost:9200"`). Trailing slashes are stripped automatically. |
-| `index` | `String` | *(required)* | Target index name |
-| `auth` | `ElasticsearchAuth` | `None` | Authentication method (see below) |
-| `batch_size` | `usize` | `1000` | Maximum documents per `_bulk` request. See [Streaming and batching](#streaming-and-batching) below |
-| `id_field` | `Option<String>` | `None` | JSON field name to use as the document `_id`. If `None`, Elasticsearch auto-generates IDs. **Superseded by `key` in `upsert`/`delete` modes.** |
-| `write_mode` | `"append" \| "upsert" \| "delete"` | `"append"` | Write semantics. See [Write modes](#write-modes-upsert--delete) below |
-| `key` | `[String]` | `[]` | Key columns whose values form the document `_id` (joined with `:`). Required and non-empty for `upsert`/`delete` |
-| `delete_marker` | `{ field, values }` | *(none)* | Upsert only: rows whose `field` matches one of `values` are routed to deletes instead of upserts; the marker field is stripped from upserted docs |
+| `base_url` | string | — *(required)* | Base URL of the Elasticsearch cluster (e.g. `"http://localhost:9200"`). Trailing slashes are stripped automatically. |
+| `index` | string | — *(required)* | Target index name. |
+| `auth` | `AuthSpec<ElasticsearchAuth>` | `{ type: none }` | Authentication — inline `{ type, config }` or `{ ref: <name> }`. See [Authentication](#authentication). |
+| `id_field` | string | *(unset)* | JSON field name used as the document `_id` in `append` mode. If unset, Elasticsearch auto-generates IDs. **Superseded by `key` in `upsert`/`delete` modes.** |
 
-### Streaming and batching
+### Batching
 
-The Elasticsearch sink re-chunks each incoming `StreamPage` to keep
-individual `POST /_bulk` calls under Elasticsearch's recommended payload
-size.
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `batch_size` | int | `1000` | Maximum documents per `_bulk` request. The sink slices larger pages into `batch_size`-document chunks. **`0` = no batching**: the whole upstream page is sent in one `_bulk` call. See [Streaming & batching](#streaming--batching). |
 
-- **`batch_size > 0`** (default `1000`) — the sink slices the incoming
-  slice into `batch_size`-document chunks and issues one `_bulk` HTTP
-  call per chunk. Elasticsearch's documented sweet spot for `_bulk`
-  payloads is **5–15 MB of NDJSON per request**, so the right document
-  count depends on the average document size:
+### Write mode
 
-  | Avg doc size | Recommended `batch_size` |
-  |--------------|--------------------------|
-  | ~1 KB (log lines, simple events) | 5000 |
-  | ~5 KB (typical app events, denormalised rows) | 1000–2000 |
-  | ~25 KB (analytics aggregates, large nested objects) | 200–500 |
-  | ~100 KB+ (huge nested docs) | 50–100 |
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `write_mode` | `append \| upsert \| delete` | `append` | Write semantics. See [Write modes](#write-modes-upsert--delete). |
+| `key` | array of string | `[]` | Key columns whose values form the document `_id` (joined with `:`). Required and non-empty for `upsert`/`delete`; ignored for `append`. |
+| `delete_marker` | `{ field, values }` | *(none)* | Upsert only: rows whose `field` matches one of `values` become deletes; the marker field is stripped from upserted docs. |
 
-  Start with the default of `1000`, watch the [`_bulk` response size in
-  ES logs](https://www.elastic.co/docs/api/doc/elasticsearch/operation/operation-bulk),
-  and adjust until each call lands in the 5–15 MB band. Larger calls
-  risk HTTP-413, slow GC, or rejected-execution exceptions on the
-  Elasticsearch side; smaller calls amortise less per-request overhead.
+## Authentication
 
-- **`batch_size = 0`** — the "no batching" sentinel. The entire upstream
-  `StreamPage` is forwarded in a single `_bulk` call. Use this when the
-  source already emits page sizes tuned for Elasticsearch — for example
-  a Postgres source configured with `batch_size: 2000`. Larger pages
-  risk HTTP-413 from Elasticsearch's `http.max_content_length` (default
-  100 MB but typically lowered to 10–20 MB in production).
+`auth` uses the shared `ElasticsearchAuth` enum (the project-wide `{ type, config }` shape). It also accepts `auth: { ref: <name> }` to use a shared provider from the CLI's top-level `auth:` catalog (`bearer` / `basic` credentials map onto the matching variant).
 
-`batch_size` is purely a chunk-size knob — the sink's per-item error
-inspection of the `_bulk` response and the "first item that failed"
-error message are unchanged.
+| `type` | `config` | Use when |
+|--------|----------|----------|
+| `none` | *(none)* | No authentication (local / unsecured cluster). |
+| `basic` | `{ username, password }` | HTTP Basic — the classic `elastic` / password setup. |
+| `bearer` | `{ token }` | Bearer token in the `Authorization` header. |
+| `api_key` | `{ key }` | API key sent as `ApiKey <key>` in the `Authorization` header (Elastic Cloud). |
 
-### Authentication (`ElasticsearchAuth`)
+```yaml
+# No authentication
+auth:
+  type: none
+```
 
-| Variant | Fields | Description |
-|---------|--------|-------------|
-| `None` | -- | No authentication |
-| `Basic { username, password }` | `String`, `String` | HTTP Basic authentication |
-| `Bearer { token }` | `String` | Bearer token in the Authorization header |
-| `ApiKey { key }` | `String` | API key sent as `ApiKey <key>` in the Authorization header |
+```yaml
+# HTTP Basic
+auth:
+  type: basic
+  config:
+    username: elastic
+    password: ${env:ES_PASSWORD}
+```
 
-The `Debug` implementation masks passwords, tokens, and API keys with `***` to prevent credential leakage in logs.
+```yaml
+# API key (Elastic Cloud)
+auth:
+  type: api_key
+  config:
+    key: ${env:ES_API_KEY}
+```
 
-### Document ID Extraction
+The `Debug` impl masks passwords, tokens, and keys with `***` to prevent credential leakage in logs.
 
-When `id_field` is set, the sink extracts the document `_id` from each record:
+## Examples
 
-- If the field value is a string, it is used directly.
-- If the field value is a number or other type, it is converted to its string representation.
-- If a record is missing the `id_field`, Elasticsearch auto-generates an ID for that document.
+### Postgres → Elasticsearch with API key and a stable `_id`
 
-### Write modes (upsert / delete)
+```yaml
+version: 1
+name: postgres_to_elasticsearch
+pipeline:
+  source:
+    type: postgres
+    config:
+      connection_url: postgres://user:pass@localhost/app
+      query: SELECT id, title, body, tags FROM articles WHERE published = $1
+      params: [true]
+      max_connections: 8
+  sink:
+    type: elasticsearch
+    config:
+      base_url: https://es.example.com:9200
+      index: articles
+      auth:
+        type: api_key
+        config:
+          key: ${env:ES_API_KEY}
+      batch_size: 500
+      id_field: id
+```
 
-Elasticsearch is schemaless and `_id`-addressable, so the sink supports all
-three write modes. The `_bulk` `index` action is already an idempotent
-overwrite by `_id`, so an **upsert is just an `index` keyed on a stable
-document `_id`**, and a **delete is a `delete` action by `_id`**.
-
-- **`append`** (default) — every record is indexed; `_id` comes from `id_field`
-  if set, otherwise Elasticsearch auto-generates one. Unchanged behaviour.
-- **`upsert`** — each record's `_id` is derived from its `key` columns and the
-  document is re-indexed (an idempotent overwrite). This **supersedes
-  `id_field`** — `key` is authoritative for the `_id` in this mode.
-- **`delete`** — each record's `key` columns derive an `_id` and a `delete`
-  action removes that document (no doc body is sent).
-
-Composite keys are joined with `:` — e.g. `key: [tenant, id]` over
-`{tenant: "acme", id: 7}` produces `_id` `"acme:7"`. Within a single batch,
-**duplicate keys collapse last-write-wins** before the bulk request is built.
-
-In `upsert` mode, `delete_marker` lets a single stream carry both writes and
-tombstones: rows whose `field` value matches one of `values` become `delete`
-actions; all other rows are upserted with the marker field stripped from the
-indexed document.
+### CDC → upsert mirror with tombstones
 
 ```yaml
 pipeline:
   sink:
-    kind: elasticsearch
+    type: elasticsearch
     config:
       base_url: http://localhost:9200
       index: products
@@ -157,25 +161,71 @@ pipeline:
         values: [d, delete]   # rows with __op in (d, delete) are removed by _id
 ```
 
-Missing or null `key` values are per-row failures: `write_batch` aborts the
-page, and the DLQ-aware `write_batch_partial` path routes exactly those rows to
-the dead-letter queue while the rest are written.
+### One `_bulk` call per upstream page
 
-### Builder Methods
-
-```rust
-use faucet_sink_elasticsearch::{ElasticsearchSinkConfig, ElasticsearchAuth};
-
-let config = ElasticsearchSinkConfig::new("http://localhost:9200", "events")
-    .auth(ElasticsearchAuth::Basic {
-        username: "elastic".into(),
-        password: "changeme".into(),
-    })
-    .with_batch_size(1000)
-    .id_field("doc_id");
+```yaml
+pipeline:
+  sink:
+    type: elasticsearch
+    config:
+      base_url: http://localhost:9200
+      index: events
+      auth: { type: none }
+      batch_size: 0          # forward each upstream page as a single bulk request
 ```
 
-## Config Loading
+## Streaming & batching
+
+The sink re-chunks each incoming `StreamPage` to keep individual `POST /_bulk` calls within Elasticsearch's recommended payload size.
+
+- **`batch_size > 0`** (default `1000`) — the page is sliced into `batch_size`-document chunks; one `_bulk` HTTP call per chunk. Elasticsearch's documented sweet spot is **5–15 MB of NDJSON per request**, so the right document count depends on average document size:
+
+  | Avg doc size | Recommended `batch_size` |
+  |--------------|--------------------------|
+  | ~1 KB (log lines, simple events) | 5000 |
+  | ~5 KB (typical app events, denormalised rows) | 1000–2000 |
+  | ~25 KB (analytics aggregates, large nested objects) | 200–500 |
+  | ~100 KB+ (huge nested docs) | 50–100 |
+
+  Start with the default `1000`, watch the [`_bulk` response size in ES logs](https://www.elastic.co/docs/api/doc/elasticsearch/operation/operation-bulk), and adjust until each call lands in the 5–15 MB band. Larger calls risk HTTP 413, slow GC, or rejected-execution exceptions; smaller calls amortise less per-request overhead.
+
+- **`batch_size = 0`** — the "no batching" sentinel. The entire upstream `StreamPage` is forwarded in a single `_bulk` call. Use this when the source already emits page sizes tuned for Elasticsearch (e.g. a Postgres source with `batch_size: 2000`). Larger pages risk HTTP 413 from `http.max_content_length` (default 100 MB but typically lowered to 10–20 MB in production).
+
+`batch_size` is purely a chunk-size knob — per-item error inspection of the `_bulk` response is unchanged.
+
+## Write modes (upsert / delete)
+
+Elasticsearch is schemaless and `_id`-addressable, so the sink supports all three write modes (`Sink::supported_write_modes()` returns `[Append, Upsert, Delete]`). The `_bulk` `index` action is an idempotent overwrite by `_id`, so an **upsert is just an `index` keyed on a stable `_id`**, and a **delete is a `delete` action by `_id`**.
+
+- **`append`** (default) — every record is indexed; `_id` comes from `id_field` if set, otherwise Elasticsearch auto-generates one.
+- **`upsert`** — each record's `_id` is derived from its `key` columns and the document is re-indexed (idempotent overwrite). This **supersedes `id_field`** — `key` is authoritative for `_id` here.
+- **`delete`** — each record's `key` columns derive an `_id` and a `delete` action removes that document (no doc body is sent).
+
+Composite keys are joined with `:` — e.g. `key: [tenant, id]` over `{tenant: "acme", id: 7}` produces `_id` `"acme:7"`. Within a single batch, **duplicate keys collapse last-write-wins** before the bulk request is built.
+
+In `upsert` mode, `delete_marker` lets a single stream carry both writes and tombstones: rows whose `field` value matches one of `values` become `delete` actions; all other rows are upserted with the marker field stripped from the indexed document. This is the standard pairing with the `cdc_unwrap` transform for a CDC → mirror pipeline.
+
+Missing or null `key` values are per-row failures: `write_batch` aborts the page, while the DLQ-aware `write_batch_partial` path routes exactly those rows to the dead-letter queue and writes the rest.
+
+## Document ID extraction
+
+In `append` mode, when `id_field` is set the sink extracts the document `_id` from each record:
+
+- A string field value is used directly.
+- A number or other type is converted to its string representation.
+- A record missing `id_field` gets an Elasticsearch auto-generated ID.
+
+Setting `id_field` to a stable business key makes resumed/retried runs **idempotent overwrites** rather than duplicates — the recommended setting for resumable append pipelines (or configure a DLQ, whose per-row path avoids the whole-page re-send).
+
+## Dead-letter queue
+
+This sink overrides `Sink::write_batch_partial` to surface per-row failures from Elasticsearch's `_bulk` response items. Configure a DLQ at the pipeline level (see [cli/README.md — `dlq:`](https://github.com/PawanSikawat/faucet-stream/blob/main/cli/README.md)) and only the documents Elasticsearch actually rejected are routed there — already-indexed items stay in the main sink with no duplicates. This is why the bulk API's best-effort, partial-success behaviour doesn't double-write rows into the DLQ.
+
+> **Not exactly-once.** Elasticsearch does not commit a faucet commit token transactionally, so this sink does not support `delivery: exactly_once`. For idempotent re-sends use `write_mode: upsert` (or a stable `id_field` in append mode).
+
+## Config loading & schema
+
+Load from YAML/JSON or environment via the helpers in `faucet_core::config`:
 
 ```rust
 use faucet_core::config::{load_json, load_env_file};
@@ -188,54 +238,7 @@ let config: ElasticsearchSinkConfig = load_json("config.json")?;
 let config: ElasticsearchSinkConfig = load_env_file(".env", "ES_SINK")?;
 ```
 
-### Example JSON config
-
-```json
-{
-  "base_url": "http://localhost:9200",
-  "index": "events",
-  "auth": {
-    "type": "basic",
-    "config": {
-      "username": "elastic",
-      "password": "changeme"
-    }
-  },
-  "batch_size": 1000,
-  "id_field": "event_id"
-}
-```
-
-### Example JSON config (no auth, auto-generated IDs)
-
-```json
-{
-  "base_url": "http://localhost:9200",
-  "index": "logs",
-  "auth": {
-    "type": "none"
-  },
-  "batch_size": 1000
-}
-```
-
-### Example JSON config (API key)
-
-```json
-{
-  "base_url": "https://my-cluster.es.cloud:9243",
-  "index": "metrics",
-  "auth": {
-    "type": "api_key",
-    "config": {
-      "key": "VnVhQ2ZHY0JDZGJrU..."
-    }
-  },
-  "batch_size": 500
-}
-```
-
-### Example .env file
+Example `.env`:
 
 ```env
 ES_SINK_BASE_URL=http://localhost:9200
@@ -245,118 +248,83 @@ ES_SINK_BATCH_SIZE=1000
 ES_SINK_ID_FIELD=event_id
 ```
 
-## Config Schema Introspection
+Inspect the full JSON Schema with:
 
-```rust
-use faucet_core::Sink;
-
-let sink = ElasticsearchSink::new(config)?;
-let schema = sink.config_schema();
-println!("{}", serde_json::to_string_pretty(&schema)?);
+```bash
+faucet schema sink elasticsearch
 ```
 
-## Pipeline Usage
+## Library usage
 
 ```rust
-use faucet_core::Pipeline;
+use faucet_core::{Pipeline, Sink};
+use faucet_sink_elasticsearch::{ElasticsearchAuth, ElasticsearchSink, ElasticsearchSinkConfig};
 use faucet_source_rest::{RestStream, RestStreamConfig};
-use faucet_sink_elasticsearch::{ElasticsearchSink, ElasticsearchSinkConfig};
 
-let source = RestStream::new(
-    RestStreamConfig::new("https://api.example.com", "/v1/logs")
-);
+# async fn run() -> Result<(), Box<dyn std::error::Error>> {
+let source = RestStream::new(RestStreamConfig::new("https://api.example.com", "/v1/logs"));
 
-let sink = ElasticsearchSink::new(
-    ElasticsearchSinkConfig::new("http://localhost:9200", "api_logs")
-        .id_field("log_id")
-        .with_batch_size(1000)
-)?;
+let config = ElasticsearchSinkConfig::new("http://localhost:9200", "api_logs")
+    .auth(ElasticsearchAuth::ApiKey { key: std::env::var("ES_API_KEY")? })
+    .with_batch_size(1000)
+    .id_field("log_id");
+let sink = ElasticsearchSink::new(config)?;
 
 let result = Pipeline::new(source, sink).run().await?;
 println!("Indexed {} documents", result.records_written);
+# Ok(())
+# }
 ```
 
-## Examples
+## How it works
 
-### Basic indexing with auto-generated IDs
-
-```rust
-let config = ElasticsearchSinkConfig::new("http://localhost:9200", "logs");
-let sink = ElasticsearchSink::new(config)?;
-
-let records = vec![
-    json!({"level": "info", "message": "Server started", "timestamp": "2026-04-02T10:00:00Z"}),
-    json!({"level": "error", "message": "Connection timeout", "timestamp": "2026-04-02T10:01:00Z"}),
-];
-
-sink.write_batch(&records).await?;
-```
-
-### Custom document IDs from a record field
-
-```rust
-let config = ElasticsearchSinkConfig::new("http://localhost:9200", "products")
-    .id_field("product_id");
-
-let sink = ElasticsearchSink::new(config)?;
-
-let records = vec![
-    json!({"product_id": "SKU-001", "name": "Widget", "price": 9.99}),
-    json!({"product_id": "SKU-002", "name": "Gadget", "price": 24.99}),
-];
-
-sink.write_batch(&records).await?;
-// Documents are indexed with _id = "SKU-001" and _id = "SKU-002"
-```
-
-### Elasticsearch Cloud with API key authentication
-
-```rust
-let config = ElasticsearchSinkConfig::new(
-    "https://my-deployment.es.us-east-1.aws.found.io:9243",
-    "application-events",
-)
-.auth(ElasticsearchAuth::ApiKey {
-    key: std::env::var("ES_API_KEY")?,
-})
-.with_batch_size(2000);
-
-let sink = ElasticsearchSink::new(config)?;
-sink.write_batch(&records).await?;
-```
-
-## How It Works
-
-- The HTTP client is created in `ElasticsearchSink::new()` and reused across all requests.
-- `write_batch()` slices the input into `batch_size`-document chunks (or forwards the whole slice when `batch_size = 0`). For each chunk, it builds an NDJSON body with alternating action/data lines:
-  ```
-  {"index":{"_index":"events","_id":"optional-id"}}
-  {"user_id":"u123","event":"page_view"}
-  {"index":{"_index":"events"}}
-  {"user_id":"u456","event":"click"}
-  ```
-- The NDJSON body is sent as a POST to `{base_url}/_bulk` with `Content-Type: application/x-ndjson`.
-- The bulk response is inspected for per-item errors. If any items report errors, the sink returns a `FaucetError::Sink` with details about the first error.
-- Authentication headers are applied to every request based on the configured auth method.
-
-## Dead-letter queue support
-
-This sink overrides `Sink::write_batch_partial` to surface per-row
-failures from Elasticsearch's `_bulk` response items. Configure a DLQ
-at the pipeline level (see [cli/README.md — dlq:](../../../cli/README.md))
-and only the documents Elasticsearch actually rejected will be routed
-there — already-indexed items stay in the main sink with no duplicates.
-
-## Shared types
-
-`ElasticsearchAuth` lives in [`faucet-common-elasticsearch`](../../common/elasticsearch) and is shared with `faucet-source-elasticsearch`. The sink re-exports it as `faucet_sink_elasticsearch::ElasticsearchAuth`.
-
-> **Deprecation:** the previous name `ElasticsearchSinkAuth` is retained as a deprecated type alias in `0.3.x` and removed in `0.4.0`. Migrate imports to `ElasticsearchAuth` at your convenience.
+1. `new()` validates `batch_size` (≤ `MAX_BATCH_SIZE`) and the write spec, then builds the HTTP client **once**.
+2. `write_batch()` slices the input into `batch_size`-document chunks (or forwards the whole slice when `batch_size = 0`). For each chunk it builds an NDJSON body of alternating action/data lines:
+   ```
+   {"index":{"_index":"events","_id":"optional-id"}}
+   {"user_id":"u123","event":"page_view"}
+   {"index":{"_index":"events"}}
+   {"user_id":"u456","event":"click"}
+   ```
+3. The NDJSON body is `POST`ed to `{base_url}/_bulk` with `Content-Type: application/x-ndjson`; auth headers are applied per request.
+4. The bulk response is inspected for per-item errors — `write_batch` fails with a `FaucetError::Sink` naming the first failed item; `write_batch_partial` returns per-row outcomes for the DLQ router.
 
 ## Lineage dataset URI
 
 `http://<host>:<port>/<index>` (credentials stripped) — e.g. `http://localhost:9200/my-index`.
 
+## Feature flags
+
+This crate has no optional features of its own; enable it in the CLI/umbrella via the `sink-elasticsearch` feature.
+
+## Shared types
+
+`ElasticsearchAuth` lives in [`faucet-common-elasticsearch`](https://crates.io/crates/faucet-common-elasticsearch) and is shared with [`faucet-source-elasticsearch`](https://crates.io/crates/faucet-source-elasticsearch). The sink re-exports it as `faucet_sink_elasticsearch::ElasticsearchAuth`.
+
+> **Deprecation:** the previous name `ElasticsearchSinkAuth` is retained as a deprecated type alias and removed in `0.4.0`. Migrate imports to `ElasticsearchAuth` at your convenience.
+
+## Troubleshooting / FAQ
+
+| Symptom | Likely cause & fix |
+|---------|--------------------|
+| `401 Unauthorized` / `403 Forbidden` | Missing or wrong credentials. Set `auth` (`basic` / `bearer` / `api_key`) and confirm the role can write to the index. |
+| `FaucetError::Auth` on a shared provider | The `auth: { ref }` provider yielded a non-bearer/basic credential. Elasticsearch only accepts `bearer` or `basic` from a shared provider. |
+| HTTP 413 / request-too-large | A `_bulk` body exceeded `http.max_content_length`. Lower `batch_size` (or set a non-zero value if you were using `0`) until each call lands in the 5–15 MB band. |
+| `rejected_execution_exception` in ES logs | Bulk queue saturated — calls too large or too frequent. Lower `batch_size`; back-pressure with a smaller upstream page. |
+| Resumed run creates duplicate documents | Append mode with auto-generated IDs re-sends a partially-committed page. Set `id_field` to a stable business key (idempotent overwrite) or configure a DLQ. |
+| `write_mode: upsert/delete` rejected at validate | `key` is empty. Provide a non-empty `key: [...]` — it's required for upsert/delete. |
+| Rows land in the DLQ before any HTTP call | Those rows are missing/null `key` values (upsert/delete) — they're per-row failures routed to the DLQ. Fix the upstream data or the `key` columns. |
+| `index_not_found_exception` | The target `index` doesn't exist and the cluster has auto-create disabled. Create the index/template first, or enable `action.auto_create_index`. |
+| Mapping / `mapper_parsing_exception` | A field's type conflicts with the existing index mapping. Reshape with a transform, or use a fresh index/template with the right mapping. |
+
+## See also
+
+- [Sinks reference](https://pawansikawat.github.io/faucet-stream/reference/connectors.html) — capability matrix.
+- [Upsert & write modes cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/upsert.html).
+- [Dead-letter queue cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/dlq.html).
+- [Authentication cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/auth.html).
+- [`faucet-source-elasticsearch`](https://crates.io/crates/faucet-source-elasticsearch) — the Elasticsearch source (search/scroll API).
+
 ## License
 
-Licensed under MIT or Apache-2.0.
+Licensed under either of [Apache License, Version 2.0](https://www.apache.org/licenses/LICENSE-2.0) or [MIT license](https://opensource.org/licenses/MIT) at your option.

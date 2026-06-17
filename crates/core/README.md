@@ -2,234 +2,287 @@
 
 [![Crates.io](https://img.shields.io/crates/v/faucet-core.svg)](https://crates.io/crates/faucet-core)
 [![Docs.rs](https://docs.rs/faucet-core/badge.svg)](https://docs.rs/faucet-core)
+[![MSRV](https://img.shields.io/crates/msrv/faucet-core.svg)](https://github.com/PawanSikawat/faucet-stream/blob/main/rust-toolchain.toml)
+[![License](https://img.shields.io/crates/l/faucet-core.svg)](https://github.com/PawanSikawat/faucet-stream#license)
 
-Shared types, traits, and utilities for the [faucet-stream](https://github.com/PawanSikawat/faucet-stream) ecosystem.
+The foundation crate for the [faucet-stream](https://github.com/PawanSikawat/faucet-stream) ecosystem — the shared traits, pipeline orchestration, error type, transforms, state stores, and reliability machinery that every source and sink connector builds on.
 
-This is the foundation crate that all faucet source and sink connectors depend on. If you're building a custom connector, this is the only dependency you need.
+**If you are building a custom connector, this is the only dependency you need.** `faucet-core` re-exports `async-trait`, `serde_json`, `schemars`, and `CancellationToken`, so a third-party `faucet-source-*` / `faucet-sink-*` crate can implement the `Source` / `Sink` traits without pulling those in directly. The traits are object-safe (`Box<dyn Source>` / `Box<dyn Sink>` work), and `Pipeline` is generic over any source + sink combination — so anything you write here drops straight into the `faucet` CLI and the umbrella crate.
+
+## Feature highlights
+
+- **Two object-safe traits** — [`Source`](https://docs.rs/faucet-core/latest/faucet_core/trait.Source.html) and [`Sink`](https://docs.rs/faucet-core/latest/faucet_core/trait.Sink.html), with rich defaults so a minimal connector needs only one method.
+- **Batch and streaming orchestration** — `Pipeline::run` (fetch-all) and `run_stream` (page-by-page, O(batch_size) memory) connect any source to any sink.
+- **Pluggable transforms** — `RecordTransform` (flatten, key/value casing, regex rename, cast, redact, …) plus stage-level `Filter` / `Explode` / `CdcUnwrap`, attachable to any source via `TransformingSource`.
+- **Durable bookmarks** — the `StateStore` trait with in-process `MemoryStateStore` and crash-safe `FileStateStore` built in; Redis / Postgres backends live in their own crates.
+- **Reliability primitives** — dead-letter queue routing, exactly-once delivery (`DeliveryMode`), key-based upsert/delete write modes, and per-page / per-record data-quality checks.
+- **Shared authentication** — the `AuthProvider` trait and `AuthSpec` config field give N connectors one token with single-flight refresh.
+- **Typed errors** — one `FaucetError` enum covers every failure path, with a `Custom` variant for third-party connector errors.
+- **Built-in observability** — pipelines emit `tracing` spans and `metrics` counters/histograms automatically; connectors only override `connector_name()` for a friendly label.
 
 ## Installation
 
 ```bash
+# As a connector author (the only dependency you need):
 cargo add faucet-core
-cargo add tokio --features rt
+cargo add tokio --features rt   # plus a runtime to drive the async traits
 ```
 
-## What's Inside
+`faucet-core` is always linked by the [`faucet-stream`](https://crates.io/crates/faucet-stream) umbrella crate and the [`faucet-cli`](https://crates.io/crates/faucet-cli) binary — you only depend on it directly when writing a connector or driving a pipeline from Rust.
 
-### Traits
+## Quick start — a minimal connector
 
-- **`Source`** — async trait for fetching records from external systems
-- **`Sink`** — async trait for writing records to external systems
-
-Both traits include a `config_schema()` method that returns a JSON Schema describing the connector's configuration.
-
-### Decorators
-
-- **`TransformingSource`** — wraps any `Source` with a fixed `Vec<TransformStage>` (covering 1→1 `Map(RecordTransform)`, 1→0|1 `Filter`, 1→0..N `Explode`, and arbitrary `Custom` closures) applied per page via `instrumented_apply_stages`. The canonical way library callers attach transforms — including filter and explode — to any source. See [`docs.rs`](https://docs.rs/faucet-core/latest/faucet_core/struct.TransformingSource.html).
-
-### `Source::stream_pages` (recommended for large sources)
-
-`stream_pages(ctx, batch_size)` returns a `Stream<Item = Result<StreamPage, FaucetError>>` where each `StreamPage` contains a chunk of records plus an optional bookmark. The default implementation wraps `fetch_with_context_incremental` and chunks the result in memory; sources that can stream natively (REST, CDC, query DBs with cursor pagination) override this method directly to bound source-side memory at O(batch_size). `Pipeline::run` drives this stream internally; library users do not normally call it themselves.
-
-`DEFAULT_BATCH_SIZE` is `1000`, `MAX_BATCH_SIZE` is `1_000_000`, and `validate_batch_size(n)` enforces the range with `FaucetError::Config` errors for connector authors to use at config-load time. **`batch_size = 0` is the "no batching" sentinel** — sources emit the entire result set in a single `StreamPage` (and sinks that expose their own `batch_size` accept whatever upstream hands them without re-chunking). Use it for small lookup tables or for bulk-load-style sinks (SQL `COPY`, BigQuery load jobs) that prefer one large request to many small ones.
+A source needs just one method; everything else has a default.
 
 ```rust
-use faucet_core::{async_trait, FaucetError, Source, Sink, Value};
+use faucet_core::{async_trait, FaucetError, Source, Sink, Value, json};
+
+struct MySource;
 
 #[async_trait]
 impl Source for MySource {
-    async fn fetch_all(&self) -> Result<Vec<Value>, FaucetError> {
-        // Fetch records
-        todo!()
+    async fn fetch_with_context(
+        &self,
+        _ctx: &std::collections::HashMap<String, Value>,
+    ) -> Result<Vec<Value>, FaucetError> {
+        Ok(vec![json!({ "id": 1 }), json!({ "id": 2 })])
     }
 
-    // Optional: incremental replication with bookmark
-    // async fn fetch_all_incremental(&self) -> Result<(Vec<Value>, Option<Value>), FaucetError>
-
-    // Optional: return JSON Schema of config
-    // fn config_schema(&self) -> Value
+    // Optional overrides: fetch_with_context_incremental (bookmarks),
+    // stream_pages (native streaming), config_schema, connector_name, …
 }
+
+struct MySink;
 
 #[async_trait]
 impl Sink for MySink {
     async fn write_batch(&self, records: &[Value]) -> Result<usize, FaucetError> {
-        // Write records, return count written
-        todo!()
+        for r in records {
+            println!("{r}");
+        }
+        Ok(records.len())
     }
-
-    // Optional: flush buffered data
-    // async fn flush(&self) -> Result<(), FaucetError>
-
-    // Optional: return JSON Schema of config
-    // fn config_schema(&self) -> Value
+    // Optional: flush(), config_schema(), supported_write_modes(), …
 }
 ```
 
-### Pipeline
+Then connect them with a `Pipeline`:
 
-Connect any source to any sink:
+```rust
+use faucet_core::Pipeline;
+
+# async fn run(source: MySource, sink: MySink) -> Result<(), faucet_core::FaucetError> {
+let result = Pipeline::new(&source, &sink).run().await?;
+println!("Wrote {} records", result.records_written);
+# Ok(())
+# }
+```
+
+## The `Source` trait
+
+`Source: Send + Sync`. Implement at least `fetch_with_context`; the rest have defaults.
+
+| Method | Purpose | Default |
+|--------|---------|---------|
+| `fetch_with_context(ctx)` | **Required.** Fetch all records, resolving `{placeholder}` tokens from a parent-record `ctx`. | — |
+| `fetch_all()` | Convenience: fetch with an empty context. | delegates to `fetch_with_context` |
+| `fetch_with_context_incremental(ctx)` | Fetch records + an optional bookmark `Value` for incremental replication. | `(records, None)` |
+| `fetch_all_incremental()` | Convenience: incremental fetch, empty context. | delegates above |
+| `stream_pages(ctx, batch_size)` | Stream `StreamPage`s so the pipeline writes per page (bounded memory). | chunks `fetch_*_incremental` in memory |
+| `config_schema()` | JSON Schema of the config struct (via `schema_for!`). | empty object |
+| `state_key()` | `Some(key)` opts into resumable runs (read before fetch, persist after sink confirms). | `None` |
+| `apply_start_bookmark(value)` | Apply a bookmark from the state store as the run's start point. | no-op |
+| `capture_resume_position()` | Capture the current replication position without consuming changes (used by `faucet replicate`). | `None` |
+| `supports_exactly_once()` | `true` only for sources that deterministically replay from a bookmark (CDC). | `false` |
+| `connector_name()` | Stable `&'static str` label for metrics/spans. | stripped `type_name` |
+| `dataset_uri()` | Credential-free OpenLineage dataset URI. | `"<connector_name>://unknown"` |
+| `check(ctx)` | Non-mutating preflight probe for `faucet doctor`. | pulls one page via `stream_pages` |
+
+## The `Sink` trait
+
+`Sink: Send + Sync`. Implement at least `write_batch`.
+
+| Method | Purpose | Default |
+|--------|---------|---------|
+| `write_batch(records)` | **Required.** Write a batch; return count written. | — |
+| `flush()` | Flush buffered data (Parquet footer, S3 multipart, …). | no-op |
+| `write_batch_partial(records)` | Per-row `RowOutcome`s so failed rows can be routed to a DLQ. | maps a single success → all-`Ok` |
+| `supports_idempotent_writes()` | `true` for sinks that commit rows + a commit token atomically. | `false` |
+| `write_batch_idempotent(records, scope, token)` | Atomic exactly-once write + watermark. | delegates to `write_batch` (not idempotent) |
+| `last_committed_token(scope)` | Highest committed token for resume-skip. | `None` |
+| `supported_write_modes()` | The `WriteMode`s this sink accepts (`Append` / `Upsert` / `Delete`). | `[Append]` |
+| `config_schema()` | JSON Schema of the config struct. | empty object |
+| `connector_name()` / `dataset_uri()` | Metrics label / lineage URI. | as for `Source` |
+| `check(ctx)` | Non-mutating preflight probe. | `not_implemented` (sinks override with a connect/auth probe) |
+
+## The `AuthProvider` trait
+
+A live, shareable source of credentials. Multiple connectors hitting the **same** identity provider hold an `Arc<dyn AuthProvider>` ([`SharedAuthProvider`]) and ask for the current `Credential` per request — so N connectors share one token with **single-flight refresh** instead of racing.
+
+```rust
+use faucet_core::{async_trait, AuthProvider, Credential, FaucetError};
+
+#[derive(Debug)]
+struct StaticToken(String);
+
+#[async_trait]
+impl AuthProvider for StaticToken {
+    async fn credential(&self) -> Result<Credential, FaucetError> {
+        Ok(Credential::Bearer(self.0.clone()))
+    }
+    fn provider_name(&self) -> &'static str { "static" }
+}
+```
+
+- `Credential` variants: `Bearer(token)`, `Header { name, value }`, `Basic { username, password }`, `Token(raw)`. Its `Debug` impl redacts secrets as `"***"` — part of the frozen 1.0 contract.
+- `invalidate(stale)` is a compare-and-swap refresh: connectors that all hit a `401` with the same token collapse into one refresh.
+- `AuthSpec<A>` is the connector config field: it accepts **either** inline `{ type, config }` auth **or** a `{ ref: <name> }` pointer to a provider in the top-level `auth:` catalog. `ref` and inline fields are mutually exclusive (enforced at deserialize time).
+
+Concrete HTTP-based providers (OAuth2 client-credentials / refresh, token-endpoint) live in the separate [`faucet-auth`](https://crates.io/crates/faucet-auth) crate so `faucet-core` stays free of an HTTP-client dependency.
+
+## Pipeline & streaming
 
 ```rust
 use faucet_core::{Pipeline, run_stream};
 
-// Batch mode: fetch all, then write
+// Batch mode: fetch all, then write.
 let result = Pipeline::new(&source, &sink).run().await?;
 println!("Wrote {} records", result.records_written);
 
-// Streaming mode: write page-by-page (bounded memory)
-let result = run_stream(source.stream_pages(), &sink).await?;
+// Streaming mode: write page-by-page (bounded memory).
+let ctx = std::collections::HashMap::new();
+let result = run_stream(source.stream_pages(&ctx, 1000), &sink).await?;
 ```
 
-### Error Types
+`Pipeline` builders compose the reliability features below:
 
-`FaucetError` covers all failure modes:
+```rust
+use faucet_core::{Pipeline, CancellationToken};
 
-| Variant | Use Case |
+let result = Pipeline::new(&source, &sink)
+    .with_state_store(state_store)   // durable bookmarks
+    .with_dlq(dlq_config)            // dead-letter routing
+    .with_quality(compiled_quality)  // per-page data-quality checks
+    .with_cancel(CancellationToken::new()) // flush-completing cooperative cancel
+    .run()
+    .await?;
+```
+
+### `stream_pages` and `batch_size`
+
+`stream_pages(ctx, batch_size)` returns a `Stream<Item = Result<StreamPage, FaucetError>>`; each `StreamPage` is a chunk of records plus an optional bookmark. The default implementation chunks `fetch_*_incremental` in memory; sources that can stream natively (REST, CDC, query DBs with cursor pagination) override it to bound source-side memory at O(batch_size). `Pipeline::run` drives this internally — library users rarely call it directly.
+
+- `DEFAULT_BATCH_SIZE` = `1000`, `MAX_BATCH_SIZE` = `1_000_000`.
+- `validate_batch_size(n)` enforces the range with `FaucetError::Config` for config-load-time validation.
+- **`batch_size = 0` is the "no batching" sentinel** — sources emit the entire result set in a single `StreamPage` (and sinks that expose their own `batch_size` accept whatever upstream hands them without re-chunking). Use it for small lookup tables or bulk-load sinks (SQL `COPY`, BigQuery load jobs).
+
+### Cooperative cancellation
+
+`Pipeline::with_cancel(CancellationToken)` (and `RunStreamOptions::with_cancel`) attach a cancel token. When cancelled mid-run, the page loop stops at the next page boundary, **flushes the sinks** (so a buffered Parquet/S3 sink writes its footer instead of orphaning the file), and returns `Ok` with the partial result. `CancellationToken` is re-exported from `faucet-core`, so callers need not add `tokio-util`.
+
+## Transforms
+
+Transform records as they flow through the pipeline. `RecordTransform` covers per-record (1→1) operations; stage-level variants add filter, explode, and CDC-unwrap.
+
+```rust
+use faucet_core::{RecordTransform, KeyCaseMode};
+
+// Flatten nested objects: {"user": {"id": 1}} -> {"user__id": 1}
+RecordTransform::Flatten { separator: "__".into() };
+
+// Convert keys to snake_case (or camel / pascal / kebab / screaming_snake)
+RecordTransform::KeysCase { mode: KeyCaseMode::Snake };
+
+// Regex key renaming
+RecordTransform::RenameKeys { pattern: r"^_sdc_".into(), replacement: "".into() };
+
+// Custom closure
+RecordTransform::custom(|record| record);
+```
+
+Built-in `RecordTransform` variants (each feature-gated `transform-<name>`; the `transforms` aggregate enables all): `flatten`, `rename_keys` (regex), `keys_case`, `select`, `drop`, `set`, `rename_field`, `cast` (`CastType` + `CastOnError`), `redact`, `value_case` (`ValueCaseMode`), `spell_symbols`, plus `Custom` closures.
+
+Stage-level transforms (`TransformStage`, in the `stage` module): `Map(RecordTransform)` (1→1), `Filter` (1→0|1), `Explode` (1→0..N), `CdcUnwrap` (normalize a CDC envelope into a flat row + `__op` marker — the standard pairing for an upsert sink), and `PageFn` (whole-page closure). Attach any set of stages to any source with `TransformingSource` — the canonical way library callers add transforms:
+
+```rust
+use faucet_core::{TransformingSource, TransformStage, RecordTransform};
+
+let stages = vec![TransformStage::Map(
+    RecordTransform::Flatten { separator: "__".into() }.compile()?,
+)];
+let wrapped = TransformingSource::new(source, stages);
+```
+
+## Error types
+
+`FaucetError` covers every failure mode:
+
+| Variant | Use case |
 |---------|----------|
 | `Http(reqwest::Error)` | HTTP transport errors |
-| `HttpStatus { status, url, body }` | Non-success HTTP responses |
+| `HttpStatus { status, url, body }` | Non-success HTTP responses (truncated body) |
 | `Json(serde_json::Error)` | JSON parse/serialize errors |
 | `JsonPath(String)` | JSONPath extraction failures |
 | `Auth(String)` | Authentication errors |
-| `RateLimited { retry_after }` | 429 rate limit responses |
-| `Url(String)` | URL construction errors |
-| `Transform(String)` | Record transform errors |
-| `Config(String)` | Configuration/validation errors |
+| `RateLimited(Duration)` | 429 responses (wait duration from `Retry-After`) |
+| `Url(String)` | URL construction/parse errors |
+| `Transform(String)` | Record-transform compile/apply errors |
+| `Config(String)` | Configuration / validation errors |
 | `Source(String)` | Source-specific errors |
 | `Sink(String)` | Sink-specific errors |
-| `Custom(Box<dyn Error>)` | Wrap any third-party error |
+| `QualityFailure { check, message }` | A quality check failed under `abort` |
+| `State(String)` | State-store read/write/delete failures |
+| `Custom(Box<dyn Error + Send + Sync>)` | Wrap any third-party connector error |
 
-### Config Loading
+`FaucetError::is_retriable()` classifies transient failures (network errors, 5xx, 429) so connectors can drive `execute_with_retry` (exponential backoff + jitter, also re-exported). The `Custom` variant is intentionally permanent in the public API so connector authors can wrap their own error types without losing the chain.
 
-Load any `Deserialize`-able config struct from JSON files or environment variables:
+## State stores (resume & bookmarks)
 
-```rust
-use faucet_core::config::{load_json, load_env, load_env_file};
+The `StateStore` trait is a minimal async key/value store over `Value` (`get` / `put` / `delete`). Sources that override `state_key()` opt into resumable runs: the pipeline reads the bookmark before fetching and persists the new one **only after the sink confirms** the batch.
 
-// From a JSON file
-let config: MyConfig = load_json("config.json")?;
-
-// From environment variables (reads MYAPP_URL, MYAPP_BATCH_SIZE, etc.)
-let config: MyConfig = load_env("MYAPP")?;
-
-// From a .env file + environment variables
-let config: MyConfig = load_env_file(".env", "MYAPP")?;
-```
-
-#### Duration Serde Helpers
-
-For `Duration` fields in configs, use the provided serde modules:
+| Backend | Crate | Use when |
+|---------|-------|----------|
+| `MemoryStateStore` | `faucet-core` | Tests, or runs that start fresh each time. |
+| `FileStateStore` | `faucet-core` | One JSON file per key, written via atomic rename (crash-safe). |
+| `RedisStateStore` | [`faucet-state-redis`](https://crates.io/crates/faucet-state-redis) | Shared bookmarks across hosts. |
+| `PostgresStateStore` | [`faucet-state-postgres`](https://crates.io/crates/faucet-state-postgres) | Durable bookmarks in an existing Postgres. |
 
 ```rust
-use std::time::Duration;
-use serde::{Serialize, Deserialize};
+use faucet_core::{Pipeline, FileStateStore};
+use std::sync::Arc;
 
-#[derive(Serialize, Deserialize)]
-struct MyConfig {
-    #[serde(with = "faucet_core::config::duration_secs")]
-    timeout: Duration,                    // serializes as u64 seconds
-
-    #[serde(with = "faucet_core::config::duration_secs_option", default)]
-    retry_delay: Option<Duration>,        // serializes as Option<u64>
-}
+let store = Arc::new(FileStateStore::new("./state"));
+let result = Pipeline::new(&source, &sink)
+    .with_state_store(store)
+    .run()
+    .await?;
 ```
 
-### Record Transforms
+State keys are validated via `state::validate_state_key`.
 
-Transform records as they flow through the pipeline:
+## Dead-letter queue (DLQ)
 
-```rust
-use faucet_core::RecordTransform;
+`Pipeline::with_dlq(DlqConfig)` attaches an optional DLQ sink. The streaming loop calls `Sink::write_batch_partial` per page; rows that come back `Err` are wrapped in a fixed-shape envelope (`build_envelope`) and routed to the DLQ before the page bookmark advances. `OnBatchError` controls the policy when a sink can't report per-row results: `propagate` aborts the run; `dlq_all` routes the whole failed page. Sinks override `write_batch_partial` to expose per-row results (BigQuery `insertAll`, Elasticsearch `_bulk`).
 
-// Flatten nested objects: {"user": {"id": 1}} -> {"user__id": 1}
-RecordTransform::Flatten { separator: "__".into() }
+## Exactly-once delivery
 
-// Convert keys to snake_case (or camel / pascal / kebab / screaming_snake)
-RecordTransform::KeysCase { mode: KeyCaseMode::Snake }
+`DeliveryMode` (`AtLeastOnce` default, or `ExactlyOnce`) controls run semantics. Under `ExactlyOnce` the pipeline assigns a monotonic fixed-width commit token (`format_token(seq)`) to each bookmark-carrying page and calls `write_batch_idempotent(records, scope, token)`; the sink commits records **and** token atomically. On resume, `last_committed_token(scope)` is consulted to skip already-committed pages.
 
-// Regex key renaming
-RecordTransform::RenameKeys {
-    pattern: r"^_sdc_".into(),
-    replacement: "".into(),
-}
+Exactly-once requires a **deterministic-replay source** (`supports_exactly_once() == true` — CDC sources) and an **idempotent sink** (`supports_idempotent_writes() == true`). The bookmark + sequence persist together via `wrap_state(bookmark, seq)` / `unwrap_state(value)`.
 
-// Custom closure
-RecordTransform::custom(|mut record| {
-    // modify record
-    record
-})
-```
+## Write modes (upsert / delete)
 
-### Replication
+`faucet_core::write_mode` is the unified upsert layer. `WriteSpec` (`write_mode` + `key` + `delete_marker`) flattens into a capable sink's config; `plan_writes(page, &spec) -> WritePlan { upserts, deletes, failed }` is the single partitioning routine (last-write-wins dedup by `key`; missing/null-key rows → `failed` for DLQ/abort). Sinks advertise support via `supported_write_modes()`. Helpers: `key_to_doc_id`, `key_to_filter`, `KeyTuple`.
 
-Incremental replication support:
+## Data-quality checks
 
-```rust
-use faucet_core::ReplicationMethod;
-use faucet_core::replication::{filter_incremental, max_replication_value};
+Add a `quality:` block (sibling of `transforms:` and `dlq:` under `pipeline:`) to assert invariants on every page before records reach the sink. The quality pass runs **after** transforms and **before** `write_batch`: per-record checks partition the page into survivors and quarantined rows, then per-batch checks run over the survivors. Quarantined rows are routed to the DLQ.
 
-// Filter records newer than a bookmark
-let filtered = filter_incremental(&records, "updated_at", &bookmark_value);
+Enable with the `quality` Cargo feature (base) or `quality-jsonschema` (adds the `json_schema` record check).
 
-// Compute new bookmark from records
-let new_bookmark = max_replication_value(&records, "updated_at");
-```
+### Check catalog
 
-### Schema Inference
-
-Infer JSON Schema from record samples:
-
-```rust
-use faucet_core::schema::infer_schema;
-
-let schema = infer_schema(&records);
-// Returns a JSON Schema with inferred types, nullable fields, nested objects
-```
-
-### JSON Schema Generation
-
-All config structs derive `schemars::JsonSchema`. Use `schema_for!` to generate schemas:
-
-```rust
-use faucet_core::{schema_for, JsonSchema};
-use serde::{Serialize, Deserialize};
-
-#[derive(Serialize, Deserialize, JsonSchema)]
-struct MyConfig {
-    url: String,
-    batch_size: usize,
-}
-
-let schema = schema_for!(MyConfig);
-let json = serde_json::to_value(schema)?;
-```
-
-## Re-exports
-
-`faucet-core` re-exports common dependencies so connector authors only need one dependency:
-
-| Re-export | From |
-|-----------|------|
-| `async_trait` | `async-trait` |
-| `serde_json`, `Value`, `json!` | `serde_json` |
-| `schemars`, `JsonSchema`, `schema_for!` | `schemars` |
-
-### Quality checks
-
-Add a `quality:` block (sibling of `transforms:` and `dlq:` under `pipeline:`) to
-assert invariants on every page of records before they reach the sink. The quality
-pass runs **after** transforms and **before** `write_batch`; per-record checks
-partition the page into survivors and quarantined rows, then per-batch checks run
-over the survivors. Quarantined rows are routed to the DLQ sink.
-
-Enable with the `quality` Cargo feature (base) or `quality-jsonschema` to add the
-`json_schema` record check.
-
-#### Check catalog
-
-**Per-record checks** — each record is evaluated in declared order; first failure
-wins. `on_failure` may be `quarantine` (route the row to the DLQ) or `abort` (fail
-the run immediately with `FaucetError::QualityFailure`).
+**Per-record checks** — each record is evaluated in declared order; first failure wins. `on_failure` may be `quarantine` (route the row to the DLQ) or `abort` (fail the run with `FaucetError::QualityFailure`).
 
 | Check | Key config fields | Passes when | Missing field |
 |---|---|---|---|
@@ -243,15 +296,9 @@ the run immediately with `FaucetError::QualityFailure`).
 | `string_length` | `field`, `min?`, `max?` (at least one required) | char count in `[min, max]` | fail |
 | `json_schema` *(quality-jsonschema feature)* | `schema` (JSON Schema doc) | record validates against `schema` | (whole-record check; always evaluated) |
 
-`json_schema` is the most expressive check; its cost scales with schema
-complexity — for very large or deeply nested schemas on hot paths, prefer the
-granular checks above and benchmark your case.
+`json_schema` is the most expressive check; its cost scales with schema complexity — for very large or deeply nested schemas on hot paths, prefer the granular checks above and benchmark your case.
 
-**Per-batch checks** — evaluated per page over the survivors (records that passed
-the per-record pass). `on_failure` for aggregate checks (`row_count`, `null_rate`,
-`distinct_count`) may be `abort` or `quarantine_batch` (route all current survivors
-to the DLQ, write nothing this page). `unique` is row-attributable and accepts
-`quarantine` (route the duplicate rows) or `abort`.
+**Per-batch checks** — evaluated per page over the survivors. `on_failure` for aggregate checks (`row_count`, `null_rate`, `distinct_count`) may be `abort` or `quarantine_batch` (route all current survivors to the DLQ, write nothing this page). `unique` is row-attributable and accepts `quarantine` or `abort`.
 
 | Check | Key config fields | Passes when |
 |---|---|---|
@@ -260,7 +307,7 @@ to the DLQ, write nothing this page). `unique` is row-attributable and accepts
 | `unique` | `fields: [...]` (composite key, ≥1) | every survivor's key is unique within the page |
 | `distinct_count` | `field`, `min?`, `max?` | distinct values of `field` in `[min, max]` |
 
-#### `on_failure` policies
+### `on_failure` policies
 
 | Policy | Meaning | Allowed on |
 |---|---|---|
@@ -268,10 +315,9 @@ to the DLQ, write nothing this page). `unique` is row-attributable and accepts
 | `quarantine_batch` | Route all survivors of the page to the DLQ; write nothing this page | aggregate batch checks |
 | `abort` | Surface `FaucetError::QualityFailure` and fail the run | every check |
 
-**`quarantine` and `quarantine_batch` require a DLQ sink.** Configuring either
-without a `dlq:` block is rejected at config-load time with `FaucetError::Config`.
+**`quarantine` and `quarantine_batch` require a DLQ sink.** Configuring either without a `dlq:` block is rejected at config-load time with `FaucetError::Config`.
 
-#### Example
+### Example (YAML, via the CLI)
 
 ```yaml
 pipeline:
@@ -283,14 +329,6 @@ pipeline:
       method: GET
       auth: { type: bearer, config: { token: "${env:API_TOKEN}" } }
       pagination: { type: Cursor, next_token_path: $.meta.next_cursor, param_name: cursor }
-      max_retries: 3
-      retry_backoff: 2
-      tolerated_http_errors: []
-      replication_method: { type: Incremental }
-      replication_key: updated_at
-      primary_keys: ["id"]
-      partitions: []
-      schema_sample_size: 100
 
   transforms:
     - type: keys_case
@@ -301,16 +339,9 @@ pipeline:
       - type: not_null
         field: id
         on_failure: abort
-      - type: not_null
-        field: email
-        on_failure: quarantine
       - type: regex_match
         field: email
         pattern: '^[^@\s]+@[^@\s]+\.[^@\s]+$'
-        on_failure: quarantine
-      - type: value_in_set
-        field: status
-        values: ["active", "inactive", "pending", "suspended"]
         on_failure: quarantine
     batch:
       - type: row_count
@@ -336,7 +367,7 @@ pipeline:
       batch_size: 500
 ```
 
-#### Rust API
+### Quality — Rust API
 
 ```rust
 use faucet_core::{Pipeline, CompiledQuality, QualitySpec};
@@ -350,21 +381,118 @@ let result = Pipeline::new(&source, &sink)
     .await?;
 ```
 
+## Config loading & schema
+
+Load any `Deserialize`-able config from JSON files or environment variables:
+
+```rust
+use faucet_core::config::{load_json, load_env, load_env_file};
+
+let config: MyConfig = load_json("config.json")?;          // from a JSON file
+let config: MyConfig = load_env("MYAPP")?;                 // from MYAPP_* env vars
+let config: MyConfig = load_env_file(".env", "MYAPP")?;    // .env file + env vars
+```
+
+For `Duration` config fields, use the provided serde modules:
+
+```rust
+#[derive(serde::Serialize, serde::Deserialize)]
+struct MyConfig {
+    #[serde(with = "faucet_core::config::duration_secs")]
+    timeout: std::time::Duration,                         // u64 seconds
+    #[serde(with = "faucet_core::config::duration_secs_option", default)]
+    retry_delay: Option<std::time::Duration>,             // Option<u64>
+}
+```
+
+All config structs derive `schemars::JsonSchema`; implement `config_schema()` with `schema_for!` so the CLI's `faucet schema source|sink <name>` and `faucet init` can introspect them:
+
+```rust
+use faucet_core::{schema_for, JsonSchema};
+
+#[derive(serde::Serialize, serde::Deserialize, JsonSchema)]
+struct MyConfig { url: String, batch_size: usize }
+
+let schema = serde_json::to_value(schema_for!(MyConfig))?;
+```
+
+## Re-exports for connector authors
+
+`faucet-core` re-exports the dependencies a connector needs, so a third-party crate depends only on `faucet-core`:
+
+| Re-export | From | Why |
+|-----------|------|-----|
+| `async_trait` | `async-trait` | Implement the `Source` / `Sink` async traits |
+| `serde_json`, `Value`, `json!` | `serde_json` | The record type and JSON literals |
+| `schemars`, `JsonSchema`, `schema_for!` | `schemars` | Config-schema introspection |
+| `Stream`, `async_stream`, `futures_core` | `futures-core` / `async-stream` | Implement `stream_pages` |
+| `CancellationToken` | `tokio-util` | Name the token for `with_cancel` without adding `tokio-util` |
+
+> **Keep `faucet-core` the only required dependency.** If your connector needs a new common dependency, propose re-exporting it from `faucet-core` rather than requiring every connector author to add it. Keep the `Source` / `Sink` traits object-safe (no connector-specific types or generics on methods) and `FaucetError::Custom` intact for third-party error wrapping.
+
 ## Modules
 
 | Module | Contents |
 |--------|----------|
-| `traits` | `Source` and `Sink` async traits |
-| `error` | `FaucetError` enum |
-| `pipeline` | `Pipeline`, `PipelineResult`, `run_stream` |
+| `traits` | `Source` and `Sink` async traits; `RowOutcome` |
+| `auth` | `AuthProvider`, `Credential`, `AuthSpec`, `SharedAuthProvider` |
+| `pipeline` | `Pipeline`, `PipelineResult`, `StreamPage`, `run_stream`, batch-size constants |
+| `error` | `FaucetError` enum + `is_retriable` |
 | `config` | `load_json`, `load_env`, `load_env_file`, duration serde helpers |
-| `transform` | `RecordTransform`, `CompiledTransform`, plus support enums (`CastType`, `CastOnError`, `ValueCaseMode`) |
+| `transform` | `RecordTransform`, `CompiledTransform`, support enums (`CastType`, `CastOnError`, `KeyCaseMode`, `ValueCaseMode`) |
+| `transforming_source` | `TransformingSource` — attach stages to any source |
+| `stage` | `TransformStage`, `FilterSpec`, `ExplodeSpec`, `CdcUnwrapSpec`, `compile_stage` |
+| `state` | `StateStore` trait, `MemoryStateStore`, `FileStateStore`, `validate_state_key` |
+| `dlq` | `DlqConfig`, `OnBatchError`, `DlqReason`, `DlqStats`, `build_envelope` |
+| `idempotency` | `DeliveryMode`, `format_token`, `parse_token`, `wrap_state`, `unwrap_state` |
+| `write_mode` | `WriteMode`, `WriteSpec`, `DeleteMarker`, `plan_writes`, `WritePlan` |
+| `quality` | Per-record / per-batch checks (`quality` / `quality-jsonschema` features) |
 | `replication` | `ReplicationMethod`, `filter_incremental`, `max_replication_value` |
-| `schema` | `infer_schema` |
-| `stage` | `TransformStage`, `FilterSpec`, `ExplodeSpec`, `OnMissing`. The pipeline-level stage type that wraps `RecordTransform` (1→1) and adds filter (1→0\|1) and explode (1→0..N). See `docs/book/src/cookbook/transforms.md` for the merge rule and JSONPath subset. |
-| `quality` | Per-record and per-batch data-quality checks: `QualitySpec` config, `CompiledQuality`, `apply_quality`, `QualityOutcome`. Gated on the `quality` / `quality-jsonschema` features. |
-| `util` | `quote_ident`, `extract_records`, `check_http_response` |
+| `retry` | `execute_with_retry` (exponential backoff + jitter) |
+| `schema` | `infer_schema` from record samples |
+| `check` | `CheckContext`, `Probe`, `CheckReport` for `faucet doctor` |
+| `observability` | Pipeline-internal `tracing`/`metrics` decorators; `install_observability` |
+| `compression` | `CompressionConfig`, `compress_buf` (the `compression` feature) |
+| `util` | `quote_ident`, `extract_records`, `check_http_response`, `redact_uri_credentials` |
+
+## Feature flags
+
+Defaults: `transform-flatten`, `transform-rename-keys`, `transform-keys-case`.
+
+| Feature | Enables |
+|---------|---------|
+| `transform-<name>` | One built-in transform (`flatten`, `rename-keys`, `keys-case`, `select`, `drop`, `set`, `rename-field`, `cast`, `redact`, `value-case`, `spell-symbols`, `filter`, `explode`, `cdc-unwrap`) |
+| `transforms` | All built-in transforms |
+| `quality` | The 12 base per-record / per-batch quality checks |
+| `quality-jsonschema` | Adds the `json_schema` record check (pulls `jsonschema`) |
+| `compression` | `CompressionConfig` + gzip/zstd helpers |
+| `observability-install` | `install_observability` (Prometheus exporter + tracing subscriber) |
+
+> Connector authors: enable in your **own** `Cargo.toml` every feature your crate uses — the feature-isolation CI matrix builds each connector alone, so relying on workspace feature unification compiles locally but fails CI.
+
+## Troubleshooting / FAQ
+
+| Symptom | Likely cause & fix |
+|---------|--------------------|
+| `the trait Source is not object-safe` / can't `Box<dyn Source>` | You added a method with a generic or an associated type. Keep trait methods concrete; give new methods a default impl so existing connectors don't break. |
+| Records aren't being transformed when driving a source from Rust | Transforms aren't part of the `Source` trait. Wrap the source with `TransformingSource::new(source, stages)` — there is no per-connector `add_transform`. |
+| `FaucetError::Config: batch_size out of range` | `batch_size` exceeded `MAX_BATCH_SIZE` (1,000,000). Use `validate_batch_size` at load time; `0` is the valid "no batching" sentinel. |
+| Bookmark never persists across runs | Your source returns `None` from `state_key()`, or no `with_state_store` was set. Override `state_key()` and read the bookmark via `apply_start_bookmark`. |
+| `DeliveryMode::ExactlyOnce` rejected | The source isn't deterministic-replay (`supports_exactly_once()` is `false`) or the sink isn't idempotent (`supports_idempotent_writes()` is `false`). Exactly-once needs a CDC source + an idempotent sink + a state store + no DLQ. |
+| Quality config rejected at load time | A `quarantine` / `quarantine_batch` policy was set without a `dlq:` block, or a regex / JSON Schema / bound is invalid — `CompiledQuality::compile` is fail-fast. Add a DLQ or fix the spec. |
+| `Custom` errors lose their cause | Wrap with `FaucetError::Custom(Box::new(your_error))` — it implements `From<Box<dyn Error + Send + Sync>>` and preserves the chain. |
+| Secret printed in logs | `Credential`'s `Debug` redacts secrets, but connector-specific debug logging is outside that boundary. Never run a secret-bearing pipeline at `FAUCET_LOG=debug`. |
+| Buffered sink output lost on cancel | Use `Pipeline::with_cancel` (not a dropped future): cancellation flushes at the next page boundary so Parquet/S3 sinks finalize their output. |
+
+## See also
+
+- **Concepts & library guide:** <https://pawansikawat.github.io/faucet-stream/getting-started/concepts.html> · <https://pawansikawat.github.io/faucet-stream/tutorials/library.html>
+- **Transforms cookbook:** <https://pawansikawat.github.io/faucet-stream/cookbook/transforms.html>
+- **State & exactly-once:** <https://pawansikawat.github.io/faucet-stream/cookbook/state.html>
+- **Upsert / write modes:** <https://pawansikawat.github.io/faucet-stream/cookbook/upsert.html>
+- **Quality checks & DLQ:** <https://pawansikawat.github.io/faucet-stream/reference/config.html>
+- **Related crates:** [`faucet-auth`](https://crates.io/crates/faucet-auth) (shared auth providers) · [`faucet-state-redis`](https://crates.io/crates/faucet-state-redis) / [`faucet-state-postgres`](https://crates.io/crates/faucet-state-postgres) (state backends) · [`faucet-stream`](https://crates.io/crates/faucet-stream) (umbrella) · [`faucet-cli`](https://crates.io/crates/faucet-cli) (the `faucet` binary)
 
 ## License
 
-Licensed under either of [MIT](../../LICENSE-MIT) or [Apache-2.0](../../LICENSE-APACHE) at your option.
+Licensed under either of [Apache License, Version 2.0](https://www.apache.org/licenses/LICENSE-2.0) or [MIT license](https://opensource.org/licenses/MIT) at your option.

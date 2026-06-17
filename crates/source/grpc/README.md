@@ -2,117 +2,272 @@
 
 [![Crates.io](https://img.shields.io/crates/v/faucet-source-grpc.svg)](https://crates.io/crates/faucet-source-grpc)
 [![Docs.rs](https://docs.rs/faucet-source-grpc/badge.svg)](https://docs.rs/faucet-source-grpc)
+[![MSRV](https://img.shields.io/crates/msrv/faucet-source-grpc.svg)](https://github.com/PawanSikawat/faucet-stream/blob/main/rust-toolchain.toml)
+[![License](https://img.shields.io/crates/l/faucet-source-grpc.svg)](https://github.com/PawanSikawat/faucet-stream#license)
 
-A config-driven gRPC source that uses protobuf reflection to call any gRPC service dynamically and return records as JSON.
+Config-driven **gRPC** source for the [faucet-stream](https://github.com/PawanSikawat/faucet-stream) ecosystem. It calls any gRPC service **dynamically** via protobuf reflection (`prost-reflect`) — no generated client code, no per-service Rust — using a compiled `FileDescriptorSet` to encode the request and decode each response into a typed `serde_json::Value`.
 
-Part of the [faucet-stream](https://github.com/PawanSikawat/faucet-stream) ecosystem.
+Reach for it when you need to pull data out of an internal gRPC API — a list/get RPC for a one-shot snapshot, or a server-streaming RPC for a long-lived event/change/log feed — and land it in any faucet-stream sink with one declarative config.
+
+## Feature highlights
+
+- **Dynamic protobuf, zero codegen** — point the source at a `FileDescriptorSet` (`.bin`) produced by `protoc`; it resolves the service/method, maps your JSON `request` onto the protobuf message, and decodes responses back to JSON. No `.proto` compilation into your binary.
+- **Two RPC kinds** — `unary` (one request → one response) and `server_streaming` (one request → a stream of responses). Server-streaming is consumed message-by-message and emitted as records arrive.
+- **Native streaming for server-streaming RPCs** — `stream_pages` flushes a `StreamPage` each time `batch_size` messages accumulate, bounding **both** source-side and sink-side memory for unbounded feeds.
+- **Resilient reconnect** — server-streaming reconnects on transient transport errors with exponential backoff (`reconnect_initial_backoff` → `reconnect_max_backoff`), an optional attempt cap, and replay-prefix skipping so each message is delivered downstream once.
+- **JSONPath record extraction** — `records_path` (e.g. `$.users[*]`) pulls a repeated field out of each response message; unset returns the whole response as a single record.
+- **Three auth modes** — none, bearer token (`authorization` metadata), or arbitrary ordered metadata key/value pairs (duplicate keys allowed). Bearer/metadata auth also resolves from the CLI's shared `auth:` catalog via `auth: { ref: <name> }`.
+- **TLS auto-detection** — inferred from an `https://` endpoint, or forced on/off with `tls`.
+- **Tunable message-size limits** — raise `max_decoding_message_size` / `max_encoding_message_size` above tonic's 4 MiB default for large messages.
+- **Connection reuse** — the tonic channel is built once and reused for the run.
 
 ## Installation
 
 ```bash
+# As a library:
 cargo add faucet-source-grpc
-cargo add tokio --features full
+
+# In the CLI (opt-in connector feature):
+cargo install faucet-cli --features source-grpc
 ```
 
-Or via the umbrella crate:
+Via the umbrella crate:
+
 ```bash
 cargo add faucet-stream --features source-grpc
 ```
 
 ## Prerequisites
 
-This source requires a compiled `FileDescriptorSet` file. Generate it from your `.proto` files using `protoc`:
+This source needs a compiled `FileDescriptorSet` — the binary schema of your protobuf services. Generate it from your `.proto` files with `protoc`:
 
 ```bash
 protoc --descriptor_set_out=descriptor.bin --include_imports \
     -I proto/ proto/my_service.proto
 ```
 
-The descriptor file contains the full schema of your protobuf messages and services, enabling dynamic encoding and decoding without code generation.
+`--include_imports` is required so transitively-imported message types resolve. The descriptor file drives both request encoding and response decoding at runtime.
 
-## Quick Start
+## Quick start
 
-```rust
-use faucet_source_grpc::{GrpcStream, GrpcStreamConfig};
-use serde_json::json;
-
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let config = GrpcStreamConfig::new(
-        "http://localhost:50051",
-        "users.UserService",
-        "ListUsers",
-        "proto/descriptor.bin",
-    )
-    .request(json!({"page_size": 100}))
-    .records_path("$.users[*]");
-
-    let stream = GrpcStream::new(config)?;
-    let records = stream.fetch_all().await?;
-
-    for record in &records {
-        println!("{}", record);
-    }
-    Ok(())
-}
+```yaml
+# pipeline.yaml — faucet run pipeline.yaml
+version: 1
+pipeline:
+  source:
+    type: grpc
+    config:
+      endpoint: http://localhost:50051
+      service_name: users.UserService
+      method_name: ListUsers
+      descriptor_set_path: proto/descriptor.bin
+      request:
+        page_size: 100
+      records_path: $.users[*]
+  sink:
+    type: jsonl
+    config:
+      path: ./users.jsonl
 ```
 
-## Configuration
+```bash
+faucet run pipeline.yaml
+```
 
-### GrpcStreamConfig
+## Configuration reference
+
+### Core
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `endpoint` | `String` | *(required)* | gRPC endpoint URL (e.g. `"http://localhost:50051"`) |
-| `service_name` | `String` | *(required)* | Fully qualified service name (e.g. `"mypackage.MyService"`) |
-| `method_name` | `String` | *(required)* | Method name (e.g. `"ListUsers"`) |
-| `descriptor_set_path` | `PathBuf` | *(required)* | Path to the compiled `FileDescriptorSet` file |
-| `request` | `Value` | `{}` | Request message as JSON. Fields are mapped to protobuf fields using the descriptor |
-| `auth` | `GrpcAuth` | `GrpcAuth::None` | Authentication method |
-| `tls` | `Option<bool>` | `None` | Whether to use TLS. When `None`, auto-detected from `https://` in the endpoint URL |
-| `records_path` | `Option<String>` | `None` | JSONPath to extract records from the response. If not set, the entire response is returned as a single record |
-| `batch_size` | `usize` | `1000` | Records per emitted `StreamPage` for `Source::stream_pages`. `0` is the "no batching" sentinel — the entire result set is emitted in a single page. See [Streaming and batching](#streaming-and-batching) below — for unary RPCs `0` and any positive value behave identically |
-| `rpc_kind` | `RpcKind` | `Unary` | RPC kind: `Unary` (one request → one response) or `ServerStreaming` (one request → stream of responses). See [Server-streaming RPCs](#server-streaming-rpcs) below |
-| `max_messages` | `Option<usize>` | `None` | Server-streaming only. Cap on the number of streamed messages to consume before terminating. `None` means consume until the server closes the stream |
-| `terminate_on_error` | `bool` | `false` | Server-streaming only. If `true`, transient stream errors terminate the run. If `false`, the source reconnects with exponential backoff |
-| `reconnect_initial_backoff` | `Duration` (secs) | `1` | Server-streaming only. Initial backoff before the first reconnect attempt; doubles after each failure up to `reconnect_max_backoff`. Must be `> 0` (a zero backoff would busy-spin reconnects and is rejected at construction) |
-| `reconnect_max_backoff` | `Duration` (secs) | `30` | Server-streaming only. Upper bound on reconnect backoff |
-| `reconnect_max_attempts` | `Option<u32>` | `None` | Server-streaming only. Maximum reconnect attempts before surfacing the error. `None` means unlimited |
-| `reconnect_replay_from_start` | `bool` | `true` | Server-streaming only. Whether the server replays the stream from message 0 when the same request is re-issued on reconnect. `true` (default) skips already-emitted messages so each is delivered once; `false` emits every received message (at-least-once). See [Reconnect on transient errors](#reconnect-on-transient-errors) |
-| `max_decoding_message_size` | `Option<usize>` | `None` | Maximum size in bytes of a single inbound (decoded) message. `None` keeps tonic's built-in 4 MiB limit. Raise for sources that return large messages |
-| `max_encoding_message_size` | `Option<usize>` | `None` | Maximum size in bytes of a single outbound (encoded) request message. `None` keeps tonic's built-in limit |
+| `endpoint` | string | — *(required)* | gRPC endpoint URL (e.g. `http://localhost:50051`, `https://grpc.example.com:443`). |
+| `service_name` | string | — *(required)* | Fully qualified service name (e.g. `users.UserService`). Must exist in the descriptor set. |
+| `method_name` | string | — *(required)* | Method (RPC) name on that service (e.g. `ListUsers`). |
+| `descriptor_set_path` | path | — *(required)* | Path to the compiled `FileDescriptorSet` `.bin` file. |
+| `request` | object | `{}` | Request message as JSON; fields are mapped onto the protobuf request message via the descriptor. Unknown fields fail encoding. |
+| `records_path` | string | *(unset)* | JSONPath extracting records from each response (e.g. `$.users[*]`). When unset, the whole response is returned as a single record. For server-streaming it is applied to **each** message individually. |
+| `tls` | bool | *(auto)* | Force TLS on/off. When unset, auto-detected from an `https://` endpoint. |
 
-### Authentication (GrpcAuth)
+### Auth
 
-| Variant | Fields | Description |
-|---------|--------|-------------|
-| `None` | -- | No authentication |
-| `Bearer { token }` | `String` | Bearer token sent as `authorization` metadata |
-| `Metadata { entries }` | `Vec<MetadataEntry { key, value }>` | Custom metadata pairs attached to the gRPC request — `Vec` preserves order and allows duplicate keys (gRPC permits both) |
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `auth` | `GrpcAuth` / `{ ref }` | `none` | Inline `{ type, config }` (see [Authentication](#authentication)) or `{ ref: <name> }` pointing at a shared provider in the CLI's top-level `auth:` catalog. |
 
-## Streaming and batching
+### RPC kind & server-streaming
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `rpc_kind` | enum | `unary` | `unary` (one request → one response) or `server_streaming` (one request → stream of responses). |
+| `max_messages` | int | *(unset)* | Server-streaming only. Cap on streamed messages to consume before terminating. Unset = consume until the server closes the stream. |
+| `terminate_on_error` | bool | `false` | Server-streaming only. `true` propagates a transient stream error on first failure; `false` reconnects with backoff. |
+| `reconnect_initial_backoff` | int (seconds) | `1` | Server-streaming only. Initial reconnect backoff; doubles each failure up to `reconnect_max_backoff`. Must be `> 0`. |
+| `reconnect_max_backoff` | int (seconds) | `30` | Server-streaming only. Upper bound on reconnect backoff. |
+| `reconnect_max_attempts` | int | *(unset)* | Server-streaming only. Max reconnect attempts before surfacing the error. Unset = unlimited. |
+| `reconnect_replay_from_start` | bool | `true` | Server-streaming only. `true` skips the already-emitted prefix when a stateless server replays from message 0 (exactly-once downstream); `false` emits every received message (at-least-once). See [Reconnect](#reconnect-on-transient-errors). |
+
+### Batching & limits
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `batch_size` | int | `1000` | Records per emitted `StreamPage`. **`0` = no batching** (whole result set in one page). For unary RPCs any value behaves identically (full response is buffered first); for server-streaming it bounds memory. Max `1_000_000`. |
+| `max_decoding_message_size` | int (bytes) | *(tonic 4 MiB)* | Max size of a single inbound (decoded) message. Raise for large responses; a too-low limit surfaces as a decode error. |
+| `max_encoding_message_size` | int (bytes) | *(tonic default)* | Max size of a single outbound (encoded) request message. Rarely needs tuning for a data source. |
+
+## Authentication
+
+`auth` uses the project-wide `{ type, config }` shape (`GrpcAuth`):
+
+| `type` | `config` | Description |
+|--------|----------|-------------|
+| `none` | *(none)* | No authentication (default). |
+| `bearer` | `{ token: <string> }` | Token sent as `authorization` request metadata. |
+| `metadata` | `{ entries: [{ key, value }, …] }` | Arbitrary metadata pairs attached to every request. Order is preserved and duplicate keys are allowed (gRPC permits both). |
+
+```yaml
+# Bearer token (via env indirection)
+auth:
+  type: bearer
+  config:
+    token: ${env:GRPC_TOKEN}
+```
+
+```yaml
+# Custom metadata (e.g. API key + tenant)
+auth:
+  type: metadata
+  config:
+    entries:
+      - { key: x-api-key, value: ${env:API_KEY} }
+      - { key: x-tenant-id, value: tenant-123 }
+```
+
+```yaml
+# Shared provider from the top-level auth: catalog
+auth:
+  ref: my_idp
+```
+
+## Examples
+
+### Authenticated unary list with TLS and record extraction
+
+```yaml
+source:
+  type: grpc
+  config:
+    endpoint: https://grpc.production.example.com:443
+    service_name: analytics.EventService
+    method_name: QueryEvents
+    descriptor_set_path: proto/descriptor.bin
+    request:
+      start_time: "2026-01-01T00:00:00Z"
+      end_time: "2026-02-01T00:00:00Z"
+      limit: 1000
+    auth:
+      type: bearer
+      config: { token: ${env:GRPC_TOKEN} }
+    tls: true
+    records_path: $.events[*]
+```
+
+### gRPC → HTTP (matches `cli/examples/grpc_to_http.yaml`)
+
+```yaml
+version: 1
+name: grpc_to_http
+pipeline:
+  source:
+    type: grpc
+    config:
+      endpoint: https://grpc.example.com:443
+      service_name: metrics.MetricsService
+      method_name: ListMetrics
+      descriptor_set_path: proto/metrics.bin
+      request: { window: 1h }
+      auth:
+        type: bearer
+        config: { token: ${env:GRPC_TOKEN} }
+      tls: true
+      records_path: $.metrics[*]
+  sink:
+    type: http
+    config:
+      url: https://ingest.example.com/v1/events?tenant=acme
+      method: POST
+      auth:
+        type: bearer
+        config: { token: ${env:INGEST_TOKEN} }
+      batch_mode: { type: Array }
+      max_retries: 3
+      concurrency: 8
+```
+
+### Server-streaming event feed with reconnect
+
+```yaml
+source:
+  type: grpc
+  config:
+    endpoint: https://grpc.example.com:443
+    service_name: events.EventService
+    method_name: Tail
+    descriptor_set_path: proto/descriptor.bin
+    request: { topic: audit-log }
+    auth:
+      type: bearer
+      config: { token: ${env:GRPC_TOKEN} }
+    tls: true
+    rpc_kind: server_streaming
+    max_messages: 100000
+    batch_size: 500
+    reconnect_initial_backoff: 1
+    reconnect_max_backoff: 30
+    reconnect_replay_from_start: true
+    max_decoding_message_size: 16777216   # 16 MiB
+```
+
+### Custom-metadata auth, large messages
+
+```yaml
+source:
+  type: grpc
+  config:
+    endpoint: http://localhost:50051
+    service_name: inventory.InventoryService
+    method_name: ListProducts
+    descriptor_set_path: proto/descriptor.bin
+    request: { category: electronics, page_size: 100 }
+    auth:
+      type: metadata
+      config:
+        entries:
+          - { key: x-api-key, value: ${env:API_KEY} }
+    records_path: $.products[*]
+    max_decoding_message_size: 33554432   # 32 MiB
+```
+
+## Streaming & batching
 
 ### Unary RPCs
 
-Unary gRPC returns one response containing all records; `stream_pages` falls back to the default trait impl, which buffers the full response and then chunks it in memory into `batch_size` pages. This bounds **sink-side** memory only — source-side memory is still O(full response).
-
-`batch_size = 0` and any positive `batch_size` are observably identical for unary gRPC — both buffer the full result before yielding, since the unary RPC has no native paging primitive the source could honour. Treat the field as a sink-side chunk size, not a wire-protocol hint.
+A unary RPC returns one response containing all records. `stream_pages` falls back to the default trait impl, which buffers the full response and chunks it in memory into `batch_size` pages. This bounds **sink-side** memory only — source-side memory is `O(full response)`. `batch_size = 0` and any positive value are observably identical here, since there is no native wire paging primitive to honour. Treat `batch_size` as a sink-side chunk size for unary.
 
 ### Server-streaming RPCs
 
-When `rpc_kind = "server_streaming"`, the source calls `tonic::client::Grpc::server_streaming` and consumes the response stream message-by-message. Each streamed `DynamicMessage` is decoded via `prost-reflect` and converted to JSON; if `records_path` is set it is applied to each message individually (so `$.events[*]` flattens an array nested inside each message into the page record set).
-
-`stream_pages` flushes a page each time the buffer accumulates `batch_size` records, bounding both **source-side and sink-side** memory. `batch_size = 0` drains the entire stream into a single page (useful for short streams or sinks that prefer one large write). Pages carry `bookmark: None` — server-streaming has no native cursor, so resumption is driven by user-supplied request fields (e.g. an event id), not a faucet-managed bookmark.
+When `rpc_kind: server_streaming`, the source calls `tonic::client::Grpc::server_streaming` and consumes the response stream message-by-message. Each streamed `DynamicMessage` is decoded via `prost-reflect`, converted to JSON, and (if `records_path` is set) flattened per message. `stream_pages` flushes a page every `batch_size` records, bounding **both** source-side and sink-side memory — the right mode for unbounded feeds. `batch_size = 0` drains the whole stream into a single page (good for short streams). Pages carry `bookmark: None`.
 
 #### Reconnect on transient errors
 
-By default, transient stream errors (server disconnects, transport failures, etc.) trigger a reconnect with exponential backoff starting at `reconnect_initial_backoff`, doubling each attempt up to `reconnect_max_backoff`. After `reconnect_max_attempts` (when set), the error is surfaced. Set `terminate_on_error = true` to skip the reconnect path entirely and propagate the error on first failure.
+By default, transient stream errors (server disconnects, transport failures) trigger a reconnect with exponential backoff from `reconnect_initial_backoff`, doubling up to `reconnect_max_backoff`; after `reconnect_max_attempts` (when set) the error is surfaced. Set `terminate_on_error: true` to propagate on first failure instead.
 
-Reconnect re-sends the *same* request from scratch (the request is resolved once per run), so a stateless server begins emitting from the start of the stream again. By default (`reconnect_replay_from_start = true`) the source tracks how many messages it has already emitted and **skips that replayed prefix** on the reconnected attempt, so each message is delivered downstream exactly once.
+Reconnect re-sends the *same* request (resolved once per run), so a stateless server re-streams from message 0. With `reconnect_replay_from_start: true` (default) the source tracks how many messages it already emitted and **skips that replayed prefix**, delivering each message once. Set it `false` only for servers that resume mid-stream on an identical request (rare — most resumable feeds need a resume token *in the request*, e.g. an `after_event_id` field you maintain): there, every received message is emitted (at-least-once), so duplicates are possible on replay.
 
-Set `reconnect_replay_from_start = false` only for servers that resume mid-stream on an identical request (rare — most resumable feeds require a resume token *in the request*, e.g. an `after_event_id` field the user maintains). With it `false`, every received message is emitted (at-least-once), so a replayed prefix produces duplicates downstream; conversely, leaving it `true` against a genuinely-resuming server would skip legitimate new messages. Match the setting to the server's replay semantics.
+> **Resume/state:** this source has no faucet-managed bookmark or `state:` resume. For a resumable feed, drive the cursor through the `request` (e.g. an `after_event_id` your config advances), not via a faucet state store.
 
-## Config Loading
+## Config loading & schema introspection
+
+Load config from YAML/JSON, environment, or a `.env` file:
 
 ```rust
 use faucet_core::config::{load_json, load_env_file};
@@ -122,56 +277,6 @@ let config: GrpcStreamConfig = load_json("config.json")?;
 let config: GrpcStreamConfig = load_env_file(".env", "GRPC")?;
 ```
 
-### Example JSON config (unary)
-
-```json
-{
-  "endpoint": "https://grpc.example.com:443",
-  "service_name": "inventory.InventoryService",
-  "method_name": "ListProducts",
-  "descriptor_set_path": "proto/descriptor.bin",
-  "request": {
-    "category": "electronics",
-    "page_size": 100
-  },
-  "auth": {
-    "type": "bearer",
-    "config": {
-      "token": "your-api-token"
-    }
-  },
-  "tls": true,
-  "records_path": "$.products[*]",
-  "batch_size": 1000
-}
-```
-
-### Example JSON config (server-streaming)
-
-```json
-{
-  "endpoint": "https://grpc.example.com:443",
-  "service_name": "events.EventService",
-  "method_name": "Tail",
-  "descriptor_set_path": "proto/descriptor.bin",
-  "request": { "topic": "audit-log" },
-  "auth": { "type": "bearer", "config": { "token": "your-api-token" } },
-  "tls": true,
-  "records_path": null,
-  "rpc_kind": "server_streaming",
-  "max_messages": 100000,
-  "terminate_on_error": false,
-  "reconnect_initial_backoff": 1,
-  "reconnect_max_backoff": 30,
-  "reconnect_max_attempts": null,
-  "reconnect_replay_from_start": true,
-  "max_decoding_message_size": 16777216,
-  "batch_size": 500
-}
-```
-
-### Example .env file
-
 ```env
 GRPC_ENDPOINT=http://localhost:50051
 GRPC_SERVICE_NAME=users.UserService
@@ -179,71 +284,45 @@ GRPC_METHOD_NAME=ListUsers
 GRPC_DESCRIPTOR_SET_PATH=proto/descriptor.bin
 ```
 
-## Config Schema Introspection
+Inspect the full JSON Schema with:
 
-```rust
-use faucet_core::Source;
-
-let stream = GrpcStream::new(config)?;
-let schema = stream.config_schema();
-println!("{}", serde_json::to_string_pretty(&schema)?);
+```bash
+faucet schema source grpc
 ```
 
-## Examples
-
-### Basic unary RPC call
+## Library usage
 
 ```rust
-use faucet_source_grpc::{GrpcStream, GrpcStreamConfig};
-use serde_json::json;
-
-let config = GrpcStreamConfig::new(
-    "http://localhost:50051",
-    "orders.OrderService",
-    "GetOrder",
-    "proto/descriptor.bin",
-)
-.request(json!({"order_id": "ord-12345"}));
-
-let stream = GrpcStream::new(config)?;
-let records = stream.fetch_all().await?;
-// Returns the full response as a single JSON record
-```
-
-### Authenticated gRPC with TLS and record extraction
-
-```rust
-use faucet_source_grpc::{GrpcStream, GrpcStreamConfig, GrpcAuth};
-use serde_json::json;
-
-let config = GrpcStreamConfig::new(
-    "https://grpc.production.example.com",
-    "analytics.EventService",
-    "QueryEvents",
-    "proto/descriptor.bin",
-)
-.request(json!({
-    "start_time": "2025-01-01T00:00:00Z",
-    "end_time": "2025-02-01T00:00:00Z",
-    "limit": 1000
-}))
-.auth(GrpcAuth::Bearer {
-    token: "your-bearer-token".into(),
-})
-.tls(true)
-.records_path("$.events[*]");
-
-let stream = GrpcStream::new(config)?;
-let events = stream.fetch_all().await?;
-println!("Fetched {} events", events.len());
-```
-
-### Server-streaming RPC
-
-```rust
+use faucet_core::{Pipeline, Source};
 use faucet_source_grpc::{GrpcStream, GrpcStreamConfig, RpcKind};
 use serde_json::json;
 
+# async fn run() -> Result<(), Box<dyn std::error::Error>> {
+let config = GrpcStreamConfig::new(
+    "http://localhost:50051",
+    "users.UserService",
+    "ListUsers",
+    "proto/descriptor.bin",
+)
+.request(json!({ "page_size": 100 }))
+.records_path("$.users[*]");
+
+// One-shot collect:
+let stream = GrpcStream::new(config)?;
+let records = stream.fetch_all().await?;
+println!("fetched {} records", records.len());
+# Ok(())
+# }
+```
+
+For a long-lived server-streaming feed, drive the pipeline so pages flush to the sink as they arrive instead of buffering everything:
+
+```rust
+use faucet_core::Pipeline;
+use faucet_source_grpc::{GrpcStream, GrpcStreamConfig, RpcKind};
+use serde_json::json;
+
+# async fn run(my_sink: impl faucet_core::Sink) -> Result<(), Box<dyn std::error::Error>> {
 let config = GrpcStreamConfig::new(
     "http://localhost:50051",
     "events.EventService",
@@ -252,50 +331,52 @@ let config = GrpcStreamConfig::new(
 )
 .request(json!({ "topic": "audit-log" }))
 .rpc_kind(RpcKind::ServerStreaming)
-.max_messages(10_000)
 .with_batch_size(500);
 
 let stream = GrpcStream::new(config)?;
-let events = stream.fetch_all().await?;
-println!("Collected {} events", events.len());
+Pipeline::new(&stream, &my_sink).run().await?;
+# Ok(())
+# }
 ```
 
-For long-lived streams, drive the pipeline directly so pages flush to the
-sink as they arrive instead of buffering everything in memory:
+## How it works
 
-```rust
-use faucet_core::Pipeline;
-
-let pipeline = Pipeline::new(&stream, &my_sink);
-pipeline.run().await?;
-```
-
-### Custom metadata authentication
-
-```rust
-use faucet_source_grpc::{GrpcAuth, GrpcStream, GrpcStreamConfig, MetadataEntry};
-
-let config = GrpcStreamConfig::new(
-    "http://localhost:50051",
-    "mypackage.MyService",
-    "ListItems",
-    "proto/descriptor.bin",
-)
-.auth(GrpcAuth::Metadata {
-    entries: vec![
-        MetadataEntry { key: "x-api-key".into(), value: "my-secret-key".into() },
-        MetadataEntry { key: "x-tenant-id".into(), value: "tenant-123".into() },
-    ],
-});
-
-let stream = GrpcStream::new(config)?;
-let items = stream.fetch_all().await?;
-```
+1. `new()` loads and parses the `FileDescriptorSet`, resolves the service/method, and builds the tonic channel **once** (TLS auto-detected from the scheme unless `tls` overrides it).
+2. The JSON `request` is mapped onto the protobuf request message via reflection; any configured `max_encoding_message_size` is applied.
+3. **Unary:** a single response is decoded to JSON; `records_path` (if set) extracts records, otherwise the whole response is one record.
+4. **Server-streaming:** the response stream is consumed message-by-message; each `DynamicMessage` is decoded, JSON-converted, and `records_path`-flattened, with reconnect/backoff and replay-prefix skipping wrapping the consume loop.
+5. Records are framed into `batch_size` pages and streamed to the pipeline; `max_decoding_message_size` bounds each inbound message.
 
 ## Lineage dataset URI
 
-`<endpoint>/<service_name>/<method_name>` (credentials stripped) — e.g. `http://grpc.example.com:50051/example.Service/ListItems`.
+`<endpoint>/<service_name>/<method_name>` with credentials stripped — e.g. `http://grpc.example.com:50051/example.Service/ListItems`.
+
+## Feature flags
+
+This crate has no optional features of its own. Enable it in the CLI/umbrella via the `source-grpc` feature.
+
+## Troubleshooting / FAQ
+
+| Symptom | Likely cause & fix |
+|---------|--------------------|
+| Service or method not found | `service_name` / `method_name` don't match the descriptor. Use the **fully qualified** service name (`package.Service`) exactly as in the `.proto`, and confirm the method exists. |
+| Descriptor fails to load | Regenerate with `--include_imports` so transitively-imported types resolve; pass the correct `descriptor_set_path`. |
+| Request field rejected during encoding | A `request` key isn't a field of the protobuf request message. Match field names (proto field names, not JSON aliases) against the descriptor. |
+| TLS handshake fails / plaintext on a TLS endpoint | Set `tls` explicitly. An `http://` endpoint defaults to plaintext, `https://` to TLS; override when the scheme and the server disagree. |
+| `Unauthenticated` / 401-equivalent | Wrong or missing credentials. For `bearer`, the token is sent as `authorization` metadata; for `metadata`, confirm the server expects those exact keys. |
+| Decode error on a large response | The message exceeds tonic's 4 MiB inbound limit. Raise `max_decoding_message_size`. |
+| `records_path` returns nothing | The JSONPath doesn't match the decoded response shape. Drop `records_path` to inspect the raw response, then target the actual array field (e.g. `$.users[*]`). |
+| Server-streaming run never ends | Expected for an open-ended feed. Bound it with `max_messages`, or cancel the run (the page loop stops at the next boundary). |
+| Reconnect busy-spins / errors immediately | `reconnect_initial_backoff` must be `> 0`. For non-transient failures set `terminate_on_error: true` to fail fast. |
+| Duplicate or missing messages after a reconnect | Match `reconnect_replay_from_start` to the server: `true` for a stateless server that replays from 0, `false` for one that resumes mid-stream on the same request. |
+
+## See also
+
+- [Choosing a connector](https://pawansikawat.github.io/faucet-stream/reference/choosing.html)
+- [Connector capability matrix](https://pawansikawat.github.io/faucet-stream/reference/connectors.html)
+- [Authentication cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/auth.html)
+- [`faucet-sink-http`](https://crates.io/crates/faucet-sink-http) · [`faucet-source-rest`](https://crates.io/crates/faucet-source-rest) · [`faucet-source-graphql`](https://crates.io/crates/faucet-source-graphql)
 
 ## License
 
-Licensed under MIT or Apache-2.0.
+Licensed under either of [Apache License, Version 2.0](https://www.apache.org/licenses/LICENSE-2.0) or [MIT license](https://opensource.org/licenses/MIT) at your option.
