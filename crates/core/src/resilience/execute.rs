@@ -130,6 +130,40 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn jittered_nonzero_backoff_with_no_cancel_retries() {
+        // Exercises the `jitter: true` + non-zero `Fixed` backoff + `None` cancel
+        // arms directly (the zero-backoff `fast_policy` skips both). Backoff is a
+        // few ms so the test stays fast while still sleeping a real interval.
+        let policy = RetryPolicy {
+            max_attempts: 3,
+            backoff: BackoffKind::Fixed,
+            base: Duration::from_millis(2),
+            max: Duration::from_millis(2),
+            jitter: true,
+            ..RetryPolicy::default()
+        };
+        let calls = Arc::new(AtomicU32::new(0));
+        let c = calls.clone();
+        let r = execute_with_policy(&policy, None, move || {
+            let n = c.fetch_add(1, Ordering::SeqCst);
+            async move {
+                if n < 1 {
+                    Err::<i32, _>(FaucetError::HttpStatus {
+                        status: 503,
+                        url: "u".into(),
+                        body: "".into(),
+                    })
+                } else {
+                    Ok(9)
+                }
+            }
+        })
+        .await;
+        assert_eq!(r.unwrap(), 9);
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
     async fn cancel_during_backoff_returns_last_error_promptly() {
         let policy = RetryPolicy {
             max_attempts: 10,
