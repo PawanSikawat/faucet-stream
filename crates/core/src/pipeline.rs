@@ -507,6 +507,8 @@ where
     }
     let mut controller: Option<crate::adaptive::AimdController> = None;
     let mut warned_noop_sink = false;
+    // One-shot warn guard for poison-pill `Drop` action (DLQ path).
+    let mut warned_poison_drop = false;
 
     let sink_name = sink.connector_name();
     let dlq_sink_name = dlq.as_ref().map(|d| d.sink.connector_name()).unwrap_or("");
@@ -537,6 +539,9 @@ where
             cb.cooldown,
         )
     });
+    // Poison-pill (per-row) policy, applied in the DLQ path only.
+    let poison = resilience.as_ref().and_then(|r| r.poison);
+
     // Run a sink/state op under the retry policy, or bare if no policy is set.
     // A macro (not a closure) so it works across the differently-typed call
     // sites (`Result<usize, _>`, `Result<(), _>`) without boxing. `cancel` is
@@ -687,7 +692,7 @@ where
                             // `reason` label accurate when adaptive reslicing
                             // mixes a synthesized chunk with partial-failure
                             // chunks on the same page.
-                            let (chunk_outcomes, chunk_synthesized): (
+                            let (mut chunk_outcomes, chunk_synthesized): (
                                 Vec<crate::RowOutcome>,
                                 bool,
                             ) = match chunk_outcomes_result {
@@ -704,23 +709,97 @@ where
                                     }
                                 },
                             };
+
+                            // ── Poison-pill: retry the still-failing,
+                            // retriable-row subset before enveloping. A row that
+                            // succeeds on retry becomes a success; one that keeps
+                            // failing falls through to the terminal `action`
+                            // applied in the per-row loop below. Only genuine
+                            // per-row failures are retried (not a synthesized
+                            // `DlqAll` chunk — there is no per-row sink to retry
+                            // against). Inert when `poison` is `None`.
+                            if let Some(pp) = poison
+                                && !chunk_synthesized
+                            {
+                                let mut attempt = 1u32; // first attempt already done
+                                while attempt < pp.max_row_attempts {
+                                    let failing: Vec<usize> = chunk_outcomes
+                                        .iter()
+                                        .enumerate()
+                                        .filter_map(|(j, o)| match o {
+                                            Err(e)
+                                                if retry_policy
+                                                    .as_ref()
+                                                    .map(|p| p.is_retriable(e))
+                                                    .unwrap_or(false) =>
+                                            {
+                                                Some(j)
+                                            }
+                                            _ => None,
+                                        })
+                                        .collect();
+                                    if failing.is_empty() {
+                                        break;
+                                    }
+                                    let subset: Vec<Value> =
+                                        failing.iter().map(|&j| chunk[j].clone()).collect();
+                                    let retried =
+                                        with_retry!(sink.write_batch_partial(&subset))?;
+                                    // `retried` aligns positionally with `failing`
+                                    // (the subset was built in `failing` order).
+                                    // Consume by value — `FaucetError` is not Clone.
+                                    let mut retried = retried.into_iter();
+                                    for &j in failing.iter() {
+                                        chunk_outcomes[j] = retried.next().unwrap_or(Ok(()));
+                                    }
+                                    attempt += 1;
+                                }
+                            }
+
                             let mut chunk_errors = 0usize;
                             for (j, outcome) in chunk_outcomes.iter().enumerate() {
                                 match outcome {
                                     Ok(()) => page_success += 1,
                                     Err(err) => {
-                                        chunk_errors += 1;
-                                        if !chunk_synthesized {
-                                            had_per_row_sink_failure = true;
+                                        // Terminal poison action for a row that
+                                        // remained failing after retries. With no
+                                        // poison policy this is always the default
+                                        // `Dlq` behavior (envelope).
+                                        let action = poison
+                                            .map(|pp| pp.action)
+                                            .unwrap_or(crate::resilience::PoisonAction::Dlq);
+                                        match action {
+                                            crate::resilience::PoisonAction::Fail => {
+                                                return Err(FaucetError::Sink(format!(
+                                                    "poison-pill row failed permanently: {err}"
+                                                )));
+                                            }
+                                            crate::resilience::PoisonAction::Drop => {
+                                                // Count + one-shot warn, discard the
+                                                // row (no envelope). Metric emission
+                                                // is wired in Task 11.
+                                                if !warned_poison_drop {
+                                                    tracing::warn!(
+                                                        "poison-pill: dropping permanently-failing row(s) (action=drop); this warning fires once per run"
+                                                    );
+                                                    warned_poison_drop = true;
+                                                }
+                                            }
+                                            crate::resilience::PoisonAction::Dlq => {
+                                                chunk_errors += 1;
+                                                if !chunk_synthesized {
+                                                    had_per_row_sink_failure = true;
+                                                }
+                                                envelopes.push(build_envelope(
+                                                    &chunk[j],
+                                                    err,
+                                                    sink_name,
+                                                    &pipeline_name,
+                                                    &row,
+                                                    offset + j,
+                                                ));
+                                            }
                                         }
-                                        envelopes.push(build_envelope(
-                                            &chunk[j],
-                                            err,
-                                            sink_name,
-                                            &pipeline_name,
-                                            &row,
-                                            offset + j,
-                                        ));
                                     }
                                 }
                             }
@@ -3382,4 +3461,103 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn resilience_poison_retries_then_dlqs_failing_row() {
+        use crate::dlq::DlqConfig;
+        use crate::resilience::{
+            BackoffKind, PoisonAction, PoisonPolicy, ResiliencePolicy, RetryPolicy,
+        };
+        use std::sync::{Arc, Mutex};
+        use std::time::Duration;
+
+        // Sink: row {"bad":true} always fails; others succeed. Counts attempts
+        // on the bad row.
+        struct PickySink {
+            bad_attempts: Arc<Mutex<u32>>,
+        }
+        #[async_trait]
+        impl Sink for PickySink {
+            async fn write_batch(&self, r: &[Value]) -> Result<usize, FaucetError> {
+                Ok(r.len())
+            }
+            async fn write_batch_partial(
+                &self,
+                records: &[Value],
+            ) -> Result<Vec<crate::RowOutcome>, FaucetError> {
+                Ok(records
+                    .iter()
+                    .map(|rec| {
+                        if rec.get("bad").and_then(|v| v.as_bool()).unwrap_or(false) {
+                            *self.bad_attempts.lock().unwrap() += 1;
+                            Err(FaucetError::HttpStatus {
+                                status: 503,
+                                url: "u".into(),
+                                body: "".into(),
+                            })
+                        } else {
+                            Ok(())
+                        }
+                    })
+                    .collect())
+            }
+            async fn flush(&self) -> Result<(), FaucetError> {
+                Ok(())
+            }
+        }
+        struct CaptureSink(Arc<Mutex<Vec<Value>>>);
+        #[async_trait]
+        impl Sink for CaptureSink {
+            async fn write_batch(&self, r: &[Value]) -> Result<usize, FaucetError> {
+                self.0.lock().unwrap().extend_from_slice(r);
+                Ok(r.len())
+            }
+            async fn flush(&self) -> Result<(), FaucetError> {
+                Ok(())
+            }
+        }
+
+        let captured = Arc::new(Mutex::new(Vec::new()));
+        let bad_attempts = Arc::new(Mutex::new(0u32));
+        let sink = PickySink {
+            bad_attempts: bad_attempts.clone(),
+        };
+        let pages = futures::stream::iter(vec![Ok(StreamPage {
+            records: vec![json!({"ok": 1}), json!({"bad": true})],
+            bookmark: None,
+        })]);
+        let policy = ResiliencePolicy {
+            retry: RetryPolicy {
+                max_attempts: 1,
+                backoff: BackoffKind::None,
+                base: Duration::ZERO,
+                max: Duration::ZERO,
+                jitter: false,
+                ..RetryPolicy::default()
+            },
+            circuit_breaker: None,
+            poison: Some(PoisonPolicy {
+                max_row_attempts: 3,
+                action: PoisonAction::Dlq,
+            }),
+        };
+        let res = run_stream(
+            pages,
+            &sink,
+            RunStreamOptions::new()
+                .with_dlq(DlqConfig::new(Arc::new(CaptureSink(captured.clone()))))
+                .with_resilience(policy),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            *bad_attempts.lock().unwrap(),
+            3,
+            "bad row tried max_row_attempts times"
+        );
+        assert_eq!(res.records_written, 1, "the ok row");
+        let dlq = captured.lock().unwrap();
+        assert_eq!(dlq.len(), 1, "one row to DLQ");
+        assert_eq!(dlq[0]["payload"]["bad"], json!(true));
+    }
 }
