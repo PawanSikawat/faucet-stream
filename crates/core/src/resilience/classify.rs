@@ -95,19 +95,21 @@ pub fn classify(err: &FaucetError) -> Option<RetryClass> {
     }
 }
 
-/// Pure classification of a reqwest transport error from its three discriminating
+/// Pure classification of a reqwest transport error from its discriminating
 /// predicates. Factored out of the [`FaucetError::Http`] arm so it is unit-testable
 /// without constructing a `reqwest::Error` (which has no public constructor).
 ///
 /// A timeout wins regardless of any attached status. A 5xx/429 status maps to the
 /// matching class; any other status is non-transient (`None`). With no status, a
 /// connect failure and every other transport error (body/decode mid-stream) are
-/// treated as connection-class transient — a strict superset of the legacy
-/// `FaucetError::is_retriable`, so behavior is preserved.
+/// treated as connection-class transient — so `is_connect` does not change the
+/// outcome and is accepted only to mirror the reqwest predicate at the call site.
+/// This is a strict superset of the legacy `FaucetError::is_retriable`, so behavior
+/// is preserved.
 fn classify_transport(
     is_timeout: bool,
     status: Option<u16>,
-    is_connect: bool,
+    _is_connect: bool,
 ) -> Option<RetryClass> {
     if is_timeout {
         Some(RetryClass::Timeout)
@@ -119,9 +121,9 @@ fn classify_transport(
         } else {
             None
         }
-    } else if is_connect {
-        Some(RetryClass::Connection)
     } else {
+        // Statusless, non-timeout transport error: a connect failure and every
+        // other transport error (body/decode mid-stream) are connection-class.
         Some(RetryClass::Connection)
     }
 }
