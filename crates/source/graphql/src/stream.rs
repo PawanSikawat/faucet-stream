@@ -248,19 +248,18 @@ impl GraphqlStream {
         // backoff, matching the REST source's reliability layer (#78/#16).
         // GraphQL-level `errors` in a 200 body are application errors and are
         // handled below — they are not retried here.
-        let body: Value =
-            faucet_core::execute_with_policy(&self.retry_policy, None, || {
-                let attempt = req.try_clone();
-                async move {
-                    let req = attempt.ok_or_else(|| {
-                        FaucetError::Source("graphql: request is not cloneable for retry".into())
-                    })?;
-                    let resp = req.send().await.map_err(FaucetError::Http)?;
-                    let resp = util::check_http_response(resp, DEFAULT_ERROR_BODY_MAX_LEN).await?;
-                    resp.json().await.map_err(FaucetError::Http)
-                }
-            })
-            .await?;
+        let body: Value = faucet_core::execute_with_policy(&self.retry_policy, None, || {
+            let attempt = req.try_clone();
+            async move {
+                let req = attempt.ok_or_else(|| {
+                    FaucetError::Source("graphql: request is not cloneable for retry".into())
+                })?;
+                let resp = req.send().await.map_err(FaucetError::Http)?;
+                let resp = util::check_http_response(resp, DEFAULT_ERROR_BODY_MAX_LEN).await?;
+                resp.json().await.map_err(FaucetError::Http)
+            }
+        })
+        .await?;
 
         // Check for GraphQL-level errors.
         if let Some(errors) = body.get("errors")
