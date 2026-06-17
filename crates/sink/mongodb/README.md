@@ -5,130 +5,123 @@
 [![MSRV](https://img.shields.io/crates/msrv/faucet-sink-mongodb.svg)](https://github.com/PawanSikawat/faucet-stream/blob/main/rust-toolchain.toml)
 [![License](https://img.shields.io/crates/l/faucet-sink-mongodb.svg)](https://github.com/PawanSikawat/faucet-stream#license)
 
-MongoDB sink connector for the [faucet-stream](https://github.com/PawanSikawat/faucet-stream) ecosystem.
+**MongoDB** sink for the [faucet-stream](https://github.com/PawanSikawat/faucet-stream) ecosystem. Writes JSON records into a MongoDB collection — appending with batched `insert_many`, or keeping a collection in sync with a changing source via `upsert` / `delete`.
 
-Inserts JSON records into a MongoDB collection using `insert_many` for efficient batch writes. Each JSON record is converted to a BSON document before insertion. The MongoDB client connection is established once and reused across all writes.
+Reach for it when you want to land any faucet-stream source — a REST API, a database, a CDC stream, a file — into MongoDB with one declarative config and no glue code. Each record is converted to a BSON document; the client connection is established once and reused across every write.
+
+## Feature highlights
+
+- **Batched inserts** — append mode issues `insert_many` per `batch_size`-sized chunk, the documented sweet spot for balancing round-trip overhead against MongoDB's ~48 MB per-request budget.
+- **Unordered by default** — `ordered: false` so a single poison document (duplicate `_id`, validation error) can't drop the rest of the batch.
+- **Write modes** — `append` (default), `upsert` (per-document `replace_one(upsert)`), and `delete` (`delete_one`); the `key` fields become the match filter (MongoDB is schemaless — no key columns).
+- **CDC mirroring** — a `delete_marker` mixes upserts and deletes in one stream, so a CDC source carrying an op flag (`__op: "u" | "d"`) keeps a collection in lock-step with its origin.
+- **Dead-letter queue aware** — overrides `write_batch_partial` so missing/null-key rows can be routed to a DLQ per-row while the good documents still commit.
+- **Nested documents preserved** — arbitrary nested objects, arrays, and all JSON scalar types convert to their BSON equivalents losslessly.
+- **Client built once** — the connection pool is created and validated in `new()` and reused for every write; the driver handles pooling and reconnection internally.
+- **Credential-safe logging** — the `Debug` impl masks `connection_uri` with `***`, and the lineage URI strips embedded credentials.
 
 ## Installation
 
 ```bash
+# As a library:
 cargo add faucet-sink-mongodb
-cargo add tokio --features full
+
+# In the CLI (opt-in connector feature):
+cargo install faucet-cli --features sink-mongodb
 ```
 
-Or via the umbrella crate:
+Or via the umbrella crate: `cargo add faucet-stream --features sink-mongodb`.
+
+## Quick start
+
+```yaml
+# pipeline.yaml — faucet run pipeline.yaml
+version: 1
+pipeline:
+  source:
+    type: rest
+    config:
+      base_url: https://api.example.com
+      endpoint: /v1/events
+  sink:
+    type: mongodb
+    config:
+      connection_uri: mongodb://localhost:27017
+      database: analytics
+      collection: events
+      batch_size: 1000
+```
 
 ```bash
-cargo add faucet-stream --features sink-mongodb
+faucet run pipeline.yaml
 ```
 
-## Quick Start
+## Configuration reference
 
-```rust
-use faucet_sink_mongodb::{MongoSink, MongoSinkConfig};
-use faucet_core::Sink;
-use serde_json::json;
-
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let config = MongoSinkConfig::new(
-        "mongodb://localhost:27017",
-        "analytics",
-        "events",
-    )
-    .with_batch_size(1000);
-
-    let sink = MongoSink::new(config).await?;
-
-    let records = vec![
-        json!({"user_id": "u123", "event": "signup", "source": "web"}),
-        json!({"user_id": "u456", "event": "login", "source": "mobile"}),
-    ];
-
-    let written = sink.write_batch(&records).await?;
-    println!("Inserted {written} documents");
-
-    Ok(())
-}
-```
-
-## Configuration
+### Core
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `connection_uri` | `String` | *(required)* | MongoDB connection URI (e.g. `mongodb://user:pass@host:27017`) |
-| `database` | `String` | *(required)* | Database name |
-| `collection` | `String` | *(required)* | Collection name |
-| `batch_size` | `usize` | `1000` | Maximum number of documents per `insert_many` call. See [Streaming and batching](#streaming-and-batching) below |
-| `ordered` | `bool` | `false` | Whether `insert_many` is ordered. Default `false` (unordered) so one bad document — duplicate `_id`, validation error — doesn't drop the rest of the batch. Set `true` only if you require strict insertion order and want the batch to abort at the first failure. |
-| `write_mode` | `string` | `append` | `append`, `upsert`, or `delete`. See [Write modes (upsert / delete)](#write-modes-upsert--delete) below |
-| `key` | `[string]` | `[]` | Match-filter fields for `upsert` / `delete`. **Required and non-empty** for those modes; ignored for `append`. Typically `["_id"]` |
-| `delete_marker` | `object` | *(none)* | Upsert only. `{ field, values }` — rows whose `field` matches one of `values` are routed to deletes instead of upserts. The marker field is stripped from upsert rows before writing |
+| `connection_uri` | string | — *(required)* | MongoDB connection URI (e.g. `mongodb://user:pass@host:27017`, or a replica-set URI). Masked as `***` in `Debug` output. |
+| `database` | string | — *(required)* | Target database name. |
+| `collection` | string | — *(required)* | Target collection name. |
 
-The `Debug` implementation masks the `connection_uri` with `***` to prevent credential leakage in logs.
+### Batching & reliability
 
-### Streaming and batching
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `batch_size` | int | `1000` | Maximum documents per `insert_many` call (append mode). **`0` = no batching**: the entire records slice is sent in one call. Values above `MAX_BATCH_SIZE` (1,000,000) are rejected. See [Streaming & batching](#streaming--batching). |
+| `ordered` | bool | `false` | Whether `insert_many` is ordered. Default `false` (unordered) so one bad document doesn't drop the rest of the batch. Set `true` only when you require strict insertion order and want the batch to abort at the first failure. |
 
-`MongoSink::write_batch` re-chunks the incoming records slice into
-`batch_size` slices and issues one `insert_many` call per chunk. The
-default of `1000` matches MongoDB's documented sweet spot for
-`insert_many` — roughly 1000 documents per call balances round-trip
-overhead against the per-request BSON size budget (the server caps a
-single request at 48 MB). Tune up for narrow documents where round-trip
-latency dominates, and down for very wide documents that bump up against
-the BSON size cap.
+### Write mode
 
-`batch_size = 0` is the **"no batching" sentinel** — `write_batch`
-forwards the entire records slice in a single `insert_many` call, no
-matter how large, so upstream `StreamPage` framing flows through
-untouched. Use it when the upstream source already emits pages sized for
-MongoDB's per-request limits. Values larger than `MAX_BATCH_SIZE`
-(1,000,000) are rejected by `faucet_core::validate_batch_size`.
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `write_mode` | string | `append` | `append`, `upsert`, or `delete`. See [Write modes (upsert / delete)](#write-modes-upsert--delete). |
+| `key` | `[string]` | `[]` | Match-filter fields for `upsert` / `delete`. **Required and non-empty** for those modes; ignored for `append`. Typically `["_id"]`. |
+| `delete_marker` | object | *(none)* | Upsert only. `{ field, values }` — rows whose `field` matches one of `values` are routed to deletes instead of upserts. The marker field is stripped from upsert rows before writing. |
 
-Note that this `batch_size` is a **write-side chunking knob** specific
-to the sink. It is unrelated to the MongoDB driver's internal
-`cursor_batch_size` (the wire-level read-side cursor tuning knob used by
-`faucet-source-mongodb`) — the two concerns don't share a value because
-`insert_many` and a query cursor are different operations.
+## Examples
 
-### Write modes (upsert / delete)
+### Append events from a REST API
 
-By default the sink runs in `append` mode and inserts every record via
-`insert_many`. Set `write_mode: upsert` or `write_mode: delete` to keep a
-collection in sync with a changing source instead of only appending.
+```yaml
+sink:
+  type: mongodb
+  config:
+    connection_uri: mongodb://localhost:27017
+    database: analytics
+    collection: events
+    batch_size: 1000
+```
 
-MongoDB is schemaless, so unlike the SQL sinks there are no key *columns* —
-the `key` fields become the **match filter** for each document. `key` is
-typically `["_id"]`, but any combination of top-level fields works
-(composite keys are matched on all of them). `key` must be non-empty for
-`upsert` / `delete`; an empty `key` is rejected at config-load time.
+### High-throughput load with large batches
 
-- **`upsert`** — each row is committed with a per-document
-  `replace_one(filter, replacement).upsert(true)`. The filter is built from
-  the row's `key` fields and the whole row is the replacement document, so an
-  existing document is **replaced in place** (not field-merged) and a missing
-  one is inserted.
-- **`delete`** — each row is removed with `delete_one(filter)`, where the
-  filter is built from the row's `key` fields.
-- **`delete_marker`** (upsert only) — mix upserts and deletes in one stream:
-  rows whose `delete_marker.field` matches one of `delete_marker.values` are
-  routed to `delete_one`; all others are upserted. The marker field is
-  stripped from the upsert replacement document so it never lands in the
-  collection — handy for CDC streams that carry an operation flag like
-  `__op: "u" | "d"`.
+```yaml
+sink:
+  type: mongodb
+  config:
+    connection_uri: mongodb://writer:s3cret@mongo-primary:27017
+    database: warehouse
+    collection: raw_events
+    batch_size: 5000        # narrow docs where round-trip latency dominates
+```
 
-Within a single batch, repeated keys are deduped **last-write-wins** before
-any write is issued, so a page that touches the same `_id` twice results in a
-single `replace_one` / `delete_one` carrying the final value.
+### Replica-set target, no client-side re-chunking
 
-A document missing or null in a key field fails. When a `dlq:` block is
-configured the good documents are still written and only the missing/null-key
-documents are routed to the DLQ per-row; without a DLQ the whole batch fails.
+```yaml
+sink:
+  type: mongodb
+  config:
+    connection_uri: mongodb://writer:s3cret@mongo1:27017,mongo2:27017,mongo3:27017/analytics?replicaSet=rs0
+    database: analytics
+    collection: events
+    batch_size: 0           # forward each upstream StreamPage as one insert_many
+```
 
-Each `replace_one` / `delete_one` is a per-document primitive (not the
-namespaced `Client::bulk_write`) for compatibility with all supported MongoDB
-server versions; the sink recovers throughput by issuing the deduped ops
-concurrently.
+### CDC mirror — upsert with a delete marker
+
+Pair a CDC source (e.g. `faucet-source-mongodb-cdc`) with a `delete_marker` to keep a collection in lock-step with its origin:
 
 ```yaml
 sink:
@@ -139,61 +132,50 @@ sink:
     collection: users
     write_mode: upsert
     key: ["_id"]
-    # Optional: route delete-flagged rows (e.g. from a CDC source) to deletes.
     delete_marker:
       field: __op
       values: ["d", "delete"]
 ```
 
-### Builder Methods
+## Streaming & batching
 
-```rust
-use faucet_sink_mongodb::MongoSinkConfig;
+`MongoSink::write_batch` re-chunks the incoming records slice into `batch_size` slices and issues one `insert_many` call per chunk. The default of `1000` matches MongoDB's documented sweet spot — roughly 1000 documents per call balances round-trip overhead against the per-request BSON size budget (the server caps a single request at ~48 MB). Tune **up** for narrow documents where round-trip latency dominates, and **down** for very wide documents that bump against the size cap.
 
-let config = MongoSinkConfig::new(
-    "mongodb://writer:s3cret@mongo.example.com:27017",
-    "my_database",
-    "my_collection",
-)
-.with_batch_size(2000);
-```
+`batch_size = 0` is the **"no batching" sentinel** — `write_batch` forwards the entire records slice in a single `insert_many` call, so upstream `StreamPage` framing flows through untouched. Use it when the source already emits pages sized for MongoDB's per-request limits. Values above `MAX_BATCH_SIZE` (1,000,000) are rejected by `faucet_core::validate_batch_size`.
 
-## Config Loading
+This `batch_size` is a **write-side chunking knob** specific to the sink. It is unrelated to the driver's internal `cursor_batch_size` (the read-side cursor tuning knob used by `faucet-source-mongodb`) — `insert_many` and a query cursor are different operations.
+
+## Write modes (upsert / delete)
+
+By default the sink runs in `append` mode and inserts every record via `insert_many`. Set `write_mode: upsert` or `write_mode: delete` to keep a collection in sync with a changing source instead of only appending.
+
+MongoDB is schemaless, so unlike the SQL sinks there are no key *columns* — the `key` fields become the **match filter** for each document. `key` is typically `["_id"]`, but any combination of top-level fields works (composite keys are matched on all of them). `key` must be non-empty for `upsert` / `delete`; an empty `key` is rejected at config-load time.
+
+- **`upsert`** — each row is committed with a per-document `replace_one(filter, replacement).upsert(true)`. The filter is built from the row's `key` fields and the whole row is the replacement document, so an existing document is **replaced in place** (not field-merged) and a missing one is inserted.
+- **`delete`** — each row is removed with `delete_one(filter)`, where the filter is built from the row's `key` fields.
+- **`delete_marker`** (upsert only) — mix upserts and deletes in one stream: rows whose `delete_marker.field` matches one of `delete_marker.values` are routed to `delete_one`; all others are upserted. The marker field is stripped from the upsert replacement so it never lands in the collection — ideal for CDC streams that carry an operation flag like `__op: "u" | "d"`.
+
+Within a single batch, repeated keys are deduped **last-write-wins** before any write is issued, so a page that touches the same `_id` twice results in a single `replace_one` / `delete_one` carrying the final value.
+
+A document missing or null in a key field fails. When a `dlq:` block is configured the good documents are still written and only the missing/null-key documents are routed to the DLQ per-row; without a DLQ the whole batch fails.
+
+Each `replace_one` / `delete_one` is a per-document primitive (not the namespaced `Client::bulk_write`) for compatibility with all supported MongoDB server versions; the sink recovers throughput by issuing the deduped ops concurrently.
+
+## Dead-letter queue
+
+The sink overrides `write_batch_partial`, so a `dlq:` block in the pipeline config catches per-row failures (missing/null-key rows in `upsert` / `delete` mode) and routes them to the dead-letter sink while the rest of the page commits. Without a DLQ, a row-level failure aborts the batch. See the [DLQ cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/dlq.html).
+
+## Config loading & schema
+
+Load config from YAML/JSON, environment variables, or a `.env` file:
 
 ```rust
 use faucet_core::config::{load_json, load_env_file};
 use faucet_sink_mongodb::MongoSinkConfig;
 
-// From a JSON file
-let config: MongoSinkConfig = load_json("config.json")?;
-
-// From an .env file with a prefix
-let config: MongoSinkConfig = load_env_file(".env", "MONGO_SINK")?;
+let from_file: MongoSinkConfig = load_json("config.json")?;
+let from_env: MongoSinkConfig = load_env_file(".env", "MONGO_SINK")?;
 ```
-
-### Example JSON config
-
-```json
-{
-  "connection_uri": "mongodb://writer:s3cret@mongo.example.com:27017",
-  "database": "analytics",
-  "collection": "events",
-  "batch_size": 1000
-}
-```
-
-### Example JSON config (replica set)
-
-```json
-{
-  "connection_uri": "mongodb://writer:s3cret@mongo1:27017,mongo2:27017,mongo3:27017/analytics?replicaSet=rs0",
-  "database": "analytics",
-  "collection": "events",
-  "batch_size": 500
-}
-```
-
-### Example .env file
 
 ```env
 MONGO_SINK_CONNECTION_URI=mongodb://writer:s3cret@mongo.example.com:27017
@@ -202,92 +184,97 @@ MONGO_SINK_COLLECTION=events
 MONGO_SINK_BATCH_SIZE=1000
 ```
 
-## Config Schema Introspection
+Inspect the full JSON Schema with:
 
-```rust
-use faucet_core::Sink;
-
-let sink = MongoSink::new(config).await?;
-let schema = sink.config_schema();
-println!("{}", serde_json::to_string_pretty(&schema)?);
+```bash
+faucet schema sink mongodb
 ```
 
-## Pipeline Usage
+## Library usage
+
+```rust
+use faucet_core::{Pipeline, Sink};
+use faucet_sink_mongodb::{MongoSink, MongoSinkConfig};
+use serde_json::json;
+
+# async fn run() -> Result<(), Box<dyn std::error::Error>> {
+let config = MongoSinkConfig::new(
+    "mongodb://localhost:27017",
+    "analytics",
+    "events",
+)
+.with_batch_size(1000);
+
+let sink = MongoSink::new(config).await?;
+
+let records = vec![
+    json!({"user_id": "u123", "event": "signup", "source": "web"}),
+    json!({"user_id": "u456", "event": "login", "source": "mobile"}),
+];
+
+let written = sink.write_batch(&records).await?;
+println!("Inserted {written} documents");
+# Ok(())
+# }
+```
+
+Drive it from a `Pipeline` with any source:
 
 ```rust
 use faucet_core::Pipeline;
 use faucet_source_rest::{RestStream, RestStreamConfig};
 use faucet_sink_mongodb::{MongoSink, MongoSinkConfig};
 
+# async fn run() -> Result<(), Box<dyn std::error::Error>> {
 let source = RestStream::new(
-    RestStreamConfig::new("https://api.example.com", "/v1/events")
+    RestStreamConfig::new("https://api.example.com", "/v1/events"),
 );
-
 let sink = MongoSink::new(
-    MongoSinkConfig::new("mongodb://localhost:27017", "analytics", "events")
+    MongoSinkConfig::new("mongodb://localhost:27017", "analytics", "events"),
 ).await?;
 
 let result = Pipeline::new(source, sink).run().await?;
 println!("Transferred {} records", result.records_written);
+# Ok(())
+# }
 ```
 
-## Examples
+## How it works
 
-### Basic insert with default batch size
-
-```rust
-let config = MongoSinkConfig::new(
-    "mongodb://localhost:27017",
-    "mydb",
-    "users",
-);
-
-let sink = MongoSink::new(config).await?;
-sink.write_batch(&records).await?;
-```
-
-### High-throughput loading with large batches
-
-```rust
-let config = MongoSinkConfig::new(
-    "mongodb://writer:pass@mongo-primary:27017",
-    "warehouse",
-    "raw_events",
-)
-.with_batch_size(5000);
-
-let sink = MongoSink::new(config).await?;
-sink.write_batch(&large_dataset).await?;
-```
-
-### Inserting nested documents
-
-MongoDB natively supports nested documents, so complex JSON structures are preserved:
-
-```rust
-let records = vec![
-    json!({
-        "user": {"name": "Alice", "email": "alice@example.com"},
-        "tags": ["premium", "active"],
-        "metadata": {"source": "api", "version": 2}
-    }),
-];
-
-sink.write_batch(&records).await?;
-```
-
-## How It Works
-
-- The MongoDB client is created in `MongoSink::new()` using `Client::with_uri_str()`. The connection is established and validated at this point.
-- `write_batch()` splits records into chunks of `batch_size`. Each chunk is converted from `serde_json::Value` to `bson::Document` and inserted using `collection.insert_many()`. When `batch_size = 0`, the entire slice is sent in a single `insert_many` call — see [Streaming and batching](#streaming-and-batching).
-- Every record must be a JSON object. Non-object values (arrays, strings, numbers, null) produce an error during BSON conversion.
-- Nested JSON objects, arrays, and all JSON types are correctly converted to their BSON equivalents.
-- The MongoDB driver handles connection pooling and automatic reconnection internally.
+1. `MongoSink::new()` builds the client via `Client::with_uri_str()` — the connection is established and validated **once** and the pool is reused for every write.
+2. **Append:** `write_batch` splits records into `batch_size` chunks; each chunk is converted from `serde_json::Value` to `bson::Document` and inserted with `collection.insert_many()` (unordered unless `ordered: true`). With `batch_size = 0`, the whole slice goes in one call.
+3. **Upsert / delete:** `faucet_core::plan_writes` dedups the page last-write-wins, strips the delete marker, and partitions into upserts / deletes / failed rows; the sink issues per-document `replace_one(upsert)` / `delete_one` ops **concurrently**.
+4. Every record must be a JSON object — non-object values produce an error during BSON conversion.
+5. The driver handles connection pooling and automatic reconnection internally.
 
 ## Lineage dataset URI
 
-`mongodb://<host>:<port>/<database>/<collection>` (credentials stripped) — e.g. `mongodb://host:27017/mydb/events`.
+`mongodb://<host>:<port>/<database>/<collection>` (credentials stripped) — e.g. `mongodb://host:27017/analytics/events`.
+
+## Feature flags
+
+This crate has no optional features of its own; enable it in the CLI / umbrella via the `sink-mongodb` feature.
+
+## Troubleshooting / FAQ
+
+| Symptom | Likely cause & fix |
+|---------|--------------------|
+| Connection fails in `new()` / `check` ping fails | `connection_uri`, credentials, or network are wrong. Run `faucet doctor` — the sink's preflight runs a `ping` admin command. Verify the URI, that the server is reachable, and (for a replica set) that the `replicaSet=` name matches. |
+| Duplicate `_id` errors drop part of an append batch | You set `ordered: true`. Leave the default `ordered: false` so only the genuinely-bad documents fail and the rest of the batch still commits. |
+| `mongodb upsert: row N: ...` error | A row is missing or null in a `key` field. Ensure every record carries the `key` field(s), or configure a `dlq:` block to quarantine the bad rows per-row while the good ones commit. |
+| Upsert replaces the whole document instead of merging fields | Expected — `upsert` uses `replace_one`, which replaces the matched document in place. Shape the record upstream (e.g. with transforms) to carry every field you want retained. |
+| Delete-flagged CDC rows are inserted instead of removed | The `delete_marker.field` / `values` don't match the source's op flag. Confirm the field name and values (commonly `__op` with `["d", "delete"]`); pair with the `cdc_unwrap` transform to normalize the envelope to `__op`. |
+| "expected a JSON object" / BSON conversion error | A record is an array, string, number, or null. Every record must be a JSON object; reshape upstream with a transform. |
+| Documents rejected at ~48 MB | A batch exceeds MongoDB's per-request limit. Lower `batch_size` for wide documents, or split very large nested documents upstream. |
+
+## See also
+
+- [Sinks reference](https://pawansikawat.github.io/faucet-stream/reference/connectors.html) — capability matrix across all connectors.
+- [Write modes / upsert cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/upsert.html) — the shared upsert layer.
+- [Dead-letter queue cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/dlq.html) — routing failed rows.
+- [`faucet-source-mongodb`](https://crates.io/crates/faucet-source-mongodb) — the MongoDB source (`find()` with filter / projection / sort).
+- [`faucet-source-mongodb-cdc`](https://crates.io/crates/faucet-source-mongodb-cdc) — MongoDB Change Streams CDC source; the natural upstream for an upsert mirror.
 
 ## License
 
-Licensed under MIT or Apache-2.0.
+Licensed under either of [Apache License, Version 2.0](https://www.apache.org/licenses/LICENSE-2.0) or [MIT license](https://opensource.org/licenses/MIT) at your option.

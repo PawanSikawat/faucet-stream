@@ -5,151 +5,147 @@
 [![MSRV](https://img.shields.io/crates/msrv/faucet-sink-postgres.svg)](https://github.com/PawanSikawat/faucet-stream/blob/main/rust-toolchain.toml)
 [![License](https://img.shields.io/crates/l/faucet-sink-postgres.svg)](https://github.com/PawanSikawat/faucet-stream#license)
 
-PostgreSQL sink connector for the [faucet-stream](https://github.com/PawanSikawat/faucet-stream) ecosystem.
+PostgreSQL **sink** connector for the [faucet-stream](https://github.com/PawanSikawat/faucet-stream) ecosystem. Writes JSON records to a Postgres table over a pooled `sqlx` connection, batching them into multi-row `INSERT` statements for high throughput.
 
-Writes JSON records to a PostgreSQL table using either JSONB column mode (storing each record as a single `jsonb` value) or AutoMap mode (mapping top-level JSON keys directly to table columns). Uses connection pooling via `sqlx` and efficient multi-row `INSERT` statements.
+Reach for it whenever you want to land a faucet-stream source — a REST API, a CDC stream, a file, a queue — into Postgres with one declarative config and no glue code. Store records verbatim as a single `jsonb` column for schemaless ingestion, or map JSON keys straight onto typed table columns. With `write_mode: upsert` and a CDC source it becomes a live mirror; with `delivery: exactly_once` it commits records and a watermark in one transaction.
 
-`write_batch` accepts whatever slice the pipeline hands it. When `batch_size > 0` and the slice is larger than `batch_size`, the sink re-chunks internally and issues one multi-row `INSERT` per chunk; when `batch_size = 0`, the entire slice is sent in a single `INSERT` — see [Streaming and batching](#streaming-and-batching) for the tradeoffs.
+## Feature highlights
+
+- **Two column-mapping modes** — **JSONB** stores each record as a single `jsonb` value (schemaless ingestion, query later with JSON operators); **AutoMap** maps top-level JSON keys directly onto typed table columns discovered from the Postgres catalog.
+- **Multi-row `INSERT` batching** — each page is written with one multi-row `INSERT` per chunk; JSONB mode uses `unnest($1::jsonb[])`, AutoMap binds per-column casts. Auto-splits to stay under Postgres' 65 535 bind-parameter ceiling.
+- **Write modes: upsert & delete** — merge or remove rows by key via `INSERT … ON CONFLICT (key) DO UPDATE` (AutoMap + a `UNIQUE`/`PRIMARY KEY` on the key columns required). Last-write-wins de-dup within a batch.
+- **Exactly-once delivery** — records and a monotonic commit token UPSERT into a `_faucet_commit_token` watermark table inside the **same transaction**; resume skips already-committed pages.
+- **Dead-letter queue** — per-row partial writes route missing/null-key rows to a configured DLQ while good rows still commit.
+- **Connection pooling** — one `sqlx::PgPool` built once in `new()` and reused for every batch; `max_connections` is configurable.
+- **Schema-qualified targets** — optional `schema` scopes both column discovery and the `INSERT` target, so a same-named table in another schema can't pollute the AutoMap column set.
+- **Credential-safe logging** — the `Debug` impl masks `connection_url` with `***`.
 
 ## Installation
 
 ```bash
+# As a library:
 cargo add faucet-sink-postgres
 cargo add tokio --features full
+
+# Or via the umbrella crate:
+cargo add faucet-stream --features sink-postgres
+
+# In the CLI (opt-in connector feature):
+cargo install faucet-cli --features sink-postgres
 ```
 
-Or via the umbrella crate:
+## Quick start
+
+```yaml
+# pipeline.yaml — faucet run pipeline.yaml
+version: 1
+pipeline:
+  source:
+    type: rest
+    config:
+      base_url: https://api.example.com
+      endpoint: /v1/users
+  sink:
+    type: postgres
+    config:
+      connection_url: postgres://writer:pass@localhost:5432/app
+      table_name: users
+      column_mapping: auto_map
+```
 
 ```bash
-cargo add faucet-stream --features sink-postgres
+faucet run pipeline.yaml
 ```
 
-## Quick Start
+## Configuration reference
 
-```rust
-use faucet_sink_postgres::{PostgresSink, PostgresSinkConfig};
-use faucet_core::Sink;
-use serde_json::json;
-
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let config = PostgresSinkConfig::new(
-        "postgres://user:password@localhost:5432/mydb",
-        "events",
-    );
-
-    let sink = PostgresSink::new(config).await?;
-
-    let records = vec![
-        json!({"user_id": "u123", "event": "signup", "metadata": {"source": "web"}}),
-        json!({"user_id": "u456", "event": "login", "metadata": {"source": "mobile"}}),
-    ];
-
-    let rows_written = sink.write_batch(&records).await?;
-    println!("Wrote {rows_written} rows");
-
-    Ok(())
-}
-```
-
-## Configuration
+### Core
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `connection_url` | `String` | *(required)* | PostgreSQL connection URL (e.g. `postgres://user:pass@host:5432/db`) |
-| `table_name` | `String` | *(required)* | Target table name |
-| `schema` | `Option<String>` | `null` | Schema (namespace) qualifying `table_name`. When set, both AutoMap column discovery and the `INSERT` target `schema.table_name` explicitly. When unset, the table resolves against the connection's `search_path` |
-| `column_mapping` | `PostgresColumnMapping` | `Jsonb { column: "data" }` | How to map JSON records to table columns (see below) |
-| `batch_size` | `usize` | `1000` | Maximum rows per multi-row `INSERT`. See [Streaming and batching](#streaming-and-batching) below |
-| `max_connections` | `u32` | `5` | Maximum number of connections in the connection pool |
+| `connection_url` | string | — *(required)* | PostgreSQL connection URL, e.g. `postgres://user:pass@host:5432/db`. Masked in logs. |
+| `table_name` | string | — *(required)* | Target table name. |
+| `schema` | string | *(unset)* | Schema (namespace) qualifying `table_name`. When set, both AutoMap column discovery and the `INSERT` target `schema.table_name` explicitly. When unset, the table resolves against the connection's `search_path`. |
+| `column_mapping` | `PostgresColumnMapping` | `{ jsonb: { column: "data" } }` | How to map JSON records to columns — see [Column mapping](#column-mapping). |
 
-The `Debug` implementation masks the `connection_url` with `***` to prevent credential leakage in logs.
-
-### Streaming and batching
-
-The PostgreSQL sink re-chunks each incoming `StreamPage` so individual
-multi-row `INSERT` statements stay well under Postgres' per-statement
-bind-parameter limit.
-
-- **`batch_size > 0`** (default `1000`) — the sink slices the incoming
-  slice into `batch_size`-row chunks and issues one multi-row `INSERT`
-  per chunk. **Recommended value is `1000`**: Postgres' multi-row
-  `INSERT` sweet spot. Larger chunks rarely add throughput. AutoMap mode
-  binds one parameter per column per row; the sink now splits each chunk
-  further so `rows × columns` never exceeds Postgres' 65 535 bind-parameter
-  ceiling, so a wide table no longer causes the server to reject the
-  statement regardless of `batch_size`. JSONB mode binds a single `jsonb[]`
-  array regardless of row count.
-- **`batch_size = 0`** — the "no batching" sentinel. The entire upstream
-  `StreamPage` is forwarded in a single logical write. Use this when the
-  source already emits page sizes tuned for Postgres — for example a
-  REST source with `batch_size: 1000` feeding a JSONB table. AutoMap still
-  sub-splits internally to respect the 65 535-parameter ceiling.
-
-`batch_size` is purely a chunk-size knob — connection pooling, identifier
-quoting, and JSONB vs AutoMap behaviour are unchanged.
-
-### Column Mapping (`PostgresColumnMapping`)
-
-| Variant | Description |
-|---------|-------------|
-| `Jsonb { column }` | Insert each record as a single `jsonb` column. The column name defaults to `"data"` but can be overridden. Uses PostgreSQL's `unnest($1::jsonb[])` for efficient batch inserts. |
-| `AutoMap` | Map top-level JSON keys directly to table columns. Column names are discovered from the PostgreSQL catalog, scoped (via `to_regclass`) to exactly the relation the `INSERT` targets — the configured `schema` if set, otherwise the `search_path`-resolved table. Only keys that match existing columns are inserted; extra keys are silently ignored. Records with no matching keys are skipped with a warning. |
-
-### Builder Methods
-
-```rust
-use faucet_sink_postgres::{PostgresSinkConfig, PostgresColumnMapping};
-
-// JSONB mode with custom column name
-let config = PostgresSinkConfig::new("postgres://localhost/mydb", "events")
-    .column_mapping(PostgresColumnMapping::Jsonb { column: "payload".into() })
-    .with_batch_size(1000)
-    .max_connections(10);
-
-// AutoMap mode
-let config = PostgresSinkConfig::new("postgres://localhost/mydb", "events")
-    .column_mapping(PostgresColumnMapping::AutoMap)
-    .with_batch_size(250);
-```
-
-## Write modes (upsert / delete)
-
-By default the sink **appends** every record. Set `write_mode` to `upsert` or
-`delete` to merge or remove rows by a key instead.
+### Batching
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `write_mode` | `"append" \| "upsert" \| "delete"` | `"append"` | How records are applied. |
-| `key` | `[String]` | `[]` | Key columns identifying a row. **Required and non-empty** for `upsert`/`delete`. Composite keys are supported. |
-| `delete_marker` | `{ field, values: [String] }` | *(none)* | **Upsert only.** Records whose `field` equals one of `values` are deleted by key; all others are upserts. The marker field is stripped from upserted rows before writing. |
+| `batch_size` | int | `1000` | Maximum rows per multi-row `INSERT`. **`0` = no batching** — the whole page is sent in one statement. See [Streaming & batching](#streaming--batching). |
+| `max_connections` | int | `5` | Maximum connections in the `sqlx` pool. |
 
-Requirements (validated in `PostgresSink::new`, before any connection is made):
+### Write mode
 
-- **`column_mapping: auto_map` is required.** Upsert/delete match on real
-  columns, so the key columns must be table columns — not fields buried inside
-  a JSONB blob.
-- **The `key` columns must carry a `UNIQUE` or `PRIMARY KEY` constraint**, since
-  upsert is implemented with `INSERT … ON CONFLICT (key) DO UPDATE SET …`
-  (non-key columns are set from `EXCLUDED`; if every column is a key column the
-  clause degrades to `DO NOTHING`). Without the constraint Postgres rejects the
-  `ON CONFLICT` target.
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `write_mode` | `"append" \| "upsert" \| "delete"` | `"append"` | How records are applied. See [Write modes](#write-modes-upsert--delete). |
+| `key` | `[string]` | `[]` | Key columns identifying a row. **Required and non-empty** for `upsert`/`delete`. Composite keys are supported. |
+| `delete_marker` | `{ field, values: [string] }` | *(none)* | **Upsert only.** Records whose `field` equals one of `values` are deleted by key; all others are upserts. The marker field is stripped from upserted rows before writing. |
 
-Semantics:
+### Column mapping
 
-- **Last-write-wins within a batch.** When the same key appears multiple times
-  in one `write_batch` call, the records are de-duplicated to a single
-  effective action (the final one), so a single statement never hits the same
-  `ON CONFLICT` target twice. A delete after an upsert (or vice-versa) for the
-  same key resolves to whichever came last.
-- **`write_mode: delete`** routes every record to a delete by key.
-- A record missing a key column (or with a `null` key value) fails with a typed
-  `Sink` error. When a `dlq:` block is configured the good rows are still
-  written (upserts + deletes applied) and only the missing/null-key rows are
-  routed to the DLQ per-row; without a DLQ the whole batch fails. Keys should be
-  present and non-null.
+`column_mapping` is the adjacently-tagged `PostgresColumnMapping` enum:
 
-### Example YAML config
+| Variant | YAML | Description |
+|---------|------|-------------|
+| `Jsonb { column }` | `{ jsonb: { column: data } }` | Insert each record as a single `jsonb` column (default name `"data"`). Uses `unnest($1::jsonb[])` for efficient batch inserts. |
+| `AutoMap` | `auto_map` | Map top-level JSON keys directly to table columns. Column names + types are discovered from the catalog, scoped (via `to_regclass`) to exactly the relation the `INSERT` targets. Only keys matching existing columns are inserted; extra keys are silently ignored. Records with no matching keys are skipped with a warning. |
+
+## Examples
+
+### JSONB mode — store entire records in one column
+
+Ideal for schemaless ingestion: store raw JSON and query it later with Postgres' JSONB operators.
+
+```sql
+CREATE TABLE raw_events (
+    id         SERIAL PRIMARY KEY,
+    data       JSONB NOT NULL,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+```
+
+```yaml
+sink:
+  type: postgres
+  config:
+    connection_url: postgres://writer:s3cret@db.example.com:5432/analytics
+    table_name: raw_events
+    column_mapping:
+      jsonb:
+        column: data
+    batch_size: 1000
+    max_connections: 5
+```
+
+### AutoMap mode — map JSON keys to typed columns
+
+Discovers column names and types from the table schema and maps matching JSON keys. A field present only in some records is still written; rows missing a column bind SQL `NULL`.
+
+```sql
+CREATE TABLE events (
+    user_id   TEXT,
+    event     TEXT,
+    timestamp TIMESTAMPTZ,
+    amount    NUMERIC
+);
+```
+
+```yaml
+sink:
+  type: postgres
+  config:
+    connection_url: postgres://writer:s3cret@db.example.com:5432/analytics
+    table_name: events
+    column_mapping: auto_map
+    batch_size: 1000
+    max_connections: 10
+```
+
+### CDC mirror — upsert with a delete marker
+
+Pair a CDC source (run through the `cdc_unwrap` transform) with `write_mode: upsert` to keep a destination table in lock-step with the source.
 
 ```yaml
 pipeline:
@@ -172,183 +168,58 @@ pipeline:
         values: [d]
 ```
 
-The destination table must define the key as a constraint, e.g.
-`CREATE TABLE users (id INT PRIMARY KEY, name TEXT, email TEXT)`.
+The destination must define the key as a constraint, e.g. `CREATE TABLE users (id INT PRIMARY KEY, name TEXT, email TEXT)`.
 
-## Config Loading
+### High-throughput pool
 
-```rust
-use faucet_core::config::{load_json, load_env_file};
-use faucet_sink_postgres::PostgresSinkConfig;
-
-// From a JSON file
-let config: PostgresSinkConfig = load_json("config.json")?;
-
-// From an .env file with a prefix
-let config: PostgresSinkConfig = load_env_file(".env", "PG_SINK")?;
+```yaml
+sink:
+  type: postgres
+  config:
+    connection_url: postgres://writer:pass@db-primary.internal:5432/warehouse
+    table_name: metrics
+    column_mapping: auto_map
+    max_connections: 20
+    batch_size: 1000
 ```
 
-### Example JSON config (JSONB mode)
+## Streaming & batching
 
-```json
-{
-  "connection_url": "postgres://writer:s3cret@db.example.com:5432/analytics",
-  "table_name": "raw_events",
-  "column_mapping": {
-    "jsonb": {
-      "column": "data"
-    }
-  },
-  "batch_size": 1000,
-  "max_connections": 5
-}
-```
+The sink re-chunks each incoming `StreamPage` so individual multi-row `INSERT` statements stay well under Postgres' per-statement bind-parameter limit.
 
-### Example JSON config (AutoMap mode)
+- **`batch_size > 0`** (default `1000`) — slice the incoming page into `batch_size`-row chunks, one multi-row `INSERT` per chunk. **`1000` is the recommended value** — Postgres' multi-row `INSERT` sweet spot. AutoMap binds one parameter per column per row; the sink sub-splits each chunk further so `rows × columns` never exceeds Postgres' 65 535 bind-parameter ceiling, so a wide table never causes a rejected statement. JSONB mode binds a single `jsonb[]` array regardless of row count.
+- **`batch_size = 0`** — the "no batching" sentinel: the entire upstream page is forwarded in a single logical write. Use it when the source already emits Postgres-tuned page sizes. AutoMap still sub-splits internally to respect the 65 535-parameter ceiling.
 
-```json
-{
-  "connection_url": "postgres://writer:s3cret@db.example.com:5432/analytics",
-  "table_name": "events",
-  "column_mapping": "auto_map",
-  "batch_size": 1000,
-  "max_connections": 10
-}
-```
+`batch_size` is purely a chunk-size knob — connection pooling, identifier quoting, and JSONB vs AutoMap behaviour are unchanged.
 
-### Example .env file
+## Write modes (upsert / delete)
 
-```env
-PG_SINK_CONNECTION_URL=postgres://writer:s3cret@db.example.com:5432/analytics
-PG_SINK_TABLE_NAME=raw_events
-PG_SINK_COLUMN_MAPPING='{"jsonb":{"column":"data"}}'
-PG_SINK_BATCH_SIZE=1000
-PG_SINK_MAX_CONNECTIONS=5
-```
+By default the sink **appends** every record. Set `write_mode` to `upsert` or `delete` to merge or remove rows by a key instead.
 
-## Config Schema Introspection
+Requirements (validated in `PostgresSink::new`, before any connection is made):
 
-```rust
-use faucet_core::Sink;
+- **`column_mapping: auto_map` is required.** Upsert/delete match on real columns, so the key columns must be table columns — not fields buried inside a JSONB blob.
+- **The `key` columns must carry a `UNIQUE` or `PRIMARY KEY` constraint**, since upsert is implemented with `INSERT … ON CONFLICT (key) DO UPDATE SET …` (non-key columns set from `EXCLUDED`; if every column is a key column the clause degrades to `DO NOTHING`). Without the constraint Postgres rejects the `ON CONFLICT` target.
 
-let sink = PostgresSink::new(config).await?;
-let schema = sink.config_schema();
-println!("{}", serde_json::to_string_pretty(&schema)?);
-```
+Semantics:
 
-## Pipeline Usage
+- **Last-write-wins within a batch.** When the same key appears multiple times in one `write_batch` call, the records are de-duplicated to a single effective action (the final one), so a single statement never hits the same `ON CONFLICT` target twice. A delete after an upsert (or vice-versa) for the same key resolves to whichever came last.
+- **`write_mode: delete`** routes every record to a delete by key.
+- A record missing a key column (or with a `null` key value) fails with a typed `Sink` error. When a `dlq:` block is configured the good rows are still written (upserts + deletes applied) and only the missing/null-key rows are routed to the DLQ per-row; without a DLQ the whole batch fails.
 
-```rust
-use faucet_core::Pipeline;
-use faucet_source_rest::{RestStream, RestStreamConfig};
-use faucet_sink_postgres::{PostgresSink, PostgresSinkConfig, PostgresColumnMapping};
-
-let source_config = RestStreamConfig::new("https://api.example.com", "/v1/users");
-let source = RestStream::new(source_config);
-
-let sink_config = PostgresSinkConfig::new(
-    "postgres://writer:pass@localhost:5432/app",
-    "users",
-)
-.column_mapping(PostgresColumnMapping::AutoMap);
-
-let sink = PostgresSink::new(sink_config).await?;
-
-let result = Pipeline::new(source, sink).run().await?;
-println!("Transferred {} records", result.records_written);
-```
-
-## Examples
-
-### JSONB mode -- store entire records in a single column
-
-This mode is ideal for schemaless ingestion where you want to store raw JSON and query it later with PostgreSQL's JSONB operators.
-
-```sql
--- Table schema
-CREATE TABLE raw_events (
-    id SERIAL PRIMARY KEY,
-    data JSONB NOT NULL,
-    created_at TIMESTAMPTZ DEFAULT NOW()
-);
-```
-
-```rust
-let config = PostgresSinkConfig::new(
-    "postgres://localhost/analytics",
-    "raw_events",
-)
-.column_mapping(PostgresColumnMapping::Jsonb { column: "data".into() })
-.with_batch_size(1000)
-.max_connections(5);
-
-let sink = PostgresSink::new(config).await?;
-sink.write_batch(&records).await?;
-```
-
-### AutoMap mode -- map JSON keys to table columns
-
-This mode automatically discovers column names from the table schema and maps matching JSON keys. Columns use SQL-injection-safe quoted identifiers.
-
-```sql
--- Table schema
-CREATE TABLE events (
-    user_id TEXT,
-    event TEXT,
-    timestamp TIMESTAMPTZ,
-    amount NUMERIC
-);
-```
-
-```rust
-let config = PostgresSinkConfig::new(
-    "postgres://localhost/analytics",
-    "events",
-)
-.column_mapping(PostgresColumnMapping::AutoMap)
-.with_batch_size(1000)
-.max_connections(10);
-
-let sink = PostgresSink::new(config).await?;
-
-let records = vec![
-    json!({"user_id": "u1", "event": "purchase", "amount": 29.99}),
-    json!({"user_id": "u2", "event": "signup"}),  // missing "amount" will be null
-];
-sink.write_batch(&records).await?;
-```
-
-### Connection pooling for high-throughput workloads
-
-```rust
-let config = PostgresSinkConfig::new(
-    "postgres://writer:pass@db-primary.internal:5432/warehouse",
-    "metrics",
-)
-.max_connections(20)
-.with_batch_size(1000);
-
-let sink = PostgresSink::new(config).await?;
-```
-
-## How It Works
-
-- A connection pool is created in `PostgresSink::new()` using `sqlx::PgPool` with the configured `max_connections`.
-- `write_batch()` slices records into chunks of `batch_size` (or forwards the whole slice when `batch_size = 0`) and inserts each chunk using a single multi-row INSERT statement.
-- In JSONB mode, inserts use `INSERT INTO table (col) SELECT * FROM unnest($1::jsonb[])` for maximum efficiency.
-- In AutoMap mode, each column's name **and underlying type** (`udt_name`) are queried from the PostgreSQL catalog, scoped via `to_regclass` to exactly the relation the `INSERT` targets (the configured `schema`, else the `search_path`-resolved table) — so a same-named table in another schema can't pollute the column set. A multi-row `INSERT INTO ... VALUES ($1::int4, $2::timestamptz), ...` is built dynamically with a per-column cast, and each value is bound as text so the destination column's input function parses it — numbers, booleans, timestamps, uuids land in their native column types, and `json`/`jsonb` columns receive JSON text. (Values are **not** bound as `jsonb` regardless of column type — doing so previously made the typed-column example above fail at runtime.) The column set is the **union** of record keys across the batch (in declared table order), so a field present only in a later record is still written; a row missing a column binds SQL `NULL`.
-- All identifiers (table names, column names) are quoted using `quote_ident()` to prevent SQL injection.
+The `cdc_unwrap` transform pairs naturally with upsert — it normalizes a CDC envelope into a flat row plus a `__op` marker (`"u"`/`"d"`) that the `delete_marker` matches. See the [upsert cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/upsert.html).
 
 ## Exactly-once delivery
 
 `PostgresSink` implements `Sink::supports_idempotent_writes` (returns `true`) and the two companion hooks:
 
 - `write_batch_idempotent(records, scope, token)` — writes `records` and UPSERTs the `token` into a `_faucet_commit_token(scope TEXT, token TEXT)` watermark table inside the **same transaction**, so both either commit together or neither does.
-- `last_committed_token(scope)` — reads the current watermark to let the pipeline skip already-committed pages on resume.
+- `last_committed_token(scope)` — reads the current watermark so the pipeline skips already-committed pages on resume.
 
-To use exactly-once delivery, set `delivery: exactly_once` in your pipeline config and pair this sink with one of the CDC sources (`postgres-cdc`, `mysql-cdc`, `mongodb-cdc`) plus a `state:` block. A DLQ is not permitted in exactly-once mode. All four requirements are validated at config-load time (`faucet validate`) before any run starts.
+To use exactly-once delivery, set `delivery: exactly_once` and pair this sink with a CDC source (`postgres-cdc`, `mysql-cdc`, `mongodb-cdc`) plus a `state:` block. A DLQ is not permitted in exactly-once mode. All four requirements are validated at config-load time (`faucet validate`) before any run starts.
 
 ```yaml
+version: 1
 pipeline:
   source:
     type: postgres-cdc
@@ -369,12 +240,124 @@ pipeline:
 delivery: exactly_once
 ```
 
-See the [Exactly-once delivery cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/state.html#exactly-once-delivery) for full rationale and the supported source/sink set.
+`delivery: exactly_once` and `write_mode: upsert` compose — the upsert and the commit-token UPSERT commit in the same transaction. See the [exactly-once delivery cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/state.html#exactly-once-delivery).
+
+## Dead-letter queue
+
+The sink overrides `Sink::write_batch_partial`, so when a `dlq:` block is configured the router gets per-row outcomes: good rows commit and only the failing rows (e.g. missing/null key columns under `write_mode: upsert`/`delete`) are wrapped in a DLQ envelope and routed to the DLQ sink — the batch is not aborted. Without a DLQ, a row failure fails the whole batch. See the [DLQ cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/dlq.html).
+
+## Config loading & schema introspection
+
+Load from YAML/JSON, environment variables, or a `.env` file via `faucet_core::config`:
+
+```rust
+use faucet_core::config::{load_json, load_env_file};
+use faucet_sink_postgres::PostgresSinkConfig;
+
+let config: PostgresSinkConfig = load_json("config.json")?;
+let config: PostgresSinkConfig = load_env_file(".env", "PG_SINK")?;
+```
+
+```env
+# .env (prefix PG_SINK)
+PG_SINK_CONNECTION_URL=postgres://writer:s3cret@db.example.com:5432/analytics
+PG_SINK_TABLE_NAME=raw_events
+PG_SINK_COLUMN_MAPPING='{"jsonb":{"column":"data"}}'
+PG_SINK_BATCH_SIZE=1000
+PG_SINK_MAX_CONNECTIONS=5
+```
+
+Inspect the full JSON Schema with:
+
+```bash
+faucet schema sink postgres
+```
+
+## Library usage
+
+```rust
+use faucet_core::{Pipeline, Sink};
+use faucet_sink_postgres::{PostgresColumnMapping, PostgresSink, PostgresSinkConfig};
+use serde_json::json;
+
+# async fn run() -> Result<(), Box<dyn std::error::Error>> {
+let config = PostgresSinkConfig::new("postgres://writer:pass@localhost:5432/app", "events")
+    .column_mapping(PostgresColumnMapping::AutoMap)
+    .with_batch_size(1000)
+    .max_connections(10);
+
+let sink = PostgresSink::new(config).await?;
+
+let records = vec![
+    json!({"user_id": "u1", "event": "purchase", "amount": 29.99}),
+    json!({"user_id": "u2", "event": "signup"}), // missing "amount" → NULL
+];
+let rows = sink.write_batch(&records).await?;
+println!("wrote {rows} rows");
+# Ok(())
+# }
+```
+
+Drive it from a full pipeline:
+
+```rust
+use faucet_core::Pipeline;
+use faucet_source_rest::{RestStream, RestStreamConfig};
+use faucet_sink_postgres::{PostgresColumnMapping, PostgresSink, PostgresSinkConfig};
+
+# async fn run() -> Result<(), Box<dyn std::error::Error>> {
+let source = RestStream::new(RestStreamConfig::new("https://api.example.com", "/v1/users"));
+let sink = PostgresSink::new(
+    PostgresSinkConfig::new("postgres://writer:pass@localhost:5432/app", "users")
+        .column_mapping(PostgresColumnMapping::AutoMap),
+)
+.await?;
+
+let result = Pipeline::new(source, sink).run().await?;
+println!("transferred {} records", result.records_written);
+# Ok(())
+# }
+```
+
+## How it works
+
+- A `sqlx::PgPool` is created once in `PostgresSink::new()` with the configured `max_connections` and reused for every batch.
+- `write_batch()` slices records into `batch_size` chunks (or forwards the whole slice when `batch_size = 0`) and inserts each chunk with a single multi-row `INSERT`.
+- **JSONB mode** inserts via `INSERT INTO table (col) SELECT * FROM unnest($1::jsonb[])` — one bound array, no per-row parameters.
+- **AutoMap mode** queries each column's name **and underlying type** (`udt_name`) from the catalog, scoped via `to_regclass` to exactly the relation the `INSERT` targets (the configured `schema`, else the `search_path`-resolved table). A multi-row `INSERT INTO ... VALUES ($1::int4, $2::timestamptz), ...` is built dynamically with a per-column cast; each value is bound as text so the destination column's input function parses it — numbers, booleans, timestamps, uuids, and `json`/`jsonb` columns all land in their native types. The column set is the **union** of record keys across the batch (in declared table order); a row missing a column binds SQL `NULL`.
+- All identifiers (table + column names) are quoted with `quote_ident()` to prevent SQL injection.
 
 ## Lineage dataset URI
 
 `postgres://<host>:<port>/<db>?table=<schema.table>` (credentials stripped) — e.g. `postgres://host:5432/app?table=public.orders`.
 
+## Feature flags
+
+This crate has no optional features of its own; enable it in the CLI/umbrella via the `sink-postgres` feature.
+
+## Troubleshooting / FAQ
+
+| Symptom | Likely cause & fix |
+|---------|--------------------|
+| Connection refused / auth failed | Check the `connection_url` host/port/credentials and that the role can connect to the target database. The URL is masked in logs, so verify it in the config. |
+| `Sink` error: upsert/delete requires `auto_map` | `write_mode: upsert`/`delete` only works in AutoMap mode. Set `column_mapping: auto_map`. |
+| `ON CONFLICT` rejected / no unique constraint | The `key` columns need a `UNIQUE` or `PRIMARY KEY` constraint on the table. Add one, e.g. `ALTER TABLE t ADD PRIMARY KEY (id)`. |
+| `key` empty for upsert/delete | `key` must be non-empty for `upsert`/`delete`. List the key column(s), e.g. `key: [id]`. |
+| Rows silently dropped (AutoMap) | A record had no keys matching existing columns — logged as a warning. Verify the JSON keys match column names (case-sensitive). Extra keys are ignored by design. |
+| Wrong table picked up | A same-named table exists in another schema on the `search_path`. Set `schema:` explicitly to disambiguate. |
+| Statement rejected with too many parameters | Hit the 65 535 bind-parameter ceiling. AutoMap auto-splits to stay under it; if you still see this, lower `batch_size` (very wide tables). |
+| Missing/null key rows fail the whole batch | Without a `dlq:` block, a row missing a key column aborts the batch. Configure a DLQ to route just the bad rows, or ensure keys are present and non-null. |
+| Exactly-once config rejected at validate | Exactly-once requires a CDC source + idempotent sink + `state:` block + no `dlq:`. `faucet validate` names the missing requirement. |
+
+## See also
+
+- [Sinks reference](https://pawansikawat.github.io/faucet-stream/reference/connectors.html) — capability matrix across all connectors.
+- [Upsert cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/upsert.html) — write modes and CDC mirroring.
+- [Exactly-once delivery](https://pawansikawat.github.io/faucet-stream/cookbook/state.html#exactly-once-delivery) — state, watermarks, supported source/sink set.
+- [Dead-letter queue cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/dlq.html) — routing bad rows.
+- [`faucet-source-postgres`](https://crates.io/crates/faucet-source-postgres) — the matching query source.
+- [`faucet-source-postgres-cdc`](https://crates.io/crates/faucet-source-postgres-cdc) — the CDC source that pairs with upsert/exactly-once.
+
 ## License
 
-Licensed under MIT or Apache-2.0.
+Licensed under either of [Apache License, Version 2.0](https://www.apache.org/licenses/LICENSE-2.0) or [MIT license](https://opensource.org/licenses/MIT) at your option.

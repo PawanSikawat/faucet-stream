@@ -5,280 +5,269 @@
 [![MSRV](https://img.shields.io/crates/msrv/faucet-sink-http.svg)](https://github.com/PawanSikawat/faucet-stream/blob/main/rust-toolchain.toml)
 [![License](https://img.shields.io/crates/l/faucet-sink-http.svg)](https://github.com/PawanSikawat/faucet-stream#license)
 
-HTTP POST sink connector for the [faucet-stream](https://github.com/PawanSikawat/faucet-stream) ecosystem.
+HTTP POST sink connector for the [faucet-stream](https://github.com/PawanSikawat/faucet-stream) ecosystem. Sends JSON records to any HTTP(S) endpoint — a webhook, an ingest API, a serverless function, another faucet pipeline's webhook source.
 
-Sends JSON records to an HTTP endpoint. Supports two batch modes: Individual (one request per record with concurrent execution) and Array (all records in a single request as a JSON array). Includes configurable authentication, retry logic for transient failures, and concurrency control via semaphores.
+Reach for it when the destination speaks HTTP but isn't one of the first-class warehouse/database/queue sinks: a SaaS ingest endpoint, an internal microservice, a Lambda/Cloud Function URL, or a fan-out webhook. It reuses a single `reqwest::Client`, sends records concurrently, and retries transient failures so it stays fast and resilient under load.
+
+## Feature highlights
+
+- **Two batch modes** — `Individual` (one POST per record, sent concurrently up to a `concurrency` cap) and `Array` (records packed into a JSON-array body, re-chunked by `batch_size`).
+- **Concurrent sends** — `Individual` mode drives a `FuturesUnordered` with at most `concurrency` requests in flight, refilling as each completes (no up-front permit acquisition, no deadlock).
+- **Four auth methods** — `none`, `bearer`, `basic`, and `custom` headers — all on the project-wide `{ type, config }` wire shape. Tokens/passwords are masked (`***`) in `Debug` output.
+- **Shared auth providers** — point `auth` at a `{ ref: <name> }` in the CLI's top-level `auth:` catalog to share one OAuth2 token (with single-flight refresh) across many sinks.
+- **Configurable retry** — retriable failures (network errors, 5xx, 429) are retried up to `max_retries`; 4xx client errors fail fast.
+- **Per-row DLQ in Individual mode** — `write_batch_partial` attempts every record and dead-letters only the ones that actually failed, so already-delivered rows are never duplicated against a non-idempotent endpoint.
+- **Client built once** — the `reqwest::Client` is created in `new()` and reused for every request, with connection pooling and keep-alive.
 
 ## Installation
 
 ```bash
+# As a library:
 cargo add faucet-sink-http
-cargo add tokio --features full
+
+# In the CLI (opt-in connector feature):
+cargo install faucet-cli --features sink-http
 ```
 
-Or via the umbrella crate:
+Or via the umbrella crate: `cargo add faucet-stream --features sink-http`.
+
+## Quick start
+
+```yaml
+# pipeline.yaml — faucet run pipeline.yaml
+version: 1
+pipeline:
+  source:
+    type: webhook
+    config:
+      listen_addr: 0.0.0.0:8080
+      path: /webhook
+  sink:
+    type: http
+    config:
+      url: https://downstream.example.com/ingest
+      method: POST
+      auth:
+        type: bearer
+        config:
+          token: ${env:INGEST_TOKEN}
+      batch_mode:
+        type: Individual
+      max_retries: 3
+      concurrency: 16
+```
 
 ```bash
-cargo add faucet-stream --features sink-http
+faucet run pipeline.yaml
 ```
 
-## Quick Start
+## Configuration reference
 
-```rust
-use faucet_sink_http::{HttpSink, HttpSinkConfig};
-use faucet_core::Sink;
-use serde_json::json;
-
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let config = HttpSinkConfig::new("https://api.example.com/ingest")
-        .max_retries(3)
-        .concurrency(10);
-
-    let sink = HttpSink::new(config);
-
-    let records = vec![
-        json!({"user_id": "u123", "event": "signup"}),
-        json!({"user_id": "u456", "event": "login"}),
-    ];
-
-    let written = sink.write_batch(&records).await?;
-    println!("Sent {written} records");
-
-    Ok(())
-}
-```
-
-## Configuration
+### Core
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `url` | `String` | *(required)* | Target endpoint URL |
-| `method` | `reqwest::Method` | `POST` | HTTP method to use |
-| `headers` | `HeaderMap` | empty | Additional request headers (not serializable; set via builder only) |
-| `auth` | `HttpSinkAuth` | `None` | Authentication method (see below) |
-| `batch_mode` | `HttpBatchMode` | `Individual` | How to batch records in requests (see below) |
-| `max_retries` | `usize` | `0` | Number of retries on transient failures |
-| `concurrency` | `usize` | `10` | Maximum number of concurrent requests in Individual mode |
-| `batch_size` | `usize` | `1000` (`faucet_core::DEFAULT_BATCH_SIZE`) | Maximum records per outbound HTTP request. Re-chunks the upstream `StreamPage` in `Array` mode; no-op in `Individual` mode. `0` = "no batching" sentinel (one POST per `StreamPage`). |
+| `url` | string | — *(required)* | Target endpoint URL. |
+| `method` | string | `POST` | HTTP method (`POST`, `PUT`, `PATCH`, …). |
+| `headers` | header map | empty | Additional request headers. **Library-only** — `#[serde(skip)]`, set via the `headers()` builder; not settable from YAML/JSON. |
+| `auth` | `HttpSinkAuth` | `{ type: none }` | Authentication — inline `{ type, config }` or `{ ref: <name> }`. See [Authentication](#authentication). |
 
-### Authentication (`HttpSinkAuth`)
+### Batching & concurrency
 
-| Variant | Fields | Description |
-|---------|--------|-------------|
-| `None` | -- | No authentication |
-| `Bearer { token }` | `String` | Bearer token in the Authorization header |
-| `Basic { username, password }` | `String`, `String` | HTTP Basic authentication |
-| `Custom { headers }` | `HashMap<String, String>` | Header name → value map attached to every request |
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `batch_mode` | `HttpBatchMode` | `Individual` | `Individual` = one POST per record; `Array` = records sent as one JSON-array body. See [Batch modes](#batch-modes). |
+| `concurrency` | int | `10` | Max concurrent in-flight requests in `Individual` mode. No effect in `Array` mode (one POST per chunk, issued sequentially). Clamped to a floor of `1`. |
+| `batch_size` | int | `1000` | Max records per outbound HTTP request in `Array` mode (re-chunks the upstream page). **`0` = "no batching" sentinel** — forwards the whole page as one JSON array. **No effect in `Individual` mode** (each record is already its own request); kept for config-shape parity and validated via `faucet_core::validate_batch_size`. |
 
-The `Debug` implementation masks tokens and passwords with `***` to prevent credential leakage in logs.
+### Reliability
 
-### Batch Modes (`HttpBatchMode`)
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `max_retries` | int | `0` | Number of retries on retriable failures (network errors, 5xx, 429). Each retry is immediate (no backoff). 4xx client errors fail fast. After exhausting retries the last error is returned. |
 
-| Mode | Description |
-|------|-------------|
-| `Individual` | Send one HTTP request per record. Requests are executed concurrently up to the `concurrency` limit using a semaphore. |
-| `Array` | Send all records as a JSON array in a single HTTP request. |
+## Authentication
 
-### Streaming and batching
+`auth` accepts the project-wide `{ type, config }` shape — either inline, or `{ ref: <name> }` pointing at a shared provider in the CLI's top-level `auth:` catalog.
 
-The HTTP sink honours the workspace-wide `batch_size` contract. The exact effect on the wire depends on the configured `batch_mode`:
+| `type` | `config` | Description |
+|--------|----------|-------------|
+| `none` | *(none)* | No authentication. |
+| `bearer` | `{ token }` | Sent as `Authorization: Bearer <token>`. |
+| `basic` | `{ username, password }` | HTTP Basic authentication. |
+| `custom` | `{ headers: { <name>: <value>, … } }` | Arbitrary header map applied to every request (e.g. an API key header). |
 
-- **`Individual` mode** — one HTTP request per record, executed concurrently up to `concurrency` via a semaphore. `batch_size` has **no effect on wire framing** in this mode (each record is already its own request); the field is accepted only for config-shape parity with other sinks and validated via `faucet_core::validate_batch_size` at load time. Use `concurrency` to tune throughput.
-- **`Array` mode** — the sink re-chunks the upstream `StreamPage` into `batch_size`-row slices and issues one POST request per chunk, with each request body a JSON array of up to `batch_size` records. With the default `batch_size = 1000`, a 2 500-record `write_batch` produces 3 POSTs (1000 + 1000 + 500). When `batch_size = 0` (the **"no batching" sentinel**), the entire records slice is forwarded as a single JSON array — useful when the upstream source already chunks the stream to a size the destination endpoint accepts (e.g. a Postgres source with its own `batch_size`).
-
-Recommended value for HTTP POST endpoints that accept arrays: match the destination's documented batch limit (commonly 100–1000 records per request). For per-record send semantics, prefer `batch_mode: Individual` over `batch_size: 1` — the former is the more direct expression of intent and the only one that drives concurrent in-flight requests.
-
-### Retry Behavior
-
-When `max_retries > 0`, the sink retries requests that fail with retriable errors (network errors, 5xx status codes, etc.). Each retry is immediate (no backoff). After exhausting all retries, the last error is returned.
-
-### Builder Methods
-
-```rust
-use faucet_sink_http::{HttpSinkConfig, HttpSinkAuth, HttpBatchMode};
-
-let config = HttpSinkConfig::new("https://api.example.com/ingest")
-    .method(reqwest::Method::PUT)
-    .auth(HttpSinkAuth::Bearer { token: "my-token".into() })
-    .batch_mode(HttpBatchMode::Array)
-    .max_retries(3)
-    .concurrency(20)
-    .with_batch_size(500);
+```yaml
+# Bearer token (typically via env / secret indirection)
+auth:
+  type: bearer
+  config:
+    token: ${env:INGEST_TOKEN}
 ```
 
-## Config Loading
-
-```rust
-use faucet_core::config::{load_json, load_env_file};
-use faucet_sink_http::HttpSinkConfig;
-
-// From a JSON file
-let config: HttpSinkConfig = load_json("config.json")?;
-
-// From an .env file with a prefix
-let config: HttpSinkConfig = load_env_file(".env", "HTTP_SINK")?;
+```yaml
+# HTTP Basic
+auth:
+  type: basic
+  config:
+    username: ingest-user
+    password: ${secret:vault:secret/ingest#password}
 ```
 
-Note: The `headers` field on `HttpSinkConfig` is `HeaderMap` and remains `#[serde(skip)]` — set it programmatically. The `Custom` auth variant uses a `HashMap<String, String>` and round-trips through JSON/YAML.
-
-### Example JSON config (Individual mode with Bearer auth)
-
-```json
-{
-  "url": "https://api.example.com/ingest",
-  "method": "POST",
-  "auth": {
-    "type": "bearer",
-    "config": {
-      "token": "my-api-token"
-    }
-  },
-  "batch_mode": {
-    "type": "Individual"
-  },
-  "max_retries": 3,
-  "concurrency": 10
-}
+```yaml
+# Custom API-key header
+auth:
+  type: custom
+  config:
+    headers:
+      X-Api-Key: ${env:API_KEY}
 ```
 
-### Example JSON config (Array mode with Basic auth)
-
-```json
-{
-  "url": "https://api.example.com/bulk",
-  "method": "POST",
-  "auth": {
-    "type": "basic",
-    "config": {
-      "username": "ingest-user",
-      "password": "s3cret"
-    }
-  },
-  "batch_mode": {
-    "type": "Array"
-  },
-  "max_retries": 2,
-  "concurrency": 1,
-  "batch_size": 500
-}
+```yaml
+# Shared provider from the top-level `auth:` catalog (OAuth2 with single-flight refresh)
+auth: { ref: my_idp }
 ```
 
-### Example .env file
-
-```env
-HTTP_SINK_URL=https://api.example.com/ingest
-HTTP_SINK_METHOD=POST
-HTTP_SINK_AUTH='{"type":"bearer","config":{"token":"my-api-token"}}'
-HTTP_SINK_BATCH_MODE='{"type":"Individual"}'
-HTTP_SINK_MAX_RETRIES=3
-HTTP_SINK_CONCURRENCY=10
-```
-
-## Config Schema Introspection
-
-```rust
-use faucet_core::Sink;
-
-let sink = HttpSink::new(config);
-let schema = sink.config_schema();
-println!("{}", serde_json::to_string_pretty(&schema)?);
-```
-
-## Pipeline Usage
-
-```rust
-use faucet_core::Pipeline;
-use faucet_source_rest::{RestStream, RestStreamConfig};
-use faucet_sink_http::{HttpSink, HttpSinkConfig, HttpBatchMode};
-
-let source = RestStream::new(
-    RestStreamConfig::new("https://source-api.example.com", "/v1/events")
-);
-
-let sink = HttpSink::new(
-    HttpSinkConfig::new("https://dest-api.example.com/ingest")
-        .batch_mode(HttpBatchMode::Array)
-        .max_retries(3)
-);
-
-let result = Pipeline::new(source, sink).run().await?;
-println!("Forwarded {} records", result.records_written);
-```
+When a shared provider is attached it **takes precedence** over inline `auth`; a bare `{ ref: <name> }` with no provider wired up is a config error.
 
 ## Examples
 
-### Individual mode -- one request per record with concurrency
+### Individual mode — one POST per record, sent concurrently
 
-```rust
-let config = HttpSinkConfig::new("https://webhooks.example.com/event")
-    .auth(HttpSinkAuth::Bearer { token: "webhook-token".into() })
-    .batch_mode(HttpBatchMode::Individual)
-    .concurrency(20)
-    .max_retries(2);
-
-let sink = HttpSink::new(config);
-
-let records = vec![
-    json!({"event": "user.created", "user_id": "u1"}),
-    json!({"event": "user.updated", "user_id": "u2"}),
-    json!({"event": "order.placed", "order_id": "o1"}),
-];
-
-// All 3 records are sent concurrently (up to 20 at a time)
-sink.write_batch(&records).await?;
+```yaml
+sink:
+  type: http
+  config:
+    url: https://webhooks.example.com/event
+    auth:
+      type: bearer
+      config: { token: ${env:WEBHOOK_TOKEN} }
+    batch_mode:
+      type: Individual
+    concurrency: 20
+    max_retries: 2
 ```
 
-### Array mode -- bulk send as JSON array
+### Array mode — bulk POST as a JSON array
+
+```yaml
+sink:
+  type: http
+  config:
+    url: https://api.example.com/bulk-ingest
+    batch_mode:
+      type: Array
+    batch_size: 500     # one POST per 500-record chunk
+    max_retries: 3
+```
+
+### Custom method + API-key header
+
+```yaml
+sink:
+  type: http
+  config:
+    url: https://api.example.com/data
+    method: PUT
+    auth:
+      type: custom
+      config:
+        headers:
+          X-Api-Key: ${env:API_KEY}
+    batch_mode:
+      type: Array
+    batch_size: 0       # forward the whole upstream page as one array
+```
+
+## Streaming & batching
+
+The pipeline calls `Sink::write_batch` once per upstream `StreamPage`. The on-the-wire effect depends on `batch_mode`:
+
+- **`Individual`** — one HTTP request per record, executed concurrently up to `concurrency` via a refilling `FuturesUnordered`. `batch_size` has **no effect** on framing here (each record is already its own request); tune throughput with `concurrency`. For per-record send semantics, prefer `batch_mode: Individual` over `batch_size: 1` — it's the direct expression of intent and the only one that drives concurrent in-flight requests.
+- **`Array`** — the page is re-chunked into `batch_size`-row slices and one POST is issued per chunk, each body a JSON array. With the default `batch_size: 1000`, a 2 500-record page produces 3 POSTs (1000 + 1000 + 500). With **`batch_size: 0`** the whole page is forwarded as a single JSON array — useful when the upstream source already chunks the stream to a size the destination accepts (e.g. a Postgres source with its own `batch_size`).
+
+Recommended `batch_size` for array-accepting endpoints: match the destination's documented batch limit (commonly 100–1000 records per request).
+
+## Dead-letter queue
+
+The sink overrides `write_batch_partial` so a configured [DLQ](https://pawansikawat.github.io/faucet-stream/cookbook/dlq.html) gets accurate per-row outcomes:
+
+- **`Individual` mode** — every record is an independent POST, so each success/failure is attributable. The sink attempts **all** records (failures don't short-circuit siblings) and returns one outcome per record; only the genuinely-failed rows are dead-lettered. This avoids duplicating already-delivered rows against a non-idempotent endpoint under `on_batch_error: dlq_all`.
+- **`Array` mode** — a single array POST cannot attribute a failure to specific rows, so it stays all-or-nothing: the whole array surfaces as an error and the DLQ `on_batch_error` policy decides whether to abort or dead-letter the batch.
+
+This sink does **not** support exactly-once delivery or upsert/delete write modes — HTTP endpoints are opaque to faucet, so it can only append (POST). For idempotent delivery, make the destination endpoint idempotent (e.g. key on a record field) and use `Individual` mode + a DLQ.
+
+## Config loading & schema
+
+Load config from YAML/JSON, environment variables, or a `.env` file. Inspect the full JSON Schema with:
+
+```bash
+faucet schema sink http
+```
+
+Note: `headers` is `#[serde(skip)]` (library-only, set via the `headers()` builder). The `custom` auth variant's header map round-trips through JSON/YAML.
+
+## Library usage
 
 ```rust
-let config = HttpSinkConfig::new("https://api.example.com/bulk-ingest")
+use faucet_core::Pipeline;
+use faucet_sink_http::{HttpBatchMode, HttpSink, HttpSinkAuth, HttpSinkConfig};
+
+# async fn run() -> Result<(), Box<dyn std::error::Error>> {
+let cfg = HttpSinkConfig::new("https://api.example.com/ingest")
+    .auth(HttpSinkAuth::Bearer { token: "my-token".into() })
     .batch_mode(HttpBatchMode::Array)
-    .max_retries(3);
+    .with_batch_size(500)
+    .max_retries(3)
+    .concurrency(20);
 
-let sink = HttpSink::new(config);
+let sink = HttpSink::new(cfg);
 
-let records = vec![
-    json!({"metric": "cpu_usage", "value": 0.85}),
-    json!({"metric": "memory_usage", "value": 0.72}),
-];
-
-// Sends: POST with body [{"metric":"cpu_usage","value":0.85},{"metric":"memory_usage","value":0.72}]
-sink.write_batch(&records).await?;
+// let result = Pipeline::new(source, sink).run().await?;
+# let _ = sink;
+# Ok(())
+# }
 ```
 
-### Custom HTTP method and headers
+Attach a shared `AuthProvider` (so several sinks share one token with single-flight refresh) via `HttpSink::new(cfg).with_auth_provider(provider)`.
 
-```rust
-use reqwest::header::{HeaderMap, HeaderValue};
+## How it works
 
-let mut headers = HeaderMap::new();
-headers.insert("X-Custom-Header", HeaderValue::from_static("my-value"));
-
-let config = HttpSinkConfig::new("https://api.example.com/data")
-    .method(reqwest::Method::PUT)
-    .headers(headers)
-    .auth(HttpSinkAuth::Basic {
-        username: "api-user".into(),
-        password: "api-pass".into(),
-    });
-
-let sink = HttpSink::new(config);
-```
-
-## How It Works
-
-- The HTTP client is created in `HttpSink::new()` and reused across all requests.
-- In **Individual** mode, each record is sent as a separate HTTP request. Requests are executed concurrently (bounded by `concurrency`). In `write_batch` the first error aborts the batch; when a [DLQ](https://pawansikawat.github.io/faucet-stream/cookbook/dlq.html) is configured the sink instead reports **per-row** outcomes (`write_batch_partial`), attempting every record and dead-lettering only the ones that actually failed — so already-delivered rows are never duplicated against a non-idempotent endpoint.
-- In **Array** mode, all records are collected into a JSON array and sent as a single request body. A failure can't be attributed to specific rows, so the whole array surfaces as an error (the DLQ `on_batch_error` policy decides whether to abort or dead-letter the batch).
-- Retry logic: on transient failures (network errors, retriable HTTP status codes), the request is retried up to `max_retries` times. Non-retriable errors (4xx client errors) are returned immediately.
-- Authentication and custom headers are applied to every request.
-- HTTP responses are validated using `check_http_response()` from `faucet-core`, which checks status codes and returns structured errors.
+- `new()` builds the `reqwest::Client` **once** and reuses it for every request (connection pooling + keep-alive).
+- Auth is resolved **once per batch** — the shared provider (if attached) wins, otherwise inline `auth` is used.
+- `Individual` mode drives a `FuturesUnordered`, seeding it with up to `concurrency` futures and refilling as each completes — so exactly `concurrency` requests are in flight without acquiring permits up-front.
+- `Array` mode collects each `batch_size` chunk into a `Value::Array` and POSTs it as one request body.
+- Every response runs through `faucet_core::util::check_http_response`, which maps non-2xx statuses to typed `FaucetError`s; retriable ones (network, 5xx, 429) are retried up to `max_retries`.
 
 ## Lineage dataset URI
 
-`https://<host><path>` (credentials stripped) — e.g. `https://api.example.com/ingest`.
+`https://<host><path>` with credentials stripped — e.g. `https://api.example.com/ingest` (a `user:pass@` prefix in the URL is redacted).
+
+## Feature flags
+
+This crate has no optional features of its own; enable it in the CLI/umbrella via the `sink-http` feature.
+
+## Troubleshooting / FAQ
+
+| Symptom | Likely cause & fix |
+|---------|--------------------|
+| `Auth` error: "references provider … but no provider was supplied" | `auth: { ref: <name> }` points at a provider not in the top-level `auth:` catalog (or no provider was injected via `with_auth_provider`). Add the named provider, or use inline `auth`. |
+| `401` / `403` from the endpoint | Wrong or expired credentials. Verify the `bearer` token / `basic` credentials, or that the shared provider's scopes are correct. |
+| `Auth` error: "invalid custom header name/value" | A `custom` header name or value isn't a valid HTTP header. Remove non-ASCII / control characters. |
+| Requests not parallel / slow in `Individual` mode | `concurrency` defaults to `10`. Raise it for high-fan-out endpoints; it's clamped to a floor of `1`. |
+| `batch_size` seems ignored | You're in `Individual` mode, where each record is its own request — `batch_size` only affects `Array` mode. Switch to `batch_mode: Array` to pack records, or use `concurrency` to tune `Individual`. |
+| Endpoint rejects large array bodies (`413` / timeout) | The `Array` body exceeds the destination's limit. Lower `batch_size` to its documented per-request cap. |
+| Duplicate rows after a partial failure | The destination isn't idempotent. Use `batch_mode: Individual` + a DLQ so only failed rows are retried/dead-lettered, and make the endpoint idempotent (key on a record field). |
+| `4xx` errors not retried | Intentional — only retriable failures (network, 5xx, 429) are retried. Fix the request shape (`url`, `method`, body) for 4xx. |
+
+## See also
+
+- [Sinks reference](https://pawansikawat.github.io/faucet-stream/reference/connectors.html) — capability matrix across all connectors.
+- [Authentication cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/auth.html) — shared `auth:` providers and the `{ type, config }` shape.
+- [Dead-letter queue cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/dlq.html) — `on_batch_error` policies and per-row dead-lettering.
+- [`faucet-source-webhook`](https://crates.io/crates/faucet-source-webhook) — the natural upstream for HTTP fan-out pipelines.
+- [`faucet-source-rest`](https://crates.io/crates/faucet-source-rest) — pull from a REST API and forward it over HTTP.
 
 ## License
 
-Licensed under MIT or Apache-2.0.
+Licensed under either of [Apache License, Version 2.0](https://www.apache.org/licenses/LICENSE-2.0) or [MIT license](https://opensource.org/licenses/MIT) at your option.
