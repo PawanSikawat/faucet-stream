@@ -9,17 +9,17 @@ version: 1
 name: resilient_rest_to_jsonl
 pipeline:
   source:
-    kind: rest
+    type: rest
     config:
       endpoint: "https://api.example.com/v1/items"
   sink:
-    kind: jsonl
+    type: jsonl
     config:
       path: "./out/items.jsonl"
   # Poison-pill `action: dlq` (below) requires a DLQ to be configured.
   dlq:
     sink:
-      kind: jsonl
+      type: jsonl
       config:
         path: "./out/items.dlq.jsonl"
 resilience:
