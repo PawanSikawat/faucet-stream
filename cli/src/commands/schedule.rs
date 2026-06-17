@@ -29,6 +29,8 @@ struct RunFinished {
     outcome: RunOutcome,
     duration: Duration,
     detail: Option<String>,
+    /// Circuit-breaker re-entry cooldown when the run tripped the breaker.
+    cooldown: Option<Duration>,
 }
 
 /// Cross-platform shutdown-signal source, registered once.
@@ -218,8 +220,43 @@ fn spawn_run(
     )
 }
 
-/// Classify a joined run task into a scheduler outcome + a log detail.
-fn classify(joined: Result<CliResult<RunSummary>, tokio::task::JoinError>) -> RunFinished {
+/// Display prefix of [`faucet_core::FaucetError::CircuitOpen`]. The per-invocation
+/// typed error is flattened to a string by the executor, so the scheduler matches
+/// on this stable prefix to detect a circuit-open run; the authoritative cooldown
+/// duration is recovered from the run's configured resilience policy (not parsed
+/// out of the message).
+const CIRCUIT_OPEN_PREFIX: &str = "Circuit open after";
+
+/// Classify a joined run task into a scheduler outcome + a log detail. When the
+/// run tripped the circuit breaker, `cooldown` is set to the policy's re-entry
+/// cooldown so the loop can delay the next tick.
+fn classify(
+    joined: Result<CliResult<RunSummary>, tokio::task::JoinError>,
+    breaker_cooldown: Option<Duration>,
+) -> RunFinished {
+    // Did any failure indicate a tripped circuit breaker?
+    let circuit_open = match &joined {
+        Ok(Ok(summary)) => summary
+            .invocations
+            .iter()
+            .filter_map(|i| i.error.as_deref())
+            .any(|e| e.starts_with(CIRCUIT_OPEN_PREFIX)),
+        Ok(Err(e)) => e.to_string().contains(CIRCUIT_OPEN_PREFIX),
+        Err(_) => false,
+    };
+    // Recover the typed cooldown through the pure decision helper, using the
+    // configured cooldown as the authoritative duration.
+    let cooldown = if circuit_open {
+        let reconstructed: Result<(), faucet_core::FaucetError> =
+            Err(faucet_core::FaucetError::CircuitOpen {
+                failures: 0,
+                cooldown: breaker_cooldown.unwrap_or(Duration::ZERO),
+            });
+        crate::schedule::state::cooldown_delay(&reconstructed).filter(|d| !d.is_zero())
+    } else {
+        None
+    };
+
     let (outcome, detail) = match joined {
         Ok(Ok(summary)) if summary.had_failures() => (
             RunOutcome::Failure,
@@ -236,6 +273,7 @@ fn classify(joined: Result<CliResult<RunSummary>, tokio::task::JoinError>) -> Ru
         outcome,
         duration: Duration::ZERO,
         detail,
+        cooldown,
     }
 }
 
@@ -298,6 +336,12 @@ async fn run_loop(
     #[cfg(feature = "lineage")] lineage_cfg: Option<faucet_lineage::LineageConfig>,
 ) -> CliResult<()> {
     let mut state = SchedulerState::new(&compiled);
+    // The circuit-breaker re-entry cooldown, if a breaker is configured. Used to
+    // delay the next tick after a run trips the breaker.
+    let breaker_cooldown = resilience
+        .as_ref()
+        .and_then(|r| r.circuit_breaker)
+        .map(|cb| cb.cooldown);
     let mut shutdown = Shutdown::new()?;
     let mut running: Option<RunningRun> = None;
     let mut pending_scheduled_for: Option<DateTime<Utc>> = None;
@@ -424,13 +468,35 @@ async fn run_loop(
                 return Ok(());
             }
 
-            finished = wait_for_run(&mut running) => {
+            finished = wait_for_run(&mut running, breaker_cooldown) => {
                 let mut finished = finished;
                 if let Some(rr) = running.take() {
                     finished.duration = rr.started.elapsed();
                 }
                 m::in_flight(&pipeline_name, 0);
                 let done_at = Utc::now();
+
+                // Circuit-breaker re-entry cooldown: if the run tripped the
+                // breaker, push the next tick out so AT LEAST `cooldown` elapses
+                // before re-entry. This composes with the cron schedule — it
+                // only delays `next_due` when the cooldown would land later than
+                // the next scheduled occurrence. The actual wait happens in the
+                // existing cancellation-aware `select!` below, so SIGTERM still
+                // interrupts it.
+                if let Some(d) = finished.cooldown
+                    && let Ok(delta) = chrono::Duration::from_std(d)
+                {
+                    let resume = done_at + delta;
+                    if resume > next_due {
+                        next_due = resume;
+                    }
+                    tracing::warn!(
+                        pipeline = %pipeline_name,
+                        cooldown_secs = d.as_secs(),
+                        next_due = %next_due,
+                        "circuit breaker opened; delaying re-entry by cooldown"
+                    );
+                }
                 m::last_run_completed(&pipeline_name, done_at);
                 m::last_run_duration(&pipeline_name, finished.duration);
                 m::run_outcome(&pipeline_name, match finished.outcome {
@@ -491,9 +557,12 @@ async fn run_loop(
 
 /// Await the in-flight run (or never resolve when idle). Returns the classified
 /// outcome; the caller fills in `duration` from the `RunningRun`.
-async fn wait_for_run(running: &mut Option<RunningRun>) -> RunFinished {
+async fn wait_for_run(
+    running: &mut Option<RunningRun>,
+    breaker_cooldown: Option<Duration>,
+) -> RunFinished {
     match running {
-        Some(rr) => classify((&mut rr.handle).await),
+        Some(rr) => classify((&mut rr.handle).await, breaker_cooldown),
         None => std::future::pending().await,
     }
 }
@@ -548,24 +617,26 @@ mod tests {
     #[test]
     fn classify_success_when_no_failures() {
         let joined = Ok(Ok(summary(0, 2)));
-        let f = classify(joined);
+        let f = classify(joined, None);
         assert_eq!(f.outcome, RunOutcome::Success);
         assert!(f.detail.is_none());
+        assert!(f.cooldown.is_none());
     }
 
     #[test]
     fn classify_failure_when_some_invocations_failed() {
         let joined = Ok(Ok(summary(2, 5)));
-        let f = classify(joined);
+        let f = classify(joined, None);
         assert_eq!(f.outcome, RunOutcome::Failure);
         assert_eq!(f.detail.as_deref(), Some("2 invocation(s) failed"));
+        assert!(f.cooldown.is_none());
     }
 
     #[test]
     fn classify_failure_when_run_errored() {
         let joined: Result<CliResult<RunSummary>, tokio::task::JoinError> =
             Ok(Err(CliError::Internal("disk full".into())));
-        let f = classify(joined);
+        let f = classify(joined, None);
         assert_eq!(f.outcome, RunOutcome::Failure);
         assert!(f.detail.as_deref().unwrap().contains("disk full"));
     }
@@ -575,13 +646,65 @@ mod tests {
         // Spawn a task that panics, then join it to obtain a real JoinError.
         let handle = tokio::spawn(async { panic!("kaboom") });
         let joined: Result<CliResult<RunSummary>, tokio::task::JoinError> = handle.await.map(Ok);
-        let f = classify(joined);
+        let f = classify(joined, None);
         assert_eq!(f.outcome, RunOutcome::Failure);
         assert!(
             f.detail.as_deref().unwrap().contains("panicked"),
             "{:?}",
             f.detail
         );
+    }
+
+    #[test]
+    fn classify_recovers_cooldown_from_circuit_open_invocation() {
+        // An invocation whose error is the flattened CircuitOpen Display string
+        // is detected; the cooldown is recovered from the configured policy.
+        let circuit_open_msg = faucet_core::FaucetError::CircuitOpen {
+            failures: 3,
+            cooldown: Duration::from_secs(60),
+        }
+        .to_string();
+        let invocations = vec![crate::executor::InvocationOutcome {
+            row_id: "r0".into(),
+            parent_record_key: None,
+            records_written: 0,
+            error: Some(circuit_open_msg),
+        }];
+        let joined = Ok(Ok(RunSummary { invocations }));
+        let f = classify(joined, Some(Duration::from_secs(45)));
+        assert_eq!(f.outcome, RunOutcome::Failure);
+        assert_eq!(f.cooldown, Some(Duration::from_secs(45)));
+    }
+
+    #[test]
+    fn classify_circuit_open_without_configured_cooldown_yields_none() {
+        // Defensive: a circuit-open run with no configured cooldown (zero)
+        // produces no delay rather than a spurious zero-length sleep.
+        let circuit_open_msg = faucet_core::FaucetError::CircuitOpen {
+            failures: 1,
+            cooldown: Duration::from_secs(10),
+        }
+        .to_string();
+        let invocations = vec![crate::executor::InvocationOutcome {
+            row_id: "r0".into(),
+            parent_record_key: None,
+            records_written: 0,
+            error: Some(circuit_open_msg),
+        }];
+        let joined = Ok(Ok(RunSummary { invocations }));
+        let f = classify(joined, None);
+        assert_eq!(f.outcome, RunOutcome::Failure);
+        assert!(f.cooldown.is_none());
+    }
+
+    #[test]
+    fn classify_no_cooldown_for_ordinary_failure() {
+        // A plain failing invocation must not trip the cooldown path even when a
+        // breaker cooldown is configured.
+        let joined = Ok(Ok(summary(1, 2)));
+        let f = classify(joined, Some(Duration::from_secs(30)));
+        assert_eq!(f.outcome, RunOutcome::Failure);
+        assert!(f.cooldown.is_none());
     }
 
     #[test]
@@ -601,7 +724,7 @@ mod tests {
             handle,
             started: Instant::now(),
         });
-        let finished = wait_for_run(&mut running).await;
+        let finished = wait_for_run(&mut running, None).await;
         assert_eq!(finished.outcome, RunOutcome::Success);
     }
 
