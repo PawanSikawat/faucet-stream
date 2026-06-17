@@ -1290,6 +1290,7 @@ mod tests {
             execution: None,
             observability: None,
             delivery: faucet_core::DeliveryMode::default(),
+            resilience: None,
             replication: None,
             #[cfg(feature = "schedule")]
             schedule: None,

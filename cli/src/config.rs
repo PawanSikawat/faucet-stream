@@ -84,6 +84,12 @@ pub struct PipelineConfig {
     #[serde(default)]
     pub delivery: faucet_core::DeliveryMode,
 
+    /// Optional resilience policy (retry / backoff / circuit-breaker /
+    /// poison-pill). Top-level in v1 (not per-matrix-row). Absent = no behaviour
+    /// change. Consumed by `faucet run`/`schedule`/`replicate`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resilience: Option<ResilienceSpec>,
+
     /// Optional snapshot→CDC replication block. Consumed only by
     /// `faucet replicate`; ignored by `faucet run` (like `schedule:`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -358,6 +364,187 @@ pub struct DlqSpec {
     pub max_failures_total: Option<usize>,
     #[serde(default = "default_true")]
     pub include_original_payload: bool,
+}
+
+/// User-facing `resilience:` config. Maps to `faucet_core::ResiliencePolicy`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ResilienceSpec {
+    /// Retry/backoff applied to sink-write, flush, and state-store I/O (and
+    /// injected into rest/xml/graphql sources).
+    #[serde(default)]
+    pub retry: RetrySpec,
+    /// Which error classes are retried. Omitted = all four transient classes.
+    #[serde(default)]
+    pub retry_on: Option<Vec<faucet_core::RetryClass>>,
+    /// Optional circuit breaker.
+    #[serde(default)]
+    pub circuit_breaker: Option<CircuitBreakerSpec>,
+    /// Optional poison-pill (per-row) handling (DLQ path only).
+    #[serde(default)]
+    pub poison: Option<PoisonSpec>,
+}
+
+/// Retry/backoff tuning.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RetrySpec {
+    /// Total attempts including the first (1 = no retry).
+    #[serde(default = "default_max_attempts")]
+    pub max_attempts: u32,
+    /// Backoff growth shape.
+    #[serde(default)]
+    pub backoff: BackoffSpec,
+    /// Base delay in milliseconds.
+    #[serde(default = "default_base_ms")]
+    pub base_ms: u64,
+    /// Per-sleep cap in milliseconds (pre-jitter).
+    #[serde(default = "default_max_ms")]
+    pub max_ms: u64,
+    /// Whether to apply `[0.5, 1.5)` jitter.
+    #[serde(default = "default_true")]
+    pub jitter: bool,
+}
+
+impl Default for RetrySpec {
+    fn default() -> Self {
+        Self {
+            max_attempts: default_max_attempts(),
+            backoff: BackoffSpec::default(),
+            base_ms: default_base_ms(),
+            max_ms: default_max_ms(),
+            jitter: true,
+        }
+    }
+}
+
+/// Backoff growth shape (config spelling of `faucet_core::BackoffKind`).
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum BackoffSpec {
+    /// No delay between attempts.
+    None,
+    /// Constant `base_ms` delay.
+    Fixed,
+    /// `base_ms * 2^attempt`, capped at `max_ms`.
+    #[default]
+    Exponential,
+}
+
+/// Circuit-breaker tuning.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CircuitBreakerSpec {
+    /// Consecutive exhausted-retry page failures before the circuit opens.
+    pub consecutive_failures: u32,
+    /// Re-entry cooldown in seconds (honored by the orchestration layer).
+    pub cooldown_secs: u64,
+}
+
+/// Poison-pill (per-row) policy.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PoisonSpec {
+    /// Per-row write attempts before applying `action`.
+    pub max_row_attempts: u32,
+    /// Terminal action for a persistently failing row.
+    #[serde(default)]
+    pub action: PoisonActionSpec,
+}
+
+/// Terminal action for a poison row (config spelling of
+/// `faucet_core::PoisonAction`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum PoisonActionSpec {
+    /// Route to the DLQ (requires a `dlq:` block).
+    #[default]
+    Dlq,
+    /// Discard the row.
+    Drop,
+    /// Propagate the row error and abort the run.
+    Fail,
+}
+
+fn default_max_attempts() -> u32 {
+    5
+}
+fn default_base_ms() -> u64 {
+    200
+}
+fn default_max_ms() -> u64 {
+    30_000
+}
+
+impl ResilienceSpec {
+    /// Validate and build the core policy. Fail-fast on bad config.
+    pub fn to_policy(&self) -> Result<faucet_core::ResiliencePolicy, crate::error::CliError> {
+        use crate::error::CliError;
+        if self.retry.max_attempts < 1 {
+            return Err(CliError::Config(
+                "resilience.retry.max_attempts must be >= 1".into(),
+            ));
+        }
+        if self.retry.base_ms > self.retry.max_ms {
+            return Err(CliError::Config(
+                "resilience.retry.base_ms must be <= max_ms".into(),
+            ));
+        }
+        let retry_on = match &self.retry_on {
+            Some(v) if v.is_empty() => {
+                return Err(CliError::Config(
+                    "resilience.retry_on must not be empty".into(),
+                ));
+            }
+            Some(v) => faucet_core::RetryClassSet::from_iter(v.iter().copied()),
+            None => faucet_core::RetryClassSet::default(),
+        };
+        let backoff = match self.retry.backoff {
+            BackoffSpec::None => faucet_core::BackoffKind::None,
+            BackoffSpec::Fixed => faucet_core::BackoffKind::Fixed,
+            BackoffSpec::Exponential => faucet_core::BackoffKind::Exponential,
+        };
+        let circuit_breaker = match self.circuit_breaker {
+            Some(cb) if cb.consecutive_failures < 1 => {
+                return Err(CliError::Config(
+                    "resilience.circuit_breaker.consecutive_failures must be >= 1".into(),
+                ));
+            }
+            Some(cb) => Some(faucet_core::CircuitBreakerConfig {
+                consecutive_failures: cb.consecutive_failures,
+                cooldown: std::time::Duration::from_secs(cb.cooldown_secs),
+            }),
+            None => None,
+        };
+        let poison = match self.poison {
+            Some(p) if p.max_row_attempts < 1 => {
+                return Err(CliError::Config(
+                    "resilience.poison.max_row_attempts must be >= 1".into(),
+                ));
+            }
+            Some(p) => Some(faucet_core::PoisonPolicy {
+                max_row_attempts: p.max_row_attempts,
+                action: match p.action {
+                    PoisonActionSpec::Dlq => faucet_core::PoisonAction::Dlq,
+                    PoisonActionSpec::Drop => faucet_core::PoisonAction::Drop,
+                    PoisonActionSpec::Fail => faucet_core::PoisonAction::Fail,
+                },
+            }),
+            None => None,
+        };
+        Ok(faucet_core::ResiliencePolicy {
+            retry: faucet_core::RetryPolicy {
+                max_attempts: self.retry.max_attempts,
+                backoff,
+                base: std::time::Duration::from_millis(self.retry.base_ms),
+                max: std::time::Duration::from_millis(self.retry.max_ms),
+                jitter: self.retry.jitter,
+                retry_on,
+            },
+            circuit_breaker,
+            poison,
+        })
+    }
 }
 
 fn default_true() -> bool {
@@ -1214,5 +1401,40 @@ matrix:
             cfg3.matrix[1].delivery,
             Some(faucet_core::DeliveryMode::ExactlyOnce)
         );
+    }
+
+    #[test]
+    fn resilience_spec_parses_and_builds_policy() {
+        let yaml = r#"
+version: 1
+pipeline:
+  source: { type: rest, config: { base_url: "https://x" } }
+  sink: { type: stdout, config: {} }
+resilience:
+  retry: { max_attempts: 4, backoff: exponential, base_ms: 100, max_ms: 5000, jitter: true }
+  retry_on: [http5xx, timeout]
+  circuit_breaker: { consecutive_failures: 3, cooldown_secs: 30 }
+  poison: { max_row_attempts: 2, action: dlq }
+"#;
+        let cfg = parse_with_extension(yaml, "yaml").unwrap();
+        let spec = cfg.resilience.unwrap();
+        let policy = spec.to_policy().unwrap();
+        assert_eq!(policy.retry.max_attempts, 4);
+        assert_eq!(policy.circuit_breaker.unwrap().consecutive_failures, 3);
+        assert_eq!(policy.poison.unwrap().max_row_attempts, 2);
+    }
+
+    #[test]
+    fn resilience_rejects_zero_max_attempts() {
+        let yaml = r#"
+version: 1
+pipeline:
+  source: { type: rest, config: { base_url: "https://x" } }
+  sink: { type: stdout, config: {} }
+resilience: { retry: { max_attempts: 0 } }
+"#;
+        let cfg = parse_with_extension(yaml, "yaml").unwrap();
+        let err = cfg.resilience.unwrap().to_policy().unwrap_err();
+        assert!(err.to_string().contains("max_attempts"));
     }
 }
