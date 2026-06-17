@@ -1,7 +1,7 @@
 //! Configuration value types for the resilience policy.
 
 use crate::error::FaucetError;
-use crate::resilience::classify::{RetryClass, RetryClassSet, classify};
+use crate::resilience::classify::{RetryClassSet, classify};
 use std::time::Duration;
 
 /// How the inter-attempt delay grows.
@@ -111,6 +111,7 @@ pub struct ResiliencePolicy {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::resilience::classify::RetryClass;
 
     #[test]
     fn default_policy_retries_all_classes() {
