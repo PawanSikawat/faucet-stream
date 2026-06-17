@@ -941,12 +941,17 @@ where
                         records_written += page_success;
 
                         if let Some(bookmark) = page.bookmark {
-                            sink.flush().await?;
+                            // Retry-wrap the main-sink flush, the DLQ-sink flush,
+                            // and the state write so a transient failure on any of
+                            // them is retried before aborting — same as the default
+                            // and exactly-once paths. Inert when no policy is set
+                            // (the macro's `None` arm is a bare `.await`).
+                            with_retry!(sink.flush())?;
                             let _dlq_flush_timer = crate::observability::DurationGuard::new(
                                 "faucet_sink_dlq_flush_duration_seconds",
                                 metric_labels.clone(),
                             );
-                            dlq_cfg.sink.flush().await.map_err(|e| {
+                            with_retry!(dlq_cfg.sink.flush()).map_err(|e| {
                                 let mut lbl = metric_labels.clone();
                                 lbl.push(Label::new(
                                     "kind",
@@ -963,7 +968,7 @@ where
                             if let (Some(store), Some(key)) =
                                 (state_store.as_ref(), state_key.as_ref())
                             {
-                                store.put(key, &bookmark).await?;
+                                with_retry!(store.put(key, &bookmark))?;
                             }
                             last_bookmark = Some(bookmark);
                         }
@@ -3559,5 +3564,146 @@ mod tests {
         let dlq = captured.lock().unwrap();
         assert_eq!(dlq.len(), 1, "one row to DLQ");
         assert_eq!(dlq[0]["payload"]["bad"], json!(true));
+    }
+
+    #[tokio::test]
+    async fn resilience_retries_transient_flush_and_state_on_dlq_path() {
+        // The DLQ path's `sink.flush()` and `store.put()` must be retry-wrapped
+        // like the default/exactly-once paths: a transient failure on either is
+        // retried before the run aborts. Drive a bookmark-carrying page through
+        // the DLQ path (one row routed to the DLQ via a partial-write failure),
+        // with both the main-sink flush and the state put failing twice then
+        // succeeding.
+        use crate::dlq::DlqConfig;
+        use crate::resilience::{BackoffKind, ResiliencePolicy, RetryPolicy};
+        use crate::state::StateStore;
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicU32, Ordering};
+        use std::time::Duration;
+
+        fn transient_503() -> FaucetError {
+            FaucetError::HttpStatus {
+                status: 503,
+                url: "u".into(),
+                body: "".into(),
+            }
+        }
+
+        // Main sink: one row fails per-row (→ DLQ), the rest succeed; flush()
+        // fails transiently the first two calls, then succeeds.
+        struct FlakyFlushSink {
+            flush_attempts: Arc<AtomicU32>,
+        }
+        #[async_trait]
+        impl Sink for FlakyFlushSink {
+            async fn write_batch(&self, r: &[Value]) -> Result<usize, FaucetError> {
+                Ok(r.len())
+            }
+            async fn write_batch_partial(
+                &self,
+                records: &[Value],
+            ) -> Result<Vec<crate::RowOutcome>, FaucetError> {
+                Ok(records
+                    .iter()
+                    .map(|rec| {
+                        if rec.get("bad").and_then(|v| v.as_bool()).unwrap_or(false) {
+                            Err(transient_503())
+                        } else {
+                            Ok(())
+                        }
+                    })
+                    .collect())
+            }
+            async fn flush(&self) -> Result<(), FaucetError> {
+                let n = self.flush_attempts.fetch_add(1, Ordering::SeqCst);
+                if n < 2 { Err(transient_503()) } else { Ok(()) }
+            }
+        }
+        struct NullSink;
+        #[async_trait]
+        impl Sink for NullSink {
+            async fn write_batch(&self, r: &[Value]) -> Result<usize, FaucetError> {
+                Ok(r.len())
+            }
+            async fn flush(&self) -> Result<(), FaucetError> {
+                Ok(())
+            }
+        }
+
+        // State store whose put() fails transiently the first two calls.
+        struct FlakyStore {
+            put_attempts: Arc<AtomicU32>,
+            value: Arc<std::sync::Mutex<Option<Value>>>,
+        }
+        #[async_trait]
+        impl StateStore for FlakyStore {
+            async fn get(&self, _key: &str) -> Result<Option<Value>, FaucetError> {
+                Ok(self.value.lock().unwrap().clone())
+            }
+            async fn put(&self, _key: &str, value: &Value) -> Result<(), FaucetError> {
+                let n = self.put_attempts.fetch_add(1, Ordering::SeqCst);
+                if n < 2 {
+                    return Err(transient_503());
+                }
+                *self.value.lock().unwrap() = Some(value.clone());
+                Ok(())
+            }
+            async fn delete(&self, _key: &str) -> Result<(), FaucetError> {
+                Ok(())
+            }
+        }
+
+        let flush_attempts = Arc::new(AtomicU32::new(0));
+        let put_attempts = Arc::new(AtomicU32::new(0));
+        let stored = Arc::new(std::sync::Mutex::new(None));
+        let sink = FlakyFlushSink {
+            flush_attempts: flush_attempts.clone(),
+        };
+        let store: Arc<dyn StateStore> = Arc::new(FlakyStore {
+            put_attempts: put_attempts.clone(),
+            value: stored.clone(),
+        });
+        let pages = futures::stream::iter(vec![Ok(StreamPage {
+            records: vec![json!({"ok": 1}), json!({"bad": true})],
+            bookmark: Some(json!({"cursor": 42})),
+        })]);
+        let policy = ResiliencePolicy {
+            retry: RetryPolicy {
+                max_attempts: 5,
+                backoff: BackoffKind::None,
+                base: Duration::ZERO,
+                max: Duration::ZERO,
+                jitter: false,
+                ..RetryPolicy::default()
+            },
+            ..ResiliencePolicy::default()
+        };
+        let res = run_stream(
+            pages,
+            &sink,
+            RunStreamOptions::new()
+                .with_dlq(DlqConfig::new(Arc::new(NullSink)))
+                .with_state(store, "k")
+                .with_resilience(policy),
+        )
+        .await
+        .unwrap();
+
+        // Page-gate flush: 2 transient failures retried, success on the 3rd
+        // call — proving the DLQ-path `sink.flush()` is retry-wrapped. A 4th
+        // call is the (already-succeeding) end-of-stream final flush.
+        assert_eq!(
+            flush_attempts.load(Ordering::SeqCst),
+            4,
+            "page-gate flush retried past two transient failures (3) + 1 final flush"
+        );
+        // State put succeeded on the 3rd call (2 transient failures retried).
+        assert_eq!(
+            put_attempts.load(Ordering::SeqCst),
+            3,
+            "state put retried past two transient failures"
+        );
+        assert_eq!(*stored.lock().unwrap(), Some(json!({"cursor": 42})));
+        assert_eq!(res.records_written, 1, "the ok row");
     }
 }
