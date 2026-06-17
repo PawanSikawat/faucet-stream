@@ -1,197 +1,308 @@
 # faucet-sink-parquet
 
-Apache Parquet file sink connector for [faucet-stream](https://github.com/PawanSikawat/faucet-stream).
+[![Crates.io](https://img.shields.io/crates/v/faucet-sink-parquet.svg)](https://crates.io/crates/faucet-sink-parquet)
+[![Docs.rs](https://docs.rs/faucet-sink-parquet/badge.svg)](https://docs.rs/faucet-sink-parquet)
+[![MSRV](https://img.shields.io/crates/msrv/faucet-sink-parquet.svg)](https://github.com/PawanSikawat/faucet-stream/blob/main/rust-toolchain.toml)
+[![License](https://img.shields.io/crates/l/faucet-sink-parquet.svg)](https://github.com/PawanSikawat/faucet-stream#license)
 
-Writes JSON records as columnar Parquet files to a local filesystem path or
-an S3 bucket. Schema is inferred from the first batch (or supplied
-explicitly), every field is nullable so missing keys round-trip as `NULL`,
-and large outputs can be rolled over to multiple files by row count or byte
-budget.
+Apache **Parquet** file sink for the [faucet-stream](https://github.com/PawanSikawat/faucet-stream) ecosystem. Writes JSON records as columnar Parquet files to a **local filesystem path** or an **Amazon S3** bucket (or any S3-compatible service).
+
+Built on the `parquet` + `arrow` crates wired through `object_store`, so local and S3 share one streaming code path — records are decoded into Arrow `RecordBatch`es and paged through an `AsyncArrowWriter` with bounded buffering, never staging a whole file in memory. Reach for it to land pipeline output as a columnar data lake, partition large exports across many files, or feed downstream analytics engines (DuckDB, Spark, BigQuery external tables).
+
+## Feature highlights
+
+- **Local or S3** — write to a local file/directory or to S3 (and S3-compatible services like MinIO / LocalStack via `endpoint_url`).
+- **Schema inference on first batch** — the Arrow schema is learned from the opening batch; every field is forced nullable, so missing keys round-trip as `NULL`.
+- **Columnar compression** — `snappy` (default), `gzip`, `zstd`, `lz4`, or `uncompressed` — applied internally by the Parquet writer.
+- **Row & byte rollover** — split large outputs across multiple `<uuid>.parquet` files by row count (`max_rows_per_file`) or byte budget (`max_bytes_per_file`).
+- **Streaming writer** — one reused `object_store` client, bounded buffering, configurable `row_group_size` for read-back performance.
+- **Drops unknown fields** — fields not in the inferred schema are silently skipped with a one-shot `tracing::warn!` per field name.
+- **Flush-safe** — files become valid only when the footer is written; `flush()` (called automatically by the pipeline on success, error-unwind, and cooperative cancellation) commits the footer.
+
+## Installation
+
+```bash
+# As a library:
+cargo add faucet-sink-parquet
+
+# In the CLI (opt-in connector feature):
+cargo install faucet-cli --features sink-parquet
+```
+
+The `sink-parquet` feature is opt-in (not part of the CLI/umbrella defaults).
 
 ## Quick start
 
-```rust
-use faucet_core::Sink;
-use faucet_sink_parquet::{
-    ParquetCompression, ParquetSink, ParquetSinkConfig,
-};
-use serde_json::json;
-
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let cfg = ParquetSinkConfig::local("/tmp/events")
-        .compression(ParquetCompression::Snappy)
-        .max_rows_per_file(100_000);
-
-    let sink = ParquetSink::new(cfg).await?;
-    sink.write_batch(&[
-        json!({"id": 1, "name": "alice"}),
-        json!({"id": 2, "name": "bob"}),
-    ])
-    .await?;
-    // `flush()` writes the Parquet footer. Skipping it leaves no visible file.
-    sink.flush().await?;
-    Ok(())
-}
+```yaml
+# pipeline.yaml — faucet run pipeline.yaml
+version: 1
+pipeline:
+  source:
+    type: csv
+    config:
+      path: ./events.csv
+  sink:
+    type: parquet
+    config:
+      destination:
+        type: local_path
+        path: /var/lib/exports/events
+      compression: snappy
 ```
+
+```bash
+faucet run pipeline.yaml
+```
+
+Pointing `path` at a directory writes UUID-named files into it; pointing it at a `*.parquet` file writes a single file (only valid when no rollover thresholds are set — see [Rollover](#rollover)).
+
+## Configuration reference
+
+### Core
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `destination` | `ParquetDestination` | — *(required)* | Where to write — `local_path` or `s3` (see [Destinations](#destinations)). |
+| `schema` | `SchemaSource` | infer | How the Arrow schema is determined. Omit to infer from the first batch. `explicit` is reserved and currently errors. |
+| `compression` | enum | `snappy` | Column-data codec: `uncompressed` · `snappy` · `gzip` · `zstd` · `lz4`. See [Compression](#compression). |
+| `row_group_size` | int | `1048576` | Max rows per Parquet **row group**. Must be `> 0`. Larger groups favour read scan throughput. |
+
+### Rollover
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `max_rows_per_file` | int | *(none)* | Roll to a new file once the current writer has accepted this many rows. Must be `> 0` when set. |
+| `max_bytes_per_file` | int | *(none)* | Roll to a new file once the writer's estimated in-memory size exceeds this. Checked per batch (approximate — see below). Must be `> 0` when set. |
+
+### Batching
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `batch_size` | int | `1000` (`DEFAULT_BATCH_SIZE`) | Re-chunk incoming pages into this many records per internal write. **`0` = no batching** — pages pass through as-is. For Parquet, leaving this at the default (or `0`) is recommended. Capped at `MAX_BATCH_SIZE`. |
+
+### `schema` (`SchemaSource`)
+
+```yaml
+# Infer from the first batch, sampling up to N records (default 100):
+schema: { type: inferred, sample_size: 200 }
+```
+
+`type: explicit` is reserved for a future revision and currently returns a `Config` error.
 
 ## Destinations
 
+### Local filesystem — directory mode (UUID-suffixed files)
+
 ```yaml
-# Local filesystem — directory mode (UUID-suffixed files):
 destination:
   type: local_path
   path: /var/lib/exports/events
 ```
 
+### Local filesystem — single-file mode (no rollover thresholds)
+
 ```yaml
-# Local filesystem — single-file mode (no rollover thresholds set):
 destination:
   type: local_path
   path: /var/lib/exports/events.parquet
 ```
 
+### S3 (or any S3-compatible service)
+
 ```yaml
-# S3 (or any S3-compatible service via endpoint_url, e.g. MinIO/LocalStack):
 destination:
   type: s3
   bucket: my-bucket
-  prefix: events/
-  region: us-east-1
-  endpoint_url: http://localhost:4566   # optional
+  prefix: events/                       # each object is <prefix><uuid>.parquet
+  region: us-east-1                     # optional; defaults to the AWS chain
+  endpoint_url: http://localhost:4566   # optional; MinIO / LocalStack
   allow_http: true                      # required for http:// endpoints
 ```
 
-AWS credentials follow the standard `aws_config` chain (env vars, profile,
-instance metadata).
+| `ParquetS3Destination` field | Type | Default | Description |
+|------------------------------|------|---------|-------------|
+| `bucket` | string | — *(required)* | S3 bucket name. |
+| `prefix` | string | `""` | Key prefix for written objects. Empty writes to the bucket root. |
+| `region` | string | *(SDK default)* | AWS region. |
+| `endpoint_url` | string | *(none)* | Custom endpoint for S3-compatible services. |
+| `allow_http` | bool | `false` | Allow non-HTTPS endpoints. Required when `endpoint_url` is `http://`. |
+
+S3 credentials follow the standard `aws_config` / `object_store` AWS chain (`AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`, profile, instance metadata).
+
+## Examples
+
+### Roll over every million rows, zstd-compressed
+
+```yaml
+sink:
+  type: parquet
+  config:
+    destination: { type: local_path, path: /data/exports }
+    compression: zstd
+    max_rows_per_file: 1000000
+    row_group_size: 262144
+```
+
+### S3 export with a byte budget per file
+
+```yaml
+sink:
+  type: parquet
+  config:
+    destination:
+      type: s3
+      bucket: analytics-lake
+      prefix: events/dt=2026-06-16/
+      region: us-east-1
+    compression: snappy
+    max_bytes_per_file: 134217728   # ~128 MiB (approximate)
+```
+
+### Dated subdirectory via `${now.*}` interpolation
+
+```yaml
+sink:
+  type: parquet
+  config:
+    destination:
+      type: local_path
+      path: ./data/dt=${now.date}/events    # parent dirs auto-created
+    compression: gzip
+```
+
+The `${now.*}` tokens resolve to the run's clock (`faucet run` uses process-start UTC or `--clock`; `faucet schedule` uses the tick time). Missing parent directories are created automatically, so dated partition trees like `dt=2026-06-16/` work without pre-creating the path.
+
+### S3-compatible service (MinIO / LocalStack), one large file
+
+```yaml
+sink:
+  type: parquet
+  config:
+    destination:
+      type: s3
+      bucket: dev-bucket
+      prefix: out/
+      endpoint_url: http://localhost:9000
+      allow_http: true
+    batch_size: 0          # write upstream pages through as-is
+```
 
 ## Schema handling
 
-- **Inferred (default)** — the first batch is used to learn an Arrow schema
-  via `arrow_json::reader::infer_json_schema_from_iterator`. Up to 100
-  records by default (`SchemaSource::Inferred { sample_size }` overrides
-  this). All inferred fields are forced nullable.
-- **Explicit** — reserved (`SchemaSource::Explicit { }`); currently returns a
-  `Config` error.
-- **Missing fields** — recorded as Arrow `NULL` columns.
-- **Unknown fields** — silently dropped, with a one-shot `tracing::warn!` per
-  field name per batch.
-- **Type drift** — if a later batch sends a value whose JSON type disagrees
-  with the locked-in schema (e.g. int → string), `write_batch` returns
-  `FaucetError::Sink` naming the field, the schema's declared type, and the
-  drifting record's type.
+- **Inferred (default)** — the first batch is used to learn an Arrow schema via `arrow_json::reader::infer_json_schema_from_iterator`, sampling up to `sample_size` records (default `DEFAULT_SAMPLE_SIZE` = 100). All inferred fields are forced nullable.
+- **Missing fields** — absent keys are written as Arrow `NULL` columns.
+- **Unknown fields** — fields not present in the locked-in schema are silently dropped, with a one-shot `tracing::warn!` per field name.
+- **Type drift** — if a later batch sends a value whose JSON type disagrees with the locked-in schema (e.g. int → string), `write_batch` returns `FaucetError::Sink` naming the field, the schema's declared type, and the drifting record's type.
+- **Explicit schema** — reserved; currently returns a `Config` error.
 
 ## Rollover
 
-| Threshold              | Trigger                                              |
-|------------------------|------------------------------------------------------|
-| `max_rows_per_file`    | row count of the current writer >= limit             |
-| `max_bytes_per_file`   | `bytes_written + in_progress_size` >= limit          |
+| Threshold | Trigger |
+|-----------|---------|
+| `max_rows_per_file` | row count of the current writer ≥ limit |
+| `max_bytes_per_file` | estimated in-memory size ≥ limit |
 
-When either limit fires, the current Parquet writer is `close()`-d (writing
-the footer) and the next `write_batch` opens a fresh `<uuid>.parquet`. Both
-thresholds are checked after each batch, so the actual file size may
-slightly exceed the limit by one batch worth of data.
+When either limit fires, the current Parquet writer is closed (writing the footer) and the next `write_batch` opens a fresh `<uuid>.parquet`. Both thresholds are checked after each batch, so the actual file may exceed the limit by up to one batch.
 
-Setting neither produces a single file per sink instance (until `flush()`).
+> **`max_bytes_per_file` is approximate.** The threshold compares against an estimate of the *in-memory Arrow* size, not the on-disk Parquet size. Column encoding + compression usually make the actual file substantially smaller. Treat it as a soft target, not a hard byte cap.
 
-> **`max_bytes_per_file` is approximate.** The threshold compares against an
-> estimate of the *in-memory Arrow* size of what's been written, not the
-> on-disk Parquet size. Column encoding + compression (see [Compression](#compression))
-> usually make the actual file substantially smaller, and rollover happens at
-> batch granularity. Treat it as a soft target, not a hard byte cap.
-
-> **A fixed `*.parquet` local path + a rollover threshold can't coexist.**
-> Single-file mode (a `foo.parquet` destination) requires *no* rollover
-> thresholds. If you set `max_rows_per_file` / `max_bytes_per_file` alongside
-> a fixed `.parquet` path, the sink logs a warning and falls back to writing
-> UUID-named files into the parent directory (the fixed filename is ignored).
-> Use a directory destination when you want rollover.
-
-## Streaming and batching
-
-The sink accepts whatever the upstream pipeline hands it — the streaming
-runtime in `faucet-core` already caps per-call memory at the upstream
-source's `batch_size`. On top of that, the sink exposes its own `batch_size`
-knob that re-chunks every incoming page before it reaches the Arrow writer:
-
-| Config              | Default                          | Meaning                                              |
-|---------------------|----------------------------------|------------------------------------------------------|
-| `batch_size`        | `faucet_core::DEFAULT_BATCH_SIZE` | Re-chunk pages into this many records per write.    |
-| `batch_size = 0`    | n/a                              | "No batching" sentinel — pass pages through as-is.   |
-
-For Parquet (local or S3) the source-defined page size is usually optimal
-because the writer streams into the destination as one multipart upload and
-benefits from larger row groups. **Recommended: leave `batch_size` at `0` (or
-at its default) and let the upstream `batch_size` drive sizing.** Set a
-smaller value only if you have a specific reason to slice incoming pages
-finer than the upstream provides.
-
-The row/byte rollover thresholds (`max_rows_per_file`, `max_bytes_per_file`)
-are **independent of `batch_size`** and continue to work unchanged: when a
-chunk pushes the writer past either threshold, the current file is closed
-and the next chunk opens a fresh `<uuid>.parquet`.
+> **A fixed `*.parquet` local path + a rollover threshold can't coexist.** Single-file mode (a `foo.parquet` destination) requires *no* rollover thresholds. If you set `max_rows_per_file` / `max_bytes_per_file` alongside a fixed `.parquet` path, the sink logs a warning and falls back to writing UUID-named files into the parent directory. Use a directory destination when you want rollover.
 
 ## Compression
 
-| Codec          | Notes                                          |
-|----------------|------------------------------------------------|
-| `uncompressed` | Largest output, fastest writes.                |
-| `snappy`       | Default. Best balance of speed and size.       |
-| `gzip`         | Smaller than snappy, ~3-5x slower.             |
-| `zstd`         | Strong compression; default level.             |
-| `lz4`          | Maps to `LZ4_RAW` (the Parquet-spec variant).  |
+| Codec | Notes |
+|-------|-------|
+| `uncompressed` | Largest output, fastest writes. |
+| `snappy` | **Default.** Best balance of speed and size. |
+| `gzip` | Smaller than snappy, ~3–5× slower. |
+| `zstd` | Strong compression; default level. |
+| `lz4` | Maps to `LZ4_RAW` (the Parquet-spec variant). |
+
+Conservative (default) compression levels are used — every percent of CPU spent compressing is a percent the pipeline loses on throughput; post-process if you need maximum compression. This is **internal Parquet column compression** and is unrelated to the workspace-wide `compression` feature (file-level gzip/zstd wrappers), which this sink does not use.
+
+## Streaming and batching
+
+The sink accepts whatever the upstream pipeline hands it — the streaming runtime in `faucet-core` already caps per-call memory at the upstream source's `batch_size`. On top of that, the sink's own `batch_size` knob re-chunks every incoming page before it reaches the Arrow writer:
+
+- `batch_size` (default `1000`) — slice pages into this many records per internal write.
+- `batch_size: 0` — the "no batching" sentinel; pages pass through as-is.
+
+For Parquet (local or S3) the source-defined page size is usually optimal because the writer streams into the destination as one multipart upload and benefits from larger row groups. **Recommended: leave `batch_size` at its default (or `0`) and let the upstream `batch_size` drive sizing.** The row/byte rollover thresholds are **independent of `batch_size`** and continue to work unchanged.
 
 ## Flush semantics
 
-Parquet files are only valid once the trailing footer is written. The sink
-streams data into the destination as an `object_store` multipart upload, and
-the footer is emitted only when `flush()` is called (or when a row/byte
-threshold triggers automatic rollover). **If you drop the sink without
-calling `flush()`, no visible file is produced** — the upload is aborted by
-`object_store` so you never end up with a corrupt half-written object on
-disk or in S3.
+Parquet files are only valid once the trailing footer is written. The sink streams data into the destination as an `object_store` multipart upload, and the footer is emitted only when `flush()` is called (or when a row/byte threshold triggers automatic rollover). **If you drop the sink without calling `flush()`, no visible file is produced** — the upload is aborted by `object_store`, so you never end up with a corrupt half-written object on disk or in S3.
 
-Pipelines must therefore always call `flush()` at the end of their run.
-`faucet-core`'s streaming pipeline does this on the success path **and** on the
-error-unwind path. It also flushes on **cooperative cancellation**: when a run
-is cancelled via a `CancellationToken` (the `faucet serve` run-timeout / `POST
-/cancel` / shutdown, or the CLI's `on_error: stop`), the pipeline stops at the
-next page boundary and flushes, so the footer is written and the rows committed
-so far survive — rather than the whole file being orphaned by a dropped future
-(#146 H16). A sink stuck *mid-write* past the flush-grace window is still
-hard-dropped (and its file lost), so size pages so a single `write_batch` stays
-well within the grace.
+Pipelines must therefore always call `flush()` at the end of a run. `faucet-core`'s streaming pipeline does this on the success path **and** the error-unwind path. It also flushes on **cooperative cancellation**: when a run is cancelled via a `CancellationToken` (the `faucet serve` run-timeout / `POST /cancel` / shutdown, or the CLI's `on_error: stop`), the pipeline stops at the next page boundary and flushes, so the footer is written and the rows committed so far survive — rather than the whole file being orphaned by a dropped future (#146 H16). A sink stuck *mid-write* past the flush-grace window is still hard-dropped (and its file lost), so size pages so a single `write_batch` stays well within the grace.
 
-## Round-tripping with `faucet-source-parquet`
+## Config loading & schema introspection
 
-The companion source crate (issue #28) reads files produced by this sink
-back into JSON records using the same Arrow schema. Until both crates are
-released, the round-trip is validated against the raw `parquet` and `arrow`
-crates in this crate's own test suite.
+Config can be loaded from a YAML/JSON pipeline file (the 80% path), env vars, or a `.env` file via the helpers in `faucet_core::config`. Inspect the full JSON Schema with:
 
-## Performance
+```bash
+faucet schema sink parquet
+```
 
-On a recent MacBook Air (M-series, local SSD) writing 1,000,000 records of
-shape `{"id": i64, "name": utf8}` to a single Parquet file with Snappy
-compression takes well under 5 seconds. CI does not gate on this number,
-since runner hardware varies, but the goal informs every design decision:
-the writer reuses a single `object_store` client, batches records into
-`RecordBatch` via `arrow_json::Decoder`, and pages data through
-`AsyncArrowWriter` with bounded buffering.
+## Library usage
 
-## LocalStack / MinIO testing (future work)
+```rust,no_run
+use faucet_core::Sink;
+use faucet_sink_parquet::{ParquetCompression, ParquetSink, ParquetSinkConfig};
+use serde_json::json;
 
-The sink works against any S3-compatible service by setting `endpoint_url`
-and `allow_http: true`. We exercise the S3 code path in the test suite
-against `object_store::memory::InMemory` to avoid a network dependency on
-CI; running against a real LocalStack instance is straightforward and
-documented here for callers who want to verify the wire-level behavior.
+# async fn example() -> Result<(), Box<dyn std::error::Error>> {
+let cfg = ParquetSinkConfig::local("/tmp/events")
+    .compression(ParquetCompression::Snappy)
+    .max_rows_per_file(100_000);
+
+let sink = ParquetSink::new(cfg).await?;
+sink.write_batch(&[
+    json!({"id": 1, "name": "alice"}),
+    json!({"id": 2, "name": "bob"}),
+])
+.await?;
+// `flush()` writes the Parquet footer. Skipping it leaves no visible file.
+sink.flush().await?;
+# Ok(()) }
+```
+
+The builder methods (`compression`, `row_group_size`, `max_rows_per_file`, `max_bytes_per_file`, `schema`, `with_batch_size`) and the `ParquetSinkConfig::local(path)` / `ParquetSinkConfig::new(destination)` constructors all chain. Call `cfg.validate()` to fail fast on bad values before building the sink.
+
+## How it works
+
+The S3 (or local) `object_store` client is built once in `new()` and reused for the lifetime of the sink. Incoming JSON records are decoded into Arrow `RecordBatch`es via `arrow_json::Decoder` and paged through an `AsyncArrowWriter` with bounded buffering — the writer is opened lazily on the first batch so the schema is inferred from real data. Column data is written with the configured codec and `row_group_size`. Writing 1,000,000 rows of `{"id": i64, "name": utf8}` to a single Snappy file completes in well under 5 seconds on a recent laptop; throughput depends on row width, codec, and storage medium — benchmark with your own data.
+
+## Reading the output back
+
+Files produced by this sink are standard Apache Parquet and read back with any Parquet engine — DuckDB, Spark, pandas/pyarrow, BigQuery/Athena external tables — or with the companion [`faucet-source-parquet`](https://crates.io/crates/faucet-source-parquet) crate, which decodes them back to JSON records using the same Arrow schema. Because every inferred field is nullable, columns absent from some records read back as `NULL`.
 
 ## Lineage dataset URI
 
 `file://<path>` (local) or `s3://<bucket>/<prefix>` (S3) — e.g. `file:///tmp/output/` or `s3://my-bucket/data/`.
 
+## Feature flags
+
+This crate has no optional features of its own; enable it in the CLI/umbrella via the `sink-parquet` feature.
+
+## Troubleshooting / FAQ
+
+| Symptom | Likely cause & fix |
+|---------|--------------------|
+| No file appears after a run | `flush()` was never called (the multipart upload was aborted on drop). Run via the faucet pipeline, which flushes on success/error/cancel; in library code call `sink.flush().await?`. |
+| `FaucetError::Config: row_group_size` | `row_group_size` is `0`. Set it to `≥ 1` (or omit to use the default). |
+| `FaucetError::Config` on `max_rows_per_file` / `max_bytes_per_file` | The threshold is `0`. Use `> 0`, or omit for single-file mode. |
+| `FaucetError::Config` on `destination` | Empty `path` (local) or empty `bucket` (S3). Provide a non-empty value. |
+| `FaucetError::Config` on `schema` | `type: explicit` is reserved/unsupported, or `inferred` `sample_size` is `0`. Use `inferred` with `sample_size ≥ 1`, or omit `schema`. |
+| `FaucetError::Sink` naming a field + two types | Type drift — a later batch's value type disagrees with the inferred schema. Cast the field upstream (e.g. a `cast` transform) so every record agrees. |
+| A field is missing from the output | It wasn't in the first batch (so not in the inferred schema) and was dropped — check the one-shot warn log. Ensure the schema-bearing fields appear in the opening records, or widen `sample_size`. |
+| Single-file `.parquet` path ignored; UUID files appear | You set a rollover threshold on a fixed `.parquet` path. Drop the threshold for single-file mode, or use a directory destination. |
+| S3 `403`/credential errors | Credentials missing from the AWS chain, or wrong region. Set `region` and the AWS env vars/profile. |
+| Connecting to MinIO/LocalStack fails | Set `endpoint_url` and `allow_http: true` (required for `http://` endpoints). |
+
+## See also
+
+- [Connector reference](https://pawansikawat.github.io/faucet-stream/reference/connectors.html) · [faucet-source-parquet](https://crates.io/crates/faucet-source-parquet) · [faucet-sink-s3](https://crates.io/crates/faucet-sink-s3)
+
 ## License
 
-MIT
+Licensed under either of [Apache License, Version 2.0](https://www.apache.org/licenses/LICENSE-2.0) or [MIT license](https://opensource.org/licenses/MIT) at your option.

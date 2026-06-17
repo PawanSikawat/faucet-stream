@@ -5,15 +5,31 @@
 [![MSRV](https://img.shields.io/crates/msrv/faucet-sink-jsonl.svg)](https://github.com/PawanSikawat/faucet-stream/blob/main/rust-toolchain.toml)
 [![License](https://img.shields.io/crates/l/faucet-sink-jsonl.svg)](https://github.com/PawanSikawat/faucet-stream#license)
 
-JSON Lines file sink connector for the [faucet-stream](https://github.com/PawanSikawat/faucet-stream) ecosystem.
+JSON Lines (**`.jsonl`**) file sink for the [faucet-stream](https://github.com/PawanSikawat/faucet-stream) ecosystem. Writes each record as one JSON object per line in [JSON Lines](https://jsonlines.org/) format.
 
-Writes JSON records to a file in [JSON Lines](https://jsonlines.org/) format (one JSON object per line). The file is opened lazily on the first write. Uses buffered async I/O via `tokio::io::BufWriter` for high throughput. Supports append mode, pretty-printing, and explicit flush control.
+It's the workhorse local-file destination: zero credentials, zero connection setup, and a streaming-friendly format that everything downstream understands (`jq`, `pandas`, DuckDB, BigQuery / Snowflake / Spark loaders). Records stream through a buffered async writer so even multi-million-row exports stay fast and bounded in memory, and dated output paths like `./data/dt=2026-03-08/part.jsonl` work without pre-creating the directory tree.
+
+## Feature highlights
+
+- **Buffered async writes** — records go through a `tokio::io::BufWriter`, so high-volume runs aren't bottlenecked on per-record syscalls.
+- **Append or truncate** — `append: true` adds to an existing file; the default truncates on open for a clean export.
+- **Auto-creates parent directories** — missing parents of `path` are created (`mkdir -p` semantics) before the file opens, so dated/partitioned subdirectory paths just work.
+- **Optional compression** — behind the `compression` feature, gzip / zstd are selected automatically from the `.gz` / `.zst` suffix (or set explicitly). Multi-member output stays decoder-compatible across mid-stream flushes.
+- **Pretty-print mode** — `pretty: true` indents each record for human reading (no longer strict JSONL — records span multiple lines).
+- **Flush-safe for CDC** — `flush()` finalises the writer and the next write reopens in append mode regardless of `append`, so a CDC source's per-transaction flush appends rather than truncates — no data loss mid-stream.
+- **`faucet doctor` preflight** — `check()` verifies the parent directory is writable (via a throwaway temp file) without ever touching your real output file.
 
 ## Installation
 
 ```bash
+# As a library:
 cargo add faucet-sink-jsonl
-cargo add tokio --features full
+
+# In the CLI (connector feature; in the CLI default build):
+cargo install faucet-cli --features sink-jsonl
+
+# With gzip / zstd compression:
+cargo install faucet-cli --features "sink-jsonl,compression"
 ```
 
 Or via the umbrella crate:
@@ -22,200 +38,232 @@ Or via the umbrella crate:
 cargo add faucet-stream --features sink-jsonl
 ```
 
-## Quick Start
+`sink-jsonl` is one of the most common destinations and ships in the CLI's default build. The crate-local `compression` feature is opt-in.
 
-```rust
-use faucet_sink_jsonl::{JsonlSink, JsonlSinkConfig};
-use faucet_core::Sink;
-use serde_json::json;
+## Quick start
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let config = JsonlSinkConfig::new("/tmp/output.jsonl");
-    let sink = JsonlSink::new(config);
-
-    let records = vec![
-        json!({"id": 1, "name": "Alice", "email": "alice@example.com"}),
-        json!({"id": 2, "name": "Bob", "email": "bob@example.com"}),
-    ];
-
-    let written = sink.write_batch(&records).await?;
-    sink.flush().await?;
-
-    println!("Wrote {written} records");
-    Ok(())
-}
+```yaml
+# pipeline.yaml — faucet run pipeline.yaml
+version: 1
+name: csv_to_jsonl
+pipeline:
+  source:
+    type: csv
+    config:
+      path: ./data/input.csv
+  sink:
+    type: jsonl
+    config:
+      path: ./out/records.jsonl
 ```
 
-## Configuration
+```bash
+faucet run pipeline.yaml
+```
+
+Every row of `input.csv` is written to `./out/records.jsonl` as one compact JSON object per line. The `./out/` directory is created automatically if it doesn't exist.
+
+## Configuration reference
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `path` | `PathBuf` | *(required)* | Path to the output file |
-| `append` | `bool` | `false` | Whether to append to an existing file. When `false`, the file is truncated on open. |
-| `pretty` | `bool` | `false` | Whether to pretty-print each JSON record with indentation. Note: this breaks strict JSONL format since records span multiple lines. |
-| `batch_size` | `usize` | `1000` | Records per upstream `StreamPage`. **No behavioural impact** at this sink — present for symmetry. See [Streaming and batching](#streaming-and-batching). |
+| `path` | string (path) | *(required)* | Path to the output file. Missing parent directories are created automatically. |
+| `append` | bool | `false` | Append to an existing file. When `false`, the file is **truncated** on first open. |
+| `pretty` | bool | `false` | Pretty-print (indent) each record. This breaks strict JSONL — records span multiple lines. |
+| `batch_size` | int | `1000` | Records per upstream `StreamPage`. **No behavioural effect** at this per-record sink; present only for config parity. See [Streaming & batching](#streaming--batching). |
+| `compression` | `none` \| `gzip` \| `zstd` \| `auto` | `auto` | *(requires the `compression` feature)* Output codec. `auto` picks gzip/zstd from the file suffix; anything else writes uncompressed. See [Compression](#compression). |
 
-## Streaming and batching
+## Examples
 
-This sink writes records to the output file one at a time via `tokio::io::BufWriter`. The per-page memory bound for the pipeline is set by the **source's** `batch_size` (the size of each `StreamPage` that `Pipeline::run` hands to `Sink::write_batch`); how that page is then iterated record-by-record on the sink side is what determines on-disk output, and that path does not depend on `batch_size` at all.
+### Basic export (truncate mode)
 
-`batch_size` is exposed on this config purely for symmetry across every sink in the workspace — sinks like `faucet-sink-postgres` or `faucet-sink-bigquery` use the field to size their multi-row inserts / streaming-insert requests, but a per-record file sink has nothing to tune. `batch_size = 0` (the "no batching" sentinel) and any positive value are observably identical for this sink: both produce byte-for-byte the same `.jsonl` file.
-
-### Builder Methods
-
-```rust
-use faucet_sink_jsonl::JsonlSinkConfig;
-
-let config = JsonlSinkConfig::new("/data/output.jsonl")
-    .append(true)
-    .pretty(false);
+```yaml
+version: 1
+pipeline:
+  source:
+    type: rest
+    config:
+      base_url: https://api.example.com
+      path: /v1/events
+  sink:
+    type: jsonl
+    config:
+      path: ./out/events.jsonl
 ```
 
-## Config Loading
+### Append for incremental / repeated runs
+
+```yaml
+version: 1
+pipeline:
+  source:
+    type: postgres
+    config:
+      connection_url: ${env:DATABASE_URL}
+      query: SELECT id, name, signup_date FROM users
+  sink:
+    type: jsonl
+    config:
+      path: ./out/users.jsonl
+      append: true   # each run adds to the file rather than overwriting it
+```
+
+### Partitioned, dated output path
+
+```yaml
+version: 1
+pipeline:
+  source:
+    type: csv
+    config:
+      path: ./data/input.csv
+  sink:
+    type: jsonl
+    config:
+      # ${now.date} resolves to YYYY-MM-DD per run; the dt=... directory
+      # is created automatically.
+      path: ./data/dt=${now.date}/part.jsonl
+```
+
+### Gzip-compressed export (requires the `compression` feature)
+
+```yaml
+version: 1
+pipeline:
+  source:
+    type: postgres
+    config:
+      connection_url: ${env:DATABASE_URL}
+      query: SELECT * FROM events
+  sink:
+    type: jsonl
+    config:
+      path: ./out/events.jsonl.gz   # .gz suffix → gzip via compression: auto
+```
+
+## Streaming & batching
+
+`Pipeline::run` drives the source's `stream_pages` and hands each emitted `StreamPage` to `Sink::write_batch`. This sink iterates the page **record by record**, serializing and appending each one through the buffered writer.
+
+Because the write path is inherently per-record, `batch_size` has **no observable effect** here — `batch_size = 0` (the "no batching" sentinel) and any positive value produce byte-for-byte identical files. The field exists only so every sink shares one config shape; sinks like `faucet-sink-postgres` (multi-row INSERTs) or `faucet-sink-bigquery` (streaming-insert request sizing) genuinely use it. The per-run memory bound is set by the **source's** `batch_size` (the size of each `StreamPage`), not by this field.
+
+When a bookmark-carrying page arrives (e.g. from a CDC source), the pipeline calls `flush()` after the page. This sink finalises the writer and the next `write_batch` reopens the file in **append mode regardless of `append`**, so per-transaction durability never truncates previously-written records.
+
+## Compression
+
+Behind the crate-local `compression` Cargo feature. Adds a `compression` config field with values `none`, `gzip`, `zstd`, or `auto` (the default — detects `.gz` / `.zst` from the file path):
+
+```yaml
+type: jsonl
+config:
+  path: ./out/events.jsonl.zst
+  compression: auto   # or 'gzip' | 'zstd' | 'none'
+```
+
+`flush()` finalises the encoder (writes the trailer); a subsequent write appends a fresh gzip/zstd member, producing a multi-member compressed file that standard decoders read back transparently. The sink does not set any HTTP `Content-Encoding` — the file is a plain compressed file on disk.
+
+## Config loading & schema
+
+Configs load from YAML/JSON files, environment variables, or `.env` files via the CLI's normal loading path. From a library, use the `faucet_core::config` helpers:
 
 ```rust
 use faucet_core::config::{load_json, load_env_file};
 use faucet_sink_jsonl::JsonlSinkConfig;
 
-// From a JSON file
 let config: JsonlSinkConfig = load_json("config.json")?;
-
-// From an .env file with a prefix
 let config: JsonlSinkConfig = load_env_file(".env", "JSONL_SINK")?;
 ```
 
-### Example JSON config
+Inspect the full JSON Schema with:
 
-```json
-{
-  "path": "/data/exports/events.jsonl",
-  "append": false,
-  "pretty": false,
-  "batch_size": 1000
-}
+```bash
+faucet schema sink jsonl
 ```
 
-### Example .env file
-
-```env
-JSONL_SINK_PATH=/data/exports/events.jsonl
-JSONL_SINK_APPEND=false
-JSONL_SINK_PRETTY=false
-```
-
-## Config Schema Introspection
+## Library usage
 
 ```rust
-use faucet_core::Sink;
+use faucet_core::{Pipeline, Sink};
+use faucet_sink_jsonl::{JsonlSink, JsonlSinkConfig};
+use serde_json::json;
 
+# async fn run() -> Result<(), faucet_core::FaucetError> {
+let config = JsonlSinkConfig::new("./out/output.jsonl")
+    .append(true)
+    .pretty(false);
 let sink = JsonlSink::new(config);
-let schema = sink.config_schema();
-println!("{}", serde_json::to_string_pretty(&schema)?);
+
+sink.write_batch(&[
+    json!({"id": 1, "name": "Alice"}),
+    json!({"id": 2, "name": "Bob"}),
+])
+.await?;
+sink.flush().await?; // always flush before dropping the sink
+# Ok(())
+# }
 ```
 
-## Pipeline Usage
+Wire it to any source through a `Pipeline`:
 
 ```rust
 use faucet_core::Pipeline;
 use faucet_source_rest::{RestStream, RestStreamConfig};
 use faucet_sink_jsonl::{JsonlSink, JsonlSinkConfig};
 
-let source_config = RestStreamConfig::new("https://api.example.com", "/v1/events");
-let source = RestStream::new(source_config);
-
-let sink_config = JsonlSinkConfig::new("/data/events.jsonl");
-let sink = JsonlSink::new(sink_config);
+# async fn run() -> Result<(), faucet_core::FaucetError> {
+let source = RestStream::new(RestStreamConfig::new("https://api.example.com", "/v1/events"));
+let sink = JsonlSink::new(JsonlSinkConfig::new("./out/events.jsonl"));
 
 let result = Pipeline::new(source, sink).run().await?;
-println!("Exported {} records to JSONL", result.records_written);
+println!("Exported {} records", result.records_written);
+# Ok(())
+# }
 ```
 
-## Examples
+## How it works
 
-### Basic file export (truncate mode)
-
-```rust
-let config = JsonlSinkConfig::new("/tmp/users.jsonl");
-let sink = JsonlSink::new(config);
-
-sink.write_batch(&records).await?;
-sink.flush().await?;
-```
-
-Output (`/tmp/users.jsonl`):
-```
-{"id":1,"name":"Alice","email":"alice@example.com"}
-{"id":2,"name":"Bob","email":"bob@example.com"}
-```
-
-### Append mode for incremental exports
-
-```rust
-// First run: creates the file
-let sink = JsonlSink::new(JsonlSinkConfig::new("/data/events.jsonl"));
-sink.write_batch(&batch_1).await?;
-sink.flush().await?;
-drop(sink);
-
-// Second run: appends to existing file
-let sink = JsonlSink::new(JsonlSinkConfig::new("/data/events.jsonl").append(true));
-sink.write_batch(&batch_2).await?;
-sink.flush().await?;
-```
-
-### Pretty-printed output for debugging
-
-```rust
-let config = JsonlSinkConfig::new("/tmp/debug.json").pretty(true);
-let sink = JsonlSink::new(config);
-sink.write_batch(&records).await?;
-sink.flush().await?;
-```
-
-Output:
-```json
-{
-  "id": 1,
-  "name": "Alice"
-}
-{
-  "id": 2,
-  "name": "Bob"
-}
-```
-
-## How It Works
-
-- The file is opened lazily on the first `write_batch()` call and wrapped in a `tokio::io::BufWriter` for efficient buffered writes.
-- Missing parent directories of `path` are created automatically (equivalent to `mkdir -p`) before the file is opened, matching the behaviour of the parquet sink. Dated-subdirectory paths such as `./data/dt=2026-03-08/part.jsonl` work without any pre-creation step.
-- A `Mutex` protects the writer for thread-safe concurrent access.
-- Each record is serialized to a single JSON line (or pretty-printed if configured) followed by a newline character.
-- Multiple `write_batch()` calls accumulate data in the same file without re-opening it.
-- Call `flush()` to ensure all buffered data is written to disk. This is important before dropping the sink or reading the file.
-- In truncate mode (default), the file is emptied on first write. In append mode, new records are added after existing content.
-
-## Compression
-
-Behind the crate-local `compression` Cargo feature. Adds a `compression` config
-field with values `none`, `gzip`, `zstd`, or `auto` (the default — detects
-`.gz` / `.zst` from the file path / object key).
-
-YAML example:
-
-```yaml
-kind: jsonl
-config:
-  # ... existing fields ...
-  compression: auto  # or 'gzip' | 'zstd' | 'none'
-```
-
-`flush()` finalises the encoder; subsequent writes append a fresh gzip / zstd member (multi-member-decoder compatible).
+1. The file is opened **lazily** on the first `write_batch` call and wrapped in a `tokio::io::BufWriter`. An empty batch is a no-op (no file is created).
+2. Missing parent directories of `path` are created (`mkdir -p`) before the file opens.
+3. The first open obeys `append`; **re-opens after a `flush()` always append**, so a flush-then-write sequence never truncates earlier data — important for CDC's per-transaction flush.
+4. Each record is serialized to a single JSON line (or pretty-printed) followed by a newline; a `Mutex` guards the writer for thread-safe writes.
+5. With the `compression` feature, the buffered file is wrapped in a gzip/zstd encoder chosen by `compression.resolve(path)`; a one-shot warning fires if an explicit codec disagrees with the file suffix.
+6. `flush()` finalises and shuts down the writer (flushing the buffer and writing any compression trailer). The default `Sink` impl does **not** flush on `Drop` — call `flush()` explicitly before the program exits or the tail of the buffer is lost.
 
 ## Lineage dataset URI
 
 `file://<path>` — e.g. `file:///tmp/output.jsonl`.
 
+## Feature flags
+
+| Feature | Default | Effect |
+|---------|---------|--------|
+| `compression` | off | Adds the `compression` config field and gzip/zstd encoding via `faucet-core/compression`. |
+
+This sink does **not** support exactly-once delivery or upsert/delete write modes — it is an append-only file writer. For exactly-once or upsert semantics, use a transactional sink (`faucet-sink-postgres`, `faucet-sink-bigquery`, etc.).
+
+## Troubleshooting / FAQ
+
+| Symptom | Likely cause & fix |
+|---------|--------------------|
+| `failed to create parent directory '...'` | The parent path isn't creatable (permissions, or a path component is a file). Check write permissions on the closest existing ancestor; run `faucet doctor` to probe writability up front. |
+| `failed to open <path>` | The file path is unwritable (read-only filesystem, no permission, or path is a directory). Verify the path and permissions. |
+| File is empty / truncated after the run | You didn't `flush()`. The buffered/compressed writer only finalises on `flush()` — call it before dropping the sink (the CLI does this automatically). |
+| Previous data disappeared on the next run | Default mode **truncates** on open. Set `append: true` to keep prior content across runs. |
+| Output isn't valid line-delimited JSON | `pretty: true` indents records across multiple lines, which breaks strict JSONL. Use `pretty: false` (the default) for tooling that expects one object per line. |
+| `.gz` / `.zst` file isn't compressed | The `compression` feature isn't enabled. Rebuild with `--features "sink-jsonl,compression"` (CLI) or `--features compression` (library); without it the suffix is treated as a plain filename. |
+| Setting `batch_size` changes nothing | Expected — it's a no-op for this per-record sink. To bound per-page memory, set the **source's** `batch_size`. |
+| Records lost mid-stream from a CDC source | Should not happen — re-opens after a per-page flush always append. If you see truncation, confirm nothing else is rewriting the file out-of-band. |
+
+## See also
+
+- [Sinks reference](https://pawansikawat.github.io/faucet-stream/reference/connectors.html) — the full connector capability matrix.
+- [Compression cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/compression.html) — gzip/zstd across file sinks.
+- [CLI reference](https://pawansikawat.github.io/faucet-stream/reference/cli.html) — `faucet run`, `faucet validate`, `faucet schema`, `faucet doctor`.
+- [`faucet-sink-stdout`](https://crates.io/crates/faucet-sink-stdout) — the same JSON Lines to a standard stream instead of a file.
+- [`faucet-sink-csv`](https://crates.io/crates/faucet-sink-csv) — CSV/TSV file output with full quoting.
+- [`faucet-sink-s3`](https://crates.io/crates/faucet-sink-s3) / [`faucet-sink-gcs`](https://crates.io/crates/faucet-sink-gcs) — the same JSONL records to object storage.
+- [`faucet-core`](https://crates.io/crates/faucet-core) — the `Sink` trait this connector implements.
+
 ## License
 
-Licensed under MIT or Apache-2.0.
+Licensed under either of [Apache License, Version 2.0](https://www.apache.org/licenses/LICENSE-2.0) or [MIT license](https://opensource.org/licenses/MIT) at your option.

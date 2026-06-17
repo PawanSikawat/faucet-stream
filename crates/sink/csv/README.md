@@ -5,263 +5,306 @@
 [![MSRV](https://img.shields.io/crates/msrv/faucet-sink-csv.svg)](https://github.com/PawanSikawat/faucet-stream/blob/main/rust-toolchain.toml)
 [![License](https://img.shields.io/crates/l/faucet-sink-csv.svg)](https://github.com/PawanSikawat/faucet-stream#license)
 
-CSV file sink connector for the [faucet-stream](https://github.com/PawanSikawat/faucet-stream) ecosystem.
+CSV / TSV file sink for the [faucet-stream](https://github.com/PawanSikawat/faucet-stream) ecosystem. Writes JSON records to a delimited text file — comma, tab, semicolon, pipe, or any other single-byte delimiter — with an optional header row and RFC 4180 quoting handled automatically.
 
-Writes JSON records to a CSV file. Column order is the union of keys across the records of the first `write_batch()` call. Supports configurable delimiters, optional header rows, and append mode. Uses `spawn_blocking` to avoid blocking the async runtime during file I/O.
+Reach for it whenever the destination is a spreadsheet, a BI import, a data-exchange handoff, or anything that consumes plain delimited text. All file I/O runs inside `tokio::task::spawn_blocking` and flows through a buffered `csv::Writer`, so it stays off the async runtime and doesn't bottleneck on per-record syscalls.
+
+## Feature highlights
+
+- **Any single-byte delimiter** — comma (CSV), tab (TSV), semicolon, pipe (`|`), or any other byte. One field controls the whole dialect.
+- **RFC 4180 quoting, automatic** — the underlying `csv` crate quotes fields that contain the delimiter, quotes, or newlines, so values never break the layout. No quoting knobs to misconfigure.
+- **Optional header row** — emit a header of column names (default) or write headerless data for append-style logs.
+- **Stable, union-derived columns** — column order is the union of keys across every record in the first batch (first-seen order), so a field present only in a later record of that batch is still captured.
+- **Append or truncate** — append to an existing file for incremental exports, or truncate-on-open for a clean rewrite each run.
+- **Creates missing parent dirs** — dated-subdirectory paths like `./data/dt=2026-03-08/part.csv` work with no `mkdir -p` step.
+- **Buffered, off-runtime I/O** — every write runs in `spawn_blocking` behind a buffered writer; the async runtime is never blocked on disk.
+- **Optional compression** — gzip / zstd output behind the `compression` feature, with auto-detection from the `.gz` / `.zst` suffix and an explicitly-finalised trailer (no silent corruption).
 
 ## Installation
 
 ```bash
+# As a library:
 cargo add faucet-sink-csv
-cargo add tokio --features full
+
+# In the CLI (opt-in connector feature):
+cargo install faucet-cli --features sink-csv
+
+# With gzip / zstd output:
+cargo install faucet-cli --features "sink-csv,compression"
 ```
 
-Or via the umbrella crate:
+The `sink-csv` feature is **not** in the CLI default build — enable it explicitly (or use a `full` build). Or pull it through the umbrella crate with `cargo add faucet-stream --features sink-csv`.
+
+## Quick start
+
+```yaml
+# pipeline.yaml — faucet run pipeline.yaml
+version: 1
+pipeline:
+  source:
+    type: sqlite
+    config:
+      database_url: sqlite://./data/app.db
+      query: SELECT id, email, created_at FROM users ORDER BY id
+  sink:
+    type: csv
+    config:
+      path: ./out/users.csv
+```
 
 ```bash
-cargo add faucet-stream --features sink-csv
+faucet run pipeline.yaml
 ```
 
-## Quick Start
+Every row of the query result is written to `./out/users.csv` with a header row, comma-delimited, RFC 4180-quoted. The `out/` directory is created if it doesn't exist.
 
-```rust
-use faucet_sink_csv::{CsvSink, CsvSinkConfig};
-use faucet_core::Sink;
-use serde_json::json;
-
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let config = CsvSinkConfig::new("/tmp/output.csv");
-    let sink = CsvSink::new(config);
-
-    let records = vec![
-        json!({"id": 1, "name": "Alice", "email": "alice@example.com"}),
-        json!({"id": 2, "name": "Bob", "email": "bob@example.com"}),
-    ];
-
-    let written = sink.write_batch(&records).await?;
-    sink.flush().await?;
-
-    println!("Wrote {written} rows to CSV");
-    Ok(())
-}
-```
-
-## Configuration
+## Configuration reference
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `path` | `String` | *(required)* | Path to the output CSV file |
-| `delimiter` | `u8` | `b','` (comma) | Field delimiter byte |
-| `write_headers` | `bool` | `true` | Whether to write a header row with column names |
-| `append` | `bool` | `false` | Whether to append to an existing file. When `false`, the file is truncated on open. |
-| `batch_size` | `usize` | `1000` | Records per upstream `StreamPage`. **No behavioural impact** at this sink — present for symmetry. See [Streaming and batching](#streaming-and-batching). |
+| `path` | string | *(required)* | Path to the output file. Missing parent directories are created automatically (`mkdir -p`). |
+| `delimiter` | byte (int) | `44` (`,`) | Single-byte field delimiter. Common values: `44` comma, `9` tab, `59` semicolon, `124` pipe. |
+| `write_headers` | bool | `true` | Write a header row of column names on the first open. Skipped automatically on append-mode re-opens. |
+| `append` | bool | `false` | Append to an existing file instead of truncating it on open. When `false`, the file is truncated on the first open. |
+| `batch_size` | int | `1000` | Records per upstream `StreamPage`. **No behavioural impact at this sink** — present only for config parity. See [Streaming & batching](#streaming--batching). |
+| `compression` | `none` \| `gzip` \| `zstd` \| `auto` | `auto` | Output compression. Requires the `compression` feature. `auto` infers from the `.gz` / `.zst` path suffix. See [Compression](#compression). |
 
-## Streaming and batching
+In YAML/JSON `delimiter` is the **byte value** of the character, not the character itself — e.g. `9` for tab, `59` for semicolon. The library builder takes a `u8` (`b'\t'`).
 
-This sink writes rows to the output CSV file one at a time via a buffered `csv::Writer` running inside `tokio::task::spawn_blocking`. The per-page memory bound for the pipeline is set by the **source's** `batch_size` (the size of each `StreamPage` that `Pipeline::run` hands to `Sink::write_batch`); how that page is then iterated record-by-record on the sink side is what determines on-disk output, and that path does not depend on `batch_size` at all.
+## Examples
 
-`batch_size` is exposed on this config purely for symmetry across every sink in the workspace — sinks like `faucet-sink-postgres` or `faucet-sink-bigquery` use the field to size their multi-row inserts / streaming-insert requests, but a per-record file sink has nothing to tune. `batch_size = 0` (the "no batching" sentinel) and any positive value are observably identical for this sink: both produce byte-for-byte the same `.csv` file.
+### Comma-separated export with headers
 
-### Builder Methods
-
-```rust
-use faucet_sink_csv::CsvSinkConfig;
-
-let config = CsvSinkConfig::new("/data/output.tsv")
-    .delimiter(b'\t')
-    .write_headers(true)
-    .append(false);
+```yaml
+version: 1
+name: sqlite_to_csv
+pipeline:
+  source:
+    type: sqlite
+    config:
+      database_url: sqlite://./data/app.db
+      query: SELECT id, email, created_at FROM users ORDER BY id
+  sink:
+    type: csv
+    config:
+      path: ./out/users.csv
+      delimiter: 44       # ','
+      write_headers: true
+      append: false
 ```
 
-### Column Order and Missing Fields
+### Tab-separated values (TSV)
 
-- Column order is the **union of keys across all records in the first** `write_batch()` call, in first-seen order — so a field present only in a later record of that batch is still captured (audit #146 H2).
-- All subsequent records use the same column order, regardless of their key order.
-- If a record is missing a field that exists in the column list, an empty string is written for that cell.
-- Keys that appear only in a **later** `write_batch()` call (after the header is written) are still ignored — the header is fixed once on the first call.
+```yaml
+version: 1
+pipeline:
+  source:
+    type: rest
+    config:
+      url: https://api.example.com/v1/orders
+  sink:
+    type: csv
+    config:
+      path: ./out/orders.tsv
+      delimiter: 9        # tab
+```
 
-### Value Conversion
+### Append mode for incremental / streaming exports
 
-| JSON Type | CSV Output |
-|-----------|-----------|
+A webhook receiver appending every batch to one growing file — header written once, subsequent runs append:
+
+```yaml
+version: 1
+name: webhook_to_csv
+pipeline:
+  source:
+    type: webhook
+    config:
+      listen_addr: 127.0.0.1:9090
+      path: /inbox
+      max_payloads: 5000
+      timeout_secs: 120
+  sink:
+    type: csv
+    config:
+      path: webhooks.csv
+      delimiter: 59       # ';'
+      write_headers: true
+      append: true
+```
+
+### Dated partition path with gzip compression
+
+```yaml
+version: 1
+pipeline:
+  source:
+    type: postgres
+    config:
+      connection_url: ${env:DATABASE_URL}
+      query: SELECT * FROM events WHERE created_at::date = current_date
+  sink:
+    type: csv
+    config:
+      path: ./data/dt=${now.date}/events.csv.gz   # parent dir auto-created
+      compression: auto                           # .gz suffix → gzip
+```
+
+## Streaming & batching
+
+`Pipeline::run` drives the source's `stream_pages` and hands each emitted `StreamPage` to `Sink::write_batch`. This sink then iterates the page **record by record**, serializing and writing each row through a buffered `csv::Writer` inside `spawn_blocking`.
+
+Because the write path is inherently per-record, the `batch_size` config field has **no observable effect** here. `batch_size = 0` (the "no batching" sentinel) and any positive value produce byte-for-byte identical output. The field exists only so every sink in the workspace shares one config shape — sinks like `faucet-sink-postgres` (multi-row INSERTs) or `faucet-sink-bigquery` (streaming-insert request sizing) genuinely use it; a per-record file sink has nothing to tune.
+
+The per-run memory bound is set by the **source's** `batch_size` (the size of each `StreamPage`), not by this field.
+
+### Column order & missing fields
+
+- **Column order** is the union of keys across **all records in the first** `write_batch` call, in first-seen order — a field present only in a later record of that batch is still captured.
+- All subsequent records use that same column order, regardless of their own key order.
+- A record **missing** a column writes an empty string for that cell.
+- Keys appearing only in a **later** `write_batch` call (after the header is fixed) are ignored — the header is set once, on the first call. Normalize the record shape upstream (e.g. `select` / `set` transforms) if every column must be present.
+- A non-object record (bare scalar or array) is rejected with `FaucetError::Sink` — every record must be a JSON object.
+
+### Value conversion
+
+| JSON type | CSV cell |
+|-----------|----------|
 | `null` | empty string |
 | `string` | the string value |
 | `number` | string representation |
-| `boolean` | `"true"` or `"false"` |
-| `object` / `array` | JSON serialization (e.g. `{"nested":true}`) |
+| `boolean` | `true` / `false` |
+| `object` / `array` | compact JSON (e.g. `{"nested":true}`) |
 
-## Config Loading
+## Compression
+
+Behind the crate-local `compression` Cargo feature. Adds the `compression` config field with values `none`, `gzip`, `zstd`, or `auto` (the default — selects gzip / zstd from the `.gz` / `.zst` path suffix).
+
+```yaml
+type: csv
+config:
+  path: ./out/users.csv.gz
+  compression: auto    # or 'gzip' | 'zstd' | 'none'
+```
+
+`flush()` explicitly finalises the compression encoder (writing the gzip / zstd trailer) and propagates any trailer-write I/O error rather than swallowing it on drop — so a pipeline bookmark never advances over a truncated or corrupt file. Each mid-stream flush finalises one member; the next write starts a fresh member appended after it, which gzip / zstd decoders read back transparently.
+
+S3 / GCS-style `Content-Encoding` headers don't apply here — this is a local-file sink; consumers decompress by file suffix.
+
+## Config loading & schema
+
+Configs load from YAML/JSON files, environment variables, or `.env` files via the CLI's normal loading path.
 
 ```rust
 use faucet_core::config::{load_json, load_env_file};
 use faucet_sink_csv::CsvSinkConfig;
 
+# fn run() -> Result<(), faucet_core::FaucetError> {
 // From a JSON file
 let config: CsvSinkConfig = load_json("config.json")?;
 
-// From an .env file with a prefix
+// From an .env file with a prefix (CSV_SINK_PATH, CSV_SINK_DELIMITER, …)
 let config: CsvSinkConfig = load_env_file(".env", "CSV_SINK")?;
+# Ok(())
+# }
 ```
 
-### Example JSON config
+Inspect the full JSON Schema with:
 
-```json
-{
-  "path": "/data/exports/users.csv",
-  "delimiter": 44,
-  "write_headers": true,
-  "append": false,
-  "batch_size": 1000
-}
+```bash
+faucet schema sink csv
 ```
 
-Note: The `delimiter` is a byte value (44 = comma, 9 = tab, 124 = pipe `|`).
-
-### Example JSON config (TSV)
-
-```json
-{
-  "path": "/data/exports/users.tsv",
-  "delimiter": 9,
-  "write_headers": true,
-  "append": false,
-  "batch_size": 1000
-}
-```
-
-### Example .env file
-
-```env
-CSV_SINK_PATH=/data/exports/users.csv
-CSV_SINK_DELIMITER=44
-CSV_SINK_WRITE_HEADERS=true
-CSV_SINK_APPEND=false
-```
-
-## Config Schema Introspection
+## Library usage
 
 ```rust
-use faucet_core::Sink;
+use faucet_core::{Pipeline, Sink};
+use faucet_sink_csv::{CsvSink, CsvSinkConfig};
+use serde_json::json;
+
+# async fn run() -> Result<(), faucet_core::FaucetError> {
+let config = CsvSinkConfig::new("./out/users.csv")
+    .delimiter(b'\t')        // TSV
+    .write_headers(true)
+    .append(false);
 
 let sink = CsvSink::new(config);
-let schema = sink.config_schema();
-println!("{}", serde_json::to_string_pretty(&schema)?);
+
+sink.write_batch(&[
+    json!({ "id": 1, "name": "Alice", "email": "alice@example.com" }),
+    json!({ "id": 2, "name": "Bob",   "email": "bob@example.com" }),
+])
+.await?;
+sink.flush().await?;       // always flush before dropping the sink
+# Ok(())
+# }
 ```
 
-## Pipeline Usage
+Wired into a `Pipeline` with any source:
 
 ```rust
 use faucet_core::Pipeline;
 use faucet_source_rest::{RestStream, RestStreamConfig};
 use faucet_sink_csv::{CsvSink, CsvSinkConfig};
 
-let source = RestStream::new(
-    RestStreamConfig::new("https://api.example.com", "/v1/users")
-);
-
-let sink = CsvSink::new(CsvSinkConfig::new("/data/users.csv"));
+# async fn run() -> Result<(), faucet_core::FaucetError> {
+let source = RestStream::new(RestStreamConfig::new("https://api.example.com", "/v1/users"));
+let sink = CsvSink::new(CsvSinkConfig::new("./out/users.csv"));
 
 let result = Pipeline::new(source, sink).run().await?;
 println!("Exported {} records to CSV", result.records_written);
+# Ok(())
+# }
 ```
 
-## Examples
+The builder methods are `delimiter(u8)`, `write_headers(bool)`, `append(bool)`, `with_batch_size(usize)`, and `compression(CompressionConfig)` (the last only with the `compression` feature).
 
-### Basic CSV export
+## How it works
 
-```rust
-let config = CsvSinkConfig::new("/tmp/users.csv");
-let sink = CsvSink::new(config);
-
-let records = vec![
-    json!({"id": 1, "name": "Alice", "email": "alice@example.com"}),
-    json!({"id": 2, "name": "Bob", "email": "bob@example.com"}),
-];
-
-sink.write_batch(&records).await?;
-sink.flush().await?;
-```
-
-Output (`/tmp/users.csv`):
-```csv
-id,name,email
-1,Alice,alice@example.com
-2,Bob,bob@example.com
-```
-
-### Tab-separated output (TSV)
-
-```rust
-let config = CsvSinkConfig::new("/tmp/data.tsv")
-    .delimiter(b'\t');
-
-let sink = CsvSink::new(config);
-sink.write_batch(&records).await?;
-sink.flush().await?;
-```
-
-### Append mode for incremental exports
-
-```rust
-// First run: creates the file with headers
-let sink = CsvSink::new(CsvSinkConfig::new("/data/events.csv"));
-sink.write_batch(&batch_1).await?;
-sink.flush().await?;
-drop(sink);
-
-// Second run: appends without headers
-let sink = CsvSink::new(
-    CsvSinkConfig::new("/data/events.csv")
-        .append(true)
-        .write_headers(false)
-);
-sink.write_batch(&batch_2).await?;
-sink.flush().await?;
-```
-
-### Without header row
-
-```rust
-let config = CsvSinkConfig::new("/tmp/data.csv")
-    .write_headers(false);
-
-let sink = CsvSink::new(config);
-sink.write_batch(&records).await?;
-sink.flush().await?;
-```
-
-## How It Works
-
-- The file is opened lazily on the first `write_batch()` call. Column order is the union of keys across the records of the first `write_batch()` call.
-- Missing parent directories of `path` are created automatically (equivalent to `mkdir -p`) before the file is opened, matching the behaviour of the parquet sink. Dated-subdirectory paths such as `./data/dt=2026-03-08/part.csv` work without any pre-creation step.
-- All CSV I/O runs inside `tokio::task::spawn_blocking` to avoid blocking the async runtime.
-- A `Mutex` protects the writer state (column order + csv::Writer) for thread-safe access.
-- Headers are written only on file creation (not in append mode) when `write_headers` is `true`.
-- Multiple `write_batch()` calls accumulate rows in the same file using the same column order.
-- Call `flush()` to ensure all buffered data is written to disk before dropping the sink or reading the file.
-
-## Compression
-
-Behind the crate-local `compression` Cargo feature. Adds a `compression` config
-field with values `none`, `gzip`, `zstd`, or `auto` (the default — detects
-`.gz` / `.zst` from the file path / object key).
-
-YAML example:
-
-```yaml
-kind: csv
-config:
-  # ... existing fields ...
-  compression: auto  # or 'gzip' | 'zstd' | 'none'
-```
-
-`flush()` explicitly finalises the compression encoder (writing the gzip/zstd trailer) and propagates any trailer-write I/O error, rather than swallowing it on drop — so a bookmark never advances over a truncated/corrupt file. Subsequent writes append a fresh member. Headers are emitted only on the first open.
+1. The file is opened **lazily** on the first `write_batch` call. Column order is computed from the union of keys across that first batch's records.
+2. The first open obeys `config.append` (truncate when `false`). A `Mutex` guards the writer state (column order + `csv::Writer`) for thread-safe access.
+3. Each record's cells are written in column order; missing fields become empty strings, and the `csv` crate applies RFC 4180 quoting automatically.
+4. All CSV I/O runs inside `tokio::task::spawn_blocking` so the async runtime is never blocked; the writer state is moved in and out of the `Mutex` across the blocking boundary (never held across an await).
+5. `flush()` finalises the writer (and the compression encoder, with its error surfaced) and **clears the writer slot**. A subsequent `write_batch` reopens the file in **append mode regardless of `config.append`**, so the pipeline's per-bookmark flush is safe for CDC-style sources — every transaction appends rather than truncates. The header is written only on the very first open.
+6. The default `Sink` impl does **not** flush on `Drop` — always call `flush()` before dropping the sink or reading the file.
+7. `check()` (for `faucet doctor`) verifies the parent directory exists and is writable by creating then removing a temp file there; it never touches your actual output file.
 
 ## Lineage dataset URI
 
 `file://<path>` — e.g. `file:///tmp/output.csv`.
 
+## Feature flags
+
+| Feature | Default | Description |
+|---------|---------|-------------|
+| `compression` | off | Adds the `compression` config field (gzip / zstd) via `faucet-core/compression`. |
+
+Enable the connector itself in the CLI / umbrella via the `sink-csv` feature.
+
+## Troubleshooting / FAQ
+
+| Symptom | Likely cause & fix |
+|---------|--------------------|
+| `CSV sink expects JSON objects, got non-object record` | The source emits bare scalars or arrays. CSV needs columnar objects — shape records into objects upstream (e.g. a `set` / `select` transform) before this sink. |
+| A column present in some rows is missing from the file | The header is fixed from the **first** batch. A key that first appears in a *later* batch is dropped. Normalize the record shape upstream so every expected column is present in the first batch (e.g. `select`/`set`), or sort the source so a fully-populated record comes first. |
+| Output file is empty or truncated | The sink buffers; you must `flush()` before reading or exiting. With compression, an un-flushed file is missing its trailer and won't decode. |
+| Delimiter setting seems ignored | `delimiter` is the **byte value** (e.g. `9` for tab, `59` for semicolon), not the literal character. Setting `delimiter: ","` in YAML is wrong; use `delimiter: 44`. |
+| Header keeps repeating across runs | You're truncating each run but expected append, or vice versa. Set `append: true` + `write_headers: false` for incremental log-style files; the header is written only on the first (truncating) open. |
+| `failed to open CSV file …` / `failed to create parent directory …` | The path isn't writable. The sink creates parent dirs but can't fix permissions — check directory ownership/mode, or run `faucet doctor` to probe writability. |
+| Setting `batch_size` changes nothing | Expected — `batch_size` is a no-op for this per-record sink (present only for config parity). To bound per-page memory, set the **source's** `batch_size`. |
+| Fields with commas/newlines look fine but a downstream parser chokes | Output is RFC 4180-quoted. Ensure the consumer uses a real CSV parser (and the same delimiter), not a naive split-on-comma. |
+| `.gz` / `.zst` output isn't compressed | The `compression` feature isn't enabled, so the `compression` field is absent and ignored. Rebuild with `--features "sink-csv,compression"`. |
+
+## See also
+
+- [Connectors reference](https://pawansikawat.github.io/faucet-stream/reference/connectors.html) — the full connector capability matrix.
+- [Compression cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/compression.html) — gzip / zstd across file sinks.
+- [CLI reference](https://pawansikawat.github.io/faucet-stream/reference/cli.html) — `faucet run`, `faucet schema`, `faucet doctor`.
+- [`faucet-sink-jsonl`](https://crates.io/crates/faucet-sink-jsonl) — write JSON Lines to a file instead of delimited text.
+- [`faucet-sink-stdout`](https://crates.io/crates/faucet-sink-stdout) — TSV/JSON to a standard stream for debugging and piping.
+- [`faucet-source-csv`](https://crates.io/crates/faucet-source-csv) — read CSV files as a pipeline source.
+- [`faucet-core`](https://crates.io/crates/faucet-core) — the `Sink` trait this connector implements.
+
 ## License
 
-Licensed under MIT or Apache-2.0.
+Licensed under either of [Apache License, Version 2.0](https://www.apache.org/licenses/LICENSE-2.0) or [MIT license](https://opensource.org/licenses/MIT) at your option.
