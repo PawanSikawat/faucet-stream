@@ -25,6 +25,7 @@ pub mod pipeline;
 #[cfg(feature = "quality")]
 pub mod quality;
 pub mod replication;
+pub mod resilience;
 pub mod retry;
 pub mod schema;
 pub mod stage;
