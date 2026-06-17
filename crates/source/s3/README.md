@@ -5,141 +5,234 @@
 [![MSRV](https://img.shields.io/crates/msrv/faucet-source-s3.svg)](https://github.com/PawanSikawat/faucet-stream/blob/main/rust-toolchain.toml)
 [![License](https://img.shields.io/crates/l/faucet-source-s3.svg)](https://github.com/PawanSikawat/faucet-stream#license)
 
-An AWS S3 source that reads objects from a bucket and parses them as JSON Lines, JSON arrays, or raw text, with concurrent object reads via `buffer_unordered`.
+An **AWS S3** source that lists objects under a prefix and parses them as JSON Lines, a JSON array, or raw text. Part of the [faucet-stream](https://github.com/PawanSikawat/faucet-stream) ecosystem.
 
-Part of the [faucet-stream](https://github.com/PawanSikawat/faucet-stream) ecosystem.
+Built on the official `aws-sdk-s3` client (built once, reused across every read) with concurrent object fetches via `buffer_unordered`, it pulls a whole bucket prefix into any faucet-stream sink as fast as the storage and your parallelism allow. Point it at MinIO / LocalStack / Cloudflare R2 with a custom `endpoint_url`, and let the standard AWS credential chain handle auth.
+
+## Feature highlights
+
+- **Three file formats** — `json_lines` (one record per line), `json_array` (one record per array element), and `raw_text` (one `{key, content}` record per object).
+- **Parallel object reads** — up to `concurrency` objects fetched at once via `futures::buffer_unordered` (default 10).
+- **True line-level streaming** — for `json_lines` / `raw_text`, object bodies are decoded line-by-line via `tokio::io::AsyncBufReadExt`, so client memory is bounded at `O(batch_size)` regardless of file or scan size.
+- **Prefix listing with pagination** — handles truncated `ListObjectsV2` responses transparently and honours an optional `max_objects` cap.
+- **S3-compatible** — custom `endpoint_url` for MinIO, LocalStack, R2, and other S3-API services.
+- **Optional compression** — behind the `compression` feature: `gzip` / `zstd` / `auto` (suffix-detected per object key), so a single run can mix compressed and uncompressed objects.
+- **Matrix-friendly** — `${parent.field}` tokens in `prefix` are substituted per parent record in parent/child pipelines.
 
 ## Installation
 
 ```bash
+# As a library:
 cargo add faucet-source-s3
 cargo add tokio --features full
+
+# In the CLI (opt-in connector feature):
+cargo install faucet-cli --features source-s3
+
+# With compression support:
+cargo install faucet-cli --features "source-s3,compression"
 ```
 
 Or via the umbrella crate:
+
 ```bash
 cargo add faucet-stream --features source-s3
 ```
 
-## Quick Start
+`source-s3` is opt-in — it is not part of the CLI/umbrella default feature set.
 
-```rust
-use faucet_source_s3::{S3Source, S3SourceConfig};
-use faucet_core::Source;
+## Quick start
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let config = S3SourceConfig::new("my-data-bucket")
-        .prefix("exports/2025/")
-        .region("us-west-2");
-
-    let source = S3Source::new(config).await?;
-    let records = source.fetch_all().await?;
-
-    println!("Read {} records from S3", records.len());
-    Ok(())
-}
+```yaml
+# pipeline.yaml — faucet run pipeline.yaml
+version: 1
+name: s3_to_postgres
+pipeline:
+  source:
+    type: s3
+    config:
+      bucket: my-data-lake
+      prefix: events/2026/
+      region: us-east-1
+      file_format: json_lines
+      concurrency: 16
+  sink:
+    type: postgres
+    config:
+      connection_url: postgres://user:pass@localhost/warehouse
+      table_name: events_raw
+      column_mapping:
+        type: jsonb
+        column: payload
 ```
 
-## Configuration
+```bash
+export AWS_ACCESS_KEY_ID=...    # standard AWS credential chain
+export AWS_SECRET_ACCESS_KEY=...
+faucet run pipeline.yaml
+```
 
-### S3SourceConfig
+## Configuration reference
+
+### Core
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `bucket` | `String` | *(required)* | S3 bucket name |
-| `prefix` | `Option<String>` | `None` | Object key prefix filter. Only objects whose key starts with this prefix are read |
-| `region` | `Option<String>` | `None` | AWS region. `None` uses the SDK default (from env vars or instance metadata) |
-| `endpoint_url` | `Option<String>` | `None` | Custom endpoint URL for S3-compatible services (e.g. MinIO, LocalStack) |
-| `file_format` | `S3FileFormat` | `JsonLines` | Format of the files to read |
-| `max_objects` | `Option<usize>` | `None` | Maximum number of objects to read. `None` means read all matching objects |
-| `concurrency` | `usize` | `10` | Maximum number of concurrent object reads |
-| `batch_size` | `usize` | `1000` | Records per `StreamPage` emitted by `Source::stream_pages`. See [Streaming and batching](#streaming-and-batching) below |
+| `bucket` | string | *(required)* | S3 bucket name. |
+| `prefix` | string | *(none)* | Object-key prefix filter. Only objects whose key starts with this prefix are read. |
+| `region` | string | *(SDK chain)* | AWS region. `None` defers to the SDK default (env vars, profile, or instance metadata). |
+| `endpoint_url` | string | *(none)* | Custom endpoint URL for S3-compatible services (MinIO, LocalStack, R2). |
+| `file_format` | enum | `json_lines` | How object bodies are parsed — `json_lines`, `json_array`, or `raw_text`. See below. |
+| `max_objects` | int | *(all)* | Cap on the number of objects read. `None` reads every matching object. |
+| `concurrency` | int | `10` | Maximum number of objects fetched concurrently. Clamped to `≥ 1` at runtime. |
+| `batch_size` | int | `1000` | Records per emitted `StreamPage`. See [Streaming & batching](#streaming--batching). Rejected above `MAX_BATCH_SIZE` (1,000,000) by `faucet_core::validate_batch_size`. |
+| `compression` | enum | `auto` | *(requires the `compression` feature)* Per-object decompression codec — `none` / `gzip` / `zstd` / `auto`. |
 
-### Streaming and batching
+### File formats (`S3FileFormat`)
 
-`S3Source::stream_pages` lists objects matching the configured prefix and
-streams their records into `StreamPage`s without buffering the full scan.
-The exact behaviour depends on `file_format`:
+| Variant | Wire value | Record output |
+|---------|-----------|---------------|
+| JSON Lines (default) | `json_lines` | One record per non-empty line. Blank lines are skipped. |
+| JSON array | `json_array` | One record per array element. The object must be a top-level JSON array. |
+| Raw text | `raw_text` | One record per object: `{"key": "<object-key>", "content": "<file-text>"}`. |
 
-- **`JsonLines`** — the object body is decoded line-by-line via
-  `tokio::io::AsyncBufReadExt::lines`, so client-side memory is bounded at
-  `O(batch_size)` lines regardless of file or scan size. Records flow
-  across object boundaries — a single page may carry lines drawn from
-  multiple objects.
-- **`RawText`** — each object contributes exactly one record
-  (`{"key": ..., "content": ...}`). The contract requires the whole file
-  as a single string, so the object is necessarily held in memory once,
-  but it is streamed straight into that one `String` via the same
-  decoding reader `JsonLines` uses (no separate raw + decompressed copies
-  for compressed objects). Records are then accumulated into the same
-  `batch_size` buffer JsonLines uses.
-- **`JsonArray`** — the array can only be validated once the closing `]`
-  is observed, so each object is buffered fully and then its records are
-  chunked into pages of `batch_size`. This bounds *page* size at
-  `batch_size` but not *peak per-object* memory — sources that must
-  stream arbitrarily large array files should be re-emitted as `JsonLines`
-  upstream. The default `batch_size = 1000` keeps allocation reasonable
-  for typical sizes.
+## Authentication
 
-> **Memory ceiling — `RawText` / `JsonArray`.** Both formats hold one
-> whole decoded object in memory at a time (this is inherent: `RawText`'s
-> record *is* the whole file, and a JSON array isn't valid until its
-> closing `]`). Because objects are fetched concurrently, peak memory is
-> bounded by roughly **`concurrency` × (largest object's decoded size)**,
-> not by `batch_size`. If you read large `RawText` / `JsonArray` objects,
-> lower `concurrency` to cap peak memory, or re-emit the data as
-> `JsonLines` upstream so it streams line-by-line at `O(batch_size)`.
+This source uses the **standard AWS SDK credential chain** — there are no credential fields in the config. Credentials resolve automatically, in order:
 
-`batch_size = 0` is the **"no batching" sentinel**: every emitted
-`StreamPage` corresponds to exactly one S3 object — no within-object
-chunking and no cross-object accumulation. Use it for small lookup files,
-or for downstream sinks (SQL `COPY`, BigQuery load jobs, Snowflake stage
-uploads) that prefer one large request per file to many small ones.
-Values larger than `MAX_BATCH_SIZE` (1,000,000) are rejected by
-`faucet_core::validate_batch_size`.
+1. Environment variables — `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`.
+2. Shared AWS config files — `~/.aws/credentials`, `~/.aws/config` (honours `AWS_PROFILE`).
+3. IAM roles — EC2 instance metadata, ECS task roles, or Lambda execution roles.
 
-The S3 source has no incremental-replication mode today, so every emitted
-page carries `bookmark: None`.
+For MinIO / LocalStack, set `endpoint_url` and supply the service's access/secret keys via the same environment variables.
 
-> **Note** — `JsonArray` streaming is bounded at one full object in memory
-> at a time. True incremental JSON-array parsing (e.g. via
-> `serde_json::StreamDeserializer` over an `AsyncRead`) is a separate
-> follow-up; today the parse happens after the body is fully buffered.
+## Examples
 
-### File Formats (S3FileFormat)
+### JSON array files from MinIO (S3-compatible)
 
-| Variant | Description | Record Output |
-|---------|-------------|---------------|
-| `JsonLines` (default) | Each line in the file is a separate JSON record | One record per non-empty line |
-| `JsonArray` | The entire file is a JSON array of records | One record per array element |
-| `RawText` | Each file becomes a single record | `{"key": "<object-key>", "content": "<file-text>"}` |
+```yaml
+version: 1
+pipeline:
+  source:
+    type: s3
+    config:
+      bucket: local-bucket
+      prefix: exports/
+      region: us-east-1
+      endpoint_url: http://localhost:9000
+      file_format: json_array
+  sink:
+    type: jsonl
+    config:
+      path: ./exports.jsonl
+```
 
-## Config Loading
+### Raw text files into a document store
 
-```rust
+```yaml
+version: 1
+pipeline:
+  source:
+    type: s3
+    config:
+      bucket: documents-bucket
+      prefix: reports/
+      file_format: raw_text
+      max_objects: 50
+  sink:
+    type: mongodb
+    config:
+      connection_url: mongodb://localhost:27017
+      database: lake
+      collection: reports
+```
+
+Each record is `{"key": "reports/q1.txt", "content": "…"}`.
+
+### Compressed JSONL with auto codec detection
+
+```yaml
+version: 1
+pipeline:
+  source:
+    type: s3
+    config:
+      bucket: my-data-lake
+      prefix: logs/2026/
+      file_format: json_lines
+      concurrency: 32
+      compression: auto    # .gz → gzip, .zst → zstd, otherwise none
+  sink:
+    type: stdout
+    config:
+      format: jsonl
+```
+
+`auto` resolves the codec per object key, so a prefix holding a mix of `.jsonl`, `.jsonl.gz`, and `.jsonl.zst` objects all read correctly in one run. Requires building with the `compression` feature.
+
+### One page per object for a load-job sink
+
+```yaml
+version: 1
+pipeline:
+  source:
+    type: s3
+    config:
+      bucket: my-data-lake
+      prefix: staging/
+      file_format: json_lines
+      batch_size: 0      # one StreamPage per S3 object
+  sink:
+    type: bigquery
+    config:
+      project_id: my-project
+      dataset_id: analytics
+      table_id: events
+```
+
+## Streaming & batching
+
+`S3Source` implements `Source::stream_pages`: it lists matching objects, then streams their records into `StreamPage`s without buffering the whole scan. The per-page record count comes from the config `batch_size` field (the trait-level `batch_size` argument is ignored so a pipeline hint can't silently override an explicit config value).
+
+Behaviour by format:
+
+- **`json_lines`** — the object body is decoded line-by-line via `tokio::io::AsyncBufReadExt::lines`, so client-side memory stays bounded at `O(batch_size)` lines regardless of file or scan size. Records flow across object boundaries — a single page may carry lines drawn from multiple objects.
+- **`raw_text`** — each object contributes exactly one `{key, content}` record. The whole body is held in one `String` (the record *is* the file), then accumulated into the same `batch_size` buffer.
+- **`json_array`** — the array can only be validated once the closing `]` is observed, so each object is buffered fully, then its elements are chunked into pages of `batch_size`. This bounds *page* size but not *peak per-object* memory.
+
+`batch_size = 0` is the **"no batching" sentinel**: every emitted `StreamPage` corresponds to exactly one S3 object — no within-object chunking and no cross-object accumulation. Use it for small lookup files, or for downstream sinks (SQL `COPY`, BigQuery load jobs, Snowflake stage uploads) that prefer one large request per file to many small ones.
+
+> **Memory ceiling — `raw_text` / `json_array`.** Both formats hold one whole decoded object in memory at a time (inherent: `raw_text`'s record *is* the file, and a JSON array isn't valid until its closing `]`). Because objects are fetched concurrently, peak memory is roughly **`concurrency` × (largest object's decoded size)**, not `batch_size`. For large `raw_text` / `json_array` objects, lower `concurrency` to cap peak memory, or re-emit the data as `json_lines` upstream so it streams line-by-line.
+
+The S3 source has **no incremental-replication mode** today, so every emitted page carries `bookmark: None`. It does not implement resume/state, exactly-once, write modes, or a dead-letter queue (those are sink- or CDC-source-specific capabilities).
+
+## Compression
+
+Behind the crate-local `compression` Cargo feature. Adds the `compression` config field with values `none`, `gzip`, `zstd`, or `auto` (the default — detects `.gz` / `.zst` from the object key).
+
+```yaml
+type: s3
+config:
+  bucket: my-data-lake
+  prefix: logs/
+  compression: auto    # or 'gzip' | 'zstd' | 'none'
+```
+
+The codec resolves per object key at read time, so a single source can read a mix of compressed and uncompressed objects in one run. When an explicit codec disagrees with the key suffix, a one-time warning is logged. Decompression is streamed straight into the line reader — there is no separate raw + decompressed copy held at once.
+
+## Config loading
+
+```rust,no_run
 use faucet_core::config::{load_json, load_env_file};
 use faucet_source_s3::S3SourceConfig;
 
+# fn example() -> Result<(), Box<dyn std::error::Error>> {
 let config: S3SourceConfig = load_json("config.json")?;
 let config: S3SourceConfig = load_env_file(".env", "S3_SOURCE")?;
+# Ok(()) }
 ```
 
-### Example JSON config
-
-```json
-{
-  "bucket": "my-data-lake",
-  "prefix": "raw/events/2025-03/",
-  "region": "us-east-1",
-  "file_format": "json_lines",
-  "max_objects": 100,
-  "concurrency": 20,
-  "batch_size": 5000
-}
-```
-
-### Example .env file
+Example `.env`:
 
 ```env
 S3_SOURCE_BUCKET=my-data-lake
@@ -148,104 +241,87 @@ S3_SOURCE_REGION=us-east-1
 S3_SOURCE_CONCURRENCY=10
 ```
 
-## Config Schema Introspection
+## Schema introspection
 
-```rust
+```bash
+faucet schema source s3
+```
+
+Programmatically:
+
+```rust,no_run
 use faucet_core::Source;
-
-let source = S3Source::new(config).await?;
+# async fn example(source: faucet_source_s3::S3Source) -> Result<(), Box<dyn std::error::Error>> {
 let schema = source.config_schema();
 println!("{}", serde_json::to_string_pretty(&schema)?);
+# Ok(()) }
 ```
 
-## Examples
+## Library usage
 
-### Reading JSON Lines files from S3
-
-```rust
-use faucet_source_s3::{S3Source, S3SourceConfig};
-use faucet_core::Source;
-
-let config = S3SourceConfig::new("analytics-bucket")
-    .prefix("logs/2025/03/")
-    .region("us-west-2")
-    .concurrency(20);
-
-let source = S3Source::new(config).await?;
-let records = source.fetch_all().await?;
-println!("Read {} log records", records.len());
-```
-
-### Reading JSON array files from MinIO
-
-```rust
+```rust,no_run
 use faucet_source_s3::{S3Source, S3SourceConfig, S3FileFormat};
 use faucet_core::Source;
 
-let config = S3SourceConfig::new("local-bucket")
-    .endpoint_url("http://localhost:9000")
-    .region("us-east-1")
-    .file_format(S3FileFormat::JsonArray)
-    .prefix("exports/");
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let config = S3SourceConfig::new("my-data-bucket")
+        .prefix("exports/2026/")
+        .region("us-west-2")
+        .file_format(S3FileFormat::JsonLines)
+        .concurrency(20)
+        .with_batch_size(5000);
 
-let source = S3Source::new(config).await?;
-let records = source.fetch_all().await?;
-```
-
-### Reading raw text files
-
-```rust
-use faucet_source_s3::{S3Source, S3SourceConfig, S3FileFormat};
-use faucet_core::Source;
-
-let config = S3SourceConfig::new("documents-bucket")
-    .prefix("reports/")
-    .file_format(S3FileFormat::RawText)
-    .max_objects(50);
-
-let source = S3Source::new(config).await?;
-let records = source.fetch_all().await?;
-
-// Each record has "key" and "content" fields
-for record in &records {
-    println!("File: {}, Size: {} bytes",
-        record["key"].as_str().unwrap(),
-        record["content"].as_str().unwrap().len()
-    );
+    let source = S3Source::new(config).await?;
+    let records = source.fetch_all().await?;
+    println!("Read {} records from S3", records.len());
+    Ok(())
 }
 ```
 
-## AWS Authentication
+To run a full pipeline, wrap the source with any sink in `faucet_core::Pipeline` or drive `faucet_core::run_stream` for bounded-memory streaming.
 
-This source uses the standard AWS SDK credential chain. Credentials are resolved automatically from (in order):
+## How it works
 
-1. Environment variables (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`)
-2. AWS config files (`~/.aws/credentials`, `~/.aws/config`)
-3. IAM instance roles (on EC2/ECS/Lambda)
+- **Client reuse** — the `aws-sdk-s3` `Client` is built once in `S3Source::new()` (resolving region and `endpoint_url`) and reused for every list and get. No per-object client construction.
+- **Paginated listing** — `list_objects_v2` follows `next_continuation_token` until the response is no longer truncated, stopping early once `max_objects` is reached.
+- **Parallel reads** — listed keys are read through `futures::stream::buffer_unordered(concurrency)`, so up to `concurrency` `GetObject` calls are in flight at once.
+- **Streaming decode** — `json_lines` / `raw_text` open each body as an `AsyncBufRead` and decode line-by-line; only `json_array` buffers a full object before parsing.
 
-No credential fields are included in the config -- use the standard AWS environment instead.
-
-## Compression
-
-Behind the crate-local `compression` Cargo feature. Adds a `compression` config
-field with values `none`, `gzip`, `zstd`, or `auto` (the default — detects
-`.gz` / `.zst` from the file path / object key).
-
-YAML example:
-
-```yaml
-kind: s3
-config:
-  # ... existing fields ...
-  compression: auto  # or 'gzip' | 'zstd' | 'none'
-```
-
-The codec resolves per object key, so a single source can read a mix of compressed and uncompressed objects in one run.
+Throughput scales with `concurrency` and is ultimately bounded by S3 / network bandwidth — benchmark with your own object sizes and parallelism.
 
 ## Lineage dataset URI
 
 `s3://<bucket>` or `s3://<bucket>/<prefix>` — e.g. `s3://my-bucket/data/2026/`.
 
+## Feature flags
+
+| Feature | Default | Effect |
+|---------|---------|--------|
+| `compression` | off | Adds the `compression` config field (`none`/`gzip`/`zstd`/`auto`); pulls in `faucet-core/compression`. |
+
+Enable the connector itself in the CLI/umbrella via the `source-s3` feature.
+
+## Troubleshooting / FAQ
+
+| Symptom | Likely cause & fix |
+|---------|--------------------|
+| `S3 list objects error … 403` / credential errors | Credentials missing from the AWS chain, or wrong region. Set `region` and the AWS env vars / profile (or an IAM role). |
+| `S3 get object error … NoSuchBucket` | `bucket` is wrong, or the region doesn't match the bucket's region. Verify both. |
+| `S3 JSON parse error in '<key>' at line N` | A line in a `json_lines` object isn't valid JSON. Fix the source data, or switch to the format that matches the file. |
+| `S3 expected JSON array in '<key>', got object` | `file_format: json_array` but the object isn't a top-level array. Use `json_lines` or `raw_text` instead. |
+| `S3 read/decode error … not valid UTF-8?` | The object isn't UTF-8 text. This source reads text formats only; binary blobs aren't supported. |
+| No records and no error | The `prefix` matched no objects (note S3 prefixes are case-sensitive and don't imply a trailing `/`), or `max_objects` is `0`. Check the prefix. |
+| `compression` field rejected as unknown | The crate was built without the `compression` feature. Rebuild with `--features compression`. |
+| Connecting to MinIO / LocalStack fails | Set `endpoint_url` to the service URL (e.g. `http://localhost:9000`) and supply the service's keys via the AWS env vars. |
+| Out-of-memory on large `raw_text` / `json_array` objects | These formats buffer a whole object; peak memory ≈ `concurrency` × largest object. Lower `concurrency`, or re-emit as `json_lines`. |
+| `batch_size` rejected at load | Value exceeds `MAX_BATCH_SIZE` (1,000,000). Use a smaller value, or `0` for the no-batching sentinel. |
+
+## See also
+
+- [Connector reference](https://pawansikawat.github.io/faucet-stream/reference/connectors.html) · [Compression cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/compression.html)
+- Related crates: [faucet-sink-s3](https://crates.io/crates/faucet-sink-s3) · [faucet-source-gcs](https://crates.io/crates/faucet-source-gcs) · [faucet-source-parquet](https://crates.io/crates/faucet-source-parquet)
+
 ## License
 
-Licensed under MIT or Apache-2.0.
+Licensed under either of [Apache License, Version 2.0](https://www.apache.org/licenses/LICENSE-2.0) or [MIT license](https://opensource.org/licenses/MIT) at your option.
