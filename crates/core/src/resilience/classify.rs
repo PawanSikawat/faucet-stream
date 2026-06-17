@@ -5,7 +5,17 @@ use crate::error::FaucetError;
 
 /// The transient-failure class an error belongs to. Closed set so it can be a
 /// bounded metric label and a `retry_on` config value.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Hash,
+    serde::Serialize,
+    serde::Deserialize,
+    schemars::JsonSchema,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum RetryClass {
     /// HTTP 5xx server error.
@@ -76,9 +86,11 @@ pub fn classify(err: &FaucetError) -> Option<RetryClass> {
         FaucetError::HttpStatus { status, .. } if *status == 429 => Some(RetryClass::RateLimited),
         FaucetError::HttpStatus { status, .. } if *status >= 500 => Some(RetryClass::Http5xx),
         FaucetError::RateLimited(_) => Some(RetryClass::RateLimited),
-        FaucetError::Http(e) => {
-            classify_transport(e.is_timeout(), e.status().map(|s| s.as_u16()), e.is_connect())
-        }
+        FaucetError::Http(e) => classify_transport(
+            e.is_timeout(),
+            e.status().map(|s| s.as_u16()),
+            e.is_connect(),
+        ),
         _ => None,
     }
 }
@@ -122,11 +134,19 @@ mod tests {
     #[test]
     fn classifies_5xx_429_and_rate_limited() {
         assert_eq!(
-            classify(&FaucetError::HttpStatus { status: 503, url: "u".into(), body: "".into() }),
+            classify(&FaucetError::HttpStatus {
+                status: 503,
+                url: "u".into(),
+                body: "".into()
+            }),
             Some(RetryClass::Http5xx)
         );
         assert_eq!(
-            classify(&FaucetError::HttpStatus { status: 429, url: "u".into(), body: "".into() }),
+            classify(&FaucetError::HttpStatus {
+                status: 429,
+                url: "u".into(),
+                body: "".into()
+            }),
             Some(RetryClass::RateLimited)
         );
         assert_eq!(
@@ -138,16 +158,34 @@ mod tests {
     #[test]
     fn transport_classification_covers_every_arm() {
         // Timeout wins regardless of status.
-        assert_eq!(classify_transport(true, None, false), Some(RetryClass::Timeout));
-        assert_eq!(classify_transport(true, Some(500), true), Some(RetryClass::Timeout));
+        assert_eq!(
+            classify_transport(true, None, false),
+            Some(RetryClass::Timeout)
+        );
+        assert_eq!(
+            classify_transport(true, Some(500), true),
+            Some(RetryClass::Timeout)
+        );
         // Status-bearing transport errors.
-        assert_eq!(classify_transport(false, Some(503), false), Some(RetryClass::Http5xx));
-        assert_eq!(classify_transport(false, Some(429), false), Some(RetryClass::RateLimited));
+        assert_eq!(
+            classify_transport(false, Some(503), false),
+            Some(RetryClass::Http5xx)
+        );
+        assert_eq!(
+            classify_transport(false, Some(429), false),
+            Some(RetryClass::RateLimited)
+        );
         // A non-5xx/429 status is not transient.
         assert_eq!(classify_transport(false, Some(404), false), None);
         // Statusless: connect and other transport errors are connection-class.
-        assert_eq!(classify_transport(false, None, true), Some(RetryClass::Connection));
-        assert_eq!(classify_transport(false, None, false), Some(RetryClass::Connection));
+        assert_eq!(
+            classify_transport(false, None, true),
+            Some(RetryClass::Connection)
+        );
+        assert_eq!(
+            classify_transport(false, None, false),
+            Some(RetryClass::Connection)
+        );
     }
 
     #[test]

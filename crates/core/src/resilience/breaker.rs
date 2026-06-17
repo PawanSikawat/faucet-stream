@@ -11,7 +11,10 @@ pub struct CircuitBreaker {
 impl CircuitBreaker {
     /// New breaker that opens after `threshold` consecutive failures.
     pub fn new(threshold: u32) -> Self {
-        Self { threshold: threshold.max(1), consecutive: 0 }
+        Self {
+            threshold: threshold.max(1),
+            consecutive: 0,
+        }
     }
 
     /// Record a success; resets the consecutive counter.

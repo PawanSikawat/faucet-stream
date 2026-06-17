@@ -22,9 +22,7 @@ impl BackoffKind {
         match self {
             BackoffKind::None => Duration::ZERO,
             BackoffKind::Fixed => base.min(max),
-            BackoffKind::Exponential => base
-                .saturating_mul(2u32.saturating_pow(attempt))
-                .min(max),
+            BackoffKind::Exponential => base.saturating_mul(2u32.saturating_pow(attempt)).min(max),
         }
     }
 }
@@ -118,7 +116,9 @@ mod tests {
         let p = RetryPolicy::default();
         assert_eq!(p.max_attempts, 5);
         assert!(p.is_retriable(&FaucetError::HttpStatus {
-            status: 500, url: "u".into(), body: "".into()
+            status: 500,
+            url: "u".into(),
+            body: "".into()
         }));
         assert!(!p.is_retriable(&FaucetError::Auth("x".into())));
     }
@@ -130,11 +130,15 @@ mod tests {
             ..RetryPolicy::default()
         };
         assert!(p.is_retriable(&FaucetError::HttpStatus {
-            status: 500, url: "u".into(), body: "".into()
+            status: 500,
+            url: "u".into(),
+            body: "".into()
         }));
         // 429 classifies RateLimited, which is not opted in.
         assert!(!p.is_retriable(&FaucetError::HttpStatus {
-            status: 429, url: "u".into(), body: "".into()
+            status: 429,
+            url: "u".into(),
+            body: "".into()
         }));
     }
 
