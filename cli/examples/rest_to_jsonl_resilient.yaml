@@ -1,0 +1,39 @@
+# Resilient REST -> JSONL pipeline.
+#
+# Demonstrates the top-level `resilience:` policy: transient-failure retry with
+# exponential backoff, a circuit breaker that fails the run fast when the sink is
+# wedged, and poison-pill row handling that routes persistently-failing rows to
+# the DLQ instead of looping. The block is fully opt-in: remove it and the
+# pipeline behaves exactly as before (no sink-write retry).
+version: 1
+name: resilient_rest_to_jsonl
+pipeline:
+  source:
+    kind: rest
+    config:
+      endpoint: "https://api.example.com/v1/items"
+  sink:
+    kind: jsonl
+    config:
+      path: "./out/items.jsonl"
+  # Poison-pill `action: dlq` (below) requires a DLQ to be configured.
+  dlq:
+    sink:
+      kind: jsonl
+      config:
+        path: "./out/items.dlq.jsonl"
+resilience:
+  retry:
+    max_attempts: 5            # total tries including the first (1 = no retry)
+    backoff: exponential       # none | fixed | exponential
+    base_ms: 200
+    max_ms: 30000              # per-sleep cap, before jitter
+    jitter: true
+  # Which transient error classes are retried. Default = all four.
+  retry_on: [http_5xx, rate_limited, connection, timeout]
+  circuit_breaker:
+    consecutive_failures: 5    # consecutive fully-failed pages before the circuit opens
+    cooldown_secs: 60          # advisory: `faucet schedule` waits this long before the next tick
+  poison:
+    max_row_attempts: 3        # per-row write attempts before applying `action`
+    action: dlq                # dlq | drop | fail

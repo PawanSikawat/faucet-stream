@@ -23,6 +23,7 @@
 - [Upsert / mirror tables](./cookbook/upsert.md)
 - [Replication (snapshot → CDC)](./cookbook/replication.md)
 - [Dead-letter queues](./cookbook/dlq.md)
+- [Resilience (retry / circuit breaker / poison-pill)](./cookbook/resilience.md)
 - [Data-quality checks](./cookbook/quality.md)
 - [Compression](./cookbook/compression.md)
 - [Record transforms](./cookbook/transforms.md)
