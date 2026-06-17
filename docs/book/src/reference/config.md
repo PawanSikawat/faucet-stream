@@ -330,6 +330,52 @@ See the [Adaptive batching cookbook](../cookbook/adaptive-batching.md) for a
 full worked example, the AIMD trajectory, and the four Prometheus metrics
 (`faucet_pipeline_adaptive_batch_*`).
 
+## `resilience`
+
+Optional top-level block giving the pipeline one declarative place to configure
+retry, a circuit breaker, and per-row poison-pill handling. Fully opt-in: with
+no `resilience:` block, sink writes are not retried and source connectors keep
+their built-in retry defaults. See the
+[Resilience cookbook](../cookbook/resilience.md) for the full model, composition
+notes, and metrics.
+
+```yaml
+resilience:
+  retry:
+    max_attempts: 5            # total tries including the first (1 = no retry)
+    backoff: exponential       # none | fixed | exponential
+    base_ms: 200
+    max_ms: 30000              # per-sleep cap, before jitter
+    jitter: true
+  retry_on: [http_5xx, rate_limited, connection, timeout]
+  circuit_breaker:
+    consecutive_failures: 5
+    cooldown_secs: 60
+  poison:
+    max_row_attempts: 3
+    action: dlq                # dlq | drop | fail
+```
+
+- **`retry`** — `max_attempts` (default `5`; `1` disables retry), `backoff`
+  (`none` / `fixed` / `exponential`, default `exponential`), `base_ms` (default
+  `200`), `max_ms` (per-sleep cap, default `30000`), `jitter` (default `true`,
+  applies `[0.5, 1.5)` decorrelated jitter).
+- **`retry_on`** — the transient error classes that are retried:
+  `http_5xx` (HTTP 5xx), `rate_limited` (HTTP 429 / rate-limit signals),
+  `connection` (DNS / refused / reset), `timeout` (request timeouts). Omit for
+  all four; an empty list is rejected at config load.
+- **`circuit_breaker`** — `consecutive_failures` consecutive fully-failed pages
+  open the breaker and fail the run with a `CircuitOpen` error;
+  `cooldown_secs` is advisory for `faucet schedule` (delays the next cron tick).
+- **`poison`** — per-row DLQ-path handling: `max_row_attempts` re-submits a
+  still-failing retriable row before the terminal `action` — `dlq` (requires a
+  `dlq:` block), `drop`, or `fail`.
+
+The `rest` source's legacy `max_retries` / `retry_backoff` fields win when set
+explicitly; otherwise the injected policy's `max_attempts` + `base` apply (its
+`retry_on` / `max` / `jitter` are inert on REST, honored on `xml` / `graphql`
+and on every sink-side write).
+
 ## `replication`
 
 Present only when you run [`faucet replicate`](cli.md#replicate). It turns the

@@ -292,7 +292,7 @@ To wire it into a pipeline, hand the `XmlStream` to `faucet_core::Pipeline` (bat
 ## How it works
 
 1. `new()` builds the `reqwest` client **once** and stores it on the struct.
-2. Each page issues one request (`base_url + path` with `query_params` + the pagination param), retried up to **3 times** with exponential backoff (base 500 ms) on transient failures via `faucet_core::execute_with_retry`. Non-cloneable request bodies are not retried (surfaced as `FaucetError::Source`).
+2. Each page issues one request (`base_url + path` with `query_params` + the pagination param), retried up to **3 times** with exponential backoff (base 500 ms) on transient failures via `faucet_core::execute_with_retry`. Non-cloneable request bodies are not retried (surfaced as `FaucetError::Source`). When driven by the CLI, a pipeline-level [`resilience:`](https://pawansikawat.github.io/faucet-stream/cookbook/resilience.html) block replaces these built-in retry defaults with one shared policy — XML honors the policy's `max_attempts`, `base`, `max`, `jitter`, and `retry_on` in full.
 3. The response is converted XML → JSON and `records_element_path` is walked to find the repeating element.
 4. Records are buffered and yielded as `StreamPage`s of `batch_size`; pagination advances until the stop condition or `max_pages`.
 

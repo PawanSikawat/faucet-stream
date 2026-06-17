@@ -139,6 +139,13 @@ impl RestStream {
     /// injected `policy` is ignored — an explicit per-connector setting is never
     /// silently overridden by a pipeline-wide default. When both fields are at
     /// their defaults, the injected policy takes effect.
+    ///
+    /// **Inert fields on REST:** because the REST source keeps its own
+    /// `429`/`Retry-After`-aware retry runner, it honors only the injected
+    /// policy's `max_attempts` (→ `max_retries`) and `base` (→ `retry_backoff`).
+    /// The policy's `max` (per-sleep cap), `jitter`, and `retry_on` fields are
+    /// **not** honored here — they apply on the `xml`/`graphql` sources and on
+    /// every sink-side write.
     pub fn with_retry_policy(mut self, policy: faucet_core::RetryPolicy) -> Self {
         let user_changed_legacy_fields = self.config.max_retries != DEFAULT_MAX_RETRIES
             || self.config.retry_backoff != DEFAULT_RETRY_BACKOFF;

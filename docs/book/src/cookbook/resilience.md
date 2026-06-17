@@ -83,6 +83,10 @@ scheduler waits at least `cooldown_secs` before the next tick. A one-shot
 `faucet run` simply exits non-zero; `faucet serve` records the run as failed
 (no automatic re-run).
 
+> The cooldown only delays the scheduler's next cron-tick re-entry. An overlap
+> run that is **already queued** (`overlap: queue`) starts immediately when the
+> active run finishes — it is not delayed by the cooldown.
+
 ## `poison`
 
 Per-row handling for the DLQ path. When `write_batch_partial` reports individual
