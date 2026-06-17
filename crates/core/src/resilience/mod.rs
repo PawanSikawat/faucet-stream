@@ -9,7 +9,7 @@ mod policy;
 
 pub use breaker::CircuitBreaker;
 pub use classify::{RetryClass, RetryClassSet, classify};
-pub use execute::execute_with_policy;
+pub use execute::{RetryMetrics, execute_with_policy, execute_with_policy_metered};
 pub use policy::{
     BackoffKind, CircuitBreakerConfig, PoisonAction, PoisonPolicy, ResiliencePolicy, RetryPolicy,
 };

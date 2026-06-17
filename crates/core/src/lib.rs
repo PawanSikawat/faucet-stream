@@ -61,8 +61,9 @@ pub use pipeline::{
 };
 pub use replication::ReplicationMethod;
 pub use resilience::{
-    BackoffKind, CircuitBreaker, CircuitBreakerConfig, PoisonAction, PoisonPolicy, ResiliencePolicy,
-    RetryClass, RetryClassSet, RetryPolicy, classify, execute_with_policy,
+    BackoffKind, CircuitBreaker, CircuitBreakerConfig, PoisonAction, PoisonPolicy,
+    ResiliencePolicy, RetryClass, RetryClassSet, RetryMetrics, RetryPolicy, classify,
+    execute_with_policy, execute_with_policy_metered,
 };
 pub use retry::execute_with_retry;
 #[cfg(feature = "transform-cdc-unwrap")]
