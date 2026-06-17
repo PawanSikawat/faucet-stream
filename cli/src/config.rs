@@ -1412,7 +1412,7 @@ pipeline:
   sink: { type: stdout, config: {} }
 resilience:
   retry: { max_attempts: 4, backoff: exponential, base_ms: 100, max_ms: 5000, jitter: true }
-  retry_on: [http5xx, timeout]
+  retry_on: [http_5xx, timeout]
   circuit_breaker: { consecutive_failures: 3, cooldown_secs: 30 }
   poison: { max_row_attempts: 2, action: dlq }
 "#;

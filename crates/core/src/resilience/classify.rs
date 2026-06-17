@@ -19,6 +19,7 @@ use crate::error::FaucetError;
 #[serde(rename_all = "snake_case")]
 pub enum RetryClass {
     /// HTTP 5xx server error.
+    #[serde(rename = "http_5xx")]
     Http5xx,
     /// HTTP 429 / rate-limit signal.
     RateLimited,
@@ -195,6 +196,30 @@ mod tests {
         assert_eq!(classify(&FaucetError::Auth("x".into())), None);
         assert_eq!(classify(&FaucetError::Config("x".into())), None);
         assert_eq!(classify(&FaucetError::Sink("x".into())), None);
+    }
+
+    #[test]
+    fn retry_class_serde_round_trips() {
+        use serde_json::json;
+        // Http5xx serializes/deserializes as `http_5xx`, matching the metric
+        // label and the docs/example config value.
+        assert_eq!(
+            serde_json::from_value::<RetryClass>(json!("http_5xx")).unwrap(),
+            RetryClass::Http5xx
+        );
+        assert_eq!(
+            serde_json::to_value(RetryClass::Http5xx).unwrap(),
+            json!("http_5xx")
+        );
+        // The other three round-trip via their snake_case names.
+        for (s, c) in [
+            ("rate_limited", RetryClass::RateLimited),
+            ("connection", RetryClass::Connection),
+            ("timeout", RetryClass::Timeout),
+        ] {
+            assert_eq!(serde_json::from_value::<RetryClass>(json!(s)).unwrap(), c);
+            assert_eq!(serde_json::to_value(c).unwrap(), json!(s));
+        }
     }
 
     #[test]
