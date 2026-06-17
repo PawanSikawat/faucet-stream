@@ -537,10 +537,6 @@ where
             cb.cooldown,
         )
     });
-    // `breaker` is consumed by the DLQ path (Task 9); silence the unused
-    // warning until then without disabling it for the whole function.
-    let _ = &mut breaker;
-
     // Run a sink/state op under the retry policy, or bare if no policy is set.
     // A macro (not a closure) so it works across the differently-typed call
     // sites (`Result<usize, _>`, `Result<(), _>`) without boxing. `cancel` is
@@ -675,7 +671,13 @@ where
                             }
                             let chunk = &page.records[offset..offset + size];
                             let t0 = std::time::Instant::now();
-                            let chunk_outcomes_result = sink.write_batch_partial(chunk).await;
+                            // Wrap the partial write with the retry policy so a
+                            // whole-batch transient `Err` (a 5xx / connection
+                            // drop the sink reports at the outer level) is
+                            // retried before the `on_batch_error` decision.
+                            // Inert when no policy is attached.
+                            let chunk_outcomes_result =
+                                with_retry!(sink.write_batch_partial(chunk));
                             let latency = t0.elapsed();
                             // `chunk_synthesized` is true only when this chunk's
                             // outcomes were fabricated from a single outer
@@ -756,6 +758,27 @@ where
                         // the threshold are still written to the DLQ — losing
                         // them would be strictly worse than the small overshoot.
                         let mut budget_error: Option<FaucetError> = None;
+                        // Circuit-breaker accounting: a page counts as a failure
+                        // for the breaker when it was non-empty and nothing
+                        // succeeded (everything went to the DLQ / dropped). Any
+                        // success resets the consecutive counter. When the breaker
+                        // opens, defer the abort to the same site as `budget_error`
+                        // so the page's failures still reach the DLQ and the
+                        // bookmark advances before the run stops. Inert when no
+                        // breaker is configured.
+                        let mut circuit_error: Option<FaucetError> = None;
+                        if let Some((b, cooldown)) = breaker.as_mut() {
+                            if records_len > 0 && page_success == 0 {
+                                if b.record_failure() {
+                                    circuit_error = Some(FaucetError::CircuitOpen {
+                                        failures: b.consecutive(),
+                                        cooldown: *cooldown,
+                                    });
+                                }
+                            } else if page_success > 0 {
+                                b.record_success();
+                            }
+                        }
                         if let Some(limit) = dlq_cfg.max_failures_per_page
                             && page_failures > limit
                         {
@@ -873,6 +896,10 @@ where
                         // as a circuit breaker but never re-delivers this
                         // already-committed page (#146 M4).
                         if let Some(e) = budget_error {
+                            return Err(e);
+                        }
+                        // Circuit breaker opened after the page was made durable.
+                        if let Some(e) = circuit_error {
                             return Err(e);
                         }
                     } else if exactly_once {
@@ -3287,4 +3314,72 @@ mod tests {
         assert_eq!(attempts.load(Ordering::SeqCst), 3);
         assert_eq!(res.records_written, 1);
     }
+
+    #[tokio::test]
+    async fn resilience_circuit_opens_after_consecutive_failed_pages() {
+        use crate::dlq::{DlqConfig, OnBatchError};
+        use crate::resilience::{
+            BackoffKind, CircuitBreakerConfig, ResiliencePolicy, RetryPolicy,
+        };
+        use std::sync::Arc;
+        use std::time::Duration;
+
+        // A sink whose write_batch_partial always fully fails (outer Err).
+        struct DeadSink;
+        #[async_trait]
+        impl Sink for DeadSink {
+            async fn write_batch(&self, _r: &[Value]) -> Result<usize, FaucetError> {
+                Err(FaucetError::Sink("down".into()))
+            }
+            async fn flush(&self) -> Result<(), FaucetError> {
+                Ok(())
+            }
+        }
+        // DLQ sink that accepts everything.
+        struct NullSink;
+        #[async_trait]
+        impl Sink for NullSink {
+            async fn write_batch(&self, r: &[Value]) -> Result<usize, FaucetError> {
+                Ok(r.len())
+            }
+            async fn flush(&self) -> Result<(), FaucetError> {
+                Ok(())
+            }
+        }
+
+        let pages = futures::stream::iter(
+            (0..10).map(|i| Ok(StreamPage { records: vec![json!({"i": i})], bookmark: None })),
+        );
+        let dlq = DlqConfig {
+            on_batch_error: OnBatchError::DlqAll,
+            ..DlqConfig::new(Arc::new(NullSink))
+        };
+        let policy = ResiliencePolicy {
+            retry: RetryPolicy {
+                max_attempts: 1,
+                backoff: BackoffKind::None,
+                base: Duration::ZERO,
+                max: Duration::ZERO,
+                jitter: false,
+                ..RetryPolicy::default()
+            },
+            circuit_breaker: Some(CircuitBreakerConfig {
+                consecutive_failures: 3,
+                cooldown: Duration::from_secs(60),
+            }),
+            poison: None,
+        };
+        let err = run_stream(
+            pages,
+            &DeadSink,
+            RunStreamOptions::new().with_dlq(dlq).with_resilience(policy),
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            matches!(err, FaucetError::CircuitOpen { failures: 3, .. }),
+            "got {err:?}"
+        );
+    }
+
 }
