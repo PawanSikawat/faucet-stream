@@ -46,14 +46,14 @@ Available backends:
 state:
   type: redis
   config:
-    connection_url: redis://localhost:6379
+    url: redis://localhost:6379
     namespace: faucet
 
 # Postgres
 state:
   type: postgres
   config:
-    connection_url: postgres://user:pass@localhost/faucet
+    url: postgres://user:pass@localhost/faucet
 ```
 
 ## How bookmarks advance

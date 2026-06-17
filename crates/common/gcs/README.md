@@ -2,8 +2,8 @@
 
 [![Crates.io](https://img.shields.io/crates/v/faucet-common-gcs.svg)](https://crates.io/crates/faucet-common-gcs)
 [![Docs.rs](https://docs.rs/faucet-common-gcs/badge.svg)](https://docs.rs/faucet-common-gcs)
-[![MSRV](https://img.shields.io/badge/MSRV-1.85-blue.svg)](https://github.com/PawanSikawat/faucet-stream)
-[![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
+[![MSRV](https://img.shields.io/crates/msrv/faucet-common-gcs.svg)](https://github.com/PawanSikawat/faucet-stream/blob/main/rust-toolchain.toml)
+[![License](https://img.shields.io/crates/l/faucet-common-gcs.svg)](https://github.com/PawanSikawat/faucet-stream#license)
 
 Shared Google Cloud Storage credentials and client construction for the GCS source and sink connectors. Part of the [faucet-stream](https://github.com/PawanSikawat/faucet-stream) ecosystem.
 

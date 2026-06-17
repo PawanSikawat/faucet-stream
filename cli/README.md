@@ -759,12 +759,12 @@ File-shaped connectors (JSONL/CSV/S3/GCS source and sink) accept a `compression`
 version: 1
 pipeline:
   source:
-    kind: csv
+    type: csv
     config:
       path: data.csv.gz
       compression: auto      # or 'gzip', 'zstd', 'none'
   sink:
-    kind: jsonl
+    type: jsonl
     config:
       path: out.jsonl.zst
       compression: auto

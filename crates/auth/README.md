@@ -111,7 +111,7 @@ auth:
 pipeline:
   sources:
     sf_table:
-      kind: snowflake
+      type: snowflake
       config:
         account: ${vars.account}
         auth: { ref: sf }      # every row using this template shares ONE token
