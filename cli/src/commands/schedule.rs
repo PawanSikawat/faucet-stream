@@ -114,6 +114,10 @@ pub async fn run(args: ScheduleArgs) -> CliResult<()> {
     let lineage_cfg = cfg.lineage.clone();
     let nodes = expand(&cfg)?; // validate once; cloned per tick
     let execution = cfg.execution.clone();
+    let resilience = match &cfg.resilience {
+        Some(spec) => Some(spec.to_policy()?),
+        None => None,
+    };
 
     if args.once {
         return run_once(
@@ -122,6 +126,7 @@ pub async fn run(args: ScheduleArgs) -> CliResult<()> {
             &execution,
             &compiled,
             &pipeline_name,
+            &resilience,
             #[cfg(feature = "lineage")]
             &lineage,
             #[cfg(feature = "lineage")]
@@ -138,6 +143,7 @@ pub async fn run(args: ScheduleArgs) -> CliResult<()> {
         pipeline_name,
         cron,
         timezone,
+        resilience,
         #[cfg(feature = "lineage")]
         lineage,
         #[cfg(feature = "lineage")]
@@ -148,11 +154,13 @@ pub async fn run(args: ScheduleArgs) -> CliResult<()> {
 
 /// Build a fresh `ExecuteOptions` for one tick (connectors are rebuilt per run;
 /// the auth catalog is shared so cached tokens survive across ticks).
+#[allow(clippy::too_many_arguments)]
 fn make_opts(
     pipeline_name: &str,
     execution: &Option<crate::config::ExecutionSpec>,
     auth: &AuthCatalog,
     clock: chrono::DateTime<chrono::FixedOffset>,
+    resilience: &Option<faucet_core::ResiliencePolicy>,
     #[cfg(feature = "lineage")] lineage: &Option<std::sync::Arc<faucet_lineage::LineageEmitter>>,
     #[cfg(feature = "lineage")] lineage_cfg: &Option<faucet_lineage::LineageConfig>,
 ) -> ExecuteOptions {
@@ -165,6 +173,7 @@ fn make_opts(
         auth: auth.clone(),
         clock,
         cancel: None,
+        resilience: resilience.clone(),
         #[cfg(feature = "lineage")]
         lineage: lineage.clone(),
         #[cfg(feature = "lineage")]
@@ -238,6 +247,7 @@ async fn run_once(
     execution: &Option<crate::config::ExecutionSpec>,
     compiled: &CompiledSchedule,
     pipeline_name: &str,
+    resilience: &Option<faucet_core::ResiliencePolicy>,
     #[cfg(feature = "lineage")] lineage: &Option<std::sync::Arc<faucet_lineage::LineageEmitter>>,
     #[cfg(feature = "lineage")] lineage_cfg: &Option<faucet_lineage::LineageConfig>,
 ) -> CliResult<()> {
@@ -248,6 +258,7 @@ async fn run_once(
         execution,
         auth,
         compiled.clock_at(now),
+        resilience,
         #[cfg(feature = "lineage")]
         lineage,
         #[cfg(feature = "lineage")]
@@ -282,6 +293,7 @@ async fn run_loop(
     pipeline_name: String,
     cron: String,
     timezone: String,
+    resilience: Option<faucet_core::ResiliencePolicy>,
     #[cfg(feature = "lineage")] lineage: Option<std::sync::Arc<faucet_lineage::LineageEmitter>>,
     #[cfg(feature = "lineage")] lineage_cfg: Option<faucet_lineage::LineageConfig>,
 ) -> CliResult<()> {
@@ -344,6 +356,7 @@ async fn run_loop(
                         &execution,
                         &auth,
                         compiled.clock_at(next_due),
+                        &resilience,
                         #[cfg(feature = "lineage")]
                         &lineage,
                         #[cfg(feature = "lineage")]
@@ -453,6 +466,7 @@ async fn run_loop(
                                 &execution,
                                 &auth,
                                 compiled.clock_at(sched_for),
+                                &resilience,
                                 #[cfg(feature = "lineage")]
                                 &lineage,
                                 #[cfg(feature = "lineage")]
@@ -613,6 +627,7 @@ mod tests {
             &None,
             &auth,
             Utc::now().fixed_offset(),
+            &None,
             #[cfg(feature = "lineage")]
             &None,
             #[cfg(feature = "lineage")]
@@ -644,6 +659,7 @@ mod tests {
             &None,
             &auth,
             clock,
+            &None,
             #[cfg(feature = "lineage")]
             &None,
             #[cfg(feature = "lineage")]

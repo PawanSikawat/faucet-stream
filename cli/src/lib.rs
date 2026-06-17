@@ -66,6 +66,10 @@ pub async fn run_from_yaml_str(yaml: &str) -> CliResult<executor::RunSummary> {
     crate::secrets::resolve_secrets(&mut cfg).await?;
     let pipeline_name = cfg.name.clone().unwrap_or_else(|| "unnamed".to_string());
     let auth = auth_catalog::build_auth_catalog(cfg.auth.as_ref())?;
+    let resilience = match &cfg.resilience {
+        Some(spec) => Some(spec.to_policy()?),
+        None => None,
+    };
     let nodes = expand::expand(&cfg)?;
     executor::run_expanded(
         nodes,
@@ -78,6 +82,7 @@ pub async fn run_from_yaml_str(yaml: &str) -> CliResult<executor::RunSummary> {
             auth,
             clock: chrono::Utc::now().fixed_offset(),
             cancel: None,
+            resilience,
             #[cfg(feature = "lineage")]
             lineage: None,
             #[cfg(feature = "lineage")]

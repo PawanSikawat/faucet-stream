@@ -112,6 +112,7 @@ async fn run_once(url: &str, state_dir: &str) {
             execution: None,
             auth: Default::default(),
             clock: chrono::Utc::now().fixed_offset(),
+            resilience: None,
         },
     )
     .await

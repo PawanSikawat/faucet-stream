@@ -18,6 +18,7 @@ pub async fn build_source(
     kind: &str,
     config: Value,
     auth: &AuthCatalog,
+    retry_policy: Option<&faucet_core::RetryPolicy>,
 ) -> CliResult<Box<dyn Source>> {
     let auth_ref = auth_catalog::auth_ref(&config);
     match kind {
@@ -27,6 +28,9 @@ pub async fn build_source(
             let mut s = faucet_source_rest::RestStream::new(cfg)?;
             if let Some(name) = &auth_ref {
                 s = s.with_auth_provider(auth_catalog::resolve(auth, name)?);
+            }
+            if let Some(rp) = retry_policy {
+                s = s.with_retry_policy(rp.clone());
             }
             Ok(Box::new(s))
         }
@@ -38,6 +42,9 @@ pub async fn build_source(
             if let Some(name) = &auth_ref {
                 s = s.with_auth_provider(auth_catalog::resolve(auth, name)?);
             }
+            if let Some(rp) = retry_policy {
+                s = s.with_retry_policy(rp.clone());
+            }
             Ok(Box::new(s))
         }
         #[cfg(feature = "source-xml")]
@@ -46,6 +53,9 @@ pub async fn build_source(
             let mut s = faucet_source_xml::XmlStream::new(cfg);
             if let Some(name) = &auth_ref {
                 s = s.with_auth_provider(auth_catalog::resolve(auth, name)?);
+            }
+            if let Some(rp) = retry_policy {
+                s = s.with_retry_policy(rp.clone());
             }
             Ok(Box::new(s))
         }
@@ -679,7 +689,7 @@ mod tests {
 
     #[tokio::test]
     async fn unknown_source_kind_errors() {
-        let err = build_source("nope", serde_json::json!({}), &AuthCatalog::new())
+        let err = build_source("nope", serde_json::json!({}), &AuthCatalog::new(), None)
             .await
             .err()
             .expect("should fail");
@@ -754,6 +764,7 @@ mod tests {
             "csv",
             serde_json::json!({ "path": "/tmp/does-not-need-to-exist.csv" }),
             &AuthCatalog::new(),
+            None,
         )
         .await
         .expect("csv source should build without I/O");
@@ -801,6 +812,7 @@ mod tests {
             "csv",
             serde_json::json!({ "path": 42 }),
             &AuthCatalog::new(),
+            None,
         )
         .await;
         match res {
@@ -939,7 +951,7 @@ mod tests {
         );
         let catalog = auth_catalog::build_auth_catalog(Some(&specs)).expect("catalog");
 
-        let src = build_source("rest", rest_config_with_auth_ref("tok"), &catalog)
+        let src = build_source("rest", rest_config_with_auth_ref("tok"), &catalog, None)
             .await
             .expect("rest source with a resolvable auth ref should build");
         assert_eq!(src.connector_name(), "rest");
@@ -966,6 +978,7 @@ mod tests {
             "rest",
             rest_config_with_auth_ref("missing"),
             &AuthCatalog::new(),
+            None,
         )
         .await;
         match res {
