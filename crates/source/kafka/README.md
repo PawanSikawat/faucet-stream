@@ -1,35 +1,61 @@
 # faucet-source-kafka
 
-Apache Kafka consumer source for `faucet-stream`. Subscribes to one or more topics, drains messages until a `max_messages` count or `idle_timeout` is reached, and emits each Kafka message as a structured JSON record. Built on [`rdkafka`](https://crates.io/crates/rdkafka) (librdkafka bindings). Supports durable offset tracking via any `faucet-core` `StateStore` so pipelines can resume exactly where they left off.
+[![Crates.io](https://img.shields.io/crates/v/faucet-source-kafka.svg)](https://crates.io/crates/faucet-source-kafka)
+[![Docs.rs](https://docs.rs/faucet-source-kafka/badge.svg)](https://docs.rs/faucet-source-kafka)
+[![MSRV](https://img.shields.io/crates/msrv/faucet-source-kafka.svg)](https://github.com/PawanSikawat/faucet-stream/blob/main/rust-toolchain.toml)
+[![License](https://img.shields.io/crates/l/faucet-source-kafka.svg)](https://github.com/PawanSikawat/faucet-stream#license)
 
----
+Apache **Kafka** consumer source for the [faucet-stream](https://github.com/PawanSikawat/faucet-stream) ecosystem. Subscribes to one or more topics, drains messages until a `max_messages` count or an `idle_timeout` window fires, and emits each Kafka message as a structured JSON record. Built on [`rdkafka`](https://crates.io/crates/rdkafka) (librdkafka bindings) — one of the fastest Kafka clients available.
+
+Reach for it when you want to land a Kafka topic into any faucet-stream sink — a file, a database, a warehouse, object storage — with one declarative config, durable offset resume, and no glue code. Offsets are tracked through any `faucet-core` `StateStore`, so a pipeline resumes exactly where the last run stopped, without re-reading or skipping records.
+
+## Feature highlights
+
+- **Native streaming** — overrides `Source::stream_pages`, draining the consumer into `batch_size`-sized pages so memory stays `O(batch_size)` no matter the topic volume; the sink writes (and the bookmark advances) incrementally rather than once at the end of the run.
+- **Durable offset resume** — persists a per-partition offset bookmark through any `StateStore` (file, memory, Redis, Postgres). On restart the bookmark seeds the partition assignment *before* the first poll, so a resume never produces a duplicate or skips a record.
+- **Two stop conditions** — `max_messages` and/or `idle_timeout`; the loop exits on whichever fires first (at least one is required). `Ctrl+C` exits cleanly, persisting everything consumed so far.
+- **Five authentication modes** — plaintext, SASL/PLAIN, SASL/SCRAM (SHA-256 / SHA-512), SSL client certificates, and SASL+SSL — via the shared `KafkaAuth` enum from [`faucet-common-kafka`](https://crates.io/crates/faucet-common-kafka).
+- **Six value formats** — JSON, raw string, raw bytes (base64), plus Confluent Avro / Protobuf / JSON Schema behind the `schema-registry` feature.
+- **Structured records** — each message becomes a JSON object with `key`, `value`, `topic`, `partition`, `offset`, `timestamp`, and `headers`.
+- **Per-message decode policy** — `on_decode_error: fail | skip` chooses between aborting the batch and dropping a bad message with a warning.
+- **Escape hatch** — `extra_client_config` passes any raw librdkafka property straight through to the consumer.
+
+## Installation
+
+```bash
+# As a library:
+cargo add faucet-source-kafka
+
+# With Confluent Schema Registry support:
+cargo add faucet-source-kafka --features schema-registry
+
+# In the CLI (opt-in connector feature):
+cargo install faucet-cli --features source-kafka
+```
+
+The Kafka source is **not** in the CLI default build — enable `source-kafka` (or `full`). Schema-Registry-backed formats additionally require `kafka-schema-registry` on the CLI / umbrella.
 
 ## Quick start
 
 ```yaml
-# pipeline.yaml
+# pipeline.yaml — faucet run pipeline.yaml
 version: 1
-
-source:
-  kind: kafka
-  config:
-    brokers: "broker1:9092,broker2:9092"
-    topics:
-      - orders
-    group_id: faucet-orders-consumer
-    value_format:
-      type: json
-    auto_offset_reset: earliest
-    idle_timeout: 30      # stop after 30 s of no new messages
-    max_messages: 10000   # or stop after 10 000 messages, whichever comes first
-
-sink:
-  kind: jsonl
-  config:
-    path: orders.jsonl
+pipeline:
+  source:
+    type: kafka
+    config:
+      brokers: "localhost:9092"
+      topics: ["orders"]
+      group_id: faucet-orders-consumer
+      value_format: { type: json }
+      auto_offset_reset: earliest
+      idle_timeout: 30      # stop after 30 s of no new messages
+      max_messages: 10000   # or after 10 000 messages, whichever comes first
+  sink:
+    type: jsonl
+    config:
+      path: ./orders.jsonl
 ```
-
-Run it:
 
 ```bash
 faucet run pipeline.yaml
@@ -38,40 +64,121 @@ faucet run pipeline.yaml
 To resume from where the last run stopped, add a state store:
 
 ```yaml
-state:
-  kind: file
-  config:
-    directory: .faucet-state
+  state:
+    type: file
+    config:
+      path: ./.faucet-state
 ```
 
----
+## Configuration reference
 
-## Full config reference
+All fields are keys under `source.config`.
 
-All fields are top-level keys under `source.config` in the pipeline YAML.
+### Core
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `brokers` | `string` | **required** | Comma-separated list of bootstrap broker addresses, e.g. `"broker1:9092,broker2:9092"`. |
-| `topics` | `string[]` | **required** | One or more topic names to subscribe to. |
-| `group_id` | `string` | **required** | Kafka consumer group ID. Used for partition assignment and is part of the state-store key. |
-| `auth` | `KafkaAuth` | `{type: none}` | Authentication mode. See [Auth](#auth) below. Full details in the `faucet-common-kafka` README. |
-| `value_format` | `KafkaValueFormat` | `{type: json}` | How message value bytes are decoded. See [Value formats](#value-formats). |
-| `key_format` | `KafkaValueFormat \| null` | `null` | How message key bytes are decoded. When absent or `null`, key bytes are decoded as UTF-8 (or `null` if no key was set on the message). |
-| `auto_offset_reset` | `"earliest" \| "latest"` | `"latest"` | Where to start consuming a partition that has **no** bookmarked offset. On a resume, every partition assigned in a prior run carries a bookmarked offset (see [Resume and state store](#resume-and-state-store)), so this only governs first-ever encounters — a fresh run or a newly-added partition. |
-| `max_messages` | `integer \| null` | `null` | Stop after this many messages have been consumed. At least one of `max_messages` and `idle_timeout` must be set. |
-| `idle_timeout` | `integer \| null` | `null` | Stop after this many **seconds** with no new messages. At least one of `max_messages` and `idle_timeout` must be set. |
-| `poll_timeout` | `integer` | `1` | Maximum seconds to wait on a single `consumer.recv()` call before checking termination conditions. Rarely needs tuning. |
-| `session_timeout` | `integer` | `30` | Kafka `session.timeout.ms` in **seconds**. Increase for slow brokers or long GC pauses. |
-| `on_decode_error` | `"fail" \| "skip"` | `"fail"` | What to do when a single message fails to decode. `fail` aborts the batch; `skip` drops the message and logs a warning. |
-| `extra_client_config` | `object` | `{}` | Raw librdkafka client properties passed directly to the consumer. These can override anything set by `auth` or the typed fields above — use with care. |
-| `batch_size` | `integer` | `1000` | Messages per emitted `StreamPage` when the source is driven through `Source::stream_pages` (i.e. `Pipeline::run` / `run_stream`). See [Streaming and batching](#streaming-and-batching) below. |
+| `brokers` | string | — *(required)* | Comma-separated bootstrap broker list, e.g. `"broker1:9092,broker2:9092"`. |
+| `topics` | string[] | — *(required)* | One or more topic names to subscribe to. Must contain at least one entry. |
+| `group_id` | string | — *(required)* | Kafka consumer group ID. Drives partition assignment and forms part of the state-store key. |
+| `auth` | `KafkaAuth` | `{ type: none }` | Authentication mode — see [Authentication](#authentication). |
+| `value_format` | `KafkaValueFormat` | `{ type: json }` | How message **value** bytes are decoded — see [Value formats](#value-formats). |
+| `key_format` | `KafkaValueFormat` \| null | `null` | How message **key** bytes are decoded. When unset, key bytes are decoded as UTF-8 (or `null` if the message carried no key). |
 
----
+### Termination & polling
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `max_messages` | int \| null | `null` | Stop after this many messages. At least one of `max_messages` / `idle_timeout` is required. |
+| `idle_timeout` | int (seconds) \| null | `null` | Stop after this many seconds with no new message. At least one of `max_messages` / `idle_timeout` is required. |
+| `poll_timeout` | int (seconds) | `1` | Max time to block on a single `consumer.recv()` before re-checking termination. Advisory — rarely needs tuning. |
+| `session_timeout` | int (seconds) | `30` | Kafka `session.timeout.ms` (in seconds). Increase for slow brokers or long GC pauses. |
+
+### Offsets & reliability
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `auto_offset_reset` | `earliest` \| `latest` | `latest` | Where to start a partition that has **no** bookmarked offset — i.e. a first-ever run or a newly-added partition. Resumed partitions always start from their bookmark. |
+| `on_decode_error` | `fail` \| `skip` | `fail` | What to do when one message fails to decode. `fail` aborts the batch; `skip` drops the message and logs a `WARN`. |
+| `extra_client_config` | object | `{}` | Raw librdkafka client properties passed straight to the consumer. These can override anything set by `auth` or the typed fields above — use with care. |
+
+### Batching
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `batch_size` | int | `1000` | Messages per emitted `StreamPage`. **`0` = drain the entire run window** into one page (tests / one-shot drains only — see [Streaming & batching](#streaming--batching)). Capped at `MAX_BATCH_SIZE` (1,000,000). |
+
+## Authentication
+
+`auth` uses the shared `KafkaAuth` enum (the project-wide `{ type, config }` shape). The full reference — all fields and edge cases — lives in the [`faucet-common-kafka`](https://crates.io/crates/faucet-common-kafka) README.
+
+| `type` | `config` | Use when |
+|--------|----------|----------|
+| `none` | *(none)* | Plaintext brokers (default). |
+| `sasl_plain` | `{ username, password }` | Confluent Cloud, MSK with SASL/PLAIN. |
+| `sasl_scram` | `{ mechanism: sha256\|sha512, username, password }` | Brokers configured for SCRAM. |
+| `ssl` | `{ ca_path, cert_path, key_path, key_password? }` | Mutual-TLS client certificates. |
+| `sasl_ssl` | `{ sasl: {…}, ssl: {…} }` | SASL over a TLS transport. |
+
+```yaml
+# SASL/PLAIN — env indirection keeps secrets out of the YAML
+auth:
+  type: sasl_plain
+  config:
+    username: ${env:KAFKA_USERNAME}
+    password: ${env:KAFKA_PASSWORD}
+```
+
+```yaml
+# SASL/SCRAM-SHA-512
+auth:
+  type: sasl_scram
+  config:
+    mechanism: sha512
+    username: ${env:KAFKA_USERNAME}
+    password: ${env:KAFKA_PASSWORD}
+```
+
+```yaml
+# Mutual TLS
+auth:
+  type: ssl
+  config:
+    ca_path: /etc/kafka/certs/ca.pem
+    cert_path: /etc/kafka/certs/client.pem
+    key_path: /etc/kafka/certs/client.key
+```
+
+## Value formats
+
+Configured via `value_format` (and optionally `key_format`); all use a `type` discriminator.
+
+| `type` | Description | Feature |
+|--------|-------------|---------|
+| `json` | Parse value bytes as a JSON document. **Default.** | base |
+| `raw_string` | Decode value bytes as a UTF-8 string into `value`. | base |
+| `bytes` | Pass bytes through as a **base64-encoded string** in `value`; no parsing. | base |
+| `confluent_avro` | Confluent wire-format Avro: `[0x00][schema_id 4B][Avro binary]`. | `schema-registry` |
+| `confluent_protobuf` | Confluent wire-format Protobuf. v1 returns an error — descriptor support tracked in [#44](https://github.com/PawanSikawat/faucet-stream/issues/44). | `schema-registry` |
+| `confluent_json_schema` | Confluent wire-format JSON: `[0x00][schema_id 4B][JSON bytes]`; optional validation. | `schema-registry` |
+
+The three Confluent formats take a `schema_registry` block (URL, optional basic auth, cache capacity, request timeout) — see the [`faucet-common-kafka`](https://crates.io/crates/faucet-common-kafka) README for the full `SchemaRegistryConfig`.
+
+```yaml
+value_format:
+  type: confluent_avro
+  schema_registry:
+    url: http://localhost:8081
+    auth:                  # optional basic auth (flat username/password)
+      username: ${env:SR_USERNAME}
+      password: ${env:SR_PASSWORD}
+    cache_capacity: 1024   # default 1024
+    request_timeout: 10    # seconds, default 10
+```
 
 ## Record shape
 
-Each Kafka message becomes one JSON object in the output stream:
+Each Kafka message becomes one JSON object:
 
 ```json
 {
@@ -81,78 +188,115 @@ Each Kafka message becomes one JSON object in the output stream:
   "partition": 2,
   "offset": 10483,
   "timestamp": 1747483200000,
-  "headers": {
-    "content-type": "application/json",
-    "trace-id": "abc123"
-  }
+  "headers": { "content-type": "application/json", "trace-id": "abc123" }
 }
 ```
 
-**Field notes:**
+- `key` — the key decoded as UTF-8, or per `key_format` if set. `null` when the message carried no key.
+- `value` — the decoded payload; shape depends on `value_format`.
+- `topic` / `partition` / `offset` — provenance for the message within its partition.
+- `timestamp` — milliseconds since the Unix epoch; `0` when the message had no timestamp.
+- `headers` — a flat string→string object; non-UTF-8 values are base64-encoded; `{}` when none were set.
 
-- `key` — the message key decoded as UTF-8, or decoded according to `key_format` if set. `null` when the Kafka message carried no key.
-- `value` — the decoded message payload. Shape depends on `value_format` (see below).
-- `topic` — the topic name the message was consumed from.
-- `partition` — the partition number (integer).
-- `offset` — the offset of this message within its partition.
-- `timestamp` — milliseconds since the Unix epoch, from the Kafka message timestamp. `0` when no timestamp is present in the message.
-- `headers` — a flat object of string key → string value. Values that are not valid UTF-8 are base64-encoded. Empty object `{}` when no headers were set on the message.
+## Examples
 
----
-
-## Value formats
-
-Configured via `value_format` (and optionally `key_format`). All formats use a `type` discriminator field.
-
-| Format | `type` | Description |
-|--------|--------|-------------|
-| JSON | `json` | Parse value bytes as a JSON document. Default. |
-| Raw string | `raw_string` | Treat value bytes as a UTF-8 string. The string becomes the `value` field. |
-| Bytes | `bytes` | Pass bytes through as a **base64-encoded string** inside `value`. No parsing is attempted. |
-| Confluent Avro | `confluent_avro` | Confluent wire-format Avro: `[0x00][schema_id 4B][Avro binary]`. Requires `schema-registry` feature. |
-| Confluent Protobuf | `confluent_protobuf` | Confluent wire-format Protobuf. Requires `schema-registry` feature. v1 returns an error — full descriptor support tracked in issue #44. |
-| Confluent JSON Schema | `confluent_json_schema` | Confluent wire-format JSON: `[0x00][schema_id 4B][JSON bytes]`. Optional schema validation. Requires `schema-registry` feature. |
-
-The three Confluent formats require building with the `schema-registry` feature flag:
-
-```bash
-cargo add faucet-source-kafka --features schema-registry
-```
-
-Each Confluent format takes a `schema_registry` block — see the `faucet-common-kafka` README for the full `SchemaRegistryConfig` options (URL, basic auth, cache capacity, request timeout).
-
----
-
-## Auth
-
-Authentication is configured via the `auth` field using `KafkaAuth` from `faucet-common-kafka`. The full auth reference — SASL/PLAIN, SASL/SCRAM, SSL client certificates, and SASL+SSL — is in the [`faucet-common-kafka` README](../../common/kafka/README.md#auth-modes).
-
-Quick example for SASL/PLAIN (Confluent Cloud, MSK with SASL):
+### Confluent Cloud (SASL/PLAIN + JSON)
 
 ```yaml
-auth:
-  type: sasl_plain
-  username: "${env:KAFKA_USERNAME}"
-  password: "${env:KAFKA_PASSWORD}"
+source:
+  type: kafka
+  config:
+    brokers: "pkc-xxxx.us-east-1.aws.confluent.cloud:9092"
+    topics: ["payments"]
+    group_id: faucet-payments
+    auth:
+      type: sasl_plain
+      config:
+        username: ${env:CC_API_KEY}
+        password: ${env:CC_API_SECRET}
+    value_format: { type: json }
+    auto_offset_reset: earliest
+    idle_timeout: 60
 ```
 
-Use `${env:VAR}` interpolation so credentials never land in the YAML file.
+### Confluent Avro via Schema Registry
 
----
+```yaml
+source:
+  type: kafka
+  config:
+    brokers: "localhost:9092"
+    topics: ["users-avro"]
+    group_id: faucet-users
+    value_format:
+      type: confluent_avro
+      schema_registry:
+        url: http://localhost:8081
+    max_messages: 5000
+    idle_timeout: 15
+```
 
-## Resume and state store
+### Resumable continuous drain into Postgres
 
-When a `StateStore` is wired into the pipeline (via `state:` in the YAML, or `Pipeline::with_state_store` in Rust), the source participates in durable offset tracking:
+```yaml
+pipeline:
+  source:
+    type: kafka
+    config:
+      brokers: "localhost:9092"
+      topics: ["events", "audit"]   # joined into one stable state key
+      group_id: faucet-warehouse
+      value_format: { type: json }
+      auto_offset_reset: earliest
+      idle_timeout: 30
+      batch_size: 5000
+  sink:
+    type: postgres
+    config:
+      connection_url: ${env:DATABASE_URL}
+      table: kafka_events
+  state:
+    type: file
+    config:
+      path: ./.faucet-state
+```
 
-1. **Before each run**, the pipeline reads the stored bookmark from the `StateStore` using the source's state key and calls `apply_start_bookmark`. The bookmark is buffered in memory; no seeking happens yet.
+### Raw-bytes passthrough, skip undecodable messages
 
-2. **On partition assignment** (the consumer's rebalance callback, which fires before any message is fetched), the bookmarked offset for each assigned `(topic, partition)` is injected into the assignment so the consumer starts there. Setting the offset *as part of* the assignment — rather than seeking after the first poll — means no message from before the bookmark is ever delivered, so a resume never produces a duplicate.
+```yaml
+source:
+  type: kafka
+  config:
+    brokers: "localhost:9092"
+    topics: ["raw-feed"]
+    group_id: faucet-raw
+    value_format: { type: bytes }   # base64 string in `value`
+    on_decode_error: skip
+    max_messages: 100000
+    idle_timeout: 10
+```
 
-3. **After the sink confirms the batch**, the pipeline persists the new bookmark — a list of `{topic, partition, offset}` entries recording one past the highest offset written.
+## Streaming & batching
 
-   The persisted bookmark records an offset for **every assigned partition**, not only the partitions that delivered a message in this run. A partition that was assigned but produced nothing is recorded at the consumer's current position (and a partition known from a prior run is carried forward). This is deliberate: if an empty-this-run partition were omitted, the next resume would have no offset for it and would fall back to `auto_offset_reset` (default `latest`) — silently **skipping** any records that arrived in the meantime. Recording its position closes that gap. The bookmark is only written on successful sink completion, so a crashed run never marks data as consumed.
+The source overrides `Source::stream_pages`. Messages drained from the `StreamConsumer` are accumulated into an in-memory buffer and emitted as a `StreamPage` whenever:
 
-   A partition that has *never* been assigned in any run (e.g. one added to the topic after the last run) has no recorded offset and so honours `auto_offset_reset` on first encounter — `earliest` reads it from the start, `latest` from the tail.
+1. **The buffer reaches `batch_size`** — yield a full page, reset the buffer, keep polling.
+2. **The idle window flushes a partial buffer** — when the `idle_timeout` deadline fires with a non-empty buffer, emit it as a trailing page and continue.
+3. **`max_messages` is reached or `Ctrl+C` is received** — emit the final partial page (if any) and exit.
+
+Each emitted page carries a snapshot of the cumulative `(topic, partition) → next_offset` bookmark. The pipeline persists it through the configured `StateStore` **after** the sink confirms the write, so memory is bounded at one page and a crash between pages re-reads only the uncommitted page on resume.
+
+**`batch_size = 0` — drain the entire run window.** The source accumulates **every** message produced by the run (until `max_messages` / `idle_timeout` fires) into a single page before yielding. This negates the streaming benefit and is intended only for tests or one-shot drains; production pipelines should use a finite `batch_size` so the state store advances with each successful sink write.
+
+## Resume & state store
+
+When a `StateStore` is wired in (via `state:` in YAML, or `Pipeline::with_state_store` in Rust) the source tracks durable offsets:
+
+1. **Before the run**, the pipeline reads the stored bookmark and calls `apply_start_bookmark`. It is buffered in memory — no seeking happens yet.
+2. **On partition assignment** (the rebalance callback, before any fetch), each assigned `(topic, partition)`'s bookmarked offset is injected *into* the assignment. Setting the offset as part of the assignment — rather than seeking after the first poll — means no pre-bookmark message is ever delivered, so a resume never duplicates.
+3. **After the sink confirms a batch**, the pipeline persists the new bookmark — one `{topic, partition, offset}` entry per assigned partition, recording one past the highest committed offset.
+
+The bookmark records an offset for **every assigned partition**, not just those that produced a message this run. An empty-this-run partition is recorded at the consumer's current position; if it were omitted, the next resume would fall back to `auto_offset_reset` (default `latest`) and silently **skip** records that arrived meanwhile. A partition that has *never* been assigned (e.g. added to the topic after the last run) honours `auto_offset_reset` on first encounter.
 
 **State key format:**
 
@@ -160,96 +304,98 @@ When a `StateStore` is wired into the pipeline (via `state:` in the YAML, or `Pi
 kafka:{group_id}:{topic1}:{topic2}...
 ```
 
-Topics are sorted alphabetically before joining, so the key is stable regardless of the order you list topics in the config. They are joined with `:` (not `.`) because a Kafka topic name may legally contain `.`, which would otherwise let `["a.b", "c"]` and `["a", "b.c"]` collide on the same `group_id`. For example, `group_id = "my-group"` and `topics = ["beta", "alpha"]` produces:
+Topics are sorted alphabetically before joining, so the key is stable regardless of config order. They are joined with `:` (not `.`) because a topic name may legally contain `.`. So `group_id = "my-group"`, `topics = ["beta", "alpha"]` yields `kafka:my-group:alpha:beta`.
 
-```
-kafka:my-group:alpha:beta
-```
+**Delivery semantics:** offsets are persisted only after the sink confirms, and on restart the consumer seeds the assignment with the bookmark before the first fetch. End-to-end this is **at-least-once** if the sink can fail mid-batch; pair with an idempotent sink for stricter guarantees. (The Kafka source does *not* advertise faucet-stream's exactly-once `delivery` mode — that gate requires a CDC source.)
 
-**Delivery semantics:** Offsets are persisted via faucet-stream's state store only after the sink confirms a batch, and on restart the consumer seeds the partition assignment with the bookmarked offset *before* any message is fetched. End-to-end this is at-least-once if the sink can fail mid-batch; pair with idempotent sinks if you need stricter guarantees.
+## Config loading & schema introspection
 
----
-
-## Streaming and batching
-
-When the source is driven through `Source::stream_pages` (which is what `Pipeline::run` and `run_stream` use internally), messages are accumulated into a `batch_size`-sized in-memory buffer and emitted as a `StreamPage` whenever:
-
-1. **The buffer reaches `batch_size`** — yield a full page, reset the buffer, and keep polling for more messages.
-2. **The `idle_timeout` window flushes a partial buffer** — when the idle deadline fires with a non-empty buffer, the buffer is emitted as a trailing page and the loop continues.
-3. **`max_messages` is reached or `Ctrl+C` is received** — emit the final partial page (if any) and exit.
-
-Each emitted page carries a snapshot of the cumulative `(topic, partition) -> next_offset` bookmark. The pipeline persists this via the configured `StateStore` **after** the sink confirms the write, giving at-least-once delivery with per-page durability — a crash between pages re-reads only the uncommitted page on resume.
-
-**Why this matters:** the batch-mode `fetch_all_incremental` waits for the entire run to complete before returning, which means the sink sees nothing until termination *and* the state store is only updated once. With streaming, the sink writes (and the state store advances) every `batch_size` messages.
-
-**`batch_size = 0` — drain entire run window.** Passes the special "no batching" sentinel: the source accumulates **every** message produced by the run (until `max_messages` or `idle_timeout` fires) into a single page before yielding. This negates the streaming benefit and is intended only for tests or one-shot drain scenarios. For production pipelines, prefer a finite `batch_size` so the state store advances with each successful sink write.
-
----
-
-## Termination
-
-The consume loop exits when any of the following is true:
-
-- **`max_messages`** — the configured number of messages has been collected.
-- **`idle_timeout`** — no new message has arrived within the configured number of seconds.
-- **`Ctrl+C` (SIGINT)** — the source catches the signal and exits the loop cleanly. The bookmark for everything consumed up to that point is returned to the pipeline, which persists it before exiting.
-
-At least one of `max_messages` and `idle_timeout` must be set; the config is rejected at construction time otherwise.
-
-Both conditions can be combined — the loop stops as soon as either threshold is hit:
-
-```yaml
-max_messages: 50000
-idle_timeout: 60
-```
-
----
-
-## Throughput notes
-
-librdkafka is one of the fastest Kafka client implementations available, benchmarked at millions of messages per second on well-provisioned hardware. For most pipelines the bottleneck is the downstream sink (BigQuery inserts, Postgres writes, S3 uploads), not the consume loop itself.
-
-The v1 consume loop is single-threaded — one goroutine polls one `StreamConsumer`. For higher throughput, partition your topic and run multiple `faucet` pipeline instances with the same `group_id`. Kafka assigns disjoint partition sets to each instance, and they scale linearly.
-
-Tuning tips:
-
-- Increase `max_messages` for larger batch sizes — fewer pipeline runs per unit of data.
-- Reduce `idle_timeout` for latency-sensitive pipelines where you want frequent small batches.
-- Use `extra_client_config` to pass `fetch.max.bytes`, `max.partition.fetch.bytes`, or `queued.max.messages.kbytes` if you need to push beyond librdkafka's defaults.
-
----
-
-## CLI integration
-
-Run with the `faucet` binary:
-
-```bash
-faucet run pipeline.yaml
-faucet validate pipeline.yaml
-faucet preview pipeline.yaml --limit 5   # consume 5 messages and print to stdout
-```
-
-Inspect the full JSON Schema for every config field:
+Load from YAML/JSON or environment. Inspect the full JSON Schema with:
 
 ```bash
 faucet schema source kafka
+faucet validate pipeline.yaml
+faucet preview pipeline.yaml --limit 5   # consume a few messages and print to stdout
 ```
 
-A complete working example is in [`cli/examples/kafka_to_jsonl.yaml`](../../cli/examples/kafka_to_jsonl.yaml).
+A complete working example ships at [`cli/examples/kafka_to_jsonl.yaml`](https://github.com/PawanSikawat/faucet-stream/blob/main/cli/examples/kafka_to_jsonl.yaml).
 
----
+## Library usage
 
-## See also
+```rust
+use faucet_core::Source;
+use faucet_source_kafka::{KafkaSource, KafkaSourceConfig, KafkaValueFormat, OffsetReset};
 
-- [`faucet-sink-kafka`](../../crates/sink/kafka/README.md) — produce records to Kafka topics.
-- [`faucet-common-kafka`](../../common/kafka/README.md) — shared auth modes, value formats, schema registry client, and policy enums used by both connectors.
+# async fn run() -> Result<(), Box<dyn std::error::Error>> {
+let cfg = KafkaSourceConfig {
+    brokers: "localhost:9092".into(),
+    topics: vec!["orders".into()],
+    group_id: "faucet-orders".into(),
+    auth: Default::default(),                 // KafkaAuth::None
+    value_format: KafkaValueFormat::Json,
+    key_format: None,
+    auto_offset_reset: OffsetReset::Earliest,
+    max_messages: Some(10_000),
+    idle_timeout: Some(std::time::Duration::from_secs(30)),
+    poll_timeout: std::time::Duration::from_secs(1),
+    session_timeout: std::time::Duration::from_secs(30),
+    on_decode_error: Default::default(),      // fail
+    extra_client_config: Default::default(),
+    batch_size: 1000,
+};
+cfg.validate()?;
 
----
+let records = KafkaSource::new(cfg).await?.fetch_all().await?;
+println!("consumed {} messages", records.len());
+# Ok(())
+# }
+```
+
+For durable resume and incremental sink writes, drive it through `faucet_core::Pipeline` (or `run_stream`) with a `StateStore` rather than `fetch_all`.
+
+## How it works
+
+1. `new()` validates the config, builds the state key, and constructs the `StreamConsumer` **once** with the resolved librdkafka client config (auth + typed fields + `extra_client_config` overrides).
+2. A rebalance callback seeds the partition assignment with bookmarked offsets before the first poll.
+3. The consume loop polls with `poll_timeout`, decodes each message per `value_format` / `key_format`, and buffers it; it exits on `max_messages`, `idle_timeout`, or SIGINT.
+4. Decoded messages are framed into `batch_size` pages and streamed to the pipeline, each page carrying the cumulative offset bookmark.
+
+The v1 consume loop is single-threaded — one task polls one `StreamConsumer`. For higher throughput, partition the topic and run multiple `faucet` instances with the same `group_id`; Kafka assigns disjoint partition sets and they scale linearly. The downstream sink (database writes, object-store uploads) is usually the bottleneck, not the consume loop.
 
 ## Lineage dataset URI
 
-`kafka://<first_broker>?topic=<topic1>,<topic2>` — e.g. `kafka://kafka.example.com:9092?topic=orders`.
+`kafka://<first_broker>?topic=<topic1>,<topic2>` — e.g. `kafka://kafka.example.com:9092?topic=orders` (the first broker in `brokers`, all topics comma-joined).
+
+## Feature flags
+
+| Feature | Default | Effect |
+|---------|---------|--------|
+| `schema-registry` | off | Enables the Confluent Avro / Protobuf / JSON Schema value formats and `SchemaRegistryConfig` (pulls `reqwest`, `apache-avro`, `prost-reflect`, `jsonschema`, …). |
+
+In the CLI / umbrella, enable the connector with `source-kafka`, and the registry formats with `kafka-schema-registry`.
+
+## Troubleshooting / FAQ
+
+| Symptom | Likely cause & fix |
+|---------|--------------------|
+| `Config: at least one of max_messages or idle_timeout must be set` | A Kafka source has no stop condition. Set `max_messages`, `idle_timeout`, or both. |
+| Run consumes nothing and exits immediately | `auto_offset_reset` defaults to `latest`, so a fresh group skips existing messages. Set `auto_offset_reset: earliest` to read from the start. |
+| Run hangs until `idle_timeout` on an empty topic | Expected — the consumer waits `idle_timeout` seconds for new messages before exiting. Lower `idle_timeout` for faster turnaround. |
+| Resume re-reads or skips records | Ensure a non-`memory` `state:` block is configured and the `group_id` + `topics` are unchanged (the state key is derived from both). A changed `group_id` is a new bookmark. |
+| `Source` error / connection refused / timeout | Broker unreachable or wrong `brokers`. `faucet doctor` runs a non-consuming metadata probe to validate connectivity + auth without reading messages. |
+| SASL / SSL handshake failure | Wrong `auth` type or credentials, or a `key_path` / `cert_path` / `ca_path` that doesn't exist (paths are validated at config time). Confirm the broker's `security.protocol` matches. |
+| Messages fail to decode | The `value_format` doesn't match the wire data (e.g. `json` against Avro). Match the producer's format; use `on_decode_error: skip` to drop bad messages instead of aborting. |
+| `confluent_protobuf` returns an error | Protobuf decoding is not yet implemented (issue [#44](https://github.com/PawanSikawat/faucet-stream/issues/44)). Use `confluent_avro` / `confluent_json_schema`, or decode raw `bytes` and parse downstream. |
+| Confluent format rejected as unknown `type` | Build with the `schema-registry` feature (CLI: `kafka-schema-registry`). |
+| Throughput lower than expected | Partition the topic and run multiple instances with the same `group_id`, and/or tune `fetch.max.bytes` / `max.partition.fetch.bytes` via `extra_client_config`. |
+
+## See also
+
+- [Kafka source reference](https://pawansikawat.github.io/faucet-stream/reference/connectors.html) — capability matrix.
+- [State & resume cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/state.html) — bookmarks and delivery semantics.
+- [`faucet-sink-kafka`](https://crates.io/crates/faucet-sink-kafka) — produce records to Kafka topics.
+- [`faucet-common-kafka`](https://crates.io/crates/faucet-common-kafka) — shared auth modes, value formats, Schema Registry client, and policy enums.
 
 ## License
 
-Dual-licensed under MIT and Apache-2.0, matching the workspace `license` field.
+Licensed under either of [Apache License, Version 2.0](https://www.apache.org/licenses/LICENSE-2.0) or [MIT license](https://opensource.org/licenses/MIT) at your option.

@@ -5,76 +5,249 @@
 [![MSRV](https://img.shields.io/crates/msrv/faucet-source-xml.svg)](https://github.com/PawanSikawat/faucet-stream/blob/main/rust-toolchain.toml)
 [![License](https://img.shields.io/crates/l/faucet-source-xml.svg)](https://github.com/PawanSikawat/faucet-stream#license)
 
-A config-driven XML/SOAP API source with automatic XML-to-JSON conversion, dot-path record extraction, and pluggable authentication. Transient HTTP failures (5xx / connection resets) are retried with exponential backoff.
+A config-driven **XML / SOAP API source** for the [faucet-stream](https://github.com/PawanSikawat/faucet-stream) ecosystem. It fetches an XML (or SOAP) HTTP endpoint, converts the response to JSON, pulls the repeating record element out by a dot-separated element path, and streams the records page-by-page into any faucet-stream sink — a file, a database, a warehouse, a queue — with one declarative config and no glue code.
 
-Part of the [faucet-stream](https://github.com/PawanSikawat/faucet-stream) ecosystem.
+Reach for it when the upstream system only speaks XML or SOAP: legacy enterprise web services, RSS/Atom-style feeds, government data portals, or any HTTP endpoint that returns `application/xml`. The parser is event-driven (streaming `quick-xml`), so peak memory stays bounded by `batch_size` even for large documents.
+
+## Feature highlights
+
+- **Automatic XML → JSON conversion** — every response is parsed into a `serde_json::Value` tree; attributes, text nodes, and repeated elements all map to predictable JSON shapes.
+- **Element-path record extraction** — `records_element_path` walks a dot-separated path (e.g. `Envelope.Body.GetUsersResponse.Users.User`) to the repeating element and emits one record per match. A single element collapses to one record; a repeated element fans out to many.
+- **SOAP friendly** — set `method: POST` and supply a raw SOAP envelope as `body`; attach SOAP-action and content-type headers via `Custom` auth or `query_params`.
+- **Two pagination styles** — page-number and offset/limit, each with a built-in loop guard so a misbehaving endpoint can't spin forever; `max_pages` is a hard cap across both.
+- **Pluggable authentication** — `none`, `bearer`, `basic`, or fully custom headers — inline or via a shared provider from the CLI `auth:` catalog (OAuth2 token reuse across matrix rows).
+- **Retry with backoff** — transient HTTP failures (5xx / connection resets) are retried up to **3 attempts** with exponential backoff (base 500 ms) via the shared `faucet_core::execute_with_retry`.
+- **Bounded-memory streaming** — `Source::stream_pages` accumulates matched subtrees and yields a `StreamPage` every `batch_size` records; `batch_size: 0` drains the whole document into one page.
+- **Client built once** — the `reqwest` client is constructed in `new()` and reused for every request and every page.
 
 ## Installation
 
 ```bash
+# As a library:
 cargo add faucet-source-xml
-cargo add tokio --features full
+
+# In the CLI (opt-in connector feature):
+cargo install faucet-cli --features source-xml
 ```
 
-Or via the umbrella crate:
+Or pull it in through the umbrella crate:
+
 ```bash
 cargo add faucet-stream --features source-xml
 ```
 
-## Quick Start
+`source-xml` is **not** in the CLI default build — enable it explicitly via the feature flag above.
 
-```rust
-use faucet_source_xml::{XmlStream, XmlStreamConfig};
+## Quick start
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let config = XmlStreamConfig::new("https://api.example.com", "/users.xml")
-        .records_element_path("Response.Users.User");
-
-    let stream = XmlStream::new(config);
-    let records = stream.fetch_all().await?;
-
-    for record in &records {
-        println!("{}", record);
-    }
-    Ok(())
-}
+```yaml
+# pipeline.yaml — faucet run pipeline.yaml
+version: 1
+pipeline:
+  source:
+    type: xml
+    config:
+      base_url: https://api.example.com
+      path: /users.xml
+      method: GET
+      records_element_path: Response.Users.User
+  sink:
+    type: jsonl
+    config:
+      path: ./users.jsonl
 ```
 
-## Configuration
+```bash
+faucet run pipeline.yaml
+```
 
-### XmlStreamConfig
+## Configuration reference
+
+### Core
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `base_url` | `String` | *(required)* | Base URL of the API |
-| `path` | `String` | *(required)* | Request path appended to `base_url` |
-| `method` | `Method` | `GET` | HTTP method (`GET` or `POST` for SOAP) |
-| `auth` | `XmlAuth` | `XmlAuth::None` | Authentication method |
-| `headers` | `HeaderMap` | empty | Additional request headers |
-| `body` | `Option<String>` | `None` | Optional request body (e.g. SOAP envelope as raw XML string) |
-| `records_element_path` | `Option<String>` | `None` | Dot-separated path to the repeating element in the XML response (e.g. `"Envelope.Body.GetUsersResponse.Users.User"`) |
-| `pagination` | `Option<XmlPagination>` | `None` | Pagination configuration |
-| `max_pages` | `Option<usize>` | `None` | Maximum number of pages to fetch |
-| `query_params` | `HashMap<String, String>` | empty | Query parameters to include in every request |
+| `base_url` | string | — *(required)* | Base URL of the API. |
+| `path` | string | — *(required)* | Request path appended to `base_url`. |
+| `method` | string | `GET` | HTTP method. Use `POST` for SOAP. |
+| `body` | string | *(unset)* | Optional request body — typically a raw SOAP envelope for `POST`. |
+| `records_element_path` | string | *(unset)* | Dot-separated path to the repeating element in the converted JSON (e.g. `Envelope.Body.GetUsersResponse.Users.User`). When unset, the whole converted document is emitted as one record. |
+| `query_params` | map<string,string> | `{}` | Query parameters added to every request (in addition to pagination params). |
 
-### Authentication (XmlAuth)
+### Authentication
 
-| Variant | Fields | Description |
-|---------|--------|-------------|
-| `None` | -- | No authentication |
-| `Bearer { token }` | `String` | Bearer token in the `Authorization` header |
-| `Basic { username, password }` | `String`, `String` | HTTP Basic authentication |
-| `Custom { headers }` | `HashMap<String, String>` | Custom headers (e.g. SOAP action headers, API keys) attached to every request |
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `auth` | `XmlAuth` *(inline `{type,config}`)* or `{ ref: <name> }` | `{ type: none }` | Authentication — see [Authentication](#authentication). |
 
-### Pagination (XmlPagination)
+### Pagination
 
-| Variant | Fields | Stops When |
-|---------|--------|------------|
-| `PageNumber` | `param_name`, `start_page`, `page_size` (optional), `page_size_param` (optional) | Response returns zero records, or fewer records than `page_size` |
-| `Offset` | `offset_param`, `limit_param`, `limit` | Fewer records returned than `limit`, or loop detected |
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `pagination` | `XmlPagination` | *(unset)* | Pagination strategy — see [Pagination](#pagination). When unset, exactly one request is made. |
+| `max_pages` | int | *(unset)* | Hard cap on pages fetched, across either pagination style. |
 
-## Config Loading
+### Batching
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `batch_size` | int | `1000` | Records per emitted `StreamPage`. The event-driven parser buffers matched subtrees and yields whenever the buffer reaches this size. **`0` = no batching**: the document is drained end-to-end and the entire result set is emitted in a single page. Validated against `MAX_BATCH_SIZE` (1,000,000). |
+
+> `headers` exists on the Rust config struct for programmatic use but is `#[serde(skip)]` — it is **not** settable from YAML/JSON. Use `Custom` auth (or `query_params`) to attach request headers from config.
+
+## Authentication
+
+`auth` accepts either an **inline** `{ type, config }` block or a `{ ref: <name> }` pointer to a shared provider declared in the CLI's top-level `auth:` catalog. Inline variants:
+
+| `type` | `config` | Description |
+|--------|----------|-------------|
+| `none` | *(none)* | No authentication (default). |
+| `bearer` | `{ token: <string> }` | `Authorization: Bearer <token>`. |
+| `basic` | `{ username, password }` | HTTP Basic authentication. |
+| `custom` | `{ headers: { <name>: <value>, … } }` | Arbitrary headers attached to every request — SOAPAction, API keys, content-type overrides, etc. |
+
+```yaml
+# Bearer token (read from the environment)
+auth:
+  type: bearer
+  config:
+    token: ${env:FEED_TOKEN}
+```
+
+```yaml
+# HTTP Basic
+auth:
+  type: basic
+  config:
+    username: admin
+    password: ${env:XML_PASSWORD}
+```
+
+```yaml
+# Custom headers — e.g. SOAPAction + an API key
+auth:
+  type: custom
+  config:
+    headers:
+      SOAPAction: "http://example.com/orders/GetOrders"
+      X-API-Key: ${env:API_KEY}
+```
+
+```yaml
+# Shared provider from the top-level auth: catalog (OAuth2 token reused across rows)
+auth: { ref: my_idp }
+```
+
+## Examples
+
+### REST XML API with page-number pagination
+
+```yaml
+version: 1
+pipeline:
+  source:
+    type: xml
+    config:
+      base_url: https://api.example.com
+      path: /api/products.xml
+      records_element_path: Products.Product
+      pagination:
+        type: PageNumber
+        param_name: page
+        start_page: 1
+        page_size: 50
+        page_size_param: per_page
+      max_pages: 20
+  sink:
+    type: jsonl
+    config:
+      path: ./products.jsonl
+```
+
+### SOAP service with Basic auth (POST envelope)
+
+```yaml
+version: 1
+pipeline:
+  source:
+    type: xml
+    config:
+      base_url: https://soap.example.com
+      path: /ws
+      method: POST
+      auth:
+        type: basic
+        config:
+          username: admin
+          password: ${env:SOAP_PASSWORD}
+      body: |
+        <?xml version="1.0"?>
+        <soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/">
+          <soapenv:Body>
+            <GetOrders xmlns="http://example.com/orders"/>
+          </soapenv:Body>
+        </soapenv:Envelope>
+      records_element_path: Envelope.Body.GetOrdersResponse.Orders.Order
+  sink:
+    type: postgres
+    config:
+      connection_url: ${env:DATABASE_URL}
+      table: orders
+```
+
+### Offset-paginated feed → MongoDB (Bearer auth)
+
+```yaml
+version: 1
+name: xml_to_mongodb
+pipeline:
+  source:
+    type: xml
+    config:
+      base_url: https://feeds.example.com
+      path: /catalog
+      method: GET
+      auth:
+        type: bearer
+        config:
+          token: ${env:FEED_TOKEN}
+      query_params:
+        format: xml
+      records_element_path: catalog.products.product
+      pagination:
+        type: Offset
+        offset_param: offset
+        limit_param: limit
+        limit: 250
+  sink:
+    type: mongodb
+    config:
+      connection_uri: mongodb://localhost:27017
+      database: warehouse
+      collection: catalog_items
+      batch_size: 1000
+```
+
+Runnable copies of the last two shapes live in [`cli/examples/xml_to_mongodb.yaml`](https://github.com/PawanSikawat/faucet-stream/blob/main/cli/examples/xml_to_mongodb.yaml) and [`cli/examples/xml_to_s3.yaml`](https://github.com/PawanSikawat/faucet-stream/blob/main/cli/examples/xml_to_s3.yaml).
+
+## Pagination
+
+| Style (`type`) | Fields | Stops when |
+|----------------|--------|------------|
+| `PageNumber` | `param_name`, `start_page`, `page_size` *(optional)*, `page_size_param` *(optional)* | A page returns zero records, or fewer records than `page_size`. |
+| `Offset` | `offset_param`, `limit_param`, `limit` | A page returns fewer records than `limit`, or a loop is detected. |
+
+`max_pages` caps the total number of pages for both styles. With no `pagination` block, exactly one request is made.
+
+## Streaming & batching
+
+The source overrides `Source::stream_pages`. The XML response is parsed with an event-driven `quick-xml` reader: only the subtree matching `records_element_path` is materialized, accumulated into a buffer, and yielded as a `StreamPage` whenever the buffer reaches `batch_size`. Memory is bounded at one page regardless of document size. With `batch_size: 0`, the whole document is drained and emitted in a single page — handy for small lookup payloads or for sinks (SQL `COPY`, BigQuery load jobs) that prefer one large request to many small ones.
+
+This is a one-shot fetch source: each run re-requests the endpoint and has no incremental bookmark / resume support. For incremental loads, encode a watermark in `query_params` or the request `body` (e.g. a `since=${now.date}` param) and drive it from a matrix context or `${now.*}` token.
+
+## Config loading & schema introspection
+
+Load from YAML/JSON files, environment variables, or a `.env` file via the helpers in `faucet_core::config`:
 
 ```rust
 use faucet_core::config::{load_json, load_env_file};
@@ -84,121 +257,74 @@ let config: XmlStreamConfig = load_json("config.json")?;
 let config: XmlStreamConfig = load_env_file(".env", "XML")?;
 ```
 
-### Example JSON config
+Inspect the full JSON Schema with:
 
-```json
-{
-  "base_url": "https://api.example.com",
-  "path": "/soap/service",
-  "method": "POST",
-  "auth": {
-    "type": "basic",
-    "config": {
-      "username": "admin",
-      "password": "secret"
-    }
-  },
-  "body": "<soapenv:Envelope xmlns:soapenv=\"http://schemas.xmlsoap.org/soap/envelope/\" xmlns:web=\"http://example.com/webservice\"><soapenv:Body><web:GetUsers/></soapenv:Body></soapenv:Envelope>",
-  "records_element_path": "Envelope.Body.GetUsersResponse.Users.User",
-  "pagination": {
-    "type": "PageNumber",
-    "param_name": "page",
-    "start_page": 1,
-    "page_size": 100,
-    "page_size_param": "pageSize"
-  },
-  "max_pages": 50,
-  "query_params": {}
-}
+```bash
+faucet schema source xml
 ```
 
-### Example .env file
-
-```env
-XML_BASE_URL=https://api.example.com
-XML_PATH=/users.xml
-XML_METHOD=GET
-XML_MAX_PAGES=50
-```
-
-## Config Schema Introspection
+## Library usage
 
 ```rust
 use faucet_core::Source;
+use faucet_source_xml::{XmlStream, XmlStreamConfig, XmlAuth, XmlPagination};
 
-let stream = XmlStream::new(config);
-let schema = stream.config_schema();
-println!("{}", serde_json::to_string_pretty(&schema)?);
-```
-
-## Examples
-
-### REST XML API with page-number pagination
-
-```rust
-use faucet_source_xml::{XmlStream, XmlStreamConfig, XmlPagination};
-
-let config = XmlStreamConfig::new("https://api.example.com", "/api/products.xml")
-    .records_element_path("Products.Product")
-    .pagination(XmlPagination::PageNumber {
-        param_name: "page".into(),
-        start_page: 1,
-        page_size: Some(50),
-        page_size_param: Some("per_page".into()),
-    })
-    .max_pages(20);
-
-let stream = XmlStream::new(config);
-let products = stream.fetch_all().await?;
-println!("Fetched {} products", products.len());
-```
-
-### SOAP API with custom headers
-
-```rust
-use faucet_source_xml::{XmlStream, XmlStreamConfig, XmlAuth};
-use reqwest::Method;
-
-let config = XmlStreamConfig::new("https://soap.example.com", "/ws")
-    .method(Method::POST)
-    .auth(XmlAuth::Basic {
-        username: "admin".into(),
-        password: "password".into(),
-    })
-    .body(r#"<?xml version="1.0"?>
-<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/">
-  <soapenv:Body>
-    <GetOrders xmlns="http://example.com/orders"/>
-  </soapenv:Body>
-</soapenv:Envelope>"#)
-    .records_element_path("Envelope.Body.GetOrdersResponse.Orders.Order");
-
-let stream = XmlStream::new(config);
-let orders = stream.fetch_all().await?;
-```
-
-### Offset-paginated XML feed
-
-```rust
-use faucet_source_xml::{XmlStream, XmlStreamConfig, XmlPagination};
-
-let config = XmlStreamConfig::new("https://feeds.example.com", "/articles.xml")
-    .records_element_path("Feed.Articles.Article")
+# async fn run() -> Result<(), Box<dyn std::error::Error>> {
+let config = XmlStreamConfig::new("https://feeds.example.com", "/catalog")
+    .auth(XmlAuth::Bearer { token: std::env::var("FEED_TOKEN")? })
+    .query_param("format", "xml")
+    .records_element_path("catalog.products.product")
     .pagination(XmlPagination::Offset {
-        offset_param: "start".into(),
-        limit_param: "count".into(),
-        limit: 100,
+        offset_param: "offset".into(),
+        limit_param: "limit".into(),
+        limit: 250,
     })
-    .query_param("format", "xml");
+    .with_batch_size(500);
 
-let stream = XmlStream::new(config);
-let articles = stream.fetch_all().await?;
+let records = XmlStream::new(config).fetch_all().await?;
+println!("fetched {} records", records.len());
+# Ok(())
+# }
 ```
+
+To wire it into a pipeline, hand the `XmlStream` to `faucet_core::Pipeline` (batch) or `faucet_core::run_stream` (streaming) alongside any `Sink`. For shared-token reuse across many sources, build a `faucet_core::AuthProvider` once and inject it with `XmlStream::with_auth_provider(provider)`.
+
+## How it works
+
+1. `new()` builds the `reqwest` client **once** and stores it on the struct.
+2. Each page issues one request (`base_url + path` with `query_params` + the pagination param), retried up to **3 times** with exponential backoff (base 500 ms) on transient failures via `faucet_core::execute_with_retry`. Non-cloneable request bodies are not retried (surfaced as `FaucetError::Source`).
+3. The response is converted XML → JSON and `records_element_path` is walked to find the repeating element.
+4. Records are buffered and yielded as `StreamPage`s of `batch_size`; pagination advances until the stop condition or `max_pages`.
 
 ## Lineage dataset URI
 
-`https://<base_url><path>` (credentials stripped) — e.g. `https://soap.example.com/api/v1/service`.
+`<base_url><path>` with any embedded credentials stripped — e.g. `https://soap.example.com/svc`.
+
+## Feature flags
+
+This crate has no optional features of its own. Enable it in the CLI / umbrella crate via the `source-xml` feature.
+
+## Troubleshooting / FAQ
+
+| Symptom | Likely cause & fix |
+|---------|--------------------|
+| Zero records returned, no error | `records_element_path` doesn't match the converted JSON. Inspect the response (the converter maps attributes and text nodes); fix the dot-path to the *repeating* element, or drop it to emit the whole document as one record. |
+| Only one record when you expected many | The path points at a single element rather than the repeated parent's child. Point at the repeating element itself (e.g. `…Users.User`, not `…Users`). |
+| `401` / `403` | Auth missing or wrong. Set the right `auth` variant; for SOAP endpoints that gate on `SOAPAction`, add it via `custom` headers. |
+| `FaucetError::Source: request is not cloneable for retry` | A streaming/non-cloneable request body can't be retried. Pass the SOAP envelope as a plain `body` string (the default), which is cloneable. |
+| Persistent `5xx` after retries | The source retries transient failures **3 times** with backoff before failing. A persistent 5xx is upstream — check the service; raising your own request timeout won't help. |
+| Pagination never stops / fetches too much | Set `max_pages` as a hard cap. Confirm `page_size` (PageNumber) or `limit` (Offset) matches what the API actually returns per page so the "fewer than expected" stop condition fires. |
+| Headers set in code aren't sent from YAML | `headers` is `#[serde(skip)]` and not configurable from YAML/JSON. Use `custom` auth (or `query_params`) to attach headers from config. |
+| Malformed XML / parse error | The body isn't well-formed XML (often an HTML error page returned with a 200). Verify the endpoint and that auth/headers select the XML representation (e.g. `Accept: application/xml`). |
+
+## See also
+
+- [Connector reference](https://pawansikawat.github.io/faucet-stream/reference/connectors.html) — capability matrix.
+- [Authentication cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/auth.html) — inline vs shared `auth:` providers.
+- [Pagination cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/pagination.html).
+- [`faucet-source-rest`](https://crates.io/crates/faucet-source-rest) — the JSON/REST sibling source.
+- [`faucet-source-graphql`](https://crates.io/crates/faucet-source-graphql) — GraphQL source.
 
 ## License
 
-Licensed under MIT or Apache-2.0.
+Licensed under either of [Apache License, Version 2.0](https://www.apache.org/licenses/LICENSE-2.0) or [MIT license](https://opensource.org/licenses/MIT) at your option.
