@@ -522,6 +522,41 @@ where
     // flush below, so a buffered sink (Parquet footer, S3 multipart) is made
     // durable — the difference from a dropped future, which flushes nothing.
     let mut cancelled = false;
+
+    // ── Resilience policy (retry/backoff/circuit-breaker) ────────────────────
+    // When no policy is attached, `retry_policy` is `None` and the `with_retry!`
+    // macro falls through to a bare `$op.await`, leaving the write path
+    // byte-for-byte identical to today. The breaker is bound for later tasks
+    // (DLQ-path circuit breaking) and is unused by the default/exactly-once
+    // paths wrapped here.
+    let resilience = options.resilience.clone();
+    let retry_policy = resilience.as_ref().map(|r| r.retry.clone());
+    let mut breaker = resilience.as_ref().and_then(|r| r.circuit_breaker).map(|cb| {
+        (
+            crate::resilience::CircuitBreaker::new(cb.consecutive_failures),
+            cb.cooldown,
+        )
+    });
+    // `breaker` is consumed by the DLQ path (Task 9); silence the unused
+    // warning until then without disabling it for the whole function.
+    let _ = &mut breaker;
+
+    // Run a sink/state op under the retry policy, or bare if no policy is set.
+    // A macro (not a closure) so it works across the differently-typed call
+    // sites (`Result<usize, _>`, `Result<(), _>`) without boxing. `cancel` is
+    // the `Option<CancellationToken>` already in scope; a cancel during a
+    // backoff sleep returns the last error promptly so the caller can flush.
+    macro_rules! with_retry {
+        ($op:expr) => {
+            match &retry_policy {
+                Some(p) => {
+                    crate::resilience::execute_with_policy(p, cancel.as_ref(), || $op).await
+                }
+                None => $op.await,
+            }
+        };
+    }
+
     let loop_result: Result<(), FaucetError> = async {
         loop {
             // Poll the next page, but if a cancellation token is wired, race it
@@ -862,30 +897,29 @@ where
                                 counter!("faucet_pipeline_pages_skipped_total", skip_labels)
                                     .increment(1);
                             } else {
-                                records_written += sink
-                                    .write_batch_idempotent(&page.records, &scope, &token)
-                                    .await?;
+                                records_written += with_retry!(sink.write_batch_idempotent(
+                                    &page.records,
+                                    &scope,
+                                    &token
+                                ))?;
                             }
-                            sink.flush().await?;
+                            with_retry!(sink.flush())?;
                             let bm_labels =
                                 crate::observability::Labels::new(&*pipeline_name, &*row, &*run_id);
                             crate::observability::update_bookmark_lag(&bookmark, &bm_labels);
                             if let (Some(store), Some(key)) =
                                 (state_store.as_ref(), state_key.as_ref())
                             {
-                                store
-                                    .put(
-                                        key,
-                                        &crate::idempotency::wrap_state(Some(&bookmark), next_seq),
-                                    )
-                                    .await?;
+                                let wrapped =
+                                    crate::idempotency::wrap_state(Some(&bookmark), next_seq);
+                                with_retry!(store.put(key, &wrapped))?;
                             }
                             last_bookmark = Some(bookmark);
                         } else if !page.records.is_empty() {
                             // No bookmark → not individually checkpointed; write
                             // as-is (rare for EO sources, which bookmark every
                             // page). Stays at-least-once for this page.
-                            records_written += sink.write_batch(&page.records).await?;
+                            records_written += with_retry!(sink.write_batch(&page.records))?;
                         }
                     } else {
                         // ── DLQ-disabled path (today's behaviour) ──────────────
@@ -905,7 +939,7 @@ where
                                         ctrl.current().max(1).min(page.records.len() - offset);
                                     let chunk = &page.records[offset..offset + size];
                                     let t0 = std::time::Instant::now();
-                                    let n = sink.write_batch(chunk).await?;
+                                    let n = with_retry!(sink.write_batch(chunk))?;
                                     let latency = t0.elapsed();
                                     records_written += n;
                                     offset += size;
@@ -917,18 +951,18 @@ where
                                     emit_adaptive_metrics(ctrl, adj, &pipeline_name, &row);
                                 }
                             } else {
-                                records_written += sink.write_batch(&page.records).await?;
+                                records_written += with_retry!(sink.write_batch(&page.records))?;
                             }
                         }
                         if let Some(bookmark) = page.bookmark {
-                            sink.flush().await?;
+                            with_retry!(sink.flush())?;
                             let bm_labels =
                                 crate::observability::Labels::new(&*pipeline_name, &*row, &*run_id);
                             crate::observability::update_bookmark_lag(&bookmark, &bm_labels);
                             if let (Some(store), Some(key)) =
                                 (state_store.as_ref(), state_key.as_ref())
                             {
-                                store.put(key, &bookmark).await?;
+                                with_retry!(store.put(key, &bookmark))?;
                             }
                             last_bookmark = Some(bookmark);
                         }
@@ -3193,5 +3227,64 @@ mod tests {
             .unwrap();
         assert_eq!(result.records_written, 10);
         assert_eq!(*sink.0.lock().unwrap(), 10);
+    }
+
+    #[tokio::test]
+    async fn resilience_retries_transient_sink_write() {
+        use crate::resilience::{BackoffKind, ResiliencePolicy, RetryPolicy};
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicU32, Ordering};
+        use std::time::Duration;
+
+        struct TransientFlakySink {
+            attempts: Arc<AtomicU32>,
+            written: Arc<AtomicU32>,
+        }
+        #[async_trait::async_trait]
+        impl Sink for TransientFlakySink {
+            async fn write_batch(&self, records: &[serde_json::Value]) -> Result<usize, FaucetError> {
+                let n = self.attempts.fetch_add(1, Ordering::SeqCst);
+                if n < 2 {
+                    return Err(FaucetError::HttpStatus {
+                        status: 503,
+                        url: "u".into(),
+                        body: "".into(),
+                    });
+                }
+                self.written.fetch_add(records.len() as u32, Ordering::SeqCst);
+                Ok(records.len())
+            }
+            async fn flush(&self) -> Result<(), FaucetError> {
+                Ok(())
+            }
+        }
+
+        let attempts = Arc::new(AtomicU32::new(0));
+        let written = Arc::new(AtomicU32::new(0));
+        let sink = TransientFlakySink {
+            attempts: attempts.clone(),
+            written: written.clone(),
+        };
+        let pages = futures::stream::iter(vec![Ok(StreamPage {
+            records: vec![serde_json::json!({"a": 1})],
+            bookmark: None,
+        })]);
+        let policy = ResiliencePolicy {
+            retry: RetryPolicy {
+                max_attempts: 5,
+                backoff: BackoffKind::None,
+                base: Duration::ZERO,
+                max: Duration::ZERO,
+                jitter: false,
+                ..RetryPolicy::default()
+            },
+            ..ResiliencePolicy::default()
+        };
+        let res = run_stream(pages, &sink, RunStreamOptions::new().with_resilience(policy))
+            .await
+            .unwrap();
+        assert_eq!(written.load(Ordering::SeqCst), 1);
+        assert_eq!(attempts.load(Ordering::SeqCst), 3);
+        assert_eq!(res.records_written, 1);
     }
 }
