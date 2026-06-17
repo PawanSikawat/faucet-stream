@@ -300,6 +300,8 @@ pub enum SchemaTarget {
     Replication,
     /// JSON Schema for the top-level `execution:` block.
     Execution,
+    /// JSON Schema for the top-level `resilience:` block.
+    Resilience,
     /// JSON Schema for the `quality:` block.
     #[cfg(feature = "quality")]
     Quality,
