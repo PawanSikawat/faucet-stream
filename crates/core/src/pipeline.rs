@@ -134,6 +134,7 @@ pub struct Pipeline<'a, So: Source + ?Sized, Si: Sink + ?Sized> {
     adaptive: Option<crate::adaptive::AdaptiveBatchConfig>,
     cancel: Option<tokio_util::sync::CancellationToken>,
     delivery: crate::idempotency::DeliveryMode,
+    resilience: Option<crate::resilience::ResiliencePolicy>,
 }
 
 impl<'a, So: Source + ?Sized, Si: Sink + ?Sized> Pipeline<'a, So, Si> {
@@ -152,6 +153,7 @@ impl<'a, So: Source + ?Sized, Si: Sink + ?Sized> Pipeline<'a, So, Si> {
             adaptive: None,
             cancel: None,
             delivery: crate::idempotency::DeliveryMode::AtLeastOnce,
+            resilience: None,
         }
     }
 
@@ -232,6 +234,12 @@ impl<'a, So: Source + ?Sized, Si: Sink + ?Sized> Pipeline<'a, So, Si> {
     /// `FaucetError::Config`.
     pub fn with_delivery(mut self, mode: crate::idempotency::DeliveryMode) -> Self {
         self.delivery = mode;
+        self
+    }
+
+    /// Attach a resilience policy (retry/backoff/circuit-breaker/poison-pill).
+    pub fn with_resilience(mut self, policy: crate::resilience::ResiliencePolicy) -> Self {
+        self.resilience = Some(policy);
         self
     }
 
@@ -372,6 +380,9 @@ impl<'a, So: Source + ?Sized, Si: Sink + ?Sized> Pipeline<'a, So, Si> {
             }
             if let Some(cancel) = self.cancel.clone() {
                 opts = opts.with_cancel(cancel);
+            }
+            if let Some(policy) = self.resilience.clone() {
+                opts = opts.with_resilience(policy);
             }
             opts = opts.with_delivery(self.delivery).with_start_seq(start_seq);
 
