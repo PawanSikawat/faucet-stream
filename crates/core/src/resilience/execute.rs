@@ -2,7 +2,7 @@
 //! honoring backoff, jitter, retry classification, and a cancellation token.
 
 use crate::error::FaucetError;
-use crate::resilience::policy::{BackoffKind, RetryPolicy};
+use crate::resilience::policy::RetryPolicy;
 use std::future::Future;
 use tokio_util::sync::CancellationToken;
 
@@ -58,6 +58,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::resilience::policy::BackoffKind;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicU32, Ordering};
     use std::time::Duration;

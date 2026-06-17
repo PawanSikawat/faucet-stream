@@ -24,29 +24,22 @@ const MAX_BACKOFF: Duration = Duration::from_secs(60);
 pub async fn execute_with_retry<F, Fut, T>(
     max_retries: u32,
     base_backoff: Duration,
-    mut operation: F,
+    operation: F,
 ) -> Result<T, FaucetError>
 where
     F: FnMut() -> Fut,
     Fut: Future<Output = Result<T, FaucetError>>,
 {
-    let mut attempt = 0u32;
-    loop {
-        match operation().await {
-            Ok(val) => return Ok(val),
-            Err(e) if e.is_retriable() && attempt < max_retries => {
-                let wait = backoff_with_jitter(base_backoff, attempt);
-                tracing::warn!(
-                    "request failed (attempt {}/{}), retrying in {wait:?}: {e}",
-                    attempt + 1,
-                    max_retries + 1
-                );
-                tokio::time::sleep(wait).await;
-                attempt += 1;
-            }
-            Err(e) => return Err(e),
-        }
-    }
+    let policy = crate::resilience::RetryPolicy {
+        // max_attempts is total tries; legacy `max_retries` is retries-after-first.
+        max_attempts: max_retries.saturating_add(1),
+        backoff: crate::resilience::BackoffKind::Exponential,
+        base: base_backoff,
+        max: MAX_BACKOFF,
+        jitter: true,
+        retry_on: crate::resilience::RetryClassSet::default(),
+    };
+    crate::resilience::execute_with_policy(&policy, None, operation).await
 }
 
 /// `base * 2^attempt`, capped at `MAX_BACKOFF` (60s), scaled by a random factor
