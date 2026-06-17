@@ -77,25 +77,40 @@ pub fn classify(err: &FaucetError) -> Option<RetryClass> {
         FaucetError::HttpStatus { status, .. } if *status >= 500 => Some(RetryClass::Http5xx),
         FaucetError::RateLimited(_) => Some(RetryClass::RateLimited),
         FaucetError::Http(e) => {
-            if e.is_timeout() {
-                Some(RetryClass::Timeout)
-            } else if let Some(status) = e.status() {
-                if status.is_server_error() {
-                    Some(RetryClass::Http5xx)
-                } else if status.as_u16() == 429 {
-                    Some(RetryClass::RateLimited)
-                } else {
-                    None
-                }
-            } else if e.is_connect() {
-                Some(RetryClass::Connection)
-            } else {
-                // Other reqwest transport errors (body, decode mid-stream) —
-                // treat as connection-class transient.
-                Some(RetryClass::Connection)
-            }
+            classify_transport(e.is_timeout(), e.status().map(|s| s.as_u16()), e.is_connect())
         }
         _ => None,
+    }
+}
+
+/// Pure classification of a reqwest transport error from its three discriminating
+/// predicates. Factored out of the [`FaucetError::Http`] arm so it is unit-testable
+/// without constructing a `reqwest::Error` (which has no public constructor).
+///
+/// A timeout wins regardless of any attached status. A 5xx/429 status maps to the
+/// matching class; any other status is non-transient (`None`). With no status, a
+/// connect failure and every other transport error (body/decode mid-stream) are
+/// treated as connection-class transient — a strict superset of the legacy
+/// `FaucetError::is_retriable`, so behavior is preserved.
+fn classify_transport(
+    is_timeout: bool,
+    status: Option<u16>,
+    is_connect: bool,
+) -> Option<RetryClass> {
+    if is_timeout {
+        Some(RetryClass::Timeout)
+    } else if let Some(status) = status {
+        if status >= 500 {
+            Some(RetryClass::Http5xx)
+        } else if status == 429 {
+            Some(RetryClass::RateLimited)
+        } else {
+            None
+        }
+    } else if is_connect {
+        Some(RetryClass::Connection)
+    } else {
+        Some(RetryClass::Connection)
     }
 }
 
@@ -118,6 +133,21 @@ mod tests {
             classify(&FaucetError::RateLimited(Duration::from_secs(1))),
             Some(RetryClass::RateLimited)
         );
+    }
+
+    #[test]
+    fn transport_classification_covers_every_arm() {
+        // Timeout wins regardless of status.
+        assert_eq!(classify_transport(true, None, false), Some(RetryClass::Timeout));
+        assert_eq!(classify_transport(true, Some(500), true), Some(RetryClass::Timeout));
+        // Status-bearing transport errors.
+        assert_eq!(classify_transport(false, Some(503), false), Some(RetryClass::Http5xx));
+        assert_eq!(classify_transport(false, Some(429), false), Some(RetryClass::RateLimited));
+        // A non-5xx/429 status is not transient.
+        assert_eq!(classify_transport(false, Some(404), false), None);
+        // Statusless: connect and other transport errors are connection-class.
+        assert_eq!(classify_transport(false, None, true), Some(RetryClass::Connection));
+        assert_eq!(classify_transport(false, None, false), Some(RetryClass::Connection));
     }
 
     #[test]

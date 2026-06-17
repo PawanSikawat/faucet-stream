@@ -9,7 +9,7 @@ use std::time::Duration;
 pub enum BackoffKind {
     /// No delay between attempts.
     None,
-    /// Constant `base` delay.
+    /// Constant `base` delay, capped at `max`.
     Fixed,
     /// `base * 2^attempt`, capped at `max`.
     #[default]
@@ -144,6 +144,11 @@ mod tests {
         let max = Duration::from_secs(10);
         assert_eq!(BackoffKind::None.delay(base, max, 0), Duration::ZERO);
         assert_eq!(BackoffKind::Fixed.delay(base, max, 3), base);
+        // Fixed is capped at max when base exceeds it.
+        assert_eq!(
+            BackoffKind::Fixed.delay(Duration::from_secs(20), Duration::from_secs(10), 0),
+            Duration::from_secs(10)
+        );
         assert_eq!(BackoffKind::Exponential.delay(base, max, 0), base);
         assert_eq!(BackoffKind::Exponential.delay(base, max, 2), base * 4);
         // capped at max
