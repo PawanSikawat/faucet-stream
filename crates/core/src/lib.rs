@@ -18,6 +18,7 @@ pub mod auth;
 pub mod check;
 pub mod config;
 pub mod dlq;
+pub mod drift;
 pub mod error;
 pub mod idempotency;
 pub mod observability;
@@ -45,6 +46,7 @@ pub use adaptive::{
 pub use auth::{AuthProvider, AuthReference, AuthSpec, Credential, SharedAuthProvider};
 pub use check::{CheckContext, CheckReport, Probe, ProbeStatus};
 pub use dlq::{DlqConfig, DlqReason, DlqStats, OnBatchError, build_envelope};
+pub use drift::{ColumnChange, SchemaDiff, SchemaEvolution};
 pub use error::FaucetError;
 pub use idempotency::{DeliveryMode, format_token, parse_token, unwrap_state, wrap_state};
 #[cfg(feature = "quality")]
