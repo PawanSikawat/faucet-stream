@@ -339,22 +339,18 @@ impl Sink for KafkaSink {
             let topic = match self.resolve_topic(record) {
                 Ok(t) => t,
                 Err(e) => {
-                    let _ = crate::idempotent::abort_txn(
-                        producer.clone(),
-                        self.config.message_timeout,
-                    )
-                    .await;
+                    let _ =
+                        crate::idempotent::abort_txn(producer.clone(), self.config.message_timeout)
+                            .await;
                     return Err(e);
                 }
             };
             let (value_bytes, key_bytes) = match self.build_record_bytes(record, &topic).await {
                 Ok(v) => v,
                 Err(e) => {
-                    let _ = crate::idempotent::abort_txn(
-                        producer.clone(),
-                        self.config.message_timeout,
-                    )
-                    .await;
+                    let _ =
+                        crate::idempotent::abort_txn(producer.clone(), self.config.message_timeout)
+                            .await;
                     return Err(e);
                 }
             };
@@ -412,8 +408,8 @@ impl Sink for KafkaSink {
         )
         .await
         {
-            let _ = crate::idempotent::abort_txn(producer.clone(), self.config.message_timeout)
-                .await;
+            let _ =
+                crate::idempotent::abort_txn(producer.clone(), self.config.message_timeout).await;
             return Err(e);
         }
 
@@ -424,13 +420,16 @@ impl Sink for KafkaSink {
             .await
             .map_err(|e| FaucetError::Sink(format!("kafka commit task: {e}")))?;
         if let Err(e) = commit {
-            let _ = crate::idempotent::abort_txn(producer.clone(), self.config.message_timeout)
-                .await;
+            let _ =
+                crate::idempotent::abort_txn(producer.clone(), self.config.message_timeout).await;
             return Err(FaucetError::Sink(format!("kafka commit_transaction: {e}")));
         }
 
         if skipped > 0 {
-            tracing::warn!(skipped, "kafka sink: dropped records due to OnKeyError::Skip");
+            tracing::warn!(
+                skipped,
+                "kafka sink: dropped records due to OnKeyError::Skip"
+            );
         }
         Ok(produced)
     }

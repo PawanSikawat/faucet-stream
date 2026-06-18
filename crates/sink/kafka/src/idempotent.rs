@@ -14,7 +14,6 @@ use rdkafka::consumer::{BaseConsumer, Consumer};
 use rdkafka::error::{KafkaError, RDKafkaErrorCode};
 use rdkafka::producer::{FutureProducer, FutureRecord, Producer};
 use rdkafka::{ClientConfig, Message, Offset, TopicPartitionList};
-use std::collections::HashMap;
 use std::time::Duration;
 
 /// Build the shared connection `ClientConfig` (brokers + auth) reused by the
@@ -53,7 +52,10 @@ pub(crate) fn producer_client_config(
         config.message_timeout.as_millis().to_string(),
     );
     if config.batch_size > 0 {
-        cfg.set("queue.buffering.max.messages", config.batch_size.to_string());
+        cfg.set(
+            "queue.buffering.max.messages",
+            config.batch_size.to_string(),
+        );
     }
     for (k, v) in &config.extra_client_config {
         cfg.set(k, v);
@@ -143,56 +145,89 @@ fn read_last_token_blocking(
     };
 
     let mut tpl = TopicPartitionList::new();
-    // (partition_id, target_count) where target_count = high - low is the number
-    // of readable messages between the (committed) low and high watermarks.
-    // Subtracting `low` keeps the drain target correct on a compacted topic whose
-    // log-start offset has advanced past 0 (tombstone removal / `compact,delete`);
-    // assuming 0 there would make `consumed` never reach the target and stall the
-    // loop for a full `timeout` waiting on the empty-poll fallback.
-    let mut ends: Vec<(i32, i64)> = Vec::new();
+    // (partition_id, high_watermark). Under `read_committed`, `high` is the Last
+    // Stable Offset — the offset *after* the last committed batch, including any
+    // transaction commit/abort control markers. The drain target is therefore the
+    // consumer's fetch *position* reaching `high`, NOT a count of delivered
+    // records: a transaction commit marker advances the log offset (and the LSO)
+    // but is never delivered to a consumer via `poll`. Counting delivered records
+    // against `high - low` would over-count by one per transaction commit and the
+    // loop could never reach the target, stalling for a full `timeout`.
+    // (partition_id, high_watermark, is_empty). `is_empty` (low == high) means the
+    // partition has no readable records — true on a fresh topic AND on a fully
+    // compacted partition whose log-start offset advanced past 0; either way it is
+    // already drained and must never block the loop while we wait on a position
+    // that will never be reported (nothing is ever fetched there).
+    let mut ends: Vec<(i32, i64, bool)> = Vec::new();
     for p in topic_meta.partitions() {
         let (low, high) = consumer
             .fetch_watermarks(topic, p.id(), timeout)
             .map_err(|e| FaucetError::Sink(format!("kafka token reader watermarks: {e}")))?;
-        ends.push((p.id(), (high - low).max(0)));
+        ends.push((p.id(), high, low >= high));
         tpl.add_partition_offset(topic, p.id(), Offset::Beginning)
             .map_err(|e| FaucetError::Sink(format!("kafka token reader tpl: {e}")))?;
-    }
-    if ends.iter().all(|(_, target)| *target == 0) {
-        return Ok(None); // every partition empty
     }
     consumer
         .assign(&tpl)
         .map_err(|e| FaucetError::Sink(format!("kafka token reader assign: {e}")))?;
 
-    let mut records: Vec<(Vec<u8>, Option<Vec<u8>>)> = Vec::new();
-    let mut consumed: HashMap<i32, i64> = HashMap::new();
-    let done = |consumed: &HashMap<i32, i64>| {
-        ends.iter()
-            .all(|(pid, target)| consumed.get(pid).copied().unwrap_or(0) >= *target)
+    // Per-partition next-fetch position. A partition is drained once its position
+    // reaches its high watermark (LSO). The consumer advances its position past a
+    // control marker even though no record is delivered, so position — unlike a
+    // delivered-record count — converges to `high` exactly. An empty partition has
+    // nothing to fetch (no position is ever reported), so it counts as drained
+    // outright.
+    let position_reached = |consumer: &BaseConsumer, ends: &[(i32, i64, bool)]| -> bool {
+        let Ok(pos) = consumer.position() else {
+            return false;
+        };
+        ends.iter().all(|(pid, high, is_empty)| {
+            if *is_empty {
+                return true;
+            }
+            match pos
+                .find_partition(topic, *pid)
+                .and_then(|p| match p.offset() {
+                    Offset::Offset(o) => Some(o),
+                    _ => None,
+                }) {
+                Some(o) => o >= *high,
+                // Non-empty partition with no fetched position yet ⇒ not drained.
+                None => false,
+            }
+        })
     };
+
+    let mut records: Vec<(Vec<u8>, Option<Vec<u8>>)> = Vec::new();
+    if position_reached(&consumer, &ends) {
+        // Every partition empty (or already at its watermark) — nothing to read.
+        return Ok(None);
+    }
     loop {
-        if done(&consumed) {
-            break;
-        }
         match consumer.poll(timeout) {
             Some(Ok(msg)) => {
                 let key = msg.key().map(|k| k.to_vec()).unwrap_or_default();
                 let val = msg.payload().map(|v| v.to_vec());
-                *consumed.entry(msg.partition()).or_insert(0) += 1;
                 records.push((key, val));
+                if position_reached(&consumer, &ends) {
+                    break;
+                }
             }
             Some(Err(e)) => {
                 return Err(FaucetError::Sink(format!("kafka token reader poll: {e}")));
             }
-            // An empty poll before every partition reached its high watermark means
-            // the broker did not deliver the remaining committed records within
-            // `timeout`. Returning the max found so far could yield a token *below*
-            // the true committed value, which would make the pipeline re-write
-            // already-committed pages and produce duplicates — defeating exactly-once.
-            // Fail loudly instead so the run aborts rather than silently degrading.
+            // An empty poll means the broker delivered no record within `timeout`.
+            // The consumer's fetch position still advances past control markers on
+            // an empty fetch, so re-check it: if every partition has reached its
+            // high watermark we are genuinely done (the remaining gap to `high` was
+            // a transaction commit marker, which is never delivered). Only if the
+            // position has NOT reached the watermark did the broker fail to deliver
+            // committed data records in time — returning the max found so far could
+            // yield a token *below* the true committed value, making the pipeline
+            // re-write already-committed pages and produce duplicates. Fail loudly
+            // there rather than silently degrading exactly-once.
             None => {
-                if done(&consumed) {
+                if position_reached(&consumer, &ends) {
                     break;
                 }
                 return Err(FaucetError::Sink(format!(
