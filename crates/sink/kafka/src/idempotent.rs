@@ -11,7 +11,8 @@ use faucet_core::FaucetError;
 use rdkafka::admin::{AdminClient, AdminOptions, NewTopic, TopicReplication};
 use rdkafka::client::DefaultClientContext;
 use rdkafka::consumer::{BaseConsumer, Consumer};
-use rdkafka::error::RDKafkaErrorCode;
+use rdkafka::error::{KafkaError, RDKafkaErrorCode};
+use rdkafka::producer::{FutureProducer, FutureRecord, Producer};
 use rdkafka::{ClientConfig, Message, Offset, TopicPartitionList};
 use std::collections::HashMap;
 use std::time::Duration;
@@ -222,6 +223,59 @@ pub(crate) fn max_token_for_scope(
         .filter_map(|v| std::str::from_utf8(v).ok())
         .filter_map(faucet_core::idempotency::parse_token)
         .max()
+}
+
+/// Enqueue one record into the current transaction, retrying on `QueueFull`.
+///
+/// Unlike the at-least-once `send_with_queue_full_retry`, this does NOT await
+/// the delivery future: inside a transaction, delivery only completes at
+/// `commit_transaction`, so awaiting here would deadlock. Errors surface at
+/// commit time.
+pub(crate) async fn enqueue_in_txn(
+    producer: &FutureProducer,
+    topic: &str,
+    value_bytes: Vec<u8>,
+    key_bytes: Option<Vec<u8>>,
+    partition: Option<i32>,
+    max_retries: u32,
+    backoff: Duration,
+) -> Result<(), FaucetError> {
+    let mut attempts: u32 = 0;
+    loop {
+        let mut record: FutureRecord<'_, [u8], [u8]> =
+            FutureRecord::to(topic).payload(value_bytes.as_slice());
+        if let Some(k) = key_bytes.as_deref() {
+            record = record.key(k);
+        }
+        if let Some(p) = partition {
+            record = record.partition(p);
+        }
+        match producer.send_result(record) {
+            Ok(_delivery_future) => return Ok(()),
+            Err((KafkaError::MessageProduction(RDKafkaErrorCode::QueueFull), _)) => {
+                if attempts >= max_retries {
+                    return Err(FaucetError::Sink(format!(
+                        "kafka send: QueueFull after {max_retries} retries"
+                    )));
+                }
+                tracing::warn!(attempts, "kafka send: QueueFull, backing off");
+                tokio::time::sleep(backoff).await;
+                attempts += 1;
+            }
+            Err((e, _)) => return Err(FaucetError::Sink(format!("kafka send: {e}"))),
+        }
+    }
+}
+
+/// Abort the current transaction (best-effort, on the blocking pool).
+pub(crate) async fn abort_txn(
+    producer: std::sync::Arc<FutureProducer>,
+    timeout: Duration,
+) -> Result<(), FaucetError> {
+    tokio::task::spawn_blocking(move || producer.abort_transaction(timeout))
+        .await
+        .map_err(|e| FaucetError::Sink(format!("kafka abort task: {e}")))?
+        .map_err(|e| FaucetError::Sink(format!("kafka abort_transaction: {e}")))
 }
 
 #[cfg(test)]
