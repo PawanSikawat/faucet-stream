@@ -312,6 +312,42 @@ impl SchemaDriftPolicy {
     }
 }
 
+/// Backend-neutral base column type inferred from a JSON-Schema fragment.
+/// Each SQL sink maps these to its concrete keyword.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SqlBaseType {
+    Integer,
+    Double,
+    Boolean,
+    Text,
+    /// Nested object / array → stored as JSON/JSONB/NVARCHAR(MAX) text.
+    Json,
+}
+
+/// Map a top-level JSON-Schema type fragment to a base SQL type, or `None` for
+/// a pure-null fragment (caller falls back to TEXT/NVARCHAR for an added column
+/// whose only observed value was null).
+pub fn json_schema_base_type(fragment: &Value) -> Option<SqlBaseType> {
+    let (names, _nullable) = type_set(fragment);
+    // Prefer the widest informative type among the union.
+    if names.iter().any(|t| t == "object" || t == "array") {
+        return Some(SqlBaseType::Json);
+    }
+    if names.iter().any(|t| t == "string") {
+        return Some(SqlBaseType::Text);
+    }
+    if names.iter().any(|t| t == "number") {
+        return Some(SqlBaseType::Double);
+    }
+    if names.iter().any(|t| t == "integer") {
+        return Some(SqlBaseType::Integer);
+    }
+    if names.iter().any(|t| t == "boolean") {
+        return Some(SqlBaseType::Boolean);
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -319,6 +355,19 @@ mod tests {
 
     fn schema(props: Value) -> Value {
         json!({ "type": "object", "properties": props })
+    }
+
+    #[test]
+    fn sql_type_mapping() {
+        use super::SqlBaseType::*;
+        assert_eq!(json_schema_base_type(&json!({"type":"integer"})), Some(Integer));
+        assert_eq!(json_schema_base_type(&json!({"type":"number"})), Some(Double));
+        assert_eq!(json_schema_base_type(&json!({"type":"boolean"})), Some(Boolean));
+        assert_eq!(json_schema_base_type(&json!({"type":"string"})), Some(Text));
+        assert_eq!(json_schema_base_type(&json!({"type":["string","null"]})), Some(Text));
+        assert_eq!(json_schema_base_type(&json!({"type":"object"})), Some(Json));
+        assert_eq!(json_schema_base_type(&json!({"type":"array"})), Some(Json));
+        assert_eq!(json_schema_base_type(&json!({"type":"null"})), None);
     }
 
     #[test]
