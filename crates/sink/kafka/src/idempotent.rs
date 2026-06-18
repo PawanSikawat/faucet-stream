@@ -79,6 +79,12 @@ pub(crate) async fn read_last_token(
     cfg.set("group.id", "faucet-commit-token-reader");
     cfg.set("enable.auto.commit", "false");
     cfg.set("auto.offset.reset", "earliest");
+    // The side-topic is written by a transactional producer, so we must only
+    // read committed records — `read_committed` also makes `fetch_watermarks`
+    // return the Last Stable Offset, keeping the drain target consistent with
+    // what `poll` delivers. librdkafka defaults to this, but it is load-bearing
+    // for exactly-once correctness, so pin it explicitly.
+    cfg.set("isolation.level", "read_committed");
     let topic = config.commit_token_topic.clone();
     let scope = scope.to_string();
     let timeout = config.message_timeout;
@@ -107,17 +113,22 @@ fn read_last_token_blocking(
     };
 
     let mut tpl = TopicPartitionList::new();
-    // (partition_id, high_watermark)
+    // (partition_id, target_count) where target_count = high - low is the number
+    // of readable messages between the (committed) low and high watermarks.
+    // Subtracting `low` keeps the drain target correct on a compacted topic whose
+    // log-start offset has advanced past 0 (tombstone removal / `compact,delete`);
+    // assuming 0 there would make `consumed` never reach the target and stall the
+    // loop for a full `timeout` waiting on the empty-poll fallback.
     let mut ends: Vec<(i32, i64)> = Vec::new();
     for p in topic_meta.partitions() {
-        let (_low, high) = consumer
+        let (low, high) = consumer
             .fetch_watermarks(topic, p.id(), timeout)
             .map_err(|e| FaucetError::Sink(format!("kafka token reader watermarks: {e}")))?;
-        ends.push((p.id(), high));
+        ends.push((p.id(), (high - low).max(0)));
         tpl.add_partition_offset(topic, p.id(), Offset::Beginning)
             .map_err(|e| FaucetError::Sink(format!("kafka token reader tpl: {e}")))?;
     }
-    if ends.iter().all(|(_, high)| *high == 0) {
+    if ends.iter().all(|(_, target)| *target == 0) {
         return Ok(None); // every partition empty
     }
     consumer
@@ -126,11 +137,12 @@ fn read_last_token_blocking(
 
     let mut records: Vec<(Vec<u8>, Option<Vec<u8>>)> = Vec::new();
     let mut consumed: HashMap<i32, i64> = HashMap::new();
+    let done = |consumed: &HashMap<i32, i64>| {
+        ends.iter()
+            .all(|(pid, target)| consumed.get(pid).copied().unwrap_or(0) >= *target)
+    };
     loop {
-        let done = ends
-            .iter()
-            .all(|(pid, high)| *high == 0 || consumed.get(pid).copied().unwrap_or(0) >= *high);
-        if done {
+        if done(&consumed) {
             break;
         }
         match consumer.poll(timeout) {
@@ -143,7 +155,24 @@ fn read_last_token_blocking(
             Some(Err(e)) => {
                 return Err(FaucetError::Sink(format!("kafka token reader poll: {e}")));
             }
-            None => break, // no message within the timeout — stop draining
+            // An empty poll before every partition reached its high watermark means
+            // the broker did not deliver the remaining committed records within
+            // `timeout`. Returning the max found so far could yield a token *below*
+            // the true committed value, which would make the pipeline re-write
+            // already-committed pages and produce duplicates — defeating exactly-once.
+            // Fail loudly instead so the run aborts rather than silently degrading.
+            None => {
+                if done(&consumed) {
+                    break;
+                }
+                return Err(FaucetError::Sink(format!(
+                    "kafka token reader: drained {} record(s) but did not reach the high \
+                     watermark on every partition within the {:?} poll timeout — refusing to \
+                     return a possibly-stale commit token",
+                    records.len(),
+                    timeout
+                )));
+            }
         }
     }
 
