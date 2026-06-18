@@ -9,7 +9,6 @@ use faucet_common_kafka::KafkaValueFormat;
 use faucet_common_kafka::OnKeyError;
 use faucet_core::{FaucetError, Sink};
 use futures::stream::{FuturesUnordered, StreamExt};
-use rdkafka::ClientConfig;
 use rdkafka::error::{KafkaError, RDKafkaErrorCode};
 use rdkafka::producer::{FutureProducer, FutureRecord, Producer};
 use serde_json::Value;
@@ -30,36 +29,23 @@ impl KafkaSink {
     pub async fn new(config: KafkaSinkConfig) -> Result<Self, FaucetError> {
         config.validate()?;
 
-        let mut client_config = ClientConfig::new();
-        client_config.set("bootstrap.servers", &config.brokers);
+        let mut client_config = crate::idempotent::client_config_base(&config)?;
         client_config.set("acks", config.acks.as_str());
         client_config.set(
             "enable.idempotence",
             if config.idempotent { "true" } else { "false" },
         );
-        client_config.set("compression.type", config.compression.as_str());
         client_config.set("linger.ms", config.linger.as_millis().to_string());
         client_config.set(
             "message.timeout.ms",
             config.message_timeout.as_millis().to_string(),
         );
-        // Tie the librdkafka producer buffer cap to the streaming-pipeline
-        // batch_size so the broker-side buffer can hold one full
-        // FuturesUnordered send window. The `batch_size = 0` sentinel keeps
-        // librdkafka's default (100,000) so the "no batching" path stays
-        // identical to pre-streaming behaviour. `extra_client_config`
-        // overrides this so tests (and ops) can force a tighter cap to
-        // exercise QueueFull backpressure.
+        // Tie the librdkafka producer buffer cap to batch_size (see config docs).
         if config.batch_size > 0 {
             client_config.set(
                 "queue.buffering.max.messages",
                 config.batch_size.to_string(),
             );
-        }
-
-        config.auth.apply(&mut client_config)?;
-        for (k, v) in &config.extra_client_config {
-            client_config.set(k, v);
         }
 
         let producer: FutureProducer = client_config

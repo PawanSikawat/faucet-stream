@@ -6,6 +6,24 @@
 //! is read back on resume. See
 //! `docs/superpowers/specs/2026-06-18-kafka-sink-exactly-once-design.md`.
 
+use crate::config::KafkaSinkConfig;
+use faucet_core::FaucetError;
+use rdkafka::ClientConfig;
+
+/// Build the shared `ClientConfig` (brokers, auth, compression, user overrides)
+/// reused by the producer, the transactional producer, the admin client, and
+/// the token-reader consumer. Callers add role-specific keys on top.
+pub(crate) fn client_config_base(config: &KafkaSinkConfig) -> Result<ClientConfig, FaucetError> {
+    let mut cfg = ClientConfig::new();
+    cfg.set("bootstrap.servers", &config.brokers);
+    cfg.set("compression.type", config.compression.as_str());
+    config.auth.apply(&mut cfg)?;
+    for (k, v) in &config.extra_client_config {
+        cfg.set(k, v);
+    }
+    Ok(cfg)
+}
+
 /// Derive the producer `transactional.id` from a stable pipeline scope.
 ///
 /// The result is `"{prefix}.{sanitized}"`, where `sanitized` replaces any
@@ -54,6 +72,45 @@ pub(crate) fn max_token_for_scope(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn base_config_sets_brokers_and_compression() {
+        use crate::config::{Acks, KafkaSinkConfig, KafkaSinkTopic};
+        use faucet_common_kafka::{CompressionType, KafkaAuth, KafkaValueFormat, OnKeyError};
+        use std::collections::BTreeMap;
+        use std::time::Duration;
+
+        let config = KafkaSinkConfig {
+            brokers: "host:9092".into(),
+            topic: KafkaSinkTopic::Fixed { name: "out".into() },
+            auth: KafkaAuth::None,
+            value_format: KafkaValueFormat::Json,
+            key_format: None,
+            value_schema: None,
+            key_schema: None,
+            key_path: None,
+            partition_path: None,
+            headers_path: None,
+            on_key_error: OnKeyError::Fail,
+            compression: CompressionType::None,
+            acks: Acks::All,
+            idempotent: true,
+            linger: Duration::from_millis(5),
+            batch_size: faucet_core::DEFAULT_BATCH_SIZE,
+            message_timeout: Duration::from_secs(30),
+            max_in_flight: 100,
+            queue_full_backoff: Duration::from_millis(100),
+            queue_full_max_retries: 3,
+            transactional_id_prefix: None,
+            commit_token_topic: "__faucet_commit_token".into(),
+            commit_token_topic_partitions: 1,
+            commit_token_topic_replication: -1,
+            extra_client_config: BTreeMap::new(),
+        };
+        let cfg = client_config_base(&config).unwrap();
+        assert_eq!(cfg.get("bootstrap.servers"), Some("host:9092"));
+        assert_eq!(cfg.get("compression.type"), Some("none"));
+    }
 
     #[test]
     fn derive_sanitizes_scope_separators() {
