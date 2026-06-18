@@ -60,6 +60,11 @@ pub enum FaucetError {
     #[error("Quality check '{check}' failed: {message}")]
     QualityFailure { check: String, message: String },
 
+    /// An incoming page's shape diverged from the destination schema under an
+    /// `on_drift: fail` (or `on_incompatible: fail`) policy.
+    #[error("Schema drift on columns {columns:?}: {message}")]
+    SchemaDrift { columns: Vec<String>, message: String },
+
     /// A state-store operation failed (read/write/delete of a replication
     /// bookmark, checkpoint, or other persisted pipeline state).
     #[error("State error: {0}")]
@@ -285,6 +290,18 @@ mod tests {
         let s = err.to_string();
         assert!(s.contains("not_null"));
         assert!(s.contains("user_id"));
+    }
+
+    #[test]
+    fn schema_drift_is_not_retriable_and_displays() {
+        let err = FaucetError::SchemaDrift {
+            columns: vec!["email".into(), "score".into()],
+            message: "2 new columns".into(),
+        };
+        assert!(!err.is_retriable());
+        let s = err.to_string();
+        assert!(s.contains("email"));
+        assert!(s.contains("2 new columns"));
     }
 
     #[test]
