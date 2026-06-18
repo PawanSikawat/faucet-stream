@@ -363,7 +363,7 @@ pub fn source_supports_exactly_once(kind: &str) -> bool {
 pub fn sink_supports_idempotent_writes(kind: &str) -> bool {
     matches!(
         kind,
-        "sqlite" | "postgres" | "mysql" | "mssql" | "iceberg" | "bigquery"
+        "sqlite" | "postgres" | "mysql" | "mssql" | "iceberg" | "bigquery" | "kafka"
     )
 }
 
@@ -998,6 +998,7 @@ mod tests {
         assert!(sink_supports_idempotent_writes("postgres"));
         assert!(sink_supports_idempotent_writes("iceberg"));
         assert!(sink_supports_idempotent_writes("bigquery"));
+        assert!(sink_supports_idempotent_writes("kafka"));
         assert!(!sink_supports_idempotent_writes("jsonl"));
     }
 
