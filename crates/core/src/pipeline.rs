@@ -4300,4 +4300,46 @@ mod tests {
         let res = run_stream(pages, &sink, drift_opts(policy)).await.unwrap();
         assert_eq!(res.records_written, 1);
     }
+
+    #[tokio::test]
+    async fn drift_quarantine_routes_drift_rows_to_dlq() {
+        let sink = SchemaSink::new(
+            json!({"type":"object","properties":{"id":{"type":"integer"}}}),
+            false,
+        );
+        let dlq_sink = std::sync::Arc::new(MockSink::new());
+        let policy = crate::drift::SchemaDriftPolicy {
+            on_drift: crate::drift::OnDrift::Quarantine,
+            allow_widening: true,
+            on_incompatible: crate::drift::OnIncompatible::Fail,
+        };
+        let pages = one_page(vec![
+            json!({"id": 1}),               // conforms → written
+            json!({"id": 2, "email": "x"}), // drift → DLQ
+        ]);
+        let opts = RunStreamOptions::new()
+            .with_schema_drift(policy)
+            .with_dlq(crate::dlq::DlqConfig::new(dlq_sink.clone()));
+        let res = run_stream(pages, &sink, opts).await.unwrap();
+        assert_eq!(res.records_written, 1, "only the conforming row is written");
+        assert_eq!(sink.written(), vec![json!({"id": 1})]);
+        // The drifting row is enveloped in the DLQ.
+        let dlq = dlq_sink.written();
+        assert_eq!(dlq.len(), 1);
+        assert_eq!(dlq[0]["payload"], json!({"id": 2, "email": "x"}));
+        assert_eq!(dlq[0]["error"]["kind"], "SchemaDrift");
+    }
+
+    #[tokio::test]
+    async fn drift_quarantine_without_dlq_is_rejected() {
+        let sink = SchemaSink::new(json!({"type":"object","properties":{}}), false);
+        let policy = crate::drift::SchemaDriftPolicy {
+            on_drift: crate::drift::OnDrift::Quarantine,
+            allow_widening: true,
+            on_incompatible: crate::drift::OnIncompatible::Fail,
+        };
+        let pages = one_page(vec![json!({"id": 1})]);
+        let err = run_stream(pages, &sink, drift_opts(policy)).await.unwrap_err();
+        assert!(matches!(err, FaucetError::Config(_)));
+    }
 }
