@@ -25,6 +25,10 @@ pub struct GraphqlStream {
     /// auth. Used by the CLI to resolve `auth: { ref }`, and by library callers
     /// who construct one provider and inject it into many sources.
     auth_provider: Option<SharedAuthProvider>,
+    /// Retry policy for transient request failures. Defaulted in `new()` to
+    /// reproduce the legacy `RETRY_MAX_ATTEMPTS` / `RETRY_BASE_BACKOFF`
+    /// constants; overridable via [`with_retry_policy`](Self::with_retry_policy).
+    retry_policy: faucet_core::RetryPolicy,
 }
 
 /// Map a [`Credential`] from a shared provider onto the GraphQL [`GraphqlAuth`]
@@ -58,7 +62,27 @@ impl GraphqlStream {
             config,
             client: Client::new(),
             auth_provider: None,
+            // Reproduce the legacy `execute_with_retry(RETRY_MAX_ATTEMPTS,
+            // RETRY_BASE_BACKOFF, …)` behavior exactly: `max_retries` is
+            // retries-after-first, so `max_attempts = RETRY_MAX_ATTEMPTS + 1`.
+            retry_policy: faucet_core::RetryPolicy {
+                max_attempts: RETRY_MAX_ATTEMPTS + 1,
+                backoff: faucet_core::BackoffKind::Exponential,
+                base: RETRY_BASE_BACKOFF,
+                max: Duration::from_secs(60),
+                jitter: true,
+                retry_on: faucet_core::RetryClassSet::default(),
+            },
         }
+    }
+
+    /// Attach a custom [`RetryPolicy`](faucet_core::RetryPolicy) for transient
+    /// request failures, replacing the default derived from
+    /// `RETRY_MAX_ATTEMPTS` / `RETRY_BASE_BACKOFF`. Used by the CLI to inject a
+    /// pipeline-level `resilience:` policy into the source.
+    pub fn with_retry_policy(mut self, policy: faucet_core::RetryPolicy) -> Self {
+        self.retry_policy = policy;
+        self
     }
 
     /// Attach a shared [`AuthProvider`](faucet_core::AuthProvider). When set, the
@@ -224,19 +248,18 @@ impl GraphqlStream {
         // backoff, matching the REST source's reliability layer (#78/#16).
         // GraphQL-level `errors` in a 200 body are application errors and are
         // handled below — they are not retried here.
-        let body: Value =
-            faucet_core::execute_with_retry(RETRY_MAX_ATTEMPTS, RETRY_BASE_BACKOFF, || {
-                let attempt = req.try_clone();
-                async move {
-                    let req = attempt.ok_or_else(|| {
-                        FaucetError::Source("graphql: request is not cloneable for retry".into())
-                    })?;
-                    let resp = req.send().await.map_err(FaucetError::Http)?;
-                    let resp = util::check_http_response(resp, DEFAULT_ERROR_BODY_MAX_LEN).await?;
-                    resp.json().await.map_err(FaucetError::Http)
-                }
-            })
-            .await?;
+        let body: Value = faucet_core::execute_with_policy(&self.retry_policy, None, || {
+            let attempt = req.try_clone();
+            async move {
+                let req = attempt.ok_or_else(|| {
+                    FaucetError::Source("graphql: request is not cloneable for retry".into())
+                })?;
+                let resp = req.send().await.map_err(FaucetError::Http)?;
+                let resp = util::check_http_response(resp, DEFAULT_ERROR_BODY_MAX_LEN).await?;
+                resp.json().await.map_err(FaucetError::Http)
+            }
+        })
+        .await?;
 
         // Check for GraphQL-level errors.
         if let Some(errors) = body.get("errors")
@@ -550,5 +573,31 @@ mod tests {
             "query { id }",
         ));
         assert_eq!(stream.dataset_uri(), "https://api.example.com/graphql");
+    }
+
+    #[test]
+    fn default_retry_policy_reproduces_legacy_constants() {
+        let stream = GraphqlStream::new(GraphqlStreamConfig::new(
+            "https://api.example.com/graphql",
+            "query { id }",
+        ));
+        assert_eq!(stream.retry_policy.max_attempts, RETRY_MAX_ATTEMPTS + 1);
+        assert_eq!(stream.retry_policy.base, RETRY_BASE_BACKOFF);
+    }
+
+    #[test]
+    fn with_retry_policy_overrides_the_default() {
+        let policy = faucet_core::RetryPolicy {
+            max_attempts: 9,
+            base: Duration::from_secs(7),
+            ..faucet_core::RetryPolicy::default()
+        };
+        let stream = GraphqlStream::new(GraphqlStreamConfig::new(
+            "https://api.example.com/graphql",
+            "query { id }",
+        ))
+        .with_retry_policy(policy);
+        assert_eq!(stream.retry_policy.max_attempts, 9);
+        assert_eq!(stream.retry_policy.base, Duration::from_secs(7));
     }
 }

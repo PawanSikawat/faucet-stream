@@ -137,7 +137,7 @@ pub async fn probe_invocation(
 ) -> InvocationOut {
     let mut probes = Vec::new();
 
-    match build_source(&source.kind, source.config.clone(), auth).await {
+    match build_source(&source.kind, source.config.clone(), auth, None).await {
         Ok(src) => {
             probes.extend(collect_probes("source", src.connector_name(), ctx, src.check(ctx)).await)
         }

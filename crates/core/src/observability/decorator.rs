@@ -216,6 +216,7 @@ pub(crate) fn error_kind(e: &FaucetError) -> &'static str {
         FaucetError::Sink(_) => "Sink",
         FaucetError::QualityFailure { .. } => "QualityFailure",
         FaucetError::State(_) => "State",
+        FaucetError::CircuitOpen { .. } => "CircuitOpen",
         FaucetError::Custom(_) => "Custom",
     }
 }
@@ -667,6 +668,13 @@ pub(crate) mod source_tests {
                 "QualityFailure",
             ),
             (FaucetError::State("st".into()), "State"),
+            (
+                FaucetError::CircuitOpen {
+                    failures: 3,
+                    cooldown: Duration::from_secs(60),
+                },
+                "CircuitOpen",
+            ),
             (
                 FaucetError::Custom(Box::new(std::io::Error::other("boom"))),
                 "Custom",

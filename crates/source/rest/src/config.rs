@@ -45,7 +45,20 @@ pub struct RestStreamConfig {
     #[serde(with = "faucet_core::config::duration_secs_option", default)]
     #[schemars(with = "Option<u64>")]
     pub timeout: Option<Duration>,
+    /// Number of retries (after the first attempt) for transient request
+    /// failures. Default `3`.
+    ///
+    /// **Precedence note:** the REST source predates the unified pipeline
+    /// `resilience:` policy. When this field (or [`retry_backoff`](Self::retry_backoff))
+    /// is left at its default, an injected `RetryPolicy` (e.g. from a
+    /// pipeline-level `resilience:` block, via
+    /// [`RestStream::with_retry_policy`](crate::RestStream::with_retry_policy))
+    /// governs the retry budget. Setting this field away from its default makes
+    /// it win — an explicit per-connector value is never silently overridden by
+    /// a pipeline-wide default.
     pub max_retries: u32,
+    /// Base exponential-backoff delay between retries. Default `1s`. Shares the
+    /// legacy-field precedence rule documented on [`max_retries`](Self::max_retries).
     #[serde(with = "faucet_core::config::duration_secs")]
     #[schemars(with = "u64")]
     pub retry_backoff: Duration,

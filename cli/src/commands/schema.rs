@@ -24,6 +24,10 @@ pub async fn run(args: SchemaArgs) -> CliResult<()> {
             let s = faucet_core::schema_for!(crate::config::ExecutionSpec);
             serde_json::to_value(s).unwrap_or_else(|_| serde_json::json!({"type": "object"}))
         }
+        SchemaTarget::Resilience => {
+            let s = faucet_core::schema_for!(crate::config::ResilienceSpec);
+            serde_json::to_value(s).unwrap_or_else(|_| serde_json::json!({"type": "object"}))
+        }
         #[cfg(feature = "quality")]
         SchemaTarget::Quality => {
             let quality_schema = faucet_core::schema_for!(faucet_core::QualitySpec);
@@ -107,5 +111,25 @@ mod tests {
         let schema = faucet_core::schema_for!(crate::config::ExecutionSpec);
         let value = serde_json::to_value(schema).expect("execution schema serializes");
         assert!(value["properties"].get("adaptive_batch_size").is_some());
+    }
+
+    #[tokio::test]
+    async fn schema_resilience_target_ok() {
+        let r = super::run(SchemaArgs {
+            target: SchemaTarget::Resilience,
+        })
+        .await;
+        assert!(r.is_ok(), "{r:?}");
+    }
+
+    #[test]
+    fn schema_resilience_emits_json_schema() {
+        // Mirrors `faucet schema resilience`: the serialized ResilienceSpec
+        // schema must expose the retry `max_attempts` knob and the
+        // `circuit_breaker` sub-block.
+        let schema = faucet_core::schema_for!(crate::config::ResilienceSpec);
+        let out = serde_json::to_string(&schema).expect("resilience schema serializes");
+        assert!(out.contains("max_attempts"), "{out}");
+        assert!(out.contains("circuit_breaker"), "{out}");
     }
 }

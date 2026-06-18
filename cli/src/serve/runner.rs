@@ -603,6 +603,29 @@ async fn execute_run(
     // page boundary on cancel / timeout / shutdown — instead of having its
     // future hard-dropped, which flushes nothing (#146 H16).
     let coop = CancellationToken::new();
+    // Resilience policy from the (merged) submitted config. A malformed
+    // `resilience:` block finalizes the run as Failed, mirroring the
+    // auth/clock failure handling above.
+    let resilience = match &cfg.resilience {
+        Some(spec) => match spec.to_policy() {
+            Ok(p) => Some(p),
+            Err(e) => {
+                finalize(
+                    &state,
+                    &run_id,
+                    started,
+                    Terminal::Failed {
+                        reason: format!("resilience: {e}"),
+                        records: 0,
+                        invs: Vec::new(),
+                    },
+                )
+                .await;
+                return;
+            }
+        },
+        None => None,
+    };
     // Build the per-run OpenLineage emitter from the (merged) submitted
     // config. A malformed `lineage:` block finalizes the run as Failed,
     // mirroring the auth/clock failure handling above.
@@ -633,6 +656,7 @@ async fn execute_run(
         auth,
         clock,
         cancel: Some(coop.clone()),
+        resilience,
         #[cfg(feature = "lineage")]
         lineage,
         #[cfg(feature = "lineage")]

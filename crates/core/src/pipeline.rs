@@ -134,6 +134,7 @@ pub struct Pipeline<'a, So: Source + ?Sized, Si: Sink + ?Sized> {
     adaptive: Option<crate::adaptive::AdaptiveBatchConfig>,
     cancel: Option<tokio_util::sync::CancellationToken>,
     delivery: crate::idempotency::DeliveryMode,
+    resilience: Option<crate::resilience::ResiliencePolicy>,
 }
 
 impl<'a, So: Source + ?Sized, Si: Sink + ?Sized> Pipeline<'a, So, Si> {
@@ -152,6 +153,7 @@ impl<'a, So: Source + ?Sized, Si: Sink + ?Sized> Pipeline<'a, So, Si> {
             adaptive: None,
             cancel: None,
             delivery: crate::idempotency::DeliveryMode::AtLeastOnce,
+            resilience: None,
         }
     }
 
@@ -232,6 +234,12 @@ impl<'a, So: Source + ?Sized, Si: Sink + ?Sized> Pipeline<'a, So, Si> {
     /// `FaucetError::Config`.
     pub fn with_delivery(mut self, mode: crate::idempotency::DeliveryMode) -> Self {
         self.delivery = mode;
+        self
+    }
+
+    /// Attach a resilience policy (retry/backoff/circuit-breaker/poison-pill).
+    pub fn with_resilience(mut self, policy: crate::resilience::ResiliencePolicy) -> Self {
+        self.resilience = Some(policy);
         self
     }
 
@@ -373,6 +381,9 @@ impl<'a, So: Source + ?Sized, Si: Sink + ?Sized> Pipeline<'a, So, Si> {
             if let Some(cancel) = self.cancel.clone() {
                 opts = opts.with_cancel(cancel);
             }
+            if let Some(policy) = self.resilience.clone() {
+                opts = opts.with_resilience(policy);
+            }
             opts = opts.with_delivery(self.delivery).with_start_seq(start_seq);
 
             run_stream(pages, &wrapped_sink, opts).await
@@ -496,6 +507,8 @@ where
     }
     let mut controller: Option<crate::adaptive::AimdController> = None;
     let mut warned_noop_sink = false;
+    // One-shot warn guard for poison-pill `Drop` action (DLQ path).
+    let mut warned_poison_drop = false;
 
     let sink_name = sink.connector_name();
     let dlq_sink_name = dlq.as_ref().map(|d| d.sink.connector_name()).unwrap_or("");
@@ -511,6 +524,56 @@ where
     // flush below, so a buffered sink (Parquet footer, S3 multipart) is made
     // durable — the difference from a dropped future, which flushes nothing.
     let mut cancelled = false;
+
+    // ── Resilience policy (retry/backoff/circuit-breaker) ────────────────────
+    // When no policy is attached, `retry_policy` is `None` and the `with_retry!`
+    // macro falls through to a bare `$op.await`, leaving the write path
+    // byte-for-byte identical to today. The breaker is bound for later tasks
+    // (DLQ-path circuit breaking) and is unused by the default/exactly-once
+    // paths wrapped here.
+    let resilience = options.resilience.clone();
+    let retry_policy = resilience.as_ref().map(|r| r.retry.clone());
+    let mut breaker = resilience
+        .as_ref()
+        .and_then(|r| r.circuit_breaker)
+        .map(|cb| {
+            (
+                crate::resilience::CircuitBreaker::new(cb.consecutive_failures),
+                cb.cooldown,
+            )
+        });
+    // Poison-pill (per-row) policy, applied in the DLQ path only.
+    let poison = resilience.as_ref().and_then(|r| r.poison);
+
+    // Run a sink/state op under the retry policy, or bare if no policy is set.
+    // A macro (not a closure) so it works across the differently-typed call
+    // sites (`Result<usize, _>`, `Result<(), _>`) without boxing. `cancel` is
+    // the `Option<CancellationToken>` already in scope; a cancel during a
+    // backoff sleep returns the last error promptly so the caller can flush.
+    //
+    // Each call site tags its `op` (`"sink_write"` / `"flush"` / `"state_put"`)
+    // so the resilience metrics (`faucet_resilience_retries_total{op,class}`,
+    // `_retry_sleep_seconds{op}`, `_giveup_total{op}`) get the spec's labels via
+    // the metered runner. The `RetryMetrics` (which clones the pipeline/row
+    // strings) is built only when a policy is attached, so the no-policy path
+    // stays allocation-free and byte-for-byte identical to today.
+    macro_rules! with_retry {
+        ($op_label:literal, $op:expr) => {
+            match &retry_policy {
+                Some(p) => {
+                    let m = crate::resilience::RetryMetrics {
+                        pipeline: pipeline_name.to_string(),
+                        row: row.to_string(),
+                        op: $op_label,
+                    };
+                    crate::resilience::execute_with_policy_metered(p, cancel.as_ref(), &m, || $op)
+                        .await
+                }
+                None => $op.await,
+            }
+        };
+    }
+
     let loop_result: Result<(), FaucetError> = async {
         loop {
             // Poll the next page, but if a cancellation token is wired, race it
@@ -629,7 +692,13 @@ where
                             }
                             let chunk = &page.records[offset..offset + size];
                             let t0 = std::time::Instant::now();
-                            let chunk_outcomes_result = sink.write_batch_partial(chunk).await;
+                            // Wrap the partial write with the retry policy so a
+                            // whole-batch transient `Err` (a 5xx / connection
+                            // drop the sink reports at the outer level) is
+                            // retried before the `on_batch_error` decision.
+                            // Inert when no policy is attached.
+                            let chunk_outcomes_result =
+                                with_retry!("sink_write", sink.write_batch_partial(chunk));
                             let latency = t0.elapsed();
                             // `chunk_synthesized` is true only when this chunk's
                             // outcomes were fabricated from a single outer
@@ -639,7 +708,7 @@ where
                             // `reason` label accurate when adaptive reslicing
                             // mixes a synthesized chunk with partial-failure
                             // chunks on the same page.
-                            let (chunk_outcomes, chunk_synthesized): (
+                            let (mut chunk_outcomes, chunk_synthesized): (
                                 Vec<crate::RowOutcome>,
                                 bool,
                             ) = match chunk_outcomes_result {
@@ -656,25 +725,130 @@ where
                                     }
                                 },
                             };
+
+                            // ── Poison-pill: retry the still-failing,
+                            // retriable-row subset before enveloping. A row that
+                            // succeeds on retry becomes a success; one that keeps
+                            // failing falls through to the terminal `action`
+                            // applied in the per-row loop below. Only genuine
+                            // per-row failures are retried (not a synthesized
+                            // `DlqAll` chunk — there is no per-row sink to retry
+                            // against). Inert when `poison` is `None`.
+                            if let Some(pp) = poison
+                                && !chunk_synthesized
+                            {
+                                let mut attempt = 1u32; // first attempt already done
+                                while attempt < pp.max_row_attempts {
+                                    let failing: Vec<usize> = chunk_outcomes
+                                        .iter()
+                                        .enumerate()
+                                        .filter_map(|(j, o)| match o {
+                                            Err(e)
+                                                if retry_policy
+                                                    .as_ref()
+                                                    .map(|p| p.is_retriable(e))
+                                                    .unwrap_or(false) =>
+                                            {
+                                                Some(j)
+                                            }
+                                            _ => None,
+                                        })
+                                        .collect();
+                                    if failing.is_empty() {
+                                        break;
+                                    }
+                                    let subset: Vec<Value> =
+                                        failing.iter().map(|&j| chunk[j].clone()).collect();
+                                    let retried =
+                                        with_retry!("sink_write", sink.write_batch_partial(&subset))?;
+                                    // `retried` aligns positionally with `failing`
+                                    // (the subset was built in `failing` order).
+                                    // Consume by value — `FaucetError` is not Clone.
+                                    let mut retried = retried.into_iter();
+                                    for &j in failing.iter() {
+                                        chunk_outcomes[j] = retried.next().unwrap_or(Ok(()));
+                                    }
+                                    attempt += 1;
+                                }
+                            }
+
                             let mut chunk_errors = 0usize;
+                            // Per-action poison counts for this chunk. Emitted to
+                            // `faucet_resilience_poison_rows_total` only when a
+                            // `poison` policy is configured — the default `Dlq`
+                            // fallback (no policy) is ordinary DLQ traffic and must
+                            // not inflate the poison metric.
+                            let mut poison_dlq = 0u64;
+                            let mut poison_drop = 0u64;
                             for (j, outcome) in chunk_outcomes.iter().enumerate() {
                                 match outcome {
                                     Ok(()) => page_success += 1,
                                     Err(err) => {
-                                        chunk_errors += 1;
-                                        if !chunk_synthesized {
-                                            had_per_row_sink_failure = true;
+                                        // Terminal poison action for a row that
+                                        // remained failing after retries. With no
+                                        // poison policy this is always the default
+                                        // `Dlq` behavior (envelope).
+                                        let action = poison
+                                            .map(|pp| pp.action)
+                                            .unwrap_or(crate::resilience::PoisonAction::Dlq);
+                                        match action {
+                                            crate::resilience::PoisonAction::Fail => {
+                                                crate::observability::resilience::poison_rows(
+                                                    &pipeline_name,
+                                                    &row,
+                                                    "fail",
+                                                    1,
+                                                );
+                                                return Err(FaucetError::Sink(format!(
+                                                    "poison-pill row failed permanently: {err}"
+                                                )));
+                                            }
+                                            crate::resilience::PoisonAction::Drop => {
+                                                // Count + one-shot warn, discard the
+                                                // row (no envelope).
+                                                poison_drop += 1;
+                                                if !warned_poison_drop {
+                                                    tracing::warn!(
+                                                        "poison-pill: dropping permanently-failing row(s) (action=drop); this warning fires once per run"
+                                                    );
+                                                    warned_poison_drop = true;
+                                                }
+                                            }
+                                            crate::resilience::PoisonAction::Dlq => {
+                                                poison_dlq += 1;
+                                                chunk_errors += 1;
+                                                if !chunk_synthesized {
+                                                    had_per_row_sink_failure = true;
+                                                }
+                                                envelopes.push(build_envelope(
+                                                    &chunk[j],
+                                                    err,
+                                                    sink_name,
+                                                    &pipeline_name,
+                                                    &row,
+                                                    offset + j,
+                                                ));
+                                            }
                                         }
-                                        envelopes.push(build_envelope(
-                                            &chunk[j],
-                                            err,
-                                            sink_name,
-                                            &pipeline_name,
-                                            &row,
-                                            offset + j,
-                                        ));
                                     }
                                 }
+                            }
+                            // Only attribute these to the poison metric when the
+                            // policy is active (otherwise `Dlq` rows are plain DLQ
+                            // traffic, already counted elsewhere).
+                            if poison.is_some() {
+                                crate::observability::resilience::poison_rows(
+                                    &pipeline_name,
+                                    &row,
+                                    "dlq",
+                                    poison_dlq,
+                                );
+                                crate::observability::resilience::poison_rows(
+                                    &pipeline_name,
+                                    &row,
+                                    "drop",
+                                    poison_drop,
+                                );
                             }
                             if let Some(ctrl) = controller.as_mut() {
                                 let adj = ctrl.observe(crate::adaptive::Observation {
@@ -710,6 +884,31 @@ where
                         // the threshold are still written to the DLQ — losing
                         // them would be strictly worse than the small overshoot.
                         let mut budget_error: Option<FaucetError> = None;
+                        // Circuit-breaker accounting: a page counts as a failure
+                        // for the breaker when it was non-empty and nothing
+                        // succeeded (everything went to the DLQ / dropped). Any
+                        // success resets the consecutive counter. When the breaker
+                        // opens, defer the abort to the same site as `budget_error`
+                        // so the page's failures still reach the DLQ and the
+                        // bookmark advances before the run stops. Inert when no
+                        // breaker is configured.
+                        let mut circuit_error: Option<FaucetError> = None;
+                        if let Some((b, cooldown)) = breaker.as_mut() {
+                            if records_len > 0 && page_success == 0 {
+                                if b.record_failure() {
+                                    crate::observability::resilience::circuit_opened(
+                                        &pipeline_name,
+                                        &row,
+                                    );
+                                    circuit_error = Some(FaucetError::CircuitOpen {
+                                        failures: b.consecutive(),
+                                        cooldown: *cooldown,
+                                    });
+                                }
+                            } else if page_success > 0 {
+                                b.record_success();
+                            }
+                        }
                         if let Some(limit) = dlq_cfg.max_failures_per_page
                             && page_failures > limit
                         {
@@ -793,12 +992,17 @@ where
                         records_written += page_success;
 
                         if let Some(bookmark) = page.bookmark {
-                            sink.flush().await?;
+                            // Retry-wrap the main-sink flush, the DLQ-sink flush,
+                            // and the state write so a transient failure on any of
+                            // them is retried before aborting — same as the default
+                            // and exactly-once paths. Inert when no policy is set
+                            // (the macro's `None` arm is a bare `.await`).
+                            with_retry!("flush", sink.flush())?;
                             let _dlq_flush_timer = crate::observability::DurationGuard::new(
                                 "faucet_sink_dlq_flush_duration_seconds",
                                 metric_labels.clone(),
                             );
-                            dlq_cfg.sink.flush().await.map_err(|e| {
+                            with_retry!("flush", dlq_cfg.sink.flush()).map_err(|e| {
                                 let mut lbl = metric_labels.clone();
                                 lbl.push(Label::new(
                                     "kind",
@@ -815,7 +1019,7 @@ where
                             if let (Some(store), Some(key)) =
                                 (state_store.as_ref(), state_key.as_ref())
                             {
-                                store.put(key, &bookmark).await?;
+                                with_retry!("state_put", store.put(key, &bookmark))?;
                             }
                             last_bookmark = Some(bookmark);
                         }
@@ -827,6 +1031,10 @@ where
                         // as a circuit breaker but never re-delivers this
                         // already-committed page (#146 M4).
                         if let Some(e) = budget_error {
+                            return Err(e);
+                        }
+                        // Circuit breaker opened after the page was made durable.
+                        if let Some(e) = circuit_error {
                             return Err(e);
                         }
                     } else if exactly_once {
@@ -851,30 +1059,28 @@ where
                                 counter!("faucet_pipeline_pages_skipped_total", skip_labels)
                                     .increment(1);
                             } else {
-                                records_written += sink
-                                    .write_batch_idempotent(&page.records, &scope, &token)
-                                    .await?;
+                                records_written += with_retry!(
+                                    "sink_write",
+                                    sink.write_batch_idempotent(&page.records, &scope, &token)
+                                )?;
                             }
-                            sink.flush().await?;
+                            with_retry!("flush", sink.flush())?;
                             let bm_labels =
                                 crate::observability::Labels::new(&*pipeline_name, &*row, &*run_id);
                             crate::observability::update_bookmark_lag(&bookmark, &bm_labels);
                             if let (Some(store), Some(key)) =
                                 (state_store.as_ref(), state_key.as_ref())
                             {
-                                store
-                                    .put(
-                                        key,
-                                        &crate::idempotency::wrap_state(Some(&bookmark), next_seq),
-                                    )
-                                    .await?;
+                                let wrapped =
+                                    crate::idempotency::wrap_state(Some(&bookmark), next_seq);
+                                with_retry!("state_put", store.put(key, &wrapped))?;
                             }
                             last_bookmark = Some(bookmark);
                         } else if !page.records.is_empty() {
                             // No bookmark → not individually checkpointed; write
                             // as-is (rare for EO sources, which bookmark every
                             // page). Stays at-least-once for this page.
-                            records_written += sink.write_batch(&page.records).await?;
+                            records_written += with_retry!("sink_write", sink.write_batch(&page.records))?;
                         }
                     } else {
                         // ── DLQ-disabled path (today's behaviour) ──────────────
@@ -894,7 +1100,7 @@ where
                                         ctrl.current().max(1).min(page.records.len() - offset);
                                     let chunk = &page.records[offset..offset + size];
                                     let t0 = std::time::Instant::now();
-                                    let n = sink.write_batch(chunk).await?;
+                                    let n = with_retry!("sink_write", sink.write_batch(chunk))?;
                                     let latency = t0.elapsed();
                                     records_written += n;
                                     offset += size;
@@ -906,18 +1112,19 @@ where
                                     emit_adaptive_metrics(ctrl, adj, &pipeline_name, &row);
                                 }
                             } else {
-                                records_written += sink.write_batch(&page.records).await?;
+                                records_written +=
+                                    with_retry!("sink_write", sink.write_batch(&page.records))?;
                             }
                         }
                         if let Some(bookmark) = page.bookmark {
-                            sink.flush().await?;
+                            with_retry!("flush", sink.flush())?;
                             let bm_labels =
                                 crate::observability::Labels::new(&*pipeline_name, &*row, &*run_id);
                             crate::observability::update_bookmark_lag(&bookmark, &bm_labels);
                             if let (Some(store), Some(key)) =
                                 (state_store.as_ref(), state_key.as_ref())
                             {
-                                store.put(key, &bookmark).await?;
+                                with_retry!("state_put", store.put(key, &bookmark))?;
                             }
                             last_bookmark = Some(bookmark);
                         }
@@ -3182,5 +3389,486 @@ mod tests {
             .unwrap();
         assert_eq!(result.records_written, 10);
         assert_eq!(*sink.0.lock().unwrap(), 10);
+    }
+
+    #[tokio::test]
+    async fn resilience_retries_transient_sink_write() {
+        use crate::resilience::{BackoffKind, ResiliencePolicy, RetryPolicy};
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicU32, Ordering};
+        use std::time::Duration;
+
+        struct TransientFlakySink {
+            attempts: Arc<AtomicU32>,
+            written: Arc<AtomicU32>,
+        }
+        #[async_trait::async_trait]
+        impl Sink for TransientFlakySink {
+            async fn write_batch(
+                &self,
+                records: &[serde_json::Value],
+            ) -> Result<usize, FaucetError> {
+                let n = self.attempts.fetch_add(1, Ordering::SeqCst);
+                if n < 2 {
+                    return Err(FaucetError::HttpStatus {
+                        status: 503,
+                        url: "u".into(),
+                        body: "".into(),
+                    });
+                }
+                self.written
+                    .fetch_add(records.len() as u32, Ordering::SeqCst);
+                Ok(records.len())
+            }
+            async fn flush(&self) -> Result<(), FaucetError> {
+                Ok(())
+            }
+        }
+
+        let attempts = Arc::new(AtomicU32::new(0));
+        let written = Arc::new(AtomicU32::new(0));
+        let sink = TransientFlakySink {
+            attempts: attempts.clone(),
+            written: written.clone(),
+        };
+        let pages = futures::stream::iter(vec![Ok(StreamPage {
+            records: vec![serde_json::json!({"a": 1})],
+            bookmark: None,
+        })]);
+        let policy = ResiliencePolicy {
+            retry: RetryPolicy {
+                max_attempts: 5,
+                backoff: BackoffKind::None,
+                base: Duration::ZERO,
+                max: Duration::ZERO,
+                jitter: false,
+                ..RetryPolicy::default()
+            },
+            ..ResiliencePolicy::default()
+        };
+        let res = run_stream(
+            pages,
+            &sink,
+            RunStreamOptions::new().with_resilience(policy),
+        )
+        .await
+        .unwrap();
+        assert_eq!(written.load(Ordering::SeqCst), 1);
+        assert_eq!(attempts.load(Ordering::SeqCst), 3);
+        assert_eq!(res.records_written, 1);
+    }
+
+    #[tokio::test]
+    async fn resilience_circuit_opens_after_consecutive_failed_pages() {
+        use crate::dlq::{DlqConfig, OnBatchError};
+        use crate::resilience::{BackoffKind, CircuitBreakerConfig, ResiliencePolicy, RetryPolicy};
+        use std::sync::Arc;
+        use std::time::Duration;
+
+        // A sink whose write_batch_partial always fully fails (outer Err).
+        struct DeadSink;
+        #[async_trait]
+        impl Sink for DeadSink {
+            async fn write_batch(&self, _r: &[Value]) -> Result<usize, FaucetError> {
+                Err(FaucetError::Sink("down".into()))
+            }
+            async fn flush(&self) -> Result<(), FaucetError> {
+                Ok(())
+            }
+        }
+        // DLQ sink that accepts everything.
+        struct NullSink;
+        #[async_trait]
+        impl Sink for NullSink {
+            async fn write_batch(&self, r: &[Value]) -> Result<usize, FaucetError> {
+                Ok(r.len())
+            }
+            async fn flush(&self) -> Result<(), FaucetError> {
+                Ok(())
+            }
+        }
+
+        let pages = futures::stream::iter((0..10).map(|i| {
+            Ok(StreamPage {
+                records: vec![json!({"i": i})],
+                bookmark: None,
+            })
+        }));
+        let dlq = DlqConfig {
+            on_batch_error: OnBatchError::DlqAll,
+            ..DlqConfig::new(Arc::new(NullSink))
+        };
+        let policy = ResiliencePolicy {
+            retry: RetryPolicy {
+                max_attempts: 1,
+                backoff: BackoffKind::None,
+                base: Duration::ZERO,
+                max: Duration::ZERO,
+                jitter: false,
+                ..RetryPolicy::default()
+            },
+            circuit_breaker: Some(CircuitBreakerConfig {
+                consecutive_failures: 3,
+                cooldown: Duration::from_secs(60),
+            }),
+            poison: None,
+        };
+        let err = run_stream(
+            pages,
+            &DeadSink,
+            RunStreamOptions::new()
+                .with_dlq(dlq)
+                .with_resilience(policy),
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            matches!(err, FaucetError::CircuitOpen { failures: 3, .. }),
+            "got {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn resilience_poison_retries_then_dlqs_failing_row() {
+        use crate::dlq::DlqConfig;
+        use crate::resilience::{
+            BackoffKind, PoisonAction, PoisonPolicy, ResiliencePolicy, RetryPolicy,
+        };
+        use std::sync::{Arc, Mutex};
+        use std::time::Duration;
+
+        // Sink: row {"bad":true} always fails; others succeed. Counts attempts
+        // on the bad row.
+        struct PickySink {
+            bad_attempts: Arc<Mutex<u32>>,
+        }
+        #[async_trait]
+        impl Sink for PickySink {
+            async fn write_batch(&self, r: &[Value]) -> Result<usize, FaucetError> {
+                Ok(r.len())
+            }
+            async fn write_batch_partial(
+                &self,
+                records: &[Value],
+            ) -> Result<Vec<crate::RowOutcome>, FaucetError> {
+                Ok(records
+                    .iter()
+                    .map(|rec| {
+                        if rec.get("bad").and_then(|v| v.as_bool()).unwrap_or(false) {
+                            *self.bad_attempts.lock().unwrap() += 1;
+                            Err(FaucetError::HttpStatus {
+                                status: 503,
+                                url: "u".into(),
+                                body: "".into(),
+                            })
+                        } else {
+                            Ok(())
+                        }
+                    })
+                    .collect())
+            }
+            async fn flush(&self) -> Result<(), FaucetError> {
+                Ok(())
+            }
+        }
+        struct CaptureSink(Arc<Mutex<Vec<Value>>>);
+        #[async_trait]
+        impl Sink for CaptureSink {
+            async fn write_batch(&self, r: &[Value]) -> Result<usize, FaucetError> {
+                self.0.lock().unwrap().extend_from_slice(r);
+                Ok(r.len())
+            }
+            async fn flush(&self) -> Result<(), FaucetError> {
+                Ok(())
+            }
+        }
+
+        let captured = Arc::new(Mutex::new(Vec::new()));
+        let bad_attempts = Arc::new(Mutex::new(0u32));
+        let sink = PickySink {
+            bad_attempts: bad_attempts.clone(),
+        };
+        let pages = futures::stream::iter(vec![Ok(StreamPage {
+            records: vec![json!({"ok": 1}), json!({"bad": true})],
+            bookmark: None,
+        })]);
+        let policy = ResiliencePolicy {
+            retry: RetryPolicy {
+                max_attempts: 1,
+                backoff: BackoffKind::None,
+                base: Duration::ZERO,
+                max: Duration::ZERO,
+                jitter: false,
+                ..RetryPolicy::default()
+            },
+            circuit_breaker: None,
+            poison: Some(PoisonPolicy {
+                max_row_attempts: 3,
+                action: PoisonAction::Dlq,
+            }),
+        };
+        let res = run_stream(
+            pages,
+            &sink,
+            RunStreamOptions::new()
+                .with_dlq(DlqConfig::new(Arc::new(CaptureSink(captured.clone()))))
+                .with_resilience(policy),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            *bad_attempts.lock().unwrap(),
+            3,
+            "bad row tried max_row_attempts times"
+        );
+        assert_eq!(res.records_written, 1, "the ok row");
+        let dlq = captured.lock().unwrap();
+        assert_eq!(dlq.len(), 1, "one row to DLQ");
+        assert_eq!(dlq[0]["payload"]["bad"], json!(true));
+    }
+
+    #[tokio::test]
+    async fn resilience_retries_transient_flush_and_state_on_dlq_path() {
+        // The DLQ path's `sink.flush()` and `store.put()` must be retry-wrapped
+        // like the default/exactly-once paths: a transient failure on either is
+        // retried before the run aborts. Drive a bookmark-carrying page through
+        // the DLQ path (one row routed to the DLQ via a partial-write failure),
+        // with both the main-sink flush and the state put failing twice then
+        // succeeding.
+        use crate::dlq::DlqConfig;
+        use crate::resilience::{BackoffKind, ResiliencePolicy, RetryPolicy};
+        use crate::state::StateStore;
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicU32, Ordering};
+        use std::time::Duration;
+
+        fn transient_503() -> FaucetError {
+            FaucetError::HttpStatus {
+                status: 503,
+                url: "u".into(),
+                body: "".into(),
+            }
+        }
+
+        // Main sink: one row fails per-row (→ DLQ), the rest succeed; flush()
+        // fails transiently the first two calls, then succeeds.
+        struct FlakyFlushSink {
+            flush_attempts: Arc<AtomicU32>,
+        }
+        #[async_trait]
+        impl Sink for FlakyFlushSink {
+            async fn write_batch(&self, r: &[Value]) -> Result<usize, FaucetError> {
+                Ok(r.len())
+            }
+            async fn write_batch_partial(
+                &self,
+                records: &[Value],
+            ) -> Result<Vec<crate::RowOutcome>, FaucetError> {
+                Ok(records
+                    .iter()
+                    .map(|rec| {
+                        if rec.get("bad").and_then(|v| v.as_bool()).unwrap_or(false) {
+                            Err(transient_503())
+                        } else {
+                            Ok(())
+                        }
+                    })
+                    .collect())
+            }
+            async fn flush(&self) -> Result<(), FaucetError> {
+                let n = self.flush_attempts.fetch_add(1, Ordering::SeqCst);
+                if n < 2 { Err(transient_503()) } else { Ok(()) }
+            }
+        }
+        struct NullSink;
+        #[async_trait]
+        impl Sink for NullSink {
+            async fn write_batch(&self, r: &[Value]) -> Result<usize, FaucetError> {
+                Ok(r.len())
+            }
+            async fn flush(&self) -> Result<(), FaucetError> {
+                Ok(())
+            }
+        }
+
+        // State store whose put() fails transiently the first two calls.
+        struct FlakyStore {
+            put_attempts: Arc<AtomicU32>,
+            value: Arc<std::sync::Mutex<Option<Value>>>,
+        }
+        #[async_trait]
+        impl StateStore for FlakyStore {
+            async fn get(&self, _key: &str) -> Result<Option<Value>, FaucetError> {
+                Ok(self.value.lock().unwrap().clone())
+            }
+            async fn put(&self, _key: &str, value: &Value) -> Result<(), FaucetError> {
+                let n = self.put_attempts.fetch_add(1, Ordering::SeqCst);
+                if n < 2 {
+                    return Err(transient_503());
+                }
+                *self.value.lock().unwrap() = Some(value.clone());
+                Ok(())
+            }
+            async fn delete(&self, _key: &str) -> Result<(), FaucetError> {
+                Ok(())
+            }
+        }
+
+        let flush_attempts = Arc::new(AtomicU32::new(0));
+        let put_attempts = Arc::new(AtomicU32::new(0));
+        let stored = Arc::new(std::sync::Mutex::new(None));
+        let sink = FlakyFlushSink {
+            flush_attempts: flush_attempts.clone(),
+        };
+        let store: Arc<dyn StateStore> = Arc::new(FlakyStore {
+            put_attempts: put_attempts.clone(),
+            value: stored.clone(),
+        });
+        let pages = futures::stream::iter(vec![Ok(StreamPage {
+            records: vec![json!({"ok": 1}), json!({"bad": true})],
+            bookmark: Some(json!({"cursor": 42})),
+        })]);
+        let policy = ResiliencePolicy {
+            retry: RetryPolicy {
+                max_attempts: 5,
+                backoff: BackoffKind::None,
+                base: Duration::ZERO,
+                max: Duration::ZERO,
+                jitter: false,
+                ..RetryPolicy::default()
+            },
+            ..ResiliencePolicy::default()
+        };
+        let res = run_stream(
+            pages,
+            &sink,
+            RunStreamOptions::new()
+                .with_dlq(DlqConfig::new(Arc::new(NullSink)))
+                .with_state(store, "k")
+                .with_resilience(policy),
+        )
+        .await
+        .unwrap();
+
+        // Page-gate flush: 2 transient failures retried, success on the 3rd
+        // call — proving the DLQ-path `sink.flush()` is retry-wrapped. A 4th
+        // call is the (already-succeeding) end-of-stream final flush.
+        assert_eq!(
+            flush_attempts.load(Ordering::SeqCst),
+            4,
+            "page-gate flush retried past two transient failures (3) + 1 final flush"
+        );
+        // State put succeeded on the 3rd call (2 transient failures retried).
+        assert_eq!(
+            put_attempts.load(Ordering::SeqCst),
+            3,
+            "state put retried past two transient failures"
+        );
+        assert_eq!(*stored.lock().unwrap(), Some(json!({"cursor": 42})));
+        assert_eq!(res.records_written, 1, "the ok row");
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn resilience_emits_retries_total_with_op_and_class_labels() {
+        // Drive the flaky-sink retry path under a recorder and assert the
+        // metered runner emitted `faucet_resilience_retries_total` with the
+        // spec's `{op, class}` labels.
+        use crate::observability::decorator::source_tests::{LOCK, snapshotter};
+        use crate::resilience::{BackoffKind, ResiliencePolicy, RetryPolicy};
+        use metrics_util::debugging::DebugValue;
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicU32, Ordering};
+        use std::time::Duration;
+
+        struct RetryProbeSink {
+            attempts: Arc<AtomicU32>,
+        }
+        #[async_trait]
+        impl Sink for RetryProbeSink {
+            async fn write_batch(&self, r: &[Value]) -> Result<usize, FaucetError> {
+                let n = self.attempts.fetch_add(1, Ordering::SeqCst);
+                if n < 2 {
+                    return Err(FaucetError::HttpStatus {
+                        status: 503,
+                        url: "u".into(),
+                        body: "".into(),
+                    });
+                }
+                Ok(r.len())
+            }
+            async fn flush(&self) -> Result<(), FaucetError> {
+                Ok(())
+            }
+            // Unique connector name unused for resilience metrics (they carry
+            // pipeline/row/op only) but keeps the debug_assert happy.
+            fn connector_name(&self) -> &'static str {
+                "retry-probe"
+            }
+        }
+
+        let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let snap = snapshotter();
+
+        let attempts = Arc::new(AtomicU32::new(0));
+        let sink = RetryProbeSink {
+            attempts: attempts.clone(),
+        };
+        let pages = futures::stream::iter(vec![Ok(StreamPage {
+            records: vec![json!({"a": 1})],
+            bookmark: None,
+        })]);
+        let policy = ResiliencePolicy {
+            retry: RetryPolicy {
+                max_attempts: 5,
+                backoff: BackoffKind::None,
+                base: Duration::ZERO,
+                max: Duration::ZERO,
+                jitter: false,
+                ..RetryPolicy::default()
+            },
+            ..ResiliencePolicy::default()
+        };
+        run_stream(
+            pages,
+            &sink,
+            RunStreamOptions::new()
+                .with_name("retry-metrics-pipeline")
+                .with_resilience(policy),
+        )
+        .await
+        .unwrap();
+        assert_eq!(attempts.load(Ordering::SeqCst), 3);
+
+        let snapshot = snap.snapshot();
+        let retries: u64 = snapshot
+            .into_vec()
+            .into_iter()
+            .filter_map(|(key, _u, _d, v): (metrics_util::CompositeKey, _, _, _)| {
+                if key.key().name() == "faucet_resilience_retries_total"
+                    && key.key().labels().any(|l: &metrics::Label| {
+                        l.key() == "pipeline" && l.value() == "retry-metrics-pipeline"
+                    })
+                    && key
+                        .key()
+                        .labels()
+                        .any(|l: &metrics::Label| l.key() == "op" && l.value() == "sink_write")
+                    && key
+                        .key()
+                        .labels()
+                        .any(|l: &metrics::Label| l.key() == "class" && l.value() == "http_5xx")
+                    && let DebugValue::Counter(c) = v
+                {
+                    Some(c)
+                } else {
+                    None
+                }
+            })
+            .sum();
+        assert_eq!(
+            retries, 2,
+            "expected 2 retries (2 transient 503s) counted with op=sink_write, class=http_5xx"
+        );
     }
 }

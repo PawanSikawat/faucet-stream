@@ -104,6 +104,12 @@ faucet run pipeline.yaml
 
 A **`204 No Content`** response — or any `2xx` with an empty/whitespace-only body — is treated as an empty page ("no data"), not a parse error. A non-empty body that isn't valid JSON still fails loudly with `FaucetError::Json`.
 
+#### Unified `resilience:` policy
+
+When driven by the CLI, a pipeline-level [`resilience:`](https://pawansikawat.github.io/faucet-stream/cookbook/resilience.html) block can inject one shared retry policy into this source. **Legacy fields win when set explicitly:** if you set `max_retries` or `retry_backoff` to anything other than their defaults (`3` / `1`), the per-connector value is used and the injected policy is ignored for that field — an explicit setting is never silently overridden. Otherwise the injected policy applies.
+
+Because the REST source keeps its own `429`/`Retry-After`-aware retry runner, it honors **only** the injected policy's `max_attempts` (→ `max_retries`) and `base` (→ `retry_backoff`). The policy's `retry_on`, `max` (per-sleep cap), and `jitter` fields are **inert on REST** — they are honored on the `xml`/`graphql` sources and on every sink-side write.
+
 ### Replication & state
 
 | Field | Type | Default | Description |

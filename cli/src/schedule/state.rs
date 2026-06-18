@@ -35,6 +35,21 @@ pub enum AfterRun {
     ExitFailure { consecutive: u64 },
 }
 
+/// Extra delay before the next tick when a run tripped the circuit breaker.
+///
+/// Pure: maps a run result to the advisory cooldown carried by
+/// [`faucet_core::FaucetError::CircuitOpen`], or `None` for any other outcome.
+/// The scheduler loop uses this to push the next tick out by at least the
+/// cooldown after a fail-fast circuit-open run.
+pub fn cooldown_delay<T>(
+    result: &Result<T, faucet_core::FaucetError>,
+) -> Option<std::time::Duration> {
+    match result {
+        Err(faucet_core::FaucetError::CircuitOpen { cooldown, .. }) => Some(*cooldown),
+        _ => None,
+    }
+}
+
 /// Mutable scheduler counters + policy.
 pub struct SchedulerState {
     overlap: OverlapPolicy,
@@ -121,6 +136,24 @@ mod tests {
         let spec: ScheduleSpec = serde_yaml::from_str(yaml).unwrap();
         let compiled = CompiledSchedule::compile(&spec).unwrap();
         SchedulerState::new(&compiled)
+    }
+
+    #[test]
+    fn circuit_open_yields_cooldown_delay() {
+        use faucet_core::FaucetError;
+        let err: Result<(), FaucetError> = Err(FaucetError::CircuitOpen {
+            failures: 3,
+            cooldown: std::time::Duration::from_secs(45),
+        });
+        assert_eq!(
+            cooldown_delay(&err),
+            Some(std::time::Duration::from_secs(45))
+        );
+        let ok: Result<(), FaucetError> = Ok(());
+        assert_eq!(cooldown_delay(&ok), None);
+        // A non-circuit error carries no cooldown.
+        let other: Result<(), FaucetError> = Err(FaucetError::Sink("down".into()));
+        assert_eq!(cooldown_delay(&other), None);
     }
 
     #[test]

@@ -42,7 +42,23 @@ pub struct RestStream {
     /// [`Source::apply_start_bookmark`](faucet_core::Source::apply_start_bookmark).
     /// Takes precedence over `config.start_replication_value` when set.
     runtime_start: Arc<AsyncMutex<Option<Value>>>,
+    /// Retry policy for transient request failures. Built in `new()` from the
+    /// REST source's own `config.max_retries` / `config.retry_backoff`. Fed into
+    /// the REST `retry::execute_with_retry` runner (which keeps its 429 /
+    /// `Retry-After` handling). Overridable via
+    /// [`with_retry_policy`](Self::with_retry_policy) — but the REST connector's
+    /// own legacy `max_retries` / `retry_backoff` fields take precedence when the
+    /// user has set them away from their defaults.
+    retry_policy: faucet_core::RetryPolicy,
 }
+
+/// Default value of [`RestStreamConfig::max_retries`]. When the user leaves this
+/// untouched, an injected [`RetryPolicy`](faucet_core::RetryPolicy) is allowed to
+/// override it (see [`RestStream::with_retry_policy`]).
+const DEFAULT_MAX_RETRIES: u32 = 3;
+/// Default value of [`RestStreamConfig::retry_backoff`]. Same precedence rule as
+/// [`DEFAULT_MAX_RETRIES`].
+const DEFAULT_RETRY_BACKOFF: Duration = Duration::from_secs(1);
 
 /// Map a [`Credential`] from a shared provider onto the REST [`Auth`]
 /// representation so the existing header-application path can be reused.
@@ -80,6 +96,16 @@ impl RestStream {
         if let Some(t) = config.timeout {
             builder = builder.timeout(t);
         }
+        // Build the default retry policy from REST's own legacy reliability
+        // fields so behavior is unchanged when no policy is injected. The REST
+        // `retry::execute_with_retry` runner is driven by `max_retries`
+        // (retries-after-first) + `base`, so `max_attempts = max_retries + 1`.
+        let retry_policy = faucet_core::RetryPolicy {
+            max_attempts: config.max_retries.saturating_add(1),
+            backoff: faucet_core::BackoffKind::Exponential,
+            base: config.retry_backoff,
+            ..faucet_core::RetryPolicy::default()
+        };
         Ok(Self {
             config,
             client: builder.build()?,
@@ -87,6 +113,7 @@ impl RestStream {
             token_endpoint_cache: TokenEndpointCache::new(),
             auth_provider: None,
             runtime_start: Arc::new(AsyncMutex::new(None)),
+            retry_policy,
         })
     }
 
@@ -98,6 +125,33 @@ impl RestStream {
     /// sources.
     pub fn with_auth_provider(mut self, provider: SharedAuthProvider) -> Self {
         self.auth_provider = Some(provider);
+        self
+    }
+
+    /// Attach a custom [`RetryPolicy`](faucet_core::RetryPolicy) for transient
+    /// request failures, used by the CLI to inject a pipeline-level
+    /// `resilience:` policy.
+    ///
+    /// **Legacy-field precedence:** the REST connector predates the unified
+    /// resilience policy and exposes its own `max_retries` / `retry_backoff`
+    /// config fields. If the user has set either of those away from its default
+    /// (`max_retries: 3`, `retry_backoff: 1s`), those explicit values win and the
+    /// injected `policy` is ignored — an explicit per-connector setting is never
+    /// silently overridden by a pipeline-wide default. When both fields are at
+    /// their defaults, the injected policy takes effect.
+    ///
+    /// **Inert fields on REST:** because the REST source keeps its own
+    /// `429`/`Retry-After`-aware retry runner, it honors only the injected
+    /// policy's `max_attempts` (→ `max_retries`) and `base` (→ `retry_backoff`).
+    /// The policy's `max` (per-sleep cap), `jitter`, and `retry_on` fields are
+    /// **not** honored here — they apply on the `xml`/`graphql` sources and on
+    /// every sink-side write.
+    pub fn with_retry_policy(mut self, policy: faucet_core::RetryPolicy) -> Self {
+        let user_changed_legacy_fields = self.config.max_retries != DEFAULT_MAX_RETRIES
+            || self.config.retry_backoff != DEFAULT_RETRY_BACKOFF;
+        if !user_changed_legacy_fields {
+            self.retry_policy = policy;
+        }
         self
     }
 
@@ -311,8 +365,13 @@ impl RestStream {
                 let ctx_ref = owned_context.as_ref();
                 let is_first_page = pages_fetched == 0;
                 let (body, resp_headers) = retry::execute_with_retry(
-                    self.config.max_retries,
-                    self.config.retry_backoff,
+                    // The REST runner takes retries-after-first; the policy holds
+                    // total attempts. Feed both knobs from the resolved policy so
+                    // an injected `resilience:` policy (when legacy fields are
+                    // untouched) governs the retry budget + base backoff while the
+                    // runner keeps its 429 / `Retry-After` handling.
+                    self.retry_policy.max_attempts.saturating_sub(1),
+                    self.retry_policy.base,
                     || {
                         self.execute_request(
                             &params_clone,
@@ -757,6 +816,40 @@ impl faucet_core::Source for RestStream {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn injected_policy_applies_when_legacy_fields_at_defaults() {
+        // Config left at the default max_retries/retry_backoff → injection wins.
+        let stream =
+            RestStream::new(RestStreamConfig::new("https://api.example.com", "/items")).unwrap();
+        let injected = faucet_core::RetryPolicy {
+            max_attempts: 9,
+            base: Duration::from_secs(7),
+            ..faucet_core::RetryPolicy::default()
+        };
+        let stream = stream.with_retry_policy(injected);
+        assert_eq!(stream.retry_policy.max_attempts, 9);
+        assert_eq!(stream.retry_policy.base, Duration::from_secs(7));
+    }
+
+    #[test]
+    fn legacy_fields_take_precedence_over_injected_policy() {
+        // User set max_retries explicitly → the injected policy is ignored and
+        // the connector's own legacy fields keep governing retries.
+        let config = RestStreamConfig::new("https://api.example.com", "/items").max_retries(7);
+        let stream = RestStream::new(config).unwrap();
+        // Default policy derived from legacy fields: max_attempts = 7 + 1.
+        assert_eq!(stream.retry_policy.max_attempts, 8);
+        let injected = faucet_core::RetryPolicy {
+            max_attempts: 99,
+            base: Duration::from_secs(42),
+            ..faucet_core::RetryPolicy::default()
+        };
+        let stream = stream.with_retry_policy(injected);
+        // Unchanged: the legacy max_retries(7) still wins.
+        assert_eq!(stream.retry_policy.max_attempts, 8);
+        assert_eq!(stream.retry_policy.base, DEFAULT_RETRY_BACKOFF);
+    }
 
     #[test]
     fn test_substitute_context_substitutes_placeholders() {

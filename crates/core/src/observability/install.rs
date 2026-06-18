@@ -132,8 +132,10 @@ pub fn install_observability(cfg: &ObservabilityConfig) -> Result<InstallReport,
         }
     }
 
-    // Register build_info after any Prometheus install attempt — set!() into
-    // a not-yet-installed recorder is a no-op, so we order it last.
+    // Register metric HELP text + build_info after any Prometheus install
+    // attempt — describe!()/set!() into a not-yet-installed recorder is a no-op,
+    // so we order them last.
+    crate::observability::resilience::describe();
     register_build_info();
 
     Ok(report)
@@ -142,6 +144,7 @@ pub fn install_observability(cfg: &ObservabilityConfig) -> Result<InstallReport,
 /// Non-`observability-install` stub. Returns an empty report, never panics.
 #[cfg(not(feature = "observability-install"))]
 pub fn install_observability(_cfg: &ObservabilityConfig) -> Result<InstallReport, InstallError> {
+    crate::observability::resilience::describe();
     register_build_info();
     Ok(InstallReport::default())
 }

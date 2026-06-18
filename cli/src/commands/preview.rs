@@ -44,6 +44,7 @@ pub async fn run(args: PreviewArgs) -> CliResult<()> {
         &first_root.source.kind,
         first_root.source.config.clone(),
         &auth,
+        None,
     )
     .await?;
     let stages = compile_transforms(&first_root.transforms)?;

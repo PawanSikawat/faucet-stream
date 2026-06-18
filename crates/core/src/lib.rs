@@ -25,6 +25,7 @@ pub mod pipeline;
 #[cfg(feature = "quality")]
 pub mod quality;
 pub mod replication;
+pub mod resilience;
 pub mod retry;
 pub mod schema;
 pub mod stage;
@@ -59,6 +60,11 @@ pub use pipeline::{
     validate_batch_size,
 };
 pub use replication::ReplicationMethod;
+pub use resilience::{
+    BackoffKind, CircuitBreaker, CircuitBreakerConfig, PoisonAction, PoisonPolicy,
+    ResiliencePolicy, RetryClass, RetryClassSet, RetryMetrics, RetryPolicy, classify,
+    execute_with_policy, execute_with_policy_metered,
+};
 pub use retry::execute_with_retry;
 #[cfg(feature = "transform-cdc-unwrap")]
 pub use stage::CdcUnwrapSpec;

@@ -42,6 +42,10 @@ pub struct XmlStream {
     /// refresh. Used by the CLI to resolve `auth: { ref }`, and by library
     /// callers who construct one provider and inject it into many sources.
     auth_provider: Option<SharedAuthProvider>,
+    /// Retry policy for transient request failures. Defaulted in `new()` to
+    /// reproduce the legacy `RETRY_MAX_ATTEMPTS` / `RETRY_BASE_BACKOFF`
+    /// constants; overridable via [`with_retry_policy`](Self::with_retry_policy).
+    retry_policy: faucet_core::RetryPolicy,
 }
 
 /// Map a [`Credential`] from a shared provider onto the XML [`XmlAuth`]
@@ -66,7 +70,27 @@ impl XmlStream {
             config,
             client: Client::new(),
             auth_provider: None,
+            // Reproduce the legacy `execute_with_retry(RETRY_MAX_ATTEMPTS,
+            // RETRY_BASE_BACKOFF, …)` behavior exactly: `max_retries` is
+            // retries-after-first, so `max_attempts = RETRY_MAX_ATTEMPTS + 1`.
+            retry_policy: faucet_core::RetryPolicy {
+                max_attempts: RETRY_MAX_ATTEMPTS + 1,
+                backoff: faucet_core::BackoffKind::Exponential,
+                base: RETRY_BASE_BACKOFF,
+                max: Duration::from_secs(60),
+                jitter: true,
+                retry_on: faucet_core::RetryClassSet::default(),
+            },
         }
+    }
+
+    /// Attach a custom [`RetryPolicy`](faucet_core::RetryPolicy) for transient
+    /// request failures, replacing the default derived from
+    /// `RETRY_MAX_ATTEMPTS` / `RETRY_BASE_BACKOFF`. Used by the CLI to inject a
+    /// pipeline-level `resilience:` policy into the source.
+    pub fn with_retry_policy(mut self, policy: faucet_core::RetryPolicy) -> Self {
+        self.retry_policy = policy;
+        self
     }
 
     /// Attach a shared [`AuthProvider`](faucet_core::AuthProvider). When set,
@@ -287,7 +311,7 @@ impl XmlStream {
         // Retry transient failures (5xx / connection resets) with jittered
         // backoff, matching the REST source's reliability layer (#78/#16).
         // The request body is a String, so `try_clone` always succeeds.
-        faucet_core::execute_with_retry(RETRY_MAX_ATTEMPTS, RETRY_BASE_BACKOFF, || {
+        faucet_core::execute_with_policy(&self.retry_policy, None, || {
             let attempt = req.try_clone();
             async move {
                 let req = attempt.ok_or_else(|| {
@@ -483,5 +507,25 @@ mod tests {
             "/svc",
         ));
         assert_eq!(source.dataset_uri(), "https://soap.example.com/svc");
+    }
+
+    #[test]
+    fn default_retry_policy_reproduces_legacy_constants() {
+        let source = XmlStream::new(XmlStreamConfig::new("https://soap.example.com", "/svc"));
+        assert_eq!(source.retry_policy.max_attempts, RETRY_MAX_ATTEMPTS + 1);
+        assert_eq!(source.retry_policy.base, RETRY_BASE_BACKOFF);
+    }
+
+    #[test]
+    fn with_retry_policy_overrides_the_default() {
+        let policy = faucet_core::RetryPolicy {
+            max_attempts: 9,
+            base: Duration::from_secs(7),
+            ..faucet_core::RetryPolicy::default()
+        };
+        let source = XmlStream::new(XmlStreamConfig::new("https://soap.example.com", "/svc"))
+            .with_retry_policy(policy);
+        assert_eq!(source.retry_policy.max_attempts, 9);
+        assert_eq!(source.retry_policy.base, Duration::from_secs(7));
     }
 }

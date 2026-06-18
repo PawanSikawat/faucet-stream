@@ -78,6 +78,10 @@ pub async fn run(args: RunArgs) -> CliResult<()> {
     #[cfg(feature = "lineage")]
     let lineage = crate::lineage_glue::build_emitter(cfg.lineage.as_ref())
         .map_err(|e| CliError::Config(format!("lineage: {e}")))?;
+    let resilience = match &cfg.resilience {
+        Some(spec) => Some(spec.to_policy()?),
+        None => None,
+    };
     let nodes = expand(&cfg)?;
     let summary = run_expanded(
         nodes,
@@ -92,6 +96,7 @@ pub async fn run(args: RunArgs) -> CliResult<()> {
             // `faucet run` has no external cancel signal; the executor still
             // cooperatively cancels in-flight rows on `on_error: stop`.
             cancel: None,
+            resilience,
             #[cfg(feature = "lineage")]
             lineage,
             #[cfg(feature = "lineage")]

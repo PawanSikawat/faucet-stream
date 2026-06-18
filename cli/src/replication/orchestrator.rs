@@ -23,6 +23,8 @@ pub struct ReplicationOptions {
     pub execution: Option<ExecutionSpec>,
     pub auth: AuthCatalog,
     pub clock: DateTime<FixedOffset>,
+    /// Optional resilience policy, applied to both the snapshot and CDC phases.
+    pub resilience: Option<faucet_core::ResiliencePolicy>,
 }
 
 /// Build the snapshot-phase node by cloning the CDC node and swapping in the
@@ -73,6 +75,7 @@ fn make_opts(opts: &ReplicationOptions, cancel: Option<CancellationToken>) -> Ex
         auth: opts.auth.clone(),
         clock: opts.clock,
         cancel,
+        resilience: opts.resilience.clone(),
         #[cfg(feature = "lineage")]
         lineage: None,
         #[cfg(feature = "lineage")]
@@ -145,6 +148,7 @@ pub async fn run_replication(
             &cdc_node.source.kind,
             cdc_node.source.config.clone(),
             &opts.auth,
+            None,
         )
         .await?;
         let position = cdc_source.capture_resume_position().await?.ok_or_else(|| {

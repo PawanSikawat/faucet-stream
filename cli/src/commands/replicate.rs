@@ -40,6 +40,10 @@ pub async fn run(args: ReplicateArgs) -> CliResult<()> {
             .to_owned()
     });
     let auth = crate::auth_catalog::build_auth_catalog(cfg.auth.as_ref())?;
+    let resilience = match &cfg.resilience {
+        Some(spec) => Some(spec.to_policy()?),
+        None => None,
+    };
 
     run_replication(
         &cfg,
@@ -49,6 +53,7 @@ pub async fn run(args: ReplicateArgs) -> CliResult<()> {
             execution: cfg.execution.clone(),
             auth,
             clock: chrono::Utc::now().fixed_offset(),
+            resilience,
         },
     )
     .await?;

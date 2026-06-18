@@ -451,6 +451,21 @@ pub fn expand(cfg: &PipelineConfig) -> CliResult<Vec<ExpandedNode>> {
             }
         }
 
+        // Resilience poison-pill cross-check: `poison.action: dlq` routes
+        // persistently-failing rows to the DLQ, so a DLQ must be configured.
+        // Caught here so `faucet validate` reports it before any run starts.
+        if let Some(spec) = &cfg.resilience
+            && matches!(
+                spec.poison.as_ref().map(|p| p.action),
+                Some(crate::config::PoisonActionSpec::Dlq)
+            )
+            && dlq.is_none()
+        {
+            return Err(CliError::Config(format!(
+                "row '{row_id}': resilience.poison.action=dlq requires a dlq: block"
+            )));
+        }
+
         // write_mode × sink validation (load-time): reject an unsupported mode
         // for the sink kind, and upsert/delete without a key, before any run.
         // Runs for every row; append rows pass trivially.
@@ -1748,5 +1763,53 @@ pipeline:
             msg.contains("unknown write_mode") && msg.contains("replace"),
             "{msg}"
         );
+    }
+
+    #[test]
+    fn rejects_poison_dlq_action_without_dlq() {
+        let c = cfg(r#"
+version: 1
+pipeline:
+  source: { type: rest, config: { base_url: https://x } }
+  sink:   { type: jsonl, config: { path: ./o } }
+resilience:
+  poison: { max_row_attempts: 3, action: dlq }
+"#);
+        let err = expand(&c).unwrap_err();
+        assert!(
+            matches!(&err, CliError::Config(m) if m.contains("poison.action=dlq") && m.contains("dlq:")),
+            "got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn accepts_poison_dlq_action_with_dlq() {
+        let c = cfg(r#"
+version: 1
+pipeline:
+  source: { type: rest, config: { base_url: https://x } }
+  sink:   { type: jsonl, config: { path: ./o } }
+  dlq:
+    sink: { type: jsonl, config: { path: ./dead.jsonl } }
+resilience:
+  poison: { max_row_attempts: 3, action: dlq }
+"#);
+        let nodes = expand(&c).expect("poison.action=dlq with a dlq: block should validate");
+        assert_eq!(nodes.len(), 1);
+    }
+
+    #[test]
+    fn accepts_poison_drop_action_without_dlq() {
+        // action=drop discards rows in place, so no DLQ is required.
+        let c = cfg(r#"
+version: 1
+pipeline:
+  source: { type: rest, config: { base_url: https://x } }
+  sink:   { type: jsonl, config: { path: ./o } }
+resilience:
+  poison: { max_row_attempts: 3, action: drop }
+"#);
+        let nodes = expand(&c).expect("poison.action=drop needs no dlq");
+        assert_eq!(nodes.len(), 1);
     }
 }

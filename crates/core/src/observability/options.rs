@@ -32,6 +32,8 @@ pub struct RunStreamOptions {
     /// Resume sequence read from the (unwrapped) exactly-once state value.
     /// Ignored unless `delivery == ExactlyOnce`. Defaults to 0.
     pub start_seq: u64,
+    /// Optional resilience policy (retry/backoff/circuit-breaker/poison).
+    pub resilience: Option<crate::resilience::ResiliencePolicy>,
 }
 
 impl RunStreamOptions {
@@ -96,6 +98,12 @@ impl RunStreamOptions {
     /// `Pipeline::run` from the unwrapped state value.
     pub fn with_start_seq(mut self, seq: u64) -> Self {
         self.start_seq = seq;
+        self
+    }
+
+    /// Attach a resilience policy to the run.
+    pub fn with_resilience(mut self, policy: crate::resilience::ResiliencePolicy) -> Self {
+        self.resilience = Some(policy);
         self
     }
 }

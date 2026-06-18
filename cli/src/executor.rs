@@ -71,6 +71,11 @@ pub struct ExecuteOptions {
     /// hard-dropped (#146 H16). `faucet serve` wires this to run-cancel /
     /// timeout / shutdown; `faucet run` leaves it `None`.
     pub cancel: Option<CancellationToken>,
+    /// Optional resilience policy (retry/backoff/circuit-breaker/poison),
+    /// attached to every invocation's `RunStreamOptions` and injected into
+    /// rest/xml/graphql sources. Built once from the top-level `resilience:`
+    /// block; `None` preserves today's behaviour.
+    pub resilience: Option<faucet_core::ResiliencePolicy>,
     /// Shared OpenLineage emitter, built once from the `lineage:` block. `None`
     /// disables lineage (and adds zero overhead). Gated on the `lineage` feature.
     #[cfg(feature = "lineage")]
@@ -730,7 +735,13 @@ async fn run_one_invocation(
     }
 
     // 2) Build source + sink.
-    let source = build_source(&node.source.kind, source_cfg, &opts.auth).await?;
+    let source = build_source(
+        &node.source.kind,
+        source_cfg,
+        &opts.auth,
+        opts.resilience.as_ref().map(|r| &r.retry),
+    )
+    .await?;
     let raw_sink: Box<dyn Sink> = if opts.dry_run {
         Box::new(CountingSink::new())
     } else {
@@ -877,6 +888,13 @@ async fn run_one_invocation(
         ab.validate()
             .map_err(|e| CliError::Config(format!("adaptive_batch_size: {e}")))?;
         pipeline.with_adaptive(ab)
+    } else {
+        pipeline
+    };
+    // Resilience policy (retry/backoff/circuit-breaker/poison). Top-level in v1,
+    // so the same policy is attached to every invocation.
+    let pipeline = if let Some(policy) = opts.resilience.clone() {
+        pipeline.with_resilience(policy)
     } else {
         pipeline
     };
@@ -1290,6 +1308,7 @@ mod tests {
             execution: None,
             observability: None,
             delivery: faucet_core::DeliveryMode::default(),
+            resilience: None,
             replication: None,
             #[cfg(feature = "schedule")]
             schedule: None,
@@ -1317,6 +1336,7 @@ mod tests {
                 auth: Default::default(),
                 clock: chrono::Utc::now().fixed_offset(),
                 cancel: None,
+                resilience: None,
                 #[cfg(feature = "lineage")]
                 lineage: None,
                 #[cfg(feature = "lineage")]
@@ -1372,6 +1392,7 @@ matrix:
                 auth: Default::default(),
                 clock: chrono::Utc::now().fixed_offset(),
                 cancel: None,
+                resilience: None,
                 #[cfg(feature = "lineage")]
                 lineage: None,
                 #[cfg(feature = "lineage")]
@@ -1427,6 +1448,7 @@ matrix:
                 auth: Default::default(),
                 clock: chrono::Utc::now().fixed_offset(),
                 cancel: None,
+                resilience: None,
                 #[cfg(feature = "lineage")]
                 lineage: None,
                 #[cfg(feature = "lineage")]
@@ -1492,6 +1514,7 @@ execution:
                 auth: Default::default(),
                 clock: chrono::Utc::now().fixed_offset(),
                 cancel: None,
+                resilience: None,
                 #[cfg(feature = "lineage")]
                 lineage: None,
                 #[cfg(feature = "lineage")]
@@ -1572,6 +1595,7 @@ pipeline:
                 auth: Default::default(),
                 clock: chrono::Utc::now().fixed_offset(),
                 cancel: None,
+                resilience: None,
                 #[cfg(feature = "lineage")]
                 lineage: None,
                 #[cfg(feature = "lineage")]
@@ -1626,6 +1650,7 @@ matrix:
                 auth: Default::default(),
                 clock: chrono::Utc::now().fixed_offset(),
                 cancel: None,
+                resilience: None,
                 #[cfg(feature = "lineage")]
                 lineage: None,
                 #[cfg(feature = "lineage")]
@@ -1689,6 +1714,7 @@ execution:
                 auth: Default::default(),
                 clock: chrono::Utc::now().fixed_offset(),
                 cancel: None,
+                resilience: None,
                 #[cfg(feature = "lineage")]
                 lineage: None,
                 #[cfg(feature = "lineage")]
@@ -1753,6 +1779,7 @@ matrix:
                 auth: Default::default(),
                 clock: chrono::Utc::now().fixed_offset(),
                 cancel: None,
+                resilience: None,
                 #[cfg(feature = "lineage")]
                 lineage: None,
                 #[cfg(feature = "lineage")]
@@ -1970,6 +1997,7 @@ matrix:
             auth: Default::default(),
             clock: chrono::Utc::now().fixed_offset(),
             cancel: None,
+            resilience: None,
             #[cfg(feature = "lineage")]
             lineage: None,
             #[cfg(feature = "lineage")]
@@ -2204,6 +2232,7 @@ matrix:
             "csv",
             json!({"path": input.to_str().unwrap()}),
             &AuthCatalog::new(),
+            None,
         )
         .await
         .unwrap();
@@ -2364,6 +2393,7 @@ matrix:
                 auth: Default::default(),
                 clock: chrono::Utc::now().fixed_offset(),
                 cancel: None,
+                resilience: None,
                 #[cfg(feature = "lineage")]
                 lineage: None,
                 #[cfg(feature = "lineage")]

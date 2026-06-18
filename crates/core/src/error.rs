@@ -65,6 +65,12 @@ pub enum FaucetError {
     #[error("State error: {0}")]
     State(String),
 
+    /// The resilience circuit breaker opened after repeated failures; the run
+    /// is aborted fast. `cooldown` is advisory for the orchestration layer
+    /// (e.g. `faucet schedule` delays re-entry by this duration).
+    #[error("Circuit open after {failures} consecutive failures; cooldown {cooldown:?}")]
+    CircuitOpen { failures: u32, cooldown: Duration },
+
     /// A custom error from a third-party connector.
     ///
     /// Use this to wrap your own error types without losing the error chain:
@@ -279,5 +285,17 @@ mod tests {
         let s = err.to_string();
         assert!(s.contains("not_null"));
         assert!(s.contains("user_id"));
+    }
+
+    #[test]
+    fn circuit_open_is_not_retriable_and_displays() {
+        let err = FaucetError::CircuitOpen {
+            failures: 5,
+            cooldown: std::time::Duration::from_secs(60),
+        };
+        assert!(!err.is_retriable());
+        let s = err.to_string();
+        assert!(s.contains("5"));
+        assert!(s.contains("Circuit open"));
     }
 }
