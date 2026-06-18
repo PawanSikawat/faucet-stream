@@ -189,6 +189,82 @@ pub fn diff_schema(destination: &Value, page: &Value, allow_widening: bool) -> S
     diff
 }
 
+/// What to do when drift is detected.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum OnDrift {
+    /// Detect + emit a metric and a one-shot log; write the page unchanged.
+    #[default]
+    Warn,
+    /// Apply additive/widening DDL to the destination, then write.
+    Evolve,
+    /// Drop unknown (non-destination) fields from every record; write the rest.
+    Ignore,
+    /// Route the records that exhibit the drift to the DLQ; write the rest.
+    Quarantine,
+    /// Raise `FaucetError::SchemaDrift` and abort.
+    Fail,
+}
+
+/// `evolve`-only: what to do with a narrowing/incompatible change that can't be
+/// auto-applied.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum OnIncompatible {
+    /// Abort the run (default).
+    #[default]
+    Fail,
+    /// Route the offending records to the DLQ.
+    Quarantine,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+/// User-facing `schema:` config block (pipeline level).
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct SchemaDriftSpec {
+    /// Policy applied when drift is detected.
+    #[serde(default)]
+    pub on_drift: OnDrift,
+    /// Whether a lossless widening counts as evolvable (vs incompatible).
+    /// Only consulted by `evolve`. Default: true.
+    #[serde(default = "default_true")]
+    pub allow_type_widening: bool,
+    /// `evolve` only: action for an incompatible residue. Default: fail.
+    #[serde(default)]
+    pub on_incompatible: OnIncompatible,
+}
+
+/// Compiled, ready-to-run drift policy. Cheap to clone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SchemaDriftPolicy {
+    pub on_drift: OnDrift,
+    pub allow_widening: bool,
+    pub on_incompatible: OnIncompatible,
+}
+
+impl SchemaDriftPolicy {
+    /// Compile a spec into a runnable policy. Infallible — there is nothing to
+    /// validate that serde hasn't already (the DLQ requirement is enforced by
+    /// the pipeline at run start and by the CLI at config-load).
+    pub fn compile(spec: &SchemaDriftSpec) -> Self {
+        Self {
+            on_drift: spec.on_drift,
+            allow_widening: spec.allow_type_widening,
+            on_incompatible: spec.on_incompatible,
+        }
+    }
+
+    /// `true` when this policy can route records to a DLQ (so one must exist).
+    pub fn requires_dlq(&self) -> bool {
+        self.on_drift == OnDrift::Quarantine
+            || (self.on_drift == OnDrift::Evolve && self.on_incompatible == OnIncompatible::Quarantine)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -285,5 +361,40 @@ mod tests {
         let page = schema(json!({ "meta": {"type": "object", "properties": {"a": {"type": "integer"}, "b": {"type": "string"}}} }));
         let d = diff_schema(&dest, &page, true);
         assert!(d.is_empty(), "nested changes must not surface as drift; got {d:?}");
+    }
+
+    #[test]
+    fn spec_defaults() {
+        let spec: SchemaDriftSpec = serde_json::from_str("{}").unwrap();
+        assert_eq!(spec.on_drift, OnDrift::Warn);
+        assert!(spec.allow_type_widening);
+        assert_eq!(spec.on_incompatible, OnIncompatible::Fail);
+    }
+
+    #[test]
+    fn on_drift_serializes_snake_case() {
+        assert_eq!(serde_json::to_string(&OnDrift::Evolve).unwrap(), "\"evolve\"");
+        assert_eq!(serde_json::to_string(&OnDrift::Quarantine).unwrap(), "\"quarantine\"");
+    }
+
+    #[test]
+    fn policy_compile_carries_flags() {
+        let spec: SchemaDriftSpec =
+            serde_json::from_str(r#"{"on_drift":"evolve","allow_type_widening":false}"#).unwrap();
+        let policy = SchemaDriftPolicy::compile(&spec);
+        assert_eq!(policy.on_drift, OnDrift::Evolve);
+        assert!(!policy.allow_widening);
+        assert_eq!(policy.on_incompatible, OnIncompatible::Fail);
+    }
+
+    #[test]
+    fn policy_requires_dlq_only_for_quarantine_paths() {
+        let q: SchemaDriftSpec = serde_json::from_str(r#"{"on_drift":"quarantine"}"#).unwrap();
+        assert!(SchemaDriftPolicy::compile(&q).requires_dlq());
+        let evo_q: SchemaDriftSpec =
+            serde_json::from_str(r#"{"on_drift":"evolve","on_incompatible":"quarantine"}"#).unwrap();
+        assert!(SchemaDriftPolicy::compile(&evo_q).requires_dlq());
+        let warn: SchemaDriftSpec = serde_json::from_str(r#"{"on_drift":"warn"}"#).unwrap();
+        assert!(!SchemaDriftPolicy::compile(&warn).requires_dlq());
     }
 }
