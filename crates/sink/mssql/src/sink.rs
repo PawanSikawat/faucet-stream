@@ -139,6 +139,40 @@ impl MssqlSink {
         Ok(cols)
     }
 
+    /// Discover each column's name, system type name, and nullability for the
+    /// target relation. Returns `(name, type_name, is_nullable)` in column order,
+    /// or an empty vec when the table does not exist / has no columns.
+    async fn discover_column_types(&self) -> Result<Vec<(String, String, bool)>, FaucetError> {
+        let mut conn = self.checkout().await?;
+        let table: &str = &self.config.table;
+        let rows = conn
+            .query(
+                "SELECT c.name AS name, ty.name AS type_name, c.is_nullable AS is_nullable \
+                 FROM sys.columns c \
+                 JOIN sys.types ty ON ty.user_type_id = c.user_type_id \
+                 WHERE c.object_id = OBJECT_ID(@P1) \
+                 ORDER BY c.column_id",
+                &[&table],
+            )
+            .await
+            .map_err(|e| FaucetError::Sink(format!("MSSQL schema query failed: {e}")))?
+            .into_first_result()
+            .await
+            .map_err(|e| FaucetError::Sink(format!("MSSQL schema query failed: {e}")))?;
+
+        let mut cols = Vec::with_capacity(rows.len());
+        for row in &rows {
+            let name = row.get::<&str, _>("name");
+            let type_name = row.get::<&str, _>("type_name");
+            // `is_nullable` is a SQL Server `bit` — tiberius decodes it as a bool.
+            let is_nullable = row.get::<bool, _>("is_nullable").unwrap_or(true);
+            if let (Some(name), Some(type_name)) = (name, type_name) {
+                cols.push((name.to_string(), type_name.to_string(), is_nullable));
+            }
+        }
+        Ok(cols)
+    }
+
     /// Resolve the column list + per-row owned params for one chunk.
     /// Returns `None` when there is nothing to insert (e.g. auto_columns with no
     /// matching keys).
@@ -456,6 +490,90 @@ async fn control(conn: &mut MssqlPooledConnection<'_>, stmt: &str) -> Result<(),
     Ok(())
 }
 
+/// Map a [`SqlBaseType`] to the MSSQL type keyword used when adding/widening a
+/// column during schema evolution (issue #194). Integers widen to `BIGINT` and
+/// floats to `FLOAT` so a later, wider value never overflows a narrower column;
+/// text/json land in `NVARCHAR(MAX)`.
+fn mssql_keyword(t: faucet_core::SqlBaseType) -> &'static str {
+    use faucet_core::SqlBaseType::*;
+    match t {
+        Integer => "BIGINT",
+        Double => "FLOAT",
+        Boolean => "BIT",
+        Text => "NVARCHAR(MAX)",
+        Json => "NVARCHAR(MAX)",
+    }
+}
+
+/// Build an idempotent `ADD COLUMN`. T-SQL has no `ADD COLUMN IF NOT EXISTS`, so
+/// guard with `IF NOT EXISTS (SELECT 1 FROM sys.columns …)`.
+///
+/// `table_quoted` is the already-bracket-quoted relation (`[dbo].[events]`).
+/// `table_literal` is the bare (un-quoted) table name used inside the
+/// `OBJECT_ID(N'…')` lookup — the caller passes `self.config.table` so it
+/// resolves the same relation the DDL targets. Both `table_literal` and `col`
+/// are single-quote-escaped for their `N'…'` string literals; `col` is also
+/// bracket-quoted for the `ADD` clause via [`quote_ident_mssql`].
+fn build_add_column_sql(
+    table_quoted: &str,
+    table_literal: &str,
+    col: &str,
+    t: faucet_core::SqlBaseType,
+) -> Result<String, FaucetError> {
+    let qcol = quote_ident_mssql(col)?;
+    Ok(format!(
+        "IF NOT EXISTS (SELECT 1 FROM sys.columns \
+         WHERE object_id = OBJECT_ID(N'{}') AND name = N'{}') \
+         ALTER TABLE {table_quoted} ADD {qcol} {}",
+        table_literal.replace('\'', "''"),
+        col.replace('\'', "''"),
+        mssql_keyword(t),
+    ))
+}
+
+/// `ALTER TABLE <ref> ALTER COLUMN <col> <kw>` — widen an existing column's
+/// type. Naturally idempotent (re-running the same type change is a no-op).
+fn build_alter_type_sql(
+    table_quoted: &str,
+    col: &str,
+    t: faucet_core::SqlBaseType,
+) -> Result<String, FaucetError> {
+    let qcol = quote_ident_mssql(col)?;
+    Ok(format!(
+        "ALTER TABLE {table_quoted} ALTER COLUMN {qcol} {}",
+        mssql_keyword(t),
+    ))
+}
+
+/// `ALTER TABLE <ref> ALTER COLUMN <col> <kw> NULL` — relax a NOT NULL
+/// constraint. MSSQL requires re-stating the column's current type when toggling
+/// nullability, so `kw` must be the column's existing type keyword. Naturally
+/// idempotent.
+fn build_alter_null_sql(table_quoted: &str, col: &str, kw: &str) -> Result<String, FaucetError> {
+    let qcol = quote_ident_mssql(col)?;
+    Ok(format!(
+        "ALTER TABLE {table_quoted} ALTER COLUMN {qcol} {kw} NULL",
+    ))
+}
+
+/// Map an MSSQL system type name (`sys.types.name`, e.g. `bigint`, `float`,
+/// `bit`, `nvarchar`) back to a JSON-Schema type fragment so
+/// [`MssqlSink::current_schema`] round-trips with [`faucet_core::diff_schema`].
+/// `nullable` reflects `sys.columns.is_nullable`.
+fn mssql_type_to_json_schema(type_name: &str, nullable: bool) -> Value {
+    let base = match type_name.to_ascii_lowercase().as_str() {
+        "bigint" | "int" | "smallint" | "tinyint" => "integer",
+        "float" | "real" | "decimal" | "numeric" | "money" | "smallmoney" => "number",
+        "bit" => "boolean",
+        _ => "string",
+    };
+    if nullable {
+        serde_json::json!({ "type": [base, "null"] })
+    } else {
+        serde_json::json!({ "type": base })
+    }
+}
+
 /// Quote a (possibly schema-qualified) table name: `dbo.events` → `[dbo].[events]`.
 fn quote_table(table: &str) -> Result<String, FaucetError> {
     let parts: Vec<String> = table
@@ -627,6 +745,86 @@ impl Sink for MssqlSink {
             faucet_core::WriteMode::Upsert,
             faucet_core::WriteMode::Delete,
         ]
+    }
+
+    fn supports_schema_evolution(&self) -> bool {
+        true
+    }
+
+    /// Read the live destination schema from `sys.columns` as an
+    /// `infer_schema`-shaped object (`{"type":"object","properties":{…}}`), or
+    /// `None` when the target table does not exist yet (issue #194).
+    async fn current_schema(&self) -> Result<Option<Value>, FaucetError> {
+        let cols = self.discover_column_types().await?;
+        if cols.is_empty() {
+            return Ok(None); // table does not exist yet
+        }
+        let mut props = serde_json::Map::new();
+        for (name, type_name, nullable) in cols {
+            props.insert(name, mssql_type_to_json_schema(&type_name, nullable));
+        }
+        Ok(Some(
+            serde_json::json!({ "type": "object", "properties": props }),
+        ))
+    }
+
+    /// Apply an additive schema evolution (new columns, lossless widenings,
+    /// nullability relaxations) to the destination table. Idempotent — the
+    /// `ADD` is guarded with `IF NOT EXISTS (SELECT 1 FROM sys.columns …)`, and
+    /// re-running the same `ALTER COLUMN` type / `… NULL` is a no-op (issue #194).
+    async fn evolve_schema(
+        &self,
+        evolution: &faucet_core::SchemaEvolution,
+    ) -> Result<(), FaucetError> {
+        let mut conn = self.checkout().await?;
+
+        for c in &evolution.additions {
+            let t =
+                faucet_core::json_schema_base_type(&c.to).unwrap_or(faucet_core::SqlBaseType::Text);
+            let sql = build_add_column_sql(&self.table_quoted, &self.config.table, &c.name, t)?;
+            control(&mut conn, &sql).await.map_err(|e| {
+                FaucetError::Sink(format!("MSSQL ADD COLUMN {} failed: {e}", c.name))
+            })?;
+        }
+        for c in &evolution.widenings {
+            let t =
+                faucet_core::json_schema_base_type(&c.to).unwrap_or(faucet_core::SqlBaseType::Text);
+            let sql = build_alter_type_sql(&self.table_quoted, &c.name, t)?;
+            control(&mut conn, &sql).await.map_err(|e| {
+                FaucetError::Sink(format!("MSSQL ALTER COLUMN {} failed: {e}", c.name))
+            })?;
+        }
+        if !evolution.relax_nullability.is_empty() {
+            // Re-emitting the column as NULL requires its CURRENT type keyword —
+            // derive it from the live schema.
+            let current: std::collections::HashMap<String, &'static str> = self
+                .discover_column_types()
+                .await?
+                .into_iter()
+                .map(|(name, type_name, _)| {
+                    let base = faucet_core::json_schema_base_type(&mssql_type_to_json_schema(
+                        &type_name, false,
+                    ))
+                    .unwrap_or(faucet_core::SqlBaseType::Text);
+                    (name, mssql_keyword(base))
+                })
+                .collect();
+            for col in &evolution.relax_nullability {
+                let Some(kw) = current.get(col) else {
+                    // Column not found in the live schema — nothing to relax.
+                    continue;
+                };
+                let sql = build_alter_null_sql(&self.table_quoted, col, kw)?;
+                control(&mut conn, &sql).await.map_err(|e| {
+                    FaucetError::Sink(format!("MSSQL relax NULL {col} failed: {e}"))
+                })?;
+            }
+        }
+
+        // Columns changed — drop the cached AutoColumns set so the next write
+        // re-discovers them (a newly-added column must be picked up).
+        *self.columns_cache.lock().expect("columns mutex") = None;
+        Ok(())
     }
 
     async fn last_committed_token(&self, scope: &str) -> Result<Option<String>, FaucetError> {
@@ -827,6 +1025,97 @@ mod tests {
             faucet_core::idempotency::COMMIT_TOKEN_TOKEN_COL,
             "token",
             "COMMIT_TOKEN_TOKEN_COL name changed — update DDL and queries"
+        );
+    }
+
+    #[test]
+    fn mssql_add_column_ddl() {
+        let sql =
+            build_add_column_sql("[dbo].[events]", "dbo.events", "email", faucet_core::SqlBaseType::Text)
+                .unwrap();
+        assert!(sql.starts_with("IF NOT EXISTS"), "{sql}");
+        assert!(
+            sql.contains("ALTER TABLE [dbo].[events] ADD [email] NVARCHAR(MAX)"),
+            "{sql}"
+        );
+        // The OBJECT_ID guard targets the bare table literal.
+        assert!(sql.contains("OBJECT_ID(N'dbo.events')"), "{sql}");
+        assert!(sql.contains("name = N'email'"), "{sql}");
+    }
+
+    #[test]
+    fn mssql_add_column_keyword_per_base_type() {
+        use faucet_core::SqlBaseType::*;
+        for (t, kw) in [
+            (Integer, "BIGINT"),
+            (Double, "FLOAT"),
+            (Boolean, "BIT"),
+            (Text, "NVARCHAR(MAX)"),
+            (Json, "NVARCHAR(MAX)"),
+        ] {
+            let sql = build_add_column_sql("[t]", "t", "c", t).unwrap();
+            assert!(sql.ends_with(&format!("ADD [c] {kw}")), "{t:?}: {sql}");
+        }
+    }
+
+    #[test]
+    fn mssql_add_column_escapes_literals() {
+        // Single quotes in the table/column literal are doubled for N'…';
+        // brackets in the identifier are doubled by quote_ident_mssql.
+        let sql = build_add_column_sql("[d].[t]", "d.o'x", "c'l", faucet_core::SqlBaseType::Text)
+            .unwrap();
+        assert!(sql.contains("OBJECT_ID(N'd.o''x')"), "{sql}");
+        assert!(sql.contains("name = N'c''l'"), "{sql}");
+        assert!(sql.contains("ADD [c'l] NVARCHAR(MAX)"), "{sql}");
+    }
+
+    #[test]
+    fn mssql_widen_column_ddl() {
+        let sql =
+            build_alter_type_sql("[dbo].[t]", "score", faucet_core::SqlBaseType::Double).unwrap();
+        assert_eq!(sql, "ALTER TABLE [dbo].[t] ALTER COLUMN [score] FLOAT");
+    }
+
+    #[test]
+    fn mssql_relax_null_ddl_re_emits_current_type() {
+        let sql = build_alter_null_sql("[t]", "created_at", "DATETIME2").unwrap();
+        assert_eq!(
+            sql,
+            "ALTER TABLE [t] ALTER COLUMN [created_at] DATETIME2 NULL"
+        );
+    }
+
+    #[test]
+    fn mssql_type_round_trips_to_json_schema() {
+        use serde_json::json;
+        assert_eq!(
+            mssql_type_to_json_schema("bigint", false),
+            json!({"type":"integer"})
+        );
+        assert_eq!(
+            mssql_type_to_json_schema("int", false),
+            json!({"type":"integer"})
+        );
+        assert_eq!(
+            mssql_type_to_json_schema("float", false),
+            json!({"type":"number"})
+        );
+        assert_eq!(
+            mssql_type_to_json_schema("decimal", false),
+            json!({"type":"number"})
+        );
+        assert_eq!(
+            mssql_type_to_json_schema("bit", false),
+            json!({"type":"boolean"})
+        );
+        assert_eq!(
+            mssql_type_to_json_schema("nvarchar", false),
+            json!({"type":"string"})
+        );
+        // Case-insensitive; nullable widens to a type array.
+        assert_eq!(
+            mssql_type_to_json_schema("NVARCHAR", true),
+            json!({"type":["string","null"]})
         );
     }
 
