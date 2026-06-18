@@ -34,6 +34,8 @@ pub struct RunStreamOptions {
     pub start_seq: u64,
     /// Optional resilience policy (retry/backoff/circuit-breaker/poison).
     pub resilience: Option<crate::resilience::ResiliencePolicy>,
+    /// Compiled schema-drift policy (issue #194). `None` → no drift handling.
+    pub schema_drift: Option<crate::drift::SchemaDriftPolicy>,
 }
 
 impl RunStreamOptions {
@@ -104,6 +106,13 @@ impl RunStreamOptions {
     /// Attach a resilience policy to the run.
     pub fn with_resilience(mut self, policy: crate::resilience::ResiliencePolicy) -> Self {
         self.resilience = Some(policy);
+        self
+    }
+
+    /// Attach a compiled schema-drift policy. The pass runs per page after the
+    /// quality pass and before the sink write.
+    pub fn with_schema_drift(mut self, policy: crate::drift::SchemaDriftPolicy) -> Self {
+        self.schema_drift = Some(policy);
         self
     }
 }

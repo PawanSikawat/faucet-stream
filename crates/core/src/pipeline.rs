@@ -135,6 +135,7 @@ pub struct Pipeline<'a, So: Source + ?Sized, Si: Sink + ?Sized> {
     cancel: Option<tokio_util::sync::CancellationToken>,
     delivery: crate::idempotency::DeliveryMode,
     resilience: Option<crate::resilience::ResiliencePolicy>,
+    schema_drift: Option<crate::drift::SchemaDriftPolicy>,
 }
 
 impl<'a, So: Source + ?Sized, Si: Sink + ?Sized> Pipeline<'a, So, Si> {
@@ -154,6 +155,7 @@ impl<'a, So: Source + ?Sized, Si: Sink + ?Sized> Pipeline<'a, So, Si> {
             cancel: None,
             delivery: crate::idempotency::DeliveryMode::AtLeastOnce,
             resilience: None,
+            schema_drift: None,
         }
     }
 
@@ -240,6 +242,13 @@ impl<'a, So: Source + ?Sized, Si: Sink + ?Sized> Pipeline<'a, So, Si> {
     /// Attach a resilience policy (retry/backoff/circuit-breaker/poison-pill).
     pub fn with_resilience(mut self, policy: crate::resilience::ResiliencePolicy) -> Self {
         self.resilience = Some(policy);
+        self
+    }
+
+    /// Attach a schema-drift policy. The drift pass runs after the quality pass
+    /// and before the sink write, per page.
+    pub fn with_schema_drift(mut self, policy: crate::drift::SchemaDriftPolicy) -> Self {
+        self.schema_drift = Some(policy);
         self
     }
 
@@ -383,6 +392,9 @@ impl<'a, So: Source + ?Sized, Si: Sink + ?Sized> Pipeline<'a, So, Si> {
             }
             if let Some(policy) = self.resilience.clone() {
                 opts = opts.with_resilience(policy);
+            }
+            if let Some(p) = self.schema_drift {
+                opts = opts.with_schema_drift(p);
             }
             opts = opts.with_delivery(self.delivery).with_start_seq(start_seq);
 
