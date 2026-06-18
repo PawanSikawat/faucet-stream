@@ -42,6 +42,8 @@ pub struct ExpandedNode {
     /// matrix-row override in v1, so this is `cfg.pipeline.quality` verbatim.
     #[cfg(feature = "quality")]
     pub quality: Option<faucet_core::QualitySpec>,
+    /// Compiled schema-drift policy spec (pipeline-level; same for every node).
+    pub schema: Option<faucet_core::SchemaDriftSpec>,
     /// Delivery guarantee for this row. Resolved from the row's override or
     /// falls back to the top-level `cfg.delivery`.
     pub delivery: faucet_core::DeliveryMode,
@@ -552,6 +554,7 @@ pub fn expand(cfg: &PipelineConfig) -> CliResult<Vec<ExpandedNode>> {
             delivery,
             #[cfg(feature = "quality")]
             quality,
+            schema: cfg.pipeline.schema.clone(),
             deferred_refs: deferred,
         });
     }

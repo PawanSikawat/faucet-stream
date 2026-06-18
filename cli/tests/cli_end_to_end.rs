@@ -392,6 +392,57 @@ fn run_executes_csv_to_jsonl_pipeline() {
     assert!(lines[0].contains("\"alice\""));
 }
 
+/// A `schema:` drift block must not break a normal run when the sink reports
+/// no `current_schema` (jsonl is schemaless): the drift pass is inert. This
+/// proves the executor wiring (`with_schema_drift`) compiles and is harmless
+/// against a schemaless sink — same output as the plain csv→jsonl run.
+#[test]
+fn run_with_schema_drift_warn_against_schemaless_sink_is_inert() {
+    let dir = TempDir::new().unwrap();
+    let csv = dir.path().join("in.csv");
+    let out = dir.path().join("out.jsonl");
+    fs::write(&csv, "name,score\nalice,1\nbob,2\n").unwrap();
+
+    let yaml = format!(
+        r#"version: 1
+name: csv_to_jsonl_drift
+pipeline:
+  source:
+    type: csv
+    config:
+      path: {csv}
+  sink:
+    type: jsonl
+    config:
+      path: {out}
+  schema:
+    on_drift: warn
+"#,
+        csv = csv.display(),
+        out = out.display(),
+    );
+    let cfg = dir.path().join("pipeline.yaml");
+    fs::write(&cfg, yaml).unwrap();
+
+    Command::cargo_bin("faucet")
+        .unwrap()
+        .args(["run"])
+        .arg(&cfg)
+        .assert()
+        .success()
+        .stdout(contains("wrote 2 records"))
+        .stdout(contains("1 invocation"));
+
+    // Output is unchanged: the drift policy is present but harmless.
+    let lines: Vec<_> = fs::read_to_string(&out)
+        .unwrap()
+        .lines()
+        .map(str::to_owned)
+        .collect();
+    assert_eq!(lines.len(), 2);
+    assert!(lines[0].contains("\"alice\""));
+}
+
 #[test]
 fn run_with_dry_run_does_not_touch_the_sink_path() {
     let dir = TempDir::new().unwrap();
