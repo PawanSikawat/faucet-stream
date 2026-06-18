@@ -53,6 +53,10 @@ fn sink_config(brokers: &str, topic: KafkaSinkTopic) -> KafkaSinkConfig {
         max_in_flight: 50,
         queue_full_backoff: Duration::from_millis(100),
         queue_full_max_retries: 3,
+        transactional_id_prefix: None,
+        commit_token_topic: "__faucet_commit_token".into(),
+        commit_token_topic_partitions: 1,
+        commit_token_topic_replication: -1,
         extra_client_config: BTreeMap::new(),
     }
 }

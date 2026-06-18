@@ -86,6 +86,25 @@ pub struct KafkaSinkConfig {
     pub queue_full_backoff: Duration,
     #[serde(default = "default_queue_full_max_retries")]
     pub queue_full_max_retries: u32,
+    /// Optional namespace prefix for the producer's auto-derived
+    /// `transactional.id` (exactly-once mode only). The id is
+    /// `"{prefix}.{sanitized_scope}"`; `prefix` defaults to `"faucet"` when
+    /// unset. Set this to isolate transactional ids across clusters or
+    /// environments that share a pipeline scope namespace.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transactional_id_prefix: Option<String>,
+    /// Compacted side-topic that holds one commit-token record per pipeline
+    /// scope (exactly-once mode only). Auto-created with
+    /// `cleanup.policy=compact` if absent.
+    #[serde(default = "default_commit_token_topic")]
+    pub commit_token_topic: String,
+    /// Partition count used when auto-creating [`Self::commit_token_topic`].
+    #[serde(default = "default_commit_token_topic_partitions")]
+    pub commit_token_topic_partitions: i32,
+    /// Replication factor used when auto-creating
+    /// [`Self::commit_token_topic`]. `-1` means "use the broker default".
+    #[serde(default = "default_commit_token_topic_replication")]
+    pub commit_token_topic_replication: i32,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub extra_client_config: BTreeMap<String, String>,
 }
@@ -150,6 +169,18 @@ fn default_queue_full_backoff() -> Duration {
 fn default_queue_full_max_retries() -> u32 {
     3
 }
+// Double leading underscore mirrors Kafka's own internal-topic convention
+// (__consumer_offsets / __transaction_state); intentionally distinct from the
+// SQL sinks' `_faucet_commit_token` table constant in faucet_core::idempotency.
+fn default_commit_token_topic() -> String {
+    "__faucet_commit_token".to_string()
+}
+fn default_commit_token_topic_partitions() -> i32 {
+    1
+}
+fn default_commit_token_topic_replication() -> i32 {
+    -1
+}
 
 impl KafkaSinkConfig {
     pub fn validate(&self) -> Result<(), FaucetError> {
@@ -203,6 +234,22 @@ impl KafkaSinkConfig {
                     .into(),
             ));
         }
+        if self.commit_token_topic.trim().is_empty() {
+            return Err(FaucetError::Config(
+                "kafka sink: commit_token_topic must not be empty".into(),
+            ));
+        }
+        if self.commit_token_topic_partitions < 1 {
+            return Err(FaucetError::Config(
+                "kafka sink: commit_token_topic_partitions must be at least 1".into(),
+            ));
+        }
+        if self.commit_token_topic_replication < 1 && self.commit_token_topic_replication != -1 {
+            return Err(FaucetError::Config(
+                "kafka sink: commit_token_topic_replication must be -1 (broker default) or at least 1"
+                    .into(),
+            ));
+        }
         faucet_core::validate_batch_size(self.batch_size)?;
         Ok(())
     }
@@ -246,6 +293,10 @@ mod tests {
             max_in_flight: 100,
             queue_full_backoff: Duration::from_millis(100),
             queue_full_max_retries: 3,
+            transactional_id_prefix: None,
+            commit_token_topic: "__faucet_commit_token".into(),
+            commit_token_topic_partitions: 1,
+            commit_token_topic_replication: -1,
             extra_client_config: BTreeMap::new(),
         }
     }
@@ -372,6 +423,63 @@ mod tests {
     fn validate_rejects_batch_size_above_max() {
         let c = minimal().with_batch_size(faucet_core::MAX_BATCH_SIZE + 1);
         assert!(c.validate().is_err());
+    }
+
+    #[test]
+    fn commit_token_defaults_are_set() {
+        let raw = r#"{
+            "brokers": "b:9092",
+            "topic": { "type": "fixed", "name": "out" }
+        }"#;
+        let c: KafkaSinkConfig = serde_json::from_str(raw).unwrap();
+        assert_eq!(c.commit_token_topic, "__faucet_commit_token");
+        assert_eq!(c.commit_token_topic_partitions, 1);
+        assert_eq!(c.commit_token_topic_replication, -1);
+        assert!(c.transactional_id_prefix.is_none());
+    }
+
+    #[test]
+    fn validate_rejects_empty_commit_token_topic() {
+        let mut c = minimal();
+        c.commit_token_topic = "  ".into();
+        let err = c.validate().unwrap_err();
+        assert!(format!("{err}").contains("commit_token_topic"), "{err}");
+    }
+
+    #[test]
+    fn validate_rejects_zero_commit_token_partitions() {
+        let mut c = minimal();
+        c.commit_token_topic_partitions = 0;
+        assert!(c.validate().is_err());
+    }
+
+    #[test]
+    fn commit_token_explicit_values_round_trip() {
+        let raw = r#"{
+            "brokers": "b:9092",
+            "topic": { "type": "fixed", "name": "out" },
+            "transactional_id_prefix": "acme",
+            "commit_token_topic": "wm",
+            "commit_token_topic_partitions": 3,
+            "commit_token_topic_replication": 2
+        }"#;
+        let c: KafkaSinkConfig = serde_json::from_str(raw).unwrap();
+        assert_eq!(c.transactional_id_prefix.as_deref(), Some("acme"));
+        assert_eq!(c.commit_token_topic, "wm");
+        assert_eq!(c.commit_token_topic_partitions, 3);
+        assert_eq!(c.commit_token_topic_replication, 2);
+        assert!(c.validate().is_ok());
+    }
+
+    #[test]
+    fn validate_rejects_invalid_commit_token_replication() {
+        let mut c = minimal();
+        c.commit_token_topic_replication = 0;
+        assert!(c.validate().is_err());
+        c.commit_token_topic_replication = -2;
+        assert!(c.validate().is_err());
+        c.commit_token_topic_replication = -1; // broker default — allowed
+        assert!(c.validate().is_ok());
     }
 
     #[test]

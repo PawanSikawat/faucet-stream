@@ -73,7 +73,7 @@ file/append sinks (`jsonl`, `csv`, `stdout`) it's a no-op — they write per rec
 | Elasticsearch | `sink-elasticsearch` | ✓ | ✗ | **✓** | ✗ | `_bulk` NDJSON (per-row DLQ) |
 | HTTP | `sink-http` | ✓ | ✗ | ✗ | ✗ | POST, concurrent under a semaphore |
 | Stdout | `sink-stdout` | no-op | ✗ | ✗ | ✗ | JSON Lines / pretty JSON / TSV |
-| Apache Kafka | `sink-kafka` | ✓ | ✗ | ✗ | ✗ | producer, batched sends, multi-topic routing |
+| Apache Kafka | `sink-kafka` | ✓ | ✗ | ✗ | **✓** | producer, batched sends, multi-topic routing; transactional producer + compacted watermark side-topic for exactly-once |
 | Apache Parquet | `sink-parquet` | ✓ | ✗⁶ | ✗ | ✗ | local/S3, schema inference, row/byte rollover |
 | Apache Iceberg | `sink-iceberg` | ✓ | ✗⁶ | ✗ | **✓** | REST/Glue/SQL/HMS catalog, local + cloud (S3/GCS) warehouses, `fast_append` snapshot, Parquet data files |
 
@@ -81,8 +81,9 @@ file/append sinks (`jsonl`, `csv`, `stdout`) it's a no-op — they write per rec
 level, so the file-level `compression` feature doesn't apply to either.
 ⁷ **Exactly-once** = commits data and a watermark token atomically; required for
 `delivery: exactly_once`. The BigQuery sink does this via a multi-statement
-`MERGE` transaction (distinct from its default streaming `insertAll` path);
-Kafka is at-least-once only in this version. See
+`MERGE` transaction (distinct from its default streaming `insertAll` path); the
+Kafka sink uses a transactional producer that writes each page's records plus a
+commit-token record into a compacted side-topic in one Kafka transaction. See
 [Exactly-once delivery](../cookbook/state.md#exactly-once-delivery).
 ⁸ **Upsert** = supports `write_mode: upsert` / `delete` (insert-or-update and
 delete by `key`) in addition to plain `append`. The SQL sinks require

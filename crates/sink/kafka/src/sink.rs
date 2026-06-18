@@ -9,7 +9,6 @@ use faucet_common_kafka::KafkaValueFormat;
 use faucet_common_kafka::OnKeyError;
 use faucet_core::{FaucetError, Sink};
 use futures::stream::{FuturesUnordered, StreamExt};
-use rdkafka::ClientConfig;
 use rdkafka::error::{KafkaError, RDKafkaErrorCode};
 use rdkafka::producer::{FutureProducer, FutureRecord, Producer};
 use serde_json::Value;
@@ -22,6 +21,10 @@ use faucet_common_kafka::schema_registry::client::SchemaRegistryClient;
 pub struct KafkaSink {
     config: KafkaSinkConfig,
     producer: Arc<FutureProducer>,
+    /// Lazily-built transactional producer for exactly-once writes. Built on
+    /// the first `write_batch_idempotent` call (needs the scope-derived
+    /// `transactional.id`, unknown at `new()`).
+    txn: tokio::sync::OnceCell<Arc<FutureProducer>>,
     #[cfg(feature = "schema-registry")]
     sr_client: Option<SchemaRegistryClient>,
 }
@@ -30,37 +33,7 @@ impl KafkaSink {
     pub async fn new(config: KafkaSinkConfig) -> Result<Self, FaucetError> {
         config.validate()?;
 
-        let mut client_config = ClientConfig::new();
-        client_config.set("bootstrap.servers", &config.brokers);
-        client_config.set("acks", config.acks.as_str());
-        client_config.set(
-            "enable.idempotence",
-            if config.idempotent { "true" } else { "false" },
-        );
-        client_config.set("compression.type", config.compression.as_str());
-        client_config.set("linger.ms", config.linger.as_millis().to_string());
-        client_config.set(
-            "message.timeout.ms",
-            config.message_timeout.as_millis().to_string(),
-        );
-        // Tie the librdkafka producer buffer cap to the streaming-pipeline
-        // batch_size so the broker-side buffer can hold one full
-        // FuturesUnordered send window. The `batch_size = 0` sentinel keeps
-        // librdkafka's default (100,000) so the "no batching" path stays
-        // identical to pre-streaming behaviour. `extra_client_config`
-        // overrides this so tests (and ops) can force a tighter cap to
-        // exercise QueueFull backpressure.
-        if config.batch_size > 0 {
-            client_config.set(
-                "queue.buffering.max.messages",
-                config.batch_size.to_string(),
-            );
-        }
-
-        config.auth.apply(&mut client_config)?;
-        for (k, v) in &config.extra_client_config {
-            client_config.set(k, v);
-        }
+        let client_config = crate::idempotent::producer_client_config(&config)?;
 
         let producer: FutureProducer = client_config
             .create()
@@ -72,6 +45,7 @@ impl KafkaSink {
         Ok(Self {
             config,
             producer: Arc::new(producer),
+            txn: tokio::sync::OnceCell::new(),
             #[cfg(feature = "schema-registry")]
             sr_client,
         })
@@ -167,6 +141,52 @@ impl KafkaSink {
                 OnKeyError::Skip | OnKeyError::RoundRobin => Ok(None),
             },
         }
+    }
+
+    /// Build (once) the transactional producer for `scope` and run
+    /// `init_transactions` — which also fences any zombie producer sharing this
+    /// `transactional.id`. Cached for the run; a fatal producer error fails the
+    /// run and the whole sink is rebuilt on the next run.
+    async fn txn_producer(&self, scope: &str) -> Result<Arc<FutureProducer>, FaucetError> {
+        self.txn
+            .get_or_try_init(|| async {
+                let prefix = self
+                    .config
+                    .transactional_id_prefix
+                    .as_deref()
+                    .unwrap_or("faucet");
+                let txn_id = crate::idempotent::derive_transactional_id(prefix, scope);
+
+                let mut cfg = crate::idempotent::producer_client_config(&self.config)?;
+                // Force the transactional invariants AFTER extra_client_config so
+                // a user override cannot disable them and break EOS.
+                cfg.set("transactional.id", &txn_id);
+                cfg.set("enable.idempotence", "true");
+                cfg.set("acks", "all");
+                // message.timeout.ms must be <= transaction.timeout.ms; raise the
+                // transaction timeout floor so a large message_timeout config does
+                // not make init_transactions reject the producer.
+                let msg_timeout_ms = self.config.message_timeout.as_millis();
+                let txn_timeout_ms = msg_timeout_ms.max(60_000);
+                cfg.set("transaction.timeout.ms", txn_timeout_ms.to_string());
+
+                let producer: FutureProducer = cfg
+                    .create()
+                    .map_err(|e| FaucetError::Sink(format!("kafka txn producer init: {e}")))?;
+                let producer = Arc::new(producer);
+
+                // init_transactions is a blocking FFI call.
+                let p = producer.clone();
+                let timeout = self.config.message_timeout;
+                tokio::task::spawn_blocking(move || p.init_transactions(timeout))
+                    .await
+                    .map_err(|e| FaucetError::Sink(format!("kafka init_transactions task: {e}")))?
+                    .map_err(|e| FaucetError::Sink(format!("kafka init_transactions: {e}")))?;
+
+                Ok::<_, FaucetError>(producer)
+            })
+            .await
+            .cloned()
     }
 }
 
@@ -287,6 +307,131 @@ impl Sink for KafkaSink {
             .flush(self.config.message_timeout)
             .map_err(|e| FaucetError::Sink(format!("kafka producer flush: {e}")))?;
         Ok(())
+    }
+
+    fn supports_idempotent_writes(&self) -> bool {
+        true
+    }
+
+    async fn last_committed_token(&self, scope: &str) -> Result<Option<String>, FaucetError> {
+        let base = crate::idempotent::client_config_base(&self.config)?;
+        crate::idempotent::ensure_commit_topic(&self.config, &base).await?;
+        crate::idempotent::read_last_token(&self.config, &base, scope).await
+    }
+
+    async fn write_batch_idempotent(
+        &self,
+        records: &[Value],
+        scope: &str,
+        token: &str,
+    ) -> Result<usize, FaucetError> {
+        let producer = self.txn_producer(scope).await?;
+
+        producer
+            .begin_transaction()
+            .map_err(|e| FaucetError::Sink(format!("kafka begin_transaction: {e}")))?;
+
+        let mut produced = 0usize;
+        let mut skipped = 0usize;
+
+        // Enqueue all data records (non-awaiting — delivery completes at commit).
+        for record in records {
+            let topic = match self.resolve_topic(record) {
+                Ok(t) => t,
+                Err(e) => {
+                    let _ =
+                        crate::idempotent::abort_txn(producer.clone(), self.config.message_timeout)
+                            .await;
+                    return Err(e);
+                }
+            };
+            let (value_bytes, key_bytes) = match self.build_record_bytes(record, &topic).await {
+                Ok(v) => v,
+                Err(e) => {
+                    let _ =
+                        crate::idempotent::abort_txn(producer.clone(), self.config.message_timeout)
+                            .await;
+                    return Err(e);
+                }
+            };
+
+            if self.config.key_path.is_some()
+                && key_bytes.is_none()
+                && matches!(self.config.on_key_error, OnKeyError::Skip)
+            {
+                skipped += 1;
+                continue;
+            }
+
+            let partition = match &self.config.partition_path {
+                Some(p) => match extract::partition_at(record, p) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        let _ = crate::idempotent::abort_txn(
+                            producer.clone(),
+                            self.config.message_timeout,
+                        )
+                        .await;
+                        return Err(e);
+                    }
+                },
+                None => None,
+            };
+
+            if let Err(e) = crate::idempotent::enqueue_in_txn(
+                &producer,
+                &topic,
+                value_bytes,
+                key_bytes,
+                partition,
+                self.config.queue_full_max_retries,
+                self.config.queue_full_backoff,
+            )
+            .await
+            {
+                let _ = crate::idempotent::abort_txn(producer.clone(), self.config.message_timeout)
+                    .await;
+                return Err(e);
+            }
+            produced += 1;
+        }
+
+        // Enqueue the commit-token record (key = scope, value = token).
+        if let Err(e) = crate::idempotent::enqueue_in_txn(
+            &producer,
+            &self.config.commit_token_topic,
+            token.as_bytes().to_vec(),
+            Some(scope.as_bytes().to_vec()),
+            None,
+            self.config.queue_full_max_retries,
+            self.config.queue_full_backoff,
+        )
+        .await
+        {
+            let _ =
+                crate::idempotent::abort_txn(producer.clone(), self.config.message_timeout).await;
+            return Err(e);
+        }
+
+        // Commit atomically (blocking FFI). Errors → abort + propagate.
+        let p = producer.clone();
+        let timeout = self.config.message_timeout;
+        let commit = tokio::task::spawn_blocking(move || p.commit_transaction(timeout))
+            .await
+            .map_err(|e| FaucetError::Sink(format!("kafka commit task: {e}")))?;
+        if let Err(e) = commit {
+            let _ =
+                crate::idempotent::abort_txn(producer.clone(), self.config.message_timeout).await;
+            return Err(FaucetError::Sink(format!("kafka commit_transaction: {e}")));
+        }
+
+        if skipped > 0 {
+            tracing::warn!(
+                skipped,
+                "kafka sink: dropped records due to OnKeyError::Skip"
+            );
+        }
+        Ok(produced)
     }
 
     fn config_schema(&self) -> Value {

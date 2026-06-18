@@ -9,6 +9,7 @@
 pub mod config;
 pub mod encode;
 pub mod extract;
+mod idempotent;
 pub mod sink;
 
 #[cfg(feature = "schema-registry")]

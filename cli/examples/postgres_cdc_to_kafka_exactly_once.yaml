@@ -1,0 +1,64 @@
+# End-to-end Postgres CDC -> Kafka, exactly-once.
+#
+# Streams logical-replication change events from a source database and produces
+# them onto a Kafka topic with end-to-end exactly-once delivery. The Kafka sink
+# uses a transactional producer: each page's records PLUS a commit-token record
+# are written into a compacted side-topic (`commit_token_topic`) inside ONE
+# Kafka transaction, so the data and the watermark commit atomically. On resume
+# the sink reads the latest token for its scope back from the side-topic and the
+# pipeline skips already-committed pages -> zero duplicates.
+#
+# The `transactional.id` is auto-derived from the pipeline scope (stable across
+# restarts, unique per matrix row) so a restart fences any prior producer.
+# Downstream consumers of `orders_cdc` should set
+# `isolation.level=read_committed` so they only ever see committed transactions.
+#
+# Setup on the SOURCE database (logical replication must be enabled):
+#   psql "$SOURCE_PG_URL" <<SQL
+#     CREATE TABLE IF NOT EXISTS orders (id int4 PRIMARY KEY, total numeric);
+#     CREATE PUBLICATION faucet_pub FOR TABLE orders;
+#   SQL
+#
+# Then:
+#   export SOURCE_PG_URL=postgres://faucet:faucet@localhost:5432/appdb
+#   faucet run cli/examples/postgres_cdc_to_kafka_exactly_once.yaml
+#
+# (Point `brokers` below at your cluster; it is a literal here for the example.)
+
+version: 1
+name: pg_cdc_to_kafka_eo
+
+# Exactly-once delivery composes a CDC source + an idempotent (transactional)
+# sink + a state store with no DLQ. Each committed page and its monotonic commit
+# token land in one Kafka transaction, so a crash/resume never re-applies or
+# skips a page.
+delivery: exactly_once
+
+pipeline:
+  source:
+    type: postgres-cdc
+    config:
+      connection_url: ${env:SOURCE_PG_URL}
+      slot_name: faucet_kafka_eo
+      publication_name: faucet_pub
+      create_slot_if_missing: true
+      idle_timeout: 30
+
+  sink:
+    type: kafka
+    config:
+      brokers: "localhost:9092"
+      topic:
+        type: fixed
+        name: orders_cdc
+      value_format:
+        type: json
+      # exactly-once: transactional producer + compacted watermark side-topic
+      # (auto-created with cleanup.policy=compact). transactional.id is
+      # auto-derived from the pipeline scope.
+      commit_token_topic: __faucet_commit_token
+
+  state:
+    type: file
+    config:
+      path: ./.faucet-state/pg_cdc_to_kafka_eo
