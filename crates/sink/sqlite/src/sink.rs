@@ -2,13 +2,74 @@
 
 use crate::config::{SqliteColumnMapping, SqliteSinkConfig};
 use async_trait::async_trait;
-use faucet_core::FaucetError;
 use faucet_core::util::quote_ident;
+use faucet_core::{FaucetError, SchemaEvolution, SqlBaseType, json_schema_base_type};
 use serde_json::Value;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
 use sqlx::{Row, SqlitePool};
 use std::str::FromStr;
 use std::time::Duration;
+
+/// Map a [`SqlBaseType`] to the SQLite column-type keyword used when adding a
+/// column during schema evolution (issue #194). SQLite uses dynamic typing
+/// (type affinity), so these are advisory affinities rather than strict types:
+/// `Boolean` maps to `INTEGER` (SQLite has no native boolean) and `Json` to
+/// `TEXT` (JSON is stored as text).
+fn sqlite_keyword(t: SqlBaseType) -> &'static str {
+    match t {
+        SqlBaseType::Integer => "INTEGER",
+        SqlBaseType::Double => "REAL",
+        SqlBaseType::Boolean => "INTEGER",
+        SqlBaseType::Text => "TEXT",
+        SqlBaseType::Json => "TEXT",
+    }
+}
+
+/// `ALTER TABLE <table> ADD COLUMN "<col>" <kw>` — SQLite has no
+/// `ADD COLUMN IF NOT EXISTS`, so [`SqliteSink::evolve_schema`] only emits this
+/// for columns it has already verified are absent (idempotency by pre-check).
+/// `table` is the unquoted table name; it is quoted here via [`quote_ident`].
+fn build_add_column_sql(table: &str, col: &str, t: SqlBaseType) -> String {
+    format!(
+        "ALTER TABLE {} ADD COLUMN {} {}",
+        quote_ident(table),
+        quote_ident(col),
+        sqlite_keyword(t)
+    )
+}
+
+/// Map a SQLite column affinity string (`PRAGMA table_info.type`, e.g. `INTEGER`,
+/// `REAL`, `VARCHAR(255)`, `TEXT`) to a JSON-Schema type fragment so
+/// [`SqliteSink::current_schema`] round-trips with [`faucet_core::diff_schema`].
+///
+/// SQLite determines affinity by a tolerant, case-insensitive substring match on
+/// the declared type (the rules in <https://www.sqlite.org/datatype3.html>), so
+/// this mirrors that: contains `INT` → integer; `CHAR`/`CLOB`/`TEXT` → string;
+/// `REAL`/`FLOA`/`DOUB` (and the loose `NUMERIC`/`DECIMAL`) → number; everything
+/// else falls back to string. `nullable` reflects `PRAGMA table_info.notnull == 0`.
+fn sqlite_affinity_to_json_schema(declared: &str, nullable: bool) -> serde_json::Value {
+    let up = declared.to_ascii_uppercase();
+    let contains = |needle: &str| up.contains(needle);
+    let base = if contains("INT") {
+        "integer"
+    } else if contains("CHAR") || contains("CLOB") || contains("TEXT") {
+        "string"
+    } else if contains("REAL")
+        || contains("FLOA")
+        || contains("DOUB")
+        || contains("NUMERIC")
+        || contains("DECIMAL")
+    {
+        "number"
+    } else {
+        "string"
+    };
+    if nullable {
+        serde_json::json!({ "type": [base, "null"] })
+    } else {
+        serde_json::json!({ "type": base })
+    }
+}
 
 /// Build the `ON CONFLICT(key) DO UPDATE …` tail for an upsert INSERT.
 /// Non-key columns are SET from `excluded`. If every column is a key column,
@@ -492,6 +553,94 @@ impl faucet_core::Sink for SqliteSink {
         ]
     }
 
+    fn supports_schema_evolution(&self) -> bool {
+        true
+    }
+
+    /// Read the live destination schema via `PRAGMA table_info`, shaped as an
+    /// `infer_schema`-compatible object (`{"type":"object","properties":{…}}`),
+    /// or `None` when the target table does not exist yet (issue #194).
+    ///
+    /// `PRAGMA table_info` returns one row per column with `name`, `type` (the
+    /// declared affinity string), and `notnull`. The affinity string is mapped
+    /// to a JSON-Schema base type via [`sqlite_affinity_to_json_schema`], and
+    /// `notnull == 0` surfaces the column as nullable. The PRAGMA runs on a
+    /// connection acquired from the pool (a standalone read — not inside an open
+    /// transaction).
+    async fn current_schema(&self) -> Result<Option<serde_json::Value>, FaucetError> {
+        let rows = sqlx::query(&format!(
+            "PRAGMA table_info({})",
+            quote_ident(&self.config.table_name)
+        ))
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| FaucetError::Sink(format!("sqlite current_schema query failed: {e}")))?;
+
+        if rows.is_empty() {
+            return Ok(None); // table does not exist yet (or has no columns)
+        }
+
+        let mut props = serde_json::Map::new();
+        for row in &rows {
+            let name: String = row.get("name");
+            let declared: String = row.get("type");
+            let notnull: i64 = row.get("notnull");
+            props.insert(
+                name,
+                sqlite_affinity_to_json_schema(&declared, notnull == 0),
+            );
+        }
+        Ok(Some(
+            serde_json::json!({ "type": "object", "properties": props }),
+        ))
+    }
+
+    /// Apply an additive schema evolution to the destination table (issue #194).
+    ///
+    /// - **Additions** — `ALTER TABLE … ADD COLUMN`. SQLite has no
+    ///   `ADD COLUMN IF NOT EXISTS`, so the current columns are read first and a
+    ///   column already present is silently skipped (idempotency by pre-check).
+    /// - **Widenings** — a no-op under SQLite's dynamic typing: a column already
+    ///   accepts a value of any type, so there is nothing to ALTER. Logged once
+    ///   at `debug`.
+    /// - **Nullability relaxations** — a no-op: SQLite cannot drop a `NOT NULL`
+    ///   constraint in place (it requires a full table rebuild, which is out of
+    ///   scope here). Logged once at `debug`; the column is left as-is.
+    async fn evolve_schema(&self, evolution: &SchemaEvolution) -> Result<(), FaucetError> {
+        // Read the current column set so additions are idempotent (no
+        // `ADD COLUMN IF NOT EXISTS` in SQLite).
+        let existing: std::collections::HashSet<String> = sqlx::query(&format!(
+            "PRAGMA table_info({})",
+            quote_ident(&self.config.table_name)
+        ))
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| FaucetError::Sink(format!("sqlite evolve table_info failed: {e}")))?
+        .iter()
+        .map(|row| row.get::<String, _>("name"))
+        .collect();
+
+        for c in &evolution.additions {
+            if existing.contains(&c.name) {
+                continue; // already present — ADD COLUMN would error
+            }
+            let t = json_schema_base_type(&c.to).unwrap_or(SqlBaseType::Text);
+            sqlx::query(&build_add_column_sql(&self.config.table_name, &c.name, t))
+                .execute(&self.pool)
+                .await
+                .map_err(|e| FaucetError::Sink(format!("sqlite ADD COLUMN {} failed: {e}", c.name)))?;
+        }
+
+        if !evolution.widenings.is_empty() {
+            tracing::debug!("sqlite: type widening is a no-op under dynamic typing");
+        }
+        for col in &evolution.relax_nullability {
+            tracing::debug!("sqlite cannot relax NOT NULL in place; column {col} left as-is");
+        }
+
+        Ok(())
+    }
+
     async fn write_batch(&self, records: &[Value]) -> Result<usize, FaucetError> {
         if records.is_empty() {
             return Ok(0);
@@ -711,6 +860,88 @@ mod tests {
         assert_eq!(
             clause,
             r#"ON CONFLICT("a", "b") DO UPDATE SET "v" = excluded."v""#
+        );
+    }
+
+    #[test]
+    fn sqlite_add_column_ddl() {
+        assert_eq!(
+            build_add_column_sql("t", "email", SqlBaseType::Text),
+            r#"ALTER TABLE "t" ADD COLUMN "email" TEXT"#
+        );
+        assert_eq!(
+            build_add_column_sql("t", "age", SqlBaseType::Integer),
+            r#"ALTER TABLE "t" ADD COLUMN "age" INTEGER"#
+        );
+        assert_eq!(
+            build_add_column_sql("t", "score", SqlBaseType::Double),
+            r#"ALTER TABLE "t" ADD COLUMN "score" REAL"#
+        );
+        // Boolean has no native SQLite type → INTEGER affinity; JSON → TEXT.
+        assert_eq!(
+            build_add_column_sql("t", "ok", SqlBaseType::Boolean),
+            r#"ALTER TABLE "t" ADD COLUMN "ok" INTEGER"#
+        );
+        assert_eq!(
+            build_add_column_sql("t", "meta", SqlBaseType::Json),
+            r#"ALTER TABLE "t" ADD COLUMN "meta" TEXT"#
+        );
+    }
+
+    #[test]
+    fn sqlite_keyword_mapping() {
+        assert_eq!(sqlite_keyword(SqlBaseType::Integer), "INTEGER");
+        assert_eq!(sqlite_keyword(SqlBaseType::Double), "REAL");
+        assert_eq!(sqlite_keyword(SqlBaseType::Boolean), "INTEGER");
+        assert_eq!(sqlite_keyword(SqlBaseType::Text), "TEXT");
+        assert_eq!(sqlite_keyword(SqlBaseType::Json), "TEXT");
+    }
+
+    #[test]
+    fn sqlite_affinity_round_trips_to_json_schema() {
+        use serde_json::json;
+        // Tolerant case-insensitive substring matching, SQLite affinity rules.
+        assert_eq!(
+            sqlite_affinity_to_json_schema("INTEGER", false),
+            json!({"type":"integer"})
+        );
+        assert_eq!(
+            sqlite_affinity_to_json_schema("BIGINT", false),
+            json!({"type":"integer"})
+        );
+        assert_eq!(
+            sqlite_affinity_to_json_schema("REAL", false),
+            json!({"type":"number"})
+        );
+        assert_eq!(
+            sqlite_affinity_to_json_schema("DOUBLE PRECISION", false),
+            json!({"type":"number"})
+        );
+        assert_eq!(
+            sqlite_affinity_to_json_schema("DECIMAL(10,2)", false),
+            json!({"type":"number"})
+        );
+        assert_eq!(
+            sqlite_affinity_to_json_schema("TEXT", false),
+            json!({"type":"string"})
+        );
+        assert_eq!(
+            sqlite_affinity_to_json_schema("VARCHAR(255)", false),
+            json!({"type":"string"})
+        );
+        // Unknown / empty affinity falls back to string.
+        assert_eq!(
+            sqlite_affinity_to_json_schema("BLOB", false),
+            json!({"type":"string"})
+        );
+        assert_eq!(
+            sqlite_affinity_to_json_schema("", false),
+            json!({"type":"string"})
+        );
+        // Nullable columns widen the type array.
+        assert_eq!(
+            sqlite_affinity_to_json_schema("integer", true),
+            json!({"type":["integer","null"]})
         );
     }
 }
