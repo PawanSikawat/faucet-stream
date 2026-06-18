@@ -21,8 +21,9 @@
 #
 # Then:
 #   export SOURCE_PG_URL=postgres://faucet:faucet@localhost:5432/appdb
-#   export KAFKA_BROKERS=localhost:9092
 #   faucet run cli/examples/postgres_cdc_to_kafka_exactly_once.yaml
+#
+# (Point `brokers` below at your cluster; it is a literal here for the example.)
 
 version: 1
 name: pg_cdc_to_kafka_eo
@@ -46,7 +47,7 @@ pipeline:
   sink:
     type: kafka
     config:
-      brokers: ${env:KAFKA_BROKERS}
+      brokers: "localhost:9092"
       topic:
         type: fixed
         name: orders_cdc

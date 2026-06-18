@@ -333,7 +333,7 @@ pipeline:
   sink:
     type: kafka
     config:
-      brokers: ${env:KAFKA_BROKERS}
+      brokers: localhost:9092
       topic: { type: fixed, name: orders_cdc }
       value_format: { type: json }
       # exactly-once: transactional producer + compacted watermark side-topic
