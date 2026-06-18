@@ -66,7 +66,8 @@ async fn current_schema_missing_index_returns_none() {
         .mount(&server)
         .await;
 
-    let sink = ElasticsearchSink::new(ElasticsearchSinkConfig::new(server.uri(), "missing")).unwrap();
+    let sink =
+        ElasticsearchSink::new(ElasticsearchSinkConfig::new(server.uri(), "missing")).unwrap();
 
     assert_eq!(sink.current_schema().await.unwrap(), None);
 }
@@ -159,8 +160,7 @@ async fn evolve_schema_no_additions_issues_no_put() {
 
 #[tokio::test]
 async fn supports_schema_evolution_is_true() {
-    let sink =
-        ElasticsearchSink::new(ElasticsearchSinkConfig::new("http://localhost:9200", "idx"))
-            .unwrap();
+    let sink = ElasticsearchSink::new(ElasticsearchSinkConfig::new("http://localhost:9200", "idx"))
+        .unwrap();
     assert!(sink.supports_schema_evolution());
 }

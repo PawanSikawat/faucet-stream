@@ -1862,7 +1862,10 @@ pipeline:
         let err = expand(&c).unwrap_err();
         match &err {
             CliError::Config(msg) => {
-                assert!(msg.contains("evolve"), "expected evolve mention, got: {msg}");
+                assert!(
+                    msg.contains("evolve"),
+                    "expected evolve mention, got: {msg}"
+                );
                 assert!(msg.contains("jsonl"), "expected sink kind, got: {msg}");
             }
             other => panic!("expected Config error, got {other:?}"),

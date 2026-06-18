@@ -889,8 +889,11 @@ mod tests {
 
     #[test]
     fn pg_widen_column_ddl() {
-        let sql =
-            build_alter_type_sql("\"public\".\"t\"", "score", faucet_core::SqlBaseType::Double);
+        let sql = build_alter_type_sql(
+            "\"public\".\"t\"",
+            "score",
+            faucet_core::SqlBaseType::Double,
+        );
         assert_eq!(
             sql,
             "ALTER TABLE \"public\".\"t\" ALTER COLUMN \"score\" TYPE double precision USING \"score\"::double precision"
@@ -908,11 +911,26 @@ mod tests {
 
     #[test]
     fn pg_udt_round_trips_to_json_schema() {
-        assert_eq!(pg_udt_to_json_schema("int8", false), json!({"type":"integer"}));
-        assert_eq!(pg_udt_to_json_schema("float8", false), json!({"type":"number"}));
-        assert_eq!(pg_udt_to_json_schema("bool", false), json!({"type":"boolean"}));
-        assert_eq!(pg_udt_to_json_schema("jsonb", false), json!({"type":"object"}));
-        assert_eq!(pg_udt_to_json_schema("text", false), json!({"type":"string"}));
+        assert_eq!(
+            pg_udt_to_json_schema("int8", false),
+            json!({"type":"integer"})
+        );
+        assert_eq!(
+            pg_udt_to_json_schema("float8", false),
+            json!({"type":"number"})
+        );
+        assert_eq!(
+            pg_udt_to_json_schema("bool", false),
+            json!({"type":"boolean"})
+        );
+        assert_eq!(
+            pg_udt_to_json_schema("jsonb", false),
+            json!({"type":"object"})
+        );
+        assert_eq!(
+            pg_udt_to_json_schema("text", false),
+            json!({"type":"string"})
+        );
         // Unknown types fall back to string; nullable widens the type array.
         assert_eq!(
             pg_udt_to_json_schema("timestamptz", true),

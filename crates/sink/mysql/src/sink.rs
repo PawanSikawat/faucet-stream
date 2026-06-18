@@ -457,7 +457,8 @@ impl MysqlSink {
                     // DATA_TYPE is already lowercase per the SQL standard, but
                     // normalize defensively.
                     row.get::<String, _>("DATA_TYPE").to_ascii_lowercase(),
-                    row.get::<String, _>("IS_NULLABLE").eq_ignore_ascii_case("YES"),
+                    row.get::<String, _>("IS_NULLABLE")
+                        .eq_ignore_ascii_case("YES"),
                 )
             })
             .collect())
@@ -600,7 +601,9 @@ impl faucet_core::Sink for MysqlSink {
             sqlx::query(&build_add_column_sql(&table_ref, &c.name, t))
                 .execute(&mut *conn)
                 .await
-                .map_err(|e| FaucetError::Sink(format!("MySQL ADD COLUMN {} failed: {e}", c.name)))?;
+                .map_err(|e| {
+                    FaucetError::Sink(format!("MySQL ADD COLUMN {} failed: {e}", c.name))
+                })?;
         }
 
         for c in &evolution.widenings {

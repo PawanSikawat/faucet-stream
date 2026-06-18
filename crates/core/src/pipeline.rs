@@ -1418,9 +1418,30 @@ async fn apply_drift_policy<Si: Sink + ?Sized>(
         OnDrift::Fail => "fail",
         OnDrift::Evolve => "evolve",
     };
-    emit_drift(pipeline_name, row, sink_name, mode, "added", diff.additions.len() as u64);
-    emit_drift(pipeline_name, row, sink_name, mode, "widened", diff.widenings.len() as u64);
-    emit_drift(pipeline_name, row, sink_name, mode, "narrowed", diff.incompatible.len() as u64);
+    emit_drift(
+        pipeline_name,
+        row,
+        sink_name,
+        mode,
+        "added",
+        diff.additions.len() as u64,
+    );
+    emit_drift(
+        pipeline_name,
+        row,
+        sink_name,
+        mode,
+        "widened",
+        diff.widenings.len() as u64,
+    );
+    emit_drift(
+        pipeline_name,
+        row,
+        sink_name,
+        mode,
+        "narrowed",
+        diff.incompatible.len() as u64,
+    );
     emit_drift(
         pipeline_name,
         row,
@@ -1456,17 +1477,18 @@ async fn apply_drift_policy<Si: Sink + ?Sized>(
             let trimmed = records
                 .into_iter()
                 .map(|r| match r {
-                    Value::Object(map) => {
-                        Value::Object(map.into_iter().filter(|(k, _)| allowed.contains(k)).collect())
-                    }
+                    Value::Object(map) => Value::Object(
+                        map.into_iter()
+                            .filter(|(k, _)| allowed.contains(k))
+                            .collect(),
+                    ),
                     other => other,
                 })
                 .collect();
             Ok((trimmed, None))
         }
         OnDrift::Quarantine => {
-            let (kept, env) =
-                quarantine_drift_rows(diff, records, sink_name, pipeline_name, row);
+            let (kept, env) = quarantine_drift_rows(diff, records, sink_name, pipeline_name, row);
             drift_envelopes.extend(env);
             Ok((kept, None))
         }
@@ -1572,7 +1594,14 @@ fn quarantine_drift_rows(
                 columns: diff.changed_columns(),
                 message: "row exhibits schema drift (on_drift=quarantine)".into(),
             };
-            envelopes.push(build_envelope(&rec, &err, sink_name, pipeline_name, row, idx));
+            envelopes.push(build_envelope(
+                &rec,
+                &err,
+                sink_name,
+                pipeline_name,
+                row,
+                idx,
+            ));
         } else {
             kept.push(rec);
         }
@@ -4269,7 +4298,11 @@ mod tests {
         let pages = one_page(vec![json!({"id": 1, "email": "a@x.com"})]);
         let res = run_stream(pages, &sink, drift_opts(policy)).await.unwrap();
         assert_eq!(res.records_written, 1);
-        assert_eq!(sink.written()[0], json!({"id": 1}), "email must be stripped");
+        assert_eq!(
+            sink.written()[0],
+            json!({"id": 1}),
+            "email must be stripped"
+        );
     }
 
     #[tokio::test]
@@ -4284,7 +4317,9 @@ mod tests {
             on_incompatible: crate::drift::OnIncompatible::Fail,
         };
         let pages = one_page(vec![json!({"id": 1, "email": "a@x.com"})]);
-        let err = run_stream(pages, &sink, drift_opts(policy)).await.unwrap_err();
+        let err = run_stream(pages, &sink, drift_opts(policy))
+            .await
+            .unwrap_err();
         assert!(matches!(err, FaucetError::SchemaDrift { .. }));
     }
 
@@ -4362,7 +4397,9 @@ mod tests {
             on_incompatible: crate::drift::OnIncompatible::Fail,
         };
         let pages = one_page(vec![json!({"id": 1})]);
-        let err = run_stream(pages, &sink, drift_opts(policy)).await.unwrap_err();
+        let err = run_stream(pages, &sink, drift_opts(policy))
+            .await
+            .unwrap_err();
         assert!(matches!(err, FaucetError::Config(_)));
     }
 
@@ -4408,13 +4445,23 @@ mod tests {
             .with_dlq(DlqConfig::new(dlq_sink.clone()));
         let err = run_stream(pages, &sink, opts).await.unwrap_err();
         // The run still aborts on drift.
-        assert!(matches!(err, FaucetError::SchemaDrift { .. }), "got {err:?}");
+        assert!(
+            matches!(err, FaucetError::SchemaDrift { .. }),
+            "got {err:?}"
+        );
         // …but the quality-quarantined row was written to the DLQ first, not lost.
         let dlq = dlq_sink.written();
-        assert_eq!(dlq.len(), 1, "quarantined row must reach the DLQ before abort");
+        assert_eq!(
+            dlq.len(),
+            1,
+            "quarantined row must reach the DLQ before abort"
+        );
         assert_eq!(dlq[0]["payload"], json!({"id": 2, "email": "b@x"}));
         assert_eq!(dlq[0]["error"]["kind"], "QualityFailure");
         // The surviving (drifting) row was committed to the main sink before the abort.
-        assert_eq!(sink.written(), vec![json!({"id": 1, "name": "ok", "email": "a@x"})]);
+        assert_eq!(
+            sink.written(),
+            vec![json!({"id": 1, "name": "ok", "email": "a@x"})]
+        );
     }
 }

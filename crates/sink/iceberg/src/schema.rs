@@ -383,7 +383,10 @@ mod tests {
         assert_eq!(props["i64"]["type"], serde_json::json!(["integer", "null"]));
         assert_eq!(props["u16"]["type"], serde_json::json!(["integer", "null"]));
         assert_eq!(props["f32"]["type"], serde_json::json!(["number", "null"]));
-        assert_eq!(props["flag"]["type"], serde_json::json!(["boolean", "null"]));
+        assert_eq!(
+            props["flag"]["type"],
+            serde_json::json!(["boolean", "null"])
+        );
         assert_eq!(props["name"]["type"], serde_json::json!(["string", "null"]));
         assert_eq!(props["meta"]["type"], serde_json::json!(["object", "null"]));
         assert_eq!(props["tags"]["type"], serde_json::json!(["array", "null"]));

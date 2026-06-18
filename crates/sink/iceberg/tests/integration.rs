@@ -250,9 +250,7 @@ async fn current_schema_reports_table_columns() {
         .expect("schema must be Some once the table exists");
 
     assert_eq!(schema["type"], "object");
-    let props = schema["properties"]
-        .as_object()
-        .expect("properties object");
+    let props = schema["properties"].as_object().expect("properties object");
     // Inferred Iceberg columns surface as nullable JSON base types.
     assert_eq!(props["id"]["type"], json!(["integer", "null"]));
     assert_eq!(props["name"]["type"], json!(["string", "null"]));

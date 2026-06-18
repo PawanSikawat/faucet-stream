@@ -149,10 +149,17 @@ async fn current_schema_maps_table_fields() {
     mount_table_schema(&server).await;
     let (sink, _sa) = build_sink(&server).await;
 
-    let schema = sink.current_schema().await.expect("current_schema").unwrap();
+    let schema = sink
+        .current_schema()
+        .await
+        .expect("current_schema")
+        .unwrap();
     assert_eq!(schema["type"], "object");
     // Every column reported nullable (safe default for drift).
-    assert_eq!(schema["properties"]["id"]["type"], json!(["integer", "null"]));
+    assert_eq!(
+        schema["properties"]["id"]["type"],
+        json!(["integer", "null"])
+    );
     assert_eq!(
         schema["properties"]["name"]["type"],
         json!(["string", "null"])
@@ -221,26 +228,23 @@ async fn evolve_schema_issues_alter_table_ddl() {
     sink.evolve_schema(&evo).await.expect("evolve_schema");
 
     let bodies = captured_query_bodies(&server).await;
-    let queries: Vec<&str> = bodies
-        .iter()
-        .filter_map(|b| b["query"].as_str())
-        .collect();
+    let queries: Vec<&str> = bodies.iter().filter_map(|b| b["query"].as_str()).collect();
     assert!(
-        queries.iter().any(|q| q.contains(
-            "ALTER TABLE `p.d.t` ADD COLUMN IF NOT EXISTS `email` STRING"
-        )),
+        queries
+            .iter()
+            .any(|q| q.contains("ALTER TABLE `p.d.t` ADD COLUMN IF NOT EXISTS `email` STRING")),
         "missing ADD COLUMN DDL; got {queries:?}"
     );
     assert!(
-        queries.iter().any(|q| q.contains(
-            "ALTER TABLE `p.d.t` ALTER COLUMN `id` SET DATA TYPE FLOAT64"
-        )),
+        queries
+            .iter()
+            .any(|q| q.contains("ALTER TABLE `p.d.t` ALTER COLUMN `id` SET DATA TYPE FLOAT64")),
         "missing widening DDL; got {queries:?}"
     );
     assert!(
-        queries.iter().any(|q| q.contains(
-            "ALTER TABLE `p.d.t` ALTER COLUMN `name` DROP NOT NULL"
-        )),
+        queries
+            .iter()
+            .any(|q| q.contains("ALTER TABLE `p.d.t` ALTER COLUMN `name` DROP NOT NULL")),
         "missing DROP NOT NULL DDL; got {queries:?}"
     );
 }

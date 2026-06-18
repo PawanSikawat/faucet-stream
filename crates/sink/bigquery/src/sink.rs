@@ -254,9 +254,10 @@ impl BigQuerySink {
         if let Some(fields) = guard.as_ref() {
             return Ok(fields.clone());
         }
-        let fields = self.fetch_schema_fields().await.map_err(|e| {
-            FaucetError::Sink(format!("BigQuery tables.get (schema) failed: {e}"))
-        })?;
+        let fields = self
+            .fetch_schema_fields()
+            .await
+            .map_err(|e| FaucetError::Sink(format!("BigQuery tables.get (schema) failed: {e}")))?;
         if fields.is_empty() {
             return Err(FaucetError::Sink(format!(
                 "BigQuery target table {}.{}.{} has no schema fields; exactly-once \
@@ -878,16 +879,14 @@ impl faucet_core::Sink for BigQuerySink {
 
         for c in &evolution.additions {
             let bq = idempotent::base_to_bq(
-                faucet_core::json_schema_base_type(&c.to)
-                    .unwrap_or(faucet_core::SqlBaseType::Text),
+                faucet_core::json_schema_base_type(&c.to).unwrap_or(faucet_core::SqlBaseType::Text),
             );
             self.run_ddl(idempotent::build_add_column_ddl(&table_ref, &c.name, bq))
                 .await?;
         }
         for c in &evolution.widenings {
             let bq = idempotent::base_to_bq(
-                faucet_core::json_schema_base_type(&c.to)
-                    .unwrap_or(faucet_core::SqlBaseType::Text),
+                faucet_core::json_schema_base_type(&c.to).unwrap_or(faucet_core::SqlBaseType::Text),
             );
             self.run_ddl(idempotent::build_alter_type_ddl(&table_ref, &c.name, bq))
                 .await?;

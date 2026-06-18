@@ -1030,9 +1030,13 @@ mod tests {
 
     #[test]
     fn mssql_add_column_ddl() {
-        let sql =
-            build_add_column_sql("[dbo].[events]", "dbo.events", "email", faucet_core::SqlBaseType::Text)
-                .unwrap();
+        let sql = build_add_column_sql(
+            "[dbo].[events]",
+            "dbo.events",
+            "email",
+            faucet_core::SqlBaseType::Text,
+        )
+        .unwrap();
         assert!(sql.starts_with("IF NOT EXISTS"), "{sql}");
         assert!(
             sql.contains("ALTER TABLE [dbo].[events] ADD [email] NVARCHAR(MAX)"),

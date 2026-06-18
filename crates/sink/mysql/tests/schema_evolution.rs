@@ -29,7 +29,10 @@ async fn start_mysql() -> (ContainerAsync<Mysql>, String) {
         .expect("startup semaphore closed");
     let image = Mysql::default();
     let container: ContainerAsync<Mysql> = image.start().await.expect("mysql container start");
-    let port = container.get_host_port_ipv4(3306).await.expect("mysql port");
+    let port = container
+        .get_host_port_ipv4(3306)
+        .await
+        .expect("mysql port");
     let url = format!("mysql://root@127.0.0.1:{port}/test");
     (container, url)
 }
@@ -47,11 +50,10 @@ async fn current_schema_then_evolve_add_and_widen_is_idempotent() {
     pool.close().await;
 
     // 2. Build the sink (AutoMap) and read the live schema.
-    let sink = MysqlSink::new(
-        MysqlSinkConfig::new(&url, "t").column_mapping(MysqlColumnMapping::AutoMap),
-    )
-    .await
-    .expect("sink new");
+    let sink =
+        MysqlSink::new(MysqlSinkConfig::new(&url, "t").column_mapping(MysqlColumnMapping::AutoMap))
+            .await
+            .expect("sink new");
 
     let schema = sink
         .current_schema()
@@ -142,8 +144,7 @@ async fn current_schema_is_none_for_missing_table() {
     let (_container, url) = start_mysql().await;
 
     let sink = MysqlSink::new(
-        MysqlSinkConfig::new(&url, "does_not_exist")
-            .column_mapping(MysqlColumnMapping::AutoMap),
+        MysqlSinkConfig::new(&url, "does_not_exist").column_mapping(MysqlColumnMapping::AutoMap),
     )
     .await
     .expect("sink new");

@@ -395,10 +395,7 @@ impl faucet_core::Sink for ElasticsearchSink {
                 let es_type = def.get("type").and_then(|t| t.as_str()).unwrap_or("object");
                 let base = es_type_to_json(es_type);
                 // ES has no NOT NULL → every field is nullable.
-                out_props.insert(
-                    field.clone(),
-                    serde_json::json!({ "type": [base, "null"] }),
-                );
+                out_props.insert(field.clone(), serde_json::json!({ "type": [base, "null"] }));
             }
         }
 

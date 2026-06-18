@@ -136,7 +136,10 @@ async fn current_schema_returns_none_for_missing_table() {
         .await
         .expect("sink");
     assert!(
-        sink.current_schema().await.expect("current_schema").is_none(),
+        sink.current_schema()
+            .await
+            .expect("current_schema")
+            .is_none(),
         "missing table → None"
     );
 }

@@ -628,7 +628,9 @@ impl faucet_core::Sink for SqliteSink {
             sqlx::query(&build_add_column_sql(&self.config.table_name, &c.name, t))
                 .execute(&self.pool)
                 .await
-                .map_err(|e| FaucetError::Sink(format!("sqlite ADD COLUMN {} failed: {e}", c.name)))?;
+                .map_err(|e| {
+                    FaucetError::Sink(format!("sqlite ADD COLUMN {} failed: {e}", c.name))
+                })?;
         }
 
         if !evolution.widenings.is_empty() {

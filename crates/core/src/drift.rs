@@ -307,7 +307,8 @@ impl SchemaDriftPolicy {
     /// `true` when this policy can route records to a DLQ (so one must exist).
     pub fn requires_dlq(&self) -> bool {
         self.on_drift == OnDrift::Quarantine
-            || (self.on_drift == OnDrift::Evolve && self.on_incompatible == OnIncompatible::Quarantine)
+            || (self.on_drift == OnDrift::Evolve
+                && self.on_incompatible == OnIncompatible::Quarantine)
     }
 }
 
@@ -359,11 +360,23 @@ mod tests {
     #[test]
     fn sql_type_mapping() {
         use super::SqlBaseType::*;
-        assert_eq!(json_schema_base_type(&json!({"type":"integer"})), Some(Integer));
-        assert_eq!(json_schema_base_type(&json!({"type":"number"})), Some(Double));
-        assert_eq!(json_schema_base_type(&json!({"type":"boolean"})), Some(Boolean));
+        assert_eq!(
+            json_schema_base_type(&json!({"type":"integer"})),
+            Some(Integer)
+        );
+        assert_eq!(
+            json_schema_base_type(&json!({"type":"number"})),
+            Some(Double)
+        );
+        assert_eq!(
+            json_schema_base_type(&json!({"type":"boolean"})),
+            Some(Boolean)
+        );
         assert_eq!(json_schema_base_type(&json!({"type":"string"})), Some(Text));
-        assert_eq!(json_schema_base_type(&json!({"type":["string","null"]})), Some(Text));
+        assert_eq!(
+            json_schema_base_type(&json!({"type":["string","null"]})),
+            Some(Text)
+        );
         assert_eq!(json_schema_base_type(&json!({"type":"object"})), Some(Json));
         assert_eq!(json_schema_base_type(&json!({"type":"array"})), Some(Json));
         assert_eq!(json_schema_base_type(&json!({"type":"null"})), None);
@@ -434,7 +447,11 @@ mod tests {
         }));
         let page = schema(json!({ "id": {"type": "integer"} }));
         let d = diff_schema(&dest, &page, true);
-        assert_eq!(d.droppable_required, vec!["created_at".to_string()], "got {d:?}");
+        assert_eq!(
+            d.droppable_required,
+            vec!["created_at".to_string()],
+            "got {d:?}"
+        );
     }
 
     #[test]
@@ -452,10 +469,16 @@ mod tests {
     #[test]
     fn nested_object_treated_as_single_column() {
         // A change *inside* a nested object is invisible — top-level only.
-        let dest = schema(json!({ "meta": {"type": "object", "properties": {"a": {"type": "integer"}}} }));
-        let page = schema(json!({ "meta": {"type": "object", "properties": {"a": {"type": "integer"}, "b": {"type": "string"}}} }));
+        let dest =
+            schema(json!({ "meta": {"type": "object", "properties": {"a": {"type": "integer"}}} }));
+        let page = schema(
+            json!({ "meta": {"type": "object", "properties": {"a": {"type": "integer"}, "b": {"type": "string"}}} }),
+        );
         let d = diff_schema(&dest, &page, true);
-        assert!(d.is_empty(), "nested changes must not surface as drift; got {d:?}");
+        assert!(
+            d.is_empty(),
+            "nested changes must not surface as drift; got {d:?}"
+        );
     }
 
     /// Which bucket a single-column diff landed in.
@@ -472,7 +495,10 @@ mod tests {
         let page = schema(json!({ "col": page_ty }));
         let d = diff_schema(&dest, &page, allow_widening);
         assert!(d.additions.is_empty(), "unexpected addition: {d:?}");
-        assert!(d.droppable_required.is_empty(), "unexpected droppable: {d:?}");
+        assert!(
+            d.droppable_required.is_empty(),
+            "unexpected droppable: {d:?}"
+        );
         match (d.widenings.len(), d.incompatible.len()) {
             (0, 0) => Bucket::None,
             (1, 0) => Bucket::Widening,
@@ -502,7 +528,11 @@ mod tests {
             // Regression guard: integer fits a number column.
             (json!({"type": "number"}), json!({"type": "integer"}), None),
             // integer → number widening.
-            (json!({"type": "integer"}), json!({"type": "number"}), Widening),
+            (
+                json!({"type": "integer"}),
+                json!({"type": "number"}),
+                Widening,
+            ),
             // string → nullable string (relax null).
             (
                 json!({"type": "string"}),
@@ -522,9 +552,21 @@ mod tests {
                 Widening,
             ),
             // Genuine incompatibilities.
-            (json!({"type": "string"}), json!({"type": "integer"}), Incompatible),
-            (json!({"type": "integer"}), json!({"type": "string"}), Incompatible),
-            (json!({"type": "boolean"}), json!({"type": "number"}), Incompatible),
+            (
+                json!({"type": "string"}),
+                json!({"type": "integer"}),
+                Incompatible,
+            ),
+            (
+                json!({"type": "integer"}),
+                json!({"type": "string"}),
+                Incompatible,
+            ),
+            (
+                json!({"type": "boolean"}),
+                json!({"type": "number"}),
+                Incompatible,
+            ),
         ];
         for (dest, page, want) in cases {
             let got = classify_one(dest.clone(), page.clone(), true);
@@ -541,7 +583,11 @@ mod tests {
         // (dest, page, expected bucket) — allow_widening = false.
         let cases: &[(Value, Value, Bucket)] = &[
             // int→number is no longer a widening; with widening off it is incompatible.
-            (json!({"type": "integer"}), json!({"type": "number"}), Incompatible),
+            (
+                json!({"type": "integer"}),
+                json!({"type": "number"}),
+                Incompatible,
+            ),
             // `fits` still applies regardless of allow_widening.
             (
                 json!({"type": ["string", "null"]}),
@@ -567,7 +613,10 @@ mod tests {
     #[test]
     fn base_widened_detects_base_type_change() {
         // integer → number is a base-type widening (needs ALTER TYPE).
-        assert!(base_widened(&json!({"type": "integer"}), &json!({"type": "number"})));
+        assert!(base_widened(
+            &json!({"type": "integer"}),
+            &json!({"type": "number"})
+        ));
         // nullability-only relaxation is NOT a base-type widening.
         assert!(!base_widened(
             &json!({"type": "string"}),
@@ -622,8 +671,14 @@ mod tests {
 
     #[test]
     fn on_drift_serializes_snake_case() {
-        assert_eq!(serde_json::to_string(&OnDrift::Evolve).unwrap(), "\"evolve\"");
-        assert_eq!(serde_json::to_string(&OnDrift::Quarantine).unwrap(), "\"quarantine\"");
+        assert_eq!(
+            serde_json::to_string(&OnDrift::Evolve).unwrap(),
+            "\"evolve\""
+        );
+        assert_eq!(
+            serde_json::to_string(&OnDrift::Quarantine).unwrap(),
+            "\"quarantine\""
+        );
     }
 
     #[test]
@@ -641,7 +696,8 @@ mod tests {
         let q: SchemaDriftSpec = serde_json::from_str(r#"{"on_drift":"quarantine"}"#).unwrap();
         assert!(SchemaDriftPolicy::compile(&q).requires_dlq());
         let evo_q: SchemaDriftSpec =
-            serde_json::from_str(r#"{"on_drift":"evolve","on_incompatible":"quarantine"}"#).unwrap();
+            serde_json::from_str(r#"{"on_drift":"evolve","on_incompatible":"quarantine"}"#)
+                .unwrap();
         assert!(SchemaDriftPolicy::compile(&evo_q).requires_dlq());
         let warn: SchemaDriftSpec = serde_json::from_str(r#"{"on_drift":"warn"}"#).unwrap();
         assert!(!SchemaDriftPolicy::compile(&warn).requires_dlq());

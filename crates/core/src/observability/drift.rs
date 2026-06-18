@@ -19,7 +19,14 @@ pub fn describe() {
 /// Emit `faucet_schema_drift_total{pipeline,row,connector,mode,kind}` for a
 /// detected drift: `count` columns of `kind` handled under policy `mode`.
 /// No-op when `count == 0`.
-pub fn schema_drift(pipeline: &str, row: &str, connector: &str, mode: &str, kind: &str, count: u64) {
+pub fn schema_drift(
+    pipeline: &str,
+    row: &str,
+    connector: &str,
+    mode: &str,
+    kind: &str,
+    count: u64,
+) {
     if count == 0 {
         return;
     }

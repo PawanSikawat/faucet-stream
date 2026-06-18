@@ -63,7 +63,10 @@ pub enum FaucetError {
     /// An incoming page's shape diverged from the destination schema under an
     /// `on_drift: fail` (or `on_incompatible: fail`) policy.
     #[error("Schema drift on columns {columns:?}: {message}")]
-    SchemaDrift { columns: Vec<String>, message: String },
+    SchemaDrift {
+        columns: Vec<String>,
+        message: String,
+    },
 
     /// A state-store operation failed (read/write/delete of a replication
     /// bookmark, checkpoint, or other persisted pipeline state).
