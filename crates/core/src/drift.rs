@@ -105,29 +105,41 @@ fn type_set(fragment: &Value) -> (Vec<String>, bool) {
     (names, nullable)
 }
 
-/// Is moving from `from` to `to` a lossless widening?
-/// Top-level rules (issue #194): integer→number, and gaining nullability.
-fn is_widening(from: &Value, to: &Value) -> bool {
-    let (fnames, fnull) = type_set(from);
-    let (tnames, tnull) = type_set(to);
-    // Same non-null base types, but `to` adds nullability → widening.
-    if fnames == tnames && !fnull && tnull {
-        return true;
+/// Are the page's values already acceptable as-is by the destination?
+///
+/// True iff the page introduces no nulls a non-nullable destination would
+/// reject, AND every non-null base type the page carries is accepted by the
+/// destination (an exact base-type match, or `integer` landing in a `number`
+/// column). `fits` is never gated by `allow_widening` — a fitting page is not
+/// drift at all.
+fn fits(dest: &Value, page: &Value) -> bool {
+    let (dn, dnull) = type_set(dest);
+    let (pn, pnull) = type_set(page);
+    // The page must not introduce nulls a non-nullable destination rejects.
+    if pnull && !dnull {
+        return false;
     }
-    // integer → number (with or without matching nullability).
-    if fnames == vec!["integer".to_string()] && tnames == vec!["number".to_string()] && fnull == tnull
-    {
-        return true;
-    }
-    false
+    // Every page base type must be accepted by the destination.
+    pn.iter()
+        .all(|t| dn.contains(t) || (t == "integer" && dn.iter().any(|d| d == "number")))
 }
 
-/// Are the two fragments the same type (ignoring property/items detail —
-/// top-level only)?
-fn same_base_type(a: &Value, b: &Value) -> bool {
-    let (an, anull) = type_set(a);
-    let (bn, bnull) = type_set(b);
-    an == bn && anull == bnull
+/// Can the destination column losslessly evolve to accept the page?
+///
+/// The merged non-null base family must collapse to a single base type: take
+/// `dest ∪ page`, drop `integer` if `number` is present (int→number collapse),
+/// and require exactly one element. Nullability relaxation is always evolvable,
+/// so only the base-family check gates this.
+fn evolvable(dest: &Value, page: &Value) -> bool {
+    let (dn, _) = type_set(dest);
+    let (pn, _) = type_set(page);
+    let mut merged: Vec<String> = dn.into_iter().chain(pn).collect();
+    merged.sort();
+    merged.dedup();
+    if merged.iter().any(|t| t == "number") {
+        merged.retain(|t| t != "integer");
+    }
+    merged.len() == 1
 }
 
 /// Diff a page's inferred shape against the destination schema (top-level columns).
@@ -156,15 +168,15 @@ pub fn diff_schema(destination: &Value, page: &Value, allow_widening: bool) -> S
                 to: page_ty.clone(),
             }),
             Some(dest_ty) => {
-                if same_base_type(dest_ty, page_ty) {
-                    continue; // no change
+                if fits(dest_ty, page_ty) {
+                    continue; // page values already acceptable — no drift
                 }
                 let change = ColumnChange {
                     name: name.clone(),
                     from: Some(dest_ty.clone()),
                     to: page_ty.clone(),
                 };
-                if allow_widening && is_widening(dest_ty, page_ty) {
+                if allow_widening && evolvable(dest_ty, page_ty) {
                     diff.widenings.push(change);
                 } else {
                     diff.incompatible.push(change);
@@ -361,6 +373,112 @@ mod tests {
         let page = schema(json!({ "meta": {"type": "object", "properties": {"a": {"type": "integer"}, "b": {"type": "string"}}} }));
         let d = diff_schema(&dest, &page, true);
         assert!(d.is_empty(), "nested changes must not surface as drift; got {d:?}");
+    }
+
+    /// Which bucket a single-column diff landed in.
+    #[derive(Debug, PartialEq)]
+    enum Bucket {
+        None,
+        Widening,
+        Incompatible,
+    }
+
+    /// Diff a single column `col` (D vs P) and report which bucket it landed in.
+    fn classify_one(dest_ty: Value, page_ty: Value, allow_widening: bool) -> Bucket {
+        let dest = schema(json!({ "col": dest_ty }));
+        let page = schema(json!({ "col": page_ty }));
+        let d = diff_schema(&dest, &page, allow_widening);
+        assert!(d.additions.is_empty(), "unexpected addition: {d:?}");
+        assert!(d.droppable_required.is_empty(), "unexpected droppable: {d:?}");
+        match (d.widenings.len(), d.incompatible.len()) {
+            (0, 0) => Bucket::None,
+            (1, 0) => Bucket::Widening,
+            (0, 1) => Bucket::Incompatible,
+            _ => panic!("ambiguous classification: {d:?}"),
+        }
+    }
+
+    #[test]
+    fn truth_table_allow_widening() {
+        use Bucket::*;
+        // (dest, page, expected bucket) — allow_widening = true.
+        let cases: &[(Value, Value, Bucket)] = &[
+            (json!({"type": "integer"}), json!({"type": "integer"}), None),
+            (json!({"type": "string"}), json!({"type": "string"}), None),
+            (
+                json!({"type": ["string", "null"]}),
+                json!({"type": ["string", "null"]}),
+                None,
+            ),
+            // Regression guard: non-null page fits a nullable dest.
+            (
+                json!({"type": ["string", "null"]}),
+                json!({"type": "string"}),
+                None,
+            ),
+            // Regression guard: integer fits a number column.
+            (json!({"type": "number"}), json!({"type": "integer"}), None),
+            // integer → number widening.
+            (json!({"type": "integer"}), json!({"type": "number"}), Widening),
+            // string → nullable string (relax null).
+            (
+                json!({"type": "string"}),
+                json!({"type": ["string", "null"]}),
+                Widening,
+            ),
+            // integer → nullable number (int→number + null relax).
+            (
+                json!({"type": "integer"}),
+                json!({"type": ["number", "null"]}),
+                Widening,
+            ),
+            // nullable integer dest, number page → int→number, dest already nullable.
+            (
+                json!({"type": ["integer", "null"]}),
+                json!({"type": "number"}),
+                Widening,
+            ),
+            // Genuine incompatibilities.
+            (json!({"type": "string"}), json!({"type": "integer"}), Incompatible),
+            (json!({"type": "integer"}), json!({"type": "string"}), Incompatible),
+            (json!({"type": "boolean"}), json!({"type": "number"}), Incompatible),
+        ];
+        for (dest, page, want) in cases {
+            let got = classify_one(dest.clone(), page.clone(), true);
+            assert_eq!(
+                &got, want,
+                "allow_widening=true: D={dest} P={page} expected {want:?} got {got:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn truth_table_widening_disallowed() {
+        use Bucket::*;
+        // (dest, page, expected bucket) — allow_widening = false.
+        let cases: &[(Value, Value, Bucket)] = &[
+            // int→number is no longer a widening; with widening off it is incompatible.
+            (json!({"type": "integer"}), json!({"type": "number"}), Incompatible),
+            // `fits` still applies regardless of allow_widening.
+            (
+                json!({"type": ["string", "null"]}),
+                json!({"type": "string"}),
+                None,
+            ),
+            // null relaxation is a widening, not a fit → incompatible when disallowed.
+            (
+                json!({"type": "string"}),
+                json!({"type": ["string", "null"]}),
+                Incompatible,
+            ),
+        ];
+        for (dest, page, want) in cases {
+            let got = classify_one(dest.clone(), page.clone(), false);
+            assert_eq!(
+                &got, want,
+                "allow_widening=false: D={dest} P={page} expected {want:?} got {got:?}"
+            );
+        }
     }
 
     #[test]
