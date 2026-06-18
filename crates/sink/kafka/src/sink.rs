@@ -35,6 +35,7 @@ impl KafkaSink {
             "enable.idempotence",
             if config.idempotent { "true" } else { "false" },
         );
+        client_config.set("compression.type", config.compression.as_str());
         client_config.set("linger.ms", config.linger.as_millis().to_string());
         client_config.set(
             "message.timeout.ms",
@@ -46,6 +47,11 @@ impl KafkaSink {
                 "queue.buffering.max.messages",
                 config.batch_size.to_string(),
             );
+        }
+        // extra_client_config is applied last so it overrides any of the above —
+        // matching the pre-refactor escape-hatch precedence.
+        for (k, v) in &config.extra_client_config {
+            client_config.set(k, v);
         }
 
         let producer: FutureProducer = client_config

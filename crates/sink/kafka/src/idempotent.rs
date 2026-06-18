@@ -10,17 +10,18 @@ use crate::config::KafkaSinkConfig;
 use faucet_core::FaucetError;
 use rdkafka::ClientConfig;
 
-/// Build the shared `ClientConfig` (brokers, auth, compression, user overrides)
-/// reused by the producer, the transactional producer, the admin client, and
-/// the token-reader consumer. Callers add role-specific keys on top.
+/// Build the shared connection `ClientConfig` (brokers + auth) reused by the
+/// producer, the transactional producer, the admin client, and the
+/// token-reader consumer. Only keys valid for every client type live here.
+///
+/// Producer-only keys (compression, buffering, idempotence) and the
+/// `extra_client_config` overrides are layered on by the producer builders —
+/// applying them here would let a producer-only property reach a consumer or
+/// admin client and be rejected at create time.
 pub(crate) fn client_config_base(config: &KafkaSinkConfig) -> Result<ClientConfig, FaucetError> {
     let mut cfg = ClientConfig::new();
     cfg.set("bootstrap.servers", &config.brokers);
-    cfg.set("compression.type", config.compression.as_str());
     config.auth.apply(&mut cfg)?;
-    for (k, v) in &config.extra_client_config {
-        cfg.set(k, v);
-    }
     Ok(cfg)
 }
 
@@ -74,7 +75,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn base_config_sets_brokers_and_compression() {
+    fn base_config_sets_brokers_only() {
         use crate::config::{Acks, KafkaSinkConfig, KafkaSinkTopic};
         use faucet_common_kafka::{CompressionType, KafkaAuth, KafkaValueFormat, OnKeyError};
         use std::collections::BTreeMap;
@@ -109,7 +110,8 @@ mod tests {
         };
         let cfg = client_config_base(&config).unwrap();
         assert_eq!(cfg.get("bootstrap.servers"), Some("host:9092"));
-        assert_eq!(cfg.get("compression.type"), Some("none"));
+        // compression is producer-only — layered by new(), not by the base.
+        assert_eq!(cfg.get("compression.type"), None);
     }
 
     #[test]
