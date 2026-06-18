@@ -100,6 +100,12 @@ records and the token atomically inside its own transaction:
   UNNEST(JSON_QUERY_ARRAY(@payload))` plus a `MERGE` into the
   `_faucet_commit_token` watermark table in the target dataset), so both land
   atomically.
+- **Kafka sink** — a transactional producer writes each page's records plus a
+  commit-token record into a compacted side-topic (default
+  `__faucet_commit_token`, auto-created with `cleanup.policy=compact`) inside one
+  Kafka transaction, so the data and the watermark commit atomically. The
+  `transactional.id` is auto-derived from the pipeline scope. Downstream
+  consumers should read the destination with `isolation.level=read_committed`.
 
 On the *next run*, before writing each page, the pipeline reads the sink's
 `last_committed_token` for the current scope. If the stored token is greater
@@ -114,7 +120,7 @@ Only certain connectors are allowed in an exactly-once pipeline:
 | Role | Allowed connectors | Why others are excluded |
 |------|--------------------|------------------------|
 | Source | `postgres-cdc`, `mysql-cdc`, `mongodb-cdc` | The source must deterministically replay the same pages from a given bookmark. Non-CDC / batch sources (REST, SQL query, etc.) do not replay deterministically — a different page on resume would cause the pipeline to silently skip records it never wrote. |
-| Sink | `sqlite`, `postgres`, `mysql`, `mssql`, `iceberg`, `bigquery` | The sink must be able to commit data and a watermark token atomically in a single transaction or snapshot. Sinks without transaction support cannot provide this guarantee. |
+| Sink | `sqlite`, `postgres`, `mysql`, `mssql`, `iceberg`, `bigquery`, `kafka` | The sink must be able to commit data and a watermark token atomically in a single transaction or snapshot. Sinks without transaction support cannot provide this guarantee. The Kafka sink uses a transactional producer that commits records plus a commit-token record into a compacted side-topic in one Kafka transaction. |
 
 A DLQ (`dlq:` block) is incompatible with `exactly_once` in this version.
 
