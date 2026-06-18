@@ -875,7 +875,9 @@ mod sink_tests {
             "capable-sink"
         }
         async fn current_schema(&self) -> Result<Option<Value>, FaucetError> {
-            Ok(Some(json!({"type": "object", "properties": {"id": {"type": "integer"}}})))
+            Ok(Some(
+                json!({"type": "object", "properties": {"id": {"type": "integer"}}}),
+            ))
         }
         fn supports_schema_evolution(&self) -> bool {
             true

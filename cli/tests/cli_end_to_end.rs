@@ -600,10 +600,7 @@ pipeline:
 
     // Both rows landed with only the in-schema `id` column; `name` was stripped.
     assert_eq!(sqlite_query(&db, "SELECT count(*) FROM t;"), "2");
-    assert_eq!(
-        sqlite_query(&db, "SELECT id FROM t ORDER BY id;"),
-        "1\n2"
-    );
+    assert_eq!(sqlite_query(&db, "SELECT id FROM t ORDER BY id;"), "1\n2");
 }
 
 #[test]

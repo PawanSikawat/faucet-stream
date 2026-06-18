@@ -490,7 +490,7 @@ async fn control(conn: &mut MssqlPooledConnection<'_>, stmt: &str) -> Result<(),
     Ok(())
 }
 
-/// Map a [`SqlBaseType`] to the MSSQL type keyword used when adding/widening a
+/// Map a [`SqlBaseType`](faucet_core::SqlBaseType) to the MSSQL type keyword used when adding/widening a
 /// column during schema evolution (issue #194). Integers widen to `BIGINT` and
 /// floats to `FLOAT` so a later, wider value never overflows a narrower column;
 /// text/json land in `NVARCHAR(MAX)`.

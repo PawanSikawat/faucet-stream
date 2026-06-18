@@ -354,7 +354,7 @@ impl faucet_core::Sink for ElasticsearchSink {
     /// Elasticsearch can add new fields to an existing index in place via
     /// `PUT /<index>/_mapping`, so additive schema evolution is supported.
     /// (Changing an existing field's mapping type is *not* possible — see
-    /// [`evolve_schema`](Self::evolve_schema).)
+    /// [`evolve_schema`](faucet_core::Sink::evolve_schema).)
     fn supports_schema_evolution(&self) -> bool {
         true
     }
