@@ -145,15 +145,12 @@ fn read_last_token_blocking(
     };
 
     let mut tpl = TopicPartitionList::new();
-    // (partition_id, high_watermark). Under `read_committed`, `high` is the Last
-    // Stable Offset — the offset *after* the last committed batch, including any
-    // transaction commit/abort control markers. The drain target is therefore the
-    // consumer's fetch *position* reaching `high`, NOT a count of delivered
-    // records: a transaction commit marker advances the log offset (and the LSO)
-    // but is never delivered to a consumer via `poll`. Counting delivered records
-    // against `high - low` would over-count by one per transaction commit and the
-    // loop could never reach the target, stalling for a full `timeout`.
-    // (partition_id, high_watermark, is_empty). `is_empty` (low == high) means the
+    // (partition_id, high_watermark, is_empty). Under `read_committed`, `high` is
+    // the Last Stable Offset — the offset *after* the last committed batch, including
+    // any transaction commit/abort control markers — so the drain target is the
+    // consumer's fetch *position* reaching `high`, NOT a count of delivered records
+    // (a commit marker advances the log offset but is never delivered via `poll`).
+    // `is_empty` (low == high) means the
     // partition has no readable records — true on a fresh topic AND on a fully
     // compacted partition whose log-start offset advanced past 0; either way it is
     // already drained and must never block the loop while we wait on a position
