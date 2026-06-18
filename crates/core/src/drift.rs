@@ -142,6 +142,41 @@ fn evolvable(dest: &Value, page: &Value) -> bool {
     merged.len() == 1
 }
 
+/// True when the non-null base type family changes from `from` to `to`
+/// (after the integer→number collapse) — i.e. the column needs an `ALTER TYPE`.
+///
+/// Mirrors the [`evolvable`] base-family collapse: take `from ∪ to`, drop
+/// `integer` when `number` is present, and treat the change as a base-type
+/// widening only when the resulting family is no longer the destination's
+/// original family. Nullability changes alone never count here.
+pub fn base_widened(from: &Value, to: &Value) -> bool {
+    let (dn, _) = type_set(from);
+    let (pn, _) = type_set(to);
+    // Collapse the destination's own family the same way (so a nullable-only
+    // change yields an identical family and returns false).
+    let collapse = |names: Vec<String>| -> Vec<String> {
+        let mut m: Vec<String> = names;
+        m.sort();
+        m.dedup();
+        if m.iter().any(|t| t == "number") {
+            m.retain(|t| t != "integer");
+        }
+        m
+    };
+    let dest_family = collapse(dn.clone());
+    let mut merged: Vec<String> = dn.into_iter().chain(pn).collect();
+    let merged = collapse(merged.drain(..).collect());
+    merged != dest_family
+}
+
+/// True when `to` permits null but `from` does not — the column needs its
+/// `NOT NULL` constraint relaxed.
+pub fn adds_null(from: &Value, to: &Value) -> bool {
+    let (_, fnull) = type_set(from);
+    let (_, tnull) = type_set(to);
+    tnull && !fnull
+}
+
 /// Diff a page's inferred shape against the destination schema (top-level columns).
 ///
 /// `destination` and `page` are both `infer_schema`-shaped object schemas
@@ -479,6 +514,54 @@ mod tests {
                 "allow_widening=false: D={dest} P={page} expected {want:?} got {got:?}"
             );
         }
+    }
+
+    #[test]
+    fn base_widened_detects_base_type_change() {
+        // integer → number is a base-type widening (needs ALTER TYPE).
+        assert!(base_widened(&json!({"type": "integer"}), &json!({"type": "number"})));
+        // nullability-only relaxation is NOT a base-type widening.
+        assert!(!base_widened(
+            &json!({"type": "string"}),
+            &json!({"type": ["string", "null"]})
+        ));
+        // identical base type, no change.
+        assert!(!base_widened(
+            &json!({"type": "integer"}),
+            &json!({"type": "integer"})
+        ));
+        // integer dest, nullable number page → base family changed.
+        assert!(base_widened(
+            &json!({"type": "integer"}),
+            &json!({"type": ["number", "null"]})
+        ));
+        // number dest, integer page → integer collapses into number, no change.
+        assert!(!base_widened(
+            &json!({"type": "number"}),
+            &json!({"type": "integer"})
+        ));
+    }
+
+    #[test]
+    fn adds_null_detects_nullability_relaxation() {
+        assert!(adds_null(
+            &json!({"type": "string"}),
+            &json!({"type": ["string", "null"]})
+        ));
+        // already nullable destination → not adding null.
+        assert!(!adds_null(
+            &json!({"type": ["string", "null"]}),
+            &json!({"type": "string"})
+        ));
+        assert!(!adds_null(
+            &json!({"type": "string"}),
+            &json!({"type": "string"})
+        ));
+        // page nullable, dest not → adds null even with a base change.
+        assert!(adds_null(
+            &json!({"type": "integer"}),
+            &json!({"type": ["number", "null"]})
+        ));
     }
 
     #[test]

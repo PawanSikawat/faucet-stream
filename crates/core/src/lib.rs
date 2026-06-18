@@ -48,7 +48,7 @@ pub use check::{CheckContext, CheckReport, Probe, ProbeStatus};
 pub use dlq::{DlqConfig, DlqReason, DlqStats, OnBatchError, build_envelope};
 pub use drift::{
     ColumnChange, OnDrift, OnIncompatible, SchemaDiff, SchemaDriftPolicy, SchemaDriftSpec,
-    SchemaEvolution,
+    SchemaEvolution, adds_null, base_widened,
 };
 pub use error::FaucetError;
 pub use idempotency::{DeliveryMode, format_token, parse_token, unwrap_state, wrap_state};
