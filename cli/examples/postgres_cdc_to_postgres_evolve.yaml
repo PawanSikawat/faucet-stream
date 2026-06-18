@@ -1,0 +1,84 @@
+# End-to-end Postgres CDC -> Postgres upsert mirror with schema evolution.
+#
+# Streams logical-replication change events from a source database, normalizes
+# the CDC envelope with `cdc_unwrap`, and mirrors them into a destination table
+# with `write_mode: upsert`. The pipeline-level `schema:` block makes the mirror
+# resilient to source-schema drift: when the source table gains a column (or an
+# existing column widens losslessly), faucet applies the additive DDL to the
+# destination table in place and keeps streaming — no broken pipeline, no
+# manual `ALTER TABLE`.
+#
+# Setup on the SOURCE database (logical replication must be enabled):
+#   psql "$SOURCE_PG_URL" <<SQL
+#     CREATE TABLE IF NOT EXISTS users (id int4 PRIMARY KEY, name text);
+#     CREATE PUBLICATION faucet_pub FOR TABLE users;
+#   SQL
+#
+# Setup on the DEST database (upsert/delete need a UNIQUE/PRIMARY KEY on `key`):
+#   psql "$DEST_PG_URL" <<SQL
+#     CREATE TABLE IF NOT EXISTS users_mirror (id int4 PRIMARY KEY, name text);
+#   SQL
+#
+# Then:
+#   export SOURCE_PG_URL=postgres://faucet:faucet@localhost:5432/appdb
+#   export DEST_PG_URL=postgres://faucet:faucet@localhost:5432/warehouse
+#   faucet run cli/examples/postgres_cdc_to_postgres_evolve.yaml
+#
+# Now `ALTER TABLE users ADD COLUMN email text;` on the source and INSERT a row
+# with the new column — faucet adds `email` to `users_mirror` automatically on
+# the next fetch cycle, then writes the row.
+
+version: 1
+name: pg_cdc_mirror_evolve
+
+# Exactly-once delivery composes a CDC source + an idempotent SQL sink + a state
+# store with no DLQ. Schema `evolve` composes with exactly-once: the additive DDL
+# runs before the page write, then the records and the commit token land in one
+# transaction.
+delivery: exactly_once
+
+pipeline:
+  # Schema-drift policy (issue #194). `evolve` applies additive/widening DDL to
+  # the destination, then writes the page. `allow_type_widening` lets a lossless
+  # type change (e.g. integer -> number) be applied in place rather than treated
+  # as incompatible. `on_incompatible: fail` aborts on a narrowing / incompatible
+  # type swap that cannot be auto-applied.
+  schema:
+    on_drift: evolve
+    allow_type_widening: true
+    on_incompatible: fail
+
+  source:
+    type: postgres-cdc
+    config:
+      connection_url: ${env:SOURCE_PG_URL}
+      slot_name: faucet_mirror_evolve
+      publication_name: faucet_pub
+      create_slot_if_missing: true
+      idle_timeout: 30
+
+  # Normalize the postgres-cdc envelope ({op, before, after}) into a flat row
+  # plus a `__op` marker. Inserts/updates emit the post-image; deletes emit the
+  # key from the pre-image. DDL/truncate events are dropped.
+  transforms:
+    - type: cdc_unwrap
+
+  sink:
+    type: postgres
+    config:
+      connection_url: ${env:DEST_PG_URL}
+      table_name: users_mirror
+      # Upsert/delete and schema evolution both require column-mapping mode
+      # (not the single-JSONB-blob mode).
+      column_mapping: auto_map
+      max_connections: 5
+      # Insert-or-update by `id` (the mirror table needs a UNIQUE/PRIMARY KEY on
+      # it); rows whose `__op` is "d" are routed to DELETE instead.
+      write_mode: upsert
+      key: [id]
+      delete_marker: { field: __op, values: [d] }
+
+  state:
+    type: file
+    config:
+      path: ./state

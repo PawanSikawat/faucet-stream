@@ -93,6 +93,24 @@ schemaless sinks (MongoDB, Elasticsearch) map `key` to a match filter / `_id`.
 Iceberg upsert is not yet supported (a follow-up, blocked on `iceberg-rust`). See
 [Upsert / mirror tables](../cookbook/upsert.md).
 
+## Schema evolution
+
+The pipeline-level [`schema:`](../cookbook/schema-drift.md) block detects when an
+incoming page's top-level shape diverges from the sink's destination schema and
+applies one policy (`warn` / `ignore` / `fail` / `quarantine` / `evolve`). Which
+sinks can actually *act* on it varies:
+
+| Sink | Schema evolution |
+|------|------------------|
+| `postgres`, `mysql`, `mssql`, `sqlite`, `bigquery` | **✓ evolve** — in-place additive/widening DDL |
+| `elasticsearch` | **✓ evolve** — can add fields only (existing-field type change is incompatible) |
+| `iceberg` | detect-only — `warn`/`ignore`/`fail`/`quarantine` work; `evolve` blocked on upstream `iceberg-rust` (#255) |
+| `jsonl`, `csv`, `stdout`, `mongodb`, `redis`, `http`, `kafka`, `s3`, `gcs`, `snowflake`, `parquet` | — (schemaless; the `schema:` policy is inert) |
+
+`on_drift: evolve` against a detect-only or schemaless sink is rejected at
+config-load. See [Schema drift](../cookbook/schema-drift.md) for the per-sink
+nuances (e.g. SQLite widening is a no-op; Elasticsearch can only add fields).
+
 ## Authentication at a glance
 
 | Family | Auth options |
