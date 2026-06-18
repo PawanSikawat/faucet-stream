@@ -1303,6 +1303,7 @@ mod tests {
                 dlq: None,
                 #[cfg(feature = "quality")]
                 quality: None,
+                schema: None,
             },
             matrix: Vec::new(),
             execution: None,
