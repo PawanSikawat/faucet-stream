@@ -8,7 +8,13 @@
 
 use crate::config::KafkaSinkConfig;
 use faucet_core::FaucetError;
-use rdkafka::ClientConfig;
+use rdkafka::admin::{AdminClient, AdminOptions, NewTopic, TopicReplication};
+use rdkafka::client::DefaultClientContext;
+use rdkafka::consumer::{BaseConsumer, Consumer};
+use rdkafka::error::RDKafkaErrorCode;
+use rdkafka::{ClientConfig, Message, Offset, TopicPartitionList};
+use std::collections::HashMap;
+use std::time::Duration;
 
 /// Build the shared connection `ClientConfig` (brokers + auth) reused by the
 /// producer, the transactional producer, the admin client, and the
@@ -23,6 +29,125 @@ pub(crate) fn client_config_base(config: &KafkaSinkConfig) -> Result<ClientConfi
     cfg.set("bootstrap.servers", &config.brokers);
     config.auth.apply(&mut cfg)?;
     Ok(cfg)
+}
+
+/// Auto-create the compacted commit-token side-topic if it does not exist.
+/// Idempotent: an "already exists" result is treated as success.
+pub(crate) async fn ensure_commit_topic(
+    config: &KafkaSinkConfig,
+    base: &ClientConfig,
+) -> Result<(), FaucetError> {
+    let admin: AdminClient<DefaultClientContext> = base
+        .create()
+        .map_err(|e| FaucetError::Sink(format!("kafka admin client init: {e}")))?;
+    let topic = NewTopic::new(
+        &config.commit_token_topic,
+        config.commit_token_topic_partitions,
+        TopicReplication::Fixed(config.commit_token_topic_replication),
+    )
+    .set("cleanup.policy", "compact");
+    let results = admin
+        .create_topics([&topic], &AdminOptions::new())
+        .await
+        .map_err(|e| FaucetError::Sink(format!("kafka create_topics request: {e}")))?;
+    for r in results {
+        match r {
+            Ok(_) => {}
+            Err((_t, RDKafkaErrorCode::TopicAlreadyExists)) => {}
+            Err((t, code)) => {
+                return Err(FaucetError::Sink(format!(
+                    "kafka create commit-token topic '{t}': {code:?}"
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Read the latest committed token for `scope` from the compacted side-topic.
+/// Returns `None` when the topic is empty or has no token for the scope.
+///
+/// Builds a short-lived, non-committing consumer, assigns every side-topic
+/// partition from the beginning, and drains up to each partition's high
+/// watermark. Called once per run (at startup), so a full read is cheap.
+pub(crate) async fn read_last_token(
+    config: &KafkaSinkConfig,
+    base: &ClientConfig,
+    scope: &str,
+) -> Result<Option<String>, FaucetError> {
+    let mut cfg = base.clone();
+    cfg.set("group.id", "faucet-commit-token-reader");
+    cfg.set("enable.auto.commit", "false");
+    cfg.set("auto.offset.reset", "earliest");
+    let topic = config.commit_token_topic.clone();
+    let scope = scope.to_string();
+    let timeout = config.message_timeout;
+
+    tokio::task::spawn_blocking(move || read_last_token_blocking(&cfg, &topic, &scope, timeout))
+        .await
+        .map_err(|e| FaucetError::Sink(format!("kafka token read task: {e}")))?
+}
+
+fn read_last_token_blocking(
+    cfg: &ClientConfig,
+    topic: &str,
+    scope: &str,
+    timeout: Duration,
+) -> Result<Option<String>, FaucetError> {
+    let consumer: BaseConsumer = cfg
+        .create()
+        .map_err(|e| FaucetError::Sink(format!("kafka token reader init: {e}")))?;
+
+    let metadata = consumer
+        .fetch_metadata(Some(topic), timeout)
+        .map_err(|e| FaucetError::Sink(format!("kafka token reader metadata: {e}")))?;
+    let topic_meta = match metadata.topics().iter().find(|t| t.name() == topic) {
+        Some(t) if !t.partitions().is_empty() => t,
+        _ => return Ok(None),
+    };
+
+    let mut tpl = TopicPartitionList::new();
+    // (partition_id, high_watermark)
+    let mut ends: Vec<(i32, i64)> = Vec::new();
+    for p in topic_meta.partitions() {
+        let (_low, high) = consumer
+            .fetch_watermarks(topic, p.id(), timeout)
+            .map_err(|e| FaucetError::Sink(format!("kafka token reader watermarks: {e}")))?;
+        ends.push((p.id(), high));
+        tpl.add_partition_offset(topic, p.id(), Offset::Beginning)
+            .map_err(|e| FaucetError::Sink(format!("kafka token reader tpl: {e}")))?;
+    }
+    if ends.iter().all(|(_, high)| *high == 0) {
+        return Ok(None); // every partition empty
+    }
+    consumer
+        .assign(&tpl)
+        .map_err(|e| FaucetError::Sink(format!("kafka token reader assign: {e}")))?;
+
+    let mut records: Vec<(Vec<u8>, Option<Vec<u8>>)> = Vec::new();
+    let mut consumed: HashMap<i32, i64> = HashMap::new();
+    loop {
+        let done = ends
+            .iter()
+            .all(|(pid, high)| *high == 0 || consumed.get(pid).copied().unwrap_or(0) >= *high);
+        if done {
+            break;
+        }
+        match consumer.poll(timeout) {
+            Some(Ok(msg)) => {
+                let key = msg.key().map(|k| k.to_vec()).unwrap_or_default();
+                let val = msg.payload().map(|v| v.to_vec());
+                *consumed.entry(msg.partition()).or_insert(0) += 1;
+                records.push((key, val));
+            }
+            Some(Err(e)) => {
+                return Err(FaucetError::Sink(format!("kafka token reader poll: {e}")));
+            }
+            None => break, // no message within the timeout — stop draining
+        }
+    }
+
+    Ok(max_token_for_scope(&records, scope).map(faucet_core::idempotency::format_token))
 }
 
 /// Derive the producer `transactional.id` from a stable pipeline scope.
