@@ -282,6 +282,41 @@ pub trait Sink: Send + Sync {
         &[crate::write_mode::WriteMode::Append]
     }
 
+    /// The sink's live destination schema as an `infer_schema`-shaped object
+    /// (`{"type":"object","properties":{ <col>: <type-fragment>, … }}`), or
+    /// `None` for a schemaless sink or a target that does not exist yet.
+    ///
+    /// Used by the schema-drift policy to diff each page's shape against the
+    /// real destination. Default: `Ok(None)` (drift handling is inert).
+    async fn current_schema(&self) -> Result<Option<Value>, FaucetError> {
+        Ok(None)
+    }
+
+    /// Whether this sink can apply additive/widening DDL via
+    /// [`evolve_schema`](Self::evolve_schema). Default: `false`. The CLI rejects
+    /// `on_drift: evolve` against a sink that returns `false` at config-load.
+    fn supports_schema_evolution(&self) -> bool {
+        false
+    }
+
+    /// Apply an additive schema evolution (new columns, lossless widenings,
+    /// nullability relaxations) to the destination. MUST be idempotent
+    /// (`ADD COLUMN IF NOT EXISTS` semantics) so concurrent runs converge.
+    ///
+    /// Default: a typed "unsupported" error. Override only when the backend
+    /// supports in-place additive DDL (and return `true` from
+    /// `supports_schema_evolution`).
+    async fn evolve_schema(
+        &self,
+        evolution: &crate::drift::SchemaEvolution,
+    ) -> Result<(), FaucetError> {
+        let _ = evolution;
+        Err(FaucetError::Sink(format!(
+            "sink '{}' does not support schema evolution",
+            self.connector_name()
+        )))
+    }
+
     /// Write `records` AND durably record `token` for `scope`, atomically.
     ///
     /// `scope` namespaces the watermark (the pipeline passes the per-row state
@@ -838,6 +873,27 @@ mod tests {
         use crate::write_mode::WriteMode;
         let sink: Box<dyn Sink> = Box::new(MockSink::new());
         assert!(sink.supported_write_modes().contains(&WriteMode::Append));
+    }
+
+    #[tokio::test]
+    async fn sink_default_current_schema_is_none() {
+        let sink = MockSink::new();
+        assert_eq!(sink.current_schema().await.unwrap(), None);
+    }
+
+    #[test]
+    fn sink_default_does_not_support_schema_evolution() {
+        let sink = MockSink::new();
+        assert!(!sink.supports_schema_evolution());
+    }
+
+    #[tokio::test]
+    async fn sink_default_evolve_schema_is_unsupported_error() {
+        let sink = MockSink::new();
+        let evo = crate::drift::SchemaEvolution::default();
+        let err = sink.evolve_schema(&evo).await.unwrap_err();
+        assert!(matches!(err, FaucetError::Sink(_)));
+        assert!(err.to_string().contains("schema evolution"));
     }
 
     #[tokio::test]
