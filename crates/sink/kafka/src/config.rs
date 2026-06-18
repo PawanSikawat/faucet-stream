@@ -169,6 +169,9 @@ fn default_queue_full_backoff() -> Duration {
 fn default_queue_full_max_retries() -> u32 {
     3
 }
+// Double leading underscore mirrors Kafka's own internal-topic convention
+// (__consumer_offsets / __transaction_state); intentionally distinct from the
+// SQL sinks' `_faucet_commit_token` table constant in faucet_core::idempotency.
 fn default_commit_token_topic() -> String {
     "__faucet_commit_token".to_string()
 }
@@ -239,6 +242,12 @@ impl KafkaSinkConfig {
         if self.commit_token_topic_partitions < 1 {
             return Err(FaucetError::Config(
                 "kafka sink: commit_token_topic_partitions must be at least 1".into(),
+            ));
+        }
+        if self.commit_token_topic_replication < 1 && self.commit_token_topic_replication != -1 {
+            return Err(FaucetError::Config(
+                "kafka sink: commit_token_topic_replication must be -1 (broker default) or at least 1"
+                    .into(),
             ));
         }
         faucet_core::validate_batch_size(self.batch_size)?;
@@ -442,6 +451,35 @@ mod tests {
         let mut c = minimal();
         c.commit_token_topic_partitions = 0;
         assert!(c.validate().is_err());
+    }
+
+    #[test]
+    fn commit_token_explicit_values_round_trip() {
+        let raw = r#"{
+            "brokers": "b:9092",
+            "topic": { "type": "fixed", "name": "out" },
+            "transactional_id_prefix": "acme",
+            "commit_token_topic": "wm",
+            "commit_token_topic_partitions": 3,
+            "commit_token_topic_replication": 2
+        }"#;
+        let c: KafkaSinkConfig = serde_json::from_str(raw).unwrap();
+        assert_eq!(c.transactional_id_prefix.as_deref(), Some("acme"));
+        assert_eq!(c.commit_token_topic, "wm");
+        assert_eq!(c.commit_token_topic_partitions, 3);
+        assert_eq!(c.commit_token_topic_replication, 2);
+        assert!(c.validate().is_ok());
+    }
+
+    #[test]
+    fn validate_rejects_invalid_commit_token_replication() {
+        let mut c = minimal();
+        c.commit_token_topic_replication = 0;
+        assert!(c.validate().is_err());
+        c.commit_token_topic_replication = -2;
+        assert!(c.validate().is_err());
+        c.commit_token_topic_replication = -1; // broker default — allowed
+        assert!(c.validate().is_ok());
     }
 
     #[test]
