@@ -32,6 +32,35 @@ pub(crate) fn client_config_base(config: &KafkaSinkConfig) -> Result<ClientConfi
     Ok(cfg)
 }
 
+/// Full producer `ClientConfig`: the connection base plus producer tuning
+/// (`acks`, idempotence, compression, linger, message timeout, buffer cap) and
+/// the user's `extra_client_config` overrides (applied last so they win). Used
+/// by both the at-least-once producer and the transactional producer; the
+/// latter then force-sets the transactional invariants on top.
+pub(crate) fn producer_client_config(
+    config: &KafkaSinkConfig,
+) -> Result<ClientConfig, FaucetError> {
+    let mut cfg = client_config_base(config)?;
+    cfg.set("acks", config.acks.as_str());
+    cfg.set(
+        "enable.idempotence",
+        if config.idempotent { "true" } else { "false" },
+    );
+    cfg.set("compression.type", config.compression.as_str());
+    cfg.set("linger.ms", config.linger.as_millis().to_string());
+    cfg.set(
+        "message.timeout.ms",
+        config.message_timeout.as_millis().to_string(),
+    );
+    if config.batch_size > 0 {
+        cfg.set("queue.buffering.max.messages", config.batch_size.to_string());
+    }
+    for (k, v) in &config.extra_client_config {
+        cfg.set(k, v);
+    }
+    Ok(cfg)
+}
+
 /// Auto-create the compacted commit-token side-topic if it does not exist.
 /// Idempotent: an "already exists" result is treated as success.
 pub(crate) async fn ensure_commit_topic(
