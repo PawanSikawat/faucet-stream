@@ -164,8 +164,7 @@ pub fn base_widened(from: &Value, to: &Value) -> bool {
         m
     };
     let dest_family = collapse(dn.clone());
-    let mut merged: Vec<String> = dn.into_iter().chain(pn).collect();
-    let merged = collapse(merged.drain(..).collect());
+    let merged = collapse(dn.into_iter().chain(pn).collect());
     merged != dest_family
 }
 

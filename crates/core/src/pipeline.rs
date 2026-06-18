@@ -727,7 +727,19 @@ where
                         q.append(&mut drift_envelopes);
                         q
                     };
-                    if let Some(e) = drift_abort {
+                    // A drift `fail` / incompatible-`fail` abort is *deferred* the
+                    // same way the DLQ-budget and circuit-breaker aborts are: when a
+                    // DLQ is configured this page may carry quality- or drift-
+                    // quarantine envelopes that must still reach the DLQ before the
+                    // run stops (dropping them on an early `return` would silently
+                    // lose those rows — #146 M4). So with a DLQ we thread the error
+                    // into the post-commit raise site below; with no DLQ there are
+                    // no envelopes to strand (a no-DLQ quarantine config is rejected
+                    // at run start), so we abort immediately and write nothing.
+                    let mut drift_abort = drift_abort;
+                    if dlq.is_none()
+                        && let Some(e) = drift_abort.take()
+                    {
                         return Err(e);
                     }
 
@@ -1132,6 +1144,13 @@ where
                         if let Some(e) = circuit_error {
                             return Err(e);
                         }
+                        // Deferred schema-drift `fail` abort: this page's survivors
+                        // are committed and its quality/drift quarantine envelopes
+                        // are now in the DLQ, so the run stops without stranding
+                        // them (mirrors the budget/circuit deferral above).
+                        if let Some(e) = drift_abort {
+                            return Err(e);
+                        }
                     } else if exactly_once {
                         // ── Exactly-once path ──────────────────────────────────
                         // A token is issued only for bookmark-carrying pages, so
@@ -1370,8 +1389,12 @@ fn maybe_warn_noop_sink(sink_name: &str, warned: &mut bool) {
 }
 
 /// Apply the schema-drift policy to a page (#194). Returns the (possibly
-/// trimmed) records and an optional deferred abort error (raised by the caller
-/// after envelopes are staged). Appends quarantine envelopes to `drift_envelopes`.
+/// trimmed) records and an optional deferred abort error. The caller raises the
+/// error after this page is durable: with a DLQ it is threaded into the same
+/// post-commit raise site as the budget/circuit aborts (so the page's
+/// quality/drift quarantine envelopes reach the DLQ first); with no DLQ — where
+/// no envelopes can exist — it is raised immediately and the page is not written.
+/// Appends drift quarantine envelopes to `drift_envelopes`.
 #[allow(clippy::too_many_arguments)]
 async fn apply_drift_policy<Si: Sink + ?Sized>(
     policy: &crate::drift::SchemaDriftPolicy,
@@ -4341,5 +4364,57 @@ mod tests {
         let pages = one_page(vec![json!({"id": 1})]);
         let err = run_stream(pages, &sink, drift_opts(policy)).await.unwrap_err();
         assert!(matches!(err, FaucetError::Config(_)));
+    }
+
+    /// Regression: a drift `fail` abort must NOT discard a co-resident
+    /// quality-quarantine envelope. With a DLQ present the abort is deferred
+    /// (like the budget/circuit aborts) so the quarantined row reaches the DLQ
+    /// before the run stops — dropping it on an early `return` would silently
+    /// lose data.
+    #[cfg(feature = "quality")]
+    #[tokio::test]
+    async fn drift_fail_with_dlq_still_routes_quality_quarantine() {
+        use crate::dlq::DlqConfig;
+        use crate::quality::{CompiledQuality, OnFailure, QualitySpec, RecordCheck};
+
+        // Destination knows only `id`; the page carries an unknown `email`
+        // column → drift, and one record fails the `name` NotNull check.
+        let sink = SchemaSink::new(
+            json!({"type":"object","properties":{"id":{"type":"integer"}}}),
+            false,
+        );
+        let dlq_sink = std::sync::Arc::new(MockSink::new());
+        let policy = crate::drift::SchemaDriftPolicy {
+            on_drift: crate::drift::OnDrift::Fail,
+            allow_widening: true,
+            on_incompatible: crate::drift::OnIncompatible::Fail,
+        };
+        let spec = QualitySpec {
+            record: vec![RecordCheck::NotNull {
+                field: "name".into(),
+                treat_missing_as_null: true,
+                on_failure: OnFailure::Quarantine,
+            }],
+            batch: vec![],
+        };
+        let quality = std::sync::Arc::new(CompiledQuality::compile(&spec).unwrap());
+        let pages = one_page(vec![
+            json!({"id": 1, "name": "ok", "email": "a@x"}), // survives quality, drifts
+            json!({"id": 2, "email": "b@x"}),               // quarantined (no name)
+        ]);
+        let opts = RunStreamOptions::new()
+            .with_schema_drift(policy)
+            .with_quality(quality)
+            .with_dlq(DlqConfig::new(dlq_sink.clone()));
+        let err = run_stream(pages, &sink, opts).await.unwrap_err();
+        // The run still aborts on drift.
+        assert!(matches!(err, FaucetError::SchemaDrift { .. }), "got {err:?}");
+        // …but the quality-quarantined row was written to the DLQ first, not lost.
+        let dlq = dlq_sink.written();
+        assert_eq!(dlq.len(), 1, "quarantined row must reach the DLQ before abort");
+        assert_eq!(dlq[0]["payload"], json!({"id": 2, "email": "b@x"}));
+        assert_eq!(dlq[0]["error"]["kind"], "QualityFailure");
+        // The surviving (drifting) row was committed to the main sink before the abort.
+        assert_eq!(sink.written(), vec![json!({"id": 1, "name": "ok", "email": "a@x"})]);
     }
 }
