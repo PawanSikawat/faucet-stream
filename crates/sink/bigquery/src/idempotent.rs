@@ -326,6 +326,93 @@ pub fn build_request_id(scope: &str, token: &str) -> String {
     format!("faucet_eo_{safe_scope}_{h:016x}_{token}")
 }
 
+// ---------------------------------------------------------------------------
+// Schema introspection + evolution (issue #194)
+// ---------------------------------------------------------------------------
+
+use serde_json::{Map, Value, json};
+
+/// JSON-Schema base type keyword for a [`BqType`], used by
+/// [`fieldspecs_to_json_schema`] when reporting the sink's live schema for
+/// drift detection. Types without a JSON-native scalar (`BYTES`, `TIMESTAMP`,
+/// `DATE`, …) map to `"string"` — the shape they take in a JSON page.
+fn bq_to_json_base(ty: &BqType) -> &'static str {
+    match ty {
+        BqType::Int64 => "integer",
+        BqType::Float64 | BqType::Numeric | BqType::BigNumeric => "number",
+        BqType::Bool => "boolean",
+        BqType::Struct => "object",
+        _ => "string",
+    }
+}
+
+/// Convert the target table's [`FieldSpec`]s into an `infer_schema`-shaped JSON
+/// Schema object (`{"type":"object","properties":{<col>: <fragment>, …}}`) so
+/// the drift policy can diff a page against the live destination.
+///
+/// Every column is reported as nullable (`{"type":[base,"null"]}`): a
+/// schema-only `tables.get` carries `mode` per field, but treating columns as
+/// nullable is the safe default for drift — it never spuriously flags a page
+/// that omits an optional column. A `REPEATED` field is reported as an
+/// `array`.
+pub fn fieldspecs_to_json_schema(fields: &[FieldSpec]) -> Value {
+    let mut props = Map::new();
+    for f in fields {
+        let fragment = if f.repeated {
+            json!({ "type": ["array", "null"] })
+        } else {
+            json!({ "type": [bq_to_json_base(&f.ty), "null"] })
+        };
+        props.insert(f.name.clone(), fragment);
+    }
+    json!({ "type": "object", "properties": Value::Object(props) })
+}
+
+/// Map a [`faucet_core::SqlBaseType`] (the type inferred for a drifted column)
+/// to the BigQuery type keyword used in `ADD COLUMN` / `SET DATA TYPE` DDL.
+///
+/// Integers map to `INT64` and floats to `FLOAT64`; the drift engine only ever
+/// widens integer→number, and BigQuery permits `INT64 → FLOAT64`.
+pub fn base_to_bq(t: faucet_core::SqlBaseType) -> &'static str {
+    use faucet_core::SqlBaseType::*;
+    match t {
+        Integer => "INT64",
+        Double => "FLOAT64",
+        Boolean => "BOOL",
+        Text => "STRING",
+        Json => "JSON",
+    }
+}
+
+/// `ALTER TABLE <ref> ADD COLUMN IF NOT EXISTS `<col>` <bq_type>` — idempotent
+/// column addition. `table_ref` is already backtick-quoted (`` `p.d.t` ``).
+pub fn build_add_column_ddl(table_ref: &str, col: &str, bq_type: &str) -> String {
+    format!(
+        "ALTER TABLE {table_ref} ADD COLUMN IF NOT EXISTS {} {bq_type}",
+        quote_ident(col)
+    )
+}
+
+/// `ALTER TABLE <ref> ALTER COLUMN `<col>` SET DATA TYPE <bq_type>` — widen an
+/// existing column's type. Naturally idempotent (re-running the same widening
+/// is a no-op). BigQuery permits a lossless relaxation here (INT64→FLOAT64,
+/// NUMERIC→BIGNUMERIC/FLOAT64).
+pub fn build_alter_type_ddl(table_ref: &str, col: &str, bq_type: &str) -> String {
+    format!(
+        "ALTER TABLE {table_ref} ALTER COLUMN {} SET DATA TYPE {bq_type}",
+        quote_ident(col)
+    )
+}
+
+/// `ALTER TABLE <ref> ALTER COLUMN `<col>` DROP NOT NULL` — relax a REQUIRED
+/// column to NULLABLE. Naturally idempotent.
+pub fn build_drop_not_null_ddl(table_ref: &str, col: &str) -> String {
+    format!(
+        "ALTER TABLE {table_ref} ALTER COLUMN {} DROP NOT NULL",
+        quote_ident(col)
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -561,5 +648,75 @@ mod tests {
         assert_eq!(sql_str("a'b"), "'a\\'b'");
         assert_eq!(sql_str("a\\b"), "'a\\\\b'");
         assert_eq!(sql_str("$.ok"), "'$.ok'");
+    }
+
+    // --- schema introspection + evolution (issue #194) ---
+
+    #[test]
+    fn fieldspec_to_json_schema_maps_types_and_nullability() {
+        let fields = vec![
+            scalar("id", BqType::Int64),
+            scalar("score", BqType::Float64),
+            scalar("amount", BqType::Numeric),
+            scalar("flag", BqType::Bool),
+            scalar("name", BqType::String),
+            scalar("ts", BqType::Timestamp),
+            repeated("tags", BqType::String),
+            record("addr", false, vec![scalar("city", BqType::String)]),
+        ];
+        let js = fieldspecs_to_json_schema(&fields);
+        assert_eq!(js["type"], "object");
+        let p = &js["properties"];
+        // Numeric collapses to JSON `number`; non-JSON-native types → `string`.
+        assert_eq!(p["id"]["type"], json!(["integer", "null"]));
+        assert_eq!(p["score"]["type"], json!(["number", "null"]));
+        assert_eq!(p["amount"]["type"], json!(["number", "null"]));
+        assert_eq!(p["flag"]["type"], json!(["boolean", "null"]));
+        assert_eq!(p["name"]["type"], json!(["string", "null"]));
+        assert_eq!(p["ts"]["type"], json!(["string", "null"]));
+        // A repeated field is an array regardless of its element type.
+        assert_eq!(p["tags"]["type"], json!(["array", "null"]));
+        // A non-repeated struct is an object.
+        assert_eq!(p["addr"]["type"], json!(["object", "null"]));
+    }
+
+    #[test]
+    fn fieldspec_to_json_schema_empty_fields() {
+        let js = fieldspecs_to_json_schema(&[]);
+        assert_eq!(js, json!({ "type": "object", "properties": {} }));
+    }
+
+    #[test]
+    fn json_schema_to_bq_type_per_base() {
+        use faucet_core::SqlBaseType::*;
+        assert_eq!(base_to_bq(Integer), "INT64");
+        assert_eq!(base_to_bq(Double), "FLOAT64");
+        assert_eq!(base_to_bq(Boolean), "BOOL");
+        assert_eq!(base_to_bq(Text), "STRING");
+        assert_eq!(base_to_bq(Json), "JSON");
+    }
+
+    #[test]
+    fn add_column_ddl_is_idempotent_and_quoted() {
+        assert_eq!(
+            build_add_column_ddl("`p.d.t`", "email", "STRING"),
+            "ALTER TABLE `p.d.t` ADD COLUMN IF NOT EXISTS `email` STRING"
+        );
+    }
+
+    #[test]
+    fn alter_type_ddl_sets_data_type() {
+        assert_eq!(
+            build_alter_type_ddl("`p.d.t`", "score", "FLOAT64"),
+            "ALTER TABLE `p.d.t` ALTER COLUMN `score` SET DATA TYPE FLOAT64"
+        );
+    }
+
+    #[test]
+    fn drop_not_null_ddl() {
+        assert_eq!(
+            build_drop_not_null_ddl("`p.d.t`", "created_at"),
+            "ALTER TABLE `p.d.t` ALTER COLUMN `created_at` DROP NOT NULL"
+        );
     }
 }

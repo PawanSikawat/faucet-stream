@@ -367,6 +367,16 @@ pub fn sink_supports_idempotent_writes(kind: &str) -> bool {
     )
 }
 
+/// Sink kinds that can apply additive/widening DDL via `Sink::evolve_schema`.
+/// Mirrors each sink's `supports_schema_evolution()` override. Iceberg is
+/// intentionally excluded — iceberg-rust 0.9.1 exposes no schema-evolution API (#255).
+pub fn sink_supports_schema_evolution(kind: &str) -> bool {
+    matches!(
+        kind,
+        "postgres" | "mysql" | "mssql" | "sqlite" | "bigquery" | "elasticsearch"
+    )
+}
+
 /// Write modes each sink kind supports. Kept in sync with each sink's
 /// `Sink::supported_write_modes()` override.
 pub fn sink_supported_write_modes(kind: &str) -> &'static [faucet_core::WriteMode] {
@@ -1011,5 +1021,18 @@ mod tests {
         // a sink without upsert support is append-only
         assert_eq!(sink_supported_write_modes("jsonl"), &[WriteMode::Append]);
         assert_eq!(sink_supported_write_modes("kafka"), &[WriteMode::Append]);
+    }
+
+    #[test]
+    fn sink_supports_schema_evolution_allowlist() {
+        assert!(sink_supports_schema_evolution("postgres"));
+        assert!(sink_supports_schema_evolution("mysql"));
+        assert!(sink_supports_schema_evolution("mssql"));
+        assert!(sink_supports_schema_evolution("sqlite"));
+        assert!(sink_supports_schema_evolution("bigquery"));
+        assert!(sink_supports_schema_evolution("elasticsearch"));
+        assert!(!sink_supports_schema_evolution("iceberg"));
+        assert!(!sink_supports_schema_evolution("jsonl"));
+        assert!(!sink_supports_schema_evolution("kafka"));
     }
 }

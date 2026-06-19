@@ -3,7 +3,9 @@
 use crate::config::{ElasticsearchAuth, ElasticsearchSinkConfig};
 use async_trait::async_trait;
 use faucet_core::util::{DEFAULT_ERROR_BODY_MAX_LEN, check_http_response};
-use faucet_core::{AuthSpec, FaucetError, SharedAuthProvider};
+use faucet_core::{
+    AuthSpec, FaucetError, SchemaEvolution, SharedAuthProvider, SqlBaseType, json_schema_base_type,
+};
 use reqwest::Client;
 use serde_json::Value;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -31,6 +33,10 @@ pub struct ElasticsearchSink {
     /// One-shot guard so the resume-duplication warning (see [`resume_dup_risk`])
     /// is logged at most once per sink instance, not per page.
     resume_dup_warned: AtomicBool,
+    /// One-shot guard for the "cannot change an existing field's mapping" debug
+    /// log emitted by [`evolve_schema`](faucet_core::Sink::evolve_schema) when an
+    /// evolution carries widenings / nullability relaxations (no-ops on ES).
+    evolve_noop_warned: AtomicBool,
 }
 
 impl ElasticsearchSink {
@@ -48,6 +54,7 @@ impl ElasticsearchSink {
             client: Client::new(),
             auth_provider: None,
             resume_dup_warned: AtomicBool::new(false),
+            evolve_noop_warned: AtomicBool::new(false),
         })
     }
 
@@ -266,6 +273,33 @@ fn doc_id_from_row(row: &Value, key: &[String]) -> String {
         .join(":")
 }
 
+/// Map an Elasticsearch field-mapping `type` to a JSON-Schema base type name.
+///
+/// Numeric families collapse to `integer`/`number`, `boolean` is its own base,
+/// `object`/`nested` are `object`, and everything else (`keyword`, `text`,
+/// `date`, `ip`, …) is treated as `string`.
+fn es_type_to_json(es_type: &str) -> &'static str {
+    match es_type {
+        "long" | "integer" | "short" | "byte" => "integer",
+        "double" | "float" | "half_float" | "scaled_float" => "number",
+        "boolean" => "boolean",
+        "object" | "nested" => "object",
+        _ => "string",
+    }
+}
+
+/// Map a backend-neutral [`SqlBaseType`] to the Elasticsearch field-mapping
+/// `type` used when adding a column via `PUT /<index>/_mapping`.
+fn base_to_es(base: SqlBaseType) -> &'static str {
+    match base {
+        SqlBaseType::Integer => "long",
+        SqlBaseType::Double => "double",
+        SqlBaseType::Boolean => "boolean",
+        SqlBaseType::Text => "keyword",
+        SqlBaseType::Json => "object",
+    }
+}
+
 /// Extract per-item error messages from a `_bulk` response body.
 ///
 /// Each `items` entry is `{ "<action>": { ..., "error": {...} } }` where
@@ -315,6 +349,115 @@ impl faucet_core::Sink for ElasticsearchSink {
             faucet_core::WriteMode::Upsert,
             faucet_core::WriteMode::Delete,
         ]
+    }
+
+    /// Elasticsearch can add new fields to an existing index in place via
+    /// `PUT /<index>/_mapping`, so additive schema evolution is supported.
+    /// (Changing an existing field's mapping type is *not* possible — see
+    /// [`evolve_schema`](faucet_core::Sink::evolve_schema).)
+    fn supports_schema_evolution(&self) -> bool {
+        true
+    }
+
+    /// Read the index's live field mappings via `GET /<index>/_mapping`.
+    ///
+    /// Returns an `infer_schema`-shaped object schema with every field marked
+    /// nullable (Elasticsearch has no NOT NULL concept). A `404` (index does not
+    /// exist) yields `Ok(None)`; an index that exists with no explicit
+    /// `properties` yields an empty `{"type":"object","properties":{}}`.
+    async fn current_schema(&self) -> Result<Option<Value>, FaucetError> {
+        let auth = self.resolve_auth().await?;
+        let url = format!("{}/{}/_mapping", self.config.base_url, self.config.index);
+        let req = Self::apply_auth_value(self.client.get(&url), &auth);
+        let resp = req.send().await?;
+
+        // A missing index is reported as drift-inert (Ok(None)), not an error.
+        // Detect the 404 *before* check_http_response, which treats it as an error.
+        if resp.status().as_u16() == 404 {
+            return Ok(None);
+        }
+        let resp = check_http_response(resp, DEFAULT_ERROR_BODY_MAX_LEN).await?;
+        let body: Value = resp.json().await?;
+
+        // Shape: { "<index>": { "mappings": { "properties": { "<f>": {"type": …} } } } }.
+        // The top-level key is the concrete index name (exactly one entry).
+        let index_obj = body
+            .get(&self.config.index)
+            .or_else(|| body.as_object().and_then(|m| m.values().next()));
+        let mappings = index_obj.and_then(|v| v.get("mappings"));
+        let properties = mappings
+            .and_then(|m| m.get("properties"))
+            .and_then(|p| p.as_object());
+
+        let mut out_props = serde_json::Map::new();
+        if let Some(properties) = properties {
+            for (field, def) in properties {
+                let es_type = def.get("type").and_then(|t| t.as_str()).unwrap_or("object");
+                let base = es_type_to_json(es_type);
+                // ES has no NOT NULL → every field is nullable.
+                out_props.insert(field.clone(), serde_json::json!({ "type": [base, "null"] }));
+            }
+        }
+
+        Ok(Some(serde_json::json!({
+            "type": "object",
+            "properties": out_props,
+        })))
+    }
+
+    /// Apply an additive schema evolution to the index via
+    /// `PUT /<index>/_mapping`.
+    ///
+    /// Only [`additions`](faucet_core::SchemaEvolution::additions) are applied —
+    /// Elasticsearch cannot change an existing field's mapping type or
+    /// nullability in place, so
+    /// [`widenings`](faucet_core::SchemaEvolution::widenings) and
+    /// [`relax_nullability`](faucet_core::SchemaEvolution::relax_nullability) are
+    /// no-ops (a one-shot `debug` log notes the limitation). A `PUT` is only
+    /// issued when there is at least one addition.
+    async fn evolve_schema(&self, evolution: &SchemaEvolution) -> Result<(), FaucetError> {
+        if (!evolution.widenings.is_empty() || !evolution.relax_nullability.is_empty())
+            && !self.evolve_noop_warned.swap(true, Ordering::Relaxed)
+        {
+            tracing::debug!(
+                index = %self.config.index,
+                "elasticsearch cannot change an existing field's mapping type / nullability; \
+                 left as-is"
+            );
+        }
+
+        if evolution.additions.is_empty() {
+            return Ok(());
+        }
+
+        let mut properties = serde_json::Map::new();
+        for change in &evolution.additions {
+            let base = json_schema_base_type(&change.to).unwrap_or(SqlBaseType::Text);
+            properties.insert(
+                change.name.clone(),
+                serde_json::json!({ "type": base_to_es(base) }),
+            );
+        }
+        let body = serde_json::json!({ "properties": properties });
+
+        let auth = self.resolve_auth().await?;
+        let url = format!("{}/{}/_mapping", self.config.base_url, self.config.index);
+        let req = self
+            .client
+            .put(&url)
+            .header("Content-Type", "application/json")
+            .body(serde_json::to_string(&body).map_err(|e| {
+                FaucetError::Sink(format!("failed to serialize mapping update: {e}"))
+            })?);
+        let req = Self::apply_auth_value(req, &auth);
+        let resp = req.send().await?;
+        check_http_response(resp, DEFAULT_ERROR_BODY_MAX_LEN).await?;
+        tracing::debug!(
+            index = %self.config.index,
+            added = evolution.additions.len(),
+            "Elasticsearch mapping evolved (fields added)"
+        );
+        Ok(())
     }
 
     /// Non-mutating preflight probe.
@@ -720,6 +863,38 @@ mod tests {
         // Third record: no id field, so no _id in action.
         let action2: Value = serde_json::from_str(lines[4]).unwrap();
         assert!(action2["index"].get("_id").is_none());
+    }
+
+    #[test]
+    fn es_mapping_to_json_schema_types() {
+        // Numeric families collapse to integer / number.
+        assert_eq!(es_type_to_json("long"), "integer");
+        assert_eq!(es_type_to_json("integer"), "integer");
+        assert_eq!(es_type_to_json("short"), "integer");
+        assert_eq!(es_type_to_json("byte"), "integer");
+        assert_eq!(es_type_to_json("double"), "number");
+        assert_eq!(es_type_to_json("float"), "number");
+        assert_eq!(es_type_to_json("half_float"), "number");
+        assert_eq!(es_type_to_json("scaled_float"), "number");
+        // Boolean + object families.
+        assert_eq!(es_type_to_json("boolean"), "boolean");
+        assert_eq!(es_type_to_json("object"), "object");
+        assert_eq!(es_type_to_json("nested"), "object");
+        // Everything else → string.
+        assert_eq!(es_type_to_json("keyword"), "string");
+        assert_eq!(es_type_to_json("text"), "string");
+        assert_eq!(es_type_to_json("date"), "string");
+        assert_eq!(es_type_to_json("ip"), "string");
+        assert_eq!(es_type_to_json("geo_point"), "string");
+    }
+
+    #[test]
+    fn base_to_es_types() {
+        assert_eq!(base_to_es(SqlBaseType::Integer), "long");
+        assert_eq!(base_to_es(SqlBaseType::Double), "double");
+        assert_eq!(base_to_es(SqlBaseType::Boolean), "boolean");
+        assert_eq!(base_to_es(SqlBaseType::Text), "keyword");
+        assert_eq!(base_to_es(SqlBaseType::Json), "object");
     }
 
     #[test]

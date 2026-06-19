@@ -215,6 +215,7 @@ pub(crate) fn error_kind(e: &FaucetError) -> &'static str {
         FaucetError::Source(_) => "Source",
         FaucetError::Sink(_) => "Sink",
         FaucetError::QualityFailure { .. } => "QualityFailure",
+        FaucetError::SchemaDrift { .. } => "SchemaDrift",
         FaucetError::State(_) => "State",
         FaucetError::CircuitOpen { .. } => "CircuitOpen",
         FaucetError::Custom(_) => "Custom",
@@ -422,6 +423,51 @@ impl<'a, S: Sink + ?Sized> Sink for InstrumentedSink<'a, S> {
                 Err(FaucetError::Custom(format!("panic in flush: {msg}").into()))
             }
         }
+    }
+
+    // ── Non-instrumented passthroughs ────────────────────────────────────────
+    // These carry no per-call metric/span of their own, but they MUST delegate
+    // to the inner sink — the `Sink` trait gives each a default that disables
+    // the corresponding feature (schema-drift, upsert, exactly-once). Because
+    // the pipeline drives the *wrapped* sink, failing to forward them silently
+    // makes those features inert through the entire CLI/observability path.
+
+    async fn current_schema(&self) -> Result<Option<Value>, FaucetError> {
+        self.inner.current_schema().await
+    }
+
+    fn supports_schema_evolution(&self) -> bool {
+        self.inner.supports_schema_evolution()
+    }
+
+    async fn evolve_schema(
+        &self,
+        evolution: &crate::drift::SchemaEvolution,
+    ) -> Result<(), FaucetError> {
+        self.inner.evolve_schema(evolution).await
+    }
+
+    fn supported_write_modes(&self) -> &'static [crate::write_mode::WriteMode] {
+        self.inner.supported_write_modes()
+    }
+
+    fn supports_idempotent_writes(&self) -> bool {
+        self.inner.supports_idempotent_writes()
+    }
+
+    async fn write_batch_idempotent(
+        &self,
+        records: &[Value],
+        scope: &str,
+        token: &str,
+    ) -> Result<usize, FaucetError> {
+        self.inner
+            .write_batch_idempotent(records, scope, token)
+            .await
+    }
+
+    async fn last_committed_token(&self, scope: &str) -> Result<Option<String>, FaucetError> {
+        self.inner.last_committed_token(scope).await
     }
 }
 
@@ -809,6 +855,78 @@ mod sink_tests {
             Sink::connector_name(&wrapped),
             "unknown",
             "instrumented sink must not leak an empty connector name"
+        );
+    }
+
+    /// Regression (#194): the pipeline drives the *wrapped* sink, so
+    /// `InstrumentedSink` MUST forward the capability methods to the inner sink.
+    /// Before this was fixed, the trait defaults (`current_schema -> None`,
+    /// `supports_schema_evolution -> false`, `supports_idempotent_writes ->
+    /// false`) silently disabled schema-drift, evolution, and exactly-once
+    /// detection through the entire observability/CLI path even when the real
+    /// sink supported them.
+    struct CapableSink;
+    #[async_trait]
+    impl Sink for CapableSink {
+        async fn write_batch(&self, records: &[Value]) -> Result<usize, FaucetError> {
+            Ok(records.len())
+        }
+        fn connector_name(&self) -> &'static str {
+            "capable-sink"
+        }
+        async fn current_schema(&self) -> Result<Option<Value>, FaucetError> {
+            Ok(Some(
+                json!({"type": "object", "properties": {"id": {"type": "integer"}}}),
+            ))
+        }
+        fn supports_schema_evolution(&self) -> bool {
+            true
+        }
+        fn supports_idempotent_writes(&self) -> bool {
+            true
+        }
+        fn supported_write_modes(&self) -> &'static [crate::write_mode::WriteMode] {
+            &[
+                crate::write_mode::WriteMode::Append,
+                crate::write_mode::WriteMode::Upsert,
+            ]
+        }
+        async fn last_committed_token(&self, _scope: &str) -> Result<Option<String>, FaucetError> {
+            Ok(Some("tok-1".into()))
+        }
+    }
+
+    #[tokio::test]
+    async fn instrumented_sink_forwards_capability_methods_to_inner() {
+        let inner = CapableSink;
+        let wrapped = InstrumentedSink::new(&inner, labels());
+
+        // Schema-drift (#194): the wrapper must surface the inner schema, not the
+        // `None` default — otherwise drift detection is inert through the pipeline.
+        assert_eq!(
+            wrapped.current_schema().await.unwrap(),
+            Some(json!({"type": "object", "properties": {"id": {"type": "integer"}}})),
+            "current_schema must delegate to the inner sink"
+        );
+        assert!(
+            wrapped.supports_schema_evolution(),
+            "supports_schema_evolution must delegate"
+        );
+        // Pre-existing capabilities the wrapper must also forward.
+        assert!(
+            wrapped.supports_idempotent_writes(),
+            "supports_idempotent_writes must delegate (exactly-once)"
+        );
+        assert!(
+            wrapped
+                .supported_write_modes()
+                .contains(&crate::write_mode::WriteMode::Upsert),
+            "supported_write_modes must delegate"
+        );
+        assert_eq!(
+            wrapped.last_committed_token("scope").await.unwrap(),
+            Some("tok-1".to_string()),
+            "last_committed_token must delegate"
         );
     }
 

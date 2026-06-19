@@ -135,6 +135,7 @@ pub struct Pipeline<'a, So: Source + ?Sized, Si: Sink + ?Sized> {
     cancel: Option<tokio_util::sync::CancellationToken>,
     delivery: crate::idempotency::DeliveryMode,
     resilience: Option<crate::resilience::ResiliencePolicy>,
+    schema_drift: Option<crate::drift::SchemaDriftPolicy>,
 }
 
 impl<'a, So: Source + ?Sized, Si: Sink + ?Sized> Pipeline<'a, So, Si> {
@@ -154,6 +155,7 @@ impl<'a, So: Source + ?Sized, Si: Sink + ?Sized> Pipeline<'a, So, Si> {
             cancel: None,
             delivery: crate::idempotency::DeliveryMode::AtLeastOnce,
             resilience: None,
+            schema_drift: None,
         }
     }
 
@@ -240,6 +242,13 @@ impl<'a, So: Source + ?Sized, Si: Sink + ?Sized> Pipeline<'a, So, Si> {
     /// Attach a resilience policy (retry/backoff/circuit-breaker/poison-pill).
     pub fn with_resilience(mut self, policy: crate::resilience::ResiliencePolicy) -> Self {
         self.resilience = Some(policy);
+        self
+    }
+
+    /// Attach a schema-drift policy. The drift pass runs after the quality pass
+    /// and before the sink write, per page.
+    pub fn with_schema_drift(mut self, policy: crate::drift::SchemaDriftPolicy) -> Self {
+        self.schema_drift = Some(policy);
         self
     }
 
@@ -384,6 +393,9 @@ impl<'a, So: Source + ?Sized, Si: Sink + ?Sized> Pipeline<'a, So, Si> {
             if let Some(policy) = self.resilience.clone() {
                 opts = opts.with_resilience(policy);
             }
+            if let Some(p) = self.schema_drift {
+                opts = opts.with_schema_drift(p);
+            }
             opts = opts.with_delivery(self.delivery).with_start_seq(start_seq);
 
             run_stream(pages, &wrapped_sink, opts).await
@@ -458,6 +470,24 @@ where
             "quality: on_failure 'quarantine'/'quarantine_batch' requires a DLQ sink".into(),
         ));
     }
+
+    // ── Schema-drift policy + lazy destination-schema cache (#194) ───────────
+    let schema_drift = options.schema_drift;
+    // Fail fast: quarantine drift requires a DLQ (mirrors the quality guard).
+    if let Some(p) = schema_drift.as_ref()
+        && p.requires_dlq()
+        && dlq.is_none()
+    {
+        return Err(FaucetError::Config(
+            "schema: on_drift 'quarantine' (or on_incompatible 'quarantine') requires a DLQ sink"
+                .into(),
+        ));
+    }
+    // Destination schema cache: fetched lazily once, refreshed after evolve.
+    // The inner `None` means "fetched, sink is schemaless"; the outer `None`
+    // tracks "not yet fetched".
+    let mut dest_schema_cache: Option<Option<Value>> = None;
+    let mut warned_drift_inert = false;
 
     if let Some(key) = state_key.as_ref() {
         validate_state_key(key)?;
@@ -635,6 +665,83 @@ where
                     #[cfg(not(feature = "quality"))]
                     let (records, quality_envelopes): (Vec<Value>, Vec<Value>) =
                         (page.records, Vec::new());
+
+                    // ── Schema-drift pass (after quality, before sink) ───────
+                    let mut drift_envelopes: Vec<Value> = Vec::new();
+                    let (records, drift_abort): (Vec<Value>, Option<FaucetError>) =
+                        if let Some(policy) = schema_drift.as_ref().filter(|_| !records.is_empty()) {
+                            // Lazily fetch + cache the destination schema.
+                            if dest_schema_cache.is_none() {
+                                dest_schema_cache = Some(sink.current_schema().await?);
+                            }
+                            let dest = dest_schema_cache.as_ref().and_then(|o| o.as_ref());
+                            match dest {
+                                None => {
+                                    if !warned_drift_inert {
+                                        tracing::info!(
+                                            connector = sink_name,
+                                            "schema-drift: sink reports no destination schema; \
+                                             drift handling is inert this run"
+                                        );
+                                        warned_drift_inert = true;
+                                    }
+                                    (records, None)
+                                }
+                                Some(dest) => {
+                                    let inferred = crate::schema::infer_schema(&records);
+                                    let diff = crate::drift::diff_schema(
+                                        dest,
+                                        &inferred,
+                                        policy.allow_widening,
+                                    );
+                                    if diff.is_empty() {
+                                        (records, None)
+                                    } else {
+                                        // The cache may be replaced inside the evolve
+                                        // arm; `dest` borrows it, so re-clone before the
+                                        // call to drop the borrow.
+                                        let dest_owned = dest.clone();
+                                        apply_drift_policy(
+                                            policy,
+                                            &diff,
+                                            &dest_owned,
+                                            records,
+                                            sink,
+                                            sink_name,
+                                            &pipeline_name,
+                                            &row,
+                                            &mut dest_schema_cache,
+                                            &mut drift_envelopes,
+                                        )
+                                        .await?
+                                    }
+                                }
+                            }
+                        } else {
+                            (records, None)
+                        };
+                    // Merge drift quarantine envelopes into the quality envelopes
+                    // so the existing DLQ path writes them together.
+                    let quality_envelopes = {
+                        let mut q = quality_envelopes;
+                        q.append(&mut drift_envelopes);
+                        q
+                    };
+                    // A drift `fail` / incompatible-`fail` abort is *deferred* the
+                    // same way the DLQ-budget and circuit-breaker aborts are: when a
+                    // DLQ is configured this page may carry quality- or drift-
+                    // quarantine envelopes that must still reach the DLQ before the
+                    // run stops (dropping them on an early `return` would silently
+                    // lose those rows — #146 M4). So with a DLQ we thread the error
+                    // into the post-commit raise site below; with no DLQ there are
+                    // no envelopes to strand (a no-DLQ quarantine config is rejected
+                    // at run start), so we abort immediately and write nothing.
+                    let mut drift_abort = drift_abort;
+                    if dlq.is_none()
+                        && let Some(e) = drift_abort.take()
+                    {
+                        return Err(e);
+                    }
 
                     let page = StreamPage {
                         records,
@@ -1037,6 +1144,13 @@ where
                         if let Some(e) = circuit_error {
                             return Err(e);
                         }
+                        // Deferred schema-drift `fail` abort: this page's survivors
+                        // are committed and its quality/drift quarantine envelopes
+                        // are now in the DLQ, so the run stops without stranding
+                        // them (mirrors the budget/circuit deferral above).
+                        if let Some(e) = drift_abort {
+                            return Err(e);
+                        }
                     } else if exactly_once {
                         // ── Exactly-once path ──────────────────────────────────
                         // A token is issued only for bookmark-carrying pages, so
@@ -1272,6 +1386,227 @@ fn maybe_warn_noop_sink(sink_name: &str, warned: &mut bool) {
         );
         *warned = true;
     }
+}
+
+/// Apply the schema-drift policy to a page (#194). Returns the (possibly
+/// trimmed) records and an optional deferred abort error. The caller raises the
+/// error after this page is durable: with a DLQ it is threaded into the same
+/// post-commit raise site as the budget/circuit aborts (so the page's
+/// quality/drift quarantine envelopes reach the DLQ first); with no DLQ — where
+/// no envelopes can exist — it is raised immediately and the page is not written.
+/// Appends drift quarantine envelopes to `drift_envelopes`.
+#[allow(clippy::too_many_arguments)]
+async fn apply_drift_policy<Si: Sink + ?Sized>(
+    policy: &crate::drift::SchemaDriftPolicy,
+    diff: &crate::drift::SchemaDiff,
+    dest: &Value,
+    records: Vec<Value>,
+    sink: &Si,
+    sink_name: &str,
+    pipeline_name: &str,
+    row: &str,
+    dest_schema_cache: &mut Option<Option<Value>>,
+    drift_envelopes: &mut Vec<Value>,
+) -> Result<(Vec<Value>, Option<FaucetError>), FaucetError> {
+    use crate::drift::{OnDrift, OnIncompatible};
+    use crate::observability::schema_drift as emit_drift;
+
+    let mode = match policy.on_drift {
+        OnDrift::Warn => "warn",
+        OnDrift::Ignore => "ignore",
+        OnDrift::Quarantine => "quarantine",
+        OnDrift::Fail => "fail",
+        OnDrift::Evolve => "evolve",
+    };
+    emit_drift(
+        pipeline_name,
+        row,
+        sink_name,
+        mode,
+        "added",
+        diff.additions.len() as u64,
+    );
+    emit_drift(
+        pipeline_name,
+        row,
+        sink_name,
+        mode,
+        "widened",
+        diff.widenings.len() as u64,
+    );
+    emit_drift(
+        pipeline_name,
+        row,
+        sink_name,
+        mode,
+        "narrowed",
+        diff.incompatible.len() as u64,
+    );
+    emit_drift(
+        pipeline_name,
+        row,
+        sink_name,
+        mode,
+        "dropped",
+        diff.droppable_required.len() as u64,
+    );
+
+    match policy.on_drift {
+        OnDrift::Warn => {
+            tracing::warn!(
+                connector = sink_name,
+                columns = ?diff.changed_columns(),
+                "schema-drift detected (on_drift=warn); writing page unchanged"
+            );
+            Ok((records, None))
+        }
+        OnDrift::Fail => Ok((
+            records,
+            Some(FaucetError::SchemaDrift {
+                columns: diff.changed_columns(),
+                message: "schema drift detected (on_drift=fail)".to_string(),
+            }),
+        )),
+        OnDrift::Ignore => {
+            // Drop fields not present in the destination schema.
+            let allowed: std::collections::HashSet<String> = dest
+                .get("properties")
+                .and_then(|p| p.as_object())
+                .map(|m| m.keys().cloned().collect())
+                .unwrap_or_default();
+            let trimmed = records
+                .into_iter()
+                .map(|r| match r {
+                    Value::Object(map) => Value::Object(
+                        map.into_iter()
+                            .filter(|(k, _)| allowed.contains(k))
+                            .collect(),
+                    ),
+                    other => other,
+                })
+                .collect();
+            Ok((trimmed, None))
+        }
+        OnDrift::Quarantine => {
+            let (kept, env) = quarantine_drift_rows(diff, records, sink_name, pipeline_name, row);
+            drift_envelopes.extend(env);
+            Ok((kept, None))
+        }
+        OnDrift::Evolve => {
+            let evolution = crate::drift::SchemaEvolution {
+                additions: diff.additions.clone(),
+                widenings: diff
+                    .widenings
+                    .iter()
+                    .filter(|c| {
+                        c.from
+                            .as_ref()
+                            .map(|f| crate::drift::base_widened(f, &c.to))
+                            .unwrap_or(false)
+                    })
+                    .cloned()
+                    .collect(),
+                relax_nullability: diff
+                    .droppable_required
+                    .iter()
+                    .cloned()
+                    .chain(
+                        diff.widenings
+                            .iter()
+                            .filter(|c| {
+                                c.from
+                                    .as_ref()
+                                    .map(|f| crate::drift::adds_null(f, &c.to))
+                                    .unwrap_or(false)
+                            })
+                            .map(|c| c.name.clone()),
+                    )
+                    .collect(),
+            };
+            if !evolution.is_empty() {
+                sink.evolve_schema(&evolution).await?;
+                // Refresh the cached destination schema so later pages diff
+                // against the evolved shape (re-introspect authoritatively).
+                *dest_schema_cache = Some(sink.current_schema().await?);
+            }
+            // Handle the incompatible residue.
+            if diff.incompatible.is_empty() {
+                Ok((records, None))
+            } else {
+                match policy.on_incompatible {
+                    OnIncompatible::Fail => Ok((
+                        records,
+                        Some(FaucetError::SchemaDrift {
+                            columns: diff.incompatible.iter().map(|c| c.name.clone()).collect(),
+                            message: "incompatible type change cannot be auto-evolved \
+                                      (on_incompatible=fail)"
+                                .into(),
+                        }),
+                    )),
+                    OnIncompatible::Quarantine => {
+                        // Build a diff carrying only the incompatible columns.
+                        let incompat_only = crate::drift::SchemaDiff {
+                            incompatible: diff.incompatible.clone(),
+                            ..Default::default()
+                        };
+                        let (kept, env) = quarantine_drift_rows(
+                            &incompat_only,
+                            records,
+                            sink_name,
+                            pipeline_name,
+                            row,
+                        );
+                        drift_envelopes.extend(env);
+                        Ok((kept, None))
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Partition records: those exhibiting any drift column (an addition present in
+/// the record, or an incompatible column whose value type diverges) go to the
+/// DLQ; the rest are kept. Returns `(kept, envelopes)`.
+fn quarantine_drift_rows(
+    diff: &crate::drift::SchemaDiff,
+    records: Vec<Value>,
+    sink_name: &str,
+    pipeline_name: &str,
+    row: &str,
+) -> (Vec<Value>, Vec<Value>) {
+    use crate::dlq::build_envelope;
+    let drift_cols: std::collections::HashSet<&str> = diff
+        .additions
+        .iter()
+        .chain(&diff.incompatible)
+        .map(|c| c.name.as_str())
+        .collect();
+    let mut kept = Vec::new();
+    let mut envelopes = Vec::new();
+    for (idx, rec) in records.into_iter().enumerate() {
+        let exhibits = rec
+            .as_object()
+            .map(|m| m.keys().any(|k| drift_cols.contains(k.as_str())))
+            .unwrap_or(false);
+        if exhibits {
+            let err = FaucetError::SchemaDrift {
+                columns: diff.changed_columns(),
+                message: "row exhibits schema drift (on_drift=quarantine)".into(),
+            };
+            envelopes.push(build_envelope(
+                &rec,
+                &err,
+                sink_name,
+                pipeline_name,
+                row,
+                idx,
+            ));
+        } else {
+            kept.push(rec);
+        }
+    }
+    (kept, envelopes)
 }
 
 #[cfg(test)]
@@ -3869,6 +4204,264 @@ mod tests {
         assert_eq!(
             retries, 2,
             "expected 2 retries (2 transient 503s) counted with op=sink_write, class=http_5xx"
+        );
+    }
+
+    // ── Schema-drift pass (#194) ─────────────────────────────────────────────
+
+    /// Sink that reports a fixed `current_schema` and records evolve calls.
+    struct SchemaSink {
+        schema: Value,
+        written: std::sync::Mutex<Vec<Value>>,
+        evolutions: std::sync::Mutex<Vec<crate::drift::SchemaEvolution>>,
+        evolvable: bool,
+    }
+    impl SchemaSink {
+        fn new(schema: Value, evolvable: bool) -> Self {
+            Self {
+                schema,
+                written: std::sync::Mutex::new(Vec::new()),
+                evolutions: std::sync::Mutex::new(Vec::new()),
+                evolvable,
+            }
+        }
+        fn written(&self) -> Vec<Value> {
+            self.written.lock().unwrap().clone()
+        }
+    }
+    #[async_trait]
+    impl Sink for SchemaSink {
+        async fn write_batch(&self, records: &[Value]) -> Result<usize, FaucetError> {
+            self.written.lock().unwrap().extend(records.iter().cloned());
+            Ok(records.len())
+        }
+        async fn current_schema(&self) -> Result<Option<Value>, FaucetError> {
+            Ok(Some(self.schema.clone()))
+        }
+        fn supports_schema_evolution(&self) -> bool {
+            self.evolvable
+        }
+        async fn evolve_schema(
+            &self,
+            evo: &crate::drift::SchemaEvolution,
+        ) -> Result<(), FaucetError> {
+            if !self.evolvable {
+                return Err(FaucetError::Sink("not evolvable".into()));
+            }
+            self.evolutions.lock().unwrap().push(evo.clone());
+            Ok(())
+        }
+    }
+
+    fn drift_opts(policy: crate::drift::SchemaDriftPolicy) -> RunStreamOptions {
+        RunStreamOptions::new().with_schema_drift(policy)
+    }
+
+    fn one_page(
+        records: Vec<Value>,
+    ) -> impl futures_core::Stream<Item = Result<StreamPage, FaucetError>> + Unpin {
+        Box::pin(futures::stream::iter(vec![Ok(StreamPage {
+            records,
+            bookmark: None,
+        })]))
+    }
+
+    #[tokio::test]
+    async fn drift_warn_writes_unchanged() {
+        let sink = SchemaSink::new(
+            json!({"type":"object","properties":{"id":{"type":"integer"}}}),
+            false,
+        );
+        let policy = crate::drift::SchemaDriftPolicy {
+            on_drift: crate::drift::OnDrift::Warn,
+            allow_widening: true,
+            on_incompatible: crate::drift::OnIncompatible::Fail,
+        };
+        let pages = one_page(vec![json!({"id": 1, "email": "a@x.com"})]);
+        let res = run_stream(pages, &sink, drift_opts(policy)).await.unwrap();
+        assert_eq!(res.records_written, 1);
+        // Unknown field is NOT stripped under warn.
+        assert_eq!(sink.written()[0], json!({"id": 1, "email": "a@x.com"}));
+    }
+
+    #[tokio::test]
+    async fn drift_ignore_strips_unknown_fields() {
+        let sink = SchemaSink::new(
+            json!({"type":"object","properties":{"id":{"type":"integer"}}}),
+            false,
+        );
+        let policy = crate::drift::SchemaDriftPolicy {
+            on_drift: crate::drift::OnDrift::Ignore,
+            allow_widening: true,
+            on_incompatible: crate::drift::OnIncompatible::Fail,
+        };
+        let pages = one_page(vec![json!({"id": 1, "email": "a@x.com"})]);
+        let res = run_stream(pages, &sink, drift_opts(policy)).await.unwrap();
+        assert_eq!(res.records_written, 1);
+        assert_eq!(
+            sink.written()[0],
+            json!({"id": 1}),
+            "email must be stripped"
+        );
+    }
+
+    #[tokio::test]
+    async fn drift_fail_raises_schema_drift() {
+        let sink = SchemaSink::new(
+            json!({"type":"object","properties":{"id":{"type":"integer"}}}),
+            false,
+        );
+        let policy = crate::drift::SchemaDriftPolicy {
+            on_drift: crate::drift::OnDrift::Fail,
+            allow_widening: true,
+            on_incompatible: crate::drift::OnIncompatible::Fail,
+        };
+        let pages = one_page(vec![json!({"id": 1, "email": "a@x.com"})]);
+        let err = run_stream(pages, &sink, drift_opts(policy))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, FaucetError::SchemaDrift { .. }));
+    }
+
+    #[tokio::test]
+    async fn drift_evolve_calls_sink_then_writes() {
+        let sink = SchemaSink::new(
+            json!({"type":"object","properties":{"id":{"type":"integer"}}}),
+            true,
+        );
+        let policy = crate::drift::SchemaDriftPolicy {
+            on_drift: crate::drift::OnDrift::Evolve,
+            allow_widening: true,
+            on_incompatible: crate::drift::OnIncompatible::Fail,
+        };
+        let pages = one_page(vec![json!({"id": 1, "email": "a@x.com"})]);
+        let res = run_stream(pages, &sink, drift_opts(policy)).await.unwrap();
+        assert_eq!(res.records_written, 1);
+        let evos = sink.evolutions.lock().unwrap();
+        assert_eq!(evos.len(), 1);
+        assert_eq!(evos[0].additions.len(), 1);
+        assert_eq!(evos[0].additions[0].name, "email");
+        // Page is written through (with the unknown field — destination now has it).
+        assert_eq!(sink.written()[0], json!({"id": 1, "email": "a@x.com"}));
+    }
+
+    #[tokio::test]
+    async fn drift_inert_when_sink_reports_no_schema() {
+        // MockSink::current_schema defaults to None → pass is inert.
+        let sink = MockSink::new();
+        let policy = crate::drift::SchemaDriftPolicy {
+            on_drift: crate::drift::OnDrift::Fail, // would fail IF a schema were known
+            allow_widening: true,
+            on_incompatible: crate::drift::OnIncompatible::Fail,
+        };
+        let pages = one_page(vec![json!({"id": 1, "anything": true})]);
+        let res = run_stream(pages, &sink, drift_opts(policy)).await.unwrap();
+        assert_eq!(res.records_written, 1);
+    }
+
+    #[tokio::test]
+    async fn drift_quarantine_routes_drift_rows_to_dlq() {
+        let sink = SchemaSink::new(
+            json!({"type":"object","properties":{"id":{"type":"integer"}}}),
+            false,
+        );
+        let dlq_sink = std::sync::Arc::new(MockSink::new());
+        let policy = crate::drift::SchemaDriftPolicy {
+            on_drift: crate::drift::OnDrift::Quarantine,
+            allow_widening: true,
+            on_incompatible: crate::drift::OnIncompatible::Fail,
+        };
+        let pages = one_page(vec![
+            json!({"id": 1}),               // conforms → written
+            json!({"id": 2, "email": "x"}), // drift → DLQ
+        ]);
+        let opts = RunStreamOptions::new()
+            .with_schema_drift(policy)
+            .with_dlq(crate::dlq::DlqConfig::new(dlq_sink.clone()));
+        let res = run_stream(pages, &sink, opts).await.unwrap();
+        assert_eq!(res.records_written, 1, "only the conforming row is written");
+        assert_eq!(sink.written(), vec![json!({"id": 1})]);
+        // The drifting row is enveloped in the DLQ.
+        let dlq = dlq_sink.written();
+        assert_eq!(dlq.len(), 1);
+        assert_eq!(dlq[0]["payload"], json!({"id": 2, "email": "x"}));
+        assert_eq!(dlq[0]["error"]["kind"], "SchemaDrift");
+    }
+
+    #[tokio::test]
+    async fn drift_quarantine_without_dlq_is_rejected() {
+        let sink = SchemaSink::new(json!({"type":"object","properties":{}}), false);
+        let policy = crate::drift::SchemaDriftPolicy {
+            on_drift: crate::drift::OnDrift::Quarantine,
+            allow_widening: true,
+            on_incompatible: crate::drift::OnIncompatible::Fail,
+        };
+        let pages = one_page(vec![json!({"id": 1})]);
+        let err = run_stream(pages, &sink, drift_opts(policy))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, FaucetError::Config(_)));
+    }
+
+    /// Regression: a drift `fail` abort must NOT discard a co-resident
+    /// quality-quarantine envelope. With a DLQ present the abort is deferred
+    /// (like the budget/circuit aborts) so the quarantined row reaches the DLQ
+    /// before the run stops — dropping it on an early `return` would silently
+    /// lose data.
+    #[cfg(feature = "quality")]
+    #[tokio::test]
+    async fn drift_fail_with_dlq_still_routes_quality_quarantine() {
+        use crate::dlq::DlqConfig;
+        use crate::quality::{CompiledQuality, OnFailure, QualitySpec, RecordCheck};
+
+        // Destination knows only `id`; the page carries an unknown `email`
+        // column → drift, and one record fails the `name` NotNull check.
+        let sink = SchemaSink::new(
+            json!({"type":"object","properties":{"id":{"type":"integer"}}}),
+            false,
+        );
+        let dlq_sink = std::sync::Arc::new(MockSink::new());
+        let policy = crate::drift::SchemaDriftPolicy {
+            on_drift: crate::drift::OnDrift::Fail,
+            allow_widening: true,
+            on_incompatible: crate::drift::OnIncompatible::Fail,
+        };
+        let spec = QualitySpec {
+            record: vec![RecordCheck::NotNull {
+                field: "name".into(),
+                treat_missing_as_null: true,
+                on_failure: OnFailure::Quarantine,
+            }],
+            batch: vec![],
+        };
+        let quality = std::sync::Arc::new(CompiledQuality::compile(&spec).unwrap());
+        let pages = one_page(vec![
+            json!({"id": 1, "name": "ok", "email": "a@x"}), // survives quality, drifts
+            json!({"id": 2, "email": "b@x"}),               // quarantined (no name)
+        ]);
+        let opts = RunStreamOptions::new()
+            .with_schema_drift(policy)
+            .with_quality(quality)
+            .with_dlq(DlqConfig::new(dlq_sink.clone()));
+        let err = run_stream(pages, &sink, opts).await.unwrap_err();
+        // The run still aborts on drift.
+        assert!(
+            matches!(err, FaucetError::SchemaDrift { .. }),
+            "got {err:?}"
+        );
+        // …but the quality-quarantined row was written to the DLQ first, not lost.
+        let dlq = dlq_sink.written();
+        assert_eq!(
+            dlq.len(),
+            1,
+            "quarantined row must reach the DLQ before abort"
+        );
+        assert_eq!(dlq[0]["payload"], json!({"id": 2, "email": "b@x"}));
+        assert_eq!(dlq[0]["error"]["kind"], "QualityFailure");
+        // The surviving (drifting) row was committed to the main sink before the abort.
+        assert_eq!(
+            sink.written(),
+            vec![json!({"id": 1, "name": "ok", "email": "a@x"})]
         );
     }
 }

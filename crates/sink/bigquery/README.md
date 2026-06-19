@@ -261,6 +261,18 @@ delivery: exactly_once
 
 See the [Exactly-once delivery cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/state.html#exactly-once-delivery) for full rationale and the supported source/sink set.
 
+## Schema evolution
+
+`BigQuerySink` reports its live destination schema via `current_schema()` (a schema-only `tables.get`; a missing table → `None`, so every page column reads as new), so the pipeline-level `schema:` policy can detect drift between an incoming page's top-level shape and the real table. All five `on_drift` modes (`warn` / `ignore` / `quarantine` / `fail` / `evolve`) work against this sink.
+
+Under `on_drift: evolve`, `BigQuerySink::evolve_schema()` applies `ALTER TABLE` DDL, each statement run as its own `jobs.query` job and verified to completion:
+
+- **New columns** → `ADD COLUMN IF NOT EXISTS <col> <type>` (idempotent).
+- **Lossless widenings** (e.g. integer → number) → `ALTER COLUMN <col> SET DATA TYPE <type>` — gated on `allow_type_widening`.
+- **Nullability relaxations** → `ALTER COLUMN <col> DROP NOT NULL`.
+
+The cached schema is invalidated afterwards so the next page (and the next exactly-once / upsert page) reads the evolved table. Incompatible changes (narrowing / type swaps) are never auto-applied — they are routed by `on_incompatible` (`fail` or `quarantine`). See the [schema-drift cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/schema-drift.html).
+
 ## Dead-letter queue
 
 This sink overrides `Sink::write_batch_partial` to surface per-row failures from BigQuery `tabledata.insertAll`'s `insertErrors` response. Configure a DLQ at the pipeline level (see [cli/README.md — `dlq:`](../../../cli/README.md)) and only the rows BigQuery actually rejected are routed there — already-committed rows stay in the main sink with no duplicates. (DLQ is not permitted in exactly-once mode.)

@@ -217,6 +217,17 @@ In `append` mode, when `id_field` is set the sink extracts the document `_id` fr
 
 Setting `id_field` to a stable business key makes resumed/retried runs **idempotent overwrites** rather than duplicates — the recommended setting for resumable append pipelines (or configure a DLQ, whose per-row path avoids the whole-page re-send).
 
+## Schema evolution
+
+`ElasticsearchSink` reports its live index mappings via `current_schema()` (`GET /<index>/_mapping`, every field marked nullable since ES has no NOT NULL concept; a missing index → `None`), so the pipeline-level `schema:` policy can detect drift between an incoming page's top-level shape and the real index. All five `on_drift` modes (`warn` / `ignore` / `quarantine` / `fail` / `evolve`) work against this sink.
+
+Under `on_drift: evolve`, `ElasticsearchSink::evolve_schema()` is **add-fields only**:
+
+- **New fields** → `PUT /<index>/_mapping` adding the field mappings.
+- **Type widenings and nullability relaxations are no-ops** — Elasticsearch cannot change an existing field's mapping type or nullability in place (a one-shot `debug` log notes this).
+
+Because ES cannot retype an existing field, any change to an existing field's type is classified as **incompatible** and routed by `on_incompatible` (`fail` or `quarantine`) rather than applied. See the [schema-drift cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/schema-drift.html).
+
 ## Dead-letter queue
 
 This sink overrides `Sink::write_batch_partial` to surface per-row failures from Elasticsearch's `_bulk` response items. Configure a DLQ at the pipeline level (see [cli/README.md — `dlq:`](https://github.com/PawanSikawat/faucet-stream/blob/main/cli/README.md)) and only the documents Elasticsearch actually rejected are routed there — already-indexed items stay in the main sink with no duplicates. This is why the bulk API's best-effort, partial-success behaviour doesn't double-write rows into the DLQ.

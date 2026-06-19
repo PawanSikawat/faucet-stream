@@ -42,6 +42,8 @@ pub struct ExpandedNode {
     /// matrix-row override in v1, so this is `cfg.pipeline.quality` verbatim.
     #[cfg(feature = "quality")]
     pub quality: Option<faucet_core::QualitySpec>,
+    /// Compiled schema-drift policy spec (pipeline-level; same for every node).
+    pub schema: Option<faucet_core::SchemaDriftSpec>,
     /// Delivery guarantee for this row. Resolved from the row's override or
     /// falls back to the top-level `cfg.delivery`.
     pub delivery: faucet_core::DeliveryMode,
@@ -510,6 +512,36 @@ pub fn expand(cfg: &PipelineConfig) -> CliResult<Vec<ExpandedNode>> {
             }
         }
 
+        // Schema-drift policy gates (load-time):
+        //  - `evolve` requires an evolution-capable sink.
+        //  - `quarantine` (drift or incompatible) requires a DLQ, and is
+        //    incompatible with exactly-once (which forbids a DLQ).
+        if let Some(ref sd) = cfg.pipeline.schema {
+            let policy = faucet_core::SchemaDriftPolicy::compile(sd);
+            if policy.on_drift == faucet_core::OnDrift::Evolve
+                && !crate::registry::sink_supports_schema_evolution(&merged_sink.kind)
+            {
+                return Err(CliError::Config(format!(
+                    "row '{}': schema.on_drift: evolve is not supported by sink '{}' \
+                     (evolvable sinks: postgres, mysql, mssql, sqlite, bigquery, elasticsearch)",
+                    ids[i], merged_sink.kind
+                )));
+            }
+            if policy.requires_dlq() && dlq.is_none() {
+                return Err(CliError::Config(format!(
+                    "row '{}': schema.on_drift/on_incompatible 'quarantine' requires a `dlq:` block",
+                    ids[i]
+                )));
+            }
+            if policy.requires_dlq() && delivery == faucet_core::DeliveryMode::ExactlyOnce {
+                return Err(CliError::Config(format!(
+                    "row '{}': schema quarantine is incompatible with delivery: exactly_once \
+                     (exactly_once forbids a DLQ)",
+                    ids[i]
+                )));
+            }
+        }
+
         out.push(ExpandedNode {
             id: ids[i].clone(),
             row_index: i,
@@ -522,6 +554,7 @@ pub fn expand(cfg: &PipelineConfig) -> CliResult<Vec<ExpandedNode>> {
             delivery,
             #[cfg(feature = "quality")]
             quality,
+            schema: cfg.pipeline.schema.clone(),
             deferred_refs: deferred,
         });
     }
@@ -1811,5 +1844,69 @@ resilience:
 "#);
         let nodes = expand(&c).expect("poison.action=drop needs no dlq");
         assert_eq!(nodes.len(), 1);
+    }
+
+    // --- schema-drift composition gate tests ---
+
+    #[test]
+    fn evolve_on_non_evolvable_sink_rejected() {
+        // jsonl is not evolution-capable; on_drift: evolve must fail.
+        let c = cfg(r#"
+version: 1
+pipeline:
+  source: { type: rest, config: { base_url: https://x } }
+  sink:   { type: jsonl, config: { path: ./o.jsonl } }
+  schema:
+    on_drift: evolve
+"#);
+        let err = expand(&c).unwrap_err();
+        match &err {
+            CliError::Config(msg) => {
+                assert!(
+                    msg.contains("evolve"),
+                    "expected evolve mention, got: {msg}"
+                );
+                assert!(msg.contains("jsonl"), "expected sink kind, got: {msg}");
+            }
+            other => panic!("expected Config error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn quarantine_drift_without_dlq_rejected() {
+        // on_drift: quarantine requires a dlq: block.
+        let c = cfg(r#"
+version: 1
+pipeline:
+  source: { type: rest, config: { base_url: https://x } }
+  sink:   { type: postgres, config: {} }
+  schema:
+    on_drift: quarantine
+"#);
+        let err = expand(&c).unwrap_err();
+        match &err {
+            CliError::Config(msg) => {
+                assert!(
+                    msg.contains("quarantine"),
+                    "expected quarantine mention, got: {msg}"
+                );
+                assert!(msg.contains("dlq") || msg.contains("DLQ"), "got: {msg}");
+            }
+            other => panic!("expected Config error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn evolve_on_postgres_passes() {
+        // postgres is evolution-capable; on_drift: evolve must expand.
+        let c = cfg(r#"
+version: 1
+pipeline:
+  source: { type: rest, config: { base_url: https://x } }
+  sink:   { type: postgres, config: {} }
+  schema:
+    on_drift: evolve
+"#);
+        assert!(expand(&c).is_ok());
     }
 }

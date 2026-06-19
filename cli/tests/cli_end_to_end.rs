@@ -392,6 +392,217 @@ fn run_executes_csv_to_jsonl_pipeline() {
     assert!(lines[0].contains("\"alice\""));
 }
 
+/// A `schema:` drift block must not break a normal run when the sink reports
+/// no `current_schema` (jsonl is schemaless): the drift pass is inert. This
+/// proves the executor wiring (`with_schema_drift`) compiles and is harmless
+/// against a schemaless sink — same output as the plain csv→jsonl run.
+#[test]
+fn run_with_schema_drift_warn_against_schemaless_sink_is_inert() {
+    let dir = TempDir::new().unwrap();
+    let csv = dir.path().join("in.csv");
+    let out = dir.path().join("out.jsonl");
+    fs::write(&csv, "name,score\nalice,1\nbob,2\n").unwrap();
+
+    let yaml = format!(
+        r#"version: 1
+name: csv_to_jsonl_drift
+pipeline:
+  source:
+    type: csv
+    config:
+      path: {csv}
+  sink:
+    type: jsonl
+    config:
+      path: {out}
+  schema:
+    on_drift: warn
+"#,
+        csv = csv.display(),
+        out = out.display(),
+    );
+    let cfg = dir.path().join("pipeline.yaml");
+    fs::write(&cfg, yaml).unwrap();
+
+    Command::cargo_bin("faucet")
+        .unwrap()
+        .args(["run"])
+        .arg(&cfg)
+        .assert()
+        .success()
+        .stdout(contains("wrote 2 records"))
+        .stdout(contains("1 invocation"));
+
+    // Output is unchanged: the drift policy is present but harmless.
+    let lines: Vec<_> = fs::read_to_string(&out)
+        .unwrap()
+        .lines()
+        .map(str::to_owned)
+        .collect();
+    assert_eq!(lines.len(), 2);
+    assert!(lines[0].contains("\"alice\""));
+}
+
+/// Create a SQLite database file with `table_sql` using the system `sqlite3`
+/// CLI. Used to pre-seed a destination table whose shape is a strict subset of
+/// the incoming page so the drift pass has something to detect. Returns whether
+/// the `sqlite3` binary was available (tests skip themselves if not).
+fn sqlite_exec(db: &Path, sql: &str) -> bool {
+    match std::process::Command::new("sqlite3")
+        .arg(db)
+        .arg(sql)
+        .output()
+    {
+        Ok(out) => {
+            assert!(
+                out.status.success(),
+                "sqlite3 failed: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            true
+        }
+        // `sqlite3` not installed on this host — caller skips the test.
+        Err(_) => false,
+    }
+}
+
+/// Read the output of a `sqlite3 <db> <query>` invocation as trimmed stdout.
+fn sqlite_query(db: &Path, sql: &str) -> String {
+    let out = std::process::Command::new("sqlite3")
+        .arg(db)
+        .arg(sql)
+        .output()
+        .expect("sqlite3 query");
+    assert!(
+        out.status.success(),
+        "sqlite3 query failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8_lossy(&out.stdout).trim().to_string()
+}
+
+/// End-to-end proof that the schema-drift policy actually *fires* through a
+/// schema-reporting sink — the real regression guard for the executor seam
+/// (`with_schema_drift`). Unlike the schemaless-jsonl test above (which is inert
+/// because jsonl reports no `current_schema`), this drives csv → **sqlite** with
+/// the destination table pre-created as a strict subset (`id` only) of the
+/// incoming rows (which also carry `name`). With `pipeline.schema.on_drift:
+/// fail` the run MUST abort.
+///
+/// This exercises the whole chain: config parses the `schema:` block →
+/// `expand` carries it onto the node → `executor` attaches the policy via
+/// `pipeline.with_schema_drift(...)` → `run_stream` runs the per-page drift pass
+/// → the sqlite `current_schema` PRAGMA returns `{id}` → `diff_schema` finds the
+/// `name` addition → the `fail` policy raises `FaucetError::SchemaDrift` →
+/// the run exits non-zero. If the wiring were broken (policy never attached),
+/// the drift pass would not run and the page would write successfully — so a
+/// SUCCESS here would catch a regression in the seam.
+#[test]
+fn run_schema_drift_fail_fires_through_a_schema_reporting_sink() {
+    let dir = TempDir::new().unwrap();
+    let csv = dir.path().join("in.csv");
+    let db = dir.path().join("dest.db");
+    // Rows carry both `id` and `name`; the destination table will have only `id`.
+    fs::write(&csv, "id,name\n1,alice\n2,bob\n").unwrap();
+
+    // Pre-create the destination table as a STRICT SUBSET of the source rows.
+    if !sqlite_exec(&db, "CREATE TABLE t (id INTEGER);") {
+        eprintln!("skipping: sqlite3 CLI not available");
+        return;
+    }
+
+    let yaml = format!(
+        r#"version: 1
+name: csv_to_sqlite_drift_fail
+pipeline:
+  source:
+    type: csv
+    config:
+      path: {csv}
+  sink:
+    type: sqlite
+    config:
+      database_url: sqlite:{db}
+      table_name: t
+      column_mapping: auto_map
+  schema:
+    on_drift: fail
+"#,
+        csv = csv.display(),
+        db = db.display(),
+    );
+    let cfg = dir.path().join("pipeline.yaml");
+    fs::write(&cfg, yaml).unwrap();
+
+    Command::cargo_bin("faucet")
+        .unwrap()
+        .args(["run"])
+        .arg(&cfg)
+        .assert()
+        .failure()
+        // The aborting FaucetError reaches stderr via the executor's
+        // `tracing::error!(error = %err, ...)`; it names the drifted column.
+        .stderr(contains("Schema drift"))
+        .stderr(contains("name"));
+
+    // The page never committed: the table is still empty.
+    assert_eq!(sqlite_query(&db, "SELECT count(*) FROM t;"), "0");
+}
+
+/// Positive counterpart: same csv → sqlite setup with the destination table a
+/// strict subset (`id` only), but `pipeline.schema.on_drift: ignore`. The run
+/// must SUCCEED and the unknown `name` column is stripped before the write, so
+/// the destination ends up with the two `id` values and nothing else. This
+/// proves the policy fires and takes the `ignore` branch (drop-unknown-fields),
+/// the complement of the `fail` test above.
+#[test]
+fn run_schema_drift_ignore_strips_unknown_columns_through_sqlite() {
+    let dir = TempDir::new().unwrap();
+    let csv = dir.path().join("in.csv");
+    let db = dir.path().join("dest.db");
+    fs::write(&csv, "id,name\n1,alice\n2,bob\n").unwrap();
+
+    if !sqlite_exec(&db, "CREATE TABLE t (id INTEGER);") {
+        eprintln!("skipping: sqlite3 CLI not available");
+        return;
+    }
+
+    let yaml = format!(
+        r#"version: 1
+name: csv_to_sqlite_drift_ignore
+pipeline:
+  source:
+    type: csv
+    config:
+      path: {csv}
+  sink:
+    type: sqlite
+    config:
+      database_url: sqlite:{db}
+      table_name: t
+      column_mapping: auto_map
+  schema:
+    on_drift: ignore
+"#,
+        csv = csv.display(),
+        db = db.display(),
+    );
+    let cfg = dir.path().join("pipeline.yaml");
+    fs::write(&cfg, yaml).unwrap();
+
+    Command::cargo_bin("faucet")
+        .unwrap()
+        .args(["run"])
+        .arg(&cfg)
+        .assert()
+        .success()
+        .stdout(contains("wrote 2 records"));
+
+    // Both rows landed with only the in-schema `id` column; `name` was stripped.
+    assert_eq!(sqlite_query(&db, "SELECT count(*) FROM t;"), "2");
+    assert_eq!(sqlite_query(&db, "SELECT id FROM t ORDER BY id;"), "1\n2");
+}
+
 #[test]
 fn run_with_dry_run_does_not_touch_the_sink_path() {
     let dir = TempDir::new().unwrap();

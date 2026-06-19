@@ -48,7 +48,8 @@ use tokio::sync::Mutex;
 use crate::catalog::build_catalog;
 use crate::config::{IcebergSinkConfig, PartitionField};
 use crate::schema::{
-    arrow_to_iceberg_schema, iceberg_to_arrow_schema, infer_arrow_schema, json_to_record_batch,
+    arrow_to_iceberg_schema, arrow_to_json_schema, iceberg_to_arrow_schema, infer_arrow_schema,
+    json_to_record_batch,
 };
 use crate::writer::{TableWriter, compression_from_str};
 
@@ -502,6 +503,32 @@ impl faucet_core::Sink for IcebergSink {
         // Append only — equality-delete upsert is version-gated on iceberg-rust
         // (tracked as a follow-up to #190 / #179).
         &[faucet_core::WriteMode::Append]
+    }
+
+    /// Report the live table schema as an `infer_schema`-shaped JSON object so
+    /// the schema-drift policy (issue #194) can diff each page against the real
+    /// destination.
+    ///
+    /// Loads the table read-only via the catalog; a not-yet-created table (or
+    /// any "table absent" case) returns `Ok(None)` so drift handling stays inert
+    /// until the table exists — only a genuine catalog communication failure
+    /// surfaces as `Err`. On success the table's `current_schema()` is converted
+    /// to Arrow (via `iceberg_to_arrow_schema`) and then to the JSON shape.
+    ///
+    /// Schema *evolution* is intentionally NOT implemented for this sink:
+    /// `supports_schema_evolution` stays `false` (trait default) and
+    /// `evolve_schema` keeps the trait's typed "unsupported" error. iceberg-rust
+    /// 0.9.1 (pinned in this crate) exposes no schema-evolution transaction API
+    /// (no `UpdateSchema` / `add_column` / type-promotion — only `fast_append`),
+    /// so evolution is blocked upstream. Tracked in issue #255; the CLI rejects
+    /// `on_drift: evolve` against iceberg at config-load.
+    async fn current_schema(&self) -> Result<Option<Value>, FaucetError> {
+        let table = match self.load_table_readonly().await? {
+            Some(t) => t,
+            None => return Ok(None),
+        };
+        let arrow_schema = iceberg_to_arrow_schema(table.metadata().current_schema())?;
+        Ok(Some(arrow_to_json_schema(&arrow_schema)))
     }
 
     fn supports_idempotent_writes(&self) -> bool {

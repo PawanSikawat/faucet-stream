@@ -21,6 +21,7 @@
 - [Authentication](./cookbook/auth.md)
 - [Incremental replication & state](./cookbook/state.md)
 - [Upsert / mirror tables](./cookbook/upsert.md)
+- [Schema drift](./cookbook/schema-drift.md)
 - [Replication (snapshot → CDC)](./cookbook/replication.md)
 - [Dead-letter queues](./cookbook/dlq.md)
 - [Resilience (retry / circuit breaker / poison-pill)](./cookbook/resilience.md)

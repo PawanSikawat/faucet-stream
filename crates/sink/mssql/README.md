@@ -251,6 +251,18 @@ delivery: exactly_once
 
 See the [exactly-once delivery cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/state.html#exactly-once-delivery) for the full rationale and supported source/sink set.
 
+## Schema evolution
+
+`MssqlSink` reports its live destination schema via `current_schema()` (read from `sys.columns`, including nullability), so the pipeline-level `schema:` policy can detect drift between an incoming page's top-level shape and the real table. All five `on_drift` modes (`warn` / `ignore` / `quarantine` / `fail` / `evolve`) work against this sink.
+
+Under `on_drift: evolve`, `MssqlSink::evolve_schema()` applies additive DDL:
+
+- **New columns** → `ALTER TABLE … ADD`, guarded with `IF NOT EXISTS (SELECT 1 FROM sys.columns …)` (idempotent).
+- **Lossless widenings** (e.g. integer → number) → `ALTER COLUMN` to the wider type — gated on `allow_type_widening`.
+- **Nullability relaxations** → `ALTER COLUMN … NULL`. MSSQL's `ALTER COLUMN` requires the full type spec, so the column is re-emitted at its widened base type keyword (e.g. `INT` → `BIGINT`). This is a minor, always-lossless type canonicalization — the column ends up nullable at the same or a wider type.
+
+After an evolution the cached AutoColumns set is dropped so the next write re-discovers any newly-added column. Incompatible changes (narrowing / type swaps) are never auto-applied — they are routed by `on_incompatible` (`fail` or `quarantine`). See the [schema-drift cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/schema-drift.html).
+
 ## Config loading & schema
 
 Load from YAML/JSON or environment. Inspect the full JSON Schema with:

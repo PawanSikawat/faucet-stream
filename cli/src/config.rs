@@ -141,6 +141,10 @@ pub struct PipelineSpec {
     #[cfg(feature = "quality")]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub quality: Option<faucet_core::QualitySpec>,
+
+    /// Schema-drift handling policy (pipeline-level; no matrix-row override in v1).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schema: Option<faucet_core::SchemaDriftSpec>,
 }
 
 /// A `{ type, config }` block, the universal shape for both sources and sinks.
@@ -745,6 +749,29 @@ replication:
         let cfg = parse_with_extension(yaml, "yaml").unwrap();
         let r = cfg.replication.expect("replication parsed");
         assert_eq!(r.snapshot.source.kind, "postgres");
+    }
+
+    #[test]
+    fn pipeline_spec_parses_schema_block() {
+        let yaml = r#"
+version: 1
+pipeline:
+  source:
+    type: rest
+    config:
+      base_url: https://api.example.com
+  sink:
+    type: jsonl
+    config:
+      path: ./out.jsonl
+  schema:
+    on_drift: evolve
+    allow_type_widening: false
+"#;
+        let cfg = parse_with_extension(yaml, "yaml").unwrap();
+        let schema = cfg.pipeline.schema.expect("schema block parsed");
+        assert_eq!(schema.on_drift, faucet_core::OnDrift::Evolve);
+        assert!(!schema.allow_type_widening);
     }
 
     #[test]

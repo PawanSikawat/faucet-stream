@@ -103,6 +103,9 @@ pub enum DlqReason {
     DlqAll,
     /// A record was quarantined (or batch-quarantined) by a data-quality check.
     Quality,
+    /// A record was routed to the DLQ by an `on_drift`/`on_incompatible`
+    /// quarantine policy.
+    SchemaDrift,
 }
 
 impl DlqReason {
@@ -113,6 +116,7 @@ impl DlqReason {
             DlqReason::Partial => "partial",
             DlqReason::DlqAll => "dlq_all",
             DlqReason::Quality => "quality",
+            DlqReason::SchemaDrift => "schema_drift",
         }
     }
 }
@@ -223,5 +227,10 @@ mod tests {
     #[test]
     fn dlq_reason_quality_string() {
         assert_eq!(DlqReason::Quality.as_str(), "quality");
+    }
+
+    #[test]
+    fn dlq_reason_schema_drift_string() {
+        assert_eq!(DlqReason::SchemaDrift.as_str(), "schema_drift");
     }
 }

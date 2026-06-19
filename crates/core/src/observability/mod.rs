@@ -5,6 +5,7 @@
 
 mod bookmark;
 pub(crate) mod decorator;
+mod drift;
 mod install;
 mod labels;
 mod options;
@@ -18,6 +19,7 @@ mod transform;
 
 pub use bookmark::update_bookmark_lag;
 pub use decorator::{InstrumentedSink, InstrumentedSource};
+pub use drift::schema_drift;
 pub use install::{
     InstallError, InstallReport, ObservabilityConfig, PrometheusConfig, TracingConfig,
     install_observability, register_build_info,

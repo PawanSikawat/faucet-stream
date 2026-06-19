@@ -879,6 +879,12 @@ async fn run_one_invocation(
     } else {
         pipeline
     };
+    // Schema-drift policy (pipeline-level in v1; same for every invocation).
+    let pipeline = if let Some(ref sd) = node.schema {
+        pipeline.with_schema_drift(faucet_core::SchemaDriftPolicy::compile(sd))
+    } else {
+        pipeline
+    };
     // Execution-level adaptive batch-size controller (shared by all rows).
     let pipeline = if let Some(ab) = opts
         .execution
@@ -1303,6 +1309,7 @@ mod tests {
                 dlq: None,
                 #[cfg(feature = "quality")]
                 quality: None,
+                schema: None,
             },
             matrix: Vec::new(),
             execution: None,
@@ -1912,6 +1919,7 @@ matrix:
                 delivery: faucet_core::DeliveryMode::AtLeastOnce,
                 #[cfg(feature = "quality")]
                 quality: None,
+                schema: None,
                 deferred_refs: refs
                     .iter()
                     .map(|(rid, p)| DeferredRef {
@@ -1974,6 +1982,7 @@ matrix:
             delivery: faucet_core::DeliveryMode::AtLeastOnce,
             #[cfg(feature = "quality")]
             quality: None,
+            schema: None,
             deferred_refs: vec![DeferredRef {
                 referenced_id: "p".into(),
                 dotted_path: "".into(),
@@ -2218,6 +2227,7 @@ matrix:
             delivery: faucet_core::DeliveryMode::AtLeastOnce,
             #[cfg(feature = "quality")]
             quality: None,
+            schema: None,
             deferred_refs: Vec::new(),
         }
     }
@@ -2283,6 +2293,7 @@ matrix:
             delivery: faucet_core::DeliveryMode::AtLeastOnce,
             #[cfg(feature = "quality")]
             quality: None,
+            schema: None,
             deferred_refs: Vec::new(),
         };
         let err = run_expanded(vec![orphan], opts("deadlock"))

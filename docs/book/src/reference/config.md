@@ -284,6 +284,52 @@ All four conditions are validated at config-load time (`faucet validate` and `fa
 
 See the [Exactly-once delivery cookbook](../cookbook/state.md#exactly-once-delivery) for a worked example and the full rationale.
 
+## `schema`
+
+Optional **pipeline-level** block (a sibling of `source` / `sink` / `transforms`
+/ `state` inside `pipeline:`) that declares one uniform policy for **schema
+drift** — when an incoming page's top-level shape diverges from the sink's live
+destination schema. Fully opt-in: with no block, sinks keep their existing
+per-connector behaviour. See the [Schema drift cookbook](../cookbook/schema-drift.md)
+for the full model, sink-support matrix, and per-sink nuances.
+
+```yaml
+pipeline:
+  schema:
+    on_drift: warn            # warn | evolve | ignore | quarantine | fail
+    allow_type_widening: true # default true; only consulted by `evolve`
+    on_incompatible: fail     # fail | quarantine — `evolve` only (default fail)
+  source: { ... }
+  sink: { ... }
+```
+
+| Field | Default | Purpose |
+|-------|---------|---------|
+| `on_drift` | `warn` | Policy applied when drift is detected: `warn` (metric + log, write unchanged), `ignore` (drop unknown fields), `fail` (abort with a `SchemaDrift` error), `quarantine` (route drift-exhibiting rows to the DLQ, write the rest), `evolve` (apply additive/widening DDL, then write). |
+| `allow_type_widening` | `true` | Whether a lossless widening (`integer → number`, gaining nullability) counts as evolvable rather than incompatible. Only consulted by `evolve`. |
+| `on_incompatible` | `fail` | `evolve` only — action for an incompatible residue (narrowing / type swap): `fail` aborts, `quarantine` routes the offending rows to the DLQ. |
+
+Detection is **top-level only** — a nested object is one column, so changes
+inside it are invisible.
+
+### Gates (validated at config-load time)
+
+A violation is a hard `config error` naming the offending row; no run is started.
+
+1. **`evolve` needs an evolution-capable sink** — one of `postgres`, `mysql`,
+   `mssql`, `sqlite`, `bigquery`, `elasticsearch`. `iceberg` supports detection
+   but not `evolve` (blocked on upstream `iceberg-rust`, #255); schemaless sinks
+   have nothing to evolve. Both are rejected for `on_drift: evolve`.
+2. **`quarantine` needs a `dlq:` block** — `on_drift: quarantine`, or `evolve`
+   with `on_incompatible: quarantine`.
+3. **`quarantine` is incompatible with `delivery: exactly_once`** (exactly-once
+   forbids a DLQ). `evolve` / `ignore` / `fail` / `warn` all compose with
+   exactly-once and with `write_mode: upsert`.
+
+Against a **schemaless** sink (jsonl, csv, stdout, mongodb, redis, http, kafka,
+s3, gcs, snowflake, parquet) any non-`evolve` policy is inert — the sink reports
+no schema to diverge from.
+
 ## `execution`
 
 - `max_concurrent` — one shared concurrency budget across roots and child

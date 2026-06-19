@@ -123,6 +123,48 @@ pub fn iceberg_to_arrow_schema(schema: &iceberg::spec::Schema) -> Result<SchemaR
         })
 }
 
+/// Convert an Arrow `Schema` to an `infer_schema`-shaped JSON object
+/// (`{"type":"object","properties":{ <col>: <type-fragment>, … }}`).
+///
+/// Used by the schema-drift policy (issue #194) to diff a page's shape against
+/// the live Iceberg table schema. Each top-level field maps to a JSON base type;
+/// nullable fields carry `{"type":[base,"null"]}`, non-nullable fields
+/// `{"type":base}`. Only the top level is described — nested struct/list fields
+/// collapse to `object` / `array`.
+pub fn arrow_to_json_schema(schema: &Schema) -> Value {
+    let mut props = serde_json::Map::new();
+    for field in schema.fields() {
+        let base = arrow_base_type(field.data_type());
+        let fragment = if field.is_nullable() {
+            serde_json::json!({ "type": [base, "null"] })
+        } else {
+            serde_json::json!({ "type": base })
+        };
+        props.insert(field.name().clone(), fragment);
+    }
+    serde_json::json!({ "type": "object", "properties": Value::Object(props) })
+}
+
+/// Map a top-level Arrow `DataType` to its `infer_schema` JSON base keyword.
+fn arrow_base_type(dt: &DataType) -> &'static str {
+    match dt {
+        DataType::Int8
+        | DataType::Int16
+        | DataType::Int32
+        | DataType::Int64
+        | DataType::UInt8
+        | DataType::UInt16
+        | DataType::UInt32
+        | DataType::UInt64 => "integer",
+        DataType::Float16 | DataType::Float32 | DataType::Float64 => "number",
+        DataType::Boolean => "boolean",
+        DataType::Utf8 | DataType::LargeUtf8 => "string",
+        DataType::Struct(_) => "object",
+        DataType::List(_) | DataType::LargeList(_) | DataType::FixedSizeList(_, _) => "array",
+        _ => "string",
+    }
+}
+
 // ── Internal helpers ──────────────────────────────────────────────────────────
 
 /// Recursively force every field in the schema to be nullable.
@@ -299,5 +341,56 @@ mod tests {
             back.fields().iter().map(|f| f.name().clone()).collect();
         assert!(names.contains("col_a"), "col_a must survive round-trip");
         assert!(names.contains("col_b"), "col_b must survive round-trip");
+    }
+
+    // ── arrow_to_json_schema ──────────────────────────────────────────────────
+
+    #[test]
+    fn arrow_schema_to_json_schema_top_level() {
+        let fields = vec![
+            Field::new("i32", DataType::Int32, false),
+            Field::new("i64", DataType::Int64, true),
+            Field::new("u16", DataType::UInt16, true),
+            Field::new("f32", DataType::Float32, true),
+            Field::new("f64", DataType::Float64, false),
+            Field::new("flag", DataType::Boolean, true),
+            Field::new("name", DataType::Utf8, true),
+            Field::new("big_name", DataType::LargeUtf8, false),
+            Field::new(
+                "meta",
+                DataType::Struct(vec![Field::new("a", DataType::Int64, true)].into()),
+                true,
+            ),
+            Field::new(
+                "tags",
+                DataType::List(Arc::new(Field::new("item", DataType::Utf8, true))),
+                true,
+            ),
+            // Unknown/unmapped type falls through to "string".
+            Field::new("ts", DataType::Date32, true),
+        ];
+        let schema = Schema::new(fields);
+        let json = arrow_to_json_schema(&schema);
+
+        assert_eq!(json["type"], "object");
+        let props = json["properties"].as_object().unwrap();
+
+        // Non-nullable → bare base type.
+        assert_eq!(props["i32"]["type"], "integer");
+        assert_eq!(props["f64"]["type"], "number");
+        assert_eq!(props["big_name"]["type"], "string");
+        // Nullable → [base, "null"].
+        assert_eq!(props["i64"]["type"], serde_json::json!(["integer", "null"]));
+        assert_eq!(props["u16"]["type"], serde_json::json!(["integer", "null"]));
+        assert_eq!(props["f32"]["type"], serde_json::json!(["number", "null"]));
+        assert_eq!(
+            props["flag"]["type"],
+            serde_json::json!(["boolean", "null"])
+        );
+        assert_eq!(props["name"]["type"], serde_json::json!(["string", "null"]));
+        assert_eq!(props["meta"]["type"], serde_json::json!(["object", "null"]));
+        assert_eq!(props["tags"]["type"], serde_json::json!(["array", "null"]));
+        // Unmapped Arrow type → "string".
+        assert_eq!(props["ts"]["type"], serde_json::json!(["string", "null"]));
     }
 }

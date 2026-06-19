@@ -2,7 +2,7 @@
 
 use crate::config::{MysqlColumnMapping, MysqlSinkConfig};
 use async_trait::async_trait;
-use faucet_core::FaucetError;
+use faucet_core::{FaucetError, SchemaEvolution, SqlBaseType, json_schema_base_type};
 use serde_json::Value;
 use sqlx::mysql::MySqlPoolOptions;
 use sqlx::{MySqlConnection, MySqlPool, Row};
@@ -19,6 +19,68 @@ pub struct MysqlSink {
 /// them, per MySQL convention.
 fn quote_ident_mysql(name: &str) -> String {
     format!("`{}`", name.replace('`', "``"))
+}
+
+/// Map a [`SqlBaseType`] to the MySQL type keyword used when adding/widening a
+/// column during schema evolution (issue #194). Integers always widen to
+/// `BIGINT` and floats to `DOUBLE` so a later, wider value never overflows a
+/// narrower column. `Text` maps to `LONGTEXT` (the widest text type, so a long
+/// value never truncates) and `Json` to MySQL's native `JSON`.
+fn mysql_keyword(t: SqlBaseType) -> &'static str {
+    match t {
+        SqlBaseType::Integer => "BIGINT",
+        SqlBaseType::Double => "DOUBLE",
+        SqlBaseType::Boolean => "TINYINT(1)",
+        SqlBaseType::Text => "LONGTEXT",
+        SqlBaseType::Json => "JSON",
+    }
+}
+
+/// `ALTER TABLE <table> ADD COLUMN `col` <kw>` — column addition.
+///
+/// MySQL (pre-8.0.x) has no `ADD COLUMN IF NOT EXISTS`, so idempotency is
+/// achieved by the caller pre-checking the existing column set and only
+/// emitting this for columns not already present. `table` is the already-quoted
+/// table reference.
+fn build_add_column_sql(table: &str, col: &str, t: SqlBaseType) -> String {
+    format!(
+        "ALTER TABLE {table} ADD COLUMN {} {}",
+        quote_ident_mysql(col),
+        mysql_keyword(t)
+    )
+}
+
+/// `ALTER TABLE <table> MODIFY COLUMN `col` <kw>` — widen an existing column's
+/// type. Naturally idempotent (re-running the same MODIFY is a no-op). `table`
+/// is the already-quoted table reference.
+fn build_modify_column_sql(table: &str, col: &str, t: SqlBaseType) -> String {
+    format!(
+        "ALTER TABLE {table} MODIFY COLUMN {} {}",
+        quote_ident_mysql(col),
+        mysql_keyword(t)
+    )
+}
+
+/// Map a MySQL `INFORMATION_SCHEMA.COLUMNS.DATA_TYPE` value (lowercase, no
+/// precision — e.g. `bigint`, `double`, `json`, `varchar`) back to a JSON-Schema
+/// type fragment so [`MysqlSink::current_schema`] round-trips with
+/// [`faucet_core::diff_schema`]. `nullable` reflects `IS_NULLABLE = 'YES'`.
+///
+/// Note: `INFORMATION_SCHEMA.DATA_TYPE` returns bare `tinyint` without the
+/// `(1)` precision, so a `TINYINT(1)` (conventionally boolean) is
+/// indistinguishable from a real `TINYINT` — both map to `integer` for safety.
+fn mysql_data_type_to_json_schema(data_type: &str, nullable: bool) -> Value {
+    let base = match data_type {
+        "bigint" | "int" | "integer" | "smallint" | "mediumint" | "tinyint" => "integer",
+        "double" | "float" | "decimal" | "numeric" => "number",
+        "json" => "object",
+        _ => "string",
+    };
+    if nullable {
+        serde_json::json!({ "type": [base, "null"] })
+    } else {
+        serde_json::json!({ "type": base })
+    }
 }
 
 /// Build the `ON DUPLICATE KEY UPDATE …` tail for an upsert INSERT.
@@ -363,6 +425,45 @@ impl MysqlSink {
         Ok(affected)
     }
 
+    /// Read the live destination columns as `(name, data_type, nullable)`
+    /// tuples, in declared order, from `INFORMATION_SCHEMA.COLUMNS`. An empty
+    /// vector means the table does not exist (or has no columns).
+    ///
+    /// Shared by [`current_schema`](faucet_core::Sink::current_schema) and
+    /// [`evolve_schema`](faucet_core::Sink::evolve_schema) — the latter needs the
+    /// current set to make `ADD COLUMN` idempotent (MySQL lacks
+    /// `ADD COLUMN IF NOT EXISTS`).
+    async fn read_columns(&self) -> Result<Vec<(String, String, bool)>, FaucetError> {
+        // MySQL's INFORMATION_SCHEMA string columns are typed as a binary/blob
+        // collation, which sqlx decodes as `Vec<u8>` rather than `String`; cast
+        // each to CHAR so they decode as `String`.
+        let rows = sqlx::query(
+            "SELECT CAST(COLUMN_NAME AS CHAR) AS COLUMN_NAME, \
+                    CAST(DATA_TYPE AS CHAR) AS DATA_TYPE, \
+                    CAST(IS_NULLABLE AS CHAR) AS IS_NULLABLE \
+             FROM INFORMATION_SCHEMA.COLUMNS \
+             WHERE TABLE_NAME = ? AND TABLE_SCHEMA = DATABASE() ORDER BY ORDINAL_POSITION",
+        )
+        .bind(&self.config.table_name)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| FaucetError::Sink(format!("failed to query table columns: {e}")))?;
+
+        Ok(rows
+            .iter()
+            .map(|row| {
+                (
+                    row.get::<String, _>("COLUMN_NAME"),
+                    // DATA_TYPE is already lowercase per the SQL standard, but
+                    // normalize defensively.
+                    row.get::<String, _>("DATA_TYPE").to_ascii_lowercase(),
+                    row.get::<String, _>("IS_NULLABLE")
+                        .eq_ignore_ascii_case("YES"),
+                )
+            })
+            .collect())
+    }
+
     /// Create the commit-token watermark table if it does not yet exist.
     ///
     /// The table holds one row per pipeline scope (state key). MySQL requires a
@@ -437,6 +538,108 @@ impl faucet_core::Sink for MysqlSink {
             faucet_core::WriteMode::Upsert,
             faucet_core::WriteMode::Delete,
         ]
+    }
+
+    fn supports_schema_evolution(&self) -> bool {
+        true
+    }
+
+    /// Read the live destination schema from `INFORMATION_SCHEMA.COLUMNS` as an
+    /// `infer_schema`-shaped object (`{"type":"object","properties":{…}}`), or
+    /// `None` when the target table does not exist yet (issue #194).
+    ///
+    /// The MySQL database is implicit (`DATABASE()`), so there is no schema
+    /// qualifier to thread. `DATA_TYPE` / `IS_NULLABLE` round-trip through
+    /// `mysql_data_type_to_json_schema`.
+    async fn current_schema(&self) -> Result<Option<serde_json::Value>, FaucetError> {
+        let columns = self.read_columns().await?;
+        if columns.is_empty() {
+            return Ok(None); // table does not exist yet
+        }
+
+        let mut props = serde_json::Map::new();
+        for (name, data_type, nullable) in columns {
+            props.insert(name, mysql_data_type_to_json_schema(&data_type, nullable));
+        }
+        Ok(Some(
+            serde_json::json!({ "type": "object", "properties": props }),
+        ))
+    }
+
+    /// Apply an additive schema evolution (new columns, lossless widenings,
+    /// nullability relaxations) to the destination table (issue #194).
+    ///
+    /// MySQL has no `ADD COLUMN IF NOT EXISTS` (pre-8.0.x), so the current
+    /// column set is read first and an `ADD COLUMN` is emitted only for names
+    /// not already present — making re-runs idempotent. Widenings use
+    /// `MODIFY COLUMN` (re-running the same MODIFY is a no-op); nullability
+    /// relaxations re-emit the column as its current mapped type with an
+    /// explicit `NULL`.
+    async fn evolve_schema(&self, evolution: &SchemaEvolution) -> Result<(), FaucetError> {
+        let table_ref = quote_ident_mysql(&self.config.table_name);
+
+        // Read the current columns up front: needed for ADD-COLUMN idempotency
+        // (pre-check by name) and to derive a column's existing type when
+        // relaxing nullability.
+        let current = self.read_columns().await?;
+        let existing: std::collections::HashSet<&str> =
+            current.iter().map(|(n, _, _)| n.as_str()).collect();
+
+        let mut conn = self
+            .pool
+            .acquire()
+            .await
+            .map_err(|e| FaucetError::Sink(format!("MySQL evolve acquire failed: {e}")))?;
+
+        for c in &evolution.additions {
+            // Idempotency: MySQL lacks ADD COLUMN IF NOT EXISTS, so skip a
+            // column that already exists rather than erroring on a re-run.
+            if existing.contains(c.name.as_str()) {
+                continue;
+            }
+            let t = json_schema_base_type(&c.to).unwrap_or(SqlBaseType::Text);
+            sqlx::query(&build_add_column_sql(&table_ref, &c.name, t))
+                .execute(&mut *conn)
+                .await
+                .map_err(|e| {
+                    FaucetError::Sink(format!("MySQL ADD COLUMN {} failed: {e}", c.name))
+                })?;
+        }
+
+        for c in &evolution.widenings {
+            let t = json_schema_base_type(&c.to).unwrap_or(SqlBaseType::Text);
+            sqlx::query(&build_modify_column_sql(&table_ref, &c.name, t))
+                .execute(&mut *conn)
+                .await
+                .map_err(|e| {
+                    FaucetError::Sink(format!("MySQL MODIFY COLUMN {} failed: {e}", c.name))
+                })?;
+        }
+
+        for col in &evolution.relax_nullability {
+            // Re-emit the column as its CURRENT type but explicitly nullable.
+            // MySQL's MODIFY COLUMN requires the full type spec, so map the
+            // column's existing DATA_TYPE back to a base type and re-emit it.
+            let existing_type = current
+                .iter()
+                .find(|(n, _, _)| n == col)
+                .map(|(_, dt, nullable)| {
+                    let fragment = mysql_data_type_to_json_schema(dt, *nullable);
+                    json_schema_base_type(&fragment).unwrap_or(SqlBaseType::Text)
+                })
+                .unwrap_or(SqlBaseType::Text);
+            let sql = format!(
+                "ALTER TABLE {table_ref} MODIFY COLUMN {} {} NULL",
+                quote_ident_mysql(col),
+                mysql_keyword(existing_type)
+            );
+            sqlx::query(&sql)
+                .execute(&mut *conn)
+                .await
+                .map_err(|e| FaucetError::Sink(format!("MySQL DROP NOT NULL {col} failed: {e}")))?;
+        }
+
+        Ok(())
     }
 
     /// Write records to MySQL.
@@ -685,5 +888,73 @@ mod tests {
             &["a".to_string(), "b".to_string(), "v".to_string()],
         );
         assert_eq!(clause, "ON DUPLICATE KEY UPDATE `v` = VALUES(`v`)");
+    }
+
+    #[test]
+    fn mysql_add_column_ddl() {
+        let sql = build_add_column_sql("`t`", "email", SqlBaseType::Text);
+        assert_eq!(sql, "ALTER TABLE `t` ADD COLUMN `email` LONGTEXT");
+
+        // A backtick in the column name is doubled (SQL-injection safety).
+        let sql = build_add_column_sql("`t`", "ev`il", SqlBaseType::Integer);
+        assert_eq!(sql, "ALTER TABLE `t` ADD COLUMN `ev``il` BIGINT");
+    }
+
+    #[test]
+    fn mysql_modify_column_ddl() {
+        let sql = build_modify_column_sql("`t`", "score", SqlBaseType::Double);
+        assert_eq!(sql, "ALTER TABLE `t` MODIFY COLUMN `score` DOUBLE");
+
+        let sql = build_modify_column_sql("`t`", "flag", SqlBaseType::Boolean);
+        assert_eq!(sql, "ALTER TABLE `t` MODIFY COLUMN `flag` TINYINT(1)");
+    }
+
+    #[test]
+    fn mysql_keyword_mapping() {
+        assert_eq!(mysql_keyword(SqlBaseType::Integer), "BIGINT");
+        assert_eq!(mysql_keyword(SqlBaseType::Double), "DOUBLE");
+        assert_eq!(mysql_keyword(SqlBaseType::Boolean), "TINYINT(1)");
+        assert_eq!(mysql_keyword(SqlBaseType::Text), "LONGTEXT");
+        assert_eq!(mysql_keyword(SqlBaseType::Json), "JSON");
+    }
+
+    #[test]
+    fn mysql_data_type_round_trips_to_json_schema() {
+        use serde_json::json;
+        assert_eq!(
+            mysql_data_type_to_json_schema("bigint", false),
+            json!({"type":"integer"})
+        );
+        assert_eq!(
+            mysql_data_type_to_json_schema("int", false),
+            json!({"type":"integer"})
+        );
+        // tinyint maps to integer (precision is not exposed by DATA_TYPE, so we
+        // never guess boolean for safety).
+        assert_eq!(
+            mysql_data_type_to_json_schema("tinyint", false),
+            json!({"type":"integer"})
+        );
+        assert_eq!(
+            mysql_data_type_to_json_schema("double", false),
+            json!({"type":"number"})
+        );
+        assert_eq!(
+            mysql_data_type_to_json_schema("decimal", false),
+            json!({"type":"number"})
+        );
+        assert_eq!(
+            mysql_data_type_to_json_schema("json", false),
+            json!({"type":"object"})
+        );
+        assert_eq!(
+            mysql_data_type_to_json_schema("varchar", false),
+            json!({"type":"string"})
+        );
+        // Unknown types fall back to string; nullable widens the type array.
+        assert_eq!(
+            mysql_data_type_to_json_schema("datetime", true),
+            json!({"type":["string","null"]})
+        );
     }
 }

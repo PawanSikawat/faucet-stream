@@ -255,6 +255,12 @@ delivery: exactly_once
 
 See the [Exactly-once delivery cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/state.html#exactly-once-delivery) for the full rationale and supported source/sink set.
 
+## Schema drift
+
+`IcebergSink` reports its live table schema via `current_schema()` (the table's current Iceberg schema converted through Arrow to the `infer_schema` JSON shape; a missing table → `None`), so the pipeline-level `schema:` policy can **detect** drift between an incoming page's top-level shape and the real table. The `warn` / `ignore` / `quarantine` / `fail` modes all work against this sink.
+
+**`on_drift: evolve` is NOT supported.** `supports_schema_evolution()` stays `false`: `iceberg-rust` 0.9.1 (pinned in this crate) exposes no schema-evolution transaction API (no `UpdateSchema` / `add_column` / type promotion — only `fast_append`), so additive DDL is blocked upstream. The CLI rejects `on_drift: evolve` against iceberg at config-load. This is tracked in [#255](https://github.com/PawanSikawat/faucet-stream/issues/255) (sibling to the equality-delete upsert gate, #179/#225). See the [schema-drift cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/schema-drift.html).
+
 ## Schema inference
 
 When `create_if_missing: true` and the table is new, the Iceberg schema is inferred from the first Arrow batch: every JSON field becomes a nullable column, typed by its first non-null value. Subsequent batches use the table's existing schema so the writer and table stay in sync. Iceberg assigns **field IDs** sequentially from `1`; IDs are stable once the table exists, so renaming or reordering JSON keys in later runs does not change them.

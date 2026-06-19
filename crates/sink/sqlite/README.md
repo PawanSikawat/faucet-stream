@@ -234,6 +234,18 @@ delivery: exactly_once
 
 See the [Exactly-once delivery cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/state.html#exactly-once-delivery) for full rationale and the supported source/sink set.
 
+## Schema evolution
+
+`SqliteSink` reports its live destination schema via `current_schema()` (read from `PRAGMA table_info`, including the `notnull` flag), so the pipeline-level `schema:` policy can detect drift between an incoming page's top-level shape and the real table. All five `on_drift` modes (`warn` / `ignore` / `quarantine` / `fail` / `evolve`) work against this sink.
+
+Under `on_drift: evolve`, `SqliteSink::evolve_schema()` is **add-column only**, owing to SQLite's limited `ALTER TABLE` and dynamic typing:
+
+- **New columns** → `ALTER TABLE … ADD COLUMN`. SQLite has no `ADD COLUMN IF NOT EXISTS`, so the current columns are read first and any already present is skipped (idempotent by pre-check).
+- **Type widenings are a no-op** — under SQLite's dynamic typing a column already accepts a value of any type, so there is nothing to alter (logged once at `debug`).
+- **Nullability relaxations are a no-op** — SQLite cannot drop a `NOT NULL` constraint in place (it would require a full table rebuild, out of scope here); the column is left as-is (logged once at `debug`).
+
+Incompatible changes (narrowing / type swaps) are never auto-applied — they are routed by `on_incompatible` (`fail` or `quarantine`). See the [schema-drift cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/schema-drift.html).
+
 ## Dead-letter queue
 
 The sink reports per-row outcomes via `write_batch_partial`, so when a `dlq:` block is configured, rows that fail (e.g. a missing/null key column in upsert/delete mode) are wrapped in a DLQ envelope and routed to the configured DLQ sink while the rest of the batch still commits. Without a DLQ, a failing row fails the whole batch. See the [DLQ cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/dlq.html).

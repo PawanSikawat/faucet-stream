@@ -242,6 +242,18 @@ delivery: exactly_once
 
 `delivery: exactly_once` and `write_mode: upsert` compose — the upsert and the commit-token UPSERT commit in the same transaction. See the [exactly-once delivery cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/state.html#exactly-once-delivery).
 
+## Schema evolution
+
+`PostgresSink` reports its live destination schema via `current_schema()` (read from `pg_catalog`, including `attnotnull` so nullability round-trips), so the pipeline-level `schema:` policy can detect drift between an incoming page's top-level shape and the real table. All five `on_drift` modes (`warn` / `ignore` / `quarantine` / `fail` / `evolve`) work against this sink.
+
+Under `on_drift: evolve`, `PostgresSink::evolve_schema()` applies additive DDL in one connection:
+
+- **New columns** → `ALTER TABLE … ADD COLUMN IF NOT EXISTS` (idempotent).
+- **Lossless widenings** (e.g. integer → number) → `ALTER COLUMN … TYPE` — gated on `allow_type_widening`.
+- **Nullability relaxations** (a previously `NOT NULL` column absent from the page) → `ALTER COLUMN … DROP NOT NULL`.
+
+Incompatible changes (narrowing / type swaps) are never auto-applied — they are routed by `on_incompatible` (`fail` or `quarantine`). See the [schema-drift cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/schema-drift.html).
+
 ## Dead-letter queue
 
 The sink overrides `Sink::write_batch_partial`, so when a `dlq:` block is configured the router gets per-row outcomes: good rows commit and only the failing rows (e.g. missing/null key columns under `write_mode: upsert`/`delete`) are wrapped in a DLQ envelope and routed to the DLQ sink — the batch is not aborted. Without a DLQ, a row failure fails the whole batch. See the [DLQ cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/dlq.html).

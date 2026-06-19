@@ -223,3 +223,36 @@ async fn empty_write_batch_no_snapshot() {
     let exists = reader.table_exists(&tid).await.expect("table_exists check");
     assert!(!exists, "table must not exist after empty write+flush");
 }
+
+/// `current_schema` returns `Ok(None)` before the table exists and an
+/// `infer_schema`-shaped object once the table has been created (#194, #255).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn current_schema_reports_table_columns() {
+    let dir = TempDir::new().expect("tempdir");
+    let cfg = sink_config(&dir, "drift_table");
+    let sink = IcebergSink::new(cfg).await.expect("IcebergSink::new");
+
+    // Before any write the table does not exist → drift handling is inert.
+    let before = sink.current_schema().await.expect("current_schema (pre)");
+    assert_eq!(before, None, "missing table must report no schema");
+
+    // Write + flush so the table is created with an inferred schema.
+    let records: Vec<serde_json::Value> = (0u64..3)
+        .map(|i| json!({ "id": i, "name": format!("n{i}"), "active": true }))
+        .collect();
+    sink.write_batch(&records).await.expect("write_batch");
+    sink.flush().await.expect("flush");
+
+    let schema = sink
+        .current_schema()
+        .await
+        .expect("current_schema (post)")
+        .expect("schema must be Some once the table exists");
+
+    assert_eq!(schema["type"], "object");
+    let props = schema["properties"].as_object().expect("properties object");
+    // Inferred Iceberg columns surface as nullable JSON base types.
+    assert_eq!(props["id"]["type"], json!(["integer", "null"]));
+    assert_eq!(props["name"]["type"], json!(["string", "null"]));
+    assert_eq!(props["active"]["type"], json!(["boolean", "null"]));
+}

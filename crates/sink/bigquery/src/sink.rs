@@ -8,6 +8,7 @@ use faucet_common_bigquery::build_client;
 use faucet_core::FaucetError;
 use faucet_core::idempotency::COMMIT_TOKEN_TOKEN_COL;
 use gcp_bigquery_client::Client;
+use gcp_bigquery_client::error::BQError;
 use gcp_bigquery_client::model::get_query_results_parameters::GetQueryResultsParameters;
 use gcp_bigquery_client::model::query_parameter::QueryParameter;
 use gcp_bigquery_client::model::query_parameter_type::QueryParameterType;
@@ -18,7 +19,7 @@ use gcp_bigquery_client::model::table_data_insert_all_request::TableDataInsertAl
 use gcp_bigquery_client::model::table_data_insert_all_response::TableDataInsertAllResponse;
 use serde_json::Value;
 use std::time::Duration;
-use tokio::sync::OnceCell;
+use tokio::sync::RwLock;
 
 /// Max wall-clock spent polling an idempotent-write / token-read job to
 /// completion before giving up. Exactly-once pages are small, so this is a
@@ -28,6 +29,13 @@ const IDEMPOTENT_JOB_TIMEOUT: Duration = Duration::from_secs(120);
 /// Server-side long-poll window per `getQueryResults` completion check —
 /// BigQuery holds the connection open up to this long, so we don't busy-wait.
 const JOB_POLL_LONG_POLL_MS: i32 = 10_000;
+
+/// `true` when a `tables.get` error is a 404 (table does not exist) — used by
+/// `current_schema` to report a not-yet-created target as `Ok(None)` rather
+/// than a hard error.
+fn is_table_not_found(err: &BQError) -> bool {
+    matches!(err, BQError::ResponseError { error } if error.error.code == 404)
+}
 
 /// Serialize planned delete key tuples into a JSON array of `{key_col: value}`
 /// objects for the `@deletes` parameter consumed by the semi-join `DELETE`.
@@ -50,9 +58,12 @@ fn deletes_to_payload(deletes: &[faucet_core::KeyTuple]) -> String {
 pub struct BigQuerySink {
     config: BigQuerySinkConfig,
     client: Client,
-    /// Target table schema, fetched once on the first exactly-once call and
-    /// reused for every page in the run. Empty on the streaming path.
-    schema_cache: OnceCell<Vec<idempotent::FieldSpec>>,
+    /// Target table schema, fetched lazily on the first exactly-once / upsert
+    /// call and reused for every page in the run. `None` until first read, and
+    /// reset to `None` by [`evolve_schema`](faucet_core::Sink::evolve_schema) so
+    /// the next page diffs against the evolved table. Unused on the plain
+    /// streaming path.
+    schema_cache: RwLock<Option<Vec<idempotent::FieldSpec>>>,
 }
 
 impl BigQuerySink {
@@ -67,7 +78,7 @@ impl BigQuerySink {
         Ok(Self {
             config,
             client,
-            schema_cache: OnceCell::new(),
+            schema_cache: RwLock::new(None),
         })
     }
 
@@ -84,7 +95,7 @@ impl BigQuerySink {
         Self {
             config,
             client,
-            schema_cache: OnceCell::new(),
+            schema_cache: RwLock::new(None),
         }
     }
 
@@ -198,44 +209,88 @@ impl BigQuerySink {
         }
     }
 
-    /// Fetch (once) and cache the target table's schema as [`idempotent::FieldSpec`]s.
-    async fn target_schema(&self) -> Result<&Vec<idempotent::FieldSpec>, FaucetError> {
-        self.schema_cache
-            .get_or_try_init(|| async {
-                let table = self
-                    .client
-                    .table()
-                    .get(
-                        &self.config.project_id,
-                        &self.config.dataset_id,
-                        &self.config.table_id,
-                        Some(vec!["schema"]),
-                    )
-                    .await
-                    .map_err(|e| {
-                        FaucetError::Sink(format!("BigQuery tables.get (schema) failed: {e}"))
-                    })?;
-                // Table.schema is TableSchema (not Option); TableSchema.fields is Option<Vec<...>>.
-                let fields: Vec<idempotent::FieldSpec> = table
-                    .schema
-                    .fields
-                    .as_ref()
-                    .map(|fs| {
-                        fs.iter()
-                            .map(idempotent::FieldSpec::from_table_field)
-                            .collect()
-                    })
-                    .unwrap_or_default();
-                if fields.is_empty() {
-                    return Err(FaucetError::Sink(format!(
-                        "BigQuery target table {}.{}.{} has no schema fields; exactly-once \
-                         delivery requires a table with a defined schema",
-                        self.config.project_id, self.config.dataset_id, self.config.table_id
-                    )));
-                }
-                Ok(fields)
+    /// Fetch the target table's schema fields directly via `tables.get`, with no
+    /// caching. Returns the raw [`idempotent::FieldSpec`]s (possibly empty for a
+    /// schemaless table); a missing table surfaces as the client's `BQError`.
+    async fn fetch_schema_fields(&self) -> Result<Vec<idempotent::FieldSpec>, BQError> {
+        let table = self
+            .client
+            .table()
+            .get(
+                &self.config.project_id,
+                &self.config.dataset_id,
+                &self.config.table_id,
+                Some(vec!["schema"]),
+            )
+            .await?;
+        // Table.schema is TableSchema (not Option); TableSchema.fields is Option<Vec<...>>.
+        Ok(table
+            .schema
+            .fields
+            .as_ref()
+            .map(|fs| {
+                fs.iter()
+                    .map(idempotent::FieldSpec::from_table_field)
+                    .collect()
             })
+            .unwrap_or_default())
+    }
+
+    /// Fetch (once) and cache the target table's schema as
+    /// [`idempotent::FieldSpec`]s, returning an owned clone. Used by the
+    /// exactly-once / upsert write paths, which require a table with a defined
+    /// schema — a missing table or empty schema is a hard error here.
+    ///
+    /// The cache is reset by [`evolve_schema`](faucet_core::Sink::evolve_schema)
+    /// so a later page re-fetches the evolved schema.
+    async fn target_schema(&self) -> Result<Vec<idempotent::FieldSpec>, FaucetError> {
+        if let Some(fields) = self.schema_cache.read().await.as_ref() {
+            return Ok(fields.clone());
+        }
+        // Miss: fetch under the write lock so concurrent callers don't each
+        // issue a redundant tables.get. Re-check after acquiring in case a
+        // racing writer already filled it.
+        let mut guard = self.schema_cache.write().await;
+        if let Some(fields) = guard.as_ref() {
+            return Ok(fields.clone());
+        }
+        let fields = self
+            .fetch_schema_fields()
             .await
+            .map_err(|e| FaucetError::Sink(format!("BigQuery tables.get (schema) failed: {e}")))?;
+        if fields.is_empty() {
+            return Err(FaucetError::Sink(format!(
+                "BigQuery target table {}.{}.{} has no schema fields; exactly-once \
+                 delivery requires a table with a defined schema",
+                self.config.project_id, self.config.dataset_id, self.config.table_id
+            )));
+        }
+        *guard = Some(fields.clone());
+        Ok(fields)
+    }
+
+    /// Backtick-quoted fully-qualified `` `project.dataset.table` `` reference.
+    fn table_ref(&self) -> String {
+        idempotent::table_ref(
+            &self.config.project_id,
+            &self.config.dataset_id,
+            &self.config.table_id,
+        )
+    }
+
+    /// Run one schema-evolution DDL statement through the same `jobs.query` +
+    /// authoritative job-status-verify path the data writes use, mapping any
+    /// failure to [`FaucetError::Sink`].
+    async fn run_ddl(&self, sql: String) -> Result<(), FaucetError> {
+        let mut req = QueryRequest::new(sql);
+        req.use_legacy_sql = false;
+        let resp = self
+            .client
+            .job()
+            .query(&self.config.project_id, req)
+            .await
+            .map_err(|e| FaucetError::Sink(format!("BigQuery schema-evolution DDL failed: {e}")))?;
+        self.await_query_complete(resp).await
     }
 
     /// Create the commit-token watermark table if it does not exist.
@@ -356,7 +411,7 @@ impl BigQuerySink {
         token: Option<(&str, &str)>,
     ) -> Result<usize, FaucetError> {
         let columns = self.target_schema().await?;
-        merge::validate_keys_present(columns, &self.config.write.key)?;
+        merge::validate_keys_present(&columns, &self.config.write.key)?;
 
         let has_upserts = !plan.upserts.is_empty();
         let has_deletes = !plan.deletes.is_empty();
@@ -376,7 +431,7 @@ impl BigQuerySink {
         );
         let sql = match token {
             Some(_) => merge::build_upsert_idempotent_sql(
-                columns,
+                &columns,
                 key,
                 has_upserts,
                 has_deletes,
@@ -385,7 +440,7 @@ impl BigQuerySink {
                 table,
             ),
             None => merge::build_upsert_transaction_sql(
-                columns,
+                &columns,
                 key,
                 has_upserts,
                 has_deletes,
@@ -744,7 +799,7 @@ impl faucet_core::Sink for BigQuerySink {
         })?;
 
         let sql = idempotent::build_transaction_sql(
-            columns,
+            &columns,
             &self.config.project_id,
             &self.config.dataset_id,
             &self.config.table_id,
@@ -777,6 +832,74 @@ impl faucet_core::Sink for BigQuerySink {
             "BigQuery exactly-once page committed"
         );
         Ok(records.len())
+    }
+
+    // -----------------------------------------------------------------------
+    // Schema drift (issue #194)
+    // -----------------------------------------------------------------------
+
+    fn supports_schema_evolution(&self) -> bool {
+        true
+    }
+
+    /// Read the live destination schema via a schema-only `tables.get`, mapped
+    /// to an `infer_schema`-shaped object so the drift policy can diff a page
+    /// against the real table.
+    ///
+    /// Returns `Ok(None)` when the target table does not exist yet (404) or
+    /// carries no field definitions — both mean "no schema to diff against",
+    /// so the drift pass treats every page column as new.
+    async fn current_schema(&self) -> Result<Option<Value>, FaucetError> {
+        match self.fetch_schema_fields().await {
+            Ok(fields) if fields.is_empty() => Ok(None),
+            Ok(fields) => Ok(Some(idempotent::fieldspecs_to_json_schema(&fields))),
+            Err(e) if is_table_not_found(&e) => Ok(None),
+            Err(e) => Err(FaucetError::Sink(format!(
+                "BigQuery current_schema (tables.get) failed: {e}"
+            ))),
+        }
+    }
+
+    /// Apply an additive schema evolution to the target table via `ALTER TABLE`
+    /// DDL (issue #194):
+    ///
+    /// - additions → `ADD COLUMN IF NOT EXISTS <col> <type>`
+    /// - widenings → `ALTER COLUMN <col> SET DATA TYPE <type>`
+    /// - nullability relaxations → `ALTER COLUMN <col> DROP NOT NULL`
+    ///
+    /// Each statement runs as its own `jobs.query` job, verified to completion
+    /// via the authoritative job-status check. Every statement is idempotent so
+    /// concurrent runs converge. The cached schema is invalidated afterwards so
+    /// the next page re-fetches the evolved table.
+    async fn evolve_schema(
+        &self,
+        evolution: &faucet_core::SchemaEvolution,
+    ) -> Result<(), FaucetError> {
+        let table_ref = self.table_ref();
+
+        for c in &evolution.additions {
+            let bq = idempotent::base_to_bq(
+                faucet_core::json_schema_base_type(&c.to).unwrap_or(faucet_core::SqlBaseType::Text),
+            );
+            self.run_ddl(idempotent::build_add_column_ddl(&table_ref, &c.name, bq))
+                .await?;
+        }
+        for c in &evolution.widenings {
+            let bq = idempotent::base_to_bq(
+                faucet_core::json_schema_base_type(&c.to).unwrap_or(faucet_core::SqlBaseType::Text),
+            );
+            self.run_ddl(idempotent::build_alter_type_ddl(&table_ref, &c.name, bq))
+                .await?;
+        }
+        for col in &evolution.relax_nullability {
+            self.run_ddl(idempotent::build_drop_not_null_ddl(&table_ref, col))
+                .await?;
+        }
+
+        // Invalidate the cached schema so the next exactly-once / upsert page
+        // (and the next drift diff) reads the evolved table.
+        *self.schema_cache.write().await = None;
+        Ok(())
     }
 }
 

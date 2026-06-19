@@ -86,6 +86,68 @@ fn on_conflict_clause(key: &[String], all_cols: &[String]) -> String {
     }
 }
 
+/// Map a [`faucet_core::SqlBaseType`] to the PostgreSQL type keyword used when
+/// adding/widening a column during schema evolution (issue #194). Integers
+/// always widen to `bigint` and floats to `double precision` so a later, wider
+/// value never overflows a narrower column.
+fn pg_keyword(t: faucet_core::SqlBaseType) -> &'static str {
+    use faucet_core::SqlBaseType::*;
+    match t {
+        Integer => "bigint",
+        Double => "double precision",
+        Boolean => "boolean",
+        Text => "text",
+        Json => "jsonb",
+    }
+}
+
+/// `ALTER TABLE <ref> ADD COLUMN IF NOT EXISTS "<col>" <kw>` — idempotent column
+/// addition. `table_ref` is already quoted (`"schema"."table"`).
+fn build_add_column_sql(table_ref: &str, col: &str, t: faucet_core::SqlBaseType) -> String {
+    format!(
+        "ALTER TABLE {table_ref} ADD COLUMN IF NOT EXISTS {} {}",
+        quote_ident(col),
+        pg_keyword(t)
+    )
+}
+
+/// `ALTER TABLE <ref> ALTER COLUMN "<col>" TYPE <kw> USING "<col>"::<kw>` — widen
+/// an existing column's type. Naturally idempotent (re-running the same TYPE
+/// change is a no-op).
+fn build_alter_type_sql(table_ref: &str, col: &str, t: faucet_core::SqlBaseType) -> String {
+    let q = quote_ident(col);
+    let kw = pg_keyword(t);
+    format!("ALTER TABLE {table_ref} ALTER COLUMN {q} TYPE {kw} USING {q}::{kw}")
+}
+
+/// `ALTER TABLE <ref> ALTER COLUMN "<col>" DROP NOT NULL` — relax a NOT NULL
+/// constraint. Naturally idempotent.
+fn build_drop_not_null_sql(table_ref: &str, col: &str) -> String {
+    format!(
+        "ALTER TABLE {table_ref} ALTER COLUMN {} DROP NOT NULL",
+        quote_ident(col)
+    )
+}
+
+/// Map a PostgreSQL type name (`pg_type.typname`, e.g. `int4`, `float8`, `bool`,
+/// `jsonb`) back to a JSON-Schema type fragment so [`PostgresSink::current_schema`]
+/// round-trips with [`faucet_core::diff_schema`]. `nullable` reflects whether the
+/// column allows NULL (`NOT a.attnotnull`).
+fn pg_udt_to_json_schema(udt: &str, nullable: bool) -> serde_json::Value {
+    let base = match udt {
+        "int2" | "int4" | "int8" => "integer",
+        "float4" | "float8" | "numeric" => "number",
+        "bool" => "boolean",
+        "json" | "jsonb" => "object",
+        _ => "string",
+    };
+    if nullable {
+        serde_json::json!({ "type": [base, "null"] })
+    } else {
+        serde_json::json!({ "type": base })
+    }
+}
+
 /// A sink that writes JSON records to a PostgreSQL table.
 pub struct PostgresSink {
     config: PostgresSinkConfig,
@@ -481,6 +543,100 @@ impl faucet_core::Sink for PostgresSink {
         ]
     }
 
+    fn supports_schema_evolution(&self) -> bool {
+        true
+    }
+
+    /// Read the live destination schema from `pg_catalog` as an
+    /// `infer_schema`-shaped object (`{"type":"object","properties":{…}}`), or
+    /// `None` when the target table does not exist yet (issue #194).
+    ///
+    /// Reuses the AutoMap column-discovery query shape (scoped to the exact
+    /// relation via `to_regclass`), additionally reading `a.attnotnull` so
+    /// nullability round-trips through `pg_udt_to_json_schema`.
+    async fn current_schema(&self) -> Result<Option<serde_json::Value>, FaucetError> {
+        let table_ref = qualified_table_ref(self.config.schema.as_deref(), &self.config.table_name);
+        let rows: Vec<(String, String, bool)> = sqlx::query(
+            "SELECT a.attname::text AS column_name, t.typname::text AS udt_name, a.attnotnull \
+             FROM pg_catalog.pg_attribute a \
+             JOIN pg_catalog.pg_type t ON t.oid = a.atttypid \
+             WHERE a.attrelid = to_regclass($1)::oid \
+               AND a.attnum > 0 AND NOT a.attisdropped \
+             ORDER BY a.attnum",
+        )
+        .bind(&table_ref)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| FaucetError::Sink(format!("postgres current_schema query failed: {e}")))?
+        .iter()
+        .map(|row| {
+            (
+                row.get::<String, _>("column_name"),
+                row.get::<String, _>("udt_name"),
+                row.get::<bool, _>("attnotnull"),
+            )
+        })
+        .collect();
+
+        if rows.is_empty() {
+            return Ok(None); // table does not exist yet
+        }
+
+        let mut props = serde_json::Map::new();
+        for (name, udt, notnull) in rows {
+            props.insert(name, pg_udt_to_json_schema(&udt, !notnull));
+        }
+        Ok(Some(
+            serde_json::json!({ "type": "object", "properties": props }),
+        ))
+    }
+
+    /// Apply an additive schema evolution (new columns, lossless widenings,
+    /// nullability relaxations) to the destination table. Idempotent —
+    /// `ADD COLUMN IF NOT EXISTS`, and re-running the same TYPE / DROP NOT NULL
+    /// is a no-op (issue #194).
+    async fn evolve_schema(
+        &self,
+        evolution: &faucet_core::SchemaEvolution,
+    ) -> Result<(), FaucetError> {
+        let table_ref = qualified_table_ref(self.config.schema.as_deref(), &self.config.table_name);
+        let mut conn = self
+            .pool
+            .acquire()
+            .await
+            .map_err(|e| FaucetError::Sink(format!("postgres evolve acquire failed: {e}")))?;
+
+        for c in &evolution.additions {
+            let t =
+                faucet_core::json_schema_base_type(&c.to).unwrap_or(faucet_core::SqlBaseType::Text);
+            sqlx::query(&build_add_column_sql(&table_ref, &c.name, t))
+                .execute(&mut *conn)
+                .await
+                .map_err(|e| {
+                    FaucetError::Sink(format!("postgres ADD COLUMN {} failed: {e}", c.name))
+                })?;
+        }
+        for c in &evolution.widenings {
+            let t =
+                faucet_core::json_schema_base_type(&c.to).unwrap_or(faucet_core::SqlBaseType::Text);
+            sqlx::query(&build_alter_type_sql(&table_ref, &c.name, t))
+                .execute(&mut *conn)
+                .await
+                .map_err(|e| {
+                    FaucetError::Sink(format!("postgres ALTER TYPE {} failed: {e}", c.name))
+                })?;
+        }
+        for col in &evolution.relax_nullability {
+            sqlx::query(&build_drop_not_null_sql(&table_ref, col))
+                .execute(&mut *conn)
+                .await
+                .map_err(|e| {
+                    FaucetError::Sink(format!("postgres DROP NOT NULL {col} failed: {e}"))
+                })?;
+        }
+        Ok(())
+    }
+
     fn dataset_uri(&self) -> String {
         let table = match &self.config.schema {
             Some(s) => format!("{}.{}", s, self.config.table_name),
@@ -716,8 +872,71 @@ impl faucet_core::Sink for PostgresSink {
 
 #[cfg(test)]
 mod tests {
-    use super::{on_conflict_clause, pg_bind_text, qualified_table_ref};
+    use super::{
+        build_add_column_sql, build_alter_type_sql, build_drop_not_null_sql, on_conflict_clause,
+        pg_bind_text, pg_udt_to_json_schema, qualified_table_ref,
+    };
     use serde_json::json;
+
+    #[test]
+    fn pg_add_column_ddl() {
+        let sql = build_add_column_sql("\"public\".\"t\"", "email", faucet_core::SqlBaseType::Text);
+        assert_eq!(
+            sql,
+            "ALTER TABLE \"public\".\"t\" ADD COLUMN IF NOT EXISTS \"email\" text"
+        );
+    }
+
+    #[test]
+    fn pg_widen_column_ddl() {
+        let sql = build_alter_type_sql(
+            "\"public\".\"t\"",
+            "score",
+            faucet_core::SqlBaseType::Double,
+        );
+        assert_eq!(
+            sql,
+            "ALTER TABLE \"public\".\"t\" ALTER COLUMN \"score\" TYPE double precision USING \"score\"::double precision"
+        );
+    }
+
+    #[test]
+    fn pg_drop_not_null_ddl() {
+        let sql = build_drop_not_null_sql("\"t\"", "created_at");
+        assert_eq!(
+            sql,
+            "ALTER TABLE \"t\" ALTER COLUMN \"created_at\" DROP NOT NULL"
+        );
+    }
+
+    #[test]
+    fn pg_udt_round_trips_to_json_schema() {
+        assert_eq!(
+            pg_udt_to_json_schema("int8", false),
+            json!({"type":"integer"})
+        );
+        assert_eq!(
+            pg_udt_to_json_schema("float8", false),
+            json!({"type":"number"})
+        );
+        assert_eq!(
+            pg_udt_to_json_schema("bool", false),
+            json!({"type":"boolean"})
+        );
+        assert_eq!(
+            pg_udt_to_json_schema("jsonb", false),
+            json!({"type":"object"})
+        );
+        assert_eq!(
+            pg_udt_to_json_schema("text", false),
+            json!({"type":"string"})
+        );
+        // Unknown types fall back to string; nullable widens the type array.
+        assert_eq!(
+            pg_udt_to_json_schema("timestamptz", true),
+            json!({"type":["string","null"]})
+        );
+    }
 
     #[test]
     fn upsert_on_conflict_clause_for_keys() {

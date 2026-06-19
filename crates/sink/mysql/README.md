@@ -248,6 +248,18 @@ delivery: exactly_once
 
 See the [exactly-once cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/state.html#exactly-once-delivery) for the full rationale and the supported source/sink set.
 
+## Schema evolution
+
+`MysqlSink` reports its live destination schema via `current_schema()` (read from `INFORMATION_SCHEMA.COLUMNS`, including `IS_NULLABLE`), so the pipeline-level `schema:` policy can detect drift between an incoming page's top-level shape and the real table. All five `on_drift` modes (`warn` / `ignore` / `quarantine` / `fail` / `evolve`) work against this sink.
+
+Under `on_drift: evolve`, `MysqlSink::evolve_schema()` applies additive DDL:
+
+- **New columns** → `ADD COLUMN`. MySQL has no `ADD COLUMN IF NOT EXISTS`, so the current column set is read first and an `ADD COLUMN` is emitted only for names not already present (idempotent by pre-check).
+- **Lossless widenings** (e.g. integer → number) → `MODIFY COLUMN` — gated on `allow_type_widening`; re-running the same `MODIFY` is a no-op.
+- **Nullability relaxations** → the column is re-emitted at its current mapped type with an explicit `NULL` (`MODIFY COLUMN`).
+
+Incompatible changes (narrowing / type swaps) are never auto-applied — they are routed by `on_incompatible` (`fail` or `quarantine`). See the [schema-drift cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/schema-drift.html).
+
 ## Dead-letter queue
 
 In `upsert`/`delete` mode the sink overrides `Sink::write_batch_partial`: good rows are applied and only the rows whose key could not be extracted (missing/null key) are reported as `Err`, so the pipeline routes them to the configured DLQ per-row rather than failing the whole page. In `append` mode it delegates to `write_batch`. Add a `dlq:` block to your pipeline to capture those rows; without one, a bad key fails the batch.
