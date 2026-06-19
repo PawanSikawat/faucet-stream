@@ -563,7 +563,7 @@ impl faucet_core::Sink for SqliteSink {
     ///
     /// `PRAGMA table_info` returns one row per column with `name`, `type` (the
     /// declared affinity string), and `notnull`. The affinity string is mapped
-    /// to a JSON-Schema base type via [`sqlite_affinity_to_json_schema`], and
+    /// to a JSON-Schema base type via `sqlite_affinity_to_json_schema`, and
     /// `notnull == 0` surfaces the column as nullable. The PRAGMA runs on a
     /// connection acquired from the pool (a standalone read — not inside an open
     /// transaction).

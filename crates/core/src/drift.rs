@@ -145,7 +145,7 @@ fn evolvable(dest: &Value, page: &Value) -> bool {
 /// True when the non-null base type family changes from `from` to `to`
 /// (after the integer→number collapse) — i.e. the column needs an `ALTER TYPE`.
 ///
-/// Mirrors the [`evolvable`] base-family collapse: take `from ∪ to`, drop
+/// Mirrors the `evolvable` base-family collapse: take `from ∪ to`, drop
 /// `integer` when `number` is present, and treat the change as a base-type
 /// widening only when the resulting family is no longer the destination's
 /// original family. Nullability changes alone never count here.

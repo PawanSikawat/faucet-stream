@@ -553,7 +553,7 @@ impl faucet_core::Sink for PostgresSink {
     ///
     /// Reuses the AutoMap column-discovery query shape (scoped to the exact
     /// relation via `to_regclass`), additionally reading `a.attnotnull` so
-    /// nullability round-trips through [`pg_udt_to_json_schema`].
+    /// nullability round-trips through `pg_udt_to_json_schema`.
     async fn current_schema(&self) -> Result<Option<serde_json::Value>, FaucetError> {
         let table_ref = qualified_table_ref(self.config.schema.as_deref(), &self.config.table_name);
         let rows: Vec<(String, String, bool)> = sqlx::query(

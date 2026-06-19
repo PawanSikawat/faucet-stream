@@ -550,7 +550,7 @@ impl faucet_core::Sink for MysqlSink {
     ///
     /// The MySQL database is implicit (`DATABASE()`), so there is no schema
     /// qualifier to thread. `DATA_TYPE` / `IS_NULLABLE` round-trip through
-    /// [`mysql_data_type_to_json_schema`].
+    /// `mysql_data_type_to_json_schema`.
     async fn current_schema(&self) -> Result<Option<serde_json::Value>, FaucetError> {
         let columns = self.read_columns().await?;
         if columns.is_empty() {
