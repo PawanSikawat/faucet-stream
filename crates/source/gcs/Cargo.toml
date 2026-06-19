@@ -25,6 +25,10 @@ async-stream.workspace = true
 futures.workspace = true
 bytes.workspace = true
 tokio-util.workspace = true
+# Checksum verification (opt-in `verify_checksum`): `crc` computes CRC-32C and
+# `md-5` computes MD5 to compare against the values GCS reports per object.
+crc.workspace = true
+md-5.workspace = true
 
 [features]
 compression = ["faucet-core/compression"]

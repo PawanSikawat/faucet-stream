@@ -164,6 +164,8 @@ jsonwebtoken = "9"
 base64 = "0.22"
 rsa = "0.9"
 sha2 = "0.10"
+crc = "3"
+md-5 = "0.10"
 dashmap = "6"
 uuid = { version = "1", features = ["v4", "v7"] }
 google-cloud-storage = "1.12"

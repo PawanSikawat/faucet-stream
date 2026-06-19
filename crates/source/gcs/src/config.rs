@@ -44,6 +44,23 @@ pub struct GcsSourceConfig {
     /// emits one page per object.
     #[serde(default = "default_batch_size")]
     pub batch_size: usize,
+    /// Verify each object's byte length against the `size` GCS reports for it,
+    /// failing the read with [`FaucetError::Source`](faucet_core::FaucetError::Source)
+    /// on a short (truncated) or over-long transfer (#161). Cheap (a byte
+    /// counter over the body that is read anyway) and defaults to `true`.
+    /// The check is automatically skipped for an object served with a
+    /// non-empty `Content-Encoding` (GCS may decompressively transcode it on
+    /// read, so the received byte count would not match the stored `size`).
+    #[serde(default = "default_true")]
+    pub verify_length: bool,
+    /// Verify each object's body against the CRC32C (or MD5) checksum GCS
+    /// reports for it (#161). Stronger than the length check but costs a hash
+    /// over the full body, so it defaults to `false`. Skipped for an object
+    /// with no usable checksum or one served with a non-empty
+    /// `Content-Encoding` (the stored checksum covers the stored bytes, which
+    /// transcoding would not return).
+    #[serde(default)]
+    pub verify_checksum: bool,
     /// Optional storage-host override (e.g. `http://localhost:4443` for
     /// fake-gcs-server). Production users should leave this unset.
     pub storage_host: Option<String>,
@@ -63,6 +80,9 @@ fn default_batch_size() -> usize {
 fn default_concurrency() -> usize {
     10
 }
+fn default_true() -> bool {
+    true
+}
 
 impl GcsSourceConfig {
     /// Create a new config with the required bucket name and sensible defaults.
@@ -76,6 +96,8 @@ impl GcsSourceConfig {
             max_objects: None,
             concurrency: default_concurrency(),
             batch_size: default_batch_size(),
+            verify_length: true,
+            verify_checksum: false,
             storage_host: None,
             #[cfg(feature = "compression")]
             compression: faucet_core::CompressionConfig::default(),
@@ -119,6 +141,20 @@ impl GcsSourceConfig {
 
     pub fn storage_host(mut self, host: impl Into<String>) -> Self {
         self.storage_host = Some(host.into());
+        self
+    }
+
+    /// Enable or disable the per-object length verification (default `true`).
+    /// See [`verify_length`](Self::verify_length).
+    pub fn verify_length(mut self, verify: bool) -> Self {
+        self.verify_length = verify;
+        self
+    }
+
+    /// Enable or disable per-object checksum verification (default `false`).
+    /// See [`verify_checksum`](Self::verify_checksum).
+    pub fn verify_checksum(mut self, verify: bool) -> Self {
+        self.verify_checksum = verify;
         self
     }
 
@@ -193,6 +229,38 @@ mod tests {
     fn compression_default_is_auto() {
         let cfg = GcsSourceConfig::new("bucket");
         assert_eq!(cfg.compression, faucet_core::CompressionConfig::Auto);
+    }
+
+    #[test]
+    fn verify_defaults_length_on_checksum_off() {
+        let cfg = GcsSourceConfig::new("b");
+        assert!(cfg.verify_length);
+        assert!(!cfg.verify_checksum);
+    }
+
+    #[test]
+    fn verify_builders_override() {
+        let cfg = GcsSourceConfig::new("b")
+            .verify_length(false)
+            .verify_checksum(true);
+        assert!(!cfg.verify_length);
+        assert!(cfg.verify_checksum);
+    }
+
+    #[test]
+    fn verify_fields_default_when_absent_from_json() {
+        let json = r#"{
+            "bucket": "my-bucket",
+            "prefix": null,
+            "object_keys": null,
+            "file_format": "json_lines",
+            "max_objects": null,
+            "concurrency": 10,
+            "storage_host": null
+        }"#;
+        let config: GcsSourceConfig = serde_json::from_str(json).unwrap();
+        assert!(config.verify_length);
+        assert!(!config.verify_checksum);
     }
 
     #[test]

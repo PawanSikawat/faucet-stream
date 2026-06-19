@@ -22,6 +22,13 @@ aws-sdk-s3 = { workspace = true }
 aws-config = { workspace = true }
 async-stream = { workspace = true }
 futures.workspace = true
+# Checksum verification (opt-in `verify_checksum`): `crc` covers CRC-32 /
+# CRC-32C / CRC-64-NVME; `sha2`/`md-5` cover SHA-256 / ETag-MD5; `base64`
+# decodes the values S3 advertises.
+crc.workspace = true
+sha2.workspace = true
+md-5.workspace = true
+base64.workspace = true
 
 [features]
 compression = ["faucet-core/compression"]

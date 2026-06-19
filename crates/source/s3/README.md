@@ -17,6 +17,7 @@ Built on the official `aws-sdk-s3` client (built once, reused across every read)
 - **Prefix listing with pagination** — handles truncated `ListObjectsV2` responses transparently and honours an optional `max_objects` cap.
 - **S3-compatible** — custom `endpoint_url` for MinIO, LocalStack, R2, and other S3-API services.
 - **Optional compression** — behind the `compression` feature: `gzip` / `zstd` / `auto` (suffix-detected per object key), so a single run can mix compressed and uncompressed objects.
+- **Read-integrity verification** — every object's byte length is checked against the `Content-Length` S3 advertises (`verify_length`, default on), so a cleanly-truncated transfer is rejected instead of silently parsed as a complete object. Opt into full checksum verification (`verify_checksum`) for SHA-256 / CRC-32 / CRC-32C / CRC-64-NVME / ETag-MD5.
 - **Matrix-friendly** — `${parent.field}` tokens in `prefix` are substituted per parent record in parent/child pipelines.
 
 ## Installation
@@ -87,6 +88,8 @@ faucet run pipeline.yaml
 | `concurrency` | int | `10` | Maximum number of objects fetched concurrently. Clamped to `≥ 1` at runtime. |
 | `batch_size` | int | `1000` | Records per emitted `StreamPage`. See [Streaming & batching](#streaming--batching). Rejected above `MAX_BATCH_SIZE` (1,000,000) by `faucet_core::validate_batch_size`. |
 | `compression` | enum | `auto` | *(requires the `compression` feature)* Per-object decompression codec — `none` / `gzip` / `zstd` / `auto`. |
+| `verify_length` | bool | `true` | Verify each object's byte count against the advertised `Content-Length`; a short (truncated) or over-long transfer fails with `FaucetError::Source`. Skipped (debug-logged) when the store reports no length. Disable only for a store with unreliable `Content-Length`. See [Read-integrity verification](#read-integrity-verification). |
+| `verify_checksum` | bool | `false` | Also verify the body against the checksum S3 stores for the object. Sets `ChecksumMode::Enabled` on each `GetObject` and checks the strongest available of SHA-256 / CRC-64-NVME / CRC-32C / CRC-32 / non-multipart ETag-MD5. Costs a hash over the full body. |
 
 ### File formats (`S3FileFormat`)
 
@@ -95,6 +98,39 @@ faucet run pipeline.yaml
 | JSON Lines (default) | `json_lines` | One record per non-empty line. Blank lines are skipped. |
 | JSON array | `json_array` | One record per array element. The object must be a top-level JSON array. |
 | Raw text | `raw_text` | One record per object: `{"key": "<object-key>", "content": "<file-text>"}`. |
+
+## Read-integrity verification
+
+Object bodies are read through a verifying reader that validates the transfer at
+EOF, so a stream that ends early but *cleanly* (a truncated transfer that still
+yields a clean EOF) is rejected instead of being parsed and emitted as a
+complete object — silent data loss otherwise.
+
+- **Length** (`verify_length`, default `true`) — counts the bytes read and
+  compares them against the `Content-Length` S3 advertised. A mismatch (short or
+  long) fails the page with `FaucetError::Source`. Cheap; runs over the bytes
+  that are read anyway. If the store reports no `Content-Length`, the check is
+  skipped with a debug log rather than failing.
+- **Checksum** (`verify_checksum`, default `false`) — sets
+  `ChecksumMode::Enabled` on each `GetObject` and verifies the body against the
+  strongest checksum S3 has stored for the object, in order: SHA-256,
+  CRC-64-NVME, CRC-32C, CRC-32, then the ETag as MD5 for a non-multipart upload.
+  Costs a hash over the full body. If the object advertises no checksum this
+  source can verify, a one-shot warning is logged and the length check still
+  applies.
+
+Both checks operate on the **stored** bytes (below decompression), so they work
+unchanged for `compression`-enabled `.gz` / `.zst` objects.
+
+```yaml
+pipeline:
+  source:
+    type: s3
+    config:
+      bucket: my-bucket
+      prefix: events/
+      verify_checksum: true   # length check is already on by default
+```
 
 ## Authentication
 

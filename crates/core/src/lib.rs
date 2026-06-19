@@ -35,6 +35,7 @@ pub mod traits;
 pub mod transform;
 pub mod transforming_source;
 pub mod util;
+pub mod verify;
 pub mod write_mode;
 
 #[cfg(feature = "compression")]
@@ -89,6 +90,7 @@ pub use transform::ValueCaseMode;
 pub use transform::{CastOnError, CastType};
 pub use transforming_source::TransformingSource;
 pub use util::redact_uri_credentials;
+pub use verify::{IntegrityCheck, LengthCheck, VerifyingReader};
 pub use write_mode::{
     DeleteMarker, KeyTuple, WriteMode, WritePlan, WriteSpec, key_to_doc_id, key_to_filter,
     plan_writes,
