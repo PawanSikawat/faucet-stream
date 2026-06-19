@@ -112,10 +112,51 @@ impl GcsSource {
                     self.config.bucket
                 ))
             })?;
+        // Read the object metadata (size, content-encoding, checksums) BEFORE
+        // consuming the stream, so a cleanly-truncated/corrupted transfer is
+        // rejected rather than silently parsed as a complete object (#161).
+        let highlights = resp.object();
+        let mut checks: Vec<Box<dyn faucet_core::IntegrityCheck>> = Vec::new();
+        match crate::verify::length_check(
+            highlights.size,
+            &highlights.content_encoding,
+            self.config.verify_length,
+        ) {
+            Some(check) => checks.push(check),
+            None if self.config.verify_length => tracing::debug!(
+                key = %key,
+                size = highlights.size,
+                content_encoding = %highlights.content_encoding,
+                "GCS object length verification skipped (no size or transcoded encoding)"
+            ),
+            None => {}
+        }
+        if self.config.verify_checksum {
+            let (crc32c, md5) = match &highlights.checksums {
+                Some(c) => (c.crc32c, c.md5_hash.clone()),
+                None => (None, bytes::Bytes::new()),
+            };
+            match crate::verify::checksum_check(crc32c, &md5, &highlights.content_encoding) {
+                Some(check) => checks.push(check),
+                None if highlights.content_encoding.is_empty() => tracing::warn!(
+                    key = %key,
+                    "verify_checksum is enabled but GCS advertised no verifiable checksum for \
+                     this object; relying on the length check only"
+                ),
+                None => {}
+            }
+        }
+
         let bytes_stream = resp
             .into_stream()
             .map_err(|e| std::io::Error::other(e.to_string()));
-        let buffered = tokio::io::BufReader::new(tokio_util::io::StreamReader::new(bytes_stream));
+        // Wrap the RAW byte stream in the verifier first so length/checksum
+        // cover the stored bytes (below any client-side decompression).
+        let verified = faucet_core::VerifyingReader::new(
+            tokio_util::io::StreamReader::new(bytes_stream),
+            checks,
+        );
+        let buffered = tokio::io::BufReader::new(verified);
         #[cfg(feature = "compression")]
         {
             let codec = self.config.compression.resolve(key);

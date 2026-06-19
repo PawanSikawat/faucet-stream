@@ -9,6 +9,7 @@
 
 pub mod config;
 pub mod stream;
+pub mod verify;
 
 pub use faucet_core::{FaucetError, Source};
 

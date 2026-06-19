@@ -129,20 +129,55 @@ impl S3Source {
         &self,
         key: &str,
     ) -> Result<std::pin::Pin<Box<dyn tokio::io::AsyncBufRead + Send + Unpin>>, FaucetError> {
-        let response = self
+        let mut request = self
             .client
             .get_object()
             .bucket(&self.config.bucket)
-            .key(key)
-            .send()
-            .await
-            .map_err(|e| {
-                FaucetError::Source(format!("S3 get object error for key '{key}': {e}"))
-            })?;
+            .key(key);
+        // Ask S3 to return its stored checksum so we can verify the body (#161).
+        if self.config.verify_checksum {
+            request = request.checksum_mode(aws_sdk_s3::types::ChecksumMode::Enabled);
+        }
+        let response = request.send().await.map_err(|e| {
+            FaucetError::Source(format!("S3 get object error for key '{key}': {e}"))
+        })?;
 
-        // `ByteStream::into_async_read` returns `impl AsyncRead`; wrap in a
-        // `BufReader` so `.lines()` is usable and ownership is `Unpin`.
-        let buffered = tokio::io::BufReader::new(response.body.into_async_read());
+        // Read all metadata BEFORE consuming `body` (which partially moves
+        // `response`), so a cleanly-truncated/corrupted transfer is rejected
+        // rather than silently parsed as a complete object (#161).
+        let mut checks: Vec<Box<dyn faucet_core::IntegrityCheck>> = Vec::new();
+        match crate::verify::length_check(response.content_length(), self.config.verify_length) {
+            Some(check) => checks.push(check),
+            None if self.config.verify_length => tracing::debug!(
+                key = %key,
+                "S3 object reports no Content-Length; length verification skipped"
+            ),
+            None => {}
+        }
+        if self.config.verify_checksum {
+            let advertised = crate::verify::S3Checksums {
+                crc32: response.checksum_crc32().map(str::to_string),
+                crc32c: response.checksum_crc32_c().map(str::to_string),
+                crc64nvme: response.checksum_crc64_nvme().map(str::to_string),
+                sha256: response.checksum_sha256().map(str::to_string),
+                etag: response.e_tag().map(str::to_string),
+            };
+            match crate::verify::checksum_check(&advertised) {
+                Some(check) => checks.push(check),
+                None => tracing::warn!(
+                    key = %key,
+                    "verify_checksum is enabled but S3 advertised no verifiable checksum for \
+                     this object; relying on the length check only"
+                ),
+            }
+        }
+
+        // `ByteStream::into_async_read` returns `impl AsyncRead`. Wrap the RAW
+        // body in the verifier first so length/checksum cover the stored bytes
+        // (below any decompression), then `BufReader` so `.lines()` is usable
+        // and ownership is `Unpin`.
+        let verified = faucet_core::VerifyingReader::new(response.body.into_async_read(), checks);
+        let buffered = tokio::io::BufReader::new(verified);
         #[cfg(feature = "compression")]
         {
             let codec = self.config.compression.resolve(key);

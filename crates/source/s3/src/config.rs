@@ -49,6 +49,25 @@ pub struct S3SourceConfig {
     /// that prefer one large request per file to many small ones.
     #[serde(default = "default_batch_size")]
     pub batch_size: usize,
+    /// Verify each object's byte length against the `Content-Length` the
+    /// store advertises, failing the read with [`FaucetError::Source`](faucet_core::FaucetError::Source)
+    /// on a short (truncated) or over-long transfer (#161). The check is
+    /// cheap (a byte counter over the body that is read anyway) and defaults
+    /// to `true`. Disable it only for an S3-compatible store that does not
+    /// return a reliable `Content-Length`. When the store reports no length,
+    /// the check is skipped (a debug log notes it) rather than failing.
+    #[serde(default = "default_true")]
+    pub verify_length: bool,
+    /// Verify each object's body against the checksum the store advertises —
+    /// an `x-amz-checksum-{crc32,crc32c,sha1,sha256}` header when present, or
+    /// the ETag as MD5 for a non-multipart upload (#161). Stronger than the
+    /// length check but costs a hash over the full body, so it defaults to
+    /// `false`. Enabling it sets `ChecksumMode::Enabled` on each `GetObject`
+    /// so the store returns its stored checksum. When the store advertises no
+    /// usable checksum for an object, verification is skipped for that object
+    /// (a debug log notes it); the length check still applies.
+    #[serde(default)]
+    pub verify_checksum: bool,
     /// Compression codec applied to each downloaded object. Defaults to
     /// [`CompressionConfig::Auto`](faucet_core::CompressionConfig::Auto) —
     /// the codec is resolved per-object-key, so a single source can read a
@@ -63,6 +82,10 @@ fn default_batch_size() -> usize {
     DEFAULT_BATCH_SIZE
 }
 
+fn default_true() -> bool {
+    true
+}
+
 impl S3SourceConfig {
     /// Create a new config with the required bucket name and sensible defaults.
     pub fn new(bucket: impl Into<String>) -> Self {
@@ -75,6 +98,8 @@ impl S3SourceConfig {
             max_objects: None,
             concurrency: 10,
             batch_size: DEFAULT_BATCH_SIZE,
+            verify_length: true,
+            verify_checksum: false,
             #[cfg(feature = "compression")]
             compression: faucet_core::CompressionConfig::default(),
         }
@@ -123,6 +148,20 @@ impl S3SourceConfig {
     /// S3 object.
     pub fn with_batch_size(mut self, batch_size: usize) -> Self {
         self.batch_size = batch_size;
+        self
+    }
+
+    /// Enable or disable the per-object `Content-Length` verification
+    /// (default `true`). See [`verify_length`](Self::verify_length).
+    pub fn verify_length(mut self, verify: bool) -> Self {
+        self.verify_length = verify;
+        self
+    }
+
+    /// Enable or disable per-object checksum verification (default `false`).
+    /// See [`verify_checksum`](Self::verify_checksum).
+    pub fn verify_checksum(mut self, verify: bool) -> Self {
+        self.verify_checksum = verify;
         self
     }
 
@@ -215,6 +254,41 @@ mod tests {
         }"#;
         let config: S3SourceConfig = serde_json::from_str(json).unwrap();
         assert_eq!(config.batch_size, 250);
+    }
+
+    #[test]
+    fn verify_defaults_length_on_checksum_off() {
+        let cfg = S3SourceConfig::new("b");
+        assert!(cfg.verify_length, "length verification defaults on");
+        assert!(!cfg.verify_checksum, "checksum verification defaults off");
+    }
+
+    #[test]
+    fn verify_fields_default_when_absent_from_json() {
+        // An existing config that predates these fields must still parse, with
+        // length verification on and checksum off.
+        let json = r#"{
+            "bucket": "my-bucket",
+            "prefix": null,
+            "region": null,
+            "endpoint_url": null,
+            "file_format": "json_lines",
+            "max_objects": null,
+            "concurrency": 10,
+            "batch_size": 250
+        }"#;
+        let config: S3SourceConfig = serde_json::from_str(json).unwrap();
+        assert!(config.verify_length);
+        assert!(!config.verify_checksum);
+    }
+
+    #[test]
+    fn verify_builders_override() {
+        let cfg = S3SourceConfig::new("b")
+            .verify_length(false)
+            .verify_checksum(true);
+        assert!(!cfg.verify_length);
+        assert!(cfg.verify_checksum);
     }
 
     #[cfg(feature = "compression")]

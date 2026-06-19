@@ -6,6 +6,7 @@
 
 mod config;
 mod stream;
+mod verify;
 
 pub use config::{GcsFileFormat, GcsSourceConfig};
 pub use faucet_common_gcs::GcsCredentials;

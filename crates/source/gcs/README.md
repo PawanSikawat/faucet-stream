@@ -16,6 +16,7 @@ Reach for it when your data already lives in GCS — event exports, log dumps, a
 - **Concurrent reads** — objects are fetched in parallel via `buffer_unordered(concurrency)` (default 10), so wall-clock time is bounded by your slowest objects, not their sum.
 - **Bounded-memory streaming** — `json_lines` and `raw_text` decode straight off the GCS body reader, so peak memory is `O(batch_size)` regardless of total file size.
 - **Compression auto-detect** — behind the `compression` feature, `.gz` / `.zst` objects are transparently decompressed; the codec resolves *per object key*, so one run can mix compressed and uncompressed objects.
+- **Read-integrity verification** — every object's byte length is checked against the `size` GCS reports (`verify_length`, default on), so a cleanly-truncated transfer is rejected instead of silently parsed as a complete object. Opt into CRC-32C / MD5 checksum verification with `verify_checksum`. Both checks auto-skip GCS-transcoded (`Content-Encoding: gzip`) objects.
 - **Four credential modes** — Application Default Credentials, a service-account key file, inline service-account JSON, or anonymous (for emulators). The shared `GcsCredentials` enum is re-exported from [`faucet-common-gcs`](https://crates.io/crates/faucet-common-gcs) so it matches the GCS **sink** byte-for-byte.
 - **Clients built once** — the data-plane and control-plane clients are constructed in `new()` and reused for every list and read.
 - **Matrix-aware prefixes** — `${parent.path}` placeholders in `prefix` are resolved per-record at runtime, so a parent matrix row can fan out into many per-record bucket scans.
@@ -78,6 +79,8 @@ faucet run pipeline.yaml
 |-------|------|---------|-------------|
 | `concurrency` | int | `10` | Maximum concurrent object reads. Higher = faster on many small objects; lower caps peak memory for large `raw_text` / `json_array` objects. |
 | `batch_size` | int | `1000` | Records per emitted `StreamPage`. **`0` = no batching** (one page per object). See [Streaming & batching](#streaming--batching). |
+| `verify_length` | bool | `true` | Verify each object's byte count against the `size` GCS reports; a short (truncated) or over-long transfer fails with `FaucetError::Source`. Auto-skipped for a transcoded object (non-empty `Content-Encoding`) or when no size is reported. See [Read-integrity verification](#read-integrity-verification). |
+| `verify_checksum` | bool | `false` | Also verify the body against the CRC-32C (preferred) or MD5 checksum GCS reports. Costs a hash over the full body; skipped for transcoded objects. |
 
 ### Format & testing
 
@@ -222,6 +225,36 @@ source:
 ```
 
 The codec resolves per object key, so a single source can read a mix of compressed and uncompressed objects in one run. A one-shot warning fires when an explicit codec disagrees with the object's filename suffix.
+
+## Read-integrity verification
+
+Object bodies are read through a verifying reader that validates the transfer at
+EOF, so a stream that ends early but *cleanly* is rejected instead of being
+parsed and emitted as a complete object — silent data loss otherwise.
+
+- **Length** (`verify_length`, default `true`) — counts the bytes read and
+  compares them against the `size` GCS reports for the object. A mismatch fails
+  the page with `FaucetError::Source`.
+- **Checksum** (`verify_checksum`, default `false`) — verifies the body against
+  the CRC-32C (preferred) or MD5 digest GCS reports. Costs a hash over the full
+  body. A one-shot warning is logged if the object advertises neither.
+
+Both checks are **automatically skipped for a transcoded object** — one stored
+with a non-empty `Content-Encoding` (e.g. `gzip`), which GCS may decompress on
+read so the received bytes match neither the stored `size` nor the stored
+checksum. They operate on the bytes GCS delivers (below the client-side
+`compression` feature's decompression), so `.gz` / `.zst` objects served
+without a `Content-Encoding` header verify correctly.
+
+```yaml
+pipeline:
+  source:
+    type: gcs
+    config:
+      bucket: my-bucket
+      prefix: events/
+      verify_checksum: true   # length check is already on by default
+```
 
 ## Config loading & schema
 
