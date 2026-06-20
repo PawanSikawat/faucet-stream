@@ -333,6 +333,45 @@ mod tests {
     use super::*;
 
     #[cfg(feature = "otel")]
+    #[test]
+    fn error_layer_increments_export_failures_counter() {
+        // Validates the failure-isolation acceptance criterion end-to-end: an
+        // ERROR event from an `opentelemetry*` target, routed through
+        // `OtelErrorCountLayer`, bumps `faucet_otel_export_failures_total` with
+        // the classified `signal` label. Reuses the crate-wide shared debugging
+        // recorder + LOCK (same pattern as the decorator metric tests).
+        use crate::observability::decorator::source_tests::{LOCK, snapshotter};
+        use metrics_util::debugging::DebugValue;
+        use tracing_subscriber::layer::SubscriberExt;
+
+        let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let snap = snapshotter();
+
+        let subscriber = tracing_subscriber::registry().with(OtelErrorCountLayer);
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::error!(
+                target: "opentelemetry_sdk::metrics::periodic_reader",
+                "simulated export failure"
+            );
+        });
+
+        let found = snap.snapshot().into_vec().into_iter().any(
+            |(key, _u, _d, v): (metrics_util::CompositeKey, _, _, _)| {
+                key.key().name() == "faucet_otel_export_failures_total"
+                    && key
+                        .key()
+                        .labels()
+                        .any(|l: &metrics::Label| l.key() == "signal" && l.value() == "metrics")
+                    && matches!(v, DebugValue::Counter(c) if c >= 1)
+            },
+        );
+        assert!(
+            found,
+            "OtelErrorCountLayer must increment faucet_otel_export_failures_total{{signal=metrics}}"
+        );
+    }
+
+    #[cfg(feature = "otel")]
     #[tokio::test]
     async fn build_providers_construct_without_a_live_collector() {
         let cfg = OtelConfig {
