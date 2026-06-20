@@ -43,6 +43,20 @@ transforms = [
     "transform-cdc-unwrap",
 ]
 observability-install = ["dep:metrics-exporter-prometheus", "dep:tracing-subscriber"]
+# OTLP (OpenTelemetry) export of traces + metrics (#201). Opt-in; pulls the
+# 0.31-line OTel stack. The wiring inside `install_observability` is additionally
+# gated on `observability-install` (see otel.rs); enabling `otel` alone just makes
+# the provider builders available to library callers.
+otel = [
+    "dep:opentelemetry",
+    "dep:opentelemetry_sdk",
+    "dep:opentelemetry-otlp",
+    "dep:tracing-opentelemetry",
+    "dep:metrics-exporter-opentelemetry",
+    "dep:metrics-util",
+    "dep:tracing-subscriber",
+    "tokio/rt",
+]
 compression = ["dep:async-compression", "dep:flate2", "dep:zstd"]
 quality = ["dep:regex"]
 quality-jsonschema = ["quality", "dep:jsonschema"]
@@ -51,6 +65,7 @@ quality-jsonschema = ["quality", "dep:jsonschema"]
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+url.workspace = true
 tracing.workspace = true
 async-trait.workspace = true
 reqwest.workspace = true
@@ -71,7 +86,15 @@ metrics.workspace = true
 schemars.workspace = true
 uuid.workspace = true
 metrics-exporter-prometheus = { workspace = true, optional = true }
+# `FanoutBuilder` for the Prometheus + OTLP fanout recorder (#201); optional,
+# pulled in only by the `otel` feature.
+metrics-util = { workspace = true, optional = true }
 tracing-subscriber = { workspace = true, optional = true }
+opentelemetry = { workspace = true, optional = true }
+opentelemetry_sdk = { workspace = true, optional = true }
+opentelemetry-otlp = { workspace = true, optional = true }
+tracing-opentelemetry = { workspace = true, optional = true }
+metrics-exporter-opentelemetry = { workspace = true, optional = true }
 async-compression = { workspace = true, optional = true }
 flate2 = { workspace = true, optional = true }
 zstd = { workspace = true, optional = true }
@@ -85,6 +108,7 @@ futures.workspace = true
 tempfile = "3"
 metrics-util.workspace = true
 criterion = { workspace = true, features = ["async_tokio"] }
+axum = { workspace = true }
 
 [[bench]]
 name = "observability"

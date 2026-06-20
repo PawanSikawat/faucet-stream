@@ -55,6 +55,7 @@ pub use error::FaucetError;
 pub use idempotency::{DeliveryMode, format_token, parse_token, unwrap_state, wrap_state};
 #[cfg(feature = "quality")]
 pub use observability::instrumented_apply_quality;
+pub use observability::otel::{OtelConfig, OtelProtocol, OtelSignal, shutdown_otel};
 pub use observability::{
     DurationGuard, InstallError, InstallReport, InstrumentedSink, InstrumentedSource,
     InstrumentedStateStore, Labels, ObservabilityConfig, PrometheusConfig, RunStreamOptions,

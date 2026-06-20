@@ -228,6 +228,7 @@ fn install_observability_returns_typed_error_on_garbage_listen() {
             buckets: None,
         }),
         tracing: None,
+        otel: None,
     };
     match install_observability(&cfg) {
         Err(InstallError::PrometheusBind { .. }) => {}

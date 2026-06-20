@@ -404,6 +404,9 @@ pub async fn serve(config: ServeConfig) -> CliResult<()> {
     for h in trigger_handles {
         h.abort();
     }
+    // Flush any buffered OTLP telemetry after in-flight runs drain (no-op without
+    // the `otel` feature).
+    faucet_core::shutdown_otel();
     tracing::info!("faucet serve stopped");
     Ok(())
 }

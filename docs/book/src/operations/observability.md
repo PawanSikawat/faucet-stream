@@ -59,3 +59,55 @@ Spans carry `run_id`, `pipeline`, `row`, and per-operation timing. Point a
 `--log-level` or `FAUCET_LOG`.
 
 > Full design: `docs/superpowers/specs/2026-05-23-observability-otel-prometheus-design.md`.
+
+## OTLP / OpenTelemetry export
+
+The `otel` feature pushes traces **and** metrics to any OTLP-compatible
+collector (Jaeger, Grafana Tempo, Honeycomb, Datadog, the OpenTelemetry
+Collector, etc.) alongside — not instead of — the Prometheus endpoint. Build
+the CLI with `cargo install faucet-cli --features otel`; the feature is
+included in the `full` aggregate. Enable it in your pipeline config with an
+`otel:` sub-block under the existing `observability:` key:
+
+```yaml
+observability:
+  prometheus:
+    listen: "0.0.0.0:9090"
+  otel:
+    endpoint: "https://api.honeycomb.io"
+    protocol: grpc                        # grpc (default) | http
+    headers:
+      x-honeycomb-team: "${env:HONEYCOMB_KEY}"
+    sample_ratio: 0.1                     # head-based; 1.0 = keep all traces
+    export: [traces, metrics]             # which signals to push
+    service_name: faucet                  # OTel resource service.name
+    timeout_secs: 10
+    metric_interval_secs: 60
+```
+
+The `observability.prometheus:` and `observability.otel:` blocks coexist
+independently — both can be active in the same run and metrics are fanned out
+to both exporters.
+
+**Protocol notes:**
+
+- `grpc` uses `tonic` (the default). The `faucet` CLI always runs inside a
+  tokio runtime, so gRPC works without any extra setup.
+- `http` uses HTTP/Protobuf. When `endpoint` does not already end in a
+  per-signal path (`/v1/traces`, `/v1/metrics`), faucet appends it
+  automatically — point `endpoint` at the base URL of the collector (e.g.
+  `http://localhost:4318`) and the right path is added per signal.
+
+**Reliability:** export is best-effort. An unreachable or slow collector
+**never** fails or delays a pipeline run. Export failures increment
+`faucet_otel_export_failures_total{signal}` so you can alert on a broken
+pipeline to your observability backend.
+
+See `examples/infra/otel-collector.yaml` for a minimal local collector config
+you can run with `otelcol --config examples/infra/otel-collector.yaml`.
+
+### OTLP metrics
+
+| Metric | Labels | Description |
+|--------|--------|-------------|
+| `faucet_otel_export_failures_total` | `signal` (`traces`/`metrics`/`export`) | OTLP export attempts that failed. Failures are non-fatal; the pipeline continues. |

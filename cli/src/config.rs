@@ -321,6 +321,10 @@ pub struct ObservabilitySpec {
     /// Tracing / logging configuration.
     #[serde(default)]
     pub tracing: Option<TracingSpec>,
+
+    /// OTLP (OpenTelemetry) export configuration (#201).
+    #[serde(default)]
+    pub otel: Option<OtelSpec>,
 }
 
 /// Configuration for the Prometheus metrics HTTP endpoint.
@@ -342,6 +346,73 @@ pub struct TracingSpec {
     /// `"faucet=trace"`). Defaults to the value of `RUST_LOG` when `None`.
     #[serde(default)]
     pub level: Option<String>,
+}
+
+/// OTLP export block under `observability.otel:`.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct OtelSpec {
+    /// Collector endpoint URL. When empty, defaults to the protocol-specific
+    /// localhost address (`http://localhost:4317` for gRPC, `:4318` for HTTP).
+    #[serde(default)]
+    pub endpoint: String,
+    /// OTLP transport protocol (`grpc` or `http`). Default: `grpc`.
+    #[serde(default)]
+    pub protocol: faucet_core::OtelProtocol,
+    /// Extra headers sent on every export request (e.g. backend auth tokens).
+    #[serde(default)]
+    pub headers: std::collections::HashMap<String, String>,
+    /// Head-based trace sampling ratio, 0.0..=1.0. Default: 1.0 (sample all).
+    #[serde(default = "default_otel_ratio")]
+    pub sample_ratio: f64,
+    /// Which signals to export. Default: `[traces, metrics]`.
+    #[serde(default = "default_otel_export")]
+    pub export: Vec<faucet_core::OtelSignal>,
+    /// OTel resource `service.name`. Default: `"faucet"`.
+    #[serde(default = "default_otel_service")]
+    pub service_name: String,
+    /// Per-export timeout in seconds. Default: 10.
+    #[serde(default = "default_otel_timeout")]
+    pub timeout_secs: u64,
+    /// Metric push interval in seconds. Default: 60.
+    #[serde(default = "default_otel_interval")]
+    pub metric_interval_secs: u64,
+}
+
+fn default_otel_ratio() -> f64 {
+    1.0
+}
+fn default_otel_export() -> Vec<faucet_core::OtelSignal> {
+    vec![
+        faucet_core::OtelSignal::Traces,
+        faucet_core::OtelSignal::Metrics,
+    ]
+}
+fn default_otel_service() -> String {
+    "faucet".to_string()
+}
+fn default_otel_timeout() -> u64 {
+    10
+}
+fn default_otel_interval() -> u64 {
+    60
+}
+
+impl OtelSpec {
+    /// Convert to the core config and validate ranges/URL.
+    pub fn to_core(&self) -> Result<faucet_core::OtelConfig, String> {
+        let cfg = faucet_core::OtelConfig {
+            endpoint: self.endpoint.clone(),
+            protocol: self.protocol,
+            headers: self.headers.clone(),
+            sample_ratio: self.sample_ratio,
+            export: self.export.clone(),
+            service_name: self.service_name.clone(),
+            timeout_secs: self.timeout_secs,
+            metric_interval_secs: self.metric_interval_secs,
+        };
+        cfg.validate()?;
+        Ok(cfg)
+    }
 }
 
 /// Mirrors `faucet_core::OnBatchError` but with `JsonSchema` derived and
@@ -677,6 +748,11 @@ impl PipelineConfig {
             });
         }
         crate::interpolate::resolve_config_refs(&mut cfg)?;
+        if let Some(obs) = cfg.observability.as_ref()
+            && let Some(otel) = obs.otel.as_ref()
+        {
+            otel.to_core().map_err(CliError::Config)?;
+        }
         Ok(cfg)
     }
 }
@@ -1463,5 +1539,38 @@ resilience: { retry: { max_attempts: 0 } }
         let cfg = parse_with_extension(yaml, "yaml").unwrap();
         let err = cfg.resilience.unwrap().to_policy().unwrap_err();
         assert!(err.to_string().contains("max_attempts"));
+    }
+
+    #[test]
+    fn observability_parses_otel_block() {
+        let yaml = r#"
+version: 1
+pipeline:
+  source: { type: rest, config: { base_url: "http://x" } }
+  sink: { type: stdout, config: {} }
+observability:
+  otel:
+    endpoint: http://collector:4317
+    protocol: grpc
+    export: [traces, metrics]
+"#;
+        let cfg = parse_with_extension(yaml, "yaml").unwrap();
+        let otel = cfg.observability.unwrap().otel.unwrap();
+        assert_eq!(otel.endpoint, "http://collector:4317");
+    }
+
+    #[test]
+    fn otel_validation_rejects_bad_ratio() {
+        let yaml = r#"
+version: 1
+pipeline:
+  source: { type: rest, config: { base_url: "http://x" } }
+  sink: { type: stdout, config: {} }
+observability:
+  otel:
+    sample_ratio: 9.0
+"#;
+        let err = parse_with_extension(yaml, "yaml").unwrap_err();
+        assert!(format!("{err}").contains("sample_ratio"));
     }
 }
