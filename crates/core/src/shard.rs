@@ -5,7 +5,8 @@
 //! a single large source (a big S3 prefix, a billion-row table) scales
 //! horizontally instead of being capped at one worker's throughput.
 //!
-//! The capability is exposed as **defaulted methods on the [`Source`] trait**
+//! The capability is exposed as **defaulted methods on the
+//! [`Source`](crate::Source) trait**
 //! ([`enumerate_shards`](crate::Source::enumerate_shards),
 //! [`apply_shard`](crate::Source::apply_shard),
 //! [`is_shardable`](crate::Source::is_shardable)) rather than a separate trait,

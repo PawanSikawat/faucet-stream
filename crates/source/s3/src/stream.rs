@@ -505,7 +505,7 @@ impl faucet_core::Source for S3Source {
 
     /// The S3 source is always shardable: any object set can be split by
     /// hash-of-key. Sharding only takes effect when the cluster coordinator
-    /// calls [`apply_shard`](Self::apply_shard); a plain `faucet run` reads
+    /// calls `apply_shard`; a plain `faucet run` reads
     /// every object.
     fn is_shardable(&self) -> bool {
         true
