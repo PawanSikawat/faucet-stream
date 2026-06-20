@@ -26,9 +26,10 @@ pub fn resolve_tracing_level(cli_flag: Option<&str>, yaml_level: Option<&str>) -
     yaml_level.map(|s| s.to_string())
 }
 
-/// Install Prometheus + tracing from the config's `observability:` block. Logs
-/// (does not fail) when a recorder/subscriber is already installed.
-pub fn install(cfg: &PipelineConfig) -> CliResult<()> {
+/// Build the core `ObservabilityConfig` from the CLI config, including OTLP when
+/// the `otel` feature is compiled in. Logs a one-shot warning if an `otel:` block
+/// is present but the binary was built without `--features otel`.
+pub fn build_observability_config(cfg: &PipelineConfig) -> ObservabilityConfig {
     let level = resolve_tracing_level(
         None,
         cfg.observability
@@ -36,7 +37,9 @@ pub fn install(cfg: &PipelineConfig) -> CliResult<()> {
             .and_then(|o| o.tracing.as_ref())
             .and_then(|t| t.level.as_deref()),
     );
-    let obs_cfg = ObservabilityConfig {
+    // `mut` is only needed when the `otel` feature populates `obs.otel` below.
+    #[cfg_attr(not(feature = "otel"), allow(unused_mut))]
+    let mut obs = ObservabilityConfig {
         prometheus: cfg
             .observability
             .as_ref()
@@ -46,9 +49,39 @@ pub fn install(cfg: &PipelineConfig) -> CliResult<()> {
                 buckets: p.buckets.clone(),
             }),
         tracing: level.map(|l| TracingConfig { level: l }),
-        // OTLP export is wired from the config in a follow-up task; default off.
-        otel: None,
+        ..Default::default()
     };
+
+    let otel_present = cfg
+        .observability
+        .as_ref()
+        .and_then(|o| o.otel.as_ref())
+        .is_some();
+    #[cfg(feature = "otel")]
+    {
+        if let Some(spec) = cfg.observability.as_ref().and_then(|o| o.otel.as_ref()) {
+            match spec.to_core() {
+                Ok(c) => obs.otel = Some(c),
+                Err(e) => tracing::warn!("ignoring invalid otel config: {e}"),
+            }
+        }
+    }
+    #[cfg(not(feature = "otel"))]
+    {
+        if otel_present {
+            tracing::warn!(
+                "observability.otel is configured but this binary was built without --features otel; OTLP export is disabled"
+            );
+        }
+    }
+    let _ = otel_present;
+    obs
+}
+
+/// Install Prometheus + tracing from the config's `observability:` block. Logs
+/// (does not fail) when a recorder/subscriber is already installed.
+pub fn install(cfg: &PipelineConfig) -> CliResult<()> {
+    let obs_cfg = build_observability_config(cfg);
     let report = install_observability(&obs_cfg)?;
     if let Some(addr) = report.prometheus_listen.as_deref() {
         tracing::info!("Prometheus /metrics listening on {addr}");
@@ -62,6 +95,9 @@ pub fn install(cfg: &PipelineConfig) -> CliResult<()> {
         tracing::warn!(
             "tracing subscriber already installed; logs route through the existing subscriber"
         );
+    }
+    if report.otel_installed {
+        tracing::info!("OTLP export enabled: {}", report.otel_signals.join(", "));
     }
     Ok(())
 }
@@ -137,5 +173,22 @@ mod tests {
         with_clean_env(|| {
             assert_eq!(resolve_tracing_level(None, None), None);
         });
+    }
+
+    #[test]
+    fn maps_otel_spec_into_observability_config() {
+        let yaml = r#"
+version: 1
+pipeline:
+  source: { type: rest, config: { base_url: "http://x" } }
+  sink: { type: stdout, config: {} }
+observability:
+  otel: { endpoint: "http://c:4317" }
+"#;
+        let cfg = crate::config::parse_with_extension(yaml, "yaml").unwrap();
+        let obs = build_observability_config(&cfg);
+        #[cfg(feature = "otel")]
+        assert!(obs.otel.is_some());
+        let _ = obs;
     }
 }

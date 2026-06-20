@@ -58,6 +58,9 @@ pub async fn run(args: ReplicateArgs) -> CliResult<()> {
     )
     .await?;
 
+    // Flush any buffered OTLP telemetry before exiting (no-op without `otel`).
+    faucet_core::shutdown_otel();
+
     println!("replication finished");
     Ok(())
 }

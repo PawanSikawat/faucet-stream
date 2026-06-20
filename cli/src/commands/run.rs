@@ -136,6 +136,10 @@ pub async fn run(args: RunArgs) -> CliResult<()> {
         if total_written == 1 { "" } else { "s" }
     );
 
+    // Flush any buffered OTLP telemetry before the process exits (no-op without
+    // the `otel` feature). Done on both the success and failure exit paths.
+    faucet_core::shutdown_otel();
+
     if summary.had_failures() {
         return Err(CliError::PipelineHadFailures { count: failed });
     }

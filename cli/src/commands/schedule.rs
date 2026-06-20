@@ -465,6 +465,9 @@ async fn run_loop(
             _ = shutdown.recv() => {
                 tracing::info!(pipeline = %pipeline_name, "shutdown signal received; draining in-flight run");
                 graceful_shutdown(running.take(), compiled.shutdown_grace, &pipeline_name).await;
+                // Flush any buffered OTLP telemetry after the final run drains
+                // (no-op without the `otel` feature).
+                faucet_core::shutdown_otel();
                 return Ok(());
             }
 
