@@ -382,7 +382,10 @@ fn default_otel_ratio() -> f64 {
     1.0
 }
 fn default_otel_export() -> Vec<faucet_core::OtelSignal> {
-    vec![faucet_core::OtelSignal::Traces, faucet_core::OtelSignal::Metrics]
+    vec![
+        faucet_core::OtelSignal::Traces,
+        faucet_core::OtelSignal::Metrics,
+    ]
 }
 fn default_otel_service() -> String {
     "faucet".to_string()

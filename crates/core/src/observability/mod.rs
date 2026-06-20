@@ -9,9 +9,9 @@ mod drift;
 mod install;
 mod labels;
 mod options;
+pub mod otel;
 #[cfg(feature = "quality")]
 mod quality;
-pub mod otel;
 pub mod resilience;
 mod state;
 mod strip;

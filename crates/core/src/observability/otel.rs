@@ -125,7 +125,8 @@ impl OtelConfig {
         }
         // resolve_endpoint() always yields a value; validate the effective URL.
         let ep = self.resolve_endpoint();
-        url::Url::parse(&ep).map_err(|e| format!("otel.endpoint is not a valid URL ({ep}): {e}"))?;
+        url::Url::parse(&ep)
+            .map_err(|e| format!("otel.endpoint is not a valid URL ({ep}): {e}"))?;
         Ok(())
     }
 }
@@ -134,6 +135,9 @@ impl OtelConfig {
 /// appends the per-signal path for the `OTEL_EXPORTER_OTLP_ENDPOINT` env-var
 /// form). Users naturally configure the base endpoint, so for HTTP we append the
 /// conventional per-signal path ourselves when it is not already present.
+// Always compiled (unit-testable without the feature); only *called* from the
+// otel-gated `mod sdk`, so it reads as dead code in a no-otel non-test build.
+#[cfg_attr(not(feature = "otel"), allow(dead_code))]
 pub(crate) fn http_signal_endpoint(base: &str, signal_path: &str) -> String {
     let trimmed = base.trim_end_matches('/');
     if trimmed.ends_with(signal_path) {
@@ -146,6 +150,9 @@ pub(crate) fn http_signal_endpoint(base: &str, signal_path: &str) -> String {
 /// Map an `opentelemetry*` tracing event target to a `signal` label for the
 /// `faucet_otel_export_failures_total` counter. Pure — unit-testable without a
 /// tracing `Context`.
+// Always compiled (unit-testable without the feature); only *called* from the
+// otel-gated `mod layer`, so it reads as dead code in a no-otel non-test build.
+#[cfg_attr(not(feature = "otel"), allow(dead_code))]
 pub(crate) fn otel_signal_label(target: &str) -> &'static str {
     if target.contains("metric") {
         "metrics"
@@ -343,17 +350,35 @@ mod tests {
 
     #[test]
     fn http_signal_endpoint_appends_path_when_absent() {
-        assert_eq!(http_signal_endpoint("http://c:4318", "/v1/traces"), "http://c:4318/v1/traces");
-        assert_eq!(http_signal_endpoint("http://c:4318/", "/v1/traces"), "http://c:4318/v1/traces");
+        assert_eq!(
+            http_signal_endpoint("http://c:4318", "/v1/traces"),
+            "http://c:4318/v1/traces"
+        );
+        assert_eq!(
+            http_signal_endpoint("http://c:4318/", "/v1/traces"),
+            "http://c:4318/v1/traces"
+        );
         // idempotent: already has the path
-        assert_eq!(http_signal_endpoint("http://c:4318/v1/traces", "/v1/traces"), "http://c:4318/v1/traces");
-        assert_eq!(http_signal_endpoint("http://c:4318", "/v1/metrics"), "http://c:4318/v1/metrics");
+        assert_eq!(
+            http_signal_endpoint("http://c:4318/v1/traces", "/v1/traces"),
+            "http://c:4318/v1/traces"
+        );
+        assert_eq!(
+            http_signal_endpoint("http://c:4318", "/v1/metrics"),
+            "http://c:4318/v1/metrics"
+        );
     }
 
     #[test]
     fn record_otel_error_classifies_signal_by_target() {
-        assert_eq!(otel_signal_label("opentelemetry_sdk::metrics::periodic_reader"), "metrics");
-        assert_eq!(otel_signal_label("opentelemetry_sdk::trace::span_processor"), "traces");
+        assert_eq!(
+            otel_signal_label("opentelemetry_sdk::metrics::periodic_reader"),
+            "metrics"
+        );
+        assert_eq!(
+            otel_signal_label("opentelemetry_sdk::trace::span_processor"),
+            "traces"
+        );
         assert_eq!(otel_signal_label("opentelemetry_otlp::exporter"), "export");
         assert_eq!(otel_signal_label("opentelemetry"), "export");
     }

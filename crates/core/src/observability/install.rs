@@ -14,6 +14,9 @@ pub struct ObservabilityConfig {
 }
 
 /// Which metrics recorder to install given which exporters are requested.
+/// Only consulted by `install_observability`, which itself requires the recorder
+/// machinery, so it's gated on the same feature.
+#[cfg(feature = "observability-install")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum MetricsMode {
     None,
@@ -22,6 +25,7 @@ pub(crate) enum MetricsMode {
     Fanout,
 }
 
+#[cfg(feature = "observability-install")]
 impl MetricsMode {
     pub(crate) fn select(prometheus: bool, otel_metrics: bool) -> Self {
         match (prometheus, otel_metrics) {
