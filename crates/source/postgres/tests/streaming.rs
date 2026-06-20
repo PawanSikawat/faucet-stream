@@ -402,6 +402,30 @@ async fn shards_partition_rows_disjointly_and_completely() {
     );
 }
 
+/// `enumerate_shards` surfaces an error when the shard key can't be computed
+/// (here: a non-existent column), and `apply_shard` rejects a malformed shard
+/// descriptor — the error paths a coordinator must handle.
+#[tokio::test(flavor = "multi_thread")]
+async fn shard_error_paths() {
+    use faucet_core::ShardSpec;
+    use faucet_source_postgres::ShardConfig;
+
+    let (_container, url) = start_postgres().await;
+    seed_events(&url, 5).await;
+
+    let mut config = PostgresSourceConfig::new(&url, "SELECT id FROM events");
+    config.shard = Some(ShardConfig {
+        key: "no_such_column".into(),
+    });
+    let source = PostgresSource::new(config).await.expect("source");
+    // MIN/MAX over a non-existent column → SQL error → enumerate_shards errors.
+    assert!(source.enumerate_shards(4).await.is_err());
+
+    // A descriptor missing lo/hi is rejected by apply_shard.
+    let bad = ShardSpec::new("0", serde_json::json!({ "key": "id" }));
+    assert!(source.apply_shard(&bad).await.is_err());
+}
+
 /// A config without a `shard` block is not shardable: it enumerates to a single
 /// whole-dataset shard, preserving single-worker behavior.
 #[tokio::test(flavor = "multi_thread")]

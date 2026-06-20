@@ -1894,5 +1894,46 @@ mod tests {
             .await;
             assert!(!ok, "malformed resilience → shard fails fast");
         }
+
+        #[tokio::test]
+        async fn resume_claimed_shard_with_unloadable_config_fails_the_shard() {
+            // A claimed shard whose run config fails to re-load (malformed body)
+            // exercises resume_claimed_shard's load-error branch → shard failed.
+            let dir = tempfile::tempdir().unwrap();
+            let state = sqlite_state(dir.path()).await;
+            let mut rec = RunRecord::queued("r".into(), None, BTreeMap::new(), None, Utc::now());
+            rec.status = RunStatus::Sharded;
+            rec.config_body = Some("this: is: not: valid: yaml: [".into());
+            state.history().upsert(&rec).await.unwrap();
+            use crate::serve::history::ShardInsert;
+            state
+                .history()
+                .insert_shards(
+                    "r",
+                    &[ShardInsert {
+                        shard_id: "0".into(),
+                        descriptor: serde_json::Value::Null,
+                        size_estimate: None,
+                    }],
+                )
+                .await
+                .unwrap();
+            let claimed = state.history().claim_shards(1).await.unwrap();
+            resume_claimed_shard(state.clone(), claimed.into_iter().next().unwrap());
+
+            let mut status = RunStatus::Sharded;
+            for _ in 0..100 {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                status = state.history().get("r").await.unwrap().unwrap().status;
+                if status.is_terminal() {
+                    break;
+                }
+            }
+            assert_eq!(
+                status,
+                RunStatus::Failed,
+                "unloadable config → parent failed"
+            );
+        }
     }
 }
