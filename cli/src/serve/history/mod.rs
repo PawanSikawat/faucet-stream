@@ -643,6 +643,44 @@ mod tests {
         assert!(v.get("config_body").is_none());
     }
 
+    #[test]
+    fn shard_progress_all_terminal() {
+        // No shards yet → not terminal (don't finalize an unexpanded run).
+        assert!(!ShardProgress::default().all_terminal());
+        // Some still running.
+        let mut p = ShardProgress {
+            total: 3,
+            completed: 1,
+            failed: 0,
+            running: 1,
+            pending: 1,
+        };
+        assert!(!p.all_terminal());
+        // All terminal (mix of completed + failed sums to total).
+        p = ShardProgress {
+            total: 3,
+            completed: 2,
+            failed: 1,
+            running: 0,
+            pending: 0,
+        };
+        assert!(p.all_terminal());
+    }
+
+    #[tokio::test]
+    async fn memory_backend_shard_methods_are_inert() {
+        use crate::serve::history::memory::MemoryHistory;
+        let h = MemoryHistory::new(Duration::from_secs(60));
+        assert_eq!(h.insert_shards("r", &[]).await.unwrap(), 0);
+        assert!(h.claim_shards(8).await.unwrap().is_empty());
+        assert_eq!(h.renew_shard_leases().await.unwrap(), 0);
+        assert!(!h.finalize_shard("r", "0", true).await.unwrap());
+        assert_eq!(
+            h.shard_progress("r").await.unwrap(),
+            ShardProgress::default()
+        );
+    }
+
     #[tokio::test]
     async fn memory_backend_cluster_methods_are_inert() {
         use crate::serve::history::memory::MemoryHistory;

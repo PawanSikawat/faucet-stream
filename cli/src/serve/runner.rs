@@ -6,8 +6,10 @@
 
 use crate::auth_catalog::build_auth_catalog;
 use crate::executor::{ExecuteOptions, RunSummary, run_expanded};
+use crate::registry::build_source;
 use crate::serve::error::ServeError;
 use crate::serve::history::{Claim, InvocationRecord, RunRecord, RunStatus};
+use crate::serve::history::{ClaimedShard, ShardInsert};
 use crate::serve::load::{ConfigFormat, LoadedSubmission, load_submission};
 use crate::serve::state::ServerState;
 use crate::serve::{idempotency, metrics};
@@ -113,6 +115,33 @@ pub fn resume_claimed_run(state: ServerState, rec: RunRecord) {
             }
         };
 
+        // Mode B (#230): a sharded run is expanded into shard rows here — the
+        // claiming instance acts as the (ephemeral) coordinator — and is NOT
+        // executed as a whole. Enumeration + insert is idempotent, so two
+        // instances both claiming + coordinating converge on the same shard set.
+        if let Some(sh) = loaded.cfg.shard.clone()
+            && sh.count >= 2
+        {
+            match coordinate_sharded_run(&state, &run_id, &loaded, sh.count).await {
+                Ok(true) => return, // expanded into shards — shard loop runs them
+                Ok(false) => {}     // not shardable → fall through, run the whole run
+                Err(e) => {
+                    finalize(
+                        &state,
+                        &run_id,
+                        rec.submitted_at,
+                        Terminal::Failed {
+                            reason: format!("sharding: {e}"),
+                            records: 0,
+                            invs: Vec::new(),
+                        },
+                    )
+                    .await;
+                    return;
+                }
+            }
+        }
+
         // The claim loop only claims up to available_permits and is the sole
         // permit consumer, so this acquire returns immediately.
         let _permit = state
@@ -136,6 +165,308 @@ pub fn resume_claimed_run(state: ServerState, rec: RunRecord) {
         )
         .await;
     });
+}
+
+/// Coordinator step (Mode B): expand a sharded run into `faucet_serve_shards`
+/// rows. Returns `Ok(true)` when the run was sharded (caller must not execute it
+/// as a whole), `Ok(false)` when it isn't shardable (caller runs it whole).
+///
+/// Idempotent: enumeration is deterministic and the insert is
+/// `ON CONFLICT DO NOTHING`, so a re-coordinated run (e.g. after the coordinator
+/// crashed and the Pending run was requeued) converges on the same shard set.
+async fn coordinate_sharded_run(
+    state: &ServerState,
+    run_id: &str,
+    loaded: &LoadedSubmission,
+    count: usize,
+) -> crate::error::CliResult<bool> {
+    use crate::error::CliError;
+
+    // Sharding applies to a single-source pipeline; a matrix fan-out is not
+    // shardable (each row is already an independent unit — use Mode A).
+    if loaded.nodes.len() != 1 {
+        tracing::warn!(
+            run_id,
+            nodes = loaded.nodes.len(),
+            "shard requested but the run is not a single-node pipeline; running it whole"
+        );
+        return Ok(false);
+    }
+    let node = &loaded.nodes[0];
+    let auth = build_auth_catalog(loaded.cfg.auth.as_ref())
+        .map_err(|e| CliError::Internal(format!("auth catalog: {e}")))?;
+    let source = build_source(&node.source.kind, node.source.config.clone(), &auth, None).await?;
+    if !source.is_shardable() {
+        tracing::warn!(
+            run_id,
+            kind = %node.source.kind,
+            "source is not shardable; running the run whole"
+        );
+        return Ok(false);
+    }
+
+    let shards = source
+        .enumerate_shards(count)
+        .await
+        .map_err(|e| CliError::Internal(format!("enumerate_shards: {e}")))?;
+    let inserts: Vec<ShardInsert> = shards
+        .iter()
+        .map(|s| ShardInsert {
+            shard_id: s.id.clone(),
+            descriptor: s.descriptor.clone(),
+            size_estimate: s.size_estimate,
+        })
+        .collect();
+    let inserted = state
+        .history()
+        .insert_shards(run_id, &inserts)
+        .await
+        .map_err(|e| CliError::Internal(e.to_string()))?;
+    tracing::info!(
+        run_id,
+        shards = inserts.len(),
+        inserted,
+        "expanded run into shards (Mode B)"
+    );
+
+    // Mark the parent run Sharded (passive — finalized by shard completion).
+    if let Ok(Some(mut r)) = state.history().get(run_id).await {
+        r.status = RunStatus::Sharded;
+        let _ = state.history().upsert(&r).await;
+    }
+    // Wake the local claim loop so it picks up the freshly-inserted shards.
+    state.cluster().kick();
+    Ok(true)
+}
+
+/// Execute one claimed shard (Mode B): rebuild + narrow the source to the shard,
+/// run it under a permit, owner-fenced-finalize the shard, then finalize the
+/// parent run once every shard is terminal.
+pub fn resume_claimed_shard(state: ServerState, claimed: ClaimedShard) {
+    tokio::spawn(async move {
+        let ClaimedShard {
+            run_id,
+            shard_id,
+            descriptor,
+            run,
+        } = claimed;
+
+        let Some(body) = run.config_body.clone() else {
+            tracing::error!(run_id, shard_id, "claimed shard's run has no stored config");
+            let _ = state
+                .history()
+                .finalize_shard(&run_id, &shard_id, false)
+                .await;
+            maybe_finalize_parent(&state, &run_id).await;
+            return;
+        };
+        let format = run.config_format.unwrap_or_default();
+        let loaded = match load_submission(&body, format, state.default_base()).await {
+            Ok(l) => l,
+            Err(e) => {
+                tracing::error!(
+                    run_id,
+                    shard_id,
+                    error = %e.api_error().error.message,
+                    "re-loading shard config failed"
+                );
+                let _ = state
+                    .history()
+                    .finalize_shard(&run_id, &shard_id, false)
+                    .await;
+                maybe_finalize_parent(&state, &run_id).await;
+                return;
+            }
+        };
+
+        let _permit = state
+            .semaphore()
+            .acquire_owned()
+            .await
+            .expect("semaphore not closed");
+
+        let shard = faucet_core::ShardSpec {
+            id: shard_id.clone(),
+            descriptor,
+            size_estimate: None,
+        };
+        let success = execute_shard(
+            &state,
+            loaded,
+            &run_id,
+            &shard_id,
+            shard,
+            run.timeout_secs,
+            run.clock.clone(),
+            run.submitted_at,
+        )
+        .await;
+
+        match state
+            .history()
+            .finalize_shard(&run_id, &shard_id, success)
+            .await
+        {
+            Ok(true) => {}
+            Ok(false) => tracing::warn!(
+                run_id,
+                shard_id,
+                "shard was reclaimed by another instance; discarding result"
+            ),
+            Err(e) => tracing::error!(run_id, shard_id, error = %e, "finalize_shard failed"),
+        }
+        maybe_finalize_parent(&state, &run_id).await;
+    });
+}
+
+/// Run one shard's pipeline (single node, source narrowed via `opts.shard`).
+/// Returns `true` on clean completion. Does not touch the parent run record —
+/// the caller finalizes the shard and the parent.
+#[allow(clippy::too_many_arguments)]
+async fn execute_shard(
+    state: &ServerState,
+    loaded: LoadedSubmission,
+    run_id: &str,
+    shard_id: &str,
+    shard: faucet_core::ShardSpec,
+    timeout_secs: Option<u64>,
+    clock_flag: Option<String>,
+    submitted_at: DateTime<Utc>,
+) -> bool {
+    let LoadedSubmission { cfg, nodes } = loaded;
+    let pipeline_name = cfg.name.clone().unwrap_or_else(|| "serve".to_string());
+
+    let auth = match build_auth_catalog(cfg.auth.as_ref()) {
+        Ok(a) => a,
+        Err(e) => {
+            tracing::error!(run_id, shard_id, "shard auth catalog: {e}");
+            return false;
+        }
+    };
+    let clock = match resolve_clock(clock_flag.as_deref(), submitted_at) {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::error!(
+                run_id,
+                shard_id,
+                "shard clock: {}",
+                e.api_error().error.message
+            );
+            return false;
+        }
+    };
+    let resilience = match &cfg.resilience {
+        Some(spec) => match spec.to_policy() {
+            Ok(p) => Some(p),
+            Err(e) => {
+                tracing::error!(run_id, shard_id, "shard resilience: {e}");
+                return false;
+            }
+        },
+        None => None,
+    };
+    #[cfg(feature = "lineage")]
+    let lineage = match crate::lineage_glue::build_emitter(cfg.lineage.as_ref()) {
+        Ok(l) => l,
+        Err(e) => {
+            tracing::error!(run_id, shard_id, "shard lineage: {e}");
+            return false;
+        }
+    };
+
+    let coop = CancellationToken::new();
+    let opts = ExecuteOptions {
+        pipeline_name,
+        execution: cfg.execution.clone(),
+        dry_run: false,
+        limit: None,
+        state_path_override: None,
+        shard: Some(shard),
+        auth,
+        clock,
+        cancel: Some(coop.clone()),
+        resilience,
+        #[cfg(feature = "lineage")]
+        lineage,
+        #[cfg(feature = "lineage")]
+        lineage_cfg: cfg.lineage.clone(),
+    };
+
+    let server_shutdown = state.shutdown_token();
+    let span = tracing::info_span!("faucet.serve.shard", serve_run_id = %run_id, shard = %shard_id);
+    let work = async move { classify_run(run_expanded(nodes, opts).await) }.instrument(span);
+    tokio::pin!(work);
+    let timeout_fut = async {
+        match timeout_secs {
+            Some(s) => tokio::time::sleep(Duration::from_secs(s)).await,
+            None => std::future::pending::<()>().await,
+        }
+    };
+    tokio::pin!(timeout_fut);
+
+    // Cancel triggers (shutdown / timeout) cooperatively cancel + flush, like
+    // execute_run. A failed shard simply returns false → its lease eventually
+    // reassigns it (or it poisons after max_attempts).
+    let terminal = tokio::select! {
+        biased;
+        t = &mut work => t,
+        _ = server_shutdown.cancelled() => {
+            coop.cancel();
+            let _ = tokio::time::timeout(RUN_FLUSH_GRACE, &mut work).await;
+            Terminal::ShutdownFailed
+        }
+        _ = &mut timeout_fut => {
+            coop.cancel();
+            let _ = tokio::time::timeout(RUN_FLUSH_GRACE, &mut work).await;
+            Terminal::Timeout { secs: timeout_secs.unwrap_or(0) }
+        }
+    };
+    matches!(terminal, Terminal::Completed { .. })
+}
+
+/// Finalize a `Sharded` parent run once all its shards are terminal. The last
+/// shard to finish always observes `all_terminal` (its own `finalize_shard`
+/// committed first), so the run never lingers `Sharded`. A benign double-finalize
+/// (two shards finishing simultaneously) writes the same terminal status twice.
+async fn maybe_finalize_parent(state: &ServerState, run_id: &str) {
+    let progress = match state.history().shard_progress(run_id).await {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::warn!(run_id, error = %e, "shard_progress failed");
+            return;
+        }
+    };
+    if !progress.all_terminal() {
+        return;
+    }
+    let success = progress.failed == 0;
+    if let Ok(Some(mut r)) = state.history().get(run_id).await
+        && r.status == RunStatus::Sharded
+    {
+        r.status = if success {
+            RunStatus::Completed
+        } else {
+            RunStatus::Failed
+        };
+        r.finished_at = Some(Utc::now());
+        if !success {
+            r.error = Some(format!(
+                "{}/{} shard(s) failed",
+                progress.failed, progress.total
+            ));
+        }
+        if let Err(e) = state.history().upsert(&r).await {
+            tracing::error!(run_id, error = %e, "finalizing sharded parent run failed");
+            return;
+        }
+        metrics::record_run_finished(r.status, if success { "ok" } else { "error" });
+        tracing::info!(
+            run_id,
+            shards = progress.total,
+            failed = progress.failed,
+            "sharded run finalized"
+        );
+    }
 }
 
 /// Validate, idempotency-claim, queue, and spawn a submission.
@@ -653,6 +984,7 @@ async fn execute_run(
         dry_run: false,
         limit: None,
         state_path_override: None,
+        shard: None,
         auth,
         clock,
         cancel: Some(coop.clone()),

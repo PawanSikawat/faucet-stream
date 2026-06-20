@@ -205,6 +205,23 @@ pub(crate) async fn lease_loop(state: ServerState, period: Duration, shutdown: C
                         Ok(_) => {}
                         Err(e) => tracing::warn!(error = %e, "cluster: reclaim_orphans failed"),
                     }
+                    // Mode B (#230): heartbeat this instance's running shards, and
+                    // rebalance shards whose owner's lease expired (requeue →
+                    // another worker, or poison past max_attempts).
+                    if let Err(e) = state.history().renew_shard_leases().await {
+                        tracing::warn!(error = %e, "cluster: renew_shard_leases failed");
+                    }
+                    match state.history().reclaim_shards(cluster.max_attempts()).await {
+                        Ok(r) if r.requeued > 0 || r.failed > 0 => {
+                            crate::serve::metrics::record_shards_reclaimed(r.requeued, r.failed);
+                            tracing::warn!(
+                                requeued = r.requeued, failed = r.failed,
+                                "cluster: reclaimed orphaned shards from an expired-lease instance"
+                            );
+                        }
+                        Ok(_) => {}
+                        Err(e) => tracing::warn!(error = %e, "cluster: reclaim_shards failed"),
+                    }
                 } else {
                     // Single-instance: mark orphans failed (today's behavior).
                     match state.history().recover_orphans().await {

@@ -74,6 +74,19 @@ pub fn record_runs_claimed(n: usize) {
     metrics::counter!("faucet_serve_runs_claimed_total").increment(n as u64);
 }
 
+/// Count source shards claimed for execution by this instance (Mode B, #230).
+pub fn record_shards_claimed(n: usize) {
+    metrics::counter!("faucet_serve_shards_claimed_total").increment(n as u64);
+}
+
+/// Count shard reclaims (rebalance), split by outcome (Mode B, #230).
+pub fn record_shards_reclaimed(requeued: usize, failed: usize) {
+    metrics::counter!("faucet_serve_shards_reclaimed_total", "outcome" => "requeued")
+        .increment(requeued as u64);
+    metrics::counter!("faucet_serve_shards_reclaimed_total", "outcome" => "failed")
+        .increment(failed as u64);
+}
+
 /// `1` when clustered execution is enabled for this instance, else `0`.
 pub fn set_cluster_enabled(on: bool) {
     metrics::gauge!("faucet_serve_cluster_enabled").set(if on { 1.0 } else { 0.0 });
