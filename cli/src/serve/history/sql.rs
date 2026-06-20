@@ -486,6 +486,7 @@ pub fn parse_status(s: &str) -> RunStatus {
         "queued" => RunStatus::Queued,
         "pending" => RunStatus::Pending,
         "running" => RunStatus::Running,
+        "sharded" => RunStatus::Sharded,
         "completed" => RunStatus::Completed,
         "cancelled" => RunStatus::Cancelled,
         _ => RunStatus::Failed,

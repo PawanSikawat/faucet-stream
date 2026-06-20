@@ -31,6 +31,12 @@ pub enum RunStatus {
     Queued,
     Pending,
     Running,
+    /// Mode B (#230): the run has been expanded into shards (rows in
+    /// `faucet_serve_shards`). It does not execute as a whole — its shards do,
+    /// each claimed/leased independently — and it is finalized to a terminal
+    /// state once every shard is terminal. Non-terminal, owner-less, and not
+    /// reclaimed by run-level orphan recovery (only its shards are).
+    Sharded,
     Completed,
     Failed,
     Cancelled,
@@ -45,6 +51,7 @@ impl RunStatus {
             Self::Queued => "queued",
             Self::Pending => "pending",
             Self::Running => "running",
+            Self::Sharded => "sharded",
             Self::Completed => "completed",
             Self::Failed => "failed",
             Self::Cancelled => "cancelled",
