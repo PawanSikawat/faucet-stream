@@ -11,6 +11,7 @@ mod labels;
 mod options;
 #[cfg(feature = "quality")]
 mod quality;
+pub mod otel;
 pub mod resilience;
 mod state;
 mod strip;

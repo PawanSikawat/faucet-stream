@@ -43,6 +43,18 @@ transforms = [
     "transform-cdc-unwrap",
 ]
 observability-install = ["dep:metrics-exporter-prometheus", "dep:tracing-subscriber"]
+# OTLP (OpenTelemetry) export of traces + metrics (#201). Opt-in; pulls the
+# 0.31-line OTel stack. The wiring inside `install_observability` is additionally
+# gated on `observability-install` (see otel.rs); enabling `otel` alone just makes
+# the provider builders available to library callers.
+otel = [
+    "dep:opentelemetry",
+    "dep:opentelemetry_sdk",
+    "dep:opentelemetry-otlp",
+    "dep:tracing-opentelemetry",
+    "dep:metrics-exporter-opentelemetry",
+    "dep:tracing-subscriber",
+]
 compression = ["dep:async-compression", "dep:flate2", "dep:zstd"]
 quality = ["dep:regex"]
 quality-jsonschema = ["quality", "dep:jsonschema"]
@@ -72,6 +84,11 @@ schemars.workspace = true
 uuid.workspace = true
 metrics-exporter-prometheus = { workspace = true, optional = true }
 tracing-subscriber = { workspace = true, optional = true }
+opentelemetry = { workspace = true, optional = true }
+opentelemetry_sdk = { workspace = true, optional = true }
+opentelemetry-otlp = { workspace = true, optional = true }
+tracing-opentelemetry = { workspace = true, optional = true }
+metrics-exporter-opentelemetry = { workspace = true, optional = true }
 async-compression = { workspace = true, optional = true }
 flate2 = { workspace = true, optional = true }
 zstd = { workspace = true, optional = true }
