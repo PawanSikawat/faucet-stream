@@ -1367,7 +1367,6 @@ mod tests {
                 clock: chrono::Utc::now().fixed_offset(),
                 cancel: None,
                 resilience: None,
-                shard: None,
                 #[cfg(feature = "lineage")]
                 lineage: None,
                 #[cfg(feature = "lineage")]
@@ -1425,7 +1424,6 @@ matrix:
                 clock: chrono::Utc::now().fixed_offset(),
                 cancel: None,
                 resilience: None,
-                shard: None,
                 #[cfg(feature = "lineage")]
                 lineage: None,
                 #[cfg(feature = "lineage")]
@@ -1483,7 +1481,6 @@ matrix:
                 clock: chrono::Utc::now().fixed_offset(),
                 cancel: None,
                 resilience: None,
-                shard: None,
                 #[cfg(feature = "lineage")]
                 lineage: None,
                 #[cfg(feature = "lineage")]
@@ -1551,7 +1548,6 @@ execution:
                 clock: chrono::Utc::now().fixed_offset(),
                 cancel: None,
                 resilience: None,
-                shard: None,
                 #[cfg(feature = "lineage")]
                 lineage: None,
                 #[cfg(feature = "lineage")]
@@ -1634,7 +1630,6 @@ pipeline:
                 clock: chrono::Utc::now().fixed_offset(),
                 cancel: None,
                 resilience: None,
-                shard: None,
                 #[cfg(feature = "lineage")]
                 lineage: None,
                 #[cfg(feature = "lineage")]
@@ -1691,7 +1686,6 @@ matrix:
                 clock: chrono::Utc::now().fixed_offset(),
                 cancel: None,
                 resilience: None,
-                shard: None,
                 #[cfg(feature = "lineage")]
                 lineage: None,
                 #[cfg(feature = "lineage")]
@@ -1757,7 +1751,6 @@ execution:
                 clock: chrono::Utc::now().fixed_offset(),
                 cancel: None,
                 resilience: None,
-                shard: None,
                 #[cfg(feature = "lineage")]
                 lineage: None,
                 #[cfg(feature = "lineage")]
@@ -1824,7 +1817,6 @@ matrix:
                 clock: chrono::Utc::now().fixed_offset(),
                 cancel: None,
                 resilience: None,
-                shard: None,
                 #[cfg(feature = "lineage")]
                 lineage: None,
                 #[cfg(feature = "lineage")]
@@ -2046,7 +2038,6 @@ matrix:
             clock: chrono::Utc::now().fixed_offset(),
             cancel: None,
             resilience: None,
-            shard: None,
             #[cfg(feature = "lineage")]
             lineage: None,
             #[cfg(feature = "lineage")]
@@ -2446,7 +2437,6 @@ matrix:
                 clock: chrono::Utc::now().fixed_offset(),
                 cancel: None,
                 resilience: None,
-                shard: None,
                 #[cfg(feature = "lineage")]
                 lineage: None,
                 #[cfg(feature = "lineage")]
