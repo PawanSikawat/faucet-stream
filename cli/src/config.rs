@@ -748,10 +748,10 @@ impl PipelineConfig {
             });
         }
         crate::interpolate::resolve_config_refs(&mut cfg)?;
-        if let Some(obs) = cfg.observability.as_ref() {
-            if let Some(otel) = obs.otel.as_ref() {
-                otel.to_core().map_err(CliError::Config)?;
-            }
+        if let Some(obs) = cfg.observability.as_ref()
+            && let Some(otel) = obs.otel.as_ref()
+        {
+            otel.to_core().map_err(CliError::Config)?;
         }
         Ok(cfg)
     }
