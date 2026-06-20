@@ -129,6 +129,19 @@ impl OtelConfig {
     }
 }
 
+/// opentelemetry-otlp uses a programmatic HTTP endpoint verbatim (it only
+/// appends the per-signal path for the `OTEL_EXPORTER_OTLP_ENDPOINT` env-var
+/// form). Users naturally configure the base endpoint, so for HTTP we append the
+/// conventional per-signal path ourselves when it is not already present.
+pub(crate) fn http_signal_endpoint(base: &str, signal_path: &str) -> String {
+    let trimmed = base.trim_end_matches('/');
+    if trimmed.ends_with(signal_path) {
+        trimmed.to_string()
+    } else {
+        format!("{trimmed}{signal_path}")
+    }
+}
+
 /// Map an `opentelemetry*` tracing event target to a `signal` label for the
 /// `faucet_otel_export_failures_total` counter. Pure — unit-testable without a
 /// tracing `Context`.
@@ -219,7 +232,7 @@ mod sdk {
                 .build()?,
             OtelProtocol::Http => opentelemetry_otlp::SpanExporter::builder()
                 .with_http()
-                .with_endpoint(&endpoint)
+                .with_endpoint(super::http_signal_endpoint(&endpoint, "/v1/traces"))
                 .with_headers(header_map(cfg))
                 .with_timeout(timeout)
                 .build()?,
@@ -247,7 +260,7 @@ mod sdk {
                 .build()?,
             OtelProtocol::Http => opentelemetry_otlp::MetricExporter::builder()
                 .with_http()
-                .with_endpoint(&endpoint)
+                .with_endpoint(super::http_signal_endpoint(&endpoint, "/v1/metrics"))
                 .with_headers(header_map(cfg))
                 .with_timeout(timeout)
                 .build()?,
@@ -325,6 +338,15 @@ mod tests {
         let _ = mp.force_flush();
         let _ = tp.shutdown();
         let _ = mp.shutdown();
+    }
+
+    #[test]
+    fn http_signal_endpoint_appends_path_when_absent() {
+        assert_eq!(http_signal_endpoint("http://c:4318", "/v1/traces"), "http://c:4318/v1/traces");
+        assert_eq!(http_signal_endpoint("http://c:4318/", "/v1/traces"), "http://c:4318/v1/traces");
+        // idempotent: already has the path
+        assert_eq!(http_signal_endpoint("http://c:4318/v1/traces", "/v1/traces"), "http://c:4318/v1/traces");
+        assert_eq!(http_signal_endpoint("http://c:4318", "/v1/metrics"), "http://c:4318/v1/metrics");
     }
 
     #[test]

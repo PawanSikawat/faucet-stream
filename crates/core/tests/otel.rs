@@ -6,9 +6,10 @@
 //! Note on endpoint handling: opentelemetry-otlp 0.31's HTTP exporter uses a
 //! programmatically supplied `.with_endpoint(...)` value **verbatim** — unlike
 //! the `OTEL_EXPORTER_OTLP_ENDPOINT` env var, it does NOT append the standard
-//! `/v1/traces` / `/v1/metrics` signal path. So we point each provider's config
-//! at its full per-signal URL (a valid real-world OTLP/HTTP configuration) and
-//! register the mock at exactly those paths.
+//! `/v1/traces` / `/v1/metrics` signal path. `http_signal_endpoint` in `otel.rs`
+//! corrects this by appending the per-signal path when it is absent, so a
+//! conventional bare base endpoint (e.g. `http://collector:4318`) reaches the
+//! right route on the collector. This test uses the bare base to prove that.
 
 use axum::{Router, body::Bytes, extract::State, routing::post};
 use faucet_core::observability::otel::{
@@ -50,28 +51,24 @@ async fn spans_and_metrics_reach_collector() {
         axum::serve(listener, app).await.unwrap();
     });
 
-    // Traces: emit a span, force-flush.
-    let trace_cfg = OtelConfig {
-        endpoint: format!("http://{addr}/v1/traces"),
+    // Both providers use the bare base endpoint — the fix appends /v1/traces and
+    // /v1/metrics respectively so requests reach the correct mock routes.
+    let cfg = OtelConfig {
+        endpoint: format!("http://{addr}"),
         protocol: OtelProtocol::Http,
         export: vec![OtelSignal::Traces, OtelSignal::Metrics],
         metric_interval_secs: 1,
         ..Default::default()
     };
-    let tp = build_trace_provider(&trace_cfg).unwrap();
+
+    // Traces: emit a span, force-flush.
+    let tp = build_trace_provider(&cfg).unwrap();
     let tracer = tp.tracer("test");
     tracer.in_span("unit-span", |_cx| {});
     let _ = tp.force_flush();
 
     // Metrics: record through the bridged recorder locally (not global), flush.
-    let metric_cfg = OtelConfig {
-        endpoint: format!("http://{addr}/v1/metrics"),
-        protocol: OtelProtocol::Http,
-        export: vec![OtelSignal::Traces, OtelSignal::Metrics],
-        metric_interval_secs: 1,
-        ..Default::default()
-    };
-    let (mp, recorder) = build_meter_provider(&metric_cfg).unwrap();
+    let (mp, recorder) = build_meter_provider(&cfg).unwrap();
     metrics::with_local_recorder(&recorder, || {
         metrics::counter!("faucet_test_counter").increment(1);
     });
