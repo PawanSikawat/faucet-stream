@@ -3419,6 +3419,7 @@ dependencies = [
  "async-trait",
  "aws-config",
  "aws-sdk-s3",
+ "bytes",
  "faucet-core",
  "futures",
  "iceberg",

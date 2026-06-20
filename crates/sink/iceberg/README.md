@@ -93,6 +93,7 @@ faucet run pipeline.yaml
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `batch_size` | int | `10000` | Records buffered in memory before each Arrow write pass. **`0` = no limit** (the entire upstream page is written in one batch). Validated against `MAX_BATCH_SIZE` (1,000,000). |
+| `cleanup_orphans_on_failure` | bool | `false` | Delete the data files a flush already uploaded when the snapshot commit **definitively** fails, so they don't accumulate as orphans. Ambiguous failures are never cleaned up. See [Concurrent writers & orphaned files](#concurrent-writers--commit-conflict-retry). |
 
 ### Catalog config
 
@@ -213,7 +214,31 @@ The pipeline calls `Sink::write_batch` for each `StreamPage`, then `flush()` onc
 
 For high-throughput pipelines, use a large **upstream** `batch_size` (e.g. `100000`) so the snapshot amortises catalog-commit overhead across many rows, and leave the sink's `batch_size` near its default so Arrow batches stay within memory limits.
 
-`flush()` does two things in sequence: (1) closes the Parquet data file (writes the footer, uploads it), then (2) commits the snapshot via `Transaction::fast_append`. If step 2 fails (e.g. an unresolvable optimistic-concurrency conflict), the data files from step 1 are already in storage but referenced by no snapshot — they are **orphaned**. The error propagates, the run aborts, and the bookmark does not advance; the re-run writes fresh files and commits them. The sink does **not** auto-delete on failure (re-committing after an ambiguous commit could duplicate data); run Iceberg's standard `remove_orphan_files` maintenance to reclaim them.
+`flush()` does two things in sequence: (1) closes the Parquet data file (writes the footer, uploads it), then (2) commits the snapshot via `Transaction::fast_append`.
+
+### Concurrent writers & commit-conflict retry
+
+Iceberg commits use optimistic concurrency. If a competing writer commits between this sink's table load and its commit, `Transaction::commit` (iceberg-rust 0.9.1) **transparently retries**: it reloads the table metadata and re-applies the `fast_append` against the latest snapshot — *without re-uploading the data files* — with exponential backoff. A benign concurrent write therefore does **not** abort the run. Tune the retry budget with the standard Iceberg `commit.retry.*` table properties, set via `snapshot_properties` at table creation:
+
+```yaml
+snapshot_properties:
+  commit.retry.num-retries: "8"        # default 4
+  commit.retry.min-wait-ms: "100"
+  commit.retry.max-wait-ms: "60000"
+  commit.retry.total-timeout-ms: "1800000"
+```
+
+### Orphaned data files on a definitive commit failure
+
+If the commit *definitively* fails after those retries are exhausted (a competing writer won), the data files from step 1 are already in storage but referenced by no snapshot — they are **orphaned**. The error propagates, the run aborts, and the bookmark does not advance; the re-run writes fresh files and commits them.
+
+By default the sink leaves orphans in place — reclaim them with Iceberg's standard `remove_orphan_files` maintenance. Set **`cleanup_orphans_on_failure: true`** to delete them automatically:
+
+```yaml
+cleanup_orphans_on_failure: true   # default false
+```
+
+Cleanup runs **only** on a *definitive* loss (an exhausted commit conflict, or a catalog-rejected commit). An **ambiguous** failure — e.g. a network error on the catalog update where the commit may have landed server-side — is **never** cleaned up regardless of this flag, because deleting then could remove files a successful-but-unacknowledged commit references. The data files this sink writes have unique (UUID-based) names, so cleanup can never remove a file a concurrent writer references.
 
 ## Write mode (append-only)
 
@@ -343,7 +368,7 @@ In the CLI/umbrella, the corresponding feature is `sink-iceberg` (REST), with `s
 | `unknown variant 'overwrite'` / `write_mode … rejected` | Only `append` is supported. `upsert`/`delete` parse but are rejected at `new()`; `overwrite` is not a variant. See [Write mode](#write-mode-append-only). |
 | Catalog type fails at startup despite a valid config | The catalog's Cargo feature isn't compiled in. Rebuild with `--features catalog-glue` (or `-sql` / `-hms`) — `catalog-rest` is the only one in the default build. |
 | `faucet doctor` catalog probe times out / fails | Verify the catalog URI, credentials, and network reachability. The probe calls `table_exists` and is bounded by `--timeout-secs`. |
-| Data files exist in object storage but no snapshot references them | A commit failed after the Parquet file was uploaded (orphaned files). Re-run to write fresh files; reclaim orphans with Iceberg's `remove_orphan_files` maintenance. The sink never auto-deletes (avoids duplicating data). |
+| Data files exist in object storage but no snapshot references them | A commit failed *definitively* after the Parquet file was uploaded (orphaned files). Re-run to write fresh files. Reclaim orphans with Iceberg's `remove_orphan_files` maintenance, or set `cleanup_orphans_on_failure: true` to delete them automatically on a definitive failure (ambiguous failures are never auto-deleted). |
 | `partition_spec[…].transform … is not a recognised Iceberg transform` | Use one of `identity`/`year`/`month`/`day`/`hour`/`void` or `bucket[N]`/`truncate[N]` with a positive `N`. |
 | `target_file_size_mb must be > 0` | `0` would roll a tiny file per batch. Use a positive MB target (default `256`). |
 | Partition spec seems ignored | `partition_spec` only applies when **creating** a new table (`create_if_missing: true`). An existing table keeps its own spec. |
