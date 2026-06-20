@@ -94,6 +94,39 @@ impl OtelConfig {
     pub fn exports(&self, signal: OtelSignal) -> bool {
         self.export.contains(&signal)
     }
+
+    /// The collector endpoint, filling in the protocol-specific default when
+    /// `endpoint` is empty.
+    pub fn resolve_endpoint(&self) -> String {
+        if !self.endpoint.is_empty() {
+            return self.endpoint.clone();
+        }
+        match self.protocol {
+            OtelProtocol::Grpc => "http://localhost:4317".to_string(),
+            OtelProtocol::Http => "http://localhost:4318".to_string(),
+        }
+    }
+
+    /// Validate ranges + endpoint URL at config-load time. Returns a message on
+    /// the first problem.
+    pub fn validate(&self) -> Result<(), String> {
+        if !(0.0..=1.0).contains(&self.sample_ratio) {
+            return Err(format!(
+                "otel.sample_ratio must be in 0.0..=1.0, got {}",
+                self.sample_ratio
+            ));
+        }
+        if self.timeout_secs == 0 {
+            return Err("otel.timeout_secs must be > 0".to_string());
+        }
+        if self.metric_interval_secs == 0 {
+            return Err("otel.metric_interval_secs must be > 0".to_string());
+        }
+        // resolve_endpoint() always yields a value; validate the effective URL.
+        let ep = self.resolve_endpoint();
+        url::Url::parse(&ep).map_err(|e| format!("otel.endpoint is not a valid URL ({ep}): {e}"))?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -111,5 +144,39 @@ mod tests {
         assert_eq!(cfg.metric_interval_secs, 60);
         assert!(cfg.exports(OtelSignal::Traces));
         assert!(cfg.exports(OtelSignal::Metrics));
+    }
+
+    #[test]
+    fn resolve_endpoint_defaults_per_protocol() {
+        let mut cfg = OtelConfig::default();
+        assert_eq!(cfg.resolve_endpoint(), "http://localhost:4317");
+        cfg.protocol = OtelProtocol::Http;
+        assert_eq!(cfg.resolve_endpoint(), "http://localhost:4318");
+        cfg.endpoint = "http://collector:4317".into();
+        assert_eq!(cfg.resolve_endpoint(), "http://collector:4317");
+    }
+
+    #[test]
+    fn validate_rejects_bad_values() {
+        let mut cfg = OtelConfig::default();
+        assert!(cfg.validate().is_ok());
+
+        cfg.sample_ratio = 1.5;
+        assert!(cfg.validate().is_err());
+        cfg.sample_ratio = -0.1;
+        assert!(cfg.validate().is_err());
+        cfg.sample_ratio = 0.5;
+        assert!(cfg.validate().is_ok());
+
+        cfg.timeout_secs = 0;
+        assert!(cfg.validate().is_err());
+        cfg.timeout_secs = 10;
+
+        cfg.metric_interval_secs = 0;
+        assert!(cfg.validate().is_err());
+        cfg.metric_interval_secs = 60;
+
+        cfg.endpoint = "not a url".into();
+        assert!(cfg.validate().is_err());
     }
 }
