@@ -1515,4 +1515,303 @@ mod tests {
         // The queue reservation must have been released (no leak).
         assert_eq!(state.registry().queued(), 0);
     }
+
+    // ── Mode B coverage: coordinator / parent finalize / shard execution ─────
+    // SQLite-backed so the shard RunHistory methods are live (the memory backend
+    // is inert for shards). No Docker: the S3 source builds offline and its
+    // enumerate_shards is pure (hash-modulo); csv→jsonl runs entirely on temp
+    // files.
+    #[cfg(feature = "serve-history-sqlite")]
+    mod shards {
+        use super::*;
+        use crate::serve::config::{AuthMode, HistoryBackendSpec, ServeConfig};
+        use crate::serve::history::RunHistory;
+        use crate::serve::history::sqlite::SqliteHistory;
+        use crate::serve::load::{ConfigFormat, load_submission};
+        use crate::serve::state::ServerState;
+        use faucet_core::ShardSpec;
+        use std::collections::BTreeMap;
+        use std::sync::Arc;
+        use tokio_util::sync::CancellationToken;
+
+        async fn sqlite_state(dir: &std::path::Path) -> ServerState {
+            let url = format!("sqlite://{}/h.db", dir.display());
+            let history = Arc::new(
+                SqliteHistory::connect(
+                    &url,
+                    Duration::from_secs(300),
+                    Duration::from_secs(300),
+                    "inst-test".into(),
+                )
+                .await
+                .expect("sqlite history"),
+            ) as Arc<dyn RunHistory>;
+            let cfg = ServeConfig {
+                listen: "127.0.0.1:0".parse().unwrap(),
+                auth: AuthMode::None,
+                max_concurrent_runs: 4,
+                max_queued_runs: 4,
+                default_config_path: None,
+                history: HistoryBackendSpec::Memory,
+                cors_origins: vec![],
+                body_limit_bytes: 1_048_576,
+                shutdown_grace: Duration::from_secs(60),
+                retain_terminal_runs: Duration::from_secs(60),
+                idempotency_retention: Duration::from_secs(60),
+                lease_ttl: Duration::from_secs(30),
+                probe_timeout: Duration::from_secs(10),
+                env_file: None,
+                no_env_file: false,
+                log_level: "info".into(),
+                ui_enabled: true,
+                cluster: crate::serve::cluster::ClusterConfig::disabled(),
+                triggers_path: None,
+            };
+            ServerState::new(
+                &cfg,
+                None,
+                CancellationToken::new(),
+                history,
+                crate::serve::logs::LogHub::new(),
+                None,
+                #[cfg(feature = "triggers")]
+                crate::serve::triggers::health::TriggersHandle::empty(),
+            )
+        }
+
+        async fn loaded(yaml: &str) -> LoadedSubmission {
+            load_submission(yaml, ConfigFormat::Yaml, None)
+                .await
+                .expect("load submission")
+        }
+
+        async fn seed_run(state: &ServerState, run_id: &str, status: RunStatus) {
+            let mut rec = RunRecord::queued(run_id.into(), None, BTreeMap::new(), None, Utc::now());
+            rec.status = status;
+            rec.config_body = Some("version: 1".into());
+            state.history().upsert(&rec).await.expect("seed run");
+        }
+
+        #[tokio::test]
+        async fn coordinate_matrix_run_is_not_shardable() {
+            // A matrix expands to >1 node → not shardable → Ok(false), no build.
+            let dir = tempfile::tempdir().unwrap();
+            let state = sqlite_state(dir.path()).await;
+            let l = loaded(
+                "version: 1\nname: m\nmatrix:\n  - id: a\n  - id: b\npipeline:\n  \
+                 source: { type: rest, config: { url: \"http://localhost/x\" } }\n  \
+                 sink: { type: stdout, config: {} }\n",
+            )
+            .await;
+            assert!(!coordinate_sharded_run(&state, "r", &l, 4).await.unwrap());
+        }
+
+        #[tokio::test]
+        async fn coordinate_non_shardable_source_runs_whole() {
+            // A csv source is not shardable → Ok(false) (built offline).
+            let dir = tempfile::tempdir().unwrap();
+            let state = sqlite_state(dir.path()).await;
+            let input = dir.path().join("in.csv");
+            std::fs::write(&input, "id\n1\n").unwrap();
+            let l = loaded(&format!(
+                "version: 1\npipeline:\n  \
+                 source: {{ type: csv, config: {{ path: \"{}\" }} }}\n  \
+                 sink: {{ type: stdout, config: {{}} }}\n",
+                input.display()
+            ))
+            .await;
+            assert!(!coordinate_sharded_run(&state, "r", &l, 4).await.unwrap());
+        }
+
+        #[tokio::test]
+        async fn coordinate_s3_source_inserts_shards_and_marks_sharded() {
+            let dir = tempfile::tempdir().unwrap();
+            let state = sqlite_state(dir.path()).await;
+            seed_run(&state, "r", RunStatus::Running).await;
+            let l = loaded(
+                "version: 1\npipeline:\n  \
+                 source: { type: s3, config: { bucket: my-bucket, prefix: null, \
+                 region: null, endpoint_url: null, file_format: json_lines, \
+                 max_objects: null, concurrency: 10 } }\n  \
+                 sink: { type: stdout, config: {} }\n",
+            )
+            .await;
+            assert!(coordinate_sharded_run(&state, "r", &l, 4).await.unwrap());
+            // 4 shards inserted; parent flipped to Sharded.
+            let prog = state.history().shard_progress("r").await.unwrap();
+            assert_eq!(prog.total, 4);
+            assert_eq!(prog.pending, 4);
+            assert_eq!(
+                state.history().get("r").await.unwrap().unwrap().status,
+                RunStatus::Sharded
+            );
+        }
+
+        async fn seed_sharded_with_shards(state: &ServerState, run_id: &str, n: usize) {
+            use crate::serve::history::ShardInsert;
+            seed_run(state, run_id, RunStatus::Sharded).await;
+            let shards: Vec<ShardInsert> = (0..n)
+                .map(|i| ShardInsert {
+                    shard_id: i.to_string(),
+                    descriptor: serde_json::json!({ "i": i }),
+                    size_estimate: None,
+                })
+                .collect();
+            state
+                .history()
+                .insert_shards(run_id, &shards)
+                .await
+                .unwrap();
+            // Claim them so they are 'running' and finalizable by this instance.
+            let claimed = state.history().claim_shards(n).await.unwrap();
+            assert_eq!(claimed.len(), n);
+        }
+
+        #[tokio::test]
+        async fn maybe_finalize_parent_completes_when_all_shards_succeed() {
+            let dir = tempfile::tempdir().unwrap();
+            let state = sqlite_state(dir.path()).await;
+            seed_sharded_with_shards(&state, "r", 3).await;
+            for i in 0..3 {
+                state
+                    .history()
+                    .finalize_shard("r", &i.to_string(), true)
+                    .await
+                    .unwrap();
+            }
+            maybe_finalize_parent(&state, "r").await;
+            assert_eq!(
+                state.history().get("r").await.unwrap().unwrap().status,
+                RunStatus::Completed
+            );
+        }
+
+        #[tokio::test]
+        async fn maybe_finalize_parent_fails_when_a_shard_fails() {
+            let dir = tempfile::tempdir().unwrap();
+            let state = sqlite_state(dir.path()).await;
+            seed_sharded_with_shards(&state, "r", 2).await;
+            state
+                .history()
+                .finalize_shard("r", "0", true)
+                .await
+                .unwrap();
+            state
+                .history()
+                .finalize_shard("r", "1", false)
+                .await
+                .unwrap();
+            maybe_finalize_parent(&state, "r").await;
+            assert_eq!(
+                state.history().get("r").await.unwrap().unwrap().status,
+                RunStatus::Failed
+            );
+        }
+
+        #[tokio::test]
+        async fn maybe_finalize_parent_keeps_sharded_until_all_terminal() {
+            let dir = tempfile::tempdir().unwrap();
+            let state = sqlite_state(dir.path()).await;
+            seed_sharded_with_shards(&state, "r", 2).await;
+            // Only one shard finalized → run stays Sharded.
+            state
+                .history()
+                .finalize_shard("r", "0", true)
+                .await
+                .unwrap();
+            maybe_finalize_parent(&state, "r").await;
+            assert_eq!(
+                state.history().get("r").await.unwrap().unwrap().status,
+                RunStatus::Sharded
+            );
+        }
+
+        #[tokio::test]
+        async fn execute_shard_runs_a_csv_to_jsonl_shard() {
+            let dir = tempfile::tempdir().unwrap();
+            let state = sqlite_state(dir.path()).await;
+            let input = dir.path().join("in.csv");
+            std::fs::write(&input, "id,name\n1,alice\n2,bob\n").unwrap();
+            let output = dir.path().join("out.jsonl");
+            let yaml = format!(
+                "version: 1\npipeline:\n  \
+                 source: {{ type: csv, config: {{ path: \"{}\" }} }}\n  \
+                 sink: {{ type: jsonl, config: {{ path: \"{}\" }} }}\n",
+                input.display(),
+                output.display()
+            );
+            let l = loaded(&yaml).await;
+            // The whole-dataset shard is a no-op for the (non-shardable) csv source,
+            // exercising the apply_shard call + per-shard state-key path end-to-end.
+            let ok = execute_shard(
+                &state,
+                l,
+                "r",
+                "0",
+                ShardSpec::whole(),
+                None,
+                None,
+                Utc::now(),
+            )
+            .await;
+            assert!(ok, "csv→jsonl shard should complete");
+            let written = std::fs::read_to_string(&output).unwrap();
+            assert_eq!(written.lines().count(), 2, "both rows written");
+            assert!(written.contains("alice") && written.contains("bob"));
+        }
+
+        #[tokio::test]
+        async fn resume_claimed_shard_executes_and_finalizes_parent() {
+            // End-to-end per-shard entry point: claim a shard whose run is a
+            // csv→jsonl pipeline, dispatch it, and confirm the shard runs, is
+            // finalized, and the parent run flips to Completed.
+            let dir = tempfile::tempdir().unwrap();
+            let state = sqlite_state(dir.path()).await;
+            let input = dir.path().join("in.csv");
+            std::fs::write(&input, "id,name\n1,alice\n").unwrap();
+            let output = dir.path().join("out.jsonl");
+            let yaml = format!(
+                "version: 1\npipeline:\n  \
+                 source: {{ type: csv, config: {{ path: \"{}\" }} }}\n  \
+                 sink: {{ type: jsonl, config: {{ path: \"{}\" }} }}\n",
+                input.display(),
+                output.display()
+            );
+            // Seed the parent Sharded run carrying the pipeline config, + one shard.
+            let mut rec = RunRecord::queued("r".into(), None, BTreeMap::new(), None, Utc::now());
+            rec.status = RunStatus::Sharded;
+            rec.config_body = Some(yaml);
+            state.history().upsert(&rec).await.unwrap();
+            use crate::serve::history::ShardInsert;
+            state
+                .history()
+                .insert_shards(
+                    "r",
+                    &[ShardInsert {
+                        shard_id: "0".into(),
+                        descriptor: serde_json::Value::Null,
+                        size_estimate: None,
+                    }],
+                )
+                .await
+                .unwrap();
+            let claimed = state.history().claim_shards(1).await.unwrap();
+            assert_eq!(claimed.len(), 1);
+
+            resume_claimed_shard(state.clone(), claimed.into_iter().next().unwrap());
+
+            // Poll until the parent run reaches a terminal state (the spawned
+            // task runs the shard, finalizes it, then finalizes the parent).
+            let mut status = RunStatus::Sharded;
+            for _ in 0..100 {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                status = state.history().get("r").await.unwrap().unwrap().status;
+                if status.is_terminal() {
+                    break;
+                }
+            }
+            assert_eq!(status, RunStatus::Completed, "shard ran → parent completed");
+            assert!(output.exists(), "shard wrote its output");
+        }
+    }
 }
