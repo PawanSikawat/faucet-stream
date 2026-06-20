@@ -343,4 +343,31 @@ mod tests {
         );
         assert_eq!(fb.delete("r2").await.unwrap(), DeleteOutcome::Deleted);
     }
+
+    #[tokio::test]
+    async fn shard_methods_delegate_to_a_healthy_primary() {
+        use crate::serve::history::memory::MemoryHistory;
+        use crate::serve::history::{ReclaimReport, ShardProgress};
+        // A healthy (memory) primary → the shard methods delegate via `via!`;
+        // memory's shard methods are inert, so we get the inert results back
+        // (exercising the forwarding path).
+        let fb = FallbackHistory::healthy(
+            Box::new(MemoryHistory::new(Duration::from_secs(60))),
+            Duration::from_secs(60),
+            "test",
+        );
+        assert_eq!(fb.insert_shards("r", &[]).await.unwrap(), 0);
+        assert!(fb.claim_shards(4).await.unwrap().is_empty());
+        assert_eq!(fb.renew_shard_leases().await.unwrap(), 0);
+        assert_eq!(
+            fb.reclaim_shards(3).await.unwrap(),
+            ReclaimReport::default()
+        );
+        assert!(!fb.finalize_shard("r", "0", true).await.unwrap());
+        assert_eq!(
+            fb.shard_progress("r").await.unwrap(),
+            ShardProgress::default()
+        );
+        assert!(!fb.degraded());
+    }
 }

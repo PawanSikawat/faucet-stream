@@ -1813,5 +1813,86 @@ mod tests {
             assert_eq!(status, RunStatus::Completed, "shard ran → parent completed");
             assert!(output.exists(), "shard wrote its output");
         }
+
+        #[tokio::test]
+        async fn resume_claimed_shard_with_no_config_fails_the_shard() {
+            // A claimed shard whose parent run has no config_body can't run →
+            // the shard is finalized failed and the parent run fails.
+            let dir = tempfile::tempdir().unwrap();
+            let state = sqlite_state(dir.path()).await;
+            let mut rec = RunRecord::queued("r".into(), None, BTreeMap::new(), None, Utc::now());
+            rec.status = RunStatus::Sharded; // config_body intentionally None
+            state.history().upsert(&rec).await.unwrap();
+            use crate::serve::history::ShardInsert;
+            state
+                .history()
+                .insert_shards(
+                    "r",
+                    &[ShardInsert {
+                        shard_id: "0".into(),
+                        descriptor: serde_json::Value::Null,
+                        size_estimate: None,
+                    }],
+                )
+                .await
+                .unwrap();
+            let claimed = state.history().claim_shards(1).await.unwrap();
+            resume_claimed_shard(state.clone(), claimed.into_iter().next().unwrap());
+
+            let mut status = RunStatus::Sharded;
+            for _ in 0..100 {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                status = state.history().get("r").await.unwrap().unwrap().status;
+                if status.is_terminal() {
+                    break;
+                }
+            }
+            assert_eq!(status, RunStatus::Failed, "no-config shard → parent failed");
+        }
+
+        #[tokio::test]
+        async fn coordinate_returns_err_when_source_build_fails() {
+            // A shardable-looking source with an invalid config fails to build →
+            // coordinate_sharded_run surfaces the error (the caller fails the run).
+            let dir = tempfile::tempdir().unwrap();
+            let state = sqlite_state(dir.path()).await;
+            // s3 missing the required `file_format` field → build_source errors.
+            let l = loaded(
+                "version: 1\npipeline:\n  \
+                 source: { type: s3, config: { bucket: b } }\n  \
+                 sink: { type: stdout, config: {} }\n",
+            )
+            .await;
+            assert!(coordinate_sharded_run(&state, "r", &l, 4).await.is_err());
+        }
+
+        #[tokio::test]
+        async fn execute_shard_returns_false_on_malformed_resilience() {
+            // A resilience block that parses but fails to compile makes
+            // execute_shard fail fast (false) before running the pipeline.
+            let dir = tempfile::tempdir().unwrap();
+            let state = sqlite_state(dir.path()).await;
+            let input = dir.path().join("in.csv");
+            std::fs::write(&input, "id\n1\n").unwrap();
+            let yaml = format!(
+                "version: 1\nresilience:\n  retry:\n    max_attempts: 0\npipeline:\n  \
+                 source: {{ type: csv, config: {{ path: \"{}\" }} }}\n  \
+                 sink: {{ type: stdout, config: {{}} }}\n",
+                input.display()
+            );
+            let l = loaded(&yaml).await;
+            let ok = execute_shard(
+                &state,
+                l,
+                "r",
+                "0",
+                ShardSpec::whole(),
+                None,
+                None,
+                Utc::now(),
+            )
+            .await;
+            assert!(!ok, "malformed resilience → shard fails fast");
+        }
     }
 }

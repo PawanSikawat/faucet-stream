@@ -176,4 +176,12 @@ mod tests {
              axum 0.8 outer .layer() correctly sees MatchedPath"
         );
     }
+
+    #[test]
+    fn shard_metrics_emit_without_a_recorder() {
+        // With no global recorder installed these are no-ops; assert they don't
+        // panic and exercise the emit helpers (Mode B, #230).
+        super::record_shards_claimed(3);
+        super::record_shards_reclaimed(2, 1);
+    }
 }

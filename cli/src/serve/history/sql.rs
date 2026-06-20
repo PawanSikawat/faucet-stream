@@ -1388,6 +1388,23 @@ mod tests {
     use super::*;
 
     #[test]
+    fn postgres_shard_statements_are_built() {
+        // SQLite tests only build the Sqlite statement set; exercise the
+        // Postgres shard-statement construction too (Mode B, #230).
+        let s = Stmts::new(Dialect::Postgres);
+        assert!(s.insert_shard.contains("faucet_serve_shards"));
+        assert!(s.insert_shard.contains("ON CONFLICT"));
+        assert!(s.claim_shards_select.contains("JOIN faucet_serve_runs"));
+        assert!(s.claim_shard_one.contains("'running'"));
+        assert!(s.renew_shard_leases.contains("lease_expires_at"));
+        assert!(s.reclaim_shards_select.contains("'running'"));
+        assert!(s.reclaim_shard_requeue.contains("'pending'"));
+        assert!(s.reclaim_shard_fail.contains("'failed'"));
+        assert!(s.finalize_shard.contains("owner"));
+        assert!(s.shard_progress.contains("GROUP BY"));
+    }
+
+    #[test]
     fn fmt_ts_is_fixed_width_and_sortable() {
         let a = fmt_ts(
             DateTime::parse_from_rfc3339("2026-01-01T00:00:00Z")
