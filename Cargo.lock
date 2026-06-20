@@ -3267,6 +3267,7 @@ dependencies = [
  "async-compression",
  "async-stream",
  "async-trait",
+ "axum",
  "chrono",
  "criterion",
  "dotenvy",
@@ -6969,6 +6970,7 @@ dependencies = [
  "bytes",
  "http 1.4.0",
  "opentelemetry",
+ "reqwest 0.12.28",
 ]
 
 [[package]]
@@ -6983,6 +6985,7 @@ dependencies = [
  "opentelemetry-proto",
  "opentelemetry_sdk",
  "prost 0.14.3",
+ "reqwest 0.12.28",
  "thiserror 2.0.18",
  "tokio",
  "tonic 0.14.6",

@@ -209,7 +209,7 @@ metrics-util = "0.20"
 # these, confirm metrics-exporter-opentelemetry supports the newer line first.
 opentelemetry = "0.31"
 opentelemetry_sdk = { version = "0.31", features = ["rt-tokio"] }
-opentelemetry-otlp = { version = "0.31", default-features = false, features = ["trace", "metrics", "grpc-tonic", "http-proto"] }
+opentelemetry-otlp = { version = "0.31", default-features = false, features = ["trace", "metrics", "grpc-tonic", "http-proto", "reqwest-blocking-client"] }
 tracing-opentelemetry = "0.32.1"
 metrics-exporter-opentelemetry = "0.2.1"
 bytes = "1"

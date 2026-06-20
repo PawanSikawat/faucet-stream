@@ -108,6 +108,7 @@ futures.workspace = true
 tempfile = "3"
 metrics-util.workspace = true
 criterion = { workspace = true, features = ["async_tokio"] }
+axum = { workspace = true }
 
 [[bench]]
 name = "observability"
