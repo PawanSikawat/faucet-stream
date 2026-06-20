@@ -351,3 +351,69 @@ async fn context_tokens_bind_as_typed_params() {
     assert_eq!(page.records.len(), 1, "only account id=1 is active");
     assert_eq!(page.records[0]["name"], "alice");
 }
+
+// ── PK-range sharding (Mode B, #230) ────────────────────────────────────────
+
+/// The core Mode B correctness guarantee: enumerating a source into N shards and
+/// reading each shard yields every row exactly once — no duplication, no loss.
+#[tokio::test(flavor = "multi_thread")]
+async fn shards_partition_rows_disjointly_and_completely() {
+    use faucet_source_postgres::ShardConfig;
+
+    let (_container, url) = start_postgres().await;
+    seed_events(&url, 1000).await; // ids 1..=1000
+
+    let mut config = PostgresSourceConfig::new(&url, "SELECT id FROM events");
+    config.shard = Some(ShardConfig { key: "id".into() });
+
+    // A coordinator enumerates the shard set.
+    let coordinator = PostgresSource::new(config.clone())
+        .await
+        .expect("coordinator source");
+    assert!(coordinator.is_shardable());
+    let shards = coordinator.enumerate_shards(4).await.expect("enumerate");
+    assert!(
+        (2..=4).contains(&shards.len()),
+        "expected 2..=4 shards, got {}",
+        shards.len()
+    );
+
+    // Each shard runs on a fresh source narrowed via apply_shard.
+    let mut all_ids: Vec<i64> = Vec::new();
+    for shard in &shards {
+        let s = PostgresSource::new(config.clone())
+            .await
+            .expect("shard source");
+        s.apply_shard(shard).await.expect("apply_shard");
+        let ctx: HashMap<String, serde_json::Value> = HashMap::new();
+        let mut pages = s.stream_pages(&ctx, 0);
+        while let Some(page) = pages.next().await {
+            for rec in page.expect("page ok").records {
+                all_ids.push(rec["id"].as_i64().expect("id is int"));
+            }
+        }
+    }
+
+    all_ids.sort();
+    let expected: Vec<i64> = (1..=1000).collect();
+    assert_eq!(
+        all_ids, expected,
+        "shards must union to all rows exactly once (no dup, no loss)"
+    );
+}
+
+/// A config without a `shard` block is not shardable: it enumerates to a single
+/// whole-dataset shard, preserving single-worker behavior.
+#[tokio::test(flavor = "multi_thread")]
+async fn unsharded_config_enumerates_one_whole_shard() {
+    let (_container, url) = start_postgres().await;
+    seed_events(&url, 10).await;
+
+    let source = PostgresSource::new(PostgresSourceConfig::new(&url, "SELECT id FROM events"))
+        .await
+        .expect("source");
+    assert!(!source.is_shardable());
+    let shards = source.enumerate_shards(4).await.expect("enumerate");
+    assert_eq!(shards.len(), 1);
+    assert!(shards[0].is_whole());
+}
