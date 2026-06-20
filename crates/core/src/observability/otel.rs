@@ -129,9 +129,72 @@ impl OtelConfig {
     }
 }
 
+/// Map an `opentelemetry*` tracing event target to a `signal` label for the
+/// `faucet_otel_export_failures_total` counter. Pure — unit-testable without a
+/// tracing `Context`.
+pub(crate) fn otel_signal_label(target: &str) -> &'static str {
+    if target.contains("metric") {
+        "metrics"
+    } else if target.contains("trace") || target.contains("span") {
+        "traces"
+    } else {
+        "export"
+    }
+}
+
+/// Register HELP text for the OTLP export metric. Called from
+/// `install_observability` (a `describe!` into a not-yet-installed recorder is a
+/// no-op, so ordering is forgiving).
+pub fn describe() {
+    metrics::describe_counter!(
+        "faucet_otel_export_failures_total",
+        "OTLP export attempts that failed (collector unreachable, serialization error, etc.)."
+    );
+}
+
+#[cfg(feature = "otel")]
+mod layer {
+    use super::otel_signal_label;
+    use tracing::{Event, Level, Subscriber};
+    use tracing_subscriber::layer::{Context, Layer};
+
+    /// A `tracing` layer that counts ERROR/WARN events emitted by the
+    /// opentelemetry SDK (its only error channel in the 0.31 line, since
+    /// `global::set_error_handler` was removed) into
+    /// `faucet_otel_export_failures_total{signal}`.
+    pub struct OtelErrorCountLayer;
+
+    impl<S: Subscriber> Layer<S> for OtelErrorCountLayer {
+        fn on_event(&self, event: &Event<'_>, _ctx: Context<'_, S>) {
+            let meta = event.metadata();
+            let target = meta.target();
+            if target.starts_with("opentelemetry")
+                && matches!(*meta.level(), Level::ERROR | Level::WARN)
+            {
+                metrics::counter!(
+                    "faucet_otel_export_failures_total",
+                    "signal" => otel_signal_label(target),
+                )
+                .increment(1);
+            }
+        }
+    }
+}
+
+#[cfg(feature = "otel")]
+pub use layer::OtelErrorCountLayer;
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn record_otel_error_classifies_signal_by_target() {
+        assert_eq!(otel_signal_label("opentelemetry_sdk::metrics::periodic_reader"), "metrics");
+        assert_eq!(otel_signal_label("opentelemetry_sdk::trace::span_processor"), "traces");
+        assert_eq!(otel_signal_label("opentelemetry_otlp::exporter"), "export");
+        assert_eq!(otel_signal_label("opentelemetry"), "export");
+    }
 
     #[test]
     fn config_defaults_are_applied_from_empty_yaml() {
