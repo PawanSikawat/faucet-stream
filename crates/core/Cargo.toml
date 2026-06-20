@@ -53,7 +53,9 @@ otel = [
     "dep:opentelemetry-otlp",
     "dep:tracing-opentelemetry",
     "dep:metrics-exporter-opentelemetry",
+    "dep:metrics-util",
     "dep:tracing-subscriber",
+    "tokio/rt",
 ]
 compression = ["dep:async-compression", "dep:flate2", "dep:zstd"]
 quality = ["dep:regex"]
@@ -84,6 +86,9 @@ metrics.workspace = true
 schemars.workspace = true
 uuid.workspace = true
 metrics-exporter-prometheus = { workspace = true, optional = true }
+# `FanoutBuilder` for the Prometheus + OTLP fanout recorder (#201); optional,
+# pulled in only by the `otel` feature.
+metrics-util = { workspace = true, optional = true }
 tracing-subscriber = { workspace = true, optional = true }
 opentelemetry = { workspace = true, optional = true }
 opentelemetry_sdk = { workspace = true, optional = true }

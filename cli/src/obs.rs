@@ -46,6 +46,8 @@ pub fn install(cfg: &PipelineConfig) -> CliResult<()> {
                 buckets: p.buckets.clone(),
             }),
         tracing: level.map(|l| TracingConfig { level: l }),
+        // OTLP export is wired from the config in a follow-up task; default off.
+        otel: None,
     };
     let report = install_observability(&obs_cfg)?;
     if let Some(addr) = report.prometheus_listen.as_deref() {
