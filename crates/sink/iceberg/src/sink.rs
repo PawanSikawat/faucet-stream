@@ -11,16 +11,31 @@
 //! as an Iceberg snapshot. The pipeline (via `faucet-core`) calls `flush()`
 //! automatically at the end of each `StreamPage`.
 //!
-//! ## Commit failure
+//! ## Commit failure & conflict handling
 //!
-//! If the snapshot commit itself fails (after iceberg's internal retry of
-//! retryable conflicts), the already-uploaded data files are orphaned — written
-//! to object storage but never referenced by any snapshot. The error
-//! propagates so the run aborts without advancing the bookmark; the re-run
-//! writes fresh files and commits them. Orphaned files accumulate until you run
-//! Iceberg's standard `remove_orphan_files` maintenance (e.g. via Spark /
-//! pyiceberg). The sink does **not** auto-delete on failure (re-committing
-//! after an ambiguous commit could duplicate data).
+//! Iceberg commits use optimistic concurrency. `Transaction::commit` in
+//! iceberg-rust 0.9.1 already handles benign races: on a retryable conflict it
+//! reloads the table metadata and re-applies the `fast_append` against the
+//! latest snapshot **without re-uploading the data files**, retrying with
+//! exponential backoff. The retry budget is tunable via the standard
+//! `commit.retry.*` table properties (e.g. `commit.retry.num-retries`), which
+//! can be set through [`IcebergSinkConfig::snapshot_properties`] at table
+//! creation. So a concurrent writer that commits between our load and our
+//! commit does **not** abort the run — it is transparently retried.
+//!
+//! If the commit *definitively* fails after those retries are exhausted (a
+//! competing writer won), the already-uploaded data files are orphaned —
+//! written to object storage but never referenced by any snapshot. By default
+//! the error propagates so the run aborts without advancing the bookmark, and
+//! the orphans remain until you run Iceberg's standard `remove_orphan_files`
+//! maintenance (e.g. via Spark / pyiceberg).
+//!
+//! Set [`IcebergSinkConfig::cleanup_orphans_on_failure`] to delete those
+//! orphans automatically. Cleanup runs **only** on a definitive loss
+//! (`CatalogCommitConflicts` / `DataInvalid`); an *ambiguous* failure
+//! (`Unexpected` / transport error, where the commit may have landed
+//! server-side) is never cleaned up, because deleting then could remove files a
+//! successful-but-unacknowledged commit references.
 //!
 //! ## Schema management
 //!
@@ -38,10 +53,11 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use faucet_core::FaucetError;
+use iceberg::io::FileIO;
 use iceberg::spec::{DataFile, Transform, UnboundPartitionSpec};
 use iceberg::table::Table;
 use iceberg::transaction::{ApplyTransactionAction, Transaction};
-use iceberg::{Catalog, NamespaceIdent, TableCreation, TableIdent};
+use iceberg::{Catalog, ErrorKind, NamespaceIdent, TableCreation, TableIdent};
 use serde_json::Value;
 use tokio::sync::Mutex;
 
@@ -360,9 +376,17 @@ impl IcebergSink {
 
     /// Commit all pending data files as a single `fast_append` snapshot.
     ///
-    /// `Transaction::commit` in iceberg 0.9.1 already includes an internal
-    /// retry loop (exponential back-off on retryable commit conflicts), so we
-    /// do not add an outer retry.  Returns `Ok(())` when the commit succeeds.
+    /// `Transaction::commit` in iceberg-rust 0.9.1 already includes an internal
+    /// retry loop (reload metadata + re-apply the append against the latest
+    /// snapshot, exponential back-off on retryable commit conflicts), so we do
+    /// not add an outer retry. Returns `Ok(())` when the commit succeeds.
+    ///
+    /// On a commit failure the data files this flush uploaded are orphaned. When
+    /// [`IcebergSinkConfig::cleanup_orphans_on_failure`] is set and the failure
+    /// is a *definitive* loss (see [`commit_failure_is_definite_loss`]) those
+    /// files are deleted before the error propagates; an ambiguous failure is
+    /// never cleaned up. Either way the original error is returned so the run
+    /// aborts without advancing the bookmark.
     async fn commit_pending(&self, state: &mut SinkState) -> Result<(), FaucetError> {
         let files = std::mem::take(&mut state.pending_files);
 
@@ -380,6 +404,11 @@ impl IcebergSink {
                 )
             })?
             .clone();
+
+        // Capture the paths of the data files we are about to commit, before
+        // they are moved into the transaction action, so we can clean them up
+        // if the commit fails.
+        let file_paths: Vec<String> = files.iter().map(|f| f.file_path().to_string()).collect();
 
         let tx = Transaction::new(&table);
 
@@ -403,20 +432,132 @@ impl IcebergSink {
             action = action.set_snapshot_properties(props);
         }
 
-        let tx = action
-            .apply(tx)
-            .map_err(|e| FaucetError::Sink(format!("iceberg: fast_append apply failed: {e}")))?;
+        let tx = match action.apply(tx) {
+            Ok(tx) => tx,
+            Err(e) => {
+                // Building the append failed locally — the data files were
+                // uploaded but definitively never committed.
+                maybe_cleanup_orphans(
+                    table.file_io(),
+                    &self.config.table,
+                    self.config.cleanup_orphans_on_failure,
+                    true,
+                    &file_paths,
+                )
+                .await;
+                return Err(FaucetError::Sink(format!(
+                    "iceberg: fast_append apply failed: {e}"
+                )));
+            }
+        };
 
-        let updated_table = tx
-            .commit(self.catalog.as_ref())
-            .await
-            .map_err(|e| FaucetError::Sink(format!("iceberg: transaction commit failed: {e}")))?;
+        let updated_table = match tx.commit(self.catalog.as_ref()).await {
+            Ok(updated_table) => updated_table,
+            Err(e) => {
+                maybe_cleanup_orphans(
+                    table.file_io(),
+                    &self.config.table,
+                    self.config.cleanup_orphans_on_failure,
+                    commit_failure_is_definite_loss(e.kind()),
+                    &file_paths,
+                )
+                .await;
+                return Err(FaucetError::Sink(format!(
+                    "iceberg: transaction commit failed ({}): {e}",
+                    e.kind()
+                )));
+            }
+        };
 
         // Update the stored table handle so subsequent writes use the latest
         // metadata (snapshot ID, manifest list, etc.).
         state.table = Some(updated_table);
         Ok(())
     }
+}
+
+/// Best-effort orphan cleanup after a failed snapshot commit.
+///
+/// No-op (with a one-line warning) when cleanup is disabled (`enabled == false`)
+/// or the failure is ambiguous (`definite_loss == false`); otherwise deletes
+/// `file_paths` via `file_io`. Errors are logged, never propagated — the caller
+/// still returns the original commit error.
+pub(crate) async fn maybe_cleanup_orphans(
+    file_io: &FileIO,
+    table_name: &str,
+    enabled: bool,
+    definite_loss: bool,
+    file_paths: &[String],
+) {
+    if !enabled {
+        tracing::warn!(
+            table = %table_name,
+            orphans = file_paths.len(),
+            "iceberg: commit failed; {} data file(s) orphaned. Set \
+             cleanup_orphans_on_failure to delete them automatically, or run \
+             Iceberg's remove_orphan_files maintenance.",
+            file_paths.len()
+        );
+        return;
+    }
+
+    if !definite_loss {
+        tracing::warn!(
+            table = %table_name,
+            orphans = file_paths.len(),
+            "iceberg: commit outcome ambiguous; NOT deleting {} data file(s) \
+             (a possibly-succeeded commit may reference them). Run \
+             remove_orphan_files if the commit is confirmed failed.",
+            file_paths.len()
+        );
+        return;
+    }
+
+    let (deleted, failed) = delete_data_files(file_io, file_paths).await;
+    tracing::info!(
+        table = %table_name,
+        deleted,
+        failed,
+        "iceberg: cleaned up orphaned data files after a definitive commit failure"
+    );
+}
+
+/// Classify whether a commit failure of `kind` means the commit *definitively*
+/// did not land — so the data files we uploaded are safe to delete — versus an
+/// *ambiguous* outcome where the commit may have succeeded server-side.
+///
+/// `CatalogCommitConflicts` (a competing writer won, after iceberg-rust's
+/// internal retries are exhausted) and `DataInvalid` (the catalog rejected the
+/// commit request) both mean our commit did not apply, so our uploaded files
+/// are safely orphaned. Every other kind — notably `Unexpected` (transport / IO
+/// failure on the catalog update) — is treated as ambiguous and is never
+/// cleaned up.
+pub(crate) fn commit_failure_is_definite_loss(kind: ErrorKind) -> bool {
+    matches!(
+        kind,
+        ErrorKind::CatalogCommitConflicts | ErrorKind::DataInvalid
+    )
+}
+
+/// Delete each path in `paths` via `file_io`, returning `(deleted, failed)`.
+///
+/// Best-effort: a delete error is logged and counted as `failed` but does not
+/// stop the remaining deletes. The data files written by this sink have unique
+/// (UUID-based) names, so deleting them can never remove a file a concurrent
+/// writer references.
+pub(crate) async fn delete_data_files(file_io: &FileIO, paths: &[String]) -> (usize, usize) {
+    let mut deleted = 0usize;
+    let mut failed = 0usize;
+    for path in paths {
+        match file_io.delete(path).await {
+            Ok(()) => deleted += 1,
+            Err(e) => {
+                failed += 1;
+                tracing::warn!(path = %path, error = %e, "iceberg: failed to delete orphaned data file");
+            }
+        }
+    }
+    (deleted, failed)
 }
 
 // ── Sink trait ────────────────────────────────────────────────────────────────
@@ -825,6 +966,156 @@ mod tests {
             msg.contains("nonexistent_col"),
             "error should name the bad column: {msg}"
         );
+    }
+
+    // ── Orphan cleanup (#193) ───────────────────────────────────────────────
+
+    use iceberg::ErrorKind;
+    use iceberg::io::FileIO;
+
+    // Only a definitive loss (our commit certainly did not land) is safe to
+    // clean up; an ambiguous outcome must never delete files.
+    #[test]
+    fn definite_loss_classification() {
+        assert!(
+            commit_failure_is_definite_loss(ErrorKind::CatalogCommitConflicts),
+            "an exhausted commit conflict means our commit definitively lost"
+        );
+        assert!(
+            commit_failure_is_definite_loss(ErrorKind::DataInvalid),
+            "a catalog-rejected commit definitively did not apply"
+        );
+        // Ambiguous / not-our-loss kinds must NOT be treated as definite.
+        assert!(
+            !commit_failure_is_definite_loss(ErrorKind::Unexpected),
+            "a transport error is ambiguous — the commit may have landed"
+        );
+        assert!(!commit_failure_is_definite_loss(
+            ErrorKind::PreconditionFailed
+        ));
+        assert!(!commit_failure_is_definite_loss(
+            ErrorKind::FeatureUnsupported
+        ));
+    }
+
+    /// Write `n` files via `io` under `dir`, returning their `file://` paths.
+    async fn seed_files(io: &FileIO, dir: &std::path::Path, n: usize) -> Vec<String> {
+        let mut paths = Vec::new();
+        for i in 0..n {
+            let p = format!("file://{}/orphan-{i}.parquet", dir.display());
+            io.new_output(&p)
+                .expect("new_output")
+                .write(bytes::Bytes::from_static(b"parquet"))
+                .await
+                .expect("write orphan file");
+            assert!(
+                io.exists(&p).await.expect("exists check"),
+                "seed file present"
+            );
+            paths.push(p);
+        }
+        paths
+    }
+
+    // delete_data_files removes every path and reports an accurate count.
+    #[tokio::test]
+    async fn delete_data_files_removes_all() {
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let io = FileIO::new_with_fs();
+        let paths = seed_files(&io, dir.path(), 3).await;
+
+        let (deleted, failed) = delete_data_files(&io, &paths).await;
+        assert_eq!(deleted, 3);
+        assert_eq!(failed, 0);
+        for p in &paths {
+            assert!(!io.exists(p).await.expect("exists check"), "file deleted");
+        }
+    }
+
+    // Deleting a path that is already gone is idempotent on the local-FS
+    // backend (`Ok`), so the whole batch is reported as deleted and the present
+    // file is removed regardless of ordering. (A genuine delete error — e.g. an
+    // object-store permission failure — is counted toward `failed`; that path
+    // is exercised against real cloud backends in the S3 integration tests.)
+    #[tokio::test]
+    async fn delete_data_files_idempotent_on_missing() {
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let io = FileIO::new_with_fs();
+        let mut paths = seed_files(&io, dir.path(), 1).await;
+        let present = paths[0].clone();
+        paths.push(format!(
+            "file://{}/never-written.parquet",
+            dir.path().display()
+        ));
+
+        let (deleted, failed) = delete_data_files(&io, &paths).await;
+        assert_eq!(
+            failed, 0,
+            "idempotent delete of a missing file is not a failure"
+        );
+        assert_eq!(deleted, 2);
+        assert!(
+            !io.exists(&present).await.expect("exists check"),
+            "the present file was deleted"
+        );
+    }
+
+    // Cleanup is a no-op when disabled: files survive.
+    #[tokio::test]
+    async fn maybe_cleanup_disabled_keeps_files() {
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let io = FileIO::new_with_fs();
+        let paths = seed_files(&io, dir.path(), 2).await;
+
+        maybe_cleanup_orphans(
+            &io, "t", /*enabled=*/ false, /*definite=*/ true, &paths,
+        )
+        .await;
+
+        for p in &paths {
+            assert!(io.exists(p).await.expect("exists check"), "disabled → kept");
+        }
+    }
+
+    // Cleanup is a no-op on an ambiguous failure even when enabled: deleting
+    // could remove files a possibly-succeeded commit references.
+    #[tokio::test]
+    async fn maybe_cleanup_ambiguous_keeps_files() {
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let io = FileIO::new_with_fs();
+        let paths = seed_files(&io, dir.path(), 2).await;
+
+        maybe_cleanup_orphans(
+            &io, "t", /*enabled=*/ true, /*definite=*/ false, &paths,
+        )
+        .await;
+
+        for p in &paths {
+            assert!(
+                io.exists(p).await.expect("exists check"),
+                "ambiguous → kept"
+            );
+        }
+    }
+
+    // Cleanup deletes files only when enabled AND the failure is definitive.
+    #[tokio::test]
+    async fn maybe_cleanup_enabled_definite_deletes_files() {
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let io = FileIO::new_with_fs();
+        let paths = seed_files(&io, dir.path(), 2).await;
+
+        maybe_cleanup_orphans(
+            &io, "t", /*enabled=*/ true, /*definite=*/ true, &paths,
+        )
+        .await;
+
+        for p in &paths {
+            assert!(
+                !io.exists(p).await.expect("exists check"),
+                "enabled + definite → deleted"
+            );
+        }
     }
 
     // Verify the partition spec builder succeeds on a valid identity field.

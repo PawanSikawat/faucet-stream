@@ -201,6 +201,112 @@ async fn write_and_flush_creates_iceberg_snapshots() {
     );
 }
 
+/// Two writers committing from a stale base must both land — iceberg-rust
+/// reloads the latest metadata and re-applies the append against the newest
+/// snapshot rather than aborting (#193).
+///
+/// After a setup commit (snapshot 1), two sinks each lazily load the table at
+/// snapshot 1 and buffer their data files. Sink A flushes → snapshot 2, leaving
+/// sink B's in-memory base stale. Sink B then flushes: `Transaction::commit`
+/// detects the stale base, rebases onto snapshot 2, and re-applies the
+/// `fast_append` → snapshot 3. No error, no lost write.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn concurrent_writers_resolve_commit_conflict_via_refresh() {
+    let dir = TempDir::new().expect("tempdir");
+
+    // ── Setup: create the table + snapshot 1 ────────────────────────────────
+    let setup = IcebergSink::new(sink_config(&dir, "races"))
+        .await
+        .expect("setup sink");
+    let seed: Vec<serde_json::Value> = (0u64..10)
+        .map(|i| json!({ "id": i, "name": format!("n{i}") }))
+        .collect();
+    setup.write_batch(&seed).await.expect("seed write");
+    setup.flush().await.expect("seed flush");
+
+    // ── Two writers both lazily load the table at snapshot 1 ────────────────
+    let a = IcebergSink::new(sink_config(&dir, "races"))
+        .await
+        .expect("sink a");
+    let b = IcebergSink::new(sink_config(&dir, "races"))
+        .await
+        .expect("sink b");
+
+    let a_rows: Vec<serde_json::Value> = (100u64..110)
+        .map(|i| json!({ "id": i, "name": format!("a{i}") }))
+        .collect();
+    let b_rows: Vec<serde_json::Value> = (200u64..210)
+        .map(|i| json!({ "id": i, "name": format!("b{i}") }))
+        .collect();
+
+    // Both buffer (and lazily load the same base snapshot 1) before either
+    // commits.
+    a.write_batch(&a_rows).await.expect("a write");
+    b.write_batch(&b_rows).await.expect("b write");
+
+    // A commits → snapshot 2. B's cached base is now stale.
+    a.flush().await.expect("a flush");
+    // B commits from a stale base → iceberg reloads + rebases → snapshot 3.
+    b.flush()
+        .await
+        .expect("b flush must succeed via metadata refresh, not abort");
+
+    // ── Assert all three commits landed (no lost write) ─────────────────────
+    let reader = open_reader_catalog(&dir).await;
+    let ns = NamespaceIdent::from_strs(["db"]).expect("ns");
+    let tid = TableIdent::new(ns, "races".to_string());
+    let table = reader.load_table(&tid).await.expect("load table");
+    assert_eq!(
+        table.metadata().snapshots().count(),
+        3,
+        "setup + two stale-base commits must all produce snapshots (no lost write)"
+    );
+}
+
+/// A snapshot commit that fails (here: the table is dropped out from under the
+/// sink before flush) propagates as an error so the run aborts without
+/// advancing the bookmark — and because a "table vanished" outcome is ambiguous
+/// (not a definitive commit conflict), the uploaded data files are NOT deleted
+/// even with `cleanup_orphans_on_failure` enabled (#193).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn commit_failure_on_dropped_table_propagates_and_keeps_orphans() {
+    use iceberg::Catalog;
+
+    let dir = TempDir::new().expect("tempdir");
+
+    // Create the table + first snapshot via a setup sink.
+    let setup = IcebergSink::new(sink_config(&dir, "vanishing"))
+        .await
+        .expect("setup sink");
+    let seed: Vec<serde_json::Value> = (0u64..5).map(|i| json!({ "id": i })).collect();
+    setup.write_batch(&seed).await.expect("seed write");
+    setup.flush().await.expect("seed flush");
+
+    // A writer with cleanup enabled buffers a batch (loading the table).
+    let mut cfg = sink_config(&dir, "vanishing");
+    cfg.cleanup_orphans_on_failure = true;
+    let writer = IcebergSink::new(cfg).await.expect("writer sink");
+    let rows: Vec<serde_json::Value> = (100u64..105).map(|i| json!({ "id": i })).collect();
+    writer.write_batch(&rows).await.expect("buffer write");
+
+    // Drop the table from the catalog before the writer flushes.
+    let reader = open_reader_catalog(&dir).await;
+    let ns = NamespaceIdent::from_strs(["db"]).expect("ns");
+    let tid = TableIdent::new(ns, "vanishing".to_string());
+    reader.drop_table(&tid).await.expect("drop table");
+
+    // The commit must fail (table gone) and surface as a Sink error.
+    let err = writer
+        .flush()
+        .await
+        .expect_err("flush must fail when the table was dropped");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("iceberg") && msg.contains("commit"),
+        "error should describe the failed commit: {msg}"
+    );
+}
+
 /// Empty `write_batch` followed by `flush` must not produce any snapshot.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn empty_write_batch_no_snapshot() {

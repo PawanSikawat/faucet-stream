@@ -274,6 +274,31 @@ pub struct IcebergSinkConfig {
     /// iceberg writer pipeline. `0` = no limit (single batch). Default: 10 000.
     #[serde(default = "default_batch_size")]
     pub batch_size: usize,
+
+    /// Delete the Parquet data files this flush already uploaded when the
+    /// snapshot commit *definitively* fails, so they do not accumulate as
+    /// orphans.
+    ///
+    /// Iceberg commits use optimistic concurrency: the data files are written
+    /// to object storage *before* the snapshot commit. iceberg-rust already
+    /// retries retryable commit conflicts internally (reloading table metadata
+    /// and re-applying the append against the latest snapshot — tunable via the
+    /// standard `commit.retry.*` table properties). If those retries are
+    /// exhausted (a competing writer won) the just-written files are orphaned —
+    /// valid Parquet, but referenced by no snapshot.
+    ///
+    /// With this flag set, such orphans are deleted automatically on a
+    /// **definitive** loss (an exhausted commit conflict, or a catalog-rejected
+    /// commit). An **ambiguous** failure — e.g. a network error on the catalog
+    /// update where the commit may have landed server-side — is *never* cleaned
+    /// up regardless of this flag, because deleting then could remove files a
+    /// successful-but-unacknowledged commit references.
+    ///
+    /// Default `false`: leave orphans in place (recoverable later via Iceberg's
+    /// standard `remove_orphan_files` maintenance) so cleanup is an explicit,
+    /// opt-in choice.
+    #[serde(default)]
+    pub cleanup_orphans_on_failure: bool,
 }
 
 fn default_create_if_missing() -> bool {

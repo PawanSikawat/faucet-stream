@@ -45,6 +45,7 @@ typetag = { version = "0.2", optional = true }
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync", "time", "test-util"] }
 tempfile = "3"
+bytes = "1"
 iceberg = "0.9.1"
 iceberg-catalog-sql = "0.9.1"
 # sqlx runtime-tokio must be enabled explicitly here because iceberg-catalog-sql's
