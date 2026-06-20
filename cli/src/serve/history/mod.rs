@@ -217,6 +217,48 @@ pub enum HistoryError {
     Degraded(String),
 }
 
+/// One shard row to persist when a run is expanded into shards (Mode B, #230).
+#[derive(Debug, Clone)]
+pub struct ShardInsert {
+    /// Stable shard id, unique within the run (the [`ShardSpec`](faucet_core::ShardSpec) id).
+    pub shard_id: String,
+    /// Opaque connector descriptor, persisted verbatim and handed to
+    /// [`Source::apply_shard`](faucet_core::Source::apply_shard) on the worker.
+    pub descriptor: serde_json::Value,
+    /// Relative size estimate for skew-aware assignment, if the source provided one.
+    pub size_estimate: Option<u64>,
+}
+
+/// A shard claimed for execution, carrying its parent run's record (whose
+/// `config_body` the worker re-loads to build + shard the source).
+#[derive(Debug, Clone)]
+pub struct ClaimedShard {
+    pub run_id: String,
+    pub shard_id: String,
+    pub descriptor: serde_json::Value,
+    /// The parent run record (config body, name, etc.).
+    pub run: RunRecord,
+}
+
+/// Aggregate shard status for a run, used by the coordinator to decide when the
+/// parent run is finished.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ShardProgress {
+    pub total: usize,
+    pub completed: usize,
+    pub failed: usize,
+    pub running: usize,
+    pub pending: usize,
+}
+
+impl ShardProgress {
+    /// True when every shard has reached a terminal state (and at least one
+    /// exists) — i.e. the parent run can be finalized.
+    pub fn all_terminal(&self) -> bool {
+        self.total > 0 && self.completed + self.failed == self.total
+    }
+}
+
 #[async_trait]
 pub trait RunHistory: Send + Sync {
     /// Atomically claim `key` for `run_id` (or report a replay/conflict). A prior
@@ -315,6 +357,69 @@ pub trait RunHistory: Send + Sync {
     async fn live_instances(&self, ttl: Duration) -> Result<Vec<InstanceRecord>, HistoryError> {
         let _ = ttl;
         Ok(Vec::new())
+    }
+
+    // ── Source-shard coordination (Mode B, #230) ────────────────────────────
+    //
+    // All default to inert so the in-memory (single-process, unsharded) backend
+    // and any non-cluster deployment are unaffected. Implemented by the SQL
+    // backends, which share one `faucet_serve_shards` table.
+
+    /// Idempotently insert the shard set for `run_id` (`INSERT … ON CONFLICT
+    /// (run_id, shard_id) DO NOTHING`), so concurrent coordinators converge on
+    /// the same set without a leader. Returns the number of rows newly inserted.
+    /// Default: no-op.
+    async fn insert_shards(
+        &self,
+        run_id: &str,
+        shards: &[ShardInsert],
+    ) -> Result<usize, HistoryError> {
+        let _ = (run_id, shards);
+        Ok(0)
+    }
+
+    /// Atomically claim up to `limit` `pending` shards for *this* instance
+    /// (`pending` → `running` with a fresh lease), largest-estimated-size first
+    /// for skew-aware balancing, returning each with its parent run record.
+    /// Exclusive, like [`claim_pending`](Self::claim_pending). Default: none.
+    async fn claim_shards(&self, limit: usize) -> Result<Vec<ClaimedShard>, HistoryError> {
+        let _ = limit;
+        Ok(Vec::new())
+    }
+
+    /// Heartbeat: extend the lease of this instance's own `running` shards so a
+    /// peer's [`reclaim_shards`](Self::reclaim_shards) won't reassign them.
+    /// Returns the number renewed. Default: no-op.
+    async fn renew_shard_leases(&self) -> Result<usize, HistoryError> {
+        Ok(0)
+    }
+
+    /// Rebalance: expired-lease `running` shards whose `attempt < max_attempts`
+    /// go back to `pending` (owner cleared, `attempt++`) for another worker to
+    /// claim; the rest are `failed` (poison). Returns the counts. Default: none.
+    async fn reclaim_shards(&self, max_attempts: u32) -> Result<ReclaimReport, HistoryError> {
+        let _ = max_attempts;
+        Ok(ReclaimReport::default())
+    }
+
+    /// Owner-fenced terminal write for one shard (`running` → `completed`/`failed`),
+    /// only if this instance still owns it. Returns `true` if the write landed.
+    /// Default: `false`.
+    async fn finalize_shard(
+        &self,
+        run_id: &str,
+        shard_id: &str,
+        success: bool,
+    ) -> Result<bool, HistoryError> {
+        let _ = (run_id, shard_id, success);
+        Ok(false)
+    }
+
+    /// Aggregate shard status counts for a run (drives parent-run finalization).
+    /// Default: empty.
+    async fn shard_progress(&self, run_id: &str) -> Result<ShardProgress, HistoryError> {
+        let _ = run_id;
+        Ok(ShardProgress::default())
     }
 
     /// True when the backend is in fallback mode (drives `/readyz`). Always false

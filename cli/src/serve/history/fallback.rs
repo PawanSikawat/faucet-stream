@@ -180,6 +180,42 @@ impl RunHistory for FallbackHistory {
         via!(self, p => p.live_instances(ttl), f => f.live_instances(ttl))
     }
 
+    // ── Source shards (Mode B, #230) ─────────────────────────────────────────
+
+    async fn insert_shards(
+        &self,
+        run_id: &str,
+        shards: &[crate::serve::history::ShardInsert],
+    ) -> Result<usize, HistoryError> {
+        via!(self, p => p.insert_shards(run_id, shards), f => f.insert_shards(run_id, shards))
+    }
+    async fn claim_shards(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<crate::serve::history::ClaimedShard>, HistoryError> {
+        via!(self, p => p.claim_shards(limit), f => f.claim_shards(limit))
+    }
+    async fn renew_shard_leases(&self) -> Result<usize, HistoryError> {
+        via!(self, p => p.renew_shard_leases(), f => f.renew_shard_leases())
+    }
+    async fn reclaim_shards(&self, max_attempts: u32) -> Result<ReclaimReport, HistoryError> {
+        via!(self, p => p.reclaim_shards(max_attempts), f => f.reclaim_shards(max_attempts))
+    }
+    async fn finalize_shard(
+        &self,
+        run_id: &str,
+        shard_id: &str,
+        success: bool,
+    ) -> Result<bool, HistoryError> {
+        via!(self, p => p.finalize_shard(run_id, shard_id, success), f => f.finalize_shard(run_id, shard_id, success))
+    }
+    async fn shard_progress(
+        &self,
+        run_id: &str,
+    ) -> Result<crate::serve::history::ShardProgress, HistoryError> {
+        via!(self, p => p.shard_progress(run_id), f => f.shard_progress(run_id))
+    }
+
     fn degraded(&self) -> bool {
         self.is_degraded()
     }

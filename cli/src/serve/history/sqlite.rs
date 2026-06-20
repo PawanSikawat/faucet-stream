@@ -46,3 +46,140 @@ impl SqliteHistory {
         ))
     }
 }
+
+#[cfg(test)]
+mod shard_tests {
+    use super::*;
+    use crate::serve::history::{RunHistory, RunRecord, RunStatus, ShardInsert};
+    use std::collections::BTreeMap;
+
+    fn shard(id: &str, size: u64) -> ShardInsert {
+        ShardInsert {
+            shard_id: id.into(),
+            descriptor: serde_json::json!({ "i": id }),
+            size_estimate: Some(size),
+        }
+    }
+
+    async fn backend(url: &str, instance: &str, ttl: Duration) -> SqliteHistory {
+        SqliteHistory::connect(url, Duration::from_secs(300), ttl, instance.into())
+            .await
+            .expect("connect")
+    }
+
+    async fn seed_run(h: &SqliteHistory, run_id: &str) {
+        let mut rec = RunRecord::queued(
+            run_id.into(),
+            None,
+            BTreeMap::new(),
+            None,
+            chrono::Utc::now(),
+        );
+        rec.status = RunStatus::Pending;
+        rec.config_body = Some("version: 1".into());
+        h.upsert(&rec).await.expect("seed run");
+    }
+
+    fn url_in(dir: &std::path::Path) -> String {
+        format!("sqlite://{}/h.db", dir.display())
+    }
+
+    #[tokio::test]
+    async fn insert_shards_is_idempotent_and_progress_counts() {
+        let dir = tempfile::tempdir().unwrap();
+        let h = backend(&url_in(dir.path()), "a", Duration::from_secs(60)).await;
+        seed_run(&h, "run1").await;
+        let shards = [shard("0", 10), shard("1", 20), shard("2", 5)];
+
+        assert_eq!(h.insert_shards("run1", &shards).await.unwrap(), 3);
+        assert_eq!(
+            h.insert_shards("run1", &shards).await.unwrap(),
+            0,
+            "re-insert is a no-op (ON CONFLICT DO NOTHING)"
+        );
+
+        let p = h.shard_progress("run1").await.unwrap();
+        assert_eq!(p.total, 3);
+        assert_eq!(p.pending, 3);
+        assert!(!p.all_terminal());
+    }
+
+    #[tokio::test]
+    async fn claim_shards_largest_first_marks_running_and_is_exclusive() {
+        let dir = tempfile::tempdir().unwrap();
+        let h = backend(&url_in(dir.path()), "a", Duration::from_secs(60)).await;
+        seed_run(&h, "run1").await;
+        h.insert_shards("run1", &[shard("0", 10), shard("1", 20), shard("2", 5)])
+            .await
+            .unwrap();
+
+        let claimed = h.claim_shards(10).await.unwrap();
+        assert_eq!(claimed.len(), 3);
+        // Largest estimated size first.
+        assert_eq!(claimed[0].shard_id, "1");
+        assert_eq!(claimed[1].shard_id, "0");
+        assert_eq!(claimed[2].shard_id, "2");
+        // Parent run body is carried for the worker to rebuild the source.
+        assert_eq!(claimed[0].run.config_body.as_deref(), Some("version: 1"));
+        assert_eq!(claimed[0].descriptor, serde_json::json!({ "i": "1" }));
+
+        let p = h.shard_progress("run1").await.unwrap();
+        assert_eq!(p.running, 3);
+
+        // Everything is claimed → a second claim returns nothing.
+        assert!(h.claim_shards(10).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn finalize_shard_is_owner_fenced() {
+        let dir = tempfile::tempdir().unwrap();
+        let url = url_in(dir.path());
+        let a = backend(&url, "inst-a", Duration::from_secs(60)).await;
+        let b = backend(&url, "inst-b", Duration::from_secs(60)).await;
+        seed_run(&a, "run1").await;
+        a.insert_shards("run1", &[shard("0", 1)]).await.unwrap();
+
+        // A claims the only shard.
+        let claimed = a.claim_shards(10).await.unwrap();
+        assert_eq!(claimed.len(), 1);
+
+        // B does not own it → cannot finalize.
+        assert!(
+            !b.finalize_shard("run1", "0", true).await.unwrap(),
+            "a non-owner must not finalize the shard"
+        );
+        // A owns it → finalize succeeds.
+        assert!(a.finalize_shard("run1", "0", true).await.unwrap());
+
+        let p = a.shard_progress("run1").await.unwrap();
+        assert_eq!(p.completed, 1);
+        assert!(p.all_terminal());
+    }
+
+    #[tokio::test]
+    async fn reclaim_shards_requeues_expired_then_poisons() {
+        let dir = tempfile::tempdir().unwrap();
+        let url = url_in(dir.path());
+        // lease_ttl = 0 → a claimed shard's lease is already in the past on the
+        // next call, so it is reclaimable deterministically.
+        let h = backend(&url, "inst-a", Duration::ZERO).await;
+        seed_run(&h, "run1").await;
+        h.insert_shards("run1", &[shard("0", 1)]).await.unwrap();
+        h.claim_shards(10).await.unwrap();
+
+        // First reclaim: attempt 0 < 2 → requeued back to pending.
+        let r1 = h.reclaim_shards(2).await.unwrap();
+        assert_eq!(r1.requeued, 1);
+        assert_eq!(r1.failed, 0);
+        assert_eq!(h.shard_progress("run1").await.unwrap().pending, 1);
+
+        // Re-claim and reclaim until the attempt cap poisons it.
+        h.claim_shards(10).await.unwrap();
+        let r2 = h.reclaim_shards(2).await.unwrap();
+        assert_eq!(r2.requeued, 1, "attempt 1 < 2 → still requeued");
+        h.claim_shards(10).await.unwrap();
+        let r3 = h.reclaim_shards(2).await.unwrap();
+        assert_eq!(r3.failed, 1, "attempt 2 >= 2 → poisoned (failed)");
+        assert_eq!(h.shard_progress("run1").await.unwrap().failed, 1);
+    }
+}

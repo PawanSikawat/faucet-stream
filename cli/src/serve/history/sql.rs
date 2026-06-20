@@ -61,6 +61,24 @@ pub const DDL: &[&str] = &[
         run_id TEXT NOT NULL,\
         fingerprint TEXT NOT NULL,\
         claimed_at TEXT NOT NULL)",
+    // Source shards for clustered Mode B (#230). One row per (run, shard);
+    // `owner`/`lease_expires_at`/`attempt` reuse Mode A's lease-fencing semantics
+    // at shard granularity. `size_estimate` (an integer stored as TEXT) drives
+    // skew-aware, largest-first claiming. `descriptor` is the opaque connector
+    // shard spec, replayed to the worker that claims the shard.
+    "CREATE TABLE IF NOT EXISTS faucet_serve_shards (\
+        run_id TEXT NOT NULL,\
+        shard_id TEXT NOT NULL,\
+        descriptor TEXT NOT NULL,\
+        size_estimate TEXT,\
+        status TEXT NOT NULL,\
+        owner TEXT,\
+        lease_expires_at TEXT,\
+        attempt TEXT NOT NULL,\
+        finished_at TEXT,\
+        PRIMARY KEY (run_id, shard_id))",
+    "CREATE INDEX IF NOT EXISTS faucet_serve_shards_claim_idx \
+        ON faucet_serve_shards (status, lease_expires_at)",
 ];
 
 /// SQL placeholder dialect.
@@ -123,6 +141,25 @@ pub struct Stmts {
     pub live_instances: String,
     /// Prune instances whose last heartbeat is before a given threshold.
     pub prune_instances: String,
+    // ── Source shards (Mode B, #230) ─────────────────────────────────────────
+    /// Idempotent shard insert (`ON CONFLICT (run_id, shard_id) DO NOTHING`).
+    pub insert_shard: String,
+    /// Select claimable pending shards joined to their run body, largest first.
+    pub claim_shards_select: String,
+    /// Atomically claim one pending shard for this instance.
+    pub claim_shard_one: String,
+    /// Heartbeat this instance's running shards.
+    pub renew_shard_leases: String,
+    /// Select expired-lease running shards for requeue/fail evaluation.
+    pub reclaim_shards_select: String,
+    /// Requeue an expired running shard back to pending (attempt++).
+    pub reclaim_shard_requeue: String,
+    /// Fail an expired running shard that exhausted its attempts (poison).
+    pub reclaim_shard_fail: String,
+    /// Owner-fenced terminal write for one shard.
+    pub finalize_shard: String,
+    /// Status counts for a run's shards.
+    pub shard_progress: String,
 }
 
 impl Stmts {
@@ -228,6 +265,45 @@ impl Stmts {
                 WHERE last_heartbeat >= $1"
                 .into(),
             prune_instances: "DELETE FROM faucet_serve_instances WHERE last_heartbeat < $1".into(),
+            insert_shard: "INSERT INTO faucet_serve_shards \
+                (run_id, shard_id, descriptor, size_estimate, status, attempt) \
+                VALUES ($1,$2,$3,$4,'pending','0') \
+                ON CONFLICT (run_id, shard_id) DO NOTHING"
+                .into(),
+            claim_shards_select: "SELECT s.run_id, s.shard_id, s.descriptor, r.body \
+                FROM faucet_serve_shards s JOIN faucet_serve_runs r ON r.run_id = s.run_id \
+                WHERE s.status = 'pending' \
+                ORDER BY CAST(COALESCE(s.size_estimate, '0') AS BIGINT) DESC, s.run_id, s.shard_id \
+                LIMIT $1"
+                .into(),
+            claim_shard_one: "UPDATE faucet_serve_shards \
+                SET owner = $1, status = 'running', lease_expires_at = $2 \
+                WHERE run_id = $3 AND shard_id = $4 AND status = 'pending'"
+                .into(),
+            renew_shard_leases: "UPDATE faucet_serve_shards SET lease_expires_at = $1 \
+                WHERE owner = $2 AND status = 'running'"
+                .into(),
+            reclaim_shards_select: "SELECT run_id, shard_id, attempt FROM faucet_serve_shards \
+                WHERE status = 'running' \
+                AND (lease_expires_at IS NULL OR lease_expires_at < $1)"
+                .into(),
+            reclaim_shard_requeue: "UPDATE faucet_serve_shards \
+                SET status = 'pending', owner = NULL, lease_expires_at = NULL, attempt = $1 \
+                WHERE run_id = $2 AND shard_id = $3 AND status = 'running' \
+                AND (lease_expires_at IS NULL OR lease_expires_at < $4)"
+                .into(),
+            reclaim_shard_fail: "UPDATE faucet_serve_shards \
+                SET status = 'failed', finished_at = $1, owner = NULL \
+                WHERE run_id = $2 AND shard_id = $3 AND status = 'running' \
+                AND (lease_expires_at IS NULL OR lease_expires_at < $4)"
+                .into(),
+            finalize_shard: "UPDATE faucet_serve_shards \
+                SET status = $1, finished_at = $2 \
+                WHERE run_id = $3 AND shard_id = $4 AND owner = $5 AND status = 'running'"
+                .into(),
+            shard_progress: "SELECT status, COUNT(*) AS n FROM faucet_serve_shards \
+                WHERE run_id = $1 GROUP BY status"
+                .into(),
         }
     }
 
@@ -324,6 +400,45 @@ impl Stmts {
                 WHERE last_heartbeat >= ?"
                 .into(),
             prune_instances: "DELETE FROM faucet_serve_instances WHERE last_heartbeat < ?".into(),
+            insert_shard: "INSERT INTO faucet_serve_shards \
+                (run_id, shard_id, descriptor, size_estimate, status, attempt) \
+                VALUES (?,?,?,?,'pending','0') \
+                ON CONFLICT (run_id, shard_id) DO NOTHING"
+                .into(),
+            claim_shards_select: "SELECT s.run_id, s.shard_id, s.descriptor, r.body \
+                FROM faucet_serve_shards s JOIN faucet_serve_runs r ON r.run_id = s.run_id \
+                WHERE s.status = 'pending' \
+                ORDER BY CAST(COALESCE(s.size_estimate, '0') AS INTEGER) DESC, s.run_id, s.shard_id \
+                LIMIT ?"
+                .into(),
+            claim_shard_one: "UPDATE faucet_serve_shards \
+                SET owner = ?, status = 'running', lease_expires_at = ? \
+                WHERE run_id = ? AND shard_id = ? AND status = 'pending'"
+                .into(),
+            renew_shard_leases: "UPDATE faucet_serve_shards SET lease_expires_at = ? \
+                WHERE owner = ? AND status = 'running'"
+                .into(),
+            reclaim_shards_select: "SELECT run_id, shard_id, attempt FROM faucet_serve_shards \
+                WHERE status = 'running' \
+                AND (lease_expires_at IS NULL OR lease_expires_at < ?)"
+                .into(),
+            reclaim_shard_requeue: "UPDATE faucet_serve_shards \
+                SET status = 'pending', owner = NULL, lease_expires_at = NULL, attempt = ? \
+                WHERE run_id = ? AND shard_id = ? AND status = 'running' \
+                AND (lease_expires_at IS NULL OR lease_expires_at < ?)"
+                .into(),
+            reclaim_shard_fail: "UPDATE faucet_serve_shards \
+                SET status = 'failed', finished_at = ?, owner = NULL \
+                WHERE run_id = ? AND shard_id = ? AND status = 'running' \
+                AND (lease_expires_at IS NULL OR lease_expires_at < ?)"
+                .into(),
+            finalize_shard: "UPDATE faucet_serve_shards \
+                SET status = ?, finished_at = ? \
+                WHERE run_id = ? AND shard_id = ? AND owner = ? AND status = 'running'"
+                .into(),
+            shard_progress: "SELECT status, COUNT(*) AS n FROM faucet_serve_shards \
+                WHERE run_id = ? GROUP BY status"
+                .into(),
         }
     }
 }
@@ -1040,6 +1155,220 @@ macro_rules! impl_sql_history {
                     });
                 }
                 Ok(out)
+            }
+
+            // ── Source shards (Mode B, #230) ─────────────────────────────────
+
+            async fn insert_shards(
+                &self,
+                run_id: &str,
+                shards: &[$crate::serve::history::ShardInsert],
+            ) -> Result<usize, $crate::serve::history::HistoryError> {
+                use $crate::serve::history::HistoryError;
+                let backend = |e: sqlx::Error| HistoryError::Backend(e.to_string());
+                let mut inserted = 0usize;
+                for s in shards {
+                    let descriptor = serde_json::to_string(&s.descriptor).map_err(|e| {
+                        HistoryError::Backend(format!("encode shard descriptor: {e}"))
+                    })?;
+                    let size = s.size_estimate.map(|n| n.to_string());
+                    let n = sqlx::query(&self.stmts.insert_shard)
+                        .bind(run_id)
+                        .bind(&s.shard_id)
+                        .bind(&descriptor)
+                        .bind(size.as_deref())
+                        .execute(&self.pool)
+                        .await
+                        .map_err(backend)?
+                        .rows_affected();
+                    inserted += n as usize;
+                }
+                Ok(inserted)
+            }
+
+            async fn claim_shards(
+                &self,
+                limit: usize,
+            ) -> Result<
+                Vec<$crate::serve::history::ClaimedShard>,
+                $crate::serve::history::HistoryError,
+            > {
+                use sqlx::Row as _;
+                use $crate::serve::history::ClaimedShard;
+                use $crate::serve::history::HistoryError;
+                use $crate::serve::history::sql;
+                let backend = |e: sqlx::Error| HistoryError::Backend(e.to_string());
+                if limit == 0 {
+                    return Ok(Vec::new());
+                }
+                let lease = sql::fmt_ts(chrono::Utc::now() + self.lease_ttl);
+
+                // 1. Candidate pending shards (largest estimated size first),
+                //    joined to their parent run body.
+                let rows = sqlx::query(&self.stmts.claim_shards_select)
+                    .bind(limit as i64)
+                    .fetch_all(&self.pool)
+                    .await
+                    .map_err(backend)?;
+
+                // 2. Per-row conditional claim (portable; not FOR UPDATE SKIP LOCKED).
+                let mut claimed = Vec::new();
+                for row in &rows {
+                    let run_id: String = row.try_get("run_id").map_err(backend)?;
+                    let shard_id: String = row.try_get("shard_id").map_err(backend)?;
+                    let descriptor_s: String = row.try_get("descriptor").map_err(backend)?;
+                    let body: String = row.try_get("body").map_err(backend)?;
+                    let won = sqlx::query(&self.stmts.claim_shard_one)
+                        .bind(&self.instance_id)
+                        .bind(&lease)
+                        .bind(&run_id)
+                        .bind(&shard_id)
+                        .execute(&self.pool)
+                        .await
+                        .map_err(backend)?
+                        .rows_affected();
+                    if won == 1 {
+                        let descriptor: serde_json::Value = serde_json::from_str(&descriptor_s)
+                            .map_err(|e| {
+                                HistoryError::Backend(format!("decode shard descriptor: {e}"))
+                            })?;
+                        let run = sql::decode_body(&body)?;
+                        claimed.push(ClaimedShard {
+                            run_id,
+                            shard_id,
+                            descriptor,
+                            run,
+                        });
+                    }
+                }
+                Ok(claimed)
+            }
+
+            async fn renew_shard_leases(
+                &self,
+            ) -> Result<usize, $crate::serve::history::HistoryError> {
+                use $crate::serve::history::HistoryError;
+                use $crate::serve::history::sql;
+                let backend = |e: sqlx::Error| HistoryError::Backend(e.to_string());
+                let lease = sql::fmt_ts(chrono::Utc::now() + self.lease_ttl);
+                let n = sqlx::query(&self.stmts.renew_shard_leases)
+                    .bind(&lease)
+                    .bind(&self.instance_id)
+                    .execute(&self.pool)
+                    .await
+                    .map_err(backend)?
+                    .rows_affected() as usize;
+                Ok(n)
+            }
+
+            async fn reclaim_shards(
+                &self,
+                max_attempts: u32,
+            ) -> Result<$crate::serve::history::ReclaimReport, $crate::serve::history::HistoryError>
+            {
+                use sqlx::Row as _;
+                use $crate::serve::history::HistoryError;
+                use $crate::serve::history::ReclaimReport;
+                use $crate::serve::history::sql;
+                let backend = |e: sqlx::Error| HistoryError::Backend(e.to_string());
+                let now_s = sql::fmt_ts(chrono::Utc::now());
+
+                let rows = sqlx::query(&self.stmts.reclaim_shards_select)
+                    .bind(&now_s)
+                    .fetch_all(&self.pool)
+                    .await
+                    .map_err(backend)?;
+
+                let mut report = ReclaimReport::default();
+                for row in &rows {
+                    let run_id: String = row.try_get("run_id").map_err(backend)?;
+                    let shard_id: String = row.try_get("shard_id").map_err(backend)?;
+                    let attempt_s: String = row.try_get("attempt").map_err(backend)?;
+                    let attempt: u32 = attempt_s.parse().unwrap_or(0);
+                    if attempt < max_attempts {
+                        let next = (attempt + 1).to_string();
+                        let n = sqlx::query(&self.stmts.reclaim_shard_requeue)
+                            .bind(&next)
+                            .bind(&run_id)
+                            .bind(&shard_id)
+                            .bind(&now_s)
+                            .execute(&self.pool)
+                            .await
+                            .map_err(backend)?
+                            .rows_affected();
+                        if n == 1 {
+                            report.requeued += 1;
+                        }
+                    } else {
+                        let n = sqlx::query(&self.stmts.reclaim_shard_fail)
+                            .bind(&now_s)
+                            .bind(&run_id)
+                            .bind(&shard_id)
+                            .bind(&now_s)
+                            .execute(&self.pool)
+                            .await
+                            .map_err(backend)?
+                            .rows_affected();
+                        if n == 1 {
+                            report.failed += 1;
+                        }
+                    }
+                }
+                Ok(report)
+            }
+
+            async fn finalize_shard(
+                &self,
+                run_id: &str,
+                shard_id: &str,
+                success: bool,
+            ) -> Result<bool, $crate::serve::history::HistoryError> {
+                use $crate::serve::history::HistoryError;
+                use $crate::serve::history::sql;
+                let backend = |e: sqlx::Error| HistoryError::Backend(e.to_string());
+                let status = if success { "completed" } else { "failed" };
+                let now_s = sql::fmt_ts(chrono::Utc::now());
+                let n = sqlx::query(&self.stmts.finalize_shard)
+                    .bind(status)
+                    .bind(&now_s)
+                    .bind(run_id)
+                    .bind(shard_id)
+                    .bind(&self.instance_id)
+                    .execute(&self.pool)
+                    .await
+                    .map_err(backend)?
+                    .rows_affected();
+                Ok(n == 1)
+            }
+
+            async fn shard_progress(
+                &self,
+                run_id: &str,
+            ) -> Result<$crate::serve::history::ShardProgress, $crate::serve::history::HistoryError>
+            {
+                use sqlx::Row as _;
+                use $crate::serve::history::HistoryError;
+                use $crate::serve::history::ShardProgress;
+                let backend = |e: sqlx::Error| HistoryError::Backend(e.to_string());
+                let rows = sqlx::query(&self.stmts.shard_progress)
+                    .bind(run_id)
+                    .fetch_all(&self.pool)
+                    .await
+                    .map_err(backend)?;
+                let mut p = ShardProgress::default();
+                for row in &rows {
+                    let status: String = row.try_get("status").map_err(backend)?;
+                    let n: i64 = row.try_get("n").map_err(backend)?;
+                    let n = n.max(0) as usize;
+                    p.total += n;
+                    match status.as_str() {
+                        "completed" => p.completed += n,
+                        "failed" => p.failed += n,
+                        "running" => p.running += n,
+                        _ => p.pending += n,
+                    }
+                }
+                Ok(p)
             }
 
             fn degraded(&self) -> bool {
