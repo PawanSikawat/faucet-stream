@@ -172,6 +172,7 @@ fn make_opts(
         dry_run: false,
         limit: None,
         state_path_override: None,
+        shard: None,
         auth: auth.clone(),
         clock,
         cancel: None,

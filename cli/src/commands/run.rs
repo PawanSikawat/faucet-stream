@@ -91,6 +91,7 @@ pub async fn run(args: RunArgs) -> CliResult<()> {
             dry_run: args.dry_run,
             limit: args.limit,
             state_path_override: args.state_path.clone(),
+            shard: None,
             auth,
             clock: resolve_run_clock(args.clock.as_deref())?,
             // `faucet run` has no external cancel signal; the executor still
