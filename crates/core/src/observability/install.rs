@@ -181,10 +181,12 @@ pub fn install_observability(cfg: &ObservabilityConfig) -> Result<InstallReport,
                         if reg.try_init().is_err() {
                             tracing::warn!("tracing subscriber already installed; continuing");
                             report.tracing_already_installed = true;
+                            // try_init failed: no otel layer was installed, so DON'T store the
+                            // provider — let `tp` drop here to shut its exporter down.
                         } else {
                             report.otel_signals.push("traces");
+                            otel_tracer = Some(tp);
                         }
-                        otel_tracer = Some(tp);
                         installed = true;
                     }
                     Err(e) => tracing::warn!("OTLP trace exporter init failed; logs-only: {e}"),
