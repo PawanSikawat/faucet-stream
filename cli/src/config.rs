@@ -90,6 +90,15 @@ pub struct PipelineConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resilience: Option<ResilienceSpec>,
 
+    /// Optional source-shard distribution for clustered (Mode B) execution.
+    /// Only consumed by `faucet serve --cluster`: a run whose source
+    /// [is shardable](faucet_core::Source::is_shardable) is split into
+    /// `shard.count` shards processed concurrently across cluster workers.
+    /// Ignored by `faucet run` and by a non-cluster `serve`, so it is fully
+    /// backward compatible.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shard: Option<ShardingSpec>,
+
     /// Optional snapshot→CDC replication block. Consumed only by
     /// `faucet replicate`; ignored by `faucet run` (like `schedule:`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -298,6 +307,17 @@ pub struct ExecutionSpec {
     /// Adaptive batch-size controller (opt-in). See `faucet_core::AdaptiveBatchConfig`.
     #[serde(default)]
     pub adaptive_batch_size: Option<faucet_core::AdaptiveBatchConfig>,
+}
+
+/// Source-shard distribution settings for clustered (Mode B) execution.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ShardingSpec {
+    /// Target number of shards to split the source into. Must be `>= 2` (a
+    /// count of 1 means "don't shard" — omit the block instead). The actual
+    /// shard count may be smaller when the source has fewer natural partitions
+    /// (e.g. a key range narrower than `count`).
+    pub count: usize,
 }
 
 /// Failure-handling policy across the matrix.

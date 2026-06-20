@@ -174,6 +174,47 @@ pub trait Source: Send + Sync {
         false
     }
 
+    /// Whether this source can split its work into independent shards for
+    /// clustered (Mode B) execution. Default: `false` (single whole-dataset
+    /// shard). Sources with a natural partition (object-store prefixes, table
+    /// primary-key ranges) override this to `true` and implement
+    /// [`enumerate_shards`](Self::enumerate_shards) +
+    /// [`apply_shard`](Self::apply_shard).
+    fn is_shardable(&self) -> bool {
+        false
+    }
+
+    /// Enumerate the shards this source splits into, aiming for roughly `target`
+    /// of them (a hint — the source may return fewer, e.g. when the dataset is
+    /// small, or one per natural partition regardless of `target`).
+    ///
+    /// Called **once per run** by the cluster coordinator; enumeration must be
+    /// deterministic enough that re-enumeration yields a compatible set (stable
+    /// shard ids), since it may run on more than one instance and is reconciled
+    /// by idempotent insert. May perform read-only I/O (a `LIST`, a `MIN/MAX`
+    /// query). The default returns a single whole-dataset shard
+    /// ([`ShardSpec::whole`](crate::ShardSpec::whole)), preserving today's
+    /// single-worker behavior.
+    async fn enumerate_shards(
+        &self,
+        _target: usize,
+    ) -> Result<Vec<crate::shard::ShardSpec>, FaucetError> {
+        Ok(vec![crate::shard::ShardSpec::whole()])
+    }
+
+    /// Narrow this source instance to a single shard before streaming.
+    ///
+    /// Called on the worker that claims `shard`, after construction and before
+    /// any `stream_pages` call. Like [`apply_start_bookmark`](Self::apply_start_bookmark)
+    /// this takes `&self` and is expected to record the shard behind interior
+    /// mutability (the source consults it when building its query / listing).
+    /// The default ignores the shard — a non-shardable source only ever receives
+    /// [`ShardSpec::whole`](crate::ShardSpec::whole), so ignoring it streams the
+    /// whole dataset. Implementations should accept the whole shard as a no-op.
+    async fn apply_shard(&self, _shard: &crate::shard::ShardSpec) -> Result<(), FaucetError> {
+        Ok(())
+    }
+
     /// Stable identifier used as the `connector` label on metrics and the
     /// `connector` attribute on spans. Defaults to the final segment of
     /// `std::any::type_name::<Self>()`, e.g. `"RestSource"`. Built-in
@@ -906,5 +947,31 @@ mod tests {
     async fn capture_resume_position_callable_through_trait_object() {
         let source: Box<dyn Source> = Box::new(MockSource { records: vec![] });
         assert!(source.capture_resume_position().await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn source_default_is_not_shardable() {
+        let source: Box<dyn Source> = Box::new(MockSource { records: vec![] });
+        assert!(!source.is_shardable());
+    }
+
+    #[tokio::test]
+    async fn source_default_enumerates_single_whole_shard() {
+        // A non-shardable source enumerates to exactly one whole-dataset shard,
+        // regardless of the requested target — preserving single-worker behavior.
+        let source: Box<dyn Source> = Box::new(MockSource { records: vec![] });
+        let shards = source.enumerate_shards(8).await.unwrap();
+        assert_eq!(shards.len(), 1);
+        assert!(shards[0].is_whole());
+    }
+
+    #[tokio::test]
+    async fn source_default_apply_shard_is_noop() {
+        let source: Box<dyn Source> = Box::new(MockSource { records: vec![] });
+        // Applying the whole shard is a no-op and must not error.
+        source
+            .apply_shard(&crate::shard::ShardSpec::whole())
+            .await
+            .unwrap();
     }
 }

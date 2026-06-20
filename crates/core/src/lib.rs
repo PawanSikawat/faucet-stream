@@ -29,6 +29,7 @@ pub mod replication;
 pub mod resilience;
 pub mod retry;
 pub mod schema;
+pub mod shard;
 pub mod stage;
 pub mod state;
 pub mod traits;
@@ -73,6 +74,7 @@ pub use resilience::{
     execute_with_policy, execute_with_policy_metered,
 };
 pub use retry::execute_with_retry;
+pub use shard::ShardSpec;
 #[cfg(feature = "transform-cdc-unwrap")]
 pub use stage::CdcUnwrapSpec;
 #[cfg(feature = "transform-explode")]

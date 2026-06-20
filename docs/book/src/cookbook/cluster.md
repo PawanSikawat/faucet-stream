@@ -236,6 +236,76 @@ from the shared DB.
 
 See the operator/Helm chart for faucet — TBD (#197).
 
+## Distributing one big source across workers (Mode B)
+
+Everything above is **Mode A**: whole *runs* pull-balance across instances, but a
+single large source still runs entirely on one worker. **Mode B** splits *one
+source* into shards that different workers process concurrently, so a single
+logical pipeline over a huge table or object prefix scales horizontally.
+
+### Enabling it
+
+Add a top-level `shard:` block to the submitted config and run the cluster as
+usual (Mode B requires `--cluster` + a SQL history backend — it builds on the
+same lease/claim machinery):
+
+```yaml
+version: 1
+name: big-table-mirror
+shard:
+  count: 8            # split the source into ~8 shards
+pipeline:
+  source:
+    type: postgres
+    config:
+      connection_url: ${env:PG_URL}
+      query: "SELECT * FROM events"
+      shard: { key: id }   # integer column to range-partition on
+  sink:
+    type: postgres
+    config:
+      connection_url: ${env:WAREHOUSE_URL}
+      table: events
+      write_mode: upsert
+      key: [id]
+  state: { type: postgres, config: { connection_url: ${env:PG_URL} } }
+```
+
+When a sharded run is submitted, the instance that claims it acts as an
+(ephemeral) **coordinator**: it enumerates the shards and inserts them into the
+shared `faucet_serve_shards` table (idempotently — no leader election). Every
+instance's claim loop then pulls shard rows up to its free capacity, narrows its
+source to that shard, and runs it. The parent run is marked `sharded` and is
+finalized to `completed`/`failed` once every shard is terminal.
+
+### Shardable sources
+
+| Source | Strategy | How to enable |
+|--------|----------|---------------|
+| `postgres` | primary-key range (`WHERE key >= lo AND key < hi`) | `source.config.shard: { key: <int column> }` |
+| `s3` | hash-of-object-key modulo N | automatic (no config) |
+
+Other sources are not shardable yet (tracked in [#262](https://github.com/PawanSikawat/faucet-stream/issues/262));
+Kafka uses native consumer-group assignment instead ([#261](https://github.com/PawanSikawat/faucet-stream/issues/261)).
+A non-shardable source (or a matrix pipeline) ignores `shard:` and runs whole — Mode B is fully backward compatible.
+
+### Per-shard resume and rebalancing
+
+- **Per-shard bookmarks:** each shard has its own state key (`{run}::{shard}`),
+  so a reassigned shard resumes where its dead owner left off, independent of its
+  siblings.
+- **Rebalancing:** a shard whose owning instance's lease expires is reclaimed by
+  the lease loop — requeued to another worker, or poisoned (failed) past
+  `--cluster-max-attempts`. New members pick up unassigned/reclaimed shards on
+  their next claim tick.
+- **Correctness boundary:** the same paused-not-crashed double-processing window
+  as Mode A applies per shard. Pair with `write_mode: upsert` (or exactly-once
+  delivery) so a reassigned shard's overlap is idempotent — as in the example
+  above.
+
+Mode B metrics: `faucet_serve_shards_claimed_total`,
+`faucet_serve_shards_reclaimed_total{outcome}`.
+
 ## Related pages
 
 - [Running faucet as a service](./serve.md) — `faucet serve` fundamentals,

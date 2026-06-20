@@ -180,6 +180,42 @@ impl RunHistory for FallbackHistory {
         via!(self, p => p.live_instances(ttl), f => f.live_instances(ttl))
     }
 
+    // ── Source shards (Mode B, #230) ─────────────────────────────────────────
+
+    async fn insert_shards(
+        &self,
+        run_id: &str,
+        shards: &[crate::serve::history::ShardInsert],
+    ) -> Result<usize, HistoryError> {
+        via!(self, p => p.insert_shards(run_id, shards), f => f.insert_shards(run_id, shards))
+    }
+    async fn claim_shards(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<crate::serve::history::ClaimedShard>, HistoryError> {
+        via!(self, p => p.claim_shards(limit), f => f.claim_shards(limit))
+    }
+    async fn renew_shard_leases(&self) -> Result<usize, HistoryError> {
+        via!(self, p => p.renew_shard_leases(), f => f.renew_shard_leases())
+    }
+    async fn reclaim_shards(&self, max_attempts: u32) -> Result<ReclaimReport, HistoryError> {
+        via!(self, p => p.reclaim_shards(max_attempts), f => f.reclaim_shards(max_attempts))
+    }
+    async fn finalize_shard(
+        &self,
+        run_id: &str,
+        shard_id: &str,
+        success: bool,
+    ) -> Result<bool, HistoryError> {
+        via!(self, p => p.finalize_shard(run_id, shard_id, success), f => f.finalize_shard(run_id, shard_id, success))
+    }
+    async fn shard_progress(
+        &self,
+        run_id: &str,
+    ) -> Result<crate::serve::history::ShardProgress, HistoryError> {
+        via!(self, p => p.shard_progress(run_id), f => f.shard_progress(run_id))
+    }
+
     fn degraded(&self) -> bool {
         self.is_degraded()
     }
@@ -306,5 +342,32 @@ mod tests {
             RunStatus::Completed
         );
         assert_eq!(fb.delete("r2").await.unwrap(), DeleteOutcome::Deleted);
+    }
+
+    #[tokio::test]
+    async fn shard_methods_delegate_to_a_healthy_primary() {
+        use crate::serve::history::memory::MemoryHistory;
+        use crate::serve::history::{ReclaimReport, ShardProgress};
+        // A healthy (memory) primary → the shard methods delegate via `via!`;
+        // memory's shard methods are inert, so we get the inert results back
+        // (exercising the forwarding path).
+        let fb = FallbackHistory::healthy(
+            Box::new(MemoryHistory::new(Duration::from_secs(60))),
+            Duration::from_secs(60),
+            "test",
+        );
+        assert_eq!(fb.insert_shards("r", &[]).await.unwrap(), 0);
+        assert!(fb.claim_shards(4).await.unwrap().is_empty());
+        assert_eq!(fb.renew_shard_leases().await.unwrap(), 0);
+        assert_eq!(
+            fb.reclaim_shards(3).await.unwrap(),
+            ReclaimReport::default()
+        );
+        assert!(!fb.finalize_shard("r", "0", true).await.unwrap());
+        assert_eq!(
+            fb.shard_progress("r").await.unwrap(),
+            ShardProgress::default()
+        );
+        assert!(!fb.degraded());
     }
 }

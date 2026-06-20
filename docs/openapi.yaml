@@ -339,11 +339,14 @@ components:
   schemas:
     RunStatus:
       type: string
-      enum: [pending, queued, running, completed, failed, cancelled]
+      enum: [pending, queued, running, sharded, completed, failed, cancelled]
       description: >
         `pending` — cluster mode only; stored in the shared DB awaiting a claim by any instance.
         `queued` — claimed/admitted to the local execution queue.
         `running` — actively executing.
+        `sharded` — cluster Mode B only; the run was expanded into source shards
+        (rows in `faucet_serve_shards`) that execute independently; finalized to a
+        terminal state once every shard finishes.
         `completed` / `failed` / `cancelled` — terminal states.
     SubmitRequest:
       type: object

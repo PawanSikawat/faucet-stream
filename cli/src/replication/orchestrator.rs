@@ -72,6 +72,7 @@ fn make_opts(opts: &ReplicationOptions, cancel: Option<CancellationToken>) -> Ex
         dry_run: false,
         limit: None,
         state_path_override: None,
+        shard: None,
         auth: opts.auth.clone(),
         clock: opts.clock,
         cancel,

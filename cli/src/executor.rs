@@ -57,6 +57,11 @@ pub struct ExecuteOptions {
     pub limit: Option<usize>,
     /// `--state-path PATH` — overrides the `file` state-store path.
     pub state_path_override: Option<PathBuf>,
+    /// Clustered Mode B (#230): narrow this run's single source to one shard
+    /// before streaming, and suffix its state key with the shard id so resume is
+    /// per-shard. `None` (the default) runs the whole source unchanged. Only set
+    /// by the serve shard executor; every other caller leaves it `None`.
+    pub shard: Option<faucet_core::ShardSpec>,
     /// Shared auth providers built from the top-level `auth:` block. Connectors
     /// that reference one via `auth: { ref }` resolve against this catalog;
     /// every row sharing a provider gets the same `Arc` (one token, shared).
@@ -742,6 +747,16 @@ async fn run_one_invocation(
         opts.resilience.as_ref().map(|r| &r.retry),
     )
     .await?;
+
+    // Clustered Mode B: narrow the raw source to its assigned shard BEFORE any
+    // wrapping (the TransformingSource / StateKeyOverride wrappers do not forward
+    // apply_shard, so it must reach the concrete connector).
+    if let Some(shard) = &opts.shard {
+        source
+            .apply_shard(shard)
+            .await
+            .map_err(|e| CliError::Internal(format!("applying shard {:?}: {e}", shard.id)))?;
+    }
     let raw_sink: Box<dyn Sink> = if opts.dry_run {
         Box::new(CountingSink::new())
     } else {
@@ -814,10 +829,16 @@ async fn run_one_invocation(
     //    executor's per-row state key is used instead of the source's natural
     //    one (which is shared across all matrix rows of the same kind).
     let state = build_state_for_node(node, opts.state_path_override.as_deref()).await?;
+    // Per-shard bookmark: suffix the state key with the shard id so a reassigned
+    // shard resumes where its dead owner left off, independent of sibling shards.
+    let effective_state_key = match &opts.shard {
+        Some(shard) => format!("{state_key}::{}", shard.id),
+        None => state_key.to_owned(),
+    };
     let source: Box<dyn Source> = if state.is_some() && source.state_key().is_some() {
         Box::new(StateKeyOverride {
             inner: source,
-            key: state_key.to_owned(),
+            key: effective_state_key,
         })
     } else {
         source
@@ -1316,6 +1337,7 @@ mod tests {
             observability: None,
             delivery: faucet_core::DeliveryMode::default(),
             resilience: None,
+            shard: None,
             replication: None,
             #[cfg(feature = "schedule")]
             schedule: None,
@@ -1340,6 +1362,7 @@ mod tests {
                 dry_run: false,
                 limit: None,
                 state_path_override: None,
+                shard: None,
                 auth: Default::default(),
                 clock: chrono::Utc::now().fixed_offset(),
                 cancel: None,
@@ -1396,6 +1419,7 @@ matrix:
                 dry_run: false,
                 limit: None,
                 state_path_override: None,
+                shard: None,
                 auth: Default::default(),
                 clock: chrono::Utc::now().fixed_offset(),
                 cancel: None,
@@ -1452,6 +1476,7 @@ matrix:
                 dry_run: false,
                 limit: None,
                 state_path_override: None,
+                shard: None,
                 auth: Default::default(),
                 clock: chrono::Utc::now().fixed_offset(),
                 cancel: None,
@@ -1518,6 +1543,7 @@ execution:
                 dry_run: false,
                 limit: None,
                 state_path_override: None,
+                shard: None,
                 auth: Default::default(),
                 clock: chrono::Utc::now().fixed_offset(),
                 cancel: None,
@@ -1599,6 +1625,7 @@ pipeline:
                 dry_run: false,
                 limit: None,
                 state_path_override: None,
+                shard: None,
                 auth: Default::default(),
                 clock: chrono::Utc::now().fixed_offset(),
                 cancel: None,
@@ -1654,6 +1681,7 @@ matrix:
                 dry_run: false,
                 limit: None,
                 state_path_override: None,
+                shard: None,
                 auth: Default::default(),
                 clock: chrono::Utc::now().fixed_offset(),
                 cancel: None,
@@ -1718,6 +1746,7 @@ execution:
                 dry_run: false,
                 limit: None,
                 state_path_override: None,
+                shard: None,
                 auth: Default::default(),
                 clock: chrono::Utc::now().fixed_offset(),
                 cancel: None,
@@ -1783,6 +1812,7 @@ matrix:
                 dry_run: false,
                 limit: None,
                 state_path_override: None,
+                shard: None,
                 auth: Default::default(),
                 clock: chrono::Utc::now().fixed_offset(),
                 cancel: None,
@@ -2003,6 +2033,7 @@ matrix:
             dry_run: false,
             limit: None,
             state_path_override: None,
+            shard: None,
             auth: Default::default(),
             clock: chrono::Utc::now().fixed_offset(),
             cancel: None,
@@ -2401,6 +2432,7 @@ matrix:
                 dry_run: false,
                 limit: None,
                 state_path_override: None,
+                shard: None,
                 auth: Default::default(),
                 clock: chrono::Utc::now().fixed_offset(),
                 cancel: None,

@@ -143,16 +143,37 @@ pub async fn claim_loop(state: ServerState, shutdown: CancellationToken) {
         if free == 0 {
             continue;
         }
+        let mut claimed_count = 0usize;
         match state.history().claim_pending(free).await {
             Ok(claimed) => {
                 if !claimed.is_empty() {
                     crate::serve::metrics::record_runs_claimed(claimed.len());
+                    claimed_count = claimed.len();
                     for rec in claimed {
                         crate::serve::runner::resume_claimed_run(state.clone(), rec);
                     }
                 }
             }
             Err(e) => tracing::warn!(error = %e, "cluster: claim_pending failed"),
+        }
+
+        // 3. Mode B (#230): claim source shards with the remaining budget and
+        //    dispatch each to a per-shard executor. A claimed shard flips to
+        //    Running (leased) in the shared DB; if it over-subscribes local
+        //    permits it simply queues on the semaphore, like a claimed run.
+        let shard_budget = free.saturating_sub(claimed_count);
+        if shard_budget > 0 {
+            match state.history().claim_shards(shard_budget).await {
+                Ok(shards) => {
+                    if !shards.is_empty() {
+                        crate::serve::metrics::record_shards_claimed(shards.len());
+                        for shard in shards {
+                            crate::serve::runner::resume_claimed_shard(state.clone(), shard);
+                        }
+                    }
+                }
+                Err(e) => tracing::warn!(error = %e, "cluster: claim_shards failed"),
+            }
         }
     }
 }
