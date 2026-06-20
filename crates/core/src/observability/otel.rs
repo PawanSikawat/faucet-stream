@@ -184,9 +184,148 @@ mod layer {
 #[cfg(feature = "otel")]
 pub use layer::OtelErrorCountLayer;
 
+#[cfg(feature = "otel")]
+mod sdk {
+    use super::{OtelConfig, OtelProtocol};
+    use opentelemetry_otlp::{WithExportConfig, WithHttpConfig};
+    use opentelemetry_sdk::Resource;
+    use opentelemetry_sdk::metrics::{PeriodicReader, SdkMeterProvider};
+    use opentelemetry_sdk::trace::{Sampler, SdkTracerProvider};
+    use std::sync::OnceLock;
+    use std::time::Duration;
+
+    pub type OtelError = Box<dyn std::error::Error + Send + Sync>;
+
+    fn resource(cfg: &OtelConfig) -> Resource {
+        Resource::builder()
+            .with_service_name(cfg.service_name.clone())
+            .build()
+    }
+
+    fn header_map(cfg: &OtelConfig) -> std::collections::HashMap<String, String> {
+        cfg.headers.clone()
+    }
+
+    /// Build a batch-exporting tracer provider. NOTE: with grpc-tonic this MUST
+    /// be called inside a tokio runtime (the CLI is `#[tokio::main]`).
+    pub fn build_trace_provider(cfg: &OtelConfig) -> Result<SdkTracerProvider, OtelError> {
+        let endpoint = cfg.resolve_endpoint();
+        let timeout = Duration::from_secs(cfg.timeout_secs);
+        let exporter = match cfg.protocol {
+            OtelProtocol::Grpc => opentelemetry_otlp::SpanExporter::builder()
+                .with_tonic()
+                .with_endpoint(&endpoint)
+                .with_timeout(timeout)
+                .build()?,
+            OtelProtocol::Http => opentelemetry_otlp::SpanExporter::builder()
+                .with_http()
+                .with_endpoint(&endpoint)
+                .with_headers(header_map(cfg))
+                .with_timeout(timeout)
+                .build()?,
+        };
+        let provider = SdkTracerProvider::builder()
+            .with_batch_exporter(exporter)
+            .with_sampler(Sampler::TraceIdRatioBased(cfg.sample_ratio))
+            .with_resource(resource(cfg))
+            .build();
+        Ok(provider)
+    }
+
+    /// Build a NON-global metrics recorder bridging the `metrics` facade to an
+    /// OTLP PeriodicReader, plus its meter provider (kept alive by the caller).
+    pub fn build_meter_provider(
+        cfg: &OtelConfig,
+    ) -> Result<(SdkMeterProvider, metrics_exporter_opentelemetry::Recorder), OtelError> {
+        let endpoint = cfg.resolve_endpoint();
+        let timeout = Duration::from_secs(cfg.timeout_secs);
+        let exporter = match cfg.protocol {
+            OtelProtocol::Grpc => opentelemetry_otlp::MetricExporter::builder()
+                .with_tonic()
+                .with_endpoint(&endpoint)
+                .with_timeout(timeout)
+                .build()?,
+            OtelProtocol::Http => opentelemetry_otlp::MetricExporter::builder()
+                .with_http()
+                .with_endpoint(&endpoint)
+                .with_headers(header_map(cfg))
+                .with_timeout(timeout)
+                .build()?,
+        };
+        let reader = PeriodicReader::builder(exporter)
+            .with_interval(Duration::from_secs(cfg.metric_interval_secs))
+            .build();
+        let res = resource(cfg);
+        let (provider, recorder) =
+            metrics_exporter_opentelemetry::Recorder::builder(cfg.service_name.clone())
+                .with_meter_provider(move |mb| mb.with_reader(reader).with_resource(res))
+                .build();
+        Ok((provider, recorder))
+    }
+
+    pub struct OtelGuard {
+        pub tracer: Option<SdkTracerProvider>,
+        pub meter: Option<SdkMeterProvider>,
+    }
+
+    static GUARD: OnceLock<OtelGuard> = OnceLock::new();
+
+    /// Store providers for the process lifetime. Returns false if already set.
+    pub fn set_guard(guard: OtelGuard) -> bool {
+        GUARD.set(guard).is_ok()
+    }
+
+    /// Flush + shut down installed providers. Idempotent.
+    pub fn shutdown_otel() {
+        if let Some(g) = GUARD.get() {
+            if let Some(t) = g.tracer.as_ref() {
+                let _ = t.force_flush();
+                let _ = t.shutdown();
+            }
+            if let Some(m) = g.meter.as_ref() {
+                let _ = m.force_flush();
+                let _ = m.shutdown();
+            }
+        }
+    }
+
+    /// Install the W3C trace-context propagator globally (#230 groundwork).
+    pub fn install_propagator() {
+        use opentelemetry_sdk::propagation::TraceContextPropagator;
+        opentelemetry::global::set_text_map_propagator(TraceContextPropagator::new());
+    }
+}
+
+#[cfg(feature = "otel")]
+pub use sdk::{
+    OtelError, OtelGuard, build_meter_provider, build_trace_provider, install_propagator,
+    set_guard, shutdown_otel,
+};
+
+/// No-op `shutdown_otel` when the `otel` feature is disabled, so CLI call sites
+/// compile in every build.
+#[cfg(not(feature = "otel"))]
+pub fn shutdown_otel() {}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(feature = "otel")]
+    #[tokio::test]
+    async fn build_providers_construct_without_a_live_collector() {
+        let cfg = OtelConfig {
+            endpoint: "http://localhost:4317".into(),
+            protocol: OtelProtocol::Grpc,
+            ..Default::default()
+        };
+        let tp = build_trace_provider(&cfg).expect("trace provider builds");
+        let (mp, _recorder) = build_meter_provider(&cfg).expect("meter provider builds");
+        let _ = tp.force_flush();
+        let _ = mp.force_flush();
+        let _ = tp.shutdown();
+        let _ = mp.shutdown();
+    }
 
     #[test]
     fn record_otel_error_classifies_signal_by_target() {
