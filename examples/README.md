@@ -84,6 +84,12 @@ files as each config shows:
 `postgres_to_bigquery.yaml`, `rest_to_bigquery.yaml`, `s3_to_bigquery.yaml`,
 `mysql_to_snowflake.yaml`, `postgres_to_snowflake.yaml`, `s3_to_snowflake.yaml`.
 
+## OTLP / OpenTelemetry export
+
+| File | Notes |
+|------|-------|
+| `examples/infra/otel-collector.yaml` | OTLP collector for testing `observability.otel` export (build the CLI with `--features otel`). Run with `otelcol --config examples/infra/otel-collector.yaml` to receive traces and metrics on gRPC `:4317` and HTTP `:4318`. |
+
 ## OpenLineage emission
 
 | Example | Notes |

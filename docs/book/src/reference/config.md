@@ -534,6 +534,46 @@ See the [Lineage cookbook](../cookbook/lineage.md) for the full field reference,
 transports (HTTP, file, Kafka), the column-lineage support matrix, schema-facet behavior, and
 the Prometheus metrics (`faucet_lineage_events_total`, etc.).
 
+## `observability`
+
+Optional top-level block that enables runtime observability backends. All
+sub-blocks are independently optional; omitting the entire `observability:` key
+leaves the defaults (no Prometheus server, no OTLP export).
+
+### `otel:`
+
+Pushes traces and metrics to any OTLP-compatible collector. Requires building
+the CLI with `--features otel` (included in `full`).
+
+```yaml
+observability:
+  otel:
+    endpoint: "http://localhost:4317"
+    protocol: grpc
+    headers: {}
+    sample_ratio: 1.0
+    export: [traces, metrics]
+    service_name: faucet
+    timeout_secs: 10
+    metric_interval_secs: 60
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `endpoint` | string | `http://localhost:4317` (grpc) / `http://localhost:4318` (http) | OTLP collector URL. For `http`, if the URL does not already contain a per-signal path (`/v1/traces`, `/v1/metrics`), faucet appends it automatically. |
+| `protocol` | `grpc` \| `http` | `grpc` | Transport protocol. `grpc` uses tonic; `http` uses HTTP/Protobuf. The `faucet` CLI always runs inside a tokio runtime, so both work without extra setup. |
+| `headers` | map&lt;string, string&gt; | `{}` | Extra headers sent on every export request — auth tokens, team keys, etc. Values are secret-interpolated the same as any config value (e.g. `"${env:HONEYCOMB_KEY}"`). |
+| `sample_ratio` | float | `1.0` | Head-based trace sampling probability, `0.0`–`1.0`. `1.0` exports every trace; `0.1` keeps ~10%. Does not affect metric export. |
+| `export` | list | `[traces, metrics]` | Which signals to push. Each element is `traces` or `metrics`. Omit a signal to disable it entirely. |
+| `service_name` | string | `faucet` | Value of the OpenTelemetry resource attribute `service.name` attached to every span and metric point. |
+| `timeout_secs` | integer | `10` | Per-export timeout in seconds. Timed-out exports are counted in `faucet_otel_export_failures_total` but do not fail the run. |
+| `metric_interval_secs` | integer | `60` | How often (in seconds) accumulated metric points are pushed to the collector. |
+
+**Coexistence:** `observability.otel:` and `observability.prometheus:` are
+fully independent; both can be active at the same time and metrics fan out to
+both exporters. Export failures are never propagated to the pipeline — they
+increment `faucet_otel_export_failures_total{signal}` and are logged.
+
 ## Discovery & env files
 
 `run` / `validate` / `preview` / `schedule` auto-discover `faucet.yaml` → `.yml` → `.json` in
