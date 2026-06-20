@@ -4,10 +4,11 @@
 //! compile unconditionally. Everything that touches the OTel SDK is gated on
 //! `#[cfg(feature = "otel")]` further down this file.
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 /// OTLP transport protocol.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum OtelProtocol {
     /// gRPC over tonic (default OTLP port 4317). Must be initialised inside a
@@ -19,7 +20,7 @@ pub enum OtelProtocol {
 }
 
 /// A telemetry signal that can be exported over OTLP.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum OtelSignal {
     Traces,

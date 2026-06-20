@@ -26,7 +26,7 @@ default = ["observability", "source", "sink", "state", "transforms", "compressio
 
 # Everything the default build ships, plus the long-running runtime modes:
 # `schedule` (cron scheduler) and `serve` (HTTP control plane).
-full = ["default", "schedule", "serve", "serve-ui", "serve-history-postgres", "serve-history-sqlite", "lineage", "lineage-kafka", "transform-sql", "triggers", "triggers-object-store", "triggers-redis", "triggers-kafka"]
+full = ["default", "otel", "schedule", "serve", "serve-ui", "serve-history-postgres", "serve-history-sqlite", "lineage", "lineage-kafka", "transform-sql", "triggers", "triggers-object-store", "triggers-redis", "triggers-kafka"]
 
 # Data-quality checks (`quality:` config block). `quality-jsonschema` adds the
 # `json_schema` record check via a JSON Schema validator. Forwarded to
@@ -186,6 +186,9 @@ observability = [
     "dep:metrics-exporter-prometheus",
     "dep:tracing-subscriber",
 ]
+
+# OTLP (OpenTelemetry) export of traces + metrics (#201). Forwards to faucet-core.
+otel = ["observability", "faucet-core/otel"]
 
 # Built-in cron scheduler (`faucet schedule` + the `schedule:` config block).
 # Pulls a cron parser + IANA timezone db; opt out of it for slim builds.
