@@ -186,20 +186,29 @@ fn canonical(k: &KeyTuple) -> String {
     serde_json::to_string(&arr).expect("a Vec<&serde_json::Value> always serializes")
 }
 
-/// Join a key tuple's values into a single document id (Elasticsearch `_id`,
-/// composite keys). Each value rendered as its plain string / JSON form.
+/// Render a key tuple into a single document id (Elasticsearch `_id`).
+///
+/// A single-column key is rendered as its plain string / JSON form (no
+/// separator can collide). A **composite** key is rendered as a canonical JSON
+/// array of its values rather than a separator-join: a plain join is not
+/// injective — e.g. `["a_", "b"]` and `["a", "_b"]` both collapse to `"a__b"`
+/// under separator `"_"`, silently overwriting two distinct rows with one. JSON
+/// encoding escapes any separator-like characters in the values, so distinct key
+/// tuples always map to distinct ids.
 ///
 /// Assumes each key column has a consistent JSON type across records (the
 /// normal case for SQL and CDC sources); it does not disambiguate, e.g., the
 /// integer `7` from the string `"7"` in the same column.
 pub fn key_to_doc_id(k: &KeyTuple, separator: &str) -> String {
-    k.0.iter()
-        .map(|(_, v)| match v {
+    let _ = separator; // retained for API stability; no separator can collide now
+    if k.0.len() == 1 {
+        return match &k.0[0].1 {
             Value::String(s) => s.clone(),
             other => other.to_string(),
-        })
-        .collect::<Vec<_>>()
-        .join(separator)
+        };
+    }
+    let values: Vec<&Value> = k.0.iter().map(|(_, v)| v).collect();
+    serde_json::to_string(&values).expect("a Vec<&serde_json::Value> always serializes")
 }
 
 /// Build a Mongo/ES filter document `{ col: value, … }` from a key tuple.
@@ -226,6 +235,28 @@ mod tests {
         assert_eq!(plan.upserts, vec![json!({"id": 1, "name": "a"})]);
         assert!(plan.deletes.is_empty());
         assert!(plan.failed.is_empty());
+    }
+
+    #[test]
+    fn key_to_doc_id_single_key_is_plain() {
+        let k = KeyTuple(vec![("id".into(), json!(7))]);
+        assert_eq!(key_to_doc_id(&k, "_"), "7");
+        let k = KeyTuple(vec![("name".into(), json!("alice"))]);
+        assert_eq!(key_to_doc_id(&k, "_"), "alice");
+    }
+
+    #[test]
+    fn key_to_doc_id_composite_is_injective() {
+        // ["a_", "b"] and ["a", "_b"] must NOT collide (the F13 separator bug).
+        let k1 = KeyTuple(vec![("x".into(), json!("a_")), ("y".into(), json!("b"))]);
+        let k2 = KeyTuple(vec![("x".into(), json!("a")), ("y".into(), json!("_b"))]);
+        let id1 = key_to_doc_id(&k1, "_");
+        let id2 = key_to_doc_id(&k2, "_");
+        assert_ne!(id1, id2, "distinct composite keys must map to distinct ids");
+        // Mixed types also stay distinct.
+        let k3 = KeyTuple(vec![("x".into(), json!(1)), ("y".into(), json!("2"))]);
+        let k4 = KeyTuple(vec![("x".into(), json!("1")), ("y".into(), json!(2))]);
+        assert_ne!(key_to_doc_id(&k3, "_"), key_to_doc_id(&k4, "_"));
     }
 
     #[test]

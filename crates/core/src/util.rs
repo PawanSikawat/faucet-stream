@@ -254,37 +254,71 @@ fn json_escape_string(s: &str) -> String {
 /// Input with neither shape is returned unchanged.
 pub fn redact_uri_credentials(uri: &str) -> String {
     let mut out = uri.to_string();
-    // 1) URL userinfo: between "://" and the first '/' or '?' (the authority).
+    // 1) URL userinfo: `scheme://user:pass@host/...` → `scheme://host/...`.
+    //
+    // A naive "first '/' or '?' terminates the authority, first '@' delimits
+    // userinfo" scan LEAKS passwords that contain '/', '?' or '@' (very common
+    // in unencoded DB connection strings): the early terminator truncates the
+    // authority before the real '@', and the first '@' splits inside the
+    // password. Since a host/port never contains '@', the userinfo→host
+    // delimiter is the LAST '@' whose following host segment (up to the next
+    // '/', '?' or '#') is a non-empty, host-shaped token. Picking that '@'
+    // tolerates arbitrary '/', '?' and '@' inside the password.
     if let Some(scheme_end) = out.find("://") {
         let after = scheme_end + 3;
-        let auth_end = out[after..]
-            .find(['/', '?'])
-            .map(|i| after + i)
-            .unwrap_or(out.len());
-        if let Some(at_rel) = out[after..auth_end].find('@') {
+        let tail = &out[after..];
+        let delim = tail
+            .char_indices()
+            .rev()
+            .find(|&(at, c)| {
+                c == '@' && {
+                    let host = &tail[at + 1..];
+                    let host_end = host.find(['/', '?', '#']).unwrap_or(host.len());
+                    let host = &host[..host_end];
+                    !host.is_empty() && !host.contains('@') && is_host_shaped(host)
+                }
+            })
+            .map(|(at, _)| at);
+        if let Some(at) = delim {
             // Remove "user:pass@" inclusive of the '@'.
-            out.replace_range(after..after + at_rel + 1, "");
+            out.replace_range(after..after + at + 1, "");
         }
     }
-    // 2) ADO.NET-style Password=/Pwd= tokens.
+    // 2) ADO.NET-style and query-string Password=/Pwd= tokens. Splitting on both
+    //    ';' (ADO.NET) and '&'/'?' (URL query) catches a password carried as a
+    //    query parameter (`...?password=secret`) as well as keyword form.
     if out.contains('=') {
         out = out
-            .split(';')
-            .map(|seg| match seg.find('=') {
-                Some(eq)
-                    if {
-                        let k = seg[..eq].trim();
-                        k.eq_ignore_ascii_case("password") || k.eq_ignore_ascii_case("pwd")
-                    } =>
-                {
-                    format!("{}=***", &seg[..eq])
+            .split_inclusive([';', '&', '?'])
+            .map(|seg| {
+                // Preserve any trailing delimiter the split kept on the segment.
+                let (body, delim) = match seg.char_indices().next_back() {
+                    Some((i, ';' | '&' | '?')) => (&seg[..i], &seg[i..]),
+                    _ => (seg, ""),
+                };
+                match body.find('=') {
+                    Some(eq)
+                        if {
+                            let k = body[..eq].trim();
+                            k.eq_ignore_ascii_case("password") || k.eq_ignore_ascii_case("pwd")
+                        } =>
+                    {
+                        format!("{}=***{delim}", &body[..eq])
+                    }
+                    _ => seg.to_string(),
                 }
-                _ => seg.to_string(),
             })
-            .collect::<Vec<_>>()
-            .join(";");
+            .collect::<String>();
     }
     out
+}
+
+/// Best-effort check that a string looks like a `host[:port]` authority — used
+/// to identify the userinfo→host `@` delimiter when redacting credentials.
+/// Accepts letters, digits, `.`, `-`, `:`, `_`, and bracketed IPv6 forms.
+fn is_host_shaped(s: &str) -> bool {
+    s.bytes()
+        .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b':' | b'_' | b'[' | b']' | b'%'))
 }
 
 /// Extract context values from a record using JSONPath expressions.
@@ -699,6 +733,40 @@ mod tests {
         assert_eq!(
             redact_uri_credentials("file:///tmp/x.csv"),
             "file:///tmp/x.csv"
+        );
+    }
+
+    #[test]
+    fn redact_strips_password_containing_special_chars() {
+        // Passwords with '/', '?' or '@' must not leak (F5): the userinfo→host
+        // delimiter is the LAST '@', and the host segment after it is what's kept.
+        assert_eq!(
+            redact_uri_credentials("postgres://user:p/w@host:5432/db"),
+            "postgres://host:5432/db"
+        );
+        assert_eq!(
+            redact_uri_credentials("postgres://user:p?w@host/db"),
+            "postgres://host/db"
+        );
+        assert_eq!(
+            redact_uri_credentials("postgres://user:p@ss@host/db"),
+            "postgres://host/db"
+        );
+        assert_eq!(
+            redact_uri_credentials("mysql://u:a/b?c@d@127.0.0.1:3306/app"),
+            "mysql://127.0.0.1:3306/app"
+        );
+    }
+
+    #[test]
+    fn redact_strips_query_string_password() {
+        assert_eq!(
+            redact_uri_credentials("https://host/api?user=sa&password=secret&x=1"),
+            "https://host/api?user=sa&password=***&x=1"
+        );
+        assert_eq!(
+            redact_uri_credentials("snowflake://host/db?password=secret"),
+            "snowflake://host/db?password=***"
         );
     }
 }
