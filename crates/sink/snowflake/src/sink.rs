@@ -761,7 +761,11 @@ mod tests {
         union.sort();
         union.dedup();
         assert_eq!(union.len(), len_before, "no duplicate columns");
-        assert_eq!(union, vec!["a", "b", "m", "z"], "every key present exactly once");
+        assert_eq!(
+            union,
+            vec!["a", "b", "m", "z"],
+            "every key present exactly once"
+        );
     }
 
     #[test]
