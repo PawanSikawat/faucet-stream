@@ -46,9 +46,12 @@ log_bin             = mysql-bin  # enable binary logging
 binlog_format       = ROW        # required: row-level events (not STATEMENT/MIXED)
 binlog_row_image    = FULL       # required: full before/after images
 binlog_row_metadata = FULL       # REQUIRED for column names in the envelope
+binlog_row_value_options =       # REQUIRED empty: full JSON (NOT partial_json)
 ```
 
 > **`binlog_row_metadata=FULL` is critical.** It is `MINIMAL` by default in MySQL 8.0. Without `FULL`, column names are absent from row events and the connector cannot decode them — startup fails.
+
+> **`binlog_row_value_options` must be empty (full JSON).** With `binlog_row_value_options=PARTIAL_JSON`, an UPDATE that touches a JSON column writes only a *partial diff* of the document to the binlog. faucet-stream does not buffer prior row state, so the diff cannot be reconstructed — emitting it would silently corrupt the JSON column. Startup therefore fails fast when `PARTIAL_JSON` is set; clear it (`binlog_row_value_options=''`) and restart MySQL for CDC.
 
 ### Required user grants
 
@@ -397,7 +400,7 @@ For resumable / exactly-once runs, drive the source through `faucet_core::Pipeli
 
 ## How it works
 
-1. `new()` validates the config, opens a replication connection (honouring `tls`), and verifies the four server variables (`log_bin`, `binlog_format=ROW`, `binlog_row_image=FULL`, `binlog_row_metadata=FULL`).
+1. `new()` validates the config, opens a replication connection (honouring `tls`), and verifies the server variables (`log_bin`, `binlog_format=ROW`, `binlog_row_image=FULL`, `binlog_row_metadata=FULL`, and `binlog_row_value_options` empty — not `PARTIAL_JSON`).
 2. The start position is resolved: a persisted bookmark wins; otherwise `start_position` (`current` capture tries `SHOW BINARY LOG STATUS` then falls back to `SHOW MASTER STATUS`).
 3. Binlog events stream in; row events are decoded against the relation metadata (column names come from `binlog_row_metadata=FULL`) and buffered per transaction.
 4. On each commit boundary, the buffered rows are emitted as one `StreamPage` with the commit's `{ file, pos }` bookmark; uncommitted buffers are bounded by `max_staged_records`.
@@ -417,12 +420,13 @@ This crate has no optional features of its own; enable it in the CLI/umbrella vi
 |---------|--------------------|
 | Startup fails: `binlog_row_metadata` not `FULL` | The server has the MySQL-8.0 default of `MINIMAL`. Set `binlog_row_metadata=FULL` in `my.cnf` and restart — required for column names. |
 | Startup fails: binary logging / `binlog_format` | `log_bin` is off or `binlog_format` is `STATEMENT`/`MIXED`. Enable `log_bin` and set `binlog_format=ROW` + `binlog_row_image=FULL`. |
+| Startup fails: `binlog_row_value_options` is `PARTIAL_JSON` | The server logs partial JSON diffs, which can't be reconstructed for CDC. Set `binlog_row_value_options=''` (full JSON) and restart MySQL. |
 | `Access denied` / replication error | The user lacks `REPLICATION SLAVE` / `REPLICATION CLIENT`. Grant both on `*.*` and `FLUSH PRIVILEGES`. |
 | Another replica disconnects when this one connects | Two clients share a `server_id`. Pick a unique non-zero `server_id` per replication client. |
 | `start_position: earliest` errors | Binlogs were purged (`expire_logs_days` / `PURGE BINARY LOGS`) past the earliest point. Use `current`, or widen binlog retention. |
 | `gtid_set` start rejected by the server | `gtid_mode` is `OFF`. Set `gtid_mode=ON` + `enforce_gtid_consistency=ON`, or use a `file_pos` / `current` start instead. |
 | Resume errors that the start position is unavailable | The persisted/captured `{ file, pos }` was purged before resume. Widen binlog retention so it exceeds expected downtime / snapshot duration. |
-| A JSON column arrives as `null` (with a `warn!`) | MySQL's ROW binlog omits full JSON diff metadata; complex JSON values can't always be reconstructed. Use a query-mode lookup ([`faucet-source-mysql`](https://crates.io/crates/faucet-source-mysql)) if you need full JSON-column fidelity. |
+| A JSON column arrives as `null` (with a `warn!`) | The document holds an *opaque* scalar (e.g. a `DECIMAL`/`DATE` embedded via `CAST(... AS JSON)`) with no JSON representation. Ordinary JSON content converts losslessly; this case is rare. Use a query-mode lookup ([`faucet-source-mysql`](https://crates.io/crates/faucet-source-mysql)) if you need full JSON-column fidelity. |
 | Pipeline never returns / hangs | It's waiting for events. Lower `idle_timeout` so the fetch cycle ends sooner on a quiet binlog. |
 | OOM during a bulk load | A huge single transaction buffered entirely in memory before its commit. Set `max_staged_records` to a safe upper bound. |
 | `Config` error on a table filter | An `include_tables` / `exclude_tables` entry isn't fully qualified. Use `database.table` (e.g. `appdb.users`). |

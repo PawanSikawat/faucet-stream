@@ -539,6 +539,34 @@ pub(crate) fn commit_failure_is_definite_loss(kind: ErrorKind) -> bool {
     )
 }
 
+/// Select the highest commit token recorded for `scope` from a sequence of
+/// snapshot summary `(scope, token)` property pairs.
+///
+/// The authoritative "which page was last committed" ordering is the **token
+/// value** (a monotonic per-page sequence rendered by
+/// [`faucet_core::idempotency::format_token`]), not the snapshot wall-clock
+/// timestamp. This iterates every snapshot, keeps only those whose scope
+/// property equals `scope`, parses each token via
+/// [`faucet_core::idempotency::parse_token`], and returns the original
+/// (formatted) token string for the maximum parsed sequence. Tokens that fail
+/// to parse are ignored. Returns `None` when no snapshot matches the scope (or
+/// every matching snapshot lacks a parseable token).
+pub(crate) fn max_token_for_scope<'a, I>(snapshots: I, scope: &str) -> Option<String>
+where
+    I: IntoIterator<Item = (Option<&'a str>, Option<&'a str>)>,
+{
+    snapshots
+        .into_iter()
+        .filter(|(snap_scope, _)| *snap_scope == Some(scope))
+        .filter_map(|(_, token)| {
+            let token = token?;
+            let seq = faucet_core::idempotency::parse_token(token)?;
+            Some((seq, token.to_string()))
+        })
+        .max_by_key(|(seq, _)| *seq)
+        .map(|(_, token)| token)
+}
+
 /// Delete each path in `paths` via `file_io`, returning `(deleted, failed)`.
 ///
 /// Best-effort: a delete error is logged and counted as `failed` but does not
@@ -699,9 +727,16 @@ impl faucet_core::Sink for IcebergSink {
     /// Return the last commit token recorded for `scope` in this table's
     /// snapshot history, or `None` if no token has been committed yet.
     ///
-    /// Snapshots are scanned newest-first; the first snapshot whose
-    /// `faucet.commit-scope` property matches `scope` wins.  If the table does
-    /// not yet exist `Ok(None)` is returned immediately.
+    /// All snapshots whose `faucet.commit-scope` property matches `scope` are
+    /// scanned and the **maximum commit token** is returned. Ordering by the
+    /// token value — not by snapshot wall-clock timestamp — is authoritative:
+    /// the commit token is a monotonic per-page sequence
+    /// ([`faucet_core::idempotency::format_token`]), and snapshots can share a
+    /// `timestamp_ms` or be reordered relative to token issuance. Picking the
+    /// newest-timestamp snapshot could return a token smaller than the true
+    /// committed max, causing the pipeline to re-write already-committed pages
+    /// on resume (duplicate rows, silently breaking exactly-once). If the table
+    /// does not yet exist `Ok(None)` is returned immediately.
     async fn last_committed_token(&self, scope: &str) -> Result<Option<String>, FaucetError> {
         let table = match self.load_table_readonly().await? {
             Some(t) => t,
@@ -709,26 +744,21 @@ impl faucet_core::Sink for IcebergSink {
         };
 
         let meta = table.metadata();
-        let mut snaps: Vec<_> = meta.snapshots().collect();
-        // Sort newest-first so we return the most recent matching token.
-        snaps.sort_by_key(|s| std::cmp::Reverse(s.timestamp_ms()));
-
-        for snap in snaps {
-            let summary = snap.summary();
-            if summary
-                .additional_properties
-                .get(faucet_core::idempotency::ICEBERG_SCOPE_PROP)
-                .map(String::as_str)
-                == Some(scope)
-            {
-                return Ok(summary
+        let props = meta.snapshots().map(|s| {
+            let summary = s.summary();
+            (
+                summary
+                    .additional_properties
+                    .get(faucet_core::idempotency::ICEBERG_SCOPE_PROP)
+                    .map(String::as_str),
+                summary
                     .additional_properties
                     .get(faucet_core::idempotency::ICEBERG_TOKEN_PROP)
-                    .cloned());
-            }
-        }
+                    .map(String::as_str),
+            )
+        });
 
-        Ok(None)
+        Ok(max_token_for_scope(props, scope))
     }
 
     /// Write a batch of records to the Iceberg table.
@@ -1135,5 +1165,102 @@ mod tests {
 
         let result = IcebergSink::build_partition_spec(&pfs, &iceberg_schema).unwrap();
         assert!(result.is_some(), "should produce a partition spec");
+    }
+
+    // ── max_token_for_scope (exactly-once watermark resolution) ─────────────
+
+    use faucet_core::idempotency::format_token;
+
+    // The bug (F6): resolving by snapshot timestamp could return a token
+    // SMALLER than the true committed max. This asserts the MAX token wins
+    // regardless of the order snapshots are scanned — i.e. a snapshot that
+    // would be "newest" by timestamp but carries a smaller token must NOT win.
+    #[test]
+    fn max_token_for_scope_returns_largest_token_ignoring_order() {
+        let t1 = format_token(1);
+        let t5 = format_token(5);
+        let t10 = format_token(10);
+        // Out of token order on purpose: a smaller token appears last (as if it
+        // were the newest-timestamp snapshot under the old buggy sort).
+        let snaps = vec![
+            (Some("scopeA"), Some(t10.as_str())),
+            (Some("scopeA"), Some(t1.as_str())),
+            (Some("scopeA"), Some(t5.as_str())),
+        ];
+        assert_eq!(
+            max_token_for_scope(snaps, "scopeA"),
+            Some(t10.clone()),
+            "must return the maximum token, not the last/newest-timestamp one"
+        );
+    }
+
+    // The exact duplicate-rows scenario: a newer-timestamp snapshot carrying a
+    // smaller token must lose to the older-timestamp snapshot with the larger
+    // token. `max_token_for_scope` has no timestamp input, so ordering by token
+    // is structurally guaranteed — this documents the intent.
+    #[test]
+    fn max_token_for_scope_smaller_late_token_does_not_win() {
+        let big = format_token(99);
+        let small = format_token(3);
+        let snaps = vec![
+            (Some("s"), Some(big.as_str())),   // committed earlier, larger token
+            (Some("s"), Some(small.as_str())), // committed later, smaller token
+        ];
+        assert_eq!(max_token_for_scope(snaps, "s"), Some(big));
+    }
+
+    #[test]
+    fn max_token_for_scope_isolates_per_scope() {
+        let a_hi = format_token(7);
+        let a_lo = format_token(2);
+        let b_hi = format_token(100);
+        let snaps = vec![
+            (Some("a"), Some(a_lo.as_str())),
+            (Some("b"), Some(b_hi.as_str())),
+            (Some("a"), Some(a_hi.as_str())),
+        ];
+        assert_eq!(max_token_for_scope(snaps.clone(), "a"), Some(a_hi.clone()));
+        assert_eq!(max_token_for_scope(snaps, "b"), Some(b_hi.clone()));
+    }
+
+    #[test]
+    fn max_token_for_scope_no_match_returns_none() {
+        let t = format_token(5);
+        let snaps = vec![(Some("other"), Some(t.as_str()))];
+        assert_eq!(max_token_for_scope(snaps, "missing"), None);
+    }
+
+    #[test]
+    fn max_token_for_scope_single_match() {
+        let t = format_token(42);
+        let snaps = vec![(Some("only"), Some(t.as_str()))];
+        assert_eq!(max_token_for_scope(snaps, "only"), Some(t));
+    }
+
+    #[test]
+    fn max_token_for_scope_empty_returns_none() {
+        let snaps: Vec<(Option<&str>, Option<&str>)> = vec![];
+        assert_eq!(max_token_for_scope(snaps, "any"), None);
+    }
+
+    // Snapshots whose scope matches but token is missing or unparseable are
+    // skipped; a matching, parseable token still wins.
+    #[test]
+    fn max_token_for_scope_skips_missing_and_garbage_tokens() {
+        let good = format_token(8);
+        let snaps = vec![
+            (Some("s"), None),            // matching scope, no token property
+            (Some("s"), Some("garbage")), // matching scope, unparseable token
+            (Some("s"), Some(good.as_str())),
+        ];
+        assert_eq!(max_token_for_scope(snaps, "s"), Some(good));
+    }
+
+    // A scope match whose only tokens are unparseable yields None (no fallback
+    // to a wrong token).
+    #[test]
+    fn max_token_for_scope_all_unparseable_returns_none() {
+        let snaps = vec![(Some("s"), Some("xyz")), (Some("s"), None)];
+        assert_eq!(max_token_for_scope(snaps, "s"), None);
     }
 }

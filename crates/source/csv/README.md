@@ -13,7 +13,7 @@ Built on the streaming RFC-4180 `csv-async` reader so the file is consumed lazil
 
 - **True streaming reader** — `Source::stream_pages` reads from a `tokio` async reader and emits fixed-size pages; client-side memory is O(`batch_size`), not O(file size).
 - **Configurable dialect** — set the field `delimiter` and `quote` characters (byte values) for CSV, TSV, pipe-delimited, or any single-char-delimited format.
-- **Header or headerless** — with headers, columns are keyed by the header row; without, keys are generated as `column_0`, `column_1`, ….
+- **Header or headerless** — with headers, columns are keyed by the header row; without, keys are generated as `column_0`, `column_1`, …. Duplicate header names (including two blank-named columns) are **rejected with `FaucetError::Config`** at read time — they would otherwise silently overwrite each other last-wins and drop column data for the whole run.
 - **RFC-4180 correct** — quoted fields containing embedded delimiters *and* embedded newlines parse as a single record, so files written by `faucet-sink-csv` round-trip losslessly.
 - **Transparent compression** — opt-in `compression` feature reads `.gz` / `.zst` files, with auto-detection from the path suffix.
 - **No type inference** — every field is returned as a JSON string; cast downstream with the `cast` transform if you need typed values.
@@ -260,6 +260,7 @@ The connector itself is enabled in the CLI/umbrella via the `source-csv` feature
 | `FaucetError::Config` on `batch_size` | `batch_size` exceeds `MAX_BATCH_SIZE` (1,000,000). Lower it, or use `0` for no batching. |
 | `.gz` / `.zst` file read as raw bytes / garbage | The `compression` feature isn't enabled. Rebuild with `--features compression` (or set `compression: gzip` explicitly). |
 | A header name appears as a key but with surrounding whitespace | Header cells are taken verbatim. Trim upstream or rename with the `rename_keys` transform. |
+| `FaucetError::Config`: `duplicate CSV header …` | The header row repeats a name (or has two blank-named columns). Keying each row by header name would silently drop the earlier column, so this is rejected. Rename the duplicate column, or set `has_headers: false` to fall back to generated `column_N` keys. |
 
 ## See also
 

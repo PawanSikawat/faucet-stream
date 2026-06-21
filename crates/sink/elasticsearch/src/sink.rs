@@ -245,6 +245,9 @@ impl ElasticsearchSink {
             Self::push_bulk_line(&mut body, "index", meta, Some(row))?;
         }
         for kt in &plan.deletes {
+            // Composite ids are canonical-JSON encoded by the injective core
+            // helper; the separator is retained for API stability and unused
+            // for multi-column keys.
             let id = faucet_core::key_to_doc_id(kt, ":");
             let meta = self.action_meta(Some(id));
             Self::push_bulk_line(&mut body, "delete", meta, None)?;
@@ -254,23 +257,189 @@ impl ElasticsearchSink {
     }
 }
 
-/// Build a document `_id` from an upsert row's `key` columns, in `key` order,
-/// using the same join (`:`) and rendering (string→as-is, else `to_string()`)
-/// as [`faucet_core::key_to_doc_id`].
+/// Build a document `_id` from an upsert row's `key` columns, in `key` order.
+///
+/// Delegates to the injective [`faucet_core::key_to_doc_id`] so a single-column
+/// key renders as its plain string / JSON form and a **composite** key renders
+/// as a canonical JSON array of its values (never a separator-join, which is not
+/// injective — `["a_","b"]` and `["a","_b"]` would both collapse to `"a__b"`,
+/// silently overwriting two distinct rows). The separator argument is retained
+/// only for API stability and is unused for composite keys.
 ///
 /// Key columns are guaranteed present — [`faucet_core::plan_writes`] validated
 /// them before the row reached `plan.upserts`. A missing column would only
-/// occur on a planner contract violation, so it renders as an empty segment
-/// rather than panicking.
+/// occur on a planner contract violation, so it renders as `null` (via the core
+/// helper) rather than panicking.
 fn doc_id_from_row(row: &Value, key: &[String]) -> String {
-    key.iter()
-        .map(|col| match row.get(col) {
-            Some(Value::String(s)) => s.clone(),
-            Some(other) => other.to_string(),
-            None => String::new(),
-        })
-        .collect::<Vec<_>>()
-        .join(":")
+    let kt = faucet_core::KeyTuple(
+        key.iter()
+            .map(|col| {
+                let v = row.get(col).cloned().unwrap_or(Value::Null);
+                (col.clone(), v)
+            })
+            .collect(),
+    );
+    faucet_core::key_to_doc_id(&kt, ":")
+}
+
+/// A [`faucet_core::WritePlan`] paired with, for each emitted bulk action (in
+/// body order: all upserts then all deletes), the **original page indices**
+/// that deduped into it. Used by `write_batch_partial` to attribute per-item
+/// `_bulk` results back to original records for per-row DLQ routing (#F14).
+struct PlanWithOrigins {
+    plan: faucet_core::WritePlan,
+    /// One entry per emitted bulk action, in the same order as
+    /// `plan.upserts` followed by `plan.deletes`. Each entry is the list of
+    /// original page indices that the (deduped) action represents.
+    origins: Vec<Vec<usize>>,
+    /// `(page_index, message)` for rows whose key could not be extracted —
+    /// mirrors [`faucet_core::WritePlan::failed`].
+    failed: Vec<(usize, String)>,
+}
+
+/// Replay the [`faucet_core::plan_writes`] partition (same key extraction, same
+/// last-write-wins dedup, same upsert/delete routing) while additionally
+/// recording the original page indices behind each emitted action.
+///
+/// This is intentionally a faithful re-derivation of the core planner so the
+/// resulting `plan` is byte-for-byte what `plan_writes` would produce; the only
+/// extra output is the origin-index mapping, which the core planner discards.
+/// `WriteMode::Append` must never reach here (callers route append separately).
+fn plan_origins(page: &[Value], spec: &faucet_core::WriteSpec) -> PlanWithOrigins {
+    use faucet_core::{KeyTuple, WriteMode};
+
+    // A planned action plus the original indices that fed into it.
+    enum Slot {
+        Upsert(Value, Vec<usize>),
+        Delete(KeyTuple, Vec<usize>),
+    }
+
+    let key = &spec.key;
+    let marker = spec.delete_marker.as_ref();
+    let mut failed: Vec<(usize, String)> = Vec::new();
+    let mut index: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    let mut order: Vec<Slot> = Vec::new();
+
+    for (i, rec) in page.iter().enumerate() {
+        // Extract key in `key` order; missing/null key → failed (matches core).
+        let obj = match rec.as_object() {
+            Some(o) => o,
+            None => {
+                failed.push((i, "record is not a JSON object".to_string()));
+                continue;
+            }
+        };
+        let mut kv: Vec<(String, Value)> = Vec::with_capacity(key.len());
+        let mut key_err: Option<String> = None;
+        for col in key {
+            match obj.get(col) {
+                None => {
+                    key_err = Some(format!("missing key column '{col}'"));
+                    break;
+                }
+                Some(Value::Null) => {
+                    key_err = Some(format!("null value for key column '{col}'"));
+                    break;
+                }
+                Some(v) => kv.push((col.clone(), v.clone())),
+            }
+        }
+        if let Some(msg) = key_err {
+            failed.push((i, msg));
+            continue;
+        }
+        let key_tuple = KeyTuple(kv);
+
+        // Stable canonical dedup string (matches core's `canonical`).
+        let canon = {
+            let arr: Vec<&Value> = key_tuple.0.iter().map(|(_, v)| v).collect();
+            serde_json::to_string(&arr).expect("a Vec<&serde_json::Value> always serializes")
+        };
+
+        let is_delete = match spec.write_mode {
+            WriteMode::Delete => true,
+            WriteMode::Upsert => is_delete_marked(rec, marker),
+            WriteMode::Append => false,
+        };
+
+        let new_slot = if is_delete {
+            Slot::Delete(key_tuple, vec![i])
+        } else {
+            Slot::Upsert(strip_marker(rec.clone(), marker), vec![i])
+        };
+
+        match index.get(&canon) {
+            Some(&pos) => {
+                // Last-write-wins: replace the action but ACCUMULATE origins so
+                // a per-item failure for this key fails every input row for it.
+                let origins = match &order[pos] {
+                    Slot::Upsert(_, o) | Slot::Delete(_, o) => {
+                        let mut o = o.clone();
+                        o.push(i);
+                        o
+                    }
+                };
+                order[pos] = match new_slot {
+                    Slot::Upsert(v, _) => Slot::Upsert(v, origins),
+                    Slot::Delete(k, _) => Slot::Delete(k, origins),
+                };
+            }
+            None => {
+                index.insert(canon, order.len());
+                order.push(new_slot);
+            }
+        }
+    }
+
+    // Split into the WritePlan + origins in body order: upserts first, then
+    // deletes (exactly what `build_plan_body` emits).
+    let mut plan = faucet_core::WritePlan {
+        upserts: Vec::new(),
+        deletes: Vec::new(),
+        failed: failed.clone(),
+    };
+    let mut upsert_origins: Vec<Vec<usize>> = Vec::new();
+    let mut delete_origins: Vec<Vec<usize>> = Vec::new();
+    for slot in order {
+        match slot {
+            Slot::Upsert(v, o) => {
+                plan.upserts.push(v);
+                upsert_origins.push(o);
+            }
+            Slot::Delete(k, o) => {
+                plan.deletes.push(k);
+                delete_origins.push(o);
+            }
+        }
+    }
+    let mut origins = upsert_origins;
+    origins.extend(delete_origins);
+
+    PlanWithOrigins {
+        plan,
+        origins,
+        failed,
+    }
+}
+
+/// True when `rec`'s `marker.field` equals one of `marker.values`. Mirrors the
+/// private `is_delete_marked` in `faucet_core::write_mode`.
+fn is_delete_marked(rec: &Value, marker: Option<&faucet_core::DeleteMarker>) -> bool {
+    let Some(dm) = marker else { return false };
+    let Some(v) = rec.get(&dm.field) else {
+        return false;
+    };
+    let Some(s) = v.as_str() else { return false };
+    dm.values.iter().any(|m| m == s)
+}
+
+/// Remove `marker.field` from an upsert row. Mirrors the private `strip_marker`
+/// in `faucet_core::write_mode`.
+fn strip_marker(mut rec: Value, marker: Option<&faucet_core::DeleteMarker>) -> Value {
+    if let (Some(dm), Value::Object(map)) = (marker, &mut rec) {
+        map.remove(&dm.field);
+    }
+    rec
 }
 
 /// Map an Elasticsearch field-mapping `type` to a JSON-Schema base type name.
@@ -667,31 +836,95 @@ impl faucet_core::Sink for ElasticsearchSink {
         // Resolve auth once per write_batch_partial call; reuse across chunks.
         let auth = self.resolve_auth().await?;
 
-        // Upsert / delete routing. Per-row DLQ in these modes covers the
-        // missing/null-key case: `plan_writes` reports those rows in
-        // `plan.failed` with their original page index, and we mark exactly
-        // those indices `Err`. The deduped index/delete bulk is then sent in
-        // one call. Because the planner dedups by key (last-write-wins), an
-        // item-level bulk error can't be mapped back to a specific original
-        // record index, so per-item rejections aren't routed per-row here — a
-        // transport/bulk failure surfaces as an outer batch `Err` instead. This
-        // is the realistic DLQ case for upsert/delete (the missing-key route).
+        // Upsert / delete routing with PER-ROW fidelity (#F14).
+        //
+        // The whole point of overriding `write_batch_partial` is to give the
+        // DLQ router per-row outcomes so `OnBatchError::DlqAll` only enqueues
+        // rows that genuinely failed. The old code parsed the `_bulk` response
+        // but then called `check_bulk_errors(..)?`, collapsing any per-item
+        // error into an OUTER `Err` — under `dlq_all` that re-routed EVERY row
+        // in the page (including the upsert/delete rows Elasticsearch had
+        // already applied) to the DLQ while the bookmark still advanced →
+        // silent downstream duplication. We now attribute each `_bulk` item
+        // result back to its original page index/indices and return per-row
+        // outcomes, never an outer `Err` for an item-level rejection.
         if !matches!(self.config.write.write_mode, faucet_core::WriteMode::Append) {
-            let plan = faucet_core::plan_writes(records, &self.config.write);
+            // `plan_origins` mirrors `plan_writes` (same key extraction, same
+            // last-write-wins dedup) but additionally records, for each emitted
+            // bulk action, the original page indices that fed into it. Because
+            // the planner dedups by key, several input rows can map to one
+            // action; if that action is rejected we mark all of those indices
+            // `Err` (the final write for that key failed); if it succeeds they
+            // are all `Ok`.
+            let planned = plan_origins(records, &self.config.write);
+
             let mut outcomes: Vec<faucet_core::RowOutcome> =
                 (0..records.len()).map(|_| Ok(())).collect();
-            for (idx, msg) in &plan.failed {
+            // Missing/null-key rows: marked `Err` at their original index.
+            for (idx, msg) in &planned.failed {
                 outcomes[*idx] = Err(FaucetError::Sink(format!(
                     "elasticsearch {}: row {idx}: {msg}",
                     self.config.write.write_mode.as_str()
                 )));
             }
-            if !plan.upserts.is_empty() || !plan.deletes.is_empty() {
-                let body = self.build_plan_body(&plan)?;
-                // A transport/HTTP failure aborts the batch (outer Err); the
-                // non-failed indices otherwise stay Ok.
+
+            if !planned.plan.upserts.is_empty() || !planned.plan.deletes.is_empty() {
+                let body = self.build_plan_body(&planned.plan)?;
+                // A transport/HTTP failure means the whole chunk could not be
+                // sent — that genuinely aborts the batch (outer `Err`), matching
+                // the append path. Item-level rejections are handled per-row
+                // below.
                 let resp_body = self.send_bulk_body(body, &auth).await?;
-                Self::check_bulk_errors(&resp_body)?;
+
+                // `items` are in request order: all `index` (upsert) actions
+                // first, then all `delete` actions — exactly the order
+                // `build_plan_body` emits and `planned.origins` records.
+                let items = resp_body
+                    .get("items")
+                    .and_then(|v| v.as_array())
+                    .map(|v| v.as_slice())
+                    .unwrap_or(&[]);
+                let action_count = planned.plan.upserts.len() + planned.plan.deletes.len();
+
+                for (action_pos, origins) in planned.origins.iter().enumerate() {
+                    // Read the per-item result. The `_bulk` item object is keyed
+                    // by the action verb (`index` for upserts, `delete` for
+                    // deletes); accept any of the verbs defensively.
+                    let item_err = items.get(action_pos).and_then(|item| {
+                        item.get("index")
+                            .or_else(|| item.get("create"))
+                            .or_else(|| item.get("delete"))
+                            .or_else(|| item.get("update"))
+                            .and_then(|a| a.get("error"))
+                    });
+                    let outcome: faucet_core::RowOutcome = if let Some(err) = item_err {
+                        Err(FaucetError::Sink(format!(
+                            "Elasticsearch item rejected: {err}"
+                        )))
+                    } else if action_pos >= items.len() {
+                        // Server returned fewer items than actions sent — treat
+                        // the missing tail as failed rather than silently
+                        // dropping records.
+                        Err(FaucetError::Sink(
+                            "Elasticsearch bulk response truncated — item outcome missing".into(),
+                        ))
+                    } else {
+                        Ok(())
+                    };
+                    // Propagate this action's result to every original index that
+                    // deduped into it.
+                    for &orig in origins {
+                        // A genuine per-row failure overrides the default `Ok`;
+                        // never overwrite an already-recorded missing-key `Err`.
+                        if outcomes[orig].is_ok() {
+                            outcomes[orig] = match &outcome {
+                                Ok(()) => Ok(()),
+                                Err(e) => Err(FaucetError::Sink(e.to_string())),
+                            };
+                        }
+                    }
+                }
+                debug_assert_eq!(planned.origins.len(), action_count);
             }
             return Ok(outcomes);
         }
@@ -898,25 +1131,50 @@ mod tests {
     }
 
     #[test]
-    fn doc_id_joins_composite_key() {
+    fn doc_id_composite_key_is_canonical_json_not_separator_join() {
+        // F13: the core helper is now injective — a composite key is encoded as
+        // a canonical JSON array, NOT a `:`-join, so the separator can't collide.
         let kt = faucet_core::KeyTuple(vec![
             ("tenant".to_string(), serde_json::json!("acme")),
             ("id".to_string(), serde_json::json!(7)),
         ]);
-        assert_eq!(faucet_core::key_to_doc_id(&kt, ":"), "acme:7");
+        assert_eq!(faucet_core::key_to_doc_id(&kt, ":"), "[\"acme\",7]");
     }
 
     #[test]
-    fn doc_id_from_row_joins_key_columns_in_order() {
-        // Composite key: string rendered as-is, number via to_string(), joined
-        // with ":" in `key` declaration order.
+    fn doc_id_from_row_uses_injective_core_encoding() {
+        // Composite key: now canonical-JSON encoded (F13) — NOT a separator
+        // join — so it is injective. In `key` declaration order.
         let row = json!({"id": 7, "tenant": "acme", "v": "x"});
         let key = vec!["tenant".to_string(), "id".to_string()];
-        assert_eq!(doc_id_from_row(&row, &key), "acme:7");
+        // Matches faucet_core::key_to_doc_id for the same KeyTuple.
+        let kt = faucet_core::KeyTuple(vec![
+            ("tenant".to_string(), json!("acme")),
+            ("id".to_string(), json!(7)),
+        ]);
+        assert_eq!(
+            doc_id_from_row(&row, &key),
+            faucet_core::key_to_doc_id(&kt, ":")
+        );
 
-        // Single string key column → rendered as-is.
+        // Single string key column → rendered plain (no separator possible).
         let row = json!({"id": "abc-123"});
         assert_eq!(doc_id_from_row(&row, &["id".to_string()]), "abc-123");
+    }
+
+    #[test]
+    fn doc_id_from_row_composite_is_injective_no_collision() {
+        // F13 regression: two distinct composite keys that would collide under a
+        // naive separator-join must now produce DISTINCT `_id`s.
+        let key = vec!["a".to_string(), "b".to_string()];
+        let id1 = doc_id_from_row(&json!({"a": "x_", "b": "y"}), &key);
+        let id2 = doc_id_from_row(&json!({"a": "x", "b": "_y"}), &key);
+        assert_ne!(
+            id1, id2,
+            "distinct composite keys must not collapse to the same _id"
+        );
+        // And both go through the injective core helper, not a `:`-join.
+        assert!(!id1.contains("x_:y") && !id2.contains("x:_y"));
     }
 
     #[test]

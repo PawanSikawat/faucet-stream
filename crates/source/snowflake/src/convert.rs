@@ -9,7 +9,8 @@
 //!
 //! | Snowflake type          | JSON output                              |
 //! |-------------------------|------------------------------------------|
-//! | `fixed`                 | `Number` (i64 if it fits, else f64)      |
+//! | `fixed`, scale 0        | `Number` (i64/u64 if it fits, else `String` — full precision) |
+//! | `fixed`, scale > 0      | `String` (exact decimal — full precision preserved) |
 //! | `real`                  | `Number` (f64)                           |
 //! | `boolean`               | `Bool`                                   |
 //! | `text` / `binary`       | `String`                                 |
@@ -35,6 +36,14 @@ pub struct ColumnMeta {
     /// docs](https://docs.snowflake.com/en/developer-guide/sql-api/handling-responses).
     #[serde(rename = "type")]
     pub ty: String,
+    /// Scale of a `fixed` (`NUMBER`/`DECIMAL`/`NUMERIC`) column — the number of
+    /// digits after the decimal point. Snowflake reports `0` for integer-typed
+    /// fixed columns and `> 0` for fractional ones. Absent for non-fixed types
+    /// (defaults to `0`). A non-zero scale means the cell carries a fractional
+    /// decimal whose exact value is preserved losslessly as a JSON string,
+    /// matching how the BigQuery source treats `NUMERIC`/`BIGNUMERIC`.
+    #[serde(default)]
+    pub scale: i64,
 }
 
 /// Build a JSON object out of one Snowflake row (an array of string cells).
@@ -46,13 +55,16 @@ pub fn row_to_json(row: &[Value], columns: &[ColumnMeta]) -> Value {
     let mut obj = Map::with_capacity(columns.len());
     for (i, col) in columns.iter().enumerate() {
         let cell = row.get(i);
-        obj.insert(col.name.clone(), cell_to_json(cell, &col.ty));
+        obj.insert(col.name.clone(), cell_to_json(cell, &col.ty, col.scale));
     }
     Value::Object(obj)
 }
 
 /// Convert a single Snowflake cell to a typed `serde_json::Value`.
-fn cell_to_json(cell: Option<&Value>, ty: &str) -> Value {
+///
+/// `scale` is the column's reported decimal scale (only meaningful for `fixed`
+/// columns; `0` otherwise).
+fn cell_to_json(cell: Option<&Value>, ty: &str, scale: i64) -> Value {
     let Some(cell) = cell else {
         return Value::Null;
     };
@@ -70,7 +82,7 @@ fn cell_to_json(cell: Option<&Value>, ty: &str) -> Value {
     };
 
     match ty.to_ascii_lowercase().as_str() {
-        "fixed" => parse_number(s),
+        "fixed" => parse_number(s, scale),
         "real" => parse_real(s),
         "boolean" => parse_bool(s),
         "variant" | "object" | "array" => {
@@ -80,15 +92,40 @@ fn cell_to_json(cell: Option<&Value>, ty: &str) -> Value {
     }
 }
 
-/// Parse an integer-valued column (`FIXED`/`NUMBER` with scale 0 ships an
-/// integer literal here; non-zero-scale columns ship a decimal string and
-/// fall back to `f64`).
+/// Parse a `FIXED` (`NUMBER`/`DECIMAL`/`NUMERIC`) column value losslessly.
 ///
-/// A scale-0 value beyond `i64`/`u64` (e.g. `NUMBER(38,0)`) would lose
-/// precision as `f64`, so it is kept as a string (lossless), matching how
-/// BigQuery NUMERIC is handled. Decimal/scientific literals (non-zero scale)
-/// still fall back to `f64`.
-fn parse_number(s: &str) -> Value {
+/// Snowflake reports a `scale` for fixed-point columns:
+///
+/// - **scale > 0** (any `NUMBER(p,s)`/`DECIMAL`/`NUMERIC` with `s > 0`, i.e.
+///   every monetary/decimal column): the cell is a fractional decimal whose
+///   exact value cannot in general be represented by an `f64`
+///   (`serde_json` is built here *without* `arbitrary_precision`, so a JSON
+///   number is always an `f64`). To honor the connector's documented
+///   full-precision contract we keep the **exact decimal text as a JSON
+///   string**, matching how the BigQuery source preserves `NUMERIC`/
+///   `BIGNUMERIC`. We only fall back to numeric parsing when the value is not
+///   a well-formed finite decimal (defensive — never observed from Snowflake).
+/// - **scale 0** (integer-typed `NUMBER(p,0)`): parsed as a JSON integer when
+///   it fits `i64`/`u64`; a value beyond `u64` (e.g. `NUMBER(38,0)`) is kept
+///   as a lossless string rather than dropping precision through `f64`.
+///
+/// This is also robust when the scale metadata is missing/unreliable: a `fixed`
+/// cell whose text is a fractional decimal is preserved as a string regardless
+/// of the reported scale.
+fn parse_number(s: &str, scale: i64) -> Value {
+    let trimmed = s.trim();
+
+    if scale > 0 || is_fractional_decimal(trimmed) {
+        // Fractional fixed value — preserve the exact decimal text losslessly
+        // as a string when it is a well-formed finite decimal. A non-decimal /
+        // non-finite token (shouldn't occur for `fixed`) falls back to numeric
+        // parsing for round-trip safety.
+        if is_finite_decimal(trimmed) {
+            return Value::String(s.to_owned());
+        }
+        return parse_real(s);
+    }
+
     if let Ok(i) = s.parse::<i64>() {
         return Value::Number(i.into());
     }
@@ -97,11 +134,58 @@ fn parse_number(s: &str) -> Value {
     }
     // Past u64: only an integer literal stays a (lossless) string; a decimal or
     // scientific value is genuinely floating-point, so let `parse_real` handle it.
-    let digits = s.trim().strip_prefix(['+', '-']).unwrap_or(s.trim());
+    let digits = trimmed.strip_prefix(['+', '-']).unwrap_or(trimmed);
     if !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()) {
         return Value::String(s.to_owned());
     }
     parse_real(s)
+}
+
+/// True when `s` is a finite decimal literal containing a fractional component
+/// (a `.` with digits, or a scientific exponent) — i.e. not a plain integer.
+fn is_fractional_decimal(s: &str) -> bool {
+    is_finite_decimal(s) && (s.contains('.') || s.contains(['e', 'E']))
+}
+
+/// True when `s` is a well-formed finite decimal literal: an optional sign,
+/// decimal digits with at most one decimal point, and an optional scientific
+/// exponent. Rejects `NaN`/`Infinity` and any non-numeric token, so they fall
+/// through to `parse_real`'s round-trip-safe handling.
+fn is_finite_decimal(s: &str) -> bool {
+    let body = s.strip_prefix(['+', '-']).unwrap_or(s);
+    if body.is_empty() {
+        return false;
+    }
+
+    // Split off an optional scientific exponent (`e`/`E` + signed integer).
+    let (mantissa, exponent) = match body.split_once(['e', 'E']) {
+        Some((m, e)) => (m, Some(e)),
+        None => (body, None),
+    };
+
+    // Mantissa: digits with at most one decimal point, and at least one digit.
+    let mut seen_dot = false;
+    let mut seen_digit = false;
+    for b in mantissa.bytes() {
+        match b {
+            b'0'..=b'9' => seen_digit = true,
+            b'.' if !seen_dot => seen_dot = true,
+            _ => return false,
+        }
+    }
+    if !seen_digit {
+        return false;
+    }
+
+    // Exponent (if present): optional sign + at least one digit.
+    if let Some(exp) = exponent {
+        let exp_digits = exp.strip_prefix(['+', '-']).unwrap_or(exp);
+        if exp_digits.is_empty() || !exp_digits.bytes().all(|b| b.is_ascii_digit()) {
+            return false;
+        }
+    }
+
+    true
 }
 
 /// Parse a floating-point column. Non-finite values (`Infinity`, `NaN`) are
@@ -135,6 +219,16 @@ mod tests {
         ColumnMeta {
             name: name.into(),
             ty: ty.into(),
+            scale: 0,
+        }
+    }
+
+    /// A `fixed` column with an explicit (non-zero) decimal scale.
+    fn col_scaled(name: &str, scale: i64) -> ColumnMeta {
+        ColumnMeta {
+            name: name.into(),
+            ty: "fixed".into(),
+            scale,
         }
     }
 
@@ -146,10 +240,103 @@ mod tests {
     }
 
     #[test]
-    fn fixed_decimal_falls_back_to_float() {
+    fn fixed_fractional_preserves_exact_decimal_as_string() {
+        // A `fixed`/NUMBER column with non-zero scale ships a fractional
+        // decimal. Decoding it as f64 (the previous behavior) silently lost
+        // precision; the exact decimal text is preserved as a string instead,
+        // matching the BigQuery source's NUMERIC handling.
         let row = [json!("2.5")];
-        let cols = [col("RATIO", "fixed")];
-        assert_eq!(row_to_json(&row, &cols), json!({"RATIO": 2.5}));
+        let cols = [col_scaled("RATIO", 1)];
+        assert_eq!(row_to_json(&row, &cols), json!({"RATIO": "2.5"}));
+    }
+
+    #[test]
+    fn fixed_high_precision_decimal_preserves_all_digits() {
+        // 29 significant digits + 9 fractional — far beyond f64's ~15–17
+        // significant digits. Round-tripping through f64 would corrupt this.
+        let row = [json!("12345678901234567890.123456789")];
+        let cols = [col_scaled("AMOUNT", 9)];
+        let out = row_to_json(&row, &cols);
+        assert_eq!(out, json!({"AMOUNT": "12345678901234567890.123456789"}));
+        // Assert the serialized JSON is byte-exact — no digit dropped, no
+        // float rounding, value emitted as a JSON string.
+        assert_eq!(
+            serde_json::to_string(&out).unwrap(),
+            r#"{"AMOUNT":"12345678901234567890.123456789"}"#
+        );
+    }
+
+    #[test]
+    fn fixed_monetary_amount_preserves_exact_value() {
+        let row = [json!("1234.56")];
+        let cols = [col_scaled("PRICE", 2)];
+        let out = row_to_json(&row, &cols);
+        assert_eq!(out, json!({"PRICE": "1234.56"}));
+        assert_eq!(
+            serde_json::to_string(&out).unwrap(),
+            r#"{"PRICE":"1234.56"}"#
+        );
+    }
+
+    #[test]
+    fn fixed_negative_fractional_preserves_exact_value() {
+        let row = [json!("-0.0000000001")];
+        let cols = [col_scaled("DELTA", 10)];
+        assert_eq!(row_to_json(&row, &cols), json!({"DELTA": "-0.0000000001"}));
+    }
+
+    #[test]
+    fn fixed_scale_zero_integer_stays_json_integer() {
+        // Scale-0 fixed values that fit i64 remain JSON integers.
+        let row = [json!("100"), json!("-7")];
+        let cols = [col_scaled("A", 0), col_scaled("B", 0)];
+        assert_eq!(row_to_json(&row, &cols), json!({"A": 100, "B": -7}));
+        let out = row_to_json(&row, &cols);
+        assert_eq!(serde_json::to_string(&out).unwrap(), r#"{"A":100,"B":-7}"#);
+    }
+
+    #[test]
+    fn fixed_fractional_detected_without_scale_metadata() {
+        // Defensive: even if scale metadata is missing/zero, a `fixed` cell
+        // whose text is fractional is preserved losslessly as a string rather
+        // than dropping precision through f64.
+        let row = [json!("3.141592653589793238462643383279")];
+        let cols = [col("PI", "fixed")]; // scale defaults to 0
+        assert_eq!(
+            row_to_json(&row, &cols),
+            json!({"PI": "3.141592653589793238462643383279"})
+        );
+    }
+
+    #[test]
+    fn fixed_scientific_notation_preserved_as_string() {
+        // A scaled fixed value rendered in scientific notation is still a
+        // fractional decimal — keep its exact text.
+        let row = [json!("1.5e10")];
+        let cols = [col_scaled("X", 4)];
+        assert_eq!(row_to_json(&row, &cols), json!({"X": "1.5e10"}));
+    }
+
+    #[test]
+    fn fixed_scale_present_in_column_metadata_deserializes() {
+        // The `scale` field is read from Snowflake's rowType metadata.
+        let meta: ColumnMeta =
+            serde_json::from_value(json!({"name": "AMT", "type": "fixed", "scale": 2})).unwrap();
+        assert_eq!(meta.scale, 2);
+        // Absent scale defaults to 0.
+        let meta0: ColumnMeta =
+            serde_json::from_value(json!({"name": "ID", "type": "fixed"})).unwrap();
+        assert_eq!(meta0.scale, 0);
+    }
+
+    #[test]
+    fn fixed_non_decimal_token_falls_back_to_real() {
+        // Defensive guard: a `fixed` column reporting scale>0 but carrying a
+        // non-finite/garbage token must not be emitted as a misleading numeric
+        // string. It falls back to parse_real (string for non-finite).
+        let row = [json!("NaN")];
+        let cols = [col_scaled("X", 2)];
+        assert_eq!(row_to_json(&row, &cols), json!({"X": "NaN"}));
     }
 
     #[test]

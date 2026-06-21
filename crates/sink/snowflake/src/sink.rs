@@ -238,6 +238,36 @@ impl SnowflakeSink {
         }
     }
 
+    /// Compute the column set for an INSERT chunk as the **union of keys across
+    /// all records**, in first-seen order (stable, deterministic).
+    ///
+    /// All rows in one INSERT share a single column list, so a key that appears
+    /// only in a later record must still become a column — otherwise that
+    /// record's value for it is silently dropped (data-loss bug F16, audit
+    /// #264). Records missing a union column project to SQL `NULL` for that
+    /// column. Every record must be a JSON object; a chunk whose records carry
+    /// no fields at all is rejected.
+    fn column_union(records: &[Value]) -> Result<Vec<String>, FaucetError> {
+        let mut columns: Vec<String> = Vec::new();
+        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for record in records {
+            let obj = record.as_object().ok_or_else(|| {
+                FaucetError::Sink("Snowflake sink requires JSON object records".into())
+            })?;
+            for key in obj.keys() {
+                if seen.insert(key.clone()) {
+                    columns.push(key.clone());
+                }
+            }
+        }
+        if columns.is_empty() {
+            return Err(FaucetError::Sink(
+                "Snowflake sink: records have no fields to insert".into(),
+            ));
+        }
+        Ok(columns)
+    }
+
     /// Build an INSERT statement plus the JSON payload to bind to its single
     /// `PARSE_JSON(?)` parameter.
     ///
@@ -255,8 +285,11 @@ impl SnowflakeSink {
     /// non-functional for any normal table (audit #146 C2). The `::string` cast
     /// strips the VARIANT's JSON quotes and lets Snowflake coerce the scalar
     /// into the destination column's type on `INSERT` (text → number / boolean
-    /// / timestamp, etc.). The column set is taken from the first non-empty
-    /// record; a key missing from a later record projects to SQL `NULL`.
+    /// / timestamp, etc.). The column set is the **union of keys across every
+    /// record in the chunk** (first-seen order), so a key present only in a
+    /// later record is never silently dropped (data-loss bug F16, audit #264);
+    /// a key missing from a given record projects to SQL `NULL` for that row
+    /// (the FLATTEN `value:"k"` path yields `NULL` when `k` is absent).
     ///
     /// Both the column identifiers and the JSON path keys are escaped via
     /// [`quote_ident`] (double-quote doubling), so record keys cannot inject
@@ -266,20 +299,7 @@ impl SnowflakeSink {
     /// `OBJECT` / `ARRAY`) is stringified by the `::string` cast rather than
     /// stored as structured JSON; this sink maps records to scalar columns.
     fn build_insert(&self, records: &[Value]) -> Result<(String, String), FaucetError> {
-        // The column set is the keys of the first non-empty record (all rows in
-        // one INSERT must share a column list). Every record must be an object.
-        let mut columns: Option<Vec<String>> = None;
-        for record in records {
-            let obj = record.as_object().ok_or_else(|| {
-                FaucetError::Sink("Snowflake sink requires JSON object records".into())
-            })?;
-            if columns.is_none() && !obj.is_empty() {
-                columns = Some(obj.keys().cloned().collect());
-            }
-        }
-        let columns = columns.ok_or_else(|| {
-            FaucetError::Sink("Snowflake sink: records have no fields to insert".into())
-        })?;
+        let columns = Self::column_union(records)?;
 
         // `quote_ident` produces a `"`-escaped quoted identifier, which is also
         // the correct (injection-safe) form for a FLATTEN path key: `value:"k"`.
@@ -670,6 +690,82 @@ mod tests {
         let required = schema["required"].as_array().expect("required array");
         assert!(required.iter().any(|v| v == "account"));
         assert!(required.iter().any(|v| v == "table"));
+    }
+
+    #[test]
+    fn build_insert_uses_union_of_all_record_keys_not_just_first() {
+        // Data-loss regression F16 (audit #264): the column set must be the
+        // UNION of keys across every record in the chunk, not just the first
+        // record's keys. With differing key sets the union is {a, b, c} and
+        // every column must appear in both the column list and the FLATTEN
+        // projection so no record's value is silently dropped.
+        let config = SnowflakeSinkConfig::new(
+            "acct",
+            "wh",
+            "db",
+            "schema",
+            "events",
+            SnowflakeAuth::OAuth { token: "t".into() },
+        );
+        let sink = SnowflakeSink::new(config).unwrap();
+        let records = vec![
+            serde_json::json!({"a": 1}),
+            serde_json::json!({"b": 2}),
+            serde_json::json!({"a": 3, "b": 4, "c": 5}),
+        ];
+
+        // The union helper itself: first-seen order, all three columns.
+        let union = SnowflakeSink::column_union(&records).unwrap();
+        assert_eq!(union, vec!["a", "b", "c"]);
+
+        let (sql, _payload) = sink.build_insert(&records).unwrap();
+
+        // Every union column appears in the column list and the projection.
+        for col in ["a", "b", "c"] {
+            let quoted = format!("\"{col}\"");
+            assert!(
+                sql.contains(&quoted),
+                "column {col} missing from column list: {sql}"
+            );
+            let proj = format!("value:\"{col}\"::string");
+            assert!(sql.contains(&proj), "projection for {col} missing: {sql}");
+        }
+
+        // Records missing a column rely on the FLATTEN `value:"col"` path
+        // returning NULL — the projection covers all three columns, so the
+        // first record (only `a`) yields NULL for `b` and `c`, etc. No column
+        // is dropped.
+        assert_eq!(
+            sql.matches("value:").count(),
+            3,
+            "exactly 3 projections: {sql}"
+        );
+    }
+
+    #[test]
+    fn column_union_collects_all_keys_without_duplicates() {
+        // The union must contain every key across the chunk exactly once. The
+        // absolute column ORDER is intentionally NOT asserted: it depends on
+        // `serde_json::Map`'s key ordering (sorted BTreeMap vs insertion-order
+        // IndexMap under the `preserve_order` feature, which feature unification
+        // can toggle), and order does not affect correctness — the column list
+        // and the value projection are built from the same `Vec`, so they stay
+        // internally consistent regardless.
+        let records = vec![
+            serde_json::json!({"z": 1, "a": 2}),
+            serde_json::json!({"m": 3, "z": 4}),
+            serde_json::json!({"a": 5, "b": 6}),
+        ];
+        let mut union = SnowflakeSink::column_union(&records).unwrap();
+        let len_before = union.len();
+        union.sort();
+        union.dedup();
+        assert_eq!(union.len(), len_before, "no duplicate columns");
+        assert_eq!(
+            union,
+            vec!["a", "b", "m", "z"],
+            "every key present exactly once"
+        );
     }
 
     #[test]

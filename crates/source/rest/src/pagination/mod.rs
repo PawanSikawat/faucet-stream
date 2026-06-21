@@ -191,13 +191,42 @@ impl PaginationStyle {
             }
             PaginationStyle::Offset {
                 limit, total_path, ..
-            } => offset::advance(
-                body,
-                &mut state.offset,
-                record_count,
-                *limit,
-                total_path.as_deref(),
-            ),
+            } => {
+                let has_next = offset::advance(
+                    body,
+                    &mut state.offset,
+                    record_count,
+                    *limit,
+                    total_path.as_deref(),
+                )?;
+                // Content-stagnation guard (#264 F18): a server that ignores
+                // the `offset` parameter re-returns the identical first page
+                // forever. With `total_path` absent (commonly omitted) the
+                // record-count heuristic keeps `has_next` true on every full
+                // page, so the run would loop until `max_pages`, duplicating
+                // records to the sink. Mirror the PageNumber guard: stop if
+                // this page's body is identical to the previous one. A
+                // zero-record / short page has already returned `false` above,
+                // so this only fires on a genuinely repeated full page.
+                //
+                // Scoped to `total_path.is_none()`: when `total_path` is set,
+                // `offset::advance` has an authoritative stop condition (offset
+                // reaches total), and a paging-metadata body that legitimately
+                // repeats (e.g. `{"total": N}` echoed on every page) must not
+                // be mistaken for stagnation.
+                if has_next && total_path.is_none() {
+                    let fp = body_fingerprint(body);
+                    if state.previous_page_fingerprint == Some(fp) {
+                        tracing::warn!(
+                            "pagination loop detected: Offset returned an identical page \
+                             (server likely ignoring the offset parameter) — stopping"
+                        );
+                        return Ok(false);
+                    }
+                    state.previous_page_fingerprint = Some(fp);
+                }
+                Ok(has_next)
+            }
         }
     }
 }

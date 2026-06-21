@@ -343,6 +343,76 @@ async fn all_column_types_decode_to_expected_json() {
     assert_eq!(row["bl"], "aGkK"); // BLOB 0x68690a ("hi\n") -> base64
 }
 
+/// UNSIGNED integer columns (#264) must decode to JSON numbers, not bools or
+/// nulls. Before the fix, sqlx's signed-int decoders rejected UNSIGNED columns
+/// so they fell through to the `bool` probe (TINYINT UNSIGNED -> bool) or the
+/// `Null` fall-through (wider UNSIGNED -> null) — total silent corruption.
+///
+/// This asserts every UNSIGNED width round-trips to its exact numeric value,
+/// including a `BIGINT UNSIGNED` above `i64::MAX` (9223372036854775807) which a
+/// signed decoder could never represent.
+#[tokio::test(flavor = "multi_thread")]
+async fn unsigned_columns_decode_to_json_numbers() {
+    let (_container, url) = start_mysql().await;
+    let pool = sqlx::MySqlPool::connect(&url).await.expect("pool connect");
+    sqlx::query(
+        "CREATE TABLE unsigned_t (
+            ti TINYINT UNSIGNED,
+            si SMALLINT UNSIGNED,
+            mi MEDIUMINT UNSIGNED,
+            ii INT UNSIGNED,
+            bi BIGINT UNSIGNED,
+            flag TINYINT(1) UNSIGNED
+        )",
+    )
+    .execute(&pool)
+    .await
+    .expect("create table");
+    // Each column holds its max (or near-max) unsigned value:
+    //   TINYINT UNSIGNED max = 255
+    //   SMALLINT UNSIGNED max = 65535
+    //   MEDIUMINT UNSIGNED max = 16777215
+    //   INT UNSIGNED max = 4294967295
+    //   BIGINT UNSIGNED: 18446744073709551000 (> i64::MAX = 9223372036854775807)
+    //   flag: 1 — must stay the number 1, NOT decode to a JSON bool.
+    sqlx::query(
+        "INSERT INTO unsigned_t VALUES (255, 65535, 16777215, 4294967295, 18446744073709551000, 1)",
+    )
+    .execute(&pool)
+    .await
+    .expect("insert");
+    pool.close().await;
+
+    let config = MysqlSourceConfig::new(url, "SELECT * FROM unsigned_t");
+    let source = MysqlSource::new(config).await.expect("source new");
+    let ctx: HashMap<String, serde_json::Value> = HashMap::new();
+    let mut pages = source.stream_pages(&ctx, DEFAULT_BATCH_SIZE);
+    let page = pages.next().await.expect("one page").expect("page ok");
+    assert_eq!(page.records.len(), 1);
+    let row = &page.records[0];
+
+    assert_eq!(row["ti"], serde_json::json!(255u64));
+    assert_eq!(row["si"], serde_json::json!(65535u64));
+    assert_eq!(row["mi"], serde_json::json!(16777215u64));
+    assert_eq!(row["ii"], serde_json::json!(4294967295u64));
+    // The critical case: a BIGINT UNSIGNED above i64::MAX must round-trip as an
+    // exact JSON number, never null.
+    assert_eq!(row["bi"], serde_json::json!(18446744073709551000u64));
+    assert!(
+        row["bi"].is_number(),
+        "BIGINT UNSIGNED above i64::MAX must be a JSON number, got {:?}",
+        row["bi"]
+    );
+    // A TINYINT(1) UNSIGNED carrying 1 must stay the number 1, not become
+    // `true` — the unsigned probes are deliberately ahead of the bool probe.
+    assert_eq!(row["flag"], serde_json::json!(1u64));
+    assert!(
+        row["flag"].is_number(),
+        "TINYINT(1) UNSIGNED must decode as a number, not a bool, got {:?}",
+        row["flag"]
+    );
+}
+
 /// Context tokens (`{key}`) must become `?` bind markers bound as native scalar
 /// types — exercising `resolve_query`'s context branch and the typed arms of
 /// `bind_params` (integer + bool).

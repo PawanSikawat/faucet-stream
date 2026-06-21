@@ -137,6 +137,24 @@ pub async fn claim_loop(state: ServerState, shutdown: CancellationToken) {
             }
             Err(e) => tracing::warn!(error = %e, "cluster: pending_cancellations failed"),
         }
+        // 1b. Mode B (#230 / F10): a Sharded parent flagged for cancel — fire the
+        //     local coop tokens of any of this instance's running shards under it
+        //     so they stop + flush, instead of running to completion.
+        match state.history().pending_shard_cancellations().await {
+            Ok(ids) => {
+                for id in ids {
+                    let fired = state.registry().cancel_run_shards(&id);
+                    if fired > 0 {
+                        tracing::info!(
+                            run_id = %id,
+                            shards = fired,
+                            "cluster: cancelling local shards of a flagged sharded run"
+                        );
+                    }
+                }
+            }
+            Err(e) => tracing::warn!(error = %e, "cluster: pending_shard_cancellations failed"),
+        }
 
         // 2. Claim up to our free capacity and dispatch.
         let free = state.semaphore().available_permits();

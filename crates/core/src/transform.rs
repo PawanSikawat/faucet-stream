@@ -575,7 +575,9 @@ pub enum CompiledTransform {
     },
     #[cfg(feature = "transform-rename-field")]
     RenameField {
-        fields: HashMap<String, String>,
+        /// `(from, to)` pairs sorted by `from`, so application is deterministic
+        /// regardless of the source `HashMap`'s iteration order.
+        fields: Vec<(String, String)>,
     },
     #[cfg(feature = "transform-cast")]
     Cast {
@@ -638,9 +640,16 @@ pub fn compile(t: &RecordTransform) -> Result<CompiledTransform, FaucetError> {
             values: values.clone(),
         }),
         #[cfg(feature = "transform-rename-field")]
-        RecordTransform::RenameField { fields } => Ok(CompiledTransform::RenameField {
-            fields: fields.clone(),
-        }),
+        RecordTransform::RenameField { fields } => {
+            // Materialize into a stable, sorted order so renames apply
+            // deterministically — a `HashMap`'s iteration order is randomized,
+            // which made interacting renames (chains/swaps) produce unstable or
+            // corrupted output and intermittent collision errors.
+            let mut fields: Vec<(String, String)> =
+                fields.iter().map(|(f, t)| (f.clone(), t.clone())).collect();
+            fields.sort();
+            Ok(CompiledTransform::RenameField { fields })
+        }
         #[cfg(feature = "transform-cast")]
         RecordTransform::Cast { fields, on_error } => Ok(CompiledTransform::Cast {
             fields: fields.clone(),
@@ -963,25 +972,51 @@ fn set_fields(value: Value, values: &Map<String, Value>) -> Value {
 // ── RenameField ───────────────────────────────────────────────────────────────
 
 #[cfg(feature = "transform-rename-field")]
-fn rename_field(value: Value, fields: &HashMap<String, String>) -> Result<Value, FaucetError> {
+fn rename_field(value: Value, fields: &[(String, String)]) -> Result<Value, FaucetError> {
     match value {
         Value::Object(mut map) => {
-            for (from, to) in fields {
-                if from == to {
-                    continue;
+            // Apply every rename against the ORIGINAL record (a snapshot), not
+            // sequentially against a mutating map. This makes interacting renames
+            // — chains (`{a:b, b:c}`) and swaps (`{a:b, b:a}`) — deterministic and
+            // order-independent: each source's value moves to its target as it was
+            // before any rename, and sources are removed atomically.
+            let renames: Vec<(&str, &str)> = fields
+                .iter()
+                .filter(|(from, to)| from != to && map.contains_key(from))
+                .map(|(from, to)| (from.as_str(), to.as_str()))
+                .collect();
+            let sources: std::collections::HashSet<&str> =
+                renames.iter().map(|(from, _)| *from).collect();
+
+            // Validate before mutating.
+            let mut seen_targets: std::collections::HashSet<&str> =
+                std::collections::HashSet::new();
+            for (from, to) in &renames {
+                if !seen_targets.insert(to) {
+                    return Err(FaucetError::Transform(format!(
+                        "rename_field: two fields rename to the same target key '{to}'"
+                    )));
                 }
-                if let Some(v) = map.remove(from) {
-                    // Erroring (rather than overwriting) avoids silently dropping a
-                    // value when the target name already exists on the record —
-                    // mirrors the collision semantics in `flatten` / `keys_case`.
-                    if map.contains_key(to) {
-                        return Err(FaucetError::Transform(format!(
-                            "rename_field: target key '{to}' already exists on the record \
-                             (renaming from '{from}')"
-                        )));
-                    }
-                    map.insert(to.clone(), v);
+                // A target collides only if a *surviving* key (one not being
+                // renamed away) already occupies it — mirrors the collision
+                // semantics in `flatten` / `keys_case`.
+                if map.contains_key(*to) && !sources.contains(to) {
+                    return Err(FaucetError::Transform(format!(
+                        "rename_field: target key '{to}' already exists on the record \
+                         (renaming from '{from}')"
+                    )));
                 }
+            }
+
+            let staged: Vec<(String, Value)> = renames
+                .iter()
+                .map(|(from, to)| {
+                    let v = map.remove(*from).expect("source presence checked above");
+                    (to.to_string(), v)
+                })
+                .collect();
+            for (to, v) in staged {
+                map.insert(to, v);
             }
             Ok(Value::Object(map))
         }
@@ -1718,6 +1753,61 @@ mod tests {
         .expect_err("collision must error, not overwrite");
         assert!(matches!(err, FaucetError::Transform(_)));
         assert!(format!("{err}").contains("'b'"), "{err}");
+    }
+
+    #[cfg(feature = "transform-rename-field")]
+    #[test]
+    fn rename_field_swap_is_deterministic() {
+        // A swap {a:b, b:a} must exchange the two values, never error or corrupt,
+        // and must be stable across HashMap iteration orders (run repeatedly).
+        for _ in 0..50 {
+            let record = json!({"a": 1, "b": 2, "keep": 3});
+            let mut fields = HashMap::new();
+            fields.insert("a".to_owned(), "b".to_owned());
+            fields.insert("b".to_owned(), "a".to_owned());
+            let result = apply_all(
+                record,
+                &compiled(&[RecordTransform::RenameField { fields }]),
+            );
+            assert_eq!(result["a"], 2, "{result}");
+            assert_eq!(result["b"], 1, "{result}");
+            assert_eq!(result["keep"], 3);
+        }
+    }
+
+    #[cfg(feature = "transform-rename-field")]
+    #[test]
+    fn rename_field_chain_applies_against_original_snapshot() {
+        // A chain {a:b, b:c} renames against the ORIGINAL record: a→b and b→c
+        // both read pre-rename values, deterministically, for any iteration order.
+        for _ in 0..50 {
+            let record = json!({"a": 1, "b": 2});
+            let mut fields = HashMap::new();
+            fields.insert("a".to_owned(), "b".to_owned());
+            fields.insert("b".to_owned(), "c".to_owned());
+            let result = apply_all(
+                record,
+                &compiled(&[RecordTransform::RenameField { fields }]),
+            );
+            assert_eq!(result["b"], 1, "{result}");
+            assert_eq!(result["c"], 2, "{result}");
+            assert!(result.get("a").is_none(), "{result}");
+        }
+    }
+
+    #[cfg(feature = "transform-rename-field")]
+    #[test]
+    fn rename_field_two_sources_one_target_errors() {
+        let record = json!({"a": 1, "b": 2});
+        let mut fields = HashMap::new();
+        fields.insert("a".to_owned(), "c".to_owned());
+        fields.insert("b".to_owned(), "c".to_owned());
+        let err = super::apply_all(
+            record,
+            &compiled(&[RecordTransform::RenameField { fields }]),
+        )
+        .expect_err("two renames to the same target must error");
+        assert!(format!("{err}").contains("same target"), "{err}");
     }
 
     // ── Cast ──────────────────────────────────────────────────────────────────

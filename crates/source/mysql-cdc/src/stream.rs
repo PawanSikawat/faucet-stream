@@ -780,6 +780,17 @@ fn build_opts(config: &MysqlCdcSourceConfig) -> Result<Opts, FaucetError> {
 // Preflight helpers
 // ──────────────────────────────────────────────────────────────────────────────
 
+/// Decide whether a `binlog_row_value_options` value is safe for CDC.
+///
+/// Only an empty value (full-value JSON logging) is acceptable. Any non-empty
+/// setting — `PARTIAL_JSON` is the only documented value today — means UPDATEs to
+/// JSON columns may emit partial diffs that cannot be reconstructed without the
+/// prior row, so it is rejected. The check is case-insensitive and ignores
+/// surrounding whitespace. Pure seam, unit-tested without a server.
+fn binlog_row_value_options_ok(value: &str) -> bool {
+    value.trim().is_empty()
+}
+
 /// Run preflight checks and return a human-readable summary on success, or an
 /// error message on the first failing check.
 async fn run_preflight_probes(
@@ -840,6 +851,25 @@ async fn run_preflight_probes(
         _ => {}
     }
 
+    // Check binlog_row_value_options is not PARTIAL_JSON. Under PARTIAL_JSON an
+    // UPDATE that touches a JSON column emits a partial diff (BinlogValue::JsonDiff)
+    // rather than the full document; faucet-stream cannot reconstruct it without the
+    // prior row, so we reject it here rather than corrupt the column at runtime.
+    let value_opts: Option<(String, String)> = conn
+        .query_first("SHOW VARIABLES LIKE 'binlog_row_value_options'")
+        .await
+        .map_err(|e| format!("SHOW VARIABLES LIKE 'binlog_row_value_options' failed: {e}"))?;
+    // A missing variable (older servers) means full-value logging — acceptable.
+    if let Some((_, v)) = value_opts.as_ref()
+        && !binlog_row_value_options_ok(v)
+    {
+        return Err(format!(
+            "binlog_row_value_options is '{v}', must be empty (full JSON). \
+             Partial JSON diffs cannot be reconstructed for CDC. \
+             Set binlog_row_value_options='' on the MySQL server."
+        ));
+    }
+
     // Check REPLICATION grants
     let grants: Vec<String> = conn
         .query("SHOW GRANTS FOR CURRENT_USER()")
@@ -879,7 +909,11 @@ async fn run_preflight_probes(
         }
     }
 
-    Ok("binlog_format=ROW, binlog_row_image=FULL, binlog_row_metadata=FULL, grants OK".into())
+    Ok(
+        "binlog_format=ROW, binlog_row_image=FULL, binlog_row_metadata=FULL, \
+         binlog_row_value_options=full, grants OK"
+            .into(),
+    )
 }
 
 /// Run preflight checks, mapping a failure to a typed `FaucetError::Source`.
@@ -899,6 +933,21 @@ mod tests {
     use super::*;
     use crate::state::Bookmark;
     use serde_json::json;
+
+    // ── binlog_row_value_options preflight seam (PARTIAL_JSON, F17) ───────────
+
+    #[test]
+    fn binlog_row_value_options_empty_is_ok() {
+        assert!(binlog_row_value_options_ok(""));
+        assert!(binlog_row_value_options_ok("   "));
+    }
+
+    #[test]
+    fn binlog_row_value_options_partial_json_rejected() {
+        assert!(!binlog_row_value_options_ok("PARTIAL_JSON"));
+        assert!(!binlog_row_value_options_ok("partial_json"));
+        assert!(!binlog_row_value_options_ok("  PARTIAL_JSON  "));
+    }
 
     // ── binlog position decoding (MySQL 8.4 fallback, #242) ───────────────────
 

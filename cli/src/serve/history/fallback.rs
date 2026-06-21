@@ -215,6 +215,12 @@ impl RunHistory for FallbackHistory {
     ) -> Result<crate::serve::history::ShardProgress, HistoryError> {
         via!(self, p => p.shard_progress(run_id), f => f.shard_progress(run_id))
     }
+    async fn pending_shard_cancellations(&self) -> Result<Vec<String>, HistoryError> {
+        via!(self, p => p.pending_shard_cancellations(), f => f.pending_shard_cancellations())
+    }
+    async fn finalize_completed_sharded_parents(&self) -> Result<usize, HistoryError> {
+        via!(self, p => p.finalize_completed_sharded_parents(), f => f.finalize_completed_sharded_parents())
+    }
 
     fn degraded(&self) -> bool {
         self.is_degraded()

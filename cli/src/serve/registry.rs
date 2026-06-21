@@ -8,6 +8,14 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 
+/// The unique registry key for a shard's cancel token. Keeping it distinct from
+/// the parent run's key (which is the bare run id) lets `cancel_run_shards` fire
+/// all of a run's shard tokens via a `{run_id}::` prefix scan without colliding
+/// with the run's own token.
+fn shard_key(run_id: &str, shard_id: &str) -> String {
+    format!("{run_id}::{shard_id}")
+}
+
 pub struct Registry {
     tokens: DashMap<String, CancellationToken>,
     queued: AtomicUsize,
@@ -108,6 +116,36 @@ impl Registry {
         }
     }
 
+    /// Register a shard's cancel token under a per-shard key (`{run_id}::{shard_id}`).
+    /// Separate from a run's token so a sharded run's shards each get their own
+    /// cooperative-cancel signal (Mode B, #230 / F10).
+    pub fn register_shard(&self, run_id: &str, shard_id: &str, token: CancellationToken) {
+        self.tokens.insert(shard_key(run_id, shard_id), token);
+    }
+
+    /// Drop a token by key without touching the queue/in-flight counters. Used to
+    /// remove a finished shard's token (shard accounting is separate from the
+    /// parent run's `in_flight`, so [`Self::mark_finished`] is not appropriate).
+    pub fn deregister_shard(&self, run_id: &str, shard_id: &str) {
+        self.tokens.remove(&shard_key(run_id, shard_id));
+    }
+
+    /// Fire every registered shard token whose key belongs to `run_id` (key
+    /// prefix `{run_id}::`). Returns how many tokens were fired. Drives a
+    /// cross-instance cancel of a sharded run: the claim loop calls this for each
+    /// run id returned by `pending_shard_cancellations` (F10).
+    pub fn cancel_run_shards(&self, run_id: &str) -> usize {
+        let prefix = format!("{run_id}::");
+        let mut fired = 0usize;
+        for entry in self.tokens.iter() {
+            if entry.key().starts_with(&prefix) {
+                entry.value().cancel();
+                fired += 1;
+            }
+        }
+        fired
+    }
+
     pub fn queued(&self) -> usize {
         self.queued.load(Ordering::Acquire)
     }
@@ -200,6 +238,47 @@ mod tests {
         assert!(r.cancel("run1"));
         assert!(token.is_cancelled());
         assert!(!r.cancel("missing"));
+    }
+
+    #[test]
+    fn cancel_run_shards_fires_only_matching_run_tokens() {
+        let r = Registry::new(8);
+        // Two shards of run "A", one shard of run "B", plus a whole-run token for
+        // "A" (registered under the bare run id — must NOT be fired by the shard
+        // sweep, which keys on the "A::" prefix).
+        let a0 = CancellationToken::new();
+        let a1 = CancellationToken::new();
+        let b0 = CancellationToken::new();
+        let a_run = CancellationToken::new();
+        r.register_shard("A", "0", a0.clone());
+        r.register_shard("A", "1", a1.clone());
+        r.register_shard("B", "0", b0.clone());
+        r.register("A".into(), a_run.clone());
+
+        let fired = r.cancel_run_shards("A");
+        assert_eq!(fired, 2, "both A shards fired");
+        assert!(a0.is_cancelled());
+        assert!(a1.is_cancelled());
+        assert!(!b0.is_cancelled(), "B's shard untouched");
+        assert!(
+            !a_run.is_cancelled(),
+            "A's whole-run token (bare id, no '::') untouched"
+        );
+
+        // No shards for a run → fires nothing.
+        assert_eq!(r.cancel_run_shards("C"), 0);
+    }
+
+    #[test]
+    fn deregister_shard_removes_the_token() {
+        let r = Registry::new(4);
+        r.register_shard("A", "0", CancellationToken::new());
+        r.register_shard("A", "1", CancellationToken::new());
+        r.deregister_shard("A", "0");
+        // Only "A::1" remains → exactly one token fired.
+        assert_eq!(r.cancel_run_shards("A"), 1, "deregistered token not fired");
+        r.deregister_shard("A", "1");
+        assert_eq!(r.cancel_run_shards("A"), 0, "all shard tokens removed");
     }
 
     #[test]

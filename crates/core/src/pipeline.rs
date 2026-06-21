@@ -1565,9 +1565,15 @@ async fn apply_drift_policy<Si: Sink + ?Sized>(
     }
 }
 
-/// Partition records: those exhibiting any drift column (an addition present in
-/// the record, or an incompatible column whose value type diverges) go to the
-/// DLQ; the rest are kept. Returns `(kept, envelopes)`.
+/// Partition records: those exhibiting any drift column go to the DLQ; the rest
+/// are kept. Returns `(kept, envelopes)`.
+///
+/// A row "exhibits drift" if it either **contains** a column whose shape diverges
+/// from the destination — an addition, a type widening, or an incompatible type
+/// change — or **omits** a `droppable_required` column (a destination NOT NULL
+/// column absent from the page). All four buckets must be covered: a widening or
+/// droppable-required column written to a *non-evolved* destination is exactly
+/// the silent corruption `quarantine` exists to prevent.
 fn quarantine_drift_rows(
     diff: &crate::drift::SchemaDiff,
     records: Vec<Value>,
@@ -1576,18 +1582,26 @@ fn quarantine_drift_rows(
     row: &str,
 ) -> (Vec<Value>, Vec<Value>) {
     use crate::dlq::build_envelope;
-    let drift_cols: std::collections::HashSet<&str> = diff
+    // Columns that taint a row by their PRESENCE in the record.
+    let present_cols: std::collections::HashSet<&str> = diff
         .additions
         .iter()
+        .chain(&diff.widenings)
         .chain(&diff.incompatible)
         .map(|c| c.name.as_str())
         .collect();
+    // Required destination columns that taint a row by their ABSENCE.
+    let required_cols: std::collections::HashSet<&str> =
+        diff.droppable_required.iter().map(|s| s.as_str()).collect();
     let mut kept = Vec::new();
     let mut envelopes = Vec::new();
     for (idx, rec) in records.into_iter().enumerate() {
         let exhibits = rec
             .as_object()
-            .map(|m| m.keys().any(|k| drift_cols.contains(k.as_str())))
+            .map(|m| {
+                m.keys().any(|k| present_cols.contains(k.as_str()))
+                    || required_cols.iter().any(|c| !m.contains_key(*c))
+            })
             .unwrap_or(false);
         if exhibits {
             let err = FaucetError::SchemaDrift {
@@ -4386,6 +4400,35 @@ mod tests {
         assert_eq!(dlq.len(), 1);
         assert_eq!(dlq[0]["payload"], json!({"id": 2, "email": "x"}));
         assert_eq!(dlq[0]["error"]["kind"], "SchemaDrift");
+    }
+
+    #[test]
+    fn quarantine_drift_rows_covers_widening_and_droppable_required() {
+        use crate::drift::{ColumnChange, SchemaDiff};
+        // Widening on `amount`; required `legacy` column dropped from the page.
+        let diff = SchemaDiff {
+            additions: vec![],
+            widenings: vec![ColumnChange {
+                name: "amount".into(),
+                from: Some(json!({"type":"integer"})),
+                to: json!({"type":"number"}),
+            }],
+            incompatible: vec![],
+            droppable_required: vec!["legacy".into()],
+        };
+        let records = vec![
+            json!({"id": 1, "amount": 1.5, "legacy": "x"}), // touches widened col → DLQ
+            json!({"id": 2, "amount": 7, "legacy": "y"}),   // touches widened col → DLQ
+            json!({"id": 3, "legacy": "z"}),                // no widened col, has legacy → kept
+            json!({"id": 4}),                               // missing required `legacy` → DLQ
+        ];
+        let (kept, env) = quarantine_drift_rows(&diff, records, "sink", "pl", "");
+        assert_eq!(kept, vec![json!({"id": 3, "legacy": "z"})]);
+        assert_eq!(
+            env.len(),
+            3,
+            "widening rows + the missing-required row quarantined"
+        );
     }
 
     #[tokio::test]

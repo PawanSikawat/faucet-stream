@@ -419,6 +419,80 @@ async fn capture_resume_position_returns_current_lsn_and_creates_slot() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn capture_over_existing_slot_anchors_on_slot_consistent_point() {
+    // F8 regression: capturing a resume position over a slot that ALREADY EXISTS
+    // with unconsumed WAL must anchor on the slot's retained consistent point
+    // (confirmed_flush_lsn), NOT the server's current WAL position — otherwise
+    // the retained change window is silently skipped (lost CDC events).
+    let (_pg, url) = start_postgres().await;
+    ddl(
+        &url,
+        "CREATE TABLE public.users (id int4 PRIMARY KEY, name text); \
+         CREATE PUBLICATION faucet_pub FOR TABLE public.users;",
+    )
+    .await;
+
+    // First capture creates the slot and anchors it at its consistent point.
+    let s1 = PostgresCdcSource::new(cfg(&url, "exist_slot", "faucet_pub"))
+        .await
+        .expect("source");
+    s1.capture_resume_position()
+        .await
+        .expect("capture1")
+        .expect("supported");
+    drop(s1);
+
+    // Generate WAL the slot retains but nobody consumed (no feedback is sent, so
+    // confirmed_flush_lsn stays put while pg_current_wal_lsn advances).
+    for i in 0..50 {
+        ddl(
+            &url,
+            &format!("INSERT INTO public.users(id, name) VALUES ({i}, 'n{i}')"),
+        )
+        .await;
+    }
+    ddl(&url, "SELECT pg_switch_wal()").await;
+
+    // Capture again over the SAME pre-existing slot.
+    let s2 = PostgresCdcSource::new(cfg(&url, "exist_slot", "faucet_pub"))
+        .await
+        .expect("source");
+    let pos = s2
+        .capture_resume_position()
+        .await
+        .expect("capture2")
+        .expect("supported");
+    let captured = pos
+        .get("last_lsn")
+        .and_then(|v| v.as_str())
+        .expect("last_lsn")
+        .to_string();
+
+    let (client, conn) = tokio_postgres::connect(&url, NoTls).await.expect("connect");
+    tokio::spawn(async move {
+        let _ = conn.await;
+    });
+    let row = client
+        .query_one(
+            "SELECT confirmed_flush_lsn::text, pg_current_wal_lsn()::text \
+             FROM pg_replication_slots WHERE slot_name = $1",
+            &[&"exist_slot"],
+        )
+        .await
+        .expect("slot lsn query");
+    let confirmed: String = row.get(0);
+    let current: String = row.get(1);
+    assert_eq!(
+        captured, confirmed,
+        "capture must anchor on the slot's retained confirmed_flush_lsn"
+    );
+    assert_ne!(
+        confirmed, current,
+        "test setup invariant: WAL must have advanced past the slot's confirmed position"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn capture_resume_position_rejects_temporary_slot() {
     let (_pg, url) = start_postgres().await;
     let mut c = cfg(&url, "temp_slot", "faucet_pub");
