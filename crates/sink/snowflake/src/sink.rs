@@ -743,19 +743,25 @@ mod tests {
     }
 
     #[test]
-    fn column_union_preserves_first_seen_order() {
-        // Order is deterministic: keys appear in the order first encountered
-        // across the chunk, regardless of which record introduced them. Within
-        // a single record `serde_json`'s default object map iterates keys
-        // sorted (BTreeMap), so record 1 contributes `a` then `z`; record 2
-        // adds the new key `m`; record 3 adds `b`.
+    fn column_union_collects_all_keys_without_duplicates() {
+        // The union must contain every key across the chunk exactly once. The
+        // absolute column ORDER is intentionally NOT asserted: it depends on
+        // `serde_json::Map`'s key ordering (sorted BTreeMap vs insertion-order
+        // IndexMap under the `preserve_order` feature, which feature unification
+        // can toggle), and order does not affect correctness — the column list
+        // and the value projection are built from the same `Vec`, so they stay
+        // internally consistent regardless.
         let records = vec![
             serde_json::json!({"z": 1, "a": 2}),
             serde_json::json!({"m": 3, "z": 4}),
             serde_json::json!({"a": 5, "b": 6}),
         ];
-        let union = SnowflakeSink::column_union(&records).unwrap();
-        assert_eq!(union, vec!["a", "z", "m", "b"]);
+        let mut union = SnowflakeSink::column_union(&records).unwrap();
+        let len_before = union.len();
+        union.sort();
+        union.dedup();
+        assert_eq!(union.len(), len_before, "no duplicate columns");
+        assert_eq!(union, vec!["a", "b", "m", "z"], "every key present exactly once");
     }
 
     #[test]
