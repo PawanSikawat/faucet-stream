@@ -430,27 +430,26 @@ async fn execute_shard(
         biased;
         t = &mut work => t,
         _ = coop.cancelled() => {
-            // Fired by the claim loop for a remote cancel. Give the shard the
-            // same flush grace, then salvage its real result if it finished.
+            // Fired by the claim loop for a remote cancel. Flush within the grace
+            // window; a cooperative cancel returns Ok(partial), so the shard is
+            // Cancelled — but a flush that FAILS must surface, not be masked.
             match tokio::time::timeout(RUN_FLUSH_GRACE, &mut work).await {
-                Ok(real) => real,
-                Err(_) => Terminal::Cancelled,
+                Ok(failed @ Terminal::Failed { .. }) => failed,
+                Ok(_) | Err(_) => Terminal::Cancelled,
             }
         }
         _ = server_shutdown.cancelled() => {
             coop.cancel();
-            // Salvage the real result on flush (mirror execute_run / the executor):
-            // a shard that completed during grace is Completed, a late Failed shows.
             match tokio::time::timeout(RUN_FLUSH_GRACE, &mut work).await {
-                Ok(real) => real,
-                Err(_) => Terminal::ShutdownFailed,
+                Ok(failed @ Terminal::Failed { .. }) => failed,
+                Ok(_) | Err(_) => Terminal::ShutdownFailed,
             }
         }
         _ = &mut timeout_fut => {
             coop.cancel();
             match tokio::time::timeout(RUN_FLUSH_GRACE, &mut work).await {
-                Ok(real) => real,
-                Err(_) => Terminal::Timeout { secs: timeout_secs.unwrap_or(0) },
+                Ok(failed @ Terminal::Failed { .. }) => failed,
+                Ok(_) | Err(_) => Terminal::Timeout { secs: timeout_secs.unwrap_or(0) },
             }
         }
     };
@@ -1073,18 +1072,20 @@ async fn execute_run(
             // then hard-drop it (drops the JoinSet, aborting any pipeline
             // genuinely stuck mid-write) so a hung run can't wedge shutdown.
             coop.cancel();
-            // Salvage the run's REAL terminal result if it finishes within the
-            // grace window: a pipeline that actually completed must be reported
-            // Completed, and a late Failed must surface — never masked as
-            // Cancelled/Timeout/ShutdownFailed (which would hide a data error).
+            let trigger_terminal = match triggered {
+                Trigger::Cancel => Terminal::Cancelled,
+                Trigger::Shutdown => Terminal::ShutdownFailed,
+                Trigger::Timeout(secs) => Terminal::Timeout { secs },
+                Trigger::Done(_) => unreachable!("matched in the outer arm"),
+            };
+            // A cooperative cancel makes `run_stream` flush and return Ok(partial),
+            // so the trigger label (Cancelled/Timeout/ShutdownFailed) is the
+            // correct status for that path. But if the flush itself FAILS within
+            // the grace window, surface that real failure — never mask it behind
+            // the trigger label, which would hide a data error / partial write.
             match tokio::time::timeout(RUN_FLUSH_GRACE, &mut work).await {
-                Ok(real) => real,
-                Err(_) => match triggered {
-                    Trigger::Cancel => Terminal::Cancelled,
-                    Trigger::Shutdown => Terminal::ShutdownFailed,
-                    Trigger::Timeout(secs) => Terminal::Timeout { secs },
-                    Trigger::Done(_) => unreachable!("matched in the outer arm"),
-                },
+                Ok(failed @ Terminal::Failed { .. }) => failed,
+                Ok(_) | Err(_) => trigger_terminal,
             }
         }
     };
