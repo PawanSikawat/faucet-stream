@@ -48,6 +48,14 @@ impl TokenCache {
         Self(Arc::new(Mutex::new(None)))
     }
 
+    /// Drop any cached token so the next [`get_or_refresh`](Self::get_or_refresh)
+    /// fetches a fresh one. Called when the API rejects the current token with a
+    /// 401 — a server-side expiry (or a token with no `expires_in`, cached as
+    /// valid forever) that the time-based `is_valid` check cannot detect (F57).
+    pub async fn invalidate(&self) {
+        *self.0.lock().await = None;
+    }
+
     /// Return a valid cached token or fetch a new one.
     ///
     /// `expiry_ratio` is the fraction of the server-reported `expires_in`

@@ -514,7 +514,65 @@ impl RestStream {
     ///   are **not** appended (Link header pagination encodes them in the URL).
     /// - When `path_context` is `Some`, `{key}` placeholders in `config.path`
     ///   are substituted with values from the context map (partition support).
+    /// Execute a request, transparently refreshing an inline OAuth2 /
+    /// TokenEndpoint token once on a 401.
+    ///
+    /// The cached token's validity is tracked purely by the server-reported
+    /// `expires_in` (and a token with no `expires_in` is cached as valid
+    /// forever), so a *server-side* expiry surfaces only as a 401 on a real
+    /// request. The documented contract is "valid until a 401 forces a
+    /// refresh" — so on a 401 with an inline cached token we invalidate the
+    /// cache and retry exactly once with a freshly-fetched token (F57). Shared
+    /// auth providers manage their own refresh and are not retried here.
     async fn execute_request(
+        &self,
+        params: &HashMap<String, String>,
+        url_override: Option<&str>,
+        path_context: Option<&HashMap<String, Value>>,
+        is_first_page: bool,
+    ) -> Result<(Value, HeaderMap), FaucetError> {
+        match self
+            .execute_request_once(params, url_override, path_context, is_first_page)
+            .await
+        {
+            Err(FaucetError::HttpStatus { status: 401, .. }) if self.uses_inline_cached_token() => {
+                tracing::warn!(
+                    "401 Unauthorized with a cached inline OAuth2/TokenEndpoint token; \
+                     invalidating the token cache and retrying once with a fresh token"
+                );
+                self.invalidate_inline_token_cache().await;
+                self.execute_request_once(params, url_override, path_context, is_first_page)
+                    .await
+            }
+            other => other,
+        }
+    }
+
+    /// `true` when this source resolves its bearer token from one of the inline
+    /// time-cached auth modes (no shared provider) — the only case where a 401
+    /// should trigger a cache invalidation + retry (F57).
+    fn uses_inline_cached_token(&self) -> bool {
+        self.auth_provider.is_none()
+            && matches!(
+                self.config.auth,
+                AuthSpec::Inline(Auth::OAuth2 { .. })
+                    | AuthSpec::Inline(Auth::TokenEndpoint { .. })
+            )
+    }
+
+    /// Invalidate whichever inline token cache backs the current auth mode, so
+    /// the next request fetches a fresh token (F57).
+    async fn invalidate_inline_token_cache(&self) {
+        match &self.config.auth {
+            AuthSpec::Inline(Auth::OAuth2 { .. }) => self.token_cache.invalidate().await,
+            AuthSpec::Inline(Auth::TokenEndpoint { .. }) => {
+                self.token_endpoint_cache.invalidate().await
+            }
+            _ => {}
+        }
+    }
+
+    async fn execute_request_once(
         &self,
         params: &HashMap<String, String>,
         url_override: Option<&str>,
