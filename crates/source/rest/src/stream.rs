@@ -508,12 +508,6 @@ impl RestStream {
         Ok(all_records)
     }
 
-    /// Execute a single HTTP request and return the response body and headers.
-    ///
-    /// - When `url_override` is `Some`, that full URL is used and query params
-    ///   are **not** appended (Link header pagination encodes them in the URL).
-    /// - When `path_context` is `Some`, `{key}` placeholders in `config.path`
-    ///   are substituted with values from the context map (partition support).
     /// Execute a request, transparently refreshing an inline OAuth2 /
     /// TokenEndpoint token once on a 401.
     ///
@@ -572,6 +566,12 @@ impl RestStream {
         }
     }
 
+    /// Execute a single HTTP request and return the response body and headers.
+    ///
+    /// - When `url_override` is `Some`, that full URL is used and query params
+    ///   are **not** appended (Link header pagination encodes them in the URL).
+    /// - When `path_context` is `Some`, `{key}` placeholders in `config.path`
+    ///   are substituted with values from the context map (partition support).
     async fn execute_request_once(
         &self,
         params: &HashMap<String, String>,
