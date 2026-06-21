@@ -76,11 +76,18 @@ where
     F: FnMut() -> Fut,
     Fut: Future<Output = Result<T, FaucetError>>,
 {
+    // `max_attempts` is documented as "total attempts including the first
+    // (1 = no retry)". A caller-supplied `0` is meaningless — the loop always
+    // runs `op()` at least once before consulting the guard — so clamp it to 1
+    // rather than letting `attempt + 1 < 0` (which underflows to a large value
+    // and would retry) or `< 0` decide. Keeps the public `RetryPolicy` contract
+    // honest for library callers (F49).
+    let max_attempts = policy.max_attempts.max(1);
     let mut attempt = 0u32;
     loop {
         match op().await {
             Ok(val) => return Ok(val),
-            Err(e) if policy.is_retriable(&e) && attempt + 1 < policy.max_attempts => {
+            Err(e) if policy.is_retriable(&e) && attempt + 1 < max_attempts => {
                 let base = policy.backoff.delay(policy.base, policy.max, attempt);
                 let wait = if policy.jitter {
                     crate::retry::apply_jitter(base)
@@ -90,7 +97,7 @@ where
                 tracing::warn!(
                     "operation failed (attempt {}/{}), retrying in {wait:?}: {e}",
                     attempt + 1,
-                    policy.max_attempts
+                    max_attempts
                 );
                 if let Some(m) = metrics {
                     // `is_retriable` above guarantees a class; fall back defensively.
@@ -200,6 +207,33 @@ mod tests {
         .await;
         assert!(r.is_err());
         assert_eq!(calls.load(Ordering::SeqCst), 3, "1 initial + 2 retries");
+    }
+
+    #[tokio::test]
+    async fn max_attempts_zero_runs_op_exactly_once() {
+        // The public `RetryPolicy` contract documents `max_attempts` as "total
+        // attempts including the first (1 = no retry)". A misconfigured `0` is
+        // clamped to 1: the op runs exactly once and a retriable error is NOT
+        // retried (F49).
+        let calls = Arc::new(AtomicU32::new(0));
+        let c = calls.clone();
+        let r = execute_with_policy(&fast_policy(0), None, move || {
+            c.fetch_add(1, Ordering::SeqCst);
+            async {
+                Err::<i32, _>(FaucetError::HttpStatus {
+                    status: 503,
+                    url: "u".into(),
+                    body: "".into(),
+                })
+            }
+        })
+        .await;
+        assert!(r.is_err());
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "max_attempts=0 clamps to 1: one execution, no retry"
+        );
     }
 
     #[tokio::test]

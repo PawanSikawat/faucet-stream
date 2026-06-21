@@ -31,9 +31,12 @@ pub enum CompareOp {
     Lt,
     /// Less than or equal: `field <= value`. Both must be JSON numbers.
     Lte,
-    /// Exact JSON equality (no type coercion: string `"5"` != number `5`).
+    /// JSON equality. Two numbers compare by numeric value (`1` == `1.0`, and
+    /// large 64-bit integers compare exactly); all other types compare
+    /// structurally with no cross-type coercion (string `"5"` != number `5`).
     Eq,
-    /// Exact JSON inequality (no type coercion).
+    /// JSON inequality — the negation of [`CompareOp::Eq`] (numbers by value,
+    /// other types structurally).
     Ne,
 }
 

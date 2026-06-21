@@ -178,22 +178,32 @@ impl FileStateStore {
     }
 
     fn temp_path(&self, key: &str) -> PathBuf {
-        // Unique per write: a process id + a monotonic counter, so two writers
-        // (different processes sharing the directory, or two store instances in
-        // one process) never share a temp file. A *fixed* temp name let a
-        // second writer `File::create`-truncate the first's half-written temp,
-        // which the first could then `rename` over the final path — yielding
-        // torn/truncated state JSON that breaks resume (audit #146 H10). The
-        // per-store `write_lock` only serializes writers within one process.
-        // Orphaned `.tmp` files from an interrupted write are harmless: `get`
-        // only ever reads the final `.json` path.
+        // Unique per write: a per-process random token + a monotonic counter, so
+        // two writers (different processes sharing the directory, or two store
+        // instances in one process) never share a temp file. A *fixed* temp name
+        // let a second writer `File::create`-truncate the first's half-written
+        // temp, which the first could then `rename` over the final path —
+        // yielding torn/truncated state JSON that breaks resume (audit #146 H10).
+        //
+        // The token MUST NOT be derived from the process id: containers on a
+        // shared NFS/EFS/host volume routinely reuse the same PID (each starts at
+        // PID 1), so a PID + per-process counter collides across processes and
+        // reintroduces exactly that torn-bookmark corruption (F50). A random v4
+        // UUID minted once per process is unguessable and collision-free across
+        // processes regardless of PID; the counter keeps writers within one
+        // process distinct. The per-store `write_lock` only serializes writers
+        // within one process. Orphaned `.tmp` files from an interrupted write are
+        // harmless: `get` only ever reads the final `.json` path.
+        use std::sync::OnceLock;
         use std::sync::atomic::{AtomicU64, Ordering};
+        static PROC_TOKEN: OnceLock<String> = OnceLock::new();
         static SEQ: AtomicU64 = AtomicU64::new(0);
+        let token = PROC_TOKEN.get_or_init(|| uuid::Uuid::new_v4().simple().to_string());
         let seq = SEQ.fetch_add(1, Ordering::Relaxed);
         self.root.join(format!(
             "{}.{}.{}.json.tmp",
             safe_filename(key),
-            std::process::id(),
+            token,
             seq
         ))
     }
@@ -482,6 +492,31 @@ mod tests {
         s.put("github_issues", &value).await.unwrap();
         let got = s.get("github_issues").await.unwrap().unwrap();
         assert_eq!(got, value);
+    }
+
+    #[test]
+    fn temp_path_is_unique_and_not_pid_derived() {
+        // Regression for F50: the temp filename must not embed the process id.
+        // Containers on a shared volume reuse PIDs (each starts at PID 1), so a
+        // PID + per-process counter collides across processes and reintroduces
+        // the torn-bookmark corruption the unique-temp scheme prevents. The
+        // token is a per-process random UUID instead.
+        let dir = TempDir::new().unwrap();
+        let s = FileStateStore::new(dir.path());
+
+        let a = s.temp_path("k");
+        let b = s.temp_path("k");
+        // Distinct temp paths within one process (the monotonic counter differs).
+        assert_ne!(a, b);
+
+        let name_a = a.file_name().unwrap().to_str().unwrap();
+        let pid = std::process::id().to_string();
+        // The PID must NOT appear as a dotted segment of the temp name.
+        assert!(
+            !name_a.split('.').any(|seg| seg == pid),
+            "temp filename {name_a} must not embed the process id ({pid})"
+        );
+        assert!(name_a.ends_with(".json.tmp"));
     }
 
     #[test]
