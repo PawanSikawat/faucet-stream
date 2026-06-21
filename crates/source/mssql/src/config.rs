@@ -219,7 +219,10 @@ mod tests {
                 column: "updated_at".into(),
                 initial_value: json!("1970-01-01"),
             },
-            ..MssqlSourceConfig::new("mssql://sa:pw@h/db", "SELECT * FROM t WHERE updated_at > @bookmark")
+            ..MssqlSourceConfig::new(
+                "mssql://sa:pw@h/db",
+                "SELECT * FROM t WHERE updated_at > @bookmark",
+            )
         };
         assert!(!with_token.incremental_without_bookmark_pushdown());
 

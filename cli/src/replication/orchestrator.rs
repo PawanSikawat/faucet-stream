@@ -197,9 +197,11 @@ pub async fn run_replication(
     // ── Snapshot phase (idempotent redo on resume) ───────────────────────────
     if !marker.snapshot_done {
         tracing::info!(pipeline = %opts.pipeline_name, "replication: running snapshot phase (Ctrl-C / SIGTERM to stop)");
-        let summary =
-            run_expanded(vec![snapshot_node.clone()], make_opts(&opts, Some(cancel.clone())))
-                .await?;
+        let summary = run_expanded(
+            vec![snapshot_node.clone()],
+            make_opts(&opts, Some(cancel.clone())),
+        )
+        .await?;
         if summary.had_failures() {
             return Err(phase_failure(&summary, "snapshot"));
         }

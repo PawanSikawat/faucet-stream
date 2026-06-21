@@ -786,9 +786,7 @@ mod tests {
         // F43: a resolved value containing markup-significant characters must
         // NOT alter the document's structure — it stays one scalar string,
         // unlike the old raw-text substitution which could inject a sibling key.
-        unsafe {
-            std::env::set_var("FAUCET_F43_INJECT", "real\ninjected_key: pwned\nmore: x")
-        };
+        unsafe { std::env::set_var("FAUCET_F43_INJECT", "real\ninjected_key: pwned\nmore: x") };
         let mut v = json!({ "name": "${env:FAUCET_F43_INJECT}" });
         interpolate_value(&mut v).unwrap();
         assert_eq!(v["name"], "real\ninjected_key: pwned\nmore: x");

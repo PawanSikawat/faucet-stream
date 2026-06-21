@@ -501,12 +501,8 @@ async fn maybe_finalize_parent(state: &ServerState, run_id: &str) {
     } else {
         RunStatus::Failed
     };
-    let error = (!success).then(|| {
-        format!(
-            "{}/{} shard(s) failed",
-            progress.failed, progress.total
-        )
-    });
+    let error =
+        (!success).then(|| format!("{}/{} shard(s) failed", progress.failed, progress.total));
     // Status-fenced finalize: transitions the parent only while it is still
     // `Sharded`, and does NOT re-stamp owner/lease on the terminal record, so a
     // near-simultaneous double-finalize from two instances has a single winner
@@ -1943,12 +1939,7 @@ mod tests {
             // Second finalize sees a non-Sharded parent → no-op, status unchanged.
             let second = state
                 .history()
-                .finalize_sharded_parent(
-                    "r",
-                    RunStatus::Failed,
-                    Utc::now(),
-                    Some("late".into()),
-                )
+                .finalize_sharded_parent("r", RunStatus::Failed, Utc::now(), Some("late".into()))
                 .await
                 .unwrap();
             assert!(!second, "second finalize is a no-op");

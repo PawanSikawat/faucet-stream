@@ -200,12 +200,8 @@ impl FileStateStore {
         static SEQ: AtomicU64 = AtomicU64::new(0);
         let token = PROC_TOKEN.get_or_init(|| uuid::Uuid::new_v4().simple().to_string());
         let seq = SEQ.fetch_add(1, Ordering::Relaxed);
-        self.root.join(format!(
-            "{}.{}.{}.json.tmp",
-            safe_filename(key),
-            token,
-            seq
-        ))
+        self.root
+            .join(format!("{}.{}.{}.json.tmp", safe_filename(key), token, seq))
     }
 
     async fn ensure_root(&self) -> Result<(), FaucetError> {

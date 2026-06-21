@@ -375,7 +375,10 @@ async fn oauth2_401_after_refresh_still_fails_without_infinite_retry() {
     )
     .unwrap();
 
-    let err = stream.fetch_all().await.expect_err("persistent 401 must fail");
+    let err = stream
+        .fetch_all()
+        .await
+        .expect_err("persistent 401 must fail");
     assert!(
         matches!(err, FaucetError::HttpStatus { status: 401, .. }),
         "got: {err:?}"

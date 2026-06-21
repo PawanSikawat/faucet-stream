@@ -349,11 +349,8 @@ async fn eager_fetch_preserves_deterministic_file_order() {
     let schema = Arc::new(Schema::new(vec![Field::new("v", DataType::Int32, false)]));
     // Names sort lexicographically to 00..07; values follow the same order.
     for i in 0..8i32 {
-        let batch = RecordBatch::try_new(
-            schema.clone(),
-            vec![Arc::new(Int32Array::from(vec![i]))],
-        )
-        .unwrap();
+        let batch = RecordBatch::try_new(schema.clone(), vec![Arc::new(Int32Array::from(vec![i]))])
+            .unwrap();
         write_parquet(&dir.path().join(format!("part-{i:02}.parquet")), &batch);
     }
 

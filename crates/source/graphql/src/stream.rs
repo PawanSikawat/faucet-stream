@@ -127,8 +127,7 @@ impl GraphqlStream {
             // Check pagination.
             match &self.config.pagination {
                 Some(pag) => {
-                    let (step, unresolved) =
-                        decide_next_page(&body, pag, cursor.as_deref());
+                    let (step, unresolved) = decide_next_page(&body, pag, cursor.as_deref());
                     if unresolved && !warned_unresolved_has_next {
                         tracing::warn!(
                             path = %pag.has_next_page_path,
@@ -551,7 +550,8 @@ mod tests {
 
     #[test]
     fn decide_next_page_advances_when_has_next_true() {
-        let body = json!({"data": {"users": {"pageInfo": {"hasNextPage": true, "endCursor": "c2"}}}});
+        let body =
+            json!({"data": {"users": {"pageInfo": {"hasNextPage": true, "endCursor": "c2"}}}});
         let (step, unresolved) = decide_next_page(&body, &pageinfo_pagination(), Some("c1"));
         assert_eq!(step, PageStep::Advance("c2".into()));
         assert!(!unresolved);
@@ -568,7 +568,8 @@ mod tests {
 
     #[test]
     fn decide_next_page_detects_cursor_loop() {
-        let body = json!({"data": {"users": {"pageInfo": {"hasNextPage": true, "endCursor": "c1"}}}});
+        let body =
+            json!({"data": {"users": {"pageInfo": {"hasNextPage": true, "endCursor": "c1"}}}});
         let (step, _) = decide_next_page(&body, &pageinfo_pagination(), Some("c1"));
         assert_eq!(step, PageStep::StopLoop);
     }

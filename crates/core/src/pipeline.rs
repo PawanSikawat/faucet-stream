@@ -4184,7 +4184,10 @@ mod tests {
         .await;
 
         // The outer-`Err` subset resubmit propagates and aborts the run.
-        assert!(matches!(res, Err(FaucetError::HttpStatus { status: 503, .. })));
+        assert!(matches!(
+            res,
+            Err(FaucetError::HttpStatus { status: 503, .. })
+        ));
         // Exactly ONE subset submission — the bare call. With the bug it would be
         // `max_attempts` (4) due to the nested `with_retry!`.
         assert_eq!(

@@ -360,20 +360,34 @@ pub const EXACTLY_ONCE_SOURCE_KINDS: &[&str] = &["postgres-cdc", "mysql-cdc", "m
 /// Mirrors `Sink::supports_idempotent_writes` overrides — keep in sync when a
 /// new sink opts in. Single source of truth for the gate + the error-message
 /// list (F44).
-pub const IDEMPOTENT_SINK_KINDS: &[&str] =
-    &["sqlite", "postgres", "mysql", "mssql", "iceberg", "bigquery", "kafka"];
+pub const IDEMPOTENT_SINK_KINDS: &[&str] = &[
+    "sqlite", "postgres", "mysql", "mssql", "iceberg", "bigquery", "kafka",
+];
 
 /// Sink kinds that can apply additive/widening DDL via `Sink::evolve_schema`.
 /// Mirrors each sink's `supports_schema_evolution()` override. Iceberg is
 /// intentionally excluded — iceberg-rust 0.9.1 exposes no schema-evolution API (#255).
-pub const SCHEMA_EVOLUTION_SINK_KINDS: &[&str] =
-    &["postgres", "mysql", "mssql", "sqlite", "bigquery", "elasticsearch"];
+pub const SCHEMA_EVOLUTION_SINK_KINDS: &[&str] = &[
+    "postgres",
+    "mysql",
+    "mssql",
+    "sqlite",
+    "bigquery",
+    "elasticsearch",
+];
 
 /// Sink kinds that support `write_mode: upsert|delete`. Mirrors each sink's
 /// `Sink::supported_write_modes()` override. Single source of truth for the gate
 /// + the error-message list (F44).
-pub const UPSERT_SINK_KINDS: &[&str] =
-    &["postgres", "sqlite", "mysql", "mssql", "mongodb", "elasticsearch", "bigquery"];
+pub const UPSERT_SINK_KINDS: &[&str] = &[
+    "postgres",
+    "sqlite",
+    "mysql",
+    "mssql",
+    "mongodb",
+    "elasticsearch",
+    "bigquery",
+];
 
 /// See [`EXACTLY_ONCE_SOURCE_KINDS`].
 pub fn source_supports_exactly_once(kind: &str) -> bool {
@@ -705,10 +719,16 @@ mod tests {
         // and the upsert-sink list must include bigquery — the values the old
         // hand-maintained message strings had drifted away from.
         for &k in EXACTLY_ONCE_SOURCE_KINDS {
-            assert!(source_supports_exactly_once(k), "{k} should be exactly-once");
+            assert!(
+                source_supports_exactly_once(k),
+                "{k} should be exactly-once"
+            );
         }
         for &k in IDEMPOTENT_SINK_KINDS {
-            assert!(sink_supports_idempotent_writes(k), "{k} should be idempotent");
+            assert!(
+                sink_supports_idempotent_writes(k),
+                "{k} should be idempotent"
+            );
         }
         for &k in UPSERT_SINK_KINDS {
             use faucet_core::WriteMode;
