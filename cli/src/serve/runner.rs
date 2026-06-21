@@ -290,17 +290,29 @@ pub fn resume_claimed_shard(state: ServerState, claimed: ClaimedShard) {
             descriptor,
             size_estimate: None,
         };
+        // Register a per-shard cooperative-cancel token BEFORE running so a
+        // cross-instance cancel reaches this shard: `cancel_run` flags the parent
+        // → `pending_shard_cancellations` → the claim loop calls
+        // `registry().cancel_run_shards(run_id)`, which fires this token. Removed
+        // on return so a terminated shard never leaks a token (shard accounting is
+        // separate from the run's `in_flight`, so a plain `deregister` is used).
+        let coop = CancellationToken::new();
+        state
+            .registry()
+            .register_shard(&run_id, &shard_id, coop.clone());
         let success = execute_shard(
             &state,
             loaded,
             &run_id,
             &shard_id,
             shard,
+            coop,
             run.timeout_secs,
             run.clock.clone(),
             run.submitted_at,
         )
         .await;
+        state.registry().deregister_shard(&run_id, &shard_id);
 
         match state
             .history()
@@ -329,6 +341,7 @@ async fn execute_shard(
     run_id: &str,
     shard_id: &str,
     shard: faucet_core::ShardSpec,
+    coop: CancellationToken,
     timeout_secs: Option<u64>,
     clock_flag: Option<String>,
     submitted_at: DateTime<Utc>,
@@ -374,7 +387,9 @@ async fn execute_shard(
         }
     };
 
-    let coop = CancellationToken::new();
+    // `coop` is the per-shard cancel token registered by `resume_claimed_shard`;
+    // a cross-instance cancel (F10), a server shutdown, or a timeout all fire it
+    // so the shard's pipeline flushes at its next page boundary.
     let opts = ExecuteOptions {
         pipeline_name,
         execution: cfg.execution.clone(),
@@ -407,18 +422,36 @@ async fn execute_shard(
     // Cancel triggers (shutdown / timeout) cooperatively cancel + flush, like
     // execute_run. A failed shard simply returns false → its lease eventually
     // reassigns it (or it poisons after max_attempts).
+    // A cross-instance cancel (F10) flows in via the shard's registered coop
+    // token: `cancel_run` flags the parent → `pending_cancellations` →
+    // `claim_loop` fires `registry().cancel(run_id)`. The token is registered
+    // under the run id by `resume_claimed_shard` before this runs.
     let terminal = tokio::select! {
         biased;
         t = &mut work => t,
+        _ = coop.cancelled() => {
+            // Fired by the claim loop for a remote cancel. Give the shard the
+            // same flush grace, then salvage its real result if it finished.
+            match tokio::time::timeout(RUN_FLUSH_GRACE, &mut work).await {
+                Ok(real) => real,
+                Err(_) => Terminal::Cancelled,
+            }
+        }
         _ = server_shutdown.cancelled() => {
             coop.cancel();
-            let _ = tokio::time::timeout(RUN_FLUSH_GRACE, &mut work).await;
-            Terminal::ShutdownFailed
+            // Salvage the real result on flush (mirror execute_run / the executor):
+            // a shard that completed during grace is Completed, a late Failed shows.
+            match tokio::time::timeout(RUN_FLUSH_GRACE, &mut work).await {
+                Ok(real) => real,
+                Err(_) => Terminal::ShutdownFailed,
+            }
         }
         _ = &mut timeout_fut => {
             coop.cancel();
-            let _ = tokio::time::timeout(RUN_FLUSH_GRACE, &mut work).await;
-            Terminal::Timeout { secs: timeout_secs.unwrap_or(0) }
+            match tokio::time::timeout(RUN_FLUSH_GRACE, &mut work).await {
+                Ok(real) => real,
+                Err(_) => Terminal::Timeout { secs: timeout_secs.unwrap_or(0) },
+            }
         }
     };
     matches!(terminal, Terminal::Completed { .. })
@@ -1040,12 +1073,18 @@ async fn execute_run(
             // then hard-drop it (drops the JoinSet, aborting any pipeline
             // genuinely stuck mid-write) so a hung run can't wedge shutdown.
             coop.cancel();
-            let _ = tokio::time::timeout(RUN_FLUSH_GRACE, &mut work).await;
-            match triggered {
-                Trigger::Cancel => Terminal::Cancelled,
-                Trigger::Shutdown => Terminal::ShutdownFailed,
-                Trigger::Timeout(secs) => Terminal::Timeout { secs },
-                Trigger::Done(_) => unreachable!("matched in the outer arm"),
+            // Salvage the run's REAL terminal result if it finishes within the
+            // grace window: a pipeline that actually completed must be reported
+            // Completed, and a late Failed must surface — never masked as
+            // Cancelled/Timeout/ShutdownFailed (which would hide a data error).
+            match tokio::time::timeout(RUN_FLUSH_GRACE, &mut work).await {
+                Ok(real) => real,
+                Err(_) => match triggered {
+                    Trigger::Cancel => Terminal::Cancelled,
+                    Trigger::Shutdown => Terminal::ShutdownFailed,
+                    Trigger::Timeout(secs) => Terminal::Timeout { secs },
+                    Trigger::Done(_) => unreachable!("matched in the outer arm"),
+                },
             }
         }
     };
@@ -1749,6 +1788,7 @@ mod tests {
                 "r",
                 "0",
                 ShardSpec::whole(),
+                CancellationToken::new(),
                 None,
                 None,
                 Utc::now(),
@@ -1887,6 +1927,7 @@ mod tests {
                 "r",
                 "0",
                 ShardSpec::whole(),
+                CancellationToken::new(),
                 None,
                 None,
                 Utc::now(),
@@ -1933,6 +1974,174 @@ mod tests {
                 status,
                 RunStatus::Failed,
                 "unloadable config → parent failed"
+            );
+        }
+
+        // ── F10: cross-instance cancel of a Sharded run ──────────────────────
+
+        #[tokio::test]
+        async fn request_cancel_flags_a_sharded_parent() {
+            // F10: a Sharded parent (status 'sharded') must accept request_cancel
+            // (the guard was broadened from 'running' to ('running','sharded')).
+            let dir = tempfile::tempdir().unwrap();
+            let state = sqlite_state(dir.path()).await;
+            seed_run(&state, "r", RunStatus::Sharded).await;
+            // request_cancel is fire-and-forget; verify it took effect by reading
+            // back via pending_shard_cancellations after a shard is claimed below.
+            state.history().request_cancel("r").await.unwrap();
+            // Insert + claim a shard so this instance owns a running shard under r.
+            use crate::serve::history::ShardInsert;
+            state
+                .history()
+                .insert_shards(
+                    "r",
+                    &[ShardInsert {
+                        shard_id: "0".into(),
+                        descriptor: serde_json::Value::Null,
+                        size_estimate: None,
+                    }],
+                )
+                .await
+                .unwrap();
+            let claimed = state.history().claim_shards(1).await.unwrap();
+            assert_eq!(claimed.len(), 1, "shard claimed (running, owned)");
+
+            let flagged = state.history().pending_shard_cancellations().await.unwrap();
+            assert_eq!(
+                flagged,
+                vec!["r".to_string()],
+                "the flagged sharded parent's run id is returned for its running shard"
+            );
+        }
+
+        #[tokio::test]
+        async fn pending_shard_cancellations_filters_unflagged_and_pending_shards() {
+            let dir = tempfile::tempdir().unwrap();
+            let state = sqlite_state(dir.path()).await;
+            use crate::serve::history::ShardInsert;
+            let one = |id: &str| {
+                vec![ShardInsert {
+                    shard_id: id.into(),
+                    descriptor: serde_json::Value::Null,
+                    size_estimate: None,
+                }]
+            };
+
+            // Runs A (flagged) and C (NOT flagged) each get one shard; claim both
+            // so they are running+owned here.
+            seed_run(&state, "A", RunStatus::Sharded).await;
+            state.history().request_cancel("A").await.unwrap();
+            state.history().insert_shards("A", &one("0")).await.unwrap();
+            seed_run(&state, "C", RunStatus::Sharded).await;
+            state.history().insert_shards("C", &one("0")).await.unwrap();
+            let claimed = state.history().claim_shards(8).await.unwrap();
+            assert_eq!(claimed.len(), 2, "A and C shards claimed (running)");
+
+            // Run B: flagged, but its shard stays PENDING (inserted after the
+            // claim, never claimed) → must be excluded (the join requires a
+            // 'running' shard owned by this instance).
+            seed_run(&state, "B", RunStatus::Sharded).await;
+            state.history().request_cancel("B").await.unwrap();
+            state.history().insert_shards("B", &one("0")).await.unwrap();
+
+            let flagged = state.history().pending_shard_cancellations().await.unwrap();
+            assert_eq!(
+                flagged,
+                vec!["A".to_string()],
+                "only A (flagged + a running owned shard); B pending-shard, C unflagged"
+            );
+        }
+
+        // ── F11: orphaned-Sharded-parent sweep ───────────────────────────────
+
+        #[tokio::test]
+        async fn finalize_sweep_completes_an_all_success_sharded_parent() {
+            let dir = tempfile::tempdir().unwrap();
+            let state = sqlite_state(dir.path()).await;
+            seed_sharded_with_shards(&state, "r", 3).await;
+            for i in 0..3 {
+                state
+                    .history()
+                    .finalize_shard("r", &i.to_string(), true)
+                    .await
+                    .unwrap();
+            }
+            // No inline maybe_finalize_parent — the sweep must finalize it.
+            let n = state
+                .history()
+                .finalize_completed_sharded_parents()
+                .await
+                .unwrap();
+            assert_eq!(n, 1, "one sharded parent finalized");
+            let rec = state.history().get("r").await.unwrap().unwrap();
+            assert_eq!(rec.status, RunStatus::Completed);
+            assert!(rec.finished_at.is_some());
+            assert!(rec.error.is_none());
+
+            // Idempotent: a second sweep finalizes nothing.
+            assert_eq!(
+                state
+                    .history()
+                    .finalize_completed_sharded_parents()
+                    .await
+                    .unwrap(),
+                0,
+                "already-terminal parent is not re-finalized"
+            );
+        }
+
+        #[tokio::test]
+        async fn finalize_sweep_fails_a_parent_with_a_failed_shard() {
+            let dir = tempfile::tempdir().unwrap();
+            let state = sqlite_state(dir.path()).await;
+            seed_sharded_with_shards(&state, "r", 3).await;
+            state
+                .history()
+                .finalize_shard("r", "0", true)
+                .await
+                .unwrap();
+            state
+                .history()
+                .finalize_shard("r", "1", false)
+                .await
+                .unwrap();
+            state
+                .history()
+                .finalize_shard("r", "2", true)
+                .await
+                .unwrap();
+            let n = state
+                .history()
+                .finalize_completed_sharded_parents()
+                .await
+                .unwrap();
+            assert_eq!(n, 1);
+            let rec = state.history().get("r").await.unwrap().unwrap();
+            assert_eq!(rec.status, RunStatus::Failed);
+            assert!(rec.finished_at.is_some());
+            assert_eq!(rec.error.as_deref(), Some("1/3 shard(s) failed"));
+        }
+
+        #[tokio::test]
+        async fn finalize_sweep_leaves_a_not_all_terminal_parent_sharded() {
+            let dir = tempfile::tempdir().unwrap();
+            let state = sqlite_state(dir.path()).await;
+            seed_sharded_with_shards(&state, "r", 2).await;
+            // Only one shard terminal → the parent stays sharded.
+            state
+                .history()
+                .finalize_shard("r", "0", true)
+                .await
+                .unwrap();
+            let n = state
+                .history()
+                .finalize_completed_sharded_parents()
+                .await
+                .unwrap();
+            assert_eq!(n, 0, "parent with a still-running shard is not finalized");
+            assert_eq!(
+                state.history().get("r").await.unwrap().unwrap().status,
+                RunStatus::Sharded
             );
         }
     }

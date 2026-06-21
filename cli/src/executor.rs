@@ -813,8 +813,19 @@ async fn run_one_invocation(
         None => source,
     };
 
-    // 3) Compile transforms.
-    let stages = compile_transforms(&node.transforms)?;
+    // 3) Compile transforms. Resolve `${now.*}` run-clock tokens in each
+    //    transform's config first — exactly as for source/sink above — so e.g. a
+    //    `set` transform stamping `${now.date}` writes the real date instead of
+    //    the literal token string. Without this the token leaks into every record.
+    let stages = if node.transforms.is_empty() {
+        compile_transforms(&node.transforms)?
+    } else {
+        let mut transforms = node.transforms.clone();
+        for t in &mut transforms {
+            resolve_now_inplace(&mut t.config, opts.clock)?;
+        }
+        compile_transforms(&transforms)?
+    };
     let source: Box<dyn Source> = if stages.is_empty() {
         source
     } else {

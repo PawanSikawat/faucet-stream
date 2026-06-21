@@ -429,6 +429,26 @@ pub trait RunHistory: Send + Sync {
         Ok(ShardProgress::default())
     }
 
+    /// Distinct run_ids for which THIS instance owns a `running` shard whose
+    /// parent run has a pending cancellation request (F10). The claim loop fires
+    /// each returned run's local shard tokens via
+    /// [`Registry::cancel_run_shards`](crate::serve::registry::Registry::cancel_run_shards).
+    /// Default: none (single-process / memory owns no cross-instance shards).
+    async fn pending_shard_cancellations(&self) -> Result<Vec<String>, HistoryError> {
+        Ok(Vec::new())
+    }
+
+    /// Sweep `sharded` parent runs whose shards are ALL terminal and finalize
+    /// each to `Completed` (no failures) or `Failed`, stamping `finished_at`
+    /// (F11). Recovers a parent that no shard task finalized inline (e.g. the
+    /// coordinator crashed after the last shard completed elsewhere). Returns the
+    /// number finalized. Status-fenced, so a concurrent inline finalize is a
+    /// benign no-op and the run-finished metric is never double-counted. Default:
+    /// nothing to finalize.
+    async fn finalize_completed_sharded_parents(&self) -> Result<usize, HistoryError> {
+        Ok(0)
+    }
+
     /// True when the backend is in fallback mode (drives `/readyz`). Always false
     /// for memory.
     fn degraded(&self) -> bool;

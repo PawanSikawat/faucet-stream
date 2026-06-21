@@ -160,6 +160,17 @@ pub struct Stmts {
     pub finalize_shard: String,
     /// Status counts for a run's shards.
     pub shard_progress: String,
+    /// Distinct run_ids for which THIS instance owns a `running` shard whose
+    /// parent run has a pending cancellation request (cross-instance shard
+    /// cancel, F10). Param: `instance_id`.
+    pub pending_shard_cancellations: String,
+    /// Select run_ids of `sharded` parents (candidates to finalize once all
+    /// their shards are terminal, F11).
+    pub select_sharded_parents: String,
+    /// Status-fenced terminal write for a `sharded` parent (F11). A benign
+    /// double-finalize across instances is a no-op: the guard requires the
+    /// parent to still be `sharded`. Does NOT re-arm owner/lease.
+    pub finalize_sharded_parent: String,
 }
 
 impl Stmts {
@@ -248,7 +259,7 @@ impl Stmts {
                 WHERE run_id = $3 AND status = 'pending'"
                 .into(),
             request_cancel: "UPDATE faucet_serve_runs \
-                SET cancel_requested = $1 WHERE run_id = $2 AND status = 'running'"
+                SET cancel_requested = $1 WHERE run_id = $2 AND status IN ('running','sharded')"
                 .into(),
             pending_cancellations: "SELECT run_id FROM faucet_serve_runs \
                 WHERE status = 'running' AND owner = $1 AND cancel_requested IS NOT NULL"
@@ -303,6 +314,19 @@ impl Stmts {
                 .into(),
             shard_progress: "SELECT status, COUNT(*) AS n FROM faucet_serve_shards \
                 WHERE run_id = $1 GROUP BY status"
+                .into(),
+            pending_shard_cancellations: "SELECT DISTINCT s.run_id \
+                FROM faucet_serve_shards s \
+                JOIN faucet_serve_runs r ON r.run_id = s.run_id \
+                WHERE s.owner = $1 AND s.status = 'running' \
+                AND r.cancel_requested IS NOT NULL"
+                .into(),
+            select_sharded_parents: "SELECT run_id FROM faucet_serve_runs \
+                WHERE status = 'sharded'"
+                .into(),
+            finalize_sharded_parent: "UPDATE faucet_serve_runs \
+                SET status = $1, finished_at = $2, body = $3 \
+                WHERE run_id = $4 AND status = 'sharded'"
                 .into(),
         }
     }
@@ -383,7 +407,7 @@ impl Stmts {
                 WHERE run_id = ? AND status = 'pending'"
                 .into(),
             request_cancel: "UPDATE faucet_serve_runs \
-                SET cancel_requested = ? WHERE run_id = ? AND status = 'running'"
+                SET cancel_requested = ? WHERE run_id = ? AND status IN ('running','sharded')"
                 .into(),
             pending_cancellations: "SELECT run_id FROM faucet_serve_runs \
                 WHERE status = 'running' AND owner = ? AND cancel_requested IS NOT NULL"
@@ -438,6 +462,19 @@ impl Stmts {
                 .into(),
             shard_progress: "SELECT status, COUNT(*) AS n FROM faucet_serve_shards \
                 WHERE run_id = ? GROUP BY status"
+                .into(),
+            pending_shard_cancellations: "SELECT DISTINCT s.run_id \
+                FROM faucet_serve_shards s \
+                JOIN faucet_serve_runs r ON r.run_id = s.run_id \
+                WHERE s.owner = ? AND s.status = 'running' \
+                AND r.cancel_requested IS NOT NULL"
+                .into(),
+            select_sharded_parents: "SELECT run_id FROM faucet_serve_runs \
+                WHERE status = 'sharded'"
+                .into(),
+            finalize_sharded_parent: "UPDATE faucet_serve_runs \
+                SET status = ?, finished_at = ?, body = ? \
+                WHERE run_id = ? AND status = 'sharded'"
                 .into(),
         }
     }
@@ -1370,6 +1407,106 @@ macro_rules! impl_sql_history {
                     }
                 }
                 Ok(p)
+            }
+
+            async fn pending_shard_cancellations(
+                &self,
+            ) -> Result<Vec<String>, $crate::serve::history::HistoryError> {
+                use sqlx::Row as _;
+                use $crate::serve::history::HistoryError;
+                let backend = |e: sqlx::Error| HistoryError::Backend(e.to_string());
+                let rows = sqlx::query(&self.stmts.pending_shard_cancellations)
+                    .bind(&self.instance_id)
+                    .fetch_all(&self.pool)
+                    .await
+                    .map_err(backend)?;
+                let mut ids = Vec::with_capacity(rows.len());
+                for r in &rows {
+                    ids.push(r.try_get::<String, _>("run_id").map_err(backend)?);
+                }
+                Ok(ids)
+            }
+
+            async fn finalize_completed_sharded_parents(
+                &self,
+            ) -> Result<usize, $crate::serve::history::HistoryError> {
+                use sqlx::Row as _;
+                use $crate::serve::history::HistoryError;
+                use $crate::serve::history::RunStatus;
+                use $crate::serve::history::sql;
+                let backend = |e: sqlx::Error| HistoryError::Backend(e.to_string());
+
+                // Candidate `sharded` parents — finalize each whose shards are all
+                // terminal. The status-fenced UPDATE makes a concurrent finalize
+                // (here or in `maybe_finalize_parent`) a benign no-op.
+                let rows = sqlx::query(&self.stmts.select_sharded_parents)
+                    .fetch_all(&self.pool)
+                    .await
+                    .map_err(backend)?;
+
+                let mut finalized = 0usize;
+                for row in &rows {
+                    let run_id: String = row.try_get("run_id").map_err(backend)?;
+                    let progress = self.shard_progress(&run_id).await?;
+                    if !progress.all_terminal() {
+                        continue;
+                    }
+                    let success = progress.failed == 0;
+                    // Read-modify-write the body so the surfaced record stays
+                    // consistent (status, finished_at, error) with the column.
+                    let Some(body_row) = sqlx::query(&self.stmts.select_body)
+                        .bind(&run_id)
+                        .fetch_optional(&self.pool)
+                        .await
+                        .map_err(backend)?
+                    else {
+                        continue;
+                    };
+                    let body: String = body_row.try_get("body").map_err(backend)?;
+                    let mut rec = sql::decode_body(&body)?;
+                    // Skip if it raced to terminal already (column says sharded but
+                    // the body was just updated). The fenced UPDATE is the real guard.
+                    if rec.status != RunStatus::Sharded {
+                        continue;
+                    }
+                    let now = chrono::Utc::now();
+                    rec.status = if success {
+                        RunStatus::Completed
+                    } else {
+                        RunStatus::Failed
+                    };
+                    rec.finished_at = Some(now);
+                    if !success {
+                        rec.error = Some(format!(
+                            "{}/{} shard(s) failed",
+                            progress.failed, progress.total
+                        ));
+                    }
+                    let new_body = sql::encode_body(&rec)?;
+                    let n = sqlx::query(&self.stmts.finalize_sharded_parent)
+                        .bind(rec.status.as_str())
+                        .bind(sql::fmt_ts(now))
+                        .bind(&new_body)
+                        .bind(&run_id)
+                        .execute(&self.pool)
+                        .await
+                        .map_err(backend)?
+                        .rows_affected();
+                    if n == 1 {
+                        finalized += 1;
+                        $crate::serve::metrics::record_run_finished(
+                            rec.status,
+                            if success { "ok" } else { "error" },
+                        );
+                        tracing::info!(
+                            run_id,
+                            shards = progress.total,
+                            failed = progress.failed,
+                            "sharded run finalized by sweep (F11)"
+                        );
+                    }
+                }
+                Ok(finalized)
             }
 
             fn degraded(&self) -> bool {

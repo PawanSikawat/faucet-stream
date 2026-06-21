@@ -222,6 +222,22 @@ pub(crate) async fn lease_loop(state: ServerState, period: Duration, shutdown: C
                         Ok(_) => {}
                         Err(e) => tracing::warn!(error = %e, "cluster: reclaim_shards failed"),
                     }
+                    // Mode B (#230 / F11): finalize any `sharded` parent whose
+                    // shards are all terminal but which no shard task finalized
+                    // inline (e.g. the coordinator crashed after the last shard
+                    // completed on another instance). Status-fenced + metric
+                    // recorded inside the backend, so a parent already finalized by
+                    // `maybe_finalize_parent` is not re-finalized or double-counted.
+                    match state.history().finalize_completed_sharded_parents().await {
+                        Ok(n) if n > 0 => tracing::info!(
+                            finalized = n,
+                            "cluster: finalized completed sharded parent run(s) via sweep"
+                        ),
+                        Ok(_) => {}
+                        Err(e) => {
+                            tracing::warn!(error = %e, "cluster: finalize_completed_sharded_parents failed")
+                        }
+                    }
                 } else {
                     // Single-instance: mark orphans failed (today's behavior).
                     match state.history().recover_orphans().await {
