@@ -1,6 +1,6 @@
 //! GraphQL stream executor.
 
-use crate::config::{GraphqlAuth, GraphqlStreamConfig};
+use crate::config::{GraphqlAuth, GraphqlPagination, GraphqlStreamConfig};
 use async_trait::async_trait;
 use base64::Engine as _;
 use faucet_core::util::{self, DEFAULT_ERROR_BODY_MAX_LEN};
@@ -109,6 +109,7 @@ impl GraphqlStream {
         let mut all_records = Vec::new();
         let mut cursor: Option<String> = None;
         let mut pages_fetched = 0usize;
+        let mut warned_unresolved_has_next = false;
 
         loop {
             if let Some(max) = self.config.max_pages
@@ -126,24 +127,24 @@ impl GraphqlStream {
             // Check pagination.
             match &self.config.pagination {
                 Some(pag) => {
-                    let has_next = extract_bool(&body, &pag.has_next_page_path).unwrap_or(false);
-                    if !has_next {
-                        break;
+                    let (step, unresolved) =
+                        decide_next_page(&body, pag, cursor.as_deref());
+                    if unresolved && !warned_unresolved_has_next {
+                        tracing::warn!(
+                            path = %pag.has_next_page_path,
+                            "GraphQL has_next_page path did not resolve to a boolean; \
+                             deferring to cursor presence to decide pagination"
+                        );
+                        warned_unresolved_has_next = true;
                     }
-                    let next_cursor = extract_string(&body, &pag.cursor_path);
-                    if next_cursor.is_none() {
-                        break;
+                    match step {
+                        PageStep::Stop => break,
+                        PageStep::StopLoop => {
+                            tracing::warn!("cursor loop detected, stopping pagination");
+                            break;
+                        }
+                        PageStep::Advance(next) => cursor = Some(next),
                     }
-                    // Loop detection: if the server returns the same cursor we
-                    // just used, advancing would re-fetch the identical page —
-                    // stop now (compare against the just-used cursor, not a
-                    // lagged one, so no extra duplicate page is fetched first;
-                    // #78 LOW).
-                    if next_cursor == cursor {
-                        tracing::warn!("cursor loop detected, stopping pagination");
-                        break;
-                    }
-                    cursor = next_cursor;
                 }
                 None => break,
             }
@@ -345,6 +346,7 @@ impl GraphqlStream {
         Box::pin(async_stream::try_stream! {
             let mut cursor: Option<String> = None;
             let mut pages_fetched = 0usize;
+            let mut warned_unresolved_has_next = false;
             // No incremental replication today — `running_max` stays `None`.
             // The structure mirrors the REST source so a future replication
             // mode can plug into the same scaffolding without reworking the
@@ -368,29 +370,26 @@ impl GraphqlStream {
                 // so the bookmark is only attached on the final page.
                 let has_next = match &self.config.pagination {
                     Some(pag) => {
-                        let next = extract_bool(&body, &pag.has_next_page_path).unwrap_or(false);
-                        if next {
-                            let next_cursor = extract_string(&body, &pag.cursor_path);
-                            match next_cursor {
-                                None => false,
-                                Some(next_cursor) => {
-                                    // Loop detection: if the server returns the
-                                    // same cursor we just used, advancing would
-                                    // re-fetch the identical page — stop now
-                                    // (comparing against the just-used cursor,
-                                    // not a lagged one, so we don't fetch an
-                                    // extra duplicate page first; #78 LOW).
-                                    if Some(&next_cursor) == cursor.as_ref() {
-                                        tracing::warn!("cursor loop detected, stopping pagination");
-                                        false
-                                    } else {
-                                        cursor = Some(next_cursor);
-                                        true
-                                    }
-                                }
+                        let (step, unresolved) =
+                            decide_next_page(&body, pag, cursor.as_deref());
+                        if unresolved && !warned_unresolved_has_next {
+                            tracing::warn!(
+                                path = %pag.has_next_page_path,
+                                "GraphQL has_next_page path did not resolve to a boolean; \
+                                 deferring to cursor presence to decide pagination"
+                            );
+                            warned_unresolved_has_next = true;
+                        }
+                        match step {
+                            PageStep::Stop => false,
+                            PageStep::StopLoop => {
+                                tracing::warn!("cursor loop detected, stopping pagination");
+                                false
                             }
-                        } else {
-                            false
+                            PageStep::Advance(next) => {
+                                cursor = Some(next);
+                                true
+                            }
                         }
                     }
                     None => false,
@@ -479,6 +478,47 @@ fn extract_bool(body: &Value, path: &str) -> Option<bool> {
     results.first()?.as_bool()
 }
 
+/// What to do after fetching a page.
+#[derive(Debug, PartialEq)]
+enum PageStep {
+    /// No further pages (has-next is `false`, or there is no next cursor).
+    Stop,
+    /// The server returned the cursor we just used — advancing would re-fetch
+    /// the same page. Caller warns and stops.
+    StopLoop,
+    /// Fetch another page with this cursor.
+    Advance(String),
+}
+
+/// Pure pagination-advance decision shared by the eager and streaming paths.
+///
+/// `prev_cursor` is the cursor just used (for loop detection). The returned
+/// bool is `true` when the configured `has_next_page_path` did **not** resolve
+/// to a boolean: that is treated as "can't tell" and we **defer to cursor
+/// presence** rather than silently stopping — an unmatched has-next path must
+/// not drop the remaining pages of a paginated result (F52). The caller warns
+/// once on that condition.
+fn decide_next_page(
+    body: &Value,
+    pag: &GraphqlPagination,
+    prev_cursor: Option<&str>,
+) -> (PageStep, bool) {
+    let (stop, unresolved) = match extract_bool(body, &pag.has_next_page_path) {
+        Some(false) => (true, false),
+        Some(true) => (false, false),
+        // Path absent / not a boolean: defer the decision to the cursor signal.
+        None => (false, true),
+    };
+    if stop {
+        return (PageStep::Stop, unresolved);
+    }
+    match extract_string(body, &pag.cursor_path) {
+        None => (PageStep::Stop, unresolved),
+        Some(next) if Some(next.as_str()) == prev_cursor => (PageStep::StopLoop, unresolved),
+        Some(next) => (PageStep::Advance(next), unresolved),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -499,6 +539,60 @@ mod tests {
             extract_bool(&body, "$.data.users.pageInfo.hasNextPage"),
             Some(true)
         );
+    }
+
+    fn pageinfo_pagination() -> GraphqlPagination {
+        GraphqlPagination {
+            has_next_page_path: "$.data.users.pageInfo.hasNextPage".into(),
+            cursor_path: "$.data.users.pageInfo.endCursor".into(),
+            ..GraphqlPagination::default()
+        }
+    }
+
+    #[test]
+    fn decide_next_page_advances_when_has_next_true() {
+        let body = json!({"data": {"users": {"pageInfo": {"hasNextPage": true, "endCursor": "c2"}}}});
+        let (step, unresolved) = decide_next_page(&body, &pageinfo_pagination(), Some("c1"));
+        assert_eq!(step, PageStep::Advance("c2".into()));
+        assert!(!unresolved);
+    }
+
+    #[test]
+    fn decide_next_page_stops_when_has_next_false() {
+        let body =
+            json!({"data": {"users": {"pageInfo": {"hasNextPage": false, "endCursor": "c2"}}}});
+        let (step, unresolved) = decide_next_page(&body, &pageinfo_pagination(), Some("c1"));
+        assert_eq!(step, PageStep::Stop);
+        assert!(!unresolved);
+    }
+
+    #[test]
+    fn decide_next_page_detects_cursor_loop() {
+        let body = json!({"data": {"users": {"pageInfo": {"hasNextPage": true, "endCursor": "c1"}}}});
+        let (step, _) = decide_next_page(&body, &pageinfo_pagination(), Some("c1"));
+        assert_eq!(step, PageStep::StopLoop);
+    }
+
+    #[test]
+    fn decide_next_page_defers_to_cursor_when_has_next_unresolved() {
+        // F52: an absent / non-boolean has-next path must NOT silently stop
+        // pagination. With a valid distinct next cursor we keep going, and the
+        // unresolved flag is raised so the caller warns once.
+        let body = json!({"data": {"users": {"pageInfo": {"endCursor": "c2"}}}}); // no hasNextPage
+        let (step, unresolved) = decide_next_page(&body, &pageinfo_pagination(), Some("c1"));
+        assert_eq!(
+            step,
+            PageStep::Advance("c2".into()),
+            "unresolved has-next must defer to cursor presence, not stop"
+        );
+        assert!(unresolved, "the caller is told to warn once");
+
+        // Unresolved has-next AND no cursor → genuinely stop (nothing to follow).
+        let body_no_cursor = json!({"data": {"users": {"pageInfo": {}}}});
+        let (step, unresolved) =
+            decide_next_page(&body_no_cursor, &pageinfo_pagination(), Some("c1"));
+        assert_eq!(step, PageStep::Stop);
+        assert!(unresolved);
     }
 
     #[test]
