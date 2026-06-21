@@ -989,7 +989,8 @@ fn rename_field(value: Value, fields: &[(String, String)]) -> Result<Value, Fauc
                 renames.iter().map(|(from, _)| *from).collect();
 
             // Validate before mutating.
-            let mut seen_targets: std::collections::HashSet<&str> = std::collections::HashSet::new();
+            let mut seen_targets: std::collections::HashSet<&str> =
+                std::collections::HashSet::new();
             for (from, to) in &renames {
                 if !seen_targets.insert(to) {
                     return Err(FaucetError::Transform(format!(
@@ -1764,7 +1765,10 @@ mod tests {
             let mut fields = HashMap::new();
             fields.insert("a".to_owned(), "b".to_owned());
             fields.insert("b".to_owned(), "a".to_owned());
-            let result = apply_all(record, &compiled(&[RecordTransform::RenameField { fields }]));
+            let result = apply_all(
+                record,
+                &compiled(&[RecordTransform::RenameField { fields }]),
+            );
             assert_eq!(result["a"], 2, "{result}");
             assert_eq!(result["b"], 1, "{result}");
             assert_eq!(result["keep"], 3);
@@ -1781,7 +1785,10 @@ mod tests {
             let mut fields = HashMap::new();
             fields.insert("a".to_owned(), "b".to_owned());
             fields.insert("b".to_owned(), "c".to_owned());
-            let result = apply_all(record, &compiled(&[RecordTransform::RenameField { fields }]));
+            let result = apply_all(
+                record,
+                &compiled(&[RecordTransform::RenameField { fields }]),
+            );
             assert_eq!(result["b"], 1, "{result}");
             assert_eq!(result["c"], 2, "{result}");
             assert!(result.get("a").is_none(), "{result}");
@@ -1795,8 +1802,11 @@ mod tests {
         let mut fields = HashMap::new();
         fields.insert("a".to_owned(), "c".to_owned());
         fields.insert("b".to_owned(), "c".to_owned());
-        let err = super::apply_all(record, &compiled(&[RecordTransform::RenameField { fields }]))
-            .expect_err("two renames to the same target must error");
+        let err = super::apply_all(
+            record,
+            &compiled(&[RecordTransform::RenameField { fields }]),
+        )
+        .expect_err("two renames to the same target must error");
         assert!(format!("{err}").contains("same target"), "{err}");
     }
 

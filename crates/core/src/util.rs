@@ -317,8 +317,9 @@ pub fn redact_uri_credentials(uri: &str) -> String {
 /// to identify the userinfo→host `@` delimiter when redacting credentials.
 /// Accepts letters, digits, `.`, `-`, `:`, `_`, and bracketed IPv6 forms.
 fn is_host_shaped(s: &str) -> bool {
-    s.bytes()
-        .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b':' | b'_' | b'[' | b']' | b'%'))
+    s.bytes().all(|b| {
+        b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b':' | b'_' | b'[' | b']' | b'%')
+    })
 }
 
 /// Extract context values from a record using JSONPath expressions.

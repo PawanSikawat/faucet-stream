@@ -4424,7 +4424,11 @@ mod tests {
         ];
         let (kept, env) = quarantine_drift_rows(&diff, records, "sink", "pl", "");
         assert_eq!(kept, vec![json!({"id": 3, "legacy": "z"})]);
-        assert_eq!(env.len(), 3, "widening rows + the missing-required row quarantined");
+        assert_eq!(
+            env.len(),
+            3,
+            "widening rows + the missing-required row quarantined"
+        );
     }
 
     #[tokio::test]
