@@ -282,6 +282,22 @@ pub struct SchemaDriftSpec {
     /// `evolve` only: action for an incompatible residue. Default: fail.
     #[serde(default)]
     pub on_incompatible: OnIncompatible,
+    /// `evolve` only: whether the **absence** of a destination `NOT NULL`
+    /// column from a page may drop that column's `NOT NULL` constraint.
+    ///
+    /// Default `false`: a column merely omitted from one batch is *not*
+    /// evidence the column is genuinely optional (a transient/partial page
+    /// omits it just as readily as a real schema change), so auto-relaxing
+    /// would silently and irreversibly weaken the destination's integrity
+    /// (issue #194 / F28). When `false`, an omitted required column is left
+    /// untouched — a page that genuinely lacks a required value then fails
+    /// loudly at write time rather than degrading the schema. Set `true` only
+    /// when you deliberately want missing-column omission to relax the
+    /// constraint. Nullability relaxation driven by an *observed* null value
+    /// in a present column (a widening that adds `null`) is unaffected by this
+    /// flag — that is evidence-based, not omission-based.
+    #[serde(default)]
+    pub relax_nullability_on_missing: bool,
 }
 
 /// Compiled, ready-to-run drift policy. Cheap to clone.
@@ -290,6 +306,8 @@ pub struct SchemaDriftPolicy {
     pub on_drift: OnDrift,
     pub allow_widening: bool,
     pub on_incompatible: OnIncompatible,
+    /// See [`SchemaDriftSpec::relax_nullability_on_missing`]. Default `false`.
+    pub relax_nullability_on_missing: bool,
 }
 
 impl SchemaDriftPolicy {
@@ -301,6 +319,7 @@ impl SchemaDriftPolicy {
             on_drift: spec.on_drift,
             allow_widening: spec.allow_type_widening,
             on_incompatible: spec.on_incompatible,
+            relax_nullability_on_missing: spec.relax_nullability_on_missing,
         }
     }
 

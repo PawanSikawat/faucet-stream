@@ -248,7 +248,7 @@ To wire it into a pipeline with a sink, build a `faucet_core::Pipeline` (or call
 ## How it works
 
 1. `new()` validates `batch_size` and builds a `sqlx::SqlitePool` (`SqlitePoolOptions::max_connections`) **once**, reusing it for every query. A connection failure surfaces as `FaucetError::Config`.
-2. `stream_pages` resolves any `{field}` context placeholders into positional `?` bind markers, binds the values by JSON type (string / i64 / f64 / bool / null), and opens a streaming cursor with `Query::fetch`.
+2. `stream_pages` resolves any `{field}` context placeholders into positional `?` bind markers, binds the values by JSON type (string / integer / float / bool / null — integers up to `u64::MAX` bind exactly, with no `f64` precision loss), and opens a streaming cursor with `Query::fetch`.
 3. Rows are decoded one at a time (`row_to_json`), buffered to `batch_size`, and yielded as `StreamPage`s; the final partial buffer is flushed at the end.
 4. Each column value is decoded by probing storage classes in specificity order (see [Supported column types](#supported-column-types)).
 

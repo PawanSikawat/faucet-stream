@@ -182,6 +182,13 @@ be **executed twice** (partial overlap) if the original instance was paused-not-
 sink. The sink's atomic commit token deduplicates replayed pages regardless of
 how many instances attempted them.
 
+> **Clustered runs are at-least-once.** Both `--cluster` failover and Mode B
+> shard reclaim can re-execute work, so an **append**-mode sink can end up with
+> duplicate rows. When a run is submitted to a clustered or sharded server,
+> faucet logs a warning recommending [`write_mode: upsert`](./upsert.md) (or
+> [`delivery: exactly_once`](./state.md#exactly-once-delivery)) so any replay is
+> idempotent. The run still proceeds — the warning is a reminder, not a gate.
+
 **Practical sizing advice:** set `--lease-ttl-secs` comfortably above your
 worst-case GC/IO stall. A 30-second default is appropriate for most JVM-free
 workloads; bump to 60–120 s if you observe false-reclaim events in the metrics.
@@ -284,6 +291,11 @@ finalized to `completed`/`failed` once every shard is terminal.
 |--------|----------|---------------|
 | `postgres` | primary-key range (`WHERE key >= lo AND key < hi`) | `source.config.shard: { key: <int column> }` |
 | `s3` | hash-of-object-key modulo N | automatic (no config) |
+
+> **NULL shard keys are not dropped.** Rows whose `shard` key column is `NULL`
+> fall outside every range predicate, so the postgres sharder assigns them to
+> exactly one shard (alongside its range) — they are mirrored once, never
+> silently lost.
 
 Other sources are not shardable yet (tracked in [#262](https://github.com/PawanSikawat/faucet-stream/issues/262));
 Kafka uses native consumer-group assignment instead ([#261](https://github.com/PawanSikawat/faucet-stream/issues/261)).

@@ -170,7 +170,7 @@ Both lists must use fully-qualified names (e.g. `appdb.users`); an unqualified e
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `include_columns` | bool | `true` | Emit the pre-image (`before`) on updates and deletes. Set `false` to suppress before-images and shrink payloads. |
-| `emit_schema_changes` | bool | `false` | Emit DDL statements (CREATE/ALTER/DROP TABLE etc.) as `{ op: "ddl" }` records. Each DDL auto-commits and advances the bookmark. |
+| `emit_schema_changes` | bool | `false` | Emit DDL statements (CREATE/ALTER/DROP TABLE etc.) as `{ op: "ddl" }` records. A DDL implicitly auto-commits any in-progress transaction in MySQL; any rows already buffered for that transaction are flushed (and the bookmark advanced) **before** the DDL is processed, so no rows are lost on resume regardless of this setting. |
 
 ### Reliability & batching
 
@@ -426,7 +426,7 @@ This crate has no optional features of its own; enable it in the CLI/umbrella vi
 | `start_position: earliest` errors | Binlogs were purged (`expire_logs_days` / `PURGE BINARY LOGS`) past the earliest point. Use `current`, or widen binlog retention. |
 | `gtid_set` start rejected by the server | `gtid_mode` is `OFF`. Set `gtid_mode=ON` + `enforce_gtid_consistency=ON`, or use a `file_pos` / `current` start instead. |
 | Resume errors that the start position is unavailable | The persisted/captured `{ file, pos }` was purged before resume. Widen binlog retention so it exceeds expected downtime / snapshot duration. |
-| A JSON column arrives as `null` (with a `warn!`) | The document holds an *opaque* scalar (e.g. a `DECIMAL`/`DATE` embedded via `CAST(... AS JSON)`) with no JSON representation. Ordinary JSON content converts losslessly; this case is rare. Use a query-mode lookup ([`faucet-source-mysql`](https://crates.io/crates/faucet-source-mysql)) if you need full JSON-column fidelity. |
+| A JSON column embeds a `DECIMAL`/`DATE`/temporal value | Such values are stored as JSONB *opaque* scalars. They are now preserved **losslessly**: `DECIMAL` → its exact decimal string, `DATE`/`TIME`/`DATETIME`/`TIMESTAMP` → a formatted temporal string, any other opaque type → a round-trippable `base64:type<N>:<…>` string. (Earlier versions dropped the whole column to `null`.) A JSON column only errors out if the binlog bytes are structurally corrupt, surfacing a typed `Source` error (DLQ-routable) rather than a silent `null`. |
 | Pipeline never returns / hangs | It's waiting for events. Lower `idle_timeout` so the fetch cycle ends sooner on a quiet binlog. |
 | OOM during a bulk load | A huge single transaction buffered entirely in memory before its commit. Set `max_staged_records` to a safe upper bound. |
 | `Config` error on a table filter | An `include_tables` / `exclude_tables` entry isn't fully qualified. Use `database.table` (e.g. `appdb.users`). |

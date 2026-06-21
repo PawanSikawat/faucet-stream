@@ -140,7 +140,12 @@ completes:
 
 - **`continuous: true`** — keep streaming CDC indefinitely as a long-running
   foreground process. Stop it with Ctrl-C or SIGTERM; the in-flight page flushes
-  at the next page boundary before the process exits.
+  at the next page boundary before the process exits. A **transient** CDC-phase
+  failure (a dropped connection, a slow upstream, a momentary network blip) no
+  longer crash-exits the process: faucet logs the error, backs off (the delay
+  grows on repeated failures, capped, and resets after a successful cycle), and
+  resumes the CDC stream from the persisted bookmark. The long-running mirror
+  rides out brief outages on its own.
 - **`continuous: false`** — drain CDC once (until the source's idle timeout) and
   exit. Handy for tests, batch back-fills, or a one-shot container invocation.
 
@@ -156,6 +161,12 @@ picks up where it left off:
 - **Crash during CDC** — the next run resumes CDC from the persisted bookmark (the
   CDC source's own per-transaction position, which started at `P`). No snapshot
   redo, no gap.
+
+Under `continuous: true`, a **transient** CDC-phase error does not even require a
+restart: the process logs it, backs off, and resumes from the persisted bookmark
+in place (see [`continuous`](#continuous) above). A **one-shot** run
+(`continuous: false`) instead surfaces the error and exits non-zero, so a batch
+back-fill or CI invocation still fails loudly on a real problem.
 
 On a fresh run the marker is absent, so `faucet replicate` captures `P`, seeds
 the CDC bookmark, and starts the snapshot. On any later run the marker tells it

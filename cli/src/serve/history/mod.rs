@@ -292,6 +292,19 @@ pub trait RunHistory: Send + Sync {
     /// number removed.
     async fn purge_expired(&self, retain_for: Duration) -> Result<usize, HistoryError>;
 
+    /// Release the idempotency claim(s) pointing at `run_id`. Called on the
+    /// submit path when the run-record write that should immediately follow a
+    /// `Fresh` claim fails — without it, a fallible (SQL) backend would orphan
+    /// the claim, so every replay of the key 404s until the claim self-expires
+    /// within the retention window (F21). Scoped by `run_id`, so a newer run
+    /// that re-claimed the same key keeps its claim. Best-effort. Default:
+    /// no-op — the in-memory backend's `upsert` is infallible, so a `Fresh`
+    /// claim is always paired with a record.
+    async fn release_idempotency(&self, run_id: &str) -> Result<(), HistoryError> {
+        let _ = run_id;
+        Ok(())
+    }
+
     /// Mark non-terminal records whose owning instance's lease has expired as
     /// failed (instance-fenced orphan recovery — never touches a live peer's
     /// heartbeated runs, #146 H7). Returns the number recovered. The memory

@@ -18,6 +18,19 @@ pub struct CsvSourceConfig {
     /// Quote character byte. Defaults to `b'"'`.
     #[serde(default = "default_quote")]
     pub quote: u8,
+    /// Whether to tolerate rows with a field count that differs from the
+    /// header (or from the first data row when header-less). Defaults to
+    /// `false` (strict).
+    ///
+    /// When `false` (the default), a row whose field count does not match the
+    /// expected width is a structural defect and aborts the run with a typed
+    /// [`FaucetError::Source`](faucet_core::FaucetError::Source) naming the
+    /// offending line — silently emitting an incomplete record would corrupt
+    /// downstream consumers. Set to `true` only when ragged rows are expected
+    /// and acceptable (short rows yield records missing the trailing columns;
+    /// long rows gain `column_N` keys).
+    #[serde(default)]
+    pub flexible: bool,
     /// Records per emitted [`StreamPage`](faucet_core::StreamPage). Rows are
     /// parsed line-by-line from a tokio `BufReader` and yielded whenever the
     /// buffer reaches this size. Defaults to [`DEFAULT_BATCH_SIZE`].
@@ -61,6 +74,7 @@ impl CsvSourceConfig {
             has_headers: true,
             delimiter: b',',
             quote: b'"',
+            flexible: false,
             batch_size: DEFAULT_BATCH_SIZE,
             #[cfg(feature = "compression")]
             compression: faucet_core::CompressionConfig::Auto,
@@ -82,6 +96,15 @@ impl CsvSourceConfig {
     /// Set the quote character byte.
     pub fn quote(mut self, q: u8) -> Self {
         self.quote = q;
+        self
+    }
+
+    /// Set whether to tolerate rows with an uneven field count.
+    ///
+    /// Defaults to `false` (strict): a ragged row aborts the run. Pass `true`
+    /// to opt in to lenient parsing where short/long rows are accepted.
+    pub fn flexible(mut self, v: bool) -> Self {
+        self.flexible = v;
         self
     }
 
@@ -124,6 +147,28 @@ mod tests {
         assert!(!config.has_headers);
         assert_eq!(config.delimiter, b'\t');
         assert_eq!(config.quote, b'\'');
+    }
+
+    #[test]
+    fn flexible_defaults_to_false_strict() {
+        let config = CsvSourceConfig::new("/tmp/data.csv");
+        assert!(!config.flexible);
+    }
+
+    #[test]
+    fn flexible_builder_and_serde_default() {
+        let config = CsvSourceConfig::new("/tmp/data.csv").flexible(true);
+        assert!(config.flexible);
+
+        // Absent in JSON => strict default.
+        let json = r#"{ "path": "/tmp/data.csv" }"#;
+        let parsed: CsvSourceConfig = serde_json::from_str(json).unwrap();
+        assert!(!parsed.flexible);
+
+        // Explicit value round-trips.
+        let json = r#"{ "path": "/tmp/data.csv", "flexible": true }"#;
+        let parsed: CsvSourceConfig = serde_json::from_str(json).unwrap();
+        assert!(parsed.flexible);
     }
 
     #[test]

@@ -60,6 +60,30 @@ pub(crate) fn resolve_start(
     }
 }
 
+/// Enforce the in-memory staging cap before buffering one more change record.
+///
+/// `current_len` is the number of records already buffered this fetch cycle;
+/// `max_staged` is the configured cap (`None` = unbounded). Returns a typed
+/// [`FaucetError::Source`] when adding one more record would exceed the cap,
+/// so the run aborts cleanly instead of risking an OOM-kill on an unbounded
+/// `batch_size: 0` (or `fetch_all`) drain. Mirrors `postgres-cdc` /
+/// `mysql-cdc`'s `push_staged` guard.
+pub(crate) fn check_staging_cap(
+    current_len: usize,
+    max_staged: Option<usize>,
+) -> Result<(), FaucetError> {
+    if let Some(max) = max_staged
+        && current_len >= max
+    {
+        return Err(FaucetError::Source(format!(
+            "mongodb-cdc: in-memory change buffer exceeded max_staged_records ({max}); \
+             aborting to avoid unbounded memory growth. Raise max_staged_records or \
+             reduce batch_size so pages flush more often."
+        )));
+    }
+    Ok(())
+}
+
 /// A configured MongoDB CDC source.
 pub struct MongoCdcSource {
     config: MongoCdcSourceConfig,
@@ -302,6 +326,7 @@ impl MongoCdcSource {
         let idle_timeout = self.config.idle_timeout;
         let max_await = std::time::Duration::from_millis(self.config.max_await_time_ms);
         let per_batch = batch_size != 0;
+        let max_staged = self.config.max_staged_records;
 
         Box::pin(async_stream::try_stream! {
             use futures::StreamExt;
@@ -405,6 +430,12 @@ impl MongoCdcSource {
                             event.operation_type,
                             mongodb::change_stream::event::OperationType::Invalidate
                         );
+                        // OOM safety valve: with `batch_size: 0` (or `fetch_all`)
+                        // the buffer is never flushed mid-cycle, so a
+                        // high-throughput stream would grow it without bound.
+                        // Abort with a typed error before staging one more record
+                        // past the cap rather than risk an OOM-kill.
+                        check_staging_cap(buffer.len(), max_staged)?;
                         buffer.push(to_envelope(&event, &bookmark)?);
                         last_bookmark = Some(bookmark.to_value()?);
 
@@ -584,6 +615,53 @@ mod tests {
                 increment: 1
             })
         );
+    }
+
+    #[test]
+    fn staging_cap_none_is_unbounded() {
+        // With no cap, an arbitrarily large buffer never aborts.
+        assert!(check_staging_cap(0, None).is_ok());
+        assert!(check_staging_cap(1_000_000, None).is_ok());
+    }
+
+    #[test]
+    fn staging_cap_allows_up_to_limit() {
+        // Buffering record N is allowed while the current length is below the
+        // cap (i.e. up to `max` records total).
+        assert!(check_staging_cap(0, Some(2)).is_ok());
+        assert!(check_staging_cap(1, Some(2)).is_ok());
+    }
+
+    #[test]
+    fn staging_cap_aborts_at_limit() {
+        // Once `current_len` reaches the cap, staging one more record must
+        // abort with a typed FaucetError::Source naming max_staged_records.
+        let err = check_staging_cap(2, Some(2)).unwrap_err();
+        assert!(matches!(err, FaucetError::Source(_)));
+        assert!(format!("{err}").contains("max_staged_records"));
+
+        // And it stays an error for any length beyond the cap.
+        assert!(check_staging_cap(3, Some(2)).is_err());
+    }
+
+    #[test]
+    fn staging_cap_drives_accumulation_past_limit() {
+        // Simulate the buffer-accumulation loop with batch_size: 0 (no
+        // mid-cycle flush) and a cap of 3: the 4th record must abort.
+        let mut buffer: Vec<u8> = Vec::new();
+        let max = Some(3usize);
+        let mut last: Result<(), FaucetError> = Ok(());
+        for i in 0..10u8 {
+            if let Err(e) = check_staging_cap(buffer.len(), max) {
+                last = Err(e);
+                break;
+            }
+            buffer.push(i);
+        }
+        assert_eq!(buffer.len(), 3, "buffer stops growing at the cap");
+        let err = last.unwrap_err();
+        assert!(matches!(err, FaucetError::Source(_)));
+        assert!(format!("{err}").contains("max_staged_records"));
     }
 
     #[test]

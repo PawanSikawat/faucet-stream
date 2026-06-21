@@ -90,6 +90,36 @@ fn mysql_data_type_to_json_schema(data_type: &str, nullable: bool) -> Value {
 /// set from `VALUES(col)`. If every column is a key column there is nothing to
 /// update, so a self-assignment no-op on the first key column is emitted to
 /// keep the statement syntactically valid.
+/// Decide whether the configured upsert/delete `key` exactly corresponds to one
+/// of the target table's PRIMARY/UNIQUE indexes.
+///
+/// MySQL's `INSERT … ON DUPLICATE KEY UPDATE` does not name a conflict target —
+/// it resolves on *any* unique index present on the table. The unified
+/// write-mode contract, however, treats the configured `key` as the
+/// authoritative conflict target (`plan_writes` dedups and routes by exactly
+/// that key). If the configured `key` does not match a real unique index, MySQL
+/// would silently resolve the conflict on a *different* index, producing wrong
+/// upsert results that the user cannot detect (finding F33). This check lets the
+/// sink fail fast at construction instead.
+///
+/// `unique_indexes` is the set of the table's PRIMARY/UNIQUE indexes, each given
+/// as the full set of its column names. `key` is the configured key columns.
+/// The comparison is **order-insensitive** (a UNIQUE index on `(a, b)` matches a
+/// key of `[b, a]`) and requires the **full** column set of some index to match
+/// the key exactly — a prefix, subset, or superset does **not** match, because
+/// `ON DUPLICATE KEY UPDATE` would then trigger on a broader or narrower index
+/// than the one the pipeline deduped on.
+fn key_matches_unique_index(
+    unique_indexes: &[std::collections::BTreeSet<String>],
+    key: &[String],
+) -> bool {
+    if key.is_empty() {
+        return false;
+    }
+    let key_set: std::collections::BTreeSet<String> = key.iter().cloned().collect();
+    unique_indexes.contains(&key_set)
+}
+
 fn on_duplicate_clause(key: &[String], all_cols: &[String]) -> String {
     let updates: Vec<String> = all_cols
         .iter()
@@ -127,7 +157,97 @@ impl MysqlSink {
             .await
             .map_err(|e| FaucetError::Sink(format!("MySQL connection failed: {e}")))?;
 
-        Ok(Self { config, pool })
+        let sink = Self { config, pool };
+
+        // For upsert/delete, MySQL's anonymous `ON DUPLICATE KEY UPDATE` /
+        // `DELETE … WHERE (key) IN (…)` only resolves correctly when the
+        // configured `key` matches a real PRIMARY/UNIQUE index. Assert that here
+        // so a silent mismatch (finding F33) fails fast at construction.
+        if !matches!(sink.config.write.write_mode, faucet_core::WriteMode::Append) {
+            sink.assert_key_is_unique_index().await?;
+        }
+
+        Ok(sink)
+    }
+
+    /// Read the target table's PRIMARY/UNIQUE indexes from
+    /// `INFORMATION_SCHEMA.STATISTICS`, each as the full set of its column names.
+    ///
+    /// `STATISTICS` lists one row per index column; only non-unique-flag-zero
+    /// rows (`NON_UNIQUE = 0`) are unique indexes (the PRIMARY KEY is reported as
+    /// an index named `PRIMARY` and is also `NON_UNIQUE = 0`). Returns an empty
+    /// `Vec` when the table does not exist or has no unique indexes — the caller
+    /// decides what to do with an absent table.
+    ///
+    /// Thin I/O shim; the pure decision is [`key_matches_unique_index`].
+    async fn read_unique_indexes(
+        &self,
+    ) -> Result<Vec<std::collections::BTreeSet<String>>, FaucetError> {
+        // INFORMATION_SCHEMA string columns use a binary collation that sqlx
+        // decodes as Vec<u8>; CAST to CHAR so they decode as String.
+        let rows = sqlx::query(
+            "SELECT CAST(INDEX_NAME AS CHAR) AS INDEX_NAME, \
+                    CAST(COLUMN_NAME AS CHAR) AS COLUMN_NAME \
+             FROM INFORMATION_SCHEMA.STATISTICS \
+             WHERE TABLE_NAME = ? AND TABLE_SCHEMA = DATABASE() AND NON_UNIQUE = 0 \
+             ORDER BY INDEX_NAME, SEQ_IN_INDEX",
+        )
+        .bind(&self.config.table_name)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| FaucetError::Sink(format!("failed to query table indexes: {e}")))?;
+
+        let mut by_index: std::collections::BTreeMap<String, std::collections::BTreeSet<String>> =
+            std::collections::BTreeMap::new();
+        for row in &rows {
+            let index_name: String = row.get("INDEX_NAME");
+            let column_name: String = row.get("COLUMN_NAME");
+            by_index.entry(index_name).or_default().insert(column_name);
+        }
+        Ok(by_index.into_values().collect())
+    }
+
+    /// Assert that the configured `key` exactly matches a PRIMARY/UNIQUE index on
+    /// the target table, or fail with a clear typed [`FaucetError::Config`].
+    ///
+    /// **Table-absent behaviour:** if the table has no unique indexes — which is
+    /// the case when it does not exist yet — the assertion is **skipped** with a
+    /// warning, matching the rest of this sink which auto-discovers columns and
+    /// lets the first write surface a missing-table error. (`current_schema`
+    /// likewise returns `None` for an absent table.) The check is a guard against
+    /// a *mismatched* index on an existing table, not a table-existence preflight.
+    async fn assert_key_is_unique_index(&self) -> Result<(), FaucetError> {
+        let unique_indexes = self.read_unique_indexes().await?;
+        if unique_indexes.is_empty() {
+            tracing::warn!(
+                table = %self.config.table_name,
+                "mysql sink: no PRIMARY/UNIQUE index found on target table (it may not exist \
+                 yet); skipping upsert key validation — the first write will surface a \
+                 missing-table or missing-constraint error"
+            );
+            return Ok(());
+        }
+        if !key_matches_unique_index(&unique_indexes, &self.config.write.key) {
+            let available: Vec<String> = unique_indexes
+                .iter()
+                .map(|idx| {
+                    let mut cols: Vec<&str> = idx.iter().map(String::as_str).collect();
+                    cols.sort_unstable();
+                    format!("({})", cols.join(", "))
+                })
+                .collect();
+            return Err(FaucetError::Config(format!(
+                "mysql sink: write_mode {} requires `key` {:?} to exactly match a PRIMARY KEY or \
+                 UNIQUE index on table '{}' — MySQL's `ON DUPLICATE KEY UPDATE` resolves on the \
+                 table's real unique indexes, so an unmatched key would silently upsert on the \
+                 wrong index. Existing unique indexes: {}",
+                self.config.write.write_mode.as_str(),
+                self.config.write.key,
+                self.config.table_name,
+                available.join(", "),
+            )));
+        }
+        Ok(())
     }
 
     /// Insert a batch of records using JSON column mode.
@@ -916,6 +1036,88 @@ mod tests {
         assert_eq!(mysql_keyword(SqlBaseType::Boolean), "TINYINT(1)");
         assert_eq!(mysql_keyword(SqlBaseType::Text), "LONGTEXT");
         assert_eq!(mysql_keyword(SqlBaseType::Json), "JSON");
+    }
+
+    fn idx(cols: &[&str]) -> std::collections::BTreeSet<String> {
+        cols.iter().map(|s| s.to_string()).collect()
+    }
+
+    fn keyvec(cols: &[&str]) -> Vec<String> {
+        cols.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn key_matches_single_column_index() {
+        let indexes = vec![idx(&["id"])];
+        assert!(key_matches_unique_index(&indexes, &keyvec(&["id"])));
+    }
+
+    #[test]
+    fn key_matches_composite_index_reordered() {
+        // A UNIQUE index on (a, b) matches a configured key of [b, a].
+        let indexes = vec![idx(&["a", "b"])];
+        assert!(key_matches_unique_index(&indexes, &keyvec(&["b", "a"])));
+    }
+
+    #[test]
+    fn key_does_not_match_subset_of_index() {
+        // Index is (a, b); key [a] is a prefix/subset — not an exact match.
+        let indexes = vec![idx(&["a", "b"])];
+        assert!(!key_matches_unique_index(&indexes, &keyvec(&["a"])));
+    }
+
+    #[test]
+    fn key_does_not_match_superset_of_index() {
+        // Index is (a); key [a, b] is a superset — not an exact match.
+        let indexes = vec![idx(&["a"])];
+        assert!(!key_matches_unique_index(&indexes, &keyvec(&["a", "b"])));
+    }
+
+    #[test]
+    fn key_does_not_match_disjoint_index() {
+        let indexes = vec![idx(&["id"])];
+        assert!(!key_matches_unique_index(&indexes, &keyvec(&["other"])));
+    }
+
+    #[test]
+    fn key_matches_one_of_multiple_indexes() {
+        // Table has a PRIMARY (id) and a UNIQUE (email); key on email matches.
+        let indexes = vec![idx(&["id"]), idx(&["email"])];
+        assert!(key_matches_unique_index(&indexes, &keyvec(&["email"])));
+        assert!(key_matches_unique_index(&indexes, &keyvec(&["id"])));
+        // A key on neither matches.
+        assert!(!key_matches_unique_index(&indexes, &keyvec(&["name"])));
+        // A key spanning two distinct indexes is not itself an index.
+        assert!(!key_matches_unique_index(
+            &indexes,
+            &keyvec(&["id", "email"])
+        ));
+    }
+
+    #[test]
+    fn key_does_not_match_empty_index_set() {
+        // No unique indexes (e.g. table absent / no constraints) → never matches.
+        let indexes: Vec<std::collections::BTreeSet<String>> = vec![];
+        assert!(!key_matches_unique_index(&indexes, &keyvec(&["id"])));
+    }
+
+    #[test]
+    fn empty_key_never_matches() {
+        let indexes = vec![idx(&["id"])];
+        assert!(!key_matches_unique_index(&indexes, &keyvec(&[])));
+        // Even against an (impossible) empty index, an empty key is rejected.
+        let empty_idx = vec![idx(&[])];
+        assert!(!key_matches_unique_index(&empty_idx, &keyvec(&[])));
+    }
+
+    #[test]
+    fn key_matches_composite_index_among_several() {
+        let indexes = vec![idx(&["id"]), idx(&["tenant", "slug"])];
+        assert!(key_matches_unique_index(
+            &indexes,
+            &keyvec(&["slug", "tenant"])
+        ));
+        assert!(!key_matches_unique_index(&indexes, &keyvec(&["tenant"])));
     }
 
     #[test]

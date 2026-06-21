@@ -213,20 +213,79 @@ pub async fn run_replication(
         spawn_cancel_on_signal(cancel.clone());
         tracing::info!(pipeline = %opts.pipeline_name, "replication: streaming CDC (Ctrl-C / SIGTERM to stop)");
     }
+    // In continuous mode the CDC phase is an always-on mirror: a long-lived
+    // CDC connection routinely hits transient failures (network blips, server
+    // restarts, slot read errors). Those must NOT crash-exit the mirror — the
+    // run loops, re-running `run_expanded` which resumes from the persisted
+    // bookmark (lossless: the bookmark only advances after the pipeline
+    // persists, so a retry replays nothing already committed). We log, back off
+    // (capped, reset on a clean cycle), and continue. A one-shot run
+    // (`continuous: false`) still surfaces the error to the caller (F20).
+    let mut backoff = std::time::Duration::from_secs(1);
+    const MAX_BACKOFF: std::time::Duration = std::time::Duration::from_secs(60);
     loop {
-        let summary = run_expanded(
-            vec![cdc_node.clone()],
-            make_opts(&opts, Some(cancel.clone())),
-        )
-        .await?;
-        if summary.had_failures() {
-            return Err(phase_failure(&summary, "CDC"));
+        let cycle: CliResult<()> = async {
+            let summary = run_expanded(
+                vec![cdc_node.clone()],
+                make_opts(&opts, Some(cancel.clone())),
+            )
+            .await?;
+            if summary.had_failures() {
+                return Err(phase_failure(&summary, "CDC"));
+            }
+            Ok(())
         }
-        if !compiled.continuous || cancel.is_cancelled() {
-            break;
+        .await;
+
+        match cdc_loop_action(cycle.is_ok(), compiled.continuous, cancel.is_cancelled()) {
+            CdcLoopAction::Break => break,
+            CdcLoopAction::Continue => {
+                backoff = std::time::Duration::from_secs(1); // reset on a clean cycle
+            }
+            CdcLoopAction::Propagate => return Err(cycle.unwrap_err()),
+            CdcLoopAction::Backoff => {
+                tracing::warn!(
+                    pipeline = %opts.pipeline_name,
+                    error = %cycle.unwrap_err(),
+                    backoff_secs = backoff.as_secs(),
+                    "replication: CDC cycle failed; resuming from bookmark after backoff"
+                );
+                tokio::select! {
+                    biased;
+                    _ = cancel.cancelled() => break,
+                    _ = tokio::time::sleep(backoff) => {}
+                }
+                backoff = (backoff * 2).min(MAX_BACKOFF);
+            }
         }
     }
     Ok(())
+}
+
+/// What the CDC phase loop should do after one `run_expanded` cycle (F20).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CdcLoopAction {
+    /// Stop the loop (one-shot success, or cancelled).
+    Break,
+    /// Clean cycle in continuous mode — reset backoff and loop again.
+    Continue,
+    /// Surface the error to the caller (one-shot failure, or cancelled).
+    Propagate,
+    /// Transient failure in continuous mode — back off and resume (the mirror
+    /// must not crash-exit on a routine network blip / server restart).
+    Backoff,
+}
+
+/// Pure decision for the CDC phase loop. In continuous mode a cycle failure is
+/// recoverable (re-running resumes from the persisted bookmark, replaying
+/// nothing already committed); a one-shot run still surfaces the error.
+fn cdc_loop_action(cycle_ok: bool, continuous: bool, cancelled: bool) -> CdcLoopAction {
+    match (cycle_ok, continuous && !cancelled) {
+        (true, false) => CdcLoopAction::Break, // one-shot or cancelled success
+        (true, true) => CdcLoopAction::Continue, // keep mirroring
+        (false, false) => CdcLoopAction::Propagate, // one-shot or cancelled failure
+        (false, true) => CdcLoopAction::Backoff, // transient — resume after backoff
+    }
 }
 
 #[cfg(test)]
@@ -248,6 +307,23 @@ pipeline:
         )
         .unwrap();
         expand(&cfg).unwrap().into_iter().next().unwrap()
+    }
+
+    #[test]
+    fn cdc_loop_action_continuous_resumes_on_transient_failure() {
+        // F20: a continuous mirror backs off and resumes on a cycle failure
+        // instead of crash-exiting; a clean cycle keeps mirroring.
+        assert_eq!(cdc_loop_action(false, true, false), CdcLoopAction::Backoff);
+        assert_eq!(cdc_loop_action(true, true, false), CdcLoopAction::Continue);
+        // Cancellation stops the loop either way.
+        assert_eq!(cdc_loop_action(true, true, true), CdcLoopAction::Break);
+        assert_eq!(cdc_loop_action(false, true, true), CdcLoopAction::Propagate);
+        // One-shot runs are unchanged: success stops, failure surfaces.
+        assert_eq!(cdc_loop_action(true, false, false), CdcLoopAction::Break);
+        assert_eq!(
+            cdc_loop_action(false, false, false),
+            CdcLoopAction::Propagate
+        );
     }
 
     #[test]

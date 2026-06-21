@@ -15,6 +15,7 @@ Reach for it whenever the destination is a spreadsheet, a BI import, a data-exch
 - **RFC 4180 quoting, automatic** — the underlying `csv` crate quotes fields that contain the delimiter, quotes, or newlines, so values never break the layout. No quoting knobs to misconfigure.
 - **Optional header row** — emit a header of column names (default) or write headerless data for append-style logs.
 - **Stable, union-derived columns** — column order is the union of keys across every record in the first batch (first-seen order), so a field present only in a later record of that batch is still captured.
+- **Visible late-field handling** — the header is frozen from the first batch and can't be rewritten in place; a field that first appears in a *later* batch can't become a column. Rather than silently dropping it, the sink emits a one-shot warning naming the dropped field(s), and `on_unknown_field: error` lets you fail the run instead.
 - **Append or truncate** — append to an existing file for incremental exports, or truncate-on-open for a clean rewrite each run.
 - **Creates missing parent dirs** — dated-subdirectory paths like `./data/dt=2026-03-08/part.csv` work with no `mkdir -p` step.
 - **Buffered, off-runtime I/O** — every write runs in `spawn_blocking` behind a buffered writer; the async runtime is never blocked on disk.
@@ -67,6 +68,7 @@ Every row of the query result is written to `./out/users.csv` with a header row,
 | `write_headers` | bool | `true` | Write a header row of column names on the first open. Skipped automatically on append-mode re-opens. |
 | `append` | bool | `false` | Append to an existing file instead of truncating it on open. When `false`, the file is truncated on the first open. |
 | `batch_size` | int | `1000` | Records per upstream `StreamPage`. **No behavioural impact at this sink** — present only for config parity. See [Streaming & batching](#streaming--batching). |
+| `on_unknown_field` | `warn` \| `error` | `warn` | What to do when a record carries a field that is **not** in the frozen column set (the header is fixed from the first batch and cannot be extended). `warn` — emit a one-shot warning naming the dropped field(s) and keep writing (the value is dropped). `error` — abort the write with `FaucetError::Sink` the first time any such field appears. See [Column order & missing fields](#column-order--missing-fields). |
 | `compression` | `none` \| `gzip` \| `zstd` \| `auto` | `auto` | Output compression. Requires the `compression` feature. `auto` infers from the `.gz` / `.zst` path suffix. See [Compression](#compression). |
 
 In YAML/JSON `delimiter` is the **byte value** of the character, not the character itself — e.g. `9` for tab, `59` for semicolon. The library builder takes a `u8` (`b'\t'`).
@@ -163,7 +165,10 @@ The per-run memory bound is set by the **source's** `batch_size` (the size of ea
 - **Column order** is the union of keys across **all records in the first** `write_batch` call, in first-seen order — a field present only in a later record of that batch is still captured.
 - All subsequent records use that same column order, regardless of their own key order.
 - A record **missing** a column writes an empty string for that cell.
-- Keys appearing only in a **later** `write_batch` call (after the header is fixed) are ignored — the header is set once, on the first call. Normalize the record shape upstream (e.g. `select` / `set` transforms) if every column must be present.
+- Keys appearing only in a **later** `write_batch` call (after the header is fixed) **cannot be added to the header** — the header is written once, on the first call, and a CSV file can't be retroactively widened without rewriting the whole file. Such a field's value is **dropped** from the output. How that drop is surfaced is governed by `on_unknown_field`:
+  - `warn` (default) — a single `tracing::warn!` per run names the dropped field(s), then writing continues with those values dropped. This keeps the streaming/append contract intact while making the loss **visible** instead of silent.
+  - `error` — the write aborts with `FaucetError::Sink` (naming the offending field) the first time any record carries a field outside the frozen column set. Opt into this when silent column-level data loss is unacceptable.
+  - Either way, normalize the record shape upstream (e.g. `select` / `set` transforms) — or sort the source so a fully-populated record lands in the first batch — if every column must be present.
 - A non-object record (bare scalar or array) is rejected with `FaucetError::Sink` — every record must be a JSON object.
 
 ### Value conversion
@@ -257,7 +262,7 @@ println!("Exported {} records to CSV", result.records_written);
 # }
 ```
 
-The builder methods are `delimiter(u8)`, `write_headers(bool)`, `append(bool)`, `with_batch_size(usize)`, and `compression(CompressionConfig)` (the last only with the `compression` feature).
+The builder methods are `delimiter(u8)`, `write_headers(bool)`, `append(bool)`, `with_batch_size(usize)`, `on_unknown_field(OnUnknownField)`, and `compression(CompressionConfig)` (the last only with the `compression` feature).
 
 ## How it works
 
@@ -286,7 +291,7 @@ Enable the connector itself in the CLI / umbrella via the `sink-csv` feature.
 | Symptom | Likely cause & fix |
 |---------|--------------------|
 | `CSV sink expects JSON objects, got non-object record` | The source emits bare scalars or arrays. CSV needs columnar objects — shape records into objects upstream (e.g. a `set` / `select` transform) before this sink. |
-| A column present in some rows is missing from the file | The header is fixed from the **first** batch. A key that first appears in a *later* batch is dropped. Normalize the record shape upstream so every expected column is present in the first batch (e.g. `select`/`set`), or sort the source so a fully-populated record comes first. |
+| A column present in some rows is missing from the file | The header is fixed from the **first** batch. A key that first appears in a *later* batch is dropped (the CSV header can't be extended in place). The sink emits a one-shot `dropping field(s) not in the frozen CSV column set` warning naming it. Normalize the record shape upstream so every expected column is present in the first batch (e.g. `select`/`set`), sort the source so a fully-populated record comes first, or set `on_unknown_field: error` to fail loudly instead of dropping silently. |
 | Output file is empty or truncated | The sink buffers; you must `flush()` before reading or exiting. With compression, an un-flushed file is missing its trailer and won't decode. |
 | Delimiter setting seems ignored | `delimiter` is the **byte value** (e.g. `9` for tab, `59` for semicolon), not the literal character. Setting `delimiter: ","` in YAML is wrong; use `delimiter: 44`. |
 | Header keeps repeating across runs | You're truncating each run but expected append, or vice versa. Set `append: true` + `write_headers: false` for incremental log-style files; the header is written only on the first (truncating) open. |

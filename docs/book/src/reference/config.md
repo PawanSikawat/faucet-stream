@@ -279,7 +279,7 @@ All four conditions are validated at config-load time (`faucet validate` and `fa
 
 1. **Deterministic-replay source** — the source must be one of: `postgres-cdc`, `mysql-cdc`, `mongodb-cdc`. Non-CDC sources are rejected because a different page content on replay would cause the pipeline to silently skip records it never wrote.
 2. **Idempotent sink** — the sink must be one of: `sqlite`, `postgres`, `mysql`, `mssql`, `iceberg`, `bigquery`. These sinks atomically commit both the data and a watermark token inside the same transaction or snapshot.
-3. **State store** — a `state:` block is required. The pipeline stores the per-page sequence number alongside the bookmark so it can detect already-committed pages on resume.
+3. **Durable state store** — a `state:` block is required, and it must be a durable backend (`file`, `redis`, or `postgres`) — `memory` is rejected. The pipeline stores the per-page sequence number alongside the bookmark; the watermark must survive a restart, so an in-memory store (lost on process exit) would silently re-deliver an already-committed page on resume.
 4. **No DLQ** — a `dlq:` block is incompatible with `exactly_once` in this version. Per-row error routing and the idempotency watermark interact in ways not yet resolved.
 
 See the [Exactly-once delivery cookbook](../cookbook/state.md#exactly-once-delivery) for a worked example and the full rationale.
@@ -296,9 +296,10 @@ for the full model, sink-support matrix, and per-sink nuances.
 ```yaml
 pipeline:
   schema:
-    on_drift: warn            # warn | evolve | ignore | quarantine | fail
-    allow_type_widening: true # default true; only consulted by `evolve`
-    on_incompatible: fail     # fail | quarantine — `evolve` only (default fail)
+    on_drift: warn                     # warn | evolve | ignore | quarantine | fail
+    allow_type_widening: true          # default true; only consulted by `evolve`
+    on_incompatible: fail              # fail | quarantine — `evolve` only (default fail)
+    relax_nullability_on_missing: false # default false; `evolve` only
   source: { ... }
   sink: { ... }
 ```
@@ -308,6 +309,7 @@ pipeline:
 | `on_drift` | `warn` | Policy applied when drift is detected: `warn` (metric + log, write unchanged), `ignore` (drop unknown fields), `fail` (abort with a `SchemaDrift` error), `quarantine` (route drift-exhibiting rows to the DLQ, write the rest), `evolve` (apply additive/widening DDL, then write). |
 | `allow_type_widening` | `true` | Whether a lossless widening (`integer → number`, gaining nullability) counts as evolvable rather than incompatible. Only consulted by `evolve`. |
 | `on_incompatible` | `fail` | `evolve` only — action for an incompatible residue (narrowing / type swap): `fail` aborts, `quarantine` routes the offending rows to the DLQ. |
+| `relax_nullability_on_missing` | `false` | `evolve` only — whether a `NOT NULL` destination column **absent** from a page may have its `NOT NULL` constraint dropped. Default `false`: an omitted column is not evidence of optionality, so the constraint is left untouched (a genuinely-missing required value then fails at write time). Set `true` only to deliberately let omission relax nullability. Relaxation from an *observed* null in a present column (a widening) is unaffected. |
 
 Detection is **top-level only** — a nested object is one column, so changes
 inside it are invisible.
@@ -445,7 +447,7 @@ replication:
 |-------|------|---------|-------------|
 | `mode` | `snapshot_then_cdc` | **required** | Replication strategy. Only `snapshot_then_cdc` exists in v1: capture the CDC position, bulk-snapshot the table, then stream CDC from that position. |
 | `snapshot.source` | connector | **required** | A **non-CDC** bulk-read source (e.g. `postgres` / `mysql` / `mongodb` running a query) pointing at the same upstream database. Back-fills the destination through `pipeline.sink` before CDC starts. |
-| `continuous` | bool | `true` | When `true`, keep streaming CDC after the snapshot completes until Ctrl-C / SIGTERM. When `false`, drain CDC once and exit. |
+| `continuous` | bool | `true` | When `true`, keep streaming CDC after the snapshot completes until Ctrl-C / SIGTERM; a transient CDC-phase failure is logged, backed off (capped, reset on success), and resumed from the persisted bookmark rather than crash-exiting. When `false`, drain CDC once and exit (surfacing a transient error as a non-zero exit). |
 
 **Requirements** (enforced at config-load time, also reported by `faucet validate`):
 

@@ -18,7 +18,7 @@ Reach for it when you want to stream live mutations out of MongoDB into any fauc
 - **Snapshot → CDC handoff** — implements `capture_resume_position()`, so `faucet replicate` can anchor the change stream *before* a bulk snapshot of the collection and stitch the two into a true mirror.
 - **Server-side filtering** — push an `operationType` allowlist and arbitrary aggregation stages into the change stream so unwanted events never cross the wire.
 - **Pre-image / post-image control** — request the full document `before` and/or `after` each change (MongoDB 6.0+ for pre-images), with explicit `off` / `when_available` / `required` / `update_lookup` modes.
-- **Bounded memory** — events are emitted in pages of `batch_size`; peak memory is `O(batch_size)` no matter how busy the collection is.
+- **Bounded memory** — events are emitted in pages of `batch_size`; peak memory is `O(batch_size)` no matter how busy the collection is. With `batch_size: 0` (single-page drain), `max_staged_records` is the OOM safety valve that caps the in-memory buffer and aborts cleanly rather than risking an OOM-kill.
 - **Client built once** — the authenticated `mongodb::Client` is constructed in `new()` and reused for the lifetime of the source.
 
 ## Installation
@@ -182,6 +182,7 @@ start_from: { type: timestamp, timestamp_secs: 1779019200 }  # a cluster time, i
 | `idle_timeout` | seconds | `30` | Terminate the current fetch cycle after this long with no new events. The page accumulated so far is flushed and the bookmark is saved. Must be `> 0`. |
 | `max_await_time_ms` | u64 | `1000` | Server-side `maxAwaitTimeMS` on `getMore` requests — how long the server blocks waiting for new events before returning an empty batch. Must be **strictly less than** `idle_timeout` (in milliseconds), else config validation fails. |
 | `batch_size` | usize | `1000` | Records per emitted `StreamPage`. `0` = no batching: drain until idle and emit one page. Max `1,000,000`. |
+| `max_staged_records` | usize \| null | `null` | OOM safety valve. Abort with a typed `FaucetError::Source` once more than this many change events are buffered in memory before a page is emitted. `null` = unbounded. Matters most with `batch_size: 0` (or a library caller using `fetch_all`), where the buffer would otherwise grow without bound for the whole fetch cycle and risk an OOM-kill on a high-throughput stream. Mirrors the same field on the sibling `postgres-cdc` / `mysql-cdc` sources. |
 
 ## Examples
 
@@ -413,6 +414,7 @@ This crate has no optional features of its own. From the umbrella / CLI it is ga
 | Pipeline exits cleanly but the source dropped a collection | An `invalidate` (collection/db dropped) arrives as a `ddl` event and **terminates the stream**. Re-run `faucet run`; the prior bookmark is no longer resumable, so set `start_from`. |
 | Authorization errors opening the stream | The user needs `find` + `changeStream` on the namespace (cluster scope needs read across all databases). Check `authSource` in the URI matches where the user is defined. |
 | No events appear even though documents are changing | Check `operation_types` isn't filtering them out, and that `scope` targets the right database/collection. A too-short `idle_timeout` ends the cycle before events arrive on a quiet collection — that's expected; the next run resumes. |
+| `in-memory change buffer exceeded max_staged_records` | A high-throughput stream buffered more events than the configured `max_staged_records` cap before a page flushed — most likely with `batch_size: 0` (single-page drain). Raise `max_staged_records` to fit your available memory, or set a non-zero `batch_size` so pages flush more often. |
 
 ## Caveats
 

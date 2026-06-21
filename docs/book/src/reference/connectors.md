@@ -28,11 +28,11 @@ Legend: ✓ supported · ✗ not applicable.
 | AWS S3 | `source-s3` | ✓⁵ | ✗ | ✗ | ✓ | object reader: JSONL, JSON array, raw text |
 | Google Cloud Storage | `source-gcs` | ✓⁵ | ✗ | ✗ | ✓ | object reader: JSONL, JSON array, raw text |
 | MongoDB | `source-mongodb` | ✓ | ✗ | ✗ | ✗ | `find()` with filter/projection/sort |
-| MongoDB CDC | `source-mongodb-cdc` | ✓ | ✓ | **✓** | ✗ | Change Streams, resumeToken bookmarks |
+| MongoDB CDC | `source-mongodb-cdc` | ✓ | ✓ | **✓** | ✗ | Change Streams, resumeToken bookmarks; `max_staged_records` buffer cap |
 | Redis | `source-redis` | ✓ | ✗ | ✗ | ✗ | streams, lists, key patterns |
 | Webhook | `source-webhook` | ✗⁶ | ✗ | ✗ | ✗ | temporary HTTP server collecting POSTs |
 | WebSocket | `source-websocket` | ✓ | ✗ | ✗ | ✗ | live push feed; subscribe frames, reconnect, ping keepalive |
-| CSV | `source-csv` | ✓ | ✗ | ✗ | ✓ | CSV files as JSON |
+| CSV | `source-csv` | ✓ | ✗ | ✗ | ✓ | CSV files as JSON; strict field count by default (`flexible: true` to tolerate ragged rows) |
 | Elasticsearch | `source-elasticsearch` | ✓ | ✗ | ✗ | ✗ | search/scroll API |
 | Apache Kafka | `source-kafka` | ✓ | ✓ | ✗ | ✗ | consumer; idle/max-messages termination, offset bookmarks |
 | Apache Parquet | `source-parquet` | ✓ | ✗ | ✗ | ✗ | local/glob/S3, vectorized Arrow reader, projection |
@@ -69,12 +69,12 @@ file/append sinks (`jsonl`, `csv`, `stdout`) it's a no-op — they write per rec
 | Google Cloud Storage | `sink-gcs` | ✓ | ✓ | ✗ | ✗ | JSONL objects |
 | MongoDB | `sink-mongodb` | ✓ | ✗ | **✓** | ✗ | `insert_many` |
 | Redis | `sink-redis` | ✓ | ✗ | ✗ | ✗ | streams, lists, key-value (pipelined) |
-| CSV | `sink-csv` | no-op | ✓ | ✗ | ✗ | buffered file rows |
+| CSV | `sink-csv` | no-op | ✓ | ✗ | ✗ | buffered file rows; column set frozen from first batch (`on_unknown_field: warn`/`error`) |
 | Elasticsearch | `sink-elasticsearch` | ✓ | ✗ | **✓** | ✗ | `_bulk` NDJSON (per-row DLQ) |
 | HTTP | `sink-http` | ✓ | ✗ | ✗ | ✗ | POST, concurrent under a semaphore |
 | Stdout | `sink-stdout` | no-op | ✗ | ✗ | ✗ | JSON Lines / pretty JSON / TSV |
 | Apache Kafka | `sink-kafka` | ✓ | ✗ | ✗ | **✓** | producer, batched sends, multi-topic routing; transactional producer + compacted watermark side-topic for exactly-once |
-| Apache Parquet | `sink-parquet` | ✓ | ✗⁶ | ✗ | ✗ | local/S3, schema inference, row/byte rollover |
+| Apache Parquet | `sink-parquet` | ✓ | ✗⁶ | ✗ | ✗ | local/S3, schema inference (re-inferred per file on rollover), row/byte rollover |
 | Apache Iceberg | `sink-iceberg` | ✓ | ✗⁶ | ✗ | **✓** | REST/Glue/SQL/HMS catalog, local + cloud (S3/GCS) warehouses, `fast_append` snapshot, Parquet data files |
 
 ⁶ Parquet and Iceberg both handle compression internally at the Parquet column
@@ -92,6 +92,26 @@ UNIQUE/PRIMARY KEY on `key`; the
 schemaless sinks (MongoDB, Elasticsearch) map `key` to a match filter / `_id`.
 Iceberg upsert is not yet supported (a follow-up, blocked on `iceberg-rust`). See
 [Upsert / mirror tables](../cookbook/upsert.md).
+
+## Data-integrity notes
+
+A few connectors enforce defaults that prevent silent data loss or corruption.
+Inspect the exact fields with `faucet schema source <name>` / `faucet schema sink <name>`.
+
+- **CSV source** — strict by default. A row whose field count differs from the
+  header raises an error naming the offending line. Set `flexible: true` to
+  tolerate ragged rows (the pre-1.x behaviour). *(Breaking default change.)*
+- **CSV sink** — the column set is frozen from the first batch (the header cannot
+  be rewritten in place). A field that first appears in a later page is dropped;
+  `on_unknown_field: warn` (default) emits a one-shot warning naming the dropped
+  field(s), while `on_unknown_field: error` aborts with a typed error.
+- **Parquet sink** — the Arrow schema is re-inferred per output file on rollover,
+  so a file written after the source widens picks up the new schema. A Parquet
+  file's schema is immutable once opened, so a field appearing only later *within
+  a single file* is dropped with a per-file one-shot warning.
+- **MongoDB CDC source** — `max_staged_records` (default unbounded) caps the
+  in-memory change-event buffer (including under `batch_size: 0`) and aborts with
+  a typed error rather than risking OOM, mirroring `postgres-cdc` / `mysql-cdc`.
 
 ## Schema evolution
 

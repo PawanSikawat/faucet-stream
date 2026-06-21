@@ -182,4 +182,74 @@ mod shard_tests {
         assert_eq!(r3.failed, 1, "attempt 2 >= 2 → poisoned (failed)");
         assert_eq!(h.shard_progress("run1").await.unwrap().failed, 1);
     }
+
+    #[tokio::test]
+    async fn delete_run_removes_its_shard_rows() {
+        // F25: deleting a terminal run must also drop its shard rows so they
+        // don't leak unboundedly on the durable store.
+        use crate::serve::history::DeleteOutcome;
+        let dir = tempfile::tempdir().unwrap();
+        let h = backend(&url_in(dir.path()), "a", Duration::from_secs(60)).await;
+        seed_run(&h, "run1").await;
+        h.insert_shards("run1", &[shard("0", 1), shard("1", 1)])
+            .await
+            .unwrap();
+        // Make the run terminal so it is deletable.
+        let mut rec = h.get("run1").await.unwrap().unwrap();
+        rec.status = RunStatus::Completed;
+        rec.finished_at = Some(chrono::Utc::now());
+        h.upsert(&rec).await.unwrap();
+
+        assert_eq!(h.shard_progress("run1").await.unwrap().total, 2);
+        assert_eq!(h.delete("run1").await.unwrap(), DeleteOutcome::Deleted);
+        assert_eq!(
+            h.shard_progress("run1").await.unwrap().total,
+            0,
+            "shard rows must be removed when the run is deleted"
+        );
+    }
+
+    #[tokio::test]
+    async fn purge_expired_removes_orphaned_shard_rows() {
+        // F25: purging expired terminal runs must reclaim their shard rows too.
+        let dir = tempfile::tempdir().unwrap();
+        let h = backend(&url_in(dir.path()), "a", Duration::from_secs(60)).await;
+        seed_run(&h, "run1").await;
+        h.insert_shards("run1", &[shard("0", 1)]).await.unwrap();
+        let mut rec = h.get("run1").await.unwrap().unwrap();
+        rec.status = RunStatus::Completed;
+        rec.finished_at = Some(chrono::Utc::now());
+        h.upsert(&rec).await.unwrap();
+
+        // retain_for = 0 → the terminal run is immediately purgeable.
+        let removed = h.purge_expired(Duration::ZERO).await.unwrap();
+        assert_eq!(removed, 1, "the terminal run is purged");
+        assert_eq!(
+            h.shard_progress("run1").await.unwrap().total,
+            0,
+            "orphaned shard rows must be purged with their parent run"
+        );
+    }
+
+    #[tokio::test]
+    async fn release_idempotency_drops_the_claim() {
+        // F21: releasing a claim lets a replay of the key start fresh instead of
+        // 404-ing for the whole retention window.
+        use crate::serve::history::Claim;
+        let dir = tempfile::tempdir().unwrap();
+        let h = backend(&url_in(dir.path()), "a", Duration::from_secs(60)).await;
+        let w = Duration::from_secs(3600);
+        assert!(matches!(
+            h.claim_idempotency("k", "fp1", "run1", w).await.unwrap(),
+            Claim::Fresh
+        ));
+        // Without release, a different fingerprint on the same key is a Conflict.
+        h.release_idempotency("run1").await.unwrap();
+        // After release the key is free: a fresh claim (even a different
+        // fingerprint / run) succeeds rather than replaying/conflicting.
+        assert!(matches!(
+            h.claim_idempotency("k", "fp2", "run2", w).await.unwrap(),
+            Claim::Fresh
+        ));
+    }
 }

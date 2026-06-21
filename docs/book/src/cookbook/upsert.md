@@ -35,7 +35,7 @@ Seven sinks support `upsert`/`delete`; every other sink is append-only.
 |------|----------|------------------|
 | `postgres` | `column_mapping: auto_map` + UNIQUE/PK on `key` | `INSERT … ON CONFLICT … DO UPDATE` |
 | `sqlite` | `column_mapping: auto_map` + UNIQUE/PK on `key` | `INSERT … ON CONFLICT … DO UPDATE` |
-| `mysql` | `column_mapping: auto_map` + UNIQUE/PK on `key` | `INSERT … ON DUPLICATE KEY UPDATE` |
+| `mysql` | `column_mapping: auto_map` + a PRIMARY/UNIQUE index whose columns **exactly match** `key` | `INSERT … ON DUPLICATE KEY UPDATE` |
 | `mssql` | `column_mapping: auto_columns` + UNIQUE/PK on `key` | `MERGE` |
 | `mongodb` | — (schemaless) | `replace_one(upsert)` / `delete_one`, `key` → match filter |
 | `elasticsearch` | — (schemaless) | `_bulk` `index` / `delete`, `key` → `_id` |
@@ -48,6 +48,15 @@ mode cannot upsert because there is no per-column conflict target. They also req
 what the database's `ON CONFLICT` / `ON DUPLICATE KEY` / `MERGE` matches against;
 without it the upsert silently degrades to plain inserts. faucet does not create
 the constraint for you; create it on the destination table first.
+
+> **MySQL validates the index match at startup.** MySQL's `ON DUPLICATE KEY
+> UPDATE` resolves against *whichever* unique index a row collides with — not the
+> columns you name in `key`. So a `key` that doesn't correspond to a real
+> PRIMARY/UNIQUE index would silently upsert on the wrong index. The MySQL sink
+> therefore checks at construction that the configured `key` **exactly matches**
+> (order-insensitively) the columns of some PRIMARY or UNIQUE index on the target
+> table, and fails fast with a typed error if it does not — catching the
+> mismatch before any data is written rather than corrupting rows.
 
 The **schemaless sinks** (MongoDB, Elasticsearch) have no such requirement: the
 `key` columns are joined into a document filter / `_id`, so the same record both

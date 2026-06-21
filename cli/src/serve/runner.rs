@@ -205,6 +205,35 @@ async fn coordinate_sharded_run(
         return Ok(false);
     }
 
+    // Mark the parent run Sharded BEFORE inserting any shard rows (F27).
+    // Orphan recovery (`recover_orphans` / `reclaim_orphans`) only reclaims
+    // `running` runs; once the parent is `Sharded` it is immune to a false
+    // fail. Doing this first guarantees the invariant that **no shard row ever
+    // exists while the parent is still `running`** — otherwise a coordinator
+    // crash between `insert_shards` and the status flip would let orphan
+    // recovery mark the run Failed while its already-inserted shards are
+    // claimed, execute, and write data (a run the user believes failed and may
+    // resubmit → duplicate writes). If the flip itself fails, the run stays
+    // `running` + owned by us with no shards inserted, so a crash here is
+    // safely *requeued* by reclaim, not falsely failed. (A crash after the flip
+    // but before `insert_shards` leaves a 0-shard `Sharded` run, which
+    // `all_terminal()` never finalizes — an availability leak, not a
+    // correctness/duplication bug; the desired trade.)
+    {
+        let mut r = state
+            .history()
+            .get(run_id)
+            .await
+            .map_err(|e| CliError::Internal(e.to_string()))?
+            .ok_or_else(|| CliError::Internal(format!("run {run_id} vanished before sharding")))?;
+        r.status = RunStatus::Sharded;
+        state
+            .history()
+            .upsert(&r)
+            .await
+            .map_err(|e| CliError::Internal(e.to_string()))?;
+    }
+
     let shards = source
         .enumerate_shards(count)
         .await
@@ -229,11 +258,6 @@ async fn coordinate_sharded_run(
         "expanded run into shards (Mode B)"
     );
 
-    // Mark the parent run Sharded (passive — finalized by shard completion).
-    if let Ok(Some(mut r)) = state.history().get(run_id).await {
-        r.status = RunStatus::Sharded;
-        let _ = state.history().upsert(&r).await;
-    }
     // Wake the local claim loop so it picks up the freshly-inserted shards.
     state.cluster().kick();
     Ok(true)
@@ -501,10 +525,86 @@ async fn maybe_finalize_parent(state: &ServerState, run_id: &str) {
     }
 }
 
+/// Warn at submit when a clustered or source-sharded run is at-least-once with
+/// a non-idempotent destination (F26/F39). Cluster failover and shard reclaim
+/// are at-least-once by construction: an owner whose lease lapses while it is
+/// still alive (slow, paused), or a reassigned shard whose source re-reads from
+/// the start (postgres PK-range sharding yields no resumable bookmark), can
+/// re-execute work and write **duplicate** rows to an append-mode sink. The
+/// safe configuration is `write_mode: upsert`/`delete` (keyed, so re-writes are
+/// idempotent) or `delivery: exactly_once`. We surface the risk loudly rather
+/// than silently duplicating — the repo's #1 worst bug class.
+/// Pure decision for [`warn_if_cluster_at_least_once`]: the sink kinds that
+/// would write non-idempotently under cluster failover / shard reclaim. Empty
+/// when the run is neither clustered nor sharded, is `exactly_once`, or every
+/// sink is keyed (`upsert`/`delete`).
+fn at_least_once_risky_sinks(
+    loaded: &LoadedSubmission,
+    clustered: bool,
+    sharded: bool,
+) -> Vec<&str> {
+    if !(clustered || sharded) || loaded.cfg.delivery == faucet_core::DeliveryMode::ExactlyOnce {
+        return Vec::new();
+    }
+    loaded
+        .nodes
+        .iter()
+        .filter(|n| {
+            !matches!(
+                n.sink
+                    .config
+                    .get("write_mode")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("append"),
+                "upsert" | "delete"
+            )
+        })
+        .map(|n| n.sink.kind.as_str())
+        .collect()
+}
+
+fn warn_if_cluster_at_least_once(loaded: &LoadedSubmission, clustered: bool, sharded: bool) {
+    let risky = at_least_once_risky_sinks(loaded, clustered, sharded);
+    if !risky.is_empty() {
+        let scope = if sharded {
+            "source-sharded (Mode B)"
+        } else {
+            "clustered"
+        };
+        tracing::warn!(
+            sinks = ?risky,
+            "{scope} execution is at-least-once: a failover or shard reclaim can re-run work \
+             and write duplicate rows to an append-mode sink. Set `write_mode: upsert` (or \
+             `delivery: exactly_once`) on the destination to make re-execution idempotent (F26/F39)."
+        );
+    }
+}
+
+/// Best-effort release of an idempotency claim whose paired run-record upsert
+/// failed (F21). No-op when the request carried no key; the release itself is
+/// scoped by `run_id` (a newer run that re-claimed the key keeps its claim).
+async fn release_orphaned_claim(state: &ServerState, req: &SubmitRequest, run_id: &str) {
+    if req.idempotency_key.is_some()
+        && let Err(e) = state.history().release_idempotency(run_id).await
+    {
+        tracing::warn!(
+            run_id,
+            error = %e,
+            "failed to release idempotency claim after a run-record write error; \
+             a replay of the key may 404 until the claim self-expires"
+        );
+    }
+}
+
 /// Validate, idempotency-claim, queue, and spawn a submission.
 pub async fn submit(state: ServerState, req: SubmitRequest) -> Result<SubmitResponse, ServeError> {
     let format: ConfigFormat = req.config_format.into();
     let loaded = load_submission(&req.config, format, state.default_base()).await?;
+
+    // At-least-once duplicate-write warning for clustered / source-sharded runs
+    // with an append-mode destination (F26/F39).
+    let sharded = loaded.cfg.shard.as_ref().is_some_and(|s| s.count >= 2);
+    warn_if_cluster_at_least_once(&loaded, state.cluster().enabled(), sharded);
 
     // Reserve a queue slot first, so a Fresh idempotency claim is always followed
     // by a spawned run (no orphaned claims — spec §20.2).
@@ -564,13 +664,10 @@ pub async fn submit(state: ServerState, req: SubmitRequest) -> Result<SubmitResp
                 ));
             }
         }
-        // NOTE (Phase 5 / SQL backends): a `Fresh` claim is recorded BEFORE the
-        // record upsert below. The memory backend's `upsert` is infallible, so the
-        // claim and record are always consistent today. A future fallible backend
-        // whose `upsert` errors here would leave an orphaned claim (a replay of the
-        // key returns 404 until the claim self-expires within the retention
-        // window). When SQL backends land, claim after a successful upsert, or add
-        // a claim-release to RunHistory.
+        // A `Fresh` claim is recorded BEFORE the record upsert below. The memory
+        // backend's `upsert` is infallible, but a SQL backend's can fail — so if
+        // the upsert fails, `release_orphaned_claim` drops the claim (F21) rather
+        // than leaving a replay 404-ing until the claim self-expires.
     }
 
     let submitted_at = Utc::now();
@@ -603,11 +700,13 @@ pub async fn submit(state: ServerState, req: SubmitRequest) -> Result<SubmitResp
         rec.config_format = Some(req.config_format.into());
         rec.timeout_secs = req.timeout_secs;
         rec.clock = req.clock.clone();
-        state
-            .history()
-            .upsert(&rec)
-            .await
-            .map_err(|e| ServeError::Internal(e.to_string()))?;
+        if let Err(e) = state.history().upsert(&rec).await {
+            // The record write that should follow a `Fresh` claim failed — release
+            // the orphaned claim so a replay starts fresh instead of 404-ing for
+            // the whole retention window (F21). Best-effort.
+            release_orphaned_claim(&state, &req, &run_id).await;
+            return Err(ServeError::Internal(e.to_string()));
+        }
         // Release the local queue reservation (cluster runs are bounded by the
         // claim loop + semaphore, not the submit-side queue).
         drop(reservation);
@@ -619,11 +718,11 @@ pub async fn submit(state: ServerState, req: SubmitRequest) -> Result<SubmitResp
         });
     }
 
-    state
-        .history()
-        .upsert(&rec)
-        .await
-        .map_err(|e| ServeError::Internal(e.to_string()))?;
+    if let Err(e) = state.history().upsert(&rec).await {
+        // See the cluster path above: release the orphaned claim (F21).
+        release_orphaned_claim(&state, &req, &run_id).await;
+        return Err(ServeError::Internal(e.to_string()));
+    }
 
     let run_token = CancellationToken::new();
     state.registry().register(run_id.clone(), run_token.clone());
@@ -1685,6 +1784,54 @@ mod tests {
                 state.history().get("r").await.unwrap().unwrap().status,
                 RunStatus::Sharded
             );
+        }
+
+        #[tokio::test]
+        async fn at_least_once_risky_sinks_flags_append_cluster_and_shard() {
+            // F26/F39: a clustered or sharded run with an append-mode sink is
+            // at-least-once → flagged. Neither flag → not flagged.
+            let append = loaded(
+                "version: 1\npipeline:\n  \
+                 source: { type: rest, config: { url: \"http://localhost/x\" } }\n  \
+                 sink: { type: stdout, config: {} }\n",
+            )
+            .await;
+            // Not clustered, not sharded → no warning.
+            assert!(at_least_once_risky_sinks(&append, false, false).is_empty());
+            // Clustered append → flagged.
+            assert_eq!(
+                at_least_once_risky_sinks(&append, true, false),
+                vec!["stdout"]
+            );
+            // Sharded append → flagged.
+            assert_eq!(
+                at_least_once_risky_sinks(&append, false, true),
+                vec!["stdout"]
+            );
+        }
+
+        #[tokio::test]
+        async fn at_least_once_risky_sinks_safe_for_upsert_and_exactly_once() {
+            // Upsert sink → keyed re-writes are idempotent → not flagged.
+            let upsert = loaded(
+                "version: 1\npipeline:\n  \
+                 source: { type: postgres, config: { connection_url: \"postgres://x\", \
+                 query: \"select 1\" } }\n  \
+                 sink: { type: postgres, config: { connection_url: \"postgres://y\", \
+                 table_name: t, column_mapping: auto_map, write_mode: upsert, key: [id] } }\n",
+            )
+            .await;
+            assert!(at_least_once_risky_sinks(&upsert, true, true).is_empty());
+
+            // exactly_once delivery → not flagged even with an append sink.
+            let eo = loaded(
+                "version: 1\ndelivery: exactly_once\npipeline:\n  \
+                 source: { type: postgres-cdc, config: {} }\n  \
+                 sink: { type: sqlite, config: {} }\n  \
+                 state: { type: file, config: { path: \"/tmp/x.json\" } }\n",
+            )
+            .await;
+            assert!(at_least_once_risky_sinks(&eo, true, false).is_empty());
         }
 
         async fn seed_sharded_with_shards(state: &ServerState, run_id: &str, n: usize) {

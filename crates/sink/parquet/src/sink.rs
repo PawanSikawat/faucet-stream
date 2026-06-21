@@ -60,7 +60,13 @@ pub struct ParquetSink {
 
 /// Bookkeeping that mutates as we write.
 struct WriterState {
-    /// `None` until the first batch arrives.
+    /// `None` until the first batch of the *current* file arrives. Re-inferred
+    /// per file: cleared on every rollover (`close_current`) so a file that is
+    /// opened *after* the schema widens (e.g. CDC following an
+    /// `ALTER TABLE ADD COLUMN`) re-infers from its own first batch and writes
+    /// the new columns. A Parquet file's schema is immutable once the first
+    /// batch is written, so widening that appears *within* a single file cannot
+    /// be accommodated — only at a file boundary (see `warned_fields`).
     schema: Option<SchemaRef>,
     /// `None` between rollovers and at construction.
     writer: Option<AsyncArrowWriter<Box<dyn AsyncFileWriter>>>,
@@ -68,6 +74,12 @@ struct WriterState {
     rows_in_current_file: usize,
     /// Total files closed successfully (for diagnostics).
     files_written: usize,
+    /// Fields already warned-about as dropped from the *current* file (present
+    /// in a record but absent from this file's locked schema). Cleared on every
+    /// rollover so a new file re-warns if it still drops fields. Persisting this
+    /// across chunks (rather than resetting per `encode_batch`) keeps the
+    /// warning to one line per dropped field per file instead of one per page.
+    warned_fields: std::collections::HashSet<String>,
 }
 
 impl WriterState {
@@ -77,6 +89,7 @@ impl WriterState {
             writer: None,
             rows_in_current_file: 0,
             files_written: 0,
+            warned_fields: std::collections::HashSet::new(),
         }
     }
 }
@@ -186,17 +199,24 @@ impl ParquetSink {
     ///
     /// Unknown fields (present in records but not in schema) are silently
     /// dropped by `arrow_json::Decoder` because we leave `strict_mode` at its
-    /// default `false`; we still emit a `tracing::warn!` for visibility.
+    /// default `false`; we still emit a `tracing::warn!` for visibility. The
+    /// schema is re-inferred per file (see `WriterState::schema`), so a field
+    /// added between files is *written* in the later file; a field added
+    /// *within* a single file genuinely cannot be accommodated (a Parquet
+    /// file's schema is immutable mid-stream) and is the case this warning
+    /// makes visible. `warned_fields` dedupes the warning to one line per
+    /// dropped field per file.
     ///
     /// Type drift (a field whose JSON type disagrees with the schema's
     /// `DataType`) is surfaced as a `FaucetError::Sink` naming the field and
     /// both sides of the mismatch.
     fn encode_batch(
         &self,
+        warned_fields: &mut std::collections::HashSet<String>,
         schema: SchemaRef,
         records: &[Value],
     ) -> Result<RecordBatch, FaucetError> {
-        warn_on_unknown_fields(&schema, records);
+        warn_on_unknown_fields(warned_fields, &schema, records);
 
         let mut decoder = arrow_json::ReaderBuilder::new(schema.clone())
             .build_decoder()
@@ -248,7 +268,7 @@ impl ParquetSink {
             state.writer = Some(self.open_writer(schema.clone()).await?);
         }
 
-        let batch = self.encode_batch(schema.clone(), records)?;
+        let batch = self.encode_batch(&mut state.warned_fields, schema.clone(), records)?;
         let batch_rows = batch.num_rows();
 
         let estimated_size = {
@@ -278,7 +298,19 @@ impl ParquetSink {
         Ok(batch_rows)
     }
 
-    /// Close the current writer (writing the parquet footer) and clear state.
+    /// Close the current writer (writing the parquet footer) and reset the
+    /// per-file state so the *next* file re-infers its own schema.
+    ///
+    /// Clearing `state.schema` here is the fix for F34 (silent column-level
+    /// data loss): the schema must not be locked-in from the very first batch
+    /// of the run and reused for every subsequent file. Re-inferring per file
+    /// means a file opened *after* the record shape widens (CDC after an
+    /// `ALTER TABLE ADD COLUMN`, or a non-homogeneous first page) picks up the
+    /// new columns at the next file boundary instead of dropping them forever.
+    /// This is safe because a Parquet file's schema is immutable once its first
+    /// batch is written, so re-inference only ever happens between files, never
+    /// mid-file. `warned_fields` is reset too so a new file re-warns about any
+    /// fields it still drops.
     async fn close_current(&self, state: &mut WriterState) -> Result<(), FaucetError> {
         if let Some(writer) = state.writer.take() {
             writer
@@ -287,6 +319,8 @@ impl ParquetSink {
                 .map_err(|e| FaucetError::Sink(format!("could not close parquet writer: {e}")))?;
             state.files_written += 1;
             state.rows_in_current_file = 0;
+            state.schema = None;
+            state.warned_fields.clear();
         }
         Ok(())
     }
@@ -559,18 +593,35 @@ fn should_rollover(cfg: &ParquetSinkConfig, state: &WriterState, bytes_written: 
     false
 }
 
-fn warn_on_unknown_fields(schema: &SchemaRef, records: &[Value]) {
+/// Warn (once per field per file) about fields present in `records` but absent
+/// from the current file's locked `schema` — these are silently dropped by the
+/// `arrow_json` decoder (`strict_mode = false`).
+///
+/// `already_warned` is the per-file dedupe set carried in `WriterState`; it is
+/// cleared on rollover so a new file re-warns. This makes the *unavoidable*
+/// within-a-single-file widening (a field that appears after this file's schema
+/// is locked, which cannot be added mid-file) visible rather than silent.
+fn warn_on_unknown_fields(
+    already_warned: &mut std::collections::HashSet<String>,
+    schema: &SchemaRef,
+    records: &[Value],
+) {
     if records.is_empty() {
         return;
     }
     let known: std::collections::HashSet<&str> =
         schema.fields().iter().map(|f| f.name().as_str()).collect();
-    let mut already_warned: std::collections::HashSet<String> = std::collections::HashSet::new();
     for r in records {
         if let Value::Object(map) = r {
             for k in map.keys() {
                 if !known.contains(k.as_str()) && already_warned.insert(k.clone()) {
-                    tracing::warn!(field = %k, "dropping unknown field from parquet output");
+                    tracing::warn!(
+                        field = %k,
+                        "parquet sink: dropping field absent from this file's schema; \
+                         it was added after the file's first batch and a Parquet file's \
+                         schema is immutable mid-file. It will be captured in the next \
+                         file on rollover, or in a fresh run."
+                    );
                 }
             }
         }
@@ -1018,5 +1069,137 @@ mod tests {
             vec![1, 2, 3, 4],
             "no rows lost across rolled files"
         );
+    }
+
+    /// Read the column names of a Parquet file's schema.
+    fn read_columns(path: &std::path::Path) -> Vec<String> {
+        let file = std::fs::File::open(path).expect("open parquet file");
+        let builder =
+            ParquetRecordBatchReaderBuilder::try_new(file).expect("parquet reader builder");
+        builder
+            .schema()
+            .fields()
+            .iter()
+            .map(|f| f.name().to_string())
+            .collect()
+    }
+
+    /// Regression test for F34 (audit #264): the Parquet schema must be
+    /// re-inferred per file. When a later file's first batch carries a *wider*
+    /// schema (a new column added mid-run, e.g. CDC after ALTER TABLE ADD
+    /// COLUMN), the new column must be written in that later file rather than
+    /// silently dropped because the schema was locked from the very first batch
+    /// of the run.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn rollover_reinfers_widened_schema_in_later_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        // Directory destination + row threshold → multi-file rollover mode.
+        let cfg =
+            ParquetSinkConfig::local(tmp.path().to_string_lossy().to_string()).max_rows_per_file(2);
+        assert!(!compute_single_file_mode(&cfg));
+
+        {
+            let sink = ParquetSink::new(cfg).await.unwrap();
+            // File 1: narrow schema {id}. Two rows hits the rollover threshold,
+            // closing file 1 and clearing the locked schema.
+            sink.write_batch(&[json!({"id": 1}), json!({"id": 2})])
+                .await
+                .unwrap();
+            sink.flush().await.unwrap();
+            // File 2: widened schema {id, extra}. Under the bug the schema
+            // stayed locked to {id} and `extra` would be silently dropped.
+            sink.write_batch(&[json!({"id": 3, "extra": "new-column"})])
+                .await
+                .unwrap();
+            sink.flush().await.unwrap();
+        }
+
+        let mut files: Vec<_> = std::fs::read_dir(tmp.path())
+            .unwrap()
+            .filter_map(|e| e.ok().map(|e| e.path()))
+            .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("parquet"))
+            .collect();
+        files.sort();
+        assert_eq!(files.len(), 2, "expected exactly two rolled files");
+
+        // The file holding id=3 must include the widened `extra` column.
+        let mut found_extra = false;
+        for f in &files {
+            let cols = read_columns(f);
+            if cols.iter().any(|c| c == "extra") {
+                found_extra = true;
+                assert!(
+                    cols.iter().any(|c| c == "id"),
+                    "widened file must still carry the original `id` column: {cols:?}"
+                );
+            }
+        }
+        assert!(
+            found_extra,
+            "a later file must re-infer and write the widened `extra` column"
+        );
+    }
+
+    /// `close_current` must reset the per-file state so the next file
+    /// re-infers its own schema: `state.schema` and `warned_fields` cleared,
+    /// `rows_in_current_file` reset, `files_written` incremented.
+    #[tokio::test]
+    async fn close_current_resets_per_file_state() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg = ParquetSinkConfig::local(tmp.path().to_string_lossy().to_string());
+        let sink = ParquetSink::new(cfg).await.unwrap();
+
+        {
+            let mut state = sink.state.lock().await;
+            // Simulate a written-into file: schema locked, a row counted, and a
+            // dropped field warned-about.
+            sink.write_chunk(&mut state, &[json!({"id": 1})])
+                .await
+                .unwrap();
+            assert!(
+                state.schema.is_some(),
+                "schema should be locked after write"
+            );
+            state.warned_fields.insert("ghost".to_string());
+            assert_eq!(state.rows_in_current_file, 1);
+
+            sink.close_current(&mut state).await.unwrap();
+
+            assert!(
+                state.schema.is_none(),
+                "schema must be cleared on rollover so the next file re-infers"
+            );
+            assert!(
+                state.warned_fields.is_empty(),
+                "warned_fields must be cleared so a new file re-warns"
+            );
+            assert_eq!(state.rows_in_current_file, 0);
+            assert_eq!(state.files_written, 1);
+        }
+    }
+
+    /// The unknown-field warning de-dupe set lives in `WriterState` and is
+    /// cleared on rollover, so a field dropped within one file warns once, and
+    /// a fresh file re-warns. We assert the de-dupe set behavior directly
+    /// (tracing output is not asserted here) since the warn path itself is
+    /// exercised by `unknown_fields_are_silently_dropped`.
+    #[test]
+    fn warn_on_unknown_fields_dedupes_per_file() {
+        let records = vec![json!({"id": 1, "ghost": "x"})];
+        let schema = infer_schema(&[json!({"id": 1})], 10).unwrap();
+        let mut warned = std::collections::HashSet::new();
+
+        warn_on_unknown_fields(&mut warned, &schema, &records);
+        assert!(warned.contains("ghost"), "dropped field must be recorded");
+
+        // Second call with the same set must not re-record (one warn per file).
+        let before = warned.clone();
+        warn_on_unknown_fields(&mut warned, &schema, &records);
+        assert_eq!(warned, before, "already-warned field must not re-record");
+
+        // Clearing (as close_current does) lets a new file re-warn.
+        warned.clear();
+        warn_on_unknown_fields(&mut warned, &schema, &records);
+        assert!(warned.contains("ghost"), "a fresh file must re-warn");
     }
 }

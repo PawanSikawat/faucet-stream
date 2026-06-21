@@ -28,10 +28,22 @@ A runnable example lives at `cli/examples/rest_to_jsonl_resilient.yaml`.
 
 The policy is applied at two layers:
 
-- **Sink side (the pipeline loop):** every sink write (`write_batch` /
-  `write_batch_partial` / `write_batch_idempotent`), `flush`, and state-store
-  `put` is wrapped with retry + the circuit breaker. This covers the default,
-  exactly-once, and DLQ write paths.
+- **Sink side (the pipeline loop):** `flush`, state-store `put`, and the
+  exactly-once `write_batch_idempotent` path are wrapped with retry + the circuit
+  breaker. A plain `write_batch` / `write_batch_partial` is retried **only when the
+  sink supports idempotent writes** (the exactly-once protocol) — see the caveat
+  below.
+
+> **Plain `write_batch` retry is gated on sink idempotency.** A non-idempotent
+> sink's `write_batch` is **not** pipeline-retried: a write that failed because
+> the *response* was lost (the rows actually landed) would, on retry, duplicate
+> every row. Only sinks that support idempotent writes (`postgres`, `mysql`,
+> `mssql`, `sqlite`, `iceberg`, `bigquery`, `kafka`) have their batch writes
+> retried by the policy. The exactly-once `write_batch_idempotent` path is always
+> retried (the commit token makes a replay safe), as are `flush` and `state_put`
+> for every sink. A transient failure on a non-idempotent sink still surfaces —
+> handle it with exactly-once delivery, an upsert write mode, or downstream
+> deduplication.
 - **Source side (the connector):** the `retry` policy is injected into the
   connectors that retry their own requests (`rest`, `xml`, `graphql`), replacing
   their ad-hoc retry settings with one shared configuration.

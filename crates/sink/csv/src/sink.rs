@@ -44,6 +44,12 @@ pub struct CsvSink {
     /// pipeline's per-bookmark flush would silently lose data when
     /// `config.append = false` (the default).
     opened_once: std::sync::atomic::AtomicBool,
+    /// One-shot guard for the "dropping unknown field" warning. The CSV header
+    /// is frozen from the first batch, so a field that first appears later
+    /// cannot be added to the header and its value is dropped. We warn at most
+    /// once per run (like the parquet sink's `warn_on_unknown_fields`) so the
+    /// loss is visible rather than silent, without flooding the log.
+    warned_unknown: std::sync::atomic::AtomicBool,
 }
 
 impl CsvSink {
@@ -53,6 +59,7 @@ impl CsvSink {
             config,
             state: Mutex::new(None),
             opened_once: std::sync::atomic::AtomicBool::new(false),
+            warned_unknown: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
@@ -98,18 +105,37 @@ impl faucet_core::Sink for CsvSink {
         };
 
         let opened_before = self.opened_once.load(std::sync::atomic::Ordering::Relaxed);
+        let already_warned = self
+            .warned_unknown
+            .load(std::sync::atomic::Ordering::Relaxed);
 
         let result = tokio::task::spawn_blocking(move || {
-            write_csv_blocking(config, current_state, &records, opened_before)
+            write_csv_blocking(
+                config,
+                current_state,
+                &records,
+                opened_before,
+                already_warned,
+            )
         })
         .await
         .map_err(|e| FaucetError::Sink(format!("CSV write task failed: {e}")))?;
 
-        let (new_state, count) = result?;
+        let WriteOutcome {
+            state: new_state,
+            count,
+            warned_unknown,
+        } = result?;
 
         // Mark opened. From now on, re-opens (after flush) use append mode.
         self.opened_once
             .store(true, std::sync::atomic::Ordering::Relaxed);
+
+        // Latch the one-shot unknown-field warning so it fires once per run.
+        if warned_unknown {
+            self.warned_unknown
+                .store(true, std::sync::atomic::Ordering::Relaxed);
+        }
 
         // Put the state back.
         {
@@ -186,13 +212,43 @@ impl faucet_core::Sink for CsvSink {
     }
 }
 
+/// Result of one blocking CSV write: the (returned) writer state, the number
+/// of records written, and whether this batch emitted the one-shot
+/// "dropping unknown field" warning (so the caller can latch its atomic flag).
+struct WriteOutcome {
+    state: WriterState,
+    count: usize,
+    warned_unknown: bool,
+}
+
+/// Identify record keys that are absent from the frozen `columns` set, in
+/// first-seen order across `records`, deduplicated. These fields cannot be
+/// written (the header is already fixed) and would otherwise be silently
+/// dropped. Pure — no I/O — so it is unit-testable.
+fn unknown_fields(columns: &[String], records: &[Value]) -> Vec<String> {
+    let known: std::collections::HashSet<&str> = columns.iter().map(String::as_str).collect();
+    let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    let mut out: Vec<String> = Vec::new();
+    for record in records {
+        if let Value::Object(map) = record {
+            for k in map.keys() {
+                if !known.contains(k.as_str()) && seen.insert(k.as_str()) {
+                    out.push(k.clone());
+                }
+            }
+        }
+    }
+    out
+}
+
 /// Synchronous CSV writing logic, run inside `spawn_blocking`.
 fn write_csv_blocking(
     config: CsvSinkConfig,
     existing_state: Option<WriterState>,
     records: &[Value],
     opened_before: bool,
-) -> Result<(WriterState, usize), FaucetError> {
+    already_warned: bool,
+) -> Result<WriteOutcome, FaucetError> {
     let mut state = match existing_state {
         Some(s) => s,
         None => {
@@ -274,6 +330,38 @@ fn write_csv_blocking(
         }
     };
 
+    // The header is now frozen (either just written, or carried over from a
+    // prior batch). Detect any record key that is not a known column — it
+    // cannot be added to the header and would be dropped from the output.
+    // Under `error` this aborts the write before any row is written; under
+    // `warn` (default) it emits a single warning per run and continues.
+    let unknown = unknown_fields(&state.columns, records);
+    let mut warned_unknown = false;
+    if !unknown.is_empty() {
+        match config.on_unknown_field {
+            crate::config::OnUnknownField::Error => {
+                return Err(FaucetError::Sink(format!(
+                    "CSV sink received record field(s) not in the frozen column set \
+                     and on_unknown_field=error: [{}]. The CSV header is fixed from the \
+                     first batch and cannot be extended; these values would be dropped.",
+                    unknown.join(", ")
+                )));
+            }
+            crate::config::OnUnknownField::Warn => {
+                if !already_warned {
+                    warned_unknown = true;
+                    tracing::warn!(
+                        fields = %unknown.join(", "),
+                        path = %config.path,
+                        "dropping field(s) not in the frozen CSV column set — the header is \
+                         fixed from the first batch and cannot be extended; set \
+                         on_unknown_field=error to fail instead"
+                    );
+                }
+            }
+        }
+    }
+
     let mut count = 0;
     for record in records {
         let row: Vec<String> = state
@@ -296,7 +384,11 @@ fn write_csv_blocking(
 
     tracing::debug!(records = count, path = %config.path, "CSV batch written");
 
-    Ok((state, count))
+    Ok(WriteOutcome {
+        state,
+        count,
+        warned_unknown,
+    })
 }
 
 #[cfg(test)]
@@ -365,6 +457,122 @@ mod tests {
             "second row must carry the unioned column value: {}",
             lines[2]
         );
+    }
+
+    #[test]
+    fn unknown_fields_detects_late_keys_in_first_seen_order() {
+        let columns = vec!["id".to_string(), "name".to_string()];
+        let records = vec![
+            json!({ "id": 1, "name": "Alice" }),
+            json!({ "id": 2, "email": "b@x.y", "name": "Bob", "phone": "555" }),
+            json!({ "id": 3, "email": "c@x.y" }), // email is a dup, skipped
+            json!("not-an-object"),               // non-objects are ignored here
+        ];
+        let unknown = unknown_fields(&columns, &records);
+        assert_eq!(unknown, vec!["email".to_string(), "phone".to_string()]);
+    }
+
+    #[test]
+    fn unknown_fields_empty_when_all_known() {
+        let columns = vec!["a".to_string(), "b".to_string()];
+        let records = vec![json!({ "a": 1 }), json!({ "b": 2, "a": 3 })];
+        assert!(unknown_fields(&columns, &records).is_empty());
+    }
+
+    #[tokio::test]
+    async fn later_page_new_field_is_dropped_and_warns() {
+        // F31: the column set is frozen from the first batch. A field that
+        // first appears in a later batch (page 2) cannot be added to the
+        // already-written header, so its value is dropped — but the loss is
+        // now visible via a one-shot warning (default on_unknown_field=warn).
+        let tmp = NamedTempFile::new().unwrap();
+        let path = tmp.path().to_str().unwrap().to_string();
+        let sink = CsvSink::new(CsvSinkConfig::new(&path));
+
+        // Page 1 freezes columns to {id, name}.
+        sink.write_batch(&[json!({ "id": 1, "name": "Alice" })])
+            .await
+            .unwrap();
+        // Page 2 introduces a new field `email` absent from page 1.
+        let count = sink
+            .write_batch(&[json!({ "id": 2, "name": "Bob", "email": "bob@x.y" })])
+            .await
+            .unwrap();
+        sink.flush().await.unwrap();
+
+        assert_eq!(count, 1);
+        // The one-shot warn flag must have latched (warning path exercised).
+        assert!(
+            sink.warned_unknown
+                .load(std::sync::atomic::Ordering::Relaxed),
+            "the unknown-field warning must have fired"
+        );
+
+        let content = tokio::fs::read_to_string(&path).await.unwrap();
+        let lines: Vec<&str> = content.trim().split('\n').collect();
+        assert_eq!(lines.len(), 3, "header + 2 rows");
+        // The header carries only the first-page columns.
+        assert!(
+            !lines[0].contains("email"),
+            "header must not gain the late field: {}",
+            lines[0]
+        );
+        // The dropped field's value must NOT appear anywhere in the output.
+        assert!(
+            !content.contains("bob@x.y"),
+            "late field value must be dropped from output: {content}"
+        );
+    }
+
+    #[tokio::test]
+    async fn on_unknown_field_error_aborts_with_sink_error() {
+        use crate::config::OnUnknownField;
+        let tmp = NamedTempFile::new().unwrap();
+        let path = tmp.path().to_str().unwrap().to_string();
+        let sink = CsvSink::new(CsvSinkConfig::new(&path).on_unknown_field(OnUnknownField::Error));
+
+        sink.write_batch(&[json!({ "id": 1, "name": "Alice" })])
+            .await
+            .unwrap();
+        let err = sink
+            .write_batch(&[json!({ "id": 2, "name": "Bob", "email": "bob@x.y" })])
+            .await
+            .expect_err("a late field must abort under on_unknown_field=error");
+        match err {
+            FaucetError::Sink(msg) => {
+                assert!(msg.contains("email"), "error must name the field: {msg}");
+                assert!(
+                    msg.contains("on_unknown_field=error"),
+                    "error must explain: {msg}"
+                );
+            }
+            other => panic!("expected FaucetError::Sink, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn first_batch_union_does_not_trigger_unknown_warning() {
+        // The first batch's column union already covers all its keys, so a
+        // later-record-only field within the first batch must NOT warn.
+        let tmp = NamedTempFile::new().unwrap();
+        let path = tmp.path().to_str().unwrap().to_string();
+        let sink = CsvSink::new(CsvSinkConfig::new(&path));
+        sink.write_batch(&[
+            json!({ "id": 1, "name": "Alice" }),
+            json!({ "id": 2, "name": "Bob", "email": "bob@x.y" }),
+        ])
+        .await
+        .unwrap();
+        sink.flush().await.unwrap();
+        assert!(
+            !sink
+                .warned_unknown
+                .load(std::sync::atomic::Ordering::Relaxed),
+            "first-batch union must not trigger the unknown-field warning"
+        );
+        // And the email value IS present (it was part of the frozen union).
+        let content = tokio::fs::read_to_string(&path).await.unwrap();
+        assert!(content.contains("bob@x.y"));
     }
 
     #[tokio::test]

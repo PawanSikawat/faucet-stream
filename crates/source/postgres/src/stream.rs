@@ -31,6 +31,14 @@ struct ShardBounds {
     /// `hi` is inclusive only for the last shard (so the max row is covered);
     /// every other shard is half-open `[lo, hi)`.
     hi_inclusive: bool,
+    /// When `true` this shard *additionally* matches rows whose `key` is NULL.
+    ///
+    /// SQL aggregates (`MIN`/`MAX`) ignore NULLs, so a nullable shard key never
+    /// produces a `[lo, hi]` range covering NULL-key rows — without this flag
+    /// every sharded run would silently drop them (audit F37). Exactly one
+    /// shard (the last) carries this flag, so NULL-key rows are read by
+    /// precisely one shard: no loss, no duplication.
+    include_null: bool,
 }
 
 impl ShardBounds {
@@ -45,21 +53,34 @@ impl ShardBounds {
                 .get("hi_inclusive")
                 .and_then(Value::as_bool)
                 .unwrap_or(false),
+            include_null: d
+                .get("include_null")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
         })
     }
 
     /// Wrap `inner` so only rows whose `key` falls in this shard's range are
     /// returned. The key is quoted (injection-safe); the bounds are inlined as
     /// integer literals (safe — they are `i64`s produced by enumeration).
+    ///
+    /// The single shard with `include_null` also matches `key IS NULL` so
+    /// NULL-key rows (invisible to the `MIN`/`MAX` enumeration) are still read.
     fn wrap(&self, inner: &str) -> String {
         let op = if self.hi_inclusive { "<=" } else { "<" };
         let key = quote_ident(&self.key);
-        format!(
-            "SELECT * FROM ({inner}) AS _faucet_shard \
-             WHERE {key} >= {lo} AND {key} {op} {hi}",
+        let range = format!(
+            "{key} >= {lo} AND {key} {op} {hi}",
             lo = self.lo,
             hi = self.hi
-        )
+        );
+        let predicate = if self.include_null {
+            // Parenthesize so the OR binds correctly inside the WHERE clause.
+            format!("(({range}) OR {key} IS NULL)")
+        } else {
+            range
+        };
+        format!("SELECT * FROM ({inner}) AS _faucet_shard WHERE {predicate}")
     }
 }
 
@@ -91,8 +112,21 @@ impl PostgresSource {
 }
 
 /// Split an inclusive integer range `[min, max]` into up to `target` contiguous
-/// shards, each described by `{key, lo, hi, hi_inclusive}`. All but the last are
-/// half-open `[lo, hi)`; the last is `[lo, max]` (inclusive) so `max` is covered.
+/// shards, each described by `{key, lo, hi, hi_inclusive, include_null}`. All
+/// but the last are half-open `[lo, hi)`; the last is `[lo, max]` (inclusive) so
+/// `max` is covered.
+///
+/// The last shard also carries `include_null: true` so that NULL-key rows —
+/// invisible to the `MIN`/`MAX` enumeration that produced `[min, max]` — are
+/// read by exactly one shard (no loss, no duplication; audit F37). Picking the
+/// *last* shard means a single-shard plan still covers NULLs.
+///
+/// Coverage scheme (proven by `predicate_coverage_*` tests):
+/// - non-NULL keys: contiguous `[lo, hi)` ranges tile `[min, max]`, with the
+///   final range closing inclusively at `max` — every value falls in exactly
+///   one shard;
+/// - NULL keys: matched only by the last shard's `OR key IS NULL` clause —
+///   exactly one shard.
 ///
 /// Pure function (no I/O) so it is unit-testable without a database.
 fn plan_pk_shards(key: &str, min: i64, max: i64, target: usize) -> Vec<ShardSpec> {
@@ -115,6 +149,8 @@ fn plan_pk_shards(key: &str, min: i64, max: i64, target: usize) -> Vec<ShardSpec
             "lo": lo as i64,
             "hi": hi as i64,
             "hi_inclusive": is_last,
+            // Exactly one shard (the last) owns the NULL-key rows.
+            "include_null": is_last,
         });
         let size = (hi - lo).max(0) as u64 + if is_last { 1 } else { 0 };
         shards.push(ShardSpec::new(i.to_string(), descriptor).with_size(size));
@@ -214,6 +250,40 @@ fn resolve_query(
     }
 }
 
+/// How a numeric bind value should be bound onto a sqlx query.
+///
+/// Classifying *before* binding keeps the integer/float decision in one pure,
+/// unit-testable place and — critically — binds any integer in
+/// `[i64::MIN, i64::MAX]` as an exact `i64` rather than an `f64`. Binding an
+/// integer above `2^53` as `f64` silently rounds it (audit F38), so a large
+/// 64-bit id threaded into `WHERE id = $1` would compare against the *wrong*
+/// value and return wrong rows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NumberBind {
+    /// Exact `i64` — covers every integer in `[i64::MIN, i64::MAX]`.
+    I64,
+    /// Value above `i64::MAX`; bind the `u64` reinterpreted as `i64` (two's
+    /// complement) so the bytes round-trip into an `int8`/`bigint` column.
+    U64,
+    /// Genuine floating-point value — bind as `f64`.
+    F64,
+}
+
+/// Classify a JSON number into the bind category to use.
+///
+/// `is_i64()` losslessly covers `[i64::MIN, i64::MAX]` (including the
+/// `(2^53, i64::MAX]` range that `f64` would round); `is_u64()` covers values
+/// above `i64::MAX`; everything else is a real float.
+fn classify_number(n: &serde_json::Number) -> NumberBind {
+    if n.is_i64() {
+        NumberBind::I64
+    } else if n.is_u64() {
+        NumberBind::U64
+    } else {
+        NumberBind::F64
+    }
+}
+
 /// Apply configured params followed by context-derived bind values onto a
 /// sqlx query.
 fn bind_params<'q>(
@@ -230,8 +300,15 @@ fn bind_params<'q>(
     for value in config_params.iter().chain(bind_values) {
         query = match value {
             Value::String(s) => query.bind(s.clone()),
-            Value::Number(n) if n.is_i64() => query.bind(n.as_i64().unwrap()),
-            Value::Number(n) => query.bind(n.as_f64().unwrap_or(0.0)),
+            Value::Number(n) => match classify_number(n) {
+                // `unwrap()` is sound: the classifier proves the predicate.
+                NumberBind::I64 => query.bind(n.as_i64().unwrap()),
+                // `u64::MAX` has no `i64` representation; reinterpret the bits
+                // so the value round-trips into an `int8`/`bigint` column
+                // without the precision loss an `f64` cast would introduce.
+                NumberBind::U64 => query.bind(n.as_u64().unwrap() as i64),
+                NumberBind::F64 => query.bind(n.as_f64().unwrap_or(0.0)),
+            },
             Value::Bool(b) => query.bind(*b),
             Value::Null => query.bind(None::<String>),
             _ => query.bind(value.to_string()),
@@ -424,6 +501,71 @@ mod tests {
         }
     }
 
+    // ── F38: numeric bind classification (precision-safe) ───────────────────
+
+    fn num(v: serde_json::Value) -> serde_json::Number {
+        match v {
+            serde_json::Value::Number(n) => n,
+            _ => panic!("not a number"),
+        }
+    }
+
+    #[test]
+    fn classify_small_int_is_i64() {
+        assert_eq!(
+            classify_number(&num(serde_json::json!(42))),
+            NumberBind::I64
+        );
+        assert_eq!(
+            classify_number(&num(serde_json::json!(-7))),
+            NumberBind::I64
+        );
+        assert_eq!(classify_number(&num(serde_json::json!(0))), NumberBind::I64);
+    }
+
+    #[test]
+    fn classify_above_2_pow_53_stays_i64_not_f64() {
+        // The key precision bug: 2^53 + 1 must NOT be bound as f64 (which would
+        // round it). It is a valid i64, so it must classify as I64.
+        let v = 9_007_199_254_740_993i64; // 2^53 + 1
+        assert_eq!(classify_number(&num(serde_json::json!(v))), NumberBind::I64);
+    }
+
+    #[test]
+    fn classify_i64_max_is_i64() {
+        assert_eq!(
+            classify_number(&num(serde_json::json!(i64::MAX))),
+            NumberBind::I64
+        );
+        assert_eq!(
+            classify_number(&num(serde_json::json!(i64::MIN))),
+            NumberBind::I64
+        );
+    }
+
+    #[test]
+    fn classify_above_i64_max_is_u64() {
+        // i64::MAX + 1 has no i64 representation but fits u64.
+        let v: u64 = i64::MAX as u64 + 1;
+        assert_eq!(classify_number(&num(serde_json::json!(v))), NumberBind::U64);
+        assert_eq!(
+            classify_number(&num(serde_json::json!(u64::MAX))),
+            NumberBind::U64
+        );
+    }
+
+    #[test]
+    fn classify_float_is_f64() {
+        assert_eq!(
+            classify_number(&num(serde_json::json!(3.5))),
+            NumberBind::F64
+        );
+        assert_eq!(
+            classify_number(&num(serde_json::json!(-0.5))),
+            NumberBind::F64
+        );
+    }
+
     // ── PK-range sharding (pure logic) ──────────────────────────────────────
 
     #[test]
@@ -526,6 +668,89 @@ mod tests {
         let spec = ShardSpec::new("0", serde_json::json!({"key": "id"})); // no lo/hi
         assert!(ShardBounds::from_spec(&spec).is_none());
         assert!(ShardBounds::from_spec(&ShardSpec::whole()).is_none());
+    }
+
+    // ── F37: NULL-key shard coverage ────────────────────────────────────────
+
+    #[test]
+    fn exactly_one_shard_includes_null() {
+        let shards = plan_pk_shards("id", 0, 99, 5);
+        let null_owners: Vec<usize> = shards
+            .iter()
+            .enumerate()
+            .filter(|(_, s)| s.descriptor["include_null"].as_bool().unwrap_or(false))
+            .map(|(i, _)| i)
+            .collect();
+        assert_eq!(
+            null_owners,
+            vec![shards.len() - 1],
+            "exactly the last shard owns NULL keys"
+        );
+    }
+
+    #[test]
+    fn single_shard_plan_still_owns_null() {
+        // A single value yields one shard; it must still cover NULL keys.
+        let shards = plan_pk_shards("id", 7, 7, 4);
+        assert_eq!(shards.len(), 1);
+        assert!(shards[0].descriptor["include_null"].as_bool().unwrap());
+    }
+
+    #[test]
+    fn last_shard_wrap_emits_is_null_clause() {
+        let shards = plan_pk_shards("id", 0, 99, 3);
+        let last = ShardBounds::from_spec(shards.last().unwrap()).unwrap();
+        let sql = last.wrap("SELECT * FROM t");
+        assert!(
+            sql.contains(r#""id" IS NULL"#),
+            "last shard must match NULL keys: {sql}"
+        );
+        assert!(sql.contains(" OR "), "NULL clause OR'd with range: {sql}");
+    }
+
+    #[test]
+    fn non_last_shard_wrap_omits_is_null_clause() {
+        let shards = plan_pk_shards("id", 0, 99, 3);
+        // First shard is not the last → no NULL clause.
+        let first = ShardBounds::from_spec(&shards[0]).unwrap();
+        let sql = first.wrap("SELECT * FROM t");
+        assert!(
+            !sql.contains("IS NULL"),
+            "non-last shard must not match NULL keys: {sql}"
+        );
+    }
+
+    /// Property check on the generated predicates: OR-ing every shard's WHERE
+    /// predicate must cover (a) every non-NULL key in `[min, max]` exactly once
+    /// and (b) NULL keys exactly once.
+    #[test]
+    fn predicate_coverage_complete_and_non_overlapping() {
+        let (min, max, target) = (0i64, 19i64, 4usize);
+        let bounds: Vec<ShardBounds> = plan_pk_shards("k", min, max, target)
+            .iter()
+            .map(|s| ShardBounds::from_spec(s).unwrap())
+            .collect();
+
+        // (a) Every non-NULL key matches exactly one shard's [lo, hi) / [lo, hi].
+        for key in min..=max {
+            let matches = bounds
+                .iter()
+                .filter(|b| {
+                    let lower = key >= b.lo;
+                    let upper = if b.hi_inclusive {
+                        key <= b.hi
+                    } else {
+                        key < b.hi
+                    };
+                    lower && upper
+                })
+                .count();
+            assert_eq!(matches, 1, "key {key} matched {matches} shards (want 1)");
+        }
+
+        // (b) NULL keys match exactly one shard (the one with include_null).
+        let null_matches = bounds.iter().filter(|b| b.include_null).count();
+        assert_eq!(null_matches, 1, "NULL keys must match exactly one shard");
     }
 
     // dataset_uri is a pure-config method; the source requires a live DB to

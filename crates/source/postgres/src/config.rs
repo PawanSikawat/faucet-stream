@@ -46,6 +46,11 @@ pub struct PostgresSourceConfig {
 /// each shard runs `SELECT * FROM (<query>) WHERE <key> >= lo AND <key> < hi`.
 /// The column must be present in the query's output and orderable as a 64-bit
 /// integer (e.g. a `bigint`/`int`/`serial` primary key).
+///
+/// **Nullable keys:** if the key column contains NULLs, those rows are not
+/// visible to the `MIN`/`MAX` range enumeration. They are still read — exactly
+/// one shard (the last) additionally matches `<key> IS NULL`, so NULL-key rows
+/// are covered by precisely one shard with no loss and no duplication.
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 pub struct ShardConfig {
     /// Integer column to range-partition on. Quoted as an identifier before use,
