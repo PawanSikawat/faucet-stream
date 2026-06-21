@@ -304,10 +304,30 @@ impl faucet_core::Sink for HttpSink {
     /// *entire* batch to the DLQ — duplicating the already-delivered rows
     /// against a non-idempotent endpoint (#146 M14).
     ///
-    /// In **Array** mode a single array POST cannot attribute a failure to
-    /// specific rows, so it stays all-or-nothing (matches the default trait
-    /// impl): the whole batch surfaces as an outer `Err` and the router's
-    /// `on_batch_error` policy decides whether to abort or dead-letter it.
+    /// In **Array** mode the page is POSTed chunk-by-chunk (`batch_size`
+    /// slices), so forward progress is *not* atomic across the whole page —
+    /// each chunk is a separate, independently-committed array POST. The
+    /// override is therefore **chunk-aware** rather than all-or-nothing: it
+    /// iterates the chunks itself and POSTs each array; a row whose chunk was
+    /// delivered is reported `Ok(())`, while the rows of the first failing
+    /// chunk (and every not-yet-sent chunk after it) are reported `Err`.
+    ///
+    /// This is the fix for the duplicate-data bug (F15 / audit #264): the old
+    /// implementation delegated to the all-or-nothing `write_batch`, so a late
+    /// chunk failure surfaced the *whole* page as an outer `Err`. Under
+    /// `on_batch_error: dlq_all` the router then dead-lettered every row —
+    /// including rows from earlier chunks already successfully delivered to the
+    /// live endpoint — producing silent downstream duplicates. By reporting
+    /// per-row outcomes, an already-delivered row is **never** marked failed and
+    /// so can never land in the DLQ.
+    ///
+    /// Within a single failed chunk a single array POST cannot attribute the
+    /// failure to specific rows, so all rows of *that* chunk are reported `Err`
+    /// (acceptable — none of them were delivered). When the **first** chunk
+    /// fails (nothing has been delivered yet) the override preserves the
+    /// original all-or-nothing contract and surfaces an outer `Err`, so the
+    /// router's `on_batch_error` policy (abort vs. dead-letter) still applies to
+    /// a wholly-undelivered page exactly as before.
     async fn write_batch_partial(
         &self,
         records: &[Value],
@@ -349,8 +369,79 @@ impl faucet_core::Sink for HttpSink {
                 Ok(indexed.into_iter().map(|(_, outcome)| outcome).collect())
             }
             HttpBatchMode::Array => {
-                self.write_batch(records).await?;
-                Ok(records.iter().map(|_| Ok(())).collect())
+                // `batch_size = 0` is the "no batching" sentinel: forward the
+                // whole page as a single array POST (one chunk). Otherwise
+                // re-chunk into `batch_size` slices and POST one array per
+                // chunk — mirroring `write_batch`, but tracking per-chunk
+                // delivery so a late failure doesn't poison earlier chunks that
+                // were already delivered.
+                let effective_chunk = if self.config.batch_size == 0 {
+                    records.len()
+                } else {
+                    self.config.batch_size
+                };
+
+                let mut outcomes: Vec<faucet_core::RowOutcome> = Vec::with_capacity(records.len());
+                let mut delivered = 0usize;
+                let mut chunks = records.chunks(effective_chunk);
+                let mut failed_chunk: Option<FaucetError> = None;
+
+                for chunk in chunks.by_ref() {
+                    let array = Value::Array(chunk.to_vec());
+                    match self.send_with_retry(&array, &auth).await {
+                        Ok(()) => {
+                            // This chunk was delivered to the live endpoint.
+                            outcomes.extend(chunk.iter().map(|_| Ok(())));
+                            delivered += chunk.len();
+                        }
+                        Err(e) => {
+                            // First failing chunk before any delivery: preserve
+                            // the original all-or-nothing contract so the
+                            // router's `on_batch_error` policy still governs a
+                            // wholly-undelivered page.
+                            if delivered == 0 {
+                                return Err(e);
+                            }
+                            // Otherwise some earlier chunk(s) were delivered;
+                            // mark this chunk's rows (and all remaining,
+                            // never-sent chunks) failed without poisoning the
+                            // delivered rows.
+                            failed_chunk = Some(e);
+                            outcomes.extend(chunk.iter().map(|_| {
+                                Err(FaucetError::Sink(
+                                    "array-mode chunk POST failed; rows not delivered".into(),
+                                ))
+                            }));
+                            break;
+                        }
+                    }
+                }
+
+                if let Some(e) = failed_chunk {
+                    // Remaining chunks were never sent — report them failed too
+                    // so the DLQ captures every undelivered row.
+                    let msg = e.to_string();
+                    for chunk in chunks {
+                        outcomes.extend(chunk.iter().map(|_| {
+                            Err(FaucetError::Sink(format!(
+                                "array-mode chunk not sent after earlier failure: {msg}"
+                            )))
+                        }));
+                    }
+                }
+
+                debug_assert_eq!(
+                    outcomes.len(),
+                    records.len(),
+                    "one outcome per record in array mode"
+                );
+                tracing::debug!(
+                    delivered,
+                    records = records.len(),
+                    batch_size = self.config.batch_size,
+                    "HTTP array partial batch written"
+                );
+                Ok(outcomes)
             }
         }
     }

@@ -78,7 +78,7 @@ faucet run pipeline.yaml
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `write_mode` | `append \| upsert \| delete` | `append` | Write semantics. See [Write modes](#write-modes-upsert--delete). |
-| `key` | array of string | `[]` | Key columns whose values form the document `_id` (joined with `:`). Required and non-empty for `upsert`/`delete`; ignored for `append`. |
+| `key` | array of string | `[]` | Key columns whose values form the document `_id`. A **single** key column is used as the `_id` verbatim (its plain string / JSON form). A **composite** (multi-column) key is encoded as a canonical JSON array of its values — *not* a separator-join — so distinct key tuples always map to distinct `_id`s (e.g. `["a_", "b"]` and `["a", "_b"]` no longer collide). Required and non-empty for `upsert`/`delete`; ignored for `append`. |
 | `delete_marker` | `{ field, values }` | *(none)* | Upsert only: rows whose `field` matches one of `values` become deletes; the marker field is stripped from upserted docs. |
 
 ## Authentication
@@ -201,7 +201,7 @@ Elasticsearch is schemaless and `_id`-addressable, so the sink supports all thre
 - **`upsert`** — each record's `_id` is derived from its `key` columns and the document is re-indexed (idempotent overwrite). This **supersedes `id_field`** — `key` is authoritative for `_id` here.
 - **`delete`** — each record's `key` columns derive an `_id` and a `delete` action removes that document (no doc body is sent).
 
-Composite keys are joined with `:` — e.g. `key: [tenant, id]` over `{tenant: "acme", id: 7}` produces `_id` `"acme:7"`. Within a single batch, **duplicate keys collapse last-write-wins** before the bulk request is built.
+A **single** key column is used as the `_id` verbatim (e.g. `key: [id]` over `{id: "abc-123"}` → `_id` `"abc-123"`). A **composite** key is encoded as a **canonical JSON array** of its values — *not* a separator-join — so the mapping is injective: `["a_", "b"]` and `["a", "_b"]` (which a naive `:`/`_` join would both collapse to one `_id`) stay distinct and never silently overwrite each other. Within a single batch, **duplicate keys collapse last-write-wins** before the bulk request is built.
 
 In `upsert` mode, `delete_marker` lets a single stream carry both writes and tombstones: rows whose `field` value matches one of `values` become `delete` actions; all other rows are upserted with the marker field stripped from the indexed document. This is the standard pairing with the `cdc_unwrap` transform for a CDC → mirror pipeline.
 

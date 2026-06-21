@@ -38,15 +38,21 @@ async fn single_file_mode_writes_to_the_exact_fixed_path() {
     let tmp = TempDir::new().unwrap();
     let target = tmp.path().join("out.parquet");
     let cfg = ParquetSinkConfig::local(target.to_string_lossy().to_string());
-    let sink = ParquetSink::new(cfg).await.unwrap();
 
-    sink.write_batch(&[
-        json!({"id": 1, "name": "alice"}),
-        json!({"id": 2, "name": "bob"}),
-    ])
-    .await
-    .unwrap();
-    sink.flush().await.unwrap();
+    {
+        let sink = ParquetSink::new(cfg).await.unwrap();
+
+        sink.write_batch(&[
+            json!({"id": 1, "name": "alice"}),
+            json!({"id": 2, "name": "bob"}),
+        ])
+        .await
+        .unwrap();
+        // In single-file mode `flush()` keeps the writer open (it does not write
+        // the footer); the file is finalized when the sink is dropped at end of
+        // run. Drop the sink (end of scope) before reading it back.
+        sink.flush().await.unwrap();
+    }
 
     assert!(
         target.is_file(),
@@ -288,15 +294,20 @@ async fn lazy_writer_opens_on_first_batch_inferring_schema_from_records() {
     let tmp = TempDir::new().unwrap();
     let target = tmp.path().join("lazy.parquet");
     let cfg = ParquetSinkConfig::local(target.to_string_lossy().to_string());
-    let sink = ParquetSink::new(cfg).await.unwrap();
 
-    // No batch written yet → no file.
-    assert!(!target.is_file());
+    {
+        let sink = ParquetSink::new(cfg).await.unwrap();
 
-    sink.write_batch(&[json!({"id": 1, "name": "x"})])
-        .await
-        .unwrap();
-    sink.flush().await.unwrap();
+        // No batch written yet → no file.
+        assert!(!target.is_file());
+
+        sink.write_batch(&[json!({"id": 1, "name": "x"})])
+            .await
+            .unwrap();
+        // Single-file mode finalizes the footer on drop, not on flush; drop the
+        // sink (end of scope) before reading the file back.
+        sink.flush().await.unwrap();
+    }
 
     let batches = read_file(&target).await;
     assert_eq!(rows_in(&batches), 1);

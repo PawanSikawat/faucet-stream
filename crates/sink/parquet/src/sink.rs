@@ -22,15 +22,39 @@ use crate::schema::infer_schema;
 /// A sink that writes JSON records as Apache Parquet files.
 ///
 /// Lazily opens the first writer on the initial `write_batch` call so the
-/// schema can be inferred from real records. Closing the sink — and writing
-/// the Parquet footer — only happens on `flush()`; callers that skip it will
-/// produce unreadable files.
+/// schema can be inferred from real records.
+///
+/// # Single-file vs. rollover finalization
+///
+/// A Parquet file is only readable once its footer is written, which happens
+/// when the writer is *closed*. How that interacts with `flush()` differs by
+/// mode:
+///
+/// * **Rollover / directory / S3 mode** (`max_rows_per_file` or
+///   `max_bytes_per_file` set, or an S3 destination): each `flush()` closes the
+///   in-flight writer (writing the footer) and the next page opens a fresh,
+///   uniquely-named file. Callers that skip the final `flush()` leave the last
+///   file's footer unwritten — and on S3 abort the multipart upload — so the
+///   trailing file is unreadable.
+/// * **Single-file mode** (a fixed `*.parquet` local path with no rollover):
+///   the sink keeps **one** writer open for the whole run. The pipeline calls
+///   `flush()` after every bookmark-carrying page, so closing there would
+///   footer-write the file and the next page would reopen the same path and
+///   *truncate* it — silently losing every page but the last (a critical
+///   data-loss bug for any multi-bookmark source, e.g. all CDC pipelines).
+///   Instead, an intermediate `flush()` only flushes buffered Arrow row groups
+///   to the open writer (no footer, bounding memory) and the footer is written
+///   exactly once when the sink is dropped at end of run.
 pub struct ParquetSink {
     config: ParquetSinkConfig,
     store: Arc<dyn ObjectStore>,
     /// The directory portion of a `LocalPath` destination (created on `new`),
     /// or `None` for S3.
     local_root: Option<PathBuf>,
+    /// Computed once at construction: a fixed `*.parquet` local path with no
+    /// rollover thresholds. In this mode one writer stays open for the whole
+    /// run and the footer is written on `Drop`, never on a per-page `flush()`.
+    single_file: bool,
     state: Mutex<WriterState>,
 }
 
@@ -84,11 +108,13 @@ impl ParquetSink {
         }
 
         let (store, local_root) = build_store(&config.destination).await?;
+        let single_file = compute_single_file_mode(&config);
 
         Ok(Self {
             config,
             store,
             local_root,
+            single_file,
             state: Mutex::new(WriterState::new()),
         })
     }
@@ -96,15 +122,7 @@ impl ParquetSink {
     /// Whether the configured destination writes one file per "key" prefix +
     /// uuid (S3 or directory-style local) or to a single fixed file.
     fn single_file_mode(&self) -> bool {
-        match &self.config.destination {
-            ParquetDestination::LocalPath { path } => {
-                let p = FsPath::new(path);
-                p.extension().and_then(|s| s.to_str()) == Some("parquet")
-                    && self.config.max_rows_per_file.is_none()
-                    && self.config.max_bytes_per_file.is_none()
-            }
-            ParquetDestination::S3(_) => false,
-        }
+        self.single_file
     }
 
     /// Build the object_store `Path` for the next file. Each new file gets a
@@ -272,6 +290,113 @@ impl ParquetSink {
         }
         Ok(())
     }
+
+    /// Single-file intermediate flush: push buffered Arrow row groups to the
+    /// open writer **without** writing the footer, so the one writer stays open
+    /// across pages. Bounds memory between bookmark-carrying pages without
+    /// truncating the file. No-op until the first write has opened a writer.
+    async fn flush_open_writer(&self, state: &mut WriterState) -> Result<(), FaucetError> {
+        if let Some(writer) = state.writer.as_mut() {
+            writer
+                .flush()
+                .await
+                .map_err(|e| FaucetError::Sink(format!("could not flush parquet writer: {e}")))?;
+        }
+        Ok(())
+    }
+}
+
+impl Drop for ParquetSink {
+    /// Finalize a still-open single-file writer by writing its footer exactly
+    /// once at end of run. This is the *only* place the single-file footer is
+    /// written — per-page `flush()` deliberately leaves the writer open (see
+    /// the type-level docs) so the file is never reopened/truncated mid-stream.
+    ///
+    /// Rollover / directory / S3 modes close their writer on every `flush()`,
+    /// so by the time the sink is dropped `state.writer` is already `None` and
+    /// this is a no-op for them.
+    fn drop(&mut self) {
+        // Only single-file mode can leave a writer open past the final flush.
+        if !self.single_file {
+            return;
+        }
+        // Take the writer out under the lock without awaiting (the lock is
+        // uncontended at drop — no other handle to `self` exists).
+        let Some(writer) = self.state.get_mut().writer.take() else {
+            return;
+        };
+
+        // Closing is async (the object_store local writer offloads its final
+        // write to a blocking task), so we need a Tokio runtime context. The
+        // pipeline runs the sink on a multi-thread runtime, where
+        // `block_in_place` lets us drive the close to completion on the current
+        // thread. If we are not inside a runtime (or on a single-threaded one
+        // where `block_in_place` would panic), fall back to a transient
+        // runtime so the footer is still written rather than lost.
+        let close = async move {
+            writer
+                .close()
+                .await
+                .map(|_meta| ())
+                .map_err(|e| FaucetError::Sink(format!("could not close parquet writer: {e}")))
+        };
+
+        let result = match tokio::runtime::Handle::try_current() {
+            Ok(handle) => {
+                match handle.runtime_flavor() {
+                    tokio::runtime::RuntimeFlavor::MultiThread => {
+                        // Safe: a multi-thread runtime tolerates a blocking
+                        // section on a worker thread.
+                        tokio::task::block_in_place(|| handle.block_on(close))
+                    }
+                    // current-thread (or any non-multi-thread) runtime:
+                    // `block_in_place` would panic, and we cannot re-enter the
+                    // current runtime with `block_on`. Drive the close on a
+                    // dedicated thread with its own minimal runtime.
+                    _ => close_on_dedicated_thread(close),
+                }
+            }
+            // Dropped outside any runtime: spin up a transient one.
+            Err(_) => close_on_dedicated_thread(close),
+        };
+
+        if let Err(e) = result {
+            tracing::error!(
+                error = %e,
+                "parquet sink: failed to finalize single-file output on drop; the file may be unreadable"
+            );
+        }
+    }
+}
+
+/// Drive a future to completion on a freshly-spawned OS thread with its own
+/// single-threaded Tokio runtime. Used by `Drop` when the current context
+/// cannot host a blocking close (no runtime, or a current-thread runtime that
+/// `block_in_place` cannot enter).
+fn close_on_dedicated_thread<F>(fut: F) -> Result<(), FaucetError>
+where
+    F: std::future::Future<Output = Result<(), FaucetError>> + Send + 'static,
+{
+    std::thread::scope(|scope| {
+        scope
+            .spawn(|| {
+                let rt = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .map_err(|e| {
+                        FaucetError::Sink(format!(
+                            "could not build runtime to finalize parquet file: {e}"
+                        ))
+                    })?;
+                rt.block_on(fut)
+            })
+            .join()
+            .unwrap_or_else(|_| {
+                Err(FaucetError::Sink(
+                    "parquet finalize thread panicked".to_string(),
+                ))
+            })
+    })
 }
 
 #[async_trait]
@@ -314,12 +439,24 @@ impl faucet_core::Sink for ParquetSink {
         Ok(total_rows)
     }
 
-    /// Closes the in-flight Parquet writer so the file footer is flushed to
-    /// disk / S3. Files left without `flush()` are unreadable.
+    /// Make buffered output durable.
+    ///
+    /// In **single-file mode** this only flushes buffered Arrow row groups to
+    /// the open writer (no footer) so the file is never reopened/truncated
+    /// between the per-page flushes the pipeline issues; the footer is written
+    /// once on `Drop` at end of run. In **rollover / directory / S3 mode** this
+    /// closes the in-flight writer (writing the footer / completing the S3
+    /// multipart) — the next page opens a fresh file. Files left without a
+    /// final `flush()`/drop in those modes are unreadable.
     async fn flush(&self) -> Result<(), FaucetError> {
         let mut state = self.state.lock().await;
-        self.close_current(&mut state).await?;
-        tracing::debug!(files = state.files_written, "Parquet sink flushed");
+        if self.single_file {
+            self.flush_open_writer(&mut state).await?;
+            tracing::debug!("Parquet single-file sink flushed (writer kept open)");
+        } else {
+            self.close_current(&mut state).await?;
+            tracing::debug!(files = state.files_written, "Parquet sink flushed");
+        }
         Ok(())
     }
 
@@ -520,6 +657,21 @@ fn json_value_type_name(v: &Value) -> &'static str {
     }
 }
 
+/// Determine single-file mode from the config: a fixed `*.parquet` local path
+/// with neither rollover threshold set. Pure helper so the value can be
+/// computed once at construction and reused without `&self`.
+fn compute_single_file_mode(config: &ParquetSinkConfig) -> bool {
+    match &config.destination {
+        ParquetDestination::LocalPath { path } => {
+            let p = FsPath::new(path);
+            p.extension().and_then(|s| s.to_str()) == Some("parquet")
+                && config.max_rows_per_file.is_none()
+                && config.max_bytes_per_file.is_none()
+        }
+        ParquetDestination::S3(_) => false,
+    }
+}
+
 async fn build_store(
     destination: &ParquetDestination,
 ) -> Result<(Arc<dyn ObjectStore>, Option<PathBuf>), FaucetError> {
@@ -567,10 +719,35 @@ mod tests {
     use super::*;
     use crate::config::ParquetCompression;
     use faucet_core::Sink;
+    use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
     use serde_json::json;
 
     fn cfg(path: &std::path::Path) -> ParquetSinkConfig {
         ParquetSinkConfig::local(path.to_string_lossy().to_string())
+    }
+
+    /// Read every row group back from a Parquet file and collect the `id`
+    /// column (Int64) into a Vec. Panics on any read error — tests want the
+    /// loud failure.
+    fn read_ids(path: &std::path::Path) -> Vec<i64> {
+        let file = std::fs::File::open(path).expect("open parquet file");
+        let reader = ParquetRecordBatchReaderBuilder::try_new(file)
+            .expect("parquet reader builder")
+            .build()
+            .expect("parquet reader");
+        let mut ids = Vec::new();
+        for batch in reader {
+            let batch = batch.expect("record batch");
+            let col = batch
+                .column(batch.schema().index_of("id").expect("id column"))
+                .as_any()
+                .downcast_ref::<arrow::array::Int64Array>()
+                .expect("id is Int64");
+            for i in 0..col.len() {
+                ids.push(col.value(i));
+            }
+        }
+        ids
     }
 
     #[tokio::test]
@@ -712,5 +889,134 @@ mod tests {
         assert_eq!(json_value_type_name(&json!("s")), "string");
         assert_eq!(json_value_type_name(&json!([1])), "array");
         assert_eq!(json_value_type_name(&json!({"a": 1})), "object");
+    }
+
+    #[test]
+    fn single_file_mode_only_for_fixed_parquet_path_without_rollover() {
+        // Fixed *.parquet path, no rollover → single-file.
+        assert!(compute_single_file_mode(&ParquetSinkConfig::local(
+            "/tmp/out.parquet"
+        )));
+        // Rollover thresholds disable single-file mode.
+        assert!(!compute_single_file_mode(
+            &ParquetSinkConfig::local("/tmp/out.parquet").max_rows_per_file(10)
+        ));
+        assert!(!compute_single_file_mode(
+            &ParquetSinkConfig::local("/tmp/out.parquet").max_bytes_per_file(1024)
+        ));
+        // A directory path is never single-file.
+        assert!(!compute_single_file_mode(&ParquetSinkConfig::local(
+            "/tmp/outdir"
+        )));
+    }
+
+    /// Regression test for F2 (audit #264): single-file mode must accumulate
+    /// ALL pages across the per-page `flush()` calls the pipeline issues — the
+    /// file must not be reopened/truncated mid-stream, so only the final page
+    /// would survive. Runs on a multi-thread runtime so the production Drop
+    /// finalize path (`block_in_place`) is exercised.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn single_file_accumulates_all_pages_across_flushes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("out.parquet");
+        let cfg = ParquetSinkConfig::local(path.to_string_lossy().to_string());
+        assert!(
+            compute_single_file_mode(&cfg),
+            "test setup must be single-file"
+        );
+
+        {
+            let sink = ParquetSink::new(cfg).await.unwrap();
+
+            // Page 1 + bookmark flush.
+            sink.write_batch(&[json!({"id": 1}), json!({"id": 2})])
+                .await
+                .unwrap();
+            sink.flush().await.unwrap();
+
+            // Page 2 + bookmark flush — under the bug this would truncate the
+            // file written by page 1.
+            sink.write_batch(&[json!({"id": 3})]).await.unwrap();
+            sink.flush().await.unwrap();
+
+            // Page 3 + final flush (pipeline calls flush once more at end).
+            sink.write_batch(&[json!({"id": 4}), json!({"id": 5})])
+                .await
+                .unwrap();
+            sink.flush().await.unwrap();
+
+            // Drop here writes the footer exactly once.
+        }
+
+        let mut ids = read_ids(&path);
+        ids.sort_unstable();
+        assert_eq!(
+            ids,
+            vec![1, 2, 3, 4, 5],
+            "all rows from every page must be present in the single file"
+        );
+    }
+
+    /// Even without any intermediate `flush()`, a single-file sink must produce
+    /// a readable file once dropped (footer written on Drop).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn single_file_finalizes_on_drop_without_explicit_flush() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("out.parquet");
+        {
+            let sink = ParquetSink::new(cfg(&path)).await.unwrap();
+            sink.write_batch(&[json!({"id": 10}), json!({"id": 11})])
+                .await
+                .unwrap();
+            // No flush() — rely on Drop to write the footer.
+        }
+        let ids = read_ids(&path);
+        assert_eq!(ids, vec![10, 11]);
+    }
+
+    /// Rollover (directory) mode must keep its per-page file-rolling behavior:
+    /// each `flush()` closes a file and the next page opens a new one. Assert
+    /// the expected file count and total rows.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn rollover_mode_still_rolls_files_per_page() {
+        let tmp = tempfile::tempdir().unwrap();
+        // Directory destination + a row threshold → rollover/multi-file mode.
+        let cfg =
+            ParquetSinkConfig::local(tmp.path().to_string_lossy().to_string()).max_rows_per_file(2);
+        assert!(!compute_single_file_mode(&cfg));
+
+        let mut all_ids = Vec::new();
+        {
+            let sink = ParquetSink::new(cfg).await.unwrap();
+            // Two pages; max_rows_per_file=2 rolls within page 1.
+            sink.write_batch(&[json!({"id": 1}), json!({"id": 2}), json!({"id": 3})])
+                .await
+                .unwrap();
+            sink.flush().await.unwrap();
+            sink.write_batch(&[json!({"id": 4})]).await.unwrap();
+            sink.flush().await.unwrap();
+        }
+
+        // Read back every .parquet file in the directory.
+        let mut files: Vec<_> = std::fs::read_dir(tmp.path())
+            .unwrap()
+            .filter_map(|e| e.ok().map(|e| e.path()))
+            .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("parquet"))
+            .collect();
+        files.sort();
+        assert!(
+            files.len() >= 2,
+            "rollover mode should produce multiple files, got {}",
+            files.len()
+        );
+        for f in &files {
+            all_ids.extend(read_ids(f));
+        }
+        all_ids.sort_unstable();
+        assert_eq!(
+            all_ids,
+            vec![1, 2, 3, 4],
+            "no rows lost across rolled files"
+        );
     }
 }

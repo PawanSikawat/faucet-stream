@@ -17,7 +17,7 @@ Built on the `parquet` + `arrow` crates wired through `object_store`, so local a
 - **Row & byte rollover** — split large outputs across multiple `<uuid>.parquet` files by row count (`max_rows_per_file`) or byte budget (`max_bytes_per_file`).
 - **Streaming writer** — one reused `object_store` client, bounded buffering, configurable `row_group_size` for read-back performance.
 - **Drops unknown fields** — fields not in the inferred schema are silently skipped with a one-shot `tracing::warn!` per field name.
-- **Flush-safe** — files become valid only when the footer is written; `flush()` (called automatically by the pipeline on success, error-unwind, and cooperative cancellation) commits the footer.
+- **Flush-safe** — files become valid only when the footer is written. In **rollover / directory / S3 mode** each `flush()` (called automatically by the pipeline on success, error-unwind, and cooperative cancellation) closes the current file and writes its footer. In **single-file mode** one writer stays open for the whole run — per-page `flush()` only flushes buffered row groups (no footer) so the file is never truncated mid-stream — and the footer is written once when the sink is dropped at end of run.
 
 ## Installation
 
@@ -106,6 +106,14 @@ destination:
   type: local_path
   path: /var/lib/exports/events.parquet
 ```
+
+In single-file mode the sink keeps one writer open for the entire run and
+accumulates **every** page into that one file. The pipeline flushes after each
+bookmark-carrying page, but those intermediate flushes only push buffered row
+groups to the open file (they do **not** write the footer); the footer is
+written once when the sink is dropped at the end of the run. This is what makes
+single-file output correct for multi-bookmark sources (e.g. CDC streams), which
+emit many bookmark-carrying pages over a run.
 
 ### S3 (or any S3-compatible service)
 
@@ -231,9 +239,12 @@ For Parquet (local or S3) the source-defined page size is usually optimal becaus
 
 ## Flush semantics
 
-Parquet files are only valid once the trailing footer is written. The sink streams data into the destination as an `object_store` multipart upload, and the footer is emitted only when `flush()` is called (or when a row/byte threshold triggers automatic rollover). **If you drop the sink without calling `flush()`, no visible file is produced** — the upload is aborted by `object_store`, so you never end up with a corrupt half-written object on disk or in S3.
+Parquet files are only valid once the trailing footer is written. The sink streams data into the destination as an `object_store` multipart upload. **How `flush()` interacts with the footer depends on the mode:**
 
-Pipelines must therefore always call `flush()` at the end of a run. `faucet-core`'s streaming pipeline does this on the success path **and** the error-unwind path. It also flushes on **cooperative cancellation**: when a run is cancelled via a `CancellationToken` (the `faucet serve` run-timeout / `POST /cancel` / shutdown, or the CLI's `on_error: stop`), the pipeline stops at the next page boundary and flushes, so the footer is written and the rows committed so far survive — rather than the whole file being orphaned by a dropped future (#146 H16). A sink stuck *mid-write* past the flush-grace window is still hard-dropped (and its file lost), so size pages so a single `write_batch` stays well within the grace.
+- **Rollover / directory / S3 mode** (a `max_rows_per_file` / `max_bytes_per_file` threshold, a directory destination, or any S3 destination): each `flush()` closes the in-flight writer and writes its footer; the next page opens a fresh `<uuid>.parquet`. A row/byte threshold also triggers an automatic mid-run close + rollover. **If you drop the sink without a final `flush()`, the last file's footer is never written** — `object_store` aborts the multipart upload, so you get no half-written object rather than a corrupt one. Pipelines must therefore always call `flush()` at the end of a run.
+- **Single-file mode** (a fixed `*.parquet` local path with no rollover thresholds): one writer stays open for the whole run. The pipeline flushes after every bookmark-carrying page, but those intermediate flushes only push buffered row groups to the open file — they do **not** write the footer, and the file is never reopened/truncated mid-stream. The footer is written exactly once when the sink is dropped at end of run. This is essential for multi-bookmark sources (e.g. CDC), where a footer-on-every-flush would truncate the file on the next page and silently lose all but the last page.
+
+`faucet-core`'s streaming pipeline flushes on the success path **and** the error-unwind path, and on **cooperative cancellation**: when a run is cancelled via a `CancellationToken` (the `faucet serve` run-timeout / `POST /cancel` / shutdown, or the CLI's `on_error: stop`), the pipeline stops at the next page boundary and flushes, so the rows committed so far survive — rather than the whole file being orphaned by a dropped future (#146 H16). A sink stuck *mid-write* past the flush-grace window is still hard-dropped (and its file lost), so size pages so a single `write_batch` stays well within the grace.
 
 ## Config loading & schema introspection
 
@@ -288,7 +299,7 @@ This crate has no optional features of its own; enable it in the CLI/umbrella vi
 
 | Symptom | Likely cause & fix |
 |---------|--------------------|
-| No file appears after a run | `flush()` was never called (the multipart upload was aborted on drop). Run via the faucet pipeline, which flushes on success/error/cancel; in library code call `sink.flush().await?`. |
+| No file appears after a run (rollover / directory / S3 mode) | `flush()` was never called (the multipart upload was aborted on drop). Run via the faucet pipeline, which flushes on success/error/cancel; in library code call `sink.flush().await?`. (Single-file mode writes its footer on drop, so it does not need a final `flush()` to produce a file — though running via the pipeline still flushes.) |
 | `FaucetError::Config: row_group_size` | `row_group_size` is `0`. Set it to `≥ 1` (or omit to use the default). |
 | `FaucetError::Config` on `max_rows_per_file` / `max_bytes_per_file` | The threshold is `0`. Use `> 0`, or omit for single-file mode. |
 | `FaucetError::Config` on `destination` | Empty `path` (local) or empty `bucket` (S3). Provide a non-empty value. |

@@ -136,7 +136,10 @@ async fn delete_mode_emits_delete_action_by_key() {
 }
 
 #[tokio::test]
-async fn composite_key_id_joined_with_colon() {
+async fn composite_key_id_is_canonical_json() {
+    // F13: a composite `_id` is now a canonical JSON array of its values (an
+    // injective encoding), NOT a `:`-join — so distinct key tuples can never
+    // silently overwrite each other.
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/_bulk"))
@@ -160,7 +163,46 @@ async fn composite_key_id_joined_with_colon() {
 
     let requests = server.received_requests().await.unwrap();
     let lines = ndjson_lines(&requests[0].body);
-    assert_eq!(lines[0]["index"]["_id"], "acme:7");
+    assert_eq!(lines[0]["index"]["_id"], "[\"acme\",7]");
+}
+
+#[tokio::test]
+async fn composite_key_id_does_not_collide_separator_style() {
+    // F13 regression: ["x_","y"] and ["x","_y"] would both render "x__y" under a
+    // naive "_" join. With canonical-JSON encoding they stay distinct, so both
+    // rows are written under different `_id`s instead of one overwriting the other.
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/_bulk"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(ok_bulk_response(2)))
+        .mount(&server)
+        .await;
+
+    let config = ElasticsearchSinkConfig {
+        write: WriteSpec {
+            write_mode: WriteMode::Upsert,
+            key: vec!["a".to_string(), "b".to_string()],
+            delete_marker: None,
+        },
+        ..ElasticsearchSinkConfig::new(server.uri(), "idx")
+    };
+    let sink = ElasticsearchSink::new(config).unwrap();
+
+    let written = sink
+        .write_batch(&[
+            json!({"a": "x_", "b": "y", "v": 1}),
+            json!({"a": "x", "b": "_y", "v": 2}),
+        ])
+        .await
+        .unwrap();
+    assert_eq!(written, 2, "two distinct keys must NOT dedup into one");
+
+    let requests = server.received_requests().await.unwrap();
+    let lines = ndjson_lines(&requests[0].body);
+    // Two upserts → two action lines + two doc lines.
+    let id0 = lines[0]["index"]["_id"].as_str().unwrap();
+    let id2 = lines[2]["index"]["_id"].as_str().unwrap();
+    assert_ne!(id0, id2, "distinct composite keys → distinct _id");
 }
 
 #[tokio::test]
