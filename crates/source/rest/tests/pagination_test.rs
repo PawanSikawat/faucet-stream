@@ -148,6 +148,84 @@ fn offset_pagination_advances() {
 }
 
 #[test]
+fn offset_stops_on_repeated_identical_page_without_total_path() {
+    // Regression for #264 F18: a server that ignores the `offset` parameter
+    // returns the identical full page forever. With `total_path` omitted, the
+    // record-count heuristic keeps `has_next` true on every full page, so the
+    // run would loop until `max_pages` and duplicate records. The
+    // content-stagnation guard must stop on the repeated page.
+    let style = PaginationStyle::Offset {
+        offset_param: "offset".into(),
+        limit_param: "limit".into(),
+        limit: 2,
+        total_path: None,
+    };
+    let mut state = PaginationState::default();
+    let body = json!([{"id": 1}, {"id": 2}]);
+
+    // First full page is new content → continue.
+    assert!(style.advance(&body, &no_headers(), &mut state, 2).unwrap());
+    assert_eq!(state.offset, 2);
+    // Identical page returned again (server ignored offset) → stop.
+    assert!(!style.advance(&body, &no_headers(), &mut state, 2).unwrap());
+}
+
+#[test]
+fn offset_continues_on_distinct_pages_without_total_path() {
+    // Legitimate offset pagination where each page differs must still
+    // paginate to completion (guard must not fire on distinct content).
+    let style = PaginationStyle::Offset {
+        offset_param: "offset".into(),
+        limit_param: "limit".into(),
+        limit: 2,
+        total_path: None,
+    };
+    let mut state = PaginationState::default();
+
+    assert!(
+        style
+            .advance(&json!([{"id": 1}, {"id": 2}]), &no_headers(), &mut state, 2)
+            .unwrap()
+    );
+    assert!(
+        style
+            .advance(&json!([{"id": 3}, {"id": 4}]), &no_headers(), &mut state, 2)
+            .unwrap()
+    );
+    // Short final page → stop via the existing record-count heuristic.
+    assert!(
+        !style
+            .advance(&json!([{"id": 5}]), &no_headers(), &mut state, 1)
+            .unwrap()
+    );
+    assert_eq!(state.offset, 5);
+}
+
+#[test]
+fn offset_repeated_metadata_body_with_total_path_does_not_false_stop() {
+    // When `total_path` is set, a paging-metadata body that legitimately
+    // repeats (`{"total": N}` echoed on every page) must NOT be mistaken for
+    // stagnation — `offset::advance` has an authoritative stop condition.
+    let style = PaginationStyle::Offset {
+        offset_param: "offset".into(),
+        limit_param: "limit".into(),
+        limit: 50,
+        total_path: Some("$.total".into()),
+    };
+    let mut state = PaginationState::default();
+    let body = json!({"total": 120});
+
+    assert!(style.advance(&body, &no_headers(), &mut state, 50).unwrap());
+    assert_eq!(state.offset, 50);
+    // Identical metadata body, but pagination is legitimate (offset < total).
+    assert!(style.advance(&body, &no_headers(), &mut state, 50).unwrap());
+    assert_eq!(state.offset, 100);
+    // Offset reaches total → stop.
+    assert!(!style.advance(&body, &no_headers(), &mut state, 20).unwrap());
+    assert_eq!(state.offset, 120);
+}
+
+#[test]
 fn link_header_extracts_next_link() {
     use reqwest::header::HeaderValue;
 

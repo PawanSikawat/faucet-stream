@@ -339,8 +339,17 @@ pub async fn advance_slot(
     Ok(())
 }
 
-/// Ensure the slot exists, then read the server's current WAL insert position
-/// (`pg_current_wal_lsn`) on a normal (non-replication) connection.
+/// Ensure the slot exists, then return the slot's **own consistent point** —
+/// its `confirmed_flush_lsn` (falling back to `restart_lsn`, then the server's
+/// `pg_current_wal_lsn()` only if both are null).
+///
+/// Anchoring on the slot's consistent point — rather than the server's *current*
+/// WAL position — is what makes capture-before-snapshot gapless even when the
+/// slot **already existed** with unconsumed WAL behind it. Using
+/// `pg_current_wal_lsn()` would skip every change the slot had retained between
+/// its confirmed position and "now", silently losing those CDC events (F8).
+/// For a freshly-created logical slot, `confirmed_flush_lsn` is the slot's
+/// creation consistent point, so the fresh-slot behaviour is preserved.
 ///
 /// Ensuring the slot **first** guarantees the server retains WAL from the
 /// returned LSN onward, so a later `START_REPLICATION` from this position has
@@ -372,10 +381,33 @@ pub async fn ensure_slot_and_current_lsn(
         .connect()
         .await
         .map_err(|e| FaucetError::Source(format!("postgres-cdc capture_position connect: {e}")))?;
-    let (lsn_text,): (String,) = sqlx::query_as("SELECT pg_current_wal_lsn()::text")
-        .fetch_one(&mut conn)
-        .await
-        .map_err(|e| FaucetError::Source(format!("postgres-cdc pg_current_wal_lsn: {e}")))?;
+    // Prefer the slot's retained consistent point over the server's current LSN.
+    let slot_lsn: Option<(Option<String>, Option<String>)> = sqlx::query_as(
+        "SELECT confirmed_flush_lsn::text, restart_lsn::text \
+         FROM pg_replication_slots WHERE slot_name = $1",
+    )
+    .bind(slot_name)
+    .fetch_optional(&mut conn)
+    .await
+    .map_err(|e| FaucetError::Source(format!("postgres-cdc slot lsn lookup: {e}")))?;
+    let anchor = match slot_lsn {
+        Some((confirmed, restart)) => confirmed.or(restart),
+        None => None,
+    };
+    let lsn_text = match anchor {
+        Some(t) => t,
+        None => {
+            // Slot reports no LSN yet (e.g. just-created temporary slot on some
+            // versions) — fall back to the server's current WAL position.
+            let (cur,): (String,) = sqlx::query_as("SELECT pg_current_wal_lsn()::text")
+                .fetch_one(&mut conn)
+                .await
+                .map_err(|e| {
+                    FaucetError::Source(format!("postgres-cdc pg_current_wal_lsn: {e}"))
+                })?;
+            cur
+        }
+    };
     crate::state::parse_lsn(&lsn_text)
 }
 

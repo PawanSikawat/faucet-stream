@@ -150,6 +150,105 @@ async fn test_cursor_pagination() {
 }
 
 #[tokio::test]
+async fn test_offset_pagination_terminates_when_server_ignores_offset() {
+    // Regression for #264 F18: an Offset-paginated endpoint with no
+    // `total_path` that IGNORES the offset parameter and returns the same full
+    // page on every request must terminate via the content-stagnation guard
+    // rather than looping forever and duplicating records to the sink.
+    let server = MockServer::start().await;
+
+    // Always returns the identical full page (limit == record_count == 2),
+    // regardless of the offset query param the client sends.
+    Mock::given(method("GET"))
+        .and(path("/api/items"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "items": [{"id": 1}, {"id": 2}]
+        })))
+        .mount(&server)
+        .await;
+
+    let stream = RestStream::new(
+        RestStreamConfig::new(&server.uri(), "/api/items")
+            .records_path("$.items[*]")
+            // A generous cap that is the loop's *backstop*, not its stop
+            // condition — if the guard regressed we'd see 1000 pages of dupes.
+            .max_pages(1000)
+            .pagination(PaginationStyle::Offset {
+                offset_param: "offset".into(),
+                limit_param: "limit".into(),
+                limit: 2,
+                total_path: None,
+            }),
+    )
+    .unwrap();
+
+    // Bounded by the future timeout: proves termination (no infinite loop).
+    let records = tokio::time::timeout(std::time::Duration::from_secs(30), stream.fetch_all())
+        .await
+        .expect("offset pagination must terminate, not loop forever")
+        .unwrap();
+
+    // The repeated page is emitted twice: once as the legitimate first page,
+    // then once more before the guard detects the identical body and stops.
+    // Critically it is bounded — NOT 1000 * 2 records.
+    assert_eq!(
+        records.len(),
+        4,
+        "stagnation guard must bound emission to the first two identical pages"
+    );
+}
+
+#[tokio::test]
+async fn test_offset_pagination_paginates_to_completion_when_pages_differ() {
+    // Companion to the stagnation test: a well-behaved Offset endpoint (no
+    // `total_path`) where each page differs must still paginate to completion.
+    let server = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .and(path("/api/items"))
+        .and(query_param("offset", "0"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "items": [{"id": 1}, {"id": 2}]
+        })))
+        .mount(&server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path("/api/items"))
+        .and(query_param("offset", "2"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "items": [{"id": 3}, {"id": 4}]
+        })))
+        .mount(&server)
+        .await;
+
+    // Short final page → stops via the record-count heuristic.
+    Mock::given(method("GET"))
+        .and(path("/api/items"))
+        .and(query_param("offset", "4"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "items": [{"id": 5}]
+        })))
+        .mount(&server)
+        .await;
+
+    let stream = RestStream::new(
+        RestStreamConfig::new(&server.uri(), "/api/items")
+            .records_path("$.items[*]")
+            .pagination(PaginationStyle::Offset {
+                offset_param: "offset".into(),
+                limit_param: "limit".into(),
+                limit: 2,
+                total_path: None,
+            }),
+    )
+    .unwrap();
+
+    let records = stream.fetch_all().await.unwrap();
+    assert_eq!(records.len(), 5, "all distinct pages must be fetched");
+}
+
+#[tokio::test]
 async fn test_typed_deserialization() {
     let server = MockServer::start().await;
 

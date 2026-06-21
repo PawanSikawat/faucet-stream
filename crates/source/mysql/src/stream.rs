@@ -53,6 +53,29 @@ fn mysql_value_to_json(row: &sqlx::mysql::MySqlRow, col_name: &str) -> Value {
     if let Ok(v) = row.try_get::<i16, _>(col_name) {
         return Value::Number(v.into());
     }
+    // UNSIGNED integer columns (#264). sqlx-mysql treats UNSIGNED as a
+    // distinct type from the signed decoders above, so without these arms
+    // UNSIGNED columns fall through to the `bool` probe (TINYINT UNSIGNED ->
+    // bool) or to the `Null` fall-through (larger UNSIGNED -> null), silently
+    // corrupting every unsigned column including UNSIGNED primary keys.
+    //
+    // These are placed *after* the signed probes so a signed column always
+    // matches a signed arm first, and *before* `bool`/`f64`/`f32` so a
+    // `TINYINT UNSIGNED` decodes as a number rather than a bool (MySQL's
+    // boolean is `TINYINT(1)`). `u64` fits `serde_json::Number` exactly, so
+    // BIGINT UNSIGNED values above `i64::MAX` round-trip losslessly.
+    if let Ok(v) = row.try_get::<u64, _>(col_name) {
+        return Value::Number(v.into());
+    }
+    if let Ok(v) = row.try_get::<u32, _>(col_name) {
+        return Value::Number(v.into());
+    }
+    if let Ok(v) = row.try_get::<u16, _>(col_name) {
+        return Value::Number(v.into());
+    }
+    if let Ok(v) = row.try_get::<u8, _>(col_name) {
+        return Value::Number(v.into());
+    }
     if let Ok(v) = row.try_get::<f64, _>(col_name) {
         return serde_json::Number::from_f64(v)
             .map(Value::Number)

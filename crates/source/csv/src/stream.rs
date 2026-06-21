@@ -106,7 +106,27 @@ impl faucet_core::Source for CsvSource {
                         let rec = rec.map_err(|e| FaucetError::Config(format!(
                             "CSV header parse error in '{}': {e}", config.path
                         )))?;
-                        rec.iter().map(|f| f.to_string()).collect()
+                        let headers: Vec<String> = rec.iter().map(|f| f.to_string()).collect();
+                        // Reject duplicate header names up front: each row becomes a
+                        // JSON object keyed by header name, so a repeated header (or
+                        // two blank-named columns) would silently overwrite earlier
+                        // columns last-wins, dropping data for the whole run. Fail
+                        // fast naming the offending header and its 0-based positions.
+                        let mut seen: std::collections::HashMap<&str, usize> =
+                            std::collections::HashMap::with_capacity(headers.len());
+                        for (col_idx, name) in headers.iter().enumerate() {
+                            if let Some(&first_idx) = seen.get(name.as_str()) {
+                                let display = if name.is_empty() { "(empty)" } else { name.as_str() };
+                                Err(FaucetError::Config(format!(
+                                    "duplicate CSV header {display} in '{}' at columns {first_idx} and {col_idx}; \
+                                     each row is keyed by header name, so a repeated header would silently drop columns — \
+                                     rename the duplicate or disable headers",
+                                    config.path
+                                )))?;
+                            }
+                            seen.insert(name.as_str(), col_idx);
+                        }
+                        headers
                     }
                     None => Vec::new(),
                 }
@@ -319,6 +339,74 @@ mod tests {
         let records = source.fetch_all().await.unwrap();
         assert_eq!(records.len(), 1);
         assert_eq!(records[0]["name"], "Carol");
+    }
+
+    #[tokio::test]
+    async fn duplicate_header_names_fail_fast() {
+        // Data-loss regression (F7, audit #264): a repeated header name must be
+        // rejected, not silently overwrite the earlier column last-wins.
+        let mut tmp = NamedTempFile::new().unwrap();
+        writeln!(tmp, "id,name,id").unwrap();
+        writeln!(tmp, "1,a,2").unwrap();
+        tmp.flush().unwrap();
+
+        let config = CsvSourceConfig::new(tmp.path().to_str().unwrap());
+        let source = CsvSource::new(config);
+        let result = source.fetch_all().await;
+
+        let err = result.expect_err("duplicate header must error, not drop a column");
+        assert!(
+            matches!(err, FaucetError::Config(_)),
+            "expected FaucetError::Config, got {err:?}"
+        );
+        let msg = err.to_string();
+        assert!(msg.contains("duplicate CSV header"), "message was: {msg}");
+        assert!(msg.contains("id"), "message should name the header: {msg}");
+        assert!(
+            msg.contains("columns 0 and 2"),
+            "message should name positions: {msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn duplicate_blank_header_names_fail_fast() {
+        // Two empty-string headers must be caught too.
+        let mut tmp = NamedTempFile::new().unwrap();
+        writeln!(tmp, "id,,").unwrap();
+        writeln!(tmp, "1,a,b").unwrap();
+        tmp.flush().unwrap();
+
+        let config = CsvSourceConfig::new(tmp.path().to_str().unwrap());
+        let source = CsvSource::new(config);
+        let result = source.fetch_all().await;
+
+        let err = result.expect_err("duplicate blank header must error");
+        assert!(matches!(err, FaucetError::Config(_)), "got {err:?}");
+        let msg = err.to_string();
+        assert!(msg.contains("duplicate CSV header"), "message was: {msg}");
+        assert!(
+            msg.contains("(empty)"),
+            "blank header should render as (empty): {msg}"
+        );
+        assert!(msg.contains("columns 1 and 2"), "positions: {msg}");
+    }
+
+    #[tokio::test]
+    async fn headerless_csv_allows_repeated_values_without_error() {
+        // With has_headers=false there are no header names to collide; the
+        // duplicate-header guard must not fire (keys are generated column_N).
+        let mut tmp = NamedTempFile::new().unwrap();
+        writeln!(tmp, "1,1,1").unwrap();
+        tmp.flush().unwrap();
+
+        let config = CsvSourceConfig::new(tmp.path().to_str().unwrap()).has_headers(false);
+        let source = CsvSource::new(config);
+        let records = source.fetch_all().await.unwrap();
+
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0]["column_0"], "1");
+        assert_eq!(records[0]["column_1"], "1");
+        assert_eq!(records[0]["column_2"], "1");
     }
 
     #[test]

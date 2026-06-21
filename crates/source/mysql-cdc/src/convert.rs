@@ -50,7 +50,8 @@ pub fn value_to_json(v: &Value) -> Json {
 ///
 /// - `Value(val)` → delegates to [`value_to_json`]
 /// - `Jsonb(x)` → converts the MySQL JSONB representation to `serde_json::Value`
-/// - `JsonDiff(diffs)` → `"<JsonDiff>"` placeholder (refined in the stream loop)
+/// - `JsonDiff(diffs)` → typed `FaucetError::Source` (a partial JSON diff cannot be
+///   reconstructed without the prior document — see below)
 ///
 /// **JSONB fallback:** `mysql_common`'s `TryFrom<jsonb::Value> for serde_json::Value`
 /// fails only when the document contains an *opaque* scalar — a MySQL type with no
@@ -60,25 +61,44 @@ pub fn value_to_json(v: &Value) -> Json {
 /// observable. Ordinary JSON content (objects, arrays, strings, numbers, bools,
 /// null) converts losslessly; the opaque-scalar case is rare and documented in the
 /// crate README.
-pub fn binlog_value_to_json(v: &BinlogValue<'_>) -> Json {
+///
+/// **Partial JSON diffs:** when the MySQL server runs with
+/// `binlog_row_value_options=PARTIAL_JSON`, an UPDATE that touches a JSON column may
+/// emit a `BinlogValue::JsonDiff` — a *delta* against the column's prior value rather
+/// than the full document. faucet-stream does not buffer prior row state, so the diff
+/// cannot be applied to reconstruct the new value. Fabricating a placeholder would
+/// silently corrupt the column, so we return a typed [`FaucetError::Source`] instead;
+/// the row is surfaced as an error (and routed to a DLQ when configured). The
+/// `run_preflight` startup check rejects `PARTIAL_JSON` outright so this path is not
+/// normally reached — operators must set `binlog_row_value_options=''` for CDC.
+pub fn binlog_value_to_json(v: &BinlogValue<'_>) -> Result<Json, FaucetError> {
     match v {
-        BinlogValue::Value(val) => value_to_json(val),
+        BinlogValue::Value(val) => Ok(value_to_json(val)),
         BinlogValue::Jsonb(jsonb_val) => {
             // We clone-via-into_owned because we hold a borrow; JSONB columns are
             // rare enough that the clone cost doesn't matter.
             match serde_json::Value::try_from(jsonb_val.clone().into_owned()) {
-                Ok(j) => j,
+                Ok(j) => Ok(j),
                 Err(e) => {
                     tracing::warn!(
                         error = %e,
                         "mysql-cdc: JSON column holds an opaque value with no JSON \
                          representation; emitting null for this column"
                     );
-                    Json::Null
+                    Ok(Json::Null)
                 }
             }
         }
-        BinlogValue::JsonDiff(_) => Json::String("<JsonDiff>".into()),
+        // A partial JSON diff cannot be reconstructed without the prior document.
+        // Never fabricate a value — surface a typed error so the row is routed to a
+        // DLQ / fails the run rather than silently corrupting the JSON column.
+        BinlogValue::JsonDiff(_) => Err(FaucetError::Source(
+            "mysql-cdc: received a partial JSON diff (BinlogValue::JsonDiff) for a JSON \
+             column; this happens under binlog_row_value_options=PARTIAL_JSON and cannot \
+             be reconstructed without the prior document. Set binlog_row_value_options='' \
+             (full JSON) on the MySQL server for CDC."
+                .into(),
+        )),
     }
 }
 
@@ -99,7 +119,7 @@ pub fn binlog_row_to_json(row: &BinlogRow) -> Result<Json, FaucetError> {
             }
         };
         let val = match row.as_ref(i) {
-            Some(bv) => binlog_value_to_json(bv),
+            Some(bv) => binlog_value_to_json(bv)?,
             None => Json::Null,
         };
         obj.insert(name, val);
@@ -178,5 +198,37 @@ mod tests {
     fn double_infinity_is_null() {
         assert_eq!(value_to_json(&Value::Double(f64::INFINITY)), Json::Null);
         assert_eq!(value_to_json(&Value::Double(f64::NEG_INFINITY)), Json::Null);
+    }
+
+    #[test]
+    fn binlog_value_plain_delegates_ok() {
+        let v = binlog_value_to_json(&BinlogValue::Value(Value::Int(42)))
+            .expect("plain value converts");
+        assert_eq!(v, Json::from(42));
+    }
+
+    #[test]
+    fn binlog_value_json_diff_is_typed_error_not_placeholder() {
+        // A partial JSON diff (binlog_row_value_options=PARTIAL_JSON) must surface as a
+        // typed FaucetError::Source, never the fabricated "<JsonDiff>" placeholder.
+        let bv = BinlogValue::JsonDiff(Vec::new());
+        let err = binlog_value_to_json(&bv).expect_err("JsonDiff must error");
+        assert!(
+            matches!(err, FaucetError::Source(_)),
+            "expected FaucetError::Source, got {err:?}"
+        );
+        let msg = err.to_string();
+        assert!(msg.contains("partial JSON diff"), "{msg}");
+        assert!(msg.contains("PARTIAL_JSON"), "{msg}");
+        // Guard against any regression that re-introduces the corrupt placeholder.
+        assert!(!msg.contains("<JsonDiff>"), "{msg}");
+    }
+
+    #[test]
+    fn binlog_row_with_json_diff_propagates_error() {
+        // The row-level entry point must propagate the JsonDiff error rather than
+        // embedding a corrupt value in the resulting object.
+        let bv = BinlogValue::JsonDiff(Vec::new());
+        assert!(binlog_value_to_json(&bv).is_err());
     }
 }
