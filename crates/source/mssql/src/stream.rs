@@ -130,7 +130,13 @@ impl OwnedParam {
         match v {
             Value::String(s) => OwnedParam::Str(s.clone()),
             Value::Number(n) if n.is_i64() => OwnedParam::I64(n.as_i64().unwrap()),
-            Value::Number(n) if n.is_u64() => OwnedParam::I64(n.as_u64().unwrap() as i64),
+            // A `u64` above `i64::MAX` cannot be represented as a tiberius `i64`
+            // bind value (SQL Server has no unsigned 64-bit type). The previous
+            // `as i64` wrapped it to a negative number (e.g. u64::MAX -> -1),
+            // silently matching the wrong rows. Bind the exact decimal digits as
+            // a string instead — SQL Server implicitly converts it to the
+            // column's numeric type for comparison, preserving the value (F41).
+            Value::Number(n) if n.is_u64() => OwnedParam::Str(n.as_u64().unwrap().to_string()),
             Value::Number(n) => OwnedParam::F64(n.as_f64().unwrap_or(0.0)),
             Value::Bool(b) => OwnedParam::Bool(*b),
             Value::Null => OwnedParam::Null(None),
@@ -415,6 +421,28 @@ mod tests {
 
     fn full_cfg() -> MssqlSourceConfig {
         MssqlSourceConfig::new("mssql://sa:pw@db.example.com:1433/sales", "SELECT * FROM t")
+    }
+
+    #[test]
+    fn owned_param_binds_large_u64_as_exact_string_not_wrapped_i64() {
+        // F41: a u64 above i64::MAX must keep its exact value, not wrap to a
+        // negative i64 (`u64::MAX as i64 == -1`).
+        let big = u64::MAX; // 18446744073709551615 > i64::MAX
+        match OwnedParam::from_value(&json!(big)) {
+            OwnedParam::Str(s) => assert_eq!(s, big.to_string()),
+            OwnedParam::I64(v) => panic!("u64::MAX bound as wrapped i64 {v}"),
+            _ => panic!("expected a string-bound param for a large u64"),
+        }
+        // A u64 that still fits i64 keeps the native integer binding.
+        match OwnedParam::from_value(&json!(42u64)) {
+            OwnedParam::I64(v) => assert_eq!(v, 42),
+            _ => panic!("small u64 should bind as i64"),
+        }
+        // i64::MAX itself is representable as i64.
+        match OwnedParam::from_value(&json!(i64::MAX)) {
+            OwnedParam::I64(v) => assert_eq!(v, i64::MAX),
+            _ => panic!("i64::MAX should bind as i64"),
+        }
     }
 
     #[test]
