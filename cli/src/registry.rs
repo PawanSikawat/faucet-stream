@@ -352,40 +352,52 @@ pub async fn build_sink(kind: &str, config: Value, auth: &AuthCatalog) -> CliRes
 
 /// Source connector kinds that deterministically replay (exactly-once-capable).
 /// Mirrors `Source::supports_exactly_once` overrides — keep in sync when a new
-/// source opts in. See docs/superpowers/plans/2026-06-09-exactly-once-delivery.md.
-pub fn source_supports_exactly_once(kind: &str) -> bool {
-    matches!(kind, "postgres-cdc" | "mysql-cdc" | "mongodb-cdc")
-}
+/// source opts in. The single source of truth for both the boolean gate and the
+/// human-readable list shown in error messages (F44).
+pub const EXACTLY_ONCE_SOURCE_KINDS: &[&str] = &["postgres-cdc", "mysql-cdc", "mongodb-cdc"];
 
 /// Sink connector kinds that can durably commit a token atomically with data.
 /// Mirrors `Sink::supports_idempotent_writes` overrides — keep in sync when a
-/// new sink opts in.
-pub fn sink_supports_idempotent_writes(kind: &str) -> bool {
-    matches!(
-        kind,
-        "sqlite" | "postgres" | "mysql" | "mssql" | "iceberg" | "bigquery" | "kafka"
-    )
-}
+/// new sink opts in. Single source of truth for the gate + the error-message
+/// list (F44).
+pub const IDEMPOTENT_SINK_KINDS: &[&str] =
+    &["sqlite", "postgres", "mysql", "mssql", "iceberg", "bigquery", "kafka"];
 
 /// Sink kinds that can apply additive/widening DDL via `Sink::evolve_schema`.
 /// Mirrors each sink's `supports_schema_evolution()` override. Iceberg is
 /// intentionally excluded — iceberg-rust 0.9.1 exposes no schema-evolution API (#255).
+pub const SCHEMA_EVOLUTION_SINK_KINDS: &[&str] =
+    &["postgres", "mysql", "mssql", "sqlite", "bigquery", "elasticsearch"];
+
+/// Sink kinds that support `write_mode: upsert|delete`. Mirrors each sink's
+/// `Sink::supported_write_modes()` override. Single source of truth for the gate
+/// + the error-message list (F44).
+pub const UPSERT_SINK_KINDS: &[&str] =
+    &["postgres", "sqlite", "mysql", "mssql", "mongodb", "elasticsearch", "bigquery"];
+
+/// See [`EXACTLY_ONCE_SOURCE_KINDS`].
+pub fn source_supports_exactly_once(kind: &str) -> bool {
+    EXACTLY_ONCE_SOURCE_KINDS.contains(&kind)
+}
+
+/// See [`IDEMPOTENT_SINK_KINDS`].
+pub fn sink_supports_idempotent_writes(kind: &str) -> bool {
+    IDEMPOTENT_SINK_KINDS.contains(&kind)
+}
+
+/// See [`SCHEMA_EVOLUTION_SINK_KINDS`].
 pub fn sink_supports_schema_evolution(kind: &str) -> bool {
-    matches!(
-        kind,
-        "postgres" | "mysql" | "mssql" | "sqlite" | "bigquery" | "elasticsearch"
-    )
+    SCHEMA_EVOLUTION_SINK_KINDS.contains(&kind)
 }
 
 /// Write modes each sink kind supports. Kept in sync with each sink's
-/// `Sink::supported_write_modes()` override.
+/// `Sink::supported_write_modes()` override via [`UPSERT_SINK_KINDS`].
 pub fn sink_supported_write_modes(kind: &str) -> &'static [faucet_core::WriteMode] {
     use faucet_core::WriteMode;
-    match kind {
-        "postgres" | "sqlite" | "mysql" | "mssql" | "mongodb" | "elasticsearch" | "bigquery" => {
-            &[WriteMode::Append, WriteMode::Upsert, WriteMode::Delete]
-        }
-        _ => &[WriteMode::Append],
+    if UPSERT_SINK_KINDS.contains(&kind) {
+        &[WriteMode::Append, WriteMode::Upsert, WriteMode::Delete]
+    } else {
+        &[WriteMode::Append]
     }
 }
 
@@ -684,6 +696,31 @@ fn unknown(name: &str, kind: &'static str, available: Vec<&'static str>) -> CliE
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn capability_constants_match_their_predicates() {
+        // F44: the human-readable lists in error messages derive from these
+        // constants, which must stay in lockstep with the boolean gates. In
+        // particular the idempotent-sink list must include bigquery AND kafka,
+        // and the upsert-sink list must include bigquery — the values the old
+        // hand-maintained message strings had drifted away from.
+        for &k in EXACTLY_ONCE_SOURCE_KINDS {
+            assert!(source_supports_exactly_once(k), "{k} should be exactly-once");
+        }
+        for &k in IDEMPOTENT_SINK_KINDS {
+            assert!(sink_supports_idempotent_writes(k), "{k} should be idempotent");
+        }
+        for &k in UPSERT_SINK_KINDS {
+            use faucet_core::WriteMode;
+            assert!(
+                sink_supported_write_modes(k).contains(&WriteMode::Upsert),
+                "{k} should support upsert"
+            );
+        }
+        assert!(IDEMPOTENT_SINK_KINDS.contains(&"bigquery"));
+        assert!(IDEMPOTENT_SINK_KINDS.contains(&"kafka"));
+        assert!(UPSERT_SINK_KINDS.contains(&"bigquery"));
+    }
 
     #[cfg(feature = "source-rest")]
     #[test]

@@ -428,15 +428,19 @@ pub fn expand(cfg: &PipelineConfig) -> CliResult<Vec<ExpandedNode>> {
             if !crate::registry::source_supports_exactly_once(&merged_source.kind) {
                 return Err(CliError::Config(format!(
                     "row '{}': delivery: exactly_once is not supported by source '{}' \
-                     (deterministic-replay sources only: postgres-cdc, mysql-cdc, mongodb-cdc)",
-                    ids[i], merged_source.kind
+                     (deterministic-replay sources only: {})",
+                    ids[i],
+                    merged_source.kind,
+                    crate::registry::EXACTLY_ONCE_SOURCE_KINDS.join(", ")
                 )));
             }
             if !crate::registry::sink_supports_idempotent_writes(&merged_sink.kind) {
                 return Err(CliError::Config(format!(
                     "row '{}': delivery: exactly_once is not supported by sink '{}' \
-                     (idempotent sinks only: sqlite, postgres, mysql, mssql, iceberg, bigquery)",
-                    ids[i], merged_sink.kind
+                     (idempotent sinks only: {})",
+                    ids[i],
+                    merged_sink.kind,
+                    crate::registry::IDEMPOTENT_SINK_KINDS.join(", ")
                 )));
             }
             // Require a *durable* state store. The exactly-once mechanism
@@ -508,8 +512,11 @@ pub fn expand(cfg: &PipelineConfig) -> CliResult<Vec<ExpandedNode>> {
         if !crate::registry::sink_supported_write_modes(&merged_sink.kind).contains(&mode) {
             return Err(CliError::Config(format!(
                 "row '{}': write_mode '{}' is not supported by sink '{}' \
-                 (upsert/delete sinks: postgres, sqlite, mysql, mssql, mongodb, elasticsearch)",
-                ids[i], requested_mode, merged_sink.kind
+                 (upsert/delete sinks: {})",
+                ids[i],
+                requested_mode,
+                merged_sink.kind,
+                crate::registry::UPSERT_SINK_KINDS.join(", ")
             )));
         }
         if matches!(

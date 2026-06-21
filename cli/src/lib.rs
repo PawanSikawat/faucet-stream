@@ -46,9 +46,19 @@ pub use error::{CliError, CliResult};
 /// performs — callers can wire their own `metrics` recorder / tracing
 /// subscriber before calling this function (or not at all).
 pub async fn run_from_yaml_str(yaml: &str) -> CliResult<executor::RunSummary> {
-    // Parse through the same interpolate → from_text path that the binary uses,
-    // but accept a bare string instead of a file path.
-    let interpolated = interpolate::interpolate(yaml)?;
+    // Parse first, then resolve ${env}/${file}/${secret} INTO the parsed tree
+    // (post-parse) so a resolved value can never alter the document's structure
+    // (F43) — mirroring the binary's `from_path` path.
+    let mut value: serde_json::Value =
+        serde_yaml::from_str(yaml).map_err(|e| CliError::ParseConfig {
+            path: std::path::PathBuf::from("<yaml-string>"),
+            message: e.to_string(),
+        })?;
+    interpolate::interpolate_value(&mut value)?;
+    let interpolated = serde_yaml::to_string(&value).map_err(|e| CliError::ParseConfig {
+        path: std::path::PathBuf::from("<yaml-string>"),
+        message: e.to_string(),
+    })?;
     let mut cfg: config::PipelineConfig =
         serde_yaml::from_str(&interpolated).map_err(|e| CliError::ParseConfig {
             path: std::path::PathBuf::from("<yaml-string>"),

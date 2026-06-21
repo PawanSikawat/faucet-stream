@@ -60,6 +60,42 @@ pub fn interpolate(input: &str) -> CliResult<String> {
     })
 }
 
+/// Resolve load-time directives (`${env:}` / `${file:}` / `${secret:}`) inside
+/// an already-parsed config tree by running [`interpolate`] on every string
+/// scalar — object keys and string values, recursively.
+///
+/// This is the **structure-safe** counterpart to running [`interpolate`] on the
+/// raw document text: because substitution happens per-scalar, a resolved
+/// value containing markup-significant characters (`:`, newlines, `-`) can never
+/// inject a key, an array element, or otherwise alter the document's structure
+/// (F43) — it stays the single scalar it was parsed as, exactly like the
+/// secrets-manager pass. Deferred `${id.path}` / `${now.*}` tokens survive
+/// verbatim for their later resolution stages.
+pub fn interpolate_value(value: &mut Value) -> CliResult<()> {
+    match value {
+        Value::String(s) => {
+            *s = interpolate(s)?;
+        }
+        Value::Array(items) => {
+            for item in items {
+                interpolate_value(item)?;
+            }
+        }
+        Value::Object(map) => {
+            // Keys may also carry directives (rare, but supported by the old
+            // raw-text pass). Rebuild the map so an interpolated key is honoured.
+            let entries: Vec<(String, Value)> = std::mem::take(map).into_iter().collect();
+            for (key, mut val) in entries {
+                interpolate_value(&mut val)?;
+                let resolved_key = interpolate(&key)?;
+                map.insert(resolved_key, val);
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
 /// Resolve `${id.dotted.path}` tokens against `ctx`. Tokens that look like
 /// load-time directives (`${env:...}`, `${file:...}`, `${secret:...}`) are
 /// left untouched — they should already have been resolved by [`interpolate`].
@@ -720,6 +756,46 @@ mod tests {
             CliError::MissingEnvVar { var, .. } => assert_eq!(var, "FAUCET_TEST_MISSING"),
             other => panic!("expected MissingEnvVar, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn interpolate_value_resolves_scalars_in_strings_keys_and_arrays() {
+        unsafe { std::env::set_var("FAUCET_F43_TOKEN", "sekret") };
+        let mut v = json!({
+            "${env:FAUCET_F43_KEY}": "kv",
+            "auth": {"token": "${env:FAUCET_F43_TOKEN}"},
+            "list": ["${env:FAUCET_F43_TOKEN}", 42, true],
+            "deferred": "${users.id}",
+            "num": 5,
+        });
+        unsafe { std::env::set_var("FAUCET_F43_KEY", "ckey") };
+        interpolate_value(&mut v).unwrap();
+        assert_eq!(v["auth"]["token"], "sekret");
+        assert_eq!(v["list"][0], "sekret");
+        assert_eq!(v["list"][1], 42); // non-strings untouched
+        assert_eq!(v["list"][2], true);
+        assert_eq!(v["deferred"], "${users.id}"); // deferred token survives
+        assert_eq!(v["num"], 5);
+        assert_eq!(v["ckey"], "kv"); // interpolated key
+        unsafe { std::env::remove_var("FAUCET_F43_TOKEN") };
+        unsafe { std::env::remove_var("FAUCET_F43_KEY") };
+    }
+
+    #[test]
+    fn interpolate_value_keeps_resolved_value_as_a_single_scalar() {
+        // F43: a resolved value containing markup-significant characters must
+        // NOT alter the document's structure — it stays one scalar string,
+        // unlike the old raw-text substitution which could inject a sibling key.
+        unsafe {
+            std::env::set_var("FAUCET_F43_INJECT", "real\ninjected_key: pwned\nmore: x")
+        };
+        let mut v = json!({ "name": "${env:FAUCET_F43_INJECT}" });
+        interpolate_value(&mut v).unwrap();
+        assert_eq!(v["name"], "real\ninjected_key: pwned\nmore: x");
+        // The object still has exactly one key — nothing was injected.
+        assert_eq!(v.as_object().unwrap().len(), 1);
+        assert!(v.get("injected_key").is_none());
+        unsafe { std::env::remove_var("FAUCET_F43_INJECT") };
     }
 
     #[test]

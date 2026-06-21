@@ -1103,6 +1103,51 @@ macro_rules! impl_sql_history {
                 Ok(n == 1)
             }
 
+            async fn finalize_sharded_parent(
+                &self,
+                run_id: &str,
+                status: $crate::serve::history::RunStatus,
+                finished_at: chrono::DateTime<chrono::Utc>,
+                error: Option<String>,
+            ) -> Result<bool, $crate::serve::history::HistoryError> {
+                use sqlx::Row as _;
+                use $crate::serve::history::HistoryError;
+                use $crate::serve::history::RunStatus;
+                use $crate::serve::history::sql;
+                let backend = |e: sqlx::Error| HistoryError::Backend(e.to_string());
+                // Read the parent body, apply the terminal status, and write back
+                // conditional on it still being `sharded` — so a concurrent
+                // double-finalize from two instances has exactly one winner and
+                // neither re-stamps owner/lease on the terminal record (F45).
+                let Some(row) = sqlx::query(&self.stmts.select_body)
+                    .bind(run_id)
+                    .fetch_optional(&self.pool)
+                    .await
+                    .map_err(backend)?
+                else {
+                    return Ok(false);
+                };
+                let body: String = row.try_get("body").map_err(backend)?;
+                let mut rec = sql::decode_body(&body)?;
+                if rec.status != RunStatus::Sharded {
+                    return Ok(false);
+                }
+                rec.status = status;
+                rec.finished_at = Some(finished_at);
+                rec.error = error;
+                let new_body = sql::encode_body(&rec)?;
+                let n = sqlx::query(&self.stmts.finalize_sharded_parent)
+                    .bind(status.as_str())
+                    .bind(sql::fmt_ts(finished_at))
+                    .bind(&new_body)
+                    .bind(run_id)
+                    .execute(&self.pool)
+                    .await
+                    .map_err(backend)?
+                    .rows_affected();
+                Ok(n == 1)
+            }
+
             async fn cancel_pending(
                 &self,
                 run_id: &str,
