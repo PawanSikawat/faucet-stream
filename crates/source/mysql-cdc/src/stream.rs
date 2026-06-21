@@ -357,7 +357,26 @@ impl MysqlCdcSource {
                                     in_txn = false;
                                     txid = txid.wrapping_add(1);
                                 } else {
-                                    // DDL statement — auto-commits implicitly.
+                                    // DDL statement — auto-commits implicitly (F36).
+                                    //
+                                    // A DDL statement in MySQL forces an implicit commit
+                                    // of any in-progress transaction *before* it runs.
+                                    // If `buffer` still holds rows here, they belong to
+                                    // that just-committed transaction. We MUST flush them
+                                    // (advancing the bookmark atomically with their emit)
+                                    // before touching the DDL — otherwise the DDL's own
+                                    // bookmark below would advance past those un-emitted
+                                    // rows and they would be silently lost on resume.
+                                    // Mirror the BEGIN/COMMIT/desync flush exactly.
+                                    if should_flush_buffer_before_ddl(buffer.is_empty()) {
+                                        let bm = Bookmark::FilePos {
+                                            file: current_file.clone(),
+                                            pos: log_pos,
+                                        };
+                                        commit_buffer!(bm);
+                                        txid = txid.wrapping_add(1);
+                                    }
+
                                     if self.config.emit_schema_changes {
                                         let envelope = build_ddl_envelope(
                                             q.as_ref(),
@@ -691,6 +710,70 @@ fn build_request<'r>(
                 .with_gtid_set(sids))
         }
     }
+}
+
+/// Whether a non-empty in-progress row buffer must be flushed before handling a
+/// DDL `QueryEvent` (F36).
+///
+/// A DDL statement implicitly auto-commits any open transaction in MySQL, so rows
+/// staged in `buffer` when a DDL arrives belong to a transaction that has already
+/// committed on the server. They must be emitted (and their bookmark advanced)
+/// *before* the DDL is processed — otherwise the DDL event's own bookmark advances
+/// past those rows and they are silently lost on resume. This mirrors the
+/// BEGIN/COMMIT/desync flush contract. Returns `true` iff the buffer is non-empty.
+///
+/// Pure seam so the data-loss-prevention decision is unit-testable without a live
+/// binlog stream.
+pub(crate) fn should_flush_buffer_before_ddl(buffer_is_empty: bool) -> bool {
+    !buffer_is_empty
+}
+
+/// A single page the DDL branch emits, modelled purely for testing (F36).
+///
+/// `bookmark_pos` is the `Some(pos)` the page advances the bookmark to, or `None`
+/// when no bookmark is attached (which never happens in the DDL branch but keeps
+/// the model general).
+#[cfg(test)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PlannedPage {
+    /// Number of records on the page (DDL envelope counts as 1; buffered rows as N).
+    pub record_count: usize,
+    /// Whether this page carries the DDL envelope (vs. flushed buffered rows).
+    pub is_ddl: bool,
+    pub bookmark_pos: Option<u64>,
+}
+
+/// Pure model of the per-transaction (`batch_size != 0`) DDL-branch emit sequence,
+/// faithful to the real branch in `stream_pages_impl` (F36 regression guard).
+///
+/// Given the count of rows currently staged in `buffer`, whether the source is
+/// configured to `emit_schema_changes`, and the DDL event's `log_pos`, it returns the
+/// ordered pages the branch emits. The invariant under test: **any buffered rows are
+/// flushed (as their own page, with the pre-DDL bookmark) before the DDL envelope** —
+/// so the DDL's bookmark can never advance past un-emitted rows.
+#[cfg(test)]
+pub(crate) fn plan_ddl_pages(
+    buffered_rows: usize,
+    emit_schema_changes: bool,
+    log_pos: u64,
+) -> Vec<PlannedPage> {
+    let mut pages = Vec::new();
+    // Flush staged rows first, exactly as the real branch's `commit_buffer!` does.
+    if should_flush_buffer_before_ddl(buffered_rows == 0) {
+        pages.push(PlannedPage {
+            record_count: buffered_rows,
+            is_ddl: false,
+            bookmark_pos: Some(log_pos),
+        });
+    }
+    if emit_schema_changes {
+        pages.push(PlannedPage {
+            record_count: 1,
+            is_ddl: true,
+            bookmark_pos: Some(log_pos),
+        });
+    }
+    pages
 }
 
 /// Map a `RowsEventData` variant to its CDC operation string.
@@ -1336,5 +1419,74 @@ mod tests {
         assert!(!obj.contains_key("after"));
         assert!(!obj.contains_key("schema"));
         assert!(!obj.contains_key("table"));
+    }
+
+    // ── F36: DDL implicit-commit must flush buffered rows before advancing ────────
+
+    #[test]
+    fn should_flush_buffer_before_ddl_decision() {
+        // Non-empty buffer → must flush; empty buffer → nothing to flush.
+        assert!(should_flush_buffer_before_ddl(false));
+        assert!(!should_flush_buffer_before_ddl(true));
+    }
+
+    #[test]
+    fn ddl_with_buffered_rows_flushes_them_first() {
+        // A DDL arriving with 3 staged rows must emit those rows FIRST (their own page,
+        // bookmarked at the pre-DDL position) and only then the DDL envelope. This is
+        // the F36 fix: without the flush, the rows are silently lost on resume.
+        let pages = plan_ddl_pages(3, true, 4567);
+        assert_eq!(
+            pages.len(),
+            2,
+            "expected a buffer-flush page then a DDL page"
+        );
+
+        // Page 1: the flushed buffered rows.
+        assert_eq!(pages[0].record_count, 3);
+        assert!(
+            !pages[0].is_ddl,
+            "first page must be the buffered rows, not the DDL"
+        );
+        assert_eq!(
+            pages[0].bookmark_pos,
+            Some(4567),
+            "buffered rows must advance the bookmark — no silent loss"
+        );
+
+        // Page 2: the DDL envelope.
+        assert!(pages[1].is_ddl);
+        assert_eq!(pages[1].record_count, 1);
+        assert_eq!(pages[1].bookmark_pos, Some(4567));
+    }
+
+    #[test]
+    fn ddl_with_empty_buffer_emits_only_the_ddl() {
+        // No staged rows → no flush page; just the DDL envelope.
+        let pages = plan_ddl_pages(0, true, 100);
+        assert_eq!(pages.len(), 1);
+        assert!(pages[0].is_ddl);
+        assert_eq!(pages[0].bookmark_pos, Some(100));
+    }
+
+    #[test]
+    fn ddl_with_buffered_rows_flushes_even_when_schema_changes_disabled() {
+        // The critical safety property: even when `emit_schema_changes` is OFF (so the
+        // DDL envelope itself is dropped), buffered rows MUST still be flushed before
+        // the DDL implicitly auto-commits — otherwise those rows vanish on resume.
+        let pages = plan_ddl_pages(2, false, 888);
+        assert_eq!(pages.len(), 1, "buffered rows must still be flushed");
+        assert!(!pages[0].is_ddl);
+        assert_eq!(pages[0].record_count, 2);
+        assert_eq!(pages[0].bookmark_pos, Some(888));
+    }
+
+    #[test]
+    fn ddl_with_empty_buffer_and_no_schema_changes_emits_nothing() {
+        let pages = plan_ddl_pages(0, false, 12);
+        assert!(
+            pages.is_empty(),
+            "nothing to emit: empty buffer + schema changes off"
+        );
     }
 }

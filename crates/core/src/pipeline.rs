@@ -604,6 +604,26 @@ where
         };
     }
 
+    // Retry wrapper for the **non-idempotent** write paths (`write_batch` /
+    // `write_batch_partial`). A bare `write_batch` makes no atomicity promise:
+    // if the request commits server-side but the response is lost, a
+    // pipeline-level retry silently duplicates every row — the repo's #1 worst
+    // bug class (F29/F32). So we only apply the retry policy when the sink
+    // commits writes idempotently (`supports_idempotent_writes()`); otherwise
+    // we fall through to a bare `$op.await`, exactly as the pre-resilience code
+    // did. The idempotent exactly-once path (`write_batch_idempotent`) keeps
+    // using `with_retry!` — replaying a token-stamped write is a no-op, so it
+    // is always safe to retry.
+    macro_rules! with_retry_write {
+        ($op_label:literal, $op:expr) => {
+            if retry_policy.is_some() && sink.supports_idempotent_writes() {
+                with_retry!($op_label, $op)
+            } else {
+                $op.await
+            }
+        };
+    }
+
     let loop_result: Result<(), FaucetError> = async {
         loop {
             // Poll the next page, but if a cancellation token is wired, race it
@@ -805,7 +825,7 @@ where
                             // retried before the `on_batch_error` decision.
                             // Inert when no policy is attached.
                             let chunk_outcomes_result =
-                                with_retry!("sink_write", sink.write_batch_partial(chunk));
+                                with_retry_write!("sink_write", sink.write_batch_partial(chunk));
                             let latency = t0.elapsed();
                             // `chunk_synthesized` is true only when this chunk's
                             // outcomes were fabricated from a single outer
@@ -867,7 +887,7 @@ where
                                     let subset: Vec<Value> =
                                         failing.iter().map(|&j| chunk[j].clone()).collect();
                                     let retried =
-                                        with_retry!("sink_write", sink.write_batch_partial(&subset))?;
+                                        with_retry_write!("sink_write", sink.write_batch_partial(&subset))?;
                                     // `retried` aligns positionally with `failing`
                                     // (the subset was built in `failing` order).
                                     // Consume by value — `FaucetError` is not Clone.
@@ -1194,7 +1214,8 @@ where
                             // No bookmark → not individually checkpointed; write
                             // as-is (rare for EO sources, which bookmark every
                             // page). Stays at-least-once for this page.
-                            records_written += with_retry!("sink_write", sink.write_batch(&page.records))?;
+                            records_written +=
+                                with_retry_write!("sink_write", sink.write_batch(&page.records))?;
                         }
                     } else {
                         // ── DLQ-disabled path (today's behaviour) ──────────────
@@ -1214,7 +1235,7 @@ where
                                         ctrl.current().max(1).min(page.records.len() - offset);
                                     let chunk = &page.records[offset..offset + size];
                                     let t0 = std::time::Instant::now();
-                                    let n = with_retry!("sink_write", sink.write_batch(chunk))?;
+                                    let n = with_retry_write!("sink_write", sink.write_batch(chunk))?;
                                     let latency = t0.elapsed();
                                     records_written += n;
                                     offset += size;
@@ -1227,7 +1248,7 @@ where
                                 }
                             } else {
                                 records_written +=
-                                    with_retry!("sink_write", sink.write_batch(&page.records))?;
+                                    with_retry_write!("sink_write", sink.write_batch(&page.records))?;
                             }
                         }
                         if let Some(bookmark) = page.bookmark {
@@ -1509,6 +1530,11 @@ async fn apply_drift_policy<Si: Sink + ?Sized>(
                 relax_nullability: diff
                     .droppable_required
                     .iter()
+                    // A column merely *absent* from this page only relaxes its
+                    // NOT NULL constraint when explicitly opted in — otherwise a
+                    // transient/partial page would silently and irreversibly
+                    // weaken the destination schema (F28).
+                    .filter(|_| policy.relax_nullability_on_missing)
                     .cloned()
                     .chain(
                         diff.widenings
@@ -3772,6 +3798,10 @@ mod tests {
             async fn flush(&self) -> Result<(), FaucetError> {
                 Ok(())
             }
+            // Idempotent so the pipeline retries its `write_batch` (F29 gate).
+            fn supports_idempotent_writes(&self) -> bool {
+                true
+            }
         }
 
         let attempts = Arc::new(AtomicU32::new(0));
@@ -3805,6 +3835,69 @@ mod tests {
         assert_eq!(written.load(Ordering::SeqCst), 1);
         assert_eq!(attempts.load(Ordering::SeqCst), 3);
         assert_eq!(res.records_written, 1);
+    }
+
+    #[tokio::test]
+    async fn resilience_does_not_retry_non_idempotent_write_batch() {
+        // F29/F32: a non-idempotent `write_batch` must NOT be pipeline-retried —
+        // a lost-response retry would silently duplicate rows. The first error
+        // propagates after a single attempt.
+        use crate::resilience::{BackoffKind, ResiliencePolicy, RetryPolicy};
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicU32, Ordering};
+        use std::time::Duration;
+
+        struct NonIdempotentFlakySink {
+            attempts: Arc<AtomicU32>,
+        }
+        #[async_trait::async_trait]
+        impl Sink for NonIdempotentFlakySink {
+            async fn write_batch(&self, _r: &[Value]) -> Result<usize, FaucetError> {
+                self.attempts.fetch_add(1, Ordering::SeqCst);
+                Err(FaucetError::HttpStatus {
+                    status: 503,
+                    url: "u".into(),
+                    body: "".into(),
+                })
+            }
+            async fn flush(&self) -> Result<(), FaucetError> {
+                Ok(())
+            }
+            // supports_idempotent_writes() defaults to false.
+        }
+
+        let attempts = Arc::new(AtomicU32::new(0));
+        let sink = NonIdempotentFlakySink {
+            attempts: attempts.clone(),
+        };
+        let pages = futures::stream::iter(vec![Ok(StreamPage {
+            records: vec![json!({"a": 1})],
+            bookmark: None,
+        })]);
+        let policy = ResiliencePolicy {
+            retry: RetryPolicy {
+                max_attempts: 5,
+                backoff: BackoffKind::None,
+                base: Duration::ZERO,
+                max: Duration::ZERO,
+                jitter: false,
+                ..RetryPolicy::default()
+            },
+            ..ResiliencePolicy::default()
+        };
+        let err = run_stream(
+            pages,
+            &sink,
+            RunStreamOptions::new().with_resilience(policy),
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, FaucetError::HttpStatus { status: 503, .. }));
+        assert_eq!(
+            attempts.load(Ordering::SeqCst),
+            1,
+            "non-idempotent write_batch must be attempted exactly once (no retry)"
+        );
     }
 
     #[tokio::test]
@@ -4155,6 +4248,10 @@ mod tests {
             fn connector_name(&self) -> &'static str {
                 "retry-probe"
             }
+            // Idempotent so the pipeline retries its `write_batch` (F29 gate).
+            fn supports_idempotent_writes(&self) -> bool {
+                true
+            }
         }
 
         let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -4290,6 +4387,7 @@ mod tests {
             on_drift: crate::drift::OnDrift::Warn,
             allow_widening: true,
             on_incompatible: crate::drift::OnIncompatible::Fail,
+            relax_nullability_on_missing: false,
         };
         let pages = one_page(vec![json!({"id": 1, "email": "a@x.com"})]);
         let res = run_stream(pages, &sink, drift_opts(policy)).await.unwrap();
@@ -4308,6 +4406,7 @@ mod tests {
             on_drift: crate::drift::OnDrift::Ignore,
             allow_widening: true,
             on_incompatible: crate::drift::OnIncompatible::Fail,
+            relax_nullability_on_missing: false,
         };
         let pages = one_page(vec![json!({"id": 1, "email": "a@x.com"})]);
         let res = run_stream(pages, &sink, drift_opts(policy)).await.unwrap();
@@ -4329,6 +4428,7 @@ mod tests {
             on_drift: crate::drift::OnDrift::Fail,
             allow_widening: true,
             on_incompatible: crate::drift::OnIncompatible::Fail,
+            relax_nullability_on_missing: false,
         };
         let pages = one_page(vec![json!({"id": 1, "email": "a@x.com"})]);
         let err = run_stream(pages, &sink, drift_opts(policy))
@@ -4347,6 +4447,7 @@ mod tests {
             on_drift: crate::drift::OnDrift::Evolve,
             allow_widening: true,
             on_incompatible: crate::drift::OnIncompatible::Fail,
+            relax_nullability_on_missing: false,
         };
         let pages = one_page(vec![json!({"id": 1, "email": "a@x.com"})]);
         let res = run_stream(pages, &sink, drift_opts(policy)).await.unwrap();
@@ -4360,6 +4461,58 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn drift_evolve_does_not_relax_not_null_for_merely_absent_column() {
+        // Destination has a NOT NULL `legacy` column the page omits. By default
+        // (relax_nullability_on_missing=false) the constraint must NOT be
+        // dropped — a transiently-omitted column is not evidence of optionality
+        // (F28). The evolution is empty, so evolve_schema is never called.
+        let sink = SchemaSink::new(
+            json!({"type":"object","properties":{
+                "id":{"type":"integer"},
+                "legacy":{"type":"string"}
+            }}),
+            true,
+        );
+        let policy = crate::drift::SchemaDriftPolicy {
+            on_drift: crate::drift::OnDrift::Evolve,
+            allow_widening: true,
+            on_incompatible: crate::drift::OnIncompatible::Fail,
+            relax_nullability_on_missing: false,
+        };
+        let pages = one_page(vec![json!({"id": 1})]);
+        let res = run_stream(pages, &sink, drift_opts(policy)).await.unwrap();
+        assert_eq!(res.records_written, 1);
+        assert!(
+            sink.evolutions.lock().unwrap().is_empty(),
+            "NOT NULL must not be relaxed for a merely-absent column"
+        );
+    }
+
+    #[tokio::test]
+    async fn drift_evolve_relaxes_absent_column_only_with_opt_in() {
+        // Same scenario, but the operator explicitly opted in.
+        let sink = SchemaSink::new(
+            json!({"type":"object","properties":{
+                "id":{"type":"integer"},
+                "legacy":{"type":"string"}
+            }}),
+            true,
+        );
+        let policy = crate::drift::SchemaDriftPolicy {
+            on_drift: crate::drift::OnDrift::Evolve,
+            allow_widening: true,
+            on_incompatible: crate::drift::OnIncompatible::Fail,
+            relax_nullability_on_missing: true,
+        };
+        let pages = one_page(vec![json!({"id": 1})]);
+        let res = run_stream(pages, &sink, drift_opts(policy)).await.unwrap();
+        assert_eq!(res.records_written, 1);
+        let evos = sink.evolutions.lock().unwrap();
+        assert_eq!(evos.len(), 1);
+        assert_eq!(evos[0].relax_nullability, vec!["legacy".to_string()]);
+    }
+
+    #[tokio::test]
     async fn drift_inert_when_sink_reports_no_schema() {
         // MockSink::current_schema defaults to None → pass is inert.
         let sink = MockSink::new();
@@ -4367,6 +4520,7 @@ mod tests {
             on_drift: crate::drift::OnDrift::Fail, // would fail IF a schema were known
             allow_widening: true,
             on_incompatible: crate::drift::OnIncompatible::Fail,
+            relax_nullability_on_missing: false,
         };
         let pages = one_page(vec![json!({"id": 1, "anything": true})]);
         let res = run_stream(pages, &sink, drift_opts(policy)).await.unwrap();
@@ -4384,6 +4538,7 @@ mod tests {
             on_drift: crate::drift::OnDrift::Quarantine,
             allow_widening: true,
             on_incompatible: crate::drift::OnIncompatible::Fail,
+            relax_nullability_on_missing: false,
         };
         let pages = one_page(vec![
             json!({"id": 1}),               // conforms → written
@@ -4438,6 +4593,7 @@ mod tests {
             on_drift: crate::drift::OnDrift::Quarantine,
             allow_widening: true,
             on_incompatible: crate::drift::OnIncompatible::Fail,
+            relax_nullability_on_missing: false,
         };
         let pages = one_page(vec![json!({"id": 1})]);
         let err = run_stream(pages, &sink, drift_opts(policy))
@@ -4468,6 +4624,7 @@ mod tests {
             on_drift: crate::drift::OnDrift::Fail,
             allow_widening: true,
             on_incompatible: crate::drift::OnIncompatible::Fail,
+            relax_nullability_on_missing: false,
         };
         let spec = QualitySpec {
             record: vec![RecordCheck::NotNull {

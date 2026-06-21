@@ -171,6 +171,12 @@ pub struct Stmts {
     /// double-finalize across instances is a no-op: the guard requires the
     /// parent to still be `sharded`. Does NOT re-arm owner/lease.
     pub finalize_sharded_parent: String,
+    /// Delete a run's shard rows (paired with [`delete`](Self::delete) so a
+    /// deleted run leaves no orphaned shard rows behind, F25). Param: `run_id`.
+    pub delete_shards_by_run: String,
+    /// Purge shard rows whose parent run no longer exists (run-record purged by
+    /// retention, F25). No params — a set-difference against `faucet_serve_runs`.
+    pub purge_orphan_shards: String,
 }
 
 impl Stmts {
@@ -328,6 +334,10 @@ impl Stmts {
                 SET status = $1, finished_at = $2, body = $3 \
                 WHERE run_id = $4 AND status = 'sharded'"
                 .into(),
+            delete_shards_by_run: "DELETE FROM faucet_serve_shards WHERE run_id = $1".into(),
+            purge_orphan_shards: "DELETE FROM faucet_serve_shards \
+                WHERE run_id NOT IN (SELECT run_id FROM faucet_serve_runs)"
+                .into(),
         }
     }
 
@@ -475,6 +485,10 @@ impl Stmts {
             finalize_sharded_parent: "UPDATE faucet_serve_runs \
                 SET status = ?, finished_at = ?, body = ? \
                 WHERE run_id = ? AND status = 'sharded'"
+                .into(),
+            delete_shards_by_run: "DELETE FROM faucet_serve_shards WHERE run_id = ?".into(),
+            purge_orphan_shards: "DELETE FROM faucet_serve_shards \
+                WHERE run_id NOT IN (SELECT run_id FROM faucet_serve_runs)"
                 .into(),
         }
     }
@@ -815,9 +829,30 @@ macro_rules! impl_sql_history {
                             .execute(&self.pool)
                             .await
                             .map_err(backend)?;
+                        // Drop the run's shard rows too (Mode B, #230), so a
+                        // deleted run leaves no orphaned shard rows that would
+                        // otherwise leak unboundedly (F25).
+                        sqlx::query(&self.stmts.delete_shards_by_run)
+                            .bind(id)
+                            .execute(&self.pool)
+                            .await
+                            .map_err(backend)?;
                         Ok(DeleteOutcome::Deleted)
                     }
                 }
+            }
+
+            async fn release_idempotency(
+                &self,
+                run_id: &str,
+            ) -> Result<(), $crate::serve::history::HistoryError> {
+                use $crate::serve::history::HistoryError;
+                sqlx::query(&self.stmts.delete_idem_by_run)
+                    .bind(run_id)
+                    .execute(&self.pool)
+                    .await
+                    .map_err(|e| HistoryError::Backend(e.to_string()))?;
+                Ok(())
             }
 
             async fn purge_expired(
@@ -844,6 +879,12 @@ macro_rules! impl_sql_history {
                 // prunes a live member — that's `live_instances(ttl)`'s job).
                 let _ = sqlx::query(&self.stmts.prune_instances)
                     .bind(sql::threshold(now, retain_for))
+                    .execute(&self.pool)
+                    .await;
+                // Reclaim shard rows whose parent run was just purged (F25):
+                // `purge_runs` removed the expired terminal records above, so any
+                // shard row no longer matching a run is orphaned. Best-effort.
+                let _ = sqlx::query(&self.stmts.purge_orphan_shards)
                     .execute(&self.pool)
                     .await;
                 Ok(removed)

@@ -176,7 +176,7 @@ In `auto_map` mode the INSERT is sub-chunked further so `rows × columns` never 
 
 - `column_mapping` must be `auto_map` — key columns must be real table columns, not packed inside a JSON blob.
 - `key` must be a non-empty list of column names.
-- The target table must have a **PRIMARY or UNIQUE index** on those columns. MySQL's `ON DUPLICATE KEY UPDATE` detects conflicts via that index; the `key` config drives which columns are matched, and all non-key columns are set from `VALUES(col)`.
+- The target table must have a **PRIMARY KEY or UNIQUE index whose columns exactly match `key`** (order-insensitive — a UNIQUE index on `(a, b)` matches `key: [b, a]`). MySQL's `ON DUPLICATE KEY UPDATE` does **not** name a conflict target; it resolves on *any* unique index on the table. Because the pipeline dedups and routes by exactly the configured `key`, a `key` that does not match a real unique index would make MySQL silently upsert on a *different* index — producing wrong results you cannot detect. To prevent this, the sink **validates `key` against `INFORMATION_SCHEMA.STATISTICS` at construction** and fails fast with a clear error if it does not match a PRIMARY/UNIQUE index exactly (a prefix, subset, or superset of an index does **not** match). If the table does not exist yet (no unique indexes found), the check is skipped with a warning and the first write surfaces the missing-table error.
 - A row missing/null in a key column fails. With a `dlq:` block configured, good rows are still written and only the bad rows are routed to the DLQ per-row; without a DLQ the whole batch fails.
 
 **`write_mode: upsert`** — each record is `INSERT … ON DUPLICATE KEY UPDATE` (last-write-wins). An optional `delete_marker` routes flagged records to deletes instead:

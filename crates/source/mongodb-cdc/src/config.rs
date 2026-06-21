@@ -116,6 +116,15 @@ pub struct MongoCdcSourceConfig {
     /// Records per emitted `StreamPage`. `0` = drain until idle into one page.
     #[serde(default = "default_batch_size")]
     pub batch_size: usize,
+    /// Max change records buffered in memory before a page is emitted, after
+    /// which the run aborts with a typed [`FaucetError::Source`]. `None` =
+    /// unbounded. The OOM safety valve: with `batch_size: 0` (or a library
+    /// caller using `fetch_all`) the change-event buffer would otherwise grow
+    /// without bound for the whole fetch cycle and risk an OOM-kill on a
+    /// high-throughput stream. Mirrors the same field on the sibling
+    /// `postgres-cdc` / `mysql-cdc` sources.
+    #[serde(default)]
+    pub max_staged_records: Option<usize>,
 }
 
 impl MongoCdcSourceConfig {
@@ -183,6 +192,7 @@ impl fmt::Debug for MongoCdcSourceConfig {
             .field("idle_timeout", &self.idle_timeout)
             .field("max_await_time_ms", &self.max_await_time_ms)
             .field("batch_size", &self.batch_size)
+            .field("max_staged_records", &self.max_staged_records)
             .finish()
     }
 }
@@ -209,6 +219,20 @@ mod tests {
         assert_eq!(c.start_from, StartFrom::Now);
         assert_eq!(c.full_document, FullDocument::Off);
         assert!(c.operation_types.is_empty());
+        // Defaults to unbounded, matching postgres-cdc / mysql-cdc.
+        assert_eq!(c.max_staged_records, None);
+    }
+
+    #[test]
+    fn max_staged_records_round_trips() {
+        let c: MongoCdcSourceConfig = serde_json::from_value(json!({
+            "connection_uri": "mongodb://h/?replicaSet=rs0",
+            "scope": { "type": "cluster" },
+            "max_staged_records": 100000
+        }))
+        .unwrap();
+        assert_eq!(c.max_staged_records, Some(100_000));
+        assert!(c.validate().is_ok());
     }
 
     #[test]

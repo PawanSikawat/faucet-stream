@@ -17,9 +17,10 @@ existing per-connector behaviour.
 ```yaml
 pipeline:
   schema:
-    on_drift: warn            # warn | evolve | ignore | quarantine | fail
-    allow_type_widening: true # default true; only consulted by `evolve`
-    on_incompatible: fail     # fail | quarantine — `evolve` only (default fail)
+    on_drift: warn                     # warn | evolve | ignore | quarantine | fail
+    allow_type_widening: true          # default true; only consulted by `evolve`
+    on_incompatible: fail              # fail | quarantine — `evolve` only (default fail)
+    relax_nullability_on_missing: false # default false; `evolve` only
   source: { ... }
   sink: { ... }
 ```
@@ -29,6 +30,7 @@ pipeline:
 | `on_drift` | `warn` | The policy applied when drift is detected. |
 | `allow_type_widening` | `true` | Whether a lossless type widening (e.g. `integer → number`, or gaining nullability) counts as evolvable rather than incompatible. Only consulted by `evolve`. |
 | `on_incompatible` | `fail` | `evolve` only — what to do with a residue that cannot be auto-applied (a narrowing / incompatible type swap): `fail` aborts, `quarantine` routes the offending rows to the DLQ. |
+| `relax_nullability_on_missing` | `false` | `evolve` only — whether a `NOT NULL` destination column that is merely **absent** from a page may have its `NOT NULL` constraint dropped. Default `false`: a transiently-omitted column is not evidence the column is optional, so the constraint is left untouched. Set `true` only when you deliberately want column omission to relax nullability. *Nullability relaxation driven by an observed null value (a widening) is unaffected by this flag.* |
 
 ### How detection works
 
@@ -95,17 +97,28 @@ pipeline:
 ### `evolve`
 
 Apply additive/widening DDL to the destination — `ADD COLUMN` for additions,
-type widening for widenings, NOT NULL relaxation for droppable-required columns —
-then write the page through. Any incompatible residue is handled by
-`on_incompatible`. This is the mode that keeps a mirror in lockstep with a
-changing source without manual `ALTER TABLE`s.
+type widening for widenings — then write the page through. Any incompatible
+residue is handled by `on_incompatible`. This is the mode that keeps a mirror in
+lockstep with a changing source without manual `ALTER TABLE`s.
 
 ```yaml
 schema:
   on_drift: evolve
   allow_type_widening: true
   on_incompatible: fail
+  relax_nullability_on_missing: false
 ```
+
+> **A `NOT NULL` column missing from a page does not relax by default.** A column
+> the page simply doesn't carry (a `droppable-required` column) is *not* treated
+> as evidence that the column became optional — a partial/transient page omits it
+> just as readily as a real schema change, and auto-dropping the constraint would
+> silently and irreversibly weaken the destination. With the default
+> `relax_nullability_on_missing: false`, an omitted required column is left
+> untouched (a page that genuinely lacks a required value then fails loudly at
+> write time). Set `relax_nullability_on_missing: true` only when you deliberately
+> want omission to relax the constraint. Relaxation driven by an *observed* null
+> value in a present column (a widening) still happens regardless of this flag.
 
 ## Sink support
 

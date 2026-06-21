@@ -122,12 +122,18 @@ Only certain connectors are allowed in an exactly-once pipeline:
 | Source | `postgres-cdc`, `mysql-cdc`, `mongodb-cdc` | The source must deterministically replay the same pages from a given bookmark. Non-CDC / batch sources (REST, SQL query, etc.) do not replay deterministically — a different page on resume would cause the pipeline to silently skip records it never wrote. |
 | Sink | `sqlite`, `postgres`, `mysql`, `mssql`, `iceberg`, `bigquery`, `kafka` | The sink must be able to commit data and a watermark token atomically in a single transaction or snapshot. Sinks without transaction support cannot provide this guarantee. The Kafka sink uses a transactional producer that commits records plus a commit-token record into a compacted side-topic in one Kafka transaction. |
 
+A **durable** state store is required: `delivery: exactly_once` rejects
+`state: { type: memory }` at config-load. The commit-token watermark must survive
+a restart for the resume-and-skip logic to work — an in-memory store loses it on
+process exit, so a crash would silently re-deliver an already-committed page. Use
+`file`, `redis`, or `postgres` (see [State stores](#state-stores)).
+
 A DLQ (`dlq:` block) is incompatible with `exactly_once` in this version.
 
 ### Hard gate at config-load time
 
-The four requirements (CDC source, idempotent sink, state store, no DLQ) are
-validated when the config is loaded — `faucet validate` will report a clear
+The four requirements (CDC source, idempotent sink, a **durable** state store —
+not `memory` — and no DLQ) are validated when the config is loaded — `faucet validate` will report a clear
 `config error` naming the offending row before any run starts. There is no
 runtime fallback.
 

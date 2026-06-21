@@ -61,7 +61,7 @@ All fields live under `pipeline.source.config`.
 |-------|------|---------|-------------|
 | `connection_url` | string | — *(required)* | PostgreSQL connection URL (`postgres://user:pass@host:5432/db`). Masked in `Debug` output and stripped from the lineage URI. |
 | `query` | string | — *(required)* | SQL query to execute. May contain positional placeholders `$1`, `$2`, … and `${parent.path}` matrix-context tokens. |
-| `params` | array | `[]` | Bind parameters for the query, in positional order. Each value is bound as its native scalar type (string / i64 / f64 / bool / null). |
+| `params` | array | `[]` | Bind parameters for the query, in positional order. Each value is bound as its native scalar type (string / integer / float / bool / null). Integer params bind exactly — any JSON integer up to `u64::MAX` round-trips without the precision loss an `f64` cast would cause, so large 64-bit ids compare correctly. |
 
 ### Reliability & batching
 

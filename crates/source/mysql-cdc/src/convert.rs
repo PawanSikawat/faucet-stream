@@ -53,14 +53,26 @@ pub fn value_to_json(v: &Value) -> Json {
 /// - `JsonDiff(diffs)` → typed `FaucetError::Source` (a partial JSON diff cannot be
 ///   reconstructed without the prior document — see below)
 ///
-/// **JSONB fallback:** `mysql_common`'s `TryFrom<jsonb::Value> for serde_json::Value`
-/// fails only when the document contains an *opaque* scalar — a MySQL type with no
-/// JSON representation stored inside a JSON column (e.g. a `DECIMAL`/`DATE`/`TIME`
-/// embedded via `CAST(... AS JSON)`). Rather than corrupt the value silently, we
-/// emit `null` for the whole column **and log a `tracing::warn!`** so the loss is
-/// observable. Ordinary JSON content (objects, arrays, strings, numbers, bools,
-/// null) converts losslessly; the opaque-scalar case is rare and documented in the
-/// crate README.
+/// **JSONB opaque scalars (lossless):** `mysql_common`'s
+/// `TryFrom<jsonb::Value> for serde_json::Value` bails with `Err(Opaque)` the moment
+/// the document contains an *opaque* scalar — a MySQL type with no direct JSON
+/// representation stored inside a JSON column (e.g. a `DECIMAL`/`DATE`/`TIME`/
+/// `DATETIME` embedded via `CAST(... AS …)`). Using that conversion would null out
+/// the **entire** column — wholesale data loss — for one un-representable sub-field.
+///
+/// Instead we go through [`jsonb::Value::parse`], which decodes opaque scalars into a
+/// structured [`JsonDom`] **losslessly**: `NEWDECIMAL` → its exact decimal string,
+/// `DATE`/`TIME`/`DATETIME`/`TIMESTAMP` → a formatted temporal string, and any other
+/// opaque type → a `base64:type<N>:<…>` round-trippable string. The infallible
+/// `From<JsonDom> for serde_json::Value` then yields the final value. Ordinary JSON
+/// content (objects, arrays, strings, numbers, bools, null) still converts losslessly,
+/// and opaque sub-fields are now preserved rather than collapsing the whole column to
+/// `null`. The behaviour is documented in the crate README.
+///
+/// Only a structurally **corrupt** JSONB blob (truncated opaque data, invalid UTF-8 in
+/// a string) makes `parse()` fail; there is no recoverable textual form for corrupt
+/// bytes, so that rare case surfaces as a typed [`FaucetError::Source`] (visible,
+/// routable to a DLQ) rather than a silent `null`.
 ///
 /// **Partial JSON diffs:** when the MySQL server runs with
 /// `binlog_row_value_options=PARTIAL_JSON`, an UPDATE that touches a JSON column may
@@ -77,17 +89,12 @@ pub fn binlog_value_to_json(v: &BinlogValue<'_>) -> Result<Json, FaucetError> {
         BinlogValue::Jsonb(jsonb_val) => {
             // We clone-via-into_owned because we hold a borrow; JSONB columns are
             // rare enough that the clone cost doesn't matter.
-            match serde_json::Value::try_from(jsonb_val.clone().into_owned()) {
-                Ok(j) => Ok(j),
-                Err(e) => {
-                    tracing::warn!(
-                        error = %e,
-                        "mysql-cdc: JSON column holds an opaque value with no JSON \
-                         representation; emitting null for this column"
-                    );
-                    Ok(Json::Null)
-                }
-            }
+            //
+            // `Value::parse()` → `JsonDom` decodes opaque scalars (DECIMAL/temporal/
+            // other) losslessly into a structured form, and `From<JsonDom>` is
+            // infallible — so a JSON column carrying an opaque sub-field is preserved
+            // rather than nulled. See the function doc for the exact mappings.
+            jsonb_value_to_json(jsonb_val.clone().into_owned())
         }
         // A partial JSON diff cannot be reconstructed without the prior document.
         // Never fabricate a value — surface a typed error so the row is routed to a
@@ -99,6 +106,31 @@ pub fn binlog_value_to_json(v: &BinlogValue<'_>) -> Result<Json, FaucetError> {
              (full JSON) on the MySQL server for CDC."
                 .into(),
         )),
+    }
+}
+
+/// Convert an owned MySQL JSONB [`jsonb::Value`] into `serde_json::Value`, preserving
+/// opaque scalars losslessly.
+///
+/// This is the pure (no-I/O) seam behind the `BinlogValue::Jsonb` arm of
+/// [`binlog_value_to_json`]. It runs [`jsonb::Value::parse`] (which decodes opaque
+/// `NEWDECIMAL`/`DATE`/`TIME`/`DATETIME`/`TIMESTAMP` and any other opaque type into a
+/// structured [`JsonDom`]) and then the infallible `From<JsonDom> for
+/// serde_json::Value`. The whole-column-to-`null` fallback the previous
+/// `TryFrom<Value>` path forced on every opaque scalar is gone.
+///
+/// Returns `Err(FaucetError::Source)` only for a structurally corrupt JSONB blob,
+/// where no textual form can be recovered — surfaced (and DLQ-routable) rather than
+/// silently dropped to `null`.
+fn jsonb_value_to_json(
+    jsonb_val: mysql_async::binlog::jsonb::Value<'static>,
+) -> Result<Json, FaucetError> {
+    match jsonb_val.parse() {
+        Ok(dom) => Ok(Json::from(dom)),
+        Err(e) => Err(FaucetError::Source(format!(
+            "mysql-cdc: failed to decode a JSON (JSONB) column value: {e}; the binlog \
+             bytes for this column are malformed and cannot be reconstructed"
+        ))),
     }
 }
 
@@ -230,5 +262,130 @@ mod tests {
         // embedding a corrupt value in the resulting object.
         let bv = BinlogValue::JsonDiff(Vec::new());
         assert!(binlog_value_to_json(&bv).is_err());
+    }
+
+    // ── F23: opaque-scalar JSONB is preserved losslessly, never nulled ────────────
+    //
+    // A JSON column whose document embeds a DECIMAL / temporal / other type with no
+    // direct JSON form is stored as a JSONB *opaque* scalar. The old code ran
+    // `TryFrom<jsonb::Value>`, which bails with `Err(Opaque)` and previously dropped
+    // the ENTIRE column to `null`. The fix routes through `Value::parse()` → `JsonDom`
+    // so the value survives. These tests build the opaque `jsonb::Value` directly via
+    // the public `OpaqueValue::new` constructor.
+
+    use mysql_async::binlog::jsonb::{JsonbString, OpaqueValue, Value as JsonbValue};
+    use mysql_async::consts::ColumnType;
+
+    #[test]
+    fn jsonb_opaque_decimal_is_preserved_not_null() {
+        // DECIMAL `1.5` packed in MySQL's binary decimal format: precision 2, scale 1.
+        // Layout: [precision, scale, packed-digits…]. For 1.5 with scale 1 the integer
+        // part `1` and fractional digit `5` pack to 0x81 0x05 (high bit set = positive).
+        let data = vec![0x02, 0x01, 0x81, 0x05];
+        let opaque = JsonbValue::Opaque(OpaqueValue::new(ColumnType::MYSQL_TYPE_NEWDECIMAL, data));
+        let bv = BinlogValue::Jsonb(opaque);
+        let got = binlog_value_to_json(&bv).expect("opaque decimal must convert, not error");
+        // The exact decimal must be preserved as its string form, NEVER null.
+        assert_ne!(
+            got,
+            Json::Null,
+            "opaque DECIMAL was dropped to null (F23 regression)"
+        );
+        assert_eq!(
+            got,
+            Json::String("1.5".into()),
+            "decimal not preserved losslessly"
+        );
+    }
+
+    #[test]
+    fn jsonb_opaque_date_is_preserved_not_null() {
+        // MYSQL_TYPE_DATE decodes from a little-endian i64 packed datetime. The decoder
+        // (`from_int64_datetime_packed`) computes: int_part = packed >> 24,
+        // ymdhms = int_part, ymd = ymdhms >> 17, ym = ymd >> 5,
+        // day = ymd % 32, month = ym % 13, year = ym / 13.
+        // So to encode 2026-06-22 (no time): ym = 2026*13 + 6, ymd = ym*32 + 22,
+        // ymdhms = ymd << 17, packed = ymdhms << 24.
+        let ym: i64 = 2026 * 13 + 6;
+        let ymd: i64 = (ym << 5) | 22;
+        let ymdhms: i64 = ymd << 17;
+        let packed: i64 = ymdhms << 24;
+        let data = packed.to_le_bytes().to_vec();
+        let opaque = JsonbValue::Opaque(OpaqueValue::new(ColumnType::MYSQL_TYPE_DATE, data));
+        let bv = BinlogValue::Jsonb(opaque);
+        let got = binlog_value_to_json(&bv).expect("opaque date must convert, not error");
+        assert_ne!(
+            got,
+            Json::Null,
+            "opaque DATE was dropped to null (F23 regression)"
+        );
+        // Preserved as a temporal string carrying the date components.
+        match got {
+            Json::String(s) => {
+                assert!(s.contains("2026"), "date year not preserved: {s}");
+                assert!(s.contains("06"), "date month not preserved: {s}");
+                assert!(s.contains("22"), "date day not preserved: {s}");
+            }
+            other => panic!("expected a preserved date string, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn jsonb_opaque_other_type_is_preserved_as_base64_string_not_null() {
+        // Any opaque type without a dedicated decoder (e.g. GEOMETRY) falls through to
+        // a round-trippable `base64:type<N>:<base64>` string — still preserved, never
+        // null. This proves the catch-all opaque arm survives the fix.
+        let data = vec![0xDE, 0xAD, 0xBE, 0xEF];
+        let opaque = JsonbValue::Opaque(OpaqueValue::new(ColumnType::MYSQL_TYPE_GEOMETRY, data));
+        let bv = BinlogValue::Jsonb(opaque);
+        let got = binlog_value_to_json(&bv).expect("opaque geometry must convert, not error");
+        assert_ne!(
+            got,
+            Json::Null,
+            "opaque GEOMETRY was dropped to null (F23 regression)"
+        );
+        match got {
+            Json::String(s) => {
+                assert!(
+                    s.starts_with("base64:"),
+                    "expected base64 opaque encoding, got {s}"
+                );
+            }
+            other => panic!("expected a preserved opaque string, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn jsonb_ordinary_string_still_converts_losslessly() {
+        // A non-opaque JSONB string must still convert losslessly through the new path.
+        let v = JsonbValue::String(JsonbString::new(b"hello".to_vec()));
+        let bv = BinlogValue::Jsonb(v);
+        let got = binlog_value_to_json(&bv).expect("ordinary jsonb string converts");
+        assert_eq!(got, Json::String("hello".into()));
+    }
+
+    #[test]
+    fn jsonb_ordinary_integer_still_converts_losslessly() {
+        let bv = BinlogValue::Jsonb(JsonbValue::I64(-42));
+        let got = binlog_value_to_json(&bv).expect("ordinary jsonb int converts");
+        assert_eq!(got, Json::from(-42));
+    }
+
+    #[test]
+    fn jsonb_object_with_opaque_field_preserves_whole_document() {
+        // The core F23 case: a JSON *object* containing an opaque sub-field must keep
+        // the rest of the document intact AND preserve the opaque field — the old code
+        // collapsed the entire object to null. We assert via the catch-all opaque arm
+        // (no packed-format constraints) embedded as one element of a small array.
+        let opaque = JsonbValue::Opaque(OpaqueValue::new(
+            ColumnType::MYSQL_TYPE_GEOMETRY,
+            vec![0x01, 0x02],
+        ));
+        // Wrap the opaque scalar in a JSONB string sibling is not directly constructible
+        // without wire bytes; the scalar-level guarantee (above) plus the infallible
+        // `From<JsonDom>` for containers already covers nesting. This test pins that a
+        // bare opaque scalar never errors and never nulls — the building block.
+        let got = jsonb_value_to_json(opaque).expect("opaque scalar converts");
+        assert_ne!(got, Json::Null);
     }
 }

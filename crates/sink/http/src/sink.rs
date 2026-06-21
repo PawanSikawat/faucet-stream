@@ -467,6 +467,22 @@ mod tests {
     }
 
     #[test]
+    fn http_sink_is_not_idempotent() {
+        // F32: in Array mode `write_batch` POSTs chunk-by-chunk (non-atomic
+        // forward progress). The HTTP sink must report it does NOT support
+        // idempotent writes, so the pipeline's retry gate (F29) never replays a
+        // partially-delivered page — which would re-POST already-delivered
+        // chunks and silently duplicate rows against the live endpoint.
+        let array = HttpSink::new(
+            HttpSinkConfig::new("https://api.example.com/ingest")
+                .batch_mode(crate::config::HttpBatchMode::Array),
+        );
+        assert!(!array.supports_idempotent_writes());
+        let individual = HttpSink::new(HttpSinkConfig::new("https://api.example.com/ingest"));
+        assert!(!individual.supports_idempotent_writes());
+    }
+
+    #[test]
     fn build_request_applies_bearer_auth() {
         let auth = HttpSinkAuth::Bearer {
             token: "my-token".into(),

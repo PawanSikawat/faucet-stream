@@ -147,6 +147,10 @@ impl RunHistory for FallbackHistory {
         via!(self, p => p.purge_expired(retain_for), f => f.purge_expired(retain_for))
     }
 
+    async fn release_idempotency(&self, run_id: &str) -> Result<(), HistoryError> {
+        via!(self, p => p.release_idempotency(run_id), f => f.release_idempotency(run_id))
+    }
+
     async fn recover_orphans(&self) -> Result<usize, HistoryError> {
         via!(self, p => p.recover_orphans(), f => f.recover_orphans())
     }

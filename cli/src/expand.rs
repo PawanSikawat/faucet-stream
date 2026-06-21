@@ -439,11 +439,29 @@ pub fn expand(cfg: &PipelineConfig) -> CliResult<Vec<ExpandedNode>> {
                     ids[i], merged_sink.kind
                 )));
             }
-            if state.is_none() {
-                return Err(CliError::Config(format!(
-                    "row '{}': delivery: exactly_once requires a state store",
-                    ids[i]
-                )));
+            // Require a *durable* state store. The exactly-once mechanism
+            // persists the monotonic page sequence alongside the bookmark
+            // (`wrap_state(bookmark, seq)`) and resumes from it across
+            // restarts; the in-process `memory` store loses that watermark on
+            // exit, so a restart would re-run already-committed pages — exactly
+            // the duplication exactly-once exists to prevent (F24). Mirror the
+            // `faucet replicate` gate, which already rejects `memory`.
+            match state.as_ref() {
+                None => {
+                    return Err(CliError::Config(format!(
+                        "row '{}': delivery: exactly_once requires a state store",
+                        ids[i]
+                    )));
+                }
+                Some(s) if s.kind == "memory" => {
+                    return Err(CliError::Config(format!(
+                        "row '{}': delivery: exactly_once requires a durable state store, \
+                         not `memory` — the cross-restart watermark/sequence guarantee \
+                         depends on it (use `file`, `redis`, or `postgres`)",
+                        ids[i]
+                    )));
+                }
+                Some(_) => {}
             }
             if dlq.is_some() {
                 return Err(CliError::Config(format!(
@@ -1660,7 +1678,29 @@ pipeline:
 
     #[test]
     fn exactly_once_accepted_with_cdc_source_idempotent_sink_and_state() {
-        // postgres-cdc → sqlite + state → must expand successfully.
+        // postgres-cdc → sqlite + a *durable* state store → must expand
+        // successfully. (Must not be `memory`: exactly-once needs cross-restart
+        // durability — see `exactly_once_rejects_memory_state`.)
+        let yaml = r#"
+version: 1
+delivery: exactly_once
+pipeline:
+  source: { type: postgres-cdc, config: {} }
+  sink:   { type: sqlite, config: {} }
+  state:
+    type: file
+    config: { path: "/tmp/faucet-eo-state.json" }
+"#;
+        let cfg = parse_with_extension(yaml, "yaml").unwrap();
+        let nodes = expand(&cfg).unwrap();
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(nodes[0].delivery, faucet_core::DeliveryMode::ExactlyOnce);
+    }
+
+    #[test]
+    fn exactly_once_rejects_memory_state() {
+        // A non-durable `memory` store defeats the cross-restart watermark
+        // guarantee, so it must be rejected at config-load (F24).
         let yaml = r#"
 version: 1
 delivery: exactly_once
@@ -1672,9 +1712,14 @@ pipeline:
     config: {}
 "#;
         let cfg = parse_with_extension(yaml, "yaml").unwrap();
-        let nodes = expand(&cfg).unwrap();
-        assert_eq!(nodes.len(), 1);
-        assert_eq!(nodes[0].delivery, faucet_core::DeliveryMode::ExactlyOnce);
+        let err = expand(&cfg).unwrap_err();
+        match &err {
+            CliError::Config(msg) => assert!(
+                msg.contains("durable") && msg.contains("memory"),
+                "expected durable/memory mention, got: {msg}"
+            ),
+            other => panic!("expected Config error, got {other:?}"),
+        }
     }
 
     #[test]

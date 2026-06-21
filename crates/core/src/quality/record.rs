@@ -95,10 +95,40 @@ pub fn evaluate_record_check(c: &CompiledRecordCheck, rec: &Value) -> Result<(),
     }
 }
 
-/// Evaluate a `compare` check. Note: ordering ops (`gt`/`gte`/`lt`/`lte`)
-/// convert both operands via `as_f64()`, which loses precision for integer
-/// magnitudes above 2^53; `eq`/`ne` use exact structural JSON equality.
+/// Order two JSON numbers without lossy `f64` conversion when both are
+/// integers. `serde_json::Number` may hold an `i64`, a `u64` (for magnitudes
+/// above `i64::MAX`), or an `f64`; converting an integer above 2^53 to `f64`
+/// rounds it, so a naive `as_f64()` comparison can decide the wrong ordering
+/// for large 64-bit integers. We compare integer operands exactly (handling
+/// the mixed signed/unsigned case) and only fall back to `f64` when at least
+/// one operand is genuinely a floating-point value. Returns `None` only when a
+/// float operand is non-finite (not representable for JSON numbers).
+fn cmp_numbers(a: &serde_json::Number, b: &serde_json::Number) -> Option<std::cmp::Ordering> {
+    use std::cmp::Ordering;
+    if let (Some(x), Some(y)) = (a.as_i64(), b.as_i64()) {
+        return Some(x.cmp(&y));
+    }
+    if let (Some(x), Some(y)) = (a.as_u64(), b.as_u64()) {
+        return Some(x.cmp(&y));
+    }
+    // Mixed integer signedness: an `i64`-only operand is negative (so it does
+    // not fit `u64`) while a `u64`-only operand exceeds `i64::MAX` — the
+    // negative is always the smaller of the two.
+    if a.as_i64().is_some() && b.as_u64().is_some() {
+        return Some(Ordering::Less);
+    }
+    if a.as_u64().is_some() && b.as_i64().is_some() {
+        return Some(Ordering::Greater);
+    }
+    // At least one operand is a float: lossy comparison is unavoidable here.
+    a.as_f64()?.partial_cmp(&b.as_f64()?)
+}
+
+/// Evaluate a `compare` check. Ordering ops (`gt`/`gte`/`lt`/`lte`) compare
+/// integer operands exactly via [`cmp_numbers`] (no precision loss above
+/// 2^53); `eq`/`ne` use exact structural JSON equality.
 fn evaluate_compare(op: CompareOp, actual: &Value, expected: &Value) -> Result<(), String> {
+    use std::cmp::Ordering;
     match op {
         CompareOp::Eq => {
             if actual == expected {
@@ -115,20 +145,23 @@ fn evaluate_compare(op: CompareOp, actual: &Value, expected: &Value) -> Result<(
             }
         }
         CompareOp::Gt | CompareOp::Gte | CompareOp::Lt | CompareOp::Lte => {
-            let (Some(a), Some(b)) = (actual.as_f64(), expected.as_f64()) else {
+            let (Value::Number(a), Value::Number(b)) = (actual, expected) else {
+                return Err("value was not numeric".into());
+            };
+            let Some(ord) = cmp_numbers(a, b) else {
                 return Err("value was not numeric".into());
             };
             let ok = match op {
-                CompareOp::Gt => a > b,
-                CompareOp::Gte => a >= b,
-                CompareOp::Lt => a < b,
-                CompareOp::Lte => a <= b,
+                CompareOp::Gt => ord == Ordering::Greater,
+                CompareOp::Gte => ord != Ordering::Less,
+                CompareOp::Lt => ord == Ordering::Less,
+                CompareOp::Lte => ord != Ordering::Greater,
                 _ => unreachable!(),
             };
             if ok {
                 Ok(())
             } else {
-                Err(format!("comparison {a} {op} {b} failed"))
+                Err(format!("comparison {actual} {op} {expected} failed"))
             }
         }
     }
@@ -265,6 +298,63 @@ mod tests {
         });
         assert!(evaluate_record_check(&ne, &json!({"v": 6})).is_ok()); // 6 != 5 -> pass
         assert!(evaluate_record_check(&ne, &json!({"v": 5})).is_err()); // 5 == 5 -> fail
+    }
+
+    #[test]
+    fn compare_ordering_is_exact_above_2_pow_53() {
+        // 2^53 and 2^53+1 are distinct integers but collapse to the same f64.
+        // A lossy comparison would treat `gt(2^53)` as failing for 2^53+1.
+        let threshold = 9_007_199_254_740_992i64; // 2^53
+        let gt = one(RecordCheck::Compare {
+            field: "id".into(),
+            op: CompareOp::Gt,
+            value: json!(threshold),
+            on_failure: OnFailure::Abort,
+        });
+        assert!(evaluate_record_check(&gt, &json!({"id": threshold + 1})).is_ok());
+        assert!(evaluate_record_check(&gt, &json!({"id": threshold})).is_err());
+
+        // Two distinct u64 values above i64::MAX that round to the same f64.
+        let big = 18_446_744_073_709_551_614u64; // u64::MAX - 1
+        let lte = one(RecordCheck::Compare {
+            field: "id".into(),
+            op: CompareOp::Lte,
+            value: json!(big),
+            on_failure: OnFailure::Abort,
+        });
+        assert!(evaluate_record_check(&lte, &json!({"id": big})).is_ok());
+        assert!(evaluate_record_check(&lte, &json!({"id": u64::MAX})).is_err());
+    }
+
+    #[test]
+    fn compare_ordering_handles_mixed_sign_and_floats() {
+        let lt = one(RecordCheck::Compare {
+            field: "v".into(),
+            op: CompareOp::Lt,
+            value: json!(u64::MAX),
+            on_failure: OnFailure::Abort,
+        });
+        // negative i64 vs huge u64: -1 < u64::MAX
+        assert!(evaluate_record_check(&lt, &json!({"v": -1})).is_ok());
+
+        let gt = one(RecordCheck::Compare {
+            field: "v".into(),
+            op: CompareOp::Gt,
+            value: json!(-1),
+            on_failure: OnFailure::Abort,
+        });
+        // huge u64 vs negative i64: u64::MAX > -1
+        assert!(evaluate_record_check(&gt, &json!({"v": u64::MAX})).is_ok());
+
+        // float operands still compare
+        let gte = one(RecordCheck::Compare {
+            field: "v".into(),
+            op: CompareOp::Gte,
+            value: json!(1.5),
+            on_failure: OnFailure::Abort,
+        });
+        assert!(evaluate_record_check(&gte, &json!({"v": 1.5})).is_ok());
+        assert!(evaluate_record_check(&gte, &json!({"v": 1.4})).is_err());
     }
 
     #[test]

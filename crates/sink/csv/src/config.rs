@@ -31,6 +31,14 @@ pub struct CsvSinkConfig {
     /// the page.
     #[serde(default = "default_batch_size")]
     pub batch_size: usize,
+    /// What to do when a record contains a field that is not part of the
+    /// frozen column set (the CSV header is fixed from the first batch and
+    /// cannot be rewritten without rewriting the whole file). A field that
+    /// first appears in a *later* batch — or in a later record once the header
+    /// is already written — cannot be added to the header, so its value is
+    /// dropped from the output. Defaults to [`OnUnknownField::Warn`].
+    #[serde(default)]
+    pub on_unknown_field: OnUnknownField,
     /// Compression codec for the output file. Defaults to
     /// [`CompressionConfig::Auto`](faucet_core::CompressionConfig::Auto) —
     /// `.gz` / `.zst` suffix selects gzip / zstd. Requires the crate-local
@@ -38,6 +46,27 @@ pub struct CsvSinkConfig {
     #[cfg(feature = "compression")]
     #[serde(default)]
     pub compression: faucet_core::CompressionConfig,
+}
+
+/// Policy for a record key that is not in the sink's frozen column set.
+///
+/// The CSV header is fixed from the first non-empty batch and cannot be
+/// rewritten in place. A field that first appears after the header is written
+/// (in a later batch, or a later record of the first batch once the header is
+/// determined) therefore cannot become a column, so its value would be lost.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum OnUnknownField {
+    /// Emit a one-shot `tracing::warn!` naming the dropped field(s) and keep
+    /// writing — the unknown field's value is dropped from the output. This is
+    /// the default: it preserves the historical streaming/append behaviour
+    /// while making the column-level loss visible instead of silent.
+    #[default]
+    Warn,
+    /// Abort the write with a [`FaucetError::Sink`](faucet_core::FaucetError::Sink)
+    /// the first time any record carries a field outside the frozen column set.
+    /// Opt into this when silent column-level data loss is unacceptable.
+    Error,
 }
 
 fn default_delimiter() -> u8 {
@@ -61,6 +90,7 @@ impl CsvSinkConfig {
             write_headers: true,
             append: false,
             batch_size: DEFAULT_BATCH_SIZE,
+            on_unknown_field: OnUnknownField::Warn,
             #[cfg(feature = "compression")]
             compression: faucet_core::CompressionConfig::Auto,
         }
@@ -94,6 +124,12 @@ impl CsvSinkConfig {
     /// BigQuery streaming inserts).
     pub fn with_batch_size(mut self, batch_size: usize) -> Self {
         self.batch_size = batch_size;
+        self
+    }
+
+    /// Set the policy for record keys outside the frozen column set.
+    pub fn on_unknown_field(mut self, policy: OnUnknownField) -> Self {
+        self.on_unknown_field = policy;
         self
     }
 
@@ -173,5 +209,27 @@ mod tests {
         let json = r#"{"path": "/tmp/out.csv"}"#;
         let config: CsvSinkConfig = serde_json::from_str(json).unwrap();
         assert_eq!(config.batch_size, faucet_core::DEFAULT_BATCH_SIZE);
+    }
+
+    #[test]
+    fn on_unknown_field_defaults_to_warn() {
+        let config = CsvSinkConfig::new("/tmp/out.csv");
+        assert_eq!(config.on_unknown_field, OnUnknownField::Warn);
+        let json = r#"{"path": "/tmp/out.csv"}"#;
+        let config: CsvSinkConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(config.on_unknown_field, OnUnknownField::Warn);
+    }
+
+    #[test]
+    fn on_unknown_field_deserializes_snake_case() {
+        let json = r#"{"path": "/tmp/out.csv", "on_unknown_field": "error"}"#;
+        let config: CsvSinkConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(config.on_unknown_field, OnUnknownField::Error);
+    }
+
+    #[test]
+    fn on_unknown_field_builder_sets_policy() {
+        let config = CsvSinkConfig::new("/tmp/out.csv").on_unknown_field(OnUnknownField::Error);
+        assert_eq!(config.on_unknown_field, OnUnknownField::Error);
     }
 }

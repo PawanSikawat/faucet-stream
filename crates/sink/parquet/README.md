@@ -12,11 +12,11 @@ Built on the `parquet` + `arrow` crates wired through `object_store`, so local a
 ## Feature highlights
 
 - **Local or S3** — write to a local file/directory or to S3 (and S3-compatible services like MinIO / LocalStack via `endpoint_url`).
-- **Schema inference on first batch** — the Arrow schema is learned from the opening batch; every field is forced nullable, so missing keys round-trip as `NULL`.
+- **Schema inference per file** — the Arrow schema is learned from each file's opening batch; every field is forced nullable, so missing keys round-trip as `NULL`. On rollover the schema is re-inferred, so a column added mid-run (e.g. CDC after `ALTER TABLE ADD COLUMN`) is picked up by the next file rather than dropped for the whole run.
 - **Columnar compression** — `snappy` (default), `gzip`, `zstd`, `lz4`, or `uncompressed` — applied internally by the Parquet writer.
 - **Row & byte rollover** — split large outputs across multiple `<uuid>.parquet` files by row count (`max_rows_per_file`) or byte budget (`max_bytes_per_file`).
 - **Streaming writer** — one reused `object_store` client, bounded buffering, configurable `row_group_size` for read-back performance.
-- **Drops unknown fields** — fields not in the inferred schema are silently skipped with a one-shot `tracing::warn!` per field name.
+- **Drops unknown fields (within a file)** — a field absent from the *current file's* locked schema (one that appeared after the file's first batch) is dropped, with a `tracing::warn!` once per field per file. A Parquet file cannot change its schema mid-stream, so this loss is unavoidable within a file — but the schema is re-inferred per file, so the field is captured in the next file on rollover.
 - **Flush-safe** — files become valid only when the footer is written. In **rollover / directory / S3 mode** each `flush()` (called automatically by the pipeline on success, error-unwind, and cooperative cancellation) closes the current file and writes its footer. In **single-file mode** one writer stays open for the whole run — per-page `flush()` only flushes buffered row groups (no footer) so the file is never truncated mid-stream — and the footer is written once when the sink is dropped at end of run.
 
 ## Installation
@@ -197,11 +197,14 @@ sink:
 
 ## Schema handling
 
-- **Inferred (default)** — the first batch is used to learn an Arrow schema via `arrow_json::reader::infer_json_schema_from_iterator`, sampling up to `sample_size` records (default `DEFAULT_SAMPLE_SIZE` = 100). All inferred fields are forced nullable.
+- **Inferred (default)** — each file's first batch is used to learn an Arrow schema via `arrow_json::reader::infer_json_schema_from_iterator`, sampling up to `sample_size` records (default `DEFAULT_SAMPLE_SIZE` = 100). All inferred fields are forced nullable.
+- **Per-file inference / re-inference on rollover** — a Parquet file's schema is **immutable once its first batch is written**, so the schema is locked for the lifetime of *that file*. On rollover (a `max_rows_per_file` / `max_bytes_per_file` threshold firing, or an explicit `flush()` in directory / S3 mode) the locked schema is cleared and the *next* file re-infers from its own first batch. The practical effect: when the record shape **widens mid-run** (a new column appears — e.g. CDC following an `ALTER TABLE ADD COLUMN`, or a non-homogeneous first page), the new column is written in the next file once a rollover boundary is crossed, instead of being silently dropped for the entire run. **In single-file mode (no rollover) there is no file boundary**, so the schema stays locked to the first batch for the whole run — see the within-file limitation below.
 - **Missing fields** — absent keys are written as Arrow `NULL` columns.
-- **Unknown fields** — fields not present in the locked-in schema are silently dropped, with a one-shot `tracing::warn!` per field name.
+- **Unknown fields (within-file widening limitation)** — a field present in a record but **absent from the current file's locked schema** is silently dropped by the Arrow JSON decoder. This only happens for a field that appears *after* the file's schema was locked and *before* the next file boundary — a Parquet file cannot change its schema mid-stream, so this drop is genuinely unavoidable within a single file. Each such field is logged with a `tracing::warn!` **once per field per file** (the warn de-dupe resets on rollover, so a fresh file re-warns if it still drops the field) — making the unavoidable loss visible rather than silent. To capture the field: cross a rollover boundary (it lands in the next file), set rollover thresholds so files roll more often, or re-run; in single-file mode, ensure the widest record shape appears in the opening batch (or widen `sample_size`).
 - **Type drift** — if a later batch sends a value whose JSON type disagrees with the locked-in schema (e.g. int → string), `write_batch` returns `FaucetError::Sink` naming the field, the schema's declared type, and the drifting record's type.
 - **Explicit schema** — reserved; currently returns a `Config` error.
+
+> For a destination-managed, declarative response to a widening source schema (evolve / quarantine / fail policies), see the workspace **schema-drift** feature. The Parquet sink is schemaless from that feature's perspective (it reports no live destination schema), so a `schema:` policy is inert against it — the per-file re-inference described here is the Parquet-native mechanism.
 
 ## Rollover
 
@@ -210,7 +213,7 @@ sink:
 | `max_rows_per_file` | row count of the current writer ≥ limit |
 | `max_bytes_per_file` | estimated in-memory size ≥ limit |
 
-When either limit fires, the current Parquet writer is closed (writing the footer) and the next `write_batch` opens a fresh `<uuid>.parquet`. Both thresholds are checked after each batch, so the actual file may exceed the limit by up to one batch.
+When either limit fires, the current Parquet writer is closed (writing the footer) and the next `write_batch` opens a fresh `<uuid>.parquet`. Both thresholds are checked after each batch, so the actual file may exceed the limit by up to one batch. **The schema is re-inferred for each new file**, so if the record shape has widened since the previous file, the new column appears in the new file (see [Schema handling](#schema-handling)).
 
 > **`max_bytes_per_file` is approximate.** The threshold compares against an estimate of the *in-memory Arrow* size, not the on-disk Parquet size. Column encoding + compression usually make the actual file substantially smaller. Treat it as a soft target, not a hard byte cap.
 
@@ -305,7 +308,7 @@ This crate has no optional features of its own; enable it in the CLI/umbrella vi
 | `FaucetError::Config` on `destination` | Empty `path` (local) or empty `bucket` (S3). Provide a non-empty value. |
 | `FaucetError::Config` on `schema` | `type: explicit` is reserved/unsupported, or `inferred` `sample_size` is `0`. Use `inferred` with `sample_size ≥ 1`, or omit `schema`. |
 | `FaucetError::Sink` naming a field + two types | Type drift — a later batch's value type disagrees with the inferred schema. Cast the field upstream (e.g. a `cast` transform) so every record agrees. |
-| A field is missing from the output | It wasn't in the first batch (so not in the inferred schema) and was dropped — check the one-shot warn log. Ensure the schema-bearing fields appear in the opening records, or widen `sample_size`. |
+| A field is missing from the output | It wasn't in the current file's first batch (so not in that file's inferred schema) and was dropped — check the one-shot-per-file warn log naming the field. The schema is re-inferred per file, so a widened field is captured in the next file once a rollover boundary is crossed; in single-file mode (no rollover) ensure the widest record shape appears in the opening batch, or widen `sample_size`. Set `max_rows_per_file` / `max_bytes_per_file` if you need files to roll more often so a mid-run column addition is picked up sooner. |
 | Single-file `.parquet` path ignored; UUID files appear | You set a rollover threshold on a fixed `.parquet` path. Drop the threshold for single-file mode, or use a directory destination. |
 | S3 `403`/credential errors | Credentials missing from the AWS chain, or wrong region. Set `region` and the AWS env vars/profile. |
 | Connecting to MinIO/LocalStack fails | Set `endpoint_url` and `allow_http: true` (required for `http://` endpoints). |

@@ -22,6 +22,19 @@ impl CsvSource {
     }
 }
 
+/// Build the strict-mode field-count-mismatch error message for a ragged row.
+///
+/// Pure helper (no I/O) so the message wording is unit-testable. `line` is the
+/// 1-based physical file line; `detail` is the underlying `csv-async`
+/// description of the mismatch (which names the field counts).
+fn ragged_row_message(line: usize, path: &str, detail: &str) -> String {
+    format!(
+        "ragged CSV row at line {line} in '{path}': {detail} — a short or long \
+         row is a structural defect that would silently corrupt downstream \
+         records; fix the file or set `flexible: true` to accept uneven rows"
+    )
+}
+
 #[async_trait]
 impl faucet_core::Source for CsvSource {
     async fn fetch_with_context(
@@ -55,6 +68,11 @@ impl faucet_core::Source for CsvSource {
     /// `batch_size = 0` drains the entire file into a single page. The CSV
     /// source has no incremental-replication mode, so every emitted page
     /// carries `bookmark: None`.
+    ///
+    /// Field-count leniency is opt-in via [`CsvSourceConfig::flexible`]
+    /// (default `false`): a ragged row aborts the stream with a typed
+    /// [`FaucetError::Source`] naming the offending line rather than emitting an
+    /// incomplete record.
     fn stream_pages<'a>(
         &'a self,
         context: &'a std::collections::HashMap<String, Value>,
@@ -92,9 +110,15 @@ impl faucet_core::Source for CsvSource {
                 .has_headers(false)
                 .delimiter(config.delimiter)
                 .quote(config.quote)
-                // Tolerate uneven field counts (the connector has always been
-                // lenient — uneven rows must not abort the run).
-                .flexible(true)
+                // Field-count leniency is opt-in (`flexible`, default false). A
+                // ragged row is a structural defect; silently emitting an
+                // incomplete record would corrupt downstream consumers. The
+                // header row is parsed manually below, so `csv-async` would only
+                // compare *data* rows against each other — it never sees the
+                // header. We therefore also enforce the expected width
+                // explicitly per data row (see `check_field_count`), which
+                // catches a first data row that is short relative to the header.
+                .flexible(config.flexible)
                 .create_reader(reader);
 
             let mut records = csv_reader.records();
@@ -141,14 +165,27 @@ impl faucet_core::Source for CsvSource {
             let mut row_idx = 0usize;
 
             while let Some(rec) = records.next().await {
-                let record = rec.map_err(|e| FaucetError::Config(format!(
-                    "CSV parse error at line {} in '{}': {e}",
-                    // Physical file line: `row_idx` is the 0-based *data* row, so
-                    // +1 for 1-based, and +1 more when a header row was consumed —
-                    // otherwise the first data row (file line 2) is misreported as 1.
-                    row_idx + 1 + usize::from(config.has_headers),
-                    config.path
-                )))?;
+                // Physical file line: `row_idx` is the 0-based *data* row, so
+                // +1 for 1-based, and +1 more when a header row was consumed —
+                // otherwise the first data row (file line 2) is misreported as 1.
+                let line = row_idx + 1 + usize::from(config.has_headers);
+                let record = rec.map_err(|e| {
+                    // With `flexible(false)` (the strict default), `csv-async`
+                    // raises `UnequalLengths` for any row whose field count
+                    // differs from the prior record — and because the header is
+                    // the first physical record, this catches a data row that is
+                    // short or long relative to the header too. A ragged row is a
+                    // structural defect, not a config error, so surface it as
+                    // `Source` (with `flexible: true` the reader never raises it).
+                    if matches!(e.kind(), csv_async::ErrorKind::UnequalLengths { .. }) {
+                        FaucetError::Source(ragged_row_message(line, &config.path, &e.to_string()))
+                    } else {
+                        FaucetError::Config(format!(
+                            "CSV parse error at line {line} in '{}': {e}",
+                            config.path
+                        ))
+                    }
+                })?;
 
                 let mut obj = Map::new();
                 for (col_idx, field) in record.iter().enumerate() {
@@ -414,5 +451,185 @@ mod tests {
         // CsvSource::new is sync — construct directly.
         let source = CsvSource::new(CsvSourceConfig::new("/data/input.csv"));
         assert_eq!(source.dataset_uri(), "file:///data/input.csv");
+    }
+
+    #[test]
+    fn ragged_row_message_names_line_path_and_detail_and_hints_optin() {
+        let msg = ragged_row_message(
+            3,
+            "/data/in.csv",
+            "found record with 2 fields, but the previous record has 4 fields",
+        );
+        assert!(msg.contains("line 3"), "msg: {msg}");
+        assert!(msg.contains("/data/in.csv"), "msg: {msg}");
+        assert!(msg.contains("2 fields"), "msg: {msg}");
+        assert!(msg.contains("4 fields"), "msg: {msg}");
+        assert!(msg.contains("structural defect"), "msg: {msg}");
+        assert!(msg.contains("flexible: true"), "msg: {msg}");
+    }
+
+    #[tokio::test]
+    async fn ragged_short_row_errors_by_default() {
+        // F22: a data row with fewer fields than the header is a structural
+        // defect and must abort with a typed error, not silently emit a record
+        // missing columns.
+        let mut tmp = NamedTempFile::new().unwrap();
+        writeln!(tmp, "id,name,age").unwrap();
+        writeln!(tmp, "1,Alice,30").unwrap();
+        writeln!(tmp, "2,Bob").unwrap(); // short row — missing `age`
+        tmp.flush().unwrap();
+
+        let config = CsvSourceConfig::new(tmp.path().to_str().unwrap());
+        let source = CsvSource::new(config);
+        let result = source.fetch_all().await;
+
+        let err = result.expect_err("ragged row must error under default strict mode");
+        assert!(
+            matches!(err, FaucetError::Source(_)),
+            "expected FaucetError::Source, got {err:?}"
+        );
+        let msg = err.to_string();
+        assert!(msg.contains("ragged CSV row"), "message was: {msg}");
+        assert!(
+            msg.contains("line 3"),
+            "should name the offending line: {msg}"
+        );
+        assert!(msg.contains("2 fields"), "should name the count: {msg}");
+        assert!(
+            msg.contains("flexible: true"),
+            "should hint the opt-in: {msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn first_data_row_short_vs_header_errors_by_default() {
+        // The *first* data row being short relative to the header must error.
+        // `csv-async` compares against the header (its first physical record),
+        // so this is caught even though the header is mapped to keys manually.
+        let mut tmp = NamedTempFile::new().unwrap();
+        writeln!(tmp, "id,name,age").unwrap();
+        writeln!(tmp, "1,Alice").unwrap(); // first data row, short
+        tmp.flush().unwrap();
+
+        let config = CsvSourceConfig::new(tmp.path().to_str().unwrap());
+        let source = CsvSource::new(config);
+        let err = source
+            .fetch_all()
+            .await
+            .expect_err("short first data row must error vs header");
+        assert!(matches!(err, FaucetError::Source(_)), "got {err:?}");
+        let msg = err.to_string();
+        assert!(msg.contains("ragged CSV row"), "msg: {msg}");
+        assert!(msg.contains("2 fields"), "msg: {msg}");
+        assert!(msg.contains("3 fields"), "msg: {msg}");
+        assert!(msg.contains("line 2"), "msg: {msg}");
+    }
+
+    #[tokio::test]
+    async fn ragged_long_row_errors_by_default() {
+        // A row with *more* fields than the header is equally a defect.
+        let mut tmp = NamedTempFile::new().unwrap();
+        writeln!(tmp, "id,name").unwrap();
+        writeln!(tmp, "1,Alice,extra").unwrap();
+        tmp.flush().unwrap();
+
+        let config = CsvSourceConfig::new(tmp.path().to_str().unwrap());
+        let source = CsvSource::new(config);
+        let err = source
+            .fetch_all()
+            .await
+            .expect_err("long row must error under strict mode");
+        assert!(matches!(err, FaucetError::Source(_)), "got {err:?}");
+        assert!(err.to_string().contains("line 2"), "{err:?}");
+    }
+
+    #[tokio::test]
+    async fn ragged_row_accepted_when_flexible() {
+        // Opting in to `flexible` preserves the previous lenient behavior: the
+        // short row is accepted and emitted with the columns it does have.
+        let mut tmp = NamedTempFile::new().unwrap();
+        writeln!(tmp, "id,name,age").unwrap();
+        writeln!(tmp, "1,Alice,30").unwrap();
+        writeln!(tmp, "2,Bob").unwrap();
+        tmp.flush().unwrap();
+
+        let config = CsvSourceConfig::new(tmp.path().to_str().unwrap()).flexible(true);
+        let source = CsvSource::new(config);
+        let records = source.fetch_all().await.unwrap();
+
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[1]["id"], "2");
+        assert_eq!(records[1]["name"], "Bob");
+        // The short row is missing `age` — present but incomplete (the opt-in
+        // contract).
+        assert!(records[1].get("age").is_none());
+    }
+
+    #[tokio::test]
+    async fn long_row_accepted_when_flexible_gains_generated_key() {
+        let mut tmp = NamedTempFile::new().unwrap();
+        writeln!(tmp, "id,name").unwrap();
+        writeln!(tmp, "1,Alice,extra").unwrap();
+        tmp.flush().unwrap();
+
+        let config = CsvSourceConfig::new(tmp.path().to_str().unwrap()).flexible(true);
+        let source = CsvSource::new(config);
+        let records = source.fetch_all().await.unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0]["column_2"], "extra");
+    }
+
+    #[tokio::test]
+    async fn headerless_ragged_row_errors_by_default() {
+        // Header-less: the first data row sets the expected width; a later row
+        // of a different width must error (csv-async itself would catch this,
+        // but verify the path under our config plumbing).
+        let mut tmp = NamedTempFile::new().unwrap();
+        writeln!(tmp, "a,b,c").unwrap();
+        writeln!(tmp, "d,e").unwrap();
+        tmp.flush().unwrap();
+
+        let config = CsvSourceConfig::new(tmp.path().to_str().unwrap()).has_headers(false);
+        let source = CsvSource::new(config);
+        let err = source
+            .fetch_all()
+            .await
+            .expect_err("headerless ragged row must error");
+        assert!(matches!(err, FaucetError::Source(_)), "got {err:?}");
+    }
+
+    #[tokio::test]
+    async fn well_formed_csv_still_parses_under_strict_default() {
+        // The strict default must not regress well-formed files.
+        let mut tmp = NamedTempFile::new().unwrap();
+        writeln!(tmp, "id,name,age").unwrap();
+        writeln!(tmp, "1,Alice,30").unwrap();
+        writeln!(tmp, "2,Bob,25").unwrap();
+        tmp.flush().unwrap();
+
+        let config = CsvSourceConfig::new(tmp.path().to_str().unwrap());
+        let source = CsvSource::new(config);
+        let records = source.fetch_all().await.unwrap();
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[1]["age"], "25");
+    }
+
+    #[tokio::test]
+    async fn strict_mode_honored_when_buffered_into_single_page() {
+        // The buffered path (batch_size = 0) drains via the same stream_pages
+        // loop, so it must enforce strictness too (finding cites two locations).
+        let mut tmp = NamedTempFile::new().unwrap();
+        writeln!(tmp, "id,name").unwrap();
+        writeln!(tmp, "1,Alice").unwrap();
+        writeln!(tmp, "2").unwrap();
+        tmp.flush().unwrap();
+
+        let config = CsvSourceConfig::new(tmp.path().to_str().unwrap()).with_batch_size(0);
+        let source = CsvSource::new(config);
+        let err = source
+            .fetch_all()
+            .await
+            .expect_err("buffered drain must also enforce strict mode");
+        assert!(matches!(err, FaucetError::Source(_)), "got {err:?}");
     }
 }

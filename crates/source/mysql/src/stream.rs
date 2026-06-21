@@ -133,6 +133,39 @@ fn resolve_query(
     }
 }
 
+/// How a numeric bind value should be bound onto a sqlx query.
+///
+/// Classifying *before* binding keeps the integer/float decision in one pure,
+/// unit-testable place and — critically — binds any integer in
+/// `[i64::MIN, i64::MAX]` as an exact `i64` rather than an `f64`. Binding an
+/// integer above `2^53` as `f64` silently rounds it (audit F38), so a large
+/// 64-bit id threaded into `WHERE id = ?` would compare against the *wrong*
+/// value and return wrong rows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NumberBind {
+    /// Exact `i64` — covers every integer in `[i64::MIN, i64::MAX]`.
+    I64,
+    /// Value above `i64::MAX`; bind as `u64` (MySQL has native UNSIGNED).
+    U64,
+    /// Genuine floating-point value — bind as `f64`.
+    F64,
+}
+
+/// Classify a JSON number into the bind category to use.
+///
+/// `is_i64()` losslessly covers `[i64::MIN, i64::MAX]` (including the
+/// `(2^53, i64::MAX]` range that `f64` would round); `is_u64()` covers values
+/// above `i64::MAX`; everything else is a real float.
+fn classify_number(n: &serde_json::Number) -> NumberBind {
+    if n.is_i64() {
+        NumberBind::I64
+    } else if n.is_u64() {
+        NumberBind::U64
+    } else {
+        NumberBind::F64
+    }
+}
+
 /// Apply context-derived bind values onto a sqlx query.
 fn bind_params<'q>(
     mut query: sqlx::query::Query<'q, sqlx::MySql, sqlx::mysql::MySqlArguments>,
@@ -141,8 +174,14 @@ fn bind_params<'q>(
     for value in bind_values {
         query = match value {
             Value::String(s) => query.bind(s.clone()),
-            Value::Number(n) if n.is_i64() => query.bind(n.as_i64().unwrap()),
-            Value::Number(n) => query.bind(n.as_f64().unwrap_or(0.0)),
+            Value::Number(n) => match classify_number(n) {
+                // `unwrap()` is sound: the classifier proves the predicate.
+                NumberBind::I64 => query.bind(n.as_i64().unwrap()),
+                // MySQL has a native UNSIGNED BIGINT type, so bind the `u64`
+                // directly — values above `i64::MAX` round-trip losslessly.
+                NumberBind::U64 => query.bind(n.as_u64().unwrap()),
+                NumberBind::F64 => query.bind(n.as_f64().unwrap_or(0.0)),
+            },
             Value::Bool(b) => query.bind(*b),
             Value::Null => query.bind(None::<String>),
             _ => query.bind(value.to_string()),
@@ -274,5 +313,65 @@ mod tests {
         let redacted = faucet_core::redact_uri_credentials("mysql://u:p@h:3306/db");
         let uri = format!("{}?query={}", redacted, "SELECT 1");
         assert_eq!(uri, "mysql://h:3306/db?query=SELECT 1");
+    }
+
+    // ── F38: numeric bind classification (precision-safe) ───────────────────
+
+    fn num(v: serde_json::Value) -> serde_json::Number {
+        match v {
+            serde_json::Value::Number(n) => n,
+            _ => panic!("not a number"),
+        }
+    }
+
+    #[test]
+    fn classify_small_int_is_i64() {
+        assert_eq!(
+            classify_number(&num(serde_json::json!(42))),
+            NumberBind::I64
+        );
+        assert_eq!(
+            classify_number(&num(serde_json::json!(-7))),
+            NumberBind::I64
+        );
+        assert_eq!(classify_number(&num(serde_json::json!(0))), NumberBind::I64);
+    }
+
+    #[test]
+    fn classify_above_2_pow_53_stays_i64_not_f64() {
+        // 2^53 + 1 must NOT be bound as f64 (which would round it). It is a
+        // valid i64, so it must classify as I64.
+        let v = 9_007_199_254_740_993i64; // 2^53 + 1
+        assert_eq!(classify_number(&num(serde_json::json!(v))), NumberBind::I64);
+    }
+
+    #[test]
+    fn classify_i64_boundaries_are_i64() {
+        assert_eq!(
+            classify_number(&num(serde_json::json!(i64::MAX))),
+            NumberBind::I64
+        );
+        assert_eq!(
+            classify_number(&num(serde_json::json!(i64::MIN))),
+            NumberBind::I64
+        );
+    }
+
+    #[test]
+    fn classify_above_i64_max_is_u64() {
+        let v: u64 = i64::MAX as u64 + 1;
+        assert_eq!(classify_number(&num(serde_json::json!(v))), NumberBind::U64);
+        assert_eq!(
+            classify_number(&num(serde_json::json!(u64::MAX))),
+            NumberBind::U64
+        );
+    }
+
+    #[test]
+    fn classify_float_is_f64() {
+        assert_eq!(
+            classify_number(&num(serde_json::json!(3.5))),
+            NumberBind::F64
+        );
     }
 }
