@@ -150,7 +150,7 @@ The `auth` field accepts the project-wide adjacently-tagged `{ type, config }` s
 | `token_endpoint` | `url`, `method`, `body`, `token_path`, `expiry_path`, `expiry_ratio` | Fetch a token from an arbitrary HTTP endpoint (JSONPath-extracted). |
 | `custom` | `headers` (map<string,string>) | Arbitrary headers attached to every request. |
 
-**`oauth2` / `token_endpoint` notes:** `expiry_ratio` is the fraction of the token lifetime after which the cached token is proactively refreshed — must be in `(0.0, 1.0]`, defaults to `0.9`. For `token_endpoint`, `token_path` is the JSONPath to the token string and `expiry_path` (optional) is the JSONPath to the expiry in seconds; when absent the token is cached indefinitely.
+**`oauth2` / `token_endpoint` notes:** `expiry_ratio` is the fraction of the token lifetime after which the cached token is proactively refreshed — must be in `(0.0, 1.0]`, defaults to `0.9`. For `token_endpoint`, `token_path` is the JSONPath to the token string and `expiry_path` (optional) is the JSONPath to the expiry in seconds; when absent the token is cached indefinitely. A cached token that the API later rejects with **401 Unauthorized** (a server-side expiry the time-based cache can't see, including the cached-indefinitely case) is invalidated and the request is retried once with a freshly-fetched token, so a long run doesn't abort mid-way.
 
 ```yaml
 # Bearer

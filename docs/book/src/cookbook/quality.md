@@ -134,8 +134,11 @@ Evaluated in declared order; **first failure wins** for a given record.
 | `json_schema` | `schema` | whole record validates against a JSON Schema document | (whole-record check) |
 
 **`compare` operators:** `gt`, `gte`, `lt`, `lte` require both the field value and
-the configured `value` to be JSON numbers (compared as `f64`); `eq` and `ne` do
-exact JSON equality with no type coercion.
+the configured `value` to be JSON numbers; integer operands compare exactly (no
+`f64` rounding above 2^53). `eq` and `ne` compare two numbers by **numeric
+value** (so `1` and `1.0` are equal, and large 64-bit integers compare exactly),
+and all other types by exact structural equality — there is no cross-type
+coercion, so a string `"5"` never equals a number `5`.
 
 **`json_schema`** requires the `quality-jsonschema` Cargo feature. It is the most
 expressive check; its cost scales with schema complexity — for very large or deeply

@@ -12,7 +12,7 @@ Reach for it when you want to pull a paginated GraphQL collection (users, reposi
 ## Feature highlights
 
 - **Native streaming** — overrides `Source::stream_pages`: every upstream GraphQL response is emitted as one `StreamPage` and written to the sink immediately, so a million-row collection never buffers client-side.
-- **Relay cursor pagination** — follows `pageInfo { hasNextPage, endCursor }`, injecting the `endCursor` back into the query's `after:` variable on each request. Stops cleanly when `hasNextPage` is false, the cursor is absent, the same cursor repeats (loop guard), or `max_pages` is reached.
+- **Relay cursor pagination** — follows `pageInfo { hasNextPage, endCursor }`, injecting the `endCursor` back into the query's `after:` variable on each request. Stops cleanly when `hasNextPage` is false, the cursor is absent, the same cursor repeats (loop guard), or `max_pages` is reached. If `has_next_page_path` can't be resolved to a boolean on a page, the signal is treated as "unknown" and pagination **defers to cursor presence** (and warns once) rather than silently stopping — so a missing has-next field never drops the remaining pages.
 - **Variable injection** — static `variables` from config, plus per-request cursor / page-size variables, plus parent-record context values (`${parent.path}` matrix fan-out) merged into the GraphQL variables map at runtime.
 - **JSONPath record extraction** — `records_path` plucks the record array out of any response shape (`$.data.users.edges[*].node`). When unset, the whole `data` object is returned as a single record.
 - **Pluggable authentication** — inline Bearer or custom-header auth, or a `{ ref: <name> }` pointer to a shared `auth:` provider so many sources share one token with single-flight refresh.

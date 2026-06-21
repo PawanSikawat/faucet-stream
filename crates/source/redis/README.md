@@ -86,6 +86,8 @@ Reads list elements via `LRANGE`. Each element is parsed as JSON, falling back t
 
 Reads stream entries via `XRANGE` (streaming) or `XREAD` / `XREADGROUP` (the `fetch_all` consumer-group convenience path).
 
+> **Consumer groups apply to `fetch_all` only.** The streaming path (`stream_pages`, used by `faucet run`) always uses `XRANGE` and re-reads the whole stream every run — consumer-group acknowledgement can't compose with bookmark-checkpoint draining. If you set `group`/`consumer` and the pipeline streams, the source logs a one-shot warning; use the `fetch_all` path for `XREADGROUP` consume-once semantics, or drop `group`/`consumer` to silence it.
+
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `type` | string | — | Literal `Stream`. |
