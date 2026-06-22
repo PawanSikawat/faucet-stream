@@ -112,7 +112,59 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libsasl2-dev libssl-dev libcurl4-openssl-dev cmake build-essential
 
-      - name: Run release-plz
+      # crates.io rate-limits *updates to existing crates* (a burst of ~30, then
+      # a slow refill). A workspace-wide release that bumps more crates than the
+      # burst — e.g. the reliability-audit release that touched all 57 crates
+      # (#264) — exhausts the bucket mid-run, and `cargo publish` aborts with
+      # "429 Too Many Requests". release-plz does NOT wait out the limit; it
+      # exits non-zero, leaving a partially-published release.
+      #
+      # `release-plz release` is **idempotent** — it checks the sparse index and
+      # skips already-published crates — so the cure is to retry it a few times
+      # with a cool-down between attempts, letting the bucket refill so each
+      # attempt resumes from where the previous one stopped. (A manual re-run of
+      # the failed job ~10 min later is exactly what recovered the #264 release.)
+      # The common case — a handful of crates, well under the burst — publishes
+      # on the first attempt and never sleeps. A release larger than ~3 buckets'
+      # worth could still exhaust all attempts; if so the job fails loudly and a
+      # maintainer re-runs it (idempotent), or uses the manual `release.yml`.
+      - name: Publish to crates.io (attempt 1)
+        id: publish1
+        continue-on-error: true
+        uses: release-plz/action@v0.5
+        with:
+          command: release
+          config: release-plz.toml
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+      - name: Cool-down for crates.io rate-limit refill (before retry 1)
+        if: steps.publish1.outcome == 'failure'
+        run: |
+          echo "::warning::release-plz publish exited non-zero (commonly a crates.io 429 on a large multi-crate release). Waiting 4m for the rate-limit window to refill, then retrying idempotently."
+          sleep 240
+
+      - name: Publish to crates.io (attempt 2)
+        id: publish2
+        if: steps.publish1.outcome == 'failure'
+        continue-on-error: true
+        uses: release-plz/action@v0.5
+        with:
+          command: release
+          config: release-plz.toml
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+      - name: Cool-down for crates.io rate-limit refill (before final attempt)
+        if: steps.publish1.outcome == 'failure' && steps.publish2.outcome == 'failure'
+        run: |
+          echo "::warning::publish still incomplete after 2 attempts. Waiting 6m for a larger rate-limit refill, then making a final idempotent attempt."
+          sleep 360
+
+      - name: Publish to crates.io (final attempt)
+        if: steps.publish1.outcome == 'failure' && steps.publish2.outcome == 'failure'
         uses: release-plz/action@v0.5
         with:
           command: release
