@@ -186,12 +186,37 @@ pub async fn run_replication(
         }
     };
 
+    // Install graceful-shutdown handling UP FRONT — before the snapshot phase
+    // — so a SIGTERM / Ctrl-C during a long snapshot cancels cooperatively and
+    // lets the sink flush at the next page boundary, instead of hard-killing
+    // the process mid-write (F40). The same token feeds both the snapshot and
+    // CDC runs (`faucet schedule` installs its handler up front the same way).
+    let cancel = CancellationToken::new();
+    spawn_cancel_on_signal(cancel.clone());
+
     // ── Snapshot phase (idempotent redo on resume) ───────────────────────────
     if !marker.snapshot_done {
-        tracing::info!(pipeline = %opts.pipeline_name, "replication: running snapshot phase");
-        let summary = run_expanded(vec![snapshot_node.clone()], make_opts(&opts, None)).await?;
+        tracing::info!(pipeline = %opts.pipeline_name, "replication: running snapshot phase (Ctrl-C / SIGTERM to stop)");
+        let summary = run_expanded(
+            vec![snapshot_node.clone()],
+            make_opts(&opts, Some(cancel.clone())),
+        )
+        .await?;
         if summary.had_failures() {
             return Err(phase_failure(&summary, "snapshot"));
+        }
+        // A SIGTERM mid-snapshot flushes a *partial* result — the snapshot is
+        // NOT complete. Do not mark `snapshot_done`: a restart redoes the whole
+        // snapshot idempotently from the bootstrap position (F40). Marking it
+        // done here would skip the un-snapshotted rows on restart (CDC only
+        // replays changes after the captured position, not pre-existing rows).
+        if cancel.is_cancelled() {
+            tracing::warn!(
+                pipeline = %opts.pipeline_name,
+                "replication: snapshot interrupted by shutdown before completion; \
+                 it will be redone on the next run"
+            );
+            return Ok(());
         }
         store
             .put(
@@ -208,9 +233,7 @@ pub async fn run_replication(
     }
 
     // ── CDC phase (loop until SIGTERM when continuous) ───────────────────────
-    let cancel = CancellationToken::new();
     if compiled.continuous {
-        spawn_cancel_on_signal(cancel.clone());
         tracing::info!(pipeline = %opts.pipeline_name, "replication: streaming CDC (Ctrl-C / SIGTERM to stop)");
     }
     // In continuous mode the CDC phase is an always-on mirror: a long-lived

@@ -28,9 +28,16 @@ struct ShardBounds {
     key: String,
     lo: i64,
     hi: i64,
-    /// `hi` is inclusive only for the last shard (so the max row is covered);
-    /// every other shard is half-open `[lo, hi)`.
-    hi_inclusive: bool,
+    /// When `true` this shard has **no lower bound** — it is the *first* shard,
+    /// so it owns every key below `hi` including any below the enumerated `MIN`.
+    /// Rows backfilled or inserted with smaller ids during the run are read by
+    /// this shard instead of being silently dropped outside `[MIN, MAX]` (F54).
+    lo_unbounded: bool,
+    /// When `true` this shard has **no upper bound** — it is the *last* shard,
+    /// so it owns every key at/above `lo` including any above the enumerated
+    /// `MAX`. Rows appended above the captured `MAX` between coordination and
+    /// shard execution are read by this shard instead of being lost (F55).
+    hi_unbounded: bool,
     /// When `true` this shard *additionally* matches rows whose `key` is NULL.
     ///
     /// SQL aggregates (`MIN`/`MAX`) ignore NULLs, so a nullable shard key never
@@ -49,8 +56,12 @@ impl ShardBounds {
             key: d.get("key")?.as_str()?.to_string(),
             lo: d.get("lo")?.as_i64()?,
             hi: d.get("hi")?.as_i64()?,
-            hi_inclusive: d
-                .get("hi_inclusive")
+            lo_unbounded: d
+                .get("lo_unbounded")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+            hi_unbounded: d
+                .get("hi_unbounded")
                 .and_then(Value::as_bool)
                 .unwrap_or(false),
             include_null: d
@@ -64,19 +75,33 @@ impl ShardBounds {
     /// returned. The key is quoted (injection-safe); the bounds are inlined as
     /// integer literals (safe — they are `i64`s produced by enumeration).
     ///
-    /// The single shard with `include_null` also matches `key IS NULL` so
-    /// NULL-key rows (invisible to the `MIN`/`MAX` enumeration) are still read.
+    /// The boundary shards are **open-ended** (`lo_unbounded` / `hi_unbounded`)
+    /// so the union of all shards tiles `(-∞, +∞)`, matching unsharded
+    /// semantics — no row is dropped for sorting outside the `[MIN, MAX]`
+    /// captured at enumeration time (F54/F55). The single shard with
+    /// `include_null` also matches `key IS NULL` so NULL-key rows (invisible to
+    /// the `MIN`/`MAX` enumeration) are still read.
     fn wrap(&self, inner: &str) -> String {
-        let op = if self.hi_inclusive { "<=" } else { "<" };
         let key = quote_ident(&self.key);
-        let range = format!(
-            "{key} >= {lo} AND {key} {op} {hi}",
-            lo = self.lo,
-            hi = self.hi
-        );
+        let mut parts: Vec<String> = Vec::with_capacity(2);
+        if !self.lo_unbounded {
+            parts.push(format!("{key} >= {lo}", lo = self.lo));
+        }
+        if !self.hi_unbounded {
+            parts.push(format!("{key} < {hi}", hi = self.hi));
+        }
+        let range = parts.join(" AND ");
         let predicate = if self.include_null {
-            // Parenthesize so the OR binds correctly inside the WHERE clause.
-            format!("(({range}) OR {key} IS NULL)")
+            if range.is_empty() {
+                // A single fully-unbounded shard owns the whole dataset,
+                // NULL-key rows included.
+                "TRUE".to_string()
+            } else {
+                // Parenthesize so the OR binds correctly inside the WHERE clause.
+                format!("(({range}) OR {key} IS NULL)")
+            }
+        } else if range.is_empty() {
+            "TRUE".to_string()
         } else {
             range
         };
@@ -111,10 +136,18 @@ impl PostgresSource {
     }
 }
 
-/// Split an inclusive integer range `[min, max]` into up to `target` contiguous
-/// shards, each described by `{key, lo, hi, hi_inclusive, include_null}`. All
-/// but the last are half-open `[lo, hi)`; the last is `[lo, max]` (inclusive) so
-/// `max` is covered.
+/// Split the integer range observed as `[min, max]` into up to `target`
+/// contiguous shards, each described by
+/// `{key, lo, hi, lo_unbounded, hi_unbounded, include_null}`. Interior cut
+/// points are half-open `[lo, hi)`, but the **boundary shards are open-ended**:
+/// the first shard has no lower bound and the last shard has no upper bound, so
+/// the union of all shards tiles `(-∞, +∞)`.
+///
+/// Open-ended boundaries match unsharded semantics: `min`/`max` are captured
+/// once at enumeration time, but rows can be inserted below `min` or above `max`
+/// (or backfilled) before the workers actually stream their shards. Clamping the
+/// boundary shards to the captured `[min, max]` would silently drop those rows
+/// (audit F54/F55); leaving them open captures everything.
 ///
 /// The last shard also carries `include_null: true` so that NULL-key rows —
 /// invisible to the `MIN`/`MAX` enumeration that produced `[min, max]` — are
@@ -122,9 +155,9 @@ impl PostgresSource {
 /// *last* shard means a single-shard plan still covers NULLs.
 ///
 /// Coverage scheme (proven by `predicate_coverage_*` tests):
-/// - non-NULL keys: contiguous `[lo, hi)` ranges tile `[min, max]`, with the
-///   final range closing inclusively at `max` — every value falls in exactly
-///   one shard;
+/// - non-NULL keys: the first shard owns `key < cut₁`, interior shards own
+///   `[cutᵢ, cutᵢ₊₁)`, and the last shard owns `key >= cutₙ` — every value
+///   (including below `min` and above `max`) falls in exactly one shard;
 /// - NULL keys: matched only by the last shard's `OR key IS NULL` clause —
 ///   exactly one shard.
 ///
@@ -140,15 +173,19 @@ fn plan_pk_shards(key: &str, min: i64, max: i64, target: usize) -> Vec<ShardSpec
     let mut lo = min as i128;
     for i in 0..n {
         let mut hi = lo + step as i128;
+        let is_first = i == 0;
         let is_last = i == n - 1;
         if is_last || hi > max as i128 {
-            hi = max as i128; // clamp; last shard is inclusive of max
+            hi = max as i128; // last interior cut closes at max (the last shard
+            // is unbounded above, so `hi` is unused there)
         }
         let descriptor = serde_json::json!({
             "key": key,
             "lo": lo as i64,
             "hi": hi as i64,
-            "hi_inclusive": is_last,
+            // Boundary shards are open-ended so the union tiles (-∞, +∞).
+            "lo_unbounded": is_first,
+            "hi_unbounded": is_last,
             // Exactly one shard (the last) owns the NULL-key rows.
             "include_null": is_last,
         });
@@ -572,18 +609,17 @@ mod tests {
     fn plan_pk_shards_covers_full_range_without_gaps_or_overlap() {
         let shards = plan_pk_shards("id", 0, 99, 4);
         assert_eq!(shards.len(), 4);
-        // Contiguous half-open ranges, last inclusive of max.
+        // Contiguous half-open interior cuts; boundary shards are open-ended.
         let mut expected_lo = 0i64;
         for (i, s) in shards.iter().enumerate() {
             let d = &s.descriptor;
             assert_eq!(d["key"], "id");
             assert_eq!(d["lo"].as_i64().unwrap(), expected_lo);
             let hi = d["hi"].as_i64().unwrap();
+            let first = i == 0;
             let last = i == shards.len() - 1;
-            assert_eq!(d["hi_inclusive"].as_bool().unwrap(), last);
-            if last {
-                assert_eq!(hi, 99, "last shard's hi is the inclusive max");
-            }
+            assert_eq!(d["lo_unbounded"].as_bool().unwrap(), first);
+            assert_eq!(d["hi_unbounded"].as_bool().unwrap(), last);
             expected_lo = hi; // next shard starts where this half-open one ended
         }
     }
@@ -593,12 +629,15 @@ mod tests {
         // Range [5, 7] has 3 values; asking for 10 shards yields at most 3.
         let shards = plan_pk_shards("pk", 5, 7, 10);
         assert!(shards.len() <= 3, "got {} shards", shards.len());
-        assert_eq!(shards[0].descriptor["lo"].as_i64().unwrap(), 5);
-        assert_eq!(shards.last().unwrap().descriptor["hi"].as_i64().unwrap(), 7);
         assert!(
-            shards.last().unwrap().descriptor["hi_inclusive"]
+            shards[0].descriptor["lo_unbounded"].as_bool().unwrap(),
+            "first shard is unbounded below"
+        );
+        assert!(
+            shards.last().unwrap().descriptor["hi_unbounded"]
                 .as_bool()
-                .unwrap()
+                .unwrap(),
+            "last shard is unbounded above"
         );
     }
 
@@ -606,9 +645,9 @@ mod tests {
     fn plan_pk_shards_single_value_one_shard() {
         let shards = plan_pk_shards("id", 42, 42, 8);
         assert_eq!(shards.len(), 1);
-        assert_eq!(shards[0].descriptor["lo"].as_i64().unwrap(), 42);
-        assert_eq!(shards[0].descriptor["hi"].as_i64().unwrap(), 42);
-        assert!(shards[0].descriptor["hi_inclusive"].as_bool().unwrap());
+        // A lone shard is open-ended on both sides → the whole dataset.
+        assert!(shards[0].descriptor["lo_unbounded"].as_bool().unwrap());
+        assert!(shards[0].descriptor["hi_unbounded"].as_bool().unwrap());
     }
 
     #[test]
@@ -620,9 +659,10 @@ mod tests {
 
     #[test]
     fn shard_bounds_wrap_builds_half_open_predicate() {
+        // An interior shard (bounded both sides) is half-open `[lo, hi)`.
         let spec = ShardSpec::new(
             "1",
-            serde_json::json!({"key": "id", "lo": 100, "hi": 200, "hi_inclusive": false}),
+            serde_json::json!({"key": "id", "lo": 100, "hi": 200, "lo_unbounded": false, "hi_unbounded": false}),
         );
         let b = ShardBounds::from_spec(&spec).unwrap();
         let sql = b.wrap("SELECT * FROM t");
@@ -635,16 +675,33 @@ mod tests {
     }
 
     #[test]
-    fn shard_bounds_wrap_last_shard_is_inclusive() {
+    fn shard_bounds_wrap_first_shard_has_no_lower_bound() {
+        // F54: the first shard omits the `>= lo` floor so keys below the
+        // enumerated MIN are still read.
         let spec = ShardSpec::new(
-            "2",
-            serde_json::json!({"key": "id", "lo": 200, "hi": 300, "hi_inclusive": true}),
+            "0",
+            serde_json::json!({"key": "id", "lo": 0, "hi": 100, "lo_unbounded": true, "hi_unbounded": false}),
         );
         let b = ShardBounds::from_spec(&spec).unwrap();
         let sql = b.wrap("SELECT * FROM t");
+        assert!(sql.contains(r#""id" < 100"#), "upper bound present: {sql}");
+        assert!(!sql.contains(">="), "first shard has no lower floor: {sql}");
+    }
+
+    #[test]
+    fn shard_bounds_wrap_last_shard_has_no_upper_bound() {
+        // F55: the last shard omits the upper bound so keys above the
+        // enumerated MAX are still read.
+        let spec = ShardSpec::new(
+            "2",
+            serde_json::json!({"key": "id", "lo": 200, "hi": 300, "lo_unbounded": false, "hi_unbounded": true}),
+        );
+        let b = ShardBounds::from_spec(&spec).unwrap();
+        let sql = b.wrap("SELECT * FROM t");
+        assert!(sql.contains(r#""id" >= 200"#), "lower bound present: {sql}");
         assert!(
-            sql.contains(r#""id" <= 300"#),
-            "inclusive upper bound: {sql}"
+            !sql.contains(" < ") && !sql.contains("<="),
+            "last shard has no upper bound: {sql}"
         );
     }
 
@@ -652,7 +709,7 @@ mod tests {
     fn shard_bounds_quotes_key_against_injection() {
         let spec = ShardSpec::new(
             "0",
-            serde_json::json!({"key": "weird\"; DROP", "lo": 0, "hi": 1, "hi_inclusive": false}),
+            serde_json::json!({"key": "weird\"; DROP", "lo": 0, "hi": 1, "lo_unbounded": false, "hi_unbounded": false}),
         );
         let b = ShardBounds::from_spec(&spec).unwrap();
         let sql = b.wrap("SELECT 1");
@@ -721,8 +778,9 @@ mod tests {
     }
 
     /// Property check on the generated predicates: OR-ing every shard's WHERE
-    /// predicate must cover (a) every non-NULL key in `[min, max]` exactly once
-    /// and (b) NULL keys exactly once.
+    /// predicate must cover (a) every non-NULL key — including values *outside*
+    /// the enumerated `[min, max]` (F54/F55) — exactly once and (b) NULL keys
+    /// exactly once.
     #[test]
     fn predicate_coverage_complete_and_non_overlapping() {
         let (min, max, target) = (0i64, 19i64, 4usize);
@@ -731,26 +789,36 @@ mod tests {
             .map(|s| ShardBounds::from_spec(s).unwrap())
             .collect();
 
-        // (a) Every non-NULL key matches exactly one shard's [lo, hi) / [lo, hi].
-        for key in min..=max {
-            let matches = bounds
-                .iter()
-                .filter(|b| {
-                    let lower = key >= b.lo;
-                    let upper = if b.hi_inclusive {
-                        key <= b.hi
-                    } else {
-                        key < b.hi
-                    };
-                    lower && upper
-                })
-                .count();
+        // The boundary shards model SQL membership: open below for the first
+        // shard, open above for the last.
+        let matches_key = |b: &ShardBounds, key: i64| -> bool {
+            let lower = b.lo_unbounded || key >= b.lo;
+            let upper = b.hi_unbounded || key < b.hi;
+            lower && upper
+        };
+
+        // (a) Every non-NULL key — well below min, in range, and well above max
+        // — matches exactly one shard. Keys outside [min, max] model rows
+        // inserted/backfilled during the coordinate→execute window.
+        for key in (min - 50)..=(max + 50) {
+            let matches = bounds.iter().filter(|b| matches_key(b, key)).count();
             assert_eq!(matches, 1, "key {key} matched {matches} shards (want 1)");
         }
 
         // (b) NULL keys match exactly one shard (the one with include_null).
         let null_matches = bounds.iter().filter(|b| b.include_null).count();
         assert_eq!(null_matches, 1, "NULL keys must match exactly one shard");
+    }
+
+    #[test]
+    fn single_shard_wrap_selects_whole_dataset_including_null() {
+        // A lone open-ended shard must select every row, NULL keys included.
+        let shards = plan_pk_shards("id", 7, 7, 1);
+        assert_eq!(shards.len(), 1);
+        let b = ShardBounds::from_spec(&shards[0]).unwrap();
+        let sql = b.wrap("SELECT * FROM t");
+        assert!(sql.contains("WHERE TRUE"), "whole-dataset predicate: {sql}");
+        assert!(!sql.contains(">="), "no bounds on a lone shard: {sql}");
     }
 
     // dataset_uri is a pure-config method; the source requires a live DB to

@@ -886,8 +886,14 @@ where
                                     }
                                     let subset: Vec<Value> =
                                         failing.iter().map(|&j| chunk[j].clone()).collect();
-                                    let retried =
-                                        with_retry_write!("sink_write", sink.write_batch_partial(&subset))?;
+                                    // Bare resubmit — NOT through `with_retry_write!`.
+                                    // The poison loop's `max_row_attempts` is the
+                                    // sole bound on per-row resubmission; nesting the
+                                    // resilience retry here would multiply submissions
+                                    // to a non-idempotent partial sink up to
+                                    // `(max_row_attempts - 1) * max_attempts`,
+                                    // amplifying duplicate writes (F47).
+                                    let retried = sink.write_batch_partial(&subset).await?;
                                     // `retried` aligns positionally with `failing`
                                     // (the subset was built in `failing` order).
                                     // Consume by value — `FaucetError` is not Clone.
@@ -4068,6 +4074,127 @@ mod tests {
         let dlq = captured.lock().unwrap();
         assert_eq!(dlq.len(), 1, "one row to DLQ");
         assert_eq!(dlq[0]["payload"]["bad"], json!(true));
+    }
+
+    #[tokio::test]
+    async fn poison_loop_does_not_nest_resilience_retry_on_subset_resubmit() {
+        // F47: with both `retry` and `poison` configured against an *idempotent*
+        // sink, the poison loop's per-row resubmit must be a BARE
+        // `write_batch_partial` — NOT wrapped in `with_retry!`. Otherwise an
+        // outer-`Err` resubmit is retried `max_attempts` times *inside each*
+        // poison iteration, multiplying submissions to the sink. We force the
+        // subset (single bad row) call to return an outer retriable `Err` and
+        // count how many times the sink is hit with that one-row subset.
+        use crate::dlq::DlqConfig;
+        use crate::resilience::{
+            BackoffKind, PoisonAction, PoisonPolicy, ResiliencePolicy, RetryPolicy,
+        };
+        use std::sync::{Arc, Mutex};
+        use std::time::Duration;
+
+        struct OuterErrOnSubsetSink {
+            subset_calls: Arc<Mutex<u32>>,
+        }
+        #[async_trait]
+        impl Sink for OuterErrOnSubsetSink {
+            async fn write_batch(&self, r: &[Value]) -> Result<usize, FaucetError> {
+                Ok(r.len())
+            }
+            async fn write_batch_partial(
+                &self,
+                records: &[Value],
+            ) -> Result<Vec<crate::RowOutcome>, FaucetError> {
+                // The full chunk has 2 rows; the poison subset is the 1 bad row.
+                if records.len() == 1 {
+                    *self.subset_calls.lock().unwrap() += 1;
+                    return Err(FaucetError::HttpStatus {
+                        status: 503,
+                        url: "u".into(),
+                        body: "".into(),
+                    });
+                }
+                Ok(records
+                    .iter()
+                    .map(|rec| {
+                        if rec.get("bad").and_then(|v| v.as_bool()).unwrap_or(false) {
+                            Err(FaucetError::HttpStatus {
+                                status: 503,
+                                url: "u".into(),
+                                body: "".into(),
+                            })
+                        } else {
+                            Ok(())
+                        }
+                    })
+                    .collect())
+            }
+            async fn flush(&self) -> Result<(), FaucetError> {
+                Ok(())
+            }
+            // Idempotent so `with_retry_write!` WOULD retry if it were used here —
+            // this is exactly the condition the fix guards against.
+            fn supports_idempotent_writes(&self) -> bool {
+                true
+            }
+        }
+        struct CaptureSink(Arc<Mutex<Vec<Value>>>);
+        #[async_trait]
+        impl Sink for CaptureSink {
+            async fn write_batch(&self, r: &[Value]) -> Result<usize, FaucetError> {
+                self.0.lock().unwrap().extend_from_slice(r);
+                Ok(r.len())
+            }
+            async fn flush(&self) -> Result<(), FaucetError> {
+                Ok(())
+            }
+        }
+
+        let subset_calls = Arc::new(Mutex::new(0u32));
+        let sink = OuterErrOnSubsetSink {
+            subset_calls: subset_calls.clone(),
+        };
+        let pages = futures::stream::iter(vec![Ok(StreamPage {
+            records: vec![json!({"ok": 1}), json!({"bad": true})],
+            bookmark: None,
+        })]);
+        let policy = ResiliencePolicy {
+            retry: RetryPolicy {
+                max_attempts: 4, // would-be 4× amplification per poison iteration
+                backoff: BackoffKind::None,
+                base: Duration::ZERO,
+                max: Duration::ZERO,
+                jitter: false,
+                ..RetryPolicy::default()
+            },
+            circuit_breaker: None,
+            poison: Some(PoisonPolicy {
+                max_row_attempts: 3,
+                action: PoisonAction::Dlq,
+            }),
+        };
+        let res = run_stream(
+            pages,
+            &sink,
+            RunStreamOptions::new()
+                .with_dlq(DlqConfig::new(Arc::new(CaptureSink(Arc::new(Mutex::new(
+                    Vec::new(),
+                ))))))
+                .with_resilience(policy),
+        )
+        .await;
+
+        // The outer-`Err` subset resubmit propagates and aborts the run.
+        assert!(matches!(
+            res,
+            Err(FaucetError::HttpStatus { status: 503, .. })
+        ));
+        // Exactly ONE subset submission — the bare call. With the bug it would be
+        // `max_attempts` (4) due to the nested `with_retry!`.
+        assert_eq!(
+            *subset_calls.lock().unwrap(),
+            1,
+            "poison subset resubmit must be bare (no nested resilience retry)"
+        );
     }
 
     #[tokio::test]

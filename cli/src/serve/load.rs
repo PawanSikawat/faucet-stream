@@ -32,17 +32,19 @@ pub async fn load_submission(
     format: ConfigFormat,
     default_base: Option<&Value>,
 ) -> Result<LoadedSubmission, ServeError> {
-    // 1. ${env}/${file}/${secret} interpolation against the server's env/fs.
-    let interpolated =
-        crate::interpolate::interpolate(body).map_err(|e| ServeError::BadConfig(e.to_string()))?;
-
-    // 2. Parse to a Value per the declared format.
-    let submitted: Value = match format {
-        ConfigFormat::Yaml => serde_yaml::from_str(&interpolated)
+    // 1. Parse to a Value per the declared format.
+    let mut submitted: Value = match format {
+        ConfigFormat::Yaml => serde_yaml::from_str(body)
             .map_err(|e| ServeError::BadConfig(format!("invalid YAML: {e}")))?,
-        ConfigFormat::Json => serde_json::from_str(&interpolated)
+        ConfigFormat::Json => serde_json::from_str(body)
             .map_err(|e| ServeError::BadConfig(format!("invalid JSON: {e}")))?,
     };
+
+    // 2. ${env}/${file}/${secret} interpolation against the server's env/fs,
+    // resolved INTO the parsed tree (post-parse) so a resolved value can never
+    // alter the submitted document's structure (F43).
+    crate::interpolate::interpolate_value(&mut submitted)
+        .map_err(|e| ServeError::BadConfig(e.to_string()))?;
 
     // 3. Merge onto the workspace default (submitted wins; see merge.rs semantics).
     let merged = match default_base {

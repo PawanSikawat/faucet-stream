@@ -21,7 +21,7 @@ uuid.workspace = true
 chrono.workspace = true
 metrics.workspace = true
 tracing.workspace = true
-tokio = { workspace = true, features = ["sync", "time", "rt"] }
+tokio = { workspace = true, features = ["sync", "time", "rt", "fs"] }
 indexmap = "2"
 futures = { workspace = true }
 rdkafka = { workspace = true, optional = true }

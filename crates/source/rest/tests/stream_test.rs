@@ -1,13 +1,13 @@
 use faucet_core::observability::Labels;
 use faucet_core::{Source, TransformStage, TransformingSource};
 use faucet_source_rest::{
-    Auth, DEFAULT_TOKEN_ENDPOINT_EXPIRY_RATIO, FaucetError, PaginationStyle, RecordTransform,
-    ReplicationMethod, ResponseValidator, RestStream, RestStreamConfig,
+    Auth, DEFAULT_EXPIRY_RATIO, DEFAULT_TOKEN_ENDPOINT_EXPIRY_RATIO, FaucetError, PaginationStyle,
+    RecordTransform, ReplicationMethod, ResponseValidator, RestStream, RestStreamConfig,
 };
 use futures::StreamExt;
 use serde_json::json;
 use std::collections::HashMap;
-use wiremock::matchers::{method, path, query_param};
+use wiremock::matchers::{header, method, path, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 #[tokio::test]
@@ -277,6 +277,112 @@ async fn test_typed_deserialization() {
     let users: Vec<User> = stream.fetch_all_as().await.unwrap();
     assert_eq!(users.len(), 1);
     assert_eq!(users[0].name, "Alice");
+}
+
+#[tokio::test]
+async fn oauth2_refreshes_cached_token_on_401_and_retries() {
+    // F57: an inline OAuth2 token that the server rejects with 401 (a
+    // server-side expiry the time-based cache cannot see) must be invalidated
+    // and the request retried once with a freshly-fetched token — rather than
+    // aborting the run.
+    let server = MockServer::start().await;
+
+    // Token endpoint: hands out "t1" first, then "t2".
+    Mock::given(method("POST"))
+        .and(path("/token"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!({"access_token": "t1", "expires_in": 3600})),
+        )
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/token"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!({"access_token": "t2", "expires_in": 3600})),
+        )
+        .mount(&server)
+        .await;
+
+    // Data endpoint: rejects the stale "t1" with 401, accepts "t2".
+    Mock::given(method("GET"))
+        .and(path("/api/items"))
+        .and(header("authorization", "Bearer t1"))
+        .respond_with(ResponseTemplate::new(401).set_body_json(json!({"error": "expired"})))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/items"))
+        .and(header("authorization", "Bearer t2"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"items": [{"id": 1}]})))
+        .mount(&server)
+        .await;
+
+    let stream = RestStream::new(
+        RestStreamConfig::new(&server.uri(), "/api/items")
+            .records_path("$.items[*]")
+            .auth(Auth::OAuth2 {
+                token_url: format!("{}/token", server.uri()),
+                client_id: "id".into(),
+                client_secret: "secret".into(),
+                scopes: vec![],
+                expiry_ratio: DEFAULT_EXPIRY_RATIO,
+            }),
+    )
+    .unwrap();
+
+    let records = stream
+        .fetch_all()
+        .await
+        .expect("a 401 on the cached token must trigger a refresh + retry, not fail the run");
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0]["id"], 1);
+}
+
+#[tokio::test]
+async fn oauth2_401_after_refresh_still_fails_without_infinite_retry() {
+    // The refresh-on-401 retry happens exactly once: if the freshly-fetched
+    // token is also rejected, the run fails with the 401 (no loop).
+    let server = MockServer::start().await;
+
+    Mock::given(method("POST"))
+        .and(path("/token"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!({"access_token": "tok", "expires_in": 3600})),
+        )
+        .mount(&server)
+        .await;
+    // Every data request is rejected regardless of token.
+    Mock::given(method("GET"))
+        .and(path("/api/items"))
+        .respond_with(ResponseTemplate::new(401).set_body_json(json!({"error": "nope"})))
+        .mount(&server)
+        .await;
+
+    let stream = RestStream::new(
+        RestStreamConfig::new(&server.uri(), "/api/items")
+            .records_path("$.items[*]")
+            .auth(Auth::OAuth2 {
+                token_url: format!("{}/token", server.uri()),
+                client_id: "id".into(),
+                client_secret: "secret".into(),
+                scopes: vec![],
+                expiry_ratio: DEFAULT_EXPIRY_RATIO,
+            }),
+    )
+    .unwrap();
+
+    let err = stream
+        .fetch_all()
+        .await
+        .expect_err("persistent 401 must fail");
+    assert!(
+        matches!(err, FaucetError::HttpStatus { status: 401, .. }),
+        "got: {err:?}"
+    );
 }
 
 #[tokio::test]

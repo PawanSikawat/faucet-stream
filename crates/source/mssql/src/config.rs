@@ -116,7 +116,29 @@ impl MssqlSourceConfig {
                 "MSSQL incremental replication requires a non-empty `column`".into(),
             ));
         }
+        if self.incremental_without_bookmark_pushdown() {
+            tracing::warn!(
+                "MSSQL incremental replication query has no `@bookmark` token: the \
+                 cursor is applied client-side only, so the server returns the ENTIRE \
+                 table on every run (correctness is preserved, but it is a full re-scan). \
+                 Add `@bookmark` to the WHERE clause to push the cursor down, e.g. \
+                 `... WHERE {column} > @bookmark`",
+                column = match &self.replication {
+                    MssqlReplication::Incremental { column, .. } => column.as_str(),
+                    _ => "<column>",
+                }
+            );
+        }
         Ok(())
+    }
+
+    /// `true` when replication is `Incremental` but the query omits the
+    /// `@bookmark` token, so the cursor cannot be pushed down to the server and
+    /// every run re-scans the whole table (F53). Pure predicate so the
+    /// load-time warning's condition is unit-testable.
+    pub(crate) fn incremental_without_bookmark_pushdown(&self) -> bool {
+        matches!(self.replication, MssqlReplication::Incremental { .. })
+            && !self.query.contains("@bookmark")
     }
 }
 
@@ -175,6 +197,38 @@ mod tests {
             ..MssqlSourceConfig::new("mssql://sa:pw@h/db", "SELECT 1")
         };
         assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn incremental_without_bookmark_pushdown_flags_missing_token() {
+        // F53: Incremental + query lacking `@bookmark` → full re-scan warning.
+        let missing = MssqlSourceConfig {
+            replication: MssqlReplication::Incremental {
+                column: "updated_at".into(),
+                initial_value: json!("1970-01-01"),
+            },
+            ..MssqlSourceConfig::new("mssql://sa:pw@h/db", "SELECT * FROM t")
+        };
+        assert!(missing.incremental_without_bookmark_pushdown());
+        // validate still succeeds (warn, not hard-error).
+        assert!(missing.validate().is_ok());
+
+        // With the token present, no warning.
+        let with_token = MssqlSourceConfig {
+            replication: MssqlReplication::Incremental {
+                column: "updated_at".into(),
+                initial_value: json!("1970-01-01"),
+            },
+            ..MssqlSourceConfig::new(
+                "mssql://sa:pw@h/db",
+                "SELECT * FROM t WHERE updated_at > @bookmark",
+            )
+        };
+        assert!(!with_token.incremental_without_bookmark_pushdown());
+
+        // Full replication never warns.
+        let full = MssqlSourceConfig::new("mssql://sa:pw@h/db", "SELECT * FROM t");
+        assert!(!full.incremental_without_bookmark_pushdown());
     }
 
     #[test]

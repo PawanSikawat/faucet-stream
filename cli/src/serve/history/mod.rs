@@ -345,6 +345,35 @@ pub trait RunHistory: Send + Sync {
         self.upsert(rec).await.map(|_| true)
     }
 
+    /// Status-fenced finalize of a `Sharded` parent run: set the terminal
+    /// `status` / `finished_at` / `error` only while the run is still `Sharded`,
+    /// and — crucially — WITHOUT re-stamping `owner` / `lease_expires_at`. A
+    /// terminal record must not re-arm a lease, and two shards finishing on two
+    /// instances at once must not last-writer-wins overwrite each other via the
+    /// owner-stamping `upsert` (F45). Returns `true` if *this* call performed the
+    /// transition (the first finalizer wins; a concurrent second call is a
+    /// no-op). Default: read-guard-write via `upsert` — correct for the
+    /// single-process in-memory backend, which has no cross-instance race and no
+    /// lease columns. The SQL backends override this with one conditional UPDATE.
+    async fn finalize_sharded_parent(
+        &self,
+        run_id: &str,
+        status: RunStatus,
+        finished_at: DateTime<Utc>,
+        error: Option<String>,
+    ) -> Result<bool, HistoryError> {
+        match self.get(run_id).await? {
+            Some(mut r) if r.status == RunStatus::Sharded => {
+                r.status = status;
+                r.finished_at = Some(finished_at);
+                r.error = error;
+                self.upsert(&r).await?;
+                Ok(true)
+            }
+            _ => Ok(false),
+        }
+    }
+
     /// Cancel a still-`Pending` (unclaimed) run directly. Returns `true` if it was
     /// pending and is now `Cancelled`; `false` if it had already been claimed (the
     /// caller should fall back to [`request_cancel`](Self::request_cancel)).

@@ -496,32 +496,35 @@ async fn maybe_finalize_parent(state: &ServerState, run_id: &str) {
         return;
     }
     let success = progress.failed == 0;
-    if let Ok(Some(mut r)) = state.history().get(run_id).await
-        && r.status == RunStatus::Sharded
+    let status = if success {
+        RunStatus::Completed
+    } else {
+        RunStatus::Failed
+    };
+    let error =
+        (!success).then(|| format!("{}/{} shard(s) failed", progress.failed, progress.total));
+    // Status-fenced finalize: transitions the parent only while it is still
+    // `Sharded`, and does NOT re-stamp owner/lease on the terminal record, so a
+    // near-simultaneous double-finalize from two instances has a single winner
+    // (F45). The loser (and any non-`Sharded` parent) is a no-op.
+    match state
+        .history()
+        .finalize_sharded_parent(run_id, status, Utc::now(), error)
+        .await
     {
-        r.status = if success {
-            RunStatus::Completed
-        } else {
-            RunStatus::Failed
-        };
-        r.finished_at = Some(Utc::now());
-        if !success {
-            r.error = Some(format!(
-                "{}/{} shard(s) failed",
-                progress.failed, progress.total
-            ));
+        Ok(true) => {
+            metrics::record_run_finished(status, if success { "ok" } else { "error" });
+            tracing::info!(
+                run_id,
+                shards = progress.total,
+                failed = progress.failed,
+                "sharded run finalized"
+            );
         }
-        if let Err(e) = state.history().upsert(&r).await {
+        Ok(false) => {} // already finalized by another shard/instance — nothing to do
+        Err(e) => {
             tracing::error!(run_id, error = %e, "finalizing sharded parent run failed");
-            return;
         }
-        metrics::record_run_finished(r.status, if success { "ok" } else { "error" });
-        tracing::info!(
-            run_id,
-            shards = progress.total,
-            failed = progress.failed,
-            "sharded run finalized"
-        );
     }
 }
 
@@ -1911,6 +1914,46 @@ mod tests {
                 state.history().get("r").await.unwrap().unwrap().status,
                 RunStatus::Sharded
             );
+        }
+
+        #[tokio::test]
+        async fn finalize_sharded_parent_is_status_fenced_and_idempotent() {
+            // F45: the status-fenced finalize transitions the parent exactly
+            // once. A concurrent second finalize (e.g. two shards finishing on
+            // two instances) is a no-op, and a non-Sharded run is never touched.
+            let dir = tempfile::tempdir().unwrap();
+            let state = sqlite_state(dir.path()).await;
+            seed_sharded_with_shards(&state, "r", 2).await;
+
+            let first = state
+                .history()
+                .finalize_sharded_parent("r", RunStatus::Completed, Utc::now(), None)
+                .await
+                .unwrap();
+            assert!(first, "first finalize wins");
+            assert_eq!(
+                state.history().get("r").await.unwrap().unwrap().status,
+                RunStatus::Completed
+            );
+
+            // Second finalize sees a non-Sharded parent → no-op, status unchanged.
+            let second = state
+                .history()
+                .finalize_sharded_parent("r", RunStatus::Failed, Utc::now(), Some("late".into()))
+                .await
+                .unwrap();
+            assert!(!second, "second finalize is a no-op");
+            let r = state.history().get("r").await.unwrap().unwrap();
+            assert_eq!(r.status, RunStatus::Completed, "status not overwritten");
+            assert!(r.error.is_none(), "late error must not be stamped");
+
+            // An unknown / never-sharded run id is not finalized.
+            let missing = state
+                .history()
+                .finalize_sharded_parent("does-not-exist", RunStatus::Completed, Utc::now(), None)
+                .await
+                .unwrap();
+            assert!(!missing);
         }
 
         #[tokio::test]

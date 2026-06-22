@@ -17,7 +17,7 @@ serde.workspace = true
 serde_json.workspace = true
 google-cloud-storage.workspace = true
 google-cloud-auth.workspace = true
-tokio.workspace = true
+tokio = { workspace = true, features = ["fs"] }
 
 [package.metadata.docs.rs]
 all-features = true

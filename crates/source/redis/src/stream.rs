@@ -337,12 +337,28 @@ impl faucet_core::Source for RedisSource {
                         yield page;
                     }
                 }
-                RedisSourceType::Stream { key, .. } => {
+                RedisSourceType::Stream { key, group, consumer, .. } => {
                     // Streaming intentionally uses XRANGE — consumer-group
                     // semantics (XREADGROUP) don't compose with "drain to a
                     // bookmarked checkpoint" because acknowledgement state
                     // would have to be deferred until the sink succeeds, and
                     // the source has no incremental mode today.
+                    //
+                    // The `group`/`consumer` fields select XREADGROUP on the
+                    // `fetch_all` batch path (consume-once), but here they are
+                    // ignored — so a streaming run with a configured group
+                    // silently re-reads the WHOLE stream from the start every
+                    // run. Warn loudly rather than swallowing the gap (F56).
+                    if stream_ignores_consumer_group(group.as_deref(), consumer.as_deref()) {
+                        tracing::warn!(
+                            stream = %key,
+                            "Redis Stream source has a consumer group/consumer configured, but \
+                             the streaming path (stream_pages) ignores it and uses XRANGE — it \
+                             re-reads the entire stream every run. Use the fetch_all batch path \
+                             for XREADGROUP consume-once semantics, or drop group/consumer to \
+                             silence this warning."
+                        );
+                    }
                     let resolved = if context.is_empty() {
                         key.clone()
                     } else {
@@ -631,10 +647,28 @@ fn collect_kv_records(keys: &[String], values: Vec<Option<String>>) -> Vec<Value
         .collect()
 }
 
+/// `true` when a Redis Stream source has a consumer group/consumer configured
+/// but is driven through the streaming (`stream_pages`) path, which uses
+/// `XRANGE` and ignores the group — re-reading the whole stream every run. Pure
+/// predicate so the load-time warning's condition is unit-testable (F56).
+fn stream_ignores_consumer_group(group: Option<&str>, consumer: Option<&str>) -> bool {
+    group.is_some() || consumer.is_some()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::config::RedisSourceConfig;
+
+    #[test]
+    fn stream_ignores_consumer_group_flags_configured_group() {
+        // F56: a configured group/consumer on the streaming path is ignored.
+        assert!(stream_ignores_consumer_group(Some("g"), Some("c")));
+        assert!(stream_ignores_consumer_group(Some("g"), None));
+        assert!(stream_ignores_consumer_group(None, Some("c")));
+        // No group/consumer → plain XRANGE drain, no warning.
+        assert!(!stream_ignores_consumer_group(None, None));
+    }
 
     #[test]
     fn creates_source() {

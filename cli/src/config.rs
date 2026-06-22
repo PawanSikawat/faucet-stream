@@ -29,7 +29,6 @@
 //! new fields are added to individual connectors without needing CLI work.
 
 use crate::error::{CliError, CliResult};
-use crate::interpolate::interpolate;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -663,6 +662,56 @@ where
     Option::<DlqSpec>::deserialize(deserializer).map(Some)
 }
 
+/// Resolve load-time `${env:}` / `${file:}` / `${secret:}` directives in a
+/// composed config document **after parsing** rather than on the raw text.
+///
+/// The document is parsed into an untyped value (by file extension), each string
+/// scalar is interpolated in place via [`interpolate_value`], and the tree is
+/// re-serialised back into the same format for the typed parse that follows.
+/// Resolving post-parse means a resolved value can never inject or break the
+/// document's structure (F43) — an env/file value containing `:`, a newline, or
+/// `-` stays the single scalar it was parsed as. Re-serialising and letting
+/// [`PipelineConfig::from_text`] re-parse keeps the typed-deserialise error
+/// messages (unknown field, type mismatch, version gate) identical to the old
+/// path. A syntax error in the document surfaces here, mapped exactly as
+/// `from_text` would map it.
+fn interpolate_document(text: &str, path: &Path) -> CliResult<String> {
+    use crate::interpolate::interpolate_value;
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(str::to_ascii_lowercase);
+    match ext.as_deref() {
+        Some("yaml" | "yml") => {
+            let mut value: serde_json::Value =
+                serde_yaml::from_str(text).map_err(|e| CliError::ParseConfig {
+                    path: path.to_path_buf(),
+                    message: friendly_parse_error(&e.to_string()),
+                })?;
+            interpolate_value(&mut value)?;
+            serde_yaml::to_string(&value).map_err(|e| CliError::ParseConfig {
+                path: path.to_path_buf(),
+                message: e.to_string(),
+            })
+        }
+        Some("json") => {
+            let mut value: serde_json::Value =
+                serde_json::from_str(text).map_err(|e| CliError::ParseConfig {
+                    path: path.to_path_buf(),
+                    message: friendly_parse_error(&e.to_string()),
+                })?;
+            interpolate_value(&mut value)?;
+            serde_json::to_string(&value).map_err(|e| CliError::ParseConfig {
+                path: path.to_path_buf(),
+                message: e.to_string(),
+            })
+        }
+        _ => Err(CliError::UnknownExtension {
+            path: path.to_path_buf(),
+        }),
+    }
+}
+
 impl PipelineConfig {
     /// Load a pipeline config from disk. The file extension determines the
     /// parser: `.yaml` / `.yml` → YAML, `.json` → JSON. Other extensions are
@@ -679,7 +728,7 @@ impl PipelineConfig {
     pub fn from_path(path: impl AsRef<Path>, profile: Option<&str>) -> CliResult<Self> {
         let path = path.as_ref();
         let composed = crate::compose::compose(path, profile)?;
-        let interpolated = interpolate(&composed)?;
+        let interpolated = interpolate_document(&composed, path)?;
         let cfg = Self::from_text(&interpolated, path)?;
         // Secret directives need the async resolver path; never let them survive
         // into a connector config as literal `${vault:…}` text.
@@ -696,7 +745,7 @@ impl PipelineConfig {
     ) -> CliResult<Self> {
         let path = path.as_ref();
         let composed = crate::compose::compose(path, profile)?;
-        let interpolated = interpolate(&composed)?;
+        let interpolated = interpolate_document(&composed, path)?;
         Self::from_text(&interpolated, path)
     }
 
@@ -706,7 +755,7 @@ impl PipelineConfig {
     pub async fn from_path_async(path: impl AsRef<Path>, profile: Option<&str>) -> CliResult<Self> {
         let path = path.as_ref();
         let composed = crate::compose::compose(path, profile)?;
-        let interpolated = interpolate(&composed)?;
+        let interpolated = interpolate_document(&composed, path)?;
         let mut cfg = Self::from_text(&interpolated, path)?;
         crate::secrets::resolve_secrets(&mut cfg).await?;
         Ok(cfg)

@@ -245,13 +245,18 @@ impl faucet_core::Source for ParquetSource {
 
         let concurrency = self.config.concurrency.max(1);
 
+        // `buffered` (NOT `buffer_unordered`) so decoded files come back in the
+        // deterministic order `resolve_files` sorted them into — concurrency is
+        // unchanged (up to `concurrency` reads in flight), only the result order
+        // is pinned. This keeps eager-fetch row order stable and makes the
+        // schema-mismatch error name a deterministic (first, other) pair (F42).
         let outputs: Vec<FileOutput> = stream::iter(targets)
             .map(|target| async move {
                 let out = self.read_file(&target).await?;
                 tracing::debug!(file = %out.path, rows = out.rows.len(), "Parquet file decoded");
                 Ok::<FileOutput, FaucetError>(out)
             })
-            .buffer_unordered(concurrency)
+            .buffered(concurrency)
             .try_collect()
             .await?;
 

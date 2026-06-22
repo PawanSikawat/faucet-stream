@@ -124,21 +124,38 @@ fn cmp_numbers(a: &serde_json::Number, b: &serde_json::Number) -> Option<std::cm
     a.as_f64()?.partial_cmp(&b.as_f64()?)
 }
 
+/// JSON equality used by `compare` `eq`/`ne`. For two JSON numbers this is
+/// *numeric* equality (so `1` and `1.0` are equal, and large 64-bit integers
+/// compare exactly via [`cmp_numbers`] without the `f64` rounding that
+/// structural `Value` equality would sidestep but that a naive `as_f64`
+/// wouldn't) — a number's int-vs-float spelling should not change a value
+/// comparison (F48). All other types fall back to exact structural equality, so
+/// there is still no cross-type coercion (string `"5"` ≠ number `5`).
+fn values_equal(a: &Value, b: &Value) -> bool {
+    match (a, b) {
+        (Value::Number(x), Value::Number(y)) => {
+            cmp_numbers(x, y) == Some(std::cmp::Ordering::Equal)
+        }
+        _ => a == b,
+    }
+}
+
 /// Evaluate a `compare` check. Ordering ops (`gt`/`gte`/`lt`/`lte`) compare
 /// integer operands exactly via [`cmp_numbers`] (no precision loss above
-/// 2^53); `eq`/`ne` use exact structural JSON equality.
+/// 2^53); `eq`/`ne` compare numbers numerically (`1` == `1.0`) and all other
+/// types by exact structural JSON equality via [`values_equal`].
 fn evaluate_compare(op: CompareOp, actual: &Value, expected: &Value) -> Result<(), String> {
     use std::cmp::Ordering;
     match op {
         CompareOp::Eq => {
-            if actual == expected {
+            if values_equal(actual, expected) {
                 Ok(())
             } else {
                 Err("values were not equal".into())
             }
         }
         CompareOp::Ne => {
-            if actual != expected {
+            if !values_equal(actual, expected) {
                 Ok(())
             } else {
                 Err("values were equal".into())
@@ -298,6 +315,54 @@ mod tests {
         });
         assert!(evaluate_record_check(&ne, &json!({"v": 6})).is_ok()); // 6 != 5 -> pass
         assert!(evaluate_record_check(&ne, &json!({"v": 5})).is_err()); // 5 == 5 -> fail
+    }
+
+    #[test]
+    fn compare_eq_ne_match_numbers_by_value_not_spelling() {
+        // `eq`/`ne` on numbers compare numerically, so an integer-vs-float
+        // spelling difference (5 vs 5.0) does not flip the result (F48).
+        let eq = one(RecordCheck::Compare {
+            field: "v".into(),
+            op: CompareOp::Eq,
+            value: json!(5), // serde parses the literal as an integer
+            on_failure: OnFailure::Abort,
+        });
+        assert!(evaluate_record_check(&eq, &json!({"v": 5.0})).is_ok()); // float 5.0 == int 5
+        assert!(evaluate_record_check(&eq, &json!({"v": 5})).is_ok());
+        assert!(evaluate_record_check(&eq, &json!({"v": 5.5})).is_err());
+        // Cross-type is still NOT coerced: string "5" != number 5.
+        assert!(evaluate_record_check(&eq, &json!({"v": "5"})).is_err());
+
+        let ne = one(RecordCheck::Compare {
+            field: "v".into(),
+            op: CompareOp::Ne,
+            value: json!(5),
+            on_failure: OnFailure::Abort,
+        });
+        assert!(evaluate_record_check(&ne, &json!({"v": 5.0})).is_err()); // 5.0 == 5 -> ne fails
+        assert!(evaluate_record_check(&ne, &json!({"v": 6})).is_ok());
+
+        // Large 64-bit integers compare exactly (no f64 collapse): 2^53 and
+        // 2^53+1 are distinct under `eq` even though they share an f64.
+        let big = 9_007_199_254_740_992i64; // 2^53
+        let eq_big = one(RecordCheck::Compare {
+            field: "v".into(),
+            op: CompareOp::Eq,
+            value: json!(big),
+            on_failure: OnFailure::Abort,
+        });
+        assert!(evaluate_record_check(&eq_big, &json!({"v": big})).is_ok());
+        assert!(evaluate_record_check(&eq_big, &json!({"v": big + 1})).is_err());
+
+        // Non-number operands still use structural equality.
+        let eq_obj = one(RecordCheck::Compare {
+            field: "v".into(),
+            op: CompareOp::Eq,
+            value: json!({"a": 1}),
+            on_failure: OnFailure::Abort,
+        });
+        assert!(evaluate_record_check(&eq_obj, &json!({"v": {"a": 1}})).is_ok());
+        assert!(evaluate_record_check(&eq_obj, &json!({"v": {"a": 2}})).is_err());
     }
 
     #[test]

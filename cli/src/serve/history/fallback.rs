@@ -10,9 +10,10 @@
 use super::memory::MemoryHistory;
 use super::{
     Claim, DeleteOutcome, HistoryError, InstanceHeartbeat, InstanceRecord, ListFilter, ListPage,
-    ReclaimReport, RunHistory, RunRecord,
+    ReclaimReport, RunHistory, RunRecord, RunStatus,
 };
 use async_trait::async_trait;
+use chrono::{DateTime, Utc};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
@@ -167,6 +168,19 @@ impl RunHistory for FallbackHistory {
     }
     async fn finalize_owned(&self, rec: &RunRecord) -> Result<bool, HistoryError> {
         via!(self, p => p.finalize_owned(rec), f => f.finalize_owned(rec))
+    }
+    async fn finalize_sharded_parent(
+        &self,
+        run_id: &str,
+        status: RunStatus,
+        finished_at: DateTime<Utc>,
+        error: Option<String>,
+    ) -> Result<bool, HistoryError> {
+        via!(
+            self,
+            p => p.finalize_sharded_parent(run_id, status, finished_at, error.clone()),
+            f => f.finalize_sharded_parent(run_id, status, finished_at, error.clone())
+        )
     }
     async fn cancel_pending(&self, run_id: &str) -> Result<bool, HistoryError> {
         via!(self, p => p.cancel_pending(run_id), f => f.cancel_pending(run_id))

@@ -339,6 +339,34 @@ async fn glob_reads_multiple_files() {
 }
 
 #[tokio::test]
+async fn eager_fetch_preserves_deterministic_file_order() {
+    // F42: the eager (`fetch_all`) path must return rows in the sorted file
+    // order `resolve_files` produces, even with concurrency > 1. Each file
+    // holds a single distinct value so we can assert the exact sequence
+    // (without sorting) — `buffered` preserves order; `buffer_unordered` would
+    // not.
+    let dir = TempDir::new().unwrap();
+    let schema = Arc::new(Schema::new(vec![Field::new("v", DataType::Int32, false)]));
+    // Names sort lexicographically to 00..07; values follow the same order.
+    for i in 0..8i32 {
+        let batch = RecordBatch::try_new(schema.clone(), vec![Arc::new(Int32Array::from(vec![i]))])
+            .unwrap();
+        write_parquet(&dir.path().join(format!("part-{i:02}.parquet")), &batch);
+    }
+
+    let pattern = format!("{}/*.parquet", dir.path().display());
+    let cfg = ParquetSourceConfig::glob(pattern).concurrency(8);
+    let source = ParquetSource::new(cfg).await.unwrap();
+    let rows = source.fetch_all().await.unwrap();
+    let nums: Vec<i64> = rows.iter().map(|r| r["v"].as_i64().unwrap()).collect();
+    assert_eq!(
+        nums,
+        (0..8).collect::<Vec<i64>>(),
+        "rows must come back in sorted file order, not decode-completion order"
+    );
+}
+
+#[tokio::test]
 async fn glob_with_mismatched_schemas_fails_fast() {
     let dir = TempDir::new().unwrap();
 
