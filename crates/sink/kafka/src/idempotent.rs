@@ -101,7 +101,9 @@ pub(crate) async fn ensure_commit_topic(
 ///
 /// Builds a short-lived, non-committing consumer, assigns every side-topic
 /// partition from the beginning, and drains up to each partition's high
-/// watermark. Called once per run (at startup), so a full read is cheap.
+/// watermark, folding each record into a running max and discarding it. Memory
+/// is O(1) in the side-topic size, so a large or non-compacted topic cannot
+/// blow up the startup read. Called once per run (at startup).
 pub(crate) async fn read_last_token(
     config: &KafkaSinkConfig,
     base: &ClientConfig,
@@ -195,7 +197,13 @@ fn read_last_token_blocking(
         })
     };
 
-    let mut records: Vec<(Vec<u8>, Option<Vec<u8>>)> = Vec::new();
+    // Keep only the running max token for `scope` and a count of records drained
+    // (for the fail-loud message), never the records themselves — so a
+    // non-compacted or not-yet-compacted side-topic with an unbounded backlog
+    // cannot blow up memory at startup. Each polled record is folded in and
+    // discarded (no key/value allocation in the hot path).
+    let mut max_token: Option<u64> = None;
+    let mut drained: u64 = 0;
     if position_reached(&consumer, &ends) {
         // Every partition empty (or already at its watermark) — nothing to read.
         return Ok(None);
@@ -203,9 +211,9 @@ fn read_last_token_blocking(
     loop {
         match consumer.poll(timeout) {
             Some(Ok(msg)) => {
-                let key = msg.key().map(|k| k.to_vec()).unwrap_or_default();
-                let val = msg.payload().map(|v| v.to_vec());
-                records.push((key, val));
+                max_token =
+                    fold_token_for_scope(max_token, msg.key().unwrap_or(&[]), msg.payload(), scope);
+                drained += 1;
                 if position_reached(&consumer, &ends) {
                     break;
                 }
@@ -228,17 +236,15 @@ fn read_last_token_blocking(
                     break;
                 }
                 return Err(FaucetError::Sink(format!(
-                    "kafka token reader: drained {} record(s) but did not reach the high \
-                     watermark on every partition within the {:?} poll timeout — refusing to \
-                     return a possibly-stale commit token",
-                    records.len(),
-                    timeout
+                    "kafka token reader: drained {drained} record(s) but did not reach the high \
+                     watermark on every partition within the {timeout:?} poll timeout — refusing \
+                     to return a possibly-stale commit token"
                 )));
             }
         }
     }
 
-    Ok(max_token_for_scope(&records, scope).map(faucet_core::idempotency::format_token))
+    Ok(max_token.map(faucet_core::idempotency::format_token))
 }
 
 /// Derive the producer `transactional.id` from a stable pipeline scope.
@@ -266,24 +272,32 @@ pub(crate) fn derive_transactional_id(prefix: &str, scope: &str) -> String {
     format!("{prefix}.{sanitized}")
 }
 
-/// The maximum commit-token value recorded for `scope` among consumed
-/// side-topic records.
+/// Fold one side-topic record into a running maximum commit-token value for
+/// `scope`.
 ///
-/// Records are `(key_bytes, value_bytes)`. Only records whose key equals
-/// `scope` are considered; their values are parsed as commit tokens and the
-/// maximum is returned (robust to pre-compaction duplicates / out-of-order
-/// delivery). Returns `None` when no valid token exists for the scope.
-pub(crate) fn max_token_for_scope(
-    records: &[(Vec<u8>, Option<Vec<u8>>)],
+/// Returns the updated running max: the record's token replaces `running` only
+/// when its key equals `scope`, its value parses as a commit token, and that
+/// token exceeds the current `running`. A tombstone (no value), a non-token
+/// value, or a record for a different scope leaves `running` unchanged. This is
+/// O(1) per record, so the reader keeps a single running max instead of
+/// buffering the whole side-topic — bounding memory regardless of topic size on
+/// a non-compacted (or not-yet-compacted) `commit_token_topic`.
+pub(crate) fn fold_token_for_scope(
+    running: Option<u64>,
+    key: &[u8],
+    value: Option<&[u8]>,
     scope: &str,
 ) -> Option<u64> {
-    records
-        .iter()
-        .filter(|(k, _)| k.as_slice() == scope.as_bytes())
-        .filter_map(|(_, v)| v.as_ref())
-        .filter_map(|v| std::str::from_utf8(v).ok())
-        .filter_map(faucet_core::idempotency::parse_token)
-        .max()
+    if key != scope.as_bytes() {
+        return running;
+    }
+    let Some(token) = value
+        .and_then(|v| std::str::from_utf8(v).ok())
+        .and_then(faucet_core::idempotency::parse_token)
+    else {
+        return running;
+    };
+    Some(running.map_or(token, |cur| cur.max(token)))
 }
 
 /// Enqueue one record into the current transaction, retrying on `QueueFull`.
@@ -398,36 +412,44 @@ mod tests {
     }
 
     #[test]
-    fn max_token_picks_highest_for_scope_only() {
-        let recs = vec![
-            (
-                b"s1".to_vec(),
-                Some(faucet_core::idempotency::format_token(3).into_bytes()),
-            ),
-            (
-                b"s1".to_vec(),
-                Some(faucet_core::idempotency::format_token(7).into_bytes()),
-            ),
-            (
-                b"s2".to_vec(),
-                Some(faucet_core::idempotency::format_token(99).into_bytes()),
-            ),
-        ];
-        assert_eq!(max_token_for_scope(&recs, "s1"), Some(7));
-        assert_eq!(max_token_for_scope(&recs, "s2"), Some(99));
-        assert_eq!(max_token_for_scope(&recs, "absent"), None);
+    fn fold_returns_none_without_a_matching_scope() {
+        let tok = |n| faucet_core::idempotency::format_token(n).into_bytes();
+        // Only other-scope records seen ⇒ running max stays None (resume from start).
+        let mut acc = None;
+        acc = fold_token_for_scope(acc, b"s2", Some(&tok(99)), "s1");
+        acc = fold_token_for_scope(acc, b"s3", Some(&tok(42)), "s1");
+        assert_eq!(acc, None);
     }
 
     #[test]
-    fn max_token_ignores_garbage_and_tombstones() {
-        let recs = vec![
-            (b"s1".to_vec(), None),
-            (b"s1".to_vec(), Some(b"not-a-token".to_vec())),
-            (
-                b"s1".to_vec(),
-                Some(faucet_core::idempotency::format_token(4).into_bytes()),
-            ),
-        ];
-        assert_eq!(max_token_for_scope(&recs, "s1"), Some(4));
+    fn fold_keeps_running_max_for_scope_only() {
+        let tok = |n| faucet_core::idempotency::format_token(n).into_bytes();
+        // Out-of-order tokens for the target scope: running max only grows.
+        let mut acc = None;
+        acc = fold_token_for_scope(acc, b"s1", Some(&tok(3)), "s1");
+        assert_eq!(acc, Some(3));
+        acc = fold_token_for_scope(acc, b"s1", Some(&tok(7)), "s1");
+        assert_eq!(acc, Some(7));
+        // A lower token must not lower the running max.
+        acc = fold_token_for_scope(acc, b"s1", Some(&tok(5)), "s1");
+        assert_eq!(acc, Some(7));
+        // A record for a different scope is ignored (does not perturb the max).
+        acc = fold_token_for_scope(acc, b"s2", Some(&tok(99)), "s1");
+        assert_eq!(acc, Some(7));
+    }
+
+    #[test]
+    fn fold_ignores_tombstones_and_garbage() {
+        let tok = |n| faucet_core::idempotency::format_token(n).into_bytes();
+        let mut acc = None;
+        // Tombstone (no value) for the scope: running max unchanged.
+        acc = fold_token_for_scope(acc, b"s1", None, "s1");
+        assert_eq!(acc, None);
+        // Non-token value for the scope: ignored.
+        acc = fold_token_for_scope(acc, b"s1", Some(b"not-a-token"), "s1");
+        assert_eq!(acc, None);
+        // A valid token then sets it.
+        acc = fold_token_for_scope(acc, b"s1", Some(&tok(4)), "s1");
+        assert_eq!(acc, Some(4));
     }
 }
