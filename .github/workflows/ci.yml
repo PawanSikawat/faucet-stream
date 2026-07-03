@@ -195,6 +195,8 @@ jobs:
           # Quality checks
           - quality
           - quality-jsonschema
+          # Data contracts
+          - contract
           # OpenLineage emission
           - lineage
           - lineage-kafka

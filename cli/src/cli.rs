@@ -37,6 +37,10 @@ pub enum Command {
     /// Probe every connector in a config (auth / network / permissions) and
     /// print a green/red checklist. Exits non-zero if any probe fails.
     Doctor(DoctorArgs),
+    /// Validate a config's `contract:` block and print a summary, or export
+    /// it in a machine-readable format (`--export`).
+    #[cfg(feature = "contract")]
+    Contract(ContractArgs),
     /// Run a pipeline on a cron schedule (long-running; Ctrl-C / SIGTERM to stop).
     #[cfg(feature = "schedule")]
     Schedule(ScheduleArgs),
@@ -68,6 +72,44 @@ pub struct DoctorArgs {
     /// it over the composed base. Overrides the `FAUCET_PROFILE` env var.
     #[arg(long, env = "FAUCET_PROFILE")]
     pub profile: Option<String>,
+}
+
+/// `faucet contract` arguments.
+#[cfg(feature = "contract")]
+#[derive(Debug, Parser)]
+pub struct ContractArgs {
+    /// Path to a `.yaml`, `.yml`, or `.json` pipeline config with a
+    /// `pipeline.contract:` block. If omitted, auto-discover
+    /// `faucet.yaml` / `faucet.yml` / `faucet.json` in cwd.
+    pub config: Option<PathBuf>,
+    /// Path to a `.env` file to load for `${env:VAR}` interpolation.
+    /// Defaults to `.env` in cwd if present.
+    #[arg(long, conflicts_with = "no_env_file")]
+    pub env_file: Option<PathBuf>,
+    /// Skip auto-loading `.env` from cwd.
+    #[arg(long)]
+    pub no_env_file: bool,
+    /// Select a named overlay from the config's `profiles:` block and deep-merge
+    /// it over the composed base. Overrides the `FAUCET_PROFILE` env var.
+    #[arg(long, env = "FAUCET_PROFILE")]
+    pub profile: Option<String>,
+    /// Export the contract in a machine-readable format instead of the
+    /// human summary: the canonical contract JSON, a standalone JSON Schema,
+    /// or an OpenLineage schema facet.
+    #[arg(long, value_enum)]
+    pub export: Option<ContractExportFormat>,
+}
+
+/// Export format for `faucet contract --export`.
+#[cfg(feature = "contract")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum ContractExportFormat {
+    /// The canonical contract document as JSON.
+    Contract,
+    /// A standalone JSON Schema (draft 2020-12) for the promised records.
+    JsonSchema,
+    /// An OpenLineage `SchemaDatasetFacet` JSON document.
+    Openlineage,
 }
 
 /// `faucet schedule` arguments.
@@ -305,6 +347,9 @@ pub enum SchemaTarget {
     /// JSON Schema for the `quality:` block.
     #[cfg(feature = "quality")]
     Quality,
+    /// JSON Schema for the `contract:` block.
+    #[cfg(feature = "contract")]
+    Contract,
     /// Grammar reference for secrets-manager interpolation directives.
     Secrets,
     /// JSON Schema for the `schedule:` block.

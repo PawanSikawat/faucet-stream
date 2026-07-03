@@ -911,6 +911,19 @@ async fn run_one_invocation(
     } else {
         pipeline
     };
+    // Pipeline-level data contract (v1: no matrix-row override). `expand`
+    // already validated the spec; compile again here to obtain the runtime
+    // `CompiledContract`.
+    #[cfg(feature = "contract")]
+    let pipeline = if let Some(ref contract_spec) = node.contract {
+        let compiled = Arc::new(
+            faucet_core::CompiledContract::compile(contract_spec)
+                .map_err(|e| CliError::Config(format!("contract: {e}")))?,
+        );
+        pipeline.with_contract(compiled)
+    } else {
+        pipeline
+    };
     // Schema-drift policy (pipeline-level in v1; same for every invocation).
     let pipeline = if let Some(ref sd) = node.schema {
         pipeline.with_schema_drift(faucet_core::SchemaDriftPolicy::compile(sd))
@@ -1341,6 +1354,8 @@ mod tests {
                 dlq: None,
                 #[cfg(feature = "quality")]
                 quality: None,
+                #[cfg(feature = "contract")]
+                contract: None,
                 schema: None,
             },
             matrix: Vec::new(),
@@ -1960,6 +1975,8 @@ matrix:
                 delivery: faucet_core::DeliveryMode::AtLeastOnce,
                 #[cfg(feature = "quality")]
                 quality: None,
+                #[cfg(feature = "contract")]
+                contract: None,
                 schema: None,
                 deferred_refs: refs
                     .iter()
@@ -2023,6 +2040,8 @@ matrix:
             delivery: faucet_core::DeliveryMode::AtLeastOnce,
             #[cfg(feature = "quality")]
             quality: None,
+            #[cfg(feature = "contract")]
+            contract: None,
             schema: None,
             deferred_refs: vec![DeferredRef {
                 referenced_id: "p".into(),
@@ -2269,6 +2288,8 @@ matrix:
             delivery: faucet_core::DeliveryMode::AtLeastOnce,
             #[cfg(feature = "quality")]
             quality: None,
+            #[cfg(feature = "contract")]
+            contract: None,
             schema: None,
             deferred_refs: Vec::new(),
         }
@@ -2335,6 +2356,8 @@ matrix:
             delivery: faucet_core::DeliveryMode::AtLeastOnce,
             #[cfg(feature = "quality")]
             quality: None,
+            #[cfg(feature = "contract")]
+            contract: None,
             schema: None,
             deferred_refs: Vec::new(),
         };

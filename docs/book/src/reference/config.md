@@ -332,6 +332,51 @@ Against a **schemaless** sink (jsonl, csv, stdout, mongodb, redis, http, kafka,
 s3, gcs, snowflake, parquet) any non-`evolve` policy is inert — the sink reports
 no schema to diverge from.
 
+## `contract`
+
+Optional **pipeline-level** block (a sibling of `source` / `sink` /
+`transforms` inside `pipeline:`; no matrix-row override in v1) declaring a
+**data contract**: a versioned promise about the pipeline's output shape,
+enforced per page after transforms and quality checks and before the sink
+write. Requires the `contract` Cargo feature (in the default build). See the
+[Data contracts cookbook](../cookbook/contracts.md) for the full model and
+`faucet schema contract` for the block's JSON Schema.
+
+```yaml
+pipeline:
+  contract:
+    version: "1.0.0"            # required, non-empty
+    description: Orders feed.   # optional metadata
+    owner: data-platform        # optional metadata
+    on_breach: fail             # fail (default) | quarantine | warn
+    allow_extra_fields: true    # default true
+    fields:                     # required, non-empty; names unique
+      - name: order_id
+        type: string            # string | integer | number | boolean | object | array
+        required: true          # default true
+        nullable: false         # default false
+        min_length: 1           # string-only (with max_length)
+      - name: status
+        type: string
+        enum: [open, shipped, cancelled]
+      - name: amount
+        type: number
+        min: 0                  # numeric-only (with max)
+```
+
+| Field | Default | Purpose |
+|-------|---------|---------|
+| `version` | — | Carried into breach errors, DLQ envelopes, and exports. Semver recommended (major = breaking, minor = additive). |
+| `on_breach` | `fail` | `fail` aborts on the first breach (nothing from the page is written); `quarantine` routes breaching records to the DLQ and writes the rest (requires a `dlq:` block — validated at load time); `warn` logs + counts but writes everything. |
+| `allow_extra_fields` | `true` | When `false`, an undeclared top-level key is a breach (`extra_field`). |
+| `fields[]` | — | Per-field type + constraints: `required`, `nullable`, `enum`, `pattern` (string), `min`/`max` (numeric, inclusive), `min_length`/`max_length` (string, inclusive), `description`. |
+
+A malformed contract (empty version, duplicate fields, invalid regex, empty or
+type-mismatched `enum`, constraints on the wrong type, `min > max`) is a
+config-load error — `faucet validate` catches it. `fail`/`warn` compose with
+`delivery: exactly_once`; `quarantine` does not (exactly-once forbids a DLQ).
+Inspect or export the contract with [`faucet contract`](./cli.md#contract).
+
 ## `execution`
 
 - `max_concurrent` — one shared concurrency budget across roots and child

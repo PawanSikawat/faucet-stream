@@ -60,6 +60,9 @@ otel = [
 compression = ["dep:async-compression", "dep:flate2", "dep:zstd"]
 quality = ["dep:regex"]
 quality-jsonschema = ["quality", "dep:jsonschema"]
+# Data contracts (`contract:` config block, issue #204): a versioned output
+# schema/constraint promise enforced per page with fail/quarantine/warn.
+contract = ["dep:regex"]
 
 [dependencies]
 serde.workspace = true

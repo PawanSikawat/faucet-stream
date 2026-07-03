@@ -1,6 +1,8 @@
 //! Subcommand implementations. Each module owns its `run(...)` entry point
 //! and stays free of clap so the integration tests can drive it directly.
 
+#[cfg(feature = "contract")]
+pub mod contract;
 pub mod doctor;
 pub mod init;
 pub mod list;

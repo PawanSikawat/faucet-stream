@@ -17,6 +17,8 @@ pub mod adaptive;
 pub mod auth;
 pub mod check;
 pub mod config;
+#[cfg(feature = "contract")]
+pub mod contract;
 pub mod dlq;
 pub mod drift;
 pub mod error;
@@ -54,6 +56,8 @@ pub use drift::{
 };
 pub use error::FaucetError;
 pub use idempotency::{DeliveryMode, format_token, parse_token, unwrap_state, wrap_state};
+#[cfg(feature = "contract")]
+pub use observability::instrumented_apply_contract;
 #[cfg(feature = "quality")]
 pub use observability::instrumented_apply_quality;
 pub use observability::otel::{OtelConfig, OtelProtocol, OtelSignal, shutdown_otel};
@@ -118,4 +122,10 @@ pub use compression::{Compression, CompressionConfig, compress_buf, warn_mismatc
 pub use quality::{
     BatchCheck, CheckTally, CompareOp, CompiledQuality, JsonType, OnFailure, QualityOutcome,
     QualitySpec, QuarantinedRecord, RecordCheck, apply_quality,
+};
+
+#[cfg(feature = "contract")]
+pub use contract::{
+    CompiledContract, ContractFieldType, ContractOutcome, ContractSpec, ContractViolation,
+    FieldContract, OnBreach, ViolatingRecord, apply_contract, to_json_schema, to_openlineage_facet,
 };
