@@ -24,6 +24,35 @@ pub struct MysqlSourceConfig {
     /// jobs) that prefer one large request to many small ones.
     #[serde(default = "default_batch_size")]
     pub batch_size: usize,
+
+    /// Optional primary-key range sharding for clustered (Mode B) execution.
+    ///
+    /// When set, the source advertises itself as shardable: the cluster
+    /// coordinator splits the query's `key` range into contiguous slices that
+    /// different workers process concurrently. Has **no effect** outside the
+    /// cluster coordinator (a plain `faucet run` streams the whole query), so
+    /// it is fully backward compatible. See [`ShardConfig`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shard: Option<ShardConfig>,
+}
+
+/// Primary-key range sharding settings for the MySQL source.
+///
+/// The source is split by contiguous ranges of an **integer-typed** column:
+/// each shard runs ``SELECT * FROM (<query>) WHERE `key` >= lo AND `key` < hi``.
+/// The column must be present in the query's output and orderable as a 64-bit
+/// integer (e.g. a `BIGINT`/`INT` auto-increment primary key).
+///
+/// **Nullable keys:** if the key column contains NULLs, those rows are not
+/// visible to the `MIN`/`MAX` range enumeration. They are still read — exactly
+/// one shard (the last) additionally matches ``` `key` IS NULL ```, so NULL-key
+/// rows are covered by precisely one shard with no loss and no duplication.
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct ShardConfig {
+    /// Integer column to range-partition on. Quoted as an identifier (backticks)
+    /// before use, so it is safe against injection but must name a real output
+    /// column.
+    pub key: String,
 }
 
 fn default_max_connections() -> u32 {
@@ -53,6 +82,7 @@ impl MysqlSourceConfig {
             query: query.into(),
             max_connections: 10,
             batch_size: DEFAULT_BATCH_SIZE,
+            shard: None,
         }
     }
 

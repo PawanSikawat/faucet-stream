@@ -12,5 +12,5 @@ pub mod stream;
 
 pub use faucet_core::{FaucetError, Source};
 
-pub use config::SqliteSourceConfig;
+pub use config::{ShardConfig, SqliteSourceConfig};
 pub use stream::SqliteSource;

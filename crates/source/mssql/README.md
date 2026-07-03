@@ -72,6 +72,7 @@ faucet run pipeline.yaml
 |-------|------|---------|-------------|
 | `max_connections` | int | `10` | Maximum pooled connections. |
 | `batch_size` | int | `1000` | Records per emitted `StreamPage`. **`0` = no batching**: the entire result set is emitted as a single page (good for small lookup tables, or sinks that prefer one large request). |
+| `shard` | object | *(unset)* | Optional [Mode B sharding](#sharded-execution-cluster-mode-b): `{ key: <integer column> }`. Opts the source into primary-key range splitting under `faucet serve --cluster`; no effect on a plain `faucet run`. |
 | `statement_timeout_secs` | int (seconds) | `300` | Per-query timeout. **`0` disables** (wait indefinitely). |
 | `state_key` | string | *(derived)* | Explicit state-store key for the incremental bookmark. When unset, a stable key is derived from the connection host plus a fingerprint of the query. |
 
@@ -310,6 +311,42 @@ This crate has no optional features of its own; enable it in the CLI/umbrella vi
 - [Configuration grammar reference](https://pawansikawat.github.io/faucet-stream/reference/config.html)
 - [`faucet-common-mssql`](https://crates.io/crates/faucet-common-mssql) — shared connection/TLS/pool types.
 - [`faucet-sink-mssql`](https://crates.io/crates/faucet-sink-mssql) — the matching SQL Server sink.
+
+## Sharded execution (cluster Mode B)
+
+Under [`faucet serve --cluster`](https://pawansikawat.github.io/faucet-stream/cookbook/cluster.html),
+a top-level `shard: { count: N }` block splits this source into contiguous
+primary-key ranges that different cluster workers process concurrently. Opt in
+by naming an integer-typed key column:
+
+```yaml
+shard:
+  count: 8
+pipeline:
+  source:
+    type: mssql
+    config:
+      connection_url: ${env:MSSQL_URL}
+      query: "SELECT * FROM events"
+      shard: { key: id }   # integer column to range-partition on
+```
+
+The coordinator computes `MIN(key)` / `MAX(key)` once and splits that range
+into half-open slices (`[key]` in the generated predicate, injection-safe).
+The boundary shards stay open-ended so rows inserted outside the captured
+range during the run are still read, and exactly one shard additionally
+matches `key IS NULL` so nullable keys are never silently dropped. Each shard
+keeps its own state key (`{run}::{shard}`), so a reassigned shard resumes
+where its previous owner left off.
+
+Outside the cluster coordinator the `shard` config has **no effect** — a plain
+`faucet run` streams the whole query.
+
+> A sharded query must not end in a top-level `ORDER BY` — T-SQL forbids it
+> inside the derived table the shard predicate wraps (ordering across
+> concurrently-executing shards is meaningless anyway). With incremental
+> replication, shard bounds are computed over the not-yet-synced slice (the
+> `@bookmark` binding is honoured during enumeration).
 
 ## License
 

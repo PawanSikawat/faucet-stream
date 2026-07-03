@@ -69,6 +69,7 @@ faucet run pipeline.yaml
 | `query` | string | — *(required)* | The SQL query to execute. May contain `${parent.field}` tokens that are bound as parameters in a matrix run (see [Per-record queries](#per-record-queries-matrix-pipelines)). |
 | `max_connections` | int | `10` | Maximum connections in the sqlx pool. |
 | `batch_size` | int | `1000` | Rows per emitted `StreamPage`. **`0` = no batching** (drain the whole result set into one page). Values above `MAX_BATCH_SIZE` (1,000,000) are rejected at construction by `faucet_core::validate_batch_size`. |
+| `shard` | object | *(unset)* | Optional [Mode B sharding](#sharded-execution-cluster-mode-b): `{ key: <integer column> }`. Opts the source into primary-key range splitting under `faucet serve --cluster`; no effect on a plain `faucet run`. |
 
 There is no separate `auth` block — credentials live in `connection_url` (and can be sourced from env or a secrets manager; see [Config loading](#config-loading)).
 
@@ -333,6 +334,36 @@ This crate has no optional Cargo features of its own. Enable it in the CLI / umb
 
 - [Connector reference](https://pawansikawat.github.io/faucet-stream/reference/connectors.html) · [Config grammar](https://pawansikawat.github.io/faucet-stream/reference/config.html) · [CLI reference](https://pawansikawat.github.io/faucet-stream/reference/cli.html)
 - Related crates: [faucet-source-mysql-cdc](https://crates.io/crates/faucet-source-mysql-cdc) · [faucet-sink-mysql](https://crates.io/crates/faucet-sink-mysql) · [faucet-source-postgres](https://crates.io/crates/faucet-source-postgres)
+
+## Sharded execution (cluster Mode B)
+
+Under [`faucet serve --cluster`](https://pawansikawat.github.io/faucet-stream/cookbook/cluster.html),
+a top-level `shard: { count: N }` block splits this source into contiguous
+primary-key ranges that different cluster workers process concurrently. Opt in
+by naming an integer-typed key column:
+
+```yaml
+shard:
+  count: 8
+pipeline:
+  source:
+    type: mysql
+    config:
+      connection_url: ${env:MYSQL_URL}
+      query: "SELECT * FROM events"
+      shard: { key: id }   # integer column to range-partition on
+```
+
+The coordinator computes `MIN(key)` / `MAX(key)` once and splits that range
+into half-open slices (`` `key` `` in the generated predicate, injection-safe).
+The boundary shards stay open-ended so rows inserted outside the captured
+range during the run are still read, and exactly one shard additionally
+matches `key IS NULL` so nullable keys are never silently dropped. Each shard
+keeps its own state key (`{run}::{shard}`), so a reassigned shard resumes
+where its previous owner left off.
+
+Outside the cluster coordinator the `shard` config has **no effect** — a plain
+`faucet run` streams the whole query.
 
 ## License
 

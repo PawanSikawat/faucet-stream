@@ -2,17 +2,32 @@
 
 use crate::config::MysqlSourceConfig;
 use async_trait::async_trait;
+use faucet_core::shard::{
+    PkShardBounds, ShardSpec, parse_pk_shard, pk_bounds_query, pk_shards_from_bounds,
+};
 use faucet_core::{FaucetError, Stream, StreamPage};
 use futures::TryStreamExt;
 use serde_json::Value;
 use sqlx::mysql::MySqlPoolOptions;
 use sqlx::{Column, MySqlPool, Row};
 use std::pin::Pin;
+use std::sync::Mutex;
 
 /// A source that executes a SQL query against MySQL and returns rows as JSON.
 pub struct MysqlSource {
     config: MysqlSourceConfig,
     pool: MySqlPool,
+    /// Shard applied by the cluster coordinator (Mode B), if any. `None` (or the
+    /// whole-dataset shard) means the full query is streamed. Stored behind a
+    /// `Mutex` so `apply_shard(&self, …)` can record it before streaming.
+    applied_shard: Mutex<Option<PkShardBounds>>,
+}
+
+/// Quote a MySQL identifier with backticks (MySQL's default identifier
+/// quoting — double quotes require the non-default `ANSI_QUOTES` sql_mode).
+/// Embedded backticks are doubled, preventing identifier injection.
+fn quote_ident_mysql(name: &str) -> String {
+    format!("`{}`", name.replace('`', "``"))
 }
 
 impl MysqlSource {
@@ -26,7 +41,19 @@ impl MysqlSource {
             .await
             .map_err(|e| FaucetError::Config(format!("MySQL connection failed: {e}")))?;
 
-        Ok(Self { config, pool })
+        Ok(Self {
+            config,
+            pool,
+            applied_shard: Mutex::new(None),
+        })
+    }
+
+    /// Apply the currently-set shard (if any) to a resolved query string.
+    fn shard_wrap(&self, query: String) -> String {
+        match &*self.applied_shard.lock().expect("shard mutex poisoned") {
+            Some(bounds) => bounds.wrap(&query, quote_ident_mysql),
+            None => query,
+        }
     }
 }
 
@@ -209,6 +236,7 @@ impl faucet_core::Source for MysqlSource {
         context: &std::collections::HashMap<String, serde_json::Value>,
     ) -> Result<Vec<Value>, FaucetError> {
         let (query_str, bind_values) = resolve_query(&self.config, context);
+        let query_str = self.shard_wrap(query_str);
         let query = bind_params(sqlx::query(&query_str), &bind_values);
 
         let rows = query
@@ -242,6 +270,7 @@ impl faucet_core::Source for MysqlSource {
 
         Box::pin(async_stream::try_stream! {
             let (query_str, bind_values) = resolve_query(&self.config, context);
+            let query_str = self.shard_wrap(query_str);
             let query = bind_params(sqlx::query(&query_str), &bind_values);
 
             let mut rows = query.fetch(&self.pool);
@@ -288,11 +317,58 @@ impl faucet_core::Source for MysqlSource {
             self.config.query
         )
     }
+
+    /// Shardable when a [`ShardConfig`](crate::config::ShardConfig) is set.
+    fn is_shardable(&self) -> bool {
+        self.config.shard.is_some()
+    }
+
+    /// Enumerate contiguous primary-key range shards by computing the `key`
+    /// column's `MIN`/`MAX` over the (unsharded) base query and splitting that
+    /// range into ~`target` slices. Returns a single whole-dataset shard when no
+    /// `shard` config is set or the result set is empty.
+    async fn enumerate_shards(&self, target: usize) -> Result<Vec<ShardSpec>, FaucetError> {
+        let Some(shard_cfg) = &self.config.shard else {
+            return Ok(vec![ShardSpec::whole()]);
+        };
+
+        let bounds_sql = pk_bounds_query(
+            &self.config.query,
+            &quote_ident_mysql(&shard_cfg.key),
+            "SIGNED",
+        );
+        let row = sqlx::query(&bounds_sql)
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|e| {
+                FaucetError::Source(format!(
+                    "mysql: failed to compute shard bounds for key {:?} \
+                     (it must be an integer-typed column): {e}",
+                    shard_cfg.key
+                ))
+            })?;
+
+        let lo: Option<i64> = row
+            .try_get("lo")
+            .map_err(|e| FaucetError::Source(format!("mysql: shard bounds decode failed: {e}")))?;
+        let hi: Option<i64> = row
+            .try_get("hi")
+            .map_err(|e| FaucetError::Source(format!("mysql: shard bounds decode failed: {e}")))?;
+        Ok(pk_shards_from_bounds(&shard_cfg.key, lo, hi, target))
+    }
+
+    /// Narrow this source to a single PK-range shard. The whole-dataset shard
+    /// clears any applied range (streams the full query).
+    async fn apply_shard(&self, shard: &ShardSpec) -> Result<(), FaucetError> {
+        *self.applied_shard.lock().expect("shard mutex poisoned") = parse_pk_shard(shard, "mysql")?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use faucet_core::shard::plan_pk_shards;
 
     #[tokio::test]
     async fn new_rejects_out_of_range_batch_size() {
@@ -372,6 +448,108 @@ mod tests {
         assert_eq!(
             classify_number(&num(serde_json::json!(3.5))),
             NumberBind::F64
+        );
+    }
+
+    // ── PK-range sharding (Mode B, #262) ─────────────────────────────────────
+
+    #[test]
+    fn quote_ident_mysql_backticks_and_escapes() {
+        assert_eq!(quote_ident_mysql("id"), "`id`");
+        // Embedded backticks are doubled — identifier injection is inert.
+        assert_eq!(quote_ident_mysql("we`ird"), "`we``ird`");
+    }
+
+    #[test]
+    fn shard_wrap_uses_backtick_quoting() {
+        let spec = faucet_core::shard::ShardSpec::new(
+            "1",
+            serde_json::json!({"key": "id", "lo": 100, "hi": 200, "lo_unbounded": false, "hi_unbounded": false}),
+        );
+        let bounds = PkShardBounds::from_spec(&spec).unwrap();
+        let sql = bounds.wrap("SELECT * FROM t", quote_ident_mysql);
+        assert!(sql.contains("(SELECT * FROM t) AS _faucet_shard"), "{sql}");
+        assert!(sql.contains("`id` >= 100"), "backtick-quoted key: {sql}");
+        assert!(sql.contains("`id` < 200"), "half-open upper bound: {sql}");
+    }
+
+    #[test]
+    fn last_shard_wrap_covers_null_keys() {
+        let shards = plan_pk_shards("id", 0, 99, 3);
+        let last = PkShardBounds::from_spec(shards.last().unwrap()).unwrap();
+        let sql = last.wrap("SELECT * FROM t", quote_ident_mysql);
+        assert!(
+            sql.contains("`id` IS NULL"),
+            "last shard must match NULL keys: {sql}"
+        );
+    }
+
+    /// Build a source over a lazy pool (no server needed) so the shard glue —
+    /// `apply_shard`, `shard_wrap`, and `enumerate_shards`' non-I/O branches —
+    /// is testable without Docker.
+    fn lazy_source(config: MysqlSourceConfig) -> MysqlSource {
+        let pool = MySqlPoolOptions::new()
+            // Fail fast at first checkout — these tests never reach a server.
+            .acquire_timeout(std::time::Duration::from_millis(200))
+            .connect_lazy(&config.connection_url)
+            .expect("lazy pool");
+        MysqlSource {
+            config,
+            pool,
+            applied_shard: Mutex::new(None),
+        }
+    }
+
+    #[tokio::test]
+    async fn apply_shard_then_shard_wrap_narrows_query() {
+        use faucet_core::Source as _;
+        let mut config = MysqlSourceConfig::new("mysql://root@127.0.0.1:1/db", "SELECT * FROM t");
+        config.shard = Some(crate::config::ShardConfig { key: "id".into() });
+        let source = lazy_source(config);
+        assert!(source.is_shardable());
+
+        // No shard applied / whole shard applied → query passes through.
+        assert_eq!(source.shard_wrap("SELECT 1".into()), "SELECT 1");
+        source
+            .apply_shard(&faucet_core::ShardSpec::whole())
+            .await
+            .unwrap();
+        assert_eq!(source.shard_wrap("SELECT 1".into()), "SELECT 1");
+
+        // A real shard narrows with backtick quoting.
+        let spec = &plan_pk_shards("id", 0, 99, 2)[0];
+        source.apply_shard(spec).await.unwrap();
+        let wrapped = source.shard_wrap("SELECT * FROM t".into());
+        assert!(wrapped.contains("`id`"), "got: {wrapped}");
+        assert!(wrapped.contains("_faucet_shard"), "got: {wrapped}");
+
+        // Malformed descriptor is rejected.
+        let bad = faucet_core::ShardSpec::new("0", serde_json::json!({ "key": "id" }));
+        assert!(source.apply_shard(&bad).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn enumerate_shards_without_config_is_whole_and_with_config_needs_db() {
+        use faucet_core::Source as _;
+        // No `shard` config → single whole shard, no I/O.
+        let plain = lazy_source(MysqlSourceConfig::new(
+            "mysql://root@127.0.0.1:1/db",
+            "SELECT 1",
+        ));
+        assert!(!plain.is_shardable());
+        let shards = plain.enumerate_shards(4).await.unwrap();
+        assert_eq!(shards.len(), 1);
+        assert!(shards[0].is_whole());
+
+        // With config, enumeration must reach the (unreachable) server → the
+        // bounds-probe error path surfaces as FaucetError::Source.
+        let mut config = MysqlSourceConfig::new("mysql://root@127.0.0.1:1/db", "SELECT 1");
+        config.shard = Some(crate::config::ShardConfig { key: "id".into() });
+        let sharded = lazy_source(config);
+        let err = sharded.enumerate_shards(4).await.unwrap_err();
+        assert!(
+            err.to_string().contains("shard bounds"),
+            "expected bounds-probe error, got: {err}"
         );
     }
 }

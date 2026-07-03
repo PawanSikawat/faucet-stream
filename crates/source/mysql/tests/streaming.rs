@@ -444,3 +444,93 @@ async fn context_tokens_bind_as_typed_params() {
     assert_eq!(page.records.len(), 1, "only account id=1 is active");
     assert_eq!(page.records[0]["name"], "alice");
 }
+
+// ── PK-range sharding (Mode B, #262) ────────────────────────────────────────
+
+/// The core Mode B correctness guarantee: enumerating a source into N shards and
+/// reading each shard yields every row exactly once — no duplication, no loss.
+#[tokio::test(flavor = "multi_thread")]
+async fn shards_partition_rows_disjointly_and_completely() {
+    use faucet_source_mysql::ShardConfig;
+
+    let (_container, url) = start_mysql().await;
+    seed_events(&url, 1000).await; // ids 1..=1000
+
+    let mut config = MysqlSourceConfig::new(&url, "SELECT id FROM events");
+    config.shard = Some(ShardConfig { key: "id".into() });
+
+    // A coordinator enumerates the shard set.
+    let coordinator = MysqlSource::new(config.clone())
+        .await
+        .expect("coordinator source");
+    assert!(coordinator.is_shardable());
+    let shards = coordinator.enumerate_shards(4).await.expect("enumerate");
+    assert!(
+        (2..=4).contains(&shards.len()),
+        "expected 2..=4 shards, got {}",
+        shards.len()
+    );
+
+    // Each shard runs on a fresh source narrowed via apply_shard.
+    let mut all_ids: Vec<i64> = Vec::new();
+    for shard in &shards {
+        let s = MysqlSource::new(config.clone())
+            .await
+            .expect("shard source");
+        s.apply_shard(shard).await.expect("apply_shard");
+        let ctx: HashMap<String, serde_json::Value> = HashMap::new();
+        let mut pages = s.stream_pages(&ctx, 0);
+        while let Some(page) = pages.next().await {
+            for rec in page.expect("page ok").records {
+                all_ids.push(rec["id"].as_i64().expect("id is int"));
+            }
+        }
+    }
+
+    all_ids.sort();
+    let expected: Vec<i64> = (1..=1000).collect();
+    assert_eq!(
+        all_ids, expected,
+        "shards must union to all rows exactly once (no dup, no loss)"
+    );
+}
+
+/// `enumerate_shards` surfaces an error when the shard key can't be computed
+/// (here: a non-existent column), and `apply_shard` rejects a malformed shard
+/// descriptor — the error paths a coordinator must handle.
+#[tokio::test(flavor = "multi_thread")]
+async fn shard_error_paths() {
+    use faucet_core::ShardSpec;
+    use faucet_source_mysql::ShardConfig;
+
+    let (_container, url) = start_mysql().await;
+    seed_events(&url, 5).await;
+
+    let mut config = MysqlSourceConfig::new(&url, "SELECT id FROM events");
+    config.shard = Some(ShardConfig {
+        key: "no_such_column".into(),
+    });
+    let source = MysqlSource::new(config).await.expect("source");
+    // MIN/MAX over a non-existent column → SQL error → enumerate_shards errors.
+    assert!(source.enumerate_shards(4).await.is_err());
+
+    // A descriptor missing lo/hi is rejected by apply_shard.
+    let bad = ShardSpec::new("0", serde_json::json!({ "key": "id" }));
+    assert!(source.apply_shard(&bad).await.is_err());
+}
+
+/// A config without a `shard` block is not shardable: it enumerates to a single
+/// whole-dataset shard, preserving single-worker behavior.
+#[tokio::test(flavor = "multi_thread")]
+async fn unsharded_config_enumerates_one_whole_shard() {
+    let (_container, url) = start_mysql().await;
+    seed_events(&url, 10).await;
+
+    let source = MysqlSource::new(MysqlSourceConfig::new(&url, "SELECT id FROM events"))
+        .await
+        .expect("source");
+    assert!(!source.is_shardable());
+    let shards = source.enumerate_shards(4).await.expect("enumerate");
+    assert_eq!(shards.len(), 1);
+    assert!(shards[0].is_whole());
+}

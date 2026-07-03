@@ -10,12 +10,15 @@ use std::time::Duration;
 use async_trait::async_trait;
 use faucet_core::check::{CheckContext, CheckReport, Probe};
 use faucet_core::replication::{filter_incremental, max_replication_value, max_value};
+use faucet_core::shard::{
+    PkShardBounds, ShardSpec, parse_pk_shard, pk_bounds_query, pk_shards_from_bounds,
+};
 use faucet_core::{FaucetError, Source, StreamPage};
 use futures::{Stream, TryStreamExt};
 use serde_json::Value;
 use tiberius::{QueryItem, ToSql};
 
-use faucet_common_mssql::{MssqlPool, build_pool, with_statement_timeout};
+use faucet_common_mssql::{MssqlPool, build_pool, quote_ident_mssql, with_statement_timeout};
 
 use crate::config::{MssqlReplication, MssqlSourceConfig};
 use crate::convert::row_to_json;
@@ -27,6 +30,10 @@ pub struct MssqlSource {
     /// Bookmark loaded via [`Source::apply_start_bookmark`]; overrides the
     /// configured `initial_value` for incremental runs.
     start_bookmark: Mutex<Option<Value>>,
+    /// Shard applied by the cluster coordinator (Mode B), if any. `None` (or the
+    /// whole-dataset shard) means the full query is streamed. Stored behind a
+    /// `Mutex` so `apply_shard(&self, …)` can record it before streaming.
+    applied_shard: Mutex<Option<PkShardBounds>>,
 }
 
 impl MssqlSource {
@@ -38,6 +45,7 @@ impl MssqlSource {
             config,
             pool,
             start_bookmark: Mutex::new(None),
+            applied_shard: Mutex::new(None),
         })
     }
 
@@ -54,6 +62,23 @@ impl MssqlSource {
             .expect("start_bookmark mutex poisoned")
             .clone()
     }
+
+    /// Apply the currently-set shard (if any) to a resolved query string. The
+    /// positional `@Pn` bind markers inside the wrapped subquery are unaffected
+    /// (they bind by name, not by position in the text).
+    fn shard_wrap(&self, query: String) -> String {
+        match &*self.applied_shard.lock().expect("shard mutex poisoned") {
+            Some(bounds) => bounds.wrap(&query, bracket_quote),
+            None => query,
+        }
+    }
+}
+
+/// Infallible bracket quoting for a shard key whose NUL-freeness was already
+/// validated (via [`quote_ident_mssql`]) when the shard was applied/enumerated.
+/// Interior `]` are doubled per T-SQL rules, preventing identifier injection.
+fn bracket_quote(name: &str) -> String {
+    format!("[{}]", name.replace(']', "]]"))
 }
 
 /// Incremental-replication context resolved for one run.
@@ -213,6 +238,7 @@ impl Source for MssqlSource {
         let cap = if batch_size == 0 { 1024 } else { batch_size };
         let start = self.current_start();
         let (query, values, incr) = build_query_and_params(&self.config, context, start.as_ref());
+        let query = self.shard_wrap(query);
 
         Box::pin(async_stream::try_stream! {
             let mut conn = self
@@ -339,6 +365,98 @@ impl Source for MssqlSource {
         };
         Ok(CheckReport::single(probe))
     }
+
+    /// Shardable when a [`ShardConfig`](crate::config::ShardConfig) is set.
+    fn is_shardable(&self) -> bool {
+        self.config.shard.is_some()
+    }
+
+    /// Enumerate contiguous primary-key range shards by computing the `key`
+    /// column's `MIN`/`MAX` over the (unsharded) base query and splitting that
+    /// range into ~`target` slices. Returns a single whole-dataset shard when no
+    /// `shard` config is set or the result set is empty.
+    ///
+    /// The base query is resolved through [`build_query_and_params`] first so a
+    /// `@bookmark` token (incremental replication) is bound rather than left
+    /// dangling — bounds are then computed over the not-yet-synced slice, which
+    /// is exactly the data the shards will read.
+    async fn enumerate_shards(&self, target: usize) -> Result<Vec<ShardSpec>, FaucetError> {
+        let Some(shard_cfg) = &self.config.shard else {
+            return Ok(vec![ShardSpec::whole()]);
+        };
+
+        let start = self.current_start();
+        let (inner, values, _incr) =
+            build_query_and_params(&self.config, &HashMap::new(), start.as_ref());
+        let key = quote_ident_mssql(&shard_cfg.key)?;
+        let bounds_sql = pk_bounds_query(&inner, &key, "BIGINT");
+
+        let mut conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| FaucetError::Source(format!("MSSQL pool checkout failed: {e}")))?;
+
+        let rows = {
+            let owned: Vec<OwnedParam> = values.iter().map(OwnedParam::from_value).collect();
+            let refs: Vec<&dyn ToSql> = owned.iter().map(OwnedParam::as_tosql).collect();
+            let run = async {
+                conn.query(&bounds_sql, &refs)
+                    .await
+                    .map_err(|e| {
+                        FaucetError::Source(format!(
+                            "mssql: failed to compute shard bounds for key {:?} \
+                             (it must be an integer-typed column, and the query must \
+                             not end in a top-level ORDER BY): {e}",
+                            shard_cfg.key
+                        ))
+                    })?
+                    .into_first_result()
+                    .await
+                    .map_err(|e| {
+                        FaucetError::Source(format!(
+                            "mssql: failed to compute shard bounds for key {:?} \
+                             (it must be an integer-typed column, and the query must \
+                             not end in a top-level ORDER BY): {e}",
+                            shard_cfg.key
+                        ))
+                    })
+            };
+            match self.timeout() {
+                Some(t) => {
+                    with_statement_timeout(t, run, || {
+                        FaucetError::Source("MSSQL shard-bounds query timed out".into())
+                    })
+                    .await?
+                }
+                None => run.await?,
+            }
+        };
+
+        let Some(row) = rows.first() else {
+            return Ok(vec![ShardSpec::whole()]);
+        };
+        let decoded = row_to_json(row)?;
+        Ok(pk_shards_from_bounds(
+            &shard_cfg.key,
+            decoded["lo"].as_i64(),
+            decoded["hi"].as_i64(),
+            target,
+        ))
+    }
+
+    /// Narrow this source to a single PK-range shard. The whole-dataset shard
+    /// clears any applied range (streams the full query).
+    async fn apply_shard(&self, shard: &ShardSpec) -> Result<(), FaucetError> {
+        let bounds = parse_pk_shard(shard, "mssql")?;
+        if let Some(b) = &bounds {
+            // Validate the key now (NUL check) so `bracket_quote` in the hot
+            // wrap path stays infallible.
+            quote_ident_mssql(&b.key)?;
+        }
+        *self.applied_shard.lock().expect("shard mutex poisoned") = bounds;
+        Ok(())
+    }
 }
 
 impl MssqlSource {
@@ -350,6 +468,7 @@ impl MssqlSource {
     ) -> Result<(Vec<Value>, Option<Value>), FaucetError> {
         let start = self.current_start();
         let (query, values, incr) = build_query_and_params(&self.config, context, start.as_ref());
+        let query = self.shard_wrap(query);
 
         let mut conn = self
             .pool
@@ -417,6 +536,7 @@ fn apply_incremental(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use faucet_core::shard::plan_pk_shards;
     use serde_json::json;
 
     fn full_cfg() -> MssqlSourceConfig {
@@ -592,5 +712,55 @@ mod tests {
             uri,
             "mssql://db.example.com:1433/sales?query=SELECT * FROM t"
         );
+    }
+
+    // ── PK-range sharding (Mode B, #262) ─────────────────────────────────────
+
+    #[test]
+    fn shard_wrap_uses_bracket_quoting() {
+        let spec = faucet_core::ShardSpec::new(
+            "1",
+            json!({"key": "id", "lo": 100, "hi": 200, "lo_unbounded": false, "hi_unbounded": false}),
+        );
+        let bounds = PkShardBounds::from_spec(&spec).unwrap();
+        let sql = bounds.wrap("SELECT * FROM t", bracket_quote);
+        assert!(sql.contains("(SELECT * FROM t) AS _faucet_shard"), "{sql}");
+        assert!(sql.contains("[id] >= 100"), "bracket-quoted key: {sql}");
+        assert!(sql.contains("[id] < 200"), "half-open upper bound: {sql}");
+    }
+
+    #[test]
+    fn last_shard_wrap_covers_null_keys() {
+        let shards = plan_pk_shards("id", 0, 99, 3);
+        let last = PkShardBounds::from_spec(shards.last().unwrap()).unwrap();
+        let sql = last.wrap("SELECT * FROM t", bracket_quote);
+        assert!(
+            sql.contains("[id] IS NULL"),
+            "last shard must match NULL keys: {sql}"
+        );
+    }
+
+    #[test]
+    fn shard_wrap_preserves_positional_bind_markers() {
+        // The @Pn markers of a resolved incremental query survive the wrap —
+        // tiberius binds them by name, not by textual position.
+        let cfg = MssqlSourceConfig {
+            query: "SELECT * FROM t WHERE c > @bookmark".into(),
+            replication: MssqlReplication::Incremental {
+                column: "c".into(),
+                initial_value: json!(0),
+            },
+            ..full_cfg()
+        };
+        let (q, v, _incr) = build_query_and_params(&cfg, &HashMap::new(), None);
+        let spec = faucet_core::ShardSpec::new(
+            "0",
+            json!({"key": "id", "lo": 0, "hi": 10, "lo_unbounded": false, "hi_unbounded": false}),
+        );
+        let wrapped = PkShardBounds::from_spec(&spec)
+            .unwrap()
+            .wrap(&q, bracket_quote);
+        assert!(wrapped.contains("@P1"), "bind marker survives: {wrapped}");
+        assert_eq!(v.len(), 1, "one bound value for the bookmark");
     }
 }

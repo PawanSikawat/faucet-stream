@@ -3,7 +3,7 @@
 use crate::config::{S3FileFormat, S3SourceConfig};
 use async_trait::async_trait;
 use aws_sdk_s3::Client;
-use faucet_core::shard::ShardSpec;
+use faucet_core::shard::{HashShard, ShardSpec, parse_hash_shard, plan_hash_shards};
 use faucet_core::{FaucetError, Stream, StreamPage};
 use futures::stream::{self, StreamExt, TryStreamExt};
 use serde_json::Value;
@@ -15,24 +15,10 @@ use tokio::io::AsyncBufReadExt;
 pub struct S3Source {
     config: S3SourceConfig,
     client: Client,
-    /// Shard applied by the cluster coordinator (Mode B): `(shards, index)`.
-    /// `None` (or `shards <= 1`) reads every listed object. Stored behind a
+    /// Shard applied by the cluster coordinator (Mode B). `None` (or a
+    /// degenerate single-shard set) reads every listed object. Stored behind a
     /// `Mutex` so `apply_shard(&self, …)` can record it before streaming.
-    applied_shard: Mutex<Option<(usize, usize)>>,
-}
-
-/// Stable FNV-1a hash of an object key, used to assign keys to shards.
-///
-/// Deterministic across processes and platforms (all cluster workers run the
-/// identical binary and this fixed algorithm), so every worker maps a given key
-/// to the same shard index — the partition is disjoint and complete.
-fn shard_hash(key: &str) -> u64 {
-    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-    for b in key.as_bytes() {
-        h ^= *b as u64;
-        h = h.wrapping_mul(0x0000_0100_0000_01b3);
-    }
-    h
+    applied_shard: Mutex<Option<HashShard>>,
 }
 
 impl S3Source {
@@ -52,11 +38,8 @@ impl S3Source {
     /// `shards`). A no-op when no shard is applied or `shards <= 1`.
     fn shard_filter(&self, keys: Vec<String>) -> Vec<String> {
         match *self.applied_shard.lock().expect("shard mutex poisoned") {
-            Some((shards, index)) if shards > 1 => keys
-                .into_iter()
-                .filter(|k| (shard_hash(k) % shards as u64) == index as u64)
-                .collect(),
-            _ => keys,
+            Some(member) => keys.into_iter().filter(|k| member.contains(k)).collect(),
+            None => keys,
         }
     }
 
@@ -516,49 +499,13 @@ impl faucet_core::Source for S3Source {
     /// defined by the hash function, so enumeration is cheap and stable as new
     /// objects appear. `target <= 1` yields a single whole-dataset shard.
     async fn enumerate_shards(&self, target: usize) -> Result<Vec<ShardSpec>, FaucetError> {
-        if target <= 1 {
-            return Ok(vec![ShardSpec::whole()]);
-        }
-        let shards = (0..target)
-            .map(|i| {
-                ShardSpec::new(
-                    i.to_string(),
-                    serde_json::json!({ "shards": target, "index": i }),
-                )
-            })
-            .collect();
-        Ok(shards)
+        Ok(plan_hash_shards(target))
     }
 
     /// Narrow this source to one hash-modulo shard. The whole-dataset shard
     /// clears any filter (reads every object).
     async fn apply_shard(&self, shard: &ShardSpec) -> Result<(), FaucetError> {
-        let parsed = if shard.is_whole() {
-            None
-        } else {
-            let shards = shard
-                .descriptor
-                .get("shards")
-                .and_then(Value::as_u64)
-                .ok_or_else(|| {
-                    FaucetError::Source(format!(
-                        "s3: invalid shard descriptor (missing 'shards'): {}",
-                        shard.descriptor
-                    ))
-                })?;
-            let index = shard
-                .descriptor
-                .get("index")
-                .and_then(Value::as_u64)
-                .ok_or_else(|| {
-                    FaucetError::Source(format!(
-                        "s3: invalid shard descriptor (missing 'index'): {}",
-                        shard.descriptor
-                    ))
-                })?;
-            Some((shards as usize, index as usize))
-        };
-        *self.applied_shard.lock().expect("shard mutex poisoned") = parsed;
+        *self.applied_shard.lock().expect("shard mutex poisoned") = parse_hash_shard(shard, "s3")?;
         Ok(())
     }
 }
@@ -675,6 +622,7 @@ mod tests {
 
     #[test]
     fn shard_hash_is_deterministic() {
+        use faucet_core::shard::shard_hash;
         assert_eq!(
             shard_hash("data/part-001.jsonl"),
             shard_hash("data/part-001.jsonl")
