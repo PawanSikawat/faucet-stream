@@ -376,10 +376,10 @@ impl Source for MssqlSource {
     /// range into ~`target` slices. Returns a single whole-dataset shard when no
     /// `shard` config is set or the result set is empty.
     ///
-    /// The base query is resolved through [`build_query_and_params`] first so a
-    /// `@bookmark` token (incremental replication) is bound rather than left
-    /// dangling — bounds are then computed over the not-yet-synced slice, which
-    /// is exactly the data the shards will read.
+    /// The base query is resolved through the same query builder as a normal
+    /// fetch first, so a `@bookmark` token (incremental replication) is bound
+    /// rather than left dangling — bounds are then computed over the
+    /// not-yet-synced slice, which is exactly the data the shards will read.
     async fn enumerate_shards(&self, target: usize) -> Result<Vec<ShardSpec>, FaucetError> {
         let Some(shard_cfg) = &self.config.shard else {
             return Ok(vec![ShardSpec::whole()]);

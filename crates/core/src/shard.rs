@@ -262,7 +262,7 @@ impl PkShardBounds {
 /// Parse + validate an applied shard for a PK-range source.
 ///
 /// Returns `Ok(None)` for the whole-dataset shard (the source should clear any
-/// narrowing and stream everything) and a typed [`FaucetError::Source`] naming
+/// narrowing and stream everything) and a typed [`FaucetError::Source`](crate::FaucetError::Source) naming
 /// `connector` for a malformed descriptor. The one-line body every SQL
 /// source's [`apply_shard`](crate::Source::apply_shard) delegates to.
 pub fn parse_pk_shard(
@@ -380,7 +380,7 @@ impl HashShard {
 /// Parse + validate an applied shard for a hash-of-key source.
 ///
 /// Returns `Ok(None)` for the whole-dataset shard (the source should clear any
-/// filter and read everything) and a typed [`FaucetError::Source`] naming
+/// filter and read everything) and a typed [`FaucetError::Source`](crate::FaucetError::Source) naming
 /// `connector` for a malformed descriptor. The one-line body every
 /// object-store / file source's [`apply_shard`](crate::Source::apply_shard)
 /// delegates to.
