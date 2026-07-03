@@ -8,7 +8,9 @@
 //! for the same records.
 
 use crate::config::TransformSpec;
-use crate::error::{CliError, CliResult};
+// `CliError` is referenced only inside the `quality`/`contract` cfg blocks —
+// import it there-adjacent via full path so slim builds stay warning-free.
+use crate::error::CliResult;
 use crate::transforms::compile_transforms;
 use async_trait::async_trait;
 use chrono::{DateTime, FixedOffset};
@@ -112,8 +114,9 @@ pub async fn run_case(case: &ResolvedCase) -> CliResult<CaseRun> {
     #[cfg(feature = "quality")]
     let pipeline = match &case.quality {
         Some(spec) => {
-            let compiled = faucet_core::CompiledQuality::compile(spec)
-                .map_err(|e| CliError::Config(format!("test '{}': quality: {e}", case.name)))?;
+            let compiled = faucet_core::CompiledQuality::compile(spec).map_err(|e| {
+                crate::error::CliError::Config(format!("test '{}': quality: {e}", case.name))
+            })?;
             pipeline.with_quality(Arc::new(compiled))
         }
         None => pipeline,
@@ -121,8 +124,9 @@ pub async fn run_case(case: &ResolvedCase) -> CliResult<CaseRun> {
     #[cfg(feature = "contract")]
     let pipeline = match &case.contract {
         Some(spec) => {
-            let compiled = faucet_core::CompiledContract::compile(spec)
-                .map_err(|e| CliError::Config(format!("test '{}': contract: {e}", case.name)))?;
+            let compiled = faucet_core::CompiledContract::compile(spec).map_err(|e| {
+                crate::error::CliError::Config(format!("test '{}': contract: {e}", case.name))
+            })?;
             pipeline.with_contract(Arc::new(compiled))
         }
         None => pipeline,
