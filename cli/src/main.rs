@@ -29,6 +29,8 @@ async fn main() {
         Command::Preview(args) => commands::preview::run(args).await,
         Command::Init(args) => commands::init::run(args).await,
         Command::Doctor(args) => commands::doctor::run(args).await,
+        #[cfg(feature = "contract")]
+        Command::Contract(args) => commands::contract::run(args).await,
         #[cfg(feature = "schedule")]
         Command::Schedule(args) => commands::schedule::run(args).await,
         #[cfg(feature = "serve")]

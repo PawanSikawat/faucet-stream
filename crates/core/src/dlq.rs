@@ -106,6 +106,9 @@ pub enum DlqReason {
     /// A record was routed to the DLQ by an `on_drift`/`on_incompatible`
     /// quarantine policy.
     SchemaDrift,
+    /// A record was routed to the DLQ by a data-contract `on_breach:
+    /// quarantine` policy.
+    Contract,
 }
 
 impl DlqReason {
@@ -117,6 +120,7 @@ impl DlqReason {
             DlqReason::DlqAll => "dlq_all",
             DlqReason::Quality => "quality",
             DlqReason::SchemaDrift => "schema_drift",
+            DlqReason::Contract => "contract",
         }
     }
 }
@@ -232,5 +236,10 @@ mod tests {
     #[test]
     fn dlq_reason_schema_drift_string() {
         assert_eq!(DlqReason::SchemaDrift.as_str(), "schema_drift");
+    }
+
+    #[test]
+    fn dlq_reason_contract_string() {
+        assert_eq!(DlqReason::Contract.as_str(), "contract");
     }
 }

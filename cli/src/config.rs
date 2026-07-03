@@ -150,6 +150,13 @@ pub struct PipelineSpec {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub quality: Option<faucet_core::QualitySpec>,
 
+    /// Data contract (pipeline-level; no matrix-row override in v1): a
+    /// versioned output schema/constraint promise enforced per page after
+    /// transforms and quality checks (#204). See `faucet schema contract`.
+    #[cfg(feature = "contract")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub contract: Option<faucet_core::ContractSpec>,
+
     /// Schema-drift handling policy (pipeline-level; no matrix-row override in v1).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub schema: Option<faucet_core::SchemaDriftSpec>,
@@ -1213,6 +1220,28 @@ pipeline:
         let cfg = parse_with_extension(yaml, "yaml").unwrap();
         let q = cfg.pipeline.quality.expect("quality parsed");
         assert_eq!(q.record.len(), 1);
+    }
+
+    #[cfg(feature = "contract")]
+    #[test]
+    fn parses_contract_block() {
+        let yaml = r#"
+version: 1
+pipeline:
+  source: { type: rest, config: { url: "https://x" } }
+  contract:
+    version: "1.0.0"
+    on_breach: warn
+    fields:
+      - { name: id, type: integer }
+      - { name: status, type: string, enum: [open, closed] }
+  sink: { type: stdout, config: {} }
+"#;
+        let cfg = parse_with_extension(yaml, "yaml").unwrap();
+        let c = cfg.pipeline.contract.expect("contract parsed");
+        assert_eq!(c.version, "1.0.0");
+        assert_eq!(c.on_breach, faucet_core::OnBreach::Warn);
+        assert_eq!(c.fields.len(), 2);
     }
 
     #[test]

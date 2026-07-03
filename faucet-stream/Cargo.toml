@@ -87,6 +87,9 @@ auth = ["dep:faucet-auth"]
 ## `faucet-core`.
 quality = ["faucet-core/quality"]
 quality-jsonschema = ["quality", "faucet-core/quality-jsonschema"]
+## Data contracts (`contract:` config block, #204): a versioned output
+## schema/constraint promise enforced per page. Forwarded to `faucet-core`.
+contract = ["faucet-core/contract"]
 ## OpenLineage emission (`lineage:` config block). `lineage-kafka` adds the
 ## Kafka transport. Forwarded to `faucet-lineage`.
 lineage = ["dep:faucet-lineage"]
@@ -94,7 +97,7 @@ lineage-kafka = ["lineage", "faucet-lineage/transport-kafka"]
 ## SQL-as-transform via embedded DuckDB.
 transform-sql = ["dep:faucet-transform-sql"]
 ## Every connector and state backend.
-full = ["source", "sink", "state", "auth", "kafka-schema-registry", "compression", "quality", "quality-jsonschema", "lineage", "lineage-kafka", "transform-sql", "transform-cdc-unwrap"]
+full = ["source", "sink", "state", "auth", "kafka-schema-registry", "compression", "quality", "quality-jsonschema", "contract", "lineage", "lineage-kafka", "transform-sql", "transform-cdc-unwrap"]
 
 ## Individual source connectors.
 source-rest = ["dep:faucet-source-rest"]

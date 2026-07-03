@@ -980,3 +980,225 @@ fn init_output_loads_and_expands() {
         nodes[0].source.config
     );
 }
+
+/// Helper: a csv→jsonl config with a `contract:` block and (optionally) a DLQ.
+#[cfg(feature = "contract")]
+fn contract_yaml(csv: &Path, out: &Path, dlq: Option<&Path>, on_breach: &str) -> String {
+    let dlq_block = match dlq {
+        Some(p) => format!(
+            "  dlq:\n    sink: {{ type: jsonl, config: {{ path: {} }} }}\n",
+            p.display()
+        ),
+        None => String::new(),
+    };
+    format!(
+        r#"version: 1
+name: csv_contract
+pipeline:
+  source:
+    type: csv
+    config:
+      path: {csv}
+  sink:
+    type: jsonl
+    config:
+      path: {out}
+{dlq_block}  contract:
+    version: "1.0.0"
+    on_breach: {on_breach}
+    fields:
+      - {{ name: name, type: string }}
+      - {{ name: status, type: string, enum: [open, closed] }}
+"#,
+        csv = csv.display(),
+        out = out.display(),
+    )
+}
+
+#[cfg(feature = "contract")]
+#[test]
+fn run_with_contract_quarantine_routes_breaches_to_dlq() {
+    let dir = TempDir::new().unwrap();
+    let csv = dir.path().join("in.csv");
+    let out = dir.path().join("out.jsonl");
+    let dlq = dir.path().join("dlq.jsonl");
+    fs::write(&csv, "name,status\nalice,open\nbob,bogus\n").unwrap();
+
+    let cfg = dir.path().join("pipeline.yaml");
+    fs::write(&cfg, contract_yaml(&csv, &out, Some(&dlq), "quarantine")).unwrap();
+
+    Command::cargo_bin("faucet")
+        .unwrap()
+        .args(["run"])
+        .arg(&cfg)
+        .assert()
+        .success()
+        .stdout(contains("wrote 1 record"));
+
+    let out_body = fs::read_to_string(&out).unwrap();
+    assert!(out_body.contains("\"alice\""), "{out_body}");
+    assert!(!out_body.contains("\"bob\""), "{out_body}");
+    let dlq_body = fs::read_to_string(&dlq).unwrap();
+    assert!(dlq_body.contains("ContractViolation"), "{dlq_body}");
+    assert!(dlq_body.contains("\"bob\""), "{dlq_body}");
+    assert!(dlq_body.contains("1.0.0"), "{dlq_body}");
+}
+
+#[cfg(feature = "contract")]
+#[test]
+fn run_with_contract_fail_aborts_run() {
+    let dir = TempDir::new().unwrap();
+    let csv = dir.path().join("in.csv");
+    let out = dir.path().join("out.jsonl");
+    fs::write(&csv, "name,status\nalice,open\nbob,bogus\n").unwrap();
+
+    let cfg = dir.path().join("pipeline.yaml");
+    fs::write(&cfg, contract_yaml(&csv, &out, None, "fail")).unwrap();
+
+    Command::cargo_bin("faucet")
+        .unwrap()
+        .args(["run"])
+        .arg(&cfg)
+        .assert()
+        .failure()
+        .stderr(contains("Contract v1.0.0 violated"))
+        .stderr(contains("status"));
+}
+
+#[cfg(feature = "contract")]
+#[test]
+fn run_with_contract_warn_writes_everything() {
+    let dir = TempDir::new().unwrap();
+    let csv = dir.path().join("in.csv");
+    let out = dir.path().join("out.jsonl");
+    fs::write(&csv, "name,status\nalice,open\nbob,bogus\n").unwrap();
+
+    let cfg = dir.path().join("pipeline.yaml");
+    fs::write(&cfg, contract_yaml(&csv, &out, None, "warn")).unwrap();
+
+    Command::cargo_bin("faucet")
+        .unwrap()
+        .args(["run"])
+        .arg(&cfg)
+        .assert()
+        .success()
+        .stdout(contains("wrote 2 records"));
+
+    let out_body = fs::read_to_string(&out).unwrap();
+    assert!(
+        out_body.contains("\"bob\""),
+        "warn must write breaching records"
+    );
+}
+
+#[cfg(feature = "contract")]
+#[test]
+fn validate_rejects_contract_quarantine_without_dlq() {
+    let dir = TempDir::new().unwrap();
+    let csv = dir.path().join("in.csv");
+    let out = dir.path().join("out.jsonl");
+    let cfg = dir.path().join("pipeline.yaml");
+    fs::write(&cfg, contract_yaml(&csv, &out, None, "quarantine")).unwrap();
+
+    Command::cargo_bin("faucet")
+        .unwrap()
+        .args(["validate"])
+        .arg(&cfg)
+        .assert()
+        .failure()
+        .stderr(contains("on_breach: quarantine"))
+        .stderr(contains("dlq"));
+}
+
+#[cfg(feature = "contract")]
+#[test]
+fn contract_command_prints_summary() {
+    let dir = TempDir::new().unwrap();
+    let csv = dir.path().join("in.csv");
+    let out = dir.path().join("out.jsonl");
+    let cfg = dir.path().join("pipeline.yaml");
+    fs::write(&cfg, contract_yaml(&csv, &out, None, "warn")).unwrap();
+
+    Command::cargo_bin("faucet")
+        .unwrap()
+        .args(["contract"])
+        .arg(&cfg)
+        .assert()
+        .success()
+        .stdout(contains("contract v1.0.0 — valid (2 fields)"))
+        .stdout(contains("on_breach: warn"))
+        .stdout(contains("- status: string (enum[2])"));
+}
+
+#[cfg(feature = "contract")]
+#[test]
+fn contract_command_exports_json_schema_and_openlineage() {
+    let dir = TempDir::new().unwrap();
+    let csv = dir.path().join("in.csv");
+    let out = dir.path().join("out.jsonl");
+    let cfg = dir.path().join("pipeline.yaml");
+    fs::write(&cfg, contract_yaml(&csv, &out, None, "warn")).unwrap();
+
+    let assert = Command::cargo_bin("faucet")
+        .unwrap()
+        .args(["contract"])
+        .arg(&cfg)
+        .args(["--export", "json-schema"])
+        .assert()
+        .success();
+    let schema: serde_json::Value =
+        serde_json::from_slice(&assert.get_output().stdout).expect("valid JSON schema output");
+    assert_eq!(schema["x-faucet-contract-version"], "1.0.0");
+    assert_eq!(schema["type"], "object");
+    assert_eq!(schema["required"], serde_json::json!(["name", "status"]));
+
+    let assert = Command::cargo_bin("faucet")
+        .unwrap()
+        .args(["contract"])
+        .arg(&cfg)
+        .args(["--export", "openlineage"])
+        .assert()
+        .success();
+    let facet: serde_json::Value =
+        serde_json::from_slice(&assert.get_output().stdout).expect("valid OL facet output");
+    assert!(
+        facet["_schemaURL"]
+            .as_str()
+            .unwrap()
+            .contains("SchemaDatasetFacet")
+    );
+    assert_eq!(facet["fields"].as_array().unwrap().len(), 2);
+}
+
+#[cfg(feature = "contract")]
+#[test]
+fn contract_command_errors_without_contract_block() {
+    let dir = TempDir::new().unwrap();
+    let csv = dir.path().join("in.csv");
+    let out = dir.path().join("out.jsonl");
+    let cfg = dir.path().join("pipeline.yaml");
+    fs::write(&cfg, csv_to_jsonl_yaml(&csv, &out)).unwrap();
+
+    Command::cargo_bin("faucet")
+        .unwrap()
+        .args(["contract"])
+        .arg(&cfg)
+        .assert()
+        .failure()
+        .stderr(contains("no `pipeline.contract:` block"));
+}
+
+#[cfg(feature = "contract")]
+#[test]
+fn schema_contract_prints_contract_spec_schema() {
+    let assert = Command::cargo_bin("faucet")
+        .unwrap()
+        .args(["schema", "contract"])
+        .assert()
+        .success();
+    let schema: serde_json::Value =
+        serde_json::from_slice(&assert.get_output().stdout).expect("valid JSON output");
+    assert!(schema["properties"].get("version").is_some());
+    assert!(schema["properties"].get("fields").is_some());
+    assert!(schema["properties"].get("on_breach").is_some());
+}

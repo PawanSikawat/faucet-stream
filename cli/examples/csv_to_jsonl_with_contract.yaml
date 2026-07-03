@@ -1,0 +1,56 @@
+# CSV → JSONL guarded by a data contract (issue #204).
+#
+# The `contract:` block is a versioned promise about the pipeline's *output*
+# shape: required fields, types, nullability, enum sets, regex patterns, and
+# numeric/length bounds. It is enforced per page after transforms and quality
+# checks and before the sink write. `on_breach` picks the enforcement policy:
+#
+#   fail       — abort the run on the first breach (default; nothing from the
+#                breaching page is written)
+#   quarantine — route breaching records to the DLQ, write the rest
+#   warn       — log + count breaches, write everything unchanged
+#
+# Inspect or publish the contract with the CLI:
+#   faucet contract cli/examples/csv_to_jsonl_with_contract.yaml
+#   faucet contract cli/examples/csv_to_jsonl_with_contract.yaml --export json-schema
+#   faucet contract cli/examples/csv_to_jsonl_with_contract.yaml --export openlineage
+version: 1
+name: orders_csv_with_contract
+
+pipeline:
+  source:
+    type: csv
+    config:
+      path: ./orders.csv
+
+  contract:
+    version: "1.0.0"
+    description: Orders exported for the analytics team.
+    owner: data-platform
+    on_breach: quarantine
+    allow_extra_fields: true
+    fields:
+      - name: order_id
+        type: string
+        min_length: 1
+        description: Unique order identifier.
+      - name: status
+        type: string
+        enum: [open, shipped, cancelled]
+        description: Order lifecycle state.
+      - name: customer_email
+        type: string
+        pattern: '^[^@\s]+@[^@\s]+\.[^@\s]+$'
+        required: false
+        nullable: true
+
+  dlq:
+    sink:
+      type: jsonl
+      config:
+        path: ./dlq/contract_breaches.jsonl
+
+  sink:
+    type: jsonl
+    config:
+      path: ./orders_out.jsonl

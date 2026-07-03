@@ -42,6 +42,10 @@ pub struct ExpandedNode {
     /// matrix-row override in v1, so this is `cfg.pipeline.quality` verbatim.
     #[cfg(feature = "quality")]
     pub quality: Option<faucet_core::QualitySpec>,
+    /// Pipeline-level data contract, shared by every node (`contract:` has no
+    /// matrix-row override in v1) — `cfg.pipeline.contract` verbatim.
+    #[cfg(feature = "contract")]
+    pub contract: Option<faucet_core::ContractSpec>,
     /// Compiled schema-drift policy spec (pipeline-level; same for every node).
     pub schema: Option<faucet_core::SchemaDriftSpec>,
     /// Delivery guarantee for this row. Resolved from the row's override or
@@ -421,6 +425,25 @@ pub fn expand(cfg: &PipelineConfig) -> CliResult<Vec<ExpandedNode>> {
             }
         }
 
+        // `contract:` is pipeline-level only in v1 (like `quality:`). Compile
+        // it once per node so a malformed contract (bad regex, duplicate
+        // fields, misplaced constraints) surfaces at expand time, and fail
+        // fast when `on_breach: quarantine` has no DLQ to route to.
+        #[cfg(feature = "contract")]
+        let contract = cfg.pipeline.contract.clone();
+        #[cfg(feature = "contract")]
+        if let Some(ref spec) = contract {
+            let compiled = faucet_core::CompiledContract::compile(spec)
+                .map_err(|e| CliError::Config(format!("contract (row `{row_id}`): {e}")))?;
+            if compiled.requires_dlq() && dlq.is_none() {
+                return Err(CliError::Config(format!(
+                    "row `{row_id}`: the contract uses `on_breach: quarantine` \
+                     but no DLQ is configured — add a `dlq:` block (or change \
+                     `on_breach` to `fail` or `warn`)"
+                )));
+            }
+        }
+
         // Exactly-once delivery gate: enforce source, sink, state, and DLQ
         // compatibility at config-load time so `faucet validate` catches
         // unsupported combinations before any run starts.
@@ -579,6 +602,8 @@ pub fn expand(cfg: &PipelineConfig) -> CliResult<Vec<ExpandedNode>> {
             delivery,
             #[cfg(feature = "quality")]
             quality,
+            #[cfg(feature = "contract")]
+            contract,
             schema: cfg.pipeline.schema.clone(),
             deferred_refs: deferred,
         });
@@ -1113,6 +1138,99 @@ pipeline:
         let cfg = parse_with_extension(yaml, "yaml").unwrap();
         let nodes = expand(&cfg).unwrap();
         assert!(nodes[0].quality.is_some());
+    }
+
+    #[cfg(feature = "contract")]
+    #[test]
+    fn expand_rejects_contract_quarantine_without_dlq() {
+        let yaml = r#"
+version: 1
+pipeline:
+  source: { type: rest, config: {} }
+  sink:   { type: jsonl, config: { path: ./o.jsonl } }
+  contract:
+    version: "1.0.0"
+    on_breach: quarantine
+    fields:
+      - { name: id, type: integer }
+"#;
+        let cfg = parse_with_extension(yaml, "yaml").unwrap();
+        let err = expand(&cfg).unwrap_err();
+        match err {
+            CliError::Config(msg) => {
+                assert!(msg.contains("on_breach: quarantine"), "{msg}");
+                assert!(msg.contains("dlq"), "{msg}");
+            }
+            other => panic!("expected Config error, got {other:?}"),
+        }
+    }
+
+    #[cfg(feature = "contract")]
+    #[test]
+    fn expand_accepts_contract_quarantine_with_dlq() {
+        let yaml = r#"
+version: 1
+pipeline:
+  source: { type: rest, config: {} }
+  sink:   { type: jsonl, config: { path: ./o.jsonl } }
+  dlq:
+    sink: { type: jsonl, config: { path: ./dlq.jsonl } }
+  contract:
+    version: "1.0.0"
+    on_breach: quarantine
+    fields:
+      - { name: id, type: integer }
+"#;
+        let cfg = parse_with_extension(yaml, "yaml").unwrap();
+        let nodes = expand(&cfg).unwrap();
+        assert_eq!(nodes.len(), 1);
+        let c = nodes[0]
+            .contract
+            .as_ref()
+            .expect("contract threaded onto node");
+        assert_eq!(c.version, "1.0.0");
+        assert_eq!(c.fields.len(), 1);
+    }
+
+    #[cfg(feature = "contract")]
+    #[test]
+    fn expand_accepts_contract_fail_without_dlq() {
+        // `on_breach: fail` (the default) does not route to a DLQ.
+        let yaml = r#"
+version: 1
+pipeline:
+  source: { type: rest, config: {} }
+  sink:   { type: jsonl, config: { path: ./o.jsonl } }
+  contract:
+    version: "1.0.0"
+    fields:
+      - { name: id, type: integer }
+"#;
+        let cfg = parse_with_extension(yaml, "yaml").unwrap();
+        let nodes = expand(&cfg).unwrap();
+        assert!(nodes[0].contract.is_some());
+    }
+
+    #[cfg(feature = "contract")]
+    #[test]
+    fn expand_rejects_malformed_contract() {
+        // A bad regex must surface at expand time (load-time), not mid-run.
+        let yaml = r#"
+version: 1
+pipeline:
+  source: { type: rest, config: {} }
+  sink:   { type: jsonl, config: { path: ./o.jsonl } }
+  contract:
+    version: "1.0.0"
+    fields:
+      - { name: email, type: string, pattern: "[invalid" }
+"#;
+        let cfg = parse_with_extension(yaml, "yaml").unwrap();
+        let err = expand(&cfg).unwrap_err();
+        match err {
+            CliError::Config(msg) => assert!(msg.contains("invalid pattern"), "{msg}"),
+            other => panic!("expected Config error, got {other:?}"),
+        }
     }
 
     #[test]

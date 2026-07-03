@@ -15,6 +15,11 @@ Quality checks require the `quality` Cargo feature (included in `full` and in
 `faucet-cli`'s default build). The `json_schema` check additionally requires
 `quality-jsonschema`.
 
+> Quality checks are *ad-hoc rules*. For a first-class, **versioned promise**
+> about the dataset's whole output shape — enforced at runtime and exportable
+> as JSON Schema / an OpenLineage facet — see
+> [Data contracts](./contracts.md).
+
 ## Full example
 
 The following config fetches users from a REST API, normalises keys to snake_case,

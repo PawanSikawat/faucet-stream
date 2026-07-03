@@ -317,6 +317,8 @@ pub fn build_pipeline_config(env: &HashMap<String, String>) -> CliResult<Pipelin
             dlq: None,
             #[cfg(feature = "quality")]
             quality: None,
+            #[cfg(feature = "contract")]
+            contract: None,
             schema: None,
         },
         matrix: Vec::new(),

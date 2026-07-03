@@ -68,6 +68,12 @@ pub enum FaucetError {
         message: String,
     },
 
+    /// A record breached the pipeline's data contract under an
+    /// `on_breach: fail` policy. `version` is the contract version the
+    /// record was validated against.
+    #[error("Contract v{version} violated: {message}")]
+    ContractViolation { version: String, message: String },
+
     /// A state-store operation failed (read/write/delete of a replication
     /// bookmark, checkpoint, or other persisted pipeline state).
     #[error("State error: {0}")]

@@ -15,7 +15,7 @@ The foundation crate for the [faucet-stream](https://github.com/PawanSikawat/fau
 - **Batch and streaming orchestration** — `Pipeline::run` (fetch-all) and `run_stream` (page-by-page, O(batch_size) memory) connect any source to any sink.
 - **Pluggable transforms** — `RecordTransform` (flatten, key/value casing, regex rename, cast, redact, …) plus stage-level `Filter` / `Explode` / `CdcUnwrap`, attachable to any source via `TransformingSource`.
 - **Durable bookmarks** — the `StateStore` trait with in-process `MemoryStateStore` and crash-safe `FileStateStore` built in; Redis / Postgres backends live in their own crates.
-- **Reliability primitives** — dead-letter queue routing, exactly-once delivery (`DeliveryMode`), key-based upsert/delete write modes, and per-page / per-record data-quality checks.
+- **Reliability primitives** — dead-letter queue routing, exactly-once delivery (`DeliveryMode`), key-based upsert/delete write modes, per-page / per-record data-quality checks, and versioned data contracts.
 - **Shared authentication** — the `AuthProvider` trait and `AuthSpec` config field give N connectors one token with single-flight refresh.
 - **Typed errors** — one `FaucetError` enum covers every failure path, with a `Custom` variant for third-party connector errors.
 - **Built-in observability** — pipelines emit `tracing` spans and `metrics` counters/histograms automatically; connectors only override `connector_name()` for a friendly label.
@@ -163,6 +163,7 @@ let result = Pipeline::new(&source, &sink)
     .with_state_store(state_store)   // durable bookmarks
     .with_dlq(dlq_config)            // dead-letter routing
     .with_quality(compiled_quality)  // per-page data-quality checks
+    .with_contract(compiled_contract) // versioned data contract (contract feature)
     .with_cancel(CancellationToken::new()) // flush-completing cooperative cancel
     .run()
     .await?;
@@ -231,6 +232,7 @@ let wrapped = TransformingSource::new(source, stages);
 | `Source(String)` | Source-specific errors |
 | `Sink(String)` | Sink-specific errors |
 | `QualityFailure { check, message }` | A quality check failed under `abort` |
+| `ContractViolation { version, message }` | A record breached the data contract under `on_breach: fail` |
 | `State(String)` | State-store read/write/delete failures |
 | `Custom(Box<dyn Error + Send + Sync>)` | Wrap any third-party connector error |
 
@@ -381,6 +383,49 @@ let result = Pipeline::new(&source, &sink)
     .await?;
 ```
 
+## Data contracts
+
+A `contract:` block (the `contract` Cargo feature) declares a **versioned
+promise** about the pipeline's output — required fields, types, nullability,
+enum sets, regex patterns, numeric/length bounds — enforced per page after the
+quality pass and before the sink write. The contract-level `on_breach` policy
+picks the enforcement: `fail` (default — abort on the first breach, writing
+nothing from the page), `quarantine` (route breaching records to the DLQ,
+write the rest), or `warn` (log + count, write everything). Compilation is
+fail-fast: a malformed contract (bad regex, duplicate fields, constraints on
+the wrong type) is a `Config` error at load time.
+
+```yaml
+contract:
+  version: "1.0.0"
+  on_breach: quarantine        # fail (default) | quarantine | warn
+  allow_extra_fields: true
+  fields:
+    - { name: order_id, type: string, min_length: 1 }
+    - { name: status, type: string, enum: [open, shipped, cancelled] }
+    - { name: amount, type: number, min: 0, required: false, nullable: true }
+```
+
+### Contracts — Rust API
+
+```rust
+use faucet_core::{CompiledContract, ContractSpec, Pipeline};
+use std::sync::Arc;
+
+let spec: ContractSpec = serde_json::from_value(/* ... */)?;
+let compiled = Arc::new(CompiledContract::compile(&spec)?);
+let result = Pipeline::new(&source, &sink)
+    .with_dlq(dlq_config)      // required when on_breach = quarantine
+    .with_contract(compiled)
+    .run()
+    .await?;
+```
+
+Machine-readable exports for downstream consumers are plain functions:
+`contract::to_json_schema(&spec)` (a standalone JSON Schema document) and
+`contract::to_openlineage_facet(&spec, producer)` (an OpenLineage
+`SchemaDatasetFacet`). The CLI surfaces them as `faucet contract --export`.
+
 ## Config loading & schema
 
 Load any `Deserialize`-able config from JSON files or environment variables:
@@ -447,6 +492,7 @@ let schema = serde_json::to_value(schema_for!(MyConfig))?;
 | `idempotency` | `DeliveryMode`, `format_token`, `parse_token`, `wrap_state`, `unwrap_state` |
 | `write_mode` | `WriteMode`, `WriteSpec`, `DeleteMarker`, `plan_writes`, `WritePlan` |
 | `quality` | Per-record / per-batch checks (`quality` / `quality-jsonschema` features) |
+| `contract` | Versioned data contracts — `ContractSpec`, `CompiledContract`, `apply_contract`, JSON-Schema / OpenLineage exports (the `contract` feature) |
 | `replication` | `ReplicationMethod`, `filter_incremental`, `max_replication_value` |
 | `retry` | `execute_with_retry` (exponential backoff + jitter) |
 | `schema` | `infer_schema` from record samples |
@@ -465,6 +511,7 @@ Defaults: `transform-flatten`, `transform-rename-keys`, `transform-keys-case`.
 | `transforms` | All built-in transforms |
 | `quality` | The 12 base per-record / per-batch quality checks |
 | `quality-jsonschema` | Adds the `json_schema` record check (pulls `jsonschema`) |
+| `contract` | Versioned data contracts (the `contract:` config block + enforcement pass) |
 | `compression` | `CompressionConfig` + gzip/zstd helpers |
 | `observability-install` | `install_observability` (Prometheus exporter + tracing subscriber) |
 

@@ -34,6 +34,7 @@ cargo install faucet-cli --no-default-features \
 | `faucet preview <config> --limit N` | Run only the source side and emit the first N records to stdout as JSONL. |
 | `faucet init [name] [--source X] [--sink Y]` | Scaffold a pipeline.yaml from each connector's JSON Schema. |
 | `faucet doctor <config> [--timeout-secs N] [--json]` | Probe every connector (auth/network/permissions/reachability) and print a checklist. Exits with the failed-probe count. |
+| `faucet contract <config> [--export contract\|json-schema\|openlineage]` | Validate the `pipeline.contract:` block and print a summary, or export the data contract as canonical JSON / JSON Schema / an OpenLineage schema facet. `faucet schema contract` prints the block's own JSON Schema. |
 | `faucet schedule <config> [--once]` | Run a pipeline on a cron schedule (long-running foreground process). Requires a `schedule:` block. |
 
 Pass `--log-level debug` (or set `FAUCET_LOG=debug`) for verbose tracing. Logs are written to stderr; pipeline records and command output go to stdout.
@@ -720,6 +721,32 @@ pipeline:
     max_failures_per_page: 100
     max_failures_total: 10000
 ```
+
+### `contract:` (optional)
+
+Sibling of `source`, `sink`, `transforms`, `state` under `pipeline:` — a
+versioned **data contract** for the pipeline's output (required fields, types,
+nullability, enum sets, patterns, numeric/length bounds), enforced per page
+after transforms and quality checks. `on_breach: fail` (default) aborts the
+run on the first breach; `quarantine` routes breaching records to the DLQ
+(requires a `dlq:` block, validated at load time); `warn` logs + counts but
+writes everything. Requires the `contract` feature (in the default build).
+
+```yaml
+pipeline:
+  contract:
+    version: "1.0.0"
+    on_breach: quarantine
+    fields:
+      - { name: order_id, type: string, min_length: 1 }
+      - { name: status, type: string, enum: [open, shipped, cancelled] }
+      - { name: amount, type: number, min: 0, required: false, nullable: true }
+```
+
+Inspect or publish it with `faucet contract <config> [--export
+contract|json-schema|openlineage]`; `faucet schema contract` prints the
+block's JSON Schema. Full model:
+[Data contracts](https://pawansikawat.github.io/faucet-stream/cookbook/contracts.html).
 
 ### Transforms
 

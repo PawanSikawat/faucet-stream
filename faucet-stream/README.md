@@ -113,6 +113,7 @@ The `memory` and `file` state stores are always available via `faucet-core`. The
 | `auth` | Shared single-flight auth providers (`faucet-auth`) — OAuth2 client-credentials / refresh, token-endpoint — reusable across connectors |
 | `quality` | Data-quality checks (the `quality:` config block) — per-record and per-batch |
 | `quality-jsonschema` | Adds the `json_schema` record check (implies `quality`) |
+| `contract` | Data contracts (the `contract:` config block) — a versioned output schema/constraint promise enforced per page (fail / quarantine / warn) |
 | `lineage` | OpenLineage emission (the `lineage:` block) — HTTP + file transports |
 | `lineage-kafka` | Adds the Kafka lineage transport (implies `lineage`) |
 | `transform-sql` | SQL-as-transform via embedded DuckDB — each page is a `batch` relation |

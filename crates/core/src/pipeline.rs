@@ -131,6 +131,8 @@ pub struct Pipeline<'a, So: Source + ?Sized, Si: Sink + ?Sized> {
     dlq: Option<DlqConfig>,
     #[cfg(feature = "quality")]
     quality: Option<Arc<crate::quality::CompiledQuality>>,
+    #[cfg(feature = "contract")]
+    contract: Option<Arc<crate::contract::CompiledContract>>,
     adaptive: Option<crate::adaptive::AdaptiveBatchConfig>,
     cancel: Option<tokio_util::sync::CancellationToken>,
     delivery: crate::idempotency::DeliveryMode,
@@ -151,6 +153,8 @@ impl<'a, So: Source + ?Sized, Si: Sink + ?Sized> Pipeline<'a, So, Si> {
             dlq: None,
             #[cfg(feature = "quality")]
             quality: None,
+            #[cfg(feature = "contract")]
+            contract: None,
             adaptive: None,
             cancel: None,
             delivery: crate::idempotency::DeliveryMode::AtLeastOnce,
@@ -210,6 +214,14 @@ impl<'a, So: Source + ?Sized, Si: Sink + ?Sized> Pipeline<'a, So, Si> {
     #[cfg(feature = "quality")]
     pub fn with_quality(mut self, quality: Arc<crate::quality::CompiledQuality>) -> Self {
         self.quality = Some(quality);
+        self
+    }
+
+    /// Attach a compiled data contract (issue #204). The pass runs after the
+    /// quality pass and before the schema-drift pass, per page.
+    #[cfg(feature = "contract")]
+    pub fn with_contract(mut self, contract: Arc<crate::contract::CompiledContract>) -> Self {
+        self.contract = Some(contract);
         self
     }
 
@@ -384,6 +396,10 @@ impl<'a, So: Source + ?Sized, Si: Sink + ?Sized> Pipeline<'a, So, Si> {
             if let Some(q) = self.quality.clone() {
                 opts = opts.with_quality(q);
             }
+            #[cfg(feature = "contract")]
+            if let Some(c) = self.contract.clone() {
+                opts = opts.with_contract(c);
+            }
             if let Some(ad) = self.adaptive.clone() {
                 opts = opts.with_adaptive(ad);
             }
@@ -470,6 +486,22 @@ where
             "quality: on_failure 'quarantine'/'quarantine_batch' requires a DLQ sink".into(),
         ));
     }
+
+    #[cfg(feature = "contract")]
+    let contract = options.contract.clone();
+    // Fail fast: contract quarantine requires a DLQ (mirrors the quality guard).
+    #[cfg(feature = "contract")]
+    if let Some(c) = contract.as_ref()
+        && c.requires_dlq()
+        && dlq.is_none()
+    {
+        return Err(FaucetError::Config(
+            "contract: on_breach 'quarantine' requires a DLQ sink".into(),
+        ));
+    }
+    // One-shot warn guard for contract `on_breach: warn` breaches.
+    #[cfg(feature = "contract")]
+    let mut warned_contract_breach = false;
 
     // ── Schema-drift policy + lazy destination-schema cache (#194) ───────────
     let schema_drift = options.schema_drift;
@@ -686,6 +718,55 @@ where
                     let (records, quality_envelopes): (Vec<Value>, Vec<Value>) =
                         (page.records, Vec::new());
 
+                    // ── Contract pass (after quality, before schema drift) ───
+                    // `fail` mirrors a quality `abort`: the breach error
+                    // propagates immediately and nothing from this page is
+                    // written — a contract must never commit breaching data
+                    // (unlike drift `fail`, which defers because its records
+                    // are individually fine).
+                    #[cfg(feature = "contract")]
+                    let (records, contract_envelopes): (Vec<Value>, Vec<Value>) =
+                        if let Some(c) = contract.as_ref() {
+                            let labels =
+                                crate::observability::Labels::new(&*pipeline_name, &*row, &*run_id);
+                            let outcome = crate::observability::instrumented_apply_contract(
+                                records, c, &labels,
+                            )?;
+                            if !outcome.warned.is_empty() && !warned_contract_breach {
+                                tracing::warn!(
+                                    version = %c.version,
+                                    breaches = outcome.warned.len(),
+                                    first = %outcome.warned[0].describe(),
+                                    "contract: breaching records written unchanged \
+                                     (on_breach=warn); this warning fires once per run"
+                                );
+                                warned_contract_breach = true;
+                            }
+                            let envelopes: Vec<Value> = outcome
+                                .quarantined
+                                .iter()
+                                .map(|vr| {
+                                    let err = FaucetError::ContractViolation {
+                                        version: c.version.clone(),
+                                        message: vr.violation.describe(),
+                                    };
+                                    // `record_index` is the position within the PAGE
+                                    // (the frozen envelope contract).
+                                    build_envelope(
+                                        &vr.record,
+                                        &err,
+                                        sink_name,
+                                        &pipeline_name,
+                                        &row,
+                                        vr.violation.page_index,
+                                    )
+                                })
+                                .collect();
+                            (outcome.survivors, envelopes)
+                        } else {
+                            (records, Vec::new())
+                        };
+
                     // ── Schema-drift pass (after quality, before sink) ───────
                     let mut drift_envelopes: Vec<Value> = Vec::new();
                     let (records, drift_abort): (Vec<Value>, Option<FaucetError>) =
@@ -740,10 +821,13 @@ where
                         } else {
                             (records, None)
                         };
-                    // Merge drift quarantine envelopes into the quality envelopes
-                    // so the existing DLQ path writes them together.
+                    // Merge contract + drift quarantine envelopes into the
+                    // quality envelopes so the existing DLQ path writes them
+                    // together.
                     let quality_envelopes = {
                         let mut q = quality_envelopes;
+                        #[cfg(feature = "contract")]
+                        q.extend(contract_envelopes);
                         q.append(&mut drift_envelopes);
                         q
                     };
@@ -3331,6 +3415,144 @@ mod tests {
         let opts = RunStreamOptions::new().with_quality(quality);
         let result = run_stream(futures::stream::iter(pages), &main, opts).await;
         assert!(matches!(result, Err(FaucetError::Config(_))));
+    }
+
+    #[cfg(feature = "contract")]
+    fn compiled_contract(on_breach: &str) -> Arc<crate::contract::CompiledContract> {
+        let spec: crate::contract::ContractSpec = serde_json::from_value(json!({
+            "version": "1.0.0",
+            "on_breach": on_breach,
+            "fields": [{ "name": "id", "type": "integer" }]
+        }))
+        .unwrap();
+        Arc::new(crate::contract::CompiledContract::compile(&spec).unwrap())
+    }
+
+    #[cfg(feature = "contract")]
+    #[tokio::test]
+    async fn contract_quarantines_to_dlq_and_writes_survivors() {
+        use crate::dlq::DlqConfig;
+        let main = Arc::new(MockSink::new());
+        let dlq_sink = Arc::new(MockSink::new());
+        let pages: Vec<Result<StreamPage, FaucetError>> = vec![Ok(StreamPage {
+            records: vec![json!({"id": 1}), json!({"id": "bad"}), json!({"id": 3})],
+            bookmark: None,
+        })];
+        let opts = RunStreamOptions::new()
+            .with_dlq(DlqConfig::new(dlq_sink.clone()))
+            .with_contract(compiled_contract("quarantine"));
+        let result = run_stream(futures::stream::iter(pages), main.as_ref(), opts)
+            .await
+            .unwrap();
+
+        assert_eq!(result.records_written, 2);
+        assert_eq!(main.written(), vec![json!({"id": 1}), json!({"id": 3})]);
+        let dlq = dlq_sink.written();
+        assert_eq!(dlq.len(), 1);
+        assert_eq!(dlq[0]["error"]["kind"], "ContractViolation");
+        assert_eq!(dlq[0]["payload"], json!({"id": "bad"}));
+        // record_index is the position within the page (frozen contract).
+        assert_eq!(dlq[0]["record_index"], 1);
+        assert_eq!(result.dlq.unwrap().records_dlq, 1);
+    }
+
+    #[cfg(feature = "contract")]
+    #[tokio::test]
+    async fn contract_fail_aborts_run_and_writes_nothing() {
+        let main = MockSink::new();
+        let pages: Vec<Result<StreamPage, FaucetError>> = vec![Ok(StreamPage {
+            records: vec![json!({"id": 1}), json!({"id": "bad"})],
+            bookmark: None,
+        })];
+        let opts = RunStreamOptions::new().with_contract(compiled_contract("fail"));
+        let result = run_stream(futures::stream::iter(pages), &main, opts).await;
+        match result {
+            Err(FaucetError::ContractViolation { version, message }) => {
+                assert_eq!(version, "1.0.0");
+                assert!(message.contains("id"), "message: {message}");
+            }
+            other => panic!("expected ContractViolation, got {other:?}"),
+        }
+        assert!(
+            main.written().is_empty(),
+            "a contract fail must not commit any of the page's records"
+        );
+    }
+
+    #[cfg(feature = "contract")]
+    #[tokio::test]
+    async fn contract_warn_writes_everything() {
+        let main = MockSink::new();
+        let pages: Vec<Result<StreamPage, FaucetError>> = vec![Ok(StreamPage {
+            records: vec![json!({"id": 1}), json!({"id": "bad"})],
+            bookmark: None,
+        })];
+        let opts = RunStreamOptions::new().with_contract(compiled_contract("warn"));
+        let result = run_stream(futures::stream::iter(pages), &main, opts)
+            .await
+            .unwrap();
+        assert_eq!(result.records_written, 2);
+        assert_eq!(main.written(), vec![json!({"id": 1}), json!({"id": "bad"})]);
+    }
+
+    #[cfg(feature = "contract")]
+    #[tokio::test]
+    async fn contract_quarantine_without_dlq_is_rejected() {
+        let main = MockSink::new();
+        let pages: Vec<Result<StreamPage, FaucetError>> = vec![Ok(StreamPage {
+            records: vec![json!({"id": 1})],
+            bookmark: None,
+        })];
+        // No .with_dlq(...) — must be rejected up front.
+        let opts = RunStreamOptions::new().with_contract(compiled_contract("quarantine"));
+        let result = run_stream(futures::stream::iter(pages), &main, opts).await;
+        assert!(matches!(result, Err(FaucetError::Config(_))));
+    }
+
+    #[cfg(all(feature = "contract", feature = "quality"))]
+    #[tokio::test]
+    async fn contract_runs_after_quality_and_shares_dlq() {
+        // Quality quarantines the null id; the contract then quarantines the
+        // string id from the quality survivors. Both envelopes land in the
+        // same DLQ write, each with its own error kind.
+        use crate::dlq::DlqConfig;
+        use crate::quality::{CompiledQuality, OnFailure, QualitySpec, RecordCheck};
+        let main = Arc::new(MockSink::new());
+        let dlq_sink = Arc::new(MockSink::new());
+        let quality = Arc::new(
+            CompiledQuality::compile(&QualitySpec {
+                record: vec![RecordCheck::NotNull {
+                    field: "id".into(),
+                    treat_missing_as_null: true,
+                    on_failure: OnFailure::Quarantine,
+                }],
+                batch: vec![],
+            })
+            .unwrap(),
+        );
+        let pages: Vec<Result<StreamPage, FaucetError>> = vec![Ok(StreamPage {
+            records: vec![json!({"id": null}), json!({"id": "bad"}), json!({"id": 3})],
+            bookmark: None,
+        })];
+        let opts = RunStreamOptions::new()
+            .with_dlq(DlqConfig::new(dlq_sink.clone()))
+            .with_quality(quality)
+            .with_contract(compiled_contract("quarantine"));
+        let result = run_stream(futures::stream::iter(pages), main.as_ref(), opts)
+            .await
+            .unwrap();
+
+        assert_eq!(result.records_written, 1);
+        assert_eq!(main.written(), vec![json!({"id": 3})]);
+        let dlq = dlq_sink.written();
+        assert_eq!(dlq.len(), 2);
+        let kinds: Vec<&str> = dlq
+            .iter()
+            .map(|e| e["error"]["kind"].as_str().unwrap())
+            .collect();
+        assert!(kinds.contains(&"QualityFailure"), "kinds: {kinds:?}");
+        assert!(kinds.contains(&"ContractViolation"), "kinds: {kinds:?}");
+        assert_eq!(result.dlq.unwrap().records_dlq, 2);
     }
 
     /// Sink whose write_batch_partial fails every Nth record; drives the

@@ -22,7 +22,7 @@ path = "src/main.rs"
 # `serve` (HTTP control plane; links a web-server dependency tree and opens a
 # network listener). Opt in with `--features schedule` / `--features serve`, or
 # take everything with `--features full`.
-default = ["observability", "source", "sink", "state", "transforms", "compression", "quality"]
+default = ["observability", "source", "sink", "state", "transforms", "compression", "quality", "contract"]
 
 # Everything the default build ships, plus the long-running runtime modes:
 # `schedule` (cron scheduler) and `serve` (HTTP control plane).
@@ -33,6 +33,11 @@ full = ["default", "otel", "schedule", "serve", "serve-ui", "serve-history-postg
 # `faucet-core`.
 quality = ["faucet-core/quality"]
 quality-jsonschema = ["quality", "faucet-core/quality-jsonschema"]
+
+# Data contracts (`contract:` config block + `faucet contract` verb, #204):
+# a versioned output schema/constraint promise enforced per page. Forwarded
+# to `faucet-core`.
+contract = ["faucet-core/contract"]
 
 source = [
     "source-rest",

@@ -106,6 +106,7 @@ faucet schema sink bigquery
 faucet schema transform keys_case
 faucet schema dlq
 faucet schema execution
+faucet schema contract
 faucet schema secrets
 faucet schema triggers
 ```
@@ -167,6 +168,22 @@ probing (same semantics as `run` and `validate`).
 
 See the [Troubleshooting](../cookbook/troubleshooting.md) cookbook page for
 reading the output and common failures.
+
+## `contract`
+
+```bash
+faucet contract pipeline.yaml                       # validate + human summary
+faucet contract pipeline.yaml --export contract     # canonical contract JSON
+faucet contract pipeline.yaml --export json-schema  # standalone JSON Schema
+faucet contract pipeline.yaml --export openlineage  # OpenLineage schema facet
+```
+
+Validates the config's `pipeline.contract:` block (a malformed contract exits
+non-zero with the compile error) and prints a summary of the promised fields,
+constraints, and breach policy — or, with `--export`, a machine-readable
+artifact for downstream consumers. Offline-safe: secrets are never fetched.
+Requires the `contract` Cargo feature (in the default build). See the
+[Data contracts](../cookbook/contracts.md) cookbook page.
 
 ## `replicate`
 

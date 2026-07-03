@@ -17,6 +17,10 @@ pub struct RunStreamOptions {
     pub dlq: Option<DlqConfig>,
     #[cfg(feature = "quality")]
     pub quality: Option<std::sync::Arc<crate::quality::CompiledQuality>>,
+    /// Compiled data contract (issue #204). The pass runs per page after the
+    /// quality pass and before the schema-drift pass.
+    #[cfg(feature = "contract")]
+    pub contract: Option<std::sync::Arc<crate::contract::CompiledContract>>,
     /// Adaptive batch-size controller config; `None` (or `enabled = false`)
     /// leaves the per-page write path unchanged.
     pub adaptive: Option<crate::adaptive::AdaptiveBatchConfig>,
@@ -87,6 +91,17 @@ impl RunStreamOptions {
         quality: std::sync::Arc<crate::quality::CompiledQuality>,
     ) -> Self {
         self.quality = Some(quality);
+        self
+    }
+
+    /// Attach a compiled data contract. The pass runs per page after the
+    /// quality pass and before the schema-drift pass.
+    #[cfg(feature = "contract")]
+    pub fn with_contract(
+        mut self,
+        contract: std::sync::Arc<crate::contract::CompiledContract>,
+    ) -> Self {
+        self.contract = Some(contract);
         self
     }
 
