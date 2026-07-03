@@ -29,6 +29,7 @@ async fn main() {
         Command::Preview(args) => commands::preview::run(args).await,
         Command::Init(args) => commands::init::run(args).await,
         Command::Doctor(args) => commands::doctor::run(args).await,
+        Command::Test(args) => commands::test::run(args).await,
         #[cfg(feature = "contract")]
         Command::Contract(args) => commands::contract::run(args).await,
         #[cfg(feature = "schedule")]
@@ -41,6 +42,11 @@ async fn main() {
         // `doctor` already printed its checklist; surface the failure count as
         // the exit code (clamped to 255) rather than the generic exit-1 path.
         if let CliError::DoctorFailed { failed } = &err {
+            std::process::exit((*failed).min(255) as i32);
+        }
+        // Same shape for `test`: the report is already printed; the exit code
+        // is the failed-case count (clamped to 255).
+        if let CliError::TestsFailed { failed } = &err {
             std::process::exit((*failed).min(255) as i32);
         }
         commands::report(&err);

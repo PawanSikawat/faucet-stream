@@ -353,6 +353,12 @@ pub enum CliError {
     #[error("{failed} preflight probe(s) failed")]
     DoctorFailed { failed: usize },
 
+    /// One or more `faucet test` cases failed. The report is printed by the
+    /// command; `main` maps this to an exit code equal to the failed-case
+    /// count (clamped to 255).
+    #[error("{failed} test case(s) failed")]
+    TestsFailed { failed: usize },
+
     /// A `faucet serve` startup or runtime failure (bind, auth gate, etc.).
     #[error("serve error: {0}")]
     Serve(String),

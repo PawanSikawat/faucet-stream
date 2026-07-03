@@ -1,0 +1,30 @@
+# A small pipeline used by `pipeline_tests.yaml` to demonstrate `faucet test`.
+# The csv source and jsonl sink are never touched by tests — only the
+# transforms, quality checks, and contract run against fixture records.
+version: 1
+name: orders
+pipeline:
+  source:
+    type: csv
+    config:
+      path: ./orders.csv
+  sink:
+    type: jsonl
+    config:
+      path: ./orders.jsonl
+  transforms:
+    - type: keys_case
+      config: { mode: snake }
+  quality:
+    record:
+      - { type: not_null, field: order_id, on_failure: quarantine }
+  contract:
+    version: "1.0.0"
+    fields:
+      - { name: order_id, type: integer, required: true }
+      - { name: amount, type: number, required: true }
+  dlq:
+    sink:
+      type: jsonl
+      config:
+        path: ./orders_dlq.jsonl

@@ -27,6 +27,7 @@
 - [Resilience (retry / circuit breaker / poison-pill)](./cookbook/resilience.md)
 - [Data-quality checks](./cookbook/quality.md)
 - [Data contracts](./cookbook/contracts.md)
+- [Testing pipelines](./cookbook/testing.md)
 - [Compression](./cookbook/compression.md)
 - [Record transforms](./cookbook/transforms.md)
 - [SQL transform](./cookbook/sql-transform.md)

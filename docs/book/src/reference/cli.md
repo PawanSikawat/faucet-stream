@@ -12,6 +12,7 @@ The `faucet` binary exposes these commands. Pass `--log-level <level>` (or set
 | `faucet list` | List every compiled-in source, sink, and transform with a one-line description. |
 | `faucet init [name]` | Scaffold a commented config skeleton from connector schemas. |
 | `faucet doctor [config]` | Probe every connector (auth/network/permissions) and print a checklist. |
+| `faucet test <specs…>` | Run fixture-based offline pipeline tests from one or more spec files. |
 | `faucet replicate [config]` | Bulk-snapshot a table, then hand off to CDC for a gap-free mirror. |
 | `faucet schedule [config]` | Run a pipeline on a cron schedule (long-running foreground process). |
 | `faucet serve` | Run a long-running HTTP control plane: submit / poll / cancel pipeline runs over REST. |
@@ -168,6 +169,37 @@ probing (same semantics as `run` and `validate`).
 
 See the [Troubleshooting](../cookbook/troubleshooting.md) cookbook page for
 reading the output and common failures.
+
+## `test`
+
+```bash
+faucet test tests/*.yaml                    # run every case; exit code = # of failed cases
+faucet test tests/orders.yaml --filter null # only cases whose name contains "null"
+faucet test tests/*.yaml --json             # machine-readable { total, passed, failed, tests }
+faucet test tests/*.yaml --clock 2026-03-01 # default ${now.*} clock for cases without clock:
+```
+
+Runs fixture-based, **fully-offline** pipeline tests. Each case in a spec file
+feeds sample records through the real transform → quality → contract path with
+an in-memory source, sink, and DLQ — the configured source and sink are never
+built or contacted — and asserts the output records, DLQ routing, counts, or an
+expected failure. The **exit code equals the number of failed cases** (clamped
+to 255), so CI gates on it directly.
+
+Flags:
+
+| Flag | Purpose |
+|------|---------|
+| `--filter <substring>` | Run only cases whose name contains the substring. |
+| `--json` | Emit the JSON report instead of the human checklist. |
+| `--clock <value>` | Default `${now.*}` clock for cases without `clock:` (RFC 3339 or `YYYY-MM-DD`). |
+| `--profile <name>` | Profile overlay applied to referenced configs (same semantics as `run`). |
+| `--resolve-secrets` | Resolve secrets-manager directives in referenced configs. Default: offline, directives stay unresolved. |
+| `--env-file <path>` / `--no-env-file` | Same `.env` handling as `run` / `validate`. |
+
+`faucet schema test` prints the spec file's JSON Schema. See the
+[Testing pipelines](../cookbook/testing.md) cookbook page for the spec grammar,
+matching semantics, and a CI recipe.
 
 ## `contract`
 

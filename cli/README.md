@@ -34,6 +34,7 @@ cargo install faucet-cli --no-default-features \
 | `faucet preview <config> --limit N` | Run only the source side and emit the first N records to stdout as JSONL. |
 | `faucet init [name] [--source X] [--sink Y]` | Scaffold a pipeline.yaml from each connector's JSON Schema. |
 | `faucet doctor <config> [--timeout-secs N] [--json]` | Probe every connector (auth/network/permissions/reachability) and print a checklist. Exits with the failed-probe count. |
+| `faucet test <specs…> [--filter S] [--json] [--clock C]` | Run fixture-based **offline** pipeline tests: stream sample records through a config's transforms/quality/contract with in-memory source/sink/DLQ and assert the output. Exits with the failed-case count. `faucet schema test` prints the spec-file JSON Schema. |
 | `faucet contract <config> [--export contract\|json-schema\|openlineage]` | Validate the `pipeline.contract:` block and print a summary, or export the data contract as canonical JSON / JSON Schema / an OpenLineage schema facet. `faucet schema contract` prints the block's own JSON Schema. |
 | `faucet schedule <config> [--once]` | Run a pipeline on a cron schedule (long-running foreground process). Requires a `schedule:` block. |
 
@@ -80,6 +81,53 @@ Flags:
 **Exit code** = the number of failed probes, clamped to 255 (so `0` means all probes passed). **Child invocations** (parent/child matrix rows) are listed but not probed — their configs depend on parent records that only exist at run time. Probe `reason`/`hint` text is scrubbed for resolved secrets before printing, but third-party connectors should never place credentials in a probe message.
 
 **Probe contract for connector authors:** `Source::check` / `Sink::check` / `StateStore::check` (in `faucet-core`) default to a generic probe (source) or "not implemented" skip (sink / state). Override them with a probe that is **idempotent and side-effect-free** and never echoes credentials. Return probe-level failures as `ProbeStatus::Fail` inside an `Ok(CheckReport)`; reserve `Err` for "couldn't run any probe".
+
+### `faucet test`
+
+`faucet test <specs…>` runs fixture-based, **fully-offline** pipeline tests. A spec file declares sample input records, the pipeline logic under test (a config file's transforms/quality/contract — or the same declared inline), and the expected outcome; the runner streams the fixtures through the real per-page pipeline path with an in-memory source, sink, and DLQ. No configured source or sink is ever built or contacted, so pipeline logic is assertable in CI with nothing but the `faucet` binary.
+
+```bash
+faucet test tests/*.yaml                       # run every case in every spec
+faucet test tests/orders.yaml --filter null    # only cases whose name contains "null"
+faucet test tests/*.yaml --json                # machine-readable report
+faucet test tests/*.yaml --clock 2026-03-01    # default ${now.*} clock for cases without clock:
+```
+
+Spec grammar (see `faucet schema test` for the full JSON Schema):
+
+```yaml
+version: 1
+tests:
+  - name: null order ids quarantined   # unique per spec file
+    config: ../pipeline.yaml           # config under test (relative to the spec file)…
+    # pipeline: { transforms: […], quality: …, contract: … }   # …or inline logic instead
+    # row: shaped                      # matrix row id when the config expands to several
+    # page_size: 100                   # chunk fixtures into pages (0 = one page, default)
+    # clock: 2026-02-01T00:00:00Z      # pin ${now.*} for deterministic inline transforms
+    input:                             # inline records, or a .jsonl/.json/.yaml file path
+      - { OrderId: 1, Amount: 9.5 }
+      - { OrderId: null, Amount: 3.0 }
+    expect:                            # every set field is asserted; at least one required
+      records: [ { order_id: 1, amount: 9.5 } ]   # exact sink output, in order
+      dlq: [ { order_id: null, amount: 3.0 } ]    # quarantined payloads (envelope metadata ignored)
+      # records_written: 1 / dlq_count: 1         # count-only alternatives
+      # error: "Contract v1.0.0 violated"         # the run must FAIL with this substring
+      # unordered: true                           # compare records/dlq as multisets
+      # match: subset                             # expected records name only the fields they assert
+```
+
+Failures print a structured path diff (`records[0].amount: expected 9.5, got 3.0`); the **exit code** is the failed-case count clamped to 255. The `schema:` (drift) block is inert offline; referenced configs load without contacting secrets managers (pass `--resolve-secrets` to opt in). A runnable example lives in [`examples/tests/`](examples/tests/); the [testing cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/testing.html) has the full walkthrough and CI recipe.
+
+Flags:
+
+| Flag | Purpose |
+|------|---------|
+| `--filter <substring>` | Run only cases whose name contains the substring. |
+| `--json` | Emit a `{ total, passed, failed, tests }` JSON report. |
+| `--clock <value>` | Default `${now.*}` clock for cases without their own `clock:` (RFC 3339 or `YYYY-MM-DD`). |
+| `--profile <name>` | Profile overlay applied to referenced configs (as in `run`). |
+| `--resolve-secrets` | Resolve `${vault:…}`-style directives in referenced configs (network). Default: offline. |
+| `--env-file <path>` / `--no-env-file` | Same `.env` handling as `run` / `validate`. |
 
 ### `faucet schedule`
 
