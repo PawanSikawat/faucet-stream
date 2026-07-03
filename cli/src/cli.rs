@@ -37,6 +37,9 @@ pub enum Command {
     /// Probe every connector in a config (auth / network / permissions) and
     /// print a green/red checklist. Exits non-zero if any probe fails.
     Doctor(DoctorArgs),
+    /// Run fixture-based offline pipeline tests from one or more spec files.
+    /// No real source or sink is touched. Exits non-zero if any case fails.
+    Test(TestArgs),
     /// Validate a config's `contract:` block and print a summary, or export
     /// it in a machine-readable format (`--export`).
     #[cfg(feature = "contract")]
@@ -47,6 +50,43 @@ pub enum Command {
     /// Run a long-running HTTP control plane (submit / poll / cancel pipeline runs).
     #[cfg(feature = "serve")]
     Serve(ServeArgs),
+}
+
+/// `faucet test` arguments.
+#[derive(Debug, Parser)]
+pub struct TestArgs {
+    /// One or more test-spec files (`.yaml`, `.yml`, or `.json`), e.g.
+    /// `faucet test tests/*.yaml`.
+    #[arg(required = true)]
+    pub specs: Vec<PathBuf>,
+    /// Run only cases whose name contains this substring.
+    #[arg(long)]
+    pub filter: Option<String>,
+    /// Emit a machine-readable JSON report instead of the human checklist.
+    #[arg(long)]
+    pub json: bool,
+    /// Default `${now.*}` clock for cases without their own `clock:` field
+    /// (RFC3339 like `2026-01-31T00:00:00Z`, or a date `2026-01-31`).
+    /// Defaults to process start (UTC).
+    #[arg(long)]
+    pub clock: Option<String>,
+    /// Path to a `.env` file to load for `${env:VAR}` interpolation in
+    /// referenced pipeline configs. Defaults to `.env` in cwd if present.
+    #[arg(long, conflicts_with = "no_env_file")]
+    pub env_file: Option<PathBuf>,
+    /// Skip auto-loading `.env` from cwd.
+    #[arg(long)]
+    pub no_env_file: bool,
+    /// Select a named overlay from each referenced config's `profiles:` block.
+    /// Overrides the `FAUCET_PROFILE` env var.
+    #[arg(long, env = "FAUCET_PROFILE")]
+    pub profile: Option<String>,
+    /// Resolve `${vault:…}` / `${aws-sm:…}` / … secret directives in
+    /// referenced configs (requires network + credentials). By default tests
+    /// load configs offline and leave secret directives unresolved — safe
+    /// because the real source/sink configs holding them are never used.
+    #[arg(long)]
+    pub resolve_secrets: bool,
 }
 
 /// `faucet doctor` arguments.
@@ -350,6 +390,8 @@ pub enum SchemaTarget {
     /// JSON Schema for the `contract:` block.
     #[cfg(feature = "contract")]
     Contract,
+    /// JSON Schema for the `faucet test` spec file.
+    Test,
     /// Grammar reference for secrets-manager interpolation directives.
     Secrets,
     /// JSON Schema for the `schedule:` block.

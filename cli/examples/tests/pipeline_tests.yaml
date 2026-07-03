@@ -1,0 +1,69 @@
+# Fixture-based offline tests for pipeline.yaml — run with:
+#
+#   faucet test cli/examples/tests/pipeline_tests.yaml
+#
+# No source or sink is touched: fixture records stream through the real
+# transform → quality → contract path with an in-memory sink + DLQ.
+version: 1
+tests:
+  # Happy path: keys are snake_cased and clean rows pass the contract.
+  - name: clean orders pass through
+    config: pipeline.yaml
+    input:
+      - { OrderId: 1, Amount: 9.5 }
+      - { OrderId: 2, Amount: 12.0 }
+    expect:
+      records:
+        - { order_id: 1, amount: 9.5 }
+        - { order_id: 2, amount: 12.0 }
+
+  # Quality: a null order_id is quarantined to the DLQ; the rest still land.
+  - name: null order ids quarantined
+    config: pipeline.yaml
+    input:
+      - { OrderId: 1, Amount: 9.5 }
+      - { OrderId: null, Amount: 3.0 }
+    expect:
+      records: [ { order_id: 1, amount: 9.5 } ]
+      dlq: [ { order_id: null, amount: 3.0 } ]
+      dlq_count: 1
+
+  # Contract: a string amount breaches `type: number` and (on_breach: fail,
+  # the default) aborts the run — assertable via `expect.error`.
+  - name: string amount breaches the contract
+    config: pipeline.yaml
+    input:
+      - { OrderId: 1, Amount: not-a-number }
+    expect:
+      error: "Contract v1.0.0 violated"
+      records_written: 0
+
+  # Fixture records can live in a file (.jsonl / .json / .yaml) next to the
+  # spec. `match: subset` asserts only the named fields; `unordered` compares
+  # as a multiset.
+  - name: fixture file input
+    config: pipeline.yaml
+    input: fixtures/orders.jsonl
+    expect:
+      match: subset
+      unordered: true
+      records:
+        - { order_id: 43 }
+        - { order_id: 42 }
+
+  # Inline pipelines skip the config file entirely — handy for testing a
+  # transform chain in isolation. `${now.*}` in inline transforms resolves
+  # against the case `clock:` (or `--clock`), keeping the case deterministic.
+  - name: inline transform chain with a pinned clock
+    pipeline:
+      transforms:
+        - type: flatten
+          config: { separator: "_" }
+        - type: set
+          config: { values: { day: "${now.date}" } }
+    clock: 2026-02-01T00:00:00Z
+    input:
+      - { user: { name: Ada } }
+    expect:
+      records:
+        - { user_name: Ada, day: "2026-02-01" }

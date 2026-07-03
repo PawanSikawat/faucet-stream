@@ -9,7 +9,10 @@ use crate::expand::expand;
 
 /// Parse the optional `--clock` override (RFC3339 or `YYYY-MM-DD`), or default
 /// to process start. Returned as a UTC fixed-offset clock for `${now.*}`.
-fn resolve_run_clock(flag: Option<&str>) -> CliResult<chrono::DateTime<chrono::FixedOffset>> {
+/// Shared with `faucet test` (the `--clock` flag and per-case `clock:` field).
+pub(crate) fn resolve_run_clock(
+    flag: Option<&str>,
+) -> CliResult<chrono::DateTime<chrono::FixedOffset>> {
     use chrono::{DateTime, NaiveDate, TimeZone, Utc};
     match flag {
         None => Ok(Utc::now().fixed_offset()),

@@ -1137,7 +1137,12 @@ pub async fn build_dlq_config(spec: &crate::config::DlqSpec) -> CliResult<DlqCon
 
 /// In-place `${now.*}` resolution against the run clock. Walks every string
 /// leaf and rewrites `${now.<token>}`; all other `${...}` tokens are untouched.
-fn resolve_now_inplace(value: &mut Value, clock: DateTime<FixedOffset>) -> CliResult<()> {
+/// Shared with `faucet test`, which applies the same pre-pass to transform
+/// configs under the case clock.
+pub(crate) fn resolve_now_inplace(
+    value: &mut Value,
+    clock: DateTime<FixedOffset>,
+) -> CliResult<()> {
     match value {
         Value::String(s) => {
             *s = crate::interpolate::resolve_now(s, clock)?;

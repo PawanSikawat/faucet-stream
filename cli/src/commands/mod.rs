@@ -14,6 +14,7 @@ pub mod schedule;
 pub mod schema;
 #[cfg(feature = "serve")]
 pub mod serve;
+pub mod test;
 pub mod validate;
 
 use crate::error::CliError;

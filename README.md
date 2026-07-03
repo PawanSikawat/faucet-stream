@@ -84,6 +84,7 @@ cargo install faucet-cli
 faucet init my_pipeline --source postgres --sink bigquery   # scaffold pipeline.yaml from schemas
 faucet validate pipeline.yaml                               # parse + resolve secrets, no run
 faucet doctor pipeline.yaml                                 # preflight: probe auth/network/permissions
+faucet test tests/*.yaml                                    # offline fixture tests for pipeline logic
 faucet run pipeline.yaml                                    # one-shot run to completion
 faucet schedule pipeline.yaml                               # run on a cron schedule (add a schedule: block)
 faucet serve --no-auth                                      # HTTP control plane: submit/poll/cancel runs over REST
@@ -259,7 +260,7 @@ for help picking between overlapping connectors (Postgres query vs CDC, S3 vs Pa
 | [`faucet-lineage`](crates/lineage) | OpenLineage event emission — HTTP/file/Kafka transports, schema facets, column-lineage analysis |
 | [`faucet-transform-sql`](crates/transform-sql) | Embedded DuckDB SQL transform — run DuckDB SQL over each page (`batch` relation) |
 | [`faucet-stream`](faucet-stream) | Umbrella crate — feature-gated re-exports of all connectors and state backends |
-| [`faucet-cli`](cli) | `faucet` binary — YAML/JSON config-driven pipeline runner (`run`, `validate`, `schema`, `list`, `preview`, `init`, `doctor`, `schedule`, `serve`) |
+| [`faucet-cli`](cli) | `faucet` binary — YAML/JSON config-driven pipeline runner (`run`, `validate`, `schema`, `list`, `preview`, `init`, `doctor`, `test`, `schedule`, `serve`) |
 
 </details>
 

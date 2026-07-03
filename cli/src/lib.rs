@@ -27,6 +27,7 @@ pub mod interpolate;
 pub mod lineage_glue;
 pub mod merge;
 pub mod obs;
+pub mod pipeline_test;
 pub mod registry;
 pub mod replication;
 #[cfg(feature = "schedule")]
