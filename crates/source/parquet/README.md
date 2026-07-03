@@ -192,6 +192,20 @@ No optional features of its own; enable it in the CLI/umbrella via the `source-p
 
 - [Connector reference](https://pawansikawat.github.io/faucet-stream/reference/connectors.html) · [faucet-sink-parquet](https://crates.io/crates/faucet-sink-parquet) · [faucet-source-s3](https://crates.io/crates/faucet-source-s3)
 
+## Sharded execution (cluster Mode B)
+
+Under [`faucet serve --cluster`](https://pawansikawat.github.io/faucet-stream/cookbook/cluster.html),
+a top-level `shard: { count: N }` block splits this source across cluster
+workers **automatically — no connector config needed**. Each worker reads the
+files whose path hashes to its shard index (stable FNV-1a modulo `count`),
+so the partition is disjoint and complete: every file is read by exactly one
+worker, and the partition stays stable as new files appear. Outside the
+cluster coordinator a run reads every file, unchanged.
+
+> Cross-file schema validation still covers the **full** resolved file set on
+> every worker, so a schema mismatch fails the run even when the mismatching
+> files hash into different shards.
+
 ## License
 
 Licensed under either of [Apache License, Version 2.0](https://www.apache.org/licenses/LICENSE-2.0) or [MIT license](https://opensource.org/licenses/MIT) at your option.

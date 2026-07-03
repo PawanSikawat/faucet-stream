@@ -2,17 +2,38 @@
 
 use crate::config::SqliteSourceConfig;
 use async_trait::async_trait;
+use faucet_core::shard::{
+    PkShardBounds, ShardSpec, parse_pk_shard, pk_bounds_query, pk_shards_from_bounds,
+};
 use faucet_core::{FaucetError, Stream, StreamPage};
 use futures::TryStreamExt;
 use serde_json::Value;
 use sqlx::sqlite::SqlitePoolOptions;
 use sqlx::{Column, Row, SqlitePool};
 use std::pin::Pin;
+use std::sync::Mutex;
 
 /// A source that executes a SQL query against SQLite and returns rows as JSON.
 pub struct SqliteSource {
     config: SqliteSourceConfig,
     pool: SqlitePool,
+    /// Shard applied by the cluster coordinator (Mode B), if any. `None` (or the
+    /// whole-dataset shard) means the full query is streamed. Stored behind a
+    /// `Mutex` so `apply_shard(&self, …)` can record it before streaming.
+    applied_shard: Mutex<Option<PkShardBounds>>,
+}
+
+/// Quote a SQLite identifier with backticks.
+///
+/// Deliberately NOT ANSI double quotes: SQLite's double-quoted-string
+/// misfeature silently reinterprets a double-quoted identifier that does not
+/// resolve to a column as a **string literal**, so a typo'd shard key would
+/// make `MIN("typo")` return the literal string (→ bounds of 0) instead of
+/// erroring. Backtick-quoted identifiers are always identifiers — an unknown
+/// column surfaces as a proper "no such column" error. Embedded backticks are
+/// doubled, preventing identifier injection.
+fn quote_ident_sqlite(name: &str) -> String {
+    format!("`{}`", name.replace('`', "``"))
 }
 
 impl SqliteSource {
@@ -26,7 +47,19 @@ impl SqliteSource {
             .await
             .map_err(|e| FaucetError::Config(format!("SQLite connection failed: {e}")))?;
 
-        Ok(Self { config, pool })
+        Ok(Self {
+            config,
+            pool,
+            applied_shard: Mutex::new(None),
+        })
+    }
+
+    /// Apply the currently-set shard (if any) to a resolved query string.
+    fn shard_wrap(&self, query: String) -> String {
+        match &*self.applied_shard.lock().expect("shard mutex poisoned") {
+            Some(bounds) => bounds.wrap(&query, quote_ident_sqlite),
+            None => query,
+        }
     }
 }
 
@@ -164,6 +197,7 @@ impl faucet_core::Source for SqliteSource {
         context: &std::collections::HashMap<String, serde_json::Value>,
     ) -> Result<Vec<Value>, FaucetError> {
         let (query_str, bind_values) = resolve_query(&self.config, context);
+        let query_str = self.shard_wrap(query_str);
         let query = bind_params(sqlx::query(&query_str), &bind_values);
 
         let rows = query
@@ -203,6 +237,7 @@ impl faucet_core::Source for SqliteSource {
 
         Box::pin(async_stream::try_stream! {
             let (query_str, bind_values) = resolve_query(&self.config, context);
+            let query_str = self.shard_wrap(query_str);
             let query = bind_params(sqlx::query(&query_str), &bind_values);
 
             let mut rows = query.fetch(&self.pool);
@@ -249,6 +284,53 @@ impl faucet_core::Source for SqliteSource {
             .trim_start_matches("sqlite://")
             .trim_start_matches("sqlite:");
         format!("sqlite://{}?query={}", path, self.config.query)
+    }
+
+    /// Shardable when a [`ShardConfig`](crate::config::ShardConfig) is set.
+    fn is_shardable(&self) -> bool {
+        self.config.shard.is_some()
+    }
+
+    /// Enumerate contiguous primary-key range shards by computing the `key`
+    /// column's `MIN`/`MAX` over the (unsharded) base query and splitting that
+    /// range into ~`target` slices. Returns a single whole-dataset shard when no
+    /// `shard` config is set or the result set is empty.
+    async fn enumerate_shards(&self, target: usize) -> Result<Vec<ShardSpec>, FaucetError> {
+        let Some(shard_cfg) = &self.config.shard else {
+            return Ok(vec![ShardSpec::whole()]);
+        };
+
+        let bounds_sql = pk_bounds_query(
+            &self.config.query,
+            &quote_ident_sqlite(&shard_cfg.key),
+            "INTEGER",
+        );
+        let row = sqlx::query(&bounds_sql)
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|e| {
+                FaucetError::Source(format!(
+                    "sqlite: failed to compute shard bounds for key {:?} \
+                     (it must be an integer-typed column): {e}",
+                    shard_cfg.key
+                ))
+            })?;
+
+        let lo: Option<i64> = row
+            .try_get("lo")
+            .map_err(|e| FaucetError::Source(format!("sqlite: shard bounds decode failed: {e}")))?;
+        let hi: Option<i64> = row
+            .try_get("hi")
+            .map_err(|e| FaucetError::Source(format!("sqlite: shard bounds decode failed: {e}")))?;
+        Ok(pk_shards_from_bounds(&shard_cfg.key, lo, hi, target))
+    }
+
+    /// Narrow this source to a single PK-range shard. The whole-dataset shard
+    /// clears any applied range (streams the full query).
+    async fn apply_shard(&self, shard: &ShardSpec) -> Result<(), FaucetError> {
+        *self.applied_shard.lock().expect("shard mutex poisoned") =
+            parse_pk_shard(shard, "sqlite")?;
+        Ok(())
     }
 }
 
@@ -492,5 +574,127 @@ mod tests {
         let uri = source.dataset_uri();
         assert!(uri.contains("SELECT 42 AS n"), "got: {uri}");
         assert!(uri.starts_with("sqlite://"), "got: {uri}");
+    }
+
+    // ── PK-range sharding (Mode B, #262) ─────────────────────────────────────
+
+    /// Build a single-connection in-memory source so every query sees the same
+    /// database (each pooled connection normally gets its own `:memory:` DB).
+    async fn sharded_memory_source(query: &str, key: &str) -> SqliteSource {
+        let mut config = SqliteSourceConfig::new("sqlite::memory:", query).with_max_connections(1);
+        config.shard = Some(crate::config::ShardConfig { key: key.into() });
+        SqliteSource::new(config).await.unwrap()
+    }
+
+    /// The core Mode B correctness guarantee, end-to-end on a real database:
+    /// enumerating into N shards and reading each shard yields every row —
+    /// including a NULL-key row invisible to MIN/MAX (F37) — exactly once.
+    #[tokio::test]
+    async fn shards_partition_rows_disjointly_and_completely() {
+        let source = sharded_memory_source("SELECT k, label FROM items", "k").await;
+        sqlx::query("CREATE TABLE items (k INTEGER, label TEXT)")
+            .execute(&source.pool)
+            .await
+            .unwrap();
+        for i in 1..=100i64 {
+            sqlx::query("INSERT INTO items (k, label) VALUES (?, ?)")
+                .bind(i)
+                .bind(format!("row-{i}"))
+                .execute(&source.pool)
+                .await
+                .unwrap();
+        }
+        // A NULL-key row: MIN/MAX can't see it, but exactly one shard must.
+        sqlx::query("INSERT INTO items (k, label) VALUES (NULL, 'null-row')")
+            .execute(&source.pool)
+            .await
+            .unwrap();
+
+        assert!(source.is_shardable());
+        let shards = source.enumerate_shards(4).await.expect("enumerate");
+        assert!(
+            (2..=4).contains(&shards.len()),
+            "expected 2..=4 shards, got {}",
+            shards.len()
+        );
+
+        let mut labels: Vec<String> = Vec::new();
+        for shard in &shards {
+            source.apply_shard(shard).await.expect("apply_shard");
+            for rec in source.fetch_all().await.expect("fetch shard") {
+                labels.push(rec["label"].as_str().unwrap().to_string());
+            }
+        }
+
+        labels.sort();
+        let mut expected: Vec<String> = (1..=100i64).map(|i| format!("row-{i}")).collect();
+        expected.push("null-row".to_string());
+        expected.sort();
+        assert_eq!(
+            labels, expected,
+            "shards must union to all rows exactly once (no dup, no loss)"
+        );
+    }
+
+    /// Applying the whole-dataset shard clears the range — full query again.
+    #[tokio::test]
+    async fn whole_shard_restores_full_query() {
+        let source = sharded_memory_source("SELECT k FROM items", "k").await;
+        sqlx::query("CREATE TABLE items (k INTEGER)")
+            .execute(&source.pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO items (k) VALUES (1), (2), (3)")
+            .execute(&source.pool)
+            .await
+            .unwrap();
+
+        let shards = source.enumerate_shards(2).await.unwrap();
+        source.apply_shard(&shards[0]).await.unwrap();
+        let narrowed = source.fetch_all().await.unwrap().len();
+        assert!(narrowed < 3, "a real shard narrows the result set");
+
+        source
+            .apply_shard(&faucet_core::ShardSpec::whole())
+            .await
+            .unwrap();
+        assert_eq!(source.fetch_all().await.unwrap().len(), 3);
+    }
+
+    /// Enumeration over an empty result set degrades to one whole shard, and a
+    /// config without `shard:` is not shardable.
+    #[tokio::test]
+    async fn empty_result_and_unsharded_config_yield_whole_shard() {
+        let source = sharded_memory_source("SELECT k FROM items", "k").await;
+        sqlx::query("CREATE TABLE items (k INTEGER)")
+            .execute(&source.pool)
+            .await
+            .unwrap();
+        let shards = source.enumerate_shards(4).await.unwrap();
+        assert_eq!(shards.len(), 1);
+        assert!(shards[0].is_whole());
+
+        let plain = SqliteSource::new(SqliteSourceConfig::new("sqlite::memory:", "SELECT 1"))
+            .await
+            .unwrap();
+        assert!(!plain.is_shardable());
+        let shards = plain.enumerate_shards(4).await.unwrap();
+        assert_eq!(shards.len(), 1);
+        assert!(shards[0].is_whole());
+    }
+
+    /// Error paths a coordinator must handle: a bad shard key errors at
+    /// enumeration; a malformed descriptor is rejected by apply_shard.
+    #[tokio::test]
+    async fn shard_error_paths() {
+        let source = sharded_memory_source("SELECT k FROM items", "no_such_column").await;
+        sqlx::query("CREATE TABLE items (k INTEGER)")
+            .execute(&source.pool)
+            .await
+            .unwrap();
+        assert!(source.enumerate_shards(4).await.is_err());
+
+        let bad = faucet_core::ShardSpec::new("0", serde_json::json!({ "key": "k" }));
+        assert!(source.apply_shard(&bad).await.is_err());
     }
 }

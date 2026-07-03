@@ -290,14 +290,27 @@ finalized to `completed`/`failed` once every shard is terminal.
 | Source | Strategy | How to enable |
 |--------|----------|---------------|
 | `postgres` | primary-key range (`WHERE key >= lo AND key < hi`) | `source.config.shard: { key: <int column> }` |
+| `mysql` | primary-key range | `source.config.shard: { key: <int column> }` |
+| `mssql` | primary-key range | `source.config.shard: { key: <int column> }` |
+| `sqlite` | primary-key range | `source.config.shard: { key: <int column> }` |
 | `s3` | hash-of-object-key modulo N | automatic (no config) |
+| `gcs` | hash-of-object-key modulo N | automatic (no config) |
+| `parquet` | hash-of-file-path modulo N | automatic (no config) |
 
 > **NULL shard keys are not dropped.** Rows whose `shard` key column is `NULL`
-> fall outside every range predicate, so the postgres sharder assigns them to
+> fall outside every range predicate, so the SQL sharders assign them to
 > exactly one shard (alongside its range) — they are mirrored once, never
 > silently lost.
 
-Other sources are not shardable yet (tracked in [#262](https://github.com/PawanSikawat/faucet-stream/issues/262));
+PK-range notes: the shard `key` must be an integer-typed column present in the
+query's output. On `mssql`, a sharded query must not end in a top-level
+`ORDER BY` (T-SQL forbids it inside the derived table the shard predicate
+wraps — and ordering across concurrent shards is meaningless anyway). Sharding
+a `sqlite` source across workers requires every worker to reach the same
+database file (e.g. a shared volume). On `mssql` with incremental replication,
+shard bounds are computed over the not-yet-synced slice (the `@bookmark`
+binding is honoured during enumeration).
+
 Kafka uses native consumer-group assignment instead ([#261](https://github.com/PawanSikawat/faucet-stream/issues/261)).
 A non-shardable source (or a matrix pipeline) ignores `shard:` and runs whole — Mode B is fully backward compatible.
 

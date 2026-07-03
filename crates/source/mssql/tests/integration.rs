@@ -193,3 +193,92 @@ async fn incremental_resumes_without_duplicates() {
     assert_eq!(ids2, vec![4], "run 2 resumes from bookmark, no duplicates");
     assert_eq!(bookmark2, Some(Value::from("2024-04-01")));
 }
+
+// ── PK-range sharding (Mode B, #262) ────────────────────────────────────────
+
+/// The core Mode B correctness guarantee: enumerating a source into N shards and
+/// reading each shard yields every row exactly once — no duplication, no loss.
+/// Includes a NULL-key row, which MIN/MAX enumeration cannot see but exactly one
+/// shard must still read (F37).
+#[tokio::test(flavor = "multi_thread")]
+async fn shards_partition_rows_disjointly_and_completely() {
+    use faucet_source_mssql::ShardConfig;
+
+    let _serial = SERIAL.lock().await;
+    let (_c, port) = start_mssql().await;
+    let cfg = conn_cfg(port);
+    let pool = build_pool(&cfg, 4).await.expect("pool");
+
+    exec(
+        &pool,
+        "CREATE TABLE dbo.items (k BIGINT, label NVARCHAR(20))",
+    )
+    .await;
+    // Multi-row VALUES keeps the seeding to a handful of round trips.
+    for chunk in (1..=200i64).collect::<Vec<_>>().chunks(50) {
+        let values: Vec<String> = chunk.iter().map(|i| format!("({i}, N'row-{i}')")).collect();
+        exec(
+            &pool,
+            &format!(
+                "INSERT INTO dbo.items (k, label) VALUES {}",
+                values.join(", ")
+            ),
+        )
+        .await;
+    }
+    exec(
+        &pool,
+        "INSERT INTO dbo.items (k, label) VALUES (NULL, N'null-row')",
+    )
+    .await;
+
+    let mut scfg = MssqlSourceConfig::new(
+        cfg.connection_url.clone().unwrap(),
+        "SELECT k, label FROM dbo.items",
+    );
+    scfg.connection.tls = cfg.tls.clone();
+    scfg.shard = Some(ShardConfig { key: "k".into() });
+
+    let source = MssqlSource::new(scfg).await.expect("source");
+    assert!(source.is_shardable());
+    let shards = source.enumerate_shards(4).await.expect("enumerate");
+    assert!(
+        (2..=4).contains(&shards.len()),
+        "expected 2..=4 shards, got {}",
+        shards.len()
+    );
+
+    // Each shard is applied on the same source sequentially (apply_shard
+    // replaces the previous narrowing), mirroring what a claiming worker does.
+    let mut labels: Vec<String> = Vec::new();
+    for shard in &shards {
+        source.apply_shard(shard).await.expect("apply_shard");
+        for rec in source.fetch_all().await.expect("fetch shard") {
+            labels.push(rec["label"].as_str().unwrap().to_string());
+        }
+    }
+
+    labels.sort();
+    let mut expected: Vec<String> = (1..=200i64).map(|i| format!("row-{i}")).collect();
+    expected.push("null-row".to_string());
+    expected.sort();
+    assert_eq!(
+        labels, expected,
+        "shards must union to all rows exactly once (no dup, no loss)"
+    );
+
+    // Error paths: a bad key errors at enumeration; a malformed descriptor is
+    // rejected by apply_shard. Reuses the running container to keep CI time down.
+    let mut bad_cfg = MssqlSourceConfig::new(
+        cfg.connection_url.clone().unwrap(),
+        "SELECT k FROM dbo.items",
+    );
+    bad_cfg.connection.tls = cfg.tls.clone();
+    bad_cfg.shard = Some(ShardConfig {
+        key: "no_such_column".into(),
+    });
+    let bad = MssqlSource::new(bad_cfg).await.expect("source");
+    assert!(bad.enumerate_shards(4).await.is_err());
+    let malformed = faucet_core::ShardSpec::new("0", serde_json::json!({ "key": "k" }));
+    assert!(bad.apply_shard(&malformed).await.is_err());
+}

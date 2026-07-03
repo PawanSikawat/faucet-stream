@@ -7,9 +7,10 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::pin::Pin;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
+use faucet_core::shard::{HashShard, ShardSpec, parse_hash_shard, plan_hash_shards};
 use faucet_core::{FaucetError, Stream, StreamPage};
 use futures::{StreamExt, TryStreamExt, stream};
 use object_store::ObjectStore;
@@ -28,6 +29,10 @@ pub struct ParquetSource {
     /// Eagerly-constructed object store used for S3 sources. `None` for
     /// local file / glob sources.
     s3_store: Option<Arc<dyn ObjectStore>>,
+    /// Shard applied by the cluster coordinator (Mode B). `None` (or a
+    /// degenerate single-shard set) reads every resolved file. Stored behind a
+    /// `Mutex` so `apply_shard(&self, …)` can record it before streaming.
+    applied_shard: Mutex<Option<HashShard>>,
 }
 
 impl ParquetSource {
@@ -51,14 +56,18 @@ impl ParquetSource {
             _ => None,
         };
 
-        Ok(Self { config, s3_store })
+        Ok(Self {
+            config,
+            s3_store,
+            applied_shard: Mutex::new(None),
+        })
     }
 
-    /// Resolve the configured `source` into the concrete list of files to read.
+    /// Resolve the configured `source` into the full (unsharded) list of files.
     ///
     /// For S3 prefix mode this issues a list-objects call. For glob mode this
     /// expands the pattern. The result is sorted for deterministic ordering.
-    async fn resolve_files(
+    async fn resolve_all_files(
         &self,
         context: &HashMap<String, Value>,
     ) -> Result<Vec<FileTarget>, FaucetError> {
@@ -72,6 +81,29 @@ impl ParquetSource {
                 expand_glob(&resolved)
             }
             ParquetLocation::S3(s3) => self.resolve_s3_files(s3, context).await,
+        }
+    }
+
+    /// Resolve the configured `source` into the concrete list of files to read,
+    /// narrowed to the applied shard (if any).
+    async fn resolve_files(
+        &self,
+        context: &HashMap<String, Value>,
+    ) -> Result<Vec<FileTarget>, FaucetError> {
+        Ok(self.shard_filter(self.resolve_all_files(context).await?))
+    }
+
+    /// Retain only the files belonging to the applied shard (hash of the
+    /// file's display path modulo `shards`). A no-op when no shard is applied.
+    /// Every worker resolves the same sorted file list and hashes the same
+    /// deterministic path strings, so the partition is disjoint and complete.
+    fn shard_filter(&self, targets: Vec<FileTarget>) -> Vec<FileTarget> {
+        match *self.applied_shard.lock().expect("shard mutex poisoned") {
+            Some(member) => targets
+                .into_iter()
+                .filter(|t| member.contains(&t.display()))
+                .collect(),
+            None => targets,
         }
     }
 
@@ -311,10 +343,21 @@ impl faucet_core::Source for ParquetSource {
         _batch_size: usize,
     ) -> Pin<Box<dyn Stream<Item = Result<StreamPage, FaucetError>> + Send + 'a>> {
         Box::pin(async_stream::try_stream! {
-            let targets = self.resolve_files(context).await?;
-            tracing::info!(files = targets.len(), "Parquet source resolved files");
+            // Resolve the FULL file set first: schema validation must cover
+            // every file even under Mode B sharding, then only this shard's
+            // subset is streamed. Validating just the shard's files would let
+            // a cross-shard schema mismatch slip through (each worker would
+            // see an internally-consistent subset) and silently mix shapes
+            // downstream — the exact failure the unsharded path rejects.
+            let all_targets = self.resolve_all_files(context).await?;
+            let targets = self.shard_filter(all_targets.clone());
+            tracing::info!(
+                files = targets.len(),
+                resolved = all_targets.len(),
+                "Parquet source resolved files",
+            );
 
-            if targets.is_empty() {
+            if all_targets.is_empty() {
                 return;
             }
 
@@ -327,7 +370,7 @@ impl faucet_core::Source for ParquetSource {
             // probe stream immediately. The cost is one extra footer read per
             // file, paid once before streaming begins.
             let mut reference: Option<(String, arrow::datatypes::SchemaRef)> = None;
-            for target in &targets {
+            for target in &all_targets {
                 let (_, arrow_schema, display) = self.open_target_stream(target).await?;
                 if let Some((first_path, first_schema)) = &reference {
                     if first_schema != &arrow_schema {
@@ -389,6 +432,31 @@ impl faucet_core::Source for ParquetSource {
                 _ => format!("s3://{}", s3.bucket),
             },
         }
+    }
+
+    /// The Parquet source is always shardable: any resolved file set (glob or
+    /// S3 prefix) can be split by hash-of-path. Sharding only takes effect when
+    /// the cluster coordinator calls `apply_shard`; a plain `faucet run` reads
+    /// every file. A single-file source still enumerates — the extra shards
+    /// simply resolve to zero files.
+    fn is_shardable(&self) -> bool {
+        true
+    }
+
+    /// Enumerate `target` hash-modulo shards. Each shard `i` will read the
+    /// files whose path hashes to `i (mod target)`. No I/O: the partition is
+    /// defined by the hash function, so enumeration is cheap and stable as new
+    /// files appear. `target <= 1` yields a single whole-dataset shard.
+    async fn enumerate_shards(&self, target: usize) -> Result<Vec<ShardSpec>, FaucetError> {
+        Ok(plan_hash_shards(target))
+    }
+
+    /// Narrow this source to one hash-modulo shard. The whole-dataset shard
+    /// clears any filter (reads every file).
+    async fn apply_shard(&self, shard: &ShardSpec) -> Result<(), FaucetError> {
+        *self.applied_shard.lock().expect("shard mutex poisoned") =
+            parse_hash_shard(shard, "parquet")?;
+        Ok(())
     }
 }
 
@@ -671,5 +739,90 @@ mod tests {
         let cfg = ParquetSourceConfig::s3(s3);
         let source = ParquetSource::new(cfg).await.unwrap();
         assert_eq!(source.dataset_uri(), "s3://my-bucket/path/to/file.parquet");
+    }
+
+    // ── Hash-modulo file sharding (Mode B, #262) ─────────────────────────────
+
+    /// Create `n` empty `part-XX.parquet` files in a temp dir and return the
+    /// dir. `resolve_files` only globs (no footer read), so empty files are
+    /// enough to exercise the shard partition logic.
+    fn glob_fixture(n: usize) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().expect("tempdir");
+        for i in 0..n {
+            std::fs::write(dir.path().join(format!("part-{i:02}.parquet")), b"").expect("touch");
+        }
+        dir
+    }
+
+    /// The union of every shard's resolved file set equals the full set, with
+    /// no file in two shards — the core no-dup / no-loss guarantee.
+    #[tokio::test]
+    async fn shards_partition_resolved_files_disjointly_and_completely() {
+        let dir = glob_fixture(12);
+        let pattern = format!("{}/*.parquet", dir.path().display());
+        let source = ParquetSource::new(ParquetSourceConfig::glob(&pattern))
+            .await
+            .unwrap();
+
+        assert!(source.is_shardable());
+        let shards = source.enumerate_shards(3).await.unwrap();
+        assert_eq!(shards.len(), 3);
+
+        let ctx = HashMap::new();
+        let all: Vec<String> = source
+            .resolve_files(&ctx)
+            .await
+            .unwrap()
+            .iter()
+            .map(FileTarget::display)
+            .collect();
+        assert_eq!(all.len(), 12);
+
+        let mut union: Vec<String> = Vec::new();
+        for shard in &shards {
+            source.apply_shard(shard).await.unwrap();
+            union.extend(
+                source
+                    .resolve_files(&ctx)
+                    .await
+                    .unwrap()
+                    .iter()
+                    .map(FileTarget::display),
+            );
+        }
+        union.sort();
+        let mut expected = all.clone();
+        expected.sort();
+        assert_eq!(
+            union, expected,
+            "shards must union to the full file set, disjointly"
+        );
+    }
+
+    #[tokio::test]
+    async fn whole_shard_and_target_one_read_everything() {
+        let dir = glob_fixture(4);
+        let pattern = format!("{}/*.parquet", dir.path().display());
+        let source = ParquetSource::new(ParquetSourceConfig::glob(&pattern))
+            .await
+            .unwrap();
+
+        // target <= 1 enumerates to the single whole-dataset shard.
+        let shards = source.enumerate_shards(1).await.unwrap();
+        assert_eq!(shards.len(), 1);
+        assert!(shards[0].is_whole());
+
+        let ctx = HashMap::new();
+        source.apply_shard(&shards[0]).await.unwrap();
+        assert_eq!(source.resolve_files(&ctx).await.unwrap().len(), 4);
+    }
+
+    #[tokio::test]
+    async fn apply_shard_rejects_malformed_descriptor() {
+        let source = ParquetSource::new(ParquetSourceConfig::local("/tmp/x.parquet"))
+            .await
+            .unwrap();
+        let bad = faucet_core::ShardSpec::new("0", serde_json::json!({ "index": 0 }));
+        assert!(source.apply_shard(&bad).await.is_err());
     }
 }

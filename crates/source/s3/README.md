@@ -358,6 +358,16 @@ Enable the connector itself in the CLI/umbrella via the `source-s3` feature.
 - [Connector reference](https://pawansikawat.github.io/faucet-stream/reference/connectors.html) · [Compression cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/compression.html)
 - Related crates: [faucet-sink-s3](https://crates.io/crates/faucet-sink-s3) · [faucet-source-gcs](https://crates.io/crates/faucet-source-gcs) · [faucet-source-parquet](https://crates.io/crates/faucet-source-parquet)
 
+## Sharded execution (cluster Mode B)
+
+Under [`faucet serve --cluster`](https://pawansikawat.github.io/faucet-stream/cookbook/cluster.html),
+a top-level `shard: { count: N }` block splits this source across cluster
+workers **automatically — no connector config needed**. Each worker reads the
+objects whose key hashes to its shard index (stable FNV-1a modulo `count`),
+so the partition is disjoint and complete: every object is read by exactly one
+worker, and the partition stays stable as new objects appear. Outside the
+cluster coordinator a run reads every object, unchanged.
+
 ## License
 
 Licensed under either of [Apache License, Version 2.0](https://www.apache.org/licenses/LICENSE-2.0) or [MIT license](https://opensource.org/licenses/MIT) at your option.

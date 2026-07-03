@@ -441,3 +441,93 @@ async fn stream_pages_first_page_arrives_before_full_drain() {
         full_elapsed
     );
 }
+
+// ── Hash-modulo file sharding (Mode B, #262) ────────────────────────────────
+
+/// End-to-end Mode B guarantee on real files: splitting a multi-file glob into
+/// N shards and streaming each shard yields every row exactly once.
+#[tokio::test]
+async fn shards_stream_all_rows_exactly_once() {
+    let dir = TempDir::new().expect("tempdir");
+    let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
+    // 6 files × 10 rows, globally-unique ids 0..60.
+    for f in 0..6i64 {
+        let ids: Vec<i64> = (f * 10..(f + 1) * 10).collect();
+        let batch = RecordBatch::try_new(schema.clone(), vec![Arc::new(Int64Array::from(ids))])
+            .expect("batch");
+        write_single_row_group(&dir.path().join(format!("part-{f}.parquet")), &batch);
+    }
+
+    let pattern = format!("{}/*.parquet", dir.path().display());
+    let source = ParquetSource::new(ParquetSourceConfig::glob(&pattern))
+        .await
+        .expect("source");
+
+    assert!(source.is_shardable());
+    let shards = source.enumerate_shards(3).await.expect("enumerate");
+    assert_eq!(shards.len(), 3);
+
+    let ctx = std::collections::HashMap::new();
+    let mut all_ids: Vec<i64> = Vec::new();
+    for shard in &shards {
+        source.apply_shard(shard).await.expect("apply_shard");
+        let pages: Vec<StreamPage> = source
+            .stream_pages(&ctx, 0)
+            .map(|p| p.expect("page"))
+            .collect()
+            .await;
+        for page in pages {
+            for rec in page.records {
+                all_ids.push(rec["id"].as_i64().expect("id is int"));
+            }
+        }
+    }
+
+    all_ids.sort();
+    let expected: Vec<i64> = (0..60).collect();
+    assert_eq!(
+        all_ids, expected,
+        "shards must union to all rows exactly once (no dup, no loss)"
+    );
+}
+
+/// A cross-file schema mismatch must fail a sharded worker even when the
+/// mismatching file hashes into a DIFFERENT shard — schema validation covers
+/// the full resolved set, not just the shard's subset.
+#[tokio::test]
+async fn sharded_stream_rejects_cross_shard_schema_mismatch() {
+    let dir = TempDir::new().expect("tempdir");
+    let int_schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
+    let str_schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Utf8, false)]));
+    let int_batch = RecordBatch::try_new(
+        int_schema.clone(),
+        vec![Arc::new(Int64Array::from(vec![1i64, 2]))],
+    )
+    .expect("int batch");
+    let str_batch = RecordBatch::try_new(
+        str_schema.clone(),
+        vec![Arc::new(StringArray::from(vec!["a", "b"]))],
+    )
+    .expect("str batch");
+    write_single_row_group(&dir.path().join("part-0.parquet"), &int_batch);
+    write_single_row_group(&dir.path().join("part-1.parquet"), &str_batch);
+
+    let pattern = format!("{}/*.parquet", dir.path().display());
+    let source = ParquetSource::new(ParquetSourceConfig::glob(&pattern))
+        .await
+        .expect("source");
+
+    // Every shard must reject the mismatched file set — even a shard whose own
+    // subset is internally consistent (or empty).
+    let shards = source.enumerate_shards(2).await.expect("enumerate");
+    let ctx = std::collections::HashMap::new();
+    for shard in &shards {
+        source.apply_shard(shard).await.expect("apply_shard");
+        let results: Vec<_> = source.stream_pages(&ctx, 0).collect().await;
+        assert!(
+            results.iter().any(|r| r.is_err()),
+            "shard {} must surface the cross-file schema mismatch",
+            shard.id
+        );
+    }
+}

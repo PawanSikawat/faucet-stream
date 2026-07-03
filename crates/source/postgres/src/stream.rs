@@ -2,7 +2,9 @@
 
 use crate::config::PostgresSourceConfig;
 use async_trait::async_trait;
-use faucet_core::shard::ShardSpec;
+use faucet_core::shard::{
+    PkShardBounds, ShardSpec, parse_pk_shard, pk_bounds_query, pk_shards_from_bounds,
+};
 use faucet_core::util::quote_ident;
 use faucet_core::{FaucetError, Stream, StreamPage};
 use futures::TryStreamExt;
@@ -19,94 +21,7 @@ pub struct PostgresSource {
     /// Shard applied by the cluster coordinator (Mode B), if any. `None` (or the
     /// whole-dataset shard) means the full query is streamed. Stored behind a
     /// `Mutex` so `apply_shard(&self, …)` can record it before streaming.
-    applied_shard: Mutex<Option<ShardBounds>>,
-}
-
-/// Parsed integer range bounds for an applied PK-range shard.
-#[derive(Clone, Debug)]
-struct ShardBounds {
-    key: String,
-    lo: i64,
-    hi: i64,
-    /// When `true` this shard has **no lower bound** — it is the *first* shard,
-    /// so it owns every key below `hi` including any below the enumerated `MIN`.
-    /// Rows backfilled or inserted with smaller ids during the run are read by
-    /// this shard instead of being silently dropped outside `[MIN, MAX]` (F54).
-    lo_unbounded: bool,
-    /// When `true` this shard has **no upper bound** — it is the *last* shard,
-    /// so it owns every key at/above `lo` including any above the enumerated
-    /// `MAX`. Rows appended above the captured `MAX` between coordination and
-    /// shard execution are read by this shard instead of being lost (F55).
-    hi_unbounded: bool,
-    /// When `true` this shard *additionally* matches rows whose `key` is NULL.
-    ///
-    /// SQL aggregates (`MIN`/`MAX`) ignore NULLs, so a nullable shard key never
-    /// produces a `[lo, hi]` range covering NULL-key rows — without this flag
-    /// every sharded run would silently drop them (audit F37). Exactly one
-    /// shard (the last) carries this flag, so NULL-key rows are read by
-    /// precisely one shard: no loss, no duplication.
-    include_null: bool,
-}
-
-impl ShardBounds {
-    /// Parse from a [`ShardSpec`] descriptor produced by `enumerate_shards`.
-    fn from_spec(spec: &ShardSpec) -> Option<Self> {
-        let d = &spec.descriptor;
-        Some(Self {
-            key: d.get("key")?.as_str()?.to_string(),
-            lo: d.get("lo")?.as_i64()?,
-            hi: d.get("hi")?.as_i64()?,
-            lo_unbounded: d
-                .get("lo_unbounded")
-                .and_then(Value::as_bool)
-                .unwrap_or(false),
-            hi_unbounded: d
-                .get("hi_unbounded")
-                .and_then(Value::as_bool)
-                .unwrap_or(false),
-            include_null: d
-                .get("include_null")
-                .and_then(Value::as_bool)
-                .unwrap_or(false),
-        })
-    }
-
-    /// Wrap `inner` so only rows whose `key` falls in this shard's range are
-    /// returned. The key is quoted (injection-safe); the bounds are inlined as
-    /// integer literals (safe — they are `i64`s produced by enumeration).
-    ///
-    /// The boundary shards are **open-ended** (`lo_unbounded` / `hi_unbounded`)
-    /// so the union of all shards tiles `(-∞, +∞)`, matching unsharded
-    /// semantics — no row is dropped for sorting outside the `[MIN, MAX]`
-    /// captured at enumeration time (F54/F55). The single shard with
-    /// `include_null` also matches `key IS NULL` so NULL-key rows (invisible to
-    /// the `MIN`/`MAX` enumeration) are still read.
-    fn wrap(&self, inner: &str) -> String {
-        let key = quote_ident(&self.key);
-        let mut parts: Vec<String> = Vec::with_capacity(2);
-        if !self.lo_unbounded {
-            parts.push(format!("{key} >= {lo}", lo = self.lo));
-        }
-        if !self.hi_unbounded {
-            parts.push(format!("{key} < {hi}", hi = self.hi));
-        }
-        let range = parts.join(" AND ");
-        let predicate = if self.include_null {
-            if range.is_empty() {
-                // A single fully-unbounded shard owns the whole dataset,
-                // NULL-key rows included.
-                "TRUE".to_string()
-            } else {
-                // Parenthesize so the OR binds correctly inside the WHERE clause.
-                format!("(({range}) OR {key} IS NULL)")
-            }
-        } else if range.is_empty() {
-            "TRUE".to_string()
-        } else {
-            range
-        };
-        format!("SELECT * FROM ({inner}) AS _faucet_shard WHERE {predicate}")
-    }
+    applied_shard: Mutex<Option<PkShardBounds>>,
 }
 
 impl PostgresSource {
@@ -130,73 +45,10 @@ impl PostgresSource {
     /// Apply the currently-set shard (if any) to a resolved query string.
     fn shard_wrap(&self, query: String) -> String {
         match &*self.applied_shard.lock().expect("shard mutex poisoned") {
-            Some(bounds) => bounds.wrap(&query),
+            Some(bounds) => bounds.wrap(&query, quote_ident),
             None => query,
         }
     }
-}
-
-/// Split the integer range observed as `[min, max]` into up to `target`
-/// contiguous shards, each described by
-/// `{key, lo, hi, lo_unbounded, hi_unbounded, include_null}`. Interior cut
-/// points are half-open `[lo, hi)`, but the **boundary shards are open-ended**:
-/// the first shard has no lower bound and the last shard has no upper bound, so
-/// the union of all shards tiles `(-∞, +∞)`.
-///
-/// Open-ended boundaries match unsharded semantics: `min`/`max` are captured
-/// once at enumeration time, but rows can be inserted below `min` or above `max`
-/// (or backfilled) before the workers actually stream their shards. Clamping the
-/// boundary shards to the captured `[min, max]` would silently drop those rows
-/// (audit F54/F55); leaving them open captures everything.
-///
-/// The last shard also carries `include_null: true` so that NULL-key rows —
-/// invisible to the `MIN`/`MAX` enumeration that produced `[min, max]` — are
-/// read by exactly one shard (no loss, no duplication; audit F37). Picking the
-/// *last* shard means a single-shard plan still covers NULLs.
-///
-/// Coverage scheme (proven by `predicate_coverage_*` tests):
-/// - non-NULL keys: the first shard owns `key < cut₁`, interior shards own
-///   `[cutᵢ, cutᵢ₊₁)`, and the last shard owns `key >= cutₙ` — every value
-///   (including below `min` and above `max`) falls in exactly one shard;
-/// - NULL keys: matched only by the last shard's `OR key IS NULL` clause —
-///   exactly one shard.
-///
-/// Pure function (no I/O) so it is unit-testable without a database.
-fn plan_pk_shards(key: &str, min: i64, max: i64, target: usize) -> Vec<ShardSpec> {
-    let target = target.max(1);
-    // Range width as u128 to avoid i64 overflow on full-range PKs.
-    let width = (max as i128 - min as i128 + 1).max(1) as u128;
-    let n = (target as u128).min(width) as usize; // never more shards than values
-    let step = width.div_ceil(n as u128); // ceil so shards cover the whole range
-
-    let mut shards = Vec::with_capacity(n);
-    let mut lo = min as i128;
-    for i in 0..n {
-        let mut hi = lo + step as i128;
-        let is_first = i == 0;
-        let is_last = i == n - 1;
-        if is_last || hi > max as i128 {
-            hi = max as i128; // last interior cut closes at max (the last shard
-            // is unbounded above, so `hi` is unused there)
-        }
-        let descriptor = serde_json::json!({
-            "key": key,
-            "lo": lo as i64,
-            "hi": hi as i64,
-            // Boundary shards are open-ended so the union tiles (-∞, +∞).
-            "lo_unbounded": is_first,
-            "hi_unbounded": is_last,
-            // Exactly one shard (the last) owns the NULL-key rows.
-            "include_null": is_last,
-        });
-        let size = (hi - lo).max(0) as u64 + if is_last { 1 } else { 0 };
-        shards.push(ShardSpec::new(i.to_string(), descriptor).with_size(size));
-        if is_last {
-            break;
-        }
-        lo = hi;
-    }
-    shards
 }
 
 /// Convert a raw sqlx column value to a `serde_json::Value`.
@@ -473,12 +325,8 @@ impl faucet_core::Source for PostgresSource {
             return Ok(vec![ShardSpec::whole()]);
         };
 
-        let key = quote_ident(&shard_cfg.key);
-        let bounds_sql = format!(
-            "SELECT MIN({key})::int8 AS lo, MAX({key})::int8 AS hi \
-             FROM ({inner}) AS _faucet_bounds",
-            inner = self.config.query
-        );
+        let bounds_sql =
+            pk_bounds_query(&self.config.query, &quote_ident(&shard_cfg.key), "BIGINT");
         let row = bind_params(sqlx::query(&bounds_sql), &self.config.params, &[])
             .fetch_one(&self.pool)
             .await
@@ -496,28 +344,14 @@ impl faucet_core::Source for PostgresSource {
         let hi: Option<i64> = row.try_get("hi").map_err(|e| {
             FaucetError::Source(format!("postgres: shard bounds decode failed: {e}"))
         })?;
-
-        match (lo, hi) {
-            (Some(lo), Some(hi)) => Ok(plan_pk_shards(&shard_cfg.key, lo, hi, target)),
-            // Empty result set → nothing to shard; one (empty) whole shard.
-            _ => Ok(vec![ShardSpec::whole()]),
-        }
+        Ok(pk_shards_from_bounds(&shard_cfg.key, lo, hi, target))
     }
 
     /// Narrow this source to a single PK-range shard. The whole-dataset shard
     /// clears any applied range (streams the full query).
     async fn apply_shard(&self, shard: &ShardSpec) -> Result<(), FaucetError> {
-        let bounds = if shard.is_whole() {
-            None
-        } else {
-            Some(ShardBounds::from_spec(shard).ok_or_else(|| {
-                FaucetError::Source(format!(
-                    "postgres: invalid shard descriptor: {}",
-                    shard.descriptor
-                ))
-            })?)
-        };
-        *self.applied_shard.lock().expect("shard mutex poisoned") = bounds;
+        *self.applied_shard.lock().expect("shard mutex poisoned") =
+            parse_pk_shard(shard, "postgres")?;
         Ok(())
     }
 }
@@ -525,6 +359,12 @@ impl faucet_core::Source for PostgresSource {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use faucet_core::shard::plan_pk_shards;
+
+    /// The shard-bounds type moved to `faucet_core::shard` (#262) so the
+    /// PK-range logic is shared across the SQL sources; alias it so the
+    /// long-standing tests below keep pinning postgres's behavior unchanged.
+    type ShardBounds = PkShardBounds;
 
     #[tokio::test]
     async fn new_rejects_out_of_range_batch_size() {
@@ -665,7 +505,7 @@ mod tests {
             serde_json::json!({"key": "id", "lo": 100, "hi": 200, "lo_unbounded": false, "hi_unbounded": false}),
         );
         let b = ShardBounds::from_spec(&spec).unwrap();
-        let sql = b.wrap("SELECT * FROM t");
+        let sql = b.wrap("SELECT * FROM t", quote_ident);
         assert!(sql.contains("(SELECT * FROM t) AS _faucet_shard"));
         assert!(sql.contains(r#""id" >= 100"#), "got: {sql}");
         assert!(
@@ -683,7 +523,7 @@ mod tests {
             serde_json::json!({"key": "id", "lo": 0, "hi": 100, "lo_unbounded": true, "hi_unbounded": false}),
         );
         let b = ShardBounds::from_spec(&spec).unwrap();
-        let sql = b.wrap("SELECT * FROM t");
+        let sql = b.wrap("SELECT * FROM t", quote_ident);
         assert!(sql.contains(r#""id" < 100"#), "upper bound present: {sql}");
         assert!(!sql.contains(">="), "first shard has no lower floor: {sql}");
     }
@@ -697,7 +537,7 @@ mod tests {
             serde_json::json!({"key": "id", "lo": 200, "hi": 300, "lo_unbounded": false, "hi_unbounded": true}),
         );
         let b = ShardBounds::from_spec(&spec).unwrap();
-        let sql = b.wrap("SELECT * FROM t");
+        let sql = b.wrap("SELECT * FROM t", quote_ident);
         assert!(sql.contains(r#""id" >= 200"#), "lower bound present: {sql}");
         assert!(
             !sql.contains(" < ") && !sql.contains("<="),
@@ -712,7 +552,7 @@ mod tests {
             serde_json::json!({"key": "weird\"; DROP", "lo": 0, "hi": 1, "lo_unbounded": false, "hi_unbounded": false}),
         );
         let b = ShardBounds::from_spec(&spec).unwrap();
-        let sql = b.wrap("SELECT 1");
+        let sql = b.wrap("SELECT 1", quote_ident);
         // The doubled quote escaping proves the identifier was quoted, not raw.
         assert!(
             sql.contains(r#""weird""; DROP""#),
@@ -757,7 +597,7 @@ mod tests {
     fn last_shard_wrap_emits_is_null_clause() {
         let shards = plan_pk_shards("id", 0, 99, 3);
         let last = ShardBounds::from_spec(shards.last().unwrap()).unwrap();
-        let sql = last.wrap("SELECT * FROM t");
+        let sql = last.wrap("SELECT * FROM t", quote_ident);
         assert!(
             sql.contains(r#""id" IS NULL"#),
             "last shard must match NULL keys: {sql}"
@@ -770,7 +610,7 @@ mod tests {
         let shards = plan_pk_shards("id", 0, 99, 3);
         // First shard is not the last → no NULL clause.
         let first = ShardBounds::from_spec(&shards[0]).unwrap();
-        let sql = first.wrap("SELECT * FROM t");
+        let sql = first.wrap("SELECT * FROM t", quote_ident);
         assert!(
             !sql.contains("IS NULL"),
             "non-last shard must not match NULL keys: {sql}"
@@ -816,7 +656,7 @@ mod tests {
         let shards = plan_pk_shards("id", 7, 7, 1);
         assert_eq!(shards.len(), 1);
         let b = ShardBounds::from_spec(&shards[0]).unwrap();
-        let sql = b.wrap("SELECT * FROM t");
+        let sql = b.wrap("SELECT * FROM t", quote_ident);
         assert!(sql.contains("WHERE TRUE"), "whole-dataset predicate: {sql}");
         assert!(!sql.contains(">="), "no bounds on a lone shard: {sql}");
     }
@@ -830,5 +670,54 @@ mod tests {
         let redacted = faucet_core::redact_uri_credentials("postgres://u:p@h:5432/db");
         let uri = format!("{}?query={}", redacted, "SELECT 1");
         assert_eq!(uri, "postgres://h:5432/db?query=SELECT 1");
+    }
+
+    /// Build a source over a lazy pool (no server needed) so the shard glue —
+    /// `apply_shard`, `shard_wrap`, and `enumerate_shards`' error path — is
+    /// testable without Docker.
+    fn lazy_source(config: PostgresSourceConfig) -> PostgresSource {
+        let pool = PgPoolOptions::new()
+            // Fail fast at first checkout — these tests never reach a server.
+            .acquire_timeout(std::time::Duration::from_millis(200))
+            .connect_lazy(&config.connection_url)
+            .expect("lazy pool");
+        PostgresSource {
+            config,
+            pool,
+            applied_shard: Mutex::new(None),
+        }
+    }
+
+    #[tokio::test]
+    async fn apply_shard_then_shard_wrap_narrows_query() {
+        use faucet_core::Source as _;
+        let mut config =
+            PostgresSourceConfig::new("postgres://u@127.0.0.1:1/db", "SELECT * FROM t");
+        config.shard = Some(crate::config::ShardConfig { key: "id".into() });
+        let source = lazy_source(config);
+        assert!(source.is_shardable());
+
+        // No shard applied / whole shard applied → query passes through.
+        assert_eq!(source.shard_wrap("SELECT 1".into()), "SELECT 1");
+        source
+            .apply_shard(&faucet_core::ShardSpec::whole())
+            .await
+            .unwrap();
+        assert_eq!(source.shard_wrap("SELECT 1".into()), "SELECT 1");
+
+        // A real shard narrows with ANSI double-quote quoting.
+        let spec = &plan_pk_shards("id", 0, 99, 2)[0];
+        source.apply_shard(spec).await.unwrap();
+        let wrapped = source.shard_wrap("SELECT * FROM t".into());
+        assert!(wrapped.contains(r#""id""#), "got: {wrapped}");
+        assert!(wrapped.contains("_faucet_shard"), "got: {wrapped}");
+
+        // Enumeration against the unreachable server surfaces the bounds-probe
+        // error path.
+        let err = source.enumerate_shards(4).await.unwrap_err();
+        assert!(
+            err.to_string().contains("shard bounds"),
+            "expected bounds-probe error, got: {err}"
+        );
     }
 }

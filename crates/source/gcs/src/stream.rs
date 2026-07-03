@@ -3,12 +3,14 @@
 use crate::config::{GcsFileFormat, GcsSourceConfig};
 use async_trait::async_trait;
 use faucet_common_gcs::{build_storage, build_storage_control};
+use faucet_core::shard::{HashShard, ShardSpec, parse_hash_shard, plan_hash_shards};
 use faucet_core::{FaucetError, Stream, StreamPage};
 use futures::stream::{self, StreamExt, TryStreamExt};
 use google_cloud_gax::paginator::ItemPaginator;
 use google_cloud_storage::client::{Storage, StorageControl};
 use serde_json::Value;
 use std::pin::Pin;
+use std::sync::Mutex;
 use tokio::io::AsyncBufReadExt;
 
 /// A GCS source that lists and reads objects from a bucket.
@@ -16,6 +18,10 @@ pub struct GcsSource {
     config: GcsSourceConfig,
     storage: Storage,
     control: StorageControl,
+    /// Shard applied by the cluster coordinator (Mode B). `None` (or a
+    /// degenerate single-shard set) reads every listed object. Stored behind a
+    /// `Mutex` so `apply_shard(&self, …)` can record it before streaming.
+    applied_shard: Mutex<Option<HashShard>>,
 }
 
 impl GcsSource {
@@ -28,7 +34,17 @@ impl GcsSource {
             config,
             storage,
             control,
+            applied_shard: Mutex::new(None),
         })
+    }
+
+    /// Retain only the keys belonging to the applied shard (hash-of-key modulo
+    /// `shards`). A no-op when no shard is applied.
+    fn shard_filter(&self, keys: Vec<String>) -> Vec<String> {
+        filter_shard_keys(
+            keys,
+            *self.applied_shard.lock().expect("shard mutex poisoned"),
+        )
     }
 
     /// Bucket as a GCS resource path: `projects/_/buckets/{bucket}`.
@@ -43,7 +59,7 @@ impl GcsSource {
         prefix_override: Option<&str>,
     ) -> Result<Vec<String>, FaucetError> {
         if let Some(ref keys) = self.config.object_keys {
-            return Ok(cap_keys(keys.clone(), self.config.max_objects));
+            return Ok(self.shard_filter(cap_keys(keys.clone(), self.config.max_objects)));
         }
 
         let effective_prefix = prefix_override.or(self.config.prefix.as_deref());
@@ -72,7 +88,10 @@ impl GcsSource {
                 break;
             }
         }
-        Ok(names)
+        // Shard-filter AFTER the max_objects cap so the cap bounds the run's
+        // total object set (matching single-worker semantics) rather than
+        // multiplying by the shard count.
+        Ok(self.shard_filter(names))
     }
 
     /// Read the full body of a single GCS object into a UTF-8 `String`.
@@ -417,6 +436,28 @@ impl faucet_core::Source for GcsSource {
             None => format!("gs://{}", self.config.bucket),
         }
     }
+
+    /// The GCS source is always shardable: any object set can be split by
+    /// hash-of-key. Sharding only takes effect when the cluster coordinator
+    /// calls `apply_shard`; a plain `faucet run` reads every object.
+    fn is_shardable(&self) -> bool {
+        true
+    }
+
+    /// Enumerate `target` hash-modulo shards. Each shard `i` will read the
+    /// objects whose key hashes to `i (mod target)`. No I/O: the partition is
+    /// defined by the hash function, so enumeration is cheap and stable as new
+    /// objects appear. `target <= 1` yields a single whole-dataset shard.
+    async fn enumerate_shards(&self, target: usize) -> Result<Vec<ShardSpec>, FaucetError> {
+        Ok(plan_hash_shards(target))
+    }
+
+    /// Narrow this source to one hash-modulo shard. The whole-dataset shard
+    /// clears any filter (reads every object).
+    async fn apply_shard(&self, shard: &ShardSpec) -> Result<(), FaucetError> {
+        *self.applied_shard.lock().expect("shard mutex poisoned") = parse_hash_shard(shard, "gcs")?;
+        Ok(())
+    }
 }
 
 /// Truncate an explicit object-key list to the `max_objects` cap.
@@ -430,6 +471,17 @@ fn cap_keys(mut keys: Vec<String>, max: Option<usize>) -> Vec<String> {
         keys.truncate(n);
     }
     keys
+}
+
+/// Retain only the keys owned by `shard` (hash-of-key modulo `shards`). Free
+/// function (vs. a `GcsSource` method) so the partitioning logic is
+/// unit-testable without a GCS client — constructing the source requires live
+/// credentials, and the gRPC integration tests are `#[ignore]`d (#220).
+fn filter_shard_keys(keys: Vec<String>, shard: Option<HashShard>) -> Vec<String> {
+    match shard {
+        Some(member) => keys.into_iter().filter(|k| member.contains(k)).collect(),
+        None => keys,
+    }
 }
 
 fn value_type_name(v: &Value) -> &'static str {
@@ -535,6 +587,36 @@ mod tests {
         let keys = vec!["a".to_string(), "b".to_string()];
         let capped = cap_keys(keys.clone(), Some(10));
         assert_eq!(capped, keys);
+    }
+
+    // ── Hash-modulo sharding (Mode B, #262) ──────────────────────────────────
+
+    // The union of every shard's filtered key set equals the full set, with no
+    // key in two shards — the core no-dup / no-loss guarantee.
+    #[test]
+    fn shard_filter_partitions_keys_disjointly_and_completely() {
+        let keys: Vec<String> = (0..200).map(|i| format!("data/obj-{i}.jsonl")).collect();
+        let members: Vec<HashShard> = plan_hash_shards(4)
+            .iter()
+            .map(|s| HashShard::from_spec(s).expect("descriptor parses"))
+            .collect();
+        let mut union: Vec<String> = Vec::new();
+        for member in members {
+            union.extend(filter_shard_keys(keys.clone(), Some(member)));
+        }
+        union.sort();
+        let mut expected = keys.clone();
+        expected.sort();
+        assert_eq!(
+            union, expected,
+            "shards must union to the full key set, disjointly"
+        );
+    }
+
+    #[test]
+    fn no_applied_shard_reads_everything() {
+        let keys: Vec<String> = (0..20).map(|i| format!("k{i}")).collect();
+        assert_eq!(filter_shard_keys(keys.clone(), None), keys);
     }
 
     // GcsSource requires an async constructor that tries to connect to GCS,

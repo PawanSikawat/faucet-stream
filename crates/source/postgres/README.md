@@ -69,6 +69,7 @@ All fields live under `pipeline.source.config`.
 |-------|------|---------|-------------|
 | `max_connections` | int | `10` | Maximum connections in the `sqlx` pool. |
 | `batch_size` | int | `1000` | Rows per `StreamPage`. **`0` = no batching** — the cursor is fully drained and the entire result set is emitted in a single page (see [Streaming & batching](#streaming--batching)). Values above `MAX_BATCH_SIZE` (1,000,000) are rejected at construction. |
+| `shard` | object | *(unset)* | Optional [Mode B sharding](#sharded-execution-cluster-mode-b): `{ key: <integer column> }`. Opts the source into primary-key range splitting under `faucet serve --cluster`; no effect on a plain `faucet run`. |
 
 ## Examples
 
@@ -305,6 +306,36 @@ This crate has no optional features of its own. Enable it in the CLI or umbrella
 - [`faucet-source-postgres-cdc`](https://crates.io/crates/faucet-source-postgres-cdc) — resumable change data capture via logical replication
 - [`faucet-sink-postgres`](https://crates.io/crates/faucet-sink-postgres) — the PostgreSQL sink (insert / upsert / delete)
 - [`faucet-source-mysql`](https://crates.io/crates/faucet-source-mysql) · [`faucet-source-sqlite`](https://crates.io/crates/faucet-source-sqlite) · [`faucet-source-mssql`](https://crates.io/crates/faucet-source-mssql)
+
+## Sharded execution (cluster Mode B)
+
+Under [`faucet serve --cluster`](https://pawansikawat.github.io/faucet-stream/cookbook/cluster.html),
+a top-level `shard: { count: N }` block splits this source into contiguous
+primary-key ranges that different cluster workers process concurrently. Opt in
+by naming an integer-typed key column:
+
+```yaml
+shard:
+  count: 8
+pipeline:
+  source:
+    type: postgres
+    config:
+      connection_url: ${env:PG_URL}
+      query: "SELECT * FROM events"
+      shard: { key: id }   # integer column to range-partition on
+```
+
+The coordinator computes `MIN(key)` / `MAX(key)` once and splits that range
+into half-open slices (`"key"` in the generated predicate, injection-safe).
+The boundary shards stay open-ended so rows inserted outside the captured
+range during the run are still read, and exactly one shard additionally
+matches `key IS NULL` so nullable keys are never silently dropped. Each shard
+keeps its own state key (`{run}::{shard}`), so a reassigned shard resumes
+where its previous owner left off.
+
+Outside the cluster coordinator the `shard` config has **no effect** — a plain
+`faucet run` streams the whole query.
 
 ## License
 

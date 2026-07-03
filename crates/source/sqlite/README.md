@@ -67,6 +67,7 @@ All fields live under `pipeline.source.config`.
 | `query` | string | — *(required)* | SQL to execute. May contain `{field}` placeholders that are bound from the matrix / parent-record context as positional `?` parameters at runtime. |
 | `max_connections` | int (`u32`) | `10` | Maximum connections in the sqlx pool. SQLite is single-writer; a small pool (2–5) is usually plenty for a read-only source. |
 | `batch_size` | int (`usize`) | `1000` | Rows per emitted `StreamPage`. **`0` = no batching**: the cursor is fully drained and the entire result set is emitted in a single page. Values above `MAX_BATCH_SIZE` (1,000,000) are rejected at construction. |
+| `shard` | object | *(unset)* | Optional [Mode B sharding](#sharded-execution-cluster-mode-b): `{ key: <integer column> }`. Opts the source into primary-key range splitting under `faucet serve --cluster`; no effect on a plain `faucet run`. |
 
 There is **no auth, TLS, or credential configuration** — SQLite is a local in-process engine.
 
@@ -281,6 +282,39 @@ This crate has no optional features of its own. Enable it in the CLI / umbrella 
 - [State & resume cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/state.html)
 - [`faucet-sink-sqlite`](https://crates.io/crates/faucet-sink-sqlite) — the matching SQLite sink
 - [`faucet-source-postgres`](https://crates.io/crates/faucet-source-postgres) · [`faucet-source-mysql`](https://crates.io/crates/faucet-source-mysql) — server-based SQL sources
+
+## Sharded execution (cluster Mode B)
+
+Under [`faucet serve --cluster`](https://pawansikawat.github.io/faucet-stream/cookbook/cluster.html),
+a top-level `shard: { count: N }` block splits this source into contiguous
+primary-key ranges that different cluster workers process concurrently. Opt in
+by naming an integer-typed key column:
+
+```yaml
+shard:
+  count: 8
+pipeline:
+  source:
+    type: sqlite
+    config:
+      database_url: sqlite:/shared/data.db
+      query: "SELECT * FROM events"
+      shard: { key: id }   # integer column to range-partition on
+```
+
+The coordinator computes `MIN(key)` / `MAX(key)` once and splits that range
+into half-open slices (`` `key` `` in the generated predicate, injection-safe).
+The boundary shards stay open-ended so rows inserted outside the captured
+range during the run are still read, and exactly one shard additionally
+matches `key IS NULL` so nullable keys are never silently dropped. Each shard
+keeps its own state key (`{run}::{shard}`), so a reassigned shard resumes
+where its previous owner left off.
+
+Outside the cluster coordinator the `shard` config has **no effect** — a plain
+`faucet run` streams the whole query.
+
+> Sharding a SQLite source across cluster workers requires every worker to
+> reach the same database file (e.g. a shared volume).
 
 ## License
 

@@ -29,7 +29,7 @@ mod config;
 mod convert;
 mod stream;
 
-pub use config::{MssqlReplication, MssqlSourceConfig};
+pub use config::{MssqlReplication, MssqlSourceConfig, ShardConfig};
 pub use stream::MssqlSource;
 
 // Re-export the shared connection/TLS types so users configure the source
