@@ -18,6 +18,43 @@ was started with `--no-auth`. The token is compared in constant time; the
 scrapers). `OPTIONS` preflight bypasses auth so browsers behind a CORS policy
 work.
 
+### RBAC & the audit log (`--auth-config`)
+
+A single `--auth-token` is one implicit **admin** principal. For a team
+deployment, `--auth-config <file>` promotes the server to **role-based access
+control**: a YAML/JSON file of principals, each a `{ name, token, role }`. Three
+built-in roles form a ladder:
+
+| Role | Permitted |
+|------|-----------|
+| `viewer` | read-only: `GET /v1/runs*`, `GET /v1/schemas*` |
+| `operator` | everything a viewer can do **plus** submit / cancel / delete runs, `POST /v1/doctor`, and firing triggers |
+| `admin` | everything, including `GET /v1/audit` |
+
+```yaml
+# auth.yaml
+principals:
+  - { name: alice, token: "${env:ALICE_TOKEN}", role: admin }
+  - { name: ci,    token: "${env:CI_TOKEN}",    role: operator }
+  - { name: dash,  token: "${env:DASH_TOKEN}",  role: viewer }
+```
+
+```bash
+faucet serve --auth-config auth.yaml
+```
+
+A request whose role lacks the route's required permission gets `403 forbidden`
+(and a `denied` audit record). `--auth-config` is mutually exclusive with
+`--auth-token` / `--no-auth`. Every token is registered for log redaction at
+startup.
+
+**Audit log.** Every mutating action (`run.submit` / `run.cancel` / `run.delete`)
+and every denied attempt is recorded with principal, role, action, run id,
+config fingerprint (submit), source IP, timestamp, and result. Admins read it via
+`GET /v1/audit`. Records persist in the run-history backend (`faucet_serve_audit`
+for the SQL backends; an in-memory ring otherwise) and expire with the
+`--retain-terminal-runs-secs` window.
+
 ## Endpoints
 
 | Method | Path | Success | Notes |
@@ -28,6 +65,7 @@ work.
 | `DELETE` | `/v1/runs/{id}` | `204` | Remove a terminal run from history |
 | `POST` | `/v1/runs/{id}/cancel` | `202` / `200` | Request cancel (202) or no-op if terminal (200) |
 | `GET` | `/v1/runs/{id}/logs` | `200` | Stream the run's logs as `text/event-stream` |
+| `GET` | `/v1/audit` | `200` | Read the audit log — **admin only** (RBAC). Filters: `principal`, `action`, `since`, `until`, `limit` |
 | `GET` | `/healthz` | `200` | Liveness (unauthenticated) |
 | `GET` | `/readyz` | `200`/`503` | Readiness (unauthenticated) |
 | `GET` | `/metrics` | `200` | Prometheus exposition (unauthenticated) |
@@ -139,6 +177,7 @@ Every error is a JSON `ApiError`:
 |--------|------|
 | `400` | Malformed body / parse / interpolation failure; a `schedule:` block in the config |
 | `401` | Missing/invalid bearer token |
+| `403` | Authenticated, but the principal's role lacks the required permission (RBAC) |
 | `404` | Unknown `run_id` |
 | `409` | `DELETE` on a running run; idempotency key reused with a different payload |
 | `413` | Body exceeds `--body-limit-bytes` |

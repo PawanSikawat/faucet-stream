@@ -79,6 +79,21 @@ pub const DDL: &[&str] = &[
         PRIMARY KEY (run_id, shard_id))",
     "CREATE INDEX IF NOT EXISTS faucet_serve_shards_claim_idx \
         ON faucet_serve_shards (status, lease_expires_at)",
+    // Audit log for RBAC (#205). One row per mutating (or denied) control-plane
+    // action. `id` is a time-ordered UUIDv7; `ts` is fixed-width RFC3339 so the
+    // newest-first ordering and retention purge sort lexicographically.
+    "CREATE TABLE IF NOT EXISTS faucet_serve_audit (\
+        id TEXT PRIMARY KEY,\
+        ts TEXT NOT NULL,\
+        principal TEXT NOT NULL,\
+        role TEXT NOT NULL,\
+        action TEXT NOT NULL,\
+        run_id TEXT,\
+        config_fingerprint TEXT,\
+        source_ip TEXT,\
+        result TEXT NOT NULL)",
+    "CREATE INDEX IF NOT EXISTS faucet_serve_audit_ts_idx \
+        ON faucet_serve_audit (ts)",
 ];
 
 /// SQL placeholder dialect.
@@ -177,6 +192,14 @@ pub struct Stmts {
     /// Purge shard rows whose parent run no longer exists (run-record purged by
     /// retention, F25). No params — a set-difference against `faucet_serve_runs`.
     pub purge_orphan_shards: String,
+    // ── Audit log (RBAC, #205) ───────────────────────────────────────────────
+    /// Append one audit record.
+    pub insert_audit: String,
+    /// Newest-first audit records matching the (nullable) filters. Param order:
+    /// principal, action, since, until, limit.
+    pub list_audit: String,
+    /// Purge audit records older than a threshold (retention).
+    pub purge_audit: String,
 }
 
 impl Stmts {
@@ -338,6 +361,19 @@ impl Stmts {
             purge_orphan_shards: "DELETE FROM faucet_serve_shards \
                 WHERE run_id NOT IN (SELECT run_id FROM faucet_serve_runs)"
                 .into(),
+            insert_audit: "INSERT INTO faucet_serve_audit \
+                (id, ts, principal, role, action, run_id, config_fingerprint, source_ip, result) \
+                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)"
+                .into(),
+            list_audit: "SELECT id, ts, principal, role, action, run_id, config_fingerprint, \
+                source_ip, result FROM faucet_serve_audit \
+                WHERE ($1::text IS NULL OR principal = $2::text) \
+                AND ($3::text IS NULL OR action = $4::text) \
+                AND ($5::text IS NULL OR ts >= $6::text) \
+                AND ($7::text IS NULL OR ts <= $8::text) \
+                ORDER BY ts DESC, id DESC LIMIT $9"
+                .into(),
+            purge_audit: "DELETE FROM faucet_serve_audit WHERE ts < $1".into(),
         }
     }
 
@@ -490,6 +526,19 @@ impl Stmts {
             purge_orphan_shards: "DELETE FROM faucet_serve_shards \
                 WHERE run_id NOT IN (SELECT run_id FROM faucet_serve_runs)"
                 .into(),
+            insert_audit: "INSERT INTO faucet_serve_audit \
+                (id, ts, principal, role, action, run_id, config_fingerprint, source_ip, result) \
+                VALUES (?,?,?,?,?,?,?,?,?)"
+                .into(),
+            list_audit: "SELECT id, ts, principal, role, action, run_id, config_fingerprint, \
+                source_ip, result FROM faucet_serve_audit \
+                WHERE (? IS NULL OR principal = ?) \
+                AND (? IS NULL OR action = ?) \
+                AND (? IS NULL OR ts >= ?) \
+                AND (? IS NULL OR ts <= ?) \
+                ORDER BY ts DESC, id DESC LIMIT ?"
+                .into(),
+            purge_audit: "DELETE FROM faucet_serve_audit WHERE ts < ?".into(),
         }
     }
 }
@@ -885,6 +934,11 @@ macro_rules! impl_sql_history {
                 // `purge_runs` removed the expired terminal records above, so any
                 // shard row no longer matching a run is orphaned. Best-effort.
                 let _ = sqlx::query(&self.stmts.purge_orphan_shards)
+                    .execute(&self.pool)
+                    .await;
+                // Drop audit records older than the run-retention window (#205).
+                let _ = sqlx::query(&self.stmts.purge_audit)
+                    .bind(sql::threshold(now, retain_for))
                     .execute(&self.pool)
                     .await;
                 Ok(removed)
@@ -1593,6 +1647,82 @@ macro_rules! impl_sql_history {
                     }
                 }
                 Ok(finalized)
+            }
+
+            // ── Audit log (RBAC, #205) ───────────────────────────────────────
+
+            async fn record_audit(
+                &self,
+                entry: &$crate::serve::history::AuditEntry,
+            ) -> Result<(), $crate::serve::history::HistoryError> {
+                use $crate::serve::history::HistoryError;
+                use $crate::serve::history::sql;
+                let backend = |e: sqlx::Error| HistoryError::Backend(e.to_string());
+                sqlx::query(&self.stmts.insert_audit)
+                    .bind(&entry.id)
+                    .bind(sql::fmt_ts(entry.timestamp))
+                    .bind(&entry.principal)
+                    .bind(&entry.role)
+                    .bind(&entry.action)
+                    .bind(entry.run_id.as_deref())
+                    .bind(entry.config_fingerprint.as_deref())
+                    .bind(entry.source_ip.as_deref())
+                    .bind(&entry.result)
+                    .execute(&self.pool)
+                    .await
+                    .map_err(backend)?;
+                Ok(())
+            }
+
+            async fn list_audit(
+                &self,
+                filter: &$crate::serve::history::AuditFilter,
+            ) -> Result<
+                Vec<$crate::serve::history::AuditEntry>,
+                $crate::serve::history::HistoryError,
+            > {
+                use sqlx::Row as _;
+                use $crate::serve::history::AuditEntry;
+                use $crate::serve::history::HistoryError;
+                use $crate::serve::history::sql;
+                let backend = |e: sqlx::Error| HistoryError::Backend(e.to_string());
+                let principal = filter.principal.as_deref();
+                let action = filter.action.as_deref();
+                let since = filter.since.map(sql::fmt_ts);
+                let until = filter.until.map(sql::fmt_ts);
+                let limit = filter.limit.max(1) as i64;
+                let rows = sqlx::query(&self.stmts.list_audit)
+                    .bind(principal)
+                    .bind(principal)
+                    .bind(action)
+                    .bind(action)
+                    .bind(since.as_deref())
+                    .bind(since.as_deref())
+                    .bind(until.as_deref())
+                    .bind(until.as_deref())
+                    .bind(limit)
+                    .fetch_all(&self.pool)
+                    .await
+                    .map_err(backend)?;
+                let mut out = Vec::with_capacity(rows.len());
+                for r in &rows {
+                    let ts: String = r.try_get("ts").map_err(backend)?;
+                    let timestamp = chrono::DateTime::parse_from_rfc3339(&ts)
+                        .map(|d| d.to_utc())
+                        .unwrap_or_else(|_| chrono::Utc::now());
+                    out.push(AuditEntry {
+                        id: r.try_get("id").map_err(backend)?,
+                        timestamp,
+                        principal: r.try_get("principal").map_err(backend)?,
+                        role: r.try_get("role").map_err(backend)?,
+                        action: r.try_get("action").map_err(backend)?,
+                        run_id: r.try_get("run_id").map_err(backend)?,
+                        config_fingerprint: r.try_get("config_fingerprint").map_err(backend)?,
+                        source_ip: r.try_get("source_ip").map_err(backend)?,
+                        result: r.try_get("result").map_err(backend)?,
+                    });
+                }
+                Ok(out)
             }
 
             fn degraded(&self) -> bool {

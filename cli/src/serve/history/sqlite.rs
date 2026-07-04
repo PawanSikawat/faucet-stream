@@ -232,6 +232,80 @@ mod shard_tests {
     }
 
     #[tokio::test]
+    async fn audit_record_list_filter_and_purge() {
+        use crate::serve::history::{AuditEntry, AuditFilter};
+        let dir = tempfile::tempdir().unwrap();
+        let h = backend(&url_in(dir.path()), "a", Duration::from_secs(60)).await;
+        let now = chrono::Utc::now();
+        let entry =
+            |id: &str, principal: &str, action: &str, result: &str, secs_ago: i64| AuditEntry {
+                id: id.into(),
+                timestamp: now - chrono::Duration::seconds(secs_ago),
+                principal: principal.into(),
+                role: "admin".into(),
+                action: action.into(),
+                run_id: Some(format!("r-{id}")),
+                config_fingerprint: Some("fp".into()),
+                source_ip: Some("127.0.0.1".into()),
+                result: result.into(),
+            };
+        h.record_audit(&entry("1", "alice", "run.submit", "ok", 3))
+            .await
+            .unwrap();
+        h.record_audit(&entry("2", "bob", "run.submit", "denied", 2))
+            .await
+            .unwrap();
+        h.record_audit(&entry("3", "alice", "run.cancel", "ok", 1))
+            .await
+            .unwrap();
+
+        // Newest first.
+        let all = h
+            .list_audit(&AuditFilter {
+                limit: 50,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(all.len(), 3);
+        assert_eq!(all[0].id, "3");
+        assert_eq!(all[0].run_id.as_deref(), Some("r-3"));
+        assert_eq!(all[0].source_ip.as_deref(), Some("127.0.0.1"));
+
+        // Filters.
+        let alice = h
+            .list_audit(&AuditFilter {
+                principal: Some("alice".into()),
+                limit: 50,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(alice.len(), 2);
+        let submits = h
+            .list_audit(&AuditFilter {
+                action: Some("run.submit".into()),
+                limit: 50,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(submits.len(), 2);
+
+        // purge_expired(0) drops all audit rows.
+        h.purge_expired(Duration::ZERO).await.unwrap();
+        assert!(
+            h.list_audit(&AuditFilter {
+                limit: 50,
+                ..Default::default()
+            })
+            .await
+            .unwrap()
+            .is_empty()
+        );
+    }
+
+    #[tokio::test]
     async fn release_idempotency_drops_the_claim() {
         // F21: releasing a claim lets a replay of the key start fresh instead of
         // 404-ing for the whole retention window.

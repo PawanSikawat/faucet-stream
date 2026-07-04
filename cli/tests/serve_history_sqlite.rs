@@ -304,6 +304,7 @@ async fn server_with_sqlite_history_persists_runs() {
     let args = ServeArgs {
         listen: format!("127.0.0.1:{port}"),
         auth_token: None,
+        auth_config: None,
         no_auth: true,
         max_concurrent_runs: Some(2),
         max_queued_runs: Some(8),

@@ -5,15 +5,20 @@
 use crate::cli::ServeArgs;
 use crate::error::{CliError, CliResult};
 use crate::serve::cluster::ClusterConfig;
+use crate::serve::rbac::{AuthContext, RbacConfig, Role};
 use std::net::SocketAddr;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 
 /// How `/v1/*` requests are authenticated.
 #[derive(Clone)]
 pub enum AuthMode {
-    /// Require `Authorization: Bearer <token>`.
+    /// Require `Authorization: Bearer <token>` — a single implicit `admin`
+    /// principal.
     Token(String),
+    /// Multi-principal RBAC from `--auth-config`: bearer token → principal → role.
+    Rbac(Arc<RbacConfig>),
     /// Authentication explicitly disabled via `--no-auth`.
     None,
 }
@@ -26,7 +31,31 @@ impl std::fmt::Debug for AuthMode {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             AuthMode::Token(_) => f.debug_tuple("Token").field(&"***").finish(),
+            AuthMode::Rbac(cfg) => f.debug_tuple("Rbac").field(cfg).finish(),
             AuthMode::None => f.write_str("None"),
+        }
+    }
+}
+
+impl AuthMode {
+    /// Resolve a request's `Authorization: Bearer` token to its [`AuthContext`],
+    /// or `None` if the credential is missing / invalid. `--no-auth` yields an
+    /// implicit `anonymous` admin so downstream authz + audit are uniform.
+    pub fn resolve(&self, bearer: Option<&str>) -> Option<AuthContext> {
+        match self {
+            AuthMode::None => Some(AuthContext {
+                principal: "anonymous".to_string(),
+                role: Role::Admin,
+                source_ip: None,
+            }),
+            AuthMode::Token(expected) => bearer
+                .filter(|t| crate::serve::auth::constant_time_eq(t.as_bytes(), expected.as_bytes()))
+                .map(|_| AuthContext {
+                    principal: "token".to_string(),
+                    role: Role::Admin,
+                    source_ip: None,
+                }),
+            AuthMode::Rbac(cfg) => bearer.and_then(|t| cfg.authenticate(t)),
         }
     }
 }
@@ -88,27 +117,40 @@ impl ServeConfig {
     /// Build + validate a `ServeConfig` from parsed CLI args. Enforces the
     /// no-auth gate: a server with neither a token nor `--no-auth` refuses to start.
     pub fn from_args(args: ServeArgs) -> CliResult<Self> {
-        let auth = match (args.auth_token, args.no_auth) {
-            (Some(t), _) if t.is_empty() => {
-                return Err(CliError::Serve(
-                    "--auth-token / FAUCET_SERVE_AUTH_TOKEN must not be empty \
-                     (use --no-auth to explicitly disable authentication)"
-                        .into(),
-                ));
+        // RBAC (`--auth-config`) takes precedence and is mutually exclusive with
+        // `--auth-token` / `--no-auth` (enforced by clap `conflicts_with`).
+        let auth = if let Some(path) = args.auth_config {
+            let rbac = RbacConfig::from_file(&path)?;
+            // Register every principal token so the RedactingWriter scrubs it
+            // from any tracing/log/error output for the process lifetime.
+            for token in rbac.tokens() {
+                crate::secrets::registry::register(token);
             }
-            (Some(t), _) => {
-                // Register so the RedactingWriter scrubs the token from any
-                // tracing/log/error output for the lifetime of the process.
-                crate::secrets::registry::register(&t);
-                AuthMode::Token(t)
-            }
-            (None, true) => AuthMode::None,
-            (None, false) => {
-                return Err(CliError::Serve(
-                    "refusing to start without authentication: pass --auth-token \
-                     (or FAUCET_SERVE_AUTH_TOKEN), or --no-auth to explicitly disable it"
-                        .into(),
-                ));
+            AuthMode::Rbac(Arc::new(rbac))
+        } else {
+            match (args.auth_token, args.no_auth) {
+                (Some(t), _) if t.is_empty() => {
+                    return Err(CliError::Serve(
+                        "--auth-token / FAUCET_SERVE_AUTH_TOKEN must not be empty \
+                         (use --no-auth to explicitly disable authentication)"
+                            .into(),
+                    ));
+                }
+                (Some(t), _) => {
+                    // Register so the RedactingWriter scrubs the token from any
+                    // tracing/log/error output for the lifetime of the process.
+                    crate::secrets::registry::register(&t);
+                    AuthMode::Token(t)
+                }
+                (None, true) => AuthMode::None,
+                (None, false) => {
+                    return Err(CliError::Serve(
+                        "refusing to start without authentication: pass --auth-token \
+                         (or FAUCET_SERVE_AUTH_TOKEN), --auth-config <file> for RBAC, \
+                         or --no-auth to explicitly disable it"
+                            .into(),
+                    ));
+                }
             }
         };
 
@@ -226,6 +268,7 @@ mod tests {
         crate::cli::ServeArgs {
             listen: "127.0.0.1:8080".into(),
             auth_token: None,
+            auth_config: None,
             no_auth: false,
             max_concurrent_runs: None,
             max_queued_runs: None,
@@ -268,6 +311,70 @@ mod tests {
         a.auth_token = Some("hunter2".into());
         let cfg = ServeConfig::from_args(a).unwrap();
         assert!(matches!(cfg.auth, AuthMode::Token(t) if t == "hunter2"));
+    }
+
+    #[test]
+    fn resolve_none_is_anonymous_admin() {
+        let ctx = AuthMode::None.resolve(None).unwrap();
+        assert_eq!(ctx.principal, "anonymous");
+        assert_eq!(ctx.role, Role::Admin);
+    }
+
+    #[test]
+    fn resolve_token_matches_only_exact() {
+        let mode = AuthMode::Token("s3cret".into());
+        let ctx = mode.resolve(Some("s3cret")).unwrap();
+        assert_eq!(ctx.principal, "token");
+        assert_eq!(ctx.role, Role::Admin);
+        assert!(mode.resolve(Some("wrong")).is_none());
+        assert!(mode.resolve(None).is_none());
+    }
+
+    #[test]
+    fn resolve_rbac_maps_token_to_principal() {
+        use crate::serve::rbac::{PrincipalSpec, RbacConfig};
+        let cfg = RbacConfig::new(vec![PrincipalSpec {
+            name: "bob".into(),
+            token: "viewer-tok".into(),
+            role: Role::Viewer,
+        }])
+        .unwrap();
+        let mode = AuthMode::Rbac(Arc::new(cfg));
+        let ctx = mode.resolve(Some("viewer-tok")).unwrap();
+        assert_eq!(ctx.principal, "bob");
+        assert_eq!(ctx.role, Role::Viewer);
+        assert!(mode.resolve(Some("nope")).is_none());
+    }
+
+    #[test]
+    fn auth_config_file_builds_rbac_and_registers_tokens() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("auth.yaml");
+        std::fs::write(
+            &path,
+            "principals:\n  - name: carol\n    token: rbacsecret12345\n    role: operator\n",
+        )
+        .unwrap();
+        let mut a = base_args();
+        a.auth_config = Some(path);
+        let cfg = ServeConfig::from_args(a).unwrap();
+        assert!(matches!(cfg.auth, AuthMode::Rbac(_)));
+        // Every principal token must be registered for log redaction.
+        let scrubbed = crate::secrets::registry::redact("t=rbacsecret12345 end").into_owned();
+        assert!(!scrubbed.contains("rbacsecret12345"), "{scrubbed}");
+    }
+
+    #[test]
+    fn auth_config_debug_masks_tokens() {
+        use crate::serve::rbac::{PrincipalSpec, RbacConfig};
+        let cfg = RbacConfig::new(vec![PrincipalSpec {
+            name: "x".into(),
+            token: "supersecretrbac".into(),
+            role: Role::Admin,
+        }])
+        .unwrap();
+        let s = format!("{:?}", AuthMode::Rbac(Arc::new(cfg)));
+        assert!(!s.contains("supersecretrbac"), "rbac token leaked: {s}");
     }
 
     #[test]

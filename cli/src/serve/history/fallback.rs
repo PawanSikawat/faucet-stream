@@ -9,8 +9,8 @@
 
 use super::memory::MemoryHistory;
 use super::{
-    Claim, DeleteOutcome, HistoryError, InstanceHeartbeat, InstanceRecord, ListFilter, ListPage,
-    ReclaimReport, RunHistory, RunRecord, RunStatus,
+    AuditEntry, AuditFilter, Claim, DeleteOutcome, HistoryError, InstanceHeartbeat, InstanceRecord,
+    ListFilter, ListPage, ReclaimReport, RunHistory, RunRecord, RunStatus,
 };
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -238,6 +238,13 @@ impl RunHistory for FallbackHistory {
     }
     async fn finalize_completed_sharded_parents(&self) -> Result<usize, HistoryError> {
         via!(self, p => p.finalize_completed_sharded_parents(), f => f.finalize_completed_sharded_parents())
+    }
+
+    async fn record_audit(&self, entry: &AuditEntry) -> Result<(), HistoryError> {
+        via!(self, p => p.record_audit(entry), f => f.record_audit(entry))
+    }
+    async fn list_audit(&self, filter: &AuditFilter) -> Result<Vec<AuditEntry>, HistoryError> {
+        via!(self, p => p.list_audit(filter), f => f.list_audit(filter))
     }
 
     fn degraded(&self) -> bool {

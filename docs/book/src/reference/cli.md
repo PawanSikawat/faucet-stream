@@ -319,6 +319,7 @@ Selected flags (`faucet serve --help` for the full list):
 |------|---------|
 | `--listen <addr>` | Bind address (default `127.0.0.1:8080`; env `FAUCET_SERVE_LISTEN`). |
 | `--auth-token <t>` / `--no-auth` | Bearer token (prefer the env var) or explicit no-auth opt-in. |
+| `--auth-config <path>` | RBAC principals file (`{ name, token, role }`; roles `viewer`/`operator`/`admin`) — enables role enforcement + the `GET /v1/audit` log. Mutually exclusive with `--auth-token`/`--no-auth`. |
 | `--max-concurrent-runs <n>` / `--max-queued-runs <n>` | Concurrency + queue caps (429 past the queue). |
 | `--history <url>` | `postgres://…` / `sqlite:…` for durable run history (feature-gated; default in-memory). |
 | `--default-config <path>` | Workspace defaults merged under every submitted run. |
