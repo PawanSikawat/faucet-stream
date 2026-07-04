@@ -108,6 +108,7 @@ faucet schema transform keys_case
 faucet schema dlq
 faucet schema execution
 faucet schema contract
+faucet schema sla
 faucet schema secrets
 faucet schema triggers
 ```
@@ -118,6 +119,9 @@ transform (e.g. `keys_case` lists the valid `mode:` values). Run
 
 `faucet schema execution` prints the schema for the top-level `execution:`
 block, including concurrency, error handling, and adaptive batch sizing.
+
+`faucet schema sla` prints the schema for the top-level `sla:`
+(freshness/volume SLA) block — see [SLA monitoring](../cookbook/sla.md).
 
 `faucet schema secrets` prints the directive grammar and auth requirements for
 all four secrets-manager backends in machine-readable JSON — useful for tooling
@@ -159,6 +163,9 @@ times; the **exit code equals the number of failed probes** (clamped to 255).
   `PING`, `tables.get`, cluster health, `fetch_metadata`, or a directory-writable
   check for file sinks. Never a real write.
 - **State stores** do a sentinel `put`/`get`/`delete` that leaves no residue.
+- **SLA** (when a top-level [`sla:` block](config.md#sla) is configured) reads the
+  persisted run history and reports staleness of the last successful run vs
+  `max_staleness_secs` and volume-baseline warm-up state — read-only.
 
 Child invocations (parent/child matrix rows) are listed but not probed — their
 configs depend on parent records that only exist at run time. Probe messages are

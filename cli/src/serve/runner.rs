@@ -425,6 +425,9 @@ async fn execute_shard(
         clock,
         cancel: Some(coop.clone()),
         resilience,
+        // Inert under `shard: Some(..)` (a shard's volume is not the row's) —
+        // carried for uniformity with the whole-run path below.
+        sla: cfg.sla.clone(),
         #[cfg(feature = "lineage")]
         lineage,
         #[cfg(feature = "lineage")]
@@ -766,7 +769,21 @@ pub(crate) async fn run_doctor_first(
     let ctx = CheckContext {
         timeout: state.probe_timeout(),
     };
-    let mut invs = crate::commands::doctor::probe_roots(&loaded.nodes, &auth, &ctx).await;
+    // Same pipeline-name derivation as the run path above, so SLA probes read
+    // the state keys the executor writes.
+    let pipeline_name = loaded
+        .cfg
+        .name
+        .clone()
+        .unwrap_or_else(|| "serve".to_string());
+    let mut invs = crate::commands::doctor::probe_roots(
+        &loaded.nodes,
+        &auth,
+        &ctx,
+        loaded.cfg.sla.as_ref(),
+        &pipeline_name,
+    )
+    .await;
     let failed = crate::commands::doctor::count_failures(&invs);
     // Redact regardless of outcome — the report is surfaced either way (as the
     // 422 `details` on failure, or stored on the run record on success).
@@ -1123,6 +1140,7 @@ async fn execute_run(
         clock,
         cancel: Some(coop.clone()),
         resilience,
+        sla: cfg.sla.clone(),
         #[cfg(feature = "lineage")]
         lineage,
         #[cfg(feature = "lineage")]

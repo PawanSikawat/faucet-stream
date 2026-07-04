@@ -129,6 +129,7 @@ pub async fn run(args: ScheduleArgs) -> CliResult<()> {
             &compiled,
             &pipeline_name,
             &resilience,
+            &cfg.sla,
             #[cfg(feature = "lineage")]
             &lineage,
             #[cfg(feature = "lineage")]
@@ -146,6 +147,7 @@ pub async fn run(args: ScheduleArgs) -> CliResult<()> {
         cron,
         timezone,
         resilience,
+        cfg.sla.clone(),
         #[cfg(feature = "lineage")]
         lineage,
         #[cfg(feature = "lineage")]
@@ -163,6 +165,7 @@ fn make_opts(
     auth: &AuthCatalog,
     clock: chrono::DateTime<chrono::FixedOffset>,
     resilience: &Option<faucet_core::ResiliencePolicy>,
+    sla: &Option<crate::sla::SlaSpec>,
     #[cfg(feature = "lineage")] lineage: &Option<std::sync::Arc<faucet_lineage::LineageEmitter>>,
     #[cfg(feature = "lineage")] lineage_cfg: &Option<faucet_lineage::LineageConfig>,
 ) -> ExecuteOptions {
@@ -177,6 +180,7 @@ fn make_opts(
         clock,
         cancel: None,
         resilience: resilience.clone(),
+        sla: sla.clone(),
         #[cfg(feature = "lineage")]
         lineage: lineage.clone(),
         #[cfg(feature = "lineage")]
@@ -287,6 +291,7 @@ async fn run_once(
     compiled: &CompiledSchedule,
     pipeline_name: &str,
     resilience: &Option<faucet_core::ResiliencePolicy>,
+    sla: &Option<crate::sla::SlaSpec>,
     #[cfg(feature = "lineage")] lineage: &Option<std::sync::Arc<faucet_lineage::LineageEmitter>>,
     #[cfg(feature = "lineage")] lineage_cfg: &Option<faucet_lineage::LineageConfig>,
 ) -> CliResult<()> {
@@ -298,6 +303,7 @@ async fn run_once(
         auth,
         compiled.clock_at(now),
         resilience,
+        sla,
         #[cfg(feature = "lineage")]
         lineage,
         #[cfg(feature = "lineage")]
@@ -333,6 +339,7 @@ async fn run_loop(
     cron: String,
     timezone: String,
     resilience: Option<faucet_core::ResiliencePolicy>,
+    sla: Option<crate::sla::SlaSpec>,
     #[cfg(feature = "lineage")] lineage: Option<std::sync::Arc<faucet_lineage::LineageEmitter>>,
     #[cfg(feature = "lineage")] lineage_cfg: Option<faucet_lineage::LineageConfig>,
 ) -> CliResult<()> {
@@ -402,6 +409,7 @@ async fn run_loop(
                         &auth,
                         compiled.clock_at(next_due),
                         &resilience,
+                        &sla,
                         #[cfg(feature = "lineage")]
                         &lineage,
                         #[cfg(feature = "lineage")]
@@ -537,6 +545,7 @@ async fn run_loop(
                                 &auth,
                                 compiled.clock_at(sched_for),
                                 &resilience,
+                                &sla,
                                 #[cfg(feature = "lineage")]
                                 &lineage,
                                 #[cfg(feature = "lineage")]
@@ -755,6 +764,7 @@ mod tests {
             &auth,
             Utc::now().fixed_offset(),
             &None,
+            &None,
             #[cfg(feature = "lineage")]
             &None,
             #[cfg(feature = "lineage")]
@@ -786,6 +796,7 @@ mod tests {
             &None,
             &auth,
             clock,
+            &None,
             &None,
             #[cfg(feature = "lineage")]
             &None,

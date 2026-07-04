@@ -384,6 +384,8 @@ pub enum SchemaTarget {
     Execution,
     /// JSON Schema for the top-level `resilience:` block.
     Resilience,
+    /// JSON Schema for the top-level `sla:` (freshness/volume SLA) block.
+    Sla,
     /// JSON Schema for the `quality:` block.
     #[cfg(feature = "quality")]
     Quality,

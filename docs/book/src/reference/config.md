@@ -469,6 +469,42 @@ explicitly; otherwise the injected policy's `max_attempts` + `base` apply (its
 `retry_on` / `max` / `jitter` are inert on REST, honored on `xml` / `graphql`
 and on every sink-side write).
 
+## `sla`
+
+Optional top-level block declaring a freshness/volume SLA for the pipeline
+(evaluated after every root invocation by `faucet run` / `schedule` / `serve` /
+`replicate`). Fully opt-in and **never fails a run**: violations emit the
+`faucet_pipeline_sla_violations_total{pipeline,row,kind}` counter and a
+structured warning, and `faucet doctor` reports staleness / baseline health.
+See the [SLA monitoring cookbook](../cookbook/sla.md).
+
+```yaml
+sla:
+  max_staleness_secs: 7200     # stale when no successful run within 2h
+  min_rows_per_run: 1          # a successful run writing fewer records violates
+  volume_anomaly:              # learned-baseline anomaly detection
+    method: zscore             # zscore | iqr
+    sensitivity: 3.0           # zscore default 3.0; iqr default 1.5
+    min_history: 5             # successful runs before detection starts
+    window: 20                 # rolling baseline size
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `max_staleness_secs` | int | — | Maximum seconds since the last **successful** run. Evaluated when a run fails (against the previous success) and by `faucet doctor`. Requires a `state:` block. |
+| `min_rows_per_run` | int | — | Static volume floor for a successful run (catches a source silently returning nothing). Stateless — works without a `state:` block. |
+| `volume_anomaly.method` | `zscore` \| `iqr` | `zscore` | How a successful run's volume is compared against the rolling baseline of recent successful runs. |
+| `volume_anomaly.sensitivity` | float | `3.0` / `1.5` | `zscore`: max \|x − mean\| / std. `iqr`: Tukey fence multiplier. Defaults per method. |
+| `volume_anomaly.min_history` | int | `5` | Cold-start guard: successful runs of history required before detection fires (min 2). |
+| `volume_anomaly.window` | int | `20` | Rolling window of successful-run volumes kept as the baseline (≥ `min_history`). |
+
+At least one of the three checks must be set. `max_staleness_secs` /
+`volume_anomaly` require a `state:` block (enforced at config load); the
+history is persisted next to the pipeline's bookmarks under
+`{name}::{row}::__sla__`. With a `memory` state store the history only
+persists within a single `faucet schedule` / `serve` process. Schema:
+`faucet schema sla`.
+
 ## `replication`
 
 Present only when you run [`faucet replicate`](cli.md#replicate). It turns the

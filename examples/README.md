@@ -33,6 +33,7 @@ These run immediately after installing the CLI — great for a first smoke test:
 |---------|-------|
 | `csv_to_jsonl.yaml` | the canonical smoke test (`make demo` runs this) |
 | `csv_to_jsonl_with_contract.yaml` | a versioned data contract (`contract:` block) quarantining breaching records to a DLQ; inspect with `faucet contract` |
+| `csv_to_jsonl_with_sla.yaml` | freshness/volume SLA monitoring (`sla:` block) — staleness, min-rows floor, and learned-baseline volume anomaly detection |
 | `csv_to_jsonl_sql.yaml` | CSV → SQL GROUP BY + LEFT JOIN (embedded DuckDB) → JSONL; requires `--features transform-sql` |
 | `csv_to_sqlite.yaml` | CSV → local SQLite file |
 | `sqlite_to_jsonl.yaml`, `sqlite_to_csv.yaml` | local SQLite → file |

@@ -28,6 +28,10 @@ pub async fn run(args: SchemaArgs) -> CliResult<()> {
             let s = faucet_core::schema_for!(crate::config::ResilienceSpec);
             serde_json::to_value(s).unwrap_or_else(|_| serde_json::json!({"type": "object"}))
         }
+        SchemaTarget::Sla => {
+            let s = faucet_core::schema_for!(crate::sla::SlaSpec);
+            serde_json::to_value(s).unwrap_or_else(|_| serde_json::json!({"type": "object"}))
+        }
         #[cfg(feature = "quality")]
         SchemaTarget::Quality => {
             let quality_schema = faucet_core::schema_for!(faucet_core::QualitySpec);
@@ -121,6 +125,24 @@ mod tests {
         let schema = faucet_core::schema_for!(crate::config::ExecutionSpec);
         let value = serde_json::to_value(schema).expect("execution schema serializes");
         assert!(value["properties"].get("adaptive_batch_size").is_some());
+    }
+
+    #[tokio::test]
+    async fn schema_sla_target_ok() {
+        let r = super::run(SchemaArgs {
+            target: SchemaTarget::Sla,
+        })
+        .await;
+        assert!(r.is_ok(), "{r:?}");
+    }
+
+    #[test]
+    fn sla_schema_exposes_the_three_checks() {
+        let schema = faucet_core::schema_for!(crate::sla::SlaSpec);
+        let out = serde_json::to_string(&schema).expect("sla schema serializes");
+        assert!(out.contains("max_staleness_secs"), "{out}");
+        assert!(out.contains("min_rows_per_run"), "{out}");
+        assert!(out.contains("volume_anomaly"), "{out}");
     }
 
     #[tokio::test]

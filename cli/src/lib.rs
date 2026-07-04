@@ -35,6 +35,7 @@ pub mod schedule;
 pub mod secrets;
 #[cfg(feature = "serve")]
 pub mod serve;
+pub mod sla;
 pub mod state;
 pub mod transforms;
 
@@ -95,6 +96,7 @@ pub async fn run_from_yaml_str(yaml: &str) -> CliResult<executor::RunSummary> {
             clock: chrono::Utc::now().fixed_offset(),
             cancel: None,
             resilience,
+            sla: cfg.sla.clone(),
             #[cfg(feature = "lineage")]
             lineage: None,
             #[cfg(feature = "lineage")]

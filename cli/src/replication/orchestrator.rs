@@ -25,6 +25,8 @@ pub struct ReplicationOptions {
     pub clock: DateTime<FixedOffset>,
     /// Optional resilience policy, applied to both the snapshot and CDC phases.
     pub resilience: Option<faucet_core::ResiliencePolicy>,
+    /// Optional freshness/volume SLA (#202), evaluated after each phase's runs.
+    pub sla: Option<crate::sla::SlaSpec>,
 }
 
 /// Build the snapshot-phase node by cloning the CDC node and swapping in the
@@ -77,6 +79,7 @@ fn make_opts(opts: &ReplicationOptions, cancel: Option<CancellationToken>) -> Ex
         clock: opts.clock,
         cancel,
         resilience: opts.resilience.clone(),
+        sla: opts.sla.clone(),
         #[cfg(feature = "lineage")]
         lineage: None,
         #[cfg(feature = "lineage")]

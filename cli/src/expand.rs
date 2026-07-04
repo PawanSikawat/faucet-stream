@@ -513,6 +513,36 @@ pub fn expand(cfg: &PipelineConfig) -> CliResult<Vec<ExpandedNode>> {
             )));
         }
 
+        // SLA gate (load-time, #202): validate the spec once per row and
+        // require a `state:` block when staleness / volume-anomaly checks need
+        // persisted history. `min_rows_per_run` alone is stateless and passes
+        // without one.
+        if let Some(ref sla) = cfg.sla {
+            sla.validate()
+                .map_err(|e| CliError::Config(format!("sla: {e}")))?;
+            if sla.needs_state() {
+                match state.as_ref() {
+                    None => {
+                        return Err(CliError::Config(format!(
+                            "row '{row_id}': sla.max_staleness_secs / sla.volume_anomaly \
+                             need persisted run history — add a `state:` block \
+                             (min_rows_per_run alone works without one)"
+                        )));
+                    }
+                    Some(s) if s.kind == "memory" => {
+                        tracing::warn!(
+                            row = %row_id,
+                            "sla: the `memory` state store resets on process exit — \
+                             staleness/volume baselines only persist within a single \
+                             `faucet schedule`/`serve` process; use `file`, `redis`, \
+                             or `postgres` for one-shot runs"
+                        );
+                    }
+                    Some(_) => {}
+                }
+            }
+        }
+
         // write_mode × sink validation (load-time): reject an unsupported mode
         // for the sink kind, and upsert/delete without a key, before any run.
         // Runs for every row; append rows pass trivially.

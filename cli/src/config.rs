@@ -89,6 +89,14 @@ pub struct PipelineConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resilience: Option<ResilienceSpec>,
 
+    /// Optional data-freshness & volume SLA (#202). Top-level in v1 (not
+    /// per-matrix-row, like `resilience:`). Evaluated after every root
+    /// invocation by `faucet run`/`schedule`/`serve`/`replicate`; violations
+    /// emit metrics + warnings and never fail the run. Staleness/volume checks
+    /// require a `state:` block (enforced at expand time).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sla: Option<crate::sla::SlaSpec>,
+
     /// Optional source-shard distribution for clustered (Mode B) execution.
     /// Only consumed by `faucet serve --cluster`: a run whose source
     /// [is shardable](faucet_core::Source::is_shardable) is split into
