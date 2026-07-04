@@ -308,6 +308,17 @@ Topics are sorted alphabetically before joining, so the key is stable regardless
 
 **Delivery semantics:** offsets are persisted only after the sink confirms, and on restart the consumer seeds the assignment with the bookmark before the first fetch. End-to-end this is **at-least-once** if the sink can fail mid-batch; pair with an idempotent sink for stricter guarantees. (The Kafka source does *not* advertise faucet-stream's exactly-once `delivery` mode — that gate requires a CDC source.)
 
+## Clustered consumption (Mode B, native consumer groups)
+
+Under `faucet serve --cluster`, a top-level `shard: { count: N }` block distributes one Kafka pipeline across N cluster workers using **Kafka's native consumer-group assignment** ([#261](https://github.com/PawanSikawat/faucet-stream/issues/261)) — each shard is a *membership slot* (one more consumer sharing the config's `group_id`), not a data slice. The broker assigns the topic's partitions across the members and rebalances onto survivors when a worker dies; the requested member count is capped at the subscription's total partition count.
+
+In member mode (i.e. only when a cluster coordinator applies a shard — a plain `faucet run` is unchanged) the source additionally:
+
+- **commits offsets to the consumer group at durable page boundaries** — after the pipeline has written a page to the sink and persisted its bookmark, plus a synchronous commit at stream end — so a partition that migrates to another member resumes from the last durable position instead of `auto_offset_reset`;
+- **defers bookmark seeks to the group's committed offsets** whenever those are ahead (another member may have durably advanced a partition past this member's bookmark); a bookmark *ahead* of the committed offset — the durable-write→commit crash window — still wins.
+
+The boundary on membership change is **at-least-once**: a crash between a durable page and its commit makes the partition's next owner re-read that page. Pair with an upsert-mode or otherwise idempotent sink. Note `max_messages` applies per member (N members consume up to N × `max_messages` total); `idle_timeout` is the natural terminator for shared consumption. See the [cluster cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/cluster.html) for the full Mode B walkthrough.
+
 ## Config loading & schema introspection
 
 Load from YAML/JSON or environment. Inspect the full JSON Schema with:

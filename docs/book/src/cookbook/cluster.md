@@ -296,6 +296,7 @@ finalized to `completed`/`failed` once every shard is terminal.
 | `s3` | hash-of-object-key modulo N | automatic (no config) |
 | `gcs` | hash-of-object-key modulo N | automatic (no config) |
 | `parquet` | hash-of-file-path modulo N | automatic (no config) |
+| `kafka` | native consumer-group membership | automatic (no config) |
 
 > **NULL shard keys are not dropped.** Rows whose `shard` key column is `NULL`
 > fall outside every range predicate, so the SQL sharders assign them to
@@ -311,8 +312,66 @@ database file (e.g. a shared volume). On `mssql` with incremental replication,
 shard bounds are computed over the not-yet-synced slice (the `@bookmark`
 binding is honoured during enumeration).
 
-Kafka uses native consumer-group assignment instead ([#261](https://github.com/PawanSikawat/faucet-stream/issues/261)).
 A non-shardable source (or a matrix pipeline) ignores `shard:` and runs whole — Mode B is fully backward compatible.
+
+### Kafka: native consumer-group sharding
+
+Kafka already solves work distribution inside the broker, so the `kafka`
+source does not enumerate data slices like the sharders above
+([#261](https://github.com/PawanSikawat/faucet-stream/issues/261)). Each shard
+is a **membership slot**: `shard.count: N` makes N workers each run one more
+consumer with the pipeline's `group_id`, and Kafka's consumer-group protocol
+assigns the topic's partitions across them — killing a worker triggers a
+broker-side rebalance onto the survivors immediately (well before the shard
+lease even expires), and the reclaimed membership slot simply rejoins the
+group on another worker.
+
+```yaml
+version: 1
+name: orders-fanin
+shard:
+  count: 4            # four cooperating members of the consumer group
+pipeline:
+  source:
+    type: kafka
+    config:
+      brokers: broker-1:9092,broker-2:9092
+      topics: [orders]
+      group_id: faucet-orders     # ALL members share this group
+      idle_timeout: 60
+  sink:
+    type: postgres
+    config:
+      connection_url: ${env:WAREHOUSE_URL}
+      table_name: orders
+      column_mapping: auto_map
+      write_mode: upsert
+      key: [id]
+  state: { type: postgres, config: { connection_url: ${env:STATE_URL} } }
+```
+
+How it differs from the other sharders:
+
+- **The broker decides the split.** Which member consumes which partition is
+  Kafka's choice, not faucet's; the member count is capped at the
+  subscription's total partition count (an extra member would sit idle).
+- **Offset continuity is Kafka-managed.** In member mode each consumer
+  *commits offsets to the group* at durable page boundaries (after the sink
+  confirmed the page and its bookmark persisted; plus a synchronous commit at
+  stream end). A partition that migrates to another member — rebalance,
+  worker death, shard reclaim — resumes from the last committed (= durable)
+  position instead of `auto.offset.reset`. The per-shard state-store bookmark
+  remains the safety net for the tiny durable-write→commit crash window: a
+  member seeks to its bookmark only when it is *ahead* of the committed
+  offset, never behind.
+- **The boundary is at-least-once on membership change.** A crash between a
+  durable page and its commit makes the partition's next owner re-read that
+  page. Pair with `write_mode: upsert` or an idempotent destination, as with
+  every clustered run.
+- **Termination:** each member stops on its own `idle_timeout` /
+  `max_messages` (`max_messages` is per member — N members consume up to N ×
+  `max_messages` in total). `idle_timeout` is the natural terminator for
+  shared consumption; a non-cluster Kafka run is completely unchanged.
 
 ### Per-shard resume and rebalancing
 

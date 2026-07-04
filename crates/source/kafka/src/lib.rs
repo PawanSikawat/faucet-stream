@@ -10,6 +10,7 @@
 pub mod config;
 pub(crate) mod context;
 pub mod decode;
+pub mod shard;
 pub mod state;
 pub mod stream;
 
