@@ -84,6 +84,14 @@ pub async fn run(args: DoctorArgs) -> CliResult<()> {
     let ctx = CheckContext {
         timeout: Duration::from_secs(args.timeout_secs),
     };
+    // Same derivation as `faucet run`, so the SLA probes read the same
+    // state keys the executor writes.
+    let pipeline_name = cfg.name.clone().unwrap_or_else(|| {
+        path.file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("pipeline")
+            .to_owned()
+    });
 
     let roots: Vec<&ExpandedNode> = nodes
         .iter()
@@ -91,7 +99,7 @@ pub async fn run(args: DoctorArgs) -> CliResult<()> {
         .collect();
     let n_children = nodes.len() - roots.len();
 
-    let mut invocations = probe_roots(&nodes, &auth, &ctx).await;
+    let mut invocations = probe_roots(&nodes, &auth, &ctx, cfg.sla.as_ref(), &pipeline_name).await;
 
     // Lineage transport reachability — one pipeline-wide probe (the `lineage:`
     // block is top-level, not per-row), rendered as its own invocation entry so
@@ -126,7 +134,10 @@ pub async fn run(args: DoctorArgs) -> CliResult<()> {
     Ok(())
 }
 
-/// Build the three connectors for one invocation and run their probes.
+/// Build the three connectors for one invocation and run their probes. When an
+/// `sla:` block is configured, `sla` carries the spec plus the invocation's
+/// base state key so the persisted SLA history can be probed read-only
+/// (staleness vs `max_staleness_secs`, volume-baseline warm-up).
 pub async fn probe_invocation(
     id: String,
     source: ConnectorSpec,
@@ -134,6 +145,7 @@ pub async fn probe_invocation(
     state: Option<StateStoreSpec>,
     auth: &AuthCatalog,
     ctx: &CheckContext,
+    sla: Option<(crate::sla::SlaSpec, String)>,
 ) -> InvocationOut {
     let mut probes = Vec::new();
 
@@ -151,11 +163,36 @@ pub async fn probe_invocation(
         Err(e) => probes.push(construct_fail("sink", &sink.kind, &e)),
     }
 
+    let mut store = None;
     if let Some(spec) = state {
         match build_state_store(&spec).await {
-            Ok(st) => probes.extend(collect_probes("state", &spec.kind, ctx, st.check(ctx)).await),
+            Ok(st) => {
+                probes.extend(collect_probes("state", &spec.kind, ctx, st.check(ctx)).await);
+                store = Some(st);
+            }
             Err(e) => probes.push(construct_fail("state", &spec.kind, &e)),
         }
+    }
+
+    if let Some((spec, base_key)) = sla {
+        let now = chrono::Utc::now().timestamp();
+        let sla_probes = tokio::time::timeout(
+            ctx.timeout,
+            crate::sla::doctor_probes(&spec, store.as_ref(), &base_key, now),
+        )
+        .await
+        .unwrap_or_else(|_| {
+            vec![Probe::fail(
+                "history",
+                ctx.timeout,
+                "SLA state read timed out",
+            )]
+        });
+        probes.extend(
+            sla_probes
+                .into_iter()
+                .map(|p| ProbeOut::from_probe("sla", "sla".to_string(), p)),
+        );
     }
 
     InvocationOut {
@@ -193,11 +230,15 @@ pub async fn probe_lineage(
 
 /// Probe every *root* invocation's source/sink/state concurrently (bounded).
 /// Child invocations are skipped — their configs need parent records. Reused by
-/// `faucet doctor` and serve's `doctor_first` preflight.
+/// `faucet doctor` and serve's `doctor_first` preflight. `sla` /
+/// `pipeline_name` come from the top-level config; when set, each root also
+/// gets read-only SLA staleness/baseline probes against its state store.
 pub async fn probe_roots(
     nodes: &[ExpandedNode],
     auth: &AuthCatalog,
     ctx: &CheckContext,
+    sla: Option<&crate::sla::SlaSpec>,
+    pipeline_name: &str,
 ) -> Vec<InvocationOut> {
     let sem = Arc::new(Semaphore::new(8));
     let mut handles = Vec::new();
@@ -209,9 +250,15 @@ pub async fn probe_roots(
         let auth = auth.clone();
         let ctx = ctx.clone();
         let sem = sem.clone();
+        let sla = sla.map(|s| {
+            (
+                s.clone(),
+                crate::executor::build_state_key(pipeline_name, &node.id, None),
+            )
+        });
         handles.push(tokio::spawn(async move {
             let _permit = sem.acquire_owned().await.expect("semaphore not closed");
-            probe_invocation(id, source, sink, state, &auth, &ctx).await
+            probe_invocation(id, source, sink, state, &auth, &ctx, sla).await
         }));
     }
     let mut out = Vec::with_capacity(handles.len());

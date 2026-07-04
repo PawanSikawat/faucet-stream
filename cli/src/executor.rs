@@ -81,6 +81,11 @@ pub struct ExecuteOptions {
     /// rest/xml/graphql sources. Built once from the top-level `resilience:`
     /// block; `None` preserves today's behaviour.
     pub resilience: Option<faucet_core::ResiliencePolicy>,
+    /// Optional freshness/volume SLA (#202), evaluated after every **root**
+    /// invocation against history persisted in the node's state store.
+    /// Violations emit metrics + warnings; they never fail the run. `None`
+    /// disables the pass entirely.
+    pub sla: Option<crate::sla::SlaSpec>,
     /// Shared OpenLineage emitter, built once from the `lineage:` block. `None`
     /// disables lineage (and adds zero overhead). Gated on the `lineage` feature.
     #[cfg(feature = "lineage")]
@@ -840,6 +845,9 @@ async fn run_one_invocation(
     //    executor's per-row state key is used instead of the source's natural
     //    one (which is shared across all matrix rows of the same kind).
     let state = build_state_for_node(node, opts.state_path_override.as_deref()).await?;
+    // Keep a handle for the post-run SLA pass (#202) — `state` itself is moved
+    // into the pipeline below.
+    let sla_store = state.clone();
     // Per-shard bookmark: suffix the state key with the shard id so a reassigned
     // shard resumes where its dead owner left off, independent of sibling shards.
     let effective_state_key = match &opts.shard {
@@ -891,13 +899,11 @@ async fn run_one_invocation(
         pipeline
     };
     // Cooperative cancellation: a cancelled token makes the streaming loop stop
-    // at the next page boundary and flush the sink (#146 H16). Under lineage we
-    // hand the pipeline a clone so the terminal-event classification below can
-    // still read `cancel.is_cancelled()` (cheap — the token is an `Arc`).
-    #[cfg(feature = "lineage")]
+    // at the next page boundary and flush the sink (#146 H16). The pipeline
+    // takes a clone so the lineage terminal-event classification and the SLA
+    // pass below can still read `cancel.is_cancelled()` (cheap — the token is
+    // an `Arc`).
     let pipeline = pipeline.with_cancel(cancel.clone());
-    #[cfg(not(feature = "lineage"))]
-    let pipeline = pipeline.with_cancel(cancel);
     // Pipeline-level quality checks (v1: no matrix-row override). `expand`
     // already validated this spec, but compile again here to obtain the
     // runtime `CompiledQuality`; map any error to a config-level failure.
@@ -1074,6 +1080,38 @@ async fn run_one_invocation(
             Ok(_) => faucet_lineage::EventType::Complete,
         };
         em.emit(ev, &ctx).await;
+    }
+
+    // ── SLA post-run evaluation (#202) ───────────────────────────────────────
+    // Roots only: children fan out per parent record, so their volumes are not
+    // a stable series to baseline (same scoping as `faucet doctor`). Skipped
+    // for dry-run / --limit (synthetic volumes would poison the baseline), for
+    // shard executions (a shard's volume is a fraction of the row's, and shard
+    // counts change run to run), and for cancelled runs (a partial volume is
+    // not a signal). Monitoring never fails the run — see `evaluate_post_run`.
+    if let Some(spec) = &opts.sla
+        && matches!(node.role, NodeRole::Root)
+        && !opts.dry_run
+        && opts.limit.is_none()
+        && opts.shard.is_none()
+        && !cancel.is_cancelled()
+    {
+        let outcome = match &result {
+            Ok(r) => crate::sla::RunOutcome::Success {
+                rows: r.records_written as u64,
+            },
+            Err(_) => crate::sla::RunOutcome::Failure,
+        };
+        crate::sla::evaluate_post_run(
+            spec,
+            sla_store.as_ref(),
+            state_key,
+            &obs_labels.pipeline,
+            &obs_labels.row,
+            outcome,
+            chrono::Utc::now().timestamp(),
+        )
+        .await;
     }
 
     let result = result?;
@@ -1368,6 +1406,7 @@ mod tests {
             observability: None,
             delivery: faucet_core::DeliveryMode::default(),
             resilience: None,
+            sla: None,
             shard: None,
             replication: None,
             #[cfg(feature = "schedule")]
@@ -1398,6 +1437,7 @@ mod tests {
                 clock: chrono::Utc::now().fixed_offset(),
                 cancel: None,
                 resilience: None,
+                sla: None,
                 #[cfg(feature = "lineage")]
                 lineage: None,
                 #[cfg(feature = "lineage")]
@@ -1455,6 +1495,7 @@ matrix:
                 clock: chrono::Utc::now().fixed_offset(),
                 cancel: None,
                 resilience: None,
+                sla: None,
                 #[cfg(feature = "lineage")]
                 lineage: None,
                 #[cfg(feature = "lineage")]
@@ -1512,6 +1553,7 @@ matrix:
                 clock: chrono::Utc::now().fixed_offset(),
                 cancel: None,
                 resilience: None,
+                sla: None,
                 #[cfg(feature = "lineage")]
                 lineage: None,
                 #[cfg(feature = "lineage")]
@@ -1579,6 +1621,7 @@ execution:
                 clock: chrono::Utc::now().fixed_offset(),
                 cancel: None,
                 resilience: None,
+                sla: None,
                 #[cfg(feature = "lineage")]
                 lineage: None,
                 #[cfg(feature = "lineage")]
@@ -1661,6 +1704,7 @@ pipeline:
                 clock: chrono::Utc::now().fixed_offset(),
                 cancel: None,
                 resilience: None,
+                sla: None,
                 #[cfg(feature = "lineage")]
                 lineage: None,
                 #[cfg(feature = "lineage")]
@@ -1717,6 +1761,7 @@ matrix:
                 clock: chrono::Utc::now().fixed_offset(),
                 cancel: None,
                 resilience: None,
+                sla: None,
                 #[cfg(feature = "lineage")]
                 lineage: None,
                 #[cfg(feature = "lineage")]
@@ -1782,6 +1827,7 @@ execution:
                 clock: chrono::Utc::now().fixed_offset(),
                 cancel: None,
                 resilience: None,
+                sla: None,
                 #[cfg(feature = "lineage")]
                 lineage: None,
                 #[cfg(feature = "lineage")]
@@ -1848,6 +1894,7 @@ matrix:
                 clock: chrono::Utc::now().fixed_offset(),
                 cancel: None,
                 resilience: None,
+                sla: None,
                 #[cfg(feature = "lineage")]
                 lineage: None,
                 #[cfg(feature = "lineage")]
@@ -2073,6 +2120,7 @@ matrix:
             clock: chrono::Utc::now().fixed_offset(),
             cancel: None,
             resilience: None,
+            sla: None,
             #[cfg(feature = "lineage")]
             lineage: None,
             #[cfg(feature = "lineage")]
@@ -2476,6 +2524,7 @@ matrix:
                 clock: chrono::Utc::now().fixed_offset(),
                 cancel: None,
                 resilience: None,
+                sla: None,
                 #[cfg(feature = "lineage")]
                 lineage: None,
                 #[cfg(feature = "lineage")]

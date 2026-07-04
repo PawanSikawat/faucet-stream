@@ -1,0 +1,52 @@
+# CSV → JSONL monitored by a freshness/volume SLA (issue #202).
+#
+# The top-level `sla:` block declares what "healthy" looks like for this
+# pipeline. It is evaluated automatically after every root invocation (by
+# `faucet run`, `schedule`, `serve`, and `replicate`) and NEVER fails the run —
+# a violation emits the `faucet_pipeline_sla_violations_total{kind}` counter
+# and a WARN log, and `faucet doctor` reports staleness/baseline health:
+#
+#   max_staleness_secs — stale when no *successful* run within the window
+#                        (fires on failing runs and in `faucet doctor`)
+#   min_rows_per_run   — a successful run writing fewer records violates
+#                        (catches a source silently returning nothing)
+#   volume_anomaly     — learned baseline over recent successful-run volumes;
+#                        zscore (default) or iqr detection, two-sided
+#
+# Staleness/volume need run history, so a `state:` block is required for them;
+# the history is stored next to the bookmarks under `{name}::{row}::__sla__`.
+#
+#   faucet run cli/examples/csv_to_jsonl_with_sla.yaml
+#   faucet doctor cli/examples/csv_to_jsonl_with_sla.yaml
+#   faucet schema sla
+version: 1
+name: orders_csv_with_sla
+
+pipeline:
+  source:
+    type: csv
+    config:
+      path: ./orders.csv
+
+  sink:
+    type: jsonl
+    config:
+      path: ./orders_out.jsonl
+
+  state:
+    type: file
+    config:
+      path: ./state
+
+sla:
+  # Alert when the pipeline hasn't completed successfully in 24 hours.
+  max_staleness_secs: 86400
+  # A successful run that writes zero records is a silent failure.
+  min_rows_per_run: 1
+  # Flag a run whose volume deviates more than 3σ from the recent baseline,
+  # once 5 successful runs of history exist.
+  volume_anomaly:
+    method: zscore
+    sensitivity: 3.0
+    min_history: 5
+    window: 20

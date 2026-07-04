@@ -43,7 +43,8 @@ cargo add faucet-stream           # the library
   `Pipeline::new(&source, &sink).run().await?` from Rust. Same orchestration either way.
 - **⚙️ A runtime, not just connectors** — incremental + resumable replication, change-data-capture,
   exactly-once delivery, upsert/delete write modes, data-quality checks, data contracts,
-  dead-letter queues, automatic retries, adaptive batch sizing, secrets-manager interpolation,
+  freshness/volume SLA monitoring, dead-letter queues, automatic retries, adaptive batch sizing,
+  secrets-manager interpolation,
   cron scheduling, an HTTP control plane with event-driven triggers, OpenLineage emission, and
   built-in Prometheus metrics + `tracing` spans — all with zero per-connector code.
 - **📦 Pay only for what you use** — every connector is a Cargo feature, so a slim build can
@@ -173,6 +174,7 @@ one-block addition to your YAML:
 | **Upsert / delete write modes** | `write_mode: upsert \| delete` with a `key` + `delete_marker` — merge by key on Postgres / MySQL / SQL Server / SQLite / Mongo / Elasticsearch. | [upsert](https://pawansikawat.github.io/faucet-stream/cookbook/upsert.html) |
 | **Data-quality checks** | 13 per-record and per-batch assertions (not-null, regex, ranges, uniqueness, row-count, JSON Schema, …) with quarantine routing or abort policies. | [quality](https://pawansikawat.github.io/faucet-stream/cookbook/quality.html) |
 | **Data contracts** | A versioned promise about the output shape (types, nullability, enums, patterns, bounds) enforced per page — breaches fail, quarantine, or warn; export as JSON Schema / OpenLineage via `faucet contract`. | [contracts](https://pawansikawat.github.io/faucet-stream/cookbook/contracts.html) |
+| **SLA monitoring** | Declared freshness (`max_staleness_secs`) + volume floors and learned-baseline anomaly detection (z-score / IQR) per pipeline — violations emit metrics + warnings and surface in `faucet doctor`, never failing the run. | [SLA](https://pawansikawat.github.io/faucet-stream/cookbook/sla.html) |
 | **Dead-letter queue** | Route failed rows to any sink instead of aborting the run, with a fixed envelope and reason. | [DLQ](https://pawansikawat.github.io/faucet-stream/cookbook/dlq.html) |
 | **Adaptive batch sizing** | Opt-in AIMD controller that tunes write batch size from observed sink latency and error rate. | [tuning](https://pawansikawat.github.io/faucet-stream/) |
 | **Secrets-manager interpolation** | `${vault:…}`, `${aws-sm:…}`, `${gcp-sm:…}`, `${azure-kv:…}` resolved at load time, redacted from logs. | [secrets](https://pawansikawat.github.io/faucet-stream/cookbook/secrets.html) |

@@ -48,6 +48,7 @@ faucet doctor pipeline.yaml || { echo "preflight failed"; exit 1; }
 | `redis` / `mongodb` / `elasticsearch` / `http` sinks | `PING` / `ping` / cluster health / a `HEAD` request. |
 | File sinks (`jsonl`/`csv`/`parquet`/`stdout`) | Target directory is writable (`stdout` always passes). |
 | State stores (`redis`/`postgres`/`file`/`memory`) | A sentinel `put`/`get`/`delete` that leaves no residue. |
+| SLA (`sla:` block) | Read-only staleness / volume-baseline probes against the persisted run history — see [SLA monitoring](sla.md). |
 
 ## Reading the result
 

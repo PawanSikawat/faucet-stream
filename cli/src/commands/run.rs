@@ -101,6 +101,7 @@ pub async fn run(args: RunArgs) -> CliResult<()> {
             // cooperatively cancels in-flight rows on `on_error: stop`.
             cancel: None,
             resilience,
+            sla: cfg.sla.clone(),
             #[cfg(feature = "lineage")]
             lineage,
             #[cfg(feature = "lineage")]

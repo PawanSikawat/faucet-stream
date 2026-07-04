@@ -49,6 +49,7 @@ For each root invocation it probes the source, sink, and state store:
 - **Sources** reuse the real read path — the probe pulls a *single page* (DNS + TLS + auth + the first request + first-record decode) and stops, never paginating the full dataset. A handful of sources whose first page would block or have side effects use a targeted probe instead: `webhook` checks the port is bindable, `websocket` does a TCP connect, `postgres-cdc` checks the replication slot is reachable, `kafka` fetches cluster metadata.
 - **Sinks** run a non-mutating connect/auth/metadata call (e.g. `SELECT 1`, `HeadBucket`, `PING`, `tables.get`, cluster health, `fetch_metadata`) — never a real write. File sinks check the target directory is writable; `stdout` always passes.
 - **State stores** do a sentinel `put`/`get`/`delete` round-trip that leaves no residue.
+- **SLA** (when an [`sla:` block](#sla-optional) is configured) probes the persisted run history read-only: staleness of the last successful run vs `max_staleness_secs`, and volume-baseline warm-up state.
 
 ```bash
 faucet doctor pipeline.yaml                      # checklist, exit code = # of failed probes
@@ -795,6 +796,27 @@ Inspect or publish it with `faucet contract <config> [--export
 contract|json-schema|openlineage]`; `faucet schema contract` prints the
 block's JSON Schema. Full model:
 [Data contracts](https://pawansikawat.github.io/faucet-stream/cookbook/contracts.html).
+
+### `sla:` (optional)
+
+**Top-level** block (sibling of `pipeline:`, like `resilience:`) declaring a
+freshness/volume SLA, evaluated after every root invocation by
+`run`/`schedule`/`serve`/`replicate`. Violations emit
+`faucet_pipeline_sla_violations_total{pipeline,row,kind}` + a WARN log and
+**never fail the run**; `faucet doctor` probes staleness/baseline health
+read-only.
+
+```yaml
+sla:
+  max_staleness_secs: 7200   # stale when no successful run within 2h (needs state:)
+  min_rows_per_run: 1        # a successful run writing fewer records violates
+  volume_anomaly:            # learned baseline over recent successful runs (needs state:)
+    method: zscore           # zscore | iqr
+    min_history: 5           # successful runs before detection starts
+```
+
+`faucet schema sla` prints the block's JSON Schema. Full model:
+[SLA monitoring](https://pawansikawat.github.io/faucet-stream/cookbook/sla.html).
 
 ### Transforms
 

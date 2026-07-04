@@ -54,6 +54,7 @@ pub async fn run(args: ReplicateArgs) -> CliResult<()> {
             auth,
             clock: chrono::Utc::now().fixed_offset(),
             resilience,
+            sla: cfg.sla.clone(),
         },
     )
     .await?;

@@ -326,6 +326,8 @@ pub fn build_pipeline_config(env: &HashMap<String, String>) -> CliResult<Pipelin
         observability: None,
         delivery: faucet_core::DeliveryMode::default(),
         resilience: None,
+        // Pure-env mode doesn't (yet) assemble an `sla:` block.
+        sla: None,
         shard: None,
         replication: None,
         #[cfg(feature = "schedule")]
