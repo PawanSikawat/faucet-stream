@@ -75,6 +75,7 @@ The service column lists what each example touches; all are provided by
 | `mongodb_to_redis.yaml`, `xml_to_mongodb.yaml` | mongodb (single-node replica set; query mode connects to the primary) |
 | `webhook_to_csv.yaml`, `webhook_to_http.yaml`, `grpc_to_http.yaml` | none external beyond the source/HTTP target |
 | `dag_users_posts.yaml`, `rest_users_posts_dag.yaml`, `rest_to_bigquery_matrix.yaml`, `templates_*.yaml` | demonstrate matrix / DAG / template syntax (REST source) |
+| `matrix_depends_on.yaml` | demonstrates `depends_on` completion ordering between matrix rows (local CSV/JSONL, no infra) |
 
 ## Cloud credentials required (not in the stack)
 

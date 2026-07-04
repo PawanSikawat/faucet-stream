@@ -11,6 +11,10 @@
 //!   record via [`interpolate_record`].
 //! - All invocations share one global semaphore — children and roots compete
 //!   for the same budget.
+//! - A node with `depends_on: [row, …]` starts only after every listed row's
+//!   invocations finish successfully — pure completion-ordering, no record
+//!   hand-off. A failed or skipped dependency skips the node (and, in turn,
+//!   its own subtree and dependents).
 //! - `on_error: continue` (default) skips a failed node's subtree but keeps
 //!   running siblings. `on_error: stop` cancels everything after the first
 //!   failure.
@@ -220,16 +224,27 @@ pub async fn run_expanded(nodes: Vec<ExpandedNode>, opts: ExecuteOptions) -> Cli
     };
 
     while !remaining.is_empty() {
-        // Pick every remaining node whose parent (if any) is already
-        // completed, in deterministic BFS order.
+        // Pick every remaining node whose parent (if any) and every
+        // `depends_on` row are already terminal (completed or skipped), in
+        // deterministic BFS order. Whether a skipped/failed prerequisite
+        // *skips* the node is decided in the unit loop below — readiness only
+        // asks "is there anything left to wait for".
         let ready: Vec<String> = bfs_order
             .iter()
             .filter(|id| remaining.contains(*id))
-            .filter(|id| match &nodes_by_id[*id].role {
-                NodeRole::Root => true,
-                NodeRole::Child { parent_id, .. } => {
-                    completed.contains(parent_id) || skipped_subtrees.contains(parent_id)
-                }
+            .filter(|id| {
+                let node = &nodes_by_id[*id];
+                let parent_done = match &node.role {
+                    NodeRole::Root => true,
+                    NodeRole::Child { parent_id, .. } => {
+                        completed.contains(parent_id) || skipped_subtrees.contains(parent_id)
+                    }
+                };
+                parent_done
+                    && node
+                        .depends_on
+                        .iter()
+                        .all(|d| completed.contains(d) || skipped_subtrees.contains(d))
             })
             .cloned()
             .collect();
@@ -242,7 +257,8 @@ pub async fn run_expanded(nodes: Vec<ExpandedNode>, opts: ExecuteOptions) -> Cli
             let mut stuck: Vec<String> = remaining.iter().cloned().collect();
             stuck.sort();
             return Err(CliError::Internal(format!(
-                "executor deadlock: {} node(s) never became ready (no completed/skipped parent): {}",
+                "executor deadlock: {} node(s) never became ready (no completed/skipped \
+                 parent or dependency): {}",
                 stuck.len(),
                 stuck.join(", ")
             )));
@@ -280,6 +296,22 @@ pub async fn run_expanded(nodes: Vec<ExpandedNode>, opts: ExecuteOptions) -> Cli
             {
                 skipped_subtrees.insert(id.clone());
                 tracing::warn!(row = %id, parent = %parent_id, "skipping subtree under failed parent");
+                continue;
+            }
+            // Same for a failed/skipped `depends_on` prerequisite: the row
+            // waited for something that never succeeded, so running it would
+            // violate the ordering contract. Mark it skipped so its own
+            // subtree and dependents cascade too.
+            if let Some(dep) = node
+                .depends_on
+                .iter()
+                .find(|d| skipped_subtrees.contains(d.as_str()))
+            {
+                skipped_subtrees.insert(id.clone());
+                tracing::warn!(
+                    row = %id, dependency = %dep,
+                    "skipping row: a depends_on row failed or was skipped"
+                );
                 continue;
             }
             match &node.role {
@@ -1571,6 +1603,161 @@ matrix:
     }
 
     #[tokio::test]
+    async fn depends_on_root_runs_after_dependency() {
+        // `stage` writes a CSV that `load` reads — `load` can only succeed if
+        // it genuinely starts after `stage` finishes (pure ordering, no
+        // record hand-off).
+        let dir = tempfile::tempdir().unwrap();
+        let input = dir.path().join("in.csv");
+        let mid = dir.path().join("mid.csv");
+        let out = dir.path().join("out.jsonl");
+        std::fs::write(&input, "name\nalice\nbob\n").unwrap();
+
+        let yaml = format!(
+            r#"version: 1
+pipeline:
+  source: {{ type: csv, config: {{ path: {input} }} }}
+  sink:   {{ type: jsonl, config: {{ path: {out} }} }}
+matrix:
+  - id: stage
+    sink: {{ type: csv, config: {{ path: {mid} }} }}
+  - id: load
+    depends_on: [stage]
+    source: {{ config: {{ path: {mid} }} }}
+"#,
+            input = input.display(),
+            mid = mid.display(),
+            out = out.display(),
+        );
+        let cfg = crate::config::parse_with_extension(&yaml, "yaml").unwrap();
+        let nodes = expand(&cfg).unwrap();
+        let summary = run_expanded(nodes, opts("depsorder")).await.unwrap();
+        assert_eq!(summary.invocations.len(), 2, "{summary:?}");
+        assert!(!summary.had_failures(), "{summary:?}");
+        let load = summary
+            .invocations
+            .iter()
+            .find(|i| i.row_id == "load")
+            .unwrap();
+        assert_eq!(load.records_written, 2);
+        let written = std::fs::read_to_string(&out).unwrap();
+        assert_eq!(written.lines().count(), 2);
+    }
+
+    #[tokio::test]
+    async fn diamond_dependency_waits_for_all_prerequisites() {
+        // c waits on both a and b (a diamond join): readiness must require
+        // *every* dependency to be terminal, not just the first.
+        let dir = tempfile::tempdir().unwrap();
+        let input = dir.path().join("in.csv");
+        let mid_a = dir.path().join("mid_a.csv");
+        let mid_b = dir.path().join("mid_b.csv");
+        let out = dir.path().join("out.jsonl");
+        std::fs::write(&input, "name\nalice\n").unwrap();
+
+        let yaml = format!(
+            r#"version: 1
+pipeline:
+  source: {{ type: csv, config: {{ path: {input} }} }}
+  sink:   {{ type: jsonl, config: {{ path: {out} }} }}
+matrix:
+  - id: a
+    sink: {{ type: csv, config: {{ path: {mid_a} }} }}
+  - id: b
+    sink: {{ type: csv, config: {{ path: {mid_b} }} }}
+  - id: c
+    depends_on: [a, b]
+    source: {{ config: {{ path: {mid_a} }} }}
+"#,
+            input = input.display(),
+            mid_a = mid_a.display(),
+            mid_b = mid_b.display(),
+            out = out.display(),
+        );
+        let cfg = crate::config::parse_with_extension(&yaml, "yaml").unwrap();
+        let nodes = expand(&cfg).unwrap();
+        let summary = run_expanded(nodes, opts("diamond")).await.unwrap();
+        assert_eq!(summary.invocations.len(), 3, "{summary:?}");
+        assert!(!summary.had_failures(), "{summary:?}");
+        assert!(mid_b.exists(), "b must have run before c became ready");
+        assert!(out.exists());
+    }
+
+    #[tokio::test]
+    async fn failed_dependency_skips_dependent() {
+        // `stage` fails (missing input file); `load` depends on it and must be
+        // skipped — no invocation outcome, no output file.
+        let dir = tempfile::tempdir().unwrap();
+        let good_input = dir.path().join("good.csv");
+        let out = dir.path().join("out.jsonl");
+        std::fs::write(&good_input, "name\nalice\n").unwrap();
+
+        let yaml = format!(
+            r#"version: 1
+pipeline:
+  source: {{ type: csv, config: {{ path: {good} }} }}
+  sink:   {{ type: jsonl, config: {{ path: {out} }} }}
+matrix:
+  - id: stage
+    source: {{ config: {{ path: {missing} }} }}
+  - id: load
+    depends_on: [stage]
+"#,
+            good = good_input.display(),
+            missing = dir.path().join("nonexistent.csv").display(),
+            out = out.display(),
+        );
+        let cfg = crate::config::parse_with_extension(&yaml, "yaml").unwrap();
+        let nodes = expand(&cfg).unwrap();
+        let summary = run_expanded(nodes, opts("depskip")).await.unwrap();
+        assert_eq!(summary.invocations.len(), 1, "{summary:?}");
+        assert_eq!(summary.invocations[0].row_id, "stage");
+        assert!(summary.invocations[0].error.is_some());
+        assert!(
+            !out.exists(),
+            "dependent row must not run after its dependency failed"
+        );
+    }
+
+    #[tokio::test]
+    async fn dependency_on_skipped_row_cascades() {
+        // p fails → its child c is skipped → q (which depends on c) must be
+        // skipped too, even though c itself never *failed*.
+        let dir = tempfile::tempdir().unwrap();
+        let good_input = dir.path().join("good.csv");
+        let out = dir.path().join("q.jsonl");
+        std::fs::write(&good_input, "id\n1\n").unwrap();
+
+        let yaml = format!(
+            r#"version: 1
+pipeline:
+  source: {{ type: csv, config: {{ path: {good} }} }}
+  sink:   {{ type: jsonl, config: {{ path: {out} }} }}
+matrix:
+  - id: p
+    source: {{ config: {{ path: {missing} }} }}
+  - id: c
+    parent: p
+  - id: q
+    depends_on: [c]
+"#,
+            good = good_input.display(),
+            missing = dir.path().join("nonexistent.csv").display(),
+            out = out.display(),
+        );
+        let cfg = crate::config::parse_with_extension(&yaml, "yaml").unwrap();
+        let nodes = expand(&cfg).unwrap();
+        let summary = run_expanded(nodes, opts("depcascade")).await.unwrap();
+        assert_eq!(summary.invocations.len(), 1, "{summary:?}");
+        assert_eq!(summary.invocations[0].row_id, "p");
+        assert!(summary.invocations[0].error.is_some());
+        assert!(
+            !out.exists(),
+            "q must be skipped when its dependency was skipped"
+        );
+    }
+
+    #[tokio::test]
     async fn on_error_stop_reports_failure_and_runs_no_extra_work() {
         // First root writes to an invalid sink path and fails. The second
         // ("good") root would succeed. Under `on_error: stop` the executor
@@ -2030,6 +2217,7 @@ matrix:
                 #[cfg(feature = "contract")]
                 contract: None,
                 schema: None,
+                depends_on: Vec::new(),
                 deferred_refs: refs
                     .iter()
                     .map(|(rid, p)| DeferredRef {
@@ -2095,6 +2283,7 @@ matrix:
             #[cfg(feature = "contract")]
             contract: None,
             schema: None,
+            depends_on: Vec::new(),
             deferred_refs: vec![DeferredRef {
                 referenced_id: "p".into(),
                 dotted_path: "".into(),
@@ -2344,6 +2533,7 @@ matrix:
             #[cfg(feature = "contract")]
             contract: None,
             schema: None,
+            depends_on: Vec::new(),
             deferred_refs: Vec::new(),
         }
     }
@@ -2412,6 +2602,7 @@ matrix:
             #[cfg(feature = "contract")]
             contract: None,
             schema: None,
+            depends_on: Vec::new(),
             deferred_refs: Vec::new(),
         };
         let err = run_expanded(vec![orphan], opts("deadlock"))

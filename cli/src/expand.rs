@@ -51,6 +51,10 @@ pub struct ExpandedNode {
     /// Delivery guarantee for this row. Resolved from the row's override or
     /// falls back to the top-level `cfg.delivery`.
     pub delivery: faucet_core::DeliveryMode,
+    /// Row ids this node waits for (deduplicated, declaration order). The
+    /// executor starts the node only after every listed row's invocations
+    /// finish successfully; a failed or skipped dependency skips this node.
+    pub depends_on: Vec<String>,
     /// Every `${id.path}` placeholder that survived load-time interpolation.
     /// Populated by `collect_deferred`; the executor uses this to know
     /// which parent record to feed which row.
@@ -217,6 +221,7 @@ pub fn expand(cfg: &PipelineConfig) -> CliResult<Vec<ExpandedNode>> {
         synthetic_row = [MatrixRow {
             id: None,
             parent: None,
+            depends_on: Vec::new(),
             parent_key: "id".into(),
             source: None,
             sink: None,
@@ -269,6 +274,35 @@ pub fn expand(cfg: &PipelineConfig) -> CliResult<Vec<ExpandedNode>> {
         }
     }
     detect_cycle(&parents)?;
+
+    // 2b) Validate `depends_on` edges (unknown id, self-dependency) and
+    // dedup each row's list while preserving declaration order. Then check
+    // the *combined* parent + depends_on graph for cycles — `detect_cycle`
+    // above only walks single-parent chains, so a cycle routed through a
+    // `depends_on` edge would otherwise deadlock the executor at run time.
+    let mut deps_by_row: Vec<Vec<String>> = Vec::with_capacity(rows.len());
+    for (i, row) in rows.iter().enumerate() {
+        let id = ids[i].as_str();
+        let mut deps: Vec<String> = Vec::with_capacity(row.depends_on.len());
+        for dep in &row.depends_on {
+            if !id_set.contains(dep.as_str()) {
+                return Err(CliError::UnknownDependency {
+                    id: id.to_owned(),
+                    depends_on: dep.clone(),
+                });
+            }
+            if dep == id {
+                return Err(CliError::DependencyCycle {
+                    ids: vec![id.to_owned()],
+                });
+            }
+            if !deps.contains(dep) {
+                deps.push(dep.clone());
+            }
+        }
+        deps_by_row.push(deps);
+    }
+    detect_combined_cycle(&ids, &parents, &deps_by_row)?;
 
     // 3) Validate `${id.path}` references — each `id` must be a known row.
     // We scan the *raw* (pre-merge) row configs because interpolation lives in
@@ -635,6 +669,7 @@ pub fn expand(cfg: &PipelineConfig) -> CliResult<Vec<ExpandedNode>> {
             #[cfg(feature = "contract")]
             contract,
             schema: cfg.pipeline.schema.clone(),
+            depends_on: deps_by_row[i].clone(),
             deferred_refs: deferred,
         });
     }
@@ -659,6 +694,58 @@ fn detect_cycle(parents: &HashMap<&str, &str>) -> CliResult<()> {
                 return Err(CliError::ParentCycle { ids: chain });
             }
         }
+    }
+    Ok(())
+}
+
+/// Kahn's algorithm over the combined `parent:` + `depends_on:` edge set.
+/// Pure-parent cycles are already caught by [`detect_cycle`] (with its more
+/// specific error), so any leftover here necessarily involves a `depends_on`
+/// edge. Rows that cannot be topologically ordered are the cycle participants
+/// (plus any rows downstream of them — still actionable, since the report
+/// names every row that would never become ready).
+fn detect_combined_cycle(
+    ids: &[String],
+    parents: &HashMap<&str, &str>,
+    deps_by_row: &[Vec<String>],
+) -> CliResult<()> {
+    let index_of: HashMap<&str, usize> = ids
+        .iter()
+        .enumerate()
+        .map(|(i, id)| (id.as_str(), i))
+        .collect();
+    let mut in_degree = vec![0usize; ids.len()];
+    let mut dependents: Vec<Vec<usize>> = vec![Vec::new(); ids.len()];
+    for (i, id) in ids.iter().enumerate() {
+        let mut prereqs: Vec<usize> = Vec::new();
+        if let Some(p) = parents.get(id.as_str()) {
+            prereqs.push(index_of[p]);
+        }
+        prereqs.extend(deps_by_row[i].iter().map(|d| index_of[d.as_str()]));
+        for p in prereqs {
+            in_degree[i] += 1;
+            dependents[p].push(i);
+        }
+    }
+    let mut queue: std::collections::VecDeque<usize> =
+        (0..ids.len()).filter(|&i| in_degree[i] == 0).collect();
+    let mut processed = 0usize;
+    while let Some(i) = queue.pop_front() {
+        processed += 1;
+        for &d in &dependents[i] {
+            in_degree[d] -= 1;
+            if in_degree[d] == 0 {
+                queue.push_back(d);
+            }
+        }
+    }
+    if processed < ids.len() {
+        let mut stuck: Vec<String> = (0..ids.len())
+            .filter(|&i| in_degree[i] > 0)
+            .map(|i| ids[i].clone())
+            .collect();
+        stuck.sort();
+        return Err(CliError::DependencyCycle { ids: stuck });
     }
     Ok(())
 }
@@ -929,6 +1016,112 @@ matrix:
             expand(&c).unwrap_err(),
             CliError::ParentCycle { .. }
         ));
+    }
+
+    #[test]
+    fn errors_on_unknown_dependency() {
+        let c = cfg(r#"
+version: 1
+pipeline: { source: { type: rest, config: {} }, sink: { type: jsonl, config: { path: ./o } } }
+matrix:
+  - { id: facts, depends_on: [nobody] }
+"#);
+        match expand(&c).unwrap_err() {
+            CliError::UnknownDependency { id, depends_on } => {
+                assert_eq!(id, "facts");
+                assert_eq!(depends_on, "nobody");
+            }
+            other => panic!("expected UnknownDependency, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn errors_on_self_dependency() {
+        let c = cfg(r#"
+version: 1
+pipeline: { source: { type: rest, config: {} }, sink: { type: jsonl, config: { path: ./o } } }
+matrix:
+  - { id: a, depends_on: [a] }
+"#);
+        match expand(&c).unwrap_err() {
+            CliError::DependencyCycle { ids } => assert_eq!(ids, vec!["a".to_string()]),
+            other => panic!("expected DependencyCycle, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn errors_on_depends_on_cycle() {
+        let c = cfg(r#"
+version: 1
+pipeline: { source: { type: rest, config: {} }, sink: { type: jsonl, config: { path: ./o } } }
+matrix:
+  - { id: a, depends_on: [b] }
+  - { id: b, depends_on: [a] }
+"#);
+        match expand(&c).unwrap_err() {
+            CliError::DependencyCycle { ids } => {
+                assert_eq!(ids, vec!["a".to_string(), "b".to_string()]);
+            }
+            other => panic!("expected DependencyCycle, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn errors_on_mixed_parent_depends_on_cycle() {
+        // `a` is a child of `b` (parent edge b -> a) while `b` waits for `a`
+        // (dependency edge a -> b). Neither the parent-only walk nor a
+        // depends_on-only check sees this — only the combined graph does.
+        let c = cfg(r#"
+version: 1
+pipeline: { source: { type: rest, config: {} }, sink: { type: jsonl, config: { path: ./o } } }
+matrix:
+  - { id: a, parent: b }
+  - { id: b, depends_on: [a] }
+"#);
+        match expand(&c).unwrap_err() {
+            CliError::DependencyCycle { ids } => {
+                assert_eq!(ids, vec!["a".to_string(), "b".to_string()]);
+            }
+            other => panic!("expected DependencyCycle, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn depends_on_is_recorded_and_deduped() {
+        let c = cfg(r#"
+version: 1
+pipeline: { source: { type: rest, config: {} }, sink: { type: jsonl, config: { path: ./o } } }
+matrix:
+  - { id: dims }
+  - { id: staging }
+  - { id: facts, depends_on: [dims, staging, dims] }
+"#);
+        let nodes = expand(&c).unwrap();
+        let facts = nodes.iter().find(|n| n.id == "facts").unwrap();
+        assert_eq!(
+            facts.depends_on,
+            vec!["dims".to_string(), "staging".to_string()]
+        );
+        assert!(matches!(facts.role, NodeRole::Root));
+        let dims = nodes.iter().find(|n| n.id == "dims").unwrap();
+        assert!(dims.depends_on.is_empty());
+    }
+
+    #[test]
+    fn depends_on_may_target_a_child_row() {
+        // Waiting on a per-record fan-out row is legal: the dependent starts
+        // only after every one of the child's invocations completes.
+        let c = cfg(r#"
+version: 1
+pipeline: { source: { type: rest, config: {} }, sink: { type: jsonl, config: { path: ./o } } }
+matrix:
+  - { id: users }
+  - { id: posts, parent: users }
+  - { id: rollup, depends_on: [posts] }
+"#);
+        let nodes = expand(&c).unwrap();
+        let rollup = nodes.iter().find(|n| n.id == "rollup").unwrap();
+        assert_eq!(rollup.depends_on, vec!["posts".to_string()]);
     }
 
     #[test]

@@ -263,6 +263,13 @@ pub struct MatrixRow {
     #[serde(default)]
     pub parent: Option<String>,
 
+    /// Row ids this row waits for. The row starts only after every listed
+    /// row (all of its invocations) finishes successfully; a failed or
+    /// skipped dependency skips this row. Pure completion-ordering — unlike
+    /// `parent:`, no records are consumed and no per-record fan-out occurs.
+    #[serde(default)]
+    pub depends_on: Vec<String>,
+
     /// Dotted field path inside each parent record that uniquely identifies
     /// the record. Used as the state-key suffix. Default: `id`.
     #[serde(default = "default_parent_key")]

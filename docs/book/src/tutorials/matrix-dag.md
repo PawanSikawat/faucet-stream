@@ -55,6 +55,34 @@ matrix:
 The child's state key is suffixed with the parent record's key, so each per-user
 fetch resumes independently.
 
+## Completion ordering with `depends_on`
+
+A row with `depends_on: [row_id, …]` starts only after every listed row's
+invocations finish successfully. Unlike `parent:`, no records are handed off —
+it is pure run ordering, typically with the downstream row's source reading
+what the upstream row's sink wrote:
+
+```yaml
+version: 1
+name: dims_then_facts
+pipeline:
+  source: { type: postgres, config: { connection_url: "postgres://localhost/src" } }
+  sink:   { type: postgres, config: { connection_url: "postgres://localhost/dst", column_mapping: auto_map } }
+matrix:
+  - id: dims
+    source: { config: { query: "SELECT * FROM src_dims" } }
+    sink:   { config: { table_name: dims } }
+  - id: facts
+    depends_on: [dims]     # waits for dims to succeed
+    source: { config: { query: "SELECT * FROM src_facts" } }
+    sink:   { config: { table_name: facts } }
+```
+
+A failed or skipped dependency skips the dependent row (and its own children
+and dependents). Unknown ids, self-dependencies, and cycles through any mix of
+`parent:` / `depends_on:` edges are rejected by `faucet validate`. `parent:`
+and `depends_on:` compose on the same row.
+
 ## Merge semantics
 
 A row is deep-merged onto the base `pipeline`: scalars replace, objects merge

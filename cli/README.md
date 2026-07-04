@@ -578,7 +578,7 @@ pipeline:
 
 ### Matrix mode — run many invocations from one config
 
-Add a `matrix:` block to run multiple invocations from the same base. Each row is **deep-merged** into `pipeline:` (objects merge recursively, arrays replace wholesale, scalars replace). Rows with `parent:` become children that fan out one invocation per record produced by the parent row.
+Add a `matrix:` block to run multiple invocations from the same base. Each row is **deep-merged** into `pipeline:` (objects merge recursively, arrays replace wholesale, scalars replace). Rows with `parent:` become children that fan out one invocation per record produced by the parent row. Rows with `depends_on:` wait for other rows to finish before starting (pure ordering, no record hand-off).
 
 ```yaml
 version: 1
@@ -612,10 +612,37 @@ matrix:
     source: { config: { path: /v1/users/${users.id}/posts } }
     sink:   { config: { dataset: raw, table: user_posts } }
 
+  # Completion ordering — starts only after `users` AND `products` succeed.
+  - id: order_facts
+    depends_on: [users, products]
+    source: { config: { path: /v1/orders } }
+    sink:   { config: { dataset: marts, table: order_facts } }
+
 execution:
   max_concurrent: 8
   on_error: continue   # or `stop`
 ```
+
+#### `depends_on:` — completion ordering between rows
+
+`depends_on: [row_id, …]` makes a row wait until **every listed row's
+invocations finish successfully** before it starts. Unlike `parent:`, no
+records are consumed and there is no per-record fan-out — it is pure run
+ordering ("load dimensions, then facts"; "ingest raw, then run the rollup
+whose source reads what the first row wrote").
+
+- Rows whose dependencies are all satisfied run concurrently as usual.
+- A failed or skipped dependency **skips** the dependent row (and, in turn,
+  its own children and dependents). The skip is logged; the run's exit code
+  reflects the original failure.
+- Waiting on a row means waiting for that row's own invocations. To also wait
+  for its per-record children, list the child rows explicitly
+  (`depends_on: [dims, dim_details]`).
+- `parent:` and `depends_on:` compose on the same row; the parent edge is
+  itself an implicit dependency.
+- Unknown ids, self-dependencies, and cycles through any mix of `parent:` /
+  `depends_on:` edges are rejected at load time (`faucet validate` catches
+  them).
 
 #### Deep-merge rules
 
@@ -992,6 +1019,7 @@ CLI-only smoke tests:
 
 - [`csv_to_jsonl.yaml`](examples/csv_to_jsonl.yaml) — read a CSV, write JSONL (zero external deps)
 - [`rest_to_stdout_preview.yaml`](examples/rest_to_stdout_preview.yaml) — pipe REST records into `jq`
+- [`matrix_depends_on.yaml`](examples/matrix_depends_on.yaml) — `depends_on` completion ordering: two staging rows, then a report row that waits for both (zero external deps)
 
 Mirrors of the Rust examples (one `.yaml` per `.rs`):
 
