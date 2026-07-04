@@ -1,6 +1,6 @@
 //! Compilation + fail-fast validation for the masking layer (issue #206).
 //! Turns a [`MaskingSpec`] into a [`CompiledMasking`] with pre-compiled
-//! regexes and a resolved [`Hasher`], optionally scoped to a single
+//! regexes and a resolved `Hasher`, optionally scoped to a single
 //! destination sink. Bad regexes / empty rule sets surface as
 //! [`FaucetError::Config`] at config-load time, never mid-run.
 
