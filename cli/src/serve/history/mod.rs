@@ -266,6 +266,44 @@ impl ShardProgress {
     }
 }
 
+/// One audit-log record: a mutating (or denied) control-plane action attributed
+/// to a principal (#205). Persisted in `faucet_serve_audit` (SQL backends) or an
+/// in-memory ring (memory backend), and surfaced by `GET /v1/audit`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuditEntry {
+    /// Time-ordered id (UUIDv7) — also the ordering key.
+    pub id: String,
+    pub timestamp: DateTime<Utc>,
+    /// Principal name (`"anonymous"` under `--no-auth`, `"token"` under a single
+    /// `--auth-token`, `trigger:<name>` for trigger-originated runs).
+    pub principal: String,
+    /// Role at the time of the action.
+    pub role: String,
+    /// Stable action label (`run.submit` / `run.cancel` / `run.delete` /
+    /// `trigger.fire` / `auth.denied` / …).
+    pub action: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub run_id: Option<String>,
+    /// sha256 config fingerprint (submit actions only).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub config_fingerprint: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_ip: Option<String>,
+    /// Outcome: `"ok"` (action performed) or `"denied"` (403 — insufficient role).
+    pub result: String,
+}
+
+/// Filter + limit for `list_audit` (newest-first). No cursor: a bounded,
+/// most-recent view is the audit-console primitive.
+#[derive(Debug, Default, Clone)]
+pub struct AuditFilter {
+    pub principal: Option<String>,
+    pub action: Option<String>,
+    pub since: Option<DateTime<Utc>>,
+    pub until: Option<DateTime<Utc>>,
+    pub limit: usize,
+}
+
 #[async_trait]
 pub trait RunHistory: Send + Sync {
     /// Atomically claim `key` for `run_id` (or report a replay/conflict). A prior
@@ -489,6 +527,23 @@ pub trait RunHistory: Send + Sync {
     /// nothing to finalize.
     async fn finalize_completed_sharded_parents(&self) -> Result<usize, HistoryError> {
         Ok(0)
+    }
+
+    // ── Audit log (RBAC, #205) ───────────────────────────────────────────────
+
+    /// Append one audit record. Best-effort but visible: the caller logs a
+    /// warning on failure (audit writes must never silently vanish, and must
+    /// never fail the underlying action). Default: no-op — overridden by the
+    /// memory + SQL backends.
+    async fn record_audit(&self, entry: &AuditEntry) -> Result<(), HistoryError> {
+        let _ = entry;
+        Ok(())
+    }
+
+    /// Most-recent audit records matching `filter`, newest first. Default: empty.
+    async fn list_audit(&self, filter: &AuditFilter) -> Result<Vec<AuditEntry>, HistoryError> {
+        let _ = filter;
+        Ok(Vec::new())
     }
 
     /// True when the backend is in fallback mode (drives `/readyz`). Always false

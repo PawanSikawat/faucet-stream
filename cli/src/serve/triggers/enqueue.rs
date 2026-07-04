@@ -100,7 +100,10 @@ pub async fn fire(
     // faucet_serve_idempotency_hits_total captures them. A Conflict (same key,
     // different payload hash) is treated as a committed no-op (Coalesced) so a
     // polling watcher does not retry the same event forever.
-    match runner::submit(state.clone(), req).await {
+    // Trigger-originated (non-HTTP) submission → attribute the audit record to
+    // the trigger (`trigger:<name>`).
+    let actor = crate::serve::rbac::AuthContext::trigger(compiled.name());
+    match runner::submit(state.clone(), req, actor).await {
         Ok(resp) => {
             metrics::enqueued(compiled.name());
             FireOutcome::Enqueued(resp.run_id)

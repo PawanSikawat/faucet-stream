@@ -2,13 +2,14 @@
 
 use crate::error::{CliError, CliResult};
 use crate::serve::config::ServeConfig;
-use crate::serve::handlers::{doctor, health, logs, runs, schemas};
+use crate::serve::handlers::{audit, doctor, health, logs, runs, schemas};
 use crate::serve::history::RunHistory;
 use crate::serve::state::ServerState;
 use crate::serve::{auth, metrics};
 use axum::Router;
 use axum::routing::{get, post};
 use serde_json::Value;
+use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
@@ -32,7 +33,8 @@ pub fn build_router(state: ServerState, config: &ServeConfig) -> Router {
         .route("/v1/runs/{id}/logs", get(logs::stream_logs))
         .route("/v1/schemas", get(schemas::list_schemas))
         .route("/v1/schemas/{kind}/{name}", get(schemas::get_schema))
-        .route("/v1/doctor", post(doctor::doctor));
+        .route("/v1/doctor", post(doctor::doctor))
+        .route("/v1/audit", get(audit::list_audit));
     #[cfg(feature = "triggers")]
     {
         api = api.route(
@@ -401,13 +403,18 @@ pub async fn serve(config: ServeConfig) -> CliResult<()> {
 
     // The HTTP graceful-shutdown future resolves on signal and stops accepting
     // new connections / drains in-flight HTTP — it does NOT cancel run tasks.
-    axum::serve(listener, app)
-        .with_graceful_shutdown(async move {
-            wait_for_signal().await;
-            tracing::info!("shutdown signal received; draining in-flight runs");
-        })
-        .await
-        .map_err(|e| CliError::Serve(format!("server error: {e}")))?;
+    // `into_make_service_with_connect_info` exposes the peer address so the auth
+    // layer can record a `source_ip` on audit records (#205).
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .with_graceful_shutdown(async move {
+        wait_for_signal().await;
+        tracing::info!("shutdown signal received; draining in-flight runs");
+    })
+    .await
+    .map_err(|e| CliError::Serve(format!("server error: {e}")))?;
 
     // Stop pulling NEW work the moment we begin draining: abort the claim loop so
     // a shutting-down instance drains its in-flight runs rather than claiming more.

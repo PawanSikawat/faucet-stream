@@ -11,6 +11,7 @@ use crate::serve::error::ServeError;
 use crate::serve::history::{Claim, InvocationRecord, RunRecord, RunStatus};
 use crate::serve::history::{ClaimedShard, ShardInsert};
 use crate::serve::load::{ConfigFormat, LoadedSubmission, load_submission};
+use crate::serve::rbac::AuthContext;
 use crate::serve::state::ServerState;
 use crate::serve::{idempotency, metrics};
 use chrono::{DateTime, FixedOffset, Utc};
@@ -603,7 +604,11 @@ async fn release_orphaned_claim(state: &ServerState, req: &SubmitRequest, run_id
 }
 
 /// Validate, idempotency-claim, queue, and spawn a submission.
-pub async fn submit(state: ServerState, req: SubmitRequest) -> Result<SubmitResponse, ServeError> {
+pub async fn submit(
+    state: ServerState,
+    req: SubmitRequest,
+    actor: AuthContext,
+) -> Result<SubmitResponse, ServeError> {
     let format: ConfigFormat = req.config_format.into();
     let loaded = load_submission(&req.config, format, state.default_base()).await?;
 
@@ -636,14 +641,17 @@ pub async fn submit(state: ServerState, req: SubmitRequest) -> Result<SubmitResp
 
     let run_id = uuid::Uuid::now_v7().to_string();
 
+    // Config fingerprint (sha256) — the idempotency identity AND the value
+    // recorded on the `run.submit` audit entry (#205).
+    let merged = serde_json::to_value(&loaded.cfg).unwrap_or(serde_json::Value::Null);
+    let fp_config = idempotency::fingerprint(&merged, loaded.cfg.name.as_deref());
+
     // Idempotency claim (if a key was supplied).
     if let Some(key) = &req.idempotency_key {
-        let merged = serde_json::to_value(&loaded.cfg).unwrap_or(serde_json::Value::Null);
         // Fold the run-affecting request fields (clock / timeout_secs / labels)
         // into the fingerprint, not just the config — so a key replayed with a
         // different backfill `clock` is a 409, not a replay of the original
         // run's window (#146 M7).
-        let fp_config = idempotency::fingerprint(&merged, loaded.cfg.name.as_deref());
         let fp = idempotency::request_fingerprint(
             &fp_config,
             req.clock.as_deref(),
@@ -717,6 +725,15 @@ pub async fn submit(state: ServerState, req: SubmitRequest) -> Result<SubmitResp
         // claim loop + semaphore, not the submit-side queue).
         drop(reservation);
         state.cluster().kick();
+        crate::serve::audit::write(
+            &state,
+            &actor,
+            "run.submit",
+            Some(run_id.clone()),
+            Some(fp_config.clone()),
+            "ok",
+        )
+        .await;
         return Ok(SubmitResponse {
             run_id,
             status: RunStatus::Pending,
@@ -744,6 +761,16 @@ pub async fn submit(state: ServerState, req: SubmitRequest) -> Result<SubmitResp
         run_token,
         submitted_at,
     );
+
+    crate::serve::audit::write(
+        &state,
+        &actor,
+        "run.submit",
+        Some(run_id.clone()),
+        Some(fp_config.clone()),
+        "ok",
+    )
+    .await;
 
     Ok(SubmitResponse {
         run_id,
@@ -1311,6 +1338,15 @@ fn schedule_log_drop(state: ServerState, run_id: String) {
 mod tests {
     use super::*;
 
+    /// A stand-in admin actor for the submit() tests.
+    fn admin_actor() -> AuthContext {
+        AuthContext {
+            principal: "test".into(),
+            role: crate::serve::rbac::Role::Admin,
+            source_ip: None,
+        }
+    }
+
     #[test]
     fn classify_ok_no_failures_is_completed() {
         let summary = RunSummary {
@@ -1423,7 +1459,7 @@ mod tests {
             clock: None,
         };
 
-        let err = submit(state.clone(), req).await.unwrap_err();
+        let err = submit(state.clone(), req, admin_actor()).await.unwrap_err();
         assert!(
             matches!(err, ServeError::Conflict(_)),
             "expected Conflict, got {err:?}"
@@ -1487,7 +1523,7 @@ mod tests {
             idempotency_key: None,
             clock: None,
         };
-        let resp = submit(state.clone(), req).await.unwrap();
+        let resp = submit(state.clone(), req, admin_actor()).await.unwrap();
         assert_eq!(resp.status, RunStatus::Pending);
         // No local queue slot was consumed (cluster runs don't queue locally).
         assert_eq!(state.registry().queued(), 0);
@@ -1667,7 +1703,7 @@ mod tests {
             idempotency_key: None,
             clock: None,
         };
-        let err = submit(state.clone(), req).await.unwrap_err();
+        let err = submit(state.clone(), req, admin_actor()).await.unwrap_err();
         assert!(
             matches!(err, ServeError::Unavailable(_)),
             "expected 503 Unavailable, got {err:?}"

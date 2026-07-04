@@ -28,6 +28,7 @@ const ROUTES_BASE: &[(&str, &str)] = &[
     ("GET", "/v1/schemas"),
     ("GET", "/v1/schemas/{kind}/{name}"),
     ("POST", "/v1/doctor"),
+    ("GET", "/v1/audit"),
     ("GET", "/healthz"),
     ("GET", "/readyz"),
     ("GET", "/metrics"),
@@ -112,6 +113,7 @@ async fn every_documented_route_is_wired_on_the_live_server() {
     let args = ServeArgs {
         listen: format!("127.0.0.1:{port}"),
         auth_token: None,
+        auth_config: None,
         no_auth: true,
         max_concurrent_runs: Some(2),
         max_queued_runs: Some(8),

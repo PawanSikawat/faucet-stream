@@ -68,8 +68,13 @@ impl ServerState {
     pub fn auth_token(&self) -> Option<&str> {
         match &self.inner.auth {
             AuthMode::Token(t) => Some(t),
-            AuthMode::None => None,
+            AuthMode::Rbac(_) | AuthMode::None => None,
         }
+    }
+
+    /// The configured authentication mode (bearer resolution + RBAC).
+    pub fn auth_mode(&self) -> &AuthMode {
+        &self.inner.auth
     }
 
     pub fn render_metrics(&self) -> Option<String> {

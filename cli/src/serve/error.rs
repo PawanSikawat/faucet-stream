@@ -24,6 +24,8 @@ pub struct ApiErrorBody {
 #[derive(Debug)]
 pub enum ServeError {
     Unauthorized,
+    /// 403 — authenticated but the principal's role lacks the required permission.
+    Forbidden(String),
     NotFound,
     BadConfig(String),
     /// 422 — expand/validation failure or a failed `doctor_first` preflight;
@@ -48,6 +50,7 @@ impl ServeError {
     pub fn status(&self) -> StatusCode {
         match self {
             ServeError::Unauthorized => StatusCode::UNAUTHORIZED,
+            ServeError::Forbidden(_) => StatusCode::FORBIDDEN,
             ServeError::NotFound => StatusCode::NOT_FOUND,
             ServeError::BadConfig(_) => StatusCode::BAD_REQUEST,
             ServeError::Unprocessable { .. } => StatusCode::UNPROCESSABLE_ENTITY,
@@ -61,6 +64,7 @@ impl ServeError {
     fn code(&self) -> &'static str {
         match self {
             ServeError::Unauthorized => "unauthorized",
+            ServeError::Forbidden(_) => "forbidden",
             ServeError::NotFound => "not_found",
             ServeError::BadConfig(_) => "bad_config",
             ServeError::Unprocessable { .. } => "unprocessable",
@@ -74,6 +78,7 @@ impl ServeError {
     fn message(&self) -> String {
         match self {
             ServeError::Unauthorized => "missing or invalid bearer token".into(),
+            ServeError::Forbidden(m) => m.clone(),
             ServeError::NotFound => "not found".into(),
             ServeError::BadConfig(m) => m.clone(),
             ServeError::Unprocessable { message, .. } => message.clone(),

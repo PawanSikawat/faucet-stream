@@ -10,6 +10,7 @@ fn test_config(listen: &str) -> ServeConfig {
     let args = faucet_cli::cli::ServeArgs {
         listen: listen.into(),
         auth_token: None,
+        auth_config: None,
         no_auth: true,
         max_concurrent_runs: Some(2),
         max_queued_runs: Some(8),

@@ -2,11 +2,20 @@
 //! documented memory-backend trade-off. Idempotency claims live in a second map
 //! and are pruned both lazily (on re-claim) and by `purge_expired`.
 
-use super::{Claim, DeleteOutcome, HistoryError, ListFilter, ListPage, RunHistory, RunRecord};
+use super::{
+    AuditEntry, AuditFilter, Claim, DeleteOutcome, HistoryError, ListFilter, ListPage, RunHistory,
+    RunRecord,
+};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use dashmap::DashMap;
+use std::collections::VecDeque;
+use std::sync::Mutex;
 use std::time::Duration;
+
+/// Cap on in-memory audit records (oldest dropped past this). The memory backend
+/// is ephemeral anyway; this just bounds growth for a long-lived process.
+const AUDIT_RING_CAP: usize = 10_000;
 
 struct IdemEntry {
     run_id: String,
@@ -17,6 +26,8 @@ struct IdemEntry {
 pub struct MemoryHistory {
     runs: DashMap<String, RunRecord>,
     idem: DashMap<String, IdemEntry>,
+    /// Bounded, newest-at-back ring of audit records (RBAC, #205).
+    audit: Mutex<VecDeque<AuditEntry>>,
     /// Retention window for idempotency claims (separate from run retention).
     idem_retention: Duration,
 }
@@ -26,6 +37,7 @@ impl MemoryHistory {
         Self {
             runs: DashMap::new(),
             idem: DashMap::new(),
+            audit: Mutex::new(VecDeque::new()),
             idem_retention,
         }
     }
@@ -158,7 +170,42 @@ impl RunHistory for MemoryHistory {
         // Also drop stale idempotency claims so the map stays bounded.
         self.idem
             .retain(|_, e| !is_expired(e.claimed_at, now, self.idem_retention));
+        // Trim audit records older than the run-retention window.
+        if let Ok(mut ring) = self.audit.lock() {
+            ring.retain(|e| !is_expired(e.timestamp, now, retain_for));
+        }
         Ok(before.saturating_sub(self.runs.len()))
+    }
+
+    async fn record_audit(&self, entry: &AuditEntry) -> Result<(), HistoryError> {
+        let mut ring = self
+            .audit
+            .lock()
+            .map_err(|_| HistoryError::Backend("audit ring lock poisoned".into()))?;
+        ring.push_back(entry.clone());
+        while ring.len() > AUDIT_RING_CAP {
+            ring.pop_front();
+        }
+        Ok(())
+    }
+
+    async fn list_audit(&self, filter: &AuditFilter) -> Result<Vec<AuditEntry>, HistoryError> {
+        let ring = self
+            .audit
+            .lock()
+            .map_err(|_| HistoryError::Backend("audit ring lock poisoned".into()))?;
+        let mut rows: Vec<AuditEntry> = ring
+            .iter()
+            .filter(|e| filter.principal.as_deref().is_none_or(|p| e.principal == p))
+            .filter(|e| filter.action.as_deref().is_none_or(|a| e.action == a))
+            .filter(|e| filter.since.is_none_or(|t| e.timestamp >= t))
+            .filter(|e| filter.until.is_none_or(|t| e.timestamp <= t))
+            .cloned()
+            .collect();
+        // Newest first (timestamp DESC, id DESC).
+        rows.sort_by(|a, b| b.timestamp.cmp(&a.timestamp).then_with(|| b.id.cmp(&a.id)));
+        rows.truncate(filter.limit.max(1));
+        Ok(rows)
     }
 
     async fn recover_orphans(&self) -> Result<usize, HistoryError> {
@@ -399,6 +446,100 @@ mod tests {
             .unwrap();
         assert_eq!(by_name.runs.len(), 1);
         assert_eq!(by_name.runs[0].run_id, "x");
+    }
+
+    #[tokio::test]
+    async fn audit_record_list_filter_and_purge() {
+        use crate::serve::history::{AuditEntry, AuditFilter};
+        let h = MemoryHistory::new(Duration::from_secs(60));
+        let now = Utc::now();
+        let entry =
+            |id: &str, principal: &str, action: &str, result: &str, ts: DateTime<Utc>| AuditEntry {
+                id: id.into(),
+                timestamp: ts,
+                principal: principal.into(),
+                role: "admin".into(),
+                action: action.into(),
+                run_id: None,
+                config_fingerprint: None,
+                source_ip: None,
+                result: result.into(),
+            };
+        h.record_audit(&entry(
+            "1",
+            "alice",
+            "run.submit",
+            "ok",
+            now - chrono::Duration::seconds(2),
+        ))
+        .await
+        .unwrap();
+        h.record_audit(&entry(
+            "2",
+            "bob",
+            "run.submit",
+            "denied",
+            now - chrono::Duration::seconds(1),
+        ))
+        .await
+        .unwrap();
+        h.record_audit(&entry("3", "alice", "run.cancel", "ok", now))
+            .await
+            .unwrap();
+
+        // Newest first, no filter.
+        let all = h
+            .list_audit(&AuditFilter {
+                limit: 50,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(all.len(), 3);
+        assert_eq!(all[0].id, "3", "newest first");
+
+        // Filter by principal + action.
+        let alice = h
+            .list_audit(&AuditFilter {
+                principal: Some("alice".into()),
+                limit: 50,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(alice.len(), 2);
+        assert!(alice.iter().all(|e| e.principal == "alice"));
+
+        let denied = h
+            .list_audit(&AuditFilter {
+                action: Some("run.submit".into()),
+                limit: 50,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(denied.len(), 2);
+
+        // Limit is honoured.
+        let one = h
+            .list_audit(&AuditFilter {
+                limit: 1,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(one.len(), 1);
+
+        // purge_expired(0) drops all audit records (every ts is "expired").
+        h.purge_expired(Duration::ZERO).await.unwrap();
+        let after = h
+            .list_audit(&AuditFilter {
+                limit: 50,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert!(after.is_empty(), "audit purge should clear expired entries");
     }
 
     #[tokio::test]

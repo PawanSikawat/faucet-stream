@@ -3,6 +3,7 @@
 //! structured like `cli/src/schedule/`. See
 //! `docs/superpowers/specs/2026-05-30-faucet-serve-design.md`.
 
+pub mod audit;
 pub mod auth;
 pub mod cluster;
 pub mod config;
@@ -14,6 +15,7 @@ pub mod load;
 pub mod logs;
 pub mod metrics;
 pub mod observability;
+pub mod rbac;
 pub mod registry;
 pub mod runner;
 pub mod server;

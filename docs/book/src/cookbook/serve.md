@@ -61,6 +61,44 @@ Mitigations are deployment-level and **mandatory**:
   resolved secrets — only faucet's own log output is redacted, not third-party
   connector debug logging.
 
+## RBAC & audit log
+
+A single `--auth-token` is one implicit **admin** principal — fine for a personal
+deployment, but a team needs scoped access and attribution. `--auth-config
+<file>` enables **role-based access control**: a YAML/JSON list of principals,
+each a `{ name, token, role }` where role is `viewer` (read-only), `operator`
+(submit/cancel/delete runs, doctor, triggers), or `admin` (everything, including
+the audit log).
+
+```yaml
+# auth.yaml — tokens can use ${env:…}/${secret:…} interpolation
+principals:
+  - { name: alice, token: "${env:ALICE_TOKEN}", role: admin }
+  - { name: ci,    token: "${env:CI_TOKEN}",    role: operator }
+  - { name: dash,  token: "${env:DASH_TOKEN}",  role: viewer }
+```
+
+```bash
+faucet serve --auth-config auth.yaml --history postgres://…/faucet
+```
+
+A viewer's `POST /v1/runs` returns `403`; its `GET /v1/runs` returns `200`.
+`--auth-config` is mutually exclusive with `--auth-token` / `--no-auth`.
+
+**Every mutating action** (`run.submit` / `run.cancel` / `run.delete`) **and every
+denied attempt** is written to a tamper-evident audit log — principal, role,
+action, run id, config fingerprint, source IP, timestamp, result. Admins read it:
+
+```bash
+curl -H "Authorization: Bearer $ADMIN_TOKEN" \
+  'http://127.0.0.1:8080/v1/audit?action=run.submit&limit=50'
+```
+
+Audit records persist in the run-history backend (`faucet_serve_audit` on the SQL
+backends; an in-memory ring for the default backend, lost on restart) and expire
+with `--retain-terminal-runs-secs`. For a durable trail, use a
+`--history postgres://…`/`sqlite:…` backend.
+
 ## Bounded concurrency & backpressure
 
 `--max-concurrent-runs` (default `min(16, cpu_count())`) bounds how many runs

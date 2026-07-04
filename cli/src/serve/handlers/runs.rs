@@ -3,10 +3,11 @@
 
 use crate::serve::error::ServeError;
 use crate::serve::history::{DeleteOutcome, ListFilter, RunRecord, RunStatus};
+use crate::serve::rbac::AuthContext;
 use crate::serve::runner::{self, SubmitRequest, SubmitResponse};
 use crate::serve::state::ServerState;
 use axum::Json;
-use axum::extract::{Path, Query, State};
+use axum::extract::{Extension, Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use chrono::{DateTime, Utc};
@@ -27,12 +28,14 @@ fn redact_record(rec: &mut RunRecord) {
     }
 }
 
-/// `POST /v1/runs` → 202.
+/// `POST /v1/runs` → 202. The auth middleware injects the resolved
+/// [`AuthContext`] so `submit` can attribute the `run.submit` audit record.
 pub async fn submit_run(
     State(state): State<ServerState>,
+    Extension(actor): Extension<AuthContext>,
     Json(req): Json<SubmitRequest>,
 ) -> Result<(StatusCode, Json<SubmitResponse>), ServeError> {
-    let resp = runner::submit(state, req).await?;
+    let resp = runner::submit(state, req, actor).await?;
     Ok((StatusCode::ACCEPTED, Json(resp)))
 }
 
@@ -64,10 +67,13 @@ pub async fn get_run(
 /// instance before that instance processes the flag.
 pub async fn cancel_run(
     State(state): State<ServerState>,
+    Extension(actor): Extension<AuthContext>,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, ServeError> {
     // 1. A live local token (this instance is running/queued it) → cancel now.
     if state.registry().cancel(&id) {
+        crate::serve::audit::write(&state, &actor, "run.cancel", Some(id.clone()), None, "ok")
+            .await;
         return Ok(StatusCode::ACCEPTED);
     }
 
@@ -95,6 +101,8 @@ pub async fn cancel_run(
             .await
             .map_err(|e| ServeError::Internal(e.to_string()))?
         {
+            crate::serve::audit::write(&state, &actor, "run.cancel", Some(id.clone()), None, "ok")
+                .await;
             return Ok(StatusCode::ACCEPTED);
         }
         // Otherwise it is running on a peer → flag it; the peer cancels on its
@@ -104,6 +112,8 @@ pub async fn cancel_run(
             .request_cancel(&id)
             .await
             .map_err(|e| ServeError::Internal(e.to_string()))?;
+        crate::serve::audit::write(&state, &actor, "run.cancel", Some(id.clone()), None, "ok")
+            .await;
         return Ok(StatusCode::ACCEPTED);
     }
 
@@ -116,6 +126,7 @@ pub async fn cancel_run(
 /// `DELETE /v1/runs/{id}` → 204 / 404 / 409 (still running).
 pub async fn delete_run(
     State(state): State<ServerState>,
+    Extension(actor): Extension<AuthContext>,
     Path(id): Path<String>,
 ) -> Result<StatusCode, ServeError> {
     match state
@@ -124,7 +135,11 @@ pub async fn delete_run(
         .await
         .map_err(|e| ServeError::Internal(e.to_string()))?
     {
-        DeleteOutcome::Deleted => Ok(StatusCode::NO_CONTENT),
+        DeleteOutcome::Deleted => {
+            crate::serve::audit::write(&state, &actor, "run.delete", Some(id.clone()), None, "ok")
+                .await;
+            Ok(StatusCode::NO_CONTENT)
+        }
         DeleteOutcome::NotFound => Err(ServeError::NotFound),
         DeleteOutcome::StillRunning => Err(ServeError::Conflict(
             "run is still in flight — cancel it before deleting".into(),
@@ -306,6 +321,11 @@ mod tests {
 
         let resp = cancel_run(
             axum::extract::State(state.clone()),
+            axum::extract::Extension(AuthContext {
+                principal: "test".into(),
+                role: crate::serve::rbac::Role::Admin,
+                source_ip: None,
+            }),
             axum::extract::Path("p1".into()),
         )
         .await

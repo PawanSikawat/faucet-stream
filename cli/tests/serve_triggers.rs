@@ -386,6 +386,7 @@ async fn spawn_serve_with_triggers(
     let args = ServeArgs {
         listen: format!("127.0.0.1:{port}"),
         auth_token: token.map(|t| t.to_string()),
+        auth_config: None,
         no_auth: token.is_none(),
         max_concurrent_runs: Some(4),
         max_queued_runs: Some(16),

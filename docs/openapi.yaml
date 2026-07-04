@@ -245,6 +245,36 @@ paths:
         "422":
           description: One or more probes failed; report in body
           content: { application/json: { schema: { type: object } } }
+        "403": { description: Principal's role lacks the required permission }
+  /v1/audit:
+    get:
+      summary: Read the control-plane audit log (RBAC, admin-only)
+      description: >
+        Returns recent audit records (newest first), each a mutating or denied
+        control-plane action attributed to a principal. Requires the `AuditRead`
+        permission (admin role). Under a single `--auth-token` or `--no-auth`
+        the implicit principal is admin, so this endpoint is available.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: principal, in: query, required: false, schema: { type: string } }
+        - { name: action, in: query, required: false, schema: { type: string } }
+        - { name: since, in: query, required: false, schema: { type: string, format: date-time } }
+        - { name: until, in: query, required: false, schema: { type: string, format: date-time } }
+        - { name: limit, in: query, required: false, schema: { type: integer, default: 100, maximum: 1000 } }
+      responses:
+        "200":
+          description: Audit records, newest first.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  entries:
+                    type: array
+                    items: { $ref: "#/components/schemas/AuditEntry" }
+        "400": { description: Malformed `since` / `until` timestamp }
+        "401": { description: Missing or invalid bearer token }
+        "403": { description: Principal's role lacks the AuditRead permission }
   /healthz:
     get:
       summary: Liveness probe (unauthenticated)
@@ -401,6 +431,19 @@ components:
           type: array
           items: { $ref: "#/components/schemas/RunRecord" }
         next_cursor: { type: string, nullable: true }
+    AuditEntry:
+      type: object
+      required: [id, timestamp, principal, role, action, result]
+      properties:
+        id: { type: string, description: "Time-ordered UUIDv7 (also the sort key)." }
+        timestamp: { type: string, format: date-time }
+        principal: { type: string, description: "Principal name (anonymous / token / <name> / trigger:<name>)." }
+        role: { type: string, enum: [viewer, operator, admin] }
+        action: { type: string, description: "e.g. run.submit / run.cancel / run.delete / trigger.fire / <route> (denials)." }
+        run_id: { type: string, nullable: true }
+        config_fingerprint: { type: string, nullable: true, description: "sha256 of the merged config (submit actions)." }
+        source_ip: { type: string, nullable: true }
+        result: { type: string, enum: [ok, denied] }
     ApiError:
       type: object
       required: [error]

@@ -1,11 +1,19 @@
-//! Bearer-token authentication for `/v1/*`. Constant-time comparison via
-//! `subtle`; the `Authorization` header is the only accepted credential.
+//! Bearer-token authentication + RBAC authorization for `/v1/*` (#205).
+//! Constant-time comparison via `subtle`; the `Authorization` header is the only
+//! accepted credential. The bearer token resolves (via
+//! [`AuthMode::resolve`](crate::serve::config::AuthMode::resolve)) to an
+//! [`AuthContext`](crate::serve::rbac::AuthContext), the request's matched route declares the required
+//! [`Permission`](crate::serve::rbac::Permission), and a role that lacks it is
+//! denied (`403`) with an audit record.
 
+use crate::serve::audit;
 use crate::serve::error::ServeError;
+use crate::serve::rbac::{self, Role};
 use crate::serve::state::ServerState;
-use axum::extract::{Request, State};
+use axum::extract::{ConnectInfo, MatchedPath, Request, State};
 use axum::middleware::Next;
 use axum::response::Response;
+use std::net::SocketAddr;
 use subtle::ConstantTimeEq;
 
 /// Timing-safe byte-slice equality. Differing lengths return `false` after a
@@ -29,24 +37,88 @@ pub fn authorize_header(header: Option<&str>, expected: &str) -> Result<(), Serv
     }
 }
 
-/// Axum middleware enforcing bearer auth on `/v1/*`. A no-op when the server was
-/// started with `--no-auth`. CORS preflight (`OPTIONS`) is allowed through so
+/// Extract the raw bearer token from an `Authorization: Bearer <token>` header.
+fn bearer_token(headers: &axum::http::HeaderMap) -> Option<&str> {
+    headers
+        .get(axum::http::header::AUTHORIZATION)?
+        .to_str()
+        .ok()?
+        .strip_prefix("Bearer ")
+}
+
+/// Best-effort `run_id` from a `/v1/runs/{id}[/…]` path (for denial audit
+/// attribution). `None` for non-run routes.
+fn extract_run_id(path: &str) -> Option<String> {
+    let rest = path.strip_prefix("/v1/runs/")?;
+    let id = rest.split('/').next()?;
+    (!id.is_empty()).then(|| id.to_string())
+}
+
+/// Axum middleware enforcing bearer auth + RBAC on `/v1/*`. Under `--no-auth`
+/// every request resolves to an implicit `anonymous` admin (all permitted), so
+/// the authz path is uniform. CORS preflight (`OPTIONS`) is allowed through so
 /// browsers (which omit `Authorization` on preflight) work behind a CORS policy.
+///
+/// On success the resolved [`AuthContext`](crate::serve::rbac::AuthContext) is
+/// inserted into the request extensions for handlers (and the audit writer). A
+/// principal whose role lacks the route's required permission gets a `403` and a
+/// `denied` audit record.
 pub async fn require_auth(
     State(state): State<ServerState>,
-    req: Request,
+    mut req: Request,
     next: Next,
 ) -> Result<Response, ServeError> {
     if req.method() == axum::http::Method::OPTIONS {
         return Ok(next.run(req).await);
     }
-    if let Some(expected) = state.auth_token() {
-        let header = req
-            .headers()
-            .get(axum::http::header::AUTHORIZATION)
-            .and_then(|v| v.to_str().ok());
-        authorize_header(header, expected)?;
+
+    let bearer = bearer_token(req.headers());
+    let mut ctx = state
+        .auth_mode()
+        .resolve(bearer)
+        .ok_or(ServeError::Unauthorized)?;
+    // Best-effort source IP (present when the server is served with connect-info;
+    // absent when a handler is called directly in tests).
+    ctx.source_ip = req
+        .extensions()
+        .get::<ConnectInfo<SocketAddr>>()
+        .map(|c| c.0.ip().to_string());
+
+    let method = req.method().clone();
+    let matched = req
+        .extensions()
+        .get::<MatchedPath>()
+        .map(|m| m.as_str().to_string());
+
+    // A mapped route requires its permission; an unmapped `/v1` route is
+    // admin-only (fail closed for any endpoint added without an explicit entry).
+    let allowed = match matched.as_deref() {
+        Some(mp) => match rbac::required_permission(&method, mp) {
+            Some(perm) => ctx.role.grants(perm),
+            None => ctx.role == Role::Admin,
+        },
+        None => ctx.role == Role::Admin,
+    };
+
+    if !allowed {
+        let action = matched
+            .as_deref()
+            .map(|mp| rbac::audit_action(&method, mp))
+            .unwrap_or("unknown");
+        let run_id = extract_run_id(req.uri().path());
+        tracing::warn!(
+            principal = %ctx.principal, role = ctx.role.as_str(), action,
+            "RBAC denied a control-plane action"
+        );
+        audit::write(&state, &ctx, action, run_id, None, "denied").await;
+        return Err(ServeError::Forbidden(format!(
+            "principal '{}' (role {}) is not permitted to perform this action",
+            ctx.principal,
+            ctx.role.as_str()
+        )));
     }
+
+    req.extensions_mut().insert(ctx);
     Ok(next.run(req).await)
 }
 

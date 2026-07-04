@@ -190,6 +190,12 @@ pub struct ServeArgs {
     /// unauthenticated server is never accidental.
     #[arg(long)]
     pub no_auth: bool,
+    /// Path to an RBAC auth config (YAML/JSON) defining principals — each a
+    /// `{ name, token, role }` where role is `viewer` / `operator` / `admin`.
+    /// Enables role-based access control + an audit log. Mutually exclusive with
+    /// `--auth-token` / `--no-auth`.
+    #[arg(long, conflicts_with_all = ["auth_token", "no_auth"])]
+    pub auth_config: Option<std::path::PathBuf>,
     /// Max pipeline runs executing at once. Default: min(16, cpu count).
     #[arg(long)]
     pub max_concurrent_runs: Option<usize>,
