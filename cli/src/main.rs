@@ -32,6 +32,8 @@ async fn main() {
         Command::Test(args) => commands::test::run(args).await,
         #[cfg(feature = "contract")]
         Command::Contract(args) => commands::contract::run(args).await,
+        #[cfg(feature = "masking")]
+        Command::Masking(args) => commands::masking::run(args).await,
         #[cfg(feature = "schedule")]
         Command::Schedule(args) => commands::schedule::run(args).await,
         #[cfg(feature = "serve")]

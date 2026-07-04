@@ -105,6 +105,81 @@ fn schema_prints_jsonl_sink_schema() {
         .stdout(contains("\"path\""));
 }
 
+#[cfg(feature = "masking")]
+#[test]
+fn schema_prints_masking_schema() {
+    Command::cargo_bin("faucet")
+        .unwrap()
+        .args(["schema", "masking"])
+        .assert()
+        .success()
+        .stdout(contains("MaskingSpec"))
+        .stdout(contains("value_detector"));
+}
+
+#[cfg(feature = "masking")]
+#[test]
+fn masking_verb_shows_per_destination_scoping() {
+    // Two named sinks; one rule scoped to `secure` only, one unscoped. The
+    // verb must show the scoped rule under `secure` but not under `default`.
+    let dir = TempDir::new().unwrap();
+    let cfg = dir.path().join("faucet.yaml");
+    fs::write(
+        &cfg,
+        r#"version: 1
+name: masking_scope_smoke
+pipeline:
+  source: { type: csv, config: { path: ./in.csv } }
+  sinks:
+    default: { type: jsonl, config: { path: ./a.jsonl } }
+    secure:  { type: jsonl, config: { path: ./b.jsonl } }
+  masking:
+    rules:
+      - name: everywhere
+        match: { value_detector: email }
+        action: { type: redact }
+      - name: secure-only
+        match: { fields: [ssn] }
+        action: { type: hash }
+        applies_to: [secure]
+matrix:
+  - id: to_default
+    sink: { ref: default }
+  - id: to_secure
+    sink: { ref: secure }
+"#,
+    )
+    .unwrap();
+    Command::cargo_bin("faucet")
+        .unwrap()
+        .args(["masking", "--no-env-file"])
+        .arg(&cfg)
+        .assert()
+        .success()
+        .stdout(contains("masking — valid (2 rules)"))
+        .stdout(contains("- default [jsonl]: everywhere"))
+        .stdout(contains("- secure [jsonl]: everywhere, secure-only"));
+}
+
+#[cfg(feature = "masking")]
+#[test]
+fn masking_verb_errors_without_a_masking_block() {
+    let dir = TempDir::new().unwrap();
+    let cfg = dir.path().join("faucet.yaml");
+    fs::write(
+        &cfg,
+        csv_to_jsonl_yaml(Path::new("./in.csv"), Path::new("./out.jsonl")),
+    )
+    .unwrap();
+    Command::cargo_bin("faucet")
+        .unwrap()
+        .args(["masking", "--no-env-file"])
+        .arg(&cfg)
+        .assert()
+        .failure()
+        .stderr(contains("no `pipeline.masking:` block"));
+}
+
 #[test]
 fn schema_rejects_unknown_kind() {
     Command::cargo_bin("faucet")
@@ -779,6 +854,15 @@ fn shipped_example_yamls_pass_validate() {
                 continue;
             }
         }
+        // `masking:` is a deny_unknown_fields key gated on the `masking`
+        // feature; a build without it can't parse those examples.
+        #[cfg(not(feature = "masking"))]
+        {
+            let yaml_text = fs::read_to_string(&path).unwrap_or_default();
+            if yaml_text.contains("\n  masking:") || yaml_text.contains("\nmasking:") {
+                continue;
+            }
+        }
         count += 1;
         let mut cmd = Command::cargo_bin("faucet").unwrap();
         for (k, v) in env_placeholders {
@@ -795,6 +879,55 @@ fn shipped_example_yamls_pass_validate() {
             .success();
     }
     assert!(count >= 30, "expected many YAML examples, got {count}");
+}
+
+#[cfg(feature = "masking")]
+#[test]
+fn run_masks_pii_before_writing_to_the_sink() {
+    // End-to-end: a real `faucet run` masks matching fields before they reach
+    // the sink. Exercises the executor's masking attach + the run_stream pass.
+    let dir = TempDir::new().unwrap();
+    let csv = dir.path().join("in.csv");
+    let out = dir.path().join("out.jsonl");
+    fs::write(&csv, "name,email,uid\nAl,al@example.com,u1\n").unwrap();
+    let cfg = dir.path().join("faucet.yaml");
+    fs::write(
+        &cfg,
+        format!(
+            r#"version: 1
+name: mask_run
+pipeline:
+  source: {{ type: csv, config: {{ path: {csv} }} }}
+  masking:
+    key: k
+    rules:
+      - match: {{ value_detector: email }}
+        action: {{ type: redact }}
+      - match: {{ fields: [uid] }}
+        action: {{ type: hash }}
+  sink: {{ type: jsonl, config: {{ path: {out} }} }}
+"#,
+            csv = csv.display(),
+            out = out.display(),
+        ),
+    )
+    .unwrap();
+    Command::cargo_bin("faucet")
+        .unwrap()
+        .args(["run", "--no-env-file"])
+        .arg(&cfg)
+        .assert()
+        .success();
+    let written = fs::read_to_string(&out).unwrap();
+    let rec: serde_json::Value = serde_json::from_str(written.lines().next().unwrap()).unwrap();
+    assert_eq!(rec["name"], "Al", "non-PII untouched");
+    assert_eq!(rec["email"], "***", "email redacted before the sink");
+    assert_eq!(
+        rec["uid"].as_str().unwrap().len(),
+        64,
+        "uid replaced by a 64-hex-char hash"
+    );
+    assert_ne!(rec["uid"], "u1");
 }
 
 #[test]

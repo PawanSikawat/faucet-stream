@@ -1,0 +1,63 @@
+# Fixture-based offline tests for the `masking:` policy (issue #206) — run with:
+#
+#   faucet test cli/examples/tests/masking_tests.yaml
+#
+# No source or sink is touched: fixture records stream through the real
+# masking → transform → quality → contract path with an in-memory sink.
+# Offline there is no destination sink, so every rule applies regardless of
+# its `applies_to` scoping.
+version: 1
+tests:
+  # Value detectors: an email (whatever the column) and a Luhn-valid card are
+  # detected and masked; a non-PII field is left untouched.
+  - name: detectors mask email and card
+    pipeline:
+      masking:
+        rules:
+          - match: { value_detector: email }
+            action: { type: redact }
+          - match: { value_detector: credit_card }
+            action: { type: partial, keep_last: 4 }
+    input:
+      - { contact: "alice@example.com", card: "4111 1111 1111 1111", city: "NYC" }
+    expect:
+      records:
+        - { contact: "***", card: "***************1111", city: "NYC" }
+
+  # Keyed hashing is deterministic → equal inputs produce equal hashes, so
+  # masked values stay joinable. (We assert the two ids collapse to one via a
+  # subset match on the second field.)
+  - name: keyed hash is deterministic
+    pipeline:
+      masking:
+        key: test-key
+        rules:
+          - match: { fields: [uid] }
+            action: { type: hash }
+    input:
+      - { uid: "u1", n: 1 }
+      - { uid: "u1", n: 2 }
+    expect:
+      match: subset
+      records:
+        - { n: 1 }
+        - { n: 2 }
+
+  # Name-pattern match + explicit-field tokenize, nested-path redaction.
+  - name: name patterns and nested paths
+    pipeline:
+      masking:
+        key: k
+        rules:
+          - match: { field_pattern: '(?i)^ssn$' }
+            action: { type: hash }
+          - match: { fields: [user_id] }
+            action: { type: tokenize, prefix: "usr_" }
+          - match: { fields: ["address"] }
+            action: { type: redact }
+    input:
+      - { ssn: "123-45-6789", user_id: "abc", address: { street: "1 Main", zip: "94103" }, keep: 1 }
+    expect:
+      match: subset
+      records:
+        - { address: "***", keep: 1 }

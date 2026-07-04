@@ -16,6 +16,7 @@ The foundation crate for the [faucet-stream](https://github.com/PawanSikawat/fau
 - **Pluggable transforms** — `RecordTransform` (flatten, key/value casing, regex rename, cast, redact, …) plus stage-level `Filter` / `Explode` / `CdcUnwrap`, attachable to any source via `TransformingSource`.
 - **Durable bookmarks** — the `StateStore` trait with in-process `MemoryStateStore` and crash-safe `FileStateStore` built in; Redis / Postgres backends live in their own crates.
 - **Reliability primitives** — dead-letter queue routing, exactly-once delivery (`DeliveryMode`), key-based upsert/delete write modes, per-page / per-record data-quality checks, and versioned data contracts.
+- **Governance** — PII detection + column-level masking (`masking` feature): classify sensitive fields (name pattern / value detector / explicit list) and `redact`/`hash`/`tokenize`/`partial`-mask them; the pass runs before every sink so PII never leaks to a sink, the DLQ, or a lineage sample.
 - **Shared authentication** — the `AuthProvider` trait and `AuthSpec` config field give N connectors one token with single-flight refresh.
 - **Typed errors** — one `FaucetError` enum covers every failure path, with a `Custom` variant for third-party connector errors.
 - **Built-in observability** — pipelines emit `tracing` spans and `metrics` counters/histograms automatically; connectors only override `connector_name()` for a friendly label.
@@ -426,6 +427,34 @@ Machine-readable exports for downstream consumers are plain functions:
 `contract::to_openlineage_facet(&spec, producer)` (an OpenLineage
 `SchemaDatasetFacet`). The CLI surfaces them as `faucet contract --export`.
 
+## PII masking
+
+The `masking` feature adds a `MaskingSpec` policy that classifies sensitive
+fields — by field-name pattern (regex over the dot-path), by value detector
+(`email` / `credit_card` (Luhn) / `ssn` / `phone` / `ipv4`), or by explicit
+field list — and rewrites them per action: `redact` (fixed mask), `hash`
+(HMAC-SHA256 keyed / SHA-256 unkeyed; deterministic, so masked values stay
+joinable), `tokenize` (short opaque token), or `partial` (reveal only the last N
+chars). Detectors are conservative (anchored; cards require a valid Luhn
+checksum) so silent over-masking is rare.
+
+The masking pass runs **first** — before the quality, contract, and drift passes
+and before every sink write — so PII never reaches a sink, the DLQ, or a lineage
+sample unmasked. It never fails a run or quarantines (matching fields are
+rewritten in place), so no DLQ is required.
+
+```rust
+use faucet_core::{CompiledMasking, MaskingSpec, Pipeline};
+use std::sync::Arc;
+
+let spec: MaskingSpec = serde_json::from_value(/* ... */)?;
+let compiled = Arc::new(CompiledMasking::compile(&spec)?);
+let result = Pipeline::new(&source, &sink)
+    .with_masking(compiled)
+    .run()
+    .await?;
+```
+
 ## Config loading & schema
 
 Load any `Deserialize`-able config from JSON files or environment variables:
@@ -493,6 +522,7 @@ let schema = serde_json::to_value(schema_for!(MyConfig))?;
 | `write_mode` | `WriteMode`, `WriteSpec`, `DeleteMarker`, `plan_writes`, `WritePlan` |
 | `quality` | Per-record / per-batch checks (`quality` / `quality-jsonschema` features) |
 | `contract` | Versioned data contracts — `ContractSpec`, `CompiledContract`, `apply_contract`, JSON-Schema / OpenLineage exports (the `contract` feature) |
+| `masking` | PII detection + column-level masking — `MaskingSpec`, `CompiledMasking`, `apply_masking`, `Detector`, `MaskAction` (the `masking` feature) |
 | `replication` | `ReplicationMethod`, `filter_incremental`, `max_replication_value` |
 | `retry` | `execute_with_retry` (exponential backoff + jitter) |
 | `schema` | `infer_schema` from record samples |
@@ -512,6 +542,7 @@ Defaults: `transform-flatten`, `transform-rename-keys`, `transform-keys-case`.
 | `quality` | The 12 base per-record / per-batch quality checks |
 | `quality-jsonschema` | Adds the `json_schema` record check (pulls `jsonschema`) |
 | `contract` | Versioned data contracts (the `contract:` config block + enforcement pass) |
+| `masking` | PII detection + column-level masking (the `masking:` config block; pulls `regex`+`sha2`+`hmac`) |
 | `compression` | `CompressionConfig` + gzip/zstd helpers |
 | `observability-install` | `install_observability` (Prometheus exporter + tracing subscriber) |
 

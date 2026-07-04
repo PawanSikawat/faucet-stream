@@ -412,6 +412,54 @@ config-load error — `faucet validate` catches it. `fail`/`warn` compose with
 `delivery: exactly_once`; `quarantine` does not (exactly-once forbids a DLQ).
 Inspect or export the contract with [`faucet contract`](./cli.md#contract).
 
+## `masking`
+
+Optional **pipeline-level** block (a sibling of `source` / `sink` /
+`transforms` inside `pipeline:`) declaring a **PII detection + column-masking**
+policy. The masking pass runs **first** — before the quality, contract, and
+schema-drift passes and before every sink write, the DLQ, and lineage sampling
+— so PII never reaches a sink (including the DLQ) or an OpenLineage facet
+unmasked. Masking is value-only and key-preserving: it never fails a run or
+quarantines (no `dlq:` required). Requires the `masking` Cargo feature (in the
+default build). See the [masking cookbook](../cookbook/masking.md) for the full
+model and `faucet schema masking` for the block's JSON Schema.
+
+```yaml
+pipeline:
+  masking:
+    description: Mask customer PII.       # optional metadata
+    key: ${vault:secret/faucet#mask_key}  # optional — keyed HMAC-SHA256 for hash/tokenize
+    rules:                                # required, non-empty; first match per field wins
+      - name: emails                      # optional label (logs + metric); default rule_<n>
+        match:                            # at least one of the three must be set
+          value_detector: email          # email | credit_card | ssn | phone | ipv4
+        action: { type: redact }          # replace with `mask` (default "***")
+      - match: { field_pattern: '(?i)^ssn$' }   # regex over the field dot-path
+        action: { type: hash }            # HMAC-SHA256 (keyed) / SHA-256 (unkeyed) hex
+      - match: { fields: [card] }         # explicit dot-paths
+        action: { type: partial, keep_last: 4 }   # reveal only the last N chars
+        applies_to: [warehouse]           # scope to sink template name(s) / connector kind(s)
+```
+
+| Field | Default | Purpose |
+|-------|---------|---------|
+| `description` | — | Documentation metadata. |
+| `key` | — | Secret for keyed HMAC-SHA256 `hash`/`tokenize` (deterministic + irreversible). Absent → unkeyed SHA-256 (deterministic but recomputable). Resolved after secrets, so `${vault:...}` etc. work. |
+| `rules[]` | — | Required, non-empty. Each rule = `name` (optional label) + `match` + `action` + optional `applies_to`. Evaluated in order; the first rule that matches a field wins. |
+| `rules[].match` | — | At least one of `field_pattern` (regex over the dot-path), `value_detector` (`email`/`credit_card`/`ssn`/`phone`/`ipv4`, run over string values), `fields` (explicit dot-paths). A match on a container masks the whole subtree. |
+| `rules[].action` | — | Tagged by `type`: `redact` (`mask`, default `"***"`; `mask: null` nulls the field), `hash`, `tokenize` (`prefix`), `partial` (`keep_last` default `4`, `mask_char` default `*`; `keep_last >= len` masks everything). |
+| `rules[].applies_to` | `[]` (all sinks) | Scope the rule to specific sinks by template name (under `pipeline.sinks:`) or connector kind (e.g. `bigquery`). |
+
+Detectors are conservative (fully anchored; `credit_card` requires a valid
+Luhn checksum; `ssn` excludes never-issued ranges) so false positives stay
+rare. `hash`/`tokenize` are deterministic → masked values stay joinable across
+pipelines that share a `key`. A malformed policy (empty rules, an empty
+`match`, an invalid regex, an empty `tokenize` prefix) is a config-load error —
+`faucet validate` and [`faucet masking`](./cli.md#masking) catch it.
+
+- `faucet_masking_fields_total{pipeline,row,rule,action,detector}` — one
+  increment per masked field (`detector` empty for name-based matches).
+
 ## `execution`
 
 - `max_concurrent` — one shared concurrency budget across roots and child

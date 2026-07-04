@@ -34,6 +34,10 @@ pub struct ResolvedCase {
     /// Data contract to enforce per page.
     #[cfg(feature = "contract")]
     pub contract: Option<faucet_core::ContractSpec>,
+    /// PII masking policy to apply per page. Offline there is no destination
+    /// sink, so every rule applies regardless of its `applies_to` scoping.
+    #[cfg(feature = "masking")]
+    pub masking: Option<faucet_core::MaskingSpec>,
     /// Fixture records fed to the pipeline.
     pub input: Vec<Value>,
     /// Page size for the fixture source (`0` = single page).
@@ -128,6 +132,16 @@ pub async fn run_case(case: &ResolvedCase) -> CliResult<CaseRun> {
                 crate::error::CliError::Config(format!("test '{}': contract: {e}", case.name))
             })?;
             pipeline.with_contract(Arc::new(compiled))
+        }
+        None => pipeline,
+    };
+    #[cfg(feature = "masking")]
+    let pipeline = match &case.masking {
+        Some(spec) => {
+            let compiled = faucet_core::CompiledMasking::compile(spec).map_err(|e| {
+                crate::error::CliError::Config(format!("test '{}': masking: {e}", case.name))
+            })?;
+            pipeline.with_masking(Arc::new(compiled))
         }
         None => pipeline,
     };
@@ -238,6 +252,8 @@ mod tests {
             quality: None,
             #[cfg(feature = "contract")]
             contract: None,
+            #[cfg(feature = "masking")]
+            masking: None,
             input,
             page_size: 0,
             clock: chrono::Utc::now().fixed_offset(),

@@ -136,6 +136,8 @@ async fn resolve_case(
                 quality: node.quality.clone(),
                 #[cfg(feature = "contract")]
                 contract: node.contract.clone(),
+                #[cfg(feature = "masking")]
+                masking: node.masking.clone(),
                 input,
                 page_size: case.page_size,
                 clock,
@@ -148,6 +150,8 @@ async fn resolve_case(
             quality: inline.quality.clone(),
             #[cfg(feature = "contract")]
             contract: inline.contract.clone(),
+            #[cfg(feature = "masking")]
+            masking: inline.masking.clone(),
             input,
             page_size: case.page_size,
             clock,

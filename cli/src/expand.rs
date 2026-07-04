@@ -46,6 +46,19 @@ pub struct ExpandedNode {
     /// matrix-row override in v1) — `cfg.pipeline.contract` verbatim.
     #[cfg(feature = "contract")]
     pub contract: Option<faucet_core::ContractSpec>,
+    /// Pipeline-level PII masking policy, shared by every node (`masking:` has
+    /// no matrix-row override in v1) — `cfg.pipeline.masking` verbatim. The
+    /// executor compiles it *scoped to this node's sink* ([`sink_ref`] +
+    /// [`sink`].`kind`) so `applies_to` destination-scoping works (#206).
+    ///
+    /// [`sink_ref`]: ExpandedNode::sink_ref
+    /// [`sink`]: ExpandedNode::sink
+    #[cfg(feature = "masking")]
+    pub masking: Option<faucet_core::MaskingSpec>,
+    /// The sink template name this node resolved (`sink.ref`, or `"default"`
+    /// for the legacy singular `pipeline.sink`). Used to scope masking
+    /// `applies_to` rules per destination.
+    pub sink_ref: String,
     /// Compiled schema-drift policy spec (pipeline-level; same for every node).
     pub schema: Option<faucet_core::SchemaDriftSpec>,
     /// Delivery guarantee for this row. Resolved from the row's override or
@@ -363,6 +376,13 @@ pub fn expand(cfg: &PipelineConfig) -> CliResult<Vec<ExpandedNode>> {
         let row_id = ids[i].as_str();
         let merged_source = registry.resolve("source", row_id, row.source.as_ref())?;
         let merged_sink = registry.resolve("sink", row_id, row.sink.as_ref())?;
+        // The sink template name this row resolved (or the legacy `default`),
+        // used to scope masking `applies_to` per destination.
+        let sink_ref = row
+            .sink
+            .as_ref()
+            .and_then(|s| s.r#ref.clone())
+            .unwrap_or_else(|| "default".to_string());
         let role = match &row.parent {
             None => NodeRole::Root,
             Some(p) => NodeRole::Child {
@@ -476,6 +496,18 @@ pub fn expand(cfg: &PipelineConfig) -> CliResult<Vec<ExpandedNode>> {
                      `on_breach` to `fail` or `warn`)"
                 )));
             }
+        }
+
+        // `masking:` is pipeline-level only in v1 (like `quality:`/`contract:`).
+        // Compile it once per node so a malformed policy (empty rules, empty
+        // match, bad regex) surfaces at expand time. No DLQ gate — masking
+        // never quarantines; it rewrites matching fields in place.
+        #[cfg(feature = "masking")]
+        let masking = cfg.pipeline.masking.clone();
+        #[cfg(feature = "masking")]
+        if let Some(ref spec) = masking {
+            faucet_core::CompiledMasking::compile(spec)
+                .map_err(|e| CliError::Config(format!("masking (row `{row_id}`): {e}")))?;
         }
 
         // Exactly-once delivery gate: enforce source, sink, state, and DLQ
@@ -668,6 +700,9 @@ pub fn expand(cfg: &PipelineConfig) -> CliResult<Vec<ExpandedNode>> {
             quality,
             #[cfg(feature = "contract")]
             contract,
+            #[cfg(feature = "masking")]
+            masking,
+            sink_ref,
             schema: cfg.pipeline.schema.clone(),
             depends_on: deps_by_row[i].clone(),
             deferred_refs: deferred,

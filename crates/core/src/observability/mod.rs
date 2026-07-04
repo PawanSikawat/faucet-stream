@@ -10,6 +10,8 @@ pub(crate) mod decorator;
 mod drift;
 mod install;
 mod labels;
+#[cfg(feature = "masking")]
+mod masking;
 mod options;
 pub mod otel;
 #[cfg(feature = "quality")]
@@ -30,6 +32,8 @@ pub use install::{
     install_observability, register_build_info,
 };
 pub use labels::Labels;
+#[cfg(feature = "masking")]
+pub use masking::instrumented_apply_masking;
 pub use options::RunStreamOptions;
 #[cfg(feature = "quality")]
 pub use quality::instrumented_apply_quality;
