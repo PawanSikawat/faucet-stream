@@ -1,0 +1,42 @@
+# Completion ordering between matrix rows with `depends_on` (#195).
+#
+# The `stage_countries` and `stage_orders` rows each land a CSV locally;
+# the `report` row waits for BOTH to finish successfully before reading
+# what `stage_orders` wrote. Unlike `parent:`, `depends_on:` hands off no
+# records — it is pure run ordering ("load dims, then facts").
+#
+#   faucet validate cli/examples/matrix_depends_on.yaml
+#   faucet run      cli/examples/matrix_depends_on.yaml
+#
+# A failed or skipped dependency skips the dependent row; unknown ids,
+# self-dependencies, and cycles are rejected at validate time.
+version: 1
+name: matrix_depends_on
+
+pipeline:
+  source:
+    type: csv
+    config:
+      path: cli/examples/data/orders.csv
+
+  sink:
+    type: csv
+    config:
+      path: staged.csv
+
+matrix:
+  # Independent staging rows — run concurrently.
+  - id: stage_countries
+    source: { config: { path: cli/examples/data/countries.csv } }
+    sink: { config: { path: staged_countries.csv } }
+  - id: stage_orders
+    sink: { config: { path: staged_orders.csv } }
+
+  # Runs only after BOTH staging rows succeed, reading the file the
+  # `stage_orders` row just wrote.
+  - id: report
+    depends_on: [stage_countries, stage_orders]
+    source: { config: { path: staged_orders.csv } }
+    sink:
+      type: jsonl
+      config: { path: report.jsonl }

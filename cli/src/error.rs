@@ -145,6 +145,14 @@ pub enum CliError {
     #[error("matrix has a parent cycle through: {}", ids.join(" -> "))]
     ParentCycle { ids: Vec<String> },
 
+    /// A row's `depends_on:` list names a row that doesn't exist.
+    #[error("matrix row '{id}' depends on unknown row '{depends_on}'")]
+    UnknownDependency { id: String, depends_on: String },
+
+    /// The combined `parent:` + `depends_on:` graph contains a cycle.
+    #[error("matrix has a dependency cycle involving: {}", ids.join(", "))]
+    DependencyCycle { ids: Vec<String> },
+
     /// Two parent records of the same matrix row resolved to the same
     /// `parent_key` value, producing a colliding state-key suffix.
     #[error(

@@ -227,6 +227,41 @@ replace). A row with `parent:` runs once per parent record. See the
 rows, define named templates under `pipeline.sources` / `pipeline.sinks` and
 select them per row with `ref:`.
 
+### `depends_on` — completion ordering between rows
+
+A row with `depends_on: [row_id, …]` starts only after **every listed row's
+invocations finish successfully**. Unlike `parent:`, no records are consumed
+and there is no per-record fan-out — it is pure run ordering ("load
+dimensions, then facts"), typically paired with a downstream row whose source
+reads what the upstream row's sink wrote.
+
+```yaml
+matrix:
+  - id: dims
+    source: { config: { query: "SELECT * FROM src_dims" } }
+    sink:   { config: { table_name: dims } }
+  - id: facts
+    depends_on: [dims]        # starts only after `dims` succeeds
+    source: { config: { query: "SELECT * FROM src_facts" } }
+    sink:   { config: { table_name: facts } }
+```
+
+Semantics:
+
+- Rows whose dependencies are all satisfied run concurrently under the usual
+  `execution.max_concurrent` budget.
+- A failed or skipped dependency **skips** the dependent row (and its own
+  children and dependents in turn); the run's exit code reflects the original
+  failure.
+- Waiting on a row waits for that row's own invocations only. To also wait
+  for its per-record children, list them explicitly.
+- `parent:` and `depends_on:` compose on the same row (the parent edge is an
+  implicit dependency).
+- Unknown ids, self-dependencies, and cycles through any mix of `parent:` /
+  `depends_on:` edges are rejected at load time by `faucet validate`.
+- Ordering works identically under `faucet run`, `schedule`, and `serve` —
+  they all execute the same expanded plan.
+
 ## `auth`
 
 A map of named auth providers, each `{ type, config }` (`type` ∈ `static` /

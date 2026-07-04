@@ -116,8 +116,9 @@ pipeline:
       path: ./out/issues.jsonl
 ```
 
-Run many invocations from one config with a `matrix:` block (independent fan-out **or** a
-parent/child DAG), and bound concurrency with `execution:`. See [`cli/README.md`](cli/README.md)
+Run many invocations from one config with a `matrix:` block (independent fan-out, a
+parent/child DAG, **or** `depends_on:` completion ordering between rows), and bound
+concurrency with `execution:`. See [`cli/README.md`](cli/README.md)
 for the full grammar, [`cli/examples/rest_to_bigquery_matrix.yaml`](cli/examples/rest_to_bigquery_matrix.yaml)
 for matrix fan-out, and [`cli/examples/rest_users_posts_dag.yaml`](cli/examples/rest_users_posts_dag.yaml)
 for the DAG pattern. The [`cli/examples/`](cli/examples) directory has runnable configs for

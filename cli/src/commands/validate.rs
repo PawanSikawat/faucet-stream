@@ -118,19 +118,67 @@ pub async fn run(args: ValidateArgs) -> CliResult<()> {
             .unwrap_or_else(|| "(defaults)".to_owned()),
     );
     for node in &nodes {
-        let role = match &node.role {
-            NodeRole::Root => "root".to_owned(),
-            NodeRole::Child {
-                parent_id,
-                parent_key,
-            } => {
-                format!("child of '{parent_id}' (parent_key={parent_key})")
-            }
-        };
-        println!(
-            "  - {} [{}] source={} sink={}",
-            node.id, role, node.source.kind, node.sink.kind
-        );
+        println!("{}", row_line(node));
     }
     Ok(())
+}
+
+/// Render one per-row report line for `faucet validate` output.
+fn row_line(node: &crate::expand::ExpandedNode) -> String {
+    let role = match &node.role {
+        NodeRole::Root => "root".to_owned(),
+        NodeRole::Child {
+            parent_id,
+            parent_key,
+        } => {
+            format!("child of '{parent_id}' (parent_key={parent_key})")
+        }
+    };
+    let deps = if node.depends_on.is_empty() {
+        String::new()
+    } else {
+        format!(" depends_on=[{}]", node.depends_on.join(", "))
+    };
+    format!(
+        "  - {} [{}] source={} sink={}{}",
+        node.id, role, node.source.kind, node.sink.kind, deps
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::row_line;
+    use crate::expand::expand;
+
+    #[test]
+    fn row_line_renders_role_and_depends_on() {
+        let cfg = crate::config::parse_with_extension(
+            r#"
+version: 1
+pipeline:
+  source: { type: rest, config: {} }
+  sink:   { type: jsonl, config: { path: ./o } }
+matrix:
+  - id: dims
+  - id: posts
+    parent: dims
+    parent_key: id
+  - id: facts
+    depends_on: [dims]
+"#,
+            "yaml",
+        )
+        .unwrap();
+        let nodes = expand(&cfg).unwrap();
+        let line_for = |id: &str| row_line(nodes.iter().find(|n| n.id == id).unwrap());
+        assert_eq!(line_for("dims"), "  - dims [root] source=rest sink=jsonl");
+        assert_eq!(
+            line_for("posts"),
+            "  - posts [child of 'dims' (parent_key=id)] source=rest sink=jsonl"
+        );
+        assert_eq!(
+            line_for("facts"),
+            "  - facts [root] source=rest sink=jsonl depends_on=[dims]"
+        );
+    }
 }
