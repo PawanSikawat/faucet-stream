@@ -19,7 +19,14 @@ use rdkafka::consumer::{Consumer, ConsumerContext, Rebalance, RebalanceProtocol}
 use rdkafka::error::KafkaError;
 use rdkafka::types::RDKafkaRespErr;
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
+/// Broker-round-trip budget for the committed-offsets lookup performed inside
+/// the rebalance callback in group-member mode. Matches the watermark-lookup
+/// budget used elsewhere in this crate.
+const COMMITTED_LOOKUP_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Shared state between [`KafkaSource`](crate::stream::KafkaSource) and the
 /// rdkafka consumer background thread. Cloning a `BookmarkContext` clones the
@@ -40,6 +47,12 @@ pub(crate) struct BookmarkContext {
     /// The poll loop drains this between iterations and surfaces it to the
     /// caller.
     pub(crate) callback_error: Arc<Mutex<Option<FaucetError>>>,
+    /// Group-member (Mode B, #261) mode: this consumer is one of N cooperating
+    /// members of the group, so bookmark seeks must defer to the group's
+    /// committed offsets whenever those are ahead (another member may have
+    /// durably advanced a partition past our bookmark). Set by
+    /// [`KafkaSource::apply_shard`](crate::stream::KafkaSource).
+    pub(crate) member_mode: Arc<AtomicBool>,
 }
 
 impl BookmarkContext {
@@ -107,7 +120,7 @@ impl ConsumerContext for BookmarkContext {
 
                     // Collect (topic, partition, offset) triples first to avoid
                     // holding an immutable borrow on `tpl` while mutating it.
-                    let seeks: Vec<(String, i32, i64)> = tpl
+                    let mut seeks: Vec<(String, i32, i64)> = tpl
                         .elements()
                         .into_iter()
                         .filter_map(|elem| {
@@ -119,6 +132,22 @@ impl ConsumerContext for BookmarkContext {
                                 .map(|offset| (topic, partition, offset))
                         })
                         .collect();
+
+                    // Group-member mode (#261): the group's committed offsets
+                    // are the shared source of truth across members — another
+                    // member may have durably advanced a partition past this
+                    // member's bookmark, so an unconditional bookmark seek
+                    // would re-read its work. Keep a seek only when the
+                    // bookmark is AHEAD of the committed offset (the durable
+                    // write → commit crash window, where skipping the seek
+                    // under `auto.offset.reset: latest` would silently lose
+                    // records). The lookup is a bounded broker round-trip,
+                    // paid only at assign time; on failure fall back to
+                    // seeking every bookmarked partition — that can duplicate
+                    // (at-least-once) but never lose.
+                    if self.member_mode.load(Ordering::Acquire) && !seeks.is_empty() {
+                        seeks = filter_seeks_by_committed(base_consumer, seeks);
+                    }
 
                     // Partitions absent from the bookmark are left at their
                     // default offset (earliest/latest per `auto.offset.reset`).
@@ -197,6 +226,53 @@ impl ConsumerContext for BookmarkContext {
             }
         }
     }
+}
+
+/// Drop bookmark seeks that the group's committed offsets already cover
+/// (member mode only). Queries the committed offset for each seek candidate in
+/// one bounded broker round-trip; a lookup failure conservatively keeps every
+/// seek (duplicates are possible, loss is not). The per-partition decision is
+/// the pure [`member_seek_offset`](crate::shard::member_seek_offset).
+fn filter_seeks_by_committed(
+    consumer: &BaseConsumer<BookmarkContext>,
+    seeks: Vec<(String, i32, i64)>,
+) -> Vec<(String, i32, i64)> {
+    let mut query = TopicPartitionList::with_capacity(seeks.len());
+    for (topic, partition, _) in &seeks {
+        query.add_partition(topic, *partition);
+    }
+    let committed: HashMap<(String, i32), Option<i64>> =
+        match consumer.committed_offsets(query, COMMITTED_LOOKUP_TIMEOUT) {
+            Ok(tpl) => tpl
+                .elements()
+                .into_iter()
+                .map(|e| {
+                    let offset = match e.offset() {
+                        Offset::Offset(n) => Some(n),
+                        _ => None,
+                    };
+                    ((e.topic().to_string(), e.partition()), offset)
+                })
+                .collect(),
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "kafka member mode: committed-offsets lookup failed; \
+                     seeking every bookmarked partition (may re-read, never loses)"
+                );
+                return seeks;
+            }
+        };
+    seeks
+        .into_iter()
+        .filter(|(topic, partition, bookmark)| {
+            let c = committed
+                .get(&(topic.clone(), *partition))
+                .copied()
+                .flatten();
+            crate::shard::member_seek_offset(*bookmark, c).is_some()
+        })
+        .collect()
 }
 
 #[cfg(test)]

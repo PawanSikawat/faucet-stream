@@ -3,20 +3,22 @@
 use crate::config::KafkaSourceConfig;
 use crate::context::BookmarkContext;
 use crate::decode;
+use crate::shard::{MemberShard, commit_list, parse_member_shard, plan_member_shards};
 use crate::state::{Bookmark, PartitionOffset, state_key};
 use async_trait::async_trait;
 use base64::Engine;
 use faucet_common_kafka::OnDecodeError;
+use faucet_core::shard::ShardSpec;
 use faucet_core::{FaucetError, Source, Stream, StreamPage};
-use rdkafka::ClientConfig;
-use rdkafka::Message;
 use rdkafka::config::RDKafkaLogLevel;
-use rdkafka::consumer::{Consumer, StreamConsumer};
+use rdkafka::consumer::{CommitMode, Consumer, StreamConsumer};
 use rdkafka::message::Headers;
+use rdkafka::{ClientConfig, Message, Offset, TopicPartitionList};
 use serde_json::{Map, Value, json};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::pin::Pin;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
 #[cfg(feature = "schema-registry")]
@@ -34,6 +36,10 @@ pub struct KafkaSource {
     /// Resolved once per partition and reused so the streaming bookmark build
     /// doesn't issue a broker `fetch_watermarks` every page (#146 H9).
     assigned_floor: std::sync::Mutex<HashMap<(String, i32), i64>>,
+    /// The group-member shard applied by a cluster coordinator (Mode B, #261),
+    /// or `None` for a plain single-consumer run. `Mutex` so
+    /// `apply_shard(&self, …)` can record it before streaming.
+    member_shard: std::sync::Mutex<Option<MemberShard>>,
     #[cfg(feature = "schema-registry")]
     sr_client: Option<SchemaRegistryClient>,
 }
@@ -80,6 +86,7 @@ impl KafkaSource {
             context,
             state_key_value,
             assigned_floor: std::sync::Mutex::new(HashMap::new()),
+            member_shard: std::sync::Mutex::new(None),
             #[cfg(feature = "schema-registry")]
             sr_client,
         })
@@ -223,6 +230,134 @@ impl KafkaSource {
         } else {
             Ok(Some(merged.to_value()?))
         }
+    }
+
+    /// Whether a cluster coordinator applied a group-member shard (Mode B,
+    /// #261) — i.e. this consumer is one of N cooperating members of the group.
+    fn member_mode(&self) -> bool {
+        self.context.member_mode.load(Ordering::Acquire)
+    }
+
+    /// Group-member mode only: commit `offsets` (the cumulative
+    /// `(topic, partition) -> next_offset` map of pages that are already
+    /// durable — written to the sink and bookmark-persisted) to the consumer
+    /// group, so a partition that migrates to another member on rebalance
+    /// resumes from the last durable position instead of `auto.offset.reset`.
+    ///
+    /// Only currently-assigned partitions are committed — committing a stale
+    /// offset for a partition that migrated away mid-page would regress the
+    /// new owner's commit. Best-effort by design (warn on error): offsets are
+    /// cumulative, so a failed commit is retried at the next durable boundary
+    /// and the cost of a lost commit is a bounded re-read (at-least-once),
+    /// never data loss.
+    ///
+    /// Mid-run commits are `CommitMode::Async` (no broker round-trip on the
+    /// hot path). The `terminal` end-of-stream commit is synchronous (off the
+    /// async runtime) so the group's next member sees the final position even
+    /// when the process exits right after the run — the run-end handoff case.
+    async fn commit_durable(&self, offsets: &HashMap<(String, i32), i64>, terminal: bool) {
+        if !self.member_mode() || offsets.is_empty() {
+            return;
+        }
+        let assigned: HashSet<(String, i32)> = match self.consumer.assignment() {
+            Ok(tpl) => tpl
+                .elements()
+                .iter()
+                .map(|e| (e.topic().to_string(), e.partition()))
+                .collect(),
+            Err(e) => {
+                tracing::warn!(error = %e, "kafka member mode: assignment() failed; skipping offset commit");
+                return;
+            }
+        };
+        let list = commit_list(offsets, &assigned);
+        if list.is_empty() {
+            return;
+        }
+        let mut tpl = TopicPartitionList::with_capacity(list.len());
+        for (topic, partition, offset) in &list {
+            if let Err(e) = tpl.add_partition_offset(topic, *partition, Offset::Offset(*offset)) {
+                tracing::warn!(
+                    topic,
+                    partition,
+                    offset,
+                    error = %e,
+                    "kafka member mode: building commit list failed; skipping offset commit"
+                );
+                return;
+            }
+        }
+        if terminal {
+            // `commit(…, Sync)` is a blocking broker round-trip — run it off
+            // the async runtime.
+            let consumer = Arc::clone(&self.consumer);
+            match tokio::task::spawn_blocking(move || consumer.commit(&tpl, CommitMode::Sync)).await
+            {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => tracing::warn!(
+                    error = %e,
+                    "kafka member mode: terminal offset commit failed; \
+                     the group's next member may re-read the tail (at-least-once)"
+                ),
+                Err(join_err) => tracing::warn!(
+                    error = %join_err,
+                    "kafka member mode: terminal offset commit task failed"
+                ),
+            }
+        } else if let Err(e) = self.consumer.commit(&tpl, CommitMode::Async) {
+            tracing::warn!(
+                error = %e,
+                "kafka member mode: offset commit failed (retried at the next durable boundary)"
+            );
+        }
+    }
+
+    /// Total partition count across the subscribed topics, used to cap the
+    /// member-shard plan (a member beyond the partition count would sit idle).
+    /// `None` when any topic's metadata cannot be resolved — enumeration then
+    /// trusts the requested member count instead of failing the run.
+    async fn total_partitions(&self) -> Option<usize> {
+        let consumer = Arc::clone(&self.consumer);
+        let topics = self.config.topics.clone();
+        // `fetch_metadata` is a blocking librdkafka broker call — run it off
+        // the async runtime.
+        tokio::task::spawn_blocking(move || {
+            let mut total = 0usize;
+            for topic in &topics {
+                match consumer.fetch_metadata(Some(topic), Duration::from_secs(5)) {
+                    Ok(md) => {
+                        let n: usize = md
+                            .topics()
+                            .iter()
+                            .filter(|t| t.name() == topic)
+                            .map(|t| t.partitions().len())
+                            .sum();
+                        if n == 0 {
+                            tracing::warn!(
+                                topic,
+                                "kafka enumerate_shards: topic has no partitions in metadata; \
+                                 not capping the member count"
+                            );
+                            return None;
+                        }
+                        total += n;
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            topic,
+                            error = %e,
+                            "kafka enumerate_shards: metadata fetch failed; \
+                             not capping the member count"
+                        );
+                        return None;
+                    }
+                }
+            }
+            Some(total)
+        })
+        .await
+        .ok()
+        .flatten()
     }
 
     async fn message_to_value(
@@ -437,8 +572,19 @@ impl Source for KafkaSource {
             let mut pending_offsets: HashMap<(String, i32), i64> = HashMap::new();
             let mut last_message_at = Instant::now();
             let mut total: usize = 0;
+            // Group-member mode (#261): offsets of the last yielded page,
+            // committed to the consumer group once that page is DURABLE. The
+            // generator resumes after a `yield` only when the pipeline polls
+            // the next page — which happens after it has written the previous
+            // page to the sink and persisted its bookmark — so committing at
+            // resume time never advances the group past unwritten data.
+            let mut to_commit: Option<HashMap<(String, i32), i64>> = None;
 
             loop {
+                if let Some(durable) = to_commit.take() {
+                    self.commit_durable(&durable, false).await;
+                }
+
                 // Surface any error raised by the rebalance callback (e.g. a
                 // failed seek) before processing the next poll batch.
                 self.check_callback_error()?;
@@ -518,7 +664,11 @@ impl Source for KafkaSource {
                         Vec::with_capacity(initial_capacity),
                     );
                     let bookmark = self.build_bookmark(&pending_offsets).await?;
+                    let durable_snapshot = pending_offsets.clone();
                     yield StreamPage { records: page_records, bookmark };
+                    // Resumed ⇒ the page above is durable; commit its offsets
+                    // to the group at the top of the next iteration.
+                    to_commit = Some(durable_snapshot);
                 }
 
                 if stop {
@@ -533,6 +683,13 @@ impl Source for KafkaSource {
                 let bookmark = self.build_bookmark(&pending_offsets).await?;
                 yield StreamPage { records: buffer, bookmark };
             }
+
+            // This code runs only when the pipeline polls past the final page
+            // — i.e. after every yielded page has been written and its
+            // bookmark persisted — so the whole cumulative offset map is
+            // durable. Committing it hands the group's next member a clean
+            // starting position (covers the tail the mid-loop commit missed).
+            self.commit_durable(&pending_offsets, true).await;
 
             tracing::info!(
                 messages = total,
@@ -640,13 +797,196 @@ impl Source for KafkaSource {
         };
         Ok(CheckReport::single(probe))
     }
+
+    /// The Kafka source is always shardable via **native consumer-group
+    /// assignment** (#261): each shard is a membership slot in the shared
+    /// group, and the broker — not faucet — assigns partitions across the
+    /// members and rebalances on membership change. Sharding only takes
+    /// effect when the cluster coordinator calls `apply_shard`; a plain
+    /// `faucet run` consumes as a single group member, unchanged.
+    fn is_shardable(&self) -> bool {
+        true
+    }
+
+    /// Enumerate `target` group-membership slots, capped at the subscription's
+    /// total partition count (extra members would never be assigned a
+    /// partition). Falls back to the uncapped `target` when topic metadata
+    /// cannot be resolved.
+    async fn enumerate_shards(&self, target: usize) -> Result<Vec<ShardSpec>, FaucetError> {
+        if target <= 1 {
+            return Ok(vec![ShardSpec::whole()]);
+        }
+        let cap = self.total_partitions().await;
+        Ok(plan_member_shards(target, cap))
+    }
+
+    /// Enter group-member mode for one membership slot (or leave it, for the
+    /// whole-dataset shard). In member mode the source additionally:
+    ///
+    /// - **commits offsets to the consumer group at durable page boundaries**
+    ///   (see [`stream_pages`](Self::stream_pages)), so partitions that
+    ///   migrate between members resume from the last durably-written
+    ///   position;
+    /// - **defers bookmark seeks to the group's committed offsets** whenever
+    ///   those are ahead (another member may have advanced a partition past
+    ///   this member's bookmark).
+    ///
+    /// Only the streaming path (`stream_pages`, which every `Pipeline` run
+    /// drives) commits; the batch `fetch_all` path never commits because its
+    /// records are not durable until after the fetch returns.
+    async fn apply_shard(&self, shard: &ShardSpec) -> Result<(), FaucetError> {
+        let parsed = parse_member_shard(shard)?;
+        self.context
+            .member_mode
+            .store(parsed.is_some(), Ordering::Release);
+        *self
+            .member_shard
+            .lock()
+            .map_err(|e| FaucetError::State(format!("kafka member_shard mutex poisoned: {e}")))? =
+            parsed;
+        if let Some(m) = parsed {
+            tracing::info!(
+                member = m.member,
+                members = m.members,
+                group = %self.config.group_id,
+                "kafka source: joining the consumer group as one of N cooperating members (Mode B)"
+            );
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    /// `dataset_uri` logic tests — replicate the method's computation directly
-    /// using config field values, because `KafkaSource::new` requires a live
-    /// broker to construct an `rdkafka` consumer.
+    use super::*;
+    use crate::config::OffsetReset;
+    use std::collections::BTreeMap;
+
+    /// Build a source pointing at an unreachable broker. rdkafka client
+    /// construction and `subscribe()` are local operations (no broker
+    /// round-trip), so this constructs fine offline — only actual
+    /// polls/metadata fetches would fail.
+    async fn offline_source() -> KafkaSource {
+        let config = KafkaSourceConfig {
+            brokers: "127.0.0.1:1".into(),
+            topics: vec!["orders".into()],
+            group_id: "g".into(),
+            auth: faucet_common_kafka::KafkaAuth::None,
+            value_format: faucet_common_kafka::KafkaValueFormat::Json,
+            key_format: None,
+            auto_offset_reset: OffsetReset::Latest,
+            max_messages: Some(1),
+            idle_timeout: None,
+            poll_timeout: Duration::from_secs(1),
+            session_timeout: Duration::from_secs(30),
+            on_decode_error: OnDecodeError::Fail,
+            extra_client_config: BTreeMap::new(),
+            batch_size: 10,
+        };
+        KafkaSource::new(config)
+            .await
+            .expect("offline construction")
+    }
+
+    #[tokio::test]
+    async fn source_is_shardable() {
+        assert!(offline_source().await.is_shardable());
+    }
+
+    #[tokio::test]
+    async fn apply_shard_enters_and_leaves_member_mode() {
+        let source = offline_source().await;
+        assert!(!source.member_mode(), "plain run starts out of member mode");
+
+        let member = ShardSpec::new("1", serde_json::json!({ "members": 3, "member": 1 }));
+        source.apply_shard(&member).await.unwrap();
+        assert!(source.member_mode());
+        assert_eq!(
+            *source.member_shard.lock().unwrap(),
+            Some(MemberShard {
+                members: 3,
+                member: 1
+            })
+        );
+
+        // The whole-dataset shard clears member mode (plain single consumer).
+        source.apply_shard(&ShardSpec::whole()).await.unwrap();
+        assert!(!source.member_mode());
+        assert_eq!(*source.member_shard.lock().unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn apply_shard_rejects_malformed_descriptor() {
+        let source = offline_source().await;
+        let err = source
+            .apply_shard(&ShardSpec::new("0", serde_json::json!({ "member": 0 })))
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("kafka"), "got: {err}");
+        assert!(
+            !source.member_mode(),
+            "a rejected shard must not flip modes"
+        );
+    }
+
+    #[tokio::test]
+    async fn enumerate_shards_target_one_is_whole() {
+        // target <= 1 short-circuits before any metadata fetch, so this is
+        // fast offline.
+        let source = offline_source().await;
+        let shards = source.enumerate_shards(1).await.unwrap();
+        assert_eq!(shards.len(), 1);
+        assert!(shards[0].is_whole());
+    }
+
+    #[tokio::test]
+    async fn enumerate_shards_uncapped_when_metadata_unreachable() {
+        // fetch_metadata against the unreachable broker fails within its
+        // bounded budget; enumeration falls back to the requested member
+        // count (uncapped) instead of failing the run.
+        let source = offline_source().await;
+        let shards = source.enumerate_shards(3).await.unwrap();
+        assert_eq!(shards.len(), 3);
+        assert_eq!(shards[0].descriptor["members"], 3);
+        assert_eq!(shards[2].descriptor["member"], 2);
+    }
+
+    #[tokio::test]
+    async fn commit_durable_with_no_assignment_commits_nothing() {
+        // Member mode + a non-empty offset map, but the consumer owns no
+        // partitions (it never polled): the assigned-partition filter drops
+        // everything and no commit is attempted — which would otherwise
+        // block against the unreachable broker.
+        let source = offline_source().await;
+        source
+            .apply_shard(&ShardSpec::new(
+                "0",
+                serde_json::json!({ "members": 2, "member": 0 }),
+            ))
+            .await
+            .unwrap();
+        let mut offsets = HashMap::new();
+        offsets.insert(("orders".to_string(), 0), 10i64);
+        source.commit_durable(&offsets, true).await;
+    }
+
+    #[tokio::test]
+    async fn commit_durable_is_a_noop_outside_member_mode() {
+        // Must not touch the (unreachable) broker: returns before any
+        // assignment/commit call when member mode is off or offsets are empty.
+        let source = offline_source().await;
+        let mut offsets = HashMap::new();
+        offsets.insert(("orders".to_string(), 0), 10i64);
+        source.commit_durable(&offsets, false).await; // member mode off
+        source
+            .apply_shard(&ShardSpec::new(
+                "0",
+                serde_json::json!({ "members": 2, "member": 0 }),
+            ))
+            .await
+            .unwrap();
+        source.commit_durable(&HashMap::new(), true).await; // empty offsets
+    }
 
     #[test]
     fn dataset_uri_single_broker_single_topic() {
