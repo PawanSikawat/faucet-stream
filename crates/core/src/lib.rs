@@ -23,6 +23,8 @@ pub mod dlq;
 pub mod drift;
 pub mod error;
 pub mod idempotency;
+#[cfg(feature = "masking")]
+pub mod masking;
 pub mod observability;
 pub mod pipeline;
 #[cfg(feature = "quality")]
@@ -58,6 +60,8 @@ pub use error::FaucetError;
 pub use idempotency::{DeliveryMode, format_token, parse_token, unwrap_state, wrap_state};
 #[cfg(feature = "contract")]
 pub use observability::instrumented_apply_contract;
+#[cfg(feature = "masking")]
+pub use observability::instrumented_apply_masking;
 #[cfg(feature = "quality")]
 pub use observability::instrumented_apply_quality;
 pub use observability::otel::{OtelConfig, OtelProtocol, OtelSignal, shutdown_otel};
@@ -128,4 +132,10 @@ pub use quality::{
 pub use contract::{
     CompiledContract, ContractFieldType, ContractOutcome, ContractSpec, ContractViolation,
     FieldContract, OnBreach, ViolatingRecord, apply_contract, to_json_schema, to_openlineage_facet,
+};
+
+#[cfg(feature = "masking")]
+pub use masking::{
+    CompiledMasking, Detector, MaskAction, MaskHit, MaskRule, MaskingOutcome, MaskingSpec,
+    MatchSpec, apply_masking,
 };

@@ -962,6 +962,24 @@ async fn run_one_invocation(
     } else {
         pipeline
     };
+    // Pipeline-level PII masking (v1: no matrix-row override). Compile scoped
+    // to this node's destination sink — by template name (`sink_ref`) and by
+    // connector kind — so `applies_to` per-destination rules resolve. When no
+    // rule applies to this sink the compiled policy is empty and the pass is
+    // skipped entirely.
+    #[cfg(feature = "masking")]
+    let pipeline = if let Some(ref masking_spec) = node.masking {
+        let sink_ids = [node.sink_ref.as_str(), node.sink.kind.as_str()];
+        let compiled = faucet_core::CompiledMasking::compile_for_sink(masking_spec, &sink_ids)
+            .map_err(|e| CliError::Config(format!("masking: {e}")))?;
+        if compiled.is_empty() {
+            pipeline
+        } else {
+            pipeline.with_masking(Arc::new(compiled))
+        }
+    } else {
+        pipeline
+    };
     // Schema-drift policy (pipeline-level in v1; same for every invocation).
     let pipeline = if let Some(ref sd) = node.schema {
         pipeline.with_schema_drift(faucet_core::SchemaDriftPolicy::compile(sd))
@@ -1092,7 +1110,11 @@ async fn run_one_invocation(
             {
                 let input_fields: Vec<String> =
                     in_schema.fields.iter().map(|(n, _)| n.clone()).collect();
-                let ops = crate::lineage_glue::column_ops(&node.transforms);
+                #[cfg(feature = "masking")]
+                let has_masking = node.masking.is_some();
+                #[cfg(not(feature = "masking"))]
+                let has_masking = false;
+                let ops = crate::lineage_glue::column_ops(&node.transforms, has_masking);
                 ctx.column_lineage = faucet_lineage::derive_column_lineage(&input_fields, &ops);
             }
             if lineage_cfg
@@ -1431,6 +1453,8 @@ mod tests {
                 quality: None,
                 #[cfg(feature = "contract")]
                 contract: None,
+                #[cfg(feature = "masking")]
+                masking: None,
                 schema: None,
             },
             matrix: Vec::new(),
@@ -2216,6 +2240,9 @@ matrix:
                 quality: None,
                 #[cfg(feature = "contract")]
                 contract: None,
+                #[cfg(feature = "masking")]
+                masking: None,
+                sink_ref: "default".into(),
                 schema: None,
                 depends_on: Vec::new(),
                 deferred_refs: refs
@@ -2282,6 +2309,9 @@ matrix:
             quality: None,
             #[cfg(feature = "contract")]
             contract: None,
+            #[cfg(feature = "masking")]
+            masking: None,
+            sink_ref: "default".into(),
             schema: None,
             depends_on: Vec::new(),
             deferred_refs: vec![DeferredRef {
@@ -2532,6 +2562,9 @@ matrix:
             quality: None,
             #[cfg(feature = "contract")]
             contract: None,
+            #[cfg(feature = "masking")]
+            masking: None,
+            sink_ref: "default".into(),
             schema: None,
             depends_on: Vec::new(),
             deferred_refs: Vec::new(),
@@ -2601,6 +2634,9 @@ matrix:
             quality: None,
             #[cfg(feature = "contract")]
             contract: None,
+            #[cfg(feature = "masking")]
+            masking: None,
+            sink_ref: "default".into(),
             schema: None,
             depends_on: Vec::new(),
             deferred_refs: Vec::new(),

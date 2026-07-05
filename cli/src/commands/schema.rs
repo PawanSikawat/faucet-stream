@@ -44,6 +44,12 @@ pub async fn run(args: SchemaArgs) -> CliResult<()> {
             serde_json::to_value(contract_schema)
                 .unwrap_or_else(|_| serde_json::json!({"type": "object"}))
         }
+        #[cfg(feature = "masking")]
+        SchemaTarget::Masking => {
+            let masking_schema = faucet_core::schema_for!(faucet_core::MaskingSpec);
+            serde_json::to_value(masking_schema)
+                .unwrap_or_else(|_| serde_json::json!({"type": "object"}))
+        }
         #[cfg(feature = "schedule")]
         SchemaTarget::Schedule => {
             let s = faucet_core::schema_for!(crate::schedule::spec::ScheduleSpec);

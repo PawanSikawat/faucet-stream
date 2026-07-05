@@ -63,6 +63,11 @@ quality-jsonschema = ["quality", "dep:jsonschema"]
 # Data contracts (`contract:` config block, issue #204): a versioned output
 # schema/constraint promise enforced per page with fail/quarantine/warn.
 contract = ["dep:regex"]
+# PII detection + column-level masking policies (`masking:` config block,
+# issue #206): classify sensitive fields (name pattern / value detector /
+# explicit list) and redact/hash/tokenize/partial-mask them per page, before
+# every sink. `hmac`+`sha2` back the keyed hashing/tokenization actions.
+masking = ["dep:regex", "dep:sha2", "dep:hmac"]
 
 [dependencies]
 serde.workspace = true
@@ -103,6 +108,8 @@ flate2 = { workspace = true, optional = true }
 zstd = { workspace = true, optional = true }
 chrono = { workspace = true, optional = true }
 jsonschema = { workspace = true, optional = true }
+sha2 = { workspace = true, optional = true }
+hmac = { workspace = true, optional = true }
 
 [dev-dependencies]
 serde_json.workspace = true

@@ -133,6 +133,8 @@ pub struct Pipeline<'a, So: Source + ?Sized, Si: Sink + ?Sized> {
     quality: Option<Arc<crate::quality::CompiledQuality>>,
     #[cfg(feature = "contract")]
     contract: Option<Arc<crate::contract::CompiledContract>>,
+    #[cfg(feature = "masking")]
+    masking: Option<Arc<crate::masking::CompiledMasking>>,
     adaptive: Option<crate::adaptive::AdaptiveBatchConfig>,
     cancel: Option<tokio_util::sync::CancellationToken>,
     delivery: crate::idempotency::DeliveryMode,
@@ -155,6 +157,8 @@ impl<'a, So: Source + ?Sized, Si: Sink + ?Sized> Pipeline<'a, So, Si> {
             quality: None,
             #[cfg(feature = "contract")]
             contract: None,
+            #[cfg(feature = "masking")]
+            masking: None,
             adaptive: None,
             cancel: None,
             delivery: crate::idempotency::DeliveryMode::AtLeastOnce,
@@ -222,6 +226,15 @@ impl<'a, So: Source + ?Sized, Si: Sink + ?Sized> Pipeline<'a, So, Si> {
     #[cfg(feature = "contract")]
     pub fn with_contract(mut self, contract: Arc<crate::contract::CompiledContract>) -> Self {
         self.contract = Some(contract);
+        self
+    }
+
+    /// Attach a compiled masking policy (issue #206). The masking pass runs
+    /// per page *first* — before quality/contract/drift and every sink write —
+    /// so PII never reaches a sink, the DLQ, or a lineage sample unmasked.
+    #[cfg(feature = "masking")]
+    pub fn with_masking(mut self, masking: Arc<crate::masking::CompiledMasking>) -> Self {
+        self.masking = Some(masking);
         self
     }
 
@@ -400,6 +413,10 @@ impl<'a, So: Source + ?Sized, Si: Sink + ?Sized> Pipeline<'a, So, Si> {
             if let Some(c) = self.contract.clone() {
                 opts = opts.with_contract(c);
             }
+            #[cfg(feature = "masking")]
+            if let Some(m) = self.masking.clone() {
+                opts = opts.with_masking(m);
+            }
             if let Some(ad) = self.adaptive.clone() {
                 opts = opts.with_adaptive(ad);
             }
@@ -502,6 +519,12 @@ where
     // One-shot warn guard for contract `on_breach: warn` breaches.
     #[cfg(feature = "contract")]
     let mut warned_contract_breach = false;
+
+    // Masking policy (issue #206). Applied *first* per page — before
+    // quality/contract/drift and every sink — so PII never leaks to a sink,
+    // the DLQ, or a lineage sample. Never quarantines, so no DLQ gate.
+    #[cfg(feature = "masking")]
+    let masking = options.masking.clone();
 
     // ── Schema-drift policy + lazy destination-schema cache (#194) ───────────
     let schema_drift = options.schema_drift;
@@ -677,6 +700,28 @@ where
                     if page.records.is_empty() && page.bookmark.is_none() {
                         continue;
                     }
+
+                    // ── Masking pass (FIRST — before quality/contract/drift and
+                    // every sink write) ─────────────────────────────────────
+                    // Runs ahead of everything so PII never reaches a sink, the
+                    // DLQ (quarantine envelopes are built downstream from these
+                    // already-masked records), or the sink-side lineage sample.
+                    #[cfg(feature = "masking")]
+                    let page = if let Some(m) = masking.as_ref() {
+                        let labels =
+                            crate::observability::Labels::new(&*pipeline_name, &*row, &*run_id);
+                        let outcome = crate::observability::instrumented_apply_masking(
+                            page.records,
+                            m,
+                            &labels,
+                        );
+                        StreamPage {
+                            records: outcome.records,
+                            bookmark: page.bookmark,
+                        }
+                    } else {
+                        page
+                    };
 
                     // ── Quality pass (after transforms, before sink) ─────────
                     #[cfg(feature = "quality")]
@@ -2836,6 +2881,69 @@ mod tests {
         let stats = result.dlq.unwrap();
         assert_eq!(stats.records_dlq, 2);
         assert_eq!(stats.pages_with_failures, 1);
+    }
+
+    #[cfg(feature = "masking")]
+    #[tokio::test]
+    async fn masking_runs_before_the_sink() {
+        use crate::masking::{CompiledMasking, MaskingSpec};
+        let sink = MockSink::new();
+        let spec: MaskingSpec = serde_json::from_value(json!({
+            "rules": [{ "match": { "value_detector": "email" },
+                        "action": { "type": "redact" } }]
+        }))
+        .unwrap();
+        let m = std::sync::Arc::new(CompiledMasking::compile(&spec).unwrap());
+        let pages: Vec<Result<StreamPage, FaucetError>> = vec![Ok(StreamPage {
+            records: vec![json!({"email": "a@b.com", "name": "Al"})],
+            bookmark: None,
+        })];
+        run_stream(
+            futures::stream::iter(pages),
+            &sink,
+            RunStreamOptions::new().with_masking(m),
+        )
+        .await
+        .unwrap();
+        assert_eq!(sink.written()[0], json!({"email": "***", "name": "Al"}));
+    }
+
+    #[cfg(feature = "masking")]
+    #[tokio::test]
+    async fn masking_applies_before_the_dlq_envelope() {
+        // The headline correctness claim: PII must be masked before it reaches
+        // *any* sink — including the DLQ. Row 0 fails at the sink and is routed
+        // to the DLQ; its envelope payload must already be masked.
+        use crate::masking::{CompiledMasking, MaskingSpec};
+        let main = PartialSink::new(vec![0]); // row 0 fails → DLQ
+        let dlq = std::sync::Arc::new(MockSink::new());
+        let spec: MaskingSpec = serde_json::from_value(json!({
+            "rules": [{ "match": { "value_detector": "email" },
+                        "action": { "type": "redact" } }]
+        }))
+        .unwrap();
+        let m = std::sync::Arc::new(CompiledMasking::compile(&spec).unwrap());
+        let pages: Vec<Result<StreamPage, FaucetError>> = vec![Ok(StreamPage {
+            records: vec![
+                json!({"email": "secret@x.com"}),
+                json!({"email": "ok@y.com"}),
+            ],
+            bookmark: None,
+        })];
+        let opts = RunStreamOptions::new()
+            .with_masking(m)
+            .with_dlq(DlqConfig::new(dlq.clone()));
+        run_stream(futures::stream::iter(pages), &main, opts)
+            .await
+            .unwrap();
+        // Row 0 → DLQ, masked; row 1 → committed to the main sink, masked.
+        let env = dlq.0.lock().unwrap();
+        assert_eq!(env.len(), 1);
+        assert_eq!(
+            env[0]["payload"]["email"], "***",
+            "the DLQ payload must be masked, not raw PII"
+        );
+        assert_eq!(main.committed.lock().unwrap()[0]["email"], "***");
     }
 
     #[tokio::test]

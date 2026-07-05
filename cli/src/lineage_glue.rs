@@ -46,8 +46,18 @@ pub async fn check_transport(cfg: &LineageConfig) -> Result<String, String> {
 /// change structure or rewrite keys (`flatten`, `explode`, `keys_case`,
 /// `rename_keys`) and any unknown transform become `Opaque`, which makes
 /// `faucet_lineage::derive` omit the column-lineage facet (never fabricated).
-pub fn column_ops(specs: &[TransformSpec]) -> Vec<ColumnOp> {
-    specs.iter().map(map_one).collect()
+///
+/// `has_masking` appends a trailing `Identity` op when a `masking:` policy is
+/// active: masking rewrites field *values* (redact/hash/tokenize/partial) but
+/// preserves the column set, so it is faithfully an identity at the
+/// column-lineage level — every output column derives from the same-named
+/// input column (#206).
+pub fn column_ops(specs: &[TransformSpec], has_masking: bool) -> Vec<ColumnOp> {
+    let mut ops: Vec<ColumnOp> = specs.iter().map(map_one).collect();
+    if has_masking {
+        ops.push(ColumnOp::Identity);
+    }
+    ops
 }
 
 fn map_one(s: &TransformSpec) -> ColumnOp {
@@ -114,10 +124,24 @@ mod tests {
             spec("select", json!({"fields": ["b", "c"]})),
             spec("cast", json!({"fields": {"b": "integer"}})),
         ];
-        let ops = column_ops(&specs);
+        let ops = column_ops(&specs, false);
         assert!(matches!(ops[0], faucet_lineage::ColumnOp::Rename(_)));
         assert!(matches!(ops[1], faucet_lineage::ColumnOp::Select(_)));
         assert!(matches!(ops[2], faucet_lineage::ColumnOp::Identity));
+    }
+
+    #[test]
+    fn masking_appends_trailing_identity_op() {
+        let specs = vec![spec("select", json!({"fields": ["a"]}))];
+        let ops = column_ops(&specs, true);
+        assert_eq!(ops.len(), 2);
+        assert!(matches!(ops[0], faucet_lineage::ColumnOp::Select(_)));
+        assert!(
+            matches!(ops[1], faucet_lineage::ColumnOp::Identity),
+            "masking is value-only + key-preserving → Identity"
+        );
+        // Without masking, no trailing op is appended.
+        assert_eq!(column_ops(&specs, false).len(), 1);
     }
 
     #[test]
@@ -129,7 +153,7 @@ mod tests {
             "rename_keys",
             "weird_custom",
         ] {
-            let ops = column_ops(&[spec(k, json!({}))]);
+            let ops = column_ops(&[spec(k, json!({}))], false);
             assert!(matches!(ops[0], faucet_lineage::ColumnOp::Opaque), "{k}");
         }
     }

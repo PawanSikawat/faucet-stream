@@ -86,6 +86,13 @@ pub struct InlinePipeline {
     #[cfg(feature = "contract")]
     #[serde(default)]
     pub contract: Option<faucet_core::ContractSpec>,
+
+    /// PII masking policy, identical to `pipeline.masking` in a config file.
+    /// Offline there is no destination sink, so every rule applies regardless
+    /// of its `applies_to` scoping.
+    #[cfg(feature = "masking")]
+    #[serde(default)]
+    pub masking: Option<faucet_core::MaskingSpec>,
 }
 
 /// Fixture input — inline records or a fixture-file path.

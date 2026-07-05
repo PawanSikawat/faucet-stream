@@ -21,6 +21,11 @@ pub struct RunStreamOptions {
     /// quality pass and before the schema-drift pass.
     #[cfg(feature = "contract")]
     pub contract: Option<std::sync::Arc<crate::contract::CompiledContract>>,
+    /// Compiled masking policy (issue #206). The pass runs per page *first* —
+    /// before quality/contract/drift and every sink write — so PII never
+    /// reaches a sink, the DLQ, or a lineage sample unmasked.
+    #[cfg(feature = "masking")]
+    pub masking: Option<std::sync::Arc<crate::masking::CompiledMasking>>,
     /// Adaptive batch-size controller config; `None` (or `enabled = false`)
     /// leaves the per-page write path unchanged.
     pub adaptive: Option<crate::adaptive::AdaptiveBatchConfig>,
@@ -102,6 +107,17 @@ impl RunStreamOptions {
         contract: std::sync::Arc<crate::contract::CompiledContract>,
     ) -> Self {
         self.contract = Some(contract);
+        self
+    }
+
+    /// Attach a compiled masking policy. The pass runs per page *first* —
+    /// before quality/contract/drift and every sink write.
+    #[cfg(feature = "masking")]
+    pub fn with_masking(
+        mut self,
+        masking: std::sync::Arc<crate::masking::CompiledMasking>,
+    ) -> Self {
+        self.masking = Some(masking);
         self
     }
 

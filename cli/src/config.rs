@@ -165,6 +165,16 @@ pub struct PipelineSpec {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub contract: Option<faucet_core::ContractSpec>,
 
+    /// PII detection + column-level masking policy (pipeline-level; no
+    /// matrix-row override in v1): classify sensitive fields (by name pattern,
+    /// value detector, or explicit list) and redact/hash/tokenize/partial-mask
+    /// them per page — before every sink write, the DLQ, and lineage sampling
+    /// (#206). Rules can be scoped per destination sink via `applies_to`. See
+    /// `faucet schema masking` and `faucet masking`.
+    #[cfg(feature = "masking")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub masking: Option<faucet_core::MaskingSpec>,
+
     /// Schema-drift handling policy (pipeline-level; no matrix-row override in v1).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub schema: Option<faucet_core::SchemaDriftSpec>,

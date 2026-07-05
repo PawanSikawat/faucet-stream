@@ -319,6 +319,8 @@ pub fn build_pipeline_config(env: &HashMap<String, String>) -> CliResult<Pipelin
             quality: None,
             #[cfg(feature = "contract")]
             contract: None,
+            #[cfg(feature = "masking")]
+            masking: None,
             schema: None,
         },
         matrix: Vec::new(),

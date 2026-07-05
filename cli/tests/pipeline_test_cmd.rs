@@ -409,6 +409,19 @@ fn shipped_example_spec_passes() {
         .stdout(contains("5 tests, 5 passed, 0 failed"));
 }
 
+#[cfg(feature = "masking")]
+#[test]
+fn shipped_masking_example_spec_passes() {
+    // Keeps cli/examples/tests/masking_tests.yaml (and the masking cookbook
+    // that quotes it) grounded.
+    let spec = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/tests/masking_tests.yaml");
+    faucet()
+        .arg(&spec)
+        .assert()
+        .success()
+        .stdout(contains("3 tests, 3 passed, 0 failed"));
+}
+
 #[test]
 fn resolve_secrets_flag_loads_plain_config() {
     // --resolve-secrets on a config with no secret directives goes through the

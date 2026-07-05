@@ -66,6 +66,15 @@ fn every_example_loads_and_expands() {
                 continue;
             }
         }
+        // `masking:` is gated on the `masking` feature (deny_unknown_fields).
+        #[cfg(not(feature = "masking"))]
+        {
+            let yaml_text = std::fs::read_to_string(&path).unwrap_or_default();
+            if yaml_text.contains("\n  masking:") || yaml_text.contains("\nmasking:") {
+                skipped += 1;
+                continue;
+            }
+        }
         count += 1;
         let cfg = match PipelineConfig::from_path(&path, None) {
             Ok(c) => c,

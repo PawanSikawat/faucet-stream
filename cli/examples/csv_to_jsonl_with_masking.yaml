@@ -1,0 +1,71 @@
+# CSV → JSONL with a PII detection + column-masking policy (issue #206).
+#
+# The `masking:` block classifies sensitive fields — by field-name pattern, by
+# a value detector (email / credit_card / ssn / phone / ipv4), or by explicit
+# field list — and rewrites them per action:
+#
+#   redact    — replace with a fixed mask (default "***"; set `mask: null` to
+#               null the field, or any JSON scalar)
+#   hash      — HMAC-SHA256 (keyed) / SHA-256 (unkeyed) hex digest; deterministic
+#               so masked values stay joinable downstream
+#   tokenize  — a short opaque token from the keyed digest, optional `prefix`
+#   partial   — reveal only the last `keep_last` characters (e.g. ****1234)
+#
+# The masking pass runs FIRST — before quality/contract/drift checks and every
+# sink write, the DLQ, and lineage sampling — so PII never leaves the pipeline
+# unmasked. Rules can be scoped to specific destination sinks via `applies_to`
+# (by sink-template name or connector kind); an empty/absent `applies_to`
+# applies the rule to every sink.
+#
+# Pull the tokenization/hash `key` from a secrets manager in production:
+#   key: ${vault:secret/faucet#masking_key}
+#
+# Inspect which rules apply to each destination:
+#   faucet masking cli/examples/csv_to_jsonl_with_masking.yaml
+version: 1
+name: customers_csv_with_masking
+
+pipeline:
+  source:
+    type: csv
+    config:
+      path: ./customers.csv
+
+  masking:
+    description: Mask customer PII before it lands anywhere.
+    key: change-me-pull-from-a-secrets-manager
+    rules:
+      # Redact anything that looks like an email address, whatever the column.
+      - name: emails
+        match:
+          value_detector: email
+        action:
+          type: redact
+
+      # Hash the SSN (keyed, deterministic → still joinable).
+      - name: ssn
+        match:
+          field_pattern: '(?i)^ssn$|social'
+        action:
+          type: hash
+
+      # Show only the last 4 digits of any card number.
+      - name: cards
+        match:
+          value_detector: credit_card
+        action:
+          type: partial
+          keep_last: 4
+
+      # Tokenize the user id with a stable prefix.
+      - name: user-id
+        match:
+          fields: [user_id]
+        action:
+          type: tokenize
+          prefix: usr_
+
+  sink:
+    type: jsonl
+    config:
+      path: ./customers_masked.jsonl

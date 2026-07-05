@@ -336,6 +336,11 @@ initial release; file a follow-up issue if you need it.
 are skipped — `redact` will not add `"***"` to a record that didn't
 have the field.
 
+> For a policy-driven layer that *detects* PII by value (whatever the column is
+> called), reaches into nested paths, hashes/tokenizes for joinable pseudonyms,
+> and scopes rules per destination sink, see
+> [PII detection & masking](./masking.md).
+
 ## `value_case`
 
 ```yaml

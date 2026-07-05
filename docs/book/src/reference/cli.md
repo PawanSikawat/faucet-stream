@@ -108,6 +108,7 @@ faucet schema transform keys_case
 faucet schema dlq
 faucet schema execution
 faucet schema contract
+faucet schema masking
 faucet schema sla
 faucet schema secrets
 faucet schema triggers
@@ -119,6 +120,9 @@ transform (e.g. `keys_case` lists the valid `mode:` values). Run
 
 `faucet schema execution` prints the schema for the top-level `execution:`
 block, including concurrency, error handling, and adaptive batch sizing.
+
+`faucet schema masking` prints the JSON Schema for the `pipeline.masking:`
+(PII detection + column-masking) block — see [masking](../cookbook/masking.md).
 
 `faucet schema sla` prints the schema for the top-level `sla:`
 (freshness/volume SLA) block — see [SLA monitoring](../cookbook/sla.md).
@@ -223,6 +227,19 @@ constraints, and breach policy — or, with `--export`, a machine-readable
 artifact for downstream consumers. Offline-safe: secrets are never fetched.
 Requires the `contract` Cargo feature (in the default build). See the
 [Data contracts](../cookbook/contracts.md) cookbook page.
+
+## `masking`
+
+```bash
+faucet masking pipeline.yaml     # validate + per-destination rule breakdown
+faucet masking                   # auto-discover faucet.yaml in cwd
+```
+
+Validates the config's `pipeline.masking:` block (a malformed policy exits
+non-zero with the compile error) and prints, per destination sink, which rules
+apply — the fast way to confirm `applies_to` scoping. Offline-safe: secrets are
+never fetched. Requires the `masking` Cargo feature (in the default build). See
+the [masking](../cookbook/masking.md) cookbook page.
 
 ## `replicate`
 

@@ -44,6 +44,10 @@ pub enum Command {
     /// it in a machine-readable format (`--export`).
     #[cfg(feature = "contract")]
     Contract(ContractArgs),
+    /// Validate a config's `masking:` block and print which rules apply to
+    /// each destination sink.
+    #[cfg(feature = "masking")]
+    Masking(MaskingArgs),
     /// Run a pipeline on a cron schedule (long-running; Ctrl-C / SIGTERM to stop).
     #[cfg(feature = "schedule")]
     Schedule(ScheduleArgs),
@@ -138,6 +142,27 @@ pub struct ContractArgs {
     /// or an OpenLineage schema facet.
     #[arg(long, value_enum)]
     pub export: Option<ContractExportFormat>,
+}
+
+/// Arguments for `faucet masking`.
+#[cfg(feature = "masking")]
+#[derive(Debug, Parser)]
+pub struct MaskingArgs {
+    /// Path to a `.yaml`, `.yml`, or `.json` pipeline config with a
+    /// `pipeline.masking:` block. If omitted, auto-discover
+    /// `faucet.yaml` / `faucet.yml` / `faucet.json` in cwd.
+    pub config: Option<PathBuf>,
+    /// Path to a `.env` file to load for `${env:VAR}` interpolation.
+    /// Defaults to `.env` in cwd if present.
+    #[arg(long, conflicts_with = "no_env_file")]
+    pub env_file: Option<PathBuf>,
+    /// Skip auto-loading `.env` from cwd.
+    #[arg(long)]
+    pub no_env_file: bool,
+    /// Select a named overlay from the config's `profiles:` block and deep-merge
+    /// it over the composed base. Overrides the `FAUCET_PROFILE` env var.
+    #[arg(long, env = "FAUCET_PROFILE")]
+    pub profile: Option<String>,
 }
 
 /// Export format for `faucet contract --export`.
@@ -398,6 +423,9 @@ pub enum SchemaTarget {
     /// JSON Schema for the `contract:` block.
     #[cfg(feature = "contract")]
     Contract,
+    /// JSON Schema for the `masking:` (PII masking) block.
+    #[cfg(feature = "masking")]
+    Masking,
     /// JSON Schema for the `faucet test` spec file.
     Test,
     /// Grammar reference for secrets-manager interpolation directives.
