@@ -1215,9 +1215,7 @@ async fn run_one_invocation(
                 }
             }
             Err(e) => {
-                notifier
-                    .emit(error_event(&pipeline, &row, e))
-                    .await;
+                notifier.emit(error_event(&pipeline, &row, e)).await;
             }
         }
         for v in &sla_violations {

@@ -7,7 +7,7 @@
 
 use assert_cmd::Command;
 use faucet_cli::notify::{
-    ChannelSpec, EventKind, NotificationSpec, NotifyEvent, Notifier, PagerdutyConfig, Severity,
+    ChannelSpec, EventKind, NotificationSpec, Notifier, NotifyEvent, PagerdutyConfig, Severity,
     SlackConfig, WebhookConfig,
 };
 use serde_json::Value;

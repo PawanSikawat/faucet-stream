@@ -6,7 +6,7 @@
 use crate::cli::{NotifyArgs, NotifyCommand, NotifyTestArgs};
 use crate::config::PipelineConfig;
 use crate::error::{CliError, CliResult};
-use crate::notify::{NotifyEvent, Notifier};
+use crate::notify::{Notifier, NotifyEvent};
 
 /// Execute the `notify` subcommand.
 pub async fn run(args: NotifyArgs) -> CliResult<()> {

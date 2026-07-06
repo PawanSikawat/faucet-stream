@@ -246,9 +246,7 @@ fn rule_matches(rule: &NotificationSpec, event: &NotifyEvent) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::notify::spec::{
-        ChannelSpec, PagerdutyConfig, Severity, SlackConfig, WebhookConfig,
-    };
+    use crate::notify::spec::{ChannelSpec, PagerdutyConfig, Severity, SlackConfig, WebhookConfig};
 
     fn rule(name: &str, on: Vec<EventKind>, channel: ChannelSpec) -> NotificationSpec {
         NotificationSpec {
@@ -272,7 +270,10 @@ mod tests {
     #[test]
     fn matches_on_kind_selector() {
         let r = rule("a", vec![EventKind::RunFailure], slack());
-        assert!(rule_matches(&r, &NotifyEvent::run_failure("p", "", "s", "m")));
+        assert!(rule_matches(
+            &r,
+            &NotifyEvent::run_failure("p", "", "s", "m")
+        ));
         assert!(!rule_matches(&r, &NotifyEvent::run_success("p", "", 1)));
     }
 
@@ -292,7 +293,10 @@ mod tests {
         // circuit_open is Critical ≥ Error → passes
         assert!(rule_matches(&r, &NotifyEvent::circuit_open("p", "", 3, 5)));
         // sla_breach is Warning < Error → gated
-        assert!(!rule_matches(&r, &NotifyEvent::sla_breach("p", "", "staleness", "x")));
+        assert!(!rule_matches(
+            &r,
+            &NotifyEvent::sla_breach("p", "", "staleness", "x")
+        ));
     }
 
     #[test]
@@ -365,10 +369,7 @@ mod tests {
         let mut r = rule("pd", vec![EventKind::RunFailure], pd);
         r.min_severity = Severity::Info;
         let n = Notifier::from_specs(&[r]).unwrap().unwrap();
-        n.incidents
-            .lock()
-            .unwrap()
-            .insert("pd::p:r1".to_string());
+        n.incidents.lock().unwrap().insert("pd::p:r1".to_string());
         assert_eq!(n.open_incident_count(), 1);
         n.emit(NotifyEvent::run_success("p", "r1", 1)).await;
         // resolve delivery failed (bad endpoint) → incident intentionally kept.
@@ -384,6 +385,10 @@ mod tests {
             hmac_secret: Some("s".into()),
             signature_header: "X-Faucet-Signature".into(),
         });
-        assert!(Notifier::from_specs(&[rule("w", vec![], wh)]).unwrap().is_some());
+        assert!(
+            Notifier::from_specs(&[rule("w", vec![], wh)])
+                .unwrap()
+                .is_some()
+        );
     }
 }

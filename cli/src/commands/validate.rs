@@ -70,10 +70,7 @@ pub async fn run(args: ValidateArgs) -> CliResult<()> {
     #[cfg(feature = "notify")]
     if !cfg.notifications.is_empty() {
         crate::notify::validate_all(&cfg.notifications)?;
-        println!(
-            "notifications: {} rule(s) — valid",
-            cfg.notifications.len()
-        );
+        println!("notifications: {} rule(s) — valid", cfg.notifications.len());
     }
 
     // Lineage transport reachability — best-effort. A failure here is only a

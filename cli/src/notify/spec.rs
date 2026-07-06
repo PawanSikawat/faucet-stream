@@ -47,9 +47,7 @@ pub struct NotificationSpec {
 }
 
 /// The lifecycle / health events a rule can subscribe to.
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema,
-)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum EventKind {
     /// A pipeline run (or its final flush) failed.

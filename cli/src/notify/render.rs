@@ -74,10 +74,7 @@ pub fn pagerduty(
     action: PdAction,
     dedup_key: &str,
 ) -> Value {
-    let source = cfg
-        .source
-        .clone()
-        .unwrap_or_else(|| event.pipeline.clone());
+    let source = cfg.source.clone().unwrap_or_else(|| event.pipeline.clone());
     let mut body = json!({
         "routing_key": cfg.routing_key,
         "event_action": action.as_str(),

@@ -146,7 +146,9 @@ impl NotifyEvent {
             p.clone(),
             row,
             format!("Circuit breaker open on `{p}`"),
-            format!("Tripped after {failures} consecutive failures; cooling down {cooldown_secs}s."),
+            format!(
+                "Tripped after {failures} consecutive failures; cooling down {cooldown_secs}s."
+            ),
         )
         .with("failures", Value::from(failures))
         .with("cooldown_secs", Value::from(cooldown_secs))

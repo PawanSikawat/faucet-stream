@@ -54,7 +54,10 @@ pub async fn send_webhook(
         .map(|(k, v)| (k.clone(), v.clone()))
         .collect();
     if let Some(secret) = &cfg.hmac_secret {
-        headers.push((cfg.signature_header.clone(), hmac_sha256_hex(secret.as_bytes(), &raw)));
+        headers.push((
+            cfg.signature_header.clone(),
+            hmac_sha256_hex(secret.as_bytes(), &raw),
+        ));
     }
 
     let method = reqwest::Method::from_bytes(cfg.method.as_bytes())
@@ -66,7 +69,10 @@ pub async fn send_webhook(
     for (k, v) in &headers {
         req = req.header(k, v);
     }
-    let resp = req.send().await.map_err(|e| format!("request failed: {e}"))?;
+    let resp = req
+        .send()
+        .await
+        .map_err(|e| format!("request failed: {e}"))?;
     check_status(resp).await
 }
 
@@ -81,7 +87,10 @@ async fn post_json(
     for (k, v) in headers {
         req = req.header(k, v);
     }
-    let resp = req.send().await.map_err(|e| format!("request failed: {e}"))?;
+    let resp = req
+        .send()
+        .await
+        .map_err(|e| format!("request failed: {e}"))?;
     check_status(resp).await
 }
 

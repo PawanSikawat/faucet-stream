@@ -823,7 +823,10 @@ fn shipped_example_yamls_pass_validate() {
             "/tmp/service-account.json",
         ),
         // csv_to_jsonl_with_notifications.yaml (#280 notification channels).
-        ("SLACK_WEBHOOK_URL", "https://hooks.slack.com/services/T0/B0/x"),
+        (
+            "SLACK_WEBHOOK_URL",
+            "https://hooks.slack.com/services/T0/B0/x",
+        ),
         ("PAGERDUTY_ROUTING_KEY", "x"),
         ("FAUCET_WEBHOOK_SECRET", "x"),
     ];

@@ -33,6 +33,6 @@ pub mod spec;
 pub use dispatch::Notifier;
 pub use event::NotifyEvent;
 pub use spec::{
-    ChannelSpec, EventKind, NotificationSpec, PagerdutyConfig, Severity, SlackConfig, WebhookConfig,
-    validate_all,
+    ChannelSpec, EventKind, NotificationSpec, PagerdutyConfig, Severity, SlackConfig,
+    WebhookConfig, validate_all,
 };
