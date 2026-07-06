@@ -822,6 +822,13 @@ fn shipped_example_yamls_pass_validate() {
             "GOOGLE_APPLICATION_CREDENTIALS",
             "/tmp/service-account.json",
         ),
+        // csv_to_jsonl_with_notifications.yaml (#280 notification channels).
+        (
+            "SLACK_WEBHOOK_URL",
+            "https://hooks.slack.com/services/T0/B0/x",
+        ),
+        ("PAGERDUTY_ROUTING_KEY", "x"),
+        ("FAUCET_WEBHOOK_SECRET", "x"),
     ];
     let examples_dir = std::path::Path::new(manifest_dir).join("examples");
     // Some examples interpolate `${file:./snowflake_key.pem}`. We run faucet
@@ -860,6 +867,15 @@ fn shipped_example_yamls_pass_validate() {
         {
             let yaml_text = fs::read_to_string(&path).unwrap_or_default();
             if yaml_text.contains("\n  masking:") || yaml_text.contains("\nmasking:") {
+                continue;
+            }
+        }
+        // `notifications:` is a deny_unknown_fields key gated on the `notify`
+        // feature; a build without it can't parse those examples.
+        #[cfg(not(feature = "notify"))]
+        {
+            let yaml_text = fs::read_to_string(&path).unwrap_or_default();
+            if yaml_text.contains("\nnotifications:") {
                 continue;
             }
         }

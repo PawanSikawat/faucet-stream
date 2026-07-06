@@ -114,6 +114,10 @@ pub async fn run(args: ScheduleArgs) -> CliResult<()> {
         .map_err(|e| CliError::Config(format!("lineage: {e}")))?;
     #[cfg(feature = "lineage")]
     let lineage_cfg = cfg.lineage.clone();
+    // Build the notifier once; the `Arc` is cloned into each tick's options and
+    // reused for the scheduler-level `scheduler_stuck` signal.
+    #[cfg(feature = "notify")]
+    let notifier = crate::notify::Notifier::from_specs(&cfg.notifications)?;
     let nodes = expand(&cfg)?; // validate once; cloned per tick
     let execution = cfg.execution.clone();
     let resilience = match &cfg.resilience {
@@ -134,6 +138,8 @@ pub async fn run(args: ScheduleArgs) -> CliResult<()> {
             &lineage,
             #[cfg(feature = "lineage")]
             &lineage_cfg,
+            #[cfg(feature = "notify")]
+            &notifier,
         )
         .await;
     }
@@ -152,6 +158,8 @@ pub async fn run(args: ScheduleArgs) -> CliResult<()> {
         lineage,
         #[cfg(feature = "lineage")]
         lineage_cfg,
+        #[cfg(feature = "notify")]
+        notifier,
     )
     .await
 }
@@ -168,6 +176,7 @@ fn make_opts(
     sla: &Option<crate::sla::SlaSpec>,
     #[cfg(feature = "lineage")] lineage: &Option<std::sync::Arc<faucet_lineage::LineageEmitter>>,
     #[cfg(feature = "lineage")] lineage_cfg: &Option<faucet_lineage::LineageConfig>,
+    #[cfg(feature = "notify")] notifier: &Option<std::sync::Arc<crate::notify::Notifier>>,
 ) -> ExecuteOptions {
     ExecuteOptions {
         pipeline_name: pipeline_name.to_string(),
@@ -185,6 +194,8 @@ fn make_opts(
         lineage: lineage.clone(),
         #[cfg(feature = "lineage")]
         lineage_cfg: lineage_cfg.clone(),
+        #[cfg(feature = "notify")]
+        notifier: notifier.clone(),
     }
 }
 
@@ -294,6 +305,7 @@ async fn run_once(
     sla: &Option<crate::sla::SlaSpec>,
     #[cfg(feature = "lineage")] lineage: &Option<std::sync::Arc<faucet_lineage::LineageEmitter>>,
     #[cfg(feature = "lineage")] lineage_cfg: &Option<faucet_lineage::LineageConfig>,
+    #[cfg(feature = "notify")] notifier: &Option<std::sync::Arc<crate::notify::Notifier>>,
 ) -> CliResult<()> {
     tracing::info!(pipeline = %pipeline_name, "schedule --once: running one pipeline now");
     let now = chrono::Utc::now();
@@ -308,6 +320,8 @@ async fn run_once(
         lineage,
         #[cfg(feature = "lineage")]
         lineage_cfg,
+        #[cfg(feature = "notify")]
+        notifier,
     );
     let span = run_span(1, now, now);
     let fut = run_expanded(nodes.to_vec(), opts).instrument(span);
@@ -342,6 +356,7 @@ async fn run_loop(
     sla: Option<crate::sla::SlaSpec>,
     #[cfg(feature = "lineage")] lineage: Option<std::sync::Arc<faucet_lineage::LineageEmitter>>,
     #[cfg(feature = "lineage")] lineage_cfg: Option<faucet_lineage::LineageConfig>,
+    #[cfg(feature = "notify")] notifier: Option<std::sync::Arc<crate::notify::Notifier>>,
 ) -> CliResult<()> {
     let mut state = SchedulerState::new(&compiled);
     // The circuit-breaker re-entry cooldown, if a breaker is configured. Used to
@@ -414,6 +429,8 @@ async fn run_loop(
                         &lineage,
                         #[cfg(feature = "lineage")]
                         &lineage_cfg,
+                        #[cfg(feature = "notify")]
+                        &notifier,
                     );
                     let span = run_span(run_ordinal, next_due, now);
                     let handle = spawn_run(nodes.clone(), opts, compiled.run_timeout, span);
@@ -533,6 +550,16 @@ async fn run_loop(
                         return Ok(());
                     }
                     AfterRun::ExitFailure { consecutive } => {
+                        #[cfg(feature = "notify")]
+                        if let Some(n) = &notifier {
+                            n.emit(crate::notify::NotifyEvent::scheduler_stuck(
+                                &pipeline_name,
+                                format!(
+                                    "scheduler exiting after {consecutive} consecutive failures"
+                                ),
+                            ))
+                            .await;
+                        }
                         return Err(CliError::PipelineHadFailures { count: consecutive as usize });
                     }
                     AfterRun::Continue { dispatch_pending } => {
@@ -550,6 +577,8 @@ async fn run_loop(
                                 &lineage,
                                 #[cfg(feature = "lineage")]
                                 &lineage_cfg,
+                                #[cfg(feature = "notify")]
+                                &notifier,
                             );
                             let span = run_span(run_ordinal, sched_for, done_at);
                             let handle = spawn_run(nodes.clone(), opts, compiled.run_timeout, span);
@@ -769,6 +798,8 @@ mod tests {
             &None,
             #[cfg(feature = "lineage")]
             &None,
+            #[cfg(feature = "notify")]
+            &None,
         );
         // A zero-ish timeout (1ns) virtually guarantees the timeout branch fires
         // even though the pipeline is fast — the timeout races the spawn.
@@ -801,6 +832,8 @@ mod tests {
             #[cfg(feature = "lineage")]
             &None,
             #[cfg(feature = "lineage")]
+            &None,
+            #[cfg(feature = "notify")]
             &None,
         );
         assert_eq!(opts.pipeline_name, "p");

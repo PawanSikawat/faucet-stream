@@ -8,6 +8,8 @@ pub mod init;
 pub mod list;
 #[cfg(feature = "masking")]
 pub mod masking;
+#[cfg(feature = "notify")]
+pub mod notify;
 pub mod preview;
 pub mod replicate;
 pub mod run;

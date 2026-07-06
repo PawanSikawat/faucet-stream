@@ -3135,6 +3135,7 @@ dependencies = [
  "futures",
  "futures-core",
  "google-cloud-auth",
+ "hmac 0.12.1",
  "inquire",
  "metrics",
  "metrics-exporter-prometheus",

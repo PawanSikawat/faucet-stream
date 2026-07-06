@@ -44,6 +44,8 @@ pub async fn run(args: ReplicateArgs) -> CliResult<()> {
         Some(spec) => Some(spec.to_policy()?),
         None => None,
     };
+    #[cfg(feature = "notify")]
+    let notifier = crate::notify::Notifier::from_specs(&cfg.notifications)?;
 
     run_replication(
         &cfg,
@@ -55,6 +57,8 @@ pub async fn run(args: ReplicateArgs) -> CliResult<()> {
             clock: chrono::Utc::now().fixed_offset(),
             resilience,
             sla: cfg.sla.clone(),
+            #[cfg(feature = "notify")]
+            notifier,
         },
     )
     .await?;

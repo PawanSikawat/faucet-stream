@@ -121,6 +121,15 @@ pub struct PipelineConfig {
     #[cfg(feature = "lineage")]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lineage: Option<faucet_lineage::LineageConfig>,
+
+    /// Optional notification / incident-routing rules (#280). Fan pipeline
+    /// lifecycle and health events (run failure/success, SLA breach, circuit
+    /// open, contract abort, DLQ threshold, scheduler stuck) out to Slack /
+    /// PagerDuty / a signed webhook. Consumed by every runtime
+    /// (`run`/`schedule`/`serve`/`replicate`); delivery never fails a run.
+    #[cfg(feature = "notify")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub notifications: Vec<crate::notify::NotificationSpec>,
 }
 
 /// The base pipeline definition. Each matrix row is resolved against the

@@ -26,6 +26,8 @@ pub mod interpolate;
 #[cfg(feature = "lineage")]
 pub mod lineage_glue;
 pub mod merge;
+#[cfg(feature = "notify")]
+pub mod notify;
 pub mod obs;
 pub mod pipeline_test;
 pub mod registry;
@@ -101,6 +103,8 @@ pub async fn run_from_yaml_str(yaml: &str) -> CliResult<executor::RunSummary> {
             lineage: None,
             #[cfg(feature = "lineage")]
             lineage_cfg: None,
+            #[cfg(feature = "notify")]
+            notifier: None,
         },
     )
     .await

@@ -29,6 +29,7 @@
 - [Data contracts](./cookbook/contracts.md)
 - [PII detection & masking](./cookbook/masking.md)
 - [SLA monitoring (freshness & volume)](./cookbook/sla.md)
+- [Notifications (Slack / PagerDuty / webhook)](./cookbook/notifications.md)
 - [Testing pipelines](./cookbook/testing.md)
 - [Compression](./cookbook/compression.md)
 - [Record transforms](./cookbook/transforms.md)

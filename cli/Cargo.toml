@@ -26,7 +26,7 @@ default = ["observability", "source", "sink", "state", "transforms", "compressio
 
 # Everything the default build ships, plus the long-running runtime modes:
 # `schedule` (cron scheduler) and `serve` (HTTP control plane).
-full = ["default", "otel", "schedule", "serve", "serve-ui", "serve-history-postgres", "serve-history-sqlite", "lineage", "lineage-kafka", "transform-sql", "triggers", "triggers-object-store", "triggers-redis", "triggers-kafka"]
+full = ["default", "otel", "schedule", "serve", "serve-ui", "serve-history-postgres", "serve-history-sqlite", "lineage", "lineage-kafka", "notify", "transform-sql", "triggers", "triggers-object-store", "triggers-redis", "triggers-kafka"]
 
 # Data-quality checks (`quality:` config block). `quality-jsonschema` adds the
 # `json_schema` record check via a JSON Schema validator. Forwarded to
@@ -170,6 +170,13 @@ state-postgres = ["dep:faucet-state-postgres"]
 lineage = ["dep:faucet-lineage", "dep:reqwest"]
 lineage-kafka = ["lineage", "faucet-lineage/transport-kafka"]
 
+# Notification / incident-routing layer (#280): the `notifications:` config
+# block + `faucet notify test` + `faucet schema notifications`. Fans pipeline
+# lifecycle / health events out to Slack / PagerDuty / a signed webhook.
+# CLI-only; not in `default`, included in `full`. `dep:reqwest` for delivery,
+# `dep:hmac` + `dep:sha2` for the optional webhook HMAC-SHA256 signature.
+notify = ["dep:reqwest", "dep:hmac", "dep:sha2"]
+
 # Enables the `faucet init --interactive` prompt UI (`dialoguer`-driven Select
 # prompts for source / sink kind). Off by default so minimal builds don't pull
 # in the TTY-prompt dep tree.
@@ -308,8 +315,11 @@ tokio-util = { workspace = true }
 subtle = { workspace = true, optional = true }
 # faucet serve run registry (Phase 2+); only compiled with the `serve` feature.
 dashmap = { workspace = true, optional = true }
-# faucet serve idempotency-key hashing (Phase 2+); only compiled with `serve`.
+# faucet serve idempotency-key hashing (Phase 2+; `serve`) + notify webhook
+# HMAC signing (#280; `notify`).
 sha2 = { workspace = true, optional = true }
+# notify webhook HMAC-SHA256 signature (#280); only compiled with `notify`.
+hmac = { workspace = true, optional = true }
 # faucet serve SSE log streaming (Phase 4); only compiled with `serve`.
 async-stream = { workspace = true, optional = true }
 sqlx = { workspace = true, optional = true }

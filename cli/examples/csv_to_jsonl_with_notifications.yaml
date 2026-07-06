@@ -1,0 +1,54 @@
+# CSV -> JSONL pipeline with notification / incident routing (#280).
+#
+# The top-level `notifications:` block fans pipeline lifecycle and health events
+# out to Slack / PagerDuty / a generic signed webhook. It is fully opt-in:
+# remove the block and the pipeline behaves exactly as before. Delivery is
+# fire-and-forget — a channel outage is retried a little, logged, and never
+# fails the run.
+#
+# Each rule uses the project-wide adjacently-tagged `{ type, config }` channel
+# shape (the same shape as connector `auth:`). Supply channel secrets via
+# `${env:...}` / `${secret:...}` so they are redacted from logs — never inline.
+version: 1
+name: csv_to_jsonl_notified
+pipeline:
+  source:
+    type: csv
+    config:
+      path: "./data/input.csv"
+  sink:
+    type: jsonl
+    config:
+      path: "./out/output.jsonl"
+
+notifications:
+  # Page on-call for anything that stopped or systemically degraded the run.
+  - name: oncall-pagerduty
+    on: [run_failure, circuit_open, contract_abort, scheduler_stuck]
+    channel:
+      type: pagerduty
+      config:
+        routing_key: "${env:PAGERDUTY_ROUTING_KEY}"
+        # `source` defaults to the pipeline name; override if you like.
+
+  # Post every notable event to a Slack channel, but coalesce repeats so a
+  # flapping pipeline doesn't spam the channel more than once every 5 minutes.
+  - name: slack-alerts
+    on: [run_failure, sla_breach, dlq_threshold]
+    dedupe_window_secs: 300
+    channel:
+      type: slack
+      config:
+        webhook_url: "${env:SLACK_WEBHOOK_URL}"
+        channel: "#data-alerts"
+
+  # Fan a signed JSON envelope to an internal endpoint for every event
+  # (empty `on:` = all kinds). The HMAC-SHA256 signature is sent in the
+  # `X-Faucet-Signature` header so the receiver can verify authenticity.
+  - name: internal-webhook
+    min_severity: warning        # info | warning | error | critical
+    channel:
+      type: webhook
+      config:
+        url: "https://ops.internal.example.com/hooks/faucet"
+        hmac_secret: "${env:FAUCET_WEBHOOK_SECRET}"
