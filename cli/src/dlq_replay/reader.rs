@@ -303,6 +303,20 @@ mod tests {
     }
 
     #[test]
+    fn expand_location_glob_matches_multiple_files() {
+        let dir = tempfile::tempdir().unwrap();
+        for name in ["a.jsonl", "b.jsonl"] {
+            std::fs::write(dir.path().join(name), "\n").unwrap();
+        }
+        std::fs::write(dir.path().join("skip.txt"), "\n").unwrap();
+        let pattern = format!("{}/*.jsonl", dir.path().display());
+        let got = expand_location(&pattern).unwrap();
+        assert_eq!(got.len(), 2, "glob matches both .jsonl files, not the .txt");
+        // A glob that matches nothing errors.
+        assert!(expand_location(&format!("{}/*.none", dir.path().display())).is_err());
+    }
+
+    #[test]
     fn expand_location_file_dir_and_missing() {
         let (dir, path) = write_tmp("dlq.jsonl", "\n");
         // single file
