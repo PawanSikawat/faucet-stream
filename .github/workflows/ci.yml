@@ -216,6 +216,8 @@ jobs:
           - triggers-object-store
           - triggers-redis
           - triggers-kafka
+          # Notification / incident routing (CLI-only)
+          - notify
           # Secrets backends
           - secrets-vault
           - secrets-aws-sm
@@ -249,7 +251,7 @@ jobs:
         run: |
           # Secrets, schedule, serve, and triggers features live in faucet-cli
           # (CLI layer), not in the faucet-stream umbrella crate. Route accordingly.
-          if [[ "${{ matrix.feature }}" == secrets-* || "${{ matrix.feature }}" == "schedule" || "${{ matrix.feature }}" == serve* || "${{ matrix.feature }}" == triggers* ]]; then
+          if [[ "${{ matrix.feature }}" == secrets-* || "${{ matrix.feature }}" == "schedule" || "${{ matrix.feature }}" == serve* || "${{ matrix.feature }}" == triggers* || "${{ matrix.feature }}" == "notify" ]]; then
             cargo check -p faucet-cli --no-default-features --features ${{ matrix.feature }}
           else
             cargo check -p faucet-stream --no-default-features --features ${{ matrix.feature }}

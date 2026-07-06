@@ -99,6 +99,13 @@ pub struct ExecuteOptions {
     /// knows which facets/events to assemble. Gated on the `lineage` feature.
     #[cfg(feature = "lineage")]
     pub lineage_cfg: Option<faucet_lineage::LineageConfig>,
+    /// Optional notification/incident-routing notifier (#280), built once from
+    /// the top-level `notifications:` block and shared across invocations. Fires
+    /// run success/failure, SLA breach, circuit-open, contract-abort, and
+    /// DLQ-threshold events after every **root** invocation. `None` disables
+    /// notifications entirely (zero overhead). Gated on the `notify` feature.
+    #[cfg(feature = "notify")]
+    pub notifier: Option<std::sync::Arc<crate::notify::Notifier>>,
 }
 
 /// Grace window granted to in-flight invocations to flush cooperatively after
@@ -1143,12 +1150,17 @@ async fn run_one_invocation(
     // shard executions (a shard's volume is a fraction of the row's, and shard
     // counts change run to run), and for cancelled runs (a partial volume is
     // not a signal). Monitoring never fails the run — see `evaluate_post_run`.
-    if let Some(spec) = &opts.sla
-        && matches!(node.role, NodeRole::Root)
+    // Roots only, and never for dry-run / --limit / shard / cancelled runs —
+    // the same scoping the notification pass below reuses.
+    let is_notifiable_root = matches!(node.role, NodeRole::Root)
         && !opts.dry_run
         && opts.limit.is_none()
         && opts.shard.is_none()
-        && !cancel.is_cancelled()
+        && !cancel.is_cancelled();
+
+    #[cfg_attr(not(feature = "notify"), allow(unused_variables))]
+    let sla_violations = if let Some(spec) = &opts.sla
+        && is_notifiable_root
     {
         let outcome = match &result {
             Ok(r) => crate::sla::RunOutcome::Success {
@@ -1165,7 +1177,59 @@ async fn run_one_invocation(
             outcome,
             chrono::Utc::now().timestamp(),
         )
-        .await;
+        .await
+    } else {
+        Vec::new()
+    };
+
+    // ── Notifications (#280) ─────────────────────────────────────────────────
+    // Fan run success/failure, SLA breach, circuit-open, contract-abort, and
+    // DLQ-threshold out to the configured channels. Same root/real-run scoping
+    // as SLA; delivery is fire-and-forget and never fails the run.
+    #[cfg(feature = "notify")]
+    if let Some(notifier) = &opts.notifier
+        && is_notifiable_root
+    {
+        use crate::notify::NotifyEvent;
+        let pipeline = obs_labels.pipeline.to_string();
+        let row = obs_labels.row.to_string();
+        match &result {
+            Ok(r) => {
+                notifier
+                    .emit(NotifyEvent::run_success(
+                        pipeline.clone(),
+                        row.clone(),
+                        r.records_written as u64,
+                    ))
+                    .await;
+                if let Some(dlq) = &r.dlq
+                    && dlq.records_dlq > 0
+                {
+                    notifier
+                        .emit(NotifyEvent::dlq_threshold(
+                            pipeline.clone(),
+                            row.clone(),
+                            dlq.records_dlq as u64,
+                        ))
+                        .await;
+                }
+            }
+            Err(e) => {
+                notifier
+                    .emit(error_event(&pipeline, &row, e))
+                    .await;
+            }
+        }
+        for v in &sla_violations {
+            notifier
+                .emit(NotifyEvent::sla_breach(
+                    pipeline.clone(),
+                    row.clone(),
+                    v.kind(),
+                    v.to_string(),
+                ))
+                .await;
+        }
     }
 
     let result = result?;
@@ -1225,6 +1289,41 @@ pub async fn build_dlq_config(spec: &crate::config::DlqSpec) -> CliResult<DlqCon
         max_failures_total: spec.max_failures_total,
         include_original_payload: spec.include_original_payload,
     })
+}
+
+/// Classify a pipeline error into a notification event (#280). A circuit-breaker
+/// trip and a contract-abort breach get their own event kinds; everything else
+/// is a generic `run_failure` carrying a short error-kind label.
+#[cfg(feature = "notify")]
+fn error_event(pipeline: &str, row: &str, err: &FaucetError) -> crate::notify::NotifyEvent {
+    use crate::notify::NotifyEvent;
+    match err {
+        FaucetError::CircuitOpen { failures, cooldown } => {
+            NotifyEvent::circuit_open(pipeline, row, *failures, cooldown.as_secs())
+        }
+        FaucetError::ContractViolation { message, .. } => {
+            NotifyEvent::contract_abort(pipeline, row, message.clone())
+        }
+        other => {
+            NotifyEvent::run_failure(pipeline, row, faucet_error_kind(other), other.to_string())
+        }
+    }
+}
+
+/// Short, stable label for a `FaucetError` variant used as the `error_kind`
+/// detail on a `run_failure` notification. (`faucet-core`'s own `error_kind`
+/// helper is `pub(crate)`, so we keep a small CLI-side mapping.)
+#[cfg(feature = "notify")]
+fn faucet_error_kind(err: &FaucetError) -> &'static str {
+    match err {
+        FaucetError::Config(_) => "config",
+        FaucetError::Source(_) => "source",
+        FaucetError::Sink(_) => "sink",
+        FaucetError::State(_) => "state",
+        FaucetError::QualityFailure { .. } => "quality",
+        FaucetError::SchemaDrift { .. } => "schema_drift",
+        _ => "error",
+    }
 }
 
 /// In-place `${now.*}` resolution against the run clock. Walks every string
@@ -1469,6 +1568,8 @@ mod tests {
             schedule: None,
             #[cfg(feature = "lineage")]
             lineage: None,
+            #[cfg(feature = "notify")]
+            notifications: Vec::new(),
         }
     }
 
@@ -1498,6 +1599,8 @@ mod tests {
                 lineage: None,
                 #[cfg(feature = "lineage")]
                 lineage_cfg: None,
+                #[cfg(feature = "notify")]
+                notifier: None,
             },
         )
         .await
@@ -1556,6 +1659,8 @@ matrix:
                 lineage: None,
                 #[cfg(feature = "lineage")]
                 lineage_cfg: None,
+                #[cfg(feature = "notify")]
+                notifier: None,
             },
         )
         .await
@@ -1614,6 +1719,8 @@ matrix:
                 lineage: None,
                 #[cfg(feature = "lineage")]
                 lineage_cfg: None,
+                #[cfg(feature = "notify")]
+                notifier: None,
             },
         )
         .await
@@ -1837,6 +1944,8 @@ execution:
                 lineage: None,
                 #[cfg(feature = "lineage")]
                 lineage_cfg: None,
+                #[cfg(feature = "notify")]
+                notifier: None,
             },
         )
         .await
@@ -1920,6 +2029,8 @@ pipeline:
                 lineage: None,
                 #[cfg(feature = "lineage")]
                 lineage_cfg: None,
+                #[cfg(feature = "notify")]
+                notifier: None,
             },
         )
         .await
@@ -1977,6 +2088,8 @@ matrix:
                 lineage: None,
                 #[cfg(feature = "lineage")]
                 lineage_cfg: None,
+                #[cfg(feature = "notify")]
+                notifier: None,
             },
         )
         .await
@@ -2043,6 +2156,8 @@ execution:
                 lineage: None,
                 #[cfg(feature = "lineage")]
                 lineage_cfg: None,
+                #[cfg(feature = "notify")]
+                notifier: None,
             },
         )
         .await
@@ -2110,6 +2225,8 @@ matrix:
                 lineage: None,
                 #[cfg(feature = "lineage")]
                 lineage_cfg: None,
+                #[cfg(feature = "notify")]
+                notifier: None,
             },
         )
         .await
@@ -2344,6 +2461,8 @@ matrix:
             lineage: None,
             #[cfg(feature = "lineage")]
             lineage_cfg: None,
+            #[cfg(feature = "notify")]
+            notifier: None,
         }
     }
 
@@ -2756,6 +2875,8 @@ matrix:
                 lineage: None,
                 #[cfg(feature = "lineage")]
                 lineage_cfg: None,
+                #[cfg(feature = "notify")]
+                notifier: None,
             },
         )
         .await

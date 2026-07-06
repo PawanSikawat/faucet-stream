@@ -65,6 +65,17 @@ pub async fn run(args: ValidateArgs) -> CliResult<()> {
         );
     }
 
+    // Validate the notifications block (unique names, non-empty channel fields)
+    // so `faucet validate` catches misconfiguration without running. Offline.
+    #[cfg(feature = "notify")]
+    if !cfg.notifications.is_empty() {
+        crate::notify::validate_all(&cfg.notifications)?;
+        println!(
+            "notifications: {} rule(s) — valid",
+            cfg.notifications.len()
+        );
+    }
+
     // Lineage transport reachability — best-effort. A failure here is only a
     // warning: lineage emission never blocks a pipeline run.
     #[cfg(feature = "lineage")]

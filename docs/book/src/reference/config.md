@@ -588,6 +588,34 @@ history is persisted next to the pipeline's bookmarks under
 persists within a single `faucet schedule` / `serve` process. Schema:
 `faucet schema sla`.
 
+## `notifications`
+
+*(requires the `notify` build feature)*
+
+A list of rules that fan pipeline lifecycle / health events out to Slack,
+PagerDuty, or a signed webhook. Events: `run_failure`, `run_success`,
+`sla_breach`, `circuit_open`, `contract_abort`, `dlq_threshold`,
+`scheduler_stuck`. Fires from every runtime; delivery never fails a run.
+
+```yaml
+notifications:
+  - name: oncall
+    on: [run_failure, circuit_open, contract_abort]
+    dedupe_window_secs: 300     # optional leading-edge coalesce
+    min_severity: error         # optional floor: info|warning|error|critical
+    channel:
+      type: pagerduty           # slack | pagerduty | webhook — {type, config}
+      config:
+        routing_key: "${env:PAGERDUTY_ROUTING_KEY}"
+```
+
+Per-rule fields: `name` (unique), `on` (event kinds; empty = all),
+`min_severity`, `dedupe_window_secs`, `dlq_threshold` (min DLQ rows for the
+`dlq_threshold` event), and `channel` (`{ type, config }`). Channel secrets
+should come from `${env:...}` / `${secret:...}` so they are log-redacted. See
+the [Notifications cookbook](../cookbook/notifications.md) for channel details,
+metrics, and `faucet notify test`. Schema: `faucet schema notifications`.
+
 ## `replication`
 
 Present only when you run [`faucet replicate`](cli.md#replicate). It turns the

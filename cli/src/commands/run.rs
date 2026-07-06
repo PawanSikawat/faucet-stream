@@ -85,6 +85,8 @@ pub async fn run(args: RunArgs) -> CliResult<()> {
         Some(spec) => Some(spec.to_policy()?),
         None => None,
     };
+    #[cfg(feature = "notify")]
+    let notifier = crate::notify::Notifier::from_specs(&cfg.notifications)?;
     let nodes = expand(&cfg)?;
     let summary = run_expanded(
         nodes,
@@ -106,6 +108,8 @@ pub async fn run(args: RunArgs) -> CliResult<()> {
             lineage,
             #[cfg(feature = "lineage")]
             lineage_cfg: cfg.lineage.clone(),
+            #[cfg(feature = "notify")]
+            notifier,
         },
     )
     .await?;

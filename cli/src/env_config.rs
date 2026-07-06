@@ -336,6 +336,8 @@ pub fn build_pipeline_config(env: &HashMap<String, String>) -> CliResult<Pipelin
         schedule: None,
         #[cfg(feature = "lineage")]
         lineage: None,
+        #[cfg(feature = "notify")]
+        notifications: Vec::new(),
     })
 }
 

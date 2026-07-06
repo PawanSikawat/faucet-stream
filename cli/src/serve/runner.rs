@@ -433,6 +433,8 @@ async fn execute_shard(
         lineage,
         #[cfg(feature = "lineage")]
         lineage_cfg: cfg.lineage.clone(),
+        #[cfg(feature = "notify")]
+        notifier: None,
     };
 
     let server_shutdown = state.shutdown_token();
@@ -1156,6 +1158,14 @@ async fn execute_run(
             return;
         }
     };
+    // Notifier from the submitted config's `notifications:` block. A malformed
+    // block disables notifications for this run (logged) rather than failing an
+    // already-accepted run.
+    #[cfg(feature = "notify")]
+    let notifier = crate::notify::Notifier::from_specs(&cfg.notifications).unwrap_or_else(|e| {
+        tracing::error!(%run_id, "notifications config invalid, disabling: {e}");
+        None
+    });
     let opts = ExecuteOptions {
         pipeline_name,
         execution: cfg.execution.clone(),
@@ -1172,6 +1182,8 @@ async fn execute_run(
         lineage,
         #[cfg(feature = "lineage")]
         lineage_cfg: cfg.lineage.clone(),
+        #[cfg(feature = "notify")]
+        notifier,
     };
 
     let span = tracing::info_span!("faucet.serve.run", serve_run_id = %run_id);

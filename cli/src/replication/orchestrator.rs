@@ -27,6 +27,9 @@ pub struct ReplicationOptions {
     pub resilience: Option<faucet_core::ResiliencePolicy>,
     /// Optional freshness/volume SLA (#202), evaluated after each phase's runs.
     pub sla: Option<crate::sla::SlaSpec>,
+    /// Optional notifier (#280), shared across both phases' runs.
+    #[cfg(feature = "notify")]
+    pub notifier: Option<std::sync::Arc<crate::notify::Notifier>>,
 }
 
 /// Build the snapshot-phase node by cloning the CDC node and swapping in the
@@ -84,6 +87,8 @@ fn make_opts(opts: &ReplicationOptions, cancel: Option<CancellationToken>) -> Ex
         lineage: None,
         #[cfg(feature = "lineage")]
         lineage_cfg: None,
+        #[cfg(feature = "notify")]
+        notifier: opts.notifier.clone(),
     }
 }
 

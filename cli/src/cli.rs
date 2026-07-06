@@ -54,6 +54,44 @@ pub enum Command {
     /// Run a long-running HTTP control plane (submit / poll / cancel pipeline runs).
     #[cfg(feature = "serve")]
     Serve(ServeArgs),
+    /// Send a synthetic notification through a config's `notifications:` rules
+    /// to validate channel setup end-to-end (no pipeline runs).
+    #[cfg(feature = "notify")]
+    Notify(NotifyArgs),
+}
+
+/// `faucet notify test` arguments.
+#[cfg(feature = "notify")]
+#[derive(Debug, Parser)]
+pub struct NotifyArgs {
+    #[command(subcommand)]
+    pub command: NotifyCommand,
+}
+
+/// `faucet notify` subcommands.
+#[cfg(feature = "notify")]
+#[derive(Debug, Subcommand)]
+pub enum NotifyCommand {
+    /// Fire one synthetic event at every matching rule in the config.
+    Test(NotifyTestArgs),
+}
+
+/// `faucet notify test <config>` arguments.
+#[cfg(feature = "notify")]
+#[derive(Debug, Parser)]
+pub struct NotifyTestArgs {
+    /// Path to a `.yaml`, `.yml`, or `.json` pipeline config with a
+    /// `notifications:` block. If omitted, auto-discover in cwd.
+    pub config: Option<PathBuf>,
+    /// Which event to synthesize (defaults to `run_failure`).
+    #[arg(long, default_value = "run_failure")]
+    pub event: String,
+    /// Path to a `.env` file for `${env:VAR}` interpolation.
+    #[arg(long, conflicts_with = "no_env_file")]
+    pub env_file: Option<PathBuf>,
+    /// Disable `.env` auto-discovery.
+    #[arg(long)]
+    pub no_env_file: bool,
 }
 
 /// `faucet test` arguments.
@@ -439,6 +477,9 @@ pub enum SchemaTarget {
     /// JSON Schema for the `--triggers` file (event-driven pipeline triggers).
     #[cfg(feature = "triggers")]
     Triggers,
+    /// JSON Schema for the `notifications:` (incident-routing) block.
+    #[cfg(feature = "notify")]
+    Notifications,
 }
 
 /// `faucet preview` arguments.

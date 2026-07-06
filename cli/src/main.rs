@@ -38,6 +38,8 @@ async fn main() {
         Command::Schedule(args) => commands::schedule::run(args).await,
         #[cfg(feature = "serve")]
         Command::Serve(args) => commands::serve::run(args, serve_log_level).await,
+        #[cfg(feature = "notify")]
+        Command::Notify(args) => commands::notify::run(args).await,
     };
 
     if let Err(err) = result {

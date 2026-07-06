@@ -110,6 +110,7 @@ faucet schema execution
 faucet schema contract
 faucet schema masking
 faucet schema sla
+faucet schema notifications
 faucet schema secrets
 faucet schema triggers
 ```
@@ -240,6 +241,22 @@ non-zero with the compile error) and prints, per destination sink, which rules
 apply — the fast way to confirm `applies_to` scoping. Offline-safe: secrets are
 never fetched. Requires the `masking` Cargo feature (in the default build). See
 the [masking](../cookbook/masking.md) cookbook page.
+
+## `notify`
+
+*(requires the `notify` build feature)*
+
+```bash
+faucet notify test pipeline.yaml --event run_failure
+faucet notify test --event circuit_open        # auto-discover faucet.yaml
+```
+
+Fires one **synthetic** event through the config's `notifications:` rules using
+the real delivery path (no pipeline runs) — the fast way to confirm a Slack /
+PagerDuty / webhook channel is wired correctly. `--event` accepts any event
+kind (`run_failure`, `run_success`, `sla_breach`, `circuit_open`,
+`contract_abort`, `dlq_threshold`, `scheduler_stuck`). See the
+[Notifications](../cookbook/notifications.md) cookbook page.
 
 ## `replicate`
 

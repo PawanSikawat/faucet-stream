@@ -66,6 +66,12 @@ pub async fn run(args: SchemaArgs) -> CliResult<()> {
             let s = faucet_core::schema_for!(crate::pipeline_test::spec::TestSpecFile);
             serde_json::to_value(s).unwrap_or_else(|_| serde_json::json!({"type": "object"}))
         }
+        #[cfg(feature = "notify")]
+        SchemaTarget::Notifications => {
+            // The `notifications:` block is a list; emit the per-rule schema.
+            let s = faucet_core::schema_for!(crate::notify::NotificationSpec);
+            serde_json::to_value(s).unwrap_or_else(|_| serde_json::json!({"type": "object"}))
+        }
         SchemaTarget::Secrets => serde_json::json!({
             "title": "Secrets-manager interpolation grammar",
             "schemes": {
