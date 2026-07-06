@@ -12,6 +12,8 @@
 //! integrations and tests can reuse them.
 
 pub mod auth_catalog;
+#[cfg(feature = "catalog")]
+pub mod catalog;
 pub mod cli;
 pub mod commands;
 pub mod compose;
@@ -85,6 +87,11 @@ pub async fn run_from_yaml_str(yaml: &str) -> CliResult<executor::RunSummary> {
         Some(spec) => Some(spec.to_policy()?),
         None => None,
     };
+    #[cfg(feature = "catalog")]
+    let catalog = match cfg.catalog.as_ref() {
+        Some(spec) => Some(catalog::connect_from_spec(spec).await?),
+        None => None,
+    };
     let nodes = expand::expand(&cfg)?;
     executor::run_expanded(
         nodes,
@@ -106,6 +113,8 @@ pub async fn run_from_yaml_str(yaml: &str) -> CliResult<executor::RunSummary> {
             lineage_cfg: None,
             #[cfg(feature = "notify")]
             notifier: None,
+            #[cfg(feature = "catalog")]
+            catalog,
         },
     )
     .await

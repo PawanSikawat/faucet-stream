@@ -435,6 +435,10 @@ async fn execute_shard(
         lineage_cfg: cfg.lineage.clone(),
         #[cfg(feature = "notify")]
         notifier: None,
+        // Inert under `shard: Some(..)` — a shard's records/URIs are a slice
+        // of the row's; the catalog records whole runs only.
+        #[cfg(feature = "catalog")]
+        catalog: None,
     };
 
     let server_shutdown = state.shutdown_token();
@@ -1184,6 +1188,15 @@ async fn execute_run(
         lineage_cfg: cfg.lineage.clone(),
         #[cfg(feature = "notify")]
         notifier,
+        // Record every serve run into the Data Movement Catalog (#279),
+        // stored alongside the run history (`--history` backend) and
+        // attributed to this serve run id.
+        #[cfg(feature = "catalog")]
+        catalog: Some(crate::catalog::CatalogHandle {
+            store: state.history(),
+            run_id: Some(run_id.clone()),
+            sample_records: crate::catalog::DEFAULT_SAMPLE_RECORDS,
+        }),
     };
 
     let span = tracing::info_span!("faucet.serve.run", serve_run_id = %run_id);

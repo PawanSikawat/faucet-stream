@@ -247,6 +247,34 @@ impl RunHistory for FallbackHistory {
         via!(self, p => p.list_audit(filter), f => f.list_audit(filter))
     }
 
+    // ── Data Movement Catalog (#279) ─────────────────────────────────────────
+
+    async fn catalog_record(
+        &self,
+        update: &crate::serve::history::catalog::CatalogUpdate,
+    ) -> Result<(), HistoryError> {
+        via!(self, p => p.catalog_record(update), f => f.catalog_record(update))
+    }
+    async fn catalog_list_datasets(
+        &self,
+        filter: &crate::serve::history::catalog::CatalogListFilter,
+    ) -> Result<crate::serve::history::catalog::CatalogDatasetPage, HistoryError> {
+        via!(self, p => p.catalog_list_datasets(filter), f => f.catalog_list_datasets(filter))
+    }
+    async fn catalog_get_dataset(
+        &self,
+        id: &str,
+    ) -> Result<Option<crate::serve::history::catalog::CatalogDatasetDetail>, HistoryError> {
+        via!(self, p => p.catalog_get_dataset(id), f => f.catalog_get_dataset(id))
+    }
+    async fn catalog_lineage(
+        &self,
+        root: Option<&str>,
+        depth: u32,
+    ) -> Result<Vec<crate::serve::history::catalog::CatalogLineageEdge>, HistoryError> {
+        via!(self, p => p.catalog_lineage(root, depth), f => f.catalog_lineage(root, depth))
+    }
+
     fn degraded(&self) -> bool {
         self.is_degraded()
     }

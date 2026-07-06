@@ -45,6 +45,14 @@ impl SampleState {
             s.push(r.clone());
         }
     }
+    /// A copy of the sampled records (bounded by the construction-time cap).
+    /// Used by consumers that run their own schema inference over the sample —
+    /// e.g. the CLI's Data Movement Catalog (#279), which feeds them to
+    /// `faucet_core::schema::infer_schema` for a drift-comparable shape.
+    pub fn samples(&self) -> Vec<Value> {
+        self.sample.lock().unwrap().clone()
+    }
+
     /// Infer an ordered (name, OL-type) schema from the sampled records.
     pub fn inferred_schema(&self) -> InferredSchema {
         let sample = self.sample.lock().unwrap();

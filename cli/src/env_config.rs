@@ -336,6 +336,9 @@ pub fn build_pipeline_config(env: &HashMap<String, String>) -> CliResult<Pipelin
         schedule: None,
         #[cfg(feature = "lineage")]
         lineage: None,
+        // Pure-env mode doesn't (yet) assemble a `catalog:` block.
+        #[cfg(feature = "catalog")]
+        catalog: None,
         #[cfg(feature = "notify")]
         notifications: Vec::new(),
     })

@@ -2,6 +2,10 @@
 //! documented memory-backend trade-off. Idempotency claims live in a second map
 //! and are pruned both lazily (on re-claim) and by `purge_expired`.
 
+use super::catalog::{
+    self, CatalogDataset, CatalogDatasetDetail, CatalogDatasetPage, CatalogLineageEdge,
+    CatalogListFilter, CatalogSchemaVersion, CatalogStatsPoint, CatalogUpdate,
+};
 use super::{
     AuditEntry, AuditFilter, Claim, DeleteOutcome, HistoryError, ListFilter, ListPage, RunHistory,
     RunRecord,
@@ -23,11 +27,27 @@ struct IdemEntry {
     claimed_at: DateTime<Utc>,
 }
 
+/// In-memory Data Movement Catalog state (#279). One `Mutex` guards the whole
+/// catalog so a `catalog_record` (a read-modify-write across three maps) is
+/// atomic without per-map lock ordering.
+#[derive(Default)]
+struct CatalogState {
+    datasets: std::collections::HashMap<String, CatalogDataset>,
+    /// dataset id → timeline, oldest first.
+    schema_versions: std::collections::HashMap<String, Vec<CatalogSchemaVersion>>,
+    /// dataset id → volume points, oldest first, capped at `STATS_RETAIN`.
+    stats: std::collections::HashMap<String, Vec<CatalogStatsPoint>>,
+    /// (src id, dst id) → edge.
+    edges: std::collections::HashMap<(String, String), CatalogLineageEdge>,
+}
+
 pub struct MemoryHistory {
     runs: DashMap<String, RunRecord>,
     idem: DashMap<String, IdemEntry>,
     /// Bounded, newest-at-back ring of audit records (RBAC, #205).
     audit: Mutex<VecDeque<AuditEntry>>,
+    /// Data Movement Catalog (#279). Ephemeral like everything else here.
+    catalog: Mutex<CatalogState>,
     /// Retention window for idempotency claims (separate from run retention).
     idem_retention: Duration,
 }
@@ -38,6 +58,7 @@ impl MemoryHistory {
             runs: DashMap::new(),
             idem: DashMap::new(),
             audit: Mutex::new(VecDeque::new()),
+            catalog: Mutex::new(CatalogState::default()),
             idem_retention,
         }
     }
@@ -222,6 +243,115 @@ impl RunHistory for MemoryHistory {
             return Ok(true);
         }
         Ok(false)
+    }
+
+    // ── Data Movement Catalog (#279) ─────────────────────────────────────────
+
+    async fn catalog_record(&self, update: &CatalogUpdate) -> Result<(), HistoryError> {
+        let lock_err = |_| HistoryError::Backend("catalog lock poisoned".into());
+        let mut cat = self.catalog.lock().map_err(lock_err)?;
+        for obs in [&update.source, &update.sink] {
+            let id = catalog::dataset_id(&obs.uri);
+            let (ds, new_version) = catalog::apply_observation(
+                cat.datasets.get(&id),
+                obs,
+                &update.run_id,
+                &update.pipeline,
+                &update.row,
+                update.recorded_at,
+            );
+            if let Some(v) = new_version {
+                cat.schema_versions.entry(id.clone()).or_default().push(v);
+            }
+            let points = cat.stats.entry(id.clone()).or_default();
+            points.push(CatalogStatsPoint {
+                recorded_at: update.recorded_at,
+                run_id: update.run_id.clone(),
+                records: obs.records,
+            });
+            if points.len() > catalog::STATS_RETAIN {
+                let drop_n = points.len() - catalog::STATS_RETAIN;
+                points.drain(..drop_n);
+            }
+            cat.datasets.insert(id, ds);
+        }
+        let key = (
+            catalog::dataset_id(&update.source.uri),
+            catalog::dataset_id(&update.sink.uri),
+        );
+        let edge = catalog::apply_edge(cat.edges.get(&key), update);
+        cat.edges.insert(key, edge);
+        Ok(())
+    }
+
+    async fn catalog_list_datasets(
+        &self,
+        filter: &CatalogListFilter,
+    ) -> Result<CatalogDatasetPage, HistoryError> {
+        let cat = self
+            .catalog
+            .lock()
+            .map_err(|_| HistoryError::Backend("catalog lock poisoned".into()))?;
+        Ok(catalog::filter_datasets(
+            cat.datasets.values().cloned().collect(),
+            filter,
+        ))
+    }
+
+    async fn catalog_get_dataset(
+        &self,
+        id: &str,
+    ) -> Result<Option<CatalogDatasetDetail>, HistoryError> {
+        let cat = self
+            .catalog
+            .lock()
+            .map_err(|_| HistoryError::Backend("catalog lock poisoned".into()))?;
+        let Some(dataset) = cat.datasets.get(id).cloned() else {
+            return Ok(None);
+        };
+        let schema_timeline = cat.schema_versions.get(id).cloned().unwrap_or_default();
+        let mut stats: Vec<CatalogStatsPoint> =
+            cat.stats.get(id).cloned().unwrap_or_default();
+        stats.reverse(); // newest first
+        stats.truncate(catalog::STATS_DETAIL_LIMIT);
+        let upstream = cat
+            .edges
+            .values()
+            .filter(|e| e.dst_id == id)
+            .cloned()
+            .collect();
+        let downstream = cat
+            .edges
+            .values()
+            .filter(|e| e.src_id == id)
+            .cloned()
+            .collect();
+        Ok(Some(CatalogDatasetDetail {
+            dataset,
+            schema_timeline,
+            stats,
+            upstream,
+            downstream,
+        }))
+    }
+
+    async fn catalog_lineage(
+        &self,
+        root: Option<&str>,
+        depth: u32,
+    ) -> Result<Vec<CatalogLineageEdge>, HistoryError> {
+        let cat = self
+            .catalog
+            .lock()
+            .map_err(|_| HistoryError::Backend("catalog lock poisoned".into()))?;
+        let mut edges: Vec<CatalogLineageEdge> = cat.edges.values().cloned().collect();
+        // Stable order for pagination-free consumers (newest activity first).
+        edges.sort_by(|a, b| {
+            b.last_seen
+                .cmp(&a.last_seen)
+                .then_with(|| (&a.src_id, &a.dst_id).cmp(&(&b.src_id, &b.dst_id)))
+        });
+        Ok(catalog::lineage_slice(edges, root, depth))
     }
 
     fn degraded(&self) -> bool {
@@ -540,6 +670,84 @@ mod tests {
             .await
             .unwrap();
         assert!(after.is_empty(), "audit purge should clear expired entries");
+    }
+
+    fn catalog_update(src: &str, dst: &str, schema: Option<serde_json::Value>) -> CatalogUpdate {
+        use crate::serve::history::catalog::{DatasetObservation, DatasetRole};
+        CatalogUpdate {
+            run_id: "r1".into(),
+            pipeline: "p".into(),
+            row: "default".into(),
+            recorded_at: Utc::now(),
+            source: DatasetObservation {
+                uri: src.into(),
+                kind: "csv".into(),
+                role: DatasetRole::Source,
+                schema: schema.clone(),
+                records: 10,
+            },
+            sink: DatasetObservation {
+                uri: dst.into(),
+                kind: "jsonl".into(),
+                role: DatasetRole::Sink,
+                schema,
+                records: 10,
+            },
+            column_lineage: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn catalog_record_accumulates_datasets_edges_and_timeline() {
+        use serde_json::json;
+        let h = MemoryHistory::new(Duration::from_secs(60));
+        let schema_v1 = json!({"type": "object", "properties": {"id": {"type": "integer"}}});
+        let schema_v2 = json!({"type": "object", "properties": {"id": {"type": "integer"}, "email": {"type": "string"}}});
+
+        h.catalog_record(&catalog_update("csv://./in.csv", "jsonl://./out.jsonl", Some(schema_v1.clone())))
+            .await
+            .unwrap();
+        // Same schema again → no new version.
+        h.catalog_record(&catalog_update("csv://./in.csv", "jsonl://./out.jsonl", Some(schema_v1)))
+            .await
+            .unwrap();
+        // Changed schema → second version with a diff.
+        h.catalog_record(&catalog_update("csv://./in.csv", "jsonl://./out.jsonl", Some(schema_v2)))
+            .await
+            .unwrap();
+
+        let page = h
+            .catalog_list_datasets(&CatalogListFilter {
+                limit: 10,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(page.datasets.len(), 2, "source + sink datasets");
+
+        let src_id = catalog::dataset_id("csv://./in.csv");
+        let detail = h.catalog_get_dataset(&src_id).await.unwrap().unwrap();
+        assert_eq!(detail.dataset.runs, 3);
+        assert_eq!(detail.dataset.total_records, 30);
+        assert_eq!(
+            detail.schema_timeline.len(),
+            2,
+            "identical schema deduped; change appended"
+        );
+        assert!(detail.schema_timeline[0].diff.is_none());
+        assert!(detail.schema_timeline[1].diff.is_some());
+        assert_eq!(detail.stats.len(), 3);
+        assert_eq!(detail.downstream.len(), 1);
+        assert!(detail.upstream.is_empty());
+        assert_eq!(detail.downstream[0].runs, 3);
+
+        // Lineage: one edge, whole graph == rooted graph.
+        let all = h.catalog_lineage(None, 5).await.unwrap();
+        assert_eq!(all.len(), 1);
+        let rooted = h.catalog_lineage(Some(&src_id), 3).await.unwrap();
+        assert_eq!(rooted.len(), 1);
+        assert!(h.catalog_lineage(Some("missing"), 3).await.unwrap().is_empty());
+        assert!(h.catalog_get_dataset("missing").await.unwrap().is_none());
     }
 
     #[tokio::test]

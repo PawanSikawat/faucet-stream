@@ -4,6 +4,7 @@
 //! unreachable backend degrades to in-memory rather than refusing to start.
 //! See spec §11 + §20.
 
+pub mod catalog;
 #[cfg(any(feature = "serve-history-postgres", feature = "serve-history-sqlite"))]
 pub mod fallback;
 pub mod memory;
@@ -550,6 +551,58 @@ pub trait RunHistory: Send + Sync {
     /// Most-recent audit records matching `filter`, newest first. Default: empty.
     async fn list_audit(&self, filter: &AuditFilter) -> Result<Vec<AuditEntry>, HistoryError> {
         let _ = filter;
+        Ok(Vec::new())
+    }
+
+    // ── Data Movement Catalog (#279) ─────────────────────────────────────────
+    //
+    // Accumulating, cross-run picture of every dataset a pipeline touches:
+    // identity, schema timeline, volume/freshness stats, lineage edges. All
+    // defaulted to inert so third-party `RunHistory` impls are unaffected;
+    // implemented by the memory + SQL backends and forwarded by the fallback
+    // wrapper. Catalog rows are deliberately NOT purged by `purge_expired` —
+    // the accumulated history is the point (only per-dataset stats are capped,
+    // at [`catalog::STATS_RETAIN`]).
+
+    /// Fold one run's catalog update (two dataset observations + the lineage
+    /// edge between them) into the store. Idempotent-ish last-write-wins per
+    /// dataset/edge, so concurrent cluster instances converge. Default: no-op.
+    async fn catalog_record(&self, update: &catalog::CatalogUpdate) -> Result<(), HistoryError> {
+        let _ = update;
+        Ok(())
+    }
+
+    /// List catalogued datasets, filtered + keyset-paginated
+    /// (`last_seen DESC, id DESC`). Default: empty.
+    async fn catalog_list_datasets(
+        &self,
+        filter: &catalog::CatalogListFilter,
+    ) -> Result<catalog::CatalogDatasetPage, HistoryError> {
+        let _ = filter;
+        Ok(catalog::CatalogDatasetPage {
+            datasets: Vec::new(),
+            next_cursor: None,
+        })
+    }
+
+    /// One dataset's full detail: current schema, schema timeline, recent
+    /// volume points, and upstream/downstream edges. Default: `None`.
+    async fn catalog_get_dataset(
+        &self,
+        id: &str,
+    ) -> Result<Option<catalog::CatalogDatasetDetail>, HistoryError> {
+        let _ = id;
+        Ok(None)
+    }
+
+    /// The lineage edge graph — everything, or a depth-bounded slice around
+    /// `root` (a dataset id). Default: empty.
+    async fn catalog_lineage(
+        &self,
+        root: Option<&str>,
+        depth: u32,
+    ) -> Result<Vec<catalog::CatalogLineageEdge>, HistoryError> {
+        let _ = (root, depth);
         Ok(Vec::new())
     }
 

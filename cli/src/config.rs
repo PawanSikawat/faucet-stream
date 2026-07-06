@@ -122,6 +122,15 @@ pub struct PipelineConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lineage: Option<faucet_lineage::LineageConfig>,
 
+    /// Optional Data Movement Catalog store (#279): where `faucet run` /
+    /// `schedule` / `replicate` accumulate the cross-run dataset catalog
+    /// (identity, schema timeline, volume/freshness, lineage edges). `faucet
+    /// serve` ignores this block and records into its `--history` backend.
+    /// Recording never fails a run. See `faucet schema catalog`.
+    #[cfg(feature = "catalog")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub catalog: Option<crate::catalog::CatalogSpec>,
+
     /// Optional notification / incident-routing rules (#280). Fan pipeline
     /// lifecycle and health events (run failure/success, SLA breach, circuit
     /// open, contract abort, DLQ threshold, scheduler stuck) out to Slack /

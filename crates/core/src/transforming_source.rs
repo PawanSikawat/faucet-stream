@@ -128,6 +128,13 @@ impl Source for TransformingSource {
     fn connector_name(&self) -> &'static str {
         self.inner.connector_name()
     }
+
+    fn dataset_uri(&self) -> String {
+        // Forward the wrapped connector's identity — without this, lineage and
+        // the Data Movement Catalog would see the default
+        // `<connector>://unknown` whenever transforms are attached.
+        self.inner.dataset_uri()
+    }
 }
 
 #[cfg(test)]

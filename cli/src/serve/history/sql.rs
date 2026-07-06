@@ -94,6 +94,39 @@ pub const DDL: &[&str] = &[
         result TEXT NOT NULL)",
     "CREATE INDEX IF NOT EXISTS faucet_serve_audit_ts_idx \
         ON faucet_serve_audit (ts)",
+    // Data Movement Catalog (#279). Accumulating cross-run state, deliberately
+    // NOT covered by `purge_expired` (the history is the value). Same
+    // TEXT-columns + JSON `body` convention as the run tables: the dedicated
+    // columns exist for filtering only; `body` is the source of truth on read.
+    "CREATE TABLE IF NOT EXISTS faucet_catalog_datasets (\
+        id TEXT PRIMARY KEY,\
+        uri TEXT NOT NULL,\
+        kind TEXT NOT NULL,\
+        last_seen TEXT NOT NULL,\
+        body TEXT NOT NULL)",
+    // One row per (dataset, schema version); appended only on content change.
+    // `version` is an integer stored as TEXT (cast on ORDER BY), matching the
+    // shard table's `size_estimate` convention.
+    "CREATE TABLE IF NOT EXISTS faucet_catalog_schema_versions (\
+        dataset_id TEXT NOT NULL,\
+        version TEXT NOT NULL,\
+        recorded_at TEXT NOT NULL,\
+        body TEXT NOT NULL,\
+        PRIMARY KEY (dataset_id, version))",
+    // One row per (source dataset, sink dataset) lineage edge.
+    "CREATE TABLE IF NOT EXISTS faucet_catalog_edges (\
+        src_id TEXT NOT NULL,\
+        dst_id TEXT NOT NULL,\
+        last_seen TEXT NOT NULL,\
+        body TEXT NOT NULL,\
+        PRIMARY KEY (src_id, dst_id))",
+    // Per-run volume points, capped per dataset at `catalog::STATS_RETAIN`.
+    "CREATE TABLE IF NOT EXISTS faucet_catalog_stats (\
+        dataset_id TEXT NOT NULL,\
+        recorded_at TEXT NOT NULL,\
+        run_id TEXT NOT NULL,\
+        records TEXT NOT NULL,\
+        PRIMARY KEY (dataset_id, recorded_at))",
 ];
 
 /// SQL placeholder dialect.
@@ -200,6 +233,32 @@ pub struct Stmts {
     pub list_audit: String,
     /// Purge audit records older than a threshold (retention).
     pub purge_audit: String,
+    // ── Data Movement Catalog (#279) ─────────────────────────────────────────
+    /// One dataset body by id (the merge read + the detail head).
+    pub catalog_select_dataset: String,
+    /// Upsert one dataset row (filter columns + body). Params: id, uri, kind,
+    /// last_seen, body.
+    pub catalog_upsert_dataset: String,
+    /// Every dataset body — filtering/ordering happens in shared pure code
+    /// ([`catalog::filter_datasets`](super::catalog::filter_datasets)), so the
+    /// memory and SQL backends can never disagree on semantics.
+    pub catalog_select_datasets: String,
+    /// Append one schema-timeline entry; `ON CONFLICT DO NOTHING` so a cluster
+    /// replay of the same (dataset, version) is idempotent.
+    pub catalog_insert_schema_version: String,
+    /// A dataset's schema timeline, oldest first.
+    pub catalog_select_schema_versions: String,
+    /// Upsert one lineage edge. Params: src_id, dst_id, last_seen, body.
+    pub catalog_upsert_edge: String,
+    /// Every edge body, newest activity first.
+    pub catalog_select_edges: String,
+    /// Append one volume point. Params: dataset_id, recorded_at, run_id, records.
+    pub catalog_insert_stat: String,
+    /// A dataset's most recent volume points. Params: dataset_id, limit.
+    pub catalog_select_stats: String,
+    /// Drop volume points beyond the newest `STATS_RETAIN` for one dataset.
+    /// Params: dataset_id, dataset_id, keep-limit.
+    pub catalog_prune_stats: String,
 }
 
 impl Stmts {
@@ -374,6 +433,41 @@ impl Stmts {
                 ORDER BY ts DESC, id DESC LIMIT $9"
                 .into(),
             purge_audit: "DELETE FROM faucet_serve_audit WHERE ts < $1".into(),
+            catalog_select_dataset: "SELECT body FROM faucet_catalog_datasets WHERE id=$1".into(),
+            catalog_upsert_dataset: "INSERT INTO faucet_catalog_datasets \
+                (id, uri, kind, last_seen, body) VALUES ($1,$2,$3,$4,$5) \
+                ON CONFLICT (id) DO UPDATE SET uri=excluded.uri, kind=excluded.kind, \
+                last_seen=excluded.last_seen, body=excluded.body"
+                .into(),
+            catalog_select_datasets: "SELECT body FROM faucet_catalog_datasets".into(),
+            catalog_insert_schema_version: "INSERT INTO faucet_catalog_schema_versions \
+                (dataset_id, version, recorded_at, body) VALUES ($1,$2,$3,$4) \
+                ON CONFLICT (dataset_id, version) DO NOTHING"
+                .into(),
+            catalog_select_schema_versions: "SELECT body FROM faucet_catalog_schema_versions \
+                WHERE dataset_id=$1 ORDER BY CAST(version AS BIGINT) ASC"
+                .into(),
+            catalog_upsert_edge: "INSERT INTO faucet_catalog_edges \
+                (src_id, dst_id, last_seen, body) VALUES ($1,$2,$3,$4) \
+                ON CONFLICT (src_id, dst_id) DO UPDATE SET \
+                last_seen=excluded.last_seen, body=excluded.body"
+                .into(),
+            catalog_select_edges: "SELECT body FROM faucet_catalog_edges \
+                ORDER BY last_seen DESC, src_id, dst_id"
+                .into(),
+            catalog_insert_stat: "INSERT INTO faucet_catalog_stats \
+                (dataset_id, recorded_at, run_id, records) VALUES ($1,$2,$3,$4) \
+                ON CONFLICT (dataset_id, recorded_at) DO NOTHING"
+                .into(),
+            catalog_select_stats: "SELECT recorded_at, run_id, records \
+                FROM faucet_catalog_stats WHERE dataset_id=$1 \
+                ORDER BY recorded_at DESC LIMIT $2"
+                .into(),
+            catalog_prune_stats: "DELETE FROM faucet_catalog_stats \
+                WHERE dataset_id=$1 AND recorded_at NOT IN (\
+                    SELECT recorded_at FROM faucet_catalog_stats WHERE dataset_id=$2 \
+                    ORDER BY recorded_at DESC LIMIT $3)"
+                .into(),
         }
     }
 
@@ -539,6 +633,41 @@ impl Stmts {
                 ORDER BY ts DESC, id DESC LIMIT ?"
                 .into(),
             purge_audit: "DELETE FROM faucet_serve_audit WHERE ts < ?".into(),
+            catalog_select_dataset: "SELECT body FROM faucet_catalog_datasets WHERE id=?".into(),
+            catalog_upsert_dataset: "INSERT INTO faucet_catalog_datasets \
+                (id, uri, kind, last_seen, body) VALUES (?,?,?,?,?) \
+                ON CONFLICT (id) DO UPDATE SET uri=excluded.uri, kind=excluded.kind, \
+                last_seen=excluded.last_seen, body=excluded.body"
+                .into(),
+            catalog_select_datasets: "SELECT body FROM faucet_catalog_datasets".into(),
+            catalog_insert_schema_version: "INSERT INTO faucet_catalog_schema_versions \
+                (dataset_id, version, recorded_at, body) VALUES (?,?,?,?) \
+                ON CONFLICT (dataset_id, version) DO NOTHING"
+                .into(),
+            catalog_select_schema_versions: "SELECT body FROM faucet_catalog_schema_versions \
+                WHERE dataset_id=? ORDER BY CAST(version AS INTEGER) ASC"
+                .into(),
+            catalog_upsert_edge: "INSERT INTO faucet_catalog_edges \
+                (src_id, dst_id, last_seen, body) VALUES (?,?,?,?) \
+                ON CONFLICT (src_id, dst_id) DO UPDATE SET \
+                last_seen=excluded.last_seen, body=excluded.body"
+                .into(),
+            catalog_select_edges: "SELECT body FROM faucet_catalog_edges \
+                ORDER BY last_seen DESC, src_id, dst_id"
+                .into(),
+            catalog_insert_stat: "INSERT INTO faucet_catalog_stats \
+                (dataset_id, recorded_at, run_id, records) VALUES (?,?,?,?) \
+                ON CONFLICT (dataset_id, recorded_at) DO NOTHING"
+                .into(),
+            catalog_select_stats: "SELECT recorded_at, run_id, records \
+                FROM faucet_catalog_stats WHERE dataset_id=? \
+                ORDER BY recorded_at DESC LIMIT ?"
+                .into(),
+            catalog_prune_stats: "DELETE FROM faucet_catalog_stats \
+                WHERE dataset_id=? AND recorded_at NOT IN (\
+                    SELECT recorded_at FROM faucet_catalog_stats WHERE dataset_id=? \
+                    ORDER BY recorded_at DESC LIMIT ?)"
+                .into(),
         }
     }
 }
@@ -579,6 +708,18 @@ pub fn encode_body(rec: &RunRecord) -> Result<String, HistoryError> {
 
 pub fn decode_body(body: &str) -> Result<RunRecord, HistoryError> {
     serde_json::from_str(body).map_err(|e| HistoryError::Backend(format!("decode run record: {e}")))
+}
+
+/// Generic body (de)serialization for the catalog tables (#279).
+pub fn encode_json<T: serde::Serialize>(value: &T, what: &str) -> Result<String, HistoryError> {
+    serde_json::to_string(value).map_err(|e| HistoryError::Backend(format!("encode {what}: {e}")))
+}
+
+pub fn decode_json<T: serde::de::DeserializeOwned>(
+    body: &str,
+    what: &str,
+) -> Result<T, HistoryError> {
+    serde_json::from_str(body).map_err(|e| HistoryError::Backend(format!("decode {what}: {e}")))
 }
 
 pub fn parse_status(s: &str) -> RunStatus {
@@ -1725,10 +1866,232 @@ macro_rules! impl_sql_history {
                 Ok(out)
             }
 
+            // ── Data Movement Catalog (#279) ─────────────────────────────────
+
+            async fn catalog_record(
+                &self,
+                update: &$crate::serve::history::catalog::CatalogUpdate,
+            ) -> Result<(), $crate::serve::history::HistoryError> {
+                use sqlx::Row as _;
+                use $crate::serve::history::HistoryError;
+                use $crate::serve::history::catalog;
+                use $crate::serve::history::sql;
+                let backend = |e: sqlx::Error| HistoryError::Backend(e.to_string());
+                let now_s = sql::fmt_ts(update.recorded_at);
+
+                for obs in [&update.source, &update.sink] {
+                    let id = catalog::dataset_id(&obs.uri);
+                    // Read-merge-write; last-write-wins under cluster concurrency
+                    // (counters may undercount on a race — acceptable for
+                    // operational stats, never for correctness).
+                    let existing = sqlx::query(&self.stmts.catalog_select_dataset)
+                        .bind(&id)
+                        .fetch_optional(&self.pool)
+                        .await
+                        .map_err(backend)?
+                        .map(|r| r.try_get::<String, _>("body"))
+                        .transpose()
+                        .map_err(backend)?
+                        .map(|b| {
+                            sql::decode_json::<catalog::CatalogDataset>(&b, "catalog dataset")
+                        })
+                        .transpose()?;
+                    let (ds, new_version) = catalog::apply_observation(
+                        existing.as_ref(),
+                        obs,
+                        &update.run_id,
+                        &update.pipeline,
+                        &update.row,
+                        update.recorded_at,
+                    );
+                    sqlx::query(&self.stmts.catalog_upsert_dataset)
+                        .bind(&ds.id)
+                        .bind(&ds.uri)
+                        .bind(&ds.kind)
+                        .bind(&now_s)
+                        .bind(sql::encode_json(&ds, "catalog dataset")?)
+                        .execute(&self.pool)
+                        .await
+                        .map_err(backend)?;
+                    if let Some(v) = new_version {
+                        sqlx::query(&self.stmts.catalog_insert_schema_version)
+                            .bind(&v.dataset_id)
+                            .bind(v.version.to_string())
+                            .bind(sql::fmt_ts(v.recorded_at))
+                            .bind(sql::encode_json(&v, "catalog schema version")?)
+                            .execute(&self.pool)
+                            .await
+                            .map_err(backend)?;
+                    }
+                    sqlx::query(&self.stmts.catalog_insert_stat)
+                        .bind(&id)
+                        .bind(&now_s)
+                        .bind(&update.run_id)
+                        .bind(obs.records.to_string())
+                        .execute(&self.pool)
+                        .await
+                        .map_err(backend)?;
+                    sqlx::query(&self.stmts.catalog_prune_stats)
+                        .bind(&id)
+                        .bind(&id)
+                        .bind(catalog::STATS_RETAIN as i64)
+                        .execute(&self.pool)
+                        .await
+                        .map_err(backend)?;
+                }
+
+                let src_id = catalog::dataset_id(&update.source.uri);
+                let dst_id = catalog::dataset_id(&update.sink.uri);
+                let existing_edges = self.catalog_all_edges().await?;
+                let existing = existing_edges
+                    .iter()
+                    .find(|e| e.src_id == src_id && e.dst_id == dst_id);
+                let edge = catalog::apply_edge(existing, update);
+                sqlx::query(&self.stmts.catalog_upsert_edge)
+                    .bind(&edge.src_id)
+                    .bind(&edge.dst_id)
+                    .bind(&now_s)
+                    .bind(sql::encode_json(&edge, "catalog edge")?)
+                    .execute(&self.pool)
+                    .await
+                    .map_err(backend)?;
+                Ok(())
+            }
+
+            async fn catalog_list_datasets(
+                &self,
+                filter: &$crate::serve::history::catalog::CatalogListFilter,
+            ) -> Result<
+                $crate::serve::history::catalog::CatalogDatasetPage,
+                $crate::serve::history::HistoryError,
+            > {
+                use sqlx::Row as _;
+                use $crate::serve::history::HistoryError;
+                use $crate::serve::history::catalog;
+                use $crate::serve::history::sql;
+                let backend = |e: sqlx::Error| HistoryError::Backend(e.to_string());
+                let rows = sqlx::query(&self.stmts.catalog_select_datasets)
+                    .fetch_all(&self.pool)
+                    .await
+                    .map_err(backend)?;
+                let mut all = Vec::with_capacity(rows.len());
+                for r in &rows {
+                    let body: String = r.try_get("body").map_err(backend)?;
+                    all.push(sql::decode_json(&body, "catalog dataset")?);
+                }
+                Ok(catalog::filter_datasets(all, filter))
+            }
+
+            async fn catalog_get_dataset(
+                &self,
+                id: &str,
+            ) -> Result<
+                Option<$crate::serve::history::catalog::CatalogDatasetDetail>,
+                $crate::serve::history::HistoryError,
+            > {
+                use sqlx::Row as _;
+                use $crate::serve::history::HistoryError;
+                use $crate::serve::history::catalog;
+                use $crate::serve::history::sql;
+                let backend = |e: sqlx::Error| HistoryError::Backend(e.to_string());
+                let Some(row) = sqlx::query(&self.stmts.catalog_select_dataset)
+                    .bind(id)
+                    .fetch_optional(&self.pool)
+                    .await
+                    .map_err(backend)?
+                else {
+                    return Ok(None);
+                };
+                let body: String = row.try_get("body").map_err(backend)?;
+                let dataset: catalog::CatalogDataset =
+                    sql::decode_json(&body, "catalog dataset")?;
+
+                let rows = sqlx::query(&self.stmts.catalog_select_schema_versions)
+                    .bind(id)
+                    .fetch_all(&self.pool)
+                    .await
+                    .map_err(backend)?;
+                let mut schema_timeline = Vec::with_capacity(rows.len());
+                for r in &rows {
+                    let body: String = r.try_get("body").map_err(backend)?;
+                    schema_timeline.push(sql::decode_json(&body, "catalog schema version")?);
+                }
+
+                let rows = sqlx::query(&self.stmts.catalog_select_stats)
+                    .bind(id)
+                    .bind(catalog::STATS_DETAIL_LIMIT as i64)
+                    .fetch_all(&self.pool)
+                    .await
+                    .map_err(backend)?;
+                let mut stats = Vec::with_capacity(rows.len());
+                for r in &rows {
+                    let recorded: String = r.try_get("recorded_at").map_err(backend)?;
+                    let run_id: String = r.try_get("run_id").map_err(backend)?;
+                    let records: String = r.try_get("records").map_err(backend)?;
+                    stats.push(catalog::CatalogStatsPoint {
+                        recorded_at: chrono::DateTime::parse_from_rfc3339(&recorded)
+                            .map(|d| d.to_utc())
+                            .unwrap_or_else(|_| chrono::Utc::now()),
+                        run_id,
+                        records: records.parse().unwrap_or(0),
+                    });
+                }
+
+                let edges = self.catalog_all_edges().await?;
+                let (downstream, rest): (Vec<_>, Vec<_>) =
+                    edges.into_iter().partition(|e| e.src_id == id);
+                let upstream = rest.into_iter().filter(|e| e.dst_id == id).collect();
+                Ok(Some(catalog::CatalogDatasetDetail {
+                    dataset,
+                    schema_timeline,
+                    stats,
+                    upstream,
+                    downstream,
+                }))
+            }
+
+            async fn catalog_lineage(
+                &self,
+                root: Option<&str>,
+                depth: u32,
+            ) -> Result<
+                Vec<$crate::serve::history::catalog::CatalogLineageEdge>,
+                $crate::serve::history::HistoryError,
+            > {
+                use $crate::serve::history::catalog;
+                let edges = self.catalog_all_edges().await?;
+                Ok(catalog::lineage_slice(edges, root, depth))
+            }
+
             fn degraded(&self) -> bool {
                 // A live SQL backend is never self-degraded; the FallbackHistory
                 // wrapper owns degradation when the backend becomes unreachable.
                 false
+            }
+        }
+
+        impl $name {
+            /// Every catalog lineage edge, newest activity first (#279).
+            async fn catalog_all_edges(
+                &self,
+            ) -> Result<
+                Vec<$crate::serve::history::catalog::CatalogLineageEdge>,
+                $crate::serve::history::HistoryError,
+            > {
+                use sqlx::Row as _;
+                use $crate::serve::history::HistoryError;
+                use $crate::serve::history::sql;
+                let backend = |e: sqlx::Error| HistoryError::Backend(e.to_string());
+                let rows = sqlx::query(&self.stmts.catalog_select_edges)
+                    .fetch_all(&self.pool)
+                    .await
+                    .map_err(backend)?;
+                let mut edges = Vec::with_capacity(rows.len());
+                for r in &rows {
+                    let body: String = r.try_get("body").map_err(backend)?;
+                    edges.push(sql::decode_json(&body, "catalog edge")?);
+                }
+                Ok(edges)
             }
         }
     };

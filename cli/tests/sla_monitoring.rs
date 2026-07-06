@@ -221,6 +221,8 @@ async fn dry_run_skips_sla_evaluation() {
             lineage_cfg: None,
             #[cfg(feature = "notify")]
             notifier: None,
+            #[cfg(feature = "catalog")]
+            catalog: None,
         },
     )
     .await

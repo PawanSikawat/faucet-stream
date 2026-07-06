@@ -196,6 +196,12 @@ pub async fn replay(
             lineage_cfg: None,
             #[cfg(feature = "notify")]
             notifier: None,
+            // A replay is a repair action over quarantined rows, not an
+            // observation of the original source — recording it would
+            // attribute the DLQ reader's rows to the pipeline's source
+            // dataset. Deliberately not catalogued.
+            #[cfg(feature = "catalog")]
+            catalog: None,
         },
     )
     .await?;

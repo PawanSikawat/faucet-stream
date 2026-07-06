@@ -46,6 +46,11 @@ pub async fn run(args: ReplicateArgs) -> CliResult<()> {
     };
     #[cfg(feature = "notify")]
     let notifier = crate::notify::Notifier::from_specs(&cfg.notifications)?;
+    #[cfg(feature = "catalog")]
+    let catalog = match cfg.catalog.as_ref() {
+        Some(spec) => Some(crate::catalog::connect_from_spec(spec).await?),
+        None => None,
+    };
 
     run_replication(
         &cfg,
@@ -59,6 +64,8 @@ pub async fn run(args: ReplicateArgs) -> CliResult<()> {
             sla: cfg.sla.clone(),
             #[cfg(feature = "notify")]
             notifier,
+            #[cfg(feature = "catalog")]
+            catalog,
         },
     )
     .await?;
