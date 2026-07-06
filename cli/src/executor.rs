@@ -783,14 +783,22 @@ async fn run_one_invocation(
         resolve_inplace(&mut sink_cfg, &ctx)?;
     }
 
-    // 2) Build source + sink.
-    let source = build_source(
-        &node.source.kind,
-        source_cfg,
-        &opts.auth,
-        opts.resilience.as_ref().map(|r| &r.retry),
-    )
-    .await?;
+    // 2) Build source + sink. `faucet dlq replay` injects a pre-built source
+    //    (an envelope-unwrapping DLQ reader) via `source_override`; every
+    //    config-driven node builds from the connector registry. The override
+    //    is taken once — replay runs a single invocation.
+    let source = match node.source_override.as_ref().and_then(|o| o.take()) {
+        Some(prebuilt) => prebuilt,
+        None => {
+            build_source(
+                &node.source.kind,
+                source_cfg,
+                &opts.auth,
+                opts.resilience.as_ref().map(|r| &r.retry),
+            )
+            .await?
+        }
+    };
 
     // Clustered Mode B: narrow the raw source to its assigned shard BEFORE any
     // wrapping (the TransformingSource / StateKeyOverride wrappers do not forward
@@ -2368,6 +2376,7 @@ matrix:
                         token: format!("${{{rid}.{p}}}"),
                     })
                     .collect(),
+                source_override: None,
             }
         }
 
@@ -2434,6 +2443,7 @@ matrix:
                 dotted_path: "".into(),
                 token: "${p}".into(),
             }],
+            source_override: None,
         };
         let nodes_by_id = HashMap::from([("c".to_string(), c)]);
         let children_of = HashMap::from([("p".to_string(), vec!["c".to_string()])]);
@@ -2685,6 +2695,7 @@ matrix:
             schema: None,
             depends_on: Vec::new(),
             deferred_refs: Vec::new(),
+            source_override: None,
         }
     }
 
@@ -2757,6 +2768,7 @@ matrix:
             schema: None,
             depends_on: Vec::new(),
             deferred_refs: Vec::new(),
+            source_override: None,
         };
         let err = run_expanded(vec![orphan], opts("deadlock"))
             .await

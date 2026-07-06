@@ -749,3 +749,15 @@ input::placeholder, textarea::placeholder { color: var(--ink-faint); }
     transition-duration: 0.001ms !important;
   }
 }
+
+/* Dead-letter-queue panel (#281) */
+.dlq-panel { display: flex; flex-direction: column; gap: 0.5rem; }
+.dlq-hint { color: var(--muted, #888); font-size: 0.85rem; margin: 0; }
+.dlq-row { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; }
+.dlq-input { flex: 1 1 20rem; min-width: 12rem; }
+.dlq-check { display: inline-flex; align-items: center; gap: 0.3rem; font-size: 0.85rem; }
+.dlq-tables { display: flex; flex-wrap: wrap; gap: 1rem; }
+.dlq-tables .tbl { flex: 0 1 auto; }
+.dlq-json { white-space: pre-wrap; word-break: break-all; font-size: 0.8rem; overflow-x: auto; }
+.dlq-sample { list-style: none; padding: 0; display: flex; flex-direction: column; gap: 0.5rem; }
+.dlq-replay textarea { width: 100%; font-family: monospace; box-sizing: border-box; }

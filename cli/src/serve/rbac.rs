@@ -31,6 +31,11 @@ pub enum Permission {
     Doctor,
     /// Fire an event-driven trigger (`POST`/`PUT /v1/triggers/{name}`).
     TriggerFire,
+    /// Inspect a dead-letter-queue location (`POST /v1/dlq/inspect`) — read-only.
+    DlqRead,
+    /// Replay / discard dead-letter-queue envelopes
+    /// (`POST /v1/dlq/replay`, `POST /v1/dlq/discard`).
+    DlqManage,
     /// Read the audit log (`GET /v1/audit`) — admin-only.
     AuditRead,
 }
@@ -55,9 +60,12 @@ impl Role {
     pub fn grants(self, perm: Permission) -> bool {
         use Permission::*;
         match self {
-            Role::Viewer => matches!(perm, RunRead | SchemaRead),
+            Role::Viewer => matches!(perm, RunRead | SchemaRead | DlqRead),
             Role::Operator => {
-                matches!(perm, RunRead | SchemaRead | RunWrite | Doctor | TriggerFire)
+                matches!(
+                    perm,
+                    RunRead | SchemaRead | DlqRead | RunWrite | Doctor | TriggerFire | DlqManage
+                )
             }
             Role::Admin => true,
         }
@@ -218,6 +226,9 @@ pub fn required_permission(method: &Method, matched_path: &str) -> Option<Permis
         (&Method::GET, "/v1/schemas") => Some(SchemaRead),
         (&Method::GET, "/v1/schemas/{kind}/{name}") => Some(SchemaRead),
         (&Method::POST, "/v1/doctor") => Some(Doctor),
+        (&Method::POST, "/v1/dlq/inspect") => Some(DlqRead),
+        (&Method::POST, "/v1/dlq/replay") => Some(DlqManage),
+        (&Method::POST, "/v1/dlq/discard") => Some(DlqManage),
         (&Method::GET, "/v1/audit") => Some(AuditRead),
         (&Method::POST, "/v1/triggers/{name}") => Some(TriggerFire),
         (&Method::PUT, "/v1/triggers/{name}") => Some(TriggerFire),
@@ -237,6 +248,9 @@ pub fn audit_action(method: &Method, matched_path: &str) -> &'static str {
         (&Method::GET, "/v1/schemas") => "schema.list",
         (&Method::GET, "/v1/schemas/{kind}/{name}") => "schema.get",
         (&Method::POST, "/v1/doctor") => "doctor",
+        (&Method::POST, "/v1/dlq/inspect") => "dlq.inspect",
+        (&Method::POST, "/v1/dlq/replay") => "dlq.replay",
+        (&Method::POST, "/v1/dlq/discard") => "dlq.discard",
         (&Method::GET, "/v1/audit") => "audit.list",
         (&Method::POST | &Method::PUT, "/v1/triggers/{name}") => "trigger.fire",
         _ => "unknown",
@@ -261,13 +275,17 @@ mod tests {
         // Viewer: reads only.
         assert!(Role::Viewer.grants(RunRead));
         assert!(Role::Viewer.grants(SchemaRead));
+        assert!(Role::Viewer.grants(DlqRead));
         assert!(!Role::Viewer.grants(RunWrite));
         assert!(!Role::Viewer.grants(Doctor));
+        assert!(!Role::Viewer.grants(DlqManage));
         assert!(!Role::Viewer.grants(AuditRead));
-        // Operator: reads + writes + doctor + triggers, but not audit.
+        // Operator: reads + writes + doctor + triggers + dlq management, but not audit.
         assert!(Role::Operator.grants(RunWrite));
         assert!(Role::Operator.grants(Doctor));
         assert!(Role::Operator.grants(TriggerFire));
+        assert!(Role::Operator.grants(DlqRead));
+        assert!(Role::Operator.grants(DlqManage));
         assert!(!Role::Operator.grants(AuditRead));
         // Admin: everything.
         for p in [
@@ -276,6 +294,8 @@ mod tests {
             SchemaRead,
             Doctor,
             TriggerFire,
+            DlqRead,
+            DlqManage,
             AuditRead,
         ] {
             assert!(Role::Admin.grants(p));
@@ -359,6 +379,9 @@ mod tests {
             (Method::POST, "/v1/doctor", Doctor),
             (Method::POST, "/v1/triggers/{name}", TriggerFire),
             (Method::PUT, "/v1/triggers/{name}", TriggerFire),
+            (Method::POST, "/v1/dlq/inspect", DlqRead),
+            (Method::POST, "/v1/dlq/replay", DlqManage),
+            (Method::POST, "/v1/dlq/discard", DlqManage),
         ] {
             assert_eq!(required_permission(&m, path), Some(want), "{m} {path}");
         }

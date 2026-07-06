@@ -3,6 +3,7 @@
 
 #[cfg(feature = "contract")]
 pub mod contract;
+pub mod dlq;
 pub mod doctor;
 pub mod init;
 pub mod list;

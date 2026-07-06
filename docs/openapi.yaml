@@ -246,6 +246,93 @@ paths:
           description: One or more probes failed; report in body
           content: { application/json: { schema: { type: object } } }
         "403": { description: Principal's role lacks the required permission }
+  /v1/dlq/inspect:
+    post:
+      summary: Inspect a dead-letter-queue location (read-only)
+      description: >
+        Reads a server-local DLQ location (a `.jsonl` file, a directory of
+        `*.jsonl` files, or a glob) back and returns a per-reason /
+        per-error-kind breakdown plus a bounded sample. Requires the `DlqRead`
+        permission (viewer).
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [location]
+              properties:
+                location: { type: string }
+                reason: { type: string, enum: [partial, dlq_all, quality, schema_drift, contract] }
+                limit: { type: integer, default: 5 }
+      responses:
+        "200":
+          description: Grouped DLQ summary
+          content: { application/json: { schema: { type: object } } }
+        "400": { description: Bad location or reason filter }
+        "401": { description: Missing or invalid bearer token }
+        "403": { description: Principal's role lacks the required permission }
+  /v1/dlq/replay:
+    post:
+      summary: Replay quarantined records through a pipeline config
+      description: >
+        Re-feeds the unwrapped original payloads from a DLQ location through the
+        submitted config's transforms / quality / contract / sink. Rows that
+        fail again land in a fresh DLQ (never the source). Requires the
+        `DlqManage` permission (operator); audited as `dlq.replay`.
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [config, from]
+              properties:
+                config: { type: string }
+                config_format: { type: string, enum: [yaml, json], default: yaml }
+                from: { type: string }
+                reason: { type: string, enum: [partial, dlq_all, quality, schema_drift, contract] }
+                failed_dlq: { type: string }
+                row: { type: string }
+                dry_run: { type: boolean, default: false }
+      responses:
+        "200":
+          description: Replay outcome (candidates, records_written, failed_dlq)
+          content: { application/json: { schema: { type: object } } }
+        "400": { description: Bad config, location, or reason filter }
+        "401": { description: Missing or invalid bearer token }
+        "403": { description: Principal's role lacks the required permission }
+        "422": { description: Config failed validation / expansion }
+  /v1/dlq/discard:
+    post:
+      summary: Discard (archive or delete) DLQ envelopes
+      description: >
+        Removes DLQ envelopes matching a reason and/or age filter from a
+        server-local location — archived to a `<file>.archived.jsonl` sibling by
+        default, or permanently deleted with `delete: true`. Requires the
+        `DlqManage` permission (operator); audited as `dlq.discard`.
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [location]
+              properties:
+                location: { type: string }
+                reason: { type: string, enum: [partial, dlq_all, quality, schema_drift, contract] }
+                before_ms: { type: integer, description: Only discard envelopes with ts_ms strictly older than this }
+                delete: { type: boolean, default: false }
+      responses:
+        "200":
+          description: Discard outcome (discarded, files_rewritten, archived_to)
+          content: { application/json: { schema: { type: object } } }
+        "400": { description: Bad location or reason filter }
+        "401": { description: Missing or invalid bearer token }
+        "403": { description: Principal's role lacks the required permission }
   /v1/audit:
     get:
       summary: Read the control-plane audit log (RBAC, admin-only)

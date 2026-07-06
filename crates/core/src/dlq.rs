@@ -123,15 +123,37 @@ impl DlqReason {
             DlqReason::Contract => "contract",
         }
     }
+
+    /// Every closed-set reason value, for validating a user-supplied
+    /// `--reason` filter against the exact serde strings.
+    pub const ALL: [DlqReason; 5] = [
+        DlqReason::Partial,
+        DlqReason::DlqAll,
+        DlqReason::Quality,
+        DlqReason::SchemaDrift,
+        DlqReason::Contract,
+    ];
+
+    /// Parse a reason from its stable serde string (the inverse of
+    /// [`as_str`](Self::as_str)). Returns `None` for an unknown value.
+    pub fn from_serde_str(s: &str) -> Option<DlqReason> {
+        DlqReason::ALL.into_iter().find(|r| r.as_str() == s)
+    }
 }
 
 /// Build a single DLQ envelope.
 ///
 /// The schema is fixed; see the design spec for the rationale. `payload`
-/// is included verbatim — no truncation, no transformation.
+/// is included verbatim — no truncation, no transformation. `reason`
+/// records *which stage* quarantined the row (as the closed-set
+/// [`DlqReason`] serde value) so tools like `faucet dlq inspect` /
+/// `faucet dlq replay` can group and filter without re-deriving it from
+/// the free-form error message. It is written as a top-level `reason`
+/// field alongside the structured `error`.
 pub fn build_envelope(
     payload: &Value,
     error: &FaucetError,
+    reason: DlqReason,
     sink_name: &str,
     pipeline_name: &str,
     row: &str,
@@ -150,12 +172,84 @@ pub fn build_envelope(
         .unwrap_or(0);
     json!({
         "error": { "kind": kind, "message": message },
+        "reason": reason.as_str(),
         "payload": payload,
         "ts_ms": ts_ms,
         "sink": sink_name,
         "pipeline": pipeline_name,
         "row": row,
         "record_index": record_index,
+    })
+}
+
+/// A DLQ envelope parsed back into its original payload plus the metadata
+/// needed to inspect and replay it. Produced by [`unwrap_envelope`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct UnwrappedEnvelope {
+    /// The original record that was quarantined — replayed verbatim.
+    pub payload: Value,
+    /// The stage that quarantined the row (`build_envelope`'s `reason`
+    /// field). `None` for envelopes written before the field existed.
+    pub reason: Option<String>,
+    /// The [`FaucetError`] variant name (`error.kind`), e.g. `"Sink"`,
+    /// `"QualityFailure"`. `None` if the envelope omits it.
+    pub error_kind: Option<String>,
+    /// Human-readable failure message (`error.message`), if present.
+    pub error_message: Option<String>,
+    /// Position of the record within its original page.
+    pub record_index: Option<u64>,
+    /// Pipeline name that produced the envelope, if present.
+    pub pipeline: Option<String>,
+    /// Matrix row id that produced the envelope, if present.
+    pub row: Option<String>,
+    /// Sink name the record was destined for, if present.
+    pub sink: Option<String>,
+    /// Epoch-millis timestamp the envelope was written, if present.
+    pub ts_ms: Option<i64>,
+}
+
+/// Error returned by [`unwrap_envelope`] when a value is not a usable DLQ
+/// envelope. Only the *payload* is mandatory — every other field is
+/// optional so envelopes written by older versions still replay.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum EnvelopeError {
+    /// The value was not a JSON object.
+    #[error("DLQ envelope is not a JSON object")]
+    NotObject,
+    /// The mandatory `payload` field was absent — nothing to replay.
+    #[error("DLQ envelope has no `payload` field")]
+    MissingPayload,
+}
+
+/// Parse a DLQ envelope produced by [`build_envelope`] back into its
+/// original payload plus metadata.
+///
+/// Only `payload` is required; all other fields are optional so envelopes
+/// written before a field existed still round-trip (forward-compatible
+/// read). Callers reading a DLQ location back (e.g. `faucet dlq inspect`)
+/// should treat an [`EnvelopeError`] as "skip + count", never as fatal —
+/// a DLQ file may legitimately contain arbitrary lines.
+pub fn unwrap_envelope(value: &Value) -> Result<UnwrappedEnvelope, EnvelopeError> {
+    let obj = value.as_object().ok_or(EnvelopeError::NotObject)?;
+    let payload = obj.get("payload").ok_or(EnvelopeError::MissingPayload)?;
+    let error = obj.get("error").and_then(|e| e.as_object());
+    let str_field = |k: &str| obj.get(k).and_then(|v| v.as_str()).map(str::to_owned);
+    Ok(UnwrappedEnvelope {
+        payload: payload.clone(),
+        reason: str_field("reason"),
+        error_kind: error
+            .and_then(|e| e.get("kind"))
+            .and_then(|v| v.as_str())
+            .map(str::to_owned),
+        error_message: error
+            .and_then(|e| e.get("message"))
+            .and_then(|v| v.as_str())
+            .map(str::to_owned),
+        record_index: obj.get("record_index").and_then(Value::as_u64),
+        pipeline: str_field("pipeline"),
+        row: str_field("row"),
+        sink: str_field("sink"),
+        ts_ms: obj.get("ts_ms").and_then(Value::as_i64),
     })
 }
 
@@ -167,9 +261,18 @@ mod tests {
     fn envelope_has_all_required_fields() {
         let payload = json!({"user_id": 7, "name": "Alice"});
         let err = FaucetError::Sink("row rejected: bad timestamp".into());
-        let env = build_envelope(&payload, &err, "bigquery", "users_etl", "us", 3);
+        let env = build_envelope(
+            &payload,
+            &err,
+            DlqReason::Partial,
+            "bigquery",
+            "users_etl",
+            "us",
+            3,
+        );
 
         assert_eq!(env["error"]["kind"], "Sink");
+        assert_eq!(env["reason"], "partial");
         assert!(
             env["error"]["message"]
                 .as_str()
@@ -190,15 +293,88 @@ mod tests {
             "nested": { "a": [1, 2, 3], "b": null, "c": true },
             "unicode": "café — résumé"
         });
-        let env = build_envelope(&payload, &FaucetError::Sink("x".into()), "s", "p", "", 0);
+        let env = build_envelope(
+            &payload,
+            &FaucetError::Sink("x".into()),
+            DlqReason::Quality,
+            "s",
+            "p",
+            "",
+            0,
+        );
         assert_eq!(env["payload"], payload);
     }
 
     #[test]
     fn envelope_empty_row_serializes_as_empty_string() {
-        let env = build_envelope(&json!({}), &FaucetError::Sink("x".into()), "s", "", "", 0);
+        let env = build_envelope(
+            &json!({}),
+            &FaucetError::Sink("x".into()),
+            DlqReason::DlqAll,
+            "s",
+            "",
+            "",
+            0,
+        );
         assert_eq!(env["row"], "");
         assert_eq!(env["pipeline"], "");
+    }
+
+    #[test]
+    fn dlq_reason_from_serde_str_round_trips() {
+        for r in DlqReason::ALL {
+            assert_eq!(DlqReason::from_serde_str(r.as_str()), Some(r));
+        }
+        assert_eq!(DlqReason::from_serde_str("nope"), None);
+        assert_eq!(DlqReason::from_serde_str("sink_error"), None);
+    }
+
+    #[test]
+    fn unwrap_envelope_round_trips_build_envelope() {
+        let payload = json!({"id": 42, "name": "Zoe"});
+        let err = FaucetError::QualityFailure {
+            check: "not_null(email)".into(),
+            message: "email is null".into(),
+        };
+        let env = build_envelope(&payload, &err, DlqReason::Quality, "pg", "etl", "eu", 5);
+        let u = unwrap_envelope(&env).expect("valid envelope");
+        assert_eq!(u.payload, payload);
+        assert_eq!(u.reason.as_deref(), Some("quality"));
+        assert_eq!(u.error_kind.as_deref(), Some("QualityFailure"));
+        assert!(u.error_message.unwrap().contains("email is null"));
+        assert_eq!(u.record_index, Some(5));
+        assert_eq!(u.pipeline.as_deref(), Some("etl"));
+        assert_eq!(u.row.as_deref(), Some("eu"));
+        assert_eq!(u.sink.as_deref(), Some("pg"));
+        assert!(u.ts_ms.unwrap() > 0);
+    }
+
+    #[test]
+    fn unwrap_envelope_tolerates_legacy_envelope_without_reason() {
+        // An envelope written before `reason`/`error` existed still yields its
+        // payload; the missing metadata comes back as `None`, never a panic.
+        let legacy = json!({ "payload": { "x": 1 } });
+        let u = unwrap_envelope(&legacy).expect("payload present");
+        assert_eq!(u.payload, json!({ "x": 1 }));
+        assert_eq!(u.reason, None);
+        assert_eq!(u.error_kind, None);
+        assert_eq!(u.record_index, None);
+    }
+
+    #[test]
+    fn unwrap_envelope_errors_on_non_object_and_missing_payload() {
+        assert_eq!(
+            unwrap_envelope(&json!("just a string")),
+            Err(EnvelopeError::NotObject)
+        );
+        assert_eq!(
+            unwrap_envelope(&json!([1, 2, 3])),
+            Err(EnvelopeError::NotObject)
+        );
+        assert_eq!(
+            unwrap_envelope(&json!({ "error": { "kind": "Sink" } })),
+            Err(EnvelopeError::MissingPayload)
+        );
     }
 
     #[test]

@@ -72,6 +72,12 @@ pub struct ExpandedNode {
     /// Populated by `collect_deferred`; the executor uses this to know
     /// which parent record to feed which row.
     pub deferred_refs: Vec<DeferredRef>,
+    /// A pre-built source that replaces the registry-built one for this node.
+    /// Set only by `faucet dlq replay` (#281), which injects a
+    /// [`DlqReaderSource`](crate::dlq_replay::reader::DlqReaderSource) so the
+    /// executor runs it through the normal pipeline path. `None` for every
+    /// config-driven node (the executor builds the source from `source.kind`).
+    pub source_override: Option<crate::dlq_replay::reader::SourceOverride>,
 }
 
 #[derive(Debug, Clone)]
@@ -706,6 +712,7 @@ pub fn expand(cfg: &PipelineConfig) -> CliResult<Vec<ExpandedNode>> {
             schema: cfg.pipeline.schema.clone(),
             depends_on: deps_by_row[i].clone(),
             deferred_refs: deferred,
+            source_override: None,
         });
     }
     Ok(out)

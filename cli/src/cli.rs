@@ -40,6 +40,9 @@ pub enum Command {
     /// Run fixture-based offline pipeline tests from one or more spec files.
     /// No real source or sink is touched. Exits non-zero if any case fails.
     Test(TestArgs),
+    /// Inspect, replay, or discard dead-letter-queue envelopes written by a
+    /// pipeline's `dlq:` sink.
+    Dlq(DlqArgs),
     /// Validate a config's `contract:` block and print a summary, or export
     /// it in a machine-readable format (`--export`).
     #[cfg(feature = "contract")]
@@ -129,6 +132,101 @@ pub struct TestArgs {
     /// because the real source/sink configs holding them are never used.
     #[arg(long)]
     pub resolve_secrets: bool,
+}
+
+/// `faucet dlq` arguments.
+#[derive(Debug, Parser)]
+pub struct DlqArgs {
+    #[command(subcommand)]
+    pub command: DlqCommand,
+}
+
+/// `faucet dlq` subcommands.
+#[derive(Debug, Subcommand)]
+pub enum DlqCommand {
+    /// Read a DLQ location back and print a per-reason / per-error-kind
+    /// breakdown plus a sample of quarantined records.
+    Inspect(DlqInspectArgs),
+    /// Re-feed quarantined records through a pipeline config (transforms →
+    /// quality → contract → sink). Rows that fail again land in a *fresh* DLQ.
+    Replay(DlqReplayArgs),
+    /// Remove processed envelopes from a DLQ location (archive by default,
+    /// or `--delete`), filtered by reason and/or age.
+    Discard(DlqDiscardArgs),
+}
+
+/// `faucet dlq inspect <location>` arguments.
+#[derive(Debug, Parser)]
+pub struct DlqInspectArgs {
+    /// DLQ location: a `.jsonl` file, a directory of `*.jsonl` files, or a glob.
+    pub location: String,
+    /// Only include envelopes with this DLQ reason (`partial` / `dlq_all` /
+    /// `quality` / `schema_drift` / `contract`).
+    #[arg(long)]
+    pub reason: Option<String>,
+    /// Number of sample records to show. Default: 5.
+    #[arg(long, default_value_t = 5)]
+    pub limit: usize,
+    /// Emit a machine-readable JSON summary instead of the human report.
+    #[arg(long)]
+    pub json: bool,
+}
+
+/// `faucet dlq replay <config> --from <location>` arguments.
+#[derive(Debug, Parser)]
+pub struct DlqReplayArgs {
+    /// Path to the pipeline config whose sink / transforms / quality / contract
+    /// the replayed records flow through. If omitted, auto-discover in cwd.
+    pub config: Option<PathBuf>,
+    /// DLQ location to replay from: a `.jsonl` file, a directory, or a glob.
+    #[arg(long)]
+    pub from: String,
+    /// Only replay envelopes with this DLQ reason.
+    #[arg(long)]
+    pub reason: Option<String>,
+    /// Where replayed rows that fail *again* are quarantined. Defaults to a
+    /// `replay-failed.jsonl` sibling of the source (never the source itself).
+    #[arg(long)]
+    pub failed_dlq: Option<String>,
+    /// Which root row of the config to replay through. Defaults to the first root.
+    #[arg(long)]
+    pub row: Option<String>,
+    /// Report what would be replayed without writing to the sink.
+    #[arg(long)]
+    pub dry_run: bool,
+    /// Emit a machine-readable JSON result instead of the human summary.
+    #[arg(long)]
+    pub json: bool,
+    /// Path to a `.env` file for `${env:VAR}` interpolation in the config.
+    #[arg(long, conflicts_with = "no_env_file")]
+    pub env_file: Option<PathBuf>,
+    /// Skip auto-loading `.env` from cwd.
+    #[arg(long)]
+    pub no_env_file: bool,
+    /// Select a named overlay from the config's `profiles:` block.
+    #[arg(long, env = "FAUCET_PROFILE")]
+    pub profile: Option<String>,
+}
+
+/// `faucet dlq discard <location>` arguments.
+#[derive(Debug, Parser)]
+pub struct DlqDiscardArgs {
+    /// DLQ location: a `.jsonl` file, a directory of `*.jsonl` files, or a glob.
+    pub location: String,
+    /// Only discard envelopes with this DLQ reason.
+    #[arg(long)]
+    pub reason: Option<String>,
+    /// Only discard envelopes older than this: an RFC3339 timestamp
+    /// (`2026-06-01T00:00:00Z`) or a relative age (`7d`, `24h`, `30m`).
+    #[arg(long)]
+    pub before: Option<String>,
+    /// Permanently delete matching envelopes instead of archiving them to a
+    /// `<file>.archived.jsonl` sibling.
+    #[arg(long)]
+    pub delete: bool,
+    /// Emit a machine-readable JSON result instead of the human summary.
+    #[arg(long)]
+    pub json: bool,
 }
 
 /// `faucet doctor` arguments.

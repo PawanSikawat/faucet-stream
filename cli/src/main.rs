@@ -30,6 +30,7 @@ async fn main() {
         Command::Init(args) => commands::init::run(args).await,
         Command::Doctor(args) => commands::doctor::run(args).await,
         Command::Test(args) => commands::test::run(args).await,
+        Command::Dlq(args) => commands::dlq::run(args).await,
         #[cfg(feature = "contract")]
         Command::Contract(args) => commands::contract::run(args).await,
         #[cfg(feature = "masking")]

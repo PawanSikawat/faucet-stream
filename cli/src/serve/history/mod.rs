@@ -109,6 +109,12 @@ pub struct RunRecord {
     /// Failover re-run count (cluster mode). 0 on first submit.
     #[serde(default)]
     pub attempt: u32,
+    /// Provenance: the DLQ location this run was replayed from
+    /// (`faucet dlq replay` / `POST /v1/dlq/replay`, #281). `None` for an
+    /// ordinary run. Lives in the SQL `body` column, so a defaulted `Option`
+    /// is backward-compatible with records written before the field existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replay_of: Option<String>,
 }
 
 impl RunRecord {
@@ -139,6 +145,7 @@ impl RunRecord {
             timeout_secs: None,
             clock: None,
             attempt: 0,
+            replay_of: None,
         }
     }
 }

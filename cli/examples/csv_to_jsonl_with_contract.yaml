@@ -14,6 +14,13 @@
 #   faucet contract cli/examples/csv_to_jsonl_with_contract.yaml
 #   faucet contract cli/examples/csv_to_jsonl_with_contract.yaml --export json-schema
 #   faucet contract cli/examples/csv_to_jsonl_with_contract.yaml --export openlineage
+#
+# Breaching rows are quarantined to ./dlq/contract_breaches.jsonl. Once you fix
+# the source data (or the contract), inspect and replay them (issue #281):
+#   faucet dlq inspect ./dlq/contract_breaches.jsonl
+#   faucet dlq replay cli/examples/csv_to_jsonl_with_contract.yaml \
+#     --from ./dlq/contract_breaches.jsonl --dry-run
+#   faucet dlq discard ./dlq/contract_breaches.jsonl --reason contract --before 7d
 version: 1
 name: orders_csv_with_contract
 

@@ -3134,6 +3134,7 @@ dependencies = [
  "faucet-transform-sql",
  "futures",
  "futures-core",
+ "glob",
  "google-cloud-auth",
  "hmac 0.12.1",
  "inquire",
