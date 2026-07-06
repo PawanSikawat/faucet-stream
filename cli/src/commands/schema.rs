@@ -72,6 +72,11 @@ pub async fn run(args: SchemaArgs) -> CliResult<()> {
             let s = faucet_core::schema_for!(crate::notify::NotificationSpec);
             serde_json::to_value(s).unwrap_or_else(|_| serde_json::json!({"type": "object"}))
         }
+        #[cfg(feature = "catalog")]
+        SchemaTarget::Catalog => {
+            let s = faucet_core::schema_for!(crate::catalog::CatalogSpec);
+            serde_json::to_value(s).unwrap_or_else(|_| serde_json::json!({"type": "object"}))
+        }
         SchemaTarget::Secrets => serde_json::json!({
             "title": "Secrets-manager interpolation grammar",
             "schemes": {
