@@ -4,6 +4,8 @@ import { renderRuns } from "./views/runs.js";
 import { renderDetail } from "./views/detail.js";
 import { renderSubmit } from "./views/submit.js";
 import { renderSchemas } from "./views/schemas.js";
+import { renderDatasets, renderDatasetDetail } from "./views/datasets.js";
+import { renderLineage } from "./views/lineage.js";
 import { route } from "./router.js";
 
 // --- theme ---
@@ -32,6 +34,8 @@ function wireChrome() {
   document.getElementById("nav-runs").onclick = () => navigate("#/runs");
   document.getElementById("nav-submit").onclick = () => navigate("#/submit");
   document.getElementById("nav-schemas").onclick = () => navigate("#/schemas");
+  document.getElementById("nav-datasets").onclick = () => navigate("#/catalog");
+  document.getElementById("nav-lineage").onclick = () => navigate("#/lineage");
   document.getElementById("theme-toggle").onclick = () => {
     const cur = document.documentElement.dataset.theme;
     applyTheme(cur === "dark" ? "light" : cur === "light" ? "auto" : "dark");
@@ -56,6 +60,10 @@ function registerRoutes() {
   route("#/runs/:id", renderDetail);
   route("#/submit", renderSubmit);
   route("#/schemas", renderSchemas);
+  route("#/catalog", renderDatasets);
+  route("#/catalog/:id", renderDatasetDetail);
+  route("#/lineage", renderLineage);
+  route("#/lineage/:root", renderLineage);
 }
 
 async function main() {
