@@ -57,7 +57,11 @@ async fn inspect_human_and_json_render() {
         .await
         .unwrap();
     // A bad reason is rejected.
-    assert!(dlq::run(inspect_args(&dlq, Some("nope"), false)).await.is_err());
+    assert!(
+        dlq::run(inspect_args(&dlq, Some("nope"), false))
+            .await
+            .is_err()
+    );
     // A missing location errors.
     assert!(
         dlq::run(inspect_args(&dir.path().join("missing.jsonl"), None, false))
@@ -139,7 +143,9 @@ async fn replay_dry_run_via_command() {
     let out = dir.path().join("out.jsonl");
     let cfg = replay_config(dir.path(), &out);
     // JSON render + human render of the dry-run path.
-    dlq::run(replay_args(cfg.clone(), &dlq, true, true)).await.unwrap();
+    dlq::run(replay_args(cfg.clone(), &dlq, true, true))
+        .await
+        .unwrap();
     dlq::run(replay_args(cfg, &dlq, true, false)).await.unwrap();
     // Dry-run never writes the sink.
     assert!(!out.exists() || std::fs::read_to_string(&out).unwrap().trim().is_empty());
@@ -153,7 +159,9 @@ async fn replay_real_via_command_writes_and_renders_human() {
     let cfg = replay_config(dir.path(), &out);
     // A real (non-dry-run) replay exercises the human summary render + the
     // sink-write path; both payloads land.
-    dlq::run(replay_args(cfg, &dlq, false, false)).await.unwrap();
+    dlq::run(replay_args(cfg, &dlq, false, false))
+        .await
+        .unwrap();
     let landed = std::fs::read_to_string(&out).unwrap();
     assert!(landed.contains("\"id\":1") || landed.contains("\"id\": 1"));
     assert!(landed.contains("\"id\":2") || landed.contains("\"id\": 2"));

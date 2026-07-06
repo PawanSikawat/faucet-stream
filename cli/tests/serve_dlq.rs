@@ -54,7 +54,8 @@ fn serve_args(port: u16, auth_config: std::path::PathBuf) -> faucet_cli::cli::Se
 async fn spawn_server(port: u16, dir: &std::path::Path) {
     let auth_path = dir.join("auth.yaml");
     std::fs::write(&auth_path, AUTH_CONFIG).unwrap();
-    let mut config = faucet_cli::serve::ServeConfig::from_args(serve_args(port, auth_path)).unwrap();
+    let mut config =
+        faucet_cli::serve::ServeConfig::from_args(serve_args(port, auth_path)).unwrap();
     config.log_level = "warn".into();
     tokio::spawn(async move {
         let _ = faucet_cli::serve::run_server(config).await;
