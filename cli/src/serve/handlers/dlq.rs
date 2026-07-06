@@ -43,7 +43,8 @@ pub struct DlqInspectRequest {
     pub limit: usize,
 }
 
-/// `POST /v1/dlq/inspect` → 200 with the grouped [`InspectSummary`]. Read-only.
+/// `POST /v1/dlq/inspect` → 200 with the grouped
+/// [`InspectSummary`](crate::dlq_replay::InspectSummary). Read-only.
 pub async fn inspect(
     State(_state): State<ServerState>,
     Json(req): Json<DlqInspectRequest>,
@@ -80,7 +81,8 @@ pub struct DlqReplayRequest {
     pub dry_run: bool,
 }
 
-/// `POST /v1/dlq/replay` → 200 with the [`ReplayOutcome`]. Operator-only;
+/// `POST /v1/dlq/replay` → 200 with the
+/// [`ReplayOutcome`](crate::dlq_replay::ReplayOutcome). Operator-only;
 /// audited as `dlq.replay`.
 pub async fn replay(
     State(state): State<ServerState>,
@@ -133,7 +135,8 @@ pub struct DlqDiscardRequest {
     pub delete: bool,
 }
 
-/// `POST /v1/dlq/discard` → 200 with the [`DiscardOutcome`]. Operator-only;
+/// `POST /v1/dlq/discard` → 200 with the
+/// [`DiscardOutcome`](crate::dlq_replay::DiscardOutcome). Operator-only;
 /// audited as `dlq.discard`.
 pub async fn discard(
     State(state): State<ServerState>,
