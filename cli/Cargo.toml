@@ -295,6 +295,7 @@ metrics-exporter-prometheus = { workspace = true, optional = true }
 uuid.workspace = true
 inquire = { version = "0.9", optional = true, default-features = false, features = ["crossterm"] }
 futures = { workspace = true }
+glob = { workspace = true }
 reqwest = { workspace = true, optional = true }
 aws-config = { workspace = true, optional = true }
 aws-sdk-secretsmanager = { workspace = true, optional = true }

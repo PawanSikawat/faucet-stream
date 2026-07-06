@@ -51,7 +51,10 @@ pub use adaptive::{
 };
 pub use auth::{AuthProvider, AuthReference, AuthSpec, Credential, SharedAuthProvider};
 pub use check::{CheckContext, CheckReport, Probe, ProbeStatus};
-pub use dlq::{DlqConfig, DlqReason, DlqStats, OnBatchError, build_envelope};
+pub use dlq::{
+    DlqConfig, DlqReason, DlqStats, EnvelopeError, OnBatchError, UnwrappedEnvelope, build_envelope,
+    unwrap_envelope,
+};
 pub use drift::{
     ColumnChange, OnDrift, OnIncompatible, SchemaDiff, SchemaDriftPolicy, SchemaDriftSpec,
     SchemaEvolution, SqlBaseType, adds_null, base_widened, json_schema_base_type,

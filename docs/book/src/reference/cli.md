@@ -213,6 +213,54 @@ Flags:
 [Testing pipelines](../cookbook/testing.md) cookbook page for the spec grammar,
 matching semantics, and a CI recipe.
 
+## `dlq`
+
+Inspect, replay, and discard the dead-letter-queue envelopes a pipeline's `dlq:`
+sink wrote. A DLQ *location* is a local `.jsonl` file, a directory of `*.jsonl`
+files, or a glob.
+
+```bash
+faucet dlq inspect ./dlq/breaches.jsonl                          # breakdown + sample
+faucet dlq replay pipeline.yaml --from ./dlq/breaches.jsonl --dry-run
+faucet dlq replay pipeline.yaml --from ./dlq/breaches.jsonl      # re-feed through the pipeline
+faucet dlq discard ./dlq/breaches.jsonl --reason contract --before 7d
+```
+
+**`faucet dlq inspect <location>`** — group envelopes by reason and error kind
+with a sample.
+
+| Flag | Effect |
+|------|--------|
+| `--reason <r>` | Only include envelopes with this reason (`partial` / `dlq_all` / `quality` / `schema_drift` / `contract`). |
+| `--limit <n>` | Sample size. Default: 5. |
+| `--json` | Emit a JSON summary. |
+
+**`faucet dlq replay <config> --from <location>`** — re-feed the quarantined
+payloads through the config's transforms → quality → contract → sink. Rows that
+fail again go to a *fresh* DLQ, never back to the source.
+
+| Flag | Effect |
+|------|--------|
+| `--from <location>` | DLQ location to replay from (required). |
+| `--reason <r>` | Replay only envelopes with this reason. |
+| `--failed-dlq <path>` | Where re-failed rows go. Default: a `replay-failed.jsonl` sibling of the source. |
+| `--row <id>` | Which root of the config to replay through. Default: the first root. |
+| `--dry-run` | Report what would be replayed without writing. |
+| `--json` | Emit a JSON result. |
+| `--env-file <path>` / `--no-env-file` / `--profile <name>` | Same config-load handling as `run`. |
+
+**`faucet dlq discard <location>`** — remove processed envelopes.
+
+| Flag | Effect |
+|------|--------|
+| `--reason <r>` | Only discard envelopes with this reason. |
+| `--before <when>` | Only discard envelopes older than an RFC 3339 timestamp or a relative age (`7d` / `24h` / `30m`). |
+| `--delete` | Permanently delete instead of archiving to a `<file>.archived.jsonl` sibling. |
+| `--json` | Emit a JSON result. |
+
+See the [Dead-letter queues](../cookbook/dlq.md) cookbook page for the envelope
+shape and the inspect → fix → replay → discard workflow.
+
 ## `contract`
 
 ```bash

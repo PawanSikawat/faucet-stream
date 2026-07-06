@@ -16,6 +16,7 @@ pub mod cli;
 pub mod commands;
 pub mod compose;
 pub mod config;
+pub mod dlq_replay;
 pub mod env_config;
 pub mod env_loader;
 pub mod error;

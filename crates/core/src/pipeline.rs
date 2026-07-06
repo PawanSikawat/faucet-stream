@@ -480,7 +480,7 @@ where
     S: Stream<Item = Result<StreamPage, FaucetError>> + Unpin,
     Si: Sink + ?Sized,
 {
-    use crate::dlq::{DlqStats, OnBatchError, build_envelope};
+    use crate::dlq::{DlqReason, DlqStats, OnBatchError, build_envelope};
 
     let state_store = options.state_store.clone();
     let state_key = options.state_key.clone();
@@ -748,6 +748,7 @@ where
                                     build_envelope(
                                         &qr.record,
                                         &err,
+                                        DlqReason::Quality,
                                         sink_name,
                                         &pipeline_name,
                                         &row,
@@ -800,6 +801,7 @@ where
                                     build_envelope(
                                         &vr.record,
                                         &err,
+                                        DlqReason::Contract,
                                         sink_name,
                                         &pipeline_name,
                                         &row,
@@ -899,7 +901,6 @@ where
 
                     if let Some(ref dlq_cfg) = dlq {
                         // ── DLQ-enabled path ───────────────────────────────────
-                        use crate::dlq::DlqReason;
                         use metrics::{Label, SharedString, counter};
                         let metric_labels: Vec<Label> = vec![
                             Label::new("pipeline", SharedString::from(pipeline_name.clone())),
@@ -1085,6 +1086,7 @@ where
                                                 envelopes.push(build_envelope(
                                                     &chunk[j],
                                                     err,
+                                                    DlqReason::Partial,
                                                     sink_name,
                                                     &pipeline_name,
                                                     &row,
@@ -1742,7 +1744,7 @@ fn quarantine_drift_rows(
     pipeline_name: &str,
     row: &str,
 ) -> (Vec<Value>, Vec<Value>) {
-    use crate::dlq::build_envelope;
+    use crate::dlq::{DlqReason, build_envelope};
     // Columns that taint a row by their PRESENCE in the record.
     let present_cols: std::collections::HashSet<&str> = diff
         .additions
@@ -1772,6 +1774,7 @@ fn quarantine_drift_rows(
             envelopes.push(build_envelope(
                 &rec,
                 &err,
+                DlqReason::SchemaDrift,
                 sink_name,
                 pipeline_name,
                 row,
