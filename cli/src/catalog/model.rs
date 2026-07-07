@@ -120,6 +120,10 @@ mod tests {
         out.clear();
         collect_now_tokens(&json!("broken ${now.date"), &mut out);
         assert!(out.is_empty());
+        // Tokens inside arrays (e.g. a list-valued config field) are found too.
+        out.clear();
+        collect_now_tokens(&json!({"paths": ["x", "${now.date}"]}), &mut out);
+        assert_eq!(out, vec!["${now.date}"]);
     }
 
     #[test]

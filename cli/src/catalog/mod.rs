@@ -126,4 +126,38 @@ mod tests {
         .unwrap_err();
         assert!(err.to_string().contains("catalog.url"), "{err}");
     }
+
+    #[test]
+    fn parse_url_recognises_all_three_schemes() {
+        assert!(matches!(
+            parse_url("sqlite:./cat.db"),
+            Ok(HistoryBackendSpec::Sqlite(u)) if u == "sqlite:./cat.db"
+        ));
+        assert!(matches!(
+            parse_url("postgres://h/db"),
+            Ok(HistoryBackendSpec::Postgres(_))
+        ));
+        assert!(matches!(
+            parse_url("postgresql://h/db"),
+            Ok(HistoryBackendSpec::Postgres(_))
+        ));
+        assert!(matches!(
+            parse_url("memory"),
+            Ok(HistoryBackendSpec::Memory)
+        ));
+        assert!(parse_url("bogus").is_err());
+    }
+
+    #[tokio::test]
+    async fn handle_debug_never_prints_the_store() {
+        let handle = connect_from_spec(&CatalogSpec {
+            url: "memory".into(),
+            sample_records: 7,
+        })
+        .await
+        .unwrap();
+        let dbg = format!("{handle:?}");
+        assert!(dbg.contains("sample_records: 7"), "{dbg}");
+        assert!(dbg.contains(".."), "non-exhaustive marker expected: {dbg}");
+    }
 }

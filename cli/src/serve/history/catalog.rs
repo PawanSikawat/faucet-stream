@@ -520,6 +520,17 @@ mod tests {
     }
 
     #[test]
+    fn schema_hash_covers_arrays_and_preserves_their_order() {
+        // Nullable columns infer as `"type": ["string", "null"]` — the
+        // canonical rendering must keep array ORDER significant while still
+        // sorting object keys.
+        let a = json!({"properties": {"a": {"type": ["string", "null"]}}});
+        let b = json!({"properties": {"a": {"type": ["null", "string"]}}});
+        assert_ne!(schema_hash(&a), schema_hash(&b), "array order is meaning");
+        assert_eq!(schema_hash(&a), schema_hash(&a.clone()));
+    }
+
+    #[test]
     fn first_observation_creates_dataset_and_version_one() {
         let now = Utc::now();
         let (ds, v) = apply_observation(
