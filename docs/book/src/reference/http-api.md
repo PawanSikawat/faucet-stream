@@ -66,6 +66,9 @@ for the SQL backends; an in-memory ring otherwise) and expire with the
 | `POST` | `/v1/runs/{id}/cancel` | `202` / `200` | Request cancel (202) or no-op if terminal (200) |
 | `GET` | `/v1/runs/{id}/logs` | `200` | Stream the run's logs as `text/event-stream` |
 | `GET` | `/v1/audit` | `200` | Read the audit log — **admin only** (RBAC). Filters: `principal`, `action`, `since`, `until`, `limit` |
+| `GET` | `/v1/catalog/datasets` | `200` | List catalogued datasets (`kind`, `q`, `limit`, `cursor`) — requires the `catalog` build feature |
+| `GET` | `/v1/catalog/datasets/{id}` | `200` | One dataset's detail: schema timeline, volume, edges |
+| `GET` | `/v1/catalog/lineage` | `200` | The lineage edge graph (`root`, `depth`) |
 | `GET` | `/healthz` | `200` | Liveness (unauthenticated) |
 | `GET` | `/readyz` | `200`/`503` | Readiness (unauthenticated) |
 | `GET` | `/metrics` | `200` | Prometheus exposition (unauthenticated) |
@@ -163,6 +166,26 @@ whose buffer has expired yields a single `end`.
 ```bash
 curl -N -H "Authorization: Bearer $TOKEN" \
   http://127.0.0.1:8080/v1/runs/0192…/logs
+```
+
+### `GET /v1/catalog/*` (Data Movement Catalog)
+
+Read-only browsing of the [Data Movement Catalog](../cookbook/catalog.md)
+accumulated in the server's `--history` backend (every serve run records into
+it automatically). Viewer-readable under RBAC; requires a build with the
+`catalog` feature.
+
+- `GET /v1/catalog/datasets?kind=&q=&limit=&cursor=` — paginated dataset list,
+  ordered `(last_seen DESC, id DESC)`; `q` is a case-insensitive URI substring.
+- `GET /v1/catalog/datasets/{id}` — the dataset plus its deduplicated schema
+  timeline (each version with a `diff` vs the previous), recent per-run volume
+  points, and upstream/downstream lineage edges. `404` for an unknown id.
+- `GET /v1/catalog/lineage?root=&depth=` — the source→sink edge graph; with
+  `root` (a dataset id), a BFS slice bounded by `depth` hops.
+
+```bash
+curl -H "Authorization: Bearer $TOKEN" \
+  "http://127.0.0.1:8080/v1/catalog/datasets?kind=postgres&limit=20"
 ```
 
 ## Error envelope

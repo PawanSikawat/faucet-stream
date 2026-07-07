@@ -37,6 +37,7 @@ cargo install faucet-cli --no-default-features \
 | `faucet test <specs…> [--filter S] [--json] [--clock C]` | Run fixture-based **offline** pipeline tests: stream sample records through a config's transforms/quality/contract with in-memory source/sink/DLQ and assert the output. Exits with the failed-case count. `faucet schema test` prints the spec-file JSON Schema. |
 | `faucet contract <config> [--export contract\|json-schema\|openlineage]` | Validate the `pipeline.contract:` block and print a summary, or export the data contract as canonical JSON / JSON Schema / an OpenLineage schema facet. `faucet schema contract` prints the block's own JSON Schema. |
 | `faucet schedule <config> [--once]` | Run a pipeline on a cron schedule (long-running foreground process). Requires a `schedule:` block. |
+| `faucet catalog datasets\|show\|lineage [--config C] [--json]` | Browse the Data Movement Catalog accumulated by a config's `catalog:` store: dataset list, per-dataset schema timeline / volume / edges, and the lineage graph. Requires the `catalog` build feature. `faucet schema catalog` prints the block's JSON Schema. |
 
 Pass `--log-level debug` (or set `FAUCET_LOG=debug`) for verbose tracing. Logs are written to stderr; pipeline records and command output go to stdout.
 
@@ -845,6 +846,29 @@ sla:
 
 `faucet schema sla` prints the block's JSON Schema. Full model:
 [SLA monitoring](https://pawansikawat.github.io/faucet-stream/cookbook/sla.html).
+
+### `catalog:` (optional)
+
+**Top-level** block (sibling of `pipeline:`) naming the Data Movement Catalog
+store — the persistent, cross-run record of every dataset the pipeline
+touches: identity, a deduplicated schema timeline (with per-version diffs),
+per-run volume + last-success freshness, and source→sink lineage edges.
+Recorded after every successful root invocation by `run`/`schedule`/
+`replicate`; **never fails a run**. `faucet serve` ignores this block and
+records into its `--history` backend automatically. Requires the `catalog`
+build feature (in `full`); SQL stores additionally need
+`serve-history-sqlite` / `serve-history-postgres`.
+
+```yaml
+catalog:
+  url: sqlite:./faucet-catalog.db   # sqlite:<path> | postgres://… | memory
+  sample_records: 100               # schema-inference sample per side
+```
+
+Browse with `faucet catalog datasets|show|lineage`, `GET /v1/catalog/*` on
+`faucet serve`, or the web console's Datasets / Lineage views.
+`faucet schema catalog` prints the block's JSON Schema. Full model:
+[Data Movement Catalog](https://pawansikawat.github.io/faucet-stream/cookbook/catalog.html).
 
 ### Transforms
 

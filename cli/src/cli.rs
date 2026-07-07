@@ -61,6 +61,96 @@ pub enum Command {
     /// to validate channel setup end-to-end (no pipeline runs).
     #[cfg(feature = "notify")]
     Notify(NotifyArgs),
+    /// Browse the Data Movement Catalog accumulated by a config's `catalog:`
+    /// store — datasets, schema timelines, volume/freshness, lineage.
+    #[cfg(feature = "catalog")]
+    Catalog(CatalogArgs),
+}
+
+/// `faucet catalog` arguments.
+#[cfg(feature = "catalog")]
+#[derive(Debug, Parser)]
+pub struct CatalogArgs {
+    #[command(subcommand)]
+    pub command: CatalogCommand,
+}
+
+/// `faucet catalog` subcommands.
+#[cfg(feature = "catalog")]
+#[derive(Debug, Subcommand)]
+pub enum CatalogCommand {
+    /// List every catalogued dataset (newest activity first).
+    Datasets(CatalogDatasetsArgs),
+    /// Show one dataset's detail: schema timeline, volume points, edges.
+    Show(CatalogShowArgs),
+    /// Print the dataset lineage graph (optionally rooted at a dataset).
+    Lineage(CatalogLineageArgs),
+}
+
+/// Shared config-loading flags for the `faucet catalog` subcommands.
+#[cfg(feature = "catalog")]
+#[derive(Debug, Parser)]
+pub struct CatalogConfigArgs {
+    /// Path to a `.yaml`, `.yml`, or `.json` pipeline config with a
+    /// `catalog:` block naming the store. If omitted, auto-discover
+    /// `faucet.yaml` / `faucet.yml` / `faucet.json` in cwd.
+    #[arg(long)]
+    pub config: Option<PathBuf>,
+    /// Path to a `.env` file to load for `${env:VAR}` interpolation.
+    /// Defaults to `.env` in cwd if present.
+    #[arg(long, conflicts_with = "no_env_file")]
+    pub env_file: Option<PathBuf>,
+    /// Skip auto-loading `.env` from cwd.
+    #[arg(long)]
+    pub no_env_file: bool,
+    /// Select a named overlay from the config's `profiles:` block.
+    /// Overrides the `FAUCET_PROFILE` env var.
+    #[arg(long, env = "FAUCET_PROFILE")]
+    pub profile: Option<String>,
+    /// Emit machine-readable JSON instead of the human summary.
+    #[arg(long)]
+    pub json: bool,
+}
+
+/// `faucet catalog datasets` arguments.
+#[cfg(feature = "catalog")]
+#[derive(Debug, Parser)]
+pub struct CatalogDatasetsArgs {
+    #[command(flatten)]
+    pub common: CatalogConfigArgs,
+    /// Only datasets of this connector kind (e.g. `postgres`, `csv`).
+    #[arg(long)]
+    pub kind: Option<String>,
+    /// Case-insensitive substring match on the dataset URI.
+    #[arg(long)]
+    pub q: Option<String>,
+    /// Max datasets to list.
+    #[arg(long, default_value_t = 100)]
+    pub limit: usize,
+}
+
+/// `faucet catalog show <id>` arguments.
+#[cfg(feature = "catalog")]
+#[derive(Debug, Parser)]
+pub struct CatalogShowArgs {
+    /// Dataset id (from `faucet catalog datasets`), or a unique prefix of one.
+    pub id: String,
+    #[command(flatten)]
+    pub common: CatalogConfigArgs,
+}
+
+/// `faucet catalog lineage` arguments.
+#[cfg(feature = "catalog")]
+#[derive(Debug, Parser)]
+pub struct CatalogLineageArgs {
+    #[command(flatten)]
+    pub common: CatalogConfigArgs,
+    /// Dataset id to root the graph at (whole graph when omitted).
+    #[arg(long)]
+    pub root: Option<String>,
+    /// BFS hop bound around --root.
+    #[arg(long, default_value_t = 5)]
+    pub depth: u32,
 }
 
 /// `faucet notify test` arguments.
@@ -578,6 +668,9 @@ pub enum SchemaTarget {
     /// JSON Schema for the `notifications:` (incident-routing) block.
     #[cfg(feature = "notify")]
     Notifications,
+    /// JSON Schema for the `catalog:` (Data Movement Catalog store) block.
+    #[cfg(feature = "catalog")]
+    Catalog,
 }
 
 /// `faucet preview` arguments.

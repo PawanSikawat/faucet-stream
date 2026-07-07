@@ -106,6 +106,14 @@ pub struct ExecuteOptions {
     /// notifications entirely (zero overhead). Gated on the `notify` feature.
     #[cfg(feature = "notify")]
     pub notifier: Option<std::sync::Arc<crate::notify::Notifier>>,
+    /// Optional Data Movement Catalog store (#279), recorded into after every
+    /// successful **root** invocation (dataset identity, schema timeline,
+    /// volume/freshness, lineage edge). `faucet serve` passes its run-history
+    /// backend + the serve run id; the CLI runtimes connect one from the
+    /// `catalog:` block. `None` disables recording entirely (zero overhead).
+    /// Recording never fails the run. Gated on the `catalog` feature.
+    #[cfg(feature = "catalog")]
+    pub catalog: Option<crate::catalog::CatalogHandle>,
 }
 
 /// Grace window granted to in-flight invocations to flush cooperatively after
@@ -768,6 +776,15 @@ async fn run_one_invocation(
     #[cfg(feature = "lineage")]
     let lineage_cfg = opts.lineage_cfg.clone();
     let obs_labels = Labels::new(pipeline_name.clone(), row_id.clone(), run_id.clone());
+    // Whether this invocation records into the Data Movement Catalog (#279):
+    // roots only, and never for dry-run / --limit / shard runs (their volumes
+    // and datasets are partial or synthetic) — the same scoping as SLA.
+    #[cfg(feature = "catalog")]
+    let catalog_active = opts.catalog.is_some()
+        && matches!(node.role, NodeRole::Root)
+        && !opts.dry_run
+        && opts.limit.is_none()
+        && opts.shard.is_none();
     // 1) Resolve `${parent.path}` in the per-row source + sink configs.
     let mut source_cfg = node.source.config.clone();
     let mut sink_cfg = node.sink.config.clone();
@@ -800,6 +817,11 @@ async fn run_one_invocation(
         }
     };
 
+    // Catalog identity (#279): read the dataset URIs off the *raw* connectors,
+    // before any wrapper is layered on.
+    #[cfg(feature = "catalog")]
+    let source_dataset_uri = source.dataset_uri();
+
     // Clustered Mode B: narrow the raw source to its assigned shard BEFORE any
     // wrapping (the TransformingSource / StateKeyOverride wrappers do not forward
     // apply_shard, so it must reach the concrete connector).
@@ -814,6 +836,8 @@ async fn run_one_invocation(
     } else {
         build_sink(&node.sink.kind, sink_cfg, &opts.auth).await?
     };
+    #[cfg(feature = "catalog")]
+    let sink_dataset_uri = raw_sink.dataset_uri();
     let raw_sink: Box<dyn Sink> = match opts.limit {
         Some(n) => Box::new(LimitedSink::wrap(raw_sink, n)),
         None => raw_sink,
@@ -836,21 +860,35 @@ async fn run_one_invocation(
     #[cfg(feature = "lineage")]
     let (in_sample, out_sample) = {
         use std::sync::Arc as StdArc;
-        match (&lineage, &lineage_cfg) {
-            (Some(_), Some(lc)) => {
-                let want_schema = lc.include_schema_facet || lc.include_column_lineage;
-                let cap = if want_schema { lc.sample_records } else { 0 };
-                let need_counter = lc.emit_on.running;
-                if want_schema || need_counter {
-                    (
-                        Some(StdArc::new(faucet_lineage::SampleState::new(cap))),
-                        Some(StdArc::new(faucet_lineage::SampleState::new(cap))),
-                    )
-                } else {
-                    (None, None)
-                }
+        let mut want = false;
+        let mut cap = 0usize;
+        if let (Some(_), Some(lc)) = (&lineage, &lineage_cfg) {
+            let want_schema = lc.include_schema_facet || lc.include_column_lineage;
+            if want_schema {
+                cap = cap.max(lc.sample_records);
             }
-            _ => (None, None),
+            want = want_schema || lc.emit_on.running;
+        }
+        // The catalog (#279) needs input/output samples for schema inference
+        // and record counts regardless of any `lineage:` block; take the max
+        // of both caps when both are active.
+        #[cfg(feature = "catalog")]
+        if catalog_active {
+            want = true;
+            cap = cap.max(
+                opts.catalog
+                    .as_ref()
+                    .map(|h| h.sample_records)
+                    .unwrap_or(crate::catalog::DEFAULT_SAMPLE_RECORDS),
+            );
+        }
+        if want {
+            (
+                Some(StdArc::new(faucet_lineage::SampleState::new(cap))),
+                Some(StdArc::new(faucet_lineage::SampleState::new(cap))),
+            )
+        } else {
+            (None, None)
         }
     };
 
@@ -1238,6 +1276,92 @@ async fn run_one_invocation(
         }
     }
 
+    // ── Data Movement Catalog (#279) ─────────────────────────────────────────
+    // Fold this run's dataset observations + lineage edge into the catalog.
+    // Successful, complete root runs only (a cancelled run's partial volume is
+    // not a signal). Recording never fails the run — see `catalog::record`.
+    #[cfg(feature = "catalog")]
+    if let Some(handle) = &opts.catalog
+        && catalog_active
+        && !cancel.is_cancelled()
+        && let Ok(pipeline_result) = &result
+    {
+        use crate::catalog::model::{canonicalize_uri, schema_from_samples};
+        use crate::serve::history::catalog::{CatalogUpdate, DatasetObservation, DatasetRole};
+
+        let records_written = pipeline_result.records_written as u64;
+        let source_schema = in_sample
+            .as_ref()
+            .and_then(|s| schema_from_samples(&s.samples()));
+        let sink_schema = out_sample
+            .as_ref()
+            .and_then(|s| schema_from_samples(&s.samples()));
+        // The samplers are always installed while the catalog is active, so the
+        // unwrap_or arms are defensive only.
+        let records_read = in_sample
+            .as_ref()
+            .map(|s| s.count())
+            .unwrap_or(records_written);
+        let records_out = out_sample
+            .as_ref()
+            .map(|s| s.count())
+            .unwrap_or(records_written);
+
+        // Column lineage for the edge — the same derivation `faucet-lineage`
+        // emits, so the catalog's edges match the OpenLineage output.
+        let column_lineage = in_sample.as_ref().and_then(|s| {
+            let input_fields: Vec<String> = s
+                .inferred_schema()
+                .fields
+                .iter()
+                .map(|(n, _)| n.clone())
+                .collect();
+            #[cfg(feature = "masking")]
+            let has_masking = node.masking.is_some();
+            #[cfg(not(feature = "masking"))]
+            let has_masking = false;
+            let ops = crate::lineage_glue::column_ops(&node.transforms, has_masking);
+            faucet_lineage::derive_column_lineage(&input_fields, &ops).map(|cl| {
+                // `ColumnLineage` is not `Serialize` (IndexMap); render the
+                // stable `{"fields": {out: [in, …]}}` shape by hand.
+                let fields: serde_json::Map<String, Value> = cl
+                    .edges
+                    .iter()
+                    .map(|(out, ins)| {
+                        (
+                            out.clone(),
+                            Value::Array(ins.iter().map(|s| Value::String(s.clone())).collect()),
+                        )
+                    })
+                    .collect();
+                serde_json::json!({ "fields": fields })
+            })
+        });
+
+        let update = CatalogUpdate {
+            run_id: handle.run_id.clone().unwrap_or_else(|| run_id.clone()),
+            pipeline: obs_labels.pipeline.to_string(),
+            row: obs_labels.row.to_string(),
+            recorded_at: chrono::Utc::now(),
+            source: DatasetObservation {
+                uri: canonicalize_uri(&source_dataset_uri, &node.source.config, opts.clock),
+                kind: node.source.kind.clone(),
+                role: DatasetRole::Source,
+                schema: source_schema,
+                records: records_read,
+            },
+            sink: DatasetObservation {
+                uri: canonicalize_uri(&sink_dataset_uri, &node.sink.config, opts.clock),
+                kind: node.sink.kind.clone(),
+                role: DatasetRole::Sink,
+                schema: sink_schema,
+                records: records_out,
+            },
+            column_lineage,
+        };
+        crate::catalog::record(handle, &update).await;
+    }
+
     let result = result?;
 
     let captured = if capture.is_some() {
@@ -1396,6 +1520,9 @@ impl Source for StateKeyOverride {
     fn connector_name(&self) -> &'static str {
         self.inner.connector_name()
     }
+    fn dataset_uri(&self) -> String {
+        self.inner.dataset_uri()
+    }
     fn state_key(&self) -> Option<String> {
         Some(self.key.clone())
     }
@@ -1431,6 +1558,9 @@ impl CapturingSink {
 impl Sink for CapturingSink {
     fn connector_name(&self) -> &'static str {
         self.inner.connector_name()
+    }
+    fn dataset_uri(&self) -> String {
+        self.inner.dataset_uri()
     }
     async fn write_batch(&self, records: &[Value]) -> Result<usize, FaucetError> {
         let written = self.inner.write_batch(records).await?;
@@ -1471,6 +1601,9 @@ impl LimitedSink {
 impl Sink for LimitedSink {
     fn connector_name(&self) -> &'static str {
         self.inner.connector_name()
+    }
+    fn dataset_uri(&self) -> String {
+        self.inner.dataset_uri()
     }
     async fn write_batch(&self, records: &[Value]) -> Result<usize, FaucetError> {
         let remaining = self.remaining.load(Ordering::Relaxed);
@@ -1574,6 +1707,8 @@ mod tests {
             schedule: None,
             #[cfg(feature = "lineage")]
             lineage: None,
+            #[cfg(feature = "catalog")]
+            catalog: None,
             #[cfg(feature = "notify")]
             notifications: Vec::new(),
         }
@@ -1607,6 +1742,8 @@ mod tests {
                 lineage_cfg: None,
                 #[cfg(feature = "notify")]
                 notifier: None,
+                #[cfg(feature = "catalog")]
+                catalog: None,
             },
         )
         .await
@@ -1616,6 +1753,193 @@ mod tests {
         assert!(!summary.had_failures());
         let body = std::fs::read_to_string(&output).unwrap();
         assert_eq!(body.lines().count(), 2);
+    }
+
+    /// Minimal options with a catalog handle attached.
+    #[cfg(feature = "catalog")]
+    fn opts_with_catalog(name: &str, handle: crate::catalog::CatalogHandle) -> ExecuteOptions {
+        let mut o = opts(name);
+        o.catalog = Some(handle);
+        o
+    }
+
+    #[cfg(feature = "catalog")]
+    #[tokio::test]
+    async fn catalog_records_schema_timeline_across_two_runs() {
+        // Acceptance (#279): running the same pipeline twice with a schema
+        // change in between produces exactly two schema-timeline entries for
+        // the dataset, the second carrying a computed diff.
+        use crate::catalog::CatalogHandle;
+        use crate::serve::history::RunHistory as _;
+        use crate::serve::history::catalog::{self, CatalogListFilter};
+        use crate::serve::history::memory::MemoryHistory;
+
+        let dir = tempfile::tempdir().unwrap();
+        let input = dir.path().join("in.csv");
+        let output = dir.path().join("out.jsonl");
+        let store = Arc::new(MemoryHistory::new(std::time::Duration::from_secs(60)));
+        let handle = CatalogHandle {
+            store: store.clone(),
+            run_id: None,
+            sample_records: 10,
+        };
+
+        std::fs::write(&input, "id,name\n1,alice\n2,bob\n").unwrap();
+        let cfg = cfg_csv_to_jsonl(&input, &output);
+        let nodes = expand(&cfg).unwrap();
+        let summary = run_expanded(nodes, opts_with_catalog("cat", handle.clone()))
+            .await
+            .unwrap();
+        assert!(!summary.had_failures());
+
+        // Second run: same pipeline, schema gains an `email` column.
+        std::fs::write(&input, "id,name,email\n1,alice,a@x.io\n2,bob,b@x.io\n").unwrap();
+        let nodes = expand(&cfg).unwrap();
+        let summary = run_expanded(nodes, opts_with_catalog("cat", handle))
+            .await
+            .unwrap();
+        assert!(!summary.had_failures());
+
+        // Two datasets (source + sink), each with a 2-entry deduped timeline.
+        let page = store
+            .catalog_list_datasets(&CatalogListFilter {
+                limit: 10,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(page.datasets.len(), 2, "source + sink datasets");
+        for ds in &page.datasets {
+            let detail = store
+                .catalog_get_dataset(&ds.id)
+                .await
+                .unwrap()
+                .expect("dataset detail");
+            assert_eq!(detail.dataset.runs, 2);
+            assert_eq!(
+                detail.schema_timeline.len(),
+                2,
+                "exactly two timeline entries for {}",
+                ds.uri
+            );
+            assert!(detail.schema_timeline[0].diff.is_none());
+            let diff = detail.schema_timeline[1]
+                .diff
+                .as_ref()
+                .expect("second version carries a diff");
+            assert!(
+                diff["added"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|c| c["column"] == "email"),
+                "diff must show the added email column: {diff}"
+            );
+            assert_eq!(detail.stats.len(), 2, "one volume point per run");
+        }
+        // One lineage edge, csv → jsonl, traversed twice.
+        let edges = store.catalog_lineage(None, 5).await.unwrap();
+        assert_eq!(edges.len(), 1);
+        assert_eq!(edges[0].runs, 2);
+        assert_eq!(edges[0].last_records, 2);
+        assert_eq!(edges[0].src_id, catalog::dataset_id(&edges[0].src_uri));
+    }
+
+    /// A catalog store whose writes always fail — drives the never-fail-the-run
+    /// contract.
+    #[cfg(feature = "catalog")]
+    struct FailingCatalogStore;
+
+    #[cfg(feature = "catalog")]
+    #[async_trait]
+    impl crate::serve::history::RunHistory for FailingCatalogStore {
+        async fn claim_idempotency(
+            &self,
+            _: &str,
+            _: &str,
+            _: &str,
+            _: std::time::Duration,
+        ) -> Result<crate::serve::history::Claim, crate::serve::history::HistoryError> {
+            Err(crate::serve::history::HistoryError::Backend("down".into()))
+        }
+        async fn upsert(
+            &self,
+            _: &crate::serve::history::RunRecord,
+        ) -> Result<(), crate::serve::history::HistoryError> {
+            Err(crate::serve::history::HistoryError::Backend("down".into()))
+        }
+        async fn get(
+            &self,
+            _: &str,
+        ) -> Result<Option<crate::serve::history::RunRecord>, crate::serve::history::HistoryError>
+        {
+            Err(crate::serve::history::HistoryError::Backend("down".into()))
+        }
+        async fn list(
+            &self,
+            _: &crate::serve::history::ListFilter,
+        ) -> Result<crate::serve::history::ListPage, crate::serve::history::HistoryError> {
+            Err(crate::serve::history::HistoryError::Backend("down".into()))
+        }
+        async fn delete(
+            &self,
+            _: &str,
+        ) -> Result<crate::serve::history::DeleteOutcome, crate::serve::history::HistoryError>
+        {
+            Err(crate::serve::history::HistoryError::Backend("down".into()))
+        }
+        async fn purge_expired(
+            &self,
+            _: std::time::Duration,
+        ) -> Result<usize, crate::serve::history::HistoryError> {
+            Err(crate::serve::history::HistoryError::Backend("down".into()))
+        }
+        async fn recover_orphans(&self) -> Result<usize, crate::serve::history::HistoryError> {
+            Err(crate::serve::history::HistoryError::Backend("down".into()))
+        }
+        async fn catalog_record(
+            &self,
+            _: &crate::serve::history::catalog::CatalogUpdate,
+        ) -> Result<(), crate::serve::history::HistoryError> {
+            Err(crate::serve::history::HistoryError::Backend(
+                "catalog write refused".into(),
+            ))
+        }
+        fn degraded(&self) -> bool {
+            false
+        }
+    }
+
+    #[cfg(feature = "catalog")]
+    #[tokio::test]
+    async fn catalog_write_failure_never_fails_the_run() {
+        // Acceptance (#279): a forced catalog-backend error degrades (logged)
+        // while the pipeline still succeeds and writes its output.
+        use crate::catalog::CatalogHandle;
+        let dir = tempfile::tempdir().unwrap();
+        let input = dir.path().join("in.csv");
+        let output = dir.path().join("out.jsonl");
+        std::fs::write(&input, "name\nalice\n").unwrap();
+        let cfg = cfg_csv_to_jsonl(&input, &output);
+        let nodes = expand(&cfg).unwrap();
+        let handle = CatalogHandle {
+            store: Arc::new(FailingCatalogStore),
+            run_id: None,
+            sample_records: 10,
+        };
+        let summary = run_expanded(nodes, opts_with_catalog("cat-fail", handle))
+            .await
+            .unwrap();
+        assert!(
+            !summary.had_failures(),
+            "catalog failure must not fail the run"
+        );
+        assert_eq!(summary.invocations[0].records_written, 1);
+        assert_eq!(
+            std::fs::read_to_string(&output).unwrap().lines().count(),
+            1,
+            "sink output written despite the catalog error"
+        );
     }
 
     #[tokio::test]
@@ -1667,6 +1991,8 @@ matrix:
                 lineage_cfg: None,
                 #[cfg(feature = "notify")]
                 notifier: None,
+                #[cfg(feature = "catalog")]
+                catalog: None,
             },
         )
         .await
@@ -1727,6 +2053,8 @@ matrix:
                 lineage_cfg: None,
                 #[cfg(feature = "notify")]
                 notifier: None,
+                #[cfg(feature = "catalog")]
+                catalog: None,
             },
         )
         .await
@@ -1952,6 +2280,8 @@ execution:
                 lineage_cfg: None,
                 #[cfg(feature = "notify")]
                 notifier: None,
+                #[cfg(feature = "catalog")]
+                catalog: None,
             },
         )
         .await
@@ -2037,6 +2367,8 @@ pipeline:
                 lineage_cfg: None,
                 #[cfg(feature = "notify")]
                 notifier: None,
+                #[cfg(feature = "catalog")]
+                catalog: None,
             },
         )
         .await
@@ -2096,6 +2428,8 @@ matrix:
                 lineage_cfg: None,
                 #[cfg(feature = "notify")]
                 notifier: None,
+                #[cfg(feature = "catalog")]
+                catalog: None,
             },
         )
         .await
@@ -2164,6 +2498,8 @@ execution:
                 lineage_cfg: None,
                 #[cfg(feature = "notify")]
                 notifier: None,
+                #[cfg(feature = "catalog")]
+                catalog: None,
             },
         )
         .await
@@ -2233,6 +2569,8 @@ matrix:
                 lineage_cfg: None,
                 #[cfg(feature = "notify")]
                 notifier: None,
+                #[cfg(feature = "catalog")]
+                catalog: None,
             },
         )
         .await
@@ -2471,6 +2809,8 @@ matrix:
             lineage_cfg: None,
             #[cfg(feature = "notify")]
             notifier: None,
+            #[cfg(feature = "catalog")]
+            catalog: None,
         }
     }
 
@@ -2887,6 +3227,8 @@ matrix:
                 lineage_cfg: None,
                 #[cfg(feature = "notify")]
                 notifier: None,
+                #[cfg(feature = "catalog")]
+                catalog: None,
             },
         )
         .await

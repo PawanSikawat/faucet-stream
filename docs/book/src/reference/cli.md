@@ -113,6 +113,7 @@ faucet schema sla
 faucet schema notifications
 faucet schema secrets
 faucet schema triggers
+faucet schema catalog
 ```
 
 `faucet schema transform <name>` prints the inline config schema for a
@@ -135,6 +136,11 @@ that needs to understand the interpolation syntax without reading the docs.
 `faucet schema triggers` prints the JSON Schema for the `--triggers` file format
 (the `TriggersFile` / `TriggerSpec` / `TriggerKind` types). Requires the
 `triggers` Cargo feature.
+
+`faucet schema catalog` prints the JSON Schema for the top-level `catalog:`
+(Data Movement Catalog store) block — see
+[the catalog cookbook](../cookbook/catalog.md). Requires the `catalog` Cargo
+feature.
 
 ## `init`
 
@@ -289,6 +295,24 @@ non-zero with the compile error) and prints, per destination sink, which rules
 apply — the fast way to confirm `applies_to` scoping. Offline-safe: secrets are
 never fetched. Requires the `masking` Cargo feature (in the default build). See
 the [masking](../cookbook/masking.md) cookbook page.
+
+## `catalog`
+
+*(requires the `catalog` build feature — included in `full`)*
+
+```bash
+faucet catalog datasets --config pipeline.yaml                 # list catalogued datasets
+faucet catalog datasets --config pipeline.yaml --kind csv --q users --json
+faucet catalog show 3f2a9c1e0b7d4a55 --config pipeline.yaml    # detail (id prefix ok)
+faucet catalog lineage --config pipeline.yaml --root 3f2a9c1e0b7d4a55 --depth 3
+```
+
+Browses the [Data Movement Catalog](../cookbook/catalog.md) named by the
+config's `catalog:` block: the dataset list (newest activity first, `--kind` /
+`--q` filters), one dataset's detail (schema timeline with diffs, recent
+volume, upstream/downstream edges), and the lineage graph. All subcommands
+accept `--json`; `--config` auto-discovers `faucet.yaml` in cwd when omitted.
+Read-only — it never mutates the store.
 
 ## `notify`
 

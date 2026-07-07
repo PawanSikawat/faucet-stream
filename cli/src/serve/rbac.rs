@@ -36,6 +36,8 @@ pub enum Permission {
     /// Replay / discard dead-letter-queue envelopes
     /// (`POST /v1/dlq/replay`, `POST /v1/dlq/discard`).
     DlqManage,
+    /// Read the Data Movement Catalog (`GET /v1/catalog/*`, #279) — read-only.
+    CatalogRead,
     /// Read the audit log (`GET /v1/audit`) — admin-only.
     AuditRead,
 }
@@ -60,11 +62,18 @@ impl Role {
     pub fn grants(self, perm: Permission) -> bool {
         use Permission::*;
         match self {
-            Role::Viewer => matches!(perm, RunRead | SchemaRead | DlqRead),
+            Role::Viewer => matches!(perm, RunRead | SchemaRead | DlqRead | CatalogRead),
             Role::Operator => {
                 matches!(
                     perm,
-                    RunRead | SchemaRead | DlqRead | RunWrite | Doctor | TriggerFire | DlqManage
+                    RunRead
+                        | SchemaRead
+                        | DlqRead
+                        | CatalogRead
+                        | RunWrite
+                        | Doctor
+                        | TriggerFire
+                        | DlqManage
                 )
             }
             Role::Admin => true,
@@ -232,6 +241,9 @@ pub fn required_permission(method: &Method, matched_path: &str) -> Option<Permis
         (&Method::GET, "/v1/audit") => Some(AuditRead),
         (&Method::POST, "/v1/triggers/{name}") => Some(TriggerFire),
         (&Method::PUT, "/v1/triggers/{name}") => Some(TriggerFire),
+        (&Method::GET, "/v1/catalog/datasets") => Some(CatalogRead),
+        (&Method::GET, "/v1/catalog/datasets/{id}") => Some(CatalogRead),
+        (&Method::GET, "/v1/catalog/lineage") => Some(CatalogRead),
         _ => None,
     }
 }
@@ -253,6 +265,9 @@ pub fn audit_action(method: &Method, matched_path: &str) -> &'static str {
         (&Method::POST, "/v1/dlq/discard") => "dlq.discard",
         (&Method::GET, "/v1/audit") => "audit.list",
         (&Method::POST | &Method::PUT, "/v1/triggers/{name}") => "trigger.fire",
+        (&Method::GET, "/v1/catalog/datasets") => "catalog.list",
+        (&Method::GET, "/v1/catalog/datasets/{id}") => "catalog.get",
+        (&Method::GET, "/v1/catalog/lineage") => "catalog.lineage",
         _ => "unknown",
     }
 }
@@ -382,9 +397,16 @@ mod tests {
             (Method::POST, "/v1/dlq/inspect", DlqRead),
             (Method::POST, "/v1/dlq/replay", DlqManage),
             (Method::POST, "/v1/dlq/discard", DlqManage),
+            (Method::GET, "/v1/catalog/datasets", CatalogRead),
+            (Method::GET, "/v1/catalog/datasets/{id}", CatalogRead),
+            (Method::GET, "/v1/catalog/lineage", CatalogRead),
         ] {
             assert_eq!(required_permission(&m, path), Some(want), "{m} {path}");
         }
+        // Every role can read the catalog; a viewer still can't write runs.
+        assert!(Role::Viewer.grants(Permission::CatalogRead));
+        assert!(Role::Operator.grants(Permission::CatalogRead));
+        assert!(Role::Admin.grants(Permission::CatalogRead));
     }
 
     #[test]

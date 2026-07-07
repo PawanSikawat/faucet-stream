@@ -333,6 +333,83 @@ paths:
         "400": { description: Bad location or reason filter }
         "401": { description: Missing or invalid bearer token }
         "403": { description: Principal's role lacks the required permission }
+  /v1/catalog/datasets:
+    get:
+      summary: List catalogued datasets (Data Movement Catalog)
+      description: >
+        Every dataset the server's pipelines have touched (source or sink),
+        accumulated run over run into the `--history` backend, newest activity
+        first. Requires the `CatalogRead` permission (viewer). Requires the
+        `catalog` Cargo feature.
+      operationId: listCatalogDatasets
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: kind, in: query, required: false, schema: { type: string }, description: "Exact connector-kind filter (csv, postgres, …)." }
+        - { name: q, in: query, required: false, schema: { type: string }, description: "Case-insensitive substring match on the dataset URI." }
+        - { name: limit, in: query, required: false, schema: { type: integer, default: 100, maximum: 1000 } }
+        - { name: cursor, in: query, required: false, schema: { type: string }, description: "Last dataset id from the previous page." }
+      responses:
+        "200":
+          description: A page of datasets, ordered (last_seen DESC, id DESC).
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [datasets]
+                properties:
+                  datasets:
+                    type: array
+                    items: { $ref: "#/components/schemas/CatalogDataset" }
+                  next_cursor: { type: string, nullable: true }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { description: Principal's role lacks the required permission }
+  /v1/catalog/datasets/{id}:
+    get:
+      summary: Get one dataset's catalog detail
+      description: >
+        Current schema, the deduplicated schema timeline (with per-version
+        diffs), recent per-run volume points, and the dataset's upstream /
+        downstream lineage edges. Requires the `CatalogRead` permission
+        (viewer). Requires the `catalog` Cargo feature.
+      operationId: getCatalogDataset
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string }, description: "Dataset id (16-hex sha256 prefix of the canonical URI)." }
+      responses:
+        "200":
+          description: The dataset detail.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CatalogDatasetDetail" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { description: Principal's role lacks the required permission }
+        "404": { $ref: "#/components/responses/Error" }
+  /v1/catalog/lineage:
+    get:
+      summary: Get the dataset lineage graph
+      description: >
+        The source→sink lineage edges accumulated across runs — the whole
+        graph, or a depth-bounded slice around a root dataset. Requires the
+        `CatalogRead` permission (viewer). Requires the `catalog` Cargo feature.
+      operationId: getCatalogLineage
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: root, in: query, required: false, schema: { type: string }, description: "Dataset id to root the graph at; omitted = the whole graph." }
+        - { name: depth, in: query, required: false, schema: { type: integer, default: 5, maximum: 32 }, description: "BFS hop bound around root (ignored without one)." }
+      responses:
+        "200":
+          description: The lineage edges.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [edges]
+                properties:
+                  edges:
+                    type: array
+                    items: { $ref: "#/components/schemas/CatalogLineageEdge" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { description: Principal's role lacks the required permission }
   /v1/audit:
     get:
       summary: Read the control-plane audit log (RBAC, admin-only)
@@ -531,6 +608,79 @@ components:
         config_fingerprint: { type: string, nullable: true, description: "sha256 of the merged config (submit actions)." }
         source_ip: { type: string, nullable: true }
         result: { type: string, enum: [ok, denied] }
+    CatalogDataset:
+      type: object
+      required: [id, uri, kind, roles, first_seen, last_seen, last_success, last_run_id, pipeline, last_records, total_records, runs, schema_versions]
+      properties:
+        id: { type: string, description: "16-hex sha256 prefix of the canonical URI." }
+        uri: { type: string, description: "Canonical dataset URI — credential-redacted; ${now.*}-derived segments folded back to their tokens." }
+        kind: { type: string, description: "Connector kind (csv, postgres, …)." }
+        roles: { type: array, items: { type: string, enum: [source, sink] } }
+        first_seen: { type: string, format: date-time }
+        last_seen: { type: string, format: date-time }
+        last_success: { type: string, format: date-time, description: "Last successful run that touched this dataset (freshness)." }
+        last_run_id: { type: string }
+        pipeline: { type: string, description: "Pipeline name of the most recent run." }
+        last_records: { type: integer }
+        total_records: { type: integer }
+        runs: { type: integer }
+        schema_versions: { type: integer }
+        current_schema: { type: object, nullable: true, description: "Latest observed record schema (infer_schema shape)." }
+        current_schema_hash: { type: string, nullable: true }
+    CatalogSchemaVersion:
+      type: object
+      required: [dataset_id, version, recorded_at, run_id, schema, schema_hash]
+      properties:
+        dataset_id: { type: string }
+        version: { type: integer, description: "1-based, appended only on content change." }
+        recorded_at: { type: string, format: date-time }
+        run_id: { type: string }
+        schema: { type: object }
+        schema_hash: { type: string }
+        diff: { type: object, nullable: true, description: "Diff vs the previous version ({added, widened, changed, removed}); absent for version 1." }
+    CatalogStatsPoint:
+      type: object
+      required: [recorded_at, run_id, records]
+      properties:
+        recorded_at: { type: string, format: date-time }
+        run_id: { type: string }
+        records: { type: integer }
+    CatalogLineageEdge:
+      type: object
+      required: [src_id, dst_id, src_uri, dst_uri, pipeline, row, first_seen, last_seen, last_run_id, runs, last_records]
+      properties:
+        src_id: { type: string }
+        dst_id: { type: string }
+        src_uri: { type: string }
+        dst_uri: { type: string }
+        pipeline: { type: string }
+        row: { type: string }
+        first_seen: { type: string, format: date-time }
+        last_seen: { type: string, format: date-time }
+        last_run_id: { type: string }
+        runs: { type: integer }
+        last_records: { type: integer }
+        column_lineage: { type: object, nullable: true, description: "Column-lineage facet from the most recent run ({fields: {out: [in, …]}})." }
+    CatalogDatasetDetail:
+      allOf:
+        - { $ref: "#/components/schemas/CatalogDataset" }
+        - type: object
+          required: [schema_timeline, stats, upstream, downstream]
+          properties:
+            schema_timeline:
+              type: array
+              description: Oldest first.
+              items: { $ref: "#/components/schemas/CatalogSchemaVersion" }
+            stats:
+              type: array
+              description: Most recent volume points, newest first (bounded).
+              items: { $ref: "#/components/schemas/CatalogStatsPoint" }
+            upstream:
+              type: array
+              items: { $ref: "#/components/schemas/CatalogLineageEdge" }
+            downstream:
+              type: array
+              items: { $ref: "#/components/schemas/CatalogLineageEdge" }
     ApiError:
       type: object
       required: [error]

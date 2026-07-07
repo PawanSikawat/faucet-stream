@@ -26,7 +26,16 @@ default = ["observability", "source", "sink", "state", "transforms", "compressio
 
 # Everything the default build ships, plus the long-running runtime modes:
 # `schedule` (cron scheduler) and `serve` (HTTP control plane).
-full = ["default", "otel", "schedule", "serve", "serve-ui", "serve-history-postgres", "serve-history-sqlite", "lineage", "lineage-kafka", "notify", "transform-sql", "triggers", "triggers-object-store", "triggers-redis", "triggers-kafka"]
+full = ["default", "otel", "schedule", "serve", "serve-ui", "serve-history-postgres", "serve-history-sqlite", "catalog", "lineage", "lineage-kafka", "notify", "transform-sql", "triggers", "triggers-object-store", "triggers-redis", "triggers-kafka"]
+
+# Data Movement Catalog (#279): the `catalog:` config block + post-run
+# recording (datasets, schema timelines, volume/freshness stats, lineage
+# edges), the `/v1/catalog/*` serve endpoints + console views, and the
+# `faucet catalog` verb. Implies `serve` (catalog storage rides the
+# run-history backends — add `serve-history-sqlite` / `serve-history-postgres`
+# for persistence) and `lineage` (record sampling + column-lineage
+# derivation). Not in `default`; included in `full`.
+catalog = ["serve", "lineage"]
 
 # Data-quality checks (`quality:` config block). `quality-jsonschema` adds the
 # `json_schema` record check via a JSON Schema validator. Forwarded to

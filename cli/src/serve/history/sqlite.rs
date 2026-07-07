@@ -306,6 +306,103 @@ mod shard_tests {
     }
 
     #[tokio::test]
+    async fn catalog_record_roundtrips_datasets_timeline_stats_and_edges() {
+        use crate::serve::history::catalog::{
+            self, CatalogListFilter, CatalogUpdate, DatasetObservation, DatasetRole,
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let h = backend(&url_in(dir.path()), "a", Duration::from_secs(60)).await;
+
+        let update = |run: &str, schema: serde_json::Value, records: u64| CatalogUpdate {
+            run_id: run.into(),
+            pipeline: "p".into(),
+            row: "default".into(),
+            recorded_at: chrono::Utc::now(),
+            source: DatasetObservation {
+                uri: "csv://./in.csv".into(),
+                kind: "csv".into(),
+                role: DatasetRole::Source,
+                schema: Some(schema.clone()),
+                records,
+            },
+            sink: DatasetObservation {
+                uri: "jsonl://./out.jsonl".into(),
+                kind: "jsonl".into(),
+                role: DatasetRole::Sink,
+                schema: Some(schema),
+                records,
+            },
+            column_lineage: Some(serde_json::json!({"fields": {}})),
+        };
+        let v1 = serde_json::json!({"type":"object","properties":{"id":{"type":"integer"}}});
+        let v2 = serde_json::json!({"type":"object","properties":{"id":{"type":"integer"},"email":{"type":"string"}}});
+
+        h.catalog_record(&update("r1", v1.clone(), 10))
+            .await
+            .unwrap();
+        h.catalog_record(&update("r2", v1, 12)).await.unwrap(); // same schema → deduped
+        h.catalog_record(&update("r3", v2, 9)).await.unwrap(); // changed → version 2
+
+        // List: two datasets, kind filter narrows to one.
+        let page = h
+            .catalog_list_datasets(&CatalogListFilter {
+                limit: 10,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(page.datasets.len(), 2);
+        let page = h
+            .catalog_list_datasets(&CatalogListFilter {
+                kind: Some("csv".into()),
+                limit: 10,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(page.datasets.len(), 1);
+        assert_eq!(page.datasets[0].uri, "csv://./in.csv");
+
+        // Detail: counters, deduped timeline with a diff, stats, edges.
+        let src_id = catalog::dataset_id("csv://./in.csv");
+        let detail = h.catalog_get_dataset(&src_id).await.unwrap().unwrap();
+        assert_eq!(detail.dataset.runs, 3);
+        assert_eq!(detail.dataset.total_records, 31);
+        assert_eq!(detail.dataset.last_run_id, "r3");
+        assert_eq!(detail.schema_timeline.len(), 2, "same schema deduped");
+        assert_eq!(detail.schema_timeline[0].version, 1);
+        assert!(detail.schema_timeline[0].diff.is_none());
+        let diff = detail.schema_timeline[1].diff.as_ref().expect("v2 diff");
+        assert_eq!(diff["added"][0]["column"], "email");
+        assert_eq!(detail.stats.len(), 3, "one volume point per run");
+        assert_eq!(detail.stats[0].records, 9, "newest first");
+        assert_eq!(detail.downstream.len(), 1);
+        assert!(detail.upstream.is_empty());
+        assert_eq!(detail.downstream[0].runs, 3);
+        assert!(detail.downstream[0].column_lineage.is_some());
+
+        // Lineage graph: whole graph and rooted slice both return the edge.
+        assert_eq!(h.catalog_lineage(None, 5).await.unwrap().len(), 1);
+        assert_eq!(h.catalog_lineage(Some(&src_id), 2).await.unwrap().len(), 1);
+        assert!(h.catalog_get_dataset("missing").await.unwrap().is_none());
+
+        // The catalog survives run-record purges (accumulating value).
+        h.purge_expired(Duration::ZERO).await.unwrap();
+        assert_eq!(
+            h.catalog_list_datasets(&CatalogListFilter {
+                limit: 10,
+                ..Default::default()
+            })
+            .await
+            .unwrap()
+            .datasets
+            .len(),
+            2,
+            "catalog rows are never purged by run retention"
+        );
+    }
+
+    #[tokio::test]
     async fn release_idempotency_drops_the_claim() {
         // F21: releasing a claim lets a replay of the key start fresh instead of
         // 404-ing for the whole retention window.

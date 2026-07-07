@@ -761,3 +761,28 @@ input::placeholder, textarea::placeholder { color: var(--ink-faint); }
 .dlq-json { white-space: pre-wrap; word-break: break-all; font-size: 0.8rem; overflow-x: auto; }
 .dlq-sample { list-style: none; padding: 0; display: flex; flex-direction: column; gap: 0.5rem; }
 .dlq-replay textarea { width: 100%; font-family: monospace; box-sizing: border-box; }
+
+/* Data Movement Catalog (#279): Datasets browser + Lineage graph */
+.mono { font-family: var(--font-mono); }
+.dataset-title { font-size: 1.05rem; word-break: break-all; }
+.detail-grid label { display: block; font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted, #888); margin-bottom: 2px; }
+.volume-bars { display: flex; align-items: flex-end; gap: 4px; min-height: 68px; padding: 8px 12px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--r); }
+.volume-bar { width: 14px; border-radius: 3px 3px 0 0; background: var(--running, #4a9eda); opacity: 0.85; }
+.volume-bar:hover { opacity: 1; }
+.schema-version { border: 1px solid var(--border); border-radius: var(--r); background: var(--surface); margin-bottom: 8px; }
+.schema-version summary { display: flex; align-items: center; gap: 10px; padding: 10px 14px; cursor: pointer; flex-wrap: wrap; }
+.schema-json { margin: 0; padding: 12px 14px; border-top: 1px solid var(--border); font-size: 0.78rem; overflow-x: auto; }
+.diff-added   { color: var(--ok);   border-color: color-mix(in srgb, var(--ok) 40%, transparent); }
+.diff-widened { color: var(--queued); border-color: color-mix(in srgb, var(--queued) 40%, transparent); }
+.diff-changed { color: var(--fail); border-color: color-mix(in srgb, var(--fail) 40%, transparent); }
+.diff-removed { color: var(--cancelled); border-color: color-mix(in srgb, var(--cancelled) 40%, transparent); }
+.edge-lists { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; margin-bottom: 12px; }
+.edge-lists h3 { margin: 4px 0; font-size: 0.85rem; color: var(--ink-dim); }
+.lineage-graph { overflow: auto; background: var(--surface); border: 1px solid var(--border); border-radius: var(--r); padding: 8px; }
+.lineage-svg { min-width: 640px; width: 100%; height: auto; }
+.lineage-edge { fill: none; stroke: var(--border); stroke-width: 2; }
+.lineage-edge:hover { stroke: var(--running, #4a9eda); }
+.lineage-node rect { fill: var(--bg, #fff); stroke: var(--border); stroke-width: 1.5; }
+.lineage-node text { fill: var(--ink); font-family: var(--font-mono); font-size: 12px; }
+.lineage-node:hover rect { stroke: var(--running, #4a9eda); }
+.lineage-root rect { stroke: var(--ok); stroke-width: 2.5; }

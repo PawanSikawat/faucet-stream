@@ -85,6 +85,23 @@ Browses the connector catalog compiled into the running server
 JSON Schema — useful for checking config field names and types without leaving
 the browser.
 
+### Datasets & Lineage (Data Movement Catalog)
+
+When the server is built with the `catalog` feature, two more views browse the
+[Data Movement Catalog](./catalog.md) accumulated in the `--history` backend:
+
+- **Datasets** — a filterable list (kind / URI search) of every dataset the
+  server's pipelines have touched. Clicking a dataset opens its detail:
+  freshness and run counters, per-run volume bars, the deduplicated schema
+  timeline with per-version diff badges, and its upstream/downstream edges.
+- **Lineage** — the source→sink edge graph rendered as a layered SVG (sources
+  left, sinks right). Hover an edge for the pipeline/run context; click a node
+  to open its dataset detail; open a rooted, depth-bounded slice from any
+  dataset's detail page.
+
+On a server built without the `catalog` feature both views show a short
+"not available" notice (the endpoints are absent).
+
 ## Disabling the console at runtime
 
 If you built with `serve-ui` but want to serve only the API (no static assets),

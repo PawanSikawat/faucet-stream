@@ -25,7 +25,7 @@ pub fn build_router(state: ServerState, config: &ServeConfig) -> Router {
 
     // `/v1` routes guarded by the bearer middleware via `route_layer` (only runs
     // for matched routes; OPTIONS preflight is allowed through inside the layer).
-    #[cfg_attr(not(feature = "triggers"), allow(unused_mut))]
+    #[cfg_attr(not(any(feature = "triggers", feature = "catalog")), allow(unused_mut))]
     let mut api = Router::new()
         .route("/v1/runs", post(runs::submit_run).get(runs::list_runs))
         .route("/v1/runs/{id}", get(runs::get_run).delete(runs::delete_run))
@@ -45,6 +45,14 @@ pub fn build_router(state: ServerState, config: &ServeConfig) -> Router {
             post(crate::serve::triggers::webhook::handle)
                 .put(crate::serve::triggers::webhook::handle),
         );
+    }
+    #[cfg(feature = "catalog")]
+    {
+        use crate::serve::handlers::catalog;
+        api = api
+            .route("/v1/catalog/datasets", get(catalog::list_datasets))
+            .route("/v1/catalog/datasets/{id}", get(catalog::get_dataset))
+            .route("/v1/catalog/lineage", get(catalog::lineage));
     }
     let api = api.route_layer(axum::middleware::from_fn_with_state(
         state.clone(),

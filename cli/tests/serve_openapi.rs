@@ -44,6 +44,14 @@ const ROUTES_TRIGGERS: &[(&str, &str)] = &[
     ("PUT", "/v1/triggers/{name}"),
 ];
 
+/// Routes that are only registered when the `catalog` feature is compiled in.
+#[cfg(feature = "catalog")]
+const ROUTES_CATALOG: &[(&str, &str)] = &[
+    ("GET", "/v1/catalog/datasets"),
+    ("GET", "/v1/catalog/datasets/{id}"),
+    ("GET", "/v1/catalog/lineage"),
+];
+
 /// Returns the full canonical route set for the current feature configuration.
 fn canonical_routes() -> BTreeSet<(String, String)> {
     #[allow(unused_mut)]
@@ -53,6 +61,10 @@ fn canonical_routes() -> BTreeSet<(String, String)> {
         .collect();
     #[cfg(feature = "triggers")]
     for (m, p) in ROUTES_TRIGGERS {
+        set.insert((m.to_string(), p.to_string()));
+    }
+    #[cfg(feature = "catalog")]
+    for (m, p) in ROUTES_CATALOG {
         set.insert((m.to_string(), p.to_string()));
     }
     set
@@ -72,6 +84,11 @@ fn openapi_routes() -> BTreeSet<(String, String)> {
         // for a given feature combination.
         #[cfg(not(feature = "triggers"))]
         if path.starts_with("/v1/triggers") {
+            continue;
+        }
+        // Likewise for the `catalog` feature's routes.
+        #[cfg(not(feature = "catalog"))]
+        if path.starts_with("/v1/catalog") {
             continue;
         }
         let ops = ops.as_mapping().unwrap();

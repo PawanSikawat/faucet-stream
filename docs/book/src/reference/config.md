@@ -728,6 +728,27 @@ See the [Lineage cookbook](../cookbook/lineage.md) for the full field reference,
 transports (HTTP, file, Kafka), the column-lineage support matrix, schema-facet behavior, and
 the Prometheus metrics (`faucet_lineage_events_total`, etc.).
 
+## `catalog`
+
+Optional. When present, `faucet run` / `schedule` / `replicate` record every
+successful **root** invocation into the [Data Movement Catalog](../cookbook/catalog.md) —
+the persistent, cross-run store of datasets, schema timelines, volume/freshness
+stats, and lineage edges. Recording **never fails a run**. `faucet serve`
+ignores this block: it records into its `--history` backend automatically.
+Requires a build with the `catalog` feature (in `--features full`).
+
+```yaml
+catalog:
+  url: sqlite:./faucet-catalog.db   # REQUIRED. sqlite:<path> | postgres://… | memory
+  sample_records: 100               # Records sampled per side for schema inference.
+```
+
+SQL stores additionally require the matching `serve-history-sqlite` /
+`serve-history-postgres` build feature. Browse the store with
+[`faucet catalog`](./cli.md#catalog), the `/v1/catalog/*`
+[HTTP endpoints](./http-api.md), or the web console's Datasets / Lineage views.
+Schema: `faucet schema catalog`.
+
 ## `observability`
 
 Optional top-level block that enables runtime observability backends. All

@@ -30,6 +30,10 @@ pub struct ReplicationOptions {
     /// Optional notifier (#280), shared across both phases' runs.
     #[cfg(feature = "notify")]
     pub notifier: Option<std::sync::Arc<crate::notify::Notifier>>,
+    /// Optional Data Movement Catalog store (#279), recorded into after both
+    /// the snapshot and each CDC phase run.
+    #[cfg(feature = "catalog")]
+    pub catalog: Option<crate::catalog::CatalogHandle>,
 }
 
 /// Build the snapshot-phase node by cloning the CDC node and swapping in the
@@ -89,6 +93,8 @@ fn make_opts(opts: &ReplicationOptions, cancel: Option<CancellationToken>) -> Ex
         lineage_cfg: None,
         #[cfg(feature = "notify")]
         notifier: opts.notifier.clone(),
+        #[cfg(feature = "catalog")]
+        catalog: opts.catalog.clone(),
     }
 }
 

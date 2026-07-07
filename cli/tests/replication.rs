@@ -116,6 +116,8 @@ async fn run_once(url: &str, state_dir: &str) {
             sla: None,
             #[cfg(feature = "notify")]
             notifier: None,
+            #[cfg(feature = "catalog")]
+            catalog: None,
         },
     )
     .await

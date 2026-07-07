@@ -41,6 +41,8 @@ async fn main() {
         Command::Serve(args) => commands::serve::run(args, serve_log_level).await,
         #[cfg(feature = "notify")]
         Command::Notify(args) => commands::notify::run(args).await,
+        #[cfg(feature = "catalog")]
+        Command::Catalog(args) => commands::catalog::run(args).await,
     };
 
     if let Err(err) = result {
