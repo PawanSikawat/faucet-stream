@@ -89,7 +89,12 @@ async fn run_pipeline(base: &str, client: &reqwest::Client, input: &str, output:
         .send()
         .await
         .unwrap();
-    assert_eq!(resp.status().as_u16(), 202, "{}", resp.text().await.unwrap());
+    assert_eq!(
+        resp.status().as_u16(),
+        202,
+        "{}",
+        resp.text().await.unwrap()
+    );
     let body: Value = resp.json().await.unwrap();
     let run_id = body["run_id"].as_str().unwrap().to_string();
 

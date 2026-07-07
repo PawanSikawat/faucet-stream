@@ -166,7 +166,10 @@ async fn show(args: CatalogShowArgs) -> CliResult<()> {
         d.last_success.format("%Y-%m-%dT%H:%M:%SZ"),
     );
 
-    println!("\nschema timeline ({} versions):", detail.schema_timeline.len());
+    println!(
+        "\nschema timeline ({} versions):",
+        detail.schema_timeline.len()
+    );
     for v in &detail.schema_timeline {
         let cols = v.schema["properties"]
             .as_object()
@@ -196,7 +199,12 @@ async fn show(args: CatalogShowArgs) -> CliResult<()> {
                     .unwrap_or_default()
             };
             let mut parts = Vec::new();
-            for (label, key) in [("+", "added"), ("~", "widened"), ("!", "changed"), ("-", "removed")] {
+            for (label, key) in [
+                ("+", "added"),
+                ("~", "widened"),
+                ("!", "changed"),
+                ("-", "removed"),
+            ] {
                 let n = names(key);
                 if !n.is_empty() {
                     parts.push(format!("{label}{}", n.join(&format!(" {label}"))));
@@ -224,14 +232,20 @@ async fn show(args: CatalogShowArgs) -> CliResult<()> {
         println!("  (none)");
     }
     for e in &detail.upstream {
-        println!("  {}  ({} run(s), pipeline {})", e.src_uri, e.runs, e.pipeline);
+        println!(
+            "  {}  ({} run(s), pipeline {})",
+            e.src_uri, e.runs, e.pipeline
+        );
     }
     println!("downstream:");
     if detail.downstream.is_empty() {
         println!("  (none)");
     }
     for e in &detail.downstream {
-        println!("  {}  ({} run(s), pipeline {})", e.dst_uri, e.runs, e.pipeline);
+        println!(
+            "  {}  ({} run(s), pipeline {})",
+            e.dst_uri, e.runs, e.pipeline
+        );
     }
     Ok(())
 }
@@ -248,10 +262,13 @@ async fn lineage(args: CatalogLineageArgs) -> CliResult<()> {
         return Ok(());
     }
     if edges.is_empty() {
-        println!("no lineage edges recorded{}", match &args.root {
-            Some(r) => format!(" around '{r}'"),
-            None => String::new(),
-        });
+        println!(
+            "no lineage edges recorded{}",
+            match &args.root {
+                Some(r) => format!(" around '{r}'"),
+                None => String::new(),
+            }
+        );
         return Ok(());
     }
     print!("{}", render_edges(&edges));
@@ -284,7 +301,9 @@ fn render_edges(edges: &[CatalogLineageEdge]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::serve::history::catalog::{CatalogUpdate, DatasetObservation, DatasetRole, apply_edge};
+    use crate::serve::history::catalog::{
+        CatalogUpdate, DatasetObservation, DatasetRole, apply_edge,
+    };
 
     #[test]
     fn render_edges_lists_each_edge_with_context() {
@@ -311,8 +330,14 @@ mod tests {
         };
         let edge = apply_edge(None, &update);
         let text = render_edges(&[edge]);
-        assert!(text.contains("csv://./in.csv  →  jsonl://./out.jsonl"), "{text}");
-        assert!(text.contains("pipeline p (row default), 1 run(s)"), "{text}");
+        assert!(
+            text.contains("csv://./in.csv  →  jsonl://./out.jsonl"),
+            "{text}"
+        );
+        assert!(
+            text.contains("pipeline p (row default), 1 run(s)"),
+            "{text}"
+        );
         assert!(text.contains("column lineage recorded"), "{text}");
     }
 }

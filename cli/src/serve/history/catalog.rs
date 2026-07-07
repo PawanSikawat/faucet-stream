@@ -274,9 +274,11 @@ fn diff_to_value(diff: &faucet_core::SchemaDiff) -> Value {
 /// Whether a diff value carries any actual change (an all-empty diff is
 /// omitted from the timeline entry).
 fn diff_is_empty(diff: &Value) -> bool {
-    ["added", "widened", "changed", "removed"]
-        .iter()
-        .all(|k| diff.get(k).and_then(Value::as_array).is_none_or(Vec::is_empty))
+    ["added", "widened", "changed", "removed"].iter().all(|k| {
+        diff.get(k)
+            .and_then(Value::as_array)
+            .is_none_or(Vec::is_empty)
+    })
 }
 
 /// Fold one run's observation into the (possibly absent) existing dataset
@@ -357,7 +359,10 @@ pub fn apply_observation(
 }
 
 /// Fold one run's traversal into the (possibly absent) existing lineage edge.
-pub fn apply_edge(existing: Option<&CatalogLineageEdge>, update: &CatalogUpdate) -> CatalogLineageEdge {
+pub fn apply_edge(
+    existing: Option<&CatalogLineageEdge>,
+    update: &CatalogUpdate,
+) -> CatalogLineageEdge {
     let mut edge = match existing {
         Some(prev) => prev.clone(),
         None => CatalogLineageEdge {
@@ -399,11 +404,7 @@ pub fn filter_datasets(
         let q = q.to_lowercase();
         all.retain(|d| d.uri.to_lowercase().contains(&q));
     }
-    all.sort_by(|a, b| {
-        b.last_seen
-            .cmp(&a.last_seen)
-            .then_with(|| b.id.cmp(&a.id))
-    });
+    all.sort_by(|a, b| b.last_seen.cmp(&a.last_seen).then_with(|| b.id.cmp(&a.id)));
     if let Some(cursor) = &filter.cursor
         && let Some(pos) = all.iter().position(|d| &d.id == cursor)
     {
@@ -475,7 +476,12 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    fn obs(uri: &str, role: DatasetRole, schema: Option<Value>, records: u64) -> DatasetObservation {
+    fn obs(
+        uri: &str,
+        role: DatasetRole,
+        schema: Option<Value>,
+        records: u64,
+    ) -> DatasetObservation {
         DatasetObservation {
             uri: uri.into(),
             kind: "csv".into(),
@@ -670,7 +676,11 @@ mod tests {
         let all = vec![
             ds("csv://a", "csv", t0),
             ds("csv://b", "csv", t0 + chrono::Duration::seconds(1)),
-            ds("postgres://h/db", "postgres", t0 + chrono::Duration::seconds(2)),
+            ds(
+                "postgres://h/db",
+                "postgres",
+                t0 + chrono::Duration::seconds(2),
+            ),
         ];
         // Kind filter.
         let page = filter_datasets(

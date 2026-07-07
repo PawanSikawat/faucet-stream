@@ -310,8 +310,7 @@ impl RunHistory for MemoryHistory {
             return Ok(None);
         };
         let schema_timeline = cat.schema_versions.get(id).cloned().unwrap_or_default();
-        let mut stats: Vec<CatalogStatsPoint> =
-            cat.stats.get(id).cloned().unwrap_or_default();
+        let mut stats: Vec<CatalogStatsPoint> = cat.stats.get(id).cloned().unwrap_or_default();
         stats.reverse(); // newest first
         stats.truncate(catalog::STATS_DETAIL_LIMIT);
         let upstream = cat
@@ -704,17 +703,29 @@ mod tests {
         let schema_v1 = json!({"type": "object", "properties": {"id": {"type": "integer"}}});
         let schema_v2 = json!({"type": "object", "properties": {"id": {"type": "integer"}, "email": {"type": "string"}}});
 
-        h.catalog_record(&catalog_update("csv://./in.csv", "jsonl://./out.jsonl", Some(schema_v1.clone())))
-            .await
-            .unwrap();
+        h.catalog_record(&catalog_update(
+            "csv://./in.csv",
+            "jsonl://./out.jsonl",
+            Some(schema_v1.clone()),
+        ))
+        .await
+        .unwrap();
         // Same schema again → no new version.
-        h.catalog_record(&catalog_update("csv://./in.csv", "jsonl://./out.jsonl", Some(schema_v1)))
-            .await
-            .unwrap();
+        h.catalog_record(&catalog_update(
+            "csv://./in.csv",
+            "jsonl://./out.jsonl",
+            Some(schema_v1),
+        ))
+        .await
+        .unwrap();
         // Changed schema → second version with a diff.
-        h.catalog_record(&catalog_update("csv://./in.csv", "jsonl://./out.jsonl", Some(schema_v2)))
-            .await
-            .unwrap();
+        h.catalog_record(&catalog_update(
+            "csv://./in.csv",
+            "jsonl://./out.jsonl",
+            Some(schema_v2),
+        ))
+        .await
+        .unwrap();
 
         let page = h
             .catalog_list_datasets(&CatalogListFilter {
@@ -746,7 +757,12 @@ mod tests {
         assert_eq!(all.len(), 1);
         let rooted = h.catalog_lineage(Some(&src_id), 3).await.unwrap();
         assert_eq!(rooted.len(), 1);
-        assert!(h.catalog_lineage(Some("missing"), 3).await.unwrap().is_empty());
+        assert!(
+            h.catalog_lineage(Some("missing"), 3)
+                .await
+                .unwrap()
+                .is_empty()
+        );
         assert!(h.catalog_get_dataset("missing").await.unwrap().is_none());
     }
 

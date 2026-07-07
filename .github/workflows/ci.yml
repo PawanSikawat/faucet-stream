@@ -211,6 +211,8 @@ jobs:
           - serve-history-postgres
           - serve-history-sqlite
           - serve-ui
+          # Data Movement Catalog (CLI-only; implies serve + lineage)
+          - catalog
           # Event-driven triggers (CLI-only)
           - triggers
           - triggers-object-store

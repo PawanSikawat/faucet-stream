@@ -879,6 +879,15 @@ fn shipped_example_yamls_pass_validate() {
                 continue;
             }
         }
+        // `catalog:` is a deny_unknown_fields key gated on the `catalog`
+        // feature; a build without it can't parse those examples.
+        #[cfg(not(feature = "catalog"))]
+        {
+            let yaml_text = fs::read_to_string(&path).unwrap_or_default();
+            if yaml_text.contains("\ncatalog:") || yaml_text.starts_with("catalog:") {
+                continue;
+            }
+        }
         count += 1;
         let mut cmd = Command::cargo_bin("faucet").unwrap();
         for (k, v) in env_placeholders {

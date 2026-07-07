@@ -1330,9 +1330,7 @@ async fn run_one_invocation(
                     .map(|(out, ins)| {
                         (
                             out.clone(),
-                            Value::Array(
-                                ins.iter().map(|s| Value::String(s.clone())).collect(),
-                            ),
+                            Value::Array(ins.iter().map(|s| Value::String(s.clone())).collect()),
                         )
                     })
                     .collect();
@@ -1932,7 +1930,10 @@ mod tests {
         let summary = run_expanded(nodes, opts_with_catalog("cat-fail", handle))
             .await
             .unwrap();
-        assert!(!summary.had_failures(), "catalog failure must not fail the run");
+        assert!(
+            !summary.had_failures(),
+            "catalog failure must not fail the run"
+        );
         assert_eq!(summary.invocations[0].records_written, 1);
         assert_eq!(
             std::fs::read_to_string(&output).unwrap().lines().count(),

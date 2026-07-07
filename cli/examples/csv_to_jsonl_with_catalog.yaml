@@ -1,0 +1,32 @@
+# CSV → JSONL with the Data Movement Catalog (#279): every run accumulates
+# the datasets it touched (identity, schema timeline, volume/freshness) and
+# the source→sink lineage edge into a local SQLite store. Browse it with:
+#
+#   faucet run cli/examples/csv_to_jsonl_with_catalog.yaml
+#   faucet catalog datasets --config cli/examples/csv_to_jsonl_with_catalog.yaml
+#   faucet catalog show <id> --config cli/examples/csv_to_jsonl_with_catalog.yaml
+#   faucet catalog lineage  --config cli/examples/csv_to_jsonl_with_catalog.yaml
+#
+# Or point `faucet serve --history sqlite:./faucet-catalog.db` at the same
+# file and open the web console's Datasets / Lineage views.
+#
+# Requires a build with the `catalog` feature (included in `--features full`)
+# plus `serve-history-sqlite` for the SQLite store.
+version: 1
+name: csv_to_jsonl_with_catalog
+
+catalog:
+  url: sqlite:./faucet-catalog.db
+  # How many records to sample per run for schema inference (default 100).
+  sample_records: 100
+
+pipeline:
+  source:
+    type: csv
+    config:
+      path: ./data/input.csv
+
+  sink:
+    type: jsonl
+    config:
+      path: ./out/records.jsonl

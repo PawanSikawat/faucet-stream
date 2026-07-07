@@ -33,7 +33,7 @@ pub fn canonicalize_uri(uri: &str, raw_config: &Value, clock: DateTime<FixedOffs
                 .map(|rendered| (rendered, t))
         })
         .collect();
-    pairs.sort_by(|a, b| b.0.len().cmp(&a.0.len()));
+    pairs.sort_by_key(|(rendered, _)| std::cmp::Reverse(rendered.len()));
 
     let mut out = uri.to_string();
     for (rendered, token) in pairs {

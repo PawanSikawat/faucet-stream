@@ -337,7 +337,9 @@ mod shard_tests {
         let v1 = serde_json::json!({"type":"object","properties":{"id":{"type":"integer"}}});
         let v2 = serde_json::json!({"type":"object","properties":{"id":{"type":"integer"},"email":{"type":"string"}}});
 
-        h.catalog_record(&update("r1", v1.clone(), 10)).await.unwrap();
+        h.catalog_record(&update("r1", v1.clone(), 10))
+            .await
+            .unwrap();
         h.catalog_record(&update("r2", v1, 12)).await.unwrap(); // same schema → deduped
         h.catalog_record(&update("r3", v2, 9)).await.unwrap(); // changed → version 2
 
