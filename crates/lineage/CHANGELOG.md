@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 (see the versioning policy in CONTRIBUTING.md — connector crates version
 independently).
+## [1.1.0](https://github.com/PawanSikawat/faucet-stream/compare/faucet-lineage-v1.0.1...faucet-lineage-v1.1.0) - 2026-07-08
+
+### Features
+
+- Persistent Data Movement Catalog — datasets, schema timelines & lineage graph ([#286](https://github.com/PawanSikawat/faucet-stream/pull/286))
+
 ## [1.0.1](https://github.com/PawanSikawat/faucet-stream/compare/faucet-lineage-v1.0.0...faucet-lineage-v1.0.1) - 2026-06-22
 
 ### Bug Fixes
