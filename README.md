@@ -78,6 +78,13 @@ cargo add faucet-stream           # the library
 
 ## Quickstart — the CLI
 
+> **Just want to poke at it?** From a clone, run `./scripts/try-local.sh` — it
+> builds a light feature set, runs a no-infrastructure demo (transforms,
+> quality, contracts, masking, lineage, catalog, DLQ replay) against generated
+> data, then leaves the [web console](https://pawansikawat.github.io/faucet-stream/getting-started/try-it-locally.html)
+> running so you can browse Runs, Datasets, and Lineage. No Docker or cloud
+> accounts needed.
+
 Move data without writing any Rust:
 
 ```bash
@@ -703,6 +710,7 @@ cli/                          — faucet-cli: `faucet` binary, YAML/JSON pipelin
   examples/                   — ready-to-run pipeline YAMLs
   tests/                      — assert_cmd + wiremock integration tests
 examples/                     — repo-level examples: docker-compose infra stack + run index
+scripts/                      — helper scripts (try-local.sh interactive demo, cleanup-artifacts.sh)
 docs/book/                    — mdBook documentation site (source under docs/book/src)
 .github/workflows/            — ci.yml, release-plz.yml, docs.yml (mdBook → GitHub Pages)
 .github/assets/               — brand assets: logo, wordmark, social-preview banner, favicon

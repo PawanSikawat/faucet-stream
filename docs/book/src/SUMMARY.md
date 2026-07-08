@@ -6,6 +6,7 @@
 
 - [Installation](./getting-started/installation.md)
 - [Your first pipeline](./getting-started/first-pipeline.md)
+- [Try it locally (interactive demo)](./getting-started/try-it-locally.md)
 - [Core concepts](./getting-started/concepts.md)
 
 # Tutorials
