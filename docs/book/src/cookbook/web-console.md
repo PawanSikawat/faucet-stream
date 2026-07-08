@@ -10,6 +10,11 @@ leaving a browser tab.
 > via `rust-embed`. There is no separate deployment and no network call during
 > startup.
 
+> **Want to see it populated in one command?** The
+> [Try it locally](../getting-started/try-it-locally.md) quickstart builds the
+> CLI, runs a battery of demo pipelines, and leaves this console up with Runs,
+> Datasets, and Lineage already filled in — the screenshots below are from it.
+
 ## Enabling the feature
 
 ```bash
@@ -60,12 +65,24 @@ Lists all runs with live status badges. You can:
 - Click any row to open the run detail view.
 - Click **+ Submit run** to go directly to the Submit view.
 
+![The Runs dashboard, listing completed runs with status badges, record counts, and timestamps](../assets/console/runs.png)
+
 ### Run detail
 
 Shows the full run record (status, timestamps, labels, config) plus every
 invocation in the matrix. For in-flight runs it streams structured log events
 live via SSE (the same `GET /v1/runs/{id}/logs` endpoint). You can cancel or
 delete a run from this view.
+
+It also embeds a **dead-letter-queue panel** — enter a server-local DLQ location
+(a `.jsonl` file, a directory, or a glob), then **Inspect** it (grouped by
+reason), **Discard** envelopes (optionally archiving first), or **Replay
+through a config** — paste a pipeline config and re-feed the quarantined
+payloads through its transforms / quality / contract / sink, with a dry-run
+toggle. This is the [DLQ replay](./dlq.md) workflow, in the browser (backed by
+`POST /v1/dlq/{inspect,replay,discard}`).
+
+![A run's detail view showing the status summary, invocations table, live log panel, and the dead-letter-queue inspect/replay/discard panel](../assets/console/run-detail.png)
 
 ### Submit
 
@@ -77,6 +94,8 @@ Two modes for submitting a new pipeline run:
   fill in the generated form fields, and the wizard assembles a valid config.
   The form is derived from the same JSON Schemas returned by
   `GET /v1/schemas/{kind}/{name}`.
+
+![The Submit view in guided mode: a schema-driven form generated from the selected connector's JSON Schema](../assets/console/submit.png)
 
 ### Schemas explorer
 
@@ -94,10 +113,15 @@ When the server is built with the `catalog` feature, two more views browse the
   server's pipelines have touched. Clicking a dataset opens its detail:
   freshness and run counters, per-run volume bars, the deduplicated schema
   timeline with per-version diff badges, and its upstream/downstream edges.
+
+  ![The Datasets view listing every dataset touched, each with a kind badge, URI, source/sink role, and run/row counts](../assets/console/datasets.png)
+
 - **Lineage** — the source→sink edge graph rendered as a layered SVG (sources
   left, sinks right). Hover an edge for the pipeline/run context; click a node
   to open its dataset detail; open a rooted, depth-bounded slice from any
   dataset's detail page.
+
+  ![The Lineage graph showing source CSV datasets on the left fanning out to JSONL/Parquet/stdout sink datasets on the right](../assets/console/lineage.png)
 
 On a server built without the `catalog` feature both views show a short
 "not available" notice (the endpoints are absent).

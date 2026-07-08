@@ -29,8 +29,10 @@ CLAUDE.md
 .claude/
 docs/superpowers/
 
-# Local scripts (one-off helpers, not part of the project)
-/scripts/
+# Local scripts (one-off helpers, not part of the project) — ignore the dir's
+# contents, but track the shipped interactive-demo script.
+/scripts/*
+!/scripts/try-local.sh
 
 # Cargo
 doc/
@@ -41,3 +43,6 @@ docs/book/book/
 
 # Coverage instrumentation artifacts (cargo-llvm-cov)
 *.profraw
+
+# Local interactive demo workspace (scripts/try-local.sh)
+faucet-local-demo/
