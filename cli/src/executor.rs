@@ -3226,6 +3226,78 @@ matrix:
     }
 
     #[tokio::test]
+    async fn capturing_sink_forwards_capabilities_and_captures_idempotent_writes() {
+        struct IdemSink;
+        #[async_trait]
+        impl Sink for IdemSink {
+            async fn write_batch(&self, records: &[Value]) -> Result<usize, FaucetError> {
+                Ok(records.len())
+            }
+            fn connector_name(&self) -> &'static str {
+                "idem"
+            }
+            fn supports_idempotent_writes(&self) -> bool {
+                true
+            }
+            fn dedups_by_key(&self) -> bool {
+                true
+            }
+            fn supported_write_modes(&self) -> &'static [faucet_core::WriteMode] {
+                &[
+                    faucet_core::WriteMode::Append,
+                    faucet_core::WriteMode::Upsert,
+                ]
+            }
+            async fn write_batch_idempotent(
+                &self,
+                records: &[Value],
+                _scope: &str,
+                _token: &str,
+            ) -> Result<usize, FaucetError> {
+                Ok(records.len())
+            }
+            async fn last_committed_token(
+                &self,
+                _scope: &str,
+            ) -> Result<Option<String>, FaucetError> {
+                Ok(Some("tok".into()))
+            }
+        }
+
+        let captured = Arc::new(Mutex::new(Vec::new()));
+        let sink = CapturingSink::wrap(
+            Box::new(IdemSink),
+            Arc::clone(&captured),
+            Arc::new(Projection::Full),
+        );
+        // Capability passthroughs: a parent row feeding children keeps the
+        // inner sink's delivery semantics.
+        assert!(sink.supports_idempotent_writes());
+        assert!(sink.dedups_by_key());
+        assert_eq!(
+            sink.sink_guarantee(),
+            faucet_core::SinkGuarantee::AtomicWatermark
+        );
+        assert!(
+            sink.supported_write_modes()
+                .contains(&faucet_core::WriteMode::Upsert)
+        );
+        assert_eq!(
+            sink.last_committed_token("k").await.unwrap(),
+            Some("tok".into())
+        );
+        assert_eq!(sink.current_schema().await.unwrap(), None);
+        assert!(!sink.supports_schema_evolution());
+        // Idempotent writes are captured for child fan-out like plain writes.
+        let n = sink
+            .write_batch_idempotent(&[json!({"id": 7})], "k", "t")
+            .await
+            .unwrap();
+        assert_eq!(n, 1);
+        assert_eq!(*captured.lock().await, vec![json!({"id": 7})]);
+    }
+
+    #[tokio::test]
     async fn orphaned_child_surfaces_executor_deadlock() {
         // A child node whose parent id is never present among the nodes can
         // never become ready. `expand` would reject this, but a hand-built node
