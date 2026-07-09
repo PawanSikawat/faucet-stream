@@ -107,17 +107,24 @@ Singer-over-pipe overhead. This is why the 1M run is the meaningful one.
 
 ### Scenario B — Postgres → JSONL
 
-**TODO: run locally (requires Docker).** This dev environment has no Docker, so
-Scenario B was not run here. The faucet config
-(`benchmarks/faucet/postgres_to_jsonl.yaml`), the Meltano plugin
-(`tap-postgres`), and the exact commands are ready in
-[`benchmarks/README.md`](benchmarks/README.md#scenario-b--postgres--jsonl-manual-needs-docker).
-Fill this table from a local run:
+**1,000,000 rows** (`bench` table, seed 42, 1 warmup + 5 timed runs). Postgres 16
+in Docker (colima); the same machine as Scenario A. faucet `source-postgres` →
+`sink-jsonl` (streamed via `sqlx`) vs Meltano `tap-postgres` → `target-jsonl`.
 
-| Tool | Median wall-clock (s) | Throughput (rows/s) | Peak RSS (MiB) | Rows out |
-|---|---|---|---|---|
-| faucet-stream | TODO | TODO | TODO | TODO |
-| Meltano (Singer) | TODO | TODO | TODO | TODO |
+| Tool | Median wall-clock (s) | Stddev (s) | Throughput (rows/s) | Peak RSS (MiB) | Rows out |
+|---|---|---|---|---|---|
+| **faucet-stream** | **5.56** | 0.110 | **179,700** | **13.9** | 1,000,000 |
+| Meltano (Singer) | 139.19 | 1.595 | 7,184 | 743.0 | 1,000,000 |
+
+On this workload/hardware, faucet-stream was **~25× faster** and used **~53× less
+peak memory**, with **exact row-count parity** (1,000,000 = 1,000,000). The gap is
+narrower than Scenario A because both tools are now bounded by real typed row
+decoding from Postgres (Scenario A was all-string CSV) — faucet still streams
+rows via `sqlx` while `tap-postgres` marshals each row through SQLAlchemy and the
+Singer JSON pipe.
+
+Reproduce with Docker: see
+[`benchmarks/README.md`](benchmarks/README.md#scenario-b--postgres--jsonl-manual-needs-docker).
 
 ## Caveats — what this does and does NOT prove
 
