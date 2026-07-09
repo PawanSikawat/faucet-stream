@@ -300,7 +300,7 @@ UUID keys make writes idempotent-safe against collisions but mean re-runs append
 |---------|---------|--------|
 | `compression` | off | Adds the `compression` config field (gzip / zstd / auto) and compresses each object body before upload. Pulls in `faucet-core/compression`. |
 
-This is a write-only file sink: it does **not** support exactly-once delivery, upsert/delete write modes, or resumable bookmarks (UUID keys make every run append new objects).
+This is a write-only file sink: it does **not** support effectively-once delivery, upsert/delete write modes, or resumable bookmarks (UUID keys make every run append new objects).
 
 ## Troubleshooting / FAQ
 

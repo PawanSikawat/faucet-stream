@@ -14,7 +14,7 @@ Reach for it when you want to stream live mutations out of an operational Postgr
 - **Real CDC, not polling** — reads the write-ahead log directly through logical replication; no `updated_at` columns, triggers, or query load on the source tables.
 - **Transactionally consistent** — each transaction is buffered in memory and flushed to the sink only on `COMMIT`, so a sink never sees half a transaction.
 - **Resumable across restarts** — the connector overrides `state_key()` / `apply_start_bookmark()`; the durable LSN bookmark survives process crashes and restarts.
-- **Exactly-once delivery** — `supports_exactly_once()` is `true`; pair with an idempotent sink (`postgres`, `mysql`, `mssql`, `sqlite`, `iceberg`, `bigquery`) under `delivery: exactly_once`.
+- **Effectively-once delivery** — `supports_exactly_once()` is `true`; pair with an idempotent sink (`postgres`, `mysql`, `mssql`, `sqlite`, `iceberg`, `bigquery`) under `delivery: exactly_once`.
 - **Snapshot → CDC handoff** — implements `capture_resume_position()` so `faucet replicate` can bulk-snapshot a table and hand off to CDC with no gap and no duplicate.
 - **Crash-safe WAL feedback** — the advertised `confirmed_flush_lsn` advances *only* from a durably-persisted bookmark, so Postgres never recycles WAL for changes the consumer hasn't committed.
 - **TLS-capable** — `require` / `verify_ca` / `verify_full` modes for the replication connection (plaintext `disable` is the default for back-compat).
@@ -185,7 +185,7 @@ Multi-dimensional arrays, ranges, composites, and enums fall back to the raw Pos
 
 ## Examples
 
-### CDC → Postgres mirror, exactly-once + upsert
+### CDC → Postgres mirror, effectively-once + upsert
 
 Stream changes into a target table with idempotent upserts. Pair with the `cdc_unwrap` transform so the envelope's `op` becomes a normalized `__op` marker the upsert sink can act on.
 
@@ -263,16 +263,16 @@ The connector overrides `state_key()` and `apply_start_bookmark()` for durable, 
 
 Configure any `faucet-core` `StateStore` — `file`, `memory`, [`faucet-state-postgres`](https://crates.io/crates/faucet-state-postgres), or [`faucet-state-redis`](https://crates.io/crates/faucet-state-redis). **Always configure a durable (non-`memory`) state store in production** — without one the slot's `confirmed_flush_lsn` never advances and WAL is retained indefinitely.
 
-## Exactly-once delivery
+## Effectively-once delivery
 
 `supports_exactly_once()` returns `true`, so this source qualifies for `delivery: exactly_once`. With that mode the pipeline assigns a monotonic per-transaction commit token; the sink commits the records and the token in one atomic unit, and on resume skips any transaction whose token is already committed — so a crash between sink-flush and bookmark-write can never double-apply.
 
-The CLI enforces the full exactly-once gate at config-load time (`faucet validate` catches all four):
+The CLI enforces the full effectively-once gate at config-load time (`faucet validate` catches all four):
 
-1. **Source** supports exactly-once — `postgres-cdc` does. ✅
+1. **Source** supports effectively-once — `postgres-cdc` does. ✅
 2. **Sink** supports idempotent writes — one of `postgres` / `mysql` / `mssql` / `sqlite` / `iceberg` / `bigquery`.
 3. A **`state:`** block is configured.
-4. **No `dlq:`** block (DLQ and exactly-once are mutually exclusive in this version).
+4. **No `dlq:`** block (DLQ and effectively-once are mutually exclusive in this version).
 
 Without `delivery: exactly_once` the source still delivers **at-least-once**: Postgres redelivers everything after the most recent durably-persisted `confirmed_flush_lsn` on the next `START_REPLICATION`, so a crash replays the most recent transaction rather than losing it. Make sinks idempotent or tolerant of duplicates at transaction boundaries.
 
@@ -367,7 +367,7 @@ This crate has no optional features of its own; enable it in the CLI/umbrella vi
 | Pipeline doesn't resume / replays everything | No durable state store, or a `temporary` slot (resets on reconnect). Use `slot_type: permanent` + `file`/`postgres`/`redis` state. |
 | `proto_version must be 1` | Only pgoutput protocol v1 is supported. Remove the `proto_version` override or set it to `1`. |
 | Initial changes missing | The slot is created on first fetch — changes made **before** it exists aren't replicated. Create the slot (or do a warm-up fetch) before applying writes. |
-| `exactly_once` rejected by `faucet validate` | The sink isn't idempotent, no `state:` block, or a `dlq:` block is present. See [Exactly-once delivery](#exactly-once-delivery). |
+| `exactly_once` rejected by `faucet validate` | The sink isn't idempotent, no `state:` block, or a `dlq:` block is present. See [Effectively-once delivery](#effectively-once-delivery). |
 
 ## See also
 

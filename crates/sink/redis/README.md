@@ -185,7 +185,7 @@ The sink follows the workspace streaming contract: `Pipeline::run` drives the so
 | `1`..`MAX_BATCH_SIZE` (default `1000`) | A slice larger than `batch_size` is re-chunked into `batch_size` slices; one Redis pipeline is issued per chunk. Recommended for high-throughput writes — pipelined commands are cheap, and a 1000-command window amortises the round-trip without starving other clients. |
 | `0` | "No batching" sentinel — the entire records slice is packed into a single pipeline regardless of size, preserving the upstream `StreamPage` framing. Use it when the source has already chosen the page size and you want one pipeline per page. |
 
-This sink writes **append/insert-only** (`RPUSH` / `XADD` / `SET`) and does not implement upsert/delete write modes or exactly-once delivery — see [Limitations](#limitations).
+This sink writes **append/insert-only** (`RPUSH` / `XADD` / `SET`) and does not implement upsert/delete write modes or effectively-once delivery — see [Limitations](#limitations).
 
 ## Config loading & schema
 
@@ -280,7 +280,7 @@ println!("transferred {} records", result.records_written);
 ## Limitations
 
 - **Append/insert-only.** The sink writes via `RPUSH` / `XADD` / `SET`; it does not implement `write_mode: upsert | delete`. (`SET` on an existing key in `KeyValue` mode overwrites by nature, but there is no keyed upsert/delete planner.)
-- **No exactly-once delivery.** Redis writes are at-least-once; the sink does not implement idempotent commit tokens. On retry after a partial failure, already-written records may be re-applied (a re-pushed list entry / re-added stream entry; a `SET` is naturally idempotent for the same key+value).
+- **No effectively-once delivery.** Redis writes are at-least-once; the sink does not implement idempotent commit tokens. On retry after a partial failure, already-written records may be re-applied (a re-pushed list entry / re-added stream entry; a `SET` is naturally idempotent for the same key+value).
 - **No compression.** Not applicable to a Redis protocol sink.
 
 ## Feature flags

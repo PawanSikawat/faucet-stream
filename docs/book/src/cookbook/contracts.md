@@ -104,8 +104,8 @@ regex, an empty or type-mismatched `enum`, constraints on the wrong type,
 `min > max` — is rejected at config-load time (`faucet validate` catches it),
 never mid-run.
 
-**Exactly-once:** `fail` and `warn` compose with `delivery: exactly_once`;
-`quarantine` does not (exactly-once forbids a DLQ).
+**Effectively-once:** `fail` and `warn` compose with `delivery: exactly_once`;
+`quarantine` does not (effectively-once forbids a DLQ).
 
 ## Validating, printing, and publishing (`faucet contract`)
 

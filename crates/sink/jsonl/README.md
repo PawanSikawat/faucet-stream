@@ -239,7 +239,7 @@ println!("Exported {} records", result.records_written);
 |---------|---------|--------|
 | `compression` | off | Adds the `compression` config field and gzip/zstd encoding via `faucet-core/compression`. |
 
-This sink does **not** support exactly-once delivery or upsert/delete write modes — it is an append-only file writer. For exactly-once or upsert semantics, use a transactional sink (`faucet-sink-postgres`, `faucet-sink-bigquery`, etc.).
+This sink does **not** support effectively-once delivery or upsert/delete write modes — it is an append-only file writer. For effectively-once or upsert semantics, use a transactional sink (`faucet-sink-postgres`, `faucet-sink-bigquery`, etc.).
 
 ## Troubleshooting / FAQ
 

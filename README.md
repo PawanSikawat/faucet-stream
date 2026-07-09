@@ -36,13 +36,14 @@ cargo add faucet-stream           # the library
 
 ### Why faucet-stream
 
-- **🚀 Fast and reliable by default** — native streaming with bounded memory, connection
-  pooling, multi-row inserts, bulk APIs, and parallel I/O. Every connector is built to be
-  the fastest way to move its data in Rust.
+- **🚀 Built for throughput** — native streaming with bounded memory, connection
+  pooling, multi-row inserts, bulk APIs, and parallel I/O. Throughput is a first-class
+  design goal for every connector. (See [`BENCHMARKS.md`](BENCHMARKS.md) for a
+  reproducible comparison — numbers, not adjectives.)
 - **🧩 Config-driven _or_ embeddable** — run `faucet run pipeline.yaml`, or call
   `Pipeline::new(&source, &sink).run().await?` from Rust. Same orchestration either way.
 - **⚙️ A runtime, not just connectors** — incremental + resumable replication, change-data-capture,
-  exactly-once delivery, upsert/delete write modes, data-quality checks, data contracts,
+  effectively-once delivery (idempotent dedup-on-resume), upsert/delete write modes, data-quality checks, data contracts,
   freshness/volume SLA monitoring, dead-letter queues, automatic retries, adaptive batch sizing,
   secrets-manager interpolation,
   cron scheduling, an HTTP control plane with event-driven triggers, OpenLineage emission, and
@@ -178,7 +179,7 @@ one-block addition to your YAML:
 | **Streaming, bounded memory** | Sources stream page-by-page; sinks write each page as it arrives — memory stays at one `batch_size` regardless of total volume. | [concepts](https://pawansikawat.github.io/faucet-stream/getting-started/concepts.html) |
 | **Incremental + resumable** | Bookmark-based replication: only fetch what changed, resume mid-run from a durable state store (file / Redis / Postgres). | [state](https://pawansikawat.github.io/faucet-stream/cookbook/state.html) |
 | **Change data capture** | Streaming row-level CDC for **PostgreSQL** (logical replication), **MySQL** (binlog), and **MongoDB** (change streams) — resumable. | [CDC guide](https://pawansikawat.github.io/faucet-stream/reference/connectors.html) |
-| **Exactly-once delivery** | Monotonic per-page commit tokens committed atomically with the data (SQL sinks, Iceberg, BigQuery) — no duplicates on resume. | [state](https://pawansikawat.github.io/faucet-stream/cookbook/state.html) |
+| **Effectively-once delivery** | Monotonic per-page commit tokens committed atomically with the data (SQL sinks, Iceberg, BigQuery), so a resumed run re-delivers no duplicates. This is idempotent at-least-once (dedup on resume), not distributed-consensus exactly-once. | [state](https://pawansikawat.github.io/faucet-stream/cookbook/state.html) |
 | **Upsert / delete write modes** | `write_mode: upsert \| delete` with a `key` + `delete_marker` — merge by key on Postgres / MySQL / SQL Server / SQLite / Mongo / Elasticsearch. | [upsert](https://pawansikawat.github.io/faucet-stream/cookbook/upsert.html) |
 | **Data-quality checks** | 13 per-record and per-batch assertions (not-null, regex, ranges, uniqueness, row-count, JSON Schema, …) with quarantine routing or abort policies. | [quality](https://pawansikawat.github.io/faucet-stream/cookbook/quality.html) |
 | **Data contracts** | A versioned promise about the output shape (types, nullability, enums, patterns, bounds) enforced per page — breaches fail, quarantine, or warn; export as JSON Schema / OpenLineage via `faucet contract`. | [contracts](https://pawansikawat.github.io/faucet-stream/cookbook/contracts.html) |
@@ -233,7 +234,7 @@ for help picking between overlapping connectors (Postgres query vs CDC, S3 vs Pa
 
 | Crate | Description |
 |-------|-------------|
-| [`faucet-sink-bigquery`](crates/sink/bigquery) | Google BigQuery — streaming inserts; exactly-once via MERGE |
+| [`faucet-sink-bigquery`](crates/sink/bigquery) | Google BigQuery — streaming inserts; effectively-once via MERGE |
 | [`faucet-sink-iceberg`](crates/sink/iceberg) | Apache Iceberg — append snapshots via REST/Glue/SQL/HMS catalogs |
 | [`faucet-sink-postgres`](crates/sink/postgres) | PostgreSQL — JSONB or auto-mapped columns; upsert/delete |
 | [`faucet-sink-mysql`](crates/sink/mysql) | MySQL — JSON column or auto-mapped columns; upsert/delete |
@@ -309,13 +310,13 @@ own service.
 | Connector count | 41, growing | 600+ taps | 350+ | dozens | dozens | 500+ |
 | Change data capture | ✓ Postgres / MySQL / Mongo | partial¹ | ✓ | partial | ✗ | ✓ |
 | Incremental + resumable state | ✓ | ✓ | ✓ | partial | n/a | ✓ |
-| Exactly-once delivery | ✓ (SQL / Iceberg / BigQuery) | ✗ | partial | ✗ | ✗ | ✓ |
+| Effectively-once delivery³ | ✓ (SQL / Iceberg / BigQuery) | ✗ | partial | ✗ | ✗ | ✓ |
 | Built-in data-quality checks | ✓ native | ✗ | paywalled add-on | ✗ | ✗ | paywalled add-on |
 | Built-in metrics + tracing | ✓ Prometheus + `tracing` | partial | ✓ (platform) | ✓ | ✓ | ✓ (hosted) |
 | Self-hosted, no daemon | ✓ run-to-completion | ✓ | ✗ needs platform | usually a service | agent | ✗ SaaS |
 | License | MIT / Apache-2.0 | MIT | ELv2 + MIT | Apache-2.0 / source-available² | MPL-2.0 | Proprietary |
 
-¹ Singer CDC depends on the individual tap. ² The original Benthos is Apache-2.0; Redpanda Connect's maintained build is source-available. *Comparison reflects the general shape of each tool as of 2026-05 — check each project for current details.*
+¹ Singer CDC depends on the individual tap. ² The original Benthos is Apache-2.0; Redpanda Connect's maintained build is source-available. ³ "Effectively-once" = idempotent at-least-once: per-page commit tokens are committed atomically with the data so a resumed run drops duplicates — not distributed-consensus exactly-once (see [delivery guarantees](https://pawansikawat.github.io/faucet-stream/cookbook/state.html)). *Comparison reflects the general shape of each tool as of 2026-05 — check each project for current details.*
 
 For reference: **[Singer](https://www.singer.io/)** is a connector spec and **[Meltano](https://meltano.com/)**
 is its most common runtime; both appear above. faucet-stream is a full **ETL** tool — it
@@ -332,7 +333,7 @@ faucet extracts, transforms, and loads.
 
 - You want **one fast static binary** (or a Rust library) to move data between APIs, databases, object stores, and warehouses — without standing up a platform, scheduler, or Python environment.
 - You want **version-controlled, config-driven pipelines** you can run anywhere: locally, in CI, behind cron, or inside another service.
-- You need **streaming with bounded memory, incremental/resumable replication, CDC, exactly-once delivery, data-quality assertions, retries, dead-letter queues, and metrics** without hand-writing that plumbing.
+- You need **streaming with bounded memory, incremental/resumable replication, CDC, effectively-once delivery, data-quality assertions, retries, dead-letter queues, and metrics** without hand-writing that plumbing.
 - You're **already in Rust** and want typed `Source`/`Sink` traits you can embed and extend.
 
 **Look elsewhere (for now) when:**

@@ -113,9 +113,9 @@ All fields are keys under `sink.config`.
 | `compression` | `"none" \| "gzip" \| "snappy" \| "lz4" \| "zstd"` | `"none"` | Producer-side compression codec. See [Compression](#compression). |
 | `extra_client_config` | object (string→string) | `{}` | Raw librdkafka client properties. **Overrides** anything set by `auth` or the typed fields above. |
 
-### Exactly-once
+### Effectively-once
 
-These fields apply only under `delivery: exactly_once` (ignored otherwise). See [Exactly-once delivery](#exactly-once-delivery).
+These fields apply only under `delivery: exactly_once` (ignored otherwise). See [Effectively-once delivery](#effectively-once-delivery).
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
@@ -305,9 +305,9 @@ When `batch_size > 0`, `KafkaSink::new` also sets librdkafka's `queue.buffering.
 
 Reach for `batch_size: 0` when a source emits its whole result set as a single page (small lookup tables, one-shot drains) and you want the entire write to fire in parallel without the extra cap.
 
-> **Two delivery tiers.** `idempotent: true` (the default) de-duplicates retried produce calls *within a producer session* — fast, but it does not survive a faucet-stream crash/resume. For faucet-stream's cross-run **exactly-once** delivery (`delivery: exactly_once`), the sink runs a *transactional* producer that writes each page's records and a commit-token record into a compacted side-topic in one Kafka transaction — see [Exactly-once delivery](#exactly-once-delivery) below. The sink is **append-only** either way: there is no `write_mode` / upsert / delete (Kafka has no row identity to update).
+> **Two delivery tiers.** `idempotent: true` (the default) de-duplicates retried produce calls *within a producer session* — fast, but it does not survive a faucet-stream crash/resume. For faucet-stream's cross-run **effectively-once** delivery (`delivery: exactly_once`), the sink runs a *transactional* producer that writes each page's records and a commit-token record into a compacted side-topic in one Kafka transaction — see [Effectively-once delivery](#effectively-once-delivery) below. The sink is **append-only** either way: there is no `write_mode` / upsert / delete (Kafka has no row identity to update).
 
-## Exactly-once delivery
+## Effectively-once delivery
 
 `KafkaSink` implements `Sink::supports_idempotent_writes` (returns `true`) and the two companion hooks:
 
@@ -316,7 +316,7 @@ Reach for `batch_size: 0` when a source emits its whole result set as a single p
 
 The producer's `transactional.id` is auto-derived from the pipeline scope — stable across restarts and unique per matrix row — so a restart fences any prior producer. The side-topic is **auto-created** with `cleanup.policy=compact` if it does not exist (so only the latest token per scope is retained). Downstream consumers of the destination topic should set `isolation.level=read_committed` so they only ever observe committed transactions.
 
-To use exactly-once delivery, set `delivery: exactly_once` and pair this sink with a CDC source (`postgres-cdc`, `mysql-cdc`, `mongodb-cdc`) plus a `state:` block. A DLQ is not permitted in exactly-once mode. All four requirements are validated at config-load time (`faucet validate`) before any run starts.
+To use effectively-once delivery, set `delivery: exactly_once` and pair this sink with a CDC source (`postgres-cdc`, `mysql-cdc`, `mongodb-cdc`) plus a `state:` block. A DLQ is not permitted in effectively-once mode. All four requirements are validated at config-load time (`faucet validate`) before any run starts.
 
 ```yaml
 version: 1
@@ -336,7 +336,7 @@ pipeline:
       brokers: localhost:9092
       topic: { type: fixed, name: orders_cdc }
       value_format: { type: json }
-      # exactly-once: transactional producer + compacted watermark side-topic
+      # effectively-once: transactional producer + compacted watermark side-topic
       # (auto-created). transactional.id is auto-derived from the pipeline scope.
       commit_token_topic: __faucet_commit_token
   state:
@@ -345,7 +345,7 @@ pipeline:
       path: ./.faucet-state/pg_cdc_to_kafka_eo
 ```
 
-The four new config fields ([`transactional_id_prefix`](#exactly-once), `commit_token_topic`, `commit_token_topic_partitions`, `commit_token_topic_replication`) tune the transactional id namespace and the side-topic. See the [exactly-once delivery cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/state.html#exactly-once-delivery) for the cross-connector picture, and the runnable [`cli/examples/postgres_cdc_to_kafka_exactly_once.yaml`](https://github.com/PawanSikawat/faucet-stream/blob/main/cli/examples/postgres_cdc_to_kafka_exactly_once.yaml).
+The four new config fields ([`transactional_id_prefix`](#effectively-once), `commit_token_topic`, `commit_token_topic_partitions`, `commit_token_topic_replication`) tune the transactional id namespace and the side-topic. See the [effectively-once delivery cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/state.html#effectively-once-delivery) for the cross-connector picture, and the runnable [`cli/examples/postgres_cdc_to_kafka_exactly_once.yaml`](https://github.com/PawanSikawat/faucet-stream/blob/main/cli/examples/postgres_cdc_to_kafka_exactly_once.yaml).
 
 ## Config loading & schema
 
