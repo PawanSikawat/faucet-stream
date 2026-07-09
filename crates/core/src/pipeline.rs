@@ -626,8 +626,8 @@ where
     // Only the atomic-watermark mechanism changes the write/skip/state path
     // below; keyed upsert delivers its idempotence inside the sink's own
     // keyed writes, over the ordinary write path.
-    let exactly_once = mechanism
-        == Some(crate::idempotency::EffectivelyOnceMechanism::AtomicWatermark);
+    let exactly_once =
+        mechanism == Some(crate::idempotency::EffectivelyOnceMechanism::AtomicWatermark);
     let scope = state_key.clone().unwrap_or_default();
     let mut next_seq = options.start_seq;
     let committed_seq = if exactly_once {

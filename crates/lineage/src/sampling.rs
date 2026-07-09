@@ -153,7 +153,10 @@ impl Sink for SamplingSink {
         scope: &str,
         token: &str,
     ) -> Result<usize, FaucetError> {
-        let n = self.inner.write_batch_idempotent(records, scope, token).await?;
+        let n = self
+            .inner
+            .write_batch_idempotent(records, scope, token)
+            .await?;
         self.state.observe(records);
         Ok(n)
     }
@@ -315,5 +318,126 @@ mod tests {
         let schema = shared.inferred_schema();
         let names: Vec<&str> = schema.fields.iter().map(|(n, _)| n.as_str()).collect();
         assert!(names.contains(&"id"));
+    }
+
+    /// An idempotent, upsert-capable sink: the sampler must forward every
+    /// capability + exactly-once method instead of masking them with the trait
+    /// defaults (which would make an exactly-once run fail as "sink is not
+    /// idempotent" whenever lineage/catalog sampling is active).
+    struct IdemSink;
+    #[async_trait]
+    impl Sink for IdemSink {
+        async fn write_batch(&self, records: &[Value]) -> Result<usize, FaucetError> {
+            Ok(records.len())
+        }
+        fn connector_name(&self) -> &'static str {
+            "idem"
+        }
+        fn supports_idempotent_writes(&self) -> bool {
+            true
+        }
+        fn dedups_by_key(&self) -> bool {
+            true
+        }
+        fn supported_write_modes(&self) -> &'static [faucet_core::WriteMode] {
+            &[
+                faucet_core::WriteMode::Append,
+                faucet_core::WriteMode::Upsert,
+            ]
+        }
+        async fn write_batch_idempotent(
+            &self,
+            records: &[Value],
+            _scope: &str,
+            _token: &str,
+        ) -> Result<usize, FaucetError> {
+            Ok(records.len())
+        }
+        async fn last_committed_token(&self, _scope: &str) -> Result<Option<String>, FaucetError> {
+            Ok(Some("tok".into()))
+        }
+        fn supports_schema_evolution(&self) -> bool {
+            true
+        }
+        async fn current_schema(&self) -> Result<Option<Value>, FaucetError> {
+            Ok(Some(json!({"type": "object", "properties": {}})))
+        }
+    }
+
+    #[tokio::test]
+    async fn sink_forwards_capabilities_and_samples_idempotent_writes() {
+        let shared = Arc::new(SampleState::new(10));
+        let s = SamplingSink::new(Box::new(IdemSink), Arc::clone(&shared));
+        assert!(s.supports_idempotent_writes());
+        assert!(s.dedups_by_key());
+        assert_eq!(
+            s.sink_guarantee(),
+            faucet_core::SinkGuarantee::AtomicWatermark
+        );
+        assert!(
+            s.supported_write_modes()
+                .contains(&faucet_core::WriteMode::Upsert)
+        );
+        assert!(s.supports_schema_evolution());
+        assert!(s.current_schema().await.unwrap().is_some());
+        assert_eq!(
+            s.last_committed_token("k").await.unwrap(),
+            Some("tok".into())
+        );
+        // Idempotent writes are observed by the sampler like plain writes.
+        s.write_batch_idempotent(&[json!({"id": 1})], "k", "t")
+            .await
+            .unwrap();
+        assert_eq!(shared.count(), 1);
+    }
+
+    struct BookmarkedSource;
+    #[async_trait]
+    impl faucet_core::Source for BookmarkedSource {
+        async fn fetch_with_context(
+            &self,
+            _: &std::collections::HashMap<String, Value>,
+        ) -> Result<Vec<Value>, FaucetError> {
+            Ok(vec![json!({"id": 1})])
+        }
+        async fn fetch_with_context_incremental(
+            &self,
+            _: &std::collections::HashMap<String, Value>,
+        ) -> Result<(Vec<Value>, Option<Value>), FaucetError> {
+            Ok((vec![json!({"id": 1})], Some(json!("bm"))))
+        }
+        fn supports_exactly_once(&self) -> bool {
+            true
+        }
+        async fn capture_resume_position(&self) -> Result<Option<Value>, FaucetError> {
+            Ok(Some(json!("pos")))
+        }
+        fn connector_name(&self) -> &'static str {
+            "bookmarked"
+        }
+    }
+
+    #[tokio::test]
+    async fn source_forwards_bookmarks_and_capabilities() {
+        use faucet_core::Source as _;
+        let shared = Arc::new(SampleState::new(10));
+        let s = SamplingSource::new(Box::new(BookmarkedSource), Arc::clone(&shared));
+        // The incremental fetch must surface the inner bookmark — the trait
+        // default would silently drop it (breaking incremental resume when an
+        // outer wrapper's default stream_pages builds on this method).
+        let (_, bm) = s
+            .fetch_with_context_incremental(&std::collections::HashMap::new())
+            .await
+            .unwrap();
+        assert_eq!(bm, Some(json!("bm")));
+        assert!(s.supports_exactly_once());
+        assert_eq!(
+            s.replay_guarantee(),
+            faucet_core::ReplayGuarantee::Deterministic
+        );
+        assert_eq!(
+            s.capture_resume_position().await.unwrap(),
+            Some(json!("pos"))
+        );
     }
 }

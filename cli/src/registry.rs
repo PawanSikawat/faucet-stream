@@ -1136,10 +1136,7 @@ mod tests {
         );
         assert_eq!(sink_guarantee("postgres"), SinkGuarantee::AtomicWatermark);
         // Upsert-capable but not atomic: elasticsearch dedups by key only.
-        assert_eq!(
-            sink_guarantee("elasticsearch"),
-            SinkGuarantee::KeyedUpsert
-        );
+        assert_eq!(sink_guarantee("elasticsearch"), SinkGuarantee::KeyedUpsert);
         assert_eq!(sink_guarantee("jsonl"), SinkGuarantee::AtLeastOnce);
     }
 

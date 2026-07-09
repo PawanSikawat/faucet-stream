@@ -1535,7 +1535,11 @@ impl Source for StateKeyOverride {
         ctx: &'a HashMap<String, Value>,
         batch_size: usize,
     ) -> std::pin::Pin<
-        Box<dyn faucet_core::Stream<Item = Result<faucet_core::StreamPage, FaucetError>> + Send + 'a>,
+        Box<
+            dyn faucet_core::Stream<Item = Result<faucet_core::StreamPage, FaucetError>>
+                + Send
+                + 'a,
+        >,
     > {
         self.inner.stream_pages(ctx, batch_size)
     }
@@ -2778,7 +2782,7 @@ matrix:
                 state: None,
                 dlq: None,
                 delivery: faucet_core::DeliveryMode::AtLeastOnce,
-            delivery_guarantee: faucet_core::DeliveryGuarantee::AtLeastOnce,
+                delivery_guarantee: faucet_core::DeliveryGuarantee::AtLeastOnce,
                 #[cfg(feature = "quality")]
                 quality: None,
                 #[cfg(feature = "contract")]
@@ -3151,6 +3155,74 @@ matrix:
         ov.apply_start_bookmark(json!({"any": "bookmark"}))
             .await
             .unwrap();
+        // Capability passthroughs (csv defaults).
+        assert!(!ov.supports_exactly_once());
+        assert_eq!(
+            ov.replay_guarantee(),
+            faucet_core::ReplayGuarantee::NonDeterministic
+        );
+        assert_eq!(ov.capture_resume_position().await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn state_key_override_forwards_native_stream_pages() {
+        // The wrap must preserve the inner source's NATIVE page stream —
+        // per-page bookmarks included. Without the `stream_pages` forward, the
+        // trait's buffering default kicks in and collapses everything into
+        // final-page-bookmark-only pages (losing CDC per-transaction
+        // durability and exactly-once per-page tokens).
+        struct PerPageBookmarkSource;
+        #[async_trait]
+        impl Source for PerPageBookmarkSource {
+            async fn fetch_with_context(
+                &self,
+                _ctx: &HashMap<String, Value>,
+            ) -> Result<Vec<Value>, FaucetError> {
+                Ok(vec![json!({"id": 1}), json!({"id": 2})])
+            }
+            fn stream_pages<'a>(
+                &'a self,
+                _ctx: &'a HashMap<String, Value>,
+                _batch_size: usize,
+            ) -> std::pin::Pin<
+                Box<
+                    dyn faucet_core::Stream<Item = Result<faucet_core::StreamPage, FaucetError>>
+                        + Send
+                        + 'a,
+                >,
+            > {
+                Box::pin(faucet_core::async_stream::try_stream! {
+                    yield faucet_core::StreamPage {
+                        records: vec![json!({"id": 1})],
+                        bookmark: Some(json!("bm-1")),
+                    };
+                    yield faucet_core::StreamPage {
+                        records: vec![json!({"id": 2})],
+                        bookmark: Some(json!("bm-2")),
+                    };
+                })
+            }
+            fn state_key(&self) -> Option<String> {
+                Some("native".into())
+            }
+        }
+
+        use futures::StreamExt;
+        let ov = StateKeyOverride {
+            inner: Box::new(PerPageBookmarkSource),
+            key: "override".into(),
+        };
+        let ctx = HashMap::new();
+        let pages: Vec<_> = ov
+            .stream_pages(&ctx, 1000)
+            .collect::<Vec<_>>()
+            .await
+            .into_iter()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(pages.len(), 2, "native page boundaries survive the wrap");
+        assert_eq!(pages[0].bookmark, Some(json!("bm-1")));
+        assert_eq!(pages[1].bookmark, Some(json!("bm-2")));
     }
 
     #[tokio::test]

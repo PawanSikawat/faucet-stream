@@ -10,8 +10,8 @@
 //!
 //! Requires Docker (same harness as `integration.rs`).
 
-use faucet_core::{FaucetError, Pipeline, Sink, Source, StateStore, Value};
 use faucet_common_kafka::{KafkaAuth, KafkaValueFormat, OnDecodeError};
+use faucet_core::{FaucetError, Pipeline, Sink, Source, StateStore, Value};
 use faucet_source_kafka::{KafkaSource, KafkaSourceConfig, OffsetReset};
 use rdkafka::ClientConfig;
 use rdkafka::producer::{FutureProducer, FutureRecord, Producer};
@@ -51,7 +51,12 @@ async fn produce(brokers: &str, topic: &str, values: &[&str]) {
         .expect("producer flush");
 }
 
-fn source_config(brokers: &str, topic: &str, group: &str, max_messages: usize) -> KafkaSourceConfig {
+fn source_config(
+    brokers: &str,
+    topic: &str,
+    group: &str,
+    max_messages: usize,
+) -> KafkaSourceConfig {
     KafkaSourceConfig {
         brokers: brokers.into(),
         topics: vec![topic.into()],
@@ -122,7 +127,12 @@ fn ids(rows: &[Value]) -> Vec<i64> {
 async fn crash_resume_anchors_at_sink_watermark_no_dup_no_loss() {
     let (_container, brokers) = start_kafka().await;
     let topic = "eo-anchor";
-    produce(&brokers, topic, &[r#"{"id":1}"#, r#"{"id":2}"#, r#"{"id":3}"#]).await;
+    produce(
+        &brokers,
+        topic,
+        &[r#"{"id":1}"#, r#"{"id":2}"#, r#"{"id":3}"#],
+    )
+    .await;
 
     let sink = IdempotentCaptureSink::default();
     let store: Arc<dyn StateStore> = Arc::new(faucet_core::MemoryStateStore::new());

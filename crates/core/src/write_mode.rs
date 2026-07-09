@@ -379,6 +379,30 @@ mod tests {
     }
 
     #[test]
+    fn dedups_by_key_requires_keyed_upsert_or_delete() {
+        assert!(!WriteSpec::default().dedups_by_key());
+        let upsert = WriteSpec {
+            write_mode: WriteMode::Upsert,
+            key: vec!["id".into()],
+            delete_marker: None,
+        };
+        assert!(upsert.dedups_by_key());
+        let delete = WriteSpec {
+            write_mode: WriteMode::Delete,
+            key: vec!["id".into()],
+            delete_marker: None,
+        };
+        assert!(delete.dedups_by_key());
+        // An (invalid) keyless upsert never claims keyed dedup.
+        let keyless = WriteSpec {
+            write_mode: WriteMode::Upsert,
+            key: vec![],
+            delete_marker: None,
+        };
+        assert!(!keyless.dedups_by_key());
+    }
+
+    #[test]
     fn last_write_wins_upsert_after_delete_is_an_upsert() {
         // Inverse of the delete-after-upsert case: [delete, upsert] → upsert wins.
         let spec = WriteSpec {

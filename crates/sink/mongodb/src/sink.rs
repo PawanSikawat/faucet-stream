@@ -650,9 +650,11 @@ impl faucet_core::Sink for MongoSink {
             PreparedWrite::Planned(self.build_plan_ops(&plan)?)
         };
 
-        let mut session = self.client.start_session().await.map_err(|e| {
-            FaucetError::Sink(format!("MongoDB session start failed: {e}"))
-        })?;
+        let mut session = self
+            .client
+            .start_session()
+            .await
+            .map_err(|e| FaucetError::Sink(format!("MongoDB session start failed: {e}")))?;
         session.start_transaction().await.map_err(|e| {
             classify_transaction_error("MongoDB transaction start failed", &e.to_string())
         })?;

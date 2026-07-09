@@ -424,7 +424,10 @@ mod tests {
 
     #[test]
     fn capability_enums_default_to_weakest() {
-        assert_eq!(ReplayGuarantee::default(), ReplayGuarantee::NonDeterministic);
+        assert_eq!(
+            ReplayGuarantee::default(),
+            ReplayGuarantee::NonDeterministic
+        );
         assert_eq!(SinkGuarantee::default(), SinkGuarantee::AtLeastOnce);
     }
 
