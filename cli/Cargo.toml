@@ -5,6 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+homepage = "https://pawansikawat.github.io/faucet-stream/"
 description = "Config-driven CLI runner for faucet-stream pipelines (YAML / JSON, Meltano-style)"
 readme = "README.md"
 keywords = ["pipeline", "etl", "cli", "meltano", "faucet"]

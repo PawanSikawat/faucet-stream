@@ -233,3 +233,8 @@ zstd = "0.13"
 glob = "0.3"
 duckdb = "1.10503"
 tempfile = "3"
+
+# The profile that 'dist' will build with
+[profile.dist]
+inherits = "release"
+lto = "thin"
