@@ -1,0 +1,36 @@
+version: 1
+default_environment: dev
+project_id: faucet-bench
+# Meltano project for the faucet-stream comparison benchmark.
+# Scenario A: tap-csv -> target-jsonl. Scenario B: tap-postgres -> target-jsonl.
+#
+# Plugin pip_urls are pinned so the comparison is reproducible. The Meltano
+# version itself is pinned in the venv by run-bench.sh (recorded via pip freeze
+# into benchmarks/results/versions.txt).
+environments:
+  - name: dev
+plugins:
+  extractors:
+    - name: tap-csv
+      variant: meltanolabs
+      # MeltanoLabs tap-csv is not on PyPI — install from a pinned git tag.
+      pip_url: git+https://github.com/MeltanoLabs/tap-csv.git@v1.3.2
+      config:
+        files:
+          - entity: bench
+            path: ../data/bench.csv
+            keys:
+              - id
+    - name: tap-postgres
+      variant: meltanolabs
+      pip_url: meltanolabs-tap-postgres==0.9.0
+      # Connection is injected at runtime from $BENCH_PG_URL by run-bench.sh
+      # (TAP_POSTGRES_SQLALCHEMY_URL). No credentials are committed.
+      config:
+        default_replication_method: FULL_TABLE
+  loaders:
+    - name: target-jsonl
+      variant: andyh1203
+      pip_url: target-jsonl==0.1.4
+      config:
+        destination_path: output

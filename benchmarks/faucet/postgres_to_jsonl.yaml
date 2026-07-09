@@ -1,0 +1,19 @@
+# Benchmark pipeline — Scenario B: PostgreSQL -> JSONL.
+# Requires a running Postgres with the benchmark table loaded (see
+# benchmarks/README.md / run-bench.sh --postgres). Only runs when Docker is
+# available. The connection URL is read from $BENCH_PG_URL at load time so no
+# credentials are committed.
+version: 1
+name: bench_postgres_to_jsonl
+
+pipeline:
+  source:
+    type: postgres
+    config:
+      connection_url: ${env:BENCH_PG_URL}
+      query: "SELECT id, first_name, country, amount, created_at, active, attributes FROM bench ORDER BY id"
+
+  sink:
+    type: jsonl
+    config:
+      path: ./benchmarks/out/faucet_pg_out.jsonl

@@ -171,3 +171,51 @@ Apply the **first diff** now (`git_release_enable = false`, or umbrella-only) �
 directly collapses the 182→~real-count without changing when things ship. Adopt the
 weekly-cadence diff only if you also want to slow the crates.io version tick; it is a
 bigger behavior change and can wait. **Neither applied — awaiting your call.**
+
+---
+
+## Phase 4 — Real Meltano benchmark (main deliverable)
+
+### What was built
+- `scripts/gen_bench_data.py` — seeded (`--seed`), parametrized (`--rows`) CSV
+  generator; mixed types (int/str/str/float/timestamp/bool/nested-JSON). Prints on-disk size.
+- `benchmarks/faucet/{csv_to_jsonl,postgres_to_jsonl}.yaml` — faucet pipelines.
+- `benchmarks/meltano/meltano.yml` — pinned Meltano project (`tap-csv` git v1.3.2,
+  `target-jsonl` 0.1.4, `tap-postgres` meltanolabs 0.9.0). tap-csv is not on PyPI →
+  pinned to a git tag.
+- `scripts/run-bench.sh` — end-to-end: env capture, data-gen, isolated Meltano venv
+  (`python3.12`), hyperfine timing (1 warmup + N runs, median±stddev), peak RSS via
+  `/usr/bin/time` (macOS `-l` / Linux `-v`), throughput, row-count parity. Degrades
+  gracefully (Meltano failure → row marked `TODO`, never faked).
+- `benchmarks/README.md`, `BENCHMARKS.md`, `make bench` / `bench-smoke` / `bench-build`.
+- `.gitignore`: un-ignore the two benchmark scripts (dir was blanket-ignored); ignore
+  generated `benchmarks/{data,out,results}/`, `.bench-venv/`, meltano runtime dirs.
+
+### Real results (ran locally — NOT fabricated)
+Hardware: Apple M3 Pro, 12 cores, 18 GiB, macOS 26.5. faucet 1.2.0 (release).
+Meltano 4.2.1 / Python 3.12.11. Scenario A (CSV→JSONL), 1 warmup + 5 timed runs.
+
+| Rows | Tool | Median (s) | rows/s | Peak RSS (MiB) | Parity |
+|---|---|---|---|---|---|
+| 1,000,000 | faucet | 1.40 | 712,403 | 11.8 | 1,000,000 = 1,000,000 |
+| 1,000,000 | Meltano | 135.46 | 7,383 | 724.5 | ✓ |
+| 100,000 | faucet | 0.18 | 548,246 | 11.8 | 100,000 = 100,000 |
+| 100,000 | Meltano | 18.92 | 5,286 | 306.4 | ✓ |
+
+→ **1M: faucet ~96× faster, ~62× less peak memory, exact row parity.** In this
+config `tap-csv` added no `_sdc_*` columns (record shapes equivalent; both emit
+string-typed cells). Result is decisive, so per the task the README superlative was
+replaced with this cited number (not re-inflated to an unbenchmarked "fastest in Rust").
+
+- Scenario B (Postgres→JSONL): **not run here — no Docker.** Config + Meltano plugin
+  + exact commands are ready; `BENCHMARKS.md` and `benchmarks/README.md` mark it
+  `TODO: run locally` with the reproduction steps.
+- mdBook build after Phase 2 edits: clean (exit 0).
+
+## Phase 5 — Scope-narrowing proposal
+- `SCOPE_PROPOSAL.md` written. Tier 1 (supported: rest, postgres, mysql, sqlite, csv,
+  jsonl/stdout, s3, bigquery, kafka, parquet) vs Tier 2 (experimental: everything else,
+  incl. CDC trio, snowflake, elasticsearch, gcs, mssql, mongodb, redis, graphql/xml/grpc/
+  webhook/websocket/http, iceberg). Surfaced via matrix `Support` column + README/`#[doc]`
+  banners + CI required-set policy — **no code deleted**. Top-5 API-drift risks: snowflake,
+  bigquery, postgres/mysql-cdc, elasticsearch, gcs.
