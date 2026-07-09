@@ -146,25 +146,31 @@ faucet validate cli/examples/postgres_cdc_to_postgres_upsert.yaml
 
 ## Composing with effectively-once delivery
 
-`write_mode: upsert` composes with [`delivery: exactly_once`](./state.md#effectively-once-delivery)
-on the four SQL sinks (`postgres`, `mysql`, `mssql`, `sqlite`) and on **BigQuery**.
-The same four hard requirements apply, checked at config-load time:
+A keyed upsert **is** an effectively-once mechanism in its own right: any
+source feeding an upsert-capable sink with `write_mode: upsert` + `key` is
+accepted under [`delivery: exactly_once`](./state.md#effectively-once-delivery)
+and reported by `faucet validate` as `effectively-once (keyed upsert)` — the
+replayed records converge on the same keyed rows instead of duplicating. No
+state store or watermark is required for this mechanism (state is still
+recommended so re-runs are incremental).
 
-1. a CDC source (`postgres-cdc` / `mysql-cdc` / `mongodb-cdc`),
-2. an idempotent sink (`postgres` / `mysql` / `mssql` / `sqlite` / `bigquery`),
-3. a `state:` block, and
-4. **no** `dlq:` block (incompatible with effectively-once in this version).
+The **atomic-watermark** mechanism additionally composes with upsert on the
+four SQL sinks (`postgres`, `mysql`, `mssql`, `sqlite`), **BigQuery**, and
+**MongoDB** (replica set required): the sink commits the upserted/deleted rows
+**and** the monotonic commit token in a single transaction, so a crash-and-resume
+never re-applies or skips a batch — the mirror stays exactly consistent with
+the source even across restarts. Its requirements, checked at config-load time:
 
-Under effectively-once the sink commits the upserted/deleted rows **and** the
-monotonic commit token in a single transaction, so a crash-and-resume never
-re-applies or skips a batch — the mirror stays exactly consistent with the source
-even across restarts. (Because effectively-once forbids a DLQ, a missing/null-key row
-fails the batch rather than being routed aside.)
+1. a positional-replay source (`postgres-cdc` / `mysql-cdc` / `mongodb-cdc` / `kafka`),
+2. an idempotent sink (`postgres` / `mysql` / `mssql` / `sqlite` / `bigquery` / `mongodb`),
+3. a **durable** `state:` block (not `memory`), and
+4. **no** `dlq:` block (incompatible with the atomic-watermark path in this version —
+   a missing/null-key row therefore fails the batch rather than being routed aside).
 
 For BigQuery, the whole page is merged as one `jobs.query` request (~10 MB limit);
 keep the CDC source's `batch_size` modest (the default 1 000 rows is fine for most
 schemas; lower it for very wide rows that approach the limit).
 
-MongoDB and Elasticsearch support upsert but **not** effectively-once (their bulk
-APIs cannot commit a watermark atomically), so an upsert mirror into those sinks
-runs at-least-once.
+Elasticsearch supports upsert but not the atomic watermark (`_bulk` cannot
+commit a watermark atomically) — an upsert mirror into Elasticsearch reaches
+effectively-once via the keyed-upsert mechanism instead.
