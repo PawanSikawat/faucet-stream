@@ -39,6 +39,7 @@ source = [
     "source-gcs",
     "source-bigquery",
     "source-snowflake",
+    "source-singer",
 ]
 ## All sink connectors.
 sink = [
@@ -105,6 +106,7 @@ full = ["source", "sink", "state", "auth", "kafka-schema-registry", "compression
 
 ## Individual source connectors.
 source-rest = ["dep:faucet-source-rest"]
+source-singer = ["dep:faucet-source-singer"]
 source-graphql = ["dep:faucet-source-graphql"]
 source-xml = ["dep:faucet-source-xml"]
 source-grpc = ["dep:faucet-source-grpc"]
@@ -189,6 +191,7 @@ faucet-common-gcs = { workspace = true, optional = true }
 faucet-common-kafka = { workspace = true, optional = true }
 faucet-common-snowflake = { workspace = true, optional = true }
 faucet-source-rest = { workspace = true, optional = true }
+faucet-source-singer = { workspace = true, optional = true }
 faucet-source-graphql = { workspace = true, optional = true }
 faucet-source-xml = { workspace = true, optional = true }
 faucet-source-grpc = { workspace = true, optional = true }
