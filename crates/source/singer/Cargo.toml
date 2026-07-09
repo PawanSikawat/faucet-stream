@@ -1,0 +1,40 @@
+[package]
+name = "faucet-source-singer"
+version = "1.0.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Singer tap bridge source for the faucet-stream ecosystem (single-stream v0)"
+readme = "README.md"
+keywords = ["singer", "tap", "etl", "pipeline", "connector"]
+categories.workspace = true
+
+[dependencies]
+faucet-core.workspace = true
+serde = { workspace = true }
+serde_json.workspace = true
+schemars.workspace = true
+tracing.workspace = true
+async-stream.workspace = true
+async-trait.workspace = true
+futures-core.workspace = true
+futures.workspace = true
+tempfile.workspace = true
+# process: spawn the tap; io-util: BufReader::lines; sync: bounded mpsc;
+# time: idle-timeout + SIGTERM grace; rt/macros: spawn reader/stderr tasks.
+tokio = { version = "1", features = ["process", "io-util", "sync", "time", "rt", "macros"] }
+
+[target.'cfg(unix)'.dependencies]
+# SIGTERM to the tap child before falling back to SIGKILL.
+libc = "0.2"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full", "test-util"] }
+tracing-subscriber = "0.3"
+tempfile.workspace = true
+faucet-conformance.workspace = true
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

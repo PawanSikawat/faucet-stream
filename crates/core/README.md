@@ -15,7 +15,7 @@ The foundation crate for the [faucet-stream](https://github.com/PawanSikawat/fau
 - **Batch and streaming orchestration** — `Pipeline::run` (fetch-all) and `run_stream` (page-by-page, O(batch_size) memory) connect any source to any sink.
 - **Pluggable transforms** — `RecordTransform` (flatten, key/value casing, regex rename, cast, redact, …) plus stage-level `Filter` / `Explode` / `CdcUnwrap`, attachable to any source via `TransformingSource`.
 - **Durable bookmarks** — the `StateStore` trait with in-process `MemoryStateStore` and crash-safe `FileStateStore` built in; Redis / Postgres backends live in their own crates.
-- **Reliability primitives** — dead-letter queue routing, exactly-once delivery (`DeliveryMode`), key-based upsert/delete write modes, per-page / per-record data-quality checks, and versioned data contracts.
+- **Reliability primitives** — dead-letter queue routing, effectively-once delivery (`DeliveryMode`), key-based upsert/delete write modes, per-page / per-record data-quality checks, and versioned data contracts.
 - **Governance** — PII detection + column-level masking (`masking` feature): classify sensitive fields (name pattern / value detector / explicit list) and `redact`/`hash`/`tokenize`/`partial`-mask them; the pass runs before every sink so PII never leaks to a sink, the DLQ, or a lineage sample.
 - **Shared authentication** — the `AuthProvider` trait and `AuthSpec` config field give N connectors one token with single-flight refresh.
 - **Typed errors** — one `FaucetError` enum covers every failure path, with a `Custom` variant for third-party connector errors.
@@ -109,7 +109,7 @@ println!("Wrote {} records", result.records_written);
 | `flush()` | Flush buffered data (Parquet footer, S3 multipart, …). | no-op |
 | `write_batch_partial(records)` | Per-row `RowOutcome`s so failed rows can be routed to a DLQ. | maps a single success → all-`Ok` |
 | `supports_idempotent_writes()` | `true` for sinks that commit rows + a commit token atomically. | `false` |
-| `write_batch_idempotent(records, scope, token)` | Atomic exactly-once write + watermark. | delegates to `write_batch` (not idempotent) |
+| `write_batch_idempotent(records, scope, token)` | Atomic effectively-once write + watermark. | delegates to `write_batch` (not idempotent) |
 | `last_committed_token(scope)` | Highest committed token for resume-skip. | `None` |
 | `supported_write_modes()` | The `WriteMode`s this sink accepts (`Append` / `Upsert` / `Delete`). | `[Append]` |
 | `config_schema()` | JSON Schema of the config struct. | empty object |
@@ -267,11 +267,11 @@ State keys are validated via `state::validate_state_key`.
 
 `Pipeline::with_dlq(DlqConfig)` attaches an optional DLQ sink. The streaming loop calls `Sink::write_batch_partial` per page; rows that come back `Err` are wrapped in a fixed-shape envelope (`build_envelope`) and routed to the DLQ before the page bookmark advances. `OnBatchError` controls the policy when a sink can't report per-row results: `propagate` aborts the run; `dlq_all` routes the whole failed page. Sinks override `write_batch_partial` to expose per-row results (BigQuery `insertAll`, Elasticsearch `_bulk`).
 
-## Exactly-once delivery
+## Effectively-once delivery
 
 `DeliveryMode` (`AtLeastOnce` default, or `ExactlyOnce`) controls run semantics. Under `ExactlyOnce` the pipeline assigns a monotonic fixed-width commit token (`format_token(seq)`) to each bookmark-carrying page and calls `write_batch_idempotent(records, scope, token)`; the sink commits records **and** token atomically. On resume, `last_committed_token(scope)` is consulted to skip already-committed pages.
 
-Exactly-once requires a **deterministic-replay source** (`supports_exactly_once() == true` — CDC sources) and an **idempotent sink** (`supports_idempotent_writes() == true`). The bookmark + sequence persist together via `wrap_state(bookmark, seq)` / `unwrap_state(value)`.
+Effectively-once requires a **deterministic-replay source** (`supports_exactly_once() == true` — CDC sources) and an **idempotent sink** (`supports_idempotent_writes() == true`). The bookmark + sequence persist together via `wrap_state(bookmark, seq)` / `unwrap_state(value)`.
 
 ## Write modes (upsert / delete)
 
@@ -556,7 +556,7 @@ Defaults: `transform-flatten`, `transform-rename-keys`, `transform-keys-case`.
 | Records aren't being transformed when driving a source from Rust | Transforms aren't part of the `Source` trait. Wrap the source with `TransformingSource::new(source, stages)` — there is no per-connector `add_transform`. |
 | `FaucetError::Config: batch_size out of range` | `batch_size` exceeded `MAX_BATCH_SIZE` (1,000,000). Use `validate_batch_size` at load time; `0` is the valid "no batching" sentinel. |
 | Bookmark never persists across runs | Your source returns `None` from `state_key()`, or no `with_state_store` was set. Override `state_key()` and read the bookmark via `apply_start_bookmark`. |
-| `DeliveryMode::ExactlyOnce` rejected | The source isn't deterministic-replay (`supports_exactly_once()` is `false`) or the sink isn't idempotent (`supports_idempotent_writes()` is `false`). Exactly-once needs a CDC source + an idempotent sink + a state store + no DLQ. |
+| `DeliveryMode::ExactlyOnce` rejected | The source isn't deterministic-replay (`supports_exactly_once()` is `false`) or the sink isn't idempotent (`supports_idempotent_writes()` is `false`). Effectively-once needs a CDC source + an idempotent sink + a state store + no DLQ. |
 | Quality config rejected at load time | A `quarantine` / `quarantine_batch` policy was set without a `dlq:` block, or a regex / JSON Schema / bound is invalid — `CompiledQuality::compile` is fail-fast. Add a DLQ or fix the spec. |
 | `Custom` errors lose their cause | Wrap with `FaucetError::Custom(Box::new(your_error))` — it implements `From<Box<dyn Error + Send + Sync>>` and preserves the chain. |
 | Secret printed in logs | `Credential`'s `Debug` redacts secrets, but connector-specific debug logging is outside that boundary. Never run a secret-bearing pipeline at `FAUCET_LOG=debug`. |
@@ -566,7 +566,7 @@ Defaults: `transform-flatten`, `transform-rename-keys`, `transform-keys-case`.
 
 - **Concepts & library guide:** <https://pawansikawat.github.io/faucet-stream/getting-started/concepts.html> · <https://pawansikawat.github.io/faucet-stream/tutorials/library.html>
 - **Transforms cookbook:** <https://pawansikawat.github.io/faucet-stream/cookbook/transforms.html>
-- **State & exactly-once:** <https://pawansikawat.github.io/faucet-stream/cookbook/state.html>
+- **State & effectively-once:** <https://pawansikawat.github.io/faucet-stream/cookbook/state.html>
 - **Upsert / write modes:** <https://pawansikawat.github.io/faucet-stream/cookbook/upsert.html>
 - **Quality checks & DLQ:** <https://pawansikawat.github.io/faucet-stream/reference/config.html>
 - **Related crates:** [`faucet-auth`](https://crates.io/crates/faucet-auth) (shared auth providers) · [`faucet-state-redis`](https://crates.io/crates/faucet-state-redis) / [`faucet-state-postgres`](https://crates.io/crates/faucet-state-postgres) (state backends) · [`faucet-stream`](https://crates.io/crates/faucet-stream) (umbrella) · [`faucet-cli`](https://crates.io/crates/faucet-cli) (the `faucet` binary)

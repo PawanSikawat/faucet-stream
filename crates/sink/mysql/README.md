@@ -7,7 +7,7 @@
 
 **MySQL** sink for the [faucet-stream](https://github.com/PawanSikawat/faucet-stream) ecosystem. Writes JSON records to a MySQL (or MariaDB) table using a pooled `sqlx` connection and efficient multi-row `INSERT` statements with backtick-quoted identifiers.
 
-Reach for it when you want to land any faucet-stream source — a REST API, a CSV file, a CDC stream, a queue — into MySQL with one declarative config and no glue code. Store records as opaque JSON blobs, or map their keys straight onto real table columns; mirror a source table with `write_mode: upsert`; or run end-to-end exactly-once from a CDC source.
+Reach for it when you want to land any faucet-stream source — a REST API, a CSV file, a CDC stream, a queue — into MySQL with one declarative config and no glue code. Store records as opaque JSON blobs, or map their keys straight onto real table columns; mirror a source table with `write_mode: upsert`; or run end-to-end effectively-once from a CDC source.
 
 ## Feature highlights
 
@@ -15,7 +15,7 @@ Reach for it when you want to land any faucet-stream source — a REST API, a CS
 - **Multi-row `INSERT`** — every batch becomes a single `INSERT INTO t VALUES (...), (...), ...`, sub-chunked so `rows × columns` never exceeds MySQL's 65,535-placeholder limit.
 - **Connection pooling** — a `sqlx::MySqlPool` built once in `new()` and reused for every write; pool size is configurable.
 - **Write modes** — `append` (default), `upsert` (`INSERT … ON DUPLICATE KEY UPDATE`), and `delete` (delete by key), with last-write-wins de-duplication within a page and atomic per-page transactions.
-- **Exactly-once delivery** — pairs with a CDC source for at-most-once-effective writes; records and the commit-token watermark commit in one transaction.
+- **Effectively-once delivery** — pairs with a CDC source for at-most-once-effective writes; records and the commit-token watermark commit in one transaction.
 - **Dead-letter queue** — in upsert/delete mode, rows with a missing/null key are routed per-row to a configured DLQ instead of failing the whole batch.
 - **Native-typed binding** — in `auto_map` mode, values bind as native MySQL types (text, integer/double, `TINYINT` booleans, JSON for nested values).
 - **Credential-safe** — the `Debug` impl masks `connection_url` so credentials never leak into logs.
@@ -218,14 +218,14 @@ pipeline:
 
 Pair `write_mode: upsert` with the [`cdc_unwrap`](https://pawansikawat.github.io/faucet-stream/cookbook/upsert.html) transform to mirror a CDC source into MySQL. See the [upsert cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/upsert.html).
 
-## Exactly-once delivery
+## Effectively-once delivery
 
 `MysqlSink` implements `Sink::supports_idempotent_writes` (`true`) and the two companion hooks:
 
 - `write_batch_idempotent(records, scope, token)` — writes `records` and UPSERTs the `token` into a `_faucet_commit_token(scope VARCHAR, token VARCHAR)` watermark table inside the **same transaction**, so both commit together or neither does.
 - `last_committed_token(scope)` — reads the current watermark so the pipeline can skip already-committed pages on resume.
 
-Set `delivery: exactly_once` and pair this sink with a CDC source (`postgres-cdc`, `mysql-cdc`, `mongodb-cdc`) plus a `state:` block. A DLQ is **not** permitted in exactly-once mode. All four requirements are validated at config-load time (`faucet validate`) before any run starts.
+Set `delivery: exactly_once` and pair this sink with a CDC source (`postgres-cdc`, `mysql-cdc`, `mongodb-cdc`) plus a `state:` block. A DLQ is **not** permitted in effectively-once mode. All four requirements are validated at config-load time (`faucet validate`) before any run starts.
 
 ```yaml
 pipeline:
@@ -246,7 +246,7 @@ pipeline:
 delivery: exactly_once
 ```
 
-See the [exactly-once cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/state.html#exactly-once-delivery) for the full rationale and the supported source/sink set.
+See the [effectively-once cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/state.html#effectively-once-delivery) for the full rationale and the supported source/sink set.
 
 ## Schema evolution
 
@@ -359,14 +359,14 @@ This crate has no optional features of its own; enable it in the CLI/umbrella vi
 | `upsert`/`delete` rejected at validate time | `write_mode: upsert`/`delete` requires `column_mapping: auto_map` and a non-empty `key`. Fix the config; `faucet validate` catches this before any run. |
 | Upsert updates nothing / inserts duplicates | The table has no PRIMARY/UNIQUE index on the `key` columns, so `ON DUPLICATE KEY UPDATE` never detects a conflict. Add the index. |
 | `mysql upsert: row N: ...` (missing/null key) | A record had a null/absent key column. Add a `dlq:` block to route those rows per-row, or fix upstream. |
-| Exactly-once config rejected | `delivery: exactly_once` requires a CDC source, an idempotent sink (this one), a `state:` block, and **no** DLQ. All four are validated at load time. |
+| Effectively-once config rejected | `delivery: exactly_once` requires a CDC source, an idempotent sink (this one), a `state:` block, and **no** DLQ. All four are validated at load time. |
 | Numbers stored as text in AutoMap mode | Values bind by JSON type. A numeric column receiving a JSON string stores text. Cast upstream with a transform, or send JSON numbers. |
 
 ## See also
 
 - [Sinks reference](https://pawansikawat.github.io/faucet-stream/reference/connectors.html) — capability matrix.
 - [Upsert cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/upsert.html) — write modes & `cdc_unwrap`.
-- [State & exactly-once cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/state.html) — resumable and exactly-once runs.
+- [State & effectively-once cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/state.html) — resumable and effectively-once runs.
 - [`faucet-source-mysql`](https://crates.io/crates/faucet-source-mysql) · [`faucet-source-mysql-cdc`](https://crates.io/crates/faucet-source-mysql-cdc) — the MySQL query and CDC sources.
 
 ## License

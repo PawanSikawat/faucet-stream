@@ -144,27 +144,27 @@ Validate it offline (no database connection required):
 faucet validate cli/examples/postgres_cdc_to_postgres_upsert.yaml
 ```
 
-## Composing with exactly-once delivery
+## Composing with effectively-once delivery
 
-`write_mode: upsert` composes with [`delivery: exactly_once`](./state.md#exactly-once-delivery)
+`write_mode: upsert` composes with [`delivery: exactly_once`](./state.md#effectively-once-delivery)
 on the four SQL sinks (`postgres`, `mysql`, `mssql`, `sqlite`) and on **BigQuery**.
 The same four hard requirements apply, checked at config-load time:
 
 1. a CDC source (`postgres-cdc` / `mysql-cdc` / `mongodb-cdc`),
 2. an idempotent sink (`postgres` / `mysql` / `mssql` / `sqlite` / `bigquery`),
 3. a `state:` block, and
-4. **no** `dlq:` block (incompatible with exactly-once in this version).
+4. **no** `dlq:` block (incompatible with effectively-once in this version).
 
-Under exactly-once the sink commits the upserted/deleted rows **and** the
+Under effectively-once the sink commits the upserted/deleted rows **and** the
 monotonic commit token in a single transaction, so a crash-and-resume never
 re-applies or skips a batch — the mirror stays exactly consistent with the source
-even across restarts. (Because exactly-once forbids a DLQ, a missing/null-key row
+even across restarts. (Because effectively-once forbids a DLQ, a missing/null-key row
 fails the batch rather than being routed aside.)
 
 For BigQuery, the whole page is merged as one `jobs.query` request (~10 MB limit);
 keep the CDC source's `batch_size` modest (the default 1 000 rows is fine for most
 schemas; lower it for very wide rows that approach the limit).
 
-MongoDB and Elasticsearch support upsert but **not** exactly-once (their bulk
+MongoDB and Elasticsearch support upsert but **not** effectively-once (their bulk
 APIs cannot commit a watermark atomically), so an upsert mirror into those sinks
 runs at-least-once.

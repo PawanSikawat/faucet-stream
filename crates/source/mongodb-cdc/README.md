@@ -7,14 +7,14 @@
 
 MongoDB **Change Data Capture (CDC)** source for the [faucet-stream](https://github.com/PawanSikawat/faucet-stream) ecosystem. Tails a MongoDB [Change Stream](https://www.mongodb.com/docs/manual/changeStreams/) — at collection, database, or whole-cluster scope — and emits each per-document change event (insert, update, replace, delete, DDL) as a flat JSON CDC envelope.
 
-Reach for it when you want to stream live mutations out of MongoDB into any faucet-stream sink — a warehouse, a queue, another database — with no polling and no missed changes. The opaque `resumeToken` is persisted to any `faucet-core` `StateStore` after every page, so a restarted pipeline resumes from exactly where it stopped: no duplicates, no gap. Paired with a CDC-aware sink, it is also an **exactly-once** delivery source.
+Reach for it when you want to stream live mutations out of MongoDB into any faucet-stream sink — a warehouse, a queue, another database — with no polling and no missed changes. The opaque `resumeToken` is persisted to any `faucet-core` `StateStore` after every page, so a restarted pipeline resumes from exactly where it stopped: no duplicates, no gap. Paired with a CDC-aware sink, it is also an **effectively-once** delivery source.
 
 ## Feature highlights
 
 - **Native Change Streams** — tails MongoDB's oplog-backed change stream directly via the official `mongodb` driver. No polling loop, no last-modified timestamp column, no `_changed_at` bookkeeping on your documents.
 - **Three watch scopes** — one collection, one whole database, or the entire deployment (`cluster`). Pick the narrowest scope that covers what you need.
 - **Resumable by design** — the server-assigned `resumeToken` of the last event in each page becomes the pipeline bookmark; on restart the stream re-opens with `resumeAfter: <token>` for a duplicate-free, gap-free resume.
-- **Exactly-once delivery** — `supports_exactly_once()` is `true`. Combined with an idempotent sink (sqlite / postgres / mysql / mssql / iceberg / bigquery) and a state store, the pipeline commits records and a monotonic commit token in one atomic unit.
+- **Effectively-once delivery** — `supports_exactly_once()` is `true`. Combined with an idempotent sink (sqlite / postgres / mysql / mssql / iceberg / bigquery) and a state store, the pipeline commits records and a monotonic commit token in one atomic unit.
 - **Snapshot → CDC handoff** — implements `capture_resume_position()`, so `faucet replicate` can anchor the change stream *before* a bulk snapshot of the collection and stitch the two into a true mirror.
 - **Server-side filtering** — push an `operationType` allowlist and arbitrary aggregation stages into the change stream so unwanted events never cross the wire.
 - **Pre-image / post-image control** — request the full document `before` and/or `after` each change (MongoDB 6.0+ for pre-images), with explicit `off` / `when_available` / `required` / `update_lookup` modes.
@@ -292,18 +292,18 @@ State keys (one per scope) so that two pipelines on different scopes never colli
 | Database `mydb` | `mongodb-cdc:db:mydb` |
 | Collection `mydb.mycoll` | `mongodb-cdc:coll:mydb.mycoll` |
 
-Durability is **per-page, not per-event**: the bookmark is saved once per emitted page (every `batch_size` events). A crash mid-page replays at most `batch_size` events on the next run — at-least-once unless you also enable exactly-once delivery.
+Durability is **per-page, not per-event**: the bookmark is saved once per emitted page (every `batch_size` events). A crash mid-page replays at most `batch_size` events on the next run — at-least-once unless you also enable effectively-once delivery.
 
-## Exactly-once delivery
+## Effectively-once delivery
 
-`supports_exactly_once()` returns `true`. Set `delivery: exactly_once` on the pipeline and the source becomes eligible for end-to-end exactly-once semantics. The pipeline assigns a monotonic, fixed-width commit token to each bookmark-carrying page and calls the sink's `write_batch_idempotent`, which commits the records **and** the token atomically; on resume the sink's `last_committed_token` lets the pipeline skip any page already committed.
+`supports_exactly_once()` returns `true`. Set `delivery: exactly_once` on the pipeline and the source becomes eligible for end-to-end effectively-once semantics. The pipeline assigns a monotonic, fixed-width commit token to each bookmark-carrying page and calls the sink's `write_batch_idempotent`, which commits the records **and** the token atomically; on resume the sink's `last_committed_token` lets the pipeline skip any page already committed.
 
 The CLI enforces a hard gate at config-load time (caught by `faucet validate` before any run):
 
-1. **Source** must support exactly-once — `mongodb-cdc` qualifies.
+1. **Source** must support effectively-once — `mongodb-cdc` qualifies.
 2. **Sink** must support idempotent writes — one of `sqlite`, `postgres`, `mysql`, `mssql`, `iceberg`, `bigquery`.
 3. A `state:` block must be configured.
-4. No `dlq:` block (DLQ and exactly-once are mutually exclusive in this version).
+4. No `dlq:` block (DLQ and effectively-once are mutually exclusive in this version).
 
 ```yaml
 version: 1
@@ -422,11 +422,11 @@ This crate has no optional features of its own. From the umbrella / CLI it is ga
 - **`full_document: update_lookup` has at-least-once / read-skew semantics.** The document is re-read from the primary at delivery time, not at change time. If the document was further modified or deleted in between, the `after` image reflects the later state (or is absent).
 - **`start_from: earliest` may error** if the oplog has rolled past the earliest timestamp. Keep the oplog window large enough for your expected downtime.
 - **DDL events are best-effort.** Collection drops/renames arrive as `ddl` records, but the change stream does not replicate index operations or `collMod` changes that don't appear in the oplog.
-- **Per-batch durability, not per-event.** A crash mid-page replays at most `batch_size` events (unless exactly-once delivery is enabled).
+- **Per-batch durability, not per-event.** A crash mid-page replays at most `batch_size` events (unless effectively-once delivery is enabled).
 
 ## See also
 
-- [State & resumability cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/state.html) — bookmarks, durable state stores, exactly-once.
+- [State & resumability cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/state.html) — bookmarks, durable state stores, effectively-once.
 - [Replication cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/replication.html) — the snapshot → CDC handoff with `faucet replicate`.
 - [Upsert cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/upsert.html) — `cdc_unwrap` + `write_mode: upsert` for a true CDC mirror.
 - [Connector reference](https://pawansikawat.github.io/faucet-stream/reference/connectors.html) — the full capability matrix.

@@ -104,7 +104,7 @@ faucet run pipeline.yaml
 | `reconnect_initial_backoff` | int (seconds) | `1` | Server-streaming only. Initial reconnect backoff; doubles each failure up to `reconnect_max_backoff`. Must be `> 0`. |
 | `reconnect_max_backoff` | int (seconds) | `30` | Server-streaming only. Upper bound on reconnect backoff. |
 | `reconnect_max_attempts` | int | *(unset)* | Server-streaming only. Max reconnect attempts before surfacing the error. Unset = unlimited. |
-| `reconnect_replay_from_start` | bool | `true` | Server-streaming only. `true` skips the already-emitted prefix when a stateless server replays from message 0 (exactly-once downstream); `false` emits every received message (at-least-once). See [Reconnect](#reconnect-on-transient-errors). |
+| `reconnect_replay_from_start` | bool | `true` | Server-streaming only. `true` skips the already-emitted prefix when a stateless server replays from message 0 (effectively-once downstream); `false` emits every received message (at-least-once). See [Reconnect](#reconnect-on-transient-errors). |
 
 ### Batching & limits
 

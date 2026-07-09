@@ -57,8 +57,8 @@ The service column lists what each example touches; all are provided by
 | Example | Services |
 |---------|----------|
 | `postgres_cdc_to_jsonl.yaml` | postgres (logical replication preconfigured) |
-| `postgres_cdc_to_postgres_upsert.yaml` | postgres (CDC source + an upsert mirror table; `cdc_unwrap` + `write_mode: upsert`, exactly-once) |
-| `postgres_cdc_to_bigquery_upsert.yaml` | postgres (CDC source) + BigQuery (`write_mode: upsert`, in-place MERGE, exactly-once; requires GCP credentials) |
+| `postgres_cdc_to_postgres_upsert.yaml` | postgres (CDC source + an upsert mirror table; `cdc_unwrap` + `write_mode: upsert`, effectively-once) |
+| `postgres_cdc_to_bigquery_upsert.yaml` | postgres (CDC source) + BigQuery (`write_mode: upsert`, in-place MERGE, effectively-once; requires GCP credentials) |
 | `mongodb_cdc_to_jsonl.yaml` | mongodb (single-node replica set preconfigured; Change Streams) |
 | `mysql_cdc_to_jsonl.yaml` | mysql (binlog enabled; `repl` user with replication grants preconfigured) |
 | `rest_to_postgres.yaml`, `rest_to_postgres_with_quality.yaml`, `mongodb_to_postgres.yaml`, `graphql_to_postgres.yaml`, `webhook_to_postgres.yaml` | postgres (+ source) |

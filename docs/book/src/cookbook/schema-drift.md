@@ -156,11 +156,11 @@ Not every sink can evolve, and a schemaless sink has no schema to diverge from.
 
 - **`quarantine` requires a `dlq:` block** (`on_drift: quarantine`, or `evolve`
   with `on_incompatible: quarantine`). Validated at config-load.
-- **`quarantine` is incompatible with `delivery: exactly_once`** — exactly-once
+- **`quarantine` is incompatible with `delivery: exactly_once`** — effectively-once
   forbids a DLQ, so a quarantine policy cannot run alongside it.
 - **`evolve` / `ignore` / `fail` / `warn` compose with everything** — including
-  [`delivery: exactly_once`](./state.md#exactly-once-delivery) and
-  [`write_mode: upsert`](./upsert.md). Under `evolve` + exactly-once the additive
+  [`delivery: exactly_once`](./state.md#effectively-once-delivery) and
+  [`write_mode: upsert`](./upsert.md). Under `evolve` + effectively-once the additive
   DDL runs first, then the records and the commit token land in one transaction.
 
 ## Worked example: CDC mirror that evolves with the source
@@ -168,7 +168,7 @@ Not every sink can evolve, and a schemaless sink has no schema to diverge from.
 The shipped example
 [`cli/examples/postgres_cdc_to_postgres_evolve.yaml`](https://github.com/PawanSikawat/faucet-stream/blob/main/cli/examples/postgres_cdc_to_postgres_evolve.yaml)
 mirrors a Postgres table via CDC and evolves the destination as the source
-schema changes — exactly-once, upsert, drift-aware:
+schema changes — effectively-once, upsert, drift-aware:
 
 ```yaml
 version: 1

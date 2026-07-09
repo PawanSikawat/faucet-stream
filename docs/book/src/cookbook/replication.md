@@ -220,13 +220,13 @@ the source table has no natural key you cannot mirror it with upsert — either
 supply a synthetic `key` the snapshot and CDC both produce, or accept
 append-mode semantics (and the boundary duplicates that come with them).
 
-## Composing with exactly-once delivery
+## Composing with effectively-once delivery
 
-`faucet replicate` composes with [`delivery: exactly_once`](./state.md#exactly-once-delivery)
+`faucet replicate` composes with [`delivery: exactly_once`](./state.md#effectively-once-delivery)
 on the CDC phase: set `delivery: exactly_once` at the top level and pair it with
 one of the four idempotent SQL sinks (`postgres`, `mysql`, `mssql`, `sqlite`) in
 `upsert` mode. The snapshot phase always runs at-least-once (the query source is
-not exactly-once-capable), but that is harmless — re-running the snapshot is
-idempotent under upsert. The standard exactly-once hard requirements still apply
+not effectively-once-capable), but that is harmless — re-running the snapshot is
+idempotent under upsert. The standard effectively-once hard requirements still apply
 to the CDC pipeline (CDC source, idempotent SQL sink, a `state:` block, and no
 `dlq:` block).

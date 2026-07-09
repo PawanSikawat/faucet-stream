@@ -152,6 +152,18 @@ Required fields are surfaced with a typed placeholder and a `# REQUIRED` marker;
 optional fields are commented out so connector defaults apply. The interactive
 mode (`--interactive`) is gated behind the `cli-interactive` feature.
 
+**Singer discovery.** For the [Singer bridge](connectors.md) source, add
+`--discover --executable <tap>` to run the tap's `--discover`, write the returned
+catalog to `catalog.json`, and scaffold a config that inlines the catalog and
+lists the discovered streams (with `stream:` left empty for you to choose):
+
+```bash
+faucet init --source singer --discover --executable tap-github -o pipeline.yaml
+```
+
+`faucet doctor` then verifies the tap resolves on `PATH` and that the selected
+`stream` exists in the catalog.
+
 ## `doctor`
 
 ```bash

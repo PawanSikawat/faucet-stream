@@ -306,7 +306,7 @@ kafka:{group_id}:{topic1}:{topic2}...
 
 Topics are sorted alphabetically before joining, so the key is stable regardless of config order. They are joined with `:` (not `.`) because a topic name may legally contain `.`. So `group_id = "my-group"`, `topics = ["beta", "alpha"]` yields `kafka:my-group:alpha:beta`.
 
-**Delivery semantics:** offsets are persisted only after the sink confirms, and on restart the consumer seeds the assignment with the bookmark before the first fetch. End-to-end this is **at-least-once** if the sink can fail mid-batch; pair with an idempotent sink for stricter guarantees. (The Kafka source does *not* advertise faucet-stream's exactly-once `delivery` mode — that gate requires a CDC source.)
+**Delivery semantics:** offsets are persisted only after the sink confirms, and on restart the consumer seeds the assignment with the bookmark before the first fetch. End-to-end this is **at-least-once** if the sink can fail mid-batch; pair with an idempotent sink for stricter guarantees. (The Kafka source does *not* advertise faucet-stream's effectively-once `delivery` mode — that gate requires a CDC source.)
 
 ## Clustered consumption (Mode B, native consumer groups)
 

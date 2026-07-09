@@ -17,8 +17,8 @@
 
 **The fast, config-driven way to move data in Rust.**
 
-faucet-stream is a complete **ETL** toolkit: **23 source** and **18 sink** connectors
-(**41 in total**) plus in-flight transforms — including a page-level embedded-DuckDB `sql`
+faucet-stream is a complete **ETL** toolkit: **24 source** and **18 sink** connectors
+(**42 in total**) plus in-flight transforms — including a page-level embedded-DuckDB `sql`
 transform — wired together by a single `faucet` binary that runs pipelines declaratively
 from a YAML/JSON file, no Rust code required. Or skip the binary and embed the same engine
 in your own service through the typed `Source` / `Sink` traits. One toolkit, whether you
@@ -36,19 +36,22 @@ cargo add faucet-stream           # the library
 
 ### Why faucet-stream
 
-- **🚀 Fast and reliable by default** — native streaming with bounded memory, connection
-  pooling, multi-row inserts, bulk APIs, and parallel I/O. Every connector is built to be
-  the fastest way to move its data in Rust.
+- **🚀 Built for throughput** — native streaming with bounded memory, connection
+  pooling, multi-row inserts, bulk APIs, and parallel I/O. Throughput is a first-class
+  design goal for every connector. In a reproducible 1M-row CSV→JSONL benchmark,
+  faucet moved **712k rows/s using 11.8 MiB** vs Meltano's 7.4k rows/s / 724 MiB
+  (~96× faster, ~62× less memory, exact row parity) — see
+  [`BENCHMARKS.md`](BENCHMARKS.md) for the methodology and honest caveats.
 - **🧩 Config-driven _or_ embeddable** — run `faucet run pipeline.yaml`, or call
   `Pipeline::new(&source, &sink).run().await?` from Rust. Same orchestration either way.
 - **⚙️ A runtime, not just connectors** — incremental + resumable replication, change-data-capture,
-  exactly-once delivery, upsert/delete write modes, data-quality checks, data contracts,
+  effectively-once delivery (idempotent dedup-on-resume), upsert/delete write modes, data-quality checks, data contracts,
   freshness/volume SLA monitoring, dead-letter queues, automatic retries, adaptive batch sizing,
   secrets-manager interpolation,
   cron scheduling, an HTTP control plane with event-driven triggers, OpenLineage emission, and
   built-in Prometheus metrics + `tracing` spans — all with zero per-connector code.
 - **📦 Pay only for what you use** — every connector is a Cargo feature, so a slim build can
-  be just REST + JSONL, or pull in all 41 connectors with `--features full`.
+  be just REST + JSONL, or pull in all 42 connectors with `--features full`.
 
 **Documentation:** the [faucet-stream guide](https://pawansikawat.github.io/faucet-stream/)
 (getting started, tutorials, cookbook, operations) · API reference on
@@ -178,7 +181,7 @@ one-block addition to your YAML:
 | **Streaming, bounded memory** | Sources stream page-by-page; sinks write each page as it arrives — memory stays at one `batch_size` regardless of total volume. | [concepts](https://pawansikawat.github.io/faucet-stream/getting-started/concepts.html) |
 | **Incremental + resumable** | Bookmark-based replication: only fetch what changed, resume mid-run from a durable state store (file / Redis / Postgres). | [state](https://pawansikawat.github.io/faucet-stream/cookbook/state.html) |
 | **Change data capture** | Streaming row-level CDC for **PostgreSQL** (logical replication), **MySQL** (binlog), and **MongoDB** (change streams) — resumable. | [CDC guide](https://pawansikawat.github.io/faucet-stream/reference/connectors.html) |
-| **Exactly-once delivery** | Monotonic per-page commit tokens committed atomically with the data (SQL sinks, Iceberg, BigQuery) — no duplicates on resume. | [state](https://pawansikawat.github.io/faucet-stream/cookbook/state.html) |
+| **Effectively-once delivery** | Monotonic per-page commit tokens committed atomically with the data (SQL sinks, Iceberg, BigQuery), so a resumed run re-delivers no duplicates. This is idempotent at-least-once (dedup on resume), not distributed-consensus exactly-once. | [state](https://pawansikawat.github.io/faucet-stream/cookbook/state.html) |
 | **Upsert / delete write modes** | `write_mode: upsert \| delete` with a `key` + `delete_marker` — merge by key on Postgres / MySQL / SQL Server / SQLite / Mongo / Elasticsearch. | [upsert](https://pawansikawat.github.io/faucet-stream/cookbook/upsert.html) |
 | **Data-quality checks** | 13 per-record and per-batch assertions (not-null, regex, ranges, uniqueness, row-count, JSON Schema, …) with quarantine routing or abort policies. | [quality](https://pawansikawat.github.io/faucet-stream/cookbook/quality.html) |
 | **Data contracts** | A versioned promise about the output shape (types, nullability, enums, patterns, bounds) enforced per page — breaches fail, quarantine, or warn; export as JSON Schema / OpenLineage via `faucet contract`. | [contracts](https://pawansikawat.github.io/faucet-stream/cookbook/contracts.html) |
@@ -201,7 +204,14 @@ the [connector capability matrix](https://pawansikawat.github.io/faucet-stream/r
 [choosing-a-connector guide](https://pawansikawat.github.io/faucet-stream/reference/choosing.html)
 for help picking between overlapping connectors (Postgres query vs CDC, S3 vs Parquet, Redis vs Kafka, …).
 
-### Sources (23)
+> **Support tiers.** A connector is **Tier-1 (supported)** when it invokes and
+> passes the [`faucet-conformance`](crates/conformance) battery in CI (valid
+> config schema, bounded-memory streaming, …) — that battery *is* the tiering
+> mechanism, there is no separate scheme. Connectors marked **Tier-2 /
+> experimental ⚠️** are best-effort: correctness bugs are fixed, but breadth of
+> testing and upstream-drift tracking are not guaranteed.
+
+### Sources (24)
 
 | Crate | Description |
 |-------|-------------|
@@ -228,12 +238,13 @@ for help picking between overlapping connectors (Postgres query vs CDC, S3 vs Pa
 | [`faucet-source-webhook`](crates/source/webhook) | Webhook — temporary HTTP server collecting POST payloads |
 | [`faucet-source-websocket`](crates/source/websocket) | WebSocket — live streaming feed; subscribe frames, reconnect, keepalive |
 | [`faucet-source-csv`](crates/source/csv) | CSV — read CSV files as JSON objects |
+| [`faucet-source-singer`](crates/source/singer) | **Singer tap bridge** — run any Singer tap and adapt its output (single-stream v0). **Tier-2 / experimental** ⚠️ |
 
 ### Sinks (18)
 
 | Crate | Description |
 |-------|-------------|
-| [`faucet-sink-bigquery`](crates/sink/bigquery) | Google BigQuery — streaming inserts; exactly-once via MERGE |
+| [`faucet-sink-bigquery`](crates/sink/bigquery) | Google BigQuery — streaming inserts; effectively-once via MERGE |
 | [`faucet-sink-iceberg`](crates/sink/iceberg) | Apache Iceberg — append snapshots via REST/Glue/SQL/HMS catalogs |
 | [`faucet-sink-postgres`](crates/sink/postgres) | PostgreSQL — JSONB or auto-mapped columns; upsert/delete |
 | [`faucet-sink-mysql`](crates/sink/mysql) | MySQL — JSON column or auto-mapped columns; upsert/delete |
@@ -309,13 +320,13 @@ own service.
 | Connector count | 41, growing | 600+ taps | 350+ | dozens | dozens | 500+ |
 | Change data capture | ✓ Postgres / MySQL / Mongo | partial¹ | ✓ | partial | ✗ | ✓ |
 | Incremental + resumable state | ✓ | ✓ | ✓ | partial | n/a | ✓ |
-| Exactly-once delivery | ✓ (SQL / Iceberg / BigQuery) | ✗ | partial | ✗ | ✗ | ✓ |
+| Effectively-once delivery³ | ✓ (SQL / Iceberg / BigQuery) | ✗ | partial | ✗ | ✗ | ✓ |
 | Built-in data-quality checks | ✓ native | ✗ | paywalled add-on | ✗ | ✗ | paywalled add-on |
 | Built-in metrics + tracing | ✓ Prometheus + `tracing` | partial | ✓ (platform) | ✓ | ✓ | ✓ (hosted) |
 | Self-hosted, no daemon | ✓ run-to-completion | ✓ | ✗ needs platform | usually a service | agent | ✗ SaaS |
 | License | MIT / Apache-2.0 | MIT | ELv2 + MIT | Apache-2.0 / source-available² | MPL-2.0 | Proprietary |
 
-¹ Singer CDC depends on the individual tap. ² The original Benthos is Apache-2.0; Redpanda Connect's maintained build is source-available. *Comparison reflects the general shape of each tool as of 2026-05 — check each project for current details.*
+¹ Singer CDC depends on the individual tap. ² The original Benthos is Apache-2.0; Redpanda Connect's maintained build is source-available. ³ "Effectively-once" = idempotent at-least-once: per-page commit tokens are committed atomically with the data so a resumed run drops duplicates — not distributed-consensus exactly-once (see [delivery guarantees](https://pawansikawat.github.io/faucet-stream/cookbook/state.html)). *Comparison reflects the general shape of each tool as of 2026-05 — check each project for current details.*
 
 For reference: **[Singer](https://www.singer.io/)** is a connector spec and **[Meltano](https://meltano.com/)**
 is its most common runtime; both appear above. faucet-stream is a full **ETL** tool — it
@@ -332,7 +343,7 @@ faucet extracts, transforms, and loads.
 
 - You want **one fast static binary** (or a Rust library) to move data between APIs, databases, object stores, and warehouses — without standing up a platform, scheduler, or Python environment.
 - You want **version-controlled, config-driven pipelines** you can run anywhere: locally, in CI, behind cron, or inside another service.
-- You need **streaming with bounded memory, incremental/resumable replication, CDC, exactly-once delivery, data-quality assertions, retries, dead-letter queues, and metrics** without hand-writing that plumbing.
+- You need **streaming with bounded memory, incremental/resumable replication, CDC, effectively-once delivery, data-quality assertions, retries, dead-letter queues, and metrics** without hand-writing that plumbing.
 - You're **already in Rust** and want typed `Source`/`Sink` traits you can embed and extend.
 
 **Look elsewhere (for now) when:**
@@ -366,9 +377,10 @@ flowchart LR
     P -.->|metrics + spans| O
 ```
 
-faucet-stream is a Cargo workspace with **55 crates** — 23 sources, 18 sinks, 6 shared
+faucet-stream is a Cargo workspace with **57 crates** — 24 sources, 18 sinks, 6 shared
 connector libraries, the shared auth-provider library, 2 state-store backends, the lineage
-crate, the SQL transform crate, the shared core, the umbrella crate, and the CLI binary. See
+crate, the SQL transform crate, the conformance test battery, the shared core, the umbrella
+crate, and the CLI binary. See
 the [Connectors](#connectors) table above and the
 [architecture guide](https://pawansikawat.github.io/faucet-stream/getting-started/concepts.html).
 
@@ -695,11 +707,11 @@ convention `faucet-source-<name>` / `faucet-sink-<name>`. Full walkthrough:
 ## Project structure
 
 ```
-Cargo.toml                    — workspace manifest (55 crates)
+Cargo.toml                    — workspace manifest (57 crates)
 crates/
   core/                       — faucet-core: shared types, traits, pipeline, transforms, config
   auth/                       — faucet-auth: shared OAuth2 / token-endpoint providers
-  source/                     — 23 source connectors (rest, graphql, xml, grpc, *-cdc, kafka, s3, …)
+  source/                     — 24 source connectors (rest, graphql, xml, grpc, *-cdc, kafka, s3, singer, …)
   sink/                       — 18 sink connectors (bigquery, iceberg, postgres, parquet, kafka, …)
   common/                     — 6 shared connector libraries (bigquery, elasticsearch, gcs, kafka, snowflake, mssql)
   state/                      — Redis- and Postgres-backed StateStore backends

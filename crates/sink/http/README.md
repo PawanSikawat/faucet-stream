@@ -195,7 +195,7 @@ The sink overrides `write_batch_partial` so a configured [DLQ](https://pawansika
 - **`Individual` mode** — every record is an independent POST, so each success/failure is attributable. The sink attempts **all** records (failures don't short-circuit siblings) and returns one outcome per record; only the genuinely-failed rows are dead-lettered. This avoids duplicating already-delivered rows against a non-idempotent endpoint under `on_batch_error: dlq_all`.
 - **`Array` mode** — a single array POST cannot attribute a failure to specific rows, so it stays all-or-nothing: the whole array surfaces as an error and the DLQ `on_batch_error` policy decides whether to abort or dead-letter the batch.
 
-This sink does **not** support exactly-once delivery or upsert/delete write modes — HTTP endpoints are opaque to faucet, so it can only append (POST). For idempotent delivery, make the destination endpoint idempotent (e.g. key on a record field) and use `Individual` mode + a DLQ.
+This sink does **not** support effectively-once delivery or upsert/delete write modes — HTTP endpoints are opaque to faucet, so it can only append (POST). For idempotent delivery, make the destination endpoint idempotent (e.g. key on a record field) and use `Individual` mode + a DLQ.
 
 ## Config loading & schema
 

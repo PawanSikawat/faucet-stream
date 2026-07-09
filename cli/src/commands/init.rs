@@ -25,6 +25,10 @@ pub async fn run(args: InitArgs) -> CliResult<()> {
         });
     }
 
+    if args.discover {
+        return run_singer_discover(&args).await;
+    }
+
     let (source_kind, sink_kind) = resolve_kinds(&args)?;
     let name = args.name.as_deref().unwrap_or(DEFAULT_NAME);
     let template = &args.template;
@@ -50,6 +54,105 @@ pub async fn run(args: InitArgs) -> CliResult<()> {
     std::fs::write(&args.output, body)?;
     println!("wrote {}", args.output.display());
     Ok(())
+}
+
+/// `faucet init --source singer --discover --executable <tap>`: run the tap's
+/// discovery, write the catalog next to the output, and scaffold a config that
+/// references it and lists the discovered streams.
+#[cfg(feature = "source-singer")]
+async fn run_singer_discover(args: &InitArgs) -> CliResult<()> {
+    let source_kind = args.source.as_deref().unwrap_or("singer");
+    if source_kind != "singer" {
+        return Err(CliError::Config(format!(
+            "`--discover` is only supported for `--source singer` (got `{source_kind}`)"
+        )));
+    }
+    let executable = args.executable.as_deref().ok_or_else(|| {
+        CliError::Config("`--discover` requires `--executable <tap>`".to_string())
+    })?;
+
+    let cfg = faucet_source_singer::SingerSourceConfig::new(executable, "");
+    let catalog = faucet_source_singer::discover(&cfg).await?; // FaucetError -> CliError
+    let streams = faucet_source_singer::catalog_stream_ids(&catalog);
+
+    // Write the catalog next to the output file.
+    let catalog_path = match args.output.parent() {
+        Some(dir) if !dir.as_os_str().is_empty() => dir.join("catalog.json"),
+        _ => std::path::PathBuf::from("catalog.json"),
+    };
+    let catalog_json = serde_json::to_string_pretty(&catalog)
+        .map_err(|e| CliError::Config(format!("failed to serialize catalog: {e}")))?;
+    std::fs::write(&catalog_path, catalog_json)?;
+
+    // Inline the catalog as compact JSON (YAML is a JSON superset, so a
+    // single-line flow mapping parses correctly — unlike `${file:…}`, which
+    // would insert the file's contents as a *string*, not an object).
+    let catalog_inline = serde_json::to_string(&catalog)
+        .map_err(|e| CliError::Config(format!("failed to serialize catalog: {e}")))?;
+    let name = args.name.as_deref().unwrap_or(DEFAULT_NAME);
+    let body = render_singer_config(name, executable, &catalog_inline, &streams);
+    std::fs::write(&args.output, body)?;
+
+    println!(
+        "discovered {} stream(s): {}",
+        streams.len(),
+        if streams.is_empty() {
+            "(none)".to_string()
+        } else {
+            streams.join(", ")
+        }
+    );
+    println!(
+        "wrote {} and {}",
+        catalog_path.display(),
+        args.output.display()
+    );
+    Ok(())
+}
+
+#[cfg(not(feature = "source-singer"))]
+async fn run_singer_discover(_args: &InitArgs) -> CliResult<()> {
+    Err(CliError::Config(
+        "`--discover` requires the `source-singer` build feature".to_string(),
+    ))
+}
+
+/// Render a Singer scaffold that inlines the discovered catalog and lists the
+/// streams. `stream:` is left empty on purpose (the user must pick one; leaving
+/// it empty is flagged by `faucet doctor`). The same catalog is also written to
+/// `catalog.json` for reference / use as the tap's `--catalog`.
+#[cfg(feature = "source-singer")]
+fn render_singer_config(
+    name: &str,
+    executable: &str,
+    catalog_inline: &str,
+    streams: &[String],
+) -> String {
+    let discovered = if streams.is_empty() {
+        "(none discovered)".to_string()
+    } else {
+        streams.join(", ")
+    };
+    format!(
+        "version: 1\n\
+         name: {name}\n\
+         pipeline:\n\
+         \x20 source:\n\
+         \x20   type: singer\n\
+         \x20   config:\n\
+         \x20     executable: {executable}\n\
+         \x20     # Discovered catalog, inlined as compact JSON (also saved to catalog.json).\n\
+         \x20     catalog: {catalog_inline}\n\
+         \x20     # stream is REQUIRED. Discovered streams: {discovered}\n\
+         \x20     # Set it to one of the above; leaving it empty fails `faucet doctor`.\n\
+         \x20     stream: \"\"\n\
+         \x20     # The tap's own config (secret-resolved by faucet). Fill in as the tap needs:\n\
+         \x20     tap_config: {{}}\n\
+         \x20 sink:\n\
+         \x20   type: jsonl\n\
+         \x20   config:\n\
+         \x20     path: ./out/records.jsonl\n"
+    )
 }
 
 fn resolve_kinds(args: &InitArgs) -> CliResult<(String, String)> {

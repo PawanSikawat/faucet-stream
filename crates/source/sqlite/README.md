@@ -150,7 +150,7 @@ The `batch_size` argument passed to `stream_pages` by the pipeline is informatio
 
 ### No incremental / resume support
 
-This is a one-shot query source. It does **not** implement bookmark-based resume, incremental replication, or exactly-once delivery: every emitted page carries `bookmark: None`, and each run re-executes the full query. For incremental loads, encode the watermark directly in the query (e.g. `WHERE updated_at > '2026-01-01'`) and drive it from a matrix context or a `${now.*}` token. If you need change-data-capture, use a CDC source (postgres-cdc / mysql-cdc / mongodb-cdc) instead.
+This is a one-shot query source. It does **not** implement bookmark-based resume, incremental replication, or effectively-once delivery: every emitted page carries `bookmark: None`, and each run re-executes the full query. For incremental loads, encode the watermark directly in the query (e.g. `WHERE updated_at > '2026-01-01'`) and drive it from a matrix context or a `${now.*}` token. If you need change-data-capture, use a CDC source (postgres-cdc / mysql-cdc / mongodb-cdc) instead.
 
 ## Supported column types
 

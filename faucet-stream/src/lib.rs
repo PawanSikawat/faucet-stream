@@ -178,6 +178,11 @@ pub mod source {
     pub mod gcs {
         pub use faucet_source_gcs::*;
     }
+
+    #[cfg(feature = "source-singer")]
+    pub mod singer {
+        pub use faucet_source_singer::*;
+    }
 }
 
 // Source modules available without source-rest (when only other sources are enabled).
@@ -281,6 +286,11 @@ pub mod source {
     #[cfg(feature = "source-gcs")]
     pub mod gcs {
         pub use faucet_source_gcs::*;
+    }
+
+    #[cfg(feature = "source-singer")]
+    pub mod singer {
+        pub use faucet_source_singer::*;
     }
 }
 

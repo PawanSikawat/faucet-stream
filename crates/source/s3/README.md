@@ -240,7 +240,7 @@ Behaviour by format:
 
 > **Memory ceiling — `raw_text` / `json_array`.** Both formats hold one whole decoded object in memory at a time (inherent: `raw_text`'s record *is* the file, and a JSON array isn't valid until its closing `]`). Because objects are fetched concurrently, peak memory is roughly **`concurrency` × (largest object's decoded size)**, not `batch_size`. For large `raw_text` / `json_array` objects, lower `concurrency` to cap peak memory, or re-emit the data as `json_lines` upstream so it streams line-by-line.
 
-The S3 source has **no incremental-replication mode** today, so every emitted page carries `bookmark: None`. It does not implement resume/state, exactly-once, write modes, or a dead-letter queue (those are sink- or CDC-source-specific capabilities).
+The S3 source has **no incremental-replication mode** today, so every emitted page carries `bookmark: None`. It does not implement resume/state, effectively-once, write modes, or a dead-letter queue (those are sink- or CDC-source-specific capabilities).
 
 ## Compression
 

@@ -7,14 +7,14 @@
 
 Google **BigQuery** streaming-insert sink for the [faucet-stream](https://github.com/PawanSikawat/faucet-stream) ecosystem. Writes JSON records to a BigQuery table via the [`tabledata.insertAll`](https://cloud.google.com/bigquery/docs/reference/rest/v2/tabledata/insertAll) streaming API, automatically re-chunking each batch to stay within BigQuery's per-request limits.
 
-Reach for it when you want to land events, CDC streams, or query results into a BigQuery table from any faucet-stream source with one declarative config — and, when you need it, full **upsert/delete** mirroring and **exactly-once** delivery on top of the same connector.
+Reach for it when you want to land events, CDC streams, or query results into a BigQuery table from any faucet-stream source with one declarative config — and, when you need it, full **upsert/delete** mirroring and **effectively-once** delivery on top of the same connector.
 
 ## Feature highlights
 
 - **Streaming inserts** — high-throughput `tabledata.insertAll`; each batch is re-chunked to BigQuery's ~10 MB / ~500-row sweet spot.
 - **Three credential modes** — Application Default Credentials, a service-account key file, or inline service-account JSON. The shared `BigQueryCredentials` enum is re-exported from [`faucet-common-bigquery`](https://crates.io/crates/faucet-common-bigquery) so it matches the BigQuery **source** byte-for-byte.
 - **Write modes** — `append` (default), `upsert`, and `delete` via an in-place `MERGE` over the target table; no staging table required.
-- **Exactly-once delivery** — pair with a CDC source for a multi-statement `MERGE`/`INSERT` transaction that commits records and a `_faucet_commit_token` watermark atomically.
+- **Effectively-once delivery** — pair with a CDC source for a multi-statement `MERGE`/`INSERT` transaction that commits records and a `_faucet_commit_token` watermark atomically.
 - **Retry de-duplication** — set `insert_id_field` to a stable per-row key so BigQuery best-effort de-dupes the at-least-once streaming path.
 - **Dead-letter queue** — surfaces per-row `insertErrors` so only the rows BigQuery actually rejected are routed to the DLQ; committed rows are never duplicated.
 - **Client built once** — the authenticated BigQuery client is constructed (and credentials validated) in `new()` and reused for every write.
@@ -153,7 +153,7 @@ sink:
     batch_size: 100
 ```
 
-### Postgres CDC → BigQuery upsert mirror (exactly-once)
+### Postgres CDC → BigQuery upsert mirror (effectively-once)
 
 ```yaml
 version: 1
@@ -217,9 +217,9 @@ The `key` columns must be real columns of the target BigQuery table (validated a
 
 **Page-size limit.** The whole page is sent as one `jobs.query` request — BigQuery's ~10 MB body limit applies. The default `batch_size: 1000` suits most schemas; lower it for very wide rows.
 
-**Exactly-once composition.** `delivery: exactly_once` composes with `write_mode: upsert`: the data `MERGE` and the watermark `MERGE` (into `_faucet_commit_token`) commit inside a single BigQuery transaction. See [Exactly-once delivery](#exactly-once-delivery) below.
+**Effectively-once composition.** `delivery: exactly_once` composes with `write_mode: upsert`: the data `MERGE` and the watermark `MERGE` (into `_faucet_commit_token`) commit inside a single BigQuery transaction. See [Effectively-once delivery](#effectively-once-delivery) below.
 
-## Exactly-once delivery
+## Effectively-once delivery
 
 `BigQuerySink` implements `Sink::supports_idempotent_writes` (returns `true`) and the two companion hooks:
 
@@ -228,9 +228,9 @@ The `key` columns must be real columns of the target BigQuery table (validated a
 
 On crash/resume the pipeline reads `last_committed_token` and skips any page whose token is already committed, so the target table never sees duplicates. This is **append-with-idempotency**, distinct from the default streaming `insertAll` path and from key-based upsert (`write_mode`).
 
-**Requirements & limits.** The target table must already exist with a defined schema (the sink reads it to build the typed INSERT — a schemaless table is rejected with a clear error). Because each page commits as one atomic transaction (one token per page, no `batch_size` re-chunking on this path), the page must serialize within BigQuery's ~10 MB `jobs.query` request limit — keep the CDC source's per-page size modest. A scalar column whose JSON value is an object/array is coerced to `NULL` (or, for a `REQUIRED` column, fails the INSERT). This path uses BigQuery DML, which has concurrency limits; it is intended for the opt-in exactly-once mode, not high-rate streaming (use the default streaming `insertAll` path for that).
+**Requirements & limits.** The target table must already exist with a defined schema (the sink reads it to build the typed INSERT — a schemaless table is rejected with a clear error). Because each page commits as one atomic transaction (one token per page, no `batch_size` re-chunking on this path), the page must serialize within BigQuery's ~10 MB `jobs.query` request limit — keep the CDC source's per-page size modest. A scalar column whose JSON value is an object/array is coerced to `NULL` (or, for a `REQUIRED` column, fails the INSERT). This path uses BigQuery DML, which has concurrency limits; it is intended for the opt-in effectively-once mode, not high-rate streaming (use the default streaming `insertAll` path for that).
 
-To use exactly-once delivery, set `delivery: exactly_once` in your pipeline config and pair this sink with one of the CDC sources (`postgres-cdc`, `mysql-cdc`, `mongodb-cdc`) plus a `state:` block. A DLQ is not permitted in exactly-once mode. All four requirements are validated at config-load time (`faucet validate`) before any run starts.
+To use effectively-once delivery, set `delivery: exactly_once` in your pipeline config and pair this sink with one of the CDC sources (`postgres-cdc`, `mysql-cdc`, `mongodb-cdc`) plus a `state:` block. A DLQ is not permitted in effectively-once mode. All four requirements are validated at config-load time (`faucet validate`) before any run starts.
 
 ```yaml
 pipeline:
@@ -259,7 +259,7 @@ pipeline:
 delivery: exactly_once
 ```
 
-See the [Exactly-once delivery cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/state.html#exactly-once-delivery) for full rationale and the supported source/sink set.
+See the [Effectively-once delivery cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/state.html#effectively-once-delivery) for full rationale and the supported source/sink set.
 
 ## Schema evolution
 
@@ -271,11 +271,11 @@ Under `on_drift: evolve`, `BigQuerySink::evolve_schema()` applies `ALTER TABLE` 
 - **Lossless widenings** (e.g. integer → number) → `ALTER COLUMN <col> SET DATA TYPE <type>` — gated on `allow_type_widening`.
 - **Nullability relaxations** → `ALTER COLUMN <col> DROP NOT NULL`.
 
-The cached schema is invalidated afterwards so the next page (and the next exactly-once / upsert page) reads the evolved table. Incompatible changes (narrowing / type swaps) are never auto-applied — they are routed by `on_incompatible` (`fail` or `quarantine`). See the [schema-drift cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/schema-drift.html).
+The cached schema is invalidated afterwards so the next page (and the next effectively-once / upsert page) reads the evolved table. Incompatible changes (narrowing / type swaps) are never auto-applied — they are routed by `on_incompatible` (`fail` or `quarantine`). See the [schema-drift cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/schema-drift.html).
 
 ## Dead-letter queue
 
-This sink overrides `Sink::write_batch_partial` to surface per-row failures from BigQuery `tabledata.insertAll`'s `insertErrors` response. Configure a DLQ at the pipeline level (see [cli/README.md — `dlq:`](../../../cli/README.md)) and only the rows BigQuery actually rejected are routed there — already-committed rows stay in the main sink with no duplicates. (DLQ is not permitted in exactly-once mode.)
+This sink overrides `Sink::write_batch_partial` to surface per-row failures from BigQuery `tabledata.insertAll`'s `insertErrors` response. Configure a DLQ at the pipeline level (see [cli/README.md — `dlq:`](../../../cli/README.md)) and only the rows BigQuery actually rejected are routed there — already-committed rows stay in the main sink with no duplicates. (DLQ is not permitted in effectively-once mode.)
 
 ## Config loading & schema introspection
 
@@ -371,7 +371,7 @@ println!("Transferred {} records", result.records_written);
 1. `new()` resolves `BigQueryCredentials` and builds an authenticated client **once**, validating credentials eagerly so failures surface immediately.
 2. `write_batch()` slices the input into `batch_size`-row chunks (or forwards the whole slice when `batch_size = 0`) and sends each chunk as a separate `insertAll` request.
 3. Per-row errors in the BigQuery response are detected and reported. If any rows fail, the batch returns an error with details about the first failure; `write_batch_partial` exposes them per-row for DLQ routing.
-4. `write_mode: upsert`/`delete` and the exactly-once path build pure-SQL `MERGE` / `INSERT` statements and execute them via `jobs.query`, verifying success against the job's `errorResult`.
+4. `write_mode: upsert`/`delete` and the effectively-once path build pure-SQL `MERGE` / `INSERT` statements and execute them via `jobs.query`, verifying success against the job's `errorResult`.
 5. The client is reused across all calls — no re-authentication per request.
 
 ## Lineage dataset URI
@@ -391,14 +391,14 @@ This crate has no optional features of its own; enable it in the CLI/umbrella vi
 | HTTP 413 / request too large | A chunk exceeded BigQuery's ~10 MB body limit. Lower `batch_size` (or set a non-zero `batch_size` if you were using `0` with wide rows). |
 | Duplicate rows after a retry | Streaming inserts are at-least-once. Set `insert_id_field` to a stable per-row key for best-effort de-dup, or use `delivery: exactly_once`. |
 | `write_mode: upsert` / `key` rejected | `key` must be non-empty and name real columns of the target table; the table must already exist with a defined schema. |
-| Exactly-once run rejected at validate | Exactly-once requires a CDC source (`postgres-cdc`/`mysql-cdc`/`mongodb-cdc`), this sink, a `state:` block, and **no** `dlq:`. `faucet validate` reports the missing requirement. |
+| Effectively-once run rejected at validate | Effectively-once requires a CDC source (`postgres-cdc`/`mysql-cdc`/`mongodb-cdc`), this sink, a `state:` block, and **no** `dlq:`. `faucet validate` reports the missing requirement. |
 | Idempotent INSERT fails on a `REQUIRED` column | A scalar column received a JSON object/array (coerced to `NULL`) or a missing value. Shape the records (e.g. `cdc_unwrap` + a transform) so every `REQUIRED` column is populated with a scalar. |
 | Inline key JSON appears as `***` in logs | Intentional — `BigQueryCredentials`'s `Debug` masks inline JSON to prevent credential leakage. |
 
 ## See also
 
 - [Connector reference](https://pawansikawat.github.io/faucet-stream/reference/connectors.html) — capability matrix.
-- [Exactly-once delivery cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/state.html#exactly-once-delivery).
+- [Effectively-once delivery cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/state.html#effectively-once-delivery).
 - [Upsert / write-modes cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/upsert.html).
 - [`faucet-source-bigquery`](https://crates.io/crates/faucet-source-bigquery) — the matching BigQuery query source.
 - [`faucet-common-bigquery`](https://crates.io/crates/faucet-common-bigquery) — shared `BigQueryCredentials` + client builder.

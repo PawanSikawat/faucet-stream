@@ -71,7 +71,26 @@ Each invocation has a state key so concurrent matrix rows don't collide:
 `{name}::{row_id}` for roots and `{name}::{row_id}::{parent_record_key}` for DAG
 children. The CDC source uses `postgres-cdc:<slot>`.
 
-## Exactly-once delivery
+## Effectively-once delivery
+
+> **What the guarantee is — and is not.** faucet provides **effectively-once**
+> delivery: per-page monotonic commit tokens are committed *atomically with the
+> data* (SQL sinks, Iceberg, BigQuery, Kafka), so a resumed run re-delivers no
+> duplicates. This is **idempotent at-least-once** — the sink may see a page more
+> than once across a crash, but the atomic token + resume-and-skip logic
+> guarantees each page is *observably applied* exactly once. It is **not**
+> distributed-consensus exactly-once (there is no cross-system two-phase commit or
+> consensus protocol). The config key is spelled `delivery: exactly_once` for the
+> mode, but the honest description of the resulting guarantee is *effectively-once*.
+>
+> **Failure-mode boundary.** The atomicity is per-sink-transaction: the records
+> and the commit token commit together or not at all. If the process crashes
+> *after* that sink transaction commits but *before* the state store persists the
+> bookmark, the next run re-issues the same page, reads back
+> `last_committed_token`, sees the page is already committed, and **skips the
+> write** — no duplicate. The one thing faucet cannot make atomic is a sink whose
+> own write and token-commit are not a single transaction; that is exactly why the
+> supported-sink list below is restricted to transactional targets.
 
 ### The at-least-once crash window
 
@@ -84,7 +103,7 @@ destination can be handled by upsert logic or deduplication downstream.
 For CDC pipelines landing into SQL databases or Iceberg, faucet can close that
 window entirely.
 
-### How exactly-once closes the gap
+### How effectively-once closes the gap
 
 When `delivery: exactly_once`, the pipeline issues a monotonic **commit token** for
 every bookmark-carrying page. Instead of a plain `write_batch`, it calls
@@ -115,7 +134,7 @@ duplicates result from a crash at any point in the sequence.
 
 ### Supported sources and sinks
 
-Only certain connectors are allowed in an exactly-once pipeline:
+Only certain connectors are allowed in an effectively-once (`delivery: exactly_once`) pipeline:
 
 | Role | Allowed connectors | Why others are excluded |
 |------|--------------------|------------------------|

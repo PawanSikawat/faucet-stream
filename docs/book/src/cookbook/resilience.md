@@ -29,9 +29,9 @@ A runnable example lives at `cli/examples/rest_to_jsonl_resilient.yaml`.
 The policy is applied at two layers:
 
 - **Sink side (the pipeline loop):** `flush`, state-store `put`, and the
-  exactly-once `write_batch_idempotent` path are wrapped with retry + the circuit
+  effectively-once `write_batch_idempotent` path are wrapped with retry + the circuit
   breaker. A plain `write_batch` / `write_batch_partial` is retried **only when the
-  sink supports idempotent writes** (the exactly-once protocol) — see the caveat
+  sink supports idempotent writes** (the effectively-once protocol) — see the caveat
   below.
 
 > **Plain `write_batch` retry is gated on sink idempotency.** A non-idempotent
@@ -39,10 +39,10 @@ The policy is applied at two layers:
 > the *response* was lost (the rows actually landed) would, on retry, duplicate
 > every row. Only sinks that support idempotent writes (`postgres`, `mysql`,
 > `mssql`, `sqlite`, `iceberg`, `bigquery`, `kafka`) have their batch writes
-> retried by the policy. The exactly-once `write_batch_idempotent` path is always
+> retried by the policy. The effectively-once `write_batch_idempotent` path is always
 > retried (the commit token makes a replay safe), as are `flush` and `state_put`
 > for every sink. A transient failure on a non-idempotent sink still surfaces —
-> handle it with exactly-once delivery, an upsert write mode, or downstream
+> handle it with effectively-once delivery, an upsert write mode, or downstream
 > deduplication.
 - **Source side (the connector):** the `retry` policy is injected into the
   connectors that retry their own requests (`rest`, `xml`, `graphql`), replacing
@@ -113,7 +113,7 @@ row failures, the still-failing, retriable rows are re-submitted up to
 
 ## Composition
 
-- **Exactly-once delivery** — retry wraps `write_batch_idempotent`; a retried
+- **Effectively-once delivery** — retry wraps `write_batch_idempotent`; a retried
   idempotent write is safe because the commit token makes it idempotent.
 - **Adaptive batch sizing** — retry wraps each adaptive chunk; the breaker
   counts page-level failures.

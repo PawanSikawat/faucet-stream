@@ -99,7 +99,7 @@ cargo add faucet-stream --features full
 
 ### State-store backends
 
-The `memory` and `file` state stores are always available via `faucet-core`. These add durable backends for replication bookmarks / exactly-once tokens:
+The `memory` and `file` state stores are always available via `faucet-core`. These add durable backends for replication bookmarks / effectively-once commit tokens:
 
 | Feature | Description |
 |---------|-------------|
@@ -168,7 +168,7 @@ cargo add faucet-stream --features source-rest,sink-s3,compression
 # S3 → BigQuery warehouse load
 cargo add faucet-stream --features source-s3,sink-bigquery
 
-# Postgres CDC → Postgres mirror with exactly-once + durable state
+# Postgres CDC → Postgres mirror with effectively-once delivery + durable state
 cargo add faucet-stream --features source-postgres-cdc,sink-postgres,state-postgres,transform-cdc-unwrap
 
 # Kafka with Schema Registry → Parquet on S3
@@ -255,7 +255,7 @@ If you are **building your own connector**, depend only on `faucet-core` — it 
 | Kafka Avro/Protobuf decode fails | Schema-Registry formats need `kafka-schema-registry` in addition to `source-kafka`/`sink-kafka`. |
 | `auth: { ref }` errors / shared OAuth provider not found | The shared-auth catalog needs the `auth` feature (`faucet-auth`). Library callers build providers directly and pass them via `Source::with_auth_provider`. |
 | Iceberg catalog (Glue/SQL/HMS) not recognized | Enable the matching add-on: `sink-iceberg-glue`, `sink-iceberg-sql`, or `sink-iceberg-hms`. The bare `sink-iceberg` only ships the REST catalog. |
-| Exactly-once or CDC bookmarks lost across restarts | Configure a durable state backend (`state-postgres` / `state-redis`); the in-memory store does not survive a restart. Exactly-once also requires a CDC source + an idempotent sink (sqlite/postgres/mysql/mssql/iceberg/bigquery). |
+| Effectively-once or CDC bookmarks lost across restarts | Configure a durable state backend (`state-postgres` / `state-redis`); the in-memory store does not survive a restart. Effectively-once delivery also requires a CDC source + an idempotent sink (sqlite/postgres/mysql/mssql/iceberg/bigquery). |
 | Long compile times / huge binary | Don't use `full`. Enable only the connectors your pipeline uses. |
 
 ## See also

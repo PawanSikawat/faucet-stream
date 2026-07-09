@@ -221,7 +221,7 @@ Every emitted page carries `bookmark: None` — the MongoDB source has no increm
 
 ## Resume & state
 
-This source is **not resumable** and does not support exactly-once delivery. It runs a single `find()` per invocation and emits `bookmark: None` on every page, so no durable position is written and a re-run replays the full query. For change-data-capture with resumable resume tokens and exactly-once semantics, use [faucet-source-mongodb-cdc](https://crates.io/crates/faucet-source-mongodb-cdc) instead.
+This source is **not resumable** and does not support effectively-once delivery. It runs a single `find()` per invocation and emits `bookmark: None` on every page, so no durable position is written and a re-run replays the full query. For change-data-capture with resumable resume tokens and effectively-once semantics, use [faucet-source-mongodb-cdc](https://crates.io/crates/faucet-source-mongodb-cdc) instead.
 
 To approximate incremental loads with this query source, add a high-watermark clause to `filter` and parameterize it (e.g. `created_at: { $gt: "${env:SINCE}" }`) at the orchestration layer.
 
@@ -355,7 +355,7 @@ This crate has no optional features of its own. Enable it in the CLI / umbrella 
 ## See also
 
 - [Connector reference](https://pawansikawat.github.io/faucet-stream/reference/connectors.html) · [Choosing a connector](https://pawansikawat.github.io/faucet-stream/reference/choosing.html)
-- [faucet-source-mongodb-cdc](https://crates.io/crates/faucet-source-mongodb-cdc) — resumable, exactly-once change capture from MongoDB.
+- [faucet-source-mongodb-cdc](https://crates.io/crates/faucet-source-mongodb-cdc) — resumable, effectively-once change capture from MongoDB.
 - [faucet-sink-mongodb](https://crates.io/crates/faucet-sink-mongodb) — write into MongoDB (with upsert/delete write modes).
 
 ## License

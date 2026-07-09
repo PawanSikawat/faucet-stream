@@ -232,7 +232,7 @@ Because ES cannot retype an existing field, any change to an existing field's ty
 
 This sink overrides `Sink::write_batch_partial` to surface per-row failures from Elasticsearch's `_bulk` response items. Configure a DLQ at the pipeline level (see [cli/README.md — `dlq:`](https://github.com/PawanSikawat/faucet-stream/blob/main/cli/README.md)) and only the documents Elasticsearch actually rejected are routed there — already-indexed items stay in the main sink with no duplicates. This is why the bulk API's best-effort, partial-success behaviour doesn't double-write rows into the DLQ.
 
-> **Not exactly-once.** Elasticsearch does not commit a faucet commit token transactionally, so this sink does not support `delivery: exactly_once`. For idempotent re-sends use `write_mode: upsert` (or a stable `id_field` in append mode).
+> **Not effectively-once.** Elasticsearch does not commit a faucet commit token transactionally, so this sink does not support `delivery: exactly_once`. For idempotent re-sends use `write_mode: upsert` (or a stable `id_field` in append mode).
 
 ## Config loading & schema
 

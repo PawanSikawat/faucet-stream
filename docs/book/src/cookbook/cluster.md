@@ -164,7 +164,7 @@ Useful alert expressions:
   executes it from scratch. No partial results from the crashed run pollute the
   destination (assuming the pipeline had not yet flushed a page to the sink).
 
-### What is NOT guaranteed without exactly-once delivery
+### What is NOT guaranteed without effectively-once delivery
 
 An instance that was **paused** (e.g. a long GC pause, network partition, heavy
 I/O stall) longer than `--lease-ttl-secs` may have its run stolen by a survivor
@@ -177,7 +177,7 @@ may overlap with writes the paused instance already made. This means a run can
 be **executed twice** (partial overlap) if the original instance was paused-not-crashed.
 
 **To fully close this window,** pair the pipeline with
-[exactly-once delivery](./state.md#exactly-once-delivery): a CDC source
+[effectively-once delivery](./state.md#effectively-once-delivery): a CDC source
 (`postgres-cdc`, `mysql-cdc`, `mongodb-cdc`) plus an idempotent SQL or Iceberg
 sink. The sink's atomic commit token deduplicates replayed pages regardless of
 how many instances attempted them.
@@ -186,7 +186,7 @@ how many instances attempted them.
 > shard reclaim can re-execute work, so an **append**-mode sink can end up with
 > duplicate rows. When a run is submitted to a clustered or sharded server,
 > faucet logs a warning recommending [`write_mode: upsert`](./upsert.md) (or
-> [`delivery: exactly_once`](./state.md#exactly-once-delivery)) so any replay is
+> [`delivery: exactly_once`](./state.md#effectively-once-delivery)) so any replay is
 > idempotent. The run still proceeds — the warning is a reminder, not a gate.
 
 **Practical sizing advice:** set `--lease-ttl-secs` comfortably above your
@@ -383,7 +383,7 @@ How it differs from the other sharders:
   `--cluster-max-attempts`. New members pick up unassigned/reclaimed shards on
   their next claim tick.
 - **Correctness boundary:** the same paused-not-crashed double-processing window
-  as Mode A applies per shard. Pair with `write_mode: upsert` (or exactly-once
+  as Mode A applies per shard. Pair with `write_mode: upsert` (or effectively-once
   delivery) so a reassigned shard's overlap is idempotent — as in the example
   above.
 
@@ -395,6 +395,6 @@ Mode B metrics: `faucet_serve_shards_claimed_total`,
 - [Running faucet as a service](./serve.md) — `faucet serve` fundamentals,
   security model, idempotency, concurrency, and the orphan-recovery lease
   mechanism that cluster mode extends.
-- [Incremental replication and exactly-once delivery](./state.md) — use a CDC
+- [Incremental replication and effectively-once delivery](./state.md) — use a CDC
   source + idempotent sink to close the double-run window.
 - [Observability](../operations/observability.md) — all `faucet_serve_*` metrics.

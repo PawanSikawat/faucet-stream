@@ -7,14 +7,14 @@
 
 Microsoft **SQL Server** sink for the [faucet-stream](https://github.com/PawanSikawat/faucet-stream) ecosystem. Writes records via parameterized multi-row `INSERT`s — either auto-mapped to same-named table columns or serialized into a single JSON column — built on [`tiberius`](https://crates.io/crates/tiberius) + [`bb8-tiberius`](https://crates.io/crates/bb8-tiberius) with a pooled, statement-timeout-aware connection.
 
-Reach for it when you want to land records from any faucet-stream source into SQL Server or Azure SQL with one declarative config: multi-row INSERTs auto-split to stay under SQL Server's 2100-parameter ceiling, batches commit atomically inside a transaction, per-row failures are isolated for dead-letter routing, and `upsert`/`delete` write modes plus exactly-once delivery are available for keyed mirrors.
+Reach for it when you want to land records from any faucet-stream source into SQL Server or Azure SQL with one declarative config: multi-row INSERTs auto-split to stay under SQL Server's 2100-parameter ceiling, batches commit atomically inside a transaction, per-row failures are isolated for dead-letter routing, and `upsert`/`delete` write modes plus effectively-once delivery are available for keyed mirrors.
 
 ## Feature highlights
 
 - **Two write shapes** — `auto_columns` maps top-level JSON keys to same-named table columns (the column set is the union across the batch); `json_column` serializes each record into a single `NVARCHAR(MAX)` / native `JSON` column. Schema-agnostic vs. typed-column landing.
 - **2100-parameter auto-split** — a multi-row `INSERT` binds `rows × columns` parameters. SQL Server caps a request at 2100 parameters (and `tiberius` spends 2 on its `sp_executesql` wrapper, leaving 2098) and at 1000 row expressions in a `VALUES` clause. The sink splits each batch into `min(2098 / columns, 1000)`-row statements automatically, all inside one transaction.
 - **Write modes (upsert / delete)** — beyond the default append, merge-by-key (`upsert`) or delete-by-key (`delete`) via a single T-SQL `MERGE`, including composite keys and a `delete_marker` for CDC-style streams. Requires `auto_columns`.
-- **Exactly-once delivery** — atomic record + commit-token write into a `_faucet_commit_token` watermark table, so a CDC mirror never double-applies a page on resume.
+- **Effectively-once delivery** — atomic record + commit-token write into a `_faucet_commit_token` watermark table, so a CDC mirror never double-applies a page on resume.
 - **Row-isolation DLQ** — on a batch failure the sink rolls back and replays the batch one row at a time so good rows still land and only the offender is dead-lettered. Transient errors (deadlock, lock-timeout, dropped connection) retry with backoff.
 - **Connection pooling** — a `bb8` pool (default 5 connections) created once and reused; each statement runs under a configurable server-side timeout.
 - **Flexible connection** — a `mssql://` URL parsed by faucet, or an ADO.NET-style connection string handed straight to `tiberius`, with TLS/encryption governed by a `tls` block in either case.
@@ -216,14 +216,14 @@ See the [upsert cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/
 
 With `isolate_row_failures: true` (default), a batch that fails is rolled back and retried one row at a time: the good rows land and only the offending row is returned as an error for dead-letter routing under the pipeline's `dlq:` block. Transient errors (deadlock, lock-timeout, connection drops) are retried with backoff and otherwise propagated so the pipeline's `on_batch_error` policy decides. Set `isolate_row_failures: false` to fail the whole batch on the first bad row (fewer round-trips, no row isolation).
 
-## Exactly-once delivery
+## Effectively-once delivery
 
 `MssqlSink` implements `Sink::supports_idempotent_writes` (returns `true`) and the two companion hooks:
 
 - `write_batch_idempotent(records, scope, token)` — writes `records` and UPSERTs the `token` into a `_faucet_commit_token(scope NVARCHAR, token NVARCHAR)` watermark table inside the **same transaction** (respecting `transaction_per_batch`), so both commit together or neither does.
 - `last_committed_token(scope)` — reads the current watermark so the pipeline can skip already-committed pages on resume.
 
-To use exactly-once delivery, set `delivery: exactly_once` in the pipeline config and pair this sink with one of the CDC sources (`postgres-cdc`, `mysql-cdc`, `mongodb-cdc`) plus a `state:` block. A DLQ is not permitted in exactly-once mode. All four requirements are validated at config-load time (`faucet validate`) before any run starts. Exactly-once composes with `write_mode: upsert`.
+To use effectively-once delivery, set `delivery: exactly_once` in the pipeline config and pair this sink with one of the CDC sources (`postgres-cdc`, `mysql-cdc`, `mongodb-cdc`) plus a `state:` block. A DLQ is not permitted in effectively-once mode. All four requirements are validated at config-load time (`faucet validate`) before any run starts. Effectively-once composes with `write_mode: upsert`.
 
 ```yaml
 pipeline:
@@ -249,7 +249,7 @@ pipeline:
 delivery: exactly_once
 ```
 
-See the [exactly-once delivery cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/state.html#exactly-once-delivery) for the full rationale and supported source/sink set.
+See the [effectively-once delivery cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/state.html#effectively-once-delivery) for the full rationale and supported source/sink set.
 
 ## Schema evolution
 
@@ -335,13 +335,13 @@ This crate has no optional Cargo features of its own; enable it in the CLI / umb
 | `mssql upsert: …` missing/null key | An upsert/delete row has a null or absent `key` column. Configure a `dlq:` to isolate those rows, or fix the data. |
 | `json_column` with `upsert`/`delete` rejected | Key columns must be real table columns. Use `column_mapping: auto_columns` for keyed modes. |
 | Frequent deadlock / lock-timeout retries | Reduce `batch_size`, lower write concurrency, or ensure the upsert `key` matches an index so `MERGE` doesn't escalate locks. |
-| Exactly-once config rejected at `faucet validate` | All four gates must hold: a CDC source, this sink, a `state:` block, and **no** `dlq:`. The error names the offending row. |
+| Effectively-once config rejected at `faucet validate` | All four gates must hold: a CDC source, this sink, a `state:` block, and **no** `dlq:`. The error names the offending row. |
 
 ## See also
 
 - [Sinks reference & capability matrix](https://pawansikawat.github.io/faucet-stream/reference/connectors.html)
 - [Upsert / write modes cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/upsert.html)
-- [State & exactly-once cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/state.html)
+- [State & effectively-once cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/state.html)
 - [Dead-letter queue cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/dlq.html)
 - [`faucet-common-mssql`](https://crates.io/crates/faucet-common-mssql) — shared connection/TLS config
 - [`faucet-source-mssql`](https://crates.io/crates/faucet-source-mssql) — the matching SQL Server source

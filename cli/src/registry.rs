@@ -170,6 +170,12 @@ pub async fn build_source(
             let cfg = decode::<faucet_source_csv::CsvSourceConfig>("source", "csv", config)?;
             Ok(Box::new(faucet_source_csv::CsvSource::new(cfg)))
         }
+        #[cfg(feature = "source-singer")]
+        "singer" => {
+            let cfg =
+                decode::<faucet_source_singer::SingerSourceConfig>("source", "singer", config)?;
+            Ok(Box::new(faucet_source_singer::SingerSource::new(cfg)))
+        }
         #[cfg(feature = "source-elasticsearch")]
         "elasticsearch" => {
             let cfg = decode::<faucet_source_elasticsearch::ElasticsearchSourceConfig>(
@@ -452,6 +458,8 @@ pub fn source_schema(kind: &str) -> CliResult<Value> {
         "websocket" => Ok(schema::<faucet_source_websocket::WebsocketSourceConfig>()),
         #[cfg(feature = "source-csv")]
         "csv" => Ok(schema::<faucet_source_csv::CsvSourceConfig>()),
+        #[cfg(feature = "source-singer")]
+        "singer" => Ok(schema::<faucet_source_singer::SingerSourceConfig>()),
         #[cfg(feature = "source-elasticsearch")]
         "elasticsearch" => Ok(schema::<
             faucet_source_elasticsearch::ElasticsearchSourceConfig,
@@ -567,6 +575,11 @@ pub fn source_descriptions() -> Vec<(&'static str, &'static str)> {
     ));
     #[cfg(feature = "source-csv")]
     v.push(("csv", "CSV file source"));
+    #[cfg(feature = "source-singer")]
+    v.push((
+        "singer",
+        "Singer tap bridge (runs an external Singer tap; single-stream v0, Tier-2/experimental)",
+    ));
     #[cfg(feature = "source-elasticsearch")]
     v.push(("elasticsearch", "Elasticsearch search / scroll source"));
     #[cfg(feature = "source-kafka")]
