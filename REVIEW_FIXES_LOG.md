@@ -106,3 +106,68 @@ gh auth switch --user pawan-dt
   public *guarantee* is now precise in README + state.md.
 - Per-crate `CHANGELOG.md` files (release-plz-managed history — one accidental edit reverted).
 - "fastest way to start / confirm / see" colloquial UX phrasings in the guide (not throughput claims).
+
+---
+
+## Phase 3 — Release-cadence proposal (NOT APPLIED — awaiting decision)
+
+### Finding (corrects the premise)
+The current setup is **already** the batched model the review suggested:
+- `release_always = false` → publishing happens **only when the release PR merges**,
+  not on every push. Every push only *updates* a cumulative "chore: release" PR.
+- So the "182 releases in ~4 months" number is **not** per-push publishing. Measured:
+  **182 GitHub releases** but only ~30 workspace tags on the umbrella lineage. The
+  multiplier is `git_release_enable = true` in `release-plz.toml`: each release-PR
+  merge cuts **one GitHub release per bumped crate** (up to 45), so ~a dozen real
+  releases explode into 182 GitHub-release entries. Independent per-crate versions
+  add churn to the crates.io version history (and thus dependabot/docs.rs re-fetches
+  that inflate the download badge).
+
+### Highest-leverage lever (recommended): stop per-crate GitHub-release spam
+```diff
+# release-plz.toml
+-# Create a per-crate GitHub release for each crate that bumps. The release
+-# notes use the changelog body template below.
+-git_release_enable = true
++# Do NOT cut a GitHub release per crate — that multiplies one logical release
++# into up to 45 entries (182 GitHub releases from ~a dozen real bumps). Tags
++# (`<crate>-v<x.y.z>`) are still pushed for crates.io provenance; the
++# per-crate CHANGELOG.md files remain the changelog of record.
++git_release_enable = false
+```
+Tradeoff: you lose per-crate GitHub Release pages (most users read crates.io /
+the CHANGELOGs anyway). If a single human-readable release note is still wanted,
+keep it enabled for the umbrella `faucet-stream` crate only via a
+`[[package]] name = "faucet-stream" git_release_enable = true` override while
+turning the workspace default off.
+
+### Optional harder lever: publish on a weekly cadence, not per-merge
+Keep the release PR auto-updating on every push (changelog always current) but move
+the *publish* off per-merge onto a schedule + manual dispatch, so a week of feature
+merges collapses into one coordinated bump:
+```diff
+# .github/workflows/release-plz.yml
+ on:
+   push:
+     branches: [main]
++  schedule:
++    - cron: "0 15 * * 1"   # Mondays 15:00 UTC — weekly publish window
++  workflow_dispatch: {}
+```
+```diff
+# release-plz-release job — only publish on the schedule / manual dispatch,
+# not on every push (the release PR still opens/updates on push).
+-  release-plz-release:
++  release-plz-release:
+     name: Publish to crates.io
++    if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
+```
+Tradeoff: releases lag merges by up to a week; a genuine hotfix needs a manual
+`workflow_dispatch`. Net: dramatically fewer version bumps → fewer badge-inflating
+re-fetches, and a "release" reads as a curated batch rather than a per-commit tick.
+
+### Recommendation
+Apply the **first diff** now (`git_release_enable = false`, or umbrella-only) — it
+directly collapses the 182→~real-count without changing when things ship. Adopt the
+weekly-cadence diff only if you also want to slow the crates.io version tick; it is a
+bigger behavior change and can wait. **Neither applied — awaiting your call.**
