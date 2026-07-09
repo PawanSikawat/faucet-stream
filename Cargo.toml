@@ -13,6 +13,7 @@ members = [
     "crates/common/mssql",
     "crates/source/rest",
     "crates/source/singer",
+    "crates/conformance",
     "crates/source/graphql",
     "crates/source/xml",
     "crates/source/grpc",
@@ -85,6 +86,7 @@ faucet-common-snowflake = { path = "crates/common/snowflake", version = "1.0.2" 
 faucet-common-mssql = { path = "crates/common/mssql", version = "1.0.3" }
 faucet-source-rest = { path = "crates/source/rest", version = "1.2.0" }
 faucet-source-singer = { path = "crates/source/singer", version = "0.1.0" }
+faucet-conformance = { path = "crates/conformance", version = "0.1.0" }
 faucet-source-graphql = { path = "crates/source/graphql", version = "1.2.0" }
 faucet-source-xml = { path = "crates/source/xml", version = "1.2.0" }
 faucet-source-grpc = { path = "crates/source/grpc", version = "1.1.1" }

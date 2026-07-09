@@ -1,0 +1,26 @@
+[package]
+name = "faucet-conformance"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Reusable connector conformance test battery for the faucet-stream ecosystem"
+readme = "README.md"
+keywords = ["faucet", "conformance", "testing", "connector", "etl"]
+categories.workspace = true
+
+[dependencies]
+faucet-core.workspace = true
+serde_json.workspace = true
+async-trait.workspace = true
+async-stream.workspace = true
+futures.workspace = true
+futures-core.workspace = true
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread"] }
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

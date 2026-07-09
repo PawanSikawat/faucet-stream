@@ -60,3 +60,18 @@ Branch `feat/singer-bridge-and-conformance`. Remove before the final commit if a
 - No `DeliveryMode::ExactlyOnce` used (singer source is not deterministic-replay; the pipeline gate
   would reject it) — no-dup rides the keyed sink. The phrase "exactly-once" appears nowhere.
 - clippy --all-targets clean; `cargo test -p faucet-source-singer` green (18 unit + 2 integ, 1 ignored).
+
+## Phase 3 — faucet-conformance crate
+- New crate `crates/conformance` (`faucet-conformance`), depends on faucet-core + test deps only.
+- `doubles.rs`: `CountingSource` (lazily emits N records in pages of its own `batch` — genuinely
+  bounded; `batch=0` emits one big page to exercise the failure path) and `TestSink` (append or
+  keyed/upsert recording sink).
+- Checks: **1 `assert_config_schema_valid`** (valid, round-tripping JSON Schema; value form for sinks)
+  and **2 `assert_bounded_memory`** (drives stream_pages, asserts peak page <= batch_size and < total)
+  — fully implemented. **3–6** (`assert_bookmark_roundtrip`, `assert_idempotent_replay`,
+  `assert_capabilities_truthful`, `assert_errors_not_panics`) — compiling skeletons, stable signatures,
+  `// TODO` bodies.
+- 6 self-tests (incl. two `should_panic` negatives) green.
+- **Reusability proven:** checks 1 & 2 wired into `faucet-source-csv` (`tests/conformance.rs`,
+  temp 5k-row CSV, batch 250) **and** `faucet-source-singer` (`tests/conformance.rs`, fake tap 2k rows,
+  batch 100). Both pass. Passing the battery is the documented Tier-1 criterion.
