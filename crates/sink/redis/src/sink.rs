@@ -129,8 +129,8 @@ impl faucet_core::Sink for RedisSink {
     /// command for the configured [`RedisSinkType`] plus a final
     /// `SET _faucet_commit_token:{scope} {token}`. Either all of it commits
     /// or none of it does, so a crash between "sink wrote" and "state
-    /// persisted" is resolved on resume by [`Self::last_committed_token`] —
-    /// zero duplicates on replay.
+    /// persisted" is resolved on resume by `last_committed_token` — zero
+    /// duplicates on replay.
     ///
     /// **`batch_size` re-chunking does NOT apply on this path.** Splitting the
     /// page across multiple `MULTI`/`EXEC` blocks would break atomicity (a
