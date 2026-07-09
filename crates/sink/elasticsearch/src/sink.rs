@@ -520,6 +520,10 @@ impl faucet_core::Sink for ElasticsearchSink {
         ]
     }
 
+    fn dedups_by_key(&self) -> bool {
+        self.config.write.dedups_by_key()
+    }
+
     /// Elasticsearch can add new fields to an existing index in place via
     /// `PUT /<index>/_mapping`, so additive schema evolution is supported.
     /// (Changing an existing field's mapping type is *not* possible — see

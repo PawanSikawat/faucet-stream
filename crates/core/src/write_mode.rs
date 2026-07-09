@@ -70,6 +70,14 @@ impl WriteSpec {
         }
         Ok(())
     }
+
+    /// Whether this spec makes writes converge by key — `write_mode: upsert`
+    /// or `delete` with a non-empty `key`. The canonical implementation of
+    /// [`Sink::dedups_by_key`](crate::Sink::dedups_by_key) for sinks that
+    /// flatten a `WriteSpec` into their config.
+    pub fn dedups_by_key(&self) -> bool {
+        matches!(self.write_mode, WriteMode::Upsert | WriteMode::Delete) && !self.key.is_empty()
+    }
 }
 
 /// Ordered key column → value pairs, in `key` declaration order.

@@ -148,8 +148,8 @@ fn row_line(node: &crate::expand::ExpandedNode) -> String {
         format!(" depends_on=[{}]", node.depends_on.join(", "))
     };
     format!(
-        "  - {} [{}] source={} sink={}{}",
-        node.id, role, node.source.kind, node.sink.kind, deps
+        "  - {} [{}] source={} sink={}{} delivery={}",
+        node.id, role, node.source.kind, node.sink.kind, deps, node.delivery_guarantee
     )
 }
 
@@ -179,14 +179,75 @@ matrix:
         .unwrap();
         let nodes = expand(&cfg).unwrap();
         let line_for = |id: &str| row_line(nodes.iter().find(|n| n.id == id).unwrap());
-        assert_eq!(line_for("dims"), "  - dims [root] source=rest sink=jsonl");
+        assert_eq!(
+            line_for("dims"),
+            "  - dims [root] source=rest sink=jsonl delivery=at-least-once"
+        );
         assert_eq!(
             line_for("posts"),
-            "  - posts [child of 'dims' (parent_key=id)] source=rest sink=jsonl"
+            "  - posts [child of 'dims' (parent_key=id)] source=rest sink=jsonl \
+             delivery=at-least-once"
         );
         assert_eq!(
             line_for("facts"),
-            "  - facts [root] source=rest sink=jsonl depends_on=[dims]"
+            "  - facts [root] source=rest sink=jsonl depends_on=[dims] delivery=at-least-once"
+        );
+    }
+
+    #[test]
+    fn row_line_reports_derived_effectively_once_guarantees() {
+        // Keyed upsert is reported even when the user did not request
+        // `delivery: exactly_once` (truthful derived guarantee, #292)…
+        let cfg = crate::config::parse_with_extension(
+            r#"
+version: 1
+pipeline:
+  source: { type: rest, config: {} }
+  sink:
+    type: postgres
+    config:
+      connection_url: "postgres://localhost/db"
+      table_name: t
+      column_mapping: auto_map
+      write_mode: upsert
+      key: [id]
+"#,
+            "yaml",
+        )
+        .unwrap();
+        let nodes = expand(&cfg).unwrap();
+        assert!(
+            row_line(&nodes[0]).ends_with("delivery=effectively-once (keyed upsert)"),
+            "got: {}",
+            row_line(&nodes[0])
+        );
+
+        // …and the atomic-watermark mechanism is reported for a CDC → SQL
+        // exactly_once topology.
+        let cfg = crate::config::parse_with_extension(
+            r#"
+version: 1
+delivery: exactly_once
+pipeline:
+  source:
+    type: postgres-cdc
+    config: { connection_url: "postgres://localhost/db", slot: s, publication: p }
+  sink:
+    type: postgres
+    config:
+      connection_url: "postgres://localhost/db"
+      table_name: t
+      column_mapping: auto_map
+  state: { type: file, config: { path: ./state } }
+"#,
+            "yaml",
+        )
+        .unwrap();
+        let nodes = expand(&cfg).unwrap();
+        assert!(
+            row_line(&nodes[0]).ends_with("delivery=effectively-once (atomic watermark)"),
+            "got: {}",
+            row_line(&nodes[0])
         );
     }
 }

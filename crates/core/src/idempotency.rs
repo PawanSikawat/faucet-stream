@@ -26,6 +26,126 @@ pub enum DeliveryMode {
     ExactlyOnce,
 }
 
+/// How faithfully a [`Source`](crate::Source) **replays** its record stream
+/// when resumed from a bookmark.
+///
+/// This is the source-side capability the effectively-once *atomic-watermark*
+/// mechanism depends on: after a crash the pipeline re-anchors the source at a
+/// persisted position, and correctness requires that nothing before that
+/// position is re-emitted and nothing after it is skipped.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReplayGuarantee {
+    /// Resuming from a bookmark may replay a *different* record stream
+    /// (query-based sources whose upstream can mutate, sources without
+    /// per-page bookmarks). The default.
+    #[default]
+    NonDeterministic,
+    /// The source emits a complete resume position (bookmark) on **every**
+    /// page, and resuming from any such bookmark continues the record stream
+    /// at exactly that position — no record before the bookmark is re-emitted
+    /// and none after it is skipped (immutable-log sources: CDC WAL/binlog/
+    /// change streams, Kafka partitions).
+    Deterministic,
+}
+
+/// The strongest delivery guarantee a [`Sink`](crate::Sink) can uphold.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SinkGuarantee {
+    /// Plain writes: a replayed page is written again. The default.
+    #[default]
+    AtLeastOnce,
+    /// The sink can dedup by key (`write_mode: upsert` with a configured
+    /// `key`): re-applying a record with the same key converges instead of
+    /// duplicating.
+    KeyedUpsert,
+    /// The sink can commit a page's rows **and** a commit token in one atomic
+    /// transaction ([`Sink::write_batch_idempotent`](crate::Sink)).
+    AtomicWatermark,
+}
+
+/// The mechanism through which a pipeline achieves effectively-once delivery.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EffectivelyOnceMechanism {
+    /// Deterministic-replay source + sink that commits data and a per-page
+    /// commit token atomically; on resume already-committed pages are skipped
+    /// (or the stream is re-anchored at the sink's recorded position).
+    AtomicWatermark,
+    /// The sink dedups by key (`write_mode: upsert`); replayed records
+    /// converge on the same keyed row. Works with any source.
+    KeyedUpsert,
+}
+
+/// The end-to-end guarantee a *pipeline* provides for a given
+/// source × sink × config combination.
+///
+/// Deliberately no `ExactlyOnce` variant — distributed-consensus exactly-once
+/// is not achievable here; effectively-once (idempotent at-least-once: each
+/// record is *observably applied* once) is the ceiling, and
+/// `delivery: exactly_once` in config is precisely documented as requesting it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "guarantee", content = "via")]
+pub enum DeliveryGuarantee {
+    /// A crash between the sink write and the bookmark persist may re-deliver
+    /// a page. Downstream must tolerate duplicates.
+    AtLeastOnce,
+    /// Idempotent at-least-once: each record is observably applied once.
+    EffectivelyOnce(EffectivelyOnceMechanism),
+}
+
+impl std::fmt::Display for DeliveryGuarantee {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::AtLeastOnce => write!(f, "at-least-once"),
+            Self::EffectivelyOnce(EffectivelyOnceMechanism::AtomicWatermark) => {
+                write!(f, "effectively-once (atomic watermark)")
+            }
+            Self::EffectivelyOnce(EffectivelyOnceMechanism::KeyedUpsert) => {
+                write!(f, "effectively-once (keyed upsert)")
+            }
+        }
+    }
+}
+
+/// Inputs to [`derive_delivery_guarantee`] — the facts about a concrete
+/// source × sink × config combination the derivation keys off.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct GuaranteeInputs {
+    /// The source's replay capability.
+    pub replay: ReplayGuarantee,
+    /// Whether the sink commits data + token atomically
+    /// (`Sink::supports_idempotent_writes`).
+    pub sink_atomic: bool,
+    /// Whether the sink is *configured* to dedup by key — `write_mode: upsert`
+    /// (or `delete`) with a non-empty `key` (`Sink::dedups_by_key`).
+    pub keyed_upsert_configured: bool,
+    /// Whether a durable (non-memory) state store is configured. The
+    /// atomic-watermark mechanism persists its cross-restart sequence here.
+    pub durable_state: bool,
+    /// Whether a DLQ is configured (incompatible with the atomic-watermark
+    /// mechanism in this version).
+    pub dlq: bool,
+}
+
+/// Derive the end-to-end [`DeliveryGuarantee`] a pipeline actually provides.
+///
+/// Preference order: the atomic-watermark mechanism (strongest bookkeeping,
+/// no keyed-schema requirement) when the topology supports it, then keyed
+/// upsert, then at-least-once. A sink that is both atomic and keyed reports
+/// atomic-watermark when the source replays deterministically, and falls back
+/// to keyed upsert otherwise.
+pub fn derive_delivery_guarantee(i: &GuaranteeInputs) -> DeliveryGuarantee {
+    if i.sink_atomic && i.replay == ReplayGuarantee::Deterministic && i.durable_state && !i.dlq {
+        return DeliveryGuarantee::EffectivelyOnce(EffectivelyOnceMechanism::AtomicWatermark);
+    }
+    if i.keyed_upsert_configured {
+        return DeliveryGuarantee::EffectivelyOnce(EffectivelyOnceMechanism::KeyedUpsert);
+    }
+    DeliveryGuarantee::AtLeastOnce
+}
+
 /// Reserved key marking the exactly-once state wrapper object.
 const EO_MARKER: &str = "__faucet_eo";
 const EO_BOOKMARK: &str = "bookmark";
@@ -35,14 +155,55 @@ const EO_SEQ: &str = "seq";
 /// lexicographic order match numeric order for the full `u64` range.
 const TOKEN_WIDTH: usize = 20;
 
+/// Separator between the numeric sequence and the embedded resume bookmark in
+/// a commit token. The prefix before it is always the fixed-width sequence.
+const TOKEN_BOOKMARK_SEP: char = '#';
+
 /// Render a page sequence as a fixed-width, lexicographically-ordered token.
 pub fn format_token(seq: u64) -> String {
     format!("{seq:0TOKEN_WIDTH$}")
 }
 
-/// Parse a token produced by [`format_token`]. Returns `None` on garbage.
+/// Render a commit token that carries the page's **resume bookmark** alongside
+/// the sequence: `"{seq:020}#{bookmark-json}"`.
+///
+/// Sinks store the token opaquely, so the committed watermark doubles as a
+/// durable record of *where the stream stood* when the page committed. On
+/// resume the pipeline recovers that position from the sink
+/// ([`parse_token_parts`]) and re-anchors the source there — closing the
+/// crash window between "sink durably committed" and "state store persisted"
+/// without requiring the source to replay identical page boundaries.
+pub fn format_token_with_bookmark(seq: u64, bookmark: Option<&Value>) -> String {
+    match bookmark {
+        Some(bm) => format!("{seq:0TOKEN_WIDTH$}{TOKEN_BOOKMARK_SEP}{bm}"),
+        None => format_token(seq),
+    }
+}
+
+/// Parse the numeric sequence from a token produced by [`format_token`] or
+/// [`format_token_with_bookmark`]. Returns `None` on garbage.
 pub fn parse_token(s: &str) -> Option<u64> {
-    s.trim().parse::<u64>().ok()
+    let seq = match s.split_once(TOKEN_BOOKMARK_SEP) {
+        Some((prefix, _)) => prefix,
+        None => s,
+    };
+    seq.trim().parse::<u64>().ok()
+}
+
+/// Parse a stored commit token into `(seq, embedded_bookmark)`.
+///
+/// Tokens written before bookmarks were embedded (bare `format_token` output)
+/// parse with `bookmark = None`. A bookmark suffix that is not valid JSON also
+/// yields `None` for the bookmark — the sequence alone still drives the
+/// skip-on-resume path.
+pub fn parse_token_parts(s: &str) -> Option<(u64, Option<Value>)> {
+    match s.split_once(TOKEN_BOOKMARK_SEP) {
+        Some((prefix, suffix)) => {
+            let seq = prefix.trim().parse::<u64>().ok()?;
+            Some((seq, serde_json::from_str(suffix).ok()))
+        }
+        None => Some((s.trim().parse::<u64>().ok()?, None)),
+    }
 }
 
 /// Wrap a bookmark + sequence into the exactly-once state value.
@@ -154,6 +315,117 @@ mod tests {
         let (bm, seq) = unwrap_state(&json!(null));
         assert_eq!(bm, None);
         assert_eq!(seq, 0);
+    }
+
+    #[test]
+    fn token_with_bookmark_round_trips() {
+        let bm = json!({"partition_offsets": [{"topic": "t", "partition": 0, "offset": 42}]});
+        let token = format_token_with_bookmark(7, Some(&bm));
+        assert!(token.starts_with(&format_token(7)));
+        assert_eq!(parse_token(&token), Some(7));
+        let (seq, parsed_bm) = parse_token_parts(&token).unwrap();
+        assert_eq!(seq, 7);
+        assert_eq!(parsed_bm, Some(bm));
+    }
+
+    #[test]
+    fn token_with_no_bookmark_is_bare_and_back_compatible() {
+        assert_eq!(format_token_with_bookmark(3, None), format_token(3));
+        let (seq, bm) = parse_token_parts(&format_token(3)).unwrap();
+        assert_eq!((seq, bm), (3, None));
+    }
+
+    #[test]
+    fn token_with_bookmark_orders_lexicographically_on_prefix() {
+        // The fixed-width numeric prefix keeps lexicographic order meaningful
+        // even with an embedded bookmark (kafka side-topic folding compares
+        // parsed sequences, but SQL MAX() naturally works too).
+        let a = format_token_with_bookmark(9, Some(&json!({"o": 1})));
+        let b = format_token_with_bookmark(10, Some(&json!({"o": 2})));
+        assert!(a < b);
+    }
+
+    #[test]
+    fn parse_token_parts_tolerates_garbage() {
+        assert_eq!(parse_token_parts("abc"), None);
+        assert_eq!(parse_token_parts(""), None);
+        // Bad JSON suffix: sequence survives, bookmark is dropped.
+        let (seq, bm) = parse_token_parts("00000000000000000005#{not json").unwrap();
+        assert_eq!((seq, bm), (5, None));
+        // parse_token ignores the suffix entirely.
+        assert_eq!(parse_token("00000000000000000005#{not json"), Some(5));
+    }
+
+    #[test]
+    fn derive_guarantee_prefers_atomic_then_keyed_then_at_least_once() {
+        use ReplayGuarantee::*;
+        let base = GuaranteeInputs {
+            replay: Deterministic,
+            sink_atomic: true,
+            keyed_upsert_configured: false,
+            durable_state: true,
+            dlq: false,
+        };
+        assert_eq!(
+            derive_delivery_guarantee(&base),
+            DeliveryGuarantee::EffectivelyOnce(EffectivelyOnceMechanism::AtomicWatermark)
+        );
+        // Atomic path degrades without deterministic replay…
+        let non_det = GuaranteeInputs {
+            replay: NonDeterministic,
+            ..base
+        };
+        assert_eq!(
+            derive_delivery_guarantee(&non_det),
+            DeliveryGuarantee::AtLeastOnce
+        );
+        // …but keyed upsert rescues it, source-independent.
+        let keyed = GuaranteeInputs {
+            keyed_upsert_configured: true,
+            ..non_det
+        };
+        assert_eq!(
+            derive_delivery_guarantee(&keyed),
+            DeliveryGuarantee::EffectivelyOnce(EffectivelyOnceMechanism::KeyedUpsert)
+        );
+        // A DLQ or missing durable state disables atomic; keyed still applies.
+        let dlq = GuaranteeInputs {
+            dlq: true,
+            keyed_upsert_configured: true,
+            ..base
+        };
+        assert_eq!(
+            derive_delivery_guarantee(&dlq),
+            DeliveryGuarantee::EffectivelyOnce(EffectivelyOnceMechanism::KeyedUpsert)
+        );
+        let mem_state = GuaranteeInputs {
+            durable_state: false,
+            ..base
+        };
+        assert_eq!(
+            derive_delivery_guarantee(&mem_state),
+            DeliveryGuarantee::AtLeastOnce
+        );
+    }
+
+    #[test]
+    fn guarantee_display_is_human_readable() {
+        assert_eq!(DeliveryGuarantee::AtLeastOnce.to_string(), "at-least-once");
+        assert_eq!(
+            DeliveryGuarantee::EffectivelyOnce(EffectivelyOnceMechanism::AtomicWatermark)
+                .to_string(),
+            "effectively-once (atomic watermark)"
+        );
+        assert_eq!(
+            DeliveryGuarantee::EffectivelyOnce(EffectivelyOnceMechanism::KeyedUpsert).to_string(),
+            "effectively-once (keyed upsert)"
+        );
+    }
+
+    #[test]
+    fn capability_enums_default_to_weakest() {
+        assert_eq!(ReplayGuarantee::default(), ReplayGuarantee::NonDeterministic);
+        assert_eq!(SinkGuarantee::default(), SinkGuarantee::AtLeastOnce);
     }
 
     #[test]

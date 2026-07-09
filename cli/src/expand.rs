@@ -64,6 +64,12 @@ pub struct ExpandedNode {
     /// Delivery guarantee for this row. Resolved from the row's override or
     /// falls back to the top-level `cfg.delivery`.
     pub delivery: faucet_core::DeliveryMode,
+    /// The **derived** end-to-end guarantee this row's source × sink × config
+    /// actually provides (issue #292) — computed for every row regardless of
+    /// the requested `delivery:` mode, so `faucet validate` / `doctor` report
+    /// it truthfully (e.g. a keyed-upsert row is effectively-once even when
+    /// the user did not ask for `exactly_once`).
+    pub delivery_guarantee: faucet_core::DeliveryGuarantee,
     /// Row ids this node waits for (deduplicated, declaration order). The
     /// executor starts the node only after every listed row's invocations
     /// finish successfully; a failed or skipped dependency skips this node.
@@ -516,60 +522,6 @@ pub fn expand(cfg: &PipelineConfig) -> CliResult<Vec<ExpandedNode>> {
                 .map_err(|e| CliError::Config(format!("masking (row `{row_id}`): {e}")))?;
         }
 
-        // Exactly-once delivery gate: enforce source, sink, state, and DLQ
-        // compatibility at config-load time so `faucet validate` catches
-        // unsupported combinations before any run starts.
-        if delivery == faucet_core::DeliveryMode::ExactlyOnce {
-            if !crate::registry::source_supports_exactly_once(&merged_source.kind) {
-                return Err(CliError::Config(format!(
-                    "row '{}': delivery: exactly_once is not supported by source '{}' \
-                     (deterministic-replay sources only: {})",
-                    ids[i],
-                    merged_source.kind,
-                    crate::registry::EXACTLY_ONCE_SOURCE_KINDS.join(", ")
-                )));
-            }
-            if !crate::registry::sink_supports_idempotent_writes(&merged_sink.kind) {
-                return Err(CliError::Config(format!(
-                    "row '{}': delivery: exactly_once is not supported by sink '{}' \
-                     (idempotent sinks only: {})",
-                    ids[i],
-                    merged_sink.kind,
-                    crate::registry::IDEMPOTENT_SINK_KINDS.join(", ")
-                )));
-            }
-            // Require a *durable* state store. The exactly-once mechanism
-            // persists the monotonic page sequence alongside the bookmark
-            // (`wrap_state(bookmark, seq)`) and resumes from it across
-            // restarts; the in-process `memory` store loses that watermark on
-            // exit, so a restart would re-run already-committed pages — exactly
-            // the duplication exactly-once exists to prevent (F24). Mirror the
-            // `faucet replicate` gate, which already rejects `memory`.
-            match state.as_ref() {
-                None => {
-                    return Err(CliError::Config(format!(
-                        "row '{}': delivery: exactly_once requires a state store",
-                        ids[i]
-                    )));
-                }
-                Some(s) if s.kind == "memory" => {
-                    return Err(CliError::Config(format!(
-                        "row '{}': delivery: exactly_once requires a durable state store, \
-                         not `memory` — the cross-restart watermark/sequence guarantee \
-                         depends on it (use `file`, `redis`, or `postgres`)",
-                        ids[i]
-                    )));
-                }
-                Some(_) => {}
-            }
-            if dlq.is_some() {
-                return Err(CliError::Config(format!(
-                    "row '{}': delivery: exactly_once is not compatible with a DLQ in this version",
-                    ids[i]
-                )));
-            }
-        }
-
         // Resilience poison-pill cross-check: `poison.action: dlq` routes
         // persistently-failing rows to the DLQ, so a DLQ must be configured.
         // Caught here so `faucet validate` reports it before any run starts.
@@ -662,6 +614,111 @@ pub fn expand(cfg: &PipelineConfig) -> CliResult<Vec<ExpandedNode>> {
             }
         }
 
+        // Derived end-to-end delivery guarantee (issue #292): computed for
+        // *every* row — regardless of the requested `delivery:` mode — so
+        // `faucet validate` / `doctor` report the truth (a keyed-upsert row is
+        // effectively-once even when the user did not request `exactly_once`).
+        // `keyed_upsert_configured` relies on the write_mode gate above: after
+        // it, an upsert/delete mode implies a non-empty `key`.
+        let keyed_upsert_configured = matches!(
+            mode,
+            faucet_core::WriteMode::Upsert | faucet_core::WriteMode::Delete
+        );
+        let guarantee_inputs = faucet_core::GuaranteeInputs {
+            replay: crate::registry::source_replay_guarantee(&merged_source.kind),
+            sink_atomic: crate::registry::sink_supports_idempotent_writes(&merged_sink.kind),
+            keyed_upsert_configured,
+            durable_state: matches!(state.as_ref(), Some(s) if s.kind != "memory"),
+            dlq: dlq.is_some(),
+        };
+        let delivery_guarantee = faucet_core::derive_delivery_guarantee(&guarantee_inputs);
+
+        // Exactly-once delivery gate: `delivery: exactly_once` means "require
+        // ≥ effectively-once". Enforced at config-load time so `faucet
+        // validate` catches an unsupported topology before any run starts,
+        // with the error naming the limiting side. A derived `AtLeastOnce`
+        // implies keyed dedup is not configured (the keyed mechanism has no
+        // other requirement), so the cascade below walks the atomic-watermark
+        // requirements in order.
+        if delivery == faucet_core::DeliveryMode::ExactlyOnce
+            && delivery_guarantee == faucet_core::DeliveryGuarantee::AtLeastOnce
+        {
+            if !crate::registry::source_supports_exactly_once(&merged_source.kind) {
+                let keyed_hint = if crate::registry::UPSERT_SINK_KINDS.contains(&&*merged_sink.kind)
+                {
+                    format!(
+                        ", or configure `write_mode: upsert` + `key` on sink '{}' for \
+                         keyed-upsert effectively-once with any source",
+                        merged_sink.kind
+                    )
+                } else {
+                    String::new()
+                };
+                return Err(CliError::Config(format!(
+                    "row '{}': delivery: exactly_once is not supported by source '{}' \
+                     (deterministic-replay sources only: {}{})",
+                    ids[i],
+                    merged_source.kind,
+                    crate::registry::EXACTLY_ONCE_SOURCE_KINDS.join(", "),
+                    keyed_hint
+                )));
+            }
+            if !crate::registry::sink_supports_idempotent_writes(&merged_sink.kind) {
+                let keyed_hint = if crate::registry::UPSERT_SINK_KINDS.contains(&&*merged_sink.kind)
+                {
+                    format!(
+                        "; alternatively configure `write_mode: upsert` + `key` on '{}' for \
+                         keyed-upsert effectively-once",
+                        merged_sink.kind
+                    )
+                } else {
+                    String::new()
+                };
+                return Err(CliError::Config(format!(
+                    "row '{}': delivery: exactly_once is not supported by sink '{}' \
+                     (idempotent sinks only: {}{})",
+                    ids[i],
+                    merged_sink.kind,
+                    crate::registry::IDEMPOTENT_SINK_KINDS.join(", "),
+                    keyed_hint
+                )));
+            }
+            // Require a *durable* state store. The atomic-watermark mechanism
+            // persists the monotonic page sequence alongside the bookmark
+            // (`wrap_state(bookmark, seq)`) and resumes from it across
+            // restarts; the in-process `memory` store loses that watermark on
+            // exit, so a restart would re-run already-committed pages — exactly
+            // the duplication exactly-once exists to prevent (F24). Mirror the
+            // `faucet replicate` gate, which already rejects `memory`.
+            match state.as_ref() {
+                None => {
+                    return Err(CliError::Config(format!(
+                        "row '{}': delivery: exactly_once requires a state store",
+                        ids[i]
+                    )));
+                }
+                Some(s) if s.kind == "memory" => {
+                    return Err(CliError::Config(format!(
+                        "row '{}': delivery: exactly_once requires a durable state store, \
+                         not `memory` — the cross-restart watermark/sequence guarantee \
+                         depends on it (use `file`, `redis`, or `postgres`)",
+                        ids[i]
+                    )));
+                }
+                Some(_) => {}
+            }
+            if dlq.is_some() {
+                return Err(CliError::Config(format!(
+                    "row '{}': delivery: exactly_once is not compatible with a DLQ in this version",
+                    ids[i]
+                )));
+            }
+            // The cascade above covers every way the derivation can land on
+            // at-least-once; reaching here would mean it diverged from the
+            // checks.
+            unreachable!("delivery-guarantee derivation and the exactly-once gate diverged");
+        }
+
         // Schema-drift policy gates (load-time):
         //  - `evolve` requires an evolution-capable sink.
         //  - `quarantine` (drift or incompatible) requires a DLQ, and is
@@ -702,6 +759,7 @@ pub fn expand(cfg: &PipelineConfig) -> CliResult<Vec<ExpandedNode>> {
             state,
             dlq,
             delivery,
+            delivery_guarantee,
             #[cfg(feature = "quality")]
             quality,
             #[cfg(feature = "contract")]
@@ -2085,6 +2143,113 @@ pipeline:
         let nodes = expand(&cfg).unwrap();
         assert_eq!(nodes.len(), 1);
         assert_eq!(nodes[0].delivery, faucet_core::DeliveryMode::ExactlyOnce);
+        assert_eq!(
+            nodes[0].delivery_guarantee,
+            faucet_core::DeliveryGuarantee::EffectivelyOnce(
+                faucet_core::EffectivelyOnceMechanism::AtomicWatermark
+            )
+        );
+    }
+
+    #[test]
+    fn exactly_once_accepted_via_keyed_upsert_with_any_source() {
+        // rest → postgres with `write_mode: upsert` + `key`: accepted under
+        // exactly_once via the keyed-upsert mechanism (#292) — no CDC source,
+        // no state store required.
+        let yaml = r#"
+version: 1
+delivery: exactly_once
+pipeline:
+  source: { type: rest, config: { base_url: https://x } }
+  sink:
+    type: postgres
+    config:
+      connection_url: "postgres://localhost/db"
+      table_name: t
+      column_mapping: auto_map
+      write_mode: upsert
+      key: [id]
+"#;
+        let cfg = parse_with_extension(yaml, "yaml").unwrap();
+        let nodes = expand(&cfg).unwrap();
+        assert_eq!(
+            nodes[0].delivery_guarantee,
+            faucet_core::DeliveryGuarantee::EffectivelyOnce(
+                faucet_core::EffectivelyOnceMechanism::KeyedUpsert
+            )
+        );
+    }
+
+    #[test]
+    fn exactly_once_kafka_source_accepted_with_atomic_sink() {
+        // kafka → sqlite + durable state: the kafka source's offset bookmarks
+        // qualify it for the atomic-watermark mechanism (#291).
+        let yaml = r#"
+version: 1
+delivery: exactly_once
+pipeline:
+  source:
+    type: kafka
+    config: { brokers: "localhost:9092", topics: [t], group_id: g, max_messages: 10 }
+  sink:   { type: sqlite, config: {} }
+  state:
+    type: file
+    config: { path: "/tmp/faucet-eo-kafka-state.json" }
+"#;
+        let cfg = parse_with_extension(yaml, "yaml").unwrap();
+        let nodes = expand(&cfg).unwrap();
+        assert_eq!(
+            nodes[0].delivery_guarantee,
+            faucet_core::DeliveryGuarantee::EffectivelyOnce(
+                faucet_core::EffectivelyOnceMechanism::AtomicWatermark
+            )
+        );
+    }
+
+    #[test]
+    fn exactly_once_source_error_hints_keyed_upsert_for_capable_sink() {
+        // rest → postgres (no write_mode): the source error should point at
+        // the keyed-upsert alternative since postgres is upsert-capable.
+        let yaml = r#"
+version: 1
+delivery: exactly_once
+pipeline:
+  source: { type: rest, config: { base_url: https://x } }
+  sink:
+    type: postgres
+    config:
+      connection_url: "postgres://localhost/db"
+      table_name: t
+      column_mapping: auto_map
+  state:
+    type: file
+    config: { path: "/tmp/faucet-eo-hint-state.json" }
+"#;
+        let cfg = parse_with_extension(yaml, "yaml").unwrap();
+        let err = expand(&cfg).unwrap_err();
+        match &err {
+            CliError::Config(msg) => assert!(
+                msg.contains("write_mode: upsert"),
+                "expected keyed-upsert hint, got: {msg}"
+            ),
+            other => panic!("expected Config error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn derived_guarantee_is_at_least_once_by_default() {
+        let yaml = r#"
+version: 1
+pipeline:
+  source: { type: rest, config: { base_url: https://x } }
+  sink:   { type: stdout, config: {} }
+"#;
+        let cfg = parse_with_extension(yaml, "yaml").unwrap();
+        let nodes = expand(&cfg).unwrap();
+        assert_eq!(
+            nodes[0].delivery_guarantee,
+            faucet_core::DeliveryGuarantee::AtLeastOnce
+        );
     }
 
     #[test]

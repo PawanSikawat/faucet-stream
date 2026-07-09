@@ -131,6 +131,47 @@ impl Sink for SamplingSink {
     fn dataset_uri(&self) -> String {
         self.inner.dataset_uri()
     }
+    // Capability + exactly-once passthroughs. Without these the wrapper's
+    // trait defaults would mask the inner sink's capabilities whenever lineage
+    // (or catalog) sampling is active — e.g. an exactly-once run would be
+    // rejected as "sink is not idempotent" purely because sampling was on.
+    fn supports_idempotent_writes(&self) -> bool {
+        self.inner.supports_idempotent_writes()
+    }
+    fn sink_guarantee(&self) -> faucet_core::SinkGuarantee {
+        self.inner.sink_guarantee()
+    }
+    fn dedups_by_key(&self) -> bool {
+        self.inner.dedups_by_key()
+    }
+    fn supported_write_modes(&self) -> &'static [faucet_core::WriteMode] {
+        self.inner.supported_write_modes()
+    }
+    async fn write_batch_idempotent(
+        &self,
+        records: &[Value],
+        scope: &str,
+        token: &str,
+    ) -> Result<usize, FaucetError> {
+        let n = self.inner.write_batch_idempotent(records, scope, token).await?;
+        self.state.observe(records);
+        Ok(n)
+    }
+    async fn last_committed_token(&self, scope: &str) -> Result<Option<String>, FaucetError> {
+        self.inner.last_committed_token(scope).await
+    }
+    async fn current_schema(&self) -> Result<Option<Value>, FaucetError> {
+        self.inner.current_schema().await
+    }
+    fn supports_schema_evolution(&self) -> bool {
+        self.inner.supports_schema_evolution()
+    }
+    async fn evolve_schema(
+        &self,
+        evolution: &faucet_core::SchemaEvolution,
+    ) -> Result<(), FaucetError> {
+        self.inner.evolve_schema(evolution).await
+    }
 }
 
 /// Wraps a source, sampling the records it yields (pre-transform input schema).
@@ -185,6 +226,26 @@ impl Source for SamplingSource {
     }
     async fn apply_start_bookmark(&self, bookmark: Value) -> Result<(), FaucetError> {
         self.inner.apply_start_bookmark(bookmark).await
+    }
+    // Bookmark + capability passthroughs. `fetch_with_context_incremental`
+    // matters even though the pipeline drives `stream_pages`: an *outer*
+    // wrapper's default `stream_pages` builds on it, and the trait default
+    // would silently drop the inner source's bookmark (breaking incremental
+    // resume whenever sampling is active).
+    async fn fetch_with_context_incremental(
+        &self,
+        ctx: &HashMap<String, Value>,
+    ) -> Result<(Vec<Value>, Option<Value>), FaucetError> {
+        self.inner.fetch_with_context_incremental(ctx).await
+    }
+    fn supports_exactly_once(&self) -> bool {
+        self.inner.supports_exactly_once()
+    }
+    fn replay_guarantee(&self) -> faucet_core::ReplayGuarantee {
+        self.inner.replay_guarantee()
+    }
+    async fn capture_resume_position(&self) -> Result<Option<Value>, FaucetError> {
+        self.inner.capture_resume_position().await
     }
 }
 

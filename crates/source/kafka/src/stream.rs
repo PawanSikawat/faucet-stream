@@ -727,6 +727,20 @@ impl Source for KafkaSource {
         Ok(())
     }
 
+    /// Kafka partitions are immutable, ordered logs and every emitted page
+    /// carries a complete per-partition next-offset bookmark, so resuming from
+    /// any bookmark continues the record stream at exactly that position — no
+    /// record before it is re-emitted, none after it is skipped. Page
+    /// *boundaries* on replay may differ (idle-timeout cuts are timing-
+    /// dependent), which is why the pipeline's atomic-watermark mechanism
+    /// re-anchors from the bookmark embedded in the sink's committed token
+    /// rather than skipping replayed pages by count. In plain (non-member)
+    /// mode the source never commits consumer-group offsets, so the broker's
+    /// group position can never run ahead of the durable bookmark.
+    fn supports_exactly_once(&self) -> bool {
+        true
+    }
+
     fn connector_name(&self) -> &'static str {
         "kafka"
     }

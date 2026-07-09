@@ -54,6 +54,17 @@ pub(crate) fn build_snapshot_node(
     n.id = "snapshot".to_string();
     n.source = snapshot_source;
     n.delivery = faucet_core::DeliveryMode::AtLeastOnce;
+    // Keep the derived-guarantee report truthful for the forced-at-least-once
+    // snapshot phase — unless the sink dedups by key, in which case the
+    // snapshot inherits keyed-upsert effectively-once (the recommended
+    // `write_mode: upsert` mirror setup).
+    if n.delivery_guarantee
+        != faucet_core::DeliveryGuarantee::EffectivelyOnce(
+            faucet_core::EffectivelyOnceMechanism::KeyedUpsert,
+        )
+    {
+        n.delivery_guarantee = faucet_core::DeliveryGuarantee::AtLeastOnce;
+    }
     n.transforms.retain(|t| t.kind != "cdc_unwrap");
     n
 }

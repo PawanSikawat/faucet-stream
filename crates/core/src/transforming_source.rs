@@ -125,6 +125,18 @@ impl Source for TransformingSource {
         self.inner.apply_start_bookmark(bookmark).await
     }
 
+    fn supports_exactly_once(&self) -> bool {
+        self.inner.supports_exactly_once()
+    }
+
+    fn replay_guarantee(&self) -> crate::idempotency::ReplayGuarantee {
+        self.inner.replay_guarantee()
+    }
+
+    async fn capture_resume_position(&self) -> Result<Option<Value>, FaucetError> {
+        self.inner.capture_resume_position().await
+    }
+
     fn connector_name(&self) -> &'static str {
         self.inner.connector_name()
     }

@@ -99,6 +99,18 @@ impl<'a, S: Source + ?Sized> Source for InstrumentedSource<'a, S> {
         self.inner.apply_start_bookmark(bookmark).await
     }
 
+    fn supports_exactly_once(&self) -> bool {
+        self.inner.supports_exactly_once()
+    }
+
+    fn replay_guarantee(&self) -> crate::idempotency::ReplayGuarantee {
+        self.inner.replay_guarantee()
+    }
+
+    async fn capture_resume_position(&self) -> Result<Option<Value>, FaucetError> {
+        self.inner.capture_resume_position().await
+    }
+
     async fn fetch_with_context(
         &self,
         context: &HashMap<String, Value>,
@@ -454,6 +466,14 @@ impl<'a, S: Sink + ?Sized> Sink for InstrumentedSink<'a, S> {
 
     fn supports_idempotent_writes(&self) -> bool {
         self.inner.supports_idempotent_writes()
+    }
+
+    fn sink_guarantee(&self) -> crate::idempotency::SinkGuarantee {
+        self.inner.sink_guarantee()
+    }
+
+    fn dedups_by_key(&self) -> bool {
+        self.inner.dedups_by_key()
     }
 
     async fn write_batch_idempotent(

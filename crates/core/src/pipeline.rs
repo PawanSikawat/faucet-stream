@@ -392,6 +392,29 @@ impl<'a, So: Source + ?Sized, Si: Sink + ?Sized> Pipeline<'a, So, Si> {
                 }
             }
 
+            // Sink-anchored resume (atomic-watermark mechanism): the sink's
+            // committed watermark embeds the exact stream position of the last
+            // committed page. In the crash window between "sink durably
+            // committed" and "state store persisted" the sink is one page
+            // ahead of the state store — recover that position from the sink
+            // and re-anchor the source there, so nothing is re-written *and*
+            // nothing depends on the source replaying identical page
+            // boundaries (which log-positional sources like Kafka cannot
+            // promise). Tokens written before bookmarks were embedded parse
+            // with no bookmark and fall back to the skip-on-resume path.
+            if self.delivery == crate::idempotency::DeliveryMode::ExactlyOnce
+                && wrapped_sink.supports_idempotent_writes()
+                && wrapped_source.replay_guarantee()
+                    == crate::idempotency::ReplayGuarantee::Deterministic
+                && let Some(key) = state_key.as_ref()
+                && let Some(token) = wrapped_sink.last_committed_token(key).await?
+                && let Some((sink_seq, Some(bm))) = crate::idempotency::parse_token_parts(&token)
+                && sink_seq > start_seq
+            {
+                wrapped_source.apply_start_bookmark(bm).await?;
+                start_seq = sink_seq;
+            }
+
             let ctx = std::collections::HashMap::new();
             let pages = wrapped_source.stream_pages(&ctx, DEFAULT_BATCH_SIZE);
 
@@ -429,7 +452,10 @@ impl<'a, So: Source + ?Sized, Si: Sink + ?Sized> Pipeline<'a, So, Si> {
             if let Some(p) = self.schema_drift {
                 opts = opts.with_schema_drift(p);
             }
-            opts = opts.with_delivery(self.delivery).with_start_seq(start_seq);
+            opts = opts
+                .with_delivery(self.delivery)
+                .with_start_seq(start_seq)
+                .with_replay_guarantee(wrapped_source.replay_guarantee());
 
             run_stream(pages, &wrapped_sink, opts).await
         }
@@ -548,26 +574,60 @@ where
         validate_state_key(key)?;
     }
 
-    // ── Exactly-once gates + resume ──────────────────────────────────────────
-    let exactly_once = options.delivery == crate::idempotency::DeliveryMode::ExactlyOnce;
-    if exactly_once {
-        if !sink.supports_idempotent_writes() {
-            return Err(FaucetError::Config(format!(
-                "delivery: exactly_once requires an idempotent sink, but '{}' does not support it",
-                sink.connector_name()
-            )));
-        }
-        if state_store.is_none() || state_key.is_none() {
-            return Err(FaucetError::Config(
-                "delivery: exactly_once requires a state store".into(),
-            ));
-        }
-        if dlq.is_some() {
-            return Err(FaucetError::Config(
-                "delivery: exactly_once is not compatible with a DLQ in this version".into(),
-            ));
-        }
-    }
+    // ── Effectively-once mechanism selection + gates ─────────────────────────
+    // `delivery: exactly_once` requests ≥ effectively-once; derive which
+    // mechanism this topology actually provides (issue #292):
+    //   1. atomic watermark — idempotent sink + positional-replay source
+    //      (`replay` unknown = trusted, for direct `run_stream` callers);
+    //   2. keyed upsert — the sink is configured to dedup by key, any source;
+    //   3. neither → typed error naming the limiting side.
+    let mechanism: Option<crate::idempotency::EffectivelyOnceMechanism> =
+        if options.delivery == crate::idempotency::DeliveryMode::ExactlyOnce {
+            let replay_ok = options
+                .replay
+                .is_none_or(|r| r == crate::idempotency::ReplayGuarantee::Deterministic);
+            if sink.supports_idempotent_writes() && replay_ok {
+                if state_store.is_none() || state_key.is_none() {
+                    return Err(FaucetError::Config(
+                        "delivery: exactly_once (atomic watermark) requires a state store".into(),
+                    ));
+                }
+                if dlq.is_some() {
+                    return Err(FaucetError::Config(
+                        "delivery: exactly_once (atomic watermark) is not compatible with a DLQ \
+                         in this version"
+                            .into(),
+                    ));
+                }
+                Some(crate::idempotency::EffectivelyOnceMechanism::AtomicWatermark)
+            } else if sink.dedups_by_key() {
+                Some(crate::idempotency::EffectivelyOnceMechanism::KeyedUpsert)
+            } else if sink.supports_idempotent_writes() {
+                // Atomic-capable sink, but the source does not replay
+                // positionally and no keyed dedup is configured.
+                return Err(FaucetError::Config(format!(
+                    "delivery: exactly_once — the source does not replay deterministically from \
+                     a bookmark, so the atomic-watermark mechanism cannot be used; configure \
+                     `write_mode: upsert` with a `key` on sink '{}' for keyed-upsert \
+                     effectively-once instead",
+                    sink.connector_name()
+                )));
+            } else {
+                return Err(FaucetError::Config(format!(
+                    "delivery: exactly_once requires an idempotent (atomic-watermark) sink or a \
+                     sink configured to dedup by key (`write_mode: upsert` + `key`), but '{}' \
+                     provides neither",
+                    sink.connector_name()
+                )));
+            }
+        } else {
+            None
+        };
+    // Only the atomic-watermark mechanism changes the write/skip/state path
+    // below; keyed upsert delivers its idempotence inside the sink's own
+    // keyed writes, over the ordinary write path.
+    let exactly_once = mechanism
+        == Some(crate::idempotency::EffectivelyOnceMechanism::AtomicWatermark);
     let scope = state_key.clone().unwrap_or_default();
     let mut next_seq = options.start_seq;
     let committed_seq = if exactly_once {
@@ -1314,7 +1374,16 @@ where
                         // (seq, bookmark) advance together and realign on resume.
                         if let Some(bookmark) = page.bookmark {
                             next_seq += 1;
-                            let token = crate::idempotency::format_token(next_seq);
+                            // Embed the page's resume bookmark in the token so
+                            // the committed watermark doubles as a durable
+                            // record of the stream position — on resume the
+                            // pipeline re-anchors the source there instead of
+                            // relying on identical replayed page boundaries
+                            // (see `Pipeline::run`).
+                            let token = crate::idempotency::format_token_with_bookmark(
+                                next_seq,
+                                Some(&bookmark),
+                            );
                             if next_seq <= committed_seq {
                                 // Sink already durably committed this page. Skip
                                 // the write; advance state so a later crash does
@@ -1984,9 +2053,12 @@ mod tests {
         let (bm, seq) = crate::idempotency::unwrap_state(&store.get("k").await.unwrap().unwrap());
         assert_eq!(bm, Some(json!("b2")));
         assert_eq!(seq, 2);
+        // The committed token embeds the page's resume bookmark (sink-anchored
+        // resume) — sequence and bookmark both recoverable from the sink.
+        let token = sink.last_committed_token("k").await.unwrap().unwrap();
         assert_eq!(
-            sink.last_committed_token("k").await.unwrap(),
-            Some(crate::idempotency::format_token(2))
+            crate::idempotency::parse_token_parts(&token),
+            Some((2, Some(json!("b2"))))
         );
     }
 
@@ -2052,6 +2124,231 @@ mod tests {
         )
         .await;
         assert!(matches!(r, Err(FaucetError::Config(_))));
+    }
+
+    /// A sink that is not atomic-watermark capable but is *configured* to
+    /// dedup by key (`write_mode: upsert` + `key`).
+    struct KeyedMockSink(MockSink);
+    #[async_trait]
+    impl Sink for KeyedMockSink {
+        async fn write_batch(&self, records: &[Value]) -> Result<usize, FaucetError> {
+            self.0.write_batch(records).await
+        }
+        fn dedups_by_key(&self) -> bool {
+            true
+        }
+        fn supported_write_modes(&self) -> &'static [crate::write_mode::WriteMode] {
+            &[
+                crate::write_mode::WriteMode::Append,
+                crate::write_mode::WriteMode::Upsert,
+                crate::write_mode::WriteMode::Delete,
+            ]
+        }
+    }
+
+    #[tokio::test]
+    async fn exactly_once_keyed_upsert_mechanism_uses_plain_write_path() {
+        // A non-deterministic source + keyed-upsert sink is accepted under
+        // `delivery: exactly_once` (effectively-once via keyed dedup, #292):
+        // records flow through the ordinary write path and the bookmark is
+        // persisted bare (no wrapped seq — there is no atomic watermark).
+        let sink = KeyedMockSink(MockSink::new());
+        let store: Arc<dyn StateStore> = Arc::new(crate::state::MemoryStateStore::new());
+        let pages = vec![Ok(StreamPage {
+            records: vec![json!({"id": 1})],
+            bookmark: Some(json!("b1")),
+        })];
+        let opts = eo_opts(store.clone(), "k", 0)
+            .with_replay_guarantee(crate::idempotency::ReplayGuarantee::NonDeterministic);
+        let r = run_stream(futures::stream::iter(pages), &sink, opts)
+            .await
+            .unwrap();
+        assert_eq!(r.records_written, 1);
+        assert_eq!(sink.0.written(), vec![json!({"id": 1})]);
+        // Bare bookmark, not the exactly-once wrapper.
+        assert_eq!(store.get("k").await.unwrap(), Some(json!("b1")));
+    }
+
+    #[tokio::test]
+    async fn exactly_once_rejects_non_deterministic_source_without_keyed_dedup() {
+        // Atomic-capable sink, but the declared replay guarantee is
+        // non-deterministic and no keyed dedup is configured: page-skip
+        // correctness cannot be upheld, so the run is rejected with a hint
+        // toward keyed upsert.
+        let pages: Vec<Result<StreamPage, FaucetError>> = vec![];
+        let store: Arc<dyn StateStore> = Arc::new(crate::state::MemoryStateStore::new());
+        let opts = eo_opts(store, "k", 0)
+            .with_replay_guarantee(crate::idempotency::ReplayGuarantee::NonDeterministic);
+        let r = run_stream(
+            futures::stream::iter(pages),
+            &IdempotentMockSink::new(),
+            opts,
+        )
+        .await;
+        match r {
+            Err(FaucetError::Config(msg)) => {
+                assert!(msg.contains("write_mode: upsert"), "hint present: {msg}")
+            }
+            other => panic!("expected Config error, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn exactly_once_rejects_plain_sink_with_mechanism_hint() {
+        let pages: Vec<Result<StreamPage, FaucetError>> = vec![];
+        let store: Arc<dyn StateStore> = Arc::new(crate::state::MemoryStateStore::new());
+        let r = run_stream(
+            futures::stream::iter(pages),
+            &MockSink::new(),
+            eo_opts(store, "k", 0),
+        )
+        .await;
+        match r {
+            Err(FaucetError::Config(msg)) => assert!(
+                msg.contains("provides neither"),
+                "names both mechanisms: {msg}"
+            ),
+            other => panic!("expected Config error, got {other:?}"),
+        }
+    }
+
+    /// Deterministic-replay source that records every applied bookmark and
+    /// then streams one page — used to prove sink-anchored resume.
+    struct AnchorRecordingSource {
+        applied: std::sync::Mutex<Vec<Value>>,
+    }
+    #[async_trait]
+    impl Source for AnchorRecordingSource {
+        async fn fetch_with_context(
+            &self,
+            _context: &std::collections::HashMap<String, Value>,
+        ) -> Result<Vec<Value>, FaucetError> {
+            Ok(vec![json!({"id": 10})])
+        }
+        async fn fetch_with_context_incremental(
+            &self,
+            _context: &std::collections::HashMap<String, Value>,
+        ) -> Result<(Vec<Value>, Option<Value>), FaucetError> {
+            Ok((vec![json!({"id": 10})], Some(json!("after"))))
+        }
+        fn state_key(&self) -> Option<String> {
+            Some("anchor_key".to_string())
+        }
+        async fn apply_start_bookmark(&self, bookmark: Value) -> Result<(), FaucetError> {
+            self.applied.lock().unwrap().push(bookmark);
+            Ok(())
+        }
+        fn supports_exactly_once(&self) -> bool {
+            true
+        }
+    }
+
+    #[tokio::test]
+    async fn pipeline_run_anchors_resume_at_sink_embedded_bookmark() {
+        // Crash window: the sink durably committed page seq 5 (token embeds
+        // its bookmark) but the state store only persisted seq 4. On resume
+        // the pipeline must re-anchor the source at the sink's embedded
+        // position — the state bookmark is applied first, then overridden —
+        // and continue numbering from the sink's sequence (no skips, no
+        // duplicates, no reliance on replayed page boundaries).
+        let source = AnchorRecordingSource {
+            applied: std::sync::Mutex::new(Vec::new()),
+        };
+        let sink = IdempotentMockSink::new();
+        sink.tokens.lock().unwrap().insert(
+            "anchor_key".to_string(),
+            crate::idempotency::format_token_with_bookmark(5, Some(&json!("sink-pos"))),
+        );
+        let store: Arc<dyn StateStore> = Arc::new(crate::state::MemoryStateStore::new());
+        store
+            .put(
+                "anchor_key",
+                &crate::idempotency::wrap_state(Some(&json!("state-pos")), 4),
+            )
+            .await
+            .unwrap();
+
+        let r = Pipeline::new(&source, &sink)
+            .with_state_store(Arc::clone(&store))
+            .with_delivery(crate::idempotency::DeliveryMode::ExactlyOnce)
+            .run()
+            .await
+            .unwrap();
+
+        assert_eq!(
+            *source.applied.lock().unwrap(),
+            vec![json!("state-pos"), json!("sink-pos")],
+            "state bookmark applied, then overridden by the sink anchor"
+        );
+        // The replayed page is written (it is *after* the anchored position),
+        // committed at seq 6 — not skipped by the stale count.
+        assert_eq!(r.records_written, 1);
+        let token = sink
+            .last_committed_token("anchor_key")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            crate::idempotency::parse_token_parts(&token),
+            Some((6, Some(json!("after"))))
+        );
+        let (bm, seq) =
+            crate::idempotency::unwrap_state(&store.get("anchor_key").await.unwrap().unwrap());
+        assert_eq!((bm, seq), (Some(json!("after")), 6));
+    }
+
+    #[tokio::test]
+    async fn pipeline_run_ignores_sink_token_behind_state_seq() {
+        // Sink watermark at seq 4, state already at seq 4 — nothing to anchor;
+        // the source resumes from the state bookmark only.
+        let source = AnchorRecordingSource {
+            applied: std::sync::Mutex::new(Vec::new()),
+        };
+        let sink = IdempotentMockSink::new();
+        sink.tokens.lock().unwrap().insert(
+            "anchor_key".to_string(),
+            crate::idempotency::format_token_with_bookmark(4, Some(&json!("sink-pos"))),
+        );
+        let store: Arc<dyn StateStore> = Arc::new(crate::state::MemoryStateStore::new());
+        store
+            .put(
+                "anchor_key",
+                &crate::idempotency::wrap_state(Some(&json!("state-pos")), 4),
+            )
+            .await
+            .unwrap();
+        Pipeline::new(&source, &sink)
+            .with_state_store(Arc::clone(&store))
+            .with_delivery(crate::idempotency::DeliveryMode::ExactlyOnce)
+            .run()
+            .await
+            .unwrap();
+        assert_eq!(*source.applied.lock().unwrap(), vec![json!("state-pos")]);
+    }
+
+    #[tokio::test]
+    async fn pipeline_run_legacy_bare_token_falls_back_to_skip_path() {
+        // A pre-upgrade watermark (bare seq, no embedded bookmark) cannot
+        // anchor; the skip path applies: the replayed page (seq 1 ≤ committed
+        // 1) is skipped, nothing double-written.
+        let source = AnchorRecordingSource {
+            applied: std::sync::Mutex::new(Vec::new()),
+        };
+        let sink = IdempotentMockSink::new();
+        sink.tokens.lock().unwrap().insert(
+            "anchor_key".to_string(),
+            crate::idempotency::format_token(1),
+        );
+        let store: Arc<dyn StateStore> = Arc::new(crate::state::MemoryStateStore::new());
+        let r = Pipeline::new(&source, &sink)
+            .with_state_store(Arc::clone(&store))
+            .with_delivery(crate::idempotency::DeliveryMode::ExactlyOnce)
+            .run()
+            .await
+            .unwrap();
+        assert!(source.applied.lock().unwrap().is_empty());
+        assert_eq!(r.records_written, 0, "page 1 already committed → skipped");
+        assert!(sink.rows().is_empty());
     }
 
     // ── StreamPage / batch_size tests ───────────────────────────────────────
@@ -4020,9 +4317,10 @@ mod tests {
             crate::idempotency::unwrap_state(&store.get("eo_key").await.unwrap().unwrap());
         assert_eq!(bm, Some(json!("bm-after-resume")));
         assert_eq!(seq, 8, "sequence resumes at start_seq + 1");
+        let token = sink.last_committed_token("eo_key").await.unwrap().unwrap();
         assert_eq!(
-            sink.last_committed_token("eo_key").await.unwrap(),
-            Some(crate::idempotency::format_token(8))
+            crate::idempotency::parse_token_parts(&token),
+            Some((8, Some(json!("bm-after-resume"))))
         );
     }
 
