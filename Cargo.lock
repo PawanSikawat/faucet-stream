@@ -3124,6 +3124,7 @@ dependencies = [
  "faucet-source-redis",
  "faucet-source-rest",
  "faucet-source-s3",
+ "faucet-source-singer",
  "faucet-source-snowflake",
  "faucet-source-sqlite",
  "faucet-source-webhook",

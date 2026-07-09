@@ -297,8 +297,11 @@ impl TapProcess {
     }
 }
 
-/// Write `value` as pretty JSON to a private (0600) temp file.
-fn write_temp(kind: &str, value: &Value) -> Result<tempfile::NamedTempFile, FaucetError> {
+/// Write `value` as JSON to a private (0600) temp file.
+pub(crate) fn write_temp(
+    kind: &str,
+    value: &Value,
+) -> Result<tempfile::NamedTempFile, FaucetError> {
     use std::io::Write;
     let mut file = tempfile::Builder::new()
         .prefix(&format!("faucet-singer-{kind}-"))

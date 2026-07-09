@@ -726,4 +726,13 @@ pub struct InitArgs {
     /// without a `ref:` field still resolves through the new schema.
     #[arg(long, default_value = "default")]
     pub template: String,
+    /// (singer only) Run `<executable> --discover` to fetch the tap's catalog,
+    /// write it next to the output, and scaffold the config with the discovered
+    /// streams listed. Requires `--source singer` and `--executable`.
+    #[arg(long)]
+    pub discover: bool,
+    /// (singer only) The Singer tap executable to discover with (used by
+    /// `--discover`), e.g. `tap-github` or `/opt/taps/tap-csv`.
+    #[arg(long)]
+    pub executable: Option<String>,
 }

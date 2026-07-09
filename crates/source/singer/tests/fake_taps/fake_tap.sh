@@ -21,6 +21,7 @@ total=5
 state_at=""
 crash_after_new=""
 state_file=""
+discover=0
 
 # Scan every argument; ignore --config/--catalog and their values.
 while [ $# -gt 0 ]; do
@@ -30,10 +31,21 @@ while [ $# -gt 0 ]; do
     --state-at) state_at="$2"; shift 2 ;;
     --crash-after-new) crash_after_new="$2"; shift 2 ;;
     --state) state_file="$2"; shift 2 ;;
+    --discover) discover=1; shift 1 ;;
     --config|--catalog) shift 2 ;;
     *) shift 1 ;;
   esac
 done
+
+# Discovery mode: emit a Singer catalog and exit. Advertises the configured
+# stream plus a second "audit_log" stream so `faucet init` shows a real choice.
+if [ "$discover" -eq 1 ]; then
+  printf '{"streams":['
+  printf '{"tap_stream_id":"%s","stream":"%s","schema":{"type":"object","properties":{"id":{"type":"integer"}}},"metadata":[]},' "$stream" "$stream"
+  printf '{"tap_stream_id":"audit_log","stream":"audit_log","schema":{"type":"object","properties":{"ts":{"type":"string"}}},"metadata":[]}'
+  printf ']}\n'
+  exit 0
+fi
 
 # Read resume cursor (last_id) from the state file if present.
 last_id=0

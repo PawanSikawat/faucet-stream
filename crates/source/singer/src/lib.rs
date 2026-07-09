@@ -17,6 +17,7 @@
 
 pub mod assemble;
 pub mod config;
+pub mod discover;
 pub mod message;
 pub mod process;
 pub mod stream;
@@ -25,5 +26,6 @@ pub mod stream;
 pub use faucet_core::{FaucetError, Sink, Source};
 
 pub use config::{MalformedPolicy, SingerSourceConfig};
+pub use discover::{catalog_stream_ids, discover};
 pub use message::{SingerMessage, parse_line};
 pub use stream::SingerSource;

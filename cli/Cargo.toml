@@ -77,6 +77,7 @@ source = [
     "source-gcs",
     "source-bigquery",
     "source-snowflake",
+    "source-singer",
 ]
 sink = [
     "sink-bigquery",
@@ -123,6 +124,7 @@ source-parquet = ["dep:faucet-source-parquet"]
 source-gcs = ["dep:faucet-source-gcs"]
 source-bigquery = ["dep:faucet-source-bigquery"]
 source-snowflake = ["dep:faucet-source-snowflake"]
+source-singer = ["dep:faucet-source-singer"]
 
 sink-bigquery = ["dep:faucet-sink-bigquery"]
 sink-iceberg = ["dep:faucet-sink-iceberg"]
@@ -265,6 +267,7 @@ faucet-source-parquet = { workspace = true, optional = true }
 faucet-source-gcs = { workspace = true, optional = true }
 faucet-source-bigquery = { workspace = true, optional = true }
 faucet-source-snowflake = { workspace = true, optional = true }
+faucet-source-singer = { workspace = true, optional = true }
 faucet-sink-bigquery = { workspace = true, optional = true }
 faucet-sink-iceberg = { workspace = true, optional = true }
 faucet-sink-postgres = { workspace = true, optional = true }

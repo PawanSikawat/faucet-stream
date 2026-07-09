@@ -88,3 +88,20 @@ Branch `feat/singer-bridge-and-conformance`. Remove before the final commit if a
 - CI: added `source-singer` to the `feature-check` isolation matrix in `.github/workflows/ci.yml`.
 - No "exactly-once" text authored anywhere (guarantee = effectively-once / idempotent at-least-once).
 - mdBook builds clean.
+
+## Phase 5 — CLI seams (optional stretch)
+- **Registry wiring** (`cli/src/registry.rs` + `cli/Cargo.toml`): `source-singer` feature + optional dep,
+  added to the CLI `source` aggregate (so it's in the default CLI build); `build_source` / `source_schema`
+  / `source_descriptions` arms. Singer is now driveable from the `faucet` binary (run/validate/list/schema).
+- **`faucet doctor`**: `SingerSource::check()` override — non-spawning probes `tap_executable`
+  (resolves on PATH / as a file) and `stream_in_catalog` (skips when no catalog). Verified end-to-end:
+  valid stream passes, bad/empty stream fails with a clear reason.
+- **`faucet init --source singer --discover --executable <tap>`**: new `discover()` in the singer crate
+  (`<tap> --config <tmp> --discover` → catalog Value + `catalog_stream_ids`); fake tap gained a `--discover`
+  mode. `init` writes `catalog.json` and scaffolds a config that inlines the catalog as compact JSON
+  (NOT `${file:}`, which would insert it as a string — caught during testing) and lists discovered streams
+  with `stream:` left empty (flagged by doctor). Verified end-to-end via the fake tap.
+- Tests: +2 singer unit (check probes), +1 singer integration (discover), +1 crate unit (catalog_stream_ids),
+  +2 CLI tests (`cli/tests/init_singer_discover.rs`, driving `init::run` directly). All green; clippy clean
+  under `--all-features` (slim-build feature-combo `unused_*` warnings are pre-existing, not from this change).
+- `docs/book/src/reference/cli.md` documents `--discover` + the doctor behavior. No "exactly-once" text.

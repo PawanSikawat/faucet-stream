@@ -159,4 +159,122 @@ impl Source for SingerSource {
         *self.start_bookmark.lock().unwrap() = Some(bookmark);
         Ok(())
     }
+
+    /// Non-spawning preflight for `faucet doctor`: verifies the tap executable
+    /// resolves (on `PATH` or as a file) and, when a catalog is configured, that
+    /// the selected `stream` exists in it. We deliberately do **not** run the
+    /// tap here — that would have side effects and could block.
+    async fn check(
+        &self,
+        _ctx: &faucet_core::check::CheckContext,
+    ) -> Result<faucet_core::check::CheckReport, FaucetError> {
+        use faucet_core::check::{CheckReport, Probe};
+        use std::time::Instant;
+
+        let mut probes = Vec::new();
+
+        let start = Instant::now();
+        if resolve_executable(&self.config.executable).is_some() {
+            probes.push(Probe::pass("tap_executable", start.elapsed()));
+        } else {
+            probes.push(Probe::fail_hint(
+                "tap_executable",
+                start.elapsed(),
+                format!(
+                    "tap '{}' not found on PATH or as a file",
+                    self.config.executable
+                ),
+                "install the tap (e.g. `pipx install tap-foo`) and ensure it is on PATH, \
+                 or set `executable` to an absolute path",
+            ));
+        }
+
+        let start = Instant::now();
+        match &self.config.catalog {
+            Some(catalog) => {
+                if catalog_has_stream(catalog, &self.config.stream) {
+                    probes.push(Probe::pass("stream_in_catalog", start.elapsed()));
+                } else {
+                    probes.push(Probe::fail_hint(
+                        "stream_in_catalog",
+                        start.elapsed(),
+                        format!(
+                            "stream '{}' is not present in the configured catalog",
+                            self.config.stream
+                        ),
+                        "check the `stream` name against the catalog's stream list",
+                    ));
+                }
+            }
+            None => probes.push(Probe::skip(
+                "stream_in_catalog",
+                "no catalog configured; run `faucet init --source singer --discover` to generate one",
+            )),
+        }
+
+        Ok(CheckReport { probes })
+    }
+}
+
+/// Resolve a tap executable to a file path: an absolute/relative path is checked
+/// directly, a bare name is searched on `PATH`. Returns `None` if not found.
+fn resolve_executable(exe: &str) -> Option<std::path::PathBuf> {
+    use std::path::Path;
+    let p = Path::new(exe);
+    if exe.contains('/') || p.is_absolute() {
+        return if p.is_file() {
+            Some(p.to_path_buf())
+        } else {
+            None
+        };
+    }
+    let paths = std::env::var_os("PATH")?;
+    std::env::split_paths(&paths)
+        .map(|dir| dir.join(exe))
+        .find(|candidate| candidate.is_file())
+}
+
+/// Whether a Singer catalog lists `stream` (by `stream` or `tap_stream_id`).
+fn catalog_has_stream(catalog: &Value, stream: &str) -> bool {
+    catalog
+        .get("streams")
+        .and_then(Value::as_array)
+        .is_some_and(|streams| {
+            streams.iter().any(|s| {
+                s.get("stream").and_then(Value::as_str) == Some(stream)
+                    || s.get("tap_stream_id").and_then(Value::as_str) == Some(stream)
+            })
+        })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn catalog_has_stream_matches_stream_or_tap_stream_id() {
+        let catalog = json!({
+            "streams": [
+                { "tap_stream_id": "users", "stream": "users" },
+                { "tap_stream_id": "orders-v2", "stream": "orders" }
+            ]
+        });
+        assert!(catalog_has_stream(&catalog, "users"));
+        assert!(catalog_has_stream(&catalog, "orders")); // by `stream`
+        assert!(catalog_has_stream(&catalog, "orders-v2")); // by `tap_stream_id`
+        assert!(!catalog_has_stream(&catalog, "missing"));
+        assert!(!catalog_has_stream(&json!({}), "users"));
+    }
+
+    #[test]
+    fn resolve_executable_finds_absolute_file_and_rejects_missing() {
+        // A file that definitely exists.
+        assert!(
+            resolve_executable("/bin/sh").is_some() || resolve_executable("/bin/cat").is_some()
+        );
+        assert!(resolve_executable("/definitely/not/a/real/tap-xyz").is_none());
+        // A bare name that will not be on PATH.
+        assert!(resolve_executable("tap-this-does-not-exist-42").is_none());
+    }
 }

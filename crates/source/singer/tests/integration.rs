@@ -172,6 +172,17 @@ async fn crash_then_resume_produces_no_duplicates() {
     );
 }
 
+#[tokio::test]
+async fn discover_returns_catalog_streams() {
+    let cfg = SingerSourceConfig::new(fake_tap(), "s");
+    let catalog = faucet_source_singer::discover(&cfg)
+        .await
+        .expect("discovery should succeed");
+    let ids = faucet_source_singer::catalog_stream_ids(&catalog);
+    assert!(ids.contains(&"s".to_string()), "got {ids:?}");
+    assert!(ids.contains(&"audit_log".to_string()), "got {ids:?}");
+}
+
 /// End-to-end against a real Python tap. Ignored by default: requires
 /// `pip install tap-csv target-jsonl` (or a `tap-csv` on PATH) and network.
 /// Run with: `cargo test -p faucet-source-singer -- --ignored real_tap`.
