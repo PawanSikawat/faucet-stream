@@ -17,6 +17,18 @@ independently).
 
 ## [Unreleased]
 
+### Added
+
+- **`faucet-source-singer`** — a Singer tap bridge source that runs any Singer
+  tap and adapts its output into faucet records (single-stream v0). Tier-2 /
+  experimental; reintroduces a runtime (usually Python) dependency, Singer-class
+  throughput, and tap-dependent resume granularity.
+- **`faucet-conformance`** — a reusable connector conformance test battery
+  (config-schema validity + bounded-memory streaming implemented; bookmark /
+  idempotent-replay / capability / error-not-panic checks scaffolded). Passing it
+  is the Tier-1 (supported) criterion; wired into `faucet-source-csv` and
+  `faucet-source-singer`.
+
 ## `faucet-cli` — [1.1.0](https://github.com/PawanSikawat/faucet-stream/compare/faucet-cli-v1.0.1...faucet-cli-v1.1.0) - 2026-06-12
 
 ### Bug Fixes

@@ -38,6 +38,7 @@ Legend: ✓ supported · ✗ not applicable.
 | Apache Parquet | `source-parquet` | ✓ | ✗ | ✗ | ✗ | local/glob/S3, vectorized Arrow reader, projection |
 | BigQuery | `source-bigquery` | ✓ | ✗ | ✗ | ✗ | `jobs.query` + pageToken pagination |
 | Snowflake | `source-snowflake` | ✓ | ✗ | ✗ | ✗ | SQL REST API, server-side partitions |
+| Singer bridge ⚠️ | `source-singer` | ✓ | ✓⁹ | ✗ | ✗ | runs an external Singer tap; NDJSON over stdout, STATE→bookmark. **Tier-2 / experimental** |
 
 ¹ **Streams** = yields records in bounded-memory batches rather than buffering the
 whole result. ² **Resumable** = persists a bookmark to a [state store](../cookbook/state.md)
@@ -50,6 +51,18 @@ single response. ⁵ S3/GCS stream in JSONL and raw-text modes; JSON-array mode
 buffers one object. ⁶ Webhook is buffer-shaped by nature (it collects POSTs over
 a window). ⁸ MSSQL is resumable only in `replication: incremental` mode (it
 persists a tracking-column bookmark); in `full` mode it is not.
+⁹ The Singer bridge is resumable via the tap's `STATE` messages, but the
+*granularity* of resume (and whether re-emitted rows overlap) depends on the
+individual tap — pair it with a keyed/upsert sink for clean, effectively-once
+(idempotent at-least-once) behavior.
+
+> **Support tiers.** A connector is **Tier-1 (supported)** when it invokes and
+> passes the `faucet-conformance` battery in CI (valid config schema,
+> bounded-memory streaming, and the further checks as they land). That battery
+> **is** the tiering mechanism — there is no separate scheme. Connectors marked
+> **⚠️ Tier-2 / experimental** (currently the Singer bridge) are best-effort:
+> correctness bugs are fixed, but breadth of testing and upstream-drift tracking
+> are not guaranteed.
 
 ## Sinks
 

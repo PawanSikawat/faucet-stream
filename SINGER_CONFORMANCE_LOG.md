@@ -75,3 +75,16 @@ Branch `feat/singer-bridge-and-conformance`. Remove before the final commit if a
 - **Reusability proven:** checks 1 & 2 wired into `faucet-source-csv` (`tests/conformance.rs`,
   temp 5k-row CSV, batch 250) **and** `faucet-source-singer` (`tests/conformance.rs`, fake tap 2k rows,
   batch 100). Both pass. Passing the battery is the documented Tier-1 criterion.
+
+## Phase 4 — docs & honesty notes
+- README: added `faucet-source-singer` row (**Tier-2 / experimental ⚠️**) to the Sources table;
+  added a "Support tiers" callout (conformance battery = Tier-1 mechanism, no separate scheme);
+  bumped counts 23→24 sources, 41→42 connectors, 55→57 crates (+singer +conformance).
+- docs/book `reference/connectors.md`: singer row (Streams ✓, Resumable ✓ with footnote ⁹ on
+  tap-dependent granularity + effectively-once/keyed-sink guidance), plus the Tier-1/Tier-2 callout.
+- `CHANGELOG.md` `## [Unreleased]`: Added entries for both crates. **NOTE:** the root CHANGELOG's
+  header says it is a frozen archive ("new entries are not added here"); added under the existing
+  `[Unreleased]` placeholder because the task explicitly requested a CHANGELOG entry — flag for review.
+- CI: added `source-singer` to the `feature-check` isolation matrix in `.github/workflows/ci.yml`.
+- No "exactly-once" text authored anywhere (guarantee = effectively-once / idempotent at-least-once).
+- mdBook builds clean.
