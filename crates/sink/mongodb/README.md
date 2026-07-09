@@ -5,7 +5,7 @@
 [![MSRV](https://img.shields.io/crates/msrv/faucet-sink-mongodb.svg)](https://github.com/PawanSikawat/faucet-stream/blob/main/rust-toolchain.toml)
 [![License](https://img.shields.io/crates/l/faucet-sink-mongodb.svg)](https://github.com/PawanSikawat/faucet-stream#license)
 
-**MongoDB** sink for the [faucet-stream](https://github.com/PawanSikawat/faucet-stream) ecosystem. Writes JSON records into a MongoDB collection — appending with batched `insert_many`, or keeping a collection in sync with a changing source via `upsert` / `delete`.
+**MongoDB** sink for the [faucet-stream](https://github.com/PawanSikawat/faucet-stream) ecosystem. Writes JSON records into a MongoDB collection — appending with batched `insert_many`, or keeping a collection in sync with a changing source via `upsert` / `delete`. With `delivery: exactly_once` (replica set required) it commits each page and a watermark in one multi-document transaction.
 
 Reach for it when you want to land any faucet-stream source — a REST API, a database, a CDC stream, a file — into MongoDB with one declarative config and no glue code. Each record is converted to a BSON document; the client connection is established once and reused across every write.
 
@@ -15,6 +15,7 @@ Reach for it when you want to land any faucet-stream source — a REST API, a da
 - **Unordered by default** — `ordered: false` so a single poison document (duplicate `_id`, validation error) can't drop the rest of the batch.
 - **Write modes** — `append` (default), `upsert` (per-document `replace_one(upsert)`), and `delete` (`delete_one`); the `key` fields become the match filter (MongoDB is schemaless — no key columns).
 - **CDC mirroring** — a `delete_marker` mixes upserts and deletes in one stream, so a CDC source carrying an op flag (`__op: "u" | "d"`) keeps a collection in lock-step with its origin.
+- **Effectively-once delivery** — with `delivery: exactly_once` each page and its commit-token watermark commit atomically in one **multi-document transaction** (replica set required). See [Effectively-once delivery](#effectively-once-delivery).
 - **Dead-letter queue aware** — overrides `write_batch_partial` so missing/null-key rows can be routed to a DLQ per-row while the good documents still commit.
 - **Nested documents preserved** — arbitrary nested objects, arrays, and all JSON scalar types convert to their BSON equivalents losslessly.
 - **Client built once** — the connection pool is created and validated in `new()` and reused for every write; the driver handles pooling and reconnection internally.
@@ -161,6 +162,50 @@ A document missing or null in a key field fails. When a `dlq:` block is configur
 
 Each `replace_one` / `delete_one` is a per-document primitive (not the namespaced `Client::bulk_write`) for compatibility with all supported MongoDB server versions; the sink recovers throughput by issuing the deduped ops concurrently.
 
+## Effectively-once delivery
+
+`MongoSink` implements `Sink::supports_idempotent_writes` (returns `true`) and the two companion hooks:
+
+- `write_batch_idempotent(records, scope, token)` — writes the page's documents **and** upserts the watermark document `{ _id: <scope>, token: <token> }` into a `_faucet_commit_token` collection (in the same database) inside one **multi-document transaction**, so both either commit together or neither does.
+- `last_committed_token(scope)` — reads the watermark back so the pipeline skips already-committed pages on resume. The token is opaque and round-trips verbatim.
+
+> **A replica set (or sharded cluster) is required.** MongoDB multi-document transactions are unavailable on a standalone server — `write_batch_idempotent` surfaces that as a typed error naming the requirement (`… requires a replica set or sharded cluster …`). A **single-node** replica set is sufficient (e.g. `mongod --replSet rs0` + `rs.initiate()`); no second member is needed.
+
+Semantics on the exactly-once path (vs. the at-least-once `write_batch`):
+
+- **One page = one transaction.** In append mode the whole page goes in a single `insert_many` — the sink's `batch_size` re-chunking knob does **not** apply on this path (chunking would break page↔watermark atomicity). Size pages with the **source's** `batch_size` instead, keeping each page within MongoDB's per-transaction limits.
+- **Upsert/delete ops run sequentially inside the transaction.** A MongoDB `ClientSession` cannot be used concurrently, so the planned `replace_one(upsert)` / `delete_one` ops are issued one at a time — a throughput tradeoff versus the at-least-once path's concurrent fan-out. Atomicity requires the single session.
+- **Commit is retried** while the driver reports `UnknownTransactionCommitResult` (the driver-recommended pattern, bounded); any other failure aborts the transaction (best-effort) and surfaces the original error — nothing from the page is committed.
+- The data and `_faucet_commit_token` collections are pre-created (idempotently) before the first transaction, so the path also works on servers that can't create collections inside a transaction (MongoDB < 4.4).
+
+To use effectively-once delivery, set `delivery: exactly_once` and pair this sink with a CDC source (`postgres-cdc`, `mysql-cdc`, `mongodb-cdc`) plus a `state:` block. A DLQ is not permitted in effectively-once mode. All four requirements are validated at config-load time (`faucet validate`) before any run starts.
+
+```yaml
+version: 1
+pipeline:
+  source:
+    type: mongodb-cdc
+    config:
+      connection_uri: mongodb://source:pass@src-mongo:27017/?replicaSet=rs0
+      database: appdb
+      collection: users
+  sink:
+    type: mongodb
+    config:
+      connection_uri: mongodb://writer:pass@mongo1:27017,mongo2:27017,mongo3:27017/?replicaSet=rs0
+      database: analytics
+      collection: users_mirror
+      write_mode: upsert
+      key: ["_id"]
+  state:
+    type: file
+    config:
+      path: ./state
+delivery: exactly_once
+```
+
+`delivery: exactly_once` and `write_mode: upsert` compose — the planned upserts/deletes and the watermark upsert commit in the same transaction, as in the example above. See the [effectively-once delivery cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/state.html#effectively-once-delivery).
+
 ## Dead-letter queue
 
 The sink overrides `write_batch_partial`, so a `dlq:` block in the pipeline config catches per-row failures (missing/null-key rows in `upsert` / `delete` mode) and routes them to the dead-letter sink while the rest of the page commits. Without a DLQ, a row-level failure aborts the batch. See the [DLQ cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/dlq.html).
@@ -244,8 +289,9 @@ println!("Transferred {} records", result.records_written);
 1. `MongoSink::new()` builds the client via `Client::with_uri_str()` — the connection is established and validated **once** and the pool is reused for every write.
 2. **Append:** `write_batch` splits records into `batch_size` chunks; each chunk is converted from `serde_json::Value` to `bson::Document` and inserted with `collection.insert_many()` (unordered unless `ordered: true`). With `batch_size = 0`, the whole slice goes in one call.
 3. **Upsert / delete:** `faucet_core::plan_writes` dedups the page last-write-wins, strips the delete marker, and partitions into upserts / deletes / failed rows; the sink issues per-document `replace_one(upsert)` / `delete_one` ops **concurrently**.
-4. Every record must be a JSON object — non-object values produce an error during BSON conversion.
-5. The driver handles connection pooling and automatic reconnection internally.
+4. **Exactly-once (`delivery: exactly_once`):** `write_batch_idempotent` opens a `ClientSession` transaction, applies the page (whole-page `insert_many`, or the planned ops sequentially) plus a `replace_one(upsert)` of the `{ _id: scope, token }` watermark into `_faucet_commit_token`, then commits with the driver-recommended `UnknownTransactionCommitResult` retry loop. Requires a replica set.
+5. Every record must be a JSON object — non-object values produce an error during BSON conversion.
+6. The driver handles connection pooling and automatic reconnection internally.
 
 ## Lineage dataset URI
 
@@ -264,6 +310,7 @@ This crate has no optional features of its own; enable it in the CLI / umbrella 
 | `mongodb upsert: row N: ...` error | A row is missing or null in a `key` field. Ensure every record carries the `key` field(s), or configure a `dlq:` block to quarantine the bad rows per-row while the good ones commit. |
 | Upsert replaces the whole document instead of merging fields | Expected — `upsert` uses `replace_one`, which replaces the matched document in place. Shape the record upstream (e.g. with transforms) to carry every field you want retained. |
 | Delete-flagged CDC rows are inserted instead of removed | The `delete_marker.field` / `values` don't match the source's op flag. Confirm the field name and values (commonly `__op` with `["d", "delete"]`); pair with the `cdc_unwrap` transform to normalize the envelope to `__op`. |
+| `mongodb exactly-once (write_batch_idempotent) requires a replica set or sharded cluster …` | You pointed `delivery: exactly_once` at a **standalone** server — MongoDB transactions need a replica set. Convert the target to a (single-node is fine) replica set: start `mongod` with `--replSet rs0` and run `rs.initiate()`, then reconnect (add `directConnection=true` if connecting to a single member by address). |
 | "expected a JSON object" / BSON conversion error | A record is an array, string, number, or null. Every record must be a JSON object; reshape upstream with a transform. |
 | Documents rejected at ~48 MB | A batch exceeds MongoDB's per-request limit. Lower `batch_size` for wide documents, or split very large nested documents upstream. |
 

@@ -1,0 +1,53 @@
+# Kafka -> Postgres, exactly-once (effectively-once, atomic watermark).
+#
+# Drains a Kafka topic into a Postgres table with end-to-end effectively-once
+# delivery. Kafka qualifies as an exactly-once *source* because partitions are
+# immutable, ordered logs and every emitted page carries a complete
+# per-partition next-offset bookmark. The Postgres sink commits each page's
+# rows PLUS a monotonic commit token — which embeds that offsets bookmark —
+# inside ONE transaction (the `_faucet_commit_token` watermark table).
+#
+# On a crash between "sink committed" and "state store persisted", the next run
+# recovers the exact stream position from the sink's watermark and re-anchors
+# the consumer there — no record is duplicated and none is skipped, even though
+# Kafka page boundaries can differ on replay.
+#
+# Try it locally:
+#   export DEST_PG_URL=postgres://faucet:faucet@localhost:5432/warehouse
+#   faucet run cli/examples/kafka_to_postgres_exactly_once.yaml
+#
+# (Point `brokers` at your cluster; it is a literal here for the example.)
+
+version: 1
+name: kafka_to_pg_eo
+
+# Exactly-once composes a positional-replay source (kafka, *-cdc) + an
+# idempotent sink + a durable state store, with no DLQ. `faucet validate`
+# reports the derived guarantee per row:
+#   delivery=effectively-once (atomic watermark)
+delivery: exactly_once
+
+pipeline:
+  source:
+    type: kafka
+    config:
+      brokers: "localhost:9092"
+      topics: ["orders"]
+      group_id: faucet-orders-eo
+      value_format: { type: json }
+      auto_offset_reset: earliest
+      idle_timeout: 30 # stop after 30 s of silence; the next run resumes
+
+  sink:
+    type: postgres
+    config:
+      connection_url: ${env:DEST_PG_URL}
+      table_name: orders_events
+      column_mapping: auto_map
+      batch_size: 1000
+
+  # Durable state is required for exactly_once — `memory` is rejected.
+  state:
+    type: file
+    config:
+      path: ./state

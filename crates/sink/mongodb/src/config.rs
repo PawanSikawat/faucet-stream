@@ -37,6 +37,10 @@ pub struct MongoSinkConfig {
     /// sentinel** — the records slice is forwarded as a single
     /// `insert_many`, no matter how large, so upstream `StreamPage` framing
     /// flows through untouched.
+    ///
+    /// **Not applied on the exactly-once path**: `write_batch_idempotent`
+    /// always writes the whole page in one transaction (one page = one
+    /// transaction), so re-chunking would break page↔watermark atomicity.
     #[serde(default = "default_batch_size")]
     pub batch_size: usize,
     /// Whether `insert_many` is **ordered**. Default `false` (unordered).

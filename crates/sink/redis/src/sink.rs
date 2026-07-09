@@ -104,50 +104,7 @@ impl faucet_core::Sink for RedisSink {
             let mut pipe = redis::pipe();
 
             for record in chunk {
-                match &self.config.sink_type {
-                    RedisSinkType::List { key } => {
-                        let serialized = serde_json::to_string(record).map_err(|e| {
-                            FaucetError::Sink(format!("JSON serialization failed: {e}"))
-                        })?;
-                        pipe.cmd("RPUSH").arg(key.as_str()).arg(serialized);
-                    }
-                    RedisSinkType::Stream { key } => {
-                        let fields = flatten_record_to_fields(record);
-                        if fields.is_empty() {
-                            // XADD requires at least one field.
-                            let serialized = serde_json::to_string(record).map_err(|e| {
-                                FaucetError::Sink(format!("JSON serialization failed: {e}"))
-                            })?;
-                            pipe.cmd("XADD")
-                                .arg(key.as_str())
-                                .arg("*")
-                                .arg("_data")
-                                .arg(serialized);
-                        } else {
-                            let mut cmd = redis::cmd("XADD");
-                            cmd.arg(key.as_str()).arg("*");
-                            for (field_name, field_value) in &fields {
-                                cmd.arg(field_name.as_str()).arg(field_value.as_str());
-                            }
-                            pipe.add_command(cmd);
-                        }
-                    }
-                    RedisSinkType::KeyValue { key_field } => {
-                        let key = record
-                            .get(key_field)
-                            .map(|v| match v {
-                                Value::String(s) => s.clone(),
-                                other => other.to_string(),
-                            })
-                            .ok_or_else(|| {
-                                FaucetError::Sink(format!("record missing key field '{key_field}'"))
-                            })?;
-                        let serialized = serde_json::to_string(record).map_err(|e| {
-                            FaucetError::Sink(format!("JSON serialization failed: {e}"))
-                        })?;
-                        pipe.cmd("SET").arg(key).arg(serialized);
-                    }
-                }
+                append_record_command(&mut pipe, &self.config.sink_type, record)?;
             }
 
             pipe.query_async::<()>(&mut conn)
@@ -160,6 +117,140 @@ impl faucet_core::Sink for RedisSink {
         tracing::debug!(records = written, "Redis batch written");
         Ok(written)
     }
+
+    fn supports_idempotent_writes(&self) -> bool {
+        true
+    }
+
+    /// Write `records` AND durably record `token` for `scope` in one atomic
+    /// Redis transaction (`MULTI`/`EXEC`).
+    ///
+    /// The whole page ships as a single atomic pipeline: every record's
+    /// command for the configured [`RedisSinkType`] plus a final
+    /// `SET _faucet_commit_token:{scope} {token}`. Either all of it commits
+    /// or none of it does, so a crash between "sink wrote" and "state
+    /// persisted" is resolved on resume by [`Self::last_committed_token`] —
+    /// zero duplicates on replay.
+    ///
+    /// **`batch_size` re-chunking does NOT apply on this path.** Splitting the
+    /// page across multiple `MULTI`/`EXEC` blocks would break atomicity (a
+    /// crash between chunks would commit rows without the watermark), so the
+    /// entire page is one transaction regardless of `batch_size`.
+    async fn write_batch_idempotent(
+        &self,
+        records: &[Value],
+        scope: &str,
+        token: &str,
+    ) -> Result<usize, FaucetError> {
+        let mut conn = self.conn.clone();
+
+        let mut pipe = redis::pipe();
+        pipe.atomic();
+        for record in records {
+            append_record_command(&mut pipe, &self.config.sink_type, record)?;
+        }
+        // The watermark commits in the same MULTI/EXEC as the data. Even an
+        // empty page still advances the token so resume skips it.
+        pipe.cmd("SET").arg(commit_token_key(scope)).arg(token);
+
+        pipe.query_async::<()>(&mut conn).await.map_err(|e| {
+            FaucetError::Sink(format!(
+                "Redis atomic pipeline (MULTI/EXEC) execution failed: {e}"
+            ))
+        })?;
+
+        tracing::debug!(
+            records = records.len(),
+            scope,
+            "Redis atomic batch + commit token written"
+        );
+        Ok(records.len())
+    }
+
+    async fn last_committed_token(&self, scope: &str) -> Result<Option<String>, FaucetError> {
+        let mut conn = self.conn.clone();
+        // The token is opaque to the sink (it may carry an embedded resume
+        // bookmark after a '#'); never parse it here — just hand it back.
+        redis::cmd("GET")
+            .arg(commit_token_key(scope))
+            .query_async::<Option<String>>(&mut conn)
+            .await
+            .map_err(|e| FaucetError::Sink(format!("Redis commit-token read failed: {e}")))
+    }
+}
+
+/// The Redis key holding the last committed watermark for a pipeline `scope`
+/// (the per-row state key, e.g. `"{name}::{row_id}"`).
+///
+/// Mirrors the SQL sinks' `_faucet_commit_token` watermark table: one plain
+/// string key per scope, namespaced under the same `_faucet_commit_token`
+/// prefix.
+fn commit_token_key(scope: &str) -> String {
+    format!("{}:{scope}", faucet_core::idempotency::COMMIT_TOKEN_TABLE)
+}
+
+/// Render the full Redis command (name first, then arguments) that writes one
+/// record under the given sink mode. Pure — shared by [`append_record_command`]
+/// so `write_batch` and `write_batch_idempotent` build identical commands.
+fn record_command_args(
+    sink_type: &RedisSinkType,
+    record: &Value,
+) -> Result<Vec<String>, FaucetError> {
+    match sink_type {
+        RedisSinkType::List { key } => {
+            let serialized = serde_json::to_string(record)
+                .map_err(|e| FaucetError::Sink(format!("JSON serialization failed: {e}")))?;
+            Ok(vec!["RPUSH".into(), key.clone(), serialized])
+        }
+        RedisSinkType::Stream { key } => {
+            let fields = flatten_record_to_fields(record);
+            let mut args = vec!["XADD".into(), key.clone(), "*".into()];
+            if fields.is_empty() {
+                // XADD requires at least one field.
+                let serialized = serde_json::to_string(record)
+                    .map_err(|e| FaucetError::Sink(format!("JSON serialization failed: {e}")))?;
+                args.push("_data".into());
+                args.push(serialized);
+            } else {
+                for (field_name, field_value) in fields {
+                    args.push(field_name);
+                    args.push(field_value);
+                }
+            }
+            Ok(args)
+        }
+        RedisSinkType::KeyValue { key_field } => {
+            let key = record
+                .get(key_field)
+                .map(|v| match v {
+                    Value::String(s) => s.clone(),
+                    other => other.to_string(),
+                })
+                .ok_or_else(|| {
+                    FaucetError::Sink(format!("record missing key field '{key_field}'"))
+                })?;
+            let serialized = serde_json::to_string(record)
+                .map_err(|e| FaucetError::Sink(format!("JSON serialization failed: {e}")))?;
+            Ok(vec!["SET".into(), key, serialized])
+        }
+    }
+}
+
+/// Append the command that writes `record` to `pipe`. Thin I/O-free shim over
+/// the pure [`record_command_args`].
+fn append_record_command(
+    pipe: &mut redis::Pipeline,
+    sink_type: &RedisSinkType,
+    record: &Value,
+) -> Result<(), FaucetError> {
+    let args = record_command_args(sink_type, record)?;
+    // The command name is just the first protocol argument.
+    let mut cmd = redis::Cmd::new();
+    for arg in &args {
+        cmd.arg(arg);
+    }
+    pipe.add_command(cmd);
+    Ok(())
 }
 
 /// Flatten a JSON record's top-level fields into string key-value pairs
@@ -224,6 +315,137 @@ mod tests {
         assert_eq!(fields.len(), 1);
         assert_eq!(fields[0].0, "data");
         assert_eq!(fields[0].1, r#"{"nested":true}"#);
+    }
+
+    #[test]
+    fn commit_token_key_namespaces_scope_under_watermark_prefix() {
+        assert_eq!(
+            commit_token_key("orders::row1"),
+            "_faucet_commit_token:orders::row1"
+        );
+        assert_eq!(commit_token_key(""), "_faucet_commit_token:");
+    }
+
+    #[test]
+    fn list_record_command_is_rpush_key_json() {
+        let args = record_command_args(&RedisSinkType::List { key: "q".into() }, &json!({"id": 1}))
+            .unwrap();
+        assert_eq!(args, vec!["RPUSH", "q", r#"{"id":1}"#]);
+    }
+
+    #[test]
+    fn stream_record_command_is_xadd_with_flattened_fields() {
+        let args = record_command_args(
+            &RedisSinkType::Stream { key: "ev".into() },
+            &json!({"name": "Alice", "age": 30}),
+        )
+        .unwrap();
+        assert_eq!(&args[..3], ["XADD", "ev", "*"]);
+        // Field order depends on serde_json's map backing (preserve_order can
+        // flip it under --all-features), so assert the pair set, not sequence.
+        let pairs: Vec<(&str, &str)> = args[3..]
+            .chunks(2)
+            .map(|p| (p[0].as_str(), p[1].as_str()))
+            .collect();
+        assert_eq!(pairs.len(), 2);
+        assert!(pairs.contains(&("name", "Alice")));
+        assert!(pairs.contains(&("age", "30")));
+    }
+
+    #[test]
+    fn stream_record_command_empty_object_falls_back_to_data_field() {
+        let args =
+            record_command_args(&RedisSinkType::Stream { key: "ev".into() }, &json!({})).unwrap();
+        assert_eq!(args, vec!["XADD", "ev", "*", "_data", "{}"]);
+    }
+
+    #[test]
+    fn stream_record_command_non_object_falls_back_to_data_field() {
+        let args = record_command_args(&RedisSinkType::Stream { key: "ev".into() }, &json!("bare"))
+            .unwrap();
+        assert_eq!(args, vec!["XADD", "ev", "*", "_data", r#""bare""#]);
+    }
+
+    #[test]
+    fn key_value_record_command_is_set_key_json() {
+        let args = record_command_args(
+            &RedisSinkType::KeyValue {
+                key_field: "id".into(),
+            },
+            &json!({"id": "u1", "plan": "pro"}),
+        )
+        .unwrap();
+        assert_eq!(args[0], "SET");
+        assert_eq!(args[1], "u1");
+        let parsed: Value = serde_json::from_str(&args[2]).unwrap();
+        assert_eq!(parsed, json!({"id": "u1", "plan": "pro"}));
+    }
+
+    #[test]
+    fn key_value_record_command_stringifies_non_string_key() {
+        let args = record_command_args(
+            &RedisSinkType::KeyValue {
+                key_field: "id".into(),
+            },
+            &json!({"id": 42}),
+        )
+        .unwrap();
+        assert_eq!(args[1], "42");
+    }
+
+    #[test]
+    fn key_value_record_command_missing_key_field_is_typed_sink_error() {
+        let err = record_command_args(
+            &RedisSinkType::KeyValue {
+                key_field: "id".into(),
+            },
+            &json!({"other": 1}),
+        )
+        .unwrap_err();
+        match err {
+            FaucetError::Sink(m) => assert!(m.contains("missing key field 'id'"), "got: {m}"),
+            other => panic!("expected Sink error, got: {other:?}"),
+        }
+    }
+
+    /// Collect a pipe's commands as flat arg vectors for assertion.
+    fn pipe_commands(pipe: &redis::Pipeline) -> Vec<Vec<String>> {
+        pipe.cmd_iter()
+            .map(|cmd| {
+                cmd.args_iter()
+                    .map(|a| match a {
+                        redis::Arg::Simple(bytes) => String::from_utf8_lossy(bytes).into_owned(),
+                        redis::Arg::Cursor => "<cursor>".to_string(),
+                    })
+                    .collect()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn append_record_command_appends_exactly_the_pure_args() {
+        let sink_type = RedisSinkType::List { key: "q".into() };
+        let records = [json!({"id": 1}), json!({"id": 2})];
+        let mut pipe = redis::pipe();
+        for r in &records {
+            append_record_command(&mut pipe, &sink_type, r).unwrap();
+        }
+        let cmds = pipe_commands(&pipe);
+        assert_eq!(cmds.len(), 2);
+        for (cmd, record) in cmds.iter().zip(&records) {
+            assert_eq!(cmd, &record_command_args(&sink_type, record).unwrap());
+        }
+    }
+
+    #[test]
+    fn append_record_command_propagates_builder_errors() {
+        let sink_type = RedisSinkType::KeyValue {
+            key_field: "id".into(),
+        };
+        let mut pipe = redis::pipe();
+        let err = append_record_command(&mut pipe, &sink_type, &json!({"no": "id"})).unwrap_err();
+        assert!(matches!(err, FaucetError::Sink(_)));
+        assert_eq!(pipe.cmd_iter().count(), 0, "no command must be appended");
     }
 
     #[tokio::test]

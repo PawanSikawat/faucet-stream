@@ -8,6 +8,7 @@
 //! [Snowflake SQL REST API](https://docs.snowflake.com/en/developer-guide/sql-api/reference).
 
 pub mod config;
+pub mod idempotent;
 pub mod sink;
 
 pub use faucet_core::{FaucetError, Sink};

@@ -306,7 +306,55 @@ kafka:{group_id}:{topic1}:{topic2}...
 
 Topics are sorted alphabetically before joining, so the key is stable regardless of config order. They are joined with `:` (not `.`) because a topic name may legally contain `.`. So `group_id = "my-group"`, `topics = ["beta", "alpha"]` yields `kafka:my-group:alpha:beta`.
 
-**Delivery semantics:** offsets are persisted only after the sink confirms, and on restart the consumer seeds the assignment with the bookmark before the first fetch. End-to-end this is **at-least-once** if the sink can fail mid-batch; pair with an idempotent sink for stricter guarantees. (The Kafka source does *not* advertise faucet-stream's effectively-once `delivery` mode — that gate requires a CDC source.)
+**Delivery semantics:** offsets are persisted only after the sink confirms, and on restart the consumer seeds the assignment with the bookmark before the first fetch. End-to-end this is **at-least-once** by default; the source also qualifies for effectively-once — see below.
+
+## Effectively-once delivery
+
+The Kafka source supports faucet-stream's `delivery: exactly_once` mode (the
+**atomic-watermark** mechanism), because it satisfies the mechanism's source
+requirement: partitions are immutable, ordered logs and **every** emitted page
+carries a complete per-partition next-offset bookmark, so resuming from any
+bookmark continues the record stream at exactly that position.
+
+One subtlety is handled by the pipeline rather than the source: page
+*boundaries* on replay can differ (an `idle_timeout` cut is timing-dependent),
+so counting pages is not enough. The commit token an idempotent sink stores
+embeds the page's offsets bookmark; on resume the pipeline recovers that exact
+position from the sink's watermark and re-anchors the consumer there — nothing
+is re-written, nothing is skipped.
+
+Pair with any idempotent sink (`postgres`, `mysql`, `mssql`, `sqlite`,
+`bigquery`, `iceberg`, `kafka`, `snowflake`, `redis`, `mongodb`) and a durable
+state store:
+
+```yaml
+version: 1
+name: kafka_to_postgres_eo
+delivery: exactly_once
+
+pipeline:
+  source:
+    type: kafka
+    config:
+      brokers: localhost:9092
+      topics: [orders]
+      group_id: faucet-orders
+      idle_timeout: 30
+  sink:
+    type: postgres
+    config:
+      connection_url: postgres://writer:pass@localhost:5432/warehouse
+      table_name: orders
+      column_mapping: auto_map
+  state:
+    type: file
+    config: { path: ./state }
+```
+
+In plain (non-member) mode the source never commits consumer-group offsets, so
+the broker's group position can never run ahead of the durable bookmark. See
+the [state cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/state.html#effectively-once-delivery)
+for the full mechanism.
 
 ## Clustered consumption (Mode B, native consumer groups)
 

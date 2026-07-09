@@ -69,6 +69,7 @@ The service column lists what each example touches; all are provided by
 | `rest_to_mssql.yaml` | mssql + mssql-init (json_column; auto-creates `raw.dbo.products_raw`) |
 | `redis_to_sqlite.yaml`, `mongodb_to_redis.yaml`, `elasticsearch_to_redis.yaml` | redis (+ source) |
 | `kafka_to_jsonl.yaml`, `rest_to_kafka.yaml` | redpanda (Kafka API) |
+| `kafka_to_postgres_exactly_once.yaml` | redpanda (Kafka API) + postgres (effectively-once: Kafka offsets bookmark + atomic `_faucet_commit_token` watermark) |
 | `mongodb_to_elasticsearch.yaml`, `postgres_to_elasticsearch.yaml`, `grpc_to_elasticsearch.yaml` | elasticsearch (+ source) |
 | `elasticsearch_to_s3.yaml`, `postgres_to_s3.yaml`, `rest_to_s3.yaml`, `xml_to_s3.yaml` | minio (S3) (+ source) |
 | `s3_to_postgres.yaml`, `s3_to_mongodb.yaml` | minio (S3), target |
