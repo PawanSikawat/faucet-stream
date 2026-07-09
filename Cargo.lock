@@ -3263,6 +3263,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "faucet-conformance"
+version = "0.1.0"
+dependencies = [
+ "async-stream",
+ "async-trait",
+ "faucet-core",
+ "futures",
+ "futures-core",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "faucet-core"
 version = "1.2.0"
 dependencies = [
@@ -3681,6 +3694,7 @@ dependencies = [
  "async-stream",
  "async-trait",
  "csv-async",
+ "faucet-conformance",
  "faucet-core",
  "futures",
  "schemars 1.2.1",
@@ -4034,6 +4048,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "faucet-source-singer"
+version = "0.1.0"
+dependencies = [
+ "async-stream",
+ "async-trait",
+ "faucet-conformance",
+ "faucet-core",
+ "futures",
+ "futures-core",
+ "libc",
+ "schemars 1.2.1",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "faucet-source-snowflake"
 version = "1.1.1"
 dependencies = [
@@ -4196,6 +4230,7 @@ dependencies = [
  "faucet-source-redis",
  "faucet-source-rest",
  "faucet-source-s3",
+ "faucet-source-singer",
  "faucet-source-snowflake",
  "faucet-source-sqlite",
  "faucet-source-webhook",
