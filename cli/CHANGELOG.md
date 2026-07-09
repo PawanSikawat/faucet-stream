@@ -6,6 +6,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 (see the versioning policy in CONTRIBUTING.md — connector crates version
 independently).
+## [1.3.0](https://github.com/PawanSikawat/faucet-stream/compare/faucet-cli-v1.2.0...faucet-cli-v1.3.0) - 2026-07-08
+
+### Features
+
+- Persistent Data Movement Catalog — datasets, schema timelines & lineage graph ([#286](https://github.com/PawanSikawat/faucet-stream/pull/286))
+- *(cli)* DLQ replay & management — faucet dlq inspect / replay / discard ([#281](https://github.com/PawanSikawat/faucet-stream/pull/281)) ([#285](https://github.com/PawanSikawat/faucet-stream/pull/285))
+- *(cli)* Notification & incident routing — Slack / PagerDuty / webhook ([#280](https://github.com/PawanSikawat/faucet-stream/pull/280)) ([#284](https://github.com/PawanSikawat/faucet-stream/pull/284))
+- *(masking)* PII detection + column-level masking policies ([#206](https://github.com/PawanSikawat/faucet-stream/pull/206))
+- *(serve)* RBAC + audit log for the control plane ([#205](https://github.com/PawanSikawat/faucet-stream/pull/205)) ([#277](https://github.com/PawanSikawat/faucet-stream/pull/277))
+- *(cli)* Depends_on — completion ordering between matrix rows ([#276](https://github.com/PawanSikawat/faucet-stream/pull/276))
+- *(cli)* Data-freshness & volume SLA monitoring with anomaly alerts ([#275](https://github.com/PawanSikawat/faucet-stream/pull/275))
+- *(cli)* Faucet test — fixture-based offline pipeline testing ([#273](https://github.com/PawanSikawat/faucet-stream/pull/273))
+- *(core)* Data contracts — versioned output schema/constraints enforced per page ([#272](https://github.com/PawanSikawat/faucet-stream/pull/272))
+
 ## [1.2.0](https://github.com/PawanSikawat/faucet-stream/compare/faucet-cli-v1.1.0...faucet-cli-v1.2.0) - 2026-06-22
 
 ### Bug Fixes
