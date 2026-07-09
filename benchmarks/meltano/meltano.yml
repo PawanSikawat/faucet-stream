@@ -28,6 +28,9 @@ plugins:
       # (TAP_POSTGRES_SQLALCHEMY_URL). No credentials are committed.
       config:
         default_replication_method: FULL_TABLE
+      # Sync only the benchmark table (else tap-postgres discovers every table).
+      select:
+        - public-bench.*
   loaders:
     - name: target-jsonl
       variant: andyh1203
