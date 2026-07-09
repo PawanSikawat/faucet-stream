@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 (see the versioning policy in CONTRIBUTING.md — connector crates version
 independently).
+## [1.3.0](https://github.com/PawanSikawat/faucet-stream/compare/faucet-core-v1.2.0...faucet-core-v1.3.0) - 2026-07-08
+
+### Features
+
+- Persistent Data Movement Catalog — datasets, schema timelines & lineage graph ([#286](https://github.com/PawanSikawat/faucet-stream/pull/286))
+- *(cli)* DLQ replay & management — faucet dlq inspect / replay / discard ([#281](https://github.com/PawanSikawat/faucet-stream/pull/281)) ([#285](https://github.com/PawanSikawat/faucet-stream/pull/285))
+- *(masking)* PII detection + column-level masking policies ([#206](https://github.com/PawanSikawat/faucet-stream/pull/206))
+- *(core)* Data contracts — versioned output schema/constraints enforced per page ([#272](https://github.com/PawanSikawat/faucet-stream/pull/272))
+- Extend cluster Mode B sharding to mysql, mssql, sqlite, gcs, and parquet sources ([#271](https://github.com/PawanSikawat/faucet-stream/pull/271))
+
 ## [1.2.0](https://github.com/PawanSikawat/faucet-stream/compare/faucet-core-v1.1.0...faucet-core-v1.2.0) - 2026-06-22
 
 ### Bug Fixes

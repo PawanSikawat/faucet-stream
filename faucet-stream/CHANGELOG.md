@@ -6,6 +6,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 (see the versioning policy in CONTRIBUTING.md — connector crates version
 independently).
+## [1.2.0](https://github.com/PawanSikawat/faucet-stream/compare/faucet-stream-v1.1.1...faucet-stream-v1.2.0) - 2026-07-08
+
+### Documentation
+
+- Ship interactive local demo (try-local.sh) + quickstart & console screenshots ([#288](https://github.com/PawanSikawat/faucet-stream/pull/288))
+
+### Features
+
+- *(masking)* PII detection + column-level masking policies ([#206](https://github.com/PawanSikawat/faucet-stream/pull/206))
+- *(cli)* Depends_on — completion ordering between matrix rows ([#276](https://github.com/PawanSikawat/faucet-stream/pull/276))
+- *(cli)* Data-freshness & volume SLA monitoring with anomaly alerts ([#275](https://github.com/PawanSikawat/faucet-stream/pull/275))
+- *(cli)* Faucet test — fixture-based offline pipeline testing ([#273](https://github.com/PawanSikawat/faucet-stream/pull/273))
+- *(core)* Data contracts — versioned output schema/constraints enforced per page ([#272](https://github.com/PawanSikawat/faucet-stream/pull/272))
+
 ## [1.1.1](https://github.com/PawanSikawat/faucet-stream/compare/faucet-stream-v1.1.0...faucet-stream-v1.1.1) - 2026-06-22
 
 ### Miscellaneous
