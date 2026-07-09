@@ -94,11 +94,29 @@ impl SingerSourceConfig {
 
     /// The effective state-store key: the configured `state_key`, or the
     /// derived default `singer:{executable}:{stream}`.
+    ///
+    /// The derived key is sanitized so a path-style `executable` (e.g.
+    /// `/opt/taps/tap-csv`) still yields a valid state key — `validate_state_key`
+    /// only permits `[A-Za-z0-9_\-:.]`, so any other character (notably `/`) is
+    /// replaced with `_`.
     pub fn effective_state_key(&self) -> String {
         self.state_key
             .clone()
-            .unwrap_or_else(|| format!("singer:{}:{}", self.executable, self.stream))
+            .unwrap_or_else(|| format!("singer:{}:{}", sanitize(&self.executable), self.stream))
     }
+}
+
+/// Replace characters not allowed in a state key with `_`.
+fn sanitize(s: &str) -> String {
+    s.chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.') {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -126,6 +144,15 @@ mod tests {
             ..SingerSourceConfig::new("tap-github", "issues")
         };
         assert_eq!(cfg2.effective_state_key(), "custom");
+    }
+
+    #[test]
+    fn derived_state_key_is_valid_even_for_path_executable() {
+        let cfg = SingerSourceConfig::new("/opt/taps/tap-csv", "s");
+        let key = cfg.effective_state_key();
+        assert_eq!(key, "singer:_opt_taps_tap-csv:s");
+        // must satisfy the core state-key validator
+        faucet_core::state::validate_state_key(&key).expect("derived key must be valid");
     }
 
     #[test]

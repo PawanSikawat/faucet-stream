@@ -41,3 +41,22 @@ Branch `feat/singer-bridge-and-conformance`. Remove before the final commit if a
   at-least-once).
 - Acceptance: `cargo build -p faucet-source-singer` ✓; `cargo build -p faucet-stream --features source-singer` ✓;
   clippy clean; 11 lib unit tests pass.
+
+## Phase 2 — tests (no real tap needed in CI)
+- `assemble.rs` extracted as a pure `PageAssembler`; stream.rs now drives it (cleaner + unit-testable).
+- Unit tests (18 total in the lib): message parsing (every type + malformed), page assembly at
+  batch_size / STATE / EOF, bookmark attachment, empty-with-bookmark, other-stream ignore,
+  flush_on_state=false deferral, redactor, 0600 temp file, state-key sanitization.
+- Fake tap `tests/fake_taps/fake_tap.sh` — dependency-free POSIX sh; scripted RECORD/STATE NDJSON,
+  `--crash-after-new N` (exit 1) mode, resume-aware via `--state` with a deliberate 1-record overlap
+  (coarse resume) so the idempotent sink dedup is genuinely exercised. Tracked mode 100755.
+- Integration (`tests/integration.rs`) through a real `faucet_core::Pipeline` + `MemoryStateStore`
+  into an in-crate `UpsertSink` (keyed dedup = SQLite/Postgres `write_mode: upsert` stand-in):
+  - `clean_run_writes_all_rows_once` — 6 rows, one each, bookmark persisted.
+  - `crash_then_resume_produces_no_duplicates` — **THE PROOF**: run 1 crashes after the STATE(3)
+    checkpoint (only ids 1-3 visible, bookmark last_id=3); run 2 resumes, tap re-emits id 3 (overlap)
+    + 4,5,6; total write calls > 6 (overlap real) yet final ids = {1..6} with no dup. ✓
+  - `real_tap_csv_end_to_end` — `#[ignore]`d (needs a real tap on PATH); documents how to run.
+- No `DeliveryMode::ExactlyOnce` used (singer source is not deterministic-replay; the pipeline gate
+  would reject it) — no-dup rides the keyed sink. The phrase "exactly-once" appears nowhere.
+- clippy --all-targets clean; `cargo test -p faucet-source-singer` green (18 unit + 2 integ, 1 ignored).

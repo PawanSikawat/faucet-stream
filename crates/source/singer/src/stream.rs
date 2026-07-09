@@ -22,6 +22,7 @@ use faucet_core::{FaucetError, Source, StreamPage, Value, async_trait, schema_fo
 use futures::StreamExt;
 use futures_core::Stream;
 
+use crate::assemble::PageAssembler;
 use crate::config::{MalformedPolicy, SingerSourceConfig};
 use crate::message::SingerMessage;
 use crate::process::{Line, Recv, TapProcess};
@@ -82,38 +83,19 @@ impl Source for SingerSource {
 
         Box::pin(async_stream::try_stream! {
             let mut process = TapProcess::spawn(&self.config, start.as_ref())?;
-
-            let mut buffer: Vec<Value> = Vec::new();
-            // Latest STATE value seen but not yet attached to a flushed page.
-            let mut pending_state: Option<Value> = None;
+            let mut assembler = PageAssembler::new(target_stream, batch_size, flush_on_state);
 
             loop {
                 match process.recv(idle).await {
                     Recv::Line(Line::Parsed(msg)) => match msg {
                         SingerMessage::Record { stream, record } => {
-                            if stream != target_stream {
-                                // v0 is single-stream: ignore other streams.
-                                continue;
-                            }
-                            buffer.push(record);
-                            if batch_size != 0 && buffer.len() >= batch_size {
-                                // Attach a pending checkpoint if one arrived
-                                // (e.g. flush_on_state == false); otherwise no
-                                // bookmark — these rows re-emit from the last
-                                // checkpoint on resume.
-                                yield StreamPage {
-                                    records: std::mem::take(&mut buffer),
-                                    bookmark: pending_state.take(),
-                                };
+                            if let Some(page) = assembler.on_record(&stream, record) {
+                                yield page;
                             }
                         }
                         SingerMessage::State { value } => {
-                            pending_state = Some(value);
-                            if flush_on_state {
-                                yield StreamPage {
-                                    records: std::mem::take(&mut buffer),
-                                    bookmark: pending_state.take(),
-                                };
+                            if let Some(page) = assembler.on_state(value) {
+                                yield page;
                             }
                         }
                         SingerMessage::Schema { stream, .. } => {
@@ -151,11 +133,8 @@ impl Source for SingerSource {
                         // buffer, so a failed run never writes an
                         // un-checkpointed final page.
                         process.shutdown_and_check().await?;
-                        if !buffer.is_empty() || pending_state.is_some() {
-                            yield StreamPage {
-                                records: std::mem::take(&mut buffer),
-                                bookmark: pending_state.take(),
-                            };
+                        if let Some(page) = assembler.on_eof() {
+                            yield page;
                         }
                         break;
                     }

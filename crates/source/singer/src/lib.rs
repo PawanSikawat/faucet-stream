@@ -15,6 +15,7 @@
 //! [`SingerSourceConfig::stream`] is emitted; RECORD messages for other streams
 //! are ignored.
 
+pub mod assemble;
 pub mod config;
 pub mod message;
 pub mod process;
