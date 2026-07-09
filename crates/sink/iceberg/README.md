@@ -17,7 +17,7 @@ Reach for it when you want a database query, a CDC stream, a CSV dump, or an API
 - **Schema inference on create** — when `create_if_missing` is set and the table is new, the Iceberg schema is inferred from the first Arrow batch (every field becomes a nullable column typed by its first non-null value).
 - **Partitioning on create** — `identity`, `year`, `month`, `day`, `hour`, `void`, plus parameterized `bucket[N]` / `truncate[N]`.
 - **Parquet codec choice** — `snappy` (default), `zstd`, `gzip`, `lz4`, or `none`, with a soft `target_file_size_mb` rollover.
-- **Exactly-once delivery** — pairs with the CDC sources; the commit token is durably recorded as Iceberg snapshot summary properties (`faucet.commit-scope` / `faucet.commit-token`) inside the same atomic commit.
+- **Effectively-once delivery** — pairs with the CDC sources; the commit token is durably recorded as Iceberg snapshot summary properties (`faucet.commit-scope` / `faucet.commit-token`) inside the same atomic commit.
 - **`faucet doctor` preflight** — probes catalog connectivity and table existence without writing any data.
 - **Secrets-safe `Debug`** — the catalog `credential` and `uri` are redacted, never logged.
 
@@ -244,14 +244,14 @@ Cleanup runs **only** on a *definitive* loss (an exhausted commit conflict, or a
 
 `write_mode` accepts the shared `faucet_core::WriteMode` enum, but **only `append` is supported at runtime**. `upsert` / `delete` deserialise successfully (so configs round-trip) but are rejected by `IcebergSink::new` with a typed `FaucetError::Config`; `overwrite` is not a recognised variant and fails to deserialise. `Sink::supported_write_modes()` therefore returns `[Append]`. Equality-delete upsert is tracked in [#179](https://github.com/PawanSikawat/faucet-stream/issues/179), blocked on upstream `iceberg-rust` exposing a replace/overwrite transaction action.
 
-## Exactly-once delivery
+## Effectively-once delivery
 
 `IcebergSink` implements `Sink::supports_idempotent_writes()` (returns `true`) and the two companion hooks:
 
 - `write_batch_idempotent(records, scope, token)` — writes `records` and stashes the `(scope, token)` so it lands in the snapshot summary as `faucet.commit-scope` / `faucet.commit-token` inside the same atomic `fast_append`. Records and token commit together or not at all.
 - `last_committed_token(scope)` — scans snapshot history newest-first for a matching `faucet.commit-scope`, letting the pipeline skip already-committed pages on resume.
 
-To enable it, set `delivery: exactly_once` and pair this sink with a CDC source (`postgres-cdc`, `mysql-cdc`, `mongodb-cdc`) plus a `state:` block. A DLQ is **not** permitted in exactly-once mode. All four requirements are validated at config-load time (`faucet validate`) before any run starts.
+To enable it, set `delivery: exactly_once` and pair this sink with a CDC source (`postgres-cdc`, `mysql-cdc`, `mongodb-cdc`) plus a `state:` block. A DLQ is **not** permitted in effectively-once mode. All four requirements are validated at config-load time (`faucet validate`) before any run starts.
 
 ```yaml
 pipeline:
@@ -278,7 +278,7 @@ pipeline:
 delivery: exactly_once
 ```
 
-See the [Exactly-once delivery cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/state.html#exactly-once-delivery) for the full rationale and supported source/sink set.
+See the [Effectively-once delivery cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/state.html#effectively-once-delivery) for the full rationale and supported source/sink set.
 
 ## Schema drift
 
@@ -339,7 +339,7 @@ sink.flush().await?;
 1. `new()` validates the config, builds the configured catalog client, and either creates the table (inferring schema from the first batch) or loads an existing one.
 2. `write_batch` shovels JSON → Arrow, buffers into the iceberg-rust rolling writer, and rolls a new Parquet data file when the estimated size crosses `target_file_size_mb`.
 3. `flush()` closes the open data file and commits all buffered files as one snapshot via `Transaction::fast_append`; the catalog client is reused across all calls.
-4. In exactly-once mode the pending `(scope, token)` is merged into that snapshot's summary properties so it commits atomically with the data.
+4. In effectively-once mode the pending `(scope, token)` is merged into that snapshot's summary properties so it commits atomically with the data.
 
 **Arrow / Parquet version note:** this crate links Arrow / Parquet **57** to match `iceberg-rust` 0.9.x, which pins the same major. This does not affect the workspace's other connectors — the Parquet source/sink use Arrow 58, and Cargo resolves both majors simultaneously.
 
@@ -372,12 +372,12 @@ In the CLI/umbrella, the corresponding feature is `sink-iceberg` (REST), with `s
 | `partition_spec[…].transform … is not a recognised Iceberg transform` | Use one of `identity`/`year`/`month`/`day`/`hour`/`void` or `bucket[N]`/`truncate[N]` with a positive `N`. |
 | `target_file_size_mb must be > 0` | `0` would roll a tiny file per batch. Use a positive MB target (default `256`). |
 | Partition spec seems ignored | `partition_spec` only applies when **creating** a new table (`create_if_missing: true`). An existing table keeps its own spec. |
-| Exactly-once config rejected by `faucet validate` | `delivery: exactly_once` requires a CDC source + a `state:` block + **no** DLQ. Fix whichever requirement the error names. |
+| Effectively-once config rejected by `faucet validate` | `delivery: exactly_once` requires a CDC source + a `state:` block + **no** DLQ. Fix whichever requirement the error names. |
 
 ## See also
 
 - [Connector reference & capability matrix](https://pawansikawat.github.io/faucet-stream/reference/connectors.html)
-- [Exactly-once delivery cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/state.html#exactly-once-delivery)
+- [Effectively-once delivery cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/state.html#effectively-once-delivery)
 - [Configuration grammar](https://pawansikawat.github.io/faucet-stream/reference/config.html)
 - Related crates: [`faucet-sink-parquet`](https://crates.io/crates/faucet-sink-parquet), [`faucet-sink-s3`](https://crates.io/crates/faucet-sink-s3), [`faucet-sink-bigquery`](https://crates.io/crates/faucet-sink-bigquery), [`faucet-source-postgres-cdc`](https://crates.io/crates/faucet-source-postgres-cdc)
 

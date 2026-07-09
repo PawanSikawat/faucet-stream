@@ -163,7 +163,7 @@ pipeline:
 
 The trait-level `batch_size` argument to `stream_pages` is informational; the source always uses its own config field as the authoritative knob, so a pipeline-supplied hint cannot silently override an explicit config value.
 
-This is a **query source with no incremental-replication mode** — it runs the configured query once and streams the result. Every emitted page therefore carries `bookmark: None`; there is no resume/state bookmark, no exactly-once delivery, and no upsert/write modes (those are sink concerns). For change data capture, see [`faucet-source-postgres-cdc`](https://crates.io/crates/faucet-source-postgres-cdc), which captures logical-replication changes and is resumable via a state store.
+This is a **query source with no incremental-replication mode** — it runs the configured query once and streams the result. Every emitted page therefore carries `bookmark: None`; there is no resume/state bookmark, no effectively-once delivery, and no upsert/write modes (those are sink concerns). For change data capture, see [`faucet-source-postgres-cdc`](https://crates.io/crates/faucet-source-postgres-cdc), which captures logical-replication changes and is resumable via a state store.
 
 > **Note** — Postgres' wire protocol sends rows from a simple `SELECT` in a single response (no server-side cursor by default). The streaming implementation bounds *client-side* memory at `O(batch_size)` and lets the sink begin writing as soon as the first batch is parsed off the wire.
 

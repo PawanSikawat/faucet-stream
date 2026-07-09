@@ -303,7 +303,7 @@ delivery: at_least_once    # top-level default
 
 matrix:
   - id: critical_row
-    delivery: exactly_once  # this row uses exactly-once
+    delivery: exactly_once  # this row uses effectively-once
   - id: best_effort_row
     # inherits top-level at_least_once
 ```
@@ -317,7 +317,7 @@ All four conditions are validated at config-load time (`faucet validate` and `fa
 3. **Durable state store** — a `state:` block is required, and it must be a durable backend (`file`, `redis`, or `postgres`) — `memory` is rejected. The pipeline stores the per-page sequence number alongside the bookmark; the watermark must survive a restart, so an in-memory store (lost on process exit) would silently re-deliver an already-committed page on resume.
 4. **No DLQ** — a `dlq:` block is incompatible with `exactly_once` in this version. Per-row error routing and the idempotency watermark interact in ways not yet resolved.
 
-See the [Exactly-once delivery cookbook](../cookbook/state.md#exactly-once-delivery) for a worked example and the full rationale.
+See the [Effectively-once delivery cookbook](../cookbook/state.md#effectively-once-delivery) for a worked example and the full rationale.
 
 ## `schema`
 
@@ -359,9 +359,9 @@ A violation is a hard `config error` naming the offending row; no run is started
    have nothing to evolve. Both are rejected for `on_drift: evolve`.
 2. **`quarantine` needs a `dlq:` block** — `on_drift: quarantine`, or `evolve`
    with `on_incompatible: quarantine`.
-3. **`quarantine` is incompatible with `delivery: exactly_once`** (exactly-once
+3. **`quarantine` is incompatible with `delivery: exactly_once`** (effectively-once
    forbids a DLQ). `evolve` / `ignore` / `fail` / `warn` all compose with
-   exactly-once and with `write_mode: upsert`.
+   effectively-once and with `write_mode: upsert`.
 
 Against a **schemaless** sink (jsonl, csv, stdout, mongodb, redis, http, kafka,
 s3, gcs, snowflake, parquet) any non-`evolve` policy is inert — the sink reports
@@ -409,7 +409,7 @@ pipeline:
 A malformed contract (empty version, duplicate fields, invalid regex, empty or
 type-mismatched `enum`, constraints on the wrong type, `min > max`) is a
 config-load error — `faucet validate` catches it. `fail`/`warn` compose with
-`delivery: exactly_once`; `quarantine` does not (exactly-once forbids a DLQ).
+`delivery: exactly_once`; `quarantine` does not (effectively-once forbids a DLQ).
 Inspect or export the contract with [`faucet contract`](./cli.md#contract).
 
 ## `masking`

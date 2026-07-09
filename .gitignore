@@ -30,9 +30,21 @@ CLAUDE.md
 docs/superpowers/
 
 # Local scripts (one-off helpers, not part of the project) — ignore the dir's
-# contents, but track the shipped interactive-demo script.
+# contents, but track the shipped interactive-demo + benchmark scripts.
 /scripts/*
 !/scripts/try-local.sh
+!/scripts/gen_bench_data.py
+!/scripts/run-bench.sh
+
+# Benchmark generated artifacts (harness + configs are tracked; outputs are not)
+/.bench-venv/
+/benchmarks/data/
+/benchmarks/out/
+/benchmarks/results/
+/benchmarks/meltano/.meltano/
+/benchmarks/meltano/output/
+/benchmarks/meltano/plugins/
+/benchmarks/meltano/.env
 
 # Cargo
 doc/

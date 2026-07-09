@@ -1,0 +1,17 @@
+# Benchmark pipeline — Scenario A: CSV -> JSONL.
+# Paths are relative to the repo root (run-bench.sh runs faucet from there).
+# batch_size default (1000) is left as-is so this reflects faucet's out-of-box
+# behaviour, matching how a first-time user would run it.
+version: 1
+name: bench_csv_to_jsonl
+
+pipeline:
+  source:
+    type: csv
+    config:
+      path: ./benchmarks/data/bench.csv
+
+  sink:
+    type: jsonl
+    config:
+      path: ./benchmarks/out/faucet_out.jsonl

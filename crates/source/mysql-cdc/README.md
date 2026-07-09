@@ -14,7 +14,7 @@ Reach for it when you want to mirror a MySQL database into a warehouse, lake, qu
 - **Row-level change events** — each committed transaction is decoded from the binlog into a Debezium-style envelope (`op` / `before` / `after` / `lsn` / `txid`) and emitted as JSON.
 - **Per-transaction durability** — every committed transaction is its own `StreamPage` with a `{ file, pos }` bookmark attached, so the pipeline persists progress per commit. Uncommitted partial transactions never leak: they're buffered in memory and discarded at idle timeout, then re-delivered from the last persisted bookmark on the next run.
 - **Resumable** — overrides `state_key()` / `apply_start_bookmark()`; on resume the binlog stream reopens from the persisted file/position.
-- **Exactly-once delivery** — `supports_exactly_once()` is `true`. Pair with an idempotent sink (postgres / mysql / mssql / sqlite / iceberg / bigquery) + a state store for end-to-end exactly-once semantics, gated and validated by the CLI.
+- **Effectively-once delivery** — `supports_exactly_once()` is `true`. Pair with an idempotent sink (postgres / mysql / mssql / sqlite / iceberg / bigquery) + a state store for end-to-end effectively-once semantics, gated and validated by the CLI.
 - **Snapshot → CDC handoff** — implements `capture_resume_position()` (anchor the binlog *before* a bulk snapshot); `faucet replicate` uses it to build a gap-free, duplicate-free mirror. Works against MySQL **5.7 / 8.0 / 8.4+** — current-position capture tries `SHOW BINARY LOG STATUS` (8.4) and falls back to `SHOW MASTER STATUS` (5.7 / 8.0).
 - **Client-side table filtering** — `include_tables` / `exclude_tables` allowlist/blocklist by fully-qualified `database.table`.
 - **Flexible start positions** — `current`, `earliest`, explicit `file_pos`, or `gtid_set`.
@@ -324,16 +324,16 @@ Example: `server_id: 1001` → state key `mysql-cdc:1001`.
 
 Any [`StateStore`](https://crates.io/crates/faucet-core) works — `file` and `memory` ship in `faucet-core`; [`faucet-state-redis`](https://crates.io/crates/faucet-state-redis) and [`faucet-state-postgres`](https://crates.io/crates/faucet-state-postgres) provide durable shared backends.
 
-## Exactly-once delivery
+## Effectively-once delivery
 
-`MysqlCdcSource::supports_exactly_once()` returns `true`. Combined with an idempotent sink and a state store, a pipeline can run with `delivery: exactly_once` for end-to-end exactly-once semantics — the pipeline assigns a monotonic commit token per bookmark-carrying page, the sink commits records and token atomically, and on resume already-committed pages are skipped.
+`MysqlCdcSource::supports_exactly_once()` returns `true`. Combined with an idempotent sink and a state store, a pipeline can run with `delivery: exactly_once` for end-to-end effectively-once semantics — the pipeline assigns a monotonic commit token per bookmark-carrying page, the sink commits records and token atomically, and on resume already-committed pages are skipped.
 
 The CLI enforces all four requirements at config-load time (`faucet validate` catches them before any run starts):
 
-1. **Source** must support exactly-once — `mysql-cdc` qualifies.
+1. **Source** must support effectively-once — `mysql-cdc` qualifies.
 2. **Sink** must support idempotent writes — `postgres`, `mysql`, `mssql`, `sqlite`, `iceberg`, or `bigquery`.
 3. A **`state:`** block must be configured.
-4. **No `dlq:`** block (DLQ and exactly-once are mutually exclusive in this version).
+4. **No `dlq:`** block (DLQ and effectively-once are mutually exclusive in this version).
 
 ```yaml
 version: 1
@@ -396,7 +396,7 @@ let _ = source;
 # }
 ```
 
-For resumable / exactly-once runs, drive the source through `faucet_core::Pipeline` (or `run_stream`) with `Pipeline::with_state_store(...)` so bookmarks are read before each fetch and persisted only after the sink confirms each transaction.
+For resumable / effectively-once runs, drive the source through `faucet_core::Pipeline` (or `run_stream`) with `Pipeline::with_state_store(...)` so bookmarks are read before each fetch and persisted only after the sink confirms each transaction.
 
 ## How it works
 

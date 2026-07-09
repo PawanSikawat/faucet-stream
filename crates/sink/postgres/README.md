@@ -14,7 +14,7 @@ Reach for it whenever you want to land a faucet-stream source — a REST API, a 
 - **Two column-mapping modes** — **JSONB** stores each record as a single `jsonb` value (schemaless ingestion, query later with JSON operators); **AutoMap** maps top-level JSON keys directly onto typed table columns discovered from the Postgres catalog.
 - **Multi-row `INSERT` batching** — each page is written with one multi-row `INSERT` per chunk; JSONB mode uses `unnest($1::jsonb[])`, AutoMap binds per-column casts. Auto-splits to stay under Postgres' 65 535 bind-parameter ceiling.
 - **Write modes: upsert & delete** — merge or remove rows by key via `INSERT … ON CONFLICT (key) DO UPDATE` (AutoMap + a `UNIQUE`/`PRIMARY KEY` on the key columns required). Last-write-wins de-dup within a batch.
-- **Exactly-once delivery** — records and a monotonic commit token UPSERT into a `_faucet_commit_token` watermark table inside the **same transaction**; resume skips already-committed pages.
+- **Effectively-once delivery** — records and a monotonic commit token UPSERT into a `_faucet_commit_token` watermark table inside the **same transaction**; resume skips already-committed pages.
 - **Dead-letter queue** — per-row partial writes route missing/null-key rows to a configured DLQ while good rows still commit.
 - **Connection pooling** — one `sqlx::PgPool` built once in `new()` and reused for every batch; `max_connections` is configurable.
 - **Schema-qualified targets** — optional `schema` scopes both column discovery and the `INSERT` target, so a same-named table in another schema can't pollute the AutoMap column set.
@@ -209,14 +209,14 @@ Semantics:
 
 The `cdc_unwrap` transform pairs naturally with upsert — it normalizes a CDC envelope into a flat row plus a `__op` marker (`"u"`/`"d"`) that the `delete_marker` matches. See the [upsert cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/upsert.html).
 
-## Exactly-once delivery
+## Effectively-once delivery
 
 `PostgresSink` implements `Sink::supports_idempotent_writes` (returns `true`) and the two companion hooks:
 
 - `write_batch_idempotent(records, scope, token)` — writes `records` and UPSERTs the `token` into a `_faucet_commit_token(scope TEXT, token TEXT)` watermark table inside the **same transaction**, so both either commit together or neither does.
 - `last_committed_token(scope)` — reads the current watermark so the pipeline skips already-committed pages on resume.
 
-To use exactly-once delivery, set `delivery: exactly_once` and pair this sink with a CDC source (`postgres-cdc`, `mysql-cdc`, `mongodb-cdc`) plus a `state:` block. A DLQ is not permitted in exactly-once mode. All four requirements are validated at config-load time (`faucet validate`) before any run starts.
+To use effectively-once delivery, set `delivery: exactly_once` and pair this sink with a CDC source (`postgres-cdc`, `mysql-cdc`, `mongodb-cdc`) plus a `state:` block. A DLQ is not permitted in effectively-once mode. All four requirements are validated at config-load time (`faucet validate`) before any run starts.
 
 ```yaml
 version: 1
@@ -240,7 +240,7 @@ pipeline:
 delivery: exactly_once
 ```
 
-`delivery: exactly_once` and `write_mode: upsert` compose — the upsert and the commit-token UPSERT commit in the same transaction. See the [exactly-once delivery cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/state.html#exactly-once-delivery).
+`delivery: exactly_once` and `write_mode: upsert` compose — the upsert and the commit-token UPSERT commit in the same transaction. See the [effectively-once delivery cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/state.html#effectively-once-delivery).
 
 ## Schema evolution
 
@@ -359,16 +359,16 @@ This crate has no optional features of its own; enable it in the CLI/umbrella vi
 | Wrong table picked up | A same-named table exists in another schema on the `search_path`. Set `schema:` explicitly to disambiguate. |
 | Statement rejected with too many parameters | Hit the 65 535 bind-parameter ceiling. AutoMap auto-splits to stay under it; if you still see this, lower `batch_size` (very wide tables). |
 | Missing/null key rows fail the whole batch | Without a `dlq:` block, a row missing a key column aborts the batch. Configure a DLQ to route just the bad rows, or ensure keys are present and non-null. |
-| Exactly-once config rejected at validate | Exactly-once requires a CDC source + idempotent sink + `state:` block + no `dlq:`. `faucet validate` names the missing requirement. |
+| Effectively-once config rejected at validate | Effectively-once requires a CDC source + idempotent sink + `state:` block + no `dlq:`. `faucet validate` names the missing requirement. |
 
 ## See also
 
 - [Sinks reference](https://pawansikawat.github.io/faucet-stream/reference/connectors.html) — capability matrix across all connectors.
 - [Upsert cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/upsert.html) — write modes and CDC mirroring.
-- [Exactly-once delivery](https://pawansikawat.github.io/faucet-stream/cookbook/state.html#exactly-once-delivery) — state, watermarks, supported source/sink set.
+- [Effectively-once delivery](https://pawansikawat.github.io/faucet-stream/cookbook/state.html#effectively-once-delivery) — state, watermarks, supported source/sink set.
 - [Dead-letter queue cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/dlq.html) — routing bad rows.
 - [`faucet-source-postgres`](https://crates.io/crates/faucet-source-postgres) — the matching query source.
-- [`faucet-source-postgres-cdc`](https://crates.io/crates/faucet-source-postgres-cdc) — the CDC source that pairs with upsert/exactly-once.
+- [`faucet-source-postgres-cdc`](https://crates.io/crates/faucet-source-postgres-cdc) — the CDC source that pairs with upsert/effectively-once.
 
 ## License
 

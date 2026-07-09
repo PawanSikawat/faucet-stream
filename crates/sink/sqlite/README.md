@@ -17,7 +17,7 @@ Reach for it when you want a zero-dependency, embedded landing table on local di
 - **Parameter-limit aware** — in `auto_map` mode the sink splits each chunk so `rows × columns` never exceeds SQLite's `SQLITE_MAX_VARIABLE_NUMBER`, so wide tables never fail with "too many SQL variables".
 - **Native-typed binds** — in `auto_map` mode strings bind as `TEXT`, JSON numbers as `INTEGER`/`REAL`, booleans as `INTEGER` 0/1; arrays/objects bind as JSON text — so column affinity round-trips correctly.
 - **Write modes** — `append` (default), `upsert` (`INSERT … ON CONFLICT … DO UPDATE`), and `delete`, all keyed on a UNIQUE/PRIMARY KEY column set.
-- **Exactly-once delivery** — pairs with a CDC source to commit records and a watermark token in one transaction.
+- **Effectively-once delivery** — pairs with a CDC source to commit records and a watermark token in one transaction.
 - **Dead-letter queue** — per-row error reporting routes failing rows to a DLQ instead of failing the whole batch.
 
 ## Installation
@@ -202,14 +202,14 @@ pipeline:
       path: ./state
 ```
 
-## Exactly-once delivery
+## Effectively-once delivery
 
 `SqliteSink` implements `Sink::supports_idempotent_writes` (returns `true`) and the two companion hooks:
 
 - `write_batch_idempotent(records, scope, token)` — writes `records` and UPSERTs the `token` into a `_faucet_commit_token(scope TEXT, token TEXT)` watermark table inside the **same `BEGIN`/`COMMIT` transaction**, so both either commit together or neither does.
 - `last_committed_token(scope)` — reads the current watermark so the pipeline skips already-committed pages on resume.
 
-To use exactly-once delivery, set `delivery: exactly_once` and pair this sink with a CDC source (`postgres-cdc`, `mysql-cdc`, `mongodb-cdc`) plus a `state:` block. A DLQ is not permitted in exactly-once mode. All four requirements are validated at config-load time (`faucet validate`) before any run starts.
+To use effectively-once delivery, set `delivery: exactly_once` and pair this sink with a CDC source (`postgres-cdc`, `mysql-cdc`, `mongodb-cdc`) plus a `state:` block. A DLQ is not permitted in effectively-once mode. All four requirements are validated at config-load time (`faucet validate`) before any run starts.
 
 ```yaml
 pipeline:
@@ -232,7 +232,7 @@ pipeline:
 delivery: exactly_once
 ```
 
-See the [Exactly-once delivery cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/state.html#exactly-once-delivery) for full rationale and the supported source/sink set.
+See the [Effectively-once delivery cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/state.html#effectively-once-delivery) for full rationale and the supported source/sink set.
 
 ## Schema evolution
 
@@ -354,7 +354,7 @@ This crate has no optional features of its own; enable it in the CLI/umbrella vi
 | AutoMap inserts nothing / "skipped with no matching keys" warning | Record keys don't match any column. Confirm the table exists and column names match the JSON top-level keys (AutoMap silently drops unmatched keys). |
 | Upsert fails with `ON CONFLICT` error | The table has no `UNIQUE`/`PRIMARY KEY` on the `key` column(s). Add a constraint, e.g. `CREATE UNIQUE INDEX ON users(id)`. |
 | Upsert/delete rejected at config load | `column_mapping` is not `auto_map`, or `key` is empty. Upsert/delete require `auto_map` and a non-empty `key`. |
-| Exactly-once rejected by `faucet validate` | One of the four requirements is unmet: a CDC source, this sink, a `state:` block, and **no** `dlq:` block. |
+| Effectively-once rejected by `faucet validate` | One of the four requirements is unmet: a CDC source, this sink, a `state:` block, and **no** `dlq:` block. |
 | A row with a missing/null key column fails the whole batch | Add a `dlq:` block to route only the offending rows to the DLQ while the rest commit. |
 | Numbers stored as text in AutoMap | Pass JSON numbers (`29.99`), not strings (`"29.99"`); strings bind as `TEXT`. |
 
@@ -363,7 +363,7 @@ This crate has no optional features of its own; enable it in the CLI/umbrella vi
 - [Choosing a connector](https://pawansikawat.github.io/faucet-stream/reference/choosing.html)
 - [Connector capability matrix](https://pawansikawat.github.io/faucet-stream/reference/connectors.html)
 - [Upsert cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/upsert.html)
-- [State & exactly-once cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/state.html)
+- [State & effectively-once cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/state.html)
 - [`faucet-source-sqlite`](https://crates.io/crates/faucet-source-sqlite) — the matching SQLite query source.
 - [`faucet-sink-postgres`](https://crates.io/crates/faucet-sink-postgres) / [`faucet-sink-mysql`](https://crates.io/crates/faucet-sink-mysql) — server-database sinks with the same write-mode surface.
 

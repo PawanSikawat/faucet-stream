@@ -220,7 +220,7 @@ pipeline:
 
 The trait-level `batch_size` argument passed to `stream_pages` is **ignored** in favour of `RedisSourceConfig::batch_size` — the config is the authoritative, user-facing knob, so a pipeline-supplied hint can never silently override an explicit config value.
 
-Every emitted page carries `bookmark: None` — the Redis source has no incremental-replication / resume mode today, so it is **not resumable** and does not support exactly-once delivery.
+Every emitted page carries `bookmark: None` — the Redis source has no incremental-replication / resume mode today, so it is **not resumable** and does not support effectively-once delivery.
 
 ## Config loading
 

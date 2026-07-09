@@ -181,7 +181,7 @@ The trait-level `batch_size` argument to `stream_pages` is ignored in favour of 
 
 > **Note** — MySQL's wire protocol sends rows from a simple `SELECT` in a single response (no server-side cursor), so the streaming here bounds memory on the client side rather than asking the server to page. True server-side cursor streaming is tracked separately as a follow-up.
 
-The MySQL query source has **no incremental-replication mode**, so every emitted page carries `bookmark: None` (there is no resume or exactly-once support — see [Capabilities](#capabilities)). For change-data-capture against MySQL binlogs, use [`faucet-source-mysql-cdc`](https://crates.io/crates/faucet-source-mysql-cdc) instead.
+The MySQL query source has **no incremental-replication mode**, so every emitted page carries `bookmark: None` (there is no resume or effectively-once support — see [Capabilities](#capabilities)). For change-data-capture against MySQL binlogs, use [`faucet-source-mysql-cdc`](https://crates.io/crates/faucet-source-mysql-cdc) instead.
 
 ## Column types
 
@@ -210,7 +210,7 @@ Columns are converted to JSON in order of likelihood; an unsupported or `NULL` c
 | Native streaming | ✅ | sqlx row cursor; one page per `batch_size` rows. |
 | Connection pooling | ✅ | `max_connections`, reused across fetches. |
 | Resume / bookmark state | ❌ | Stateless query source; every page is `bookmark: None`. |
-| Exactly-once delivery | ❌ | Source does not implement `supports_exactly_once`. |
+| Effectively-once delivery | ❌ | Source does not implement `supports_exactly_once`. |
 | Write modes / upsert | — | Not applicable (this is a source). |
 | Compression | ❌ | No `compression` feature. |
 | Per-record (matrix) queries | ✅ | `${parent.field}` → SQL bind parameters. |
