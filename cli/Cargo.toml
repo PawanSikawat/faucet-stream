@@ -14,7 +14,7 @@ categories = ["command-line-utilities"]
 
 # cargo-dist: name the Homebrew formula after the binary (`faucet`), not the
 # package (`faucet-cli`), so the install command reads
-# `brew install PawanSikawat/faucet-stream/faucet`.
+# `brew install PawanSikawat/faucet/faucet`.
 [package.metadata.dist]
 formula = "faucet"
 
