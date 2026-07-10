@@ -136,7 +136,12 @@ jobs:
           command: release
           config: release-plz.toml
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Prefer the RELEASE_PLZ_TOKEN PAT when configured: refs (per-crate
+          # tags) pushed with the default GITHUB_TOKEN do NOT trigger other
+          # workflows, so release-binaries.yml never fires automatically after
+          # a publish. A PAT-pushed tag triggers it normally. Falls back to
+          # GITHUB_TOKEN (today's behavior: trigger release-binaries manually).
+          GITHUB_TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN || secrets.GITHUB_TOKEN }}
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
 
       - name: Cool-down for crates.io rate-limit refill (before retry 1)
@@ -154,7 +159,12 @@ jobs:
           command: release
           config: release-plz.toml
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Prefer the RELEASE_PLZ_TOKEN PAT when configured: refs (per-crate
+          # tags) pushed with the default GITHUB_TOKEN do NOT trigger other
+          # workflows, so release-binaries.yml never fires automatically after
+          # a publish. A PAT-pushed tag triggers it normally. Falls back to
+          # GITHUB_TOKEN (today's behavior: trigger release-binaries manually).
+          GITHUB_TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN || secrets.GITHUB_TOKEN }}
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
 
       - name: Cool-down for crates.io rate-limit refill (before final attempt)
@@ -170,5 +180,10 @@ jobs:
           command: release
           config: release-plz.toml
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Prefer the RELEASE_PLZ_TOKEN PAT when configured: refs (per-crate
+          # tags) pushed with the default GITHUB_TOKEN do NOT trigger other
+          # workflows, so release-binaries.yml never fires automatically after
+          # a publish. A PAT-pushed tag triggers it normally. Falls back to
+          # GITHUB_TOKEN (today's behavior: trigger release-binaries manually).
+          GITHUB_TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN || secrets.GITHUB_TOKEN }}
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
