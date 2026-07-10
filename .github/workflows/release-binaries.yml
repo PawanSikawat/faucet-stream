@@ -17,6 +17,13 @@ name: Release binaries (dist)
 permissions:
   "contents": "write"
 
+# Harden against transient crates.io connectivity drops (same guards as
+# ci.yml / release-plz.yml): retry more, force HTTP/1.1 to the registry.
+# (Hand edit — see allow-dirty = ["ci"] in dist-workspace.toml.)
+env:
+  CARGO_NET_RETRY: "10"
+  CARGO_HTTP_MULTIPLEXING: "false"
+
 # This task will run whenever you push a git tag that looks like a version
 # like "1.0.0", "v0.1.0-prerelease.1", "my-app/0.1.0", "releases/v1.0.0", etc.
 # Various formats will be parsed into a VERSION and an optional PACKAGE_NAME, where
@@ -44,8 +51,15 @@ permissions:
 # per-crate tag so the ~50 other `<crate>-vX.Y.Z` tags release-plz pushes per
 # release do not trigger binary builds. On pull requests only the cheap
 # `dist plan` job runs (build jobs are gated on publishing).
+# NOTE: release-plz pushes tags with the workflow-scoped GITHUB_TOKEN, and
+# GitHub suppresses workflow triggers from GITHUB_TOKEN-pushed refs — so the
+# tag push does NOT fire this workflow on its own. Until a RELEASE_PLZ_TOKEN
+# PAT is configured for the publish job, trigger a release build manually:
+#   gh workflow run release-binaries.yml --ref faucet-cli-vX.Y.Z
+# (workflow_dispatch on the tag ref; the plan job reads the tag from the ref).
 on:
   pull_request:
+  workflow_dispatch:
   push:
     tags:
       - 'faucet-cli-v[0-9]+.[0-9]+.[0-9]+*'
