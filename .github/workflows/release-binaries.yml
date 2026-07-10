@@ -17,6 +17,13 @@ name: Release binaries (dist)
 permissions:
   "contents": "write"
 
+# Harden against transient crates.io connectivity drops (same guards as
+# ci.yml / release-plz.yml): retry more, force HTTP/1.1 to the registry.
+# (Hand edit — see allow-dirty = ["ci"] in dist-workspace.toml.)
+env:
+  CARGO_NET_RETRY: "10"
+  CARGO_HTTP_MULTIPLEXING: "false"
+
 # This task will run whenever you push a git tag that looks like a version
 # like "1.0.0", "v0.1.0-prerelease.1", "my-app/0.1.0", "releases/v1.0.0", etc.
 # Various formats will be parsed into a VERSION and an optional PACKAGE_NAME, where

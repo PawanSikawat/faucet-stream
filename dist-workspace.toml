@@ -26,6 +26,17 @@ allow-dirty = ["ci"]
 # Whether to install an updater program
 install-updater = false
 
+# System packages for the Linux build runners (mirrors the CI "librdkafka
+# prerequisites" step): sasl2-sys needs libsasl2-dev, rdkafka needs cmake +
+# a C toolchain, openssl-sys needs libssl-dev. macOS runners need nothing
+# extra (verified: aarch64-apple-darwin built clean).
+[dist.dependencies.apt]
+libsasl2-dev = '*'
+libssl-dev = '*'
+libcurl4-openssl-dev = '*'
+cmake = '*'
+build-essential = '*'
+
 # Build Linux aarch64 natively on GitHub's arm runners instead of
 # cross-compiling (librdkafka/openssl make cross builds painful).
 [dist.github-custom-runners]
