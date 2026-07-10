@@ -44,8 +44,15 @@ permissions:
 # per-crate tag so the ~50 other `<crate>-vX.Y.Z` tags release-plz pushes per
 # release do not trigger binary builds. On pull requests only the cheap
 # `dist plan` job runs (build jobs are gated on publishing).
+# NOTE: release-plz pushes tags with the workflow-scoped GITHUB_TOKEN, and
+# GitHub suppresses workflow triggers from GITHUB_TOKEN-pushed refs — so the
+# tag push does NOT fire this workflow on its own. Until a RELEASE_PLZ_TOKEN
+# PAT is configured for the publish job, trigger a release build manually:
+#   gh workflow run release-binaries.yml --ref faucet-cli-vX.Y.Z
+# (workflow_dispatch on the tag ref; the plan job reads the tag from the ref).
 on:
   pull_request:
+  workflow_dispatch:
   push:
     tags:
       - 'faucet-cli-v[0-9]+.[0-9]+.[0-9]+*'
