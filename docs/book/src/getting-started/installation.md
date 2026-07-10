@@ -11,7 +11,7 @@ it.
 **Homebrew (macOS / Linux):**
 
 ```bash
-brew install PawanSikawat/faucet/faucet
+brew install PawanSikawat/faucet-stream/faucet
 ```
 
 **Shell installer (macOS / Linux):**
