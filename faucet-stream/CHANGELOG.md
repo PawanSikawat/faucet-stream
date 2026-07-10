@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 (see the versioning policy in CONTRIBUTING.md — connector crates version
 independently).
+## [1.3.0](https://github.com/PawanSikawat/faucet-stream/compare/faucet-stream-v1.2.0...faucet-stream-v1.3.0) - 2026-07-10
+
+### Features
+
+- Typed delivery guarantees, effectively-once coverage expansion, and prebuilt binary distribution ([#294](https://github.com/PawanSikawat/faucet-stream/pull/294))
+- Singer tap bridge + conformance battery (+ docs precision & Meltano benchmark) ([#289](https://github.com/PawanSikawat/faucet-stream/pull/289))
+
+### Miscellaneous
+
+- *(dist)* Homebrew tap homebrew-faucet-stream, formula faucet-cli ([#295](https://github.com/PawanSikawat/faucet-stream/pull/295))
+
 ## [1.2.0](https://github.com/PawanSikawat/faucet-stream/compare/faucet-stream-v1.1.1...faucet-stream-v1.2.0) - 2026-07-08
 
 ### Documentation
