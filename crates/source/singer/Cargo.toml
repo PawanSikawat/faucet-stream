@@ -33,7 +33,10 @@ libc = "0.2"
 tokio = { version = "1", features = ["full", "test-util"] }
 tracing-subscriber = "0.3"
 tempfile.workspace = true
-faucet-conformance.workspace = true
+# Path-only (no version): cargo strips path-only dev-dependencies when
+# packaging, so publishing this crate does not require faucet-conformance to
+# be on crates.io first (release-plz orders publishes without dev-dep edges).
+faucet-conformance = { path = "../../conformance" }
 
 [package.metadata.docs.rs]
 all-features = true
