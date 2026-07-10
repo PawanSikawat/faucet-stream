@@ -86,7 +86,10 @@ faucet-common-snowflake = { path = "crates/common/snowflake", version = "1.0.4" 
 faucet-common-mssql = { path = "crates/common/mssql", version = "1.0.5" }
 faucet-source-rest = { path = "crates/source/rest", version = "1.2.2" }
 faucet-source-singer = { path = "crates/source/singer", version = "1.0.0" }
-faucet-conformance = { path = "crates/conformance", version = "1.0.0" }
+# Path-only on purpose: faucet-conformance is a test battery consumed only as
+# a dev-dependency; a versioned entry would make dependents' `cargo publish`
+# require it on crates.io first (release-plz does not order by dev-dep edges).
+faucet-conformance = { path = "crates/conformance" }
 faucet-source-graphql = { path = "crates/source/graphql", version = "1.2.2" }
 faucet-source-xml = { path = "crates/source/xml", version = "1.2.2" }
 faucet-source-grpc = { path = "crates/source/grpc", version = "1.2.0" }
