@@ -11,8 +11,11 @@ it.
 **Homebrew (macOS / Linux):**
 
 ```bash
-brew install PawanSikawat/faucet/faucet
+brew install PawanSikawat/faucet-stream/faucet-cli
 ```
+
+(The formula is named after the `faucet-cli` package; it installs the `faucet`
+binary.)
 
 **Shell installer (macOS / Linux):**
 
