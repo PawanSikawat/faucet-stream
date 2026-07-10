@@ -29,7 +29,7 @@ no Python runtime, no platform to stand up, no daemon to babysit — plus a type
 you'd rather compile data movement straight into your own service.
 
 ```bash
-brew install PawanSikawat/faucet/faucet   # the CLI — prebuilt, no Rust needed
+brew install PawanSikawat/faucet-stream/faucet-cli   # the CLI — prebuilt, no Rust needed
 # — or —
 curl -LsSf https://github.com/PawanSikawat/faucet-stream/releases/latest/download/faucet-cli-installer.sh | sh
 # — or —
@@ -297,7 +297,7 @@ and `lineage`:
 
 ```bash
 # Homebrew
-brew install PawanSikawat/faucet/faucet
+brew install PawanSikawat/faucet-stream/faucet-cli
 
 # Shell installer (installs to ~/.cargo/bin by default, checksummed)
 curl -LsSf https://github.com/PawanSikawat/faucet-stream/releases/latest/download/faucet-cli-installer.sh | sh
