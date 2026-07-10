@@ -29,7 +29,11 @@ no Python runtime, no platform to stand up, no daemon to babysit — plus a type
 you'd rather compile data movement straight into your own service.
 
 ```bash
-cargo install faucet-cli          # the CLI
+brew install PawanSikawat/faucet/faucet   # the CLI — prebuilt, no Rust needed
+# — or —
+curl -LsSf https://github.com/PawanSikawat/faucet-stream/releases/latest/download/faucet-cli-installer.sh | sh
+# — or —
+cargo install faucet-cli          # build the CLI from source
 # — or —
 cargo add faucet-stream           # the library
 ```
@@ -286,6 +290,29 @@ for help picking between overlapping connectors (Postgres query vs CDC, S3 vs Pa
 </details>
 
 ### Install
+
+**CLI — prebuilt binaries** (macOS arm64/x86_64, Linux x86_64/aarch64; no Rust toolchain
+required). Includes every first-party connector plus `serve` (web console), `schedule`,
+and `lineage`:
+
+```bash
+# Homebrew
+brew install PawanSikawat/faucet/faucet
+
+# Shell installer (installs to ~/.cargo/bin by default, checksummed)
+curl -LsSf https://github.com/PawanSikawat/faucet-stream/releases/latest/download/faucet-cli-installer.sh | sh
+
+# Or download an archive + SHA256 checksum from the latest faucet-cli GitHub Release
+```
+
+**CLI — from source** (full/custom feature sets, e.g. DuckDB SQL transforms, OTLP export):
+
+```bash
+cargo install faucet-cli                   # default feature set
+cargo install faucet-cli --features full   # everything
+```
+
+**Library:**
 
 ```bash
 # Everything (default includes the REST source)

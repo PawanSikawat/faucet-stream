@@ -125,6 +125,18 @@ impl Source for TransformingSource {
         self.inner.apply_start_bookmark(bookmark).await
     }
 
+    fn supports_exactly_once(&self) -> bool {
+        self.inner.supports_exactly_once()
+    }
+
+    fn replay_guarantee(&self) -> crate::idempotency::ReplayGuarantee {
+        self.inner.replay_guarantee()
+    }
+
+    async fn capture_resume_position(&self) -> Result<Option<Value>, FaucetError> {
+        self.inner.capture_resume_position().await
+    }
+
     fn connector_name(&self) -> &'static str {
         self.inner.connector_name()
     }
@@ -349,6 +361,12 @@ mod tests {
             self.started.store(true, Ordering::Relaxed);
             Ok(())
         }
+        fn supports_exactly_once(&self) -> bool {
+            true
+        }
+        async fn capture_resume_position(&self) -> Result<Option<Value>, FaucetError> {
+            Ok(Some(json!("captured")))
+        }
     }
 
     #[tokio::test]
@@ -369,6 +387,17 @@ mod tests {
         assert_eq!(wrapped.state_key(), Some("instrumented::key".to_string()));
         wrapped.apply_start_bookmark(json!("bm")).await.unwrap();
         assert!(started.load(Ordering::Relaxed));
+        // Exactly-once capabilities must survive the transform wrap — the
+        // pipeline's mechanism selection reads them through this layer.
+        assert!(wrapped.supports_exactly_once());
+        assert_eq!(
+            wrapped.replay_guarantee(),
+            crate::idempotency::ReplayGuarantee::Deterministic
+        );
+        assert_eq!(
+            wrapped.capture_resume_position().await.unwrap(),
+            Some(json!("captured"))
+        );
     }
 
     #[tokio::test]

@@ -60,7 +60,11 @@ pub use drift::{
     SchemaEvolution, SqlBaseType, adds_null, base_widened, json_schema_base_type,
 };
 pub use error::FaucetError;
-pub use idempotency::{DeliveryMode, format_token, parse_token, unwrap_state, wrap_state};
+pub use idempotency::{
+    DeliveryGuarantee, DeliveryMode, EffectivelyOnceMechanism, GuaranteeInputs, ReplayGuarantee,
+    SinkGuarantee, derive_delivery_guarantee, format_token, format_token_with_bookmark,
+    parse_token, parse_token_parts, unwrap_state, wrap_state,
+};
 #[cfg(feature = "contract")]
 pub use observability::instrumented_apply_contract;
 #[cfg(feature = "masking")]

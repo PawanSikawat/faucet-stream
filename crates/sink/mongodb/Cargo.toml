@@ -19,7 +19,7 @@ async-trait.workspace = true
 tracing.workspace = true
 mongodb = { workspace = true }
 futures = { workspace = true }
-tokio = { workspace = true, features = ["time"] }
+tokio = { workspace = true, features = ["time", "sync"] }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread"] }

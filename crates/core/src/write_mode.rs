@@ -70,6 +70,14 @@ impl WriteSpec {
         }
         Ok(())
     }
+
+    /// Whether this spec makes writes converge by key — `write_mode: upsert`
+    /// or `delete` with a non-empty `key`. The canonical implementation of
+    /// [`Sink::dedups_by_key`](crate::Sink::dedups_by_key) for sinks that
+    /// flatten a `WriteSpec` into their config.
+    pub fn dedups_by_key(&self) -> bool {
+        matches!(self.write_mode, WriteMode::Upsert | WriteMode::Delete) && !self.key.is_empty()
+    }
 }
 
 /// Ordered key column → value pairs, in `key` declaration order.
@@ -368,6 +376,30 @@ mod tests {
     #[test]
     fn validate_allows_append_without_key() {
         assert!(WriteSpec::default().validate().is_ok());
+    }
+
+    #[test]
+    fn dedups_by_key_requires_keyed_upsert_or_delete() {
+        assert!(!WriteSpec::default().dedups_by_key());
+        let upsert = WriteSpec {
+            write_mode: WriteMode::Upsert,
+            key: vec!["id".into()],
+            delete_marker: None,
+        };
+        assert!(upsert.dedups_by_key());
+        let delete = WriteSpec {
+            write_mode: WriteMode::Delete,
+            key: vec!["id".into()],
+            delete_marker: None,
+        };
+        assert!(delete.dedups_by_key());
+        // An (invalid) keyless upsert never claims keyed dedup.
+        let keyless = WriteSpec {
+            write_mode: WriteMode::Upsert,
+            key: vec![],
+            delete_marker: None,
+        };
+        assert!(!keyless.dedups_by_key());
     }
 
     #[test]

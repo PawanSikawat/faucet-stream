@@ -99,6 +99,18 @@ impl<'a, S: Source + ?Sized> Source for InstrumentedSource<'a, S> {
         self.inner.apply_start_bookmark(bookmark).await
     }
 
+    fn supports_exactly_once(&self) -> bool {
+        self.inner.supports_exactly_once()
+    }
+
+    fn replay_guarantee(&self) -> crate::idempotency::ReplayGuarantee {
+        self.inner.replay_guarantee()
+    }
+
+    async fn capture_resume_position(&self) -> Result<Option<Value>, FaucetError> {
+        self.inner.capture_resume_position().await
+    }
+
     async fn fetch_with_context(
         &self,
         context: &HashMap<String, Value>,
@@ -456,6 +468,14 @@ impl<'a, S: Sink + ?Sized> Sink for InstrumentedSink<'a, S> {
         self.inner.supports_idempotent_writes()
     }
 
+    fn sink_guarantee(&self) -> crate::idempotency::SinkGuarantee {
+        self.inner.sink_guarantee()
+    }
+
+    fn dedups_by_key(&self) -> bool {
+        self.inner.dedups_by_key()
+    }
+
     async fn write_batch_idempotent(
         &self,
         records: &[Value],
@@ -795,6 +815,52 @@ pub(crate) mod source_tests {
             Some(json!("resume")),
             "apply_start_bookmark must reach the inner source"
         );
+
+        // capability passthroughs: defaults for this inner source…
+        assert!(!wrapped.supports_exactly_once());
+        assert_eq!(
+            wrapped.replay_guarantee(),
+            crate::idempotency::ReplayGuarantee::NonDeterministic
+        );
+        assert_eq!(wrapped.capture_resume_position().await.unwrap(), None);
+    }
+
+    /// A source advertising exactly-once — the decorator must not mask it
+    /// (the pipeline's mechanism selection reads these through the wrapper).
+    struct ExactlyOnceSource;
+    #[async_trait]
+    impl Source for ExactlyOnceSource {
+        async fn fetch_with_context(
+            &self,
+            _context: &HashMap<String, Value>,
+        ) -> Result<Vec<Value>, FaucetError> {
+            Ok(vec![])
+        }
+        fn supports_exactly_once(&self) -> bool {
+            true
+        }
+        async fn capture_resume_position(&self) -> Result<Option<Value>, FaucetError> {
+            Ok(Some(json!("pos")))
+        }
+        fn connector_name(&self) -> &'static str {
+            "eo-source"
+        }
+    }
+
+    #[tokio::test]
+    async fn source_capability_passthroughs_delegate_to_inner() {
+        let inner = ExactlyOnceSource;
+        let wrapped = InstrumentedSource::new(&inner, labels());
+        assert!(wrapped.supports_exactly_once());
+        assert_eq!(
+            wrapped.replay_guarantee(),
+            crate::idempotency::ReplayGuarantee::Deterministic,
+            "typed capability derives through the wrapper"
+        );
+        assert_eq!(
+            wrapped.capture_resume_position().await.unwrap(),
+            Some(json!("pos"))
+        );
     }
 }
 
@@ -895,6 +961,9 @@ mod sink_tests {
         async fn last_committed_token(&self, _scope: &str) -> Result<Option<String>, FaucetError> {
             Ok(Some("tok-1".into()))
         }
+        fn dedups_by_key(&self) -> bool {
+            true
+        }
     }
 
     #[tokio::test]
@@ -929,6 +998,14 @@ mod sink_tests {
             Some("tok-1".to_string()),
             "last_committed_token must delegate"
         );
+        // Typed delivery capabilities (#292): the pipeline's mechanism
+        // selection reads these through the wrapper.
+        assert_eq!(
+            wrapped.sink_guarantee(),
+            crate::idempotency::SinkGuarantee::AtomicWatermark,
+            "sink_guarantee must delegate"
+        );
+        assert!(wrapped.dedups_by_key(), "dedups_by_key must delegate");
     }
 
     #[tokio::test]

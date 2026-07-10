@@ -294,7 +294,7 @@ delivery: exactly_once
 | Value | Behaviour |
 |-------|-----------|
 | `at_least_once` | Default. A crash between the sink write and the bookmark persist causes the page to be re-delivered on the next run. Downstream must tolerate duplicates. |
-| `exactly_once` | The sink durably records a per-page commit token atomically with the data inside its own transaction. On resume the pipeline reads the sink's last committed token and skips already-committed pages, giving zero duplicates after a crash. |
+| `exactly_once` | Require **at least effectively-once**. Two mechanisms qualify: the **atomic watermark** (the sink durably records a per-page commit token — which embeds the page's resume bookmark — atomically with the data; on resume the pipeline recovers the exact stream position from the sink's watermark, or skips already-committed pages for legacy tokens), and **keyed upsert** (`write_mode: upsert` + `key` on an upsert-capable sink, any source). `faucet validate` prints which mechanism each row derives. |
 
 **Per-row override:** set `delivery:` directly on a matrix row to override the top-level value for that row.
 
@@ -310,12 +310,21 @@ matrix:
 
 ### Requirements for `exactly_once`
 
-All four conditions are validated at config-load time (`faucet validate` and `faucet run`). A violation is a hard `config error` naming the offending row — no run is started.
+The config is accepted when either effectively-once mechanism is achievable and
+rejected otherwise, at config-load time (`faucet validate` and `faucet run`). A
+violation is a hard `config error` naming the limiting side — no run is started.
 
-1. **Deterministic-replay source** — the source must be one of: `postgres-cdc`, `mysql-cdc`, `mongodb-cdc`. Non-CDC sources are rejected because a different page content on replay would cause the pipeline to silently skip records it never wrote.
-2. **Idempotent sink** — the sink must be one of: `sqlite`, `postgres`, `mysql`, `mssql`, `iceberg`, `bigquery`. These sinks atomically commit both the data and a watermark token inside the same transaction or snapshot.
+**Keyed-upsert path** (any source): the sink must be upsert-capable
+(`postgres`, `sqlite`, `mysql`, `mssql`, `mongodb`, `elasticsearch`,
+`bigquery`) and configured with `write_mode: upsert` (or `delete`) and a
+non-empty `key`. No other requirement — no watermark is used.
+
+**Atomic-watermark path**, all four conditions:
+
+1. **Positional-replay source** — the source must be one of: `postgres-cdc`, `mysql-cdc`, `mongodb-cdc`, `kafka`. These emit a complete resume position on every page over an immutable log. Query-based sources are rejected because different data on replay would cause the pipeline to silently skip records it never wrote.
+2. **Idempotent sink** — the sink must be one of: `sqlite`, `postgres`, `mysql`, `mssql`, `iceberg`, `bigquery`, `kafka`, `snowflake`, `redis`, `mongodb` (MongoDB requires a replica set at run time). These sinks atomically commit both the data and a watermark token inside the same transaction or snapshot.
 3. **Durable state store** — a `state:` block is required, and it must be a durable backend (`file`, `redis`, or `postgres`) — `memory` is rejected. The pipeline stores the per-page sequence number alongside the bookmark; the watermark must survive a restart, so an in-memory store (lost on process exit) would silently re-deliver an already-committed page on resume.
-4. **No DLQ** — a `dlq:` block is incompatible with `exactly_once` in this version. Per-row error routing and the idempotency watermark interact in ways not yet resolved.
+4. **No DLQ** — a `dlq:` block is incompatible with the atomic-watermark path in this version. (The keyed-upsert path permits a DLQ.)
 
 See the [Effectively-once delivery cookbook](../cookbook/state.md#effectively-once-delivery) for a worked example and the full rationale.
 

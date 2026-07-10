@@ -17,6 +17,7 @@ Reach for it when you want to land records from any faucet-stream source — a R
 - **Set-based batch inserts** — one `INSERT … SELECT … FROM TABLE(FLATTEN(input => PARSE_JSON(?)))` per chunk parses and inserts the whole batch in a single statement.
 - **Configurable batching** — `batch_size` controls rows per request (default `1000`, the documented sweet spot); `batch_size: 0` forwards each upstream page untouched.
 - **Async-execution aware** — when Snowflake answers an `INSERT` with HTTP 202 (queued, not yet run), the sink polls the statement handle until it succeeds before counting rows as written, bounded by `poll_timeout`.
+- **Effectively-once delivery** — with `delivery: exactly_once`, each page's INSERT and a commit-token `MERGE` land in one multi-statement transaction, so a crash/resume never duplicates a page.
 - **SQL-injection-safe** — data is bound, never interpolated; all table/schema/database identifiers are quoted.
 - **Preflight probe** — `faucet doctor` runs a read-only `SELECT 1` to confirm credentials and warehouse access without writing rows.
 
@@ -197,6 +198,47 @@ sink:
 ### Asynchronous execution
 
 Snowflake's SQL REST API may answer a submitted `INSERT` with **HTTP 202 Accepted** — the statement was queued but has not yet executed. The sink does **not** count those rows as written at that point (that would report success before the data is durable). Instead it polls `GET /api/v2/statements/{handle}` until the statement reports success (code `090001`), then returns. The poll loop is bounded by `poll_timeout` (default 300 s): if the statement is still running after that budget, the write fails with `FaucetError::Sink` rather than hanging forever. Set `poll_timeout: 0` to poll indefinitely.
+
+## Effectively-once delivery
+
+`SnowflakeSink` implements `Sink::supports_idempotent_writes` (returns `true`) and the two companion hooks:
+
+- `write_batch_idempotent(records, scope, token)` — writes the page's records and MERGEs the `token` into a `_faucet_commit_token("scope" STRING PRIMARY KEY, "token" STRING, "updated_at" TIMESTAMP_NTZ)` watermark table in the target database/schema, all inside **one multi-statement transaction** (`BEGIN; INSERT; MERGE; COMMIT;` with `MULTI_STATEMENT_COUNT` set on the request), so both either commit together or neither does. The watermark table is created (`CREATE TABLE IF NOT EXISTS`) as its own request once per sink instance — Snowflake DDL auto-commits, so it can never ride inside the transaction.
+- `last_committed_token(scope)` — reads the current watermark so the pipeline skips already-committed pages on resume.
+
+**The whole page is one atomic unit on this path** — `batch_size` re-chunking does not apply to `write_batch_idempotent` (core issues exactly one token per page; splitting the page across transactions would break the rows-plus-token atomicity). Size the *source's* `batch_size` down if a page's JSON payload grows too large for a single SQL REST API request. An empty page still advances the watermark via a commit-only `BEGIN; MERGE; COMMIT;` transaction.
+
+To use effectively-once delivery, set `delivery: exactly_once` and pair this sink with a CDC source (`postgres-cdc`, `mysql-cdc`, `mongodb-cdc`) plus a `state:` block. A DLQ is not permitted in effectively-once mode. All four requirements are validated at config-load time (`faucet validate`) before any run starts.
+
+```yaml
+version: 1
+pipeline:
+  source:
+    type: postgres-cdc
+    config:
+      connection_url: postgres://faucet:faucet@localhost:5432/appdb
+      slot_name: faucet_slot
+      publication_name: faucet_pub
+  sink:
+    type: snowflake
+    config:
+      account: xy12345.us-east-1
+      warehouse: COMPUTE_WH
+      database: ANALYTICS_DB
+      schema: PUBLIC
+      table: change_events
+      auth:
+        type: oauth
+        config:
+          token: ${env:SNOWFLAKE_TOKEN}
+  state:
+    type: file
+    config:
+      path: ./state
+delivery: exactly_once
+```
+
+See the [effectively-once delivery cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/state.html#effectively-once-delivery).
 
 ## Config loading & schema
 

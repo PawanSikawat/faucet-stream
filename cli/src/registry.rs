@@ -359,15 +359,27 @@ pub async fn build_sink(kind: &str, config: Value, auth: &AuthCatalog) -> CliRes
 /// Source connector kinds that deterministically replay (exactly-once-capable).
 /// Mirrors `Source::supports_exactly_once` overrides — keep in sync when a new
 /// source opts in. The single source of truth for both the boolean gate and the
-/// human-readable list shown in error messages (F44).
-pub const EXACTLY_ONCE_SOURCE_KINDS: &[&str] = &["postgres-cdc", "mysql-cdc", "mongodb-cdc"];
+/// human-readable list shown in error messages (F44). `kafka` qualifies because
+/// partitions are immutable logs and every page carries a complete offsets
+/// bookmark (#291).
+pub const EXACTLY_ONCE_SOURCE_KINDS: &[&str] =
+    &["postgres-cdc", "mysql-cdc", "mongodb-cdc", "kafka"];
 
 /// Sink connector kinds that can durably commit a token atomically with data.
 /// Mirrors `Sink::supports_idempotent_writes` overrides — keep in sync when a
 /// new sink opts in. Single source of truth for the gate + the error-message
 /// list (F44).
 pub const IDEMPOTENT_SINK_KINDS: &[&str] = &[
-    "sqlite", "postgres", "mysql", "mssql", "iceberg", "bigquery", "kafka",
+    "sqlite",
+    "postgres",
+    "mysql",
+    "mssql",
+    "iceberg",
+    "bigquery",
+    "kafka",
+    "snowflake",
+    "redis",
+    "mongodb",
 ];
 
 /// Sink kinds that can apply additive/widening DDL via `Sink::evolve_schema`.
@@ -395,14 +407,39 @@ pub const UPSERT_SINK_KINDS: &[&str] = &[
     "bigquery",
 ];
 
+/// The typed replay capability a source kind advertises
+/// (`Source::replay_guarantee`, issue #292). Derived from
+/// [`EXACTLY_ONCE_SOURCE_KINDS`] — the kind table stays the single source of
+/// truth; this is the typed view the delivery-guarantee derivation consumes.
+pub fn source_replay_guarantee(kind: &str) -> faucet_core::ReplayGuarantee {
+    if EXACTLY_ONCE_SOURCE_KINDS.contains(&kind) {
+        faucet_core::ReplayGuarantee::Deterministic
+    } else {
+        faucet_core::ReplayGuarantee::NonDeterministic
+    }
+}
+
+/// The strongest delivery guarantee a sink kind can uphold
+/// (`Sink::sink_guarantee`, issue #292). Derived from
+/// [`IDEMPOTENT_SINK_KINDS`] / [`UPSERT_SINK_KINDS`].
+pub fn sink_guarantee(kind: &str) -> faucet_core::SinkGuarantee {
+    if IDEMPOTENT_SINK_KINDS.contains(&kind) {
+        faucet_core::SinkGuarantee::AtomicWatermark
+    } else if UPSERT_SINK_KINDS.contains(&kind) {
+        faucet_core::SinkGuarantee::KeyedUpsert
+    } else {
+        faucet_core::SinkGuarantee::AtLeastOnce
+    }
+}
+
 /// See [`EXACTLY_ONCE_SOURCE_KINDS`].
 pub fn source_supports_exactly_once(kind: &str) -> bool {
-    EXACTLY_ONCE_SOURCE_KINDS.contains(&kind)
+    source_replay_guarantee(kind) == faucet_core::ReplayGuarantee::Deterministic
 }
 
 /// See [`IDEMPOTENT_SINK_KINDS`].
 pub fn sink_supports_idempotent_writes(kind: &str) -> bool {
-    IDEMPOTENT_SINK_KINDS.contains(&kind)
+    sink_guarantee(kind) == faucet_core::SinkGuarantee::AtomicWatermark
 }
 
 /// See [`SCHEMA_EVOLUTION_SINK_KINDS`].
@@ -1073,13 +1110,34 @@ mod tests {
         assert!(source_supports_exactly_once("postgres-cdc"));
         assert!(source_supports_exactly_once("mysql-cdc"));
         assert!(source_supports_exactly_once("mongodb-cdc"));
+        assert!(source_supports_exactly_once("kafka"));
         assert!(!source_supports_exactly_once("rest"));
 
         assert!(sink_supports_idempotent_writes("postgres"));
         assert!(sink_supports_idempotent_writes("iceberg"));
         assert!(sink_supports_idempotent_writes("bigquery"));
         assert!(sink_supports_idempotent_writes("kafka"));
+        assert!(sink_supports_idempotent_writes("snowflake"));
+        assert!(sink_supports_idempotent_writes("redis"));
+        assert!(sink_supports_idempotent_writes("mongodb"));
         assert!(!sink_supports_idempotent_writes("jsonl"));
+    }
+
+    #[test]
+    fn typed_delivery_capabilities_derive_from_kind_tables() {
+        use faucet_core::{ReplayGuarantee, SinkGuarantee};
+        assert_eq!(
+            source_replay_guarantee("kafka"),
+            ReplayGuarantee::Deterministic
+        );
+        assert_eq!(
+            source_replay_guarantee("rest"),
+            ReplayGuarantee::NonDeterministic
+        );
+        assert_eq!(sink_guarantee("postgres"), SinkGuarantee::AtomicWatermark);
+        // Upsert-capable but not atomic: elasticsearch dedups by key only.
+        assert_eq!(sink_guarantee("elasticsearch"), SinkGuarantee::KeyedUpsert);
+        assert_eq!(sink_guarantee("jsonl"), SinkGuarantee::AtLeastOnce);
     }
 
     #[test]

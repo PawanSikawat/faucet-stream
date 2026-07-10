@@ -747,6 +747,10 @@ impl Sink for MssqlSink {
         ]
     }
 
+    fn dedups_by_key(&self) -> bool {
+        self.config.write.dedups_by_key()
+    }
+
     fn supports_schema_evolution(&self) -> bool {
         true
     }

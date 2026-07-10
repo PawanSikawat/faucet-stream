@@ -34,7 +34,7 @@ Legend: ✓ supported · ✗ not applicable.
 | WebSocket | `source-websocket` | ✓ | ✗ | ✗ | ✗ | live push feed; subscribe frames, reconnect, ping keepalive |
 | CSV | `source-csv` | ✓ | ✗ | ✗ | ✓ | CSV files as JSON; strict field count by default (`flexible: true` to tolerate ragged rows) |
 | Elasticsearch | `source-elasticsearch` | ✓ | ✗ | ✗ | ✗ | search/scroll API |
-| Apache Kafka | `source-kafka` | ✓ | ✓ | ✗ | ✗ | consumer; idle/max-messages termination, offset bookmarks |
+| Apache Kafka | `source-kafka` | ✓ | ✓ | **✓** | ✗ | consumer; idle/max-messages termination, offset bookmarks |
 | Apache Parquet | `source-parquet` | ✓ | ✗ | ✗ | ✗ | local/glob/S3, vectorized Arrow reader, projection |
 | BigQuery | `source-bigquery` | ✓ | ✗ | ✗ | ✗ | `jobs.query` + pageToken pagination |
 | Snowflake | `source-snowflake` | ✓ | ✗ | ✗ | ✗ | SQL REST API, server-side partitions |
@@ -43,8 +43,11 @@ Legend: ✓ supported · ✗ not applicable.
 ¹ **Streams** = yields records in bounded-memory batches rather than buffering the
 whole result. ² **Resumable** = persists a bookmark to a [state store](../cookbook/state.md)
 so re-runs continue where they left off (incremental replication / CDC / Kafka
-offsets). ³ **Effectively-once** = deterministically replays the same page sequence
-from a given bookmark; required for `delivery: exactly_once` — see
+offsets). ³ **Effectively-once** = the source emits a complete resume position on
+every page and replaying from a bookmark continues the record stream at exactly
+that position (immutable-log sources: CDC WAL/binlog/change streams, Kafka
+partition offsets); required for the atomic-watermark mechanism behind
+`delivery: exactly_once` — see
 [Effectively-once delivery](../cookbook/state.md#effectively-once-delivery).
 ⁴ gRPC streams natively in *server-streaming* mode; unary buffers the
 single response. ⁵ S3/GCS stream in JSONL and raw-text modes; JSON-array mode
@@ -74,14 +77,14 @@ file/append sinks (`jsonl`, `csv`, `stdout`) it's a no-op — they write per rec
 | BigQuery | `sink-bigquery` | ✓ | ✗ | **✓** | **✓** | `tabledata.insertAll` streaming; in-place `MERGE` for upsert + effectively-once |
 | PostgreSQL | `sink-postgres` | ✓ | ✗ | **✓** | **✓** | multi-row `INSERT` (JSONB or mapped cols) |
 | JSON Lines | `sink-jsonl` | no-op | ✓ | ✗ | ✗ | buffered file append |
-| Snowflake | `sink-snowflake` | ✓ | ✗ | ✗ | ✗ | SQL REST API |
+| Snowflake | `sink-snowflake` | ✓ | ✗ | ✗ | **✓** | SQL REST API; multi-statement `BEGIN;INSERT;MERGE;COMMIT` transaction for effectively-once |
 | MySQL | `sink-mysql` | ✓ | ✗ | **✓** | **✓** | multi-row `INSERT` |
 | Microsoft SQL Server | `sink-mssql` | ✓ | ✗ | **✓** | **✓** | multi-row `INSERT` (2100-param auto-split, per-row DLQ) |
 | SQLite | `sink-sqlite` | ✓ | ✗ | **✓** | **✓** | transaction-wrapped batch |
 | AWS S3 | `sink-s3` | ✓ | ✓ | ✗ | ✗ | JSONL objects, parallel uploads |
 | Google Cloud Storage | `sink-gcs` | ✓ | ✓ | ✗ | ✗ | JSONL objects |
-| MongoDB | `sink-mongodb` | ✓ | ✗ | **✓** | ✗ | `insert_many` |
-| Redis | `sink-redis` | ✓ | ✗ | ✗ | ✗ | streams, lists, key-value (pipelined) |
+| MongoDB | `sink-mongodb` | ✓ | ✗ | **✓** | **✓** | `insert_many`; multi-document transaction for effectively-once (replica set required) |
+| Redis | `sink-redis` | ✓ | ✗ | ✗ | **✓** | streams, lists, key-value (pipelined); `MULTI`/`EXEC` transaction for effectively-once |
 | CSV | `sink-csv` | no-op | ✓ | ✗ | ✗ | buffered file rows; column set frozen from first batch (`on_unknown_field: warn`/`error`) |
 | Elasticsearch | `sink-elasticsearch` | ✓ | ✗ | **✓** | ✗ | `_bulk` NDJSON (per-row DLQ) |
 | HTTP | `sink-http` | ✓ | ✗ | ✗ | ✗ | POST, concurrent under a semaphore |
@@ -96,7 +99,13 @@ level, so the file-level `compression` feature doesn't apply to either.
 `delivery: exactly_once`. The BigQuery sink does this via a multi-statement
 `MERGE` transaction (distinct from its default streaming `insertAll` path); the
 Kafka sink uses a transactional producer that writes each page's records plus a
-commit-token record into a compacted side-topic in one Kafka transaction. See
+commit-token record into a compacted side-topic in one Kafka transaction; the
+Snowflake sink runs one multi-statement `BEGIN;INSERT;MERGE;COMMIT` request; the
+Redis sink wraps the page plus a `_faucet_commit_token:<scope>` key in one
+`MULTI`/`EXEC`; the MongoDB sink commits the page plus a watermark document in
+one multi-document transaction (replica set required). Sinks configured with
+`write_mode: upsert` + `key` also reach effectively-once via keyed dedup, with
+any source. See
 [Effectively-once delivery](../cookbook/state.md#effectively-once-delivery).
 ⁸ **Upsert** = supports `write_mode: upsert` / `delete` (insert-or-update and
 delete by `key`) in addition to plain `append`. The SQL sinks require

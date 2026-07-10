@@ -74,23 +74,33 @@ children. The CDC source uses `postgres-cdc:<slot>`.
 ## Effectively-once delivery
 
 > **What the guarantee is — and is not.** faucet provides **effectively-once**
-> delivery: per-page monotonic commit tokens are committed *atomically with the
-> data* (SQL sinks, Iceberg, BigQuery, Kafka), so a resumed run re-delivers no
-> duplicates. This is **idempotent at-least-once** — the sink may see a page more
-> than once across a crash, but the atomic token + resume-and-skip logic
-> guarantees each page is *observably applied* exactly once. It is **not**
-> distributed-consensus exactly-once (there is no cross-system two-phase commit or
-> consensus protocol). The config key is spelled `delivery: exactly_once` for the
-> mode, but the honest description of the resulting guarantee is *effectively-once*.
+> delivery: each record is *observably applied* exactly once. This is
+> **idempotent at-least-once** — it is **not** distributed-consensus
+> exactly-once (there is no cross-system two-phase commit or consensus
+> protocol). The config key is spelled `delivery: exactly_once` for the mode,
+> but the honest description of the resulting guarantee is *effectively-once*.
 >
-> **Failure-mode boundary.** The atomicity is per-sink-transaction: the records
-> and the commit token commit together or not at all. If the process crashes
-> *after* that sink transaction commits but *before* the state store persists the
-> bookmark, the next run re-issues the same page, reads back
-> `last_committed_token`, sees the page is already committed, and **skips the
-> write** — no duplicate. The one thing faucet cannot make atomic is a sink whose
-> own write and token-commit are not a single transaction; that is exactly why the
-> supported-sink list below is restricted to transactional targets.
+> Two **mechanisms** can provide it, and `faucet validate` reports which one a
+> pipeline actually gets (`delivery=effectively-once (atomic watermark)` /
+> `(keyed upsert)` on each row line):
+>
+> 1. **Atomic watermark** — the sink commits each page's records *and* a
+>    monotonic commit token in one transaction (SQL sinks, Iceberg, BigQuery,
+>    Kafka, Snowflake, Redis, MongoDB), paired with a source that resumes
+>    positionally from a per-page bookmark (CDC, Kafka).
+> 2. **Keyed upsert** — the sink is configured with `write_mode: upsert` (or
+>    `delete`) and a `key`, so re-applying a record converges on the same keyed
+>    row instead of duplicating. Works with **any** source.
+>
+> **Failure-mode boundary (atomic watermark).** The atomicity is
+> per-sink-transaction: the records and the commit token commit together or not
+> at all. The committed token also **embeds the page's resume bookmark**, so if
+> the process crashes *after* the sink transaction commits but *before* the
+> state store persists, the next run recovers the exact stream position from
+> the sink's watermark and **re-anchors the source there** — nothing is
+> re-written and nothing is skipped, even for sources (like Kafka) whose page
+> *boundaries* differ on replay. Pre-existing watermarks written before
+> bookmarks were embedded fall back to count-based skip-on-resume.
 
 ### The at-least-once crash window
 
@@ -126,11 +136,23 @@ records and the token atomically inside its own transaction:
   `transactional.id` is auto-derived from the pipeline scope. Downstream
   consumers should read the destination with `isolation.level=read_committed`.
 
-On the *next run*, before writing each page, the pipeline reads the sink's
-`last_committed_token` for the current scope. If the stored token is greater
-than or equal to the page's own token, the sink already durably committed that
-page — the pipeline **skips the write** and advances the state store. Zero
-duplicates result from a crash at any point in the sequence.
+- **Snowflake sink** — one multi-statement SQL API request
+  (`BEGIN; INSERT …; MERGE INTO _faucet_commit_token …; COMMIT;`) commits the
+  page and the watermark in a single Snowflake transaction.
+- **Redis sink** — one `MULTI`/`EXEC` transaction appends the page's commands
+  plus a `SET _faucet_commit_token:<scope> <token>`.
+- **MongoDB sink** — one multi-document transaction (replica set required)
+  commits the page plus a `{_id: scope, token}` watermark document in the
+  `_faucet_commit_token` collection.
+
+On the *next run*, the pipeline reads the sink's `last_committed_token` for the
+current scope. The token **embeds the committed page's bookmark**: when the
+sink is ahead of the state store (the crash window), the pipeline re-anchors
+the source at that exact position and continues — no page is re-written and no
+record is skipped. For tokens written before bookmarks were embedded, the
+count-based path applies: a page whose token is ≤ the stored token is already
+durably committed, so the pipeline **skips the write** and advances the state
+store. Zero duplicates result from a crash at any point in the sequence.
 
 ### Supported sources and sinks
 
@@ -138,8 +160,15 @@ Only certain connectors are allowed in an effectively-once (`delivery: exactly_o
 
 | Role | Allowed connectors | Why others are excluded |
 |------|--------------------|------------------------|
-| Source | `postgres-cdc`, `mysql-cdc`, `mongodb-cdc` | The source must deterministically replay the same pages from a given bookmark. Non-CDC / batch sources (REST, SQL query, etc.) do not replay deterministically — a different page on resume would cause the pipeline to silently skip records it never wrote. |
-| Sink | `sqlite`, `postgres`, `mysql`, `mssql`, `iceberg`, `bigquery`, `kafka` | The sink must be able to commit data and a watermark token atomically in a single transaction or snapshot. Sinks without transaction support cannot provide this guarantee. The Kafka sink uses a transactional producer that commits records plus a commit-token record into a compacted side-topic in one Kafka transaction. |
+| Source | `postgres-cdc`, `mysql-cdc`, `mongodb-cdc`, `kafka` | The source must emit a complete resume position (bookmark) on every page, over an immutable log, so resuming from a bookmark continues the record stream at exactly that position. Query-based sources (REST, SQL query, etc.) can return different data on replay — the pipeline would silently skip records it never wrote. |
+| Sink | `sqlite`, `postgres`, `mysql`, `mssql`, `iceberg`, `bigquery`, `kafka`, `snowflake`, `redis`, `mongodb` | The sink must be able to commit data and a watermark token atomically in a single transaction or snapshot. Sinks without transaction support cannot provide this guarantee (they can still reach effectively-once via keyed upsert, below). The MongoDB sink requires a replica set (or sharded cluster) — multi-document transactions are unavailable on a standalone server. |
+
+**Keyed upsert relaxes the source restriction entirely**: any source feeding an
+upsert-capable sink (`postgres`, `sqlite`, `mysql`, `mssql`, `mongodb`,
+`elasticsearch`, `bigquery`) configured with `write_mode: upsert` + `key` is
+accepted under `delivery: exactly_once` and reported as
+`effectively-once (keyed upsert)`. There is no watermark in this mode — the
+idempotence comes from the sink converging on the keyed row.
 
 A **durable** state store is required: `delivery: exactly_once` rejects
 `state: { type: memory }` at config-load. The commit-token watermark must survive
@@ -151,10 +180,13 @@ A DLQ (`dlq:` block) is incompatible with `exactly_once` in this version.
 
 ### Hard gate at config-load time
 
-The four requirements (CDC source, idempotent sink, a **durable** state store —
-not `memory` — and no DLQ) are validated when the config is loaded — `faucet validate` will report a clear
-`config error` naming the offending row before any run starts. There is no
-runtime fallback.
+`delivery: exactly_once` means "require at least effectively-once": the config
+is accepted when either mechanism is achievable and rejected otherwise. The
+atomic-watermark requirements (positional-replay source, idempotent sink, a
+**durable** state store — not `memory` — and no DLQ) are validated when the
+config is loaded — `faucet validate` reports a clear `config error` naming the
+limiting side (and suggests the keyed-upsert alternative when the sink supports
+it) before any run starts. There is no runtime fallback.
 
 ### Example: PostgreSQL CDC → PostgreSQL sink
 

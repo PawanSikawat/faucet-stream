@@ -41,6 +41,14 @@ pub struct RunStreamOptions {
     /// Resume sequence read from the (unwrapped) exactly-once state value.
     /// Ignored unless `delivery == ExactlyOnce`. Defaults to 0.
     pub start_seq: u64,
+    /// The source's replay capability, when the caller knows it.
+    /// `Some(NonDeterministic)` steers an `ExactlyOnce` run away from the
+    /// atomic-watermark skip path (whose correctness depends on positional
+    /// replay) and onto the keyed-upsert mechanism when the sink is configured
+    /// for it. `None` (default) trusts the caller — today's behaviour for
+    /// library users driving `run_stream` directly. `Pipeline::run` always
+    /// sets it from `Source::replay_guarantee()`.
+    pub replay: Option<crate::idempotency::ReplayGuarantee>,
     /// Optional resilience policy (retry/backoff/circuit-breaker/poison).
     pub resilience: Option<crate::resilience::ResiliencePolicy>,
     /// Compiled schema-drift policy (issue #194). `None` → no drift handling.
@@ -129,6 +137,12 @@ impl RunStreamOptions {
 
     /// Set the resume sequence (exactly-once). Normally derived by
     /// `Pipeline::run` from the unwrapped state value.
+    /// Declare the source's replay capability (see the `replay` field).
+    pub fn with_replay_guarantee(mut self, replay: crate::idempotency::ReplayGuarantee) -> Self {
+        self.replay = Some(replay);
+        self
+    }
+
     pub fn with_start_seq(mut self, seq: u64) -> Self {
         self.start_seq = seq;
         self

@@ -1059,8 +1059,16 @@ async fn run_one_invocation(
         pipeline
     };
     // Delivery guarantee (exactly-once resume/skip when the node opted in; the
-    // expand gate already verified source/sink/state support).
-    let pipeline = pipeline.with_delivery(node.delivery);
+    // expand gate already verified source/sink/state support). Preview modes
+    // (`--dry-run`, `--limit`) swap in counting/truncating sinks that cannot
+    // uphold an atomic watermark — and a token committed for a truncated page
+    // would corrupt it — so they always run at-least-once.
+    let effective_delivery = if opts.dry_run || opts.limit.is_some() {
+        faucet_core::idempotency::DeliveryMode::AtLeastOnce
+    } else {
+        node.delivery
+    };
+    let pipeline = pipeline.with_delivery(effective_delivery);
     // ── Lineage: START + heartbeat + terminal ────────────────────────────────
     #[cfg(feature = "lineage")]
     let lineage_ctx = match (&lineage, &lineage_cfg) {
@@ -1517,6 +1525,24 @@ impl Source for StateKeyOverride {
     ) -> Result<(Vec<Value>, Option<Value>), FaucetError> {
         self.inner.fetch_with_context_incremental(ctx).await
     }
+    // Forward `stream_pages` so the wrapped connector's *native* page stream
+    // survives the wrap. Without this the trait's buffering default kicks in
+    // for every stateful run — losing per-page bookmarks (CDC per-transaction
+    // durability, exactly-once per-page tokens) and the O(batch_size) memory
+    // bound.
+    fn stream_pages<'a>(
+        &'a self,
+        ctx: &'a HashMap<String, Value>,
+        batch_size: usize,
+    ) -> std::pin::Pin<
+        Box<
+            dyn faucet_core::Stream<Item = Result<faucet_core::StreamPage, FaucetError>>
+                + Send
+                + 'a,
+        >,
+    > {
+        self.inner.stream_pages(ctx, batch_size)
+    }
     fn connector_name(&self) -> &'static str {
         self.inner.connector_name()
     }
@@ -1528,6 +1554,15 @@ impl Source for StateKeyOverride {
     }
     async fn apply_start_bookmark(&self, bookmark: Value) -> Result<(), FaucetError> {
         self.inner.apply_start_bookmark(bookmark).await
+    }
+    fn supports_exactly_once(&self) -> bool {
+        self.inner.supports_exactly_once()
+    }
+    fn replay_guarantee(&self) -> faucet_core::ReplayGuarantee {
+        self.inner.replay_guarantee()
+    }
+    async fn capture_resume_position(&self) -> Result<Option<Value>, FaucetError> {
+        self.inner.capture_resume_position().await
     }
 }
 
@@ -1578,6 +1613,56 @@ impl Sink for CapturingSink {
     }
     async fn flush(&self) -> Result<(), FaucetError> {
         self.inner.flush().await
+    }
+    // Capability + exactly-once passthroughs, so a parent row that fans out to
+    // children (which is what this wrapper serves) keeps the inner sink's
+    // delivery semantics instead of being masked down to the trait defaults.
+    fn supports_idempotent_writes(&self) -> bool {
+        self.inner.supports_idempotent_writes()
+    }
+    fn sink_guarantee(&self) -> faucet_core::SinkGuarantee {
+        self.inner.sink_guarantee()
+    }
+    fn dedups_by_key(&self) -> bool {
+        self.inner.dedups_by_key()
+    }
+    fn supported_write_modes(&self) -> &'static [faucet_core::WriteMode] {
+        self.inner.supported_write_modes()
+    }
+    async fn write_batch_idempotent(
+        &self,
+        records: &[Value],
+        scope: &str,
+        token: &str,
+    ) -> Result<usize, FaucetError> {
+        let written = self
+            .inner
+            .write_batch_idempotent(records, scope, token)
+            .await?;
+        let n = written.min(records.len());
+        let mut buf = self.captured.lock().await;
+        buf.extend(
+            records
+                .iter()
+                .take(n)
+                .map(|r| project_record(r, &self.projection)),
+        );
+        Ok(written)
+    }
+    async fn last_committed_token(&self, scope: &str) -> Result<Option<String>, FaucetError> {
+        self.inner.last_committed_token(scope).await
+    }
+    async fn current_schema(&self) -> Result<Option<Value>, FaucetError> {
+        self.inner.current_schema().await
+    }
+    fn supports_schema_evolution(&self) -> bool {
+        self.inner.supports_schema_evolution()
+    }
+    async fn evolve_schema(
+        &self,
+        evolution: &faucet_core::SchemaEvolution,
+    ) -> Result<(), FaucetError> {
+        self.inner.evolve_schema(evolution).await
     }
 }
 
@@ -2697,6 +2782,7 @@ matrix:
                 state: None,
                 dlq: None,
                 delivery: faucet_core::DeliveryMode::AtLeastOnce,
+                delivery_guarantee: faucet_core::DeliveryGuarantee::AtLeastOnce,
                 #[cfg(feature = "quality")]
                 quality: None,
                 #[cfg(feature = "contract")]
@@ -2767,6 +2853,7 @@ matrix:
             state: None,
             dlq: None,
             delivery: faucet_core::DeliveryMode::AtLeastOnce,
+            delivery_guarantee: faucet_core::DeliveryGuarantee::AtLeastOnce,
             #[cfg(feature = "quality")]
             quality: None,
             #[cfg(feature = "contract")]
@@ -3025,6 +3112,7 @@ matrix:
             state,
             dlq: None,
             delivery: faucet_core::DeliveryMode::AtLeastOnce,
+            delivery_guarantee: faucet_core::DeliveryGuarantee::AtLeastOnce,
             #[cfg(feature = "quality")]
             quality: None,
             #[cfg(feature = "contract")]
@@ -3067,6 +3155,146 @@ matrix:
         ov.apply_start_bookmark(json!({"any": "bookmark"}))
             .await
             .unwrap();
+        // Capability passthroughs (csv defaults).
+        assert!(!ov.supports_exactly_once());
+        assert_eq!(
+            ov.replay_guarantee(),
+            faucet_core::ReplayGuarantee::NonDeterministic
+        );
+        assert_eq!(ov.capture_resume_position().await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn state_key_override_forwards_native_stream_pages() {
+        // The wrap must preserve the inner source's NATIVE page stream —
+        // per-page bookmarks included. Without the `stream_pages` forward, the
+        // trait's buffering default kicks in and collapses everything into
+        // final-page-bookmark-only pages (losing CDC per-transaction
+        // durability and exactly-once per-page tokens).
+        struct PerPageBookmarkSource;
+        #[async_trait]
+        impl Source for PerPageBookmarkSource {
+            async fn fetch_with_context(
+                &self,
+                _ctx: &HashMap<String, Value>,
+            ) -> Result<Vec<Value>, FaucetError> {
+                Ok(vec![json!({"id": 1}), json!({"id": 2})])
+            }
+            fn stream_pages<'a>(
+                &'a self,
+                _ctx: &'a HashMap<String, Value>,
+                _batch_size: usize,
+            ) -> std::pin::Pin<
+                Box<
+                    dyn faucet_core::Stream<Item = Result<faucet_core::StreamPage, FaucetError>>
+                        + Send
+                        + 'a,
+                >,
+            > {
+                Box::pin(faucet_core::async_stream::try_stream! {
+                    yield faucet_core::StreamPage {
+                        records: vec![json!({"id": 1})],
+                        bookmark: Some(json!("bm-1")),
+                    };
+                    yield faucet_core::StreamPage {
+                        records: vec![json!({"id": 2})],
+                        bookmark: Some(json!("bm-2")),
+                    };
+                })
+            }
+            fn state_key(&self) -> Option<String> {
+                Some("native".into())
+            }
+        }
+
+        use futures::StreamExt;
+        let ov = StateKeyOverride {
+            inner: Box::new(PerPageBookmarkSource),
+            key: "override".into(),
+        };
+        let ctx = HashMap::new();
+        let pages: Vec<_> = ov
+            .stream_pages(&ctx, 1000)
+            .collect::<Vec<_>>()
+            .await
+            .into_iter()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(pages.len(), 2, "native page boundaries survive the wrap");
+        assert_eq!(pages[0].bookmark, Some(json!("bm-1")));
+        assert_eq!(pages[1].bookmark, Some(json!("bm-2")));
+    }
+
+    #[tokio::test]
+    async fn capturing_sink_forwards_capabilities_and_captures_idempotent_writes() {
+        struct IdemSink;
+        #[async_trait]
+        impl Sink for IdemSink {
+            async fn write_batch(&self, records: &[Value]) -> Result<usize, FaucetError> {
+                Ok(records.len())
+            }
+            fn connector_name(&self) -> &'static str {
+                "idem"
+            }
+            fn supports_idempotent_writes(&self) -> bool {
+                true
+            }
+            fn dedups_by_key(&self) -> bool {
+                true
+            }
+            fn supported_write_modes(&self) -> &'static [faucet_core::WriteMode] {
+                &[
+                    faucet_core::WriteMode::Append,
+                    faucet_core::WriteMode::Upsert,
+                ]
+            }
+            async fn write_batch_idempotent(
+                &self,
+                records: &[Value],
+                _scope: &str,
+                _token: &str,
+            ) -> Result<usize, FaucetError> {
+                Ok(records.len())
+            }
+            async fn last_committed_token(
+                &self,
+                _scope: &str,
+            ) -> Result<Option<String>, FaucetError> {
+                Ok(Some("tok".into()))
+            }
+        }
+
+        let captured = Arc::new(Mutex::new(Vec::new()));
+        let sink = CapturingSink::wrap(
+            Box::new(IdemSink),
+            Arc::clone(&captured),
+            Arc::new(Projection::Full),
+        );
+        // Capability passthroughs: a parent row feeding children keeps the
+        // inner sink's delivery semantics.
+        assert!(sink.supports_idempotent_writes());
+        assert!(sink.dedups_by_key());
+        assert_eq!(
+            sink.sink_guarantee(),
+            faucet_core::SinkGuarantee::AtomicWatermark
+        );
+        assert!(
+            sink.supported_write_modes()
+                .contains(&faucet_core::WriteMode::Upsert)
+        );
+        assert_eq!(
+            sink.last_committed_token("k").await.unwrap(),
+            Some("tok".into())
+        );
+        assert_eq!(sink.current_schema().await.unwrap(), None);
+        assert!(!sink.supports_schema_evolution());
+        // Idempotent writes are captured for child fan-out like plain writes.
+        let n = sink
+            .write_batch_idempotent(&[json!({"id": 7})], "k", "t")
+            .await
+            .unwrap();
+        assert_eq!(n, 1);
+        assert_eq!(*captured.lock().await, vec![json!({"id": 7})]);
     }
 
     #[tokio::test]
@@ -3098,6 +3326,7 @@ matrix:
             state: None,
             dlq: None,
             delivery: faucet_core::DeliveryMode::AtLeastOnce,
+            delivery_guarantee: faucet_core::DeliveryGuarantee::AtLeastOnce,
             #[cfg(feature = "quality")]
             quality: None,
             #[cfg(feature = "contract")]

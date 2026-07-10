@@ -174,6 +174,22 @@ pub trait Source: Send + Sync {
         false
     }
 
+    /// The typed replay capability this source advertises — see
+    /// [`ReplayGuarantee`](crate::ReplayGuarantee).
+    ///
+    /// The default derives from [`supports_exactly_once`](Self::supports_exactly_once)
+    /// (the boolean stays the back-compat primitive: existing connectors that
+    /// override only the boolean automatically advertise `Deterministic`
+    /// here). Override this directly only to *diverge* from the boolean —
+    /// there is currently no reason to.
+    fn replay_guarantee(&self) -> crate::idempotency::ReplayGuarantee {
+        if self.supports_exactly_once() {
+            crate::idempotency::ReplayGuarantee::Deterministic
+        } else {
+            crate::idempotency::ReplayGuarantee::NonDeterministic
+        }
+    }
+
     /// Whether this source can split its work into independent shards for
     /// clustered (Mode B) execution. Default: `false` (single whole-dataset
     /// shard). Sources with a natural partition (object-store prefixes, table
@@ -311,6 +327,42 @@ pub trait Sink: Send + Sync {
     /// see [`write_batch_idempotent`](Self::write_batch_idempotent). The pipeline
     /// rejects `DeliveryMode::ExactlyOnce` against a sink that returns `false`.
     fn supports_idempotent_writes(&self) -> bool {
+        false
+    }
+
+    /// The strongest delivery guarantee this sink can uphold — see
+    /// [`SinkGuarantee`](crate::SinkGuarantee).
+    ///
+    /// The default derives from the two back-compat primitives:
+    /// [`supports_idempotent_writes`](Self::supports_idempotent_writes) →
+    /// `AtomicWatermark`, else an upsert-capable
+    /// [`supported_write_modes`](Self::supported_write_modes) → `KeyedUpsert`,
+    /// else `AtLeastOnce`. Existing connectors that override only the
+    /// primitives automatically advertise the right capability here.
+    fn sink_guarantee(&self) -> crate::idempotency::SinkGuarantee {
+        if self.supports_idempotent_writes() {
+            crate::idempotency::SinkGuarantee::AtomicWatermark
+        } else if self
+            .supported_write_modes()
+            .contains(&crate::write_mode::WriteMode::Upsert)
+        {
+            crate::idempotency::SinkGuarantee::KeyedUpsert
+        } else {
+            crate::idempotency::SinkGuarantee::AtLeastOnce
+        }
+    }
+
+    /// Whether this sink instance is **configured** to dedup by key — i.e.
+    /// `write_mode: upsert` (or `delete`) with a non-empty `key`, so
+    /// re-applying a record with the same key converges instead of
+    /// duplicating. Default: `false`.
+    ///
+    /// Distinct from [`sink_guarantee`](Self::sink_guarantee) (capability):
+    /// this reflects the *live config*. Sinks that flatten a
+    /// [`WriteSpec`](crate::write_mode::WriteSpec) into their config override
+    /// it as `self.config.write.dedups_by_key()`. The pipeline consults it to
+    /// derive the keyed-upsert effectively-once mechanism at run time.
+    fn dedups_by_key(&self) -> bool {
         false
     }
 

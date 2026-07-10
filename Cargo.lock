@@ -3593,6 +3593,7 @@ version = "1.1.2"
 dependencies = [
  "async-trait",
  "faucet-core",
+ "futures",
  "redis",
  "schemars 1.2.1",
  "serde",

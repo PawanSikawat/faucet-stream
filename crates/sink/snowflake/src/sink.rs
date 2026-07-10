@@ -1,6 +1,7 @@
 //! Snowflake SQL REST API sink.
 
 use crate::config::SnowflakeSinkConfig;
+use crate::idempotent;
 use async_trait::async_trait;
 use faucet_common_snowflake::{
     SnowflakeAuth, authorization_header, credential_to_auth, snowflake_token_type,
@@ -10,6 +11,7 @@ use faucet_core::{AuthSpec, FaucetError, SharedAuthProvider};
 use reqwest::Client;
 use serde::Deserialize;
 use serde_json::{Value, json};
+use tokio::sync::OnceCell;
 
 /// A sink that writes JSON records to a Snowflake table using the
 /// SQL REST API.
@@ -24,6 +26,12 @@ pub struct SnowflakeSink {
     /// auth; the provider yields a `Bearer` or `Token` credential mapped onto
     /// [`SnowflakeAuth::OAuth`]. Set via [`Self::with_auth_provider`].
     auth_provider: Option<SharedAuthProvider>,
+    /// One-shot guard so the exactly-once watermark table's
+    /// `CREATE TABLE IF NOT EXISTS` DDL runs at most once per sink instance
+    /// (Snowflake DDL auto-commits, so it must be its own request, outside
+    /// the data transaction). A failed attempt leaves the cell empty and is
+    /// retried on the next call.
+    commit_table_ready: OnceCell<()>,
 }
 
 #[derive(Deserialize)]
@@ -35,6 +43,11 @@ struct SnowflakeResponse {
     /// opaque handle used to poll the statement to completion.
     #[serde(rename = "statementHandle", default)]
     statement_handle: Option<String>,
+    /// Result rows for a completed query (`[["cell", …], …]`); the SQL REST
+    /// API renders every cell as a JSON string (or `null`). Only consumed by
+    /// [`SnowflakeSink::last_committed_token`].
+    #[serde(default)]
+    data: Option<Vec<Vec<Value>>>,
 }
 
 /// Map a parsed statement response onto a success/error result. Code
@@ -65,6 +78,7 @@ impl SnowflakeSink {
             client: Client::new(),
             endpoint: None,
             auth_provider: None,
+            commit_table_ready: OnceCell::new(),
         })
     }
 
@@ -131,8 +145,28 @@ impl SnowflakeSink {
     }
 
     /// Execute a SQL statement via the REST API, optionally with positional
-    /// bindings (`{"1": {"type": "TEXT", "value": ...}}`).
+    /// bindings (`{"1": {"type": "TEXT", "value": ...}}`). Convenience
+    /// wrapper over [`Self::execute_statement`] for callers that don't need
+    /// the parsed response.
     async fn execute_sql(&self, sql: &str, bindings: Option<Value>) -> Result<(), FaucetError> {
+        self.execute_statement(sql, bindings, None)
+            .await
+            .map(|_| ())
+    }
+
+    /// Execute a SQL statement via the REST API and return the parsed final
+    /// response (after polling to completion if Snowflake answered 202).
+    ///
+    /// `bindings` are positional (`{"1": {"type": "TEXT", "value": ...}}`);
+    /// `parameters` is the optional session-parameters object merged into the
+    /// request body (used by the exactly-once path to set
+    /// `MULTI_STATEMENT_COUNT` for a multi-statement transaction).
+    async fn execute_statement(
+        &self,
+        sql: &str,
+        bindings: Option<Value>,
+        parameters: Option<Value>,
+    ) -> Result<SnowflakeResponse, FaucetError> {
         let url = self.api_url();
         let (auth, token_type) = self.auth_header().await?;
 
@@ -145,6 +179,9 @@ impl SnowflakeSink {
         });
         if let Some(bindings) = bindings {
             body["bindings"] = bindings;
+        }
+        if let Some(parameters) = parameters {
+            body["parameters"] = parameters;
         }
 
         let resp = self
@@ -187,12 +224,15 @@ impl SnowflakeSink {
             return self.poll_until_complete(&handle).await;
         }
 
-        check_statement_code(&sf_resp)
+        check_statement_code(&sf_resp)?;
+        Ok(sf_resp)
     }
 
     /// Poll `GET /api/v2/statements/{handle}` until the statement finishes
     /// executing (HTTP 200 + code `090001`), bounded by `poll_timeout`.
-    async fn poll_until_complete(&self, handle: &str) -> Result<(), FaucetError> {
+    /// Returns the final parsed response (which carries the result `data`
+    /// for a completed query).
+    async fn poll_until_complete(&self, handle: &str) -> Result<SnowflakeResponse, FaucetError> {
         let url = format!("{}/{}", self.api_url(), handle);
         let poll_timeout = self.config.poll_timeout;
         let started = std::time::Instant::now();
@@ -234,8 +274,30 @@ impl SnowflakeSink {
             let sf_resp: SnowflakeResponse = resp.json().await.map_err(|e| {
                 FaucetError::Sink(format!("failed to parse Snowflake poll response: {e}"))
             })?;
-            return check_statement_code(&sf_resp);
+            check_statement_code(&sf_resp)?;
+            return Ok(sf_resp);
         }
+    }
+
+    /// Create the exactly-once commit-token watermark table if it does not
+    /// exist — at most once per sink instance.
+    ///
+    /// Snowflake DDL auto-commits, so the `CREATE TABLE IF NOT EXISTS` must
+    /// be its own request, submitted before (never inside) the data
+    /// transaction. On failure the guard cell stays empty, so the next call
+    /// retries the DDL instead of proceeding against a possibly-missing
+    /// table.
+    async fn ensure_commit_table(&self) -> Result<(), FaucetError> {
+        self.commit_table_ready
+            .get_or_try_init(|| async {
+                let sql = idempotent::build_create_commit_table(
+                    &self.config.database,
+                    &self.config.schema,
+                );
+                self.execute_sql(&sql, None).await
+            })
+            .await
+            .map(|_| ())
     }
 
     /// Compute the column set for an INSERT chunk as the **union of keys across
@@ -415,6 +477,105 @@ impl faucet_core::Sink for SnowflakeSink {
             "Snowflake write complete"
         );
         Ok(total)
+    }
+
+    fn supports_idempotent_writes(&self) -> bool {
+        true
+    }
+
+    /// Atomically write `records` and record `token` for `scope` in one
+    /// Snowflake multi-statement transaction: the sink's regular
+    /// parameterized page INSERT plus a watermark `MERGE` into
+    /// `_faucet_commit_token`, wrapped in `BEGIN`/`COMMIT`. Either both the
+    /// rows and the token commit, or neither does — so a crash/resume skips
+    /// the already-committed page (zero duplicates) and a failed page
+    /// replays cleanly.
+    ///
+    /// The entire page is one atomic unit — **no `batch_size` re-chunking on
+    /// this path** (core issues exactly one token per page; splitting the
+    /// page across transactions would break the atomicity of rows + token).
+    /// An empty page still advances the watermark via a commit-only
+    /// `BEGIN; MERGE; COMMIT;` transaction.
+    async fn write_batch_idempotent(
+        &self,
+        records: &[Value],
+        scope: &str,
+        token: &str,
+    ) -> Result<usize, FaucetError> {
+        self.ensure_commit_table().await?;
+
+        let (sql, bindings, count) = if records.is_empty() {
+            let sql =
+                idempotent::build_commit_only_statement(&self.config.database, &self.config.schema);
+            let bindings = json!({
+                "1": { "type": "TEXT", "value": scope },
+                "2": { "type": "TEXT", "value": token },
+            });
+            (sql, bindings, idempotent::COMMIT_ONLY_STATEMENT_COUNT)
+        } else {
+            let (insert_sql, payload) = self.build_insert(records)?;
+            let sql = idempotent::build_transaction_statement(
+                &insert_sql,
+                &self.config.database,
+                &self.config.schema,
+            );
+            let bindings = json!({
+                "1": { "type": "TEXT", "value": payload },
+                "2": { "type": "TEXT", "value": scope },
+                "3": { "type": "TEXT", "value": token },
+            });
+            (sql, bindings, idempotent::TRANSACTION_STATEMENT_COUNT)
+        };
+
+        let parameters = json!({ "MULTI_STATEMENT_COUNT": count.to_string() });
+        self.execute_statement(&sql, Some(bindings), Some(parameters))
+            .await?;
+
+        tracing::info!(
+            table = %format!(
+                "{}.{}.{}",
+                self.config.database, self.config.schema, self.config.table
+            ),
+            rows = records.len(),
+            token = %token,
+            "Snowflake exactly-once page committed"
+        );
+        Ok(records.len())
+    }
+
+    /// Read the last durably-committed token for `scope` from the watermark
+    /// table, so the pipeline can skip already-committed pages on resume.
+    ///
+    /// The token string is treated as **opaque** — it may carry a `#` + JSON
+    /// bookmark suffix appended by core; this sink never parses or validates
+    /// its format.
+    async fn last_committed_token(&self, scope: &str) -> Result<Option<String>, FaucetError> {
+        self.ensure_commit_table().await?;
+
+        let sql = idempotent::build_select_token(&self.config.database, &self.config.schema);
+        let bindings = json!({ "1": { "type": "TEXT", "value": scope } });
+        let resp = self.execute_statement(&sql, Some(bindings), None).await?;
+
+        // A completed SELECT always carries a `data` array (empty when the
+        // scope has no watermark row yet). If it is somehow absent we cannot
+        // tell "no committed token" from "token present but unreadable" — and
+        // a wrong `None` would replay an already-committed page, producing
+        // duplicates. Fail safe instead.
+        let rows = resp.data.ok_or_else(|| {
+            FaucetError::Sink(
+                "Snowflake watermark read returned no result data; cannot trust the token result"
+                    .into(),
+            )
+        })?;
+        match rows.first() {
+            None => Ok(None),
+            Some(row) => match row.first() {
+                Some(Value::String(token)) => Ok(Some(token.clone())),
+                other => Err(FaucetError::Sink(format!(
+                    "Snowflake watermark row has an unexpected token cell: {other:?}"
+                ))),
+            },
+        }
     }
 }
 
@@ -625,6 +786,7 @@ mod tests {
             message: Some("Object does not exist".into()),
             code: Some("002003".into()),
             statement_handle: None,
+            data: None,
         };
         match check_statement_code(&resp) {
             Err(FaucetError::Sink(msg)) => {
@@ -641,12 +803,14 @@ mod tests {
             message: None,
             code: Some("090001".into()),
             statement_handle: None,
+            data: None,
         };
         assert!(check_statement_code(&ok).is_ok());
         let no_code = SnowflakeResponse {
             message: None,
             code: None,
             statement_handle: None,
+            data: None,
         };
         assert!(check_statement_code(&no_code).is_ok());
     }

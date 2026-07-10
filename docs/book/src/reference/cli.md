@@ -57,8 +57,15 @@ confirmation line per reference (never the value):
 ```
 secret: vault:secret/data/faucet/api#token → resolved
 ok: 'my-pipeline' rows=1 (roots=1, children=0) execution=(defaults)
-  - default [root] source=rest sink=jsonl
+  - default [root] source=rest sink=jsonl delivery=at-least-once
 ```
+
+Each row line ends with the **derived end-to-end delivery guarantee** for that
+row's source × sink × config — `at-least-once`,
+`effectively-once (atomic watermark)`, or `effectively-once (keyed upsert)` —
+computed regardless of the requested `delivery:` mode, so an upsert-keyed row
+is reported as effectively-once even without `delivery: exactly_once`. See
+[`delivery`](./config.md#delivery).
 
 Pass `--no-secrets` to validate grammar and structure only, skipping all secret
 fetches. This is useful in CI environments that lack credentials, or in local

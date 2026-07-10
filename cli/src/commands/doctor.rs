@@ -56,6 +56,11 @@ impl ProbeOut {
 pub struct InvocationOut {
     pub id: String,
     pub probes: Vec<ProbeOut>,
+    /// The derived end-to-end delivery guarantee for this invocation (#292),
+    /// e.g. `"effectively-once (atomic watermark)"`. `None` for synthetic
+    /// entries (lineage transport).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub delivery: Option<String>,
     // Connector kinds for the human header; not part of the JSON contract.
     #[serde(skip)]
     pub source_kind: String,
@@ -198,6 +203,7 @@ pub async fn probe_invocation(
     InvocationOut {
         id,
         probes,
+        delivery: None,
         source_kind: source.kind,
         sink_kind: sink.kind,
     }
@@ -218,6 +224,7 @@ pub async fn probe_lineage(
     };
     Some(InvocationOut {
         id: "lineage".to_string(),
+        delivery: None,
         probes: vec![ProbeOut::from_probe(
             "lineage",
             "openlineage".to_string(),
@@ -256,9 +263,12 @@ pub async fn probe_roots(
                 crate::executor::build_state_key(pipeline_name, &node.id, None),
             )
         });
+        let guarantee = node.delivery_guarantee.to_string();
         handles.push(tokio::spawn(async move {
             let _permit = sem.acquire_owned().await.expect("semaphore not closed");
-            probe_invocation(id, source, sink, state, &auth, &ctx, sla).await
+            let mut inv = probe_invocation(id, source, sink, state, &auth, &ctx, sla).await;
+            inv.delivery = Some(guarantee);
+            inv
         }));
     }
     let mut out = Vec::with_capacity(handles.len());
@@ -374,8 +384,14 @@ fn render_human(
     for inv in invs {
         println!();
         println!(
-            "▸ Invocation {}  (source={}, sink={})",
-            inv.id, inv.source_kind, inv.sink_kind
+            "▸ Invocation {}  (source={}, sink={}{})",
+            inv.id,
+            inv.source_kind,
+            inv.sink_kind,
+            inv.delivery
+                .as_deref()
+                .map(|d| format!(", delivery={d}"))
+                .unwrap_or_default()
         );
         for p in &inv.probes {
             let (sym, extra) = match &p.status {
@@ -420,6 +436,7 @@ mod tests {
         InvocationOut {
             id: "default".into(),
             probes,
+            delivery: None,
             source_kind: "rest".into(),
             sink_kind: "stdout".into(),
         }

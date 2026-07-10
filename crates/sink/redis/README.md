@@ -7,7 +7,7 @@
 
 **Redis** sink for the [faucet-stream](https://github.com/PawanSikawat/faucet-stream) ecosystem. Writes JSON records into Redis lists (`RPUSH`), streams (`XADD`), or individual keys (`SET`), batching each page of records into a single pipelined round-trip.
 
-Reach for it when you want to land pipeline output in Redis as a work queue, an event stream for consumers, or a cache/lookup table — with one declarative config and no glue code. Redis pipelining keeps the write path fast: every chunk of records ships as one network round-trip over a connection that's opened once and reused.
+Reach for it when you want to land pipeline output in Redis as a work queue, an event stream for consumers, or a cache/lookup table — with one declarative config and no glue code. Redis pipelining keeps the write path fast: every chunk of records ships as one network round-trip over a connection that's opened once and reused. With `delivery: exactly_once` it commits each page's records and a watermark in one atomic `MULTI`/`EXEC` transaction.
 
 ## Feature highlights
 
@@ -16,6 +16,7 @@ Reach for it when you want to land pipeline output in Redis as a work queue, an 
 - **Stream field mapping** — for `Stream` mode, each record's top-level JSON object fields become native stream entry fields; non-object records land in a single `_data` field.
 - **Connection reuse** — a multiplexed async connection is opened once in `new()` and shared (cheaply cloned) across every `write_batch` call.
 - **Tunable batch window** — `batch_size` controls how many commands go in one pipeline, with a `0` sentinel that passes the upstream page straight through.
+- **Effectively-once delivery** — with `delivery: exactly_once`, each page's records and a per-page commit token commit in one atomic `MULTI`/`EXEC` transaction, so a resumed pipeline skips already-committed pages with zero duplicates.
 - **Preflight probe** — `faucet doctor` issues a non-mutating `PING` over the live connection.
 - **Credential-safe logging** — the config's `Debug` impl masks the connection URL, and the lineage dataset URI strips credentials.
 
@@ -185,7 +186,45 @@ The sink follows the workspace streaming contract: `Pipeline::run` drives the so
 | `1`..`MAX_BATCH_SIZE` (default `1000`) | A slice larger than `batch_size` is re-chunked into `batch_size` slices; one Redis pipeline is issued per chunk. Recommended for high-throughput writes — pipelined commands are cheap, and a 1000-command window amortises the round-trip without starving other clients. |
 | `0` | "No batching" sentinel — the entire records slice is packed into a single pipeline regardless of size, preserving the upstream `StreamPage` framing. Use it when the source has already chosen the page size and you want one pipeline per page. |
 
-This sink writes **append/insert-only** (`RPUSH` / `XADD` / `SET`) and does not implement upsert/delete write modes or effectively-once delivery — see [Limitations](#limitations).
+This sink writes **append/insert-only** (`RPUSH` / `XADD` / `SET`) and does not implement upsert/delete write modes — see [Limitations](#limitations). It **does** support effectively-once delivery — see the next section.
+
+## Effectively-once delivery
+
+`RedisSink` implements `Sink::supports_idempotent_writes` (returns `true`) and the two companion hooks:
+
+- `write_batch_idempotent(records, scope, token)` — packs every record's command for the configured `sink_type` **plus** a `SET _faucet_commit_token:<scope> <token>` into one atomic Redis transaction (`MULTI`/`EXEC`), so the page's data and its watermark either commit together or not at all.
+- `last_committed_token(scope)` — a `GET` on the same `_faucet_commit_token:<scope>` key, so the pipeline skips already-committed pages on resume. The token is stored and read back as an opaque string.
+
+**One page = one transaction.** `batch_size` re-chunking does **not** apply on the idempotent path — splitting a page across multiple `MULTI`/`EXEC` blocks would break atomicity (a crash between chunks could commit rows without the watermark). Size the source's page (`batch_size` on the source) rather than the sink window when running `delivery: exactly_once`.
+
+The watermark key mirrors the SQL sinks' `_faucet_commit_token(scope, token)` table: one plain Redis string key per pipeline scope (the per-row state key, e.g. `myfeed::row1`), namespaced under the `_faucet_commit_token:` prefix. It lives in the same database as the data keys — don't evict or delete it while a pipeline is live, or resume falls back to replaying from the state-store bookmark.
+
+To use effectively-once delivery, set `delivery: exactly_once` and pair this sink with a CDC source (`postgres-cdc`, `mysql-cdc`, `mongodb-cdc`) plus a `state:` block. A DLQ is not permitted in effectively-once mode. All four requirements are validated at config-load time (`faucet validate`) before any run starts.
+
+```yaml
+version: 1
+pipeline:
+  source:
+    type: postgres-cdc
+    config:
+      connection_url: postgres://faucet:faucet@localhost:5432/appdb
+      slot_name: faucet_slot
+      publication_name: faucet_pub
+  sink:
+    type: redis
+    config:
+      url: redis://127.0.0.1:6379
+      sink_type:
+        type: Stream
+        key: change_events
+  state:
+    type: file
+    config:
+      path: ./state
+delivery: exactly_once
+```
+
+Note the usual Redis caveat: `List` and `Stream` modes append, so a page that was *fully* committed is never re-applied — but downstream consumers should still treat entry IDs as the identity of a stream record. See the [effectively-once delivery cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/state.html#effectively-once-delivery).
 
 ## Config loading & schema
 
@@ -271,7 +310,8 @@ println!("transferred {} records", result.records_written);
 1. `new()` validates `batch_size`, opens a `redis::Client` from `url`, and establishes a **multiplexed async connection** — once. The connection is cheaply cloneable and shared across every `write_batch` call (it multiplexes commands over a single socket).
 2. `write_batch` chunks the incoming slice by the effective window (`batch_size`, or the whole slice when `batch_size: 0`).
 3. Each chunk is assembled into one `redis::pipe()` — `RPUSH` for `List`, `XADD` for `Stream`, `SET` for `KeyValue` — and executed in a single round-trip via `query_async`.
-4. A failed pipeline surfaces as `FaucetError::Sink`; a record missing its `key_field` (KeyValue) or a JSON-serialization failure does the same.
+4. Under `delivery: exactly_once`, `write_batch_idempotent` builds the same per-record commands but ships the **whole page** as one atomic `MULTI`/`EXEC` pipeline with a final `SET _faucet_commit_token:<scope> <token>` — see [Effectively-once delivery](#effectively-once-delivery).
+5. A failed pipeline surfaces as `FaucetError::Sink`; a record missing its `key_field` (KeyValue) or a JSON-serialization failure does the same.
 
 ## Lineage dataset URI
 
@@ -280,7 +320,6 @@ println!("transferred {} records", result.records_written);
 ## Limitations
 
 - **Append/insert-only.** The sink writes via `RPUSH` / `XADD` / `SET`; it does not implement `write_mode: upsert | delete`. (`SET` on an existing key in `KeyValue` mode overwrites by nature, but there is no keyed upsert/delete planner.)
-- **No effectively-once delivery.** Redis writes are at-least-once; the sink does not implement idempotent commit tokens. On retry after a partial failure, already-written records may be re-applied (a re-pushed list entry / re-added stream entry; a `SET` is naturally idempotent for the same key+value).
 - **No compression.** Not applicable to a Redis protocol sink.
 
 ## Feature flags
