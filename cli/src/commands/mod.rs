@@ -5,6 +5,7 @@
 pub mod catalog;
 #[cfg(feature = "contract")]
 pub mod contract;
+pub mod discover;
 pub mod dlq;
 pub mod doctor;
 pub mod init;

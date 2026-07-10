@@ -24,6 +24,10 @@ pub enum Command {
     /// before the snapshot (a true mirror with `write_mode: upsert`).
     /// Long-running when `replication.continuous` is true (Ctrl-C / SIGTERM to stop).
     Replicate(ReplicateArgs),
+    /// Connect to a config's source, enumerate the datasets behind it
+    /// (tables / collections / indices / prefixes), and emit a ready-to-run
+    /// config with one matrix row per dataset.
+    Discover(DiscoverArgs),
     /// Parse + validate a pipeline config without running it.
     Validate(ValidateArgs),
     /// Print the JSON Schema for a specific connector.
@@ -575,6 +579,48 @@ pub struct ReplicateArgs {
     pub no_env_file: bool,
     /// Select a named overlay from the config's `profiles:` block and deep-merge
     /// it over the composed base. Overrides the `FAUCET_PROFILE` env var.
+    #[arg(long, env = "FAUCET_PROFILE")]
+    pub profile: Option<String>,
+}
+
+/// `faucet discover` arguments.
+#[derive(Debug, Parser)]
+pub struct DiscoverArgs {
+    /// Path to a `.yaml`, `.yml`, or `.json` pipeline config whose source
+    /// points at the system to introspect. If omitted, auto-discover
+    /// `faucet.yaml` / `faucet.yml` / `faucet.json` in cwd.
+    pub config: Option<PathBuf>,
+    /// Which source template to introspect (an entry under `pipeline.sources`).
+    /// Defaults to `default` (the legacy singular `pipeline.source`).
+    #[arg(long)]
+    pub source: Option<String>,
+    /// Only include datasets whose name matches this `*`-wildcard pattern
+    /// (repeatable; no patterns = include everything).
+    #[arg(long)]
+    pub include: Vec<String>,
+    /// Exclude datasets whose name matches this `*`-wildcard pattern
+    /// (repeatable; applied after --include).
+    #[arg(long)]
+    pub exclude: Vec<String>,
+    /// Write the generated config to this file instead of stdout.
+    #[arg(long, short = 'o')]
+    pub output: Option<PathBuf>,
+    /// Overwrite the --output file if it already exists.
+    #[arg(long)]
+    pub force: bool,
+    /// Emit the discovered datasets as machine-readable JSON instead of a
+    /// generated config.
+    #[arg(long)]
+    pub json: bool,
+    /// Path to a `.env` file to load for `${env:VAR}` interpolation.
+    /// Defaults to `.env` in cwd if present.
+    #[arg(long, conflicts_with = "no_env_file")]
+    pub env_file: Option<PathBuf>,
+    /// Skip auto-loading `.env` from cwd.
+    #[arg(long)]
+    pub no_env_file: bool,
+    /// Select a named overlay from the config's `profiles:` block.
+    /// Overrides the `FAUCET_PROFILE` env var.
     #[arg(long, env = "FAUCET_PROFILE")]
     pub profile: Option<String>,
 }

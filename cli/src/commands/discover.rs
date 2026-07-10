@@ -1,0 +1,516 @@
+//! `faucet discover` — connect to a config's source, enumerate the datasets
+//! living behind it (tables / collections / indices / prefixes), and emit a
+//! ready-to-run config with one matrix row per dataset (#211).
+//!
+//! The generated document is the **raw composed** input config (so `${env:…}`
+//! and secrets-manager directives are echoed verbatim, never their resolved
+//! values) with the `matrix:` block replaced by one row per discovered
+//! dataset. Each row deep-merges the dataset's
+//! [`config_patch`](faucet_core::DatasetDescriptor::config_patch) over the
+//! connection config.
+
+use crate::cli::DiscoverArgs;
+use crate::config::{ConnectorSpec, PipelineConfig, PipelineSpec};
+use crate::error::{CliError, CliResult};
+use faucet_core::DatasetDescriptor;
+use serde_json::{Value, json};
+
+/// Execute the `discover` subcommand.
+pub async fn run(args: DiscoverArgs) -> CliResult<()> {
+    let cwd = std::env::current_dir()?;
+    let env_path =
+        crate::env_loader::resolve_env_file(args.env_file.as_deref(), args.no_env_file, &cwd)?;
+    crate::env_loader::load_env_file_if_present(env_path.as_deref())?;
+    let path = match args.config {
+        Some(p) => p,
+        None => crate::env_loader::discover_config_path(&cwd).ok_or(CliError::NoConfigOrFromEnv)?,
+    };
+
+    // Interpolated + secrets-resolved config: used to CONNECT.
+    let cfg = PipelineConfig::from_path_async(&path, args.profile.as_deref()).await?;
+    // Raw composed text (extends/!include/profile folded, `${…}` untouched):
+    // used to ECHO the connection config without leaking resolved secrets.
+    let raw_composed = crate::compose::compose(&path, args.profile.as_deref())?;
+
+    let template = args.source.as_deref().unwrap_or("default");
+    let spec = select_source_template(&cfg.pipeline, template)?;
+
+    let auth = crate::auth_catalog::build_auth_catalog(cfg.auth.as_ref())?;
+    let source =
+        crate::registry::build_source(&spec.kind, spec.config.clone(), &auth, None).await?;
+    if !source.supports_discover() {
+        return Err(CliError::Config(format!(
+            "source '{}' does not support dataset discovery — discovery is available for \
+             catalog-backed sources (postgres, mysql, mssql, sqlite, mongodb, elasticsearch, \
+             bigquery, snowflake, s3, gcs)",
+            spec.kind
+        )));
+    }
+
+    let datasets = source.discover().await.map_err(|e| {
+        CliError::Config(format!(
+            "discovery against source '{}' failed: {e}",
+            spec.kind
+        ))
+    })?;
+    let total = datasets.len();
+    let datasets = filter_datasets(datasets, &args.include, &args.exclude);
+    if datasets.is_empty() {
+        return Err(CliError::Config(format!(
+            "discovery found no datasets{} (source '{}' reported {total} before filtering)",
+            if args.include.is_empty() && args.exclude.is_empty() {
+                ""
+            } else {
+                " matching the --include/--exclude filters"
+            },
+            spec.kind
+        )));
+    }
+
+    if args.json {
+        let out = json!({ "source": spec.kind, "datasets": datasets });
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&out)
+                .map_err(|e| CliError::Internal(format!("json render: {e}")))?
+        );
+        return Ok(());
+    }
+
+    let doc = render_discovered_config(&raw_composed, template, &datasets)?;
+
+    // Guard: the emitted document must itself load + expand. Configs holding
+    // secrets-manager directives can't be re-verified offline — warn, don't fail.
+    if let Err(e) =
+        PipelineConfig::from_text(&doc, &path).and_then(|c| crate::expand::expand(&c).map(|_| ()))
+    {
+        tracing::warn!(error = %e, "generated config failed offline re-validation — review it before running");
+    }
+
+    match args.output {
+        Some(out) => {
+            if out.exists() && !args.force {
+                return Err(CliError::Config(format!(
+                    "output file {} already exists — pass --force to overwrite",
+                    out.display()
+                )));
+            }
+            std::fs::write(&out, &doc)?;
+            eprintln!(
+                "wrote {} ({} dataset{} from '{}' source)",
+                out.display(),
+                datasets.len(),
+                if datasets.len() == 1 { "" } else { "s" },
+                spec.kind
+            );
+        }
+        None => print!("{doc}"),
+    }
+    Ok(())
+}
+
+/// Resolve the source template to introspect: the named entry in
+/// `pipeline.sources`, or the legacy singular `pipeline.source` (which
+/// registers as `default`).
+fn select_source_template<'a>(
+    pipeline: &'a PipelineSpec,
+    name: &str,
+) -> CliResult<&'a ConnectorSpec> {
+    if let Some(spec) = pipeline.sources.get(name) {
+        return Ok(spec);
+    }
+    if name == "default"
+        && let Some(spec) = pipeline.source.as_ref()
+    {
+        return Ok(spec);
+    }
+    let mut available: Vec<&str> = pipeline.sources.keys().map(String::as_str).collect();
+    if pipeline.source.is_some() {
+        available.push("default");
+    }
+    available.sort_unstable();
+    Err(CliError::Config(format!(
+        "no source template named '{name}' — available: {}",
+        if available.is_empty() {
+            "none (the config has no `pipeline.source` or `pipeline.sources`)".to_string()
+        } else {
+            available.join(", ")
+        }
+    )))
+}
+
+/// Simple `*`-wildcard glob match (case-sensitive). `*` matches any run of
+/// characters, including none; every other character matches literally.
+fn glob_match(pattern: &str, name: &str) -> bool {
+    // Dynamic-programming over the pattern segments split by '*': the name
+    // must start with the first segment, end with the last, and contain the
+    // middle segments in order.
+    let segments: Vec<&str> = pattern.split('*').collect();
+    if segments.len() == 1 {
+        return pattern == name;
+    }
+    let mut rest = name;
+    for (i, seg) in segments.iter().enumerate() {
+        if seg.is_empty() {
+            continue;
+        }
+        if i == 0 {
+            match rest.strip_prefix(seg) {
+                Some(r) => rest = r,
+                None => return false,
+            }
+        } else if i == segments.len() - 1 {
+            return rest.ends_with(seg) && rest.len() >= seg.len();
+        } else {
+            match rest.find(seg) {
+                Some(pos) => rest = &rest[pos + seg.len()..],
+                None => return false,
+            }
+        }
+    }
+    true
+}
+
+/// Apply `--include` / `--exclude` glob filters to the discovered datasets.
+/// No `--include` patterns = include everything; any matching `--exclude`
+/// pattern removes a dataset.
+fn filter_datasets(
+    datasets: Vec<DatasetDescriptor>,
+    include: &[String],
+    exclude: &[String],
+) -> Vec<DatasetDescriptor> {
+    datasets
+        .into_iter()
+        .filter(|d| {
+            let included = include.is_empty() || include.iter().any(|p| glob_match(p, &d.name));
+            let excluded = exclude.iter().any(|p| glob_match(p, &d.name));
+            included && !excluded
+        })
+        .collect()
+}
+
+/// Sanitize a dataset name into a matrix row id: `[A-Za-z0-9_-]` only, other
+/// runs collapsed to a single `_`. Never empty.
+fn sanitize_row_id(name: &str) -> String {
+    let mut out = String::with_capacity(name.len());
+    let mut last_was_sep = false;
+    for c in name.chars() {
+        if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
+            out.push(c);
+            last_was_sep = false;
+        } else if !last_was_sep && !out.is_empty() {
+            out.push('_');
+            last_was_sep = true;
+        }
+    }
+    let trimmed = out.trim_matches('_').to_string();
+    if trimmed.is_empty() {
+        "dataset".to_string()
+    } else {
+        trimmed
+    }
+}
+
+/// Assign unique row ids to the datasets (a `-2`, `-3`, … suffix on collision).
+fn unique_row_ids(datasets: &[DatasetDescriptor]) -> Vec<String> {
+    let mut seen = std::collections::HashMap::<String, usize>::new();
+    datasets
+        .iter()
+        .map(|d| {
+            let base = sanitize_row_id(&d.name);
+            let n = seen.entry(base.clone()).or_insert(0);
+            *n += 1;
+            if *n == 1 { base } else { format!("{base}-{n}") }
+        })
+        .collect()
+}
+
+/// One-line column summary for a dataset's schema comment, e.g.
+/// `id integer, note string?, total number` (`?` = nullable), capped at
+/// `max_cols` columns with a `…` marker.
+fn schema_summary(schema: &Value, max_cols: usize) -> Option<String> {
+    let props = schema.get("properties")?.as_object()?;
+    if props.is_empty() {
+        return None;
+    }
+    let mut parts: Vec<String> = Vec::new();
+    for (name, fragment) in props.iter().take(max_cols) {
+        let (ty, nullable) = match fragment.get("type") {
+            Some(Value::String(t)) => (t.clone(), false),
+            Some(Value::Array(a)) => {
+                let base = a
+                    .iter()
+                    .filter_map(|v| v.as_str())
+                    .find(|t| *t != "null")
+                    .unwrap_or("any");
+                (base.to_string(), a.iter().any(|v| v == "null"))
+            }
+            _ => ("any".to_string(), false),
+        };
+        parts.push(format!("{name} {ty}{}", if nullable { "?" } else { "" }));
+    }
+    if props.len() > max_cols {
+        parts.push("…".to_string());
+    }
+    Some(parts.join(", "))
+}
+
+/// Render a serde value as a YAML sequence item indented under `matrix:`.
+fn yaml_seq_item(value: &Value) -> CliResult<String> {
+    let body = serde_yaml::to_string(value)
+        .map_err(|e| CliError::Internal(format!("yaml render: {e}")))?;
+    let mut out = String::new();
+    for (i, line) in body.trim_end().lines().enumerate() {
+        if i == 0 {
+            out.push_str("  - ");
+        } else {
+            out.push_str("    ");
+        }
+        out.push_str(line);
+        out.push('\n');
+    }
+    Ok(out)
+}
+
+/// Build the generated config document: the raw composed input with the
+/// `matrix:` block replaced by one row per dataset (schema summaries as
+/// comments). Pure — unit-testable without a live source.
+fn render_discovered_config(
+    raw_composed: &str,
+    template: &str,
+    datasets: &[DatasetDescriptor],
+) -> CliResult<String> {
+    let mut root: serde_yaml::Value = serde_yaml::from_str(raw_composed)
+        .map_err(|e| CliError::Config(format!("could not re-parse composed config: {e}")))?;
+    let map = root
+        .as_mapping_mut()
+        .ok_or_else(|| CliError::Config("composed config is not a mapping".into()))?;
+    let replaced_matrix = map
+        .remove(serde_yaml::Value::String("matrix".into()))
+        .is_some();
+
+    let head = serde_yaml::to_string(&root)
+        .map_err(|e| CliError::Internal(format!("yaml render: {e}")))?;
+
+    let row_ids = unique_row_ids(datasets);
+    let mut doc = String::new();
+    doc.push_str(&head);
+    if !head.ends_with('\n') {
+        doc.push('\n');
+    }
+    doc.push('\n');
+    doc.push_str(&format!(
+        "# Generated by `faucet discover` — one row per discovered dataset ({}).\n",
+        datasets.len()
+    ));
+    if replaced_matrix {
+        doc.push_str("# NOTE: the input config's `matrix:` block was replaced.\n");
+    }
+    doc.push_str("matrix:\n");
+    for (d, id) in datasets.iter().zip(&row_ids) {
+        let est = d
+            .estimated_rows
+            .map(|n| format!(", ~{n} rows"))
+            .unwrap_or_default();
+        doc.push_str(&format!("  # {} ({}{})\n", d.name, d.kind, est));
+        if let Some(summary) = d.schema.as_ref().and_then(|s| schema_summary(s, 12)) {
+            doc.push_str(&format!("  #   columns: {summary}\n"));
+        }
+        let mut row = json!({ "id": id, "source": { "config": d.config_patch } });
+        if template != "default" {
+            row["source"]["ref"] = json!(template);
+        }
+        doc.push_str(&yaml_seq_item(&row)?);
+    }
+    Ok(doc)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ds(name: &str, kind: &str, patch: Value) -> DatasetDescriptor {
+        DatasetDescriptor::new(name, kind, patch)
+    }
+
+    // ── glob matching ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn glob_exact_and_wildcards() {
+        assert!(glob_match("orders", "orders"));
+        assert!(!glob_match("orders", "orders2"));
+        assert!(glob_match("public.*", "public.orders"));
+        assert!(!glob_match("public.*", "sales.orders"));
+        assert!(glob_match("*.orders", "public.orders"));
+        assert!(glob_match("*order*", "public.orders"));
+        assert!(glob_match("*", "anything"));
+        assert!(glob_match("a*b*c", "aXXbYYc"));
+        assert!(!glob_match("a*b*c", "aXXcYYb"));
+        // The trailing segment must not re-consume the head segment.
+        assert!(!glob_match("ab*ab", "ab"));
+    }
+
+    #[test]
+    fn filter_include_exclude_composition() {
+        let all = vec![
+            ds("public.orders", "table", json!({})),
+            ds("public.users", "table", json!({})),
+            ds("audit.log", "table", json!({})),
+        ];
+        let got = filter_datasets(all.clone(), &["public.*".into()], &["*.users".into()]);
+        let names: Vec<&str> = got.iter().map(|d| d.name.as_str()).collect();
+        assert_eq!(names, vec!["public.orders"]);
+
+        // No include patterns = everything (minus excludes).
+        let got = filter_datasets(all, &[], &["audit.*".into()]);
+        assert_eq!(got.len(), 2);
+    }
+
+    // ── row ids ───────────────────────────────────────────────────────────────
+
+    #[test]
+    fn row_ids_sanitized_and_unique() {
+        assert_eq!(sanitize_row_id("public.orders"), "public_orders");
+        assert_eq!(sanitize_row_id("raw/orders/"), "raw_orders");
+        assert_eq!(sanitize_row_id("...."), "dataset");
+        let ids = unique_row_ids(&[
+            ds("a.b", "table", json!({})),
+            ds("a/b", "table", json!({})),
+            ds("a.b", "table", json!({})),
+        ]);
+        assert_eq!(ids, vec!["a_b", "a_b-2", "a_b-3"]);
+    }
+
+    // ── schema summary ────────────────────────────────────────────────────────
+
+    #[test]
+    fn schema_summary_marks_nullable_and_caps() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "id": {"type": "integer"},
+                "note": {"type": ["string", "null"]},
+            }
+        });
+        let s = schema_summary(&schema, 12).unwrap();
+        assert!(s.contains("id integer"), "{s}");
+        assert!(s.contains("note string?"), "{s}");
+
+        let mut props = serde_json::Map::new();
+        for i in 0..15 {
+            props.insert(format!("c{i:02}"), json!({"type": "integer"}));
+        }
+        let big = json!({"type": "object", "properties": props});
+        let s = schema_summary(&big, 12).unwrap();
+        assert!(s.ends_with("…"), "capped: {s}");
+    }
+
+    #[test]
+    fn schema_summary_empty_is_none() {
+        assert!(schema_summary(&json!({"type": "object", "properties": {}}), 12).is_none());
+        assert!(schema_summary(&json!({"type": "string"}), 12).is_none());
+    }
+
+    // ── rendering ─────────────────────────────────────────────────────────────
+
+    const RAW: &str = r#"
+version: 1
+name: conn
+pipeline:
+  source:
+    type: postgres
+    config:
+      connection_url: ${env:DATABASE_URL}
+      query: SELECT 1
+  sink:
+    type: jsonl
+    config:
+      path: ./out.jsonl
+"#;
+
+    #[test]
+    fn render_emits_matrix_rows_with_comments() {
+        let datasets = vec![
+            ds(
+                "public.orders",
+                "table",
+                json!({"query": "SELECT * FROM \"public\".\"orders\""}),
+            )
+            .with_schema(json!({
+                "type": "object",
+                "properties": {"id": {"type": "integer"}}
+            }))
+            .with_estimated_rows(120),
+            ds(
+                "sales.leads",
+                "table",
+                json!({"query": "SELECT * FROM \"sales\".\"leads\""}),
+            ),
+        ];
+        let doc = render_discovered_config(RAW, "default", &datasets).unwrap();
+
+        // Raw `${env:…}` reference echoed, never a resolved value.
+        assert!(doc.contains("${env:DATABASE_URL}"), "{doc}");
+        assert!(doc.contains("# public.orders (table, ~120 rows)"), "{doc}");
+        assert!(doc.contains("#   columns: id integer"), "{doc}");
+        assert!(doc.contains("- id: public_orders"), "{doc}");
+        assert!(doc.contains("SELECT * FROM \"public\".\"orders\""), "{doc}");
+
+        // The generated document must parse and expand to one node per dataset.
+        let cfg = crate::config::parse_with_extension(&doc, "yaml").unwrap();
+        let nodes = crate::expand::expand(&cfg).unwrap();
+        assert_eq!(nodes.len(), 2);
+        assert_eq!(nodes[0].id, "public_orders");
+        assert_eq!(
+            nodes[0].source.config["query"], "SELECT * FROM \"public\".\"orders\"",
+            "row patch deep-merged over the connection config"
+        );
+        assert_eq!(
+            nodes[0].source.config["connection_url"], "${env:DATABASE_URL}",
+            "connection settings inherited"
+        );
+    }
+
+    #[test]
+    fn render_replaces_existing_matrix_and_notes_it() {
+        let raw = format!("{RAW}matrix:\n  - id: old\n");
+        let datasets = vec![ds("t", "table", json!({"query": "SELECT * FROM t"}))];
+        let doc = render_discovered_config(&raw, "default", &datasets).unwrap();
+        assert!(doc.contains("was replaced"), "{doc}");
+        assert!(!doc.contains("id: old"), "{doc}");
+    }
+
+    #[test]
+    fn render_named_template_sets_source_ref() {
+        let raw = r#"
+version: 1
+pipeline:
+  sources:
+    warehouse:
+      type: postgres
+      config: { connection_url: "postgres://x", query: "SELECT 1" }
+  sinks:
+    default:
+      type: jsonl
+      config: { path: ./out.jsonl }
+"#;
+        let datasets = vec![ds("t", "table", json!({"query": "SELECT * FROM t"}))];
+        let doc = render_discovered_config(raw, "warehouse", &datasets).unwrap();
+        assert!(doc.contains("ref: warehouse"), "{doc}");
+        let cfg = crate::config::parse_with_extension(&doc, "yaml").unwrap();
+        let nodes = crate::expand::expand(&cfg).unwrap();
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(nodes[0].source.kind, "postgres");
+    }
+
+    // ── template selection ────────────────────────────────────────────────────
+
+    #[test]
+    fn select_template_falls_back_to_singular_default() {
+        let cfg = crate::config::parse_with_extension(RAW, "yaml").unwrap();
+        let spec = select_source_template(&cfg.pipeline, "default").unwrap();
+        assert_eq!(spec.kind, "postgres");
+        let err = select_source_template(&cfg.pipeline, "nope").unwrap_err();
+        assert!(err.to_string().contains("available: default"), "{err}");
+    }
+}
