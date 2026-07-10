@@ -19,6 +19,7 @@ pub mod check;
 pub mod config;
 #[cfg(feature = "contract")]
 pub mod contract;
+pub mod discover;
 pub mod dlq;
 pub mod drift;
 pub mod error;
@@ -51,6 +52,7 @@ pub use adaptive::{
 };
 pub use auth::{AuthProvider, AuthReference, AuthSpec, Credential, SharedAuthProvider};
 pub use check::{CheckContext, CheckReport, Probe, ProbeStatus};
+pub use discover::{DatasetDescriptor, columns_to_schema, nullable_type, sql_type_to_json_schema};
 pub use dlq::{
     DlqConfig, DlqReason, DlqStats, EnvelopeError, OnBatchError, UnwrappedEnvelope, build_envelope,
     unwrap_envelope,
@@ -82,7 +84,7 @@ pub use pipeline::{
     DEFAULT_BATCH_SIZE, MAX_BATCH_SIZE, Pipeline, PipelineResult, StreamPage, run_stream,
     validate_batch_size,
 };
-pub use replication::ReplicationMethod;
+pub use replication::{ReplicationMethod, json_gt};
 pub use resilience::{
     BackoffKind, CircuitBreaker, CircuitBreakerConfig, PoisonAction, PoisonPolicy,
     ResiliencePolicy, RetryClass, RetryClassSet, RetryMetrics, RetryPolicy, classify,

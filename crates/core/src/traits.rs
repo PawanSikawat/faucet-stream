@@ -231,6 +231,33 @@ pub trait Source: Send + Sync {
         Ok(())
     }
 
+    /// Whether this source can enumerate the datasets behind its connection
+    /// via [`discover`](Self::discover). Default: `false`. Sources backed by
+    /// an introspectable catalog (database `information_schema`, MongoDB
+    /// collections, Elasticsearch indices, object-store prefixes) override
+    /// this to `true`.
+    fn supports_discover(&self) -> bool {
+        false
+    }
+
+    /// Enumerate the datasets living behind this source's connection — one
+    /// [`DatasetDescriptor`](crate::discover::DatasetDescriptor) per table /
+    /// collection / index / prefix, each carrying a partial config override
+    /// that selects it (used by `faucet discover` to scaffold one matrix row
+    /// per dataset).
+    ///
+    /// Must be **read-only and cheap**: catalog metadata queries and listings
+    /// only, never a data scan. Descriptors must never embed credentials.
+    /// The default returns a typed "unsupported" error; override it (and
+    /// return `true` from [`supports_discover`](Self::supports_discover))
+    /// only for sources with a real catalog to introspect.
+    async fn discover(&self) -> Result<Vec<crate::discover::DatasetDescriptor>, FaucetError> {
+        Err(FaucetError::Source(format!(
+            "source '{}' does not support dataset discovery",
+            self.connector_name()
+        )))
+    }
+
     /// Stable identifier used as the `connector` label on metrics and the
     /// `connector` attribute on spans. Defaults to the final segment of
     /// `std::any::type_name::<Self>()`, e.g. `"RestSource"`. Built-in
@@ -999,6 +1026,18 @@ mod tests {
     async fn capture_resume_position_callable_through_trait_object() {
         let source: Box<dyn Source> = Box::new(MockSource { records: vec![] });
         assert!(source.capture_resume_position().await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn source_default_does_not_support_discover() {
+        let source: Box<dyn Source> = Box::new(MockSource { records: vec![] });
+        assert!(!source.supports_discover());
+        let err = source.discover().await.unwrap_err();
+        assert!(matches!(err, FaucetError::Source(_)));
+        assert!(
+            err.to_string().contains("dataset discovery"),
+            "typed unsupported error: {err}"
+        );
     }
 
     #[tokio::test]
