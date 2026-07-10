@@ -238,14 +238,27 @@ impl SnowflakeSource {
         (rewritten, bindings)
     }
 
-    /// Issue the initial `POST /api/v2/statements` request.
+    /// Issue the initial `POST /api/v2/statements` request for the configured
+    /// query, with `{key}` context tokens resolved to positional bindings.
     async fn submit_statement(
         &self,
         context: &HashMap<String, Value>,
     ) -> Result<StatementResponse, FaucetError> {
         let (query, bindings) = self.resolve_query(context);
-        let mut body = self.build_request_body(&bindings);
-        body["statement"] = Value::String(query);
+        self.submit_sql(query, &bindings).await
+    }
+
+    /// Issue `POST /api/v2/statements` for an arbitrary SQL statement (the
+    /// configured query, or an internal catalog query for
+    /// [`Source::discover`](faucet_core::Source::discover)), following the
+    /// async-202 poll until the statement completes.
+    async fn submit_sql(
+        &self,
+        statement: String,
+        bindings: &[Value],
+    ) -> Result<StatementResponse, FaucetError> {
+        let mut body = self.build_request_body(bindings);
+        body["statement"] = Value::String(statement);
 
         let url = self.statements_url();
         let effective = self.resolve_auth().await?;
@@ -381,6 +394,128 @@ impl SnowflakeSource {
     }
 }
 
+/// Catalog query behind [`Source::discover`](faucet_core::Source::discover):
+/// one row per column of every base table in the configured database
+/// (`INFORMATION_SCHEMA` itself excluded), with the table's `row_count`
+/// estimate joined in from `information_schema.tables`. Catalog metadata
+/// only — never a data scan.
+const CATALOG_SQL: &str = "SELECT c.table_schema, c.table_name, c.column_name, c.data_type, \
+            c.is_nullable, t.row_count \
+       FROM information_schema.columns c \
+       JOIN information_schema.tables t \
+         ON t.table_schema = c.table_schema AND t.table_name = c.table_name \
+      WHERE t.table_type = 'BASE TABLE' \
+        AND c.table_schema <> 'INFORMATION_SCHEMA' \
+      ORDER BY c.table_schema, c.table_name, c.ordinal_position";
+
+/// One flattened `information_schema.columns` row used by `discover`:
+/// (schema, table, column, data_type, is_nullable, estimated_rows).
+type CatalogRow = (String, String, String, String, bool, Option<i64>);
+
+/// In-progress per-table accumulator used while grouping catalog rows:
+/// (schema, table, estimated_rows, columns).
+type TableAcc = (String, String, Option<i64>, Vec<(String, Value)>);
+
+/// Decode the catalog result's raw cell arrays into [`CatalogRow`]s using the
+/// statement's own `rowType` metadata (so cells are decoded positionally, with
+/// the existing type-aware [`row_to_json`] machinery — no assumption about the
+/// server's identifier casing). Pure — unit-testable without a live server.
+fn catalog_rows(
+    data: &[Vec<Value>],
+    columns: &[ColumnMeta],
+) -> Result<Vec<CatalogRow>, FaucetError> {
+    if columns.len() < 6 {
+        return Err(FaucetError::Source(format!(
+            "snowflake: catalog discovery failed: expected 6 result columns, got {}",
+            columns.len()
+        )));
+    }
+    data.iter()
+        .map(|raw| {
+            let rec = row_to_json(raw, columns);
+            let text = |i: usize| -> Result<String, FaucetError> {
+                rec[columns[i].name.as_str()]
+                    .as_str()
+                    .map(str::to_owned)
+                    .ok_or_else(|| {
+                        FaucetError::Source(format!(
+                            "snowflake: catalog decode failed ({}): expected a string",
+                            columns[i].name
+                        ))
+                    })
+            };
+            let is_nullable = rec[columns[4].name.as_str()]
+                .as_str()
+                .map(|v| v.eq_ignore_ascii_case("yes"))
+                .unwrap_or(true);
+            // `row_count` is a scale-0 FIXED column → decoded as a JSON
+            // number; the string branch is defensive.
+            let estimated_rows = match &rec[columns[5].name.as_str()] {
+                Value::Number(n) => n.as_i64(),
+                Value::String(s) => s.trim().parse::<i64>().ok(),
+                _ => None,
+            };
+            Ok((
+                text(0)?,
+                text(1)?,
+                text(2)?,
+                text(3)?,
+                is_nullable,
+                estimated_rows,
+            ))
+        })
+        .collect()
+}
+
+/// Group flattened catalog rows (ordered by schema, table, ordinal position)
+/// into one [`faucet_core::DatasetDescriptor`] per table. Pure. `quote` is the
+/// dialect's identifier quoter — Snowflake uses ANSI double quotes with
+/// interior quotes doubled ([`faucet_core::util::quote_ident`]).
+fn descriptors_from_catalog(
+    rows: Vec<CatalogRow>,
+    quote: fn(&str) -> String,
+) -> Vec<faucet_core::DatasetDescriptor> {
+    let mut out: Vec<faucet_core::DatasetDescriptor> = Vec::new();
+    let mut current: Option<TableAcc> = None;
+
+    let flush = |cur: Option<TableAcc>, out: &mut Vec<faucet_core::DatasetDescriptor>| {
+        if let Some((schema, table, est, cols)) = cur {
+            let query = format!("SELECT * FROM {}.{}", quote(&schema), quote(&table));
+            let mut d = faucet_core::DatasetDescriptor::new(
+                format!("{schema}.{table}"),
+                "table",
+                json!({ "query": query }),
+            )
+            .with_schema(faucet_core::columns_to_schema(cols));
+            if let Some(n) = est
+                && n >= 0
+            {
+                d = d.with_estimated_rows(n as u64);
+            }
+            out.push(d);
+        }
+    };
+
+    for (schema, table, column, data_type, is_nullable, est) in rows {
+        let same = current
+            .as_ref()
+            .is_some_and(|(s, t, _, _)| *s == schema && *t == table);
+        if !same {
+            flush(current.take(), &mut out);
+            current = Some((schema, table, est, Vec::new()));
+        }
+        let mut fragment = faucet_core::sql_type_to_json_schema(&data_type);
+        if is_nullable {
+            fragment = faucet_core::nullable_type(fragment);
+        }
+        if let Some((_, _, _, cols)) = current.as_mut() {
+            cols.push((column, fragment));
+        }
+    }
+    flush(current, &mut out);
+    out
+}
+
 /// Validate `code: "090001"` (statement executed successfully). Any other
 /// code surfaces as `FaucetError::Source` carrying Snowflake's message.
 fn check_code(resp: &StatementResponse) -> Result<(), FaucetError> {
@@ -412,6 +547,67 @@ impl faucet_core::Source for SnowflakeSource {
             "snowflake://{}/{}/{}?query={}",
             self.config.account, self.config.database, self.config.schema, self.config.query
         )
+    }
+
+    fn supports_discover(&self) -> bool {
+        true
+    }
+
+    /// Enumerate every base table in the configured database (from
+    /// `information_schema.columns` / `information_schema.tables`, excluding
+    /// `INFORMATION_SCHEMA` itself), with column types mapped to JSON-Schema
+    /// fragments and a row estimate from `information_schema.tables.row_count`.
+    /// Runs one catalog statement through the source's ordinary SQL REST API
+    /// path (async-202 poll and partition paging included) — catalog metadata
+    /// only, no data scan.
+    async fn discover(&self) -> Result<Vec<faucet_core::DatasetDescriptor>, FaucetError> {
+        let wrap = |e: FaucetError| -> FaucetError {
+            FaucetError::Source(format!("snowflake: catalog discovery failed: {e}"))
+        };
+        let initial = self
+            .submit_sql(CATALOG_SQL.to_string(), &[])
+            .await
+            .map_err(wrap)?;
+        let columns = initial
+            .result_set_metadata
+            .as_ref()
+            .map(|m| m.row_type.clone())
+            .unwrap_or_default();
+        if columns.is_empty() {
+            // No metadata at all — an empty catalog (no base tables visible).
+            return Ok(Vec::new());
+        }
+
+        let partition_count = initial
+            .result_set_metadata
+            .as_ref()
+            .map(|m| m.partition_info.len())
+            .unwrap_or(0);
+        let mut raw = initial.data.unwrap_or_default();
+        if partition_count > 1 {
+            let handle = initial.statement_handle.ok_or_else(|| {
+                FaucetError::Source(
+                    "snowflake: catalog discovery failed: >1 partition without a statementHandle"
+                        .into(),
+                )
+            })?;
+            let effective = self.resolve_auth().await.map_err(wrap)?;
+            let auth = authorization_header(&effective, &self.config.account).map_err(wrap)?;
+            let token_type = snowflake_token_type(&effective);
+            for i in 1..partition_count {
+                raw.extend(
+                    self.fetch_partition(&handle, i, &auth, token_type)
+                        .await
+                        .map_err(wrap)?,
+                );
+            }
+        }
+
+        let rows = catalog_rows(&raw, &columns)?;
+        Ok(descriptors_from_catalog(
+            rows,
+            faucet_core::util::quote_ident,
+        ))
     }
 
     /// Preflight probe for `faucet doctor`. Overrides the default (which pulls a
@@ -818,6 +1014,214 @@ mod tests {
         let (q, binds) = src.resolve_query(&ctx);
         assert_eq!(q, "SELECT * FROM t WHERE id = ?");
         assert_eq!(binds, vec![json!(7)]);
+    }
+
+    // ── discover: pure catalog decoding + grouping ───────────────────────────
+
+    use faucet_core::util::quote_ident;
+    use serde_json::json;
+
+    /// The six-column `rowType` metadata the catalog query produces.
+    fn catalog_columns() -> Vec<ColumnMeta> {
+        [
+            ("TABLE_SCHEMA", "text"),
+            ("TABLE_NAME", "text"),
+            ("COLUMN_NAME", "text"),
+            ("DATA_TYPE", "text"),
+            ("IS_NULLABLE", "text"),
+            ("ROW_COUNT", "fixed"),
+        ]
+        .into_iter()
+        .map(|(name, ty)| ColumnMeta {
+            name: name.into(),
+            ty: ty.into(),
+            scale: 0,
+        })
+        .collect()
+    }
+
+    fn catalog_cell(
+        schema: &str,
+        table: &str,
+        column: &str,
+        ty: &str,
+        nullable: &str,
+        rows: Value,
+    ) -> Vec<Value> {
+        vec![
+            json!(schema),
+            json!(table),
+            json!(column),
+            json!(ty),
+            json!(nullable),
+            rows,
+        ]
+    }
+
+    #[test]
+    fn catalog_rows_decodes_cells_positionally() {
+        let data = vec![
+            catalog_cell("PUBLIC", "ORDERS", "ID", "NUMBER", "NO", json!("120")),
+            catalog_cell("PUBLIC", "ORDERS", "NOTE", "TEXT", "YES", json!("120")),
+        ];
+        let rows = catalog_rows(&data, &catalog_columns()).unwrap();
+        assert_eq!(
+            rows[0],
+            (
+                "PUBLIC".into(),
+                "ORDERS".into(),
+                "ID".into(),
+                "NUMBER".into(),
+                false,
+                Some(120)
+            )
+        );
+        assert!(rows[1].4, "IS_NULLABLE = YES");
+    }
+
+    #[test]
+    fn catalog_rows_null_row_count_means_no_estimate() {
+        let data = vec![catalog_cell(
+            "PUBLIC",
+            "T",
+            "ID",
+            "NUMBER",
+            "NO",
+            Value::Null,
+        )];
+        let rows = catalog_rows(&data, &catalog_columns()).unwrap();
+        assert_eq!(rows[0].5, None);
+    }
+
+    #[test]
+    fn catalog_rows_rejects_short_metadata() {
+        let cols = &catalog_columns()[..3];
+        match catalog_rows(&[], cols) {
+            Err(FaucetError::Source(m)) => {
+                assert!(m.contains("catalog discovery failed"), "got: {m}")
+            }
+            other => panic!("expected Source error, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn catalog_rows_rejects_non_string_identifier() {
+        // A null in an identifier cell is a decode error, not a silent skip.
+        let data = vec![catalog_cell("PUBLIC", "T", "ID", "NUMBER", "NO", json!(1))];
+        let mut bad = data.clone();
+        bad[0][1] = Value::Null; // TABLE_NAME
+        match catalog_rows(&bad, &catalog_columns()) {
+            Err(FaucetError::Source(m)) => {
+                assert!(m.contains("catalog decode failed"), "got: {m}")
+            }
+            other => panic!("expected Source error, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn descriptors_group_catalog_rows_per_table() {
+        let rows = vec![
+            (
+                "PUBLIC".to_string(),
+                "ORDERS".to_string(),
+                "ID".to_string(),
+                "NUMBER".to_string(),
+                false,
+                Some(120i64),
+            ),
+            (
+                "PUBLIC".to_string(),
+                "ORDERS".to_string(),
+                "NOTE".to_string(),
+                "TEXT".to_string(),
+                true,
+                Some(120i64),
+            ),
+            (
+                "SALES".to_string(),
+                "ORDERS".to_string(),
+                "DATA".to_string(),
+                "VARIANT".to_string(),
+                false,
+                None,
+            ),
+        ];
+        let ds = descriptors_from_catalog(rows, quote_ident);
+        assert_eq!(ds.len(), 2, "same table name in two schemas = two datasets");
+
+        assert_eq!(ds[0].name, "PUBLIC.ORDERS");
+        assert_eq!(ds[0].kind, "table");
+        assert_eq!(ds[0].estimated_rows, Some(120));
+        assert_eq!(
+            ds[0].config_patch["query"],
+            r#"SELECT * FROM "PUBLIC"."ORDERS""#
+        );
+        let schema = ds[0].schema.as_ref().unwrap();
+        assert_eq!(schema["type"], "object");
+        // NUMBER maps to "number" — Snowflake's NUMBER(38,0) is integer-ish,
+        // but "number" is the acceptable conservative mapping.
+        assert_eq!(schema["properties"]["ID"]["type"], "number");
+        assert_eq!(
+            schema["properties"]["NOTE"]["type"],
+            json!(["string", "null"])
+        );
+
+        assert_eq!(ds[1].name, "SALES.ORDERS");
+        assert_eq!(ds[1].estimated_rows, None);
+        assert_eq!(
+            ds[1].schema.as_ref().unwrap()["properties"]["DATA"]["type"],
+            "object",
+            "VARIANT maps to object"
+        );
+    }
+
+    #[test]
+    fn snowflake_catalog_types_map_to_json_types() {
+        for (sf, want) in [
+            ("TEXT", "string"),
+            ("NUMBER", "number"),
+            ("FLOAT", "number"),
+            ("BOOLEAN", "boolean"),
+            ("VARIANT", "object"),
+            ("OBJECT", "object"),
+            ("ARRAY", "array"),
+            ("TIMESTAMP_NTZ", "string"),
+            ("DATE", "string"),
+            ("BINARY", "string"),
+        ] {
+            assert_eq!(
+                faucet_core::sql_type_to_json_schema(sf),
+                json!({ "type": want }),
+                "for Snowflake type {sf:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn descriptors_quote_hostile_identifiers() {
+        let rows = vec![(
+            "PUBLIC".to_string(),
+            "weird\"; DROP".to_string(),
+            "ID".to_string(),
+            "NUMBER".to_string(),
+            false,
+            None,
+        )];
+        let ds = descriptors_from_catalog(rows, quote_ident);
+        let q = ds[0].config_patch["query"].as_str().unwrap();
+        assert!(q.contains(r#""weird""; DROP""#), "quoted identifier: {q}");
+    }
+
+    #[test]
+    fn descriptors_empty_catalog_is_empty() {
+        assert!(descriptors_from_catalog(Vec::new(), quote_ident).is_empty());
+    }
+
+    #[test]
+    fn source_advertises_discover() {
+        use faucet_core::Source;
+        let src = SnowflakeSource::new(cfg()).unwrap();
+        assert!(src.supports_discover());
     }
 
     #[test]

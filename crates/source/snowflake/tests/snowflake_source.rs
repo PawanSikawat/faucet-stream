@@ -313,3 +313,150 @@ async fn http_error_surfaces_as_source_error_with_status() {
         other => panic!("expected Source error, got {other:?}"),
     }
 }
+
+// ── discover ────────────────────────────────────────────────────────────────
+
+/// `rowType` metadata for the discovery catalog query, mirroring what
+/// Snowflake reports for the six selected `information_schema` columns.
+fn catalog_metadata(num_partitions: usize) -> Value {
+    let partition_info: Vec<Value> = (0..num_partitions)
+        .map(|_| json!({"rowCount": 2}))
+        .collect();
+    json!({
+        "rowType": [
+            {"name": "TABLE_SCHEMA", "type": "text"},
+            {"name": "TABLE_NAME", "type": "text"},
+            {"name": "COLUMN_NAME", "type": "text"},
+            {"name": "DATA_TYPE", "type": "text"},
+            {"name": "IS_NULLABLE", "type": "text"},
+            {"name": "ROW_COUNT", "type": "fixed"}
+        ],
+        "partitionInfo": partition_info,
+        "format": "jsonv2",
+    })
+}
+
+fn catalog_row(
+    schema: &str,
+    table: &str,
+    column: &str,
+    ty: &str,
+    nullable: &str,
+    rows: Value,
+) -> Vec<Value> {
+    vec![
+        json!(schema),
+        json!(table),
+        json!(column),
+        json!(ty),
+        json!(nullable),
+        rows,
+    ]
+}
+
+#[tokio::test]
+async fn discover_enumerates_base_tables_across_partitions() {
+    use wiremock::matchers::body_string_contains;
+
+    let server = MockServer::start().await;
+    // The catalog statement (matched on its information_schema join) returns
+    // two partitions, exercising the partition-draining path of discover().
+    Mock::given(method("POST"))
+        .and(path("/api/v2/statements"))
+        .and(body_string_contains("information_schema.columns"))
+        .and(body_string_contains("BASE TABLE"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "code": "090001",
+            "statementHandle": "cat-1",
+            "resultSetMetaData": catalog_metadata(2),
+            "data": [
+                catalog_row("PUBLIC", "ORDERS", "ID", "NUMBER", "NO", json!("120")),
+                catalog_row("PUBLIC", "ORDERS", "NOTE", "TEXT", "YES", json!("120")),
+            ],
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/v2/statements/cat-1"))
+        .and(query_param("partition", "1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "code": "090001",
+            "data": [
+                catalog_row("SALES", "EVENTS", "PAYLOAD", "VARIANT", "NO", Value::Null),
+                catalog_row("SALES", "EVENTS", "TS", "TIMESTAMP_NTZ", "YES", Value::Null),
+            ],
+        })))
+        .mount(&server)
+        .await;
+
+    let src = build_source(cfg(), &server);
+    assert!(src.supports_discover());
+    let datasets = src.discover().await.unwrap();
+
+    assert_eq!(datasets.len(), 2, "one descriptor per table: {datasets:?}");
+
+    assert_eq!(datasets[0].name, "PUBLIC.ORDERS");
+    assert_eq!(datasets[0].kind, "table");
+    assert_eq!(datasets[0].estimated_rows, Some(120));
+    assert_eq!(
+        datasets[0].config_patch,
+        json!({"query": r#"SELECT * FROM "PUBLIC"."ORDERS""#})
+    );
+    let schema = datasets[0].schema.as_ref().unwrap();
+    assert_eq!(schema["properties"]["ID"]["type"], "number");
+    assert_eq!(
+        schema["properties"]["NOTE"]["type"],
+        json!(["string", "null"])
+    );
+
+    assert_eq!(datasets[1].name, "SALES.EVENTS");
+    assert_eq!(
+        datasets[1].estimated_rows, None,
+        "NULL row_count = no estimate"
+    );
+    let schema = datasets[1].schema.as_ref().unwrap();
+    assert_eq!(schema["properties"]["PAYLOAD"]["type"], "object");
+    assert_eq!(
+        schema["properties"]["TS"]["type"],
+        json!(["string", "null"])
+    );
+}
+
+#[tokio::test]
+async fn discover_empty_catalog_returns_no_datasets() {
+    let server = MockServer::start().await;
+    // A catalog with no visible base tables: success, but no metadata/rows.
+    Mock::given(method("POST"))
+        .and(path("/api/v2/statements"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "code": "090001",
+            "statementHandle": "cat-empty",
+        })))
+        .mount(&server)
+        .await;
+
+    let src = build_source(cfg(), &server);
+    assert!(src.discover().await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn discover_surfaces_typed_error_on_catalog_failure() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api/v2/statements"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "code": "002003",
+            "message": "SQL compilation error: object does not exist",
+        })))
+        .mount(&server)
+        .await;
+
+    let src = build_source(cfg(), &server);
+    match src.discover().await {
+        Err(faucet_core::FaucetError::Source(m)) => {
+            assert!(m.contains("catalog discovery failed"), "got: {m}");
+            assert!(m.contains("002003"), "carries Snowflake's code: {m}");
+        }
+        other => panic!("expected Source error, got: {other:?}"),
+    }
+}

@@ -162,6 +162,17 @@ The source overrides `Source::stream_pages`: it runs the job, then walks `jobs.g
 
 This is a one-shot query source — it has no incremental bookmark / resume support (each run re-executes the query). For incremental loads, encode the watermark in the query (e.g. `WHERE occurred_at >= ?`) and drive it from a matrix context or `${now.*}` token.
 
+## Dataset discovery
+
+The source supports live introspection via `Source::discover()`: it lists every dataset in the project (`datasets.list`), enumerates the physical tables in each (`tables.list` — views, materialized views, and external tables are skipped), and fetches each table's schema and row count via `tables.get`. One dataset descriptor is returned per table with:
+
+- `name` — `dataset.table` (e.g. `sales.orders`), `kind: table`
+- `schema` — the column shape as a JSON-Schema object (`INTEGER`/`INT64` → integer; `FLOAT`/`FLOAT64`/`NUMERIC`/`BIGNUMERIC` → number; `BOOLEAN`/`BOOL` → boolean; `RECORD`/`STRUCT`/`JSON` → object; `mode: REPEATED` → array; everything else → string; `NULLABLE` columns become `["T", "null"]`)
+- `estimated_rows` — the table's `numRows` from `tables.get` (omitted when unavailable)
+- `config_patch` — `{ "query": "SELECT * FROM `project.dataset.table`" }`, backtick-quoted, ready to deep-merge over the connection config as a matrix row
+
+Discovery reads catalog metadata only — it never runs a billed query or scans table data. To keep it cheap on very large projects, enumeration is capped at 500 tables and per-table schema fetches at 100 (tables past the schema cap are still emitted, just without a `schema` / `estimated_rows`); a warning names the cap when it is hit.
+
 ## Config loading & schema
 
 Load from YAML/JSON or environment. Inspect the full JSON Schema with:
