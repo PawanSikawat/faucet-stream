@@ -226,6 +226,17 @@ When `replication.type: incremental`, the source is resumable:
 
 To use resume from the CLI, add a `state:` block (`file`, `memory`, `redis`, or `postgres`) to the pipeline as shown in the incremental example above.
 
+## Dataset discovery
+
+The source supports live introspection via `Source::discover()`: it enumerates every base table visible to the connection (from `INFORMATION_SCHEMA.COLUMNS` / `INFORMATION_SCHEMA.TABLES`) and returns one dataset descriptor per table with:
+
+- `name` — `schema.table` (e.g. `dbo.orders`), `kind: table`
+- `schema` — the column shape as a JSON-Schema object (types mapped per the table below; nullable columns become `["T", "null"]`)
+- `estimated_rows` — a cheap row estimate from `sys.partitions` (heap/clustered-index partitions only). If the `sys.*` views aren't readable for your principal, discovery still succeeds — the estimate is simply omitted.
+- `config_patch` — `{ "query": "SELECT * FROM [schema].[table]" }`, bracket-quoted (interior `]` doubled), ready to deep-merge over the connection config as a matrix row
+
+Discovery reads catalog metadata only — it never scans table data.
+
 ## Type mapping
 
 | MSSQL | JSON |

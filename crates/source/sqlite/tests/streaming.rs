@@ -255,3 +255,72 @@ async fn stream_pages_first_page_completes_without_parsing_full_result() {
          first page took {first_elapsed:?}, full drain took {full_elapsed:?}"
     );
 }
+
+/// `discover()` enumerates real tables from a database file with column
+/// schemas, nullability, and a ready-to-run `query` config patch (#211).
+/// SQLite exposes no cheap row-count statistic, so `estimated_rows` is
+/// always absent — discovery must never scan data to count.
+#[tokio::test(flavor = "multi_thread")]
+async fn discover_enumerates_tables_with_schemas() {
+    let tmp = NamedTempFile::new().expect("tempfile");
+    let url = sqlite_url(tmp.path());
+
+    let pool = sqlx::SqlitePool::connect(&url).await.expect("seed pool");
+    sqlx::query(
+        "CREATE TABLE orders (id INTEGER NOT NULL PRIMARY KEY, note TEXT, total REAL NOT NULL)",
+    )
+    .execute(&pool)
+    .await
+    .expect("create orders");
+    sqlx::query("CREATE TABLE leads (id INTEGER NOT NULL, active BOOLEAN)")
+        .execute(&pool)
+        .await
+        .expect("create leads");
+    sqlx::query("INSERT INTO orders (id, total) VALUES (1, 9.5), (2, 3.25)")
+        .execute(&pool)
+        .await
+        .expect("seed orders");
+    pool.close().await;
+
+    let source = SqliteSource::new(SqliteSourceConfig::new(&url, "SELECT 1"))
+        .await
+        .expect("source");
+    assert!(source.supports_discover());
+    let datasets = source.discover().await.expect("discover");
+
+    let names: Vec<&str> = datasets.iter().map(|d| d.name.as_str()).collect();
+    assert_eq!(names, vec!["leads", "orders"], "ordered by table name");
+
+    let orders = datasets
+        .iter()
+        .find(|d| d.name == "orders")
+        .expect("orders dataset");
+    assert_eq!(orders.kind, "table");
+    assert_eq!(orders.config_patch["query"], "SELECT * FROM `orders`");
+    assert_eq!(
+        orders.estimated_rows, None,
+        "no cheap estimate in SQLite — discovery never scans"
+    );
+    let schema = orders.schema.as_ref().expect("schema");
+    assert_eq!(schema["properties"]["id"]["type"], "integer");
+    assert_eq!(schema["properties"]["total"]["type"], "number");
+    assert_eq!(
+        schema["properties"]["note"]["type"],
+        serde_json::json!(["string", "null"]),
+        "nullable column"
+    );
+
+    let leads = datasets
+        .iter()
+        .find(|d| d.name == "leads")
+        .expect("leads dataset");
+    let lschema = leads.schema.as_ref().expect("schema");
+    assert_eq!(lschema["properties"]["id"]["type"], "integer");
+    // The declared type "BOOLEAN" is preserved by pragma_table_info and maps
+    // to JSON boolean (SQLite stores it with NUMERIC affinity, but the
+    // declared name is what the catalog reports).
+    assert_eq!(
+        lschema["properties"]["active"]["type"],
+        serde_json::json!(["boolean", "null"])
+    );
+}

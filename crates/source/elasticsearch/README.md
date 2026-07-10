@@ -229,6 +229,17 @@ The source overrides [`Source::stream_pages`](https://docs.rs/faucet-core/latest
 
 The Elasticsearch search source is **stateless** — it does not implement `state_key()` / `apply_start_bookmark()`, so each run re-executes the full query and there is no durable bookmark. Make runs incremental at the query level: filter on a monotonic field (`@timestamp`, a sequence id) and supply the lower bound via a `${now.*}` token, a matrix-context value, or relative date math (`now-1h`).
 
+## Dataset discovery
+
+The source implements [`Source::discover`](https://docs.rs/faucet-core/latest/faucet_core/trait.Source.html#method.discover) (#211): it lists the cluster's indices via `GET _cat/indices?format=json` (skipping system indices whose name starts with `.`) and returns one `DatasetDescriptor` per index with
+
+- `name` — the index name; `kind` — `"index"`;
+- `config_patch` — `{"index": "<name>"}`, ready to deep-merge over the connection config (one matrix row per index);
+- `estimated_rows` — parsed from the `_cat` `docs.count` column (`None` when unavailable);
+- `schema` — top-level columns from `GET /<index>/_mapping`: `long`/`integer`/`short`/`byte` → `integer`; `double`/`float`/`half_float`/`scaled_float` → `number`; `boolean` → `boolean`; `object`/`nested` (or a type-less field with nested `properties`) → `object`; everything else (`text`, `keyword`, `date`, `ip`, …) → `string`. Mappings carry no nullability, so types stay scalar.
+
+Discovery is catalog metadata only — no document scan. Both requests use the configured `auth`.
+
 ## Config loading & schema
 
 Load from YAML/JSON files, environment variables, or a `.env` file via the helpers in `faucet_core::config`:

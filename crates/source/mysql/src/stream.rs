@@ -217,6 +217,62 @@ fn bind_params<'q>(
     query
 }
 
+/// One flattened `information_schema.columns` row used by [`discover`].
+///
+/// (table, column, data_type, is_nullable, estimated_rows)
+type CatalogRow = (String, String, String, bool, Option<u64>);
+
+/// In-progress per-table accumulator while grouping catalog rows:
+/// `(table, estimated_rows, columns)`.
+type PendingTable = Option<(String, Option<u64>, Vec<(String, Value)>)>;
+
+/// Group flattened catalog rows (ordered by table name, ordinal position)
+/// into one [`DatasetDescriptor`] per table. Pure — unit-testable without a
+/// live server.
+///
+/// The dataset name is the bare table name: a MySQL connection is scoped to a
+/// single database (named in the connection URL), so the generated `SELECT`
+/// needs no database qualifier.
+fn descriptors_from_catalog(rows: Vec<CatalogRow>) -> Vec<faucet_core::DatasetDescriptor> {
+    let mut out: Vec<faucet_core::DatasetDescriptor> = Vec::new();
+    let mut current: PendingTable = None;
+
+    let flush = |cur: PendingTable, out: &mut Vec<faucet_core::DatasetDescriptor>| {
+        if let Some((table, est, cols)) = cur {
+            let query = format!("SELECT * FROM {}", quote_ident_mysql(&table));
+            let mut d = faucet_core::DatasetDescriptor::new(
+                table,
+                "table",
+                serde_json::json!({ "query": query }),
+            )
+            .with_schema(faucet_core::columns_to_schema(cols));
+            // NULL table_rows (e.g. a view snuck through, or stats missing)
+            // means no estimate.
+            if let Some(n) = est {
+                d = d.with_estimated_rows(n);
+            }
+            out.push(d);
+        }
+    };
+
+    for (table, column, data_type, is_nullable, est) in rows {
+        let same = current.as_ref().is_some_and(|(t, _, _)| *t == table);
+        if !same {
+            flush(current.take(), &mut out);
+            current = Some((table, est, Vec::new()));
+        }
+        let mut fragment = faucet_core::sql_type_to_json_schema(&data_type);
+        if is_nullable {
+            fragment = faucet_core::nullable_type(fragment);
+        }
+        if let Some((_, _, cols)) = current.as_mut() {
+            cols.push((column, fragment));
+        }
+    }
+    flush(current, &mut out);
+    out
+}
+
 /// Convert a single `MySqlRow` into a JSON object whose keys are the row's
 /// column names.
 fn row_to_json(row: &sqlx::mysql::MySqlRow) -> Value {
@@ -316,6 +372,54 @@ impl faucet_core::Source for MysqlSource {
             faucet_core::redact_uri_credentials(&self.config.connection_url),
             self.config.query
         )
+    }
+
+    fn supports_discover(&self) -> bool {
+        true
+    }
+
+    /// Enumerate every base table in the connection's current database, with
+    /// column types from `information_schema.columns` and a row estimate from
+    /// `information_schema.tables.table_rows` (catalog metadata only — no
+    /// data scan).
+    async fn discover(&self) -> Result<Vec<faucet_core::DatasetDescriptor>, FaucetError> {
+        // The lowercase aliases matter: MySQL 8 returns information_schema
+        // result columns as UPPERCASE (`TABLE_NAME`, …) without them.
+        let sql = "\
+            SELECT c.table_name AS table_name, c.column_name AS column_name, \
+                   c.data_type AS data_type, c.is_nullable AS is_nullable, \
+                   t.table_rows AS estimated_rows \
+              FROM information_schema.columns c \
+              JOIN information_schema.tables t \
+                ON t.table_schema = c.table_schema AND t.table_name = c.table_name \
+             WHERE t.table_type = 'BASE TABLE' \
+               AND c.table_schema = DATABASE() \
+             ORDER BY c.table_name, c.ordinal_position";
+        let rows = sqlx::query(sql)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| FaucetError::Source(format!("mysql: catalog discovery failed: {e}")))?;
+
+        let catalog: Vec<CatalogRow> = rows
+            .iter()
+            .map(|row| -> Result<CatalogRow, FaucetError> {
+                let decode = |col: &str| -> Result<String, FaucetError> {
+                    row.try_get::<String, _>(col).map_err(|e| {
+                        FaucetError::Source(format!("mysql: catalog decode failed ({col}): {e}"))
+                    })
+                };
+                Ok((
+                    decode("table_name")?,
+                    decode("column_name")?,
+                    decode("data_type")?,
+                    decode("is_nullable")?.eq_ignore_ascii_case("yes"),
+                    // NULL (or an unexpected type) → no estimate.
+                    row.try_get::<u64, _>("estimated_rows").ok(),
+                ))
+            })
+            .collect::<Result<_, _>>()?;
+
+        Ok(descriptors_from_catalog(catalog))
     }
 
     /// Shardable when a [`ShardConfig`](crate::config::ShardConfig) is set.
@@ -526,6 +630,95 @@ mod tests {
         // Malformed descriptor is rejected.
         let bad = faucet_core::ShardSpec::new("0", serde_json::json!({ "key": "id" }));
         assert!(source.apply_shard(&bad).await.is_err());
+    }
+
+    // ── discover: pure catalog-row grouping (#211) ───────────────────────────
+
+    #[test]
+    fn descriptors_group_catalog_rows_per_table() {
+        let rows: Vec<CatalogRow> = vec![
+            (
+                "orders".to_string(),
+                "id".to_string(),
+                "bigint".to_string(),
+                false,
+                Some(120u64),
+            ),
+            (
+                "orders".to_string(),
+                "note".to_string(),
+                "varchar".to_string(),
+                true,
+                Some(120u64),
+            ),
+            (
+                "users".to_string(),
+                "total".to_string(),
+                "decimal".to_string(),
+                false,
+                None,
+            ),
+        ];
+        let ds = descriptors_from_catalog(rows);
+        assert_eq!(ds.len(), 2, "rows group into one descriptor per table");
+
+        assert_eq!(ds[0].name, "orders", "bare table name — no db qualifier");
+        assert_eq!(ds[0].kind, "table");
+        assert_eq!(ds[0].estimated_rows, Some(120));
+        assert_eq!(ds[0].config_patch["query"], "SELECT * FROM `orders`");
+        let schema = ds[0].schema.as_ref().unwrap();
+        assert_eq!(schema["type"], "object");
+        assert_eq!(schema["properties"]["id"]["type"], "integer");
+        assert_eq!(
+            schema["properties"]["note"]["type"],
+            serde_json::json!(["string", "null"]),
+            "nullable column"
+        );
+
+        assert_eq!(ds[1].name, "users");
+        assert_eq!(ds[1].estimated_rows, None, "NULL table_rows = no estimate");
+        assert_eq!(
+            ds[1].schema.as_ref().unwrap()["properties"]["total"]["type"],
+            "number"
+        );
+    }
+
+    #[test]
+    fn descriptors_quote_hostile_identifiers() {
+        let rows: Vec<CatalogRow> = vec![(
+            "we`ird".to_string(),
+            "id".to_string(),
+            "int".to_string(),
+            false,
+            None,
+        )];
+        let ds = descriptors_from_catalog(rows);
+        assert_eq!(
+            ds[0].config_patch["query"], "SELECT * FROM `we``ird`",
+            "embedded backticks are doubled"
+        );
+    }
+
+    #[test]
+    fn descriptors_empty_catalog_is_empty() {
+        assert!(descriptors_from_catalog(Vec::new()).is_empty());
+    }
+
+    #[tokio::test]
+    async fn source_advertises_discover() {
+        use faucet_core::Source as _;
+        let source = lazy_source(MysqlSourceConfig::new(
+            "mysql://root@127.0.0.1:1/db",
+            "SELECT 1",
+        ));
+        assert!(source.supports_discover());
+        // Against an unreachable server the catalog query surfaces the typed
+        // discovery error (exercises the error path without Docker).
+        let err = source.discover().await.unwrap_err();
+        assert!(
+            err.to_string().contains("catalog discovery failed"),
+            "typed error: {err}"
+        );
     }
 
     #[tokio::test]

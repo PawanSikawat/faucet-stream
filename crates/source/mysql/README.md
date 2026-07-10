@@ -267,6 +267,17 @@ println!("{}", serde_json::to_string_pretty(&schema)?);
 # Ok(()) }
 ```
 
+## Dataset discovery
+
+The source supports live introspection via `Source::discover()` (#211): it enumerates every base table in the connection's **current database** (`information_schema.tables` / `information_schema.columns` where `table_schema = DATABASE()`) and returns one dataset descriptor per table with:
+
+- `name` — the bare table name (a MySQL connection is scoped to a single database, so no qualifier is needed); `kind: table`
+- `schema` — the column shape as a JSON-Schema object (`data_type` mapped per the Column types table; columns with `IS_NULLABLE = 'YES'` become `["T", "null"]`)
+- `estimated_rows` — the storage engine's approximate count from `information_schema.tables.table_rows` (InnoDB statistics — refresh with `ANALYZE TABLE`; `NULL` means no estimate)
+- `config_patch` — `` { "query": "SELECT * FROM `table`" } ``, backtick-quoted (interior backticks doubled), ready to deep-merge over the connection config as a matrix row
+
+Discovery reads catalog metadata only — it never scans table data.
+
 ## Library usage
 
 ```rust,no_run

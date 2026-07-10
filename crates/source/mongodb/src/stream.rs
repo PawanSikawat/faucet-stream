@@ -9,6 +9,10 @@ use mongodb::options::FindOptions;
 use serde_json::Value;
 use std::pin::Pin;
 
+/// Documents sampled per collection by [`Source::discover`] to infer a
+/// representative schema. Kept small — discovery must stay cheap.
+const DISCOVER_SAMPLE_SIZE: i64 = 10;
+
 /// A configured MongoDB source that connects to a collection and fetches documents.
 ///
 /// The MongoDB `Client` is created once during construction and reused across
@@ -267,6 +271,88 @@ impl faucet_core::Source for MongoSource {
             self.config.collection
         )
     }
+
+    fn supports_discover(&self) -> bool {
+        true
+    }
+
+    /// Enumerate the collections in the configured database (excluding
+    /// `system.*`), with a row estimate from `estimated_document_count`
+    /// (collection metadata — no scan) and a schema inferred from a bounded
+    /// [`DISCOVER_SAMPLE_SIZE`]-document sample per collection.
+    async fn discover(&self) -> Result<Vec<faucet_core::DatasetDescriptor>, FaucetError> {
+        let db = self.client.database(&self.config.database);
+        let mut names: Vec<String> = db
+            .list_collection_names()
+            .await
+            .map_err(|e| FaucetError::Source(format!("mongodb: catalog discovery failed: {e}")))?
+            .into_iter()
+            .filter(|name| !name.starts_with("system."))
+            .collect();
+        names.sort();
+
+        let mut datasets = Vec::with_capacity(names.len());
+        for name in names {
+            let collection = db.collection::<Document>(&name);
+            let estimated = collection.estimated_document_count().await.map_err(|e| {
+                FaucetError::Source(format!(
+                    "mongodb: catalog discovery failed (count for {name:?}): {e}"
+                ))
+            })?;
+
+            // Bounded sample for schema inference — the same BSON→JSON
+            // conversion the fetch path uses, capped at DISCOVER_SAMPLE_SIZE.
+            let mut cursor = collection
+                .find(Document::new())
+                .limit(DISCOVER_SAMPLE_SIZE)
+                .await
+                .map_err(|e| {
+                    FaucetError::Source(format!(
+                        "mongodb: catalog discovery failed (sample for {name:?}): {e}"
+                    ))
+                })?;
+            let mut sample = Vec::new();
+            while cursor.advance().await.map_err(|e| {
+                FaucetError::Source(format!(
+                    "mongodb: catalog discovery failed (sample for {name:?}): {e}"
+                ))
+            })? {
+                let doc = cursor.deserialize_current().map_err(|e| {
+                    FaucetError::Source(format!(
+                        "mongodb: catalog discovery failed (decode for {name:?}): {e}"
+                    ))
+                })?;
+                sample.push(bson_document_to_json_value(&doc)?);
+            }
+
+            datasets.push(descriptor_for_collection(&name, &sample, Some(estimated)));
+        }
+        Ok(datasets)
+    }
+}
+
+/// Build a [`DatasetDescriptor`](faucet_core::DatasetDescriptor) for one
+/// collection from its name, a small JSON document sample, and a cheap
+/// metadata row estimate. An empty sample yields no schema (an empty
+/// collection has no shape to report). Pure — unit-testable without a live
+/// server.
+fn descriptor_for_collection(
+    name: &str,
+    sample: &[Value],
+    estimated_rows: Option<u64>,
+) -> faucet_core::DatasetDescriptor {
+    let mut descriptor = faucet_core::DatasetDescriptor::new(
+        name,
+        "collection",
+        serde_json::json!({ "collection": name }),
+    );
+    if !sample.is_empty() {
+        descriptor = descriptor.with_schema(faucet_core::schema::infer_schema(sample));
+    }
+    if let Some(rows) = estimated_rows {
+        descriptor = descriptor.with_estimated_rows(rows);
+    }
+    descriptor
 }
 
 /// Substitute context placeholders in an optional JSON value.
@@ -494,5 +580,70 @@ mod tests {
         let value = bson_document_to_json_value(&doc).unwrap();
         // Relaxed extended JSON renders an i64 as a bare JSON number.
         assert_eq!(value["big"], json!(9_000_000_000i64));
+    }
+
+    // ── discover: pure descriptor building ──────────────────────────────────
+
+    #[test]
+    fn descriptor_infers_schema_from_sample() {
+        let sample = vec![
+            json!({"id": 1, "name": "alpha", "score": 1.5}),
+            json!({"id": 2, "name": "beta"}),
+        ];
+        let d = descriptor_for_collection("orders", &sample, Some(120));
+        assert_eq!(d.name, "orders");
+        assert_eq!(d.kind, "collection");
+        assert_eq!(d.config_patch, json!({"collection": "orders"}));
+        assert_eq!(d.estimated_rows, Some(120));
+        let schema = d.schema.as_ref().expect("schema from non-empty sample");
+        assert_eq!(schema["type"], "object");
+        assert_eq!(schema["properties"]["id"]["type"], "integer");
+        assert_eq!(schema["properties"]["name"]["type"], "string");
+        assert_eq!(
+            schema["properties"]["score"]["type"],
+            json!(["null", "number"]),
+            "field absent from one sampled doc is nullable"
+        );
+    }
+
+    #[test]
+    fn descriptor_empty_sample_has_no_schema() {
+        let d = descriptor_for_collection("empty", &[], Some(0));
+        assert_eq!(d.name, "empty");
+        assert_eq!(d.kind, "collection");
+        assert_eq!(d.config_patch, json!({"collection": "empty"}));
+        assert_eq!(d.estimated_rows, Some(0));
+        assert!(
+            d.schema.is_none(),
+            "empty collection has no shape to report"
+        );
+    }
+
+    #[test]
+    fn descriptor_without_estimate_omits_rows() {
+        let d = descriptor_for_collection("c", &[json!({"k": true})], None);
+        assert_eq!(d.estimated_rows, None);
+        let schema = d.schema.as_ref().unwrap();
+        assert_eq!(schema["properties"]["k"]["type"], "boolean");
+    }
+
+    #[tokio::test]
+    async fn source_advertises_discover() {
+        use faucet_core::Source as _;
+        // `Client::with_uri_str` does no I/O for a well-formed URI, so the
+        // capability flag is checkable offline; `discover()` against the
+        // unreachable server surfaces the typed discovery error.
+        let config = MongoSourceConfig::new(
+            "mongodb://127.0.0.1:1/?connectTimeoutMS=200&serverSelectionTimeoutMS=200",
+            "db",
+            "c",
+        );
+        let source = MongoSource::new(config).await.expect("client construct");
+        assert!(source.supports_discover());
+        let err = source.discover().await.unwrap_err();
+        assert!(
+            err.to_string().contains("catalog discovery failed"),
+            "typed error: {err}"
+        );
     }
 }

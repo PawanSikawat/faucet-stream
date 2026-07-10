@@ -282,3 +282,82 @@ async fn shards_partition_rows_disjointly_and_completely() {
     let malformed = faucet_core::ShardSpec::new("0", serde_json::json!({ "key": "k" }));
     assert!(bad.apply_shard(&malformed).await.is_err());
 }
+
+/// `discover()` enumerates real tables with column schemas, row estimates,
+/// and a ready-to-run bracket-quoted `query` config patch (#211).
+#[tokio::test(flavor = "multi_thread")]
+async fn discover_enumerates_tables_with_schemas() {
+    let _serial = SERIAL.lock().await;
+    let (_c, port) = start_mssql().await;
+    let cfg = conn_cfg(port);
+    let pool = build_pool(&cfg, 4).await.expect("pool");
+
+    exec(
+        &pool,
+        "CREATE TABLE dbo.orders (
+            id BIGINT NOT NULL,
+            note NVARCHAR(50) NULL,
+            total DECIMAL(10,2) NULL
+        )",
+    )
+    .await;
+    exec(&pool, "CREATE SCHEMA sales").await;
+    exec(
+        &pool,
+        "CREATE TABLE sales.leads (id INT NOT NULL, active BIT NULL)",
+    )
+    .await;
+    for chunk in (1..=50i64).collect::<Vec<_>>().chunks(25) {
+        let values: Vec<String> = chunk.iter().map(|i| format!("({i})")).collect();
+        exec(
+            &pool,
+            &format!("INSERT INTO dbo.orders (id) VALUES {}", values.join(", ")),
+        )
+        .await;
+    }
+
+    let mut scfg = MssqlSourceConfig::new(cfg.connection_url.clone().unwrap(), "SELECT 1");
+    scfg.connection.tls = cfg.tls.clone();
+    let source = MssqlSource::new(scfg).await.expect("source");
+
+    assert!(source.supports_discover());
+    let datasets = source.discover().await.expect("discover");
+
+    let names: Vec<&str> = datasets.iter().map(|d| d.name.as_str()).collect();
+    assert!(names.contains(&"dbo.orders"), "got: {names:?}");
+    assert!(names.contains(&"sales.leads"), "got: {names:?}");
+
+    let orders = datasets
+        .iter()
+        .find(|d| d.name == "dbo.orders")
+        .expect("orders dataset");
+    assert_eq!(orders.kind, "table");
+    assert_eq!(orders.config_patch["query"], "SELECT * FROM [dbo].[orders]");
+    assert_eq!(
+        orders.estimated_rows,
+        Some(50),
+        "sys.partitions heap row count"
+    );
+    let schema = orders.schema.as_ref().expect("schema");
+    assert_eq!(schema["properties"]["id"]["type"], "integer");
+    assert_eq!(
+        schema["properties"]["total"]["type"],
+        serde_json::json!(["number", "null"])
+    );
+    assert_eq!(
+        schema["properties"]["note"]["type"],
+        serde_json::json!(["string", "null"]),
+        "nullable column"
+    );
+
+    let leads = datasets
+        .iter()
+        .find(|d| d.name == "sales.leads")
+        .expect("leads dataset");
+    assert_eq!(leads.config_patch["query"], "SELECT * FROM [sales].[leads]");
+    assert_eq!(
+        leads.schema.as_ref().unwrap()["properties"]["active"]["type"],
+        serde_json::json!(["boolean", "null"]),
+        "BIT maps to boolean"
+    );
+}

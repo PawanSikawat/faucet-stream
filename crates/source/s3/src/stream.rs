@@ -508,6 +508,84 @@ impl faucet_core::Source for S3Source {
         *self.applied_shard.lock().expect("shard mutex poisoned") = parse_hash_shard(shard, "s3")?;
         Ok(())
     }
+
+    fn supports_discover(&self) -> bool {
+        true
+    }
+
+    /// Enumerate the "directories" directly under the configured prefix via
+    /// **one** `ListObjectsV2` delimiter (`/`) listing — each common prefix
+    /// becomes a `prefix` dataset. When the listing returns no common
+    /// prefixes but does return objects directly under the prefix, each
+    /// object (first page only, ≤ [`DISCOVER_MAX_OBJECTS`]) becomes an
+    /// `object` dataset instead. No recursion and no data scan — object
+    /// counts would require paging the whole listing, so `estimated_rows`
+    /// is never set.
+    async fn discover(&self) -> Result<Vec<faucet_core::DatasetDescriptor>, FaucetError> {
+        let mut req = self
+            .client
+            .list_objects_v2()
+            .bucket(&self.config.bucket)
+            .delimiter("/")
+            .max_keys(DISCOVER_MAX_OBJECTS as i32);
+        if let Some(prefix) = self.config.prefix.as_deref() {
+            req = req.prefix(prefix);
+        }
+        let response = req
+            .send()
+            .await
+            .map_err(|e| FaucetError::Source(format!("s3: catalog discovery failed: {e}")))?;
+
+        let prefixes: Vec<String> = response
+            .common_prefixes()
+            .iter()
+            .filter_map(|p| p.prefix())
+            .filter(|p| !p.is_empty())
+            .map(str::to_string)
+            .collect();
+        let objects: Vec<String> = response
+            .contents()
+            .iter()
+            .filter_map(|o| o.key())
+            .filter(|k| !k.is_empty())
+            .map(str::to_string)
+            .collect();
+
+        Ok(descriptors_from_listing(prefixes, objects))
+    }
+}
+
+/// Cap on object-fallback descriptors — one delimiter-listing page, matching
+/// the `max_keys` requested from S3.
+const DISCOVER_MAX_OBJECTS: usize = 1000;
+
+/// Build one [`DatasetDescriptor`](faucet_core::DatasetDescriptor) per common
+/// prefix from a single delimiter listing; when the listing yielded no common
+/// prefixes, fall back to one descriptor per object (capped at
+/// [`DISCOVER_MAX_OBJECTS`]). Each patch selects the dataset via the source's
+/// `prefix` config field — a full object key used as a prefix selects exactly
+/// that object. Pure — unit-testable without an S3 client.
+fn descriptors_from_listing(
+    prefixes: Vec<String>,
+    objects: Vec<String>,
+) -> Vec<faucet_core::DatasetDescriptor> {
+    if !prefixes.is_empty() {
+        return prefixes
+            .into_iter()
+            .map(|p| {
+                let patch = serde_json::json!({ "prefix": p });
+                faucet_core::DatasetDescriptor::new(p, "prefix", patch)
+            })
+            .collect();
+    }
+    objects
+        .into_iter()
+        .take(DISCOVER_MAX_OBJECTS)
+        .map(|k| {
+            let patch = serde_json::json!({ "prefix": k });
+            faucet_core::DatasetDescriptor::new(k, "object", patch)
+        })
+        .collect()
 }
 
 /// Return a human-readable name for a JSON value type.
@@ -694,6 +772,71 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, FaucetError::Source(_)));
+    }
+
+    // ── discover: pure listing → descriptor mapping ─────────────────────────
+
+    #[test]
+    fn descriptors_from_listing_maps_common_prefixes() {
+        let out = descriptors_from_listing(
+            vec!["raw/orders/".to_string(), "raw/users/".to_string()],
+            vec![],
+        );
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].name, "raw/orders/");
+        assert_eq!(out[0].kind, "prefix");
+        assert_eq!(out[0].config_patch, json!({ "prefix": "raw/orders/" }));
+        assert!(out[0].schema.is_none());
+        assert!(out[0].estimated_rows.is_none());
+        assert_eq!(out[1].name, "raw/users/");
+        assert_eq!(out[1].config_patch, json!({ "prefix": "raw/users/" }));
+    }
+
+    // Prefixes win: objects sitting alongside common prefixes are not
+    // enumerated as datasets (they'd be a mixed listing at the same level).
+    #[test]
+    fn descriptors_from_listing_prefers_prefixes_over_objects() {
+        let out = descriptors_from_listing(
+            vec!["raw/orders/".to_string()],
+            vec!["raw/readme.txt".to_string()],
+        );
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].kind, "prefix");
+        assert_eq!(out[0].name, "raw/orders/");
+    }
+
+    #[test]
+    fn descriptors_from_listing_falls_back_to_objects() {
+        let out = descriptors_from_listing(
+            vec![],
+            vec!["raw/a.jsonl".to_string(), "raw/b.jsonl".to_string()],
+        );
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].name, "raw/a.jsonl");
+        assert_eq!(out[0].kind, "object");
+        assert_eq!(out[0].config_patch, json!({ "prefix": "raw/a.jsonl" }));
+        assert!(out[0].schema.is_none());
+        assert!(out[0].estimated_rows.is_none());
+    }
+
+    #[test]
+    fn descriptors_from_listing_empty_listing_yields_no_datasets() {
+        assert!(descriptors_from_listing(vec![], vec![]).is_empty());
+    }
+
+    #[test]
+    fn descriptors_from_listing_caps_object_fallback() {
+        let objects: Vec<String> = (0..DISCOVER_MAX_OBJECTS + 500)
+            .map(|i| format!("obj-{i}.jsonl"))
+            .collect();
+        let out = descriptors_from_listing(vec![], objects);
+        assert_eq!(out.len(), DISCOVER_MAX_OBJECTS);
+    }
+
+    #[test]
+    fn source_advertises_discover() {
+        let source = test_source(S3SourceConfig::new("my-bucket"));
+        assert!(source.supports_discover());
     }
 
     #[test]

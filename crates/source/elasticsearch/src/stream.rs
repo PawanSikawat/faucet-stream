@@ -408,6 +408,138 @@ impl faucet_core::Source for ElasticsearchSource {
             self.config.index
         )
     }
+
+    fn supports_discover(&self) -> bool {
+        true
+    }
+
+    /// Enumerate the cluster's non-system indices via
+    /// `GET _cat/indices?format=json` (names + doc counts) and
+    /// `GET /<index>/_mapping` (field types). Catalog metadata only — no
+    /// document scan.
+    async fn discover(&self) -> Result<Vec<faucet_core::DatasetDescriptor>, FaucetError> {
+        // Resolve auth once; reuse across the _cat and _mapping requests.
+        let auth = self.resolve_auth().await?;
+
+        let url = format!(
+            "{}/_cat/indices?format=json&h=index,docs.count",
+            self.config.base_url
+        );
+        let req = Self::apply_auth_value(self.client.get(&url), &auth);
+        let resp = req.send().await.map_err(|e| {
+            FaucetError::Source(format!("elasticsearch: catalog discovery failed: {e}"))
+        })?;
+        let resp = check_http_response(resp, DEFAULT_ERROR_BODY_MAX_LEN).await?;
+        let cat: Value = resp.json().await.map_err(|e| {
+            FaucetError::Source(format!("elasticsearch: catalog discovery failed: {e}"))
+        })?;
+
+        let entries = parse_cat_indices(&cat);
+        let mut datasets = Vec::with_capacity(entries.len());
+        for (index, doc_count) in entries {
+            let url = format!("{}/{}/_mapping", self.config.base_url, index);
+            let req = Self::apply_auth_value(self.client.get(&url), &auth);
+            let resp = req.send().await.map_err(|e| {
+                FaucetError::Source(format!(
+                    "elasticsearch: catalog discovery failed (mapping for {index:?}): {e}"
+                ))
+            })?;
+            let resp = check_http_response(resp, DEFAULT_ERROR_BODY_MAX_LEN).await?;
+            let body: Value = resp.json().await.map_err(|e| {
+                FaucetError::Source(format!(
+                    "elasticsearch: catalog discovery failed (mapping for {index:?}): {e}"
+                ))
+            })?;
+            datasets.push(descriptor_for_index(&index, doc_count, &body));
+        }
+        Ok(datasets)
+    }
+}
+
+/// Map an Elasticsearch mapping field type to a JSON-Schema type. ES mappings
+/// carry no nullability, so types stay scalar (never nullable-wrapped).
+/// Everything not listed (text, keyword, date, ip, …) serializes as a JSON
+/// string in `_source`, so `string` is the safe over-approximation.
+fn es_type_to_json_type(es_type: &str) -> &'static str {
+    match es_type {
+        "long" | "integer" | "short" | "byte" => "integer",
+        "double" | "float" | "half_float" | "scaled_float" => "number",
+        "boolean" => "boolean",
+        "object" | "nested" => "object",
+        _ => "string",
+    }
+}
+
+/// Convert one index's `mappings` object (`{"properties": {field: spec, …}}`)
+/// into an [`infer_schema`](faucet_core::schema::infer_schema)-shaped object
+/// schema at top-level-column granularity. A field spec without a scalar
+/// `type` is an object field (Elasticsearch's default for mapping entries
+/// that carry only nested `properties`). Pure.
+fn mapping_to_schema(mappings: &Value) -> Value {
+    let mut properties = serde_json::Map::new();
+    if let Some(fields) = mappings.get("properties").and_then(Value::as_object) {
+        for (name, spec) in fields {
+            let ty = match spec.get("type").and_then(Value::as_str) {
+                Some(t) => es_type_to_json_type(t),
+                None => "object",
+            };
+            properties.insert(name.clone(), json!({ "type": ty }));
+        }
+    }
+    json!({ "type": "object", "properties": Value::Object(properties) })
+}
+
+/// Parse a `GET _cat/indices?format=json` response into `(index, doc_count)`
+/// pairs, skipping system indices (leading `.`). Doc counts arrive as strings
+/// in `_cat` JSON — an unparsable or missing count yields `None`. Sorted by
+/// index name for deterministic output. Pure.
+fn parse_cat_indices(cat: &Value) -> Vec<(String, Option<u64>)> {
+    let mut entries: Vec<(String, Option<u64>)> = cat
+        .as_array()
+        .map(|rows| {
+            rows.iter()
+                .filter_map(|row| {
+                    let index = row.get("index")?.as_str()?;
+                    if index.starts_with('.') {
+                        return None;
+                    }
+                    let doc_count = row.get("docs.count").and_then(|v| {
+                        v.as_str()
+                            .and_then(|s| s.parse::<u64>().ok())
+                            .or_else(|| v.as_u64())
+                    });
+                    Some((index.to_string(), doc_count))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    entries.sort_by(|a, b| a.0.cmp(&b.0));
+    entries
+}
+
+/// Build the [`DatasetDescriptor`](faucet_core::DatasetDescriptor) for one
+/// index from its `_cat` row and its `GET /<index>/_mapping` response body
+/// (`{"<index>": {"mappings": {…}}}`). The body's top-level key is the
+/// concrete index name, which can differ from the requested one when the
+/// request resolved through an alias — fall back to the first entry. Pure.
+fn descriptor_for_index(
+    index: &str,
+    doc_count: Option<u64>,
+    mapping_body: &Value,
+) -> faucet_core::DatasetDescriptor {
+    let empty = json!({});
+    let mappings = mapping_body
+        .get(index)
+        .or_else(|| mapping_body.as_object().and_then(|o| o.values().next()))
+        .and_then(|entry| entry.get("mappings"))
+        .unwrap_or(&empty);
+    let mut descriptor =
+        faucet_core::DatasetDescriptor::new(index, "index", json!({ "index": index }))
+            .with_schema(mapping_to_schema(mappings));
+    if let Some(rows) = doc_count {
+        descriptor = descriptor.with_estimated_rows(rows);
+    }
+    descriptor
 }
 
 /// RAII guard that owns the active scroll id and clears it on drop.
@@ -525,5 +657,143 @@ mod tests {
             ElasticsearchSourceConfig::new("http://user:secret@es.example.com:9200", "logs");
         let source = ElasticsearchSource::new(config).unwrap();
         assert_eq!(source.dataset_uri(), "http://es.example.com:9200/logs");
+    }
+
+    // ── discover: pure mapping/_cat parsing (#211) ──────────────────────────
+
+    #[test]
+    fn es_types_map_to_json_types() {
+        for (es, want) in [
+            ("long", "integer"),
+            ("integer", "integer"),
+            ("short", "integer"),
+            ("byte", "integer"),
+            ("double", "number"),
+            ("float", "number"),
+            ("half_float", "number"),
+            ("scaled_float", "number"),
+            ("boolean", "boolean"),
+            ("object", "object"),
+            ("nested", "object"),
+            ("text", "string"),
+            ("keyword", "string"),
+            ("date", "string"),
+            ("ip", "string"),
+            ("geo_point", "string"),
+        ] {
+            assert_eq!(es_type_to_json_type(es), want, "for ES type {es:?}");
+        }
+    }
+
+    #[test]
+    fn mapping_to_schema_covers_scalar_object_and_nested_fields() {
+        // Real-shaped mapping: scalar types, a text field with a keyword
+        // sub-field, and an object field declared only via nested properties.
+        let mappings = json!({
+            "properties": {
+                "id": {"type": "long"},
+                "total": {"type": "scaled_float", "scaling_factor": 100},
+                "note": {"type": "text", "fields": {"keyword": {"type": "keyword"}}},
+                "active": {"type": "boolean"},
+                "customer": {"properties": {"name": {"type": "text"}}},
+                "meta": {"type": "nested", "properties": {"k": {"type": "keyword"}}},
+            }
+        });
+        let schema = mapping_to_schema(&mappings);
+        assert_eq!(schema["type"], "object");
+        let props = &schema["properties"];
+        assert_eq!(props["id"]["type"], "integer");
+        assert_eq!(props["total"]["type"], "number");
+        assert_eq!(props["note"]["type"], "string");
+        assert_eq!(props["active"]["type"], "boolean");
+        assert_eq!(
+            props["customer"]["type"], "object",
+            "type-less field with nested properties is an object"
+        );
+        assert_eq!(props["meta"]["type"], "object");
+    }
+
+    #[test]
+    fn mapping_to_schema_empty_mappings_yield_empty_properties() {
+        assert_eq!(
+            mapping_to_schema(&json!({})),
+            json!({"type": "object", "properties": {}})
+        );
+        assert_eq!(
+            mapping_to_schema(&Value::Null),
+            json!({"type": "object", "properties": {}})
+        );
+    }
+
+    #[test]
+    fn parse_cat_indices_skips_system_and_parses_counts() {
+        let cat = json!([
+            {"index": "orders", "docs.count": "1200"},
+            {"index": ".kibana_1", "docs.count": "3"},
+            {"index": "logs", "docs.count": "n/a"},
+            {"index": "metrics"},
+            {"index": "numeric", "docs.count": 7},
+        ]);
+        let entries = parse_cat_indices(&cat);
+        assert_eq!(
+            entries,
+            vec![
+                ("logs".to_string(), None),
+                ("metrics".to_string(), None),
+                ("numeric".to_string(), Some(7)),
+                ("orders".to_string(), Some(1200)),
+            ],
+            "system index skipped, unparsable/missing counts → None, sorted"
+        );
+    }
+
+    #[test]
+    fn parse_cat_indices_non_array_is_empty() {
+        assert!(parse_cat_indices(&json!({"error": "nope"})).is_empty());
+        assert!(parse_cat_indices(&Value::Null).is_empty());
+    }
+
+    #[test]
+    fn descriptor_for_index_builds_full_descriptor() {
+        let body = json!({
+            "orders": {"mappings": {"properties": {"id": {"type": "long"}}}}
+        });
+        let d = descriptor_for_index("orders", Some(1200), &body);
+        assert_eq!(d.name, "orders");
+        assert_eq!(d.kind, "index");
+        assert_eq!(d.config_patch, json!({"index": "orders"}));
+        assert_eq!(d.estimated_rows, Some(1200));
+        let schema = d.schema.as_ref().expect("schema");
+        assert_eq!(schema["properties"]["id"]["type"], "integer");
+    }
+
+    #[test]
+    fn descriptor_for_index_falls_back_to_first_mapping_entry() {
+        // The _mapping response is keyed by the *concrete* index name, which
+        // differs from the requested name when it resolved via an alias.
+        let body = json!({
+            "orders-000001": {"mappings": {"properties": {"id": {"type": "long"}}}}
+        });
+        let d = descriptor_for_index("orders", None, &body);
+        assert_eq!(d.estimated_rows, None);
+        let schema = d.schema.as_ref().expect("schema");
+        assert_eq!(schema["properties"]["id"]["type"], "integer");
+    }
+
+    #[test]
+    fn descriptor_for_index_missing_mappings_yields_empty_schema() {
+        let d = descriptor_for_index("orders", Some(0), &json!({}));
+        assert_eq!(
+            d.schema,
+            Some(json!({"type": "object", "properties": {}})),
+            "no mappings → empty object schema, never a panic"
+        );
+    }
+
+    #[test]
+    fn source_advertises_discover() {
+        let config = ElasticsearchSourceConfig::new("http://localhost:9200", "idx");
+        let source = ElasticsearchSource::new(config).unwrap();
+        assert!(source.supports_discover());
     }
 }
