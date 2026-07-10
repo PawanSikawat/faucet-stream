@@ -367,6 +367,13 @@ pub enum CliError {
     #[error("{failed} test case(s) failed")]
     TestsFailed { failed: usize },
 
+    /// One or more `faucet backfill` units failed. The per-unit report is
+    /// printed by the command (progress is already durably recorded, so
+    /// `--resume` retries only the failures); `main` maps this to an exit
+    /// code equal to the failed-unit count (clamped to 255).
+    #[error("{failed} backfill unit(s) failed")]
+    BackfillFailed { failed: usize },
+
     /// A `faucet serve` startup or runtime failure (bind, auth gate, etc.).
     #[error("serve error: {0}")]
     Serve(String),

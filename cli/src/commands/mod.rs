@@ -1,6 +1,7 @@
 //! Subcommand implementations. Each module owns its `run(...)` entry point
 //! and stays free of clap so the integration tests can drive it directly.
 
+pub mod backfill;
 #[cfg(feature = "catalog")]
 pub mod catalog;
 #[cfg(feature = "contract")]

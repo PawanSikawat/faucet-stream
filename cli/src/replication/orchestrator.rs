@@ -109,8 +109,9 @@ fn make_opts(opts: &ReplicationOptions, cancel: Option<CancellationToken>) -> Ex
     }
 }
 
-/// Spawn a task that cancels `token` on SIGTERM (Unix) or Ctrl-C.
-fn spawn_cancel_on_signal(token: CancellationToken) {
+/// Spawn a task that cancels `token` on SIGTERM (Unix) or Ctrl-C. Shared
+/// with the backfill orchestrator.
+pub(crate) fn spawn_cancel_on_signal(token: CancellationToken) {
     tokio::spawn(async move {
         #[cfg(unix)]
         {

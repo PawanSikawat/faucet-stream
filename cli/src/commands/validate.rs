@@ -54,6 +54,20 @@ pub async fn run(args: ValidateArgs) -> CliResult<()> {
         println!("replication: mode={:?} — valid", spec.mode);
     }
 
+    // Validate the backfill defaults block (window / concurrency / timezone)
+    // and the window-scoping requirement: a `backfill:` block on a pipeline
+    // whose sources reference no `${backfill.*}` / `${now.*}` token would
+    // replay identical data into every window (#282). Offline-safe.
+    if let Some(spec) = &cfg.backfill {
+        let source_configs: Vec<String> = nodes
+            .iter()
+            .filter(|n| matches!(n.role, crate::expand::NodeRole::Root))
+            .map(|n| n.source.config.to_string())
+            .collect();
+        spec.validate(&source_configs)?;
+        println!("backfill: defaults valid");
+    }
+
     // Validate the schedule block (cron / timezone / bounds) so `faucet validate`
     // catches schedule misconfiguration in CI without running. Offline-safe.
     #[cfg(feature = "schedule")]

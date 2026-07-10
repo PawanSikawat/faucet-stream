@@ -20,6 +20,10 @@ pub struct Cli {
 pub enum Command {
     /// Execute a pipeline config end-to-end.
     Run(RunArgs),
+    /// Replay a bounded historical window of a pipeline: chunk --from/--to
+    /// into window units, run them with bounded parallelism, and record
+    /// durable, resumable progress. Exits non-zero if any unit fails.
+    Backfill(BackfillArgs),
     /// Bulk-snapshot a database table, then stream CDC from a position captured
     /// before the snapshot (a true mirror with `write_mode: upsert`).
     /// Long-running when `replication.continuous` is true (Ctrl-C / SIGTERM to stop).
@@ -563,6 +567,78 @@ pub struct RunArgs {
     pub profile: Option<String>,
 }
 
+/// `faucet backfill` arguments.
+#[derive(Debug, Parser)]
+pub struct BackfillArgs {
+    /// Path to a `.yaml`, `.yml`, or `.json` pipeline config. If omitted,
+    /// auto-discover `faucet.yaml` / `faucet.yml` / `faucet.json` in cwd.
+    pub config: Option<PathBuf>,
+    /// Window start (inclusive): RFC3339 (`2026-06-01T00:00:00Z`) or a date
+    /// (`2026-06-01`, midnight in --timezone). Requires --to.
+    #[arg(long, requires = "to", conflicts_with = "from_bookmark")]
+    pub from: Option<String>,
+    /// Window end (exclusive): RFC3339 or a date.
+    #[arg(long, requires = "from", conflicts_with = "from_bookmark")]
+    pub to: Option<String>,
+    /// Chunk the range into windows of this duration (`45s`, `30m`, `6h`,
+    /// `1d`, `1w`) so each chunk is an independent, resumable unit. Defaults
+    /// to the config's `backfill.window`; omitted = one unit for the whole
+    /// range.
+    #[arg(long)]
+    pub window: Option<String>,
+    /// Replay from this explicit bookmark value instead of a wall-clock
+    /// range (seeded into the backfill's scoped state key; the source's own
+    /// incremental logic reads forward from it). JSON or a bare string.
+    #[arg(long)]
+    pub from_bookmark: Option<String>,
+    /// Upper bookmark bound: records whose --bookmark-field orders after
+    /// this value are dropped before the sink.
+    #[arg(long, requires_all = ["from_bookmark", "bookmark_field"])]
+    pub to_bookmark: Option<String>,
+    /// Record field the --to-bookmark bound applies to.
+    #[arg(long)]
+    pub bookmark_field: Option<String>,
+    /// Max concurrently-running window units. Defaults to the config's
+    /// `backfill.concurrency`, else 1 (sequential).
+    #[arg(long)]
+    pub concurrency: Option<usize>,
+    /// IANA timezone for date boundaries and `${now.*}` rendering. Defaults
+    /// to the config's `backfill.timezone`, else UTC.
+    #[arg(long)]
+    pub timezone: Option<String>,
+    /// Root row of the config to backfill. Defaults to the only root.
+    #[arg(long)]
+    pub row: Option<String>,
+    /// Redirect writes to this named sink template under `pipeline.sinks`
+    /// (backfill into a staging table first).
+    #[arg(long)]
+    pub into: Option<String>,
+    /// Print the planned units without running anything.
+    #[arg(long)]
+    pub dry_run: bool,
+    /// Continue a previously-interrupted backfill of the same range: skip
+    /// units already done, re-run failed and pending ones.
+    #[arg(long, conflicts_with = "restart")]
+    pub resume: bool,
+    /// Discard a previous progress marker for this range and start over.
+    #[arg(long)]
+    pub restart: bool,
+    /// Emit a machine-readable JSON report instead of the human summary.
+    #[arg(long)]
+    pub json: bool,
+    /// Path to a `.env` file to load for `${env:VAR}` interpolation.
+    /// Defaults to `.env` in cwd if present.
+    #[arg(long, conflicts_with = "no_env_file")]
+    pub env_file: Option<PathBuf>,
+    /// Skip auto-loading `.env` from cwd.
+    #[arg(long)]
+    pub no_env_file: bool,
+    /// Select a named overlay from the config's `profiles:` block.
+    /// Overrides the `FAUCET_PROFILE` env var.
+    #[arg(long, env = "FAUCET_PROFILE")]
+    pub profile: Option<String>,
+}
+
 /// `faucet replicate` arguments.
 #[derive(Debug, Parser)]
 pub struct ReplicateArgs {
@@ -683,6 +759,8 @@ pub enum SchemaTarget {
     Dlq,
     /// JSON Schema for the `replication:` (snapshot→CDC) block.
     Replication,
+    /// JSON Schema for the `backfill:` (window replay defaults) block.
+    Backfill,
     /// JSON Schema for the top-level `execution:` block.
     Execution,
     /// JSON Schema for the top-level `resilience:` block.

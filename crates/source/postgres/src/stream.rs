@@ -221,8 +221,8 @@ fn descriptors_from_catalog(
     let mut out: Vec<faucet_core::DatasetDescriptor> = Vec::new();
     let mut current: Option<(String, String, Option<i64>, Vec<(String, Value)>)> = None;
 
-    let mut flush = |cur: Option<(String, String, Option<i64>, Vec<(String, Value)>)>,
-                     out: &mut Vec<faucet_core::DatasetDescriptor>| {
+    let flush = |cur: Option<(String, String, Option<i64>, Vec<(String, Value)>)>,
+                 out: &mut Vec<faucet_core::DatasetDescriptor>| {
         if let Some((schema, table, est, cols)) = cur {
             let query = format!("SELECT * FROM {}.{}", quote(&schema), quote(&table));
             let mut d = faucet_core::DatasetDescriptor::new(
