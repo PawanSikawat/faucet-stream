@@ -24,8 +24,8 @@
 //! `schema`, `list`, `preview`, `serve`, …).
 
 use faucet_cli::registry::PluginRegistry;
-use faucet_core::{async_trait, schema_for, FaucetError, JsonSchema, Source};
-use faucet_core::serde_json::{json, Value};
+use faucet_core::serde_json::{Value, json};
+use faucet_core::{FaucetError, JsonSchema, Source, async_trait, schema_for};
 use serde::Deserialize;
 use std::collections::HashMap;
 

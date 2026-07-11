@@ -36,8 +36,10 @@ pub mod obs;
 pub mod pipeline_test;
 pub mod registry;
 pub mod replication;
+pub mod scaffold;
 #[cfg(feature = "schedule")]
 pub mod schedule;
+pub mod schema_compose;
 pub mod secrets;
 #[cfg(feature = "serve")]
 pub mod serve;
@@ -133,6 +135,7 @@ pub async fn run_command(cli: Cli) -> CliResult<()> {
         Command::List => commands::list::run().await,
         Command::Preview(args) => commands::preview::run(args).await,
         Command::Init(args) => commands::init::run(args).await,
+        Command::New(args) => commands::new::run(args).await,
         Command::Doctor(args) => commands::doctor::run(args).await,
         Command::Test(args) => commands::test::run(args).await,
         Command::Dlq(args) => commands::dlq::run(args).await,

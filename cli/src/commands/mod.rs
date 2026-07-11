@@ -13,6 +13,7 @@ pub mod init;
 pub mod list;
 #[cfg(feature = "masking")]
 pub mod masking;
+pub mod new;
 #[cfg(feature = "notify")]
 pub mod notify;
 pub mod preview;

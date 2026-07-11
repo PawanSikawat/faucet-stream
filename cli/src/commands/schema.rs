@@ -8,6 +8,7 @@ use crate::transforms::transform_schema;
 /// Execute the `schema` subcommand.
 pub async fn run(args: SchemaArgs) -> CliResult<()> {
     let schema = match args.target {
+        SchemaTarget::Config => crate::schema_compose::config_schema(),
         SchemaTarget::Source { name } => source_schema(&name)?,
         SchemaTarget::Sink { name } => sink_schema(&name)?,
         SchemaTarget::Transform { name } => transform_schema(&name)?,

@@ -42,6 +42,8 @@ pub enum Command {
     Preview(PreviewArgs),
     /// Scaffold a starter `pipeline.yaml` to disk.
     Init(InitArgs),
+    /// Scaffold a new artifact — currently a third-party connector crate.
+    New(NewArgs),
     /// Probe every connector in a config (auth / network / permissions) and
     /// print a green/red checklist. Exits non-zero if any probe fails.
     Doctor(DoctorArgs),
@@ -739,6 +741,10 @@ pub struct SchemaArgs {
 /// Schema subcommand target — which connector or system component to describe.
 #[derive(Debug, Subcommand)]
 pub enum SchemaTarget {
+    /// Composed JSON Schema for the **entire** `faucet.yaml` / `faucet.json`
+    /// config document (top-level grammar + per-connector `type` discrimination).
+    /// Point an editor at it with a `# yaml-language-server: $schema=…` header.
+    Config,
     /// JSON Schema for a source connector config.
     Source {
         /// Connector name (e.g. `rest`, `graphql`, `postgres`).
@@ -859,4 +865,40 @@ pub struct InitArgs {
     /// `--discover`), e.g. `tap-github` or `/opt/taps/tap-csv`.
     #[arg(long)]
     pub executable: Option<String>,
+}
+
+/// `faucet new` arguments.
+#[derive(Debug, Parser)]
+pub struct NewArgs {
+    #[command(subcommand)]
+    pub target: NewTarget,
+}
+
+/// What `faucet new` scaffolds.
+#[derive(Debug, Subcommand)]
+pub enum NewTarget {
+    /// Scaffold a ready-to-build `faucet-source-<name>` / `faucet-sink-<name>`
+    /// connector crate following every repo convention.
+    Connector(NewConnectorArgs),
+}
+
+/// `faucet new connector` arguments.
+#[derive(Debug, Parser)]
+pub struct NewConnectorArgs {
+    /// Connector system name (lowercase, e.g. `acme` or `acme-widgets`). Becomes
+    /// the crate name `faucet-<kind>-<name>` and the YAML `type:` value.
+    pub name: String,
+    /// Whether to scaffold a `source` or a `sink`.
+    #[arg(long)]
+    pub kind: String,
+    /// Also scaffold a `faucet-common-<name>` crate for config shared between a
+    /// source/sink pair.
+    #[arg(long)]
+    pub common: bool,
+    /// Directory to write the new crate(s) into. Defaults to the current dir.
+    #[arg(long, short = 'o', default_value = ".")]
+    pub output: PathBuf,
+    /// Overwrite any existing files.
+    #[arg(long)]
+    pub force: bool,
 }

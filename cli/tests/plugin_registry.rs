@@ -12,8 +12,8 @@
 use clap::Parser;
 use faucet_cli::cli::Cli;
 use faucet_cli::registry::{self, PluginRegistry};
-use faucet_core::{async_trait, FaucetError, Sink, Source};
-use serde_json::{json, Value};
+use faucet_core::{FaucetError, Sink, Source, async_trait};
+use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
@@ -100,8 +100,8 @@ async fn custom_connectors_flow_from_yaml() {
     )
     .unwrap();
 
-    let cli = Cli::try_parse_from(["faucet", "run", cfg_path.to_str().unwrap()])
-        .expect("cli parses");
+    let cli =
+        Cli::try_parse_from(["faucet", "run", cfg_path.to_str().unwrap()]).expect("cli parses");
     faucet_cli::run_command(cli)
         .await
         .expect("pipeline runs to completion");

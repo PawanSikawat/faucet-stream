@@ -1083,7 +1083,9 @@ mod tests {
             .register_source("csv", |_| Ok(Box::new(DummySource) as Box<dyn Source>));
         // install() surfaces the stashed error WITHOUT touching the global
         // (errors are checked before the OnceLock is set), so this is race-free.
-        let err = reg.install().expect_err("built-in collision must be rejected");
+        let err = reg
+            .install()
+            .expect_err("built-in collision must be rejected");
         match err {
             CliError::Config(msg) => assert!(msg.contains("built-in source"), "{msg}"),
             other => panic!("expected Config error, got {other:?}"),
@@ -1095,7 +1097,9 @@ mod tests {
         let reg = PluginRegistry::new()
             .register_source("dup", |_| Ok(Box::new(DummySource) as Box<dyn Source>))
             .register_source("dup", |_| Ok(Box::new(DummySource) as Box<dyn Source>));
-        let err = reg.install().expect_err("duplicate registration must be rejected");
+        let err = reg
+            .install()
+            .expect_err("duplicate registration must be rejected");
         match err {
             CliError::Config(msg) => assert!(msg.contains("more than once"), "{msg}"),
             other => panic!("expected Config error, got {other:?}"),
@@ -1108,11 +1112,13 @@ mod tests {
         // stashed; we inspect it via the private field rather than install()
         // so no global state is touched even indirectly.
         let reg = PluginRegistry::new()
-            .register_sink("dupsink", |_| {
-                Err(CliError::Config("unused".into()))
-            })
+            .register_sink("dupsink", |_| Err(CliError::Config("unused".into())))
             .register_sink("dupsink", |_| Err(CliError::Config("unused".into())));
-        assert!(reg.errors.iter().any(|e| e.contains("more than once")), "{:?}", reg.errors);
+        assert!(
+            reg.errors.iter().any(|e| e.contains("more than once")),
+            "{:?}",
+            reg.errors
+        );
     }
 
     #[test]

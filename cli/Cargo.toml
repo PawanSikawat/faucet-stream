@@ -357,6 +357,9 @@ rdkafka = { workspace = true, optional = true }
 
 [dev-dependencies]
 tempfile = "3"
+# `faucet schema config` composed-schema tests (#213): validate the shipped
+# example configs against the emitted top-level JSON Schema.
+jsonschema = { workspace = true }
 assert_cmd = "2"
 predicates = "3"
 wiremock = "0.6"

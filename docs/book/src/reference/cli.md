@@ -8,9 +8,10 @@ The `faucet` binary exposes these commands. Pass `--log-level <level>` (or set
 | `faucet run [config]` | Run the pipeline(s) in a config file. |
 | `faucet validate [config]` | Parse, expand, and validate a config without running it. |
 | `faucet preview [config]` | Run only the source side and print records to stdout. |
-| `faucet schema <target>` | Print the JSON Schema for a connector, transform, or the DLQ. |
+| `faucet schema <target>` | Print the JSON Schema for the whole config (`config`), a connector, a transform, or any block. |
 | `faucet list` | List every compiled-in source, sink, and transform with a one-line description. |
 | `faucet init [name]` | Scaffold a commented config skeleton from connector schemas. |
+| `faucet new connector <name> --kind <source\|sink>` | Scaffold a ready-to-build connector crate. |
 | `faucet doctor [config]` | Probe every connector (auth/network/permissions) and print a checklist. |
 | `faucet test <specs…>` | Run fixture-based offline pipeline tests from one or more spec files. |
 | `faucet replicate [config]` | Bulk-snapshot a table, then hand off to CDC for a gap-free mirror. |
@@ -136,6 +137,7 @@ previewing. Same semantics as `run` and `validate`.
 ## `schema`
 
 ```bash
+faucet schema config          # the WHOLE config document (top-level grammar)
 faucet schema source rest
 faucet schema sink bigquery
 faucet schema transform keys_case
@@ -149,6 +151,16 @@ faucet schema secrets
 faucet schema triggers
 faucet schema catalog
 ```
+
+`faucet schema config` prints a composed JSON Schema for the **entire**
+`faucet.yaml` / `faucet.json` document — the top-level grammar (`version`,
+`name`, `vars`, `auth`, `pipeline`, `matrix`, `execution`, and every optional
+block such as `schedule` / `lineage` / `quality` / `dlq` / `resilience` that is
+compiled into your binary) plus per-connector `type` discrimination: the
+`source` / `sink` positions become a `oneOf` over the connector kinds your
+binary knows, each branch embedding that connector's own config schema. Point an
+editor at it for autocomplete and validation as you type — see
+[Editor setup](./editor-setup.md).
 
 `faucet schema transform <name>` prints the inline config schema for a
 transform (e.g. `keys_case` lists the valid `mode:` values). Run
@@ -197,6 +209,25 @@ faucet init --source singer --discover --executable tap-github -o pipeline.yaml
 
 `faucet doctor` then verifies the tap resolves on `PATH` and that the selected
 `stream` exists in the catalog.
+
+## `new`
+
+Scaffold a new **connector crate** (not a config) that follows every repo
+convention — ready to `cargo build` and publish:
+
+```bash
+faucet new connector acme --kind source            # → faucet-source-acme/
+faucet new connector acme --kind sink --common      # + a faucet-common-acme/ crate
+faucet new connector acme --kind source -o crates/  # write into crates/
+```
+
+The generated crate has the standard module layout (`config.rs`, `stream.rs` or
+`sink.rs`), a `JsonSchema`-deriving config, `config_schema()` / `connector_name()`
+overrides, the `#![cfg_attr(docsrs, feature(doc_cfg))]` crate-root line, the
+`[package.metadata.docs.rs]` block, system-name-first crates.io keywords, a
+README, and a passing unit test — so `cargo test` is green out of the box with a
+trivial passthrough. Fill in the `TODO`s, then publish. See
+[Authoring a connector](../extending/authoring-connectors.md).
 
 ## `doctor`
 

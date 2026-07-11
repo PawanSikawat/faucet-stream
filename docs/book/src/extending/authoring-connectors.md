@@ -5,6 +5,29 @@ faucet-stream is designed as an ecosystem: third parties can publish their own
 is the only required dependency** — it re-exports everything a connector author
 needs (`async_trait`, `serde_json`, `schemars`).
 
+## Scaffold it in one command
+
+Don't hand-assemble the crate — generate one that already follows every
+convention below:
+
+```bash
+faucet new connector acme --kind source        # → faucet-source-acme/
+faucet new connector acme --kind sink --common  # also emit faucet-common-acme/
+```
+
+The generated crate has the standard module layout (`config.rs`, `stream.rs` /
+`sink.rs`), a `JsonSchema`-deriving config, the `config_schema()` /
+`connector_name()` overrides, the `#![cfg_attr(docsrs, feature(doc_cfg))]`
+crate-root line, the `[package.metadata.docs.rs]` block, system-name-first
+crates.io keywords, a README, and a passing unit test — so `cargo test` is green
+immediately with a trivial passthrough. Replace the `TODO`s with your real
+config fields and I/O, then publish. The rest of this page explains what the
+scaffold sets up.
+
+To make your published connector usable from a `faucet.yaml` config (not just
+from Rust), see
+[Custom binaries with third-party connectors](https://github.com/PawanSikawat/faucet-stream/blob/main/cli/README.md#custom-binaries-with-third-party-connectors).
+
 ## The traits
 
 Implement `Source` or `Sink`. Both are object-safe (`Box<dyn Source>` works) and
