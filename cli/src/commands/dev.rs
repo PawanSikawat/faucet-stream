@@ -30,7 +30,7 @@ pub struct RecordDiff {
 pub fn diff_records(prev: &[Value], curr: &[Value]) -> RecordDiff {
     let ser = |v: &Value| serde_json::to_string(v).unwrap_or_default();
     let prev_set: BTreeSet<String> = prev.iter().map(ser).collect();
-    let curr_set: BTreeSet<String> = curr.iter().map(&ser).collect();
+    let curr_set: BTreeSet<String> = curr.iter().map(ser).collect();
     RecordDiff {
         added: curr_set.difference(&prev_set).cloned().collect(),
         removed: prev_set.difference(&curr_set).cloned().collect(),

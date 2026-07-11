@@ -440,7 +440,6 @@ async fn run_once(
 
 /// The scheduling loop.
 #[allow(clippy::too_many_arguments)]
-#[allow(clippy::too_many_arguments)]
 async fn run_loop(
     mut compiled: CompiledSchedule,
     mut nodes: Vec<ExpandedNode>,
