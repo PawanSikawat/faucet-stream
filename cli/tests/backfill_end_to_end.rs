@@ -9,7 +9,6 @@
 use faucet_cli::backfill::state::{BackfillState, marker_key};
 use faucet_cli::backfill::{BackfillOptions, BackfillRange, run_backfill};
 use faucet_cli::config::PipelineConfig;
-use faucet_core::StateStore;
 use serde_json::json;
 use std::path::Path;
 

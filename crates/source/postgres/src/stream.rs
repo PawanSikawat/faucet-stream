@@ -211,6 +211,10 @@ fn bind_params<'q>(
 /// (schema, table, column, data_type, is_nullable, estimated_rows)
 type CatalogRow = (String, String, String, String, bool, Option<i64>);
 
+/// A table mid-accumulation while grouping catalog rows:
+/// (schema, table, estimated_rows, columns).
+type PendingTable = (String, String, Option<i64>, Vec<(String, Value)>);
+
 /// Group flattened catalog rows (ordered by schema, table, ordinal position)
 /// into one [`DatasetDescriptor`] per table. Pure — unit-testable without a
 /// live server. `quote` is the dialect's identifier quoter.
@@ -219,10 +223,9 @@ fn descriptors_from_catalog(
     quote: fn(&str) -> String,
 ) -> Vec<faucet_core::DatasetDescriptor> {
     let mut out: Vec<faucet_core::DatasetDescriptor> = Vec::new();
-    let mut current: Option<(String, String, Option<i64>, Vec<(String, Value)>)> = None;
+    let mut current: Option<PendingTable> = None;
 
-    let flush = |cur: Option<(String, String, Option<i64>, Vec<(String, Value)>)>,
-                 out: &mut Vec<faucet_core::DatasetDescriptor>| {
+    let flush = |cur: Option<PendingTable>, out: &mut Vec<faucet_core::DatasetDescriptor>| {
         if let Some((schema, table, est, cols)) = cur {
             let query = format!("SELECT * FROM {}.{}", quote(&schema), quote(&table));
             let mut d = faucet_core::DatasetDescriptor::new(
