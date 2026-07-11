@@ -35,12 +35,21 @@ struct PostgresStateConfig {
     table: String,
     #[serde(default)]
     ensure_table: bool,
+    /// Size of the connection pool backing the state store. Defaults to
+    /// [`DEFAULT_PG_POOL_SIZE`] when omitted. Must be greater than zero.
+    #[serde(default)]
+    max_connections: Option<u32>,
 }
 
 #[cfg(feature = "state-postgres")]
 fn default_pg_table() -> String {
     "faucet_state".to_owned()
 }
+
+/// Default Postgres state-store pool size, matching the connector's own
+/// `PostgresStateStore::connect` default. Used when `max_connections` is absent.
+#[cfg(feature = "state-postgres")]
+const DEFAULT_PG_POOL_SIZE: u32 = 5;
 
 /// Construct a state store from the parsed `state:` block.
 pub async fn build_state_store(spec: &StateStoreSpec) -> CliResult<Arc<dyn StateStore>> {
@@ -60,9 +69,18 @@ pub async fn build_state_store(spec: &StateStoreSpec) -> CliResult<Arc<dyn State
         #[cfg(feature = "state-postgres")]
         "postgres" => {
             let cfg = decode::<PostgresStateConfig>("postgres", spec.config.clone())?;
-            let store =
-                faucet_state_postgres::PostgresStateStore::connect_with(&cfg.url, 5, &cfg.table)
-                    .await?;
+            let max_connections = cfg.max_connections.unwrap_or(DEFAULT_PG_POOL_SIZE);
+            if max_connections == 0 {
+                return Err(CliError::Config(
+                    "state.config.max_connections must be greater than 0".to_owned(),
+                ));
+            }
+            let store = faucet_state_postgres::PostgresStateStore::connect_with(
+                &cfg.url,
+                max_connections,
+                &cfg.table,
+            )
+            .await?;
             if cfg.ensure_table {
                 store.ensure_table().await?;
             }
@@ -118,6 +136,26 @@ mod tests {
         };
         let store = build_state_store(&spec).await.unwrap();
         store.put("k", &json!("v")).await.unwrap();
+    }
+
+    // `max_connections: 0` is rejected at config-load time with a typed
+    // `Config` error, before any connection attempt — so the assertion holds
+    // offline without a running Postgres.
+    #[cfg(feature = "state-postgres")]
+    #[tokio::test]
+    async fn postgres_state_rejects_zero_max_connections() {
+        let spec = StateStoreSpec {
+            kind: "postgres".into(),
+            config: json!({
+                "url": "postgres://user:pass@localhost/faucet",
+                "max_connections": 0,
+            }),
+        };
+        let err = build_state_store(&spec).await.err().expect("should fail");
+        match err {
+            CliError::Config(msg) => assert!(msg.contains("max_connections"), "{msg}"),
+            other => panic!("expected Config error, got {other:?}"),
+        }
     }
 
     #[tokio::test]

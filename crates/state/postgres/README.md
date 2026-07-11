@@ -76,8 +76,9 @@ faucet run pipeline.yaml
 | `url` | string | — *(required)* | PostgreSQL connection URL (`postgres://user:pass@host:port/db`). Resolve secrets via `${env:VAR}` / `${secret:…}` indirection — never hard-code credentials. |
 | `table` | string | `faucet_state` | Table that holds state rows. Validated as a Postgres identifier (ASCII letters/digits/underscore, ≤ 63 chars). |
 | `ensure_table` | bool | `false` | When `true`, run `CREATE TABLE IF NOT EXISTS` on startup. Leave `false` if you provision the table via migrations or want to grant the runtime role no DDL. |
+| `max_connections` | integer | `5` | Size of the connection pool backing the state store. Tune it up when many concurrent matrix rows share one state store, or down against a connection-limited managed Postgres. Rejected at config-load time when `0`. |
 
-The CLI uses a fixed pool size of 5 connections for the state store. Library callers can size the pool themselves via [`PostgresStateStore::connect_with`].
+`max_connections` maps onto [`PostgresStateStore::connect_with`]; library callers can also size the pool directly.
 
 > **Tip:** the state database can be the *same* Postgres instance as your source or sink — just give it its own `url`/`table`. It does not have to be a separate server.
 
