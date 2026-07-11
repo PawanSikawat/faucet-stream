@@ -69,26 +69,25 @@ pub fn config_schema() -> Value {
     // Point the source/sink positions of PipelineSpec at the discriminated
     // unions. When the derived schema uses a different `$defs` key we mirror it.
     let ref_prefix = format!("#/{defs_key}/");
-    if let Some(pipeline_spec) = defs.get_mut("PipelineSpec").and_then(Value::as_object_mut) {
-        if let Some(props) = pipeline_spec
+    if let Some(pipeline_spec) = defs.get_mut("PipelineSpec").and_then(Value::as_object_mut)
+        && let Some(props) = pipeline_spec
             .get_mut("properties")
             .and_then(Value::as_object_mut)
-        {
-            retarget_property(
-                props,
-                "source",
-                &format!("{ref_prefix}SourceConnector"),
-                false,
-            );
-            retarget_property(props, "sink", &format!("{ref_prefix}SinkConnector"), false);
-            retarget_property(
-                props,
-                "sources",
-                &format!("{ref_prefix}SourceConnector"),
-                true,
-            );
-            retarget_property(props, "sinks", &format!("{ref_prefix}SinkConnector"), true);
-        }
+    {
+        retarget_property(
+            props,
+            "source",
+            &format!("{ref_prefix}SourceConnector"),
+            false,
+        );
+        retarget_property(props, "sink", &format!("{ref_prefix}SinkConnector"), false);
+        retarget_property(
+            props,
+            "sources",
+            &format!("{ref_prefix}SourceConnector"),
+            true,
+        );
+        retarget_property(props, "sinks", &format!("{ref_prefix}SinkConnector"), true);
     }
 
     root

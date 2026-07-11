@@ -271,10 +271,9 @@ pub async fn run(args: PlanArgs) -> CliResult<()> {
             },
         };
         report.sample = Some(SampleReport {
-            source: if args.sample.is_some() {
-                format!("fixture:{}", args.sample.as_ref().unwrap().display())
-            } else {
-                format!("live:{} (≤{})", node.source.kind, args.limit)
+            source: match &args.sample {
+                Some(p) => format!("fixture:{}", p.display()),
+                None => format!("live:{} (≤{})", node.source.kind, args.limit),
             },
             input_records,
             output_records: run.written.len(),
