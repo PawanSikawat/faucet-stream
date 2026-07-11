@@ -97,6 +97,63 @@ Map every failure to a `FaucetError` variant. Third-party error types wrap into
 `FaucetError::Custom(Box<dyn Error + Send + Sync>)` without losing the chain.
 Never `.unwrap()` on anything that can fail at runtime.
 
+## Self-certify with the conformance battery
+
+A connector becomes **Tier-1 / conformant** by adding a `tests/conformance.rs`
+that invokes the reusable `faucet-conformance` battery against the *real*
+connector and passing it in CI. That battery **is** the tiering mechanism —
+there is no separate scheme. Anything not yet wired into it is Tier-2 (still
+useful, usually with its own integration tests — Tier-2 does not mean low
+quality).
+
+Add the battery as a dev-dependency (it is a path-only workspace crate, so it
+does not need to be published first):
+
+```toml
+[dev-dependencies]
+faucet-conformance.workspace = true
+```
+
+For a **source**, drive the checks against a live connector:
+
+```rust,ignore
+// crates/source/foo/tests/conformance.rs
+use faucet_source_foo::{FooSource, FooSourceConfig};
+
+#[test]
+fn conformance_config_schema_valid() {
+    let source = FooSource::new(FooSourceConfig::new(/* … */));
+    faucet_conformance::assert_config_schema_valid(&source);
+}
+
+#[tokio::test]
+async fn conformance_bounded_memory() {
+    // drive a source that yields `total` records in pages of `batch`
+    faucet_conformance::assert_bounded_memory(&source, batch, total).await;
+}
+
+#[tokio::test]
+async fn conformance_errors_not_panics() {
+    // a source configured to fail must return Err, not panic
+    faucet_conformance::assert_errors_not_panics(&broken_source).await;
+}
+```
+
+Resumable sources also add `assert_bookmark_roundtrip` (persist a bookmark,
+re-run, confirm the stream resumes at exactly that position). For a **sink**,
+use `assert_idempotent_replay` and `assert_capabilities_truthful` — both take a
+`distinct_count` closure that returns the destination's current row count (for a
+real sink, a `SELECT count(*)` against the target table).
+
+**Assert the honest branch.** Where a connector legitimately can't satisfy a
+check — an append-only sink has no idempotency mechanism, for instance — don't
+skip it: assert the honest behaviour instead. The capability method returns
+`false` and the pipeline refuses `delivery: exactly_once`. A passing conformance
+run that documents what a connector *cannot* do is exactly the point.
+
+The full contract is the
+[Faucet Connector Protocol (FCP v0)](../spec/faucet-connector-spec-v0.md).
+
 ## docs.rs setup
 
 So docs.rs renders your full API with per-feature badges, add to `Cargo.toml`:
