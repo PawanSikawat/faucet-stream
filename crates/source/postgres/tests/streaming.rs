@@ -492,7 +492,11 @@ async fn discover_enumerates_tables_with_schemas() {
     assert_eq!(orders.estimated_rows, Some(50), "reltuples after ANALYZE");
     let schema = orders.schema.as_ref().expect("schema");
     assert_eq!(schema["properties"]["id"]["type"], "integer");
-    assert_eq!(schema["properties"]["total"]["type"], "number");
+    assert_eq!(
+        schema["properties"]["total"]["type"],
+        serde_json::json!(["number", "null"]),
+        "total is declared without NOT NULL, so it is nullable-wrapped"
+    );
     assert_eq!(
         schema["properties"]["note"]["type"],
         serde_json::json!(["string", "null"]),
