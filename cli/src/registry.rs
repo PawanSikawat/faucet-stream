@@ -10,6 +10,247 @@ use crate::error::{CliError, CliResult};
 use faucet_core::{Sink, Source};
 use serde::de::DeserializeOwned;
 use serde_json::Value;
+use std::collections::BTreeMap;
+use std::sync::{Arc, OnceLock};
+
+/// A factory that builds a [`Source`] trait object from its JSON/YAML config
+/// (`source.config`). This is the extension point third-party connectors plug
+/// into: a custom-CLI author registers one per connector `type:` they want
+/// their `faucet` binary to understand.
+///
+/// The factory is **synchronous** — a connector that needs to connect eagerly
+/// should do so lazily on first use (the pattern every built-in file/DB
+/// connector already follows). Return a typed error (wrap your own error in
+/// [`faucet_core::FaucetError::Custom`]) on invalid config.
+pub type SourceFactory = Arc<dyn Fn(Value) -> CliResult<Box<dyn Source>> + Send + Sync>;
+
+/// A factory that builds a [`Sink`] trait object from its `sink.config`. See
+/// [`SourceFactory`] for the contract.
+pub type SinkFactory = Arc<dyn Fn(Value) -> CliResult<Box<dyn Sink>> + Send + Sync>;
+
+/// A closure returning the JSON Schema for a custom connector's config. Powers
+/// `faucet schema source <name>` / `faucet schema sink <name>` for third-party
+/// connectors without instantiating one. Typically `|| schema_for!(MyConfig)`.
+pub type SchemaFn = Arc<dyn Fn() -> Value + Send + Sync>;
+
+struct SourceEntry {
+    factory: SourceFactory,
+    schema: SchemaFn,
+    description: &'static str,
+}
+
+struct SinkEntry {
+    factory: SinkFactory,
+    schema: SchemaFn,
+    description: &'static str,
+}
+
+/// A registry of connector factories keyed by their YAML `type:` string.
+///
+/// The built-in connectors are dispatched by a compile-time `match` (gated by
+/// the `source-*` / `sink-*` Cargo features); this registry holds **only the
+/// third-party connectors** a custom-CLI author registers on top. The two are
+/// merged transparently — [`build_source`] / [`source_schema`] /
+/// [`source_descriptions`] (and their sink counterparts) consult the registered
+/// customs first and fall back to the built-in `match`, so a custom connector is
+/// usable from `faucet.yaml` exactly like a built-in one, across every command
+/// (`run`, `validate`, `schema`, `list`, `preview`, `serve`, …).
+///
+/// # Example
+///
+/// ```no_run
+/// use faucet_cli::registry::PluginRegistry;
+/// # use faucet_core::{Source, async_trait, serde_json::Value};
+/// # use std::collections::HashMap;
+/// # struct MySource;
+/// # impl MySource { fn from_value(_: Value) -> Result<Self, faucet_core::FaucetError> { Ok(MySource) } }
+/// # #[async_trait]
+/// # impl Source for MySource {
+/// #     async fn fetch_with_context(&self, _: &HashMap<String, Value>) -> Result<Vec<Value>, faucet_core::FaucetError> { Ok(vec![]) }
+/// #     fn config_schema(&self) -> Value { Value::Null }
+/// # }
+/// let registry = PluginRegistry::with_builtins()
+///     .register_source("my", |cfg| Ok(Box::new(MySource::from_value(cfg)?)));
+/// faucet_cli::run_main(registry);
+/// ```
+#[derive(Default)]
+pub struct PluginRegistry {
+    sources: BTreeMap<&'static str, SourceEntry>,
+    sinks: BTreeMap<&'static str, SinkEntry>,
+    /// Registration errors (name collisions) stashed during the builder chain
+    /// and surfaced by [`PluginRegistry::install`] so `register_*` can stay
+    /// chainable.
+    errors: Vec<String>,
+}
+
+impl PluginRegistry {
+    /// An empty registry. Custom connectors registered on top of the built-ins.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// A registry seeded with the built-in connectors. The built-ins are
+    /// dispatched by the compile-time `match`, so this is currently equivalent
+    /// to [`PluginRegistry::new`] — but it is the canonical constructor a
+    /// custom `main.rs` should call so that future changes to how built-ins are
+    /// registered are picked up automatically.
+    pub fn with_builtins() -> Self {
+        Self::default()
+    }
+
+    /// Register a custom source connector under `name` (its YAML `type:`).
+    /// Chainable. A collision with a built-in or a previously-registered custom
+    /// name is recorded and surfaced by [`install`](Self::install).
+    #[must_use]
+    pub fn register_source<F>(self, name: &str, factory: F) -> Self
+    where
+        F: Fn(Value) -> CliResult<Box<dyn Source>> + Send + Sync + 'static,
+    {
+        self.register_source_with(name, factory, || serde_json::json!({"type": "object"}), "")
+    }
+
+    /// Register a custom source with an explicit schema closure and one-line
+    /// description (shown by `faucet list` and `faucet schema source <name>`).
+    #[must_use]
+    pub fn register_source_with<F, S>(
+        mut self,
+        name: &str,
+        factory: F,
+        schema: S,
+        description: &str,
+    ) -> Self
+    where
+        F: Fn(Value) -> CliResult<Box<dyn Source>> + Send + Sync + 'static,
+        S: Fn() -> Value + Send + Sync + 'static,
+    {
+        let key = leak_str(name);
+        if builtin_source_descriptions().iter().any(|(n, _)| *n == key) {
+            self.errors.push(format!(
+                "cannot register source `{name}`: a built-in source already uses that name"
+            ));
+            return self;
+        }
+        if self.sources.contains_key(key) {
+            self.errors
+                .push(format!("source `{name}` is registered more than once"));
+            return self;
+        }
+        self.sources.insert(
+            key,
+            SourceEntry {
+                factory: Arc::new(factory),
+                schema: Arc::new(schema),
+                description: leak_str(description),
+            },
+        );
+        self
+    }
+
+    /// Register a custom sink connector under `name` (its YAML `type:`).
+    #[must_use]
+    pub fn register_sink<F>(self, name: &str, factory: F) -> Self
+    where
+        F: Fn(Value) -> CliResult<Box<dyn Sink>> + Send + Sync + 'static,
+    {
+        self.register_sink_with(name, factory, || serde_json::json!({"type": "object"}), "")
+    }
+
+    /// Register a custom sink with an explicit schema closure and description.
+    #[must_use]
+    pub fn register_sink_with<F, S>(
+        mut self,
+        name: &str,
+        factory: F,
+        schema: S,
+        description: &str,
+    ) -> Self
+    where
+        F: Fn(Value) -> CliResult<Box<dyn Sink>> + Send + Sync + 'static,
+        S: Fn() -> Value + Send + Sync + 'static,
+    {
+        let key = leak_str(name);
+        if builtin_sink_descriptions().iter().any(|(n, _)| *n == key) {
+            self.errors.push(format!(
+                "cannot register sink `{name}`: a built-in sink already uses that name"
+            ));
+            return self;
+        }
+        if self.sinks.contains_key(key) {
+            self.errors
+                .push(format!("sink `{name}` is registered more than once"));
+            return self;
+        }
+        self.sinks.insert(
+            key,
+            SinkEntry {
+                factory: Arc::new(factory),
+                schema: Arc::new(schema),
+                description: leak_str(description),
+            },
+        );
+        self
+    }
+
+    /// Install this registry as the process-global custom-connector registry.
+    /// Called once by [`crate::run_main`]. Returns an error if any `register_*`
+    /// call collided, or if a registry was already installed.
+    pub fn install(self) -> CliResult<()> {
+        if !self.errors.is_empty() {
+            return Err(CliError::Config(self.errors.join("; ")));
+        }
+        GLOBAL_REGISTRY
+            .set(self)
+            .map_err(|_| CliError::Config("connector registry already installed".to_owned()))
+    }
+
+    fn custom_source_descriptions(&self) -> Vec<(&'static str, &'static str)> {
+        self.sources
+            .iter()
+            .map(|(name, e)| {
+                (
+                    *name,
+                    if e.description.is_empty() {
+                        "custom source connector"
+                    } else {
+                        e.description
+                    },
+                )
+            })
+            .collect()
+    }
+
+    fn custom_sink_descriptions(&self) -> Vec<(&'static str, &'static str)> {
+        self.sinks
+            .iter()
+            .map(|(name, e)| {
+                (
+                    *name,
+                    if e.description.is_empty() {
+                        "custom sink connector"
+                    } else {
+                        e.description
+                    },
+                )
+            })
+            .collect()
+    }
+}
+
+/// Leak a string into a `&'static str`. Connector names/descriptions are
+/// registered once at process start and live for the whole run, so leaking a
+/// handful of small strings is the right tradeoff to keep the `&'static str`
+/// listing signatures (`source_kinds`, `source_descriptions`) unchanged.
+fn leak_str(s: &str) -> &'static str {
+    Box::leak(s.to_owned().into_boxed_str())
+}
+
+static GLOBAL_REGISTRY: OnceLock<PluginRegistry> = OnceLock::new();
+
+/// The process-global custom-connector registry, or an empty one if none was
+/// installed (the default `faucet` binary registers no customs).
+fn global() -> &'static PluginRegistry {
+    GLOBAL_REGISTRY.get_or_init(PluginRegistry::default)
+}
 
 /// Build a [`Source`] trait object from a `(kind, config)` pair. When the
 /// config carries `auth: { ref: <name> }`, the named provider is resolved from
@@ -20,6 +261,14 @@ pub async fn build_source(
     auth: &AuthCatalog,
     retry_policy: Option<&faucet_core::RetryPolicy>,
 ) -> CliResult<Box<dyn Source>> {
+    // Third-party connectors registered via `PluginRegistry` win first. Names
+    // can never collide with a built-in (registration rejects that), so this is
+    // safe to check ahead of the built-in `match`. Custom factories receive the
+    // raw config and manage their own auth (the shared `auth:` catalog is not
+    // injected into custom connectors).
+    if let Some(entry) = global().sources.get(kind) {
+        return (entry.factory)(config);
+    }
     let auth_ref = auth_catalog::auth_ref(&config);
     match kind {
         #[cfg(feature = "source-rest")]
@@ -245,6 +494,9 @@ pub async fn build_source(
 /// carries `auth: { ref: <name> }`, the named provider is resolved from `auth`
 /// (the catalog) and injected into the connector.
 pub async fn build_sink(kind: &str, config: Value, auth: &AuthCatalog) -> CliResult<Box<dyn Sink>> {
+    if let Some(entry) = global().sinks.get(kind) {
+        return (entry.factory)(config);
+    }
     let auth_ref = auth_catalog::auth_ref(&config);
     match kind {
         #[cfg(feature = "sink-bigquery")]
@@ -473,6 +725,9 @@ pub fn sink_supported_write_modes(kind: &str) -> &'static [faucet_core::WriteMod
 
 /// Return the JSON Schema for the named source's config struct.
 pub fn source_schema(kind: &str) -> CliResult<Value> {
+    if let Some(entry) = global().sources.get(kind) {
+        return Ok((entry.schema)());
+    }
     match kind {
         #[cfg(feature = "source-rest")]
         "rest" => Ok(schema::<faucet_source_rest::RestStreamConfig>()),
@@ -542,6 +797,9 @@ pub fn sink_exists(kind: &str) -> bool {
 
 /// Return the JSON Schema for the named sink's config struct.
 pub fn sink_schema(kind: &str) -> CliResult<Value> {
+    if let Some(entry) = global().sinks.get(kind) {
+        return Ok((entry.schema)());
+    }
     match kind {
         #[cfg(feature = "sink-bigquery")]
         "bigquery" => Ok(schema::<faucet_sink_bigquery::BigQuerySinkConfig>()),
@@ -585,9 +843,18 @@ pub fn sink_schema(kind: &str) -> CliResult<Value> {
     }
 }
 
-/// One-line summary of every compiled-in source connector. Used by `faucet list`.
-#[allow(clippy::vec_init_then_push)]
+/// One-line summary of every source connector — the compiled-in built-ins plus
+/// any third-party connectors registered via [`PluginRegistry`]. Used by
+/// `faucet list`.
 pub fn source_descriptions() -> Vec<(&'static str, &'static str)> {
+    let mut v = builtin_source_descriptions();
+    v.extend(global().custom_source_descriptions());
+    v
+}
+
+/// One-line summary of every compiled-in built-in source connector (no customs).
+#[allow(clippy::vec_init_then_push)]
+fn builtin_source_descriptions() -> Vec<(&'static str, &'static str)> {
     let mut v: Vec<(&'static str, &'static str)> = Vec::new();
     #[cfg(feature = "source-rest")]
     v.push(("rest", "REST API source with pagination, auth, transforms"));
@@ -660,9 +927,18 @@ pub fn source_descriptions() -> Vec<(&'static str, &'static str)> {
     v
 }
 
-/// One-line summary of every compiled-in sink connector. Used by `faucet list`.
-#[allow(clippy::vec_init_then_push)]
+/// One-line summary of every sink connector — the compiled-in built-ins plus
+/// any third-party connectors registered via [`PluginRegistry`]. Used by
+/// `faucet list`.
 pub fn sink_descriptions() -> Vec<(&'static str, &'static str)> {
+    let mut v = builtin_sink_descriptions();
+    v.extend(global().custom_sink_descriptions());
+    v
+}
+
+/// One-line summary of every compiled-in built-in sink connector (no customs).
+#[allow(clippy::vec_init_then_push)]
+fn builtin_sink_descriptions() -> Vec<(&'static str, &'static str)> {
     let mut v: Vec<(&'static str, &'static str)> = Vec::new();
     #[cfg(feature = "sink-bigquery")]
     v.push(("bigquery", "Google BigQuery streaming-insert sink"));
@@ -781,6 +1057,90 @@ fn unknown(name: &str, kind: &'static str, available: Vec<&'static str>) -> CliE
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // A trivial in-memory source used to exercise custom registration without
+    // any I/O.
+    #[derive(Clone)]
+    struct DummySource;
+    #[faucet_core::async_trait]
+    impl Source for DummySource {
+        async fn fetch_with_context(
+            &self,
+            _ctx: &std::collections::HashMap<String, Value>,
+        ) -> Result<Vec<Value>, faucet_core::FaucetError> {
+            Ok(vec![serde_json::json!({"ok": true})])
+        }
+        fn config_schema(&self) -> Value {
+            serde_json::json!({"type": "object"})
+        }
+    }
+
+    #[test]
+    fn register_source_rejects_builtin_collision() {
+        // `csv` is a built-in whenever that feature is on; use a name we know is
+        // built-in under --all-features to assert the collision guard fires.
+        let reg = PluginRegistry::with_builtins()
+            .register_source("csv", |_| Ok(Box::new(DummySource) as Box<dyn Source>));
+        // install() surfaces the stashed error WITHOUT touching the global
+        // (errors are checked before the OnceLock is set), so this is race-free.
+        let err = reg.install().expect_err("built-in collision must be rejected");
+        match err {
+            CliError::Config(msg) => assert!(msg.contains("built-in source"), "{msg}"),
+            other => panic!("expected Config error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn register_source_rejects_duplicate() {
+        let reg = PluginRegistry::new()
+            .register_source("dup", |_| Ok(Box::new(DummySource) as Box<dyn Source>))
+            .register_source("dup", |_| Ok(Box::new(DummySource) as Box<dyn Source>));
+        let err = reg.install().expect_err("duplicate registration must be rejected");
+        match err {
+            CliError::Config(msg) => assert!(msg.contains("more than once"), "{msg}"),
+            other => panic!("expected Config error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn register_sink_rejects_duplicate() {
+        // Build a registry with a duplicate sink and confirm the error is
+        // stashed; we inspect it via the private field rather than install()
+        // so no global state is touched even indirectly.
+        let reg = PluginRegistry::new()
+            .register_sink("dupsink", |_| {
+                Err(CliError::Config("unused".into()))
+            })
+            .register_sink("dupsink", |_| Err(CliError::Config("unused".into())));
+        assert!(reg.errors.iter().any(|e| e.contains("more than once")), "{:?}", reg.errors);
+    }
+
+    #[test]
+    fn custom_descriptions_use_default_when_blank() {
+        let reg = PluginRegistry::new()
+            .register_source("acme", |_| Ok(Box::new(DummySource) as Box<dyn Source>));
+        let descs = reg.custom_source_descriptions();
+        assert_eq!(descs.len(), 1);
+        assert_eq!(descs[0].0, "acme");
+        assert_eq!(descs[0].1, "custom source connector");
+    }
+
+    #[test]
+    fn custom_descriptions_carry_explicit_summary() {
+        let reg = PluginRegistry::new().register_source_with(
+            "acme",
+            |_| Ok(Box::new(DummySource) as Box<dyn Source>),
+            || serde_json::json!({"type": "object", "title": "acme"}),
+            "Acme widget source",
+        );
+        let descs = reg.custom_source_descriptions();
+        assert_eq!(descs[0], ("acme", "Acme widget source"));
+        // The schema closure is what `faucet schema source acme` would print.
+        assert_eq!(
+            (reg.sources.get("acme").unwrap().schema)()["title"],
+            serde_json::json!("acme")
+        );
+    }
 
     #[test]
     fn capability_constants_match_their_predicates() {
