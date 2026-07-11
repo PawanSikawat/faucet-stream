@@ -10,6 +10,7 @@ pub mod discover;
 pub mod dlq;
 pub mod doctor;
 pub mod init;
+pub mod install;
 pub mod list;
 #[cfg(feature = "masking")]
 pub mod masking;
@@ -22,6 +23,7 @@ pub mod run;
 #[cfg(feature = "schedule")]
 pub mod schedule;
 pub mod schema;
+pub mod search;
 #[cfg(feature = "serve")]
 pub mod serve;
 pub mod test;

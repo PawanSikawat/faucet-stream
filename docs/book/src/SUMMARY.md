@@ -70,3 +70,4 @@
 # Extending
 
 - [Authoring a connector](./extending/authoring-connectors.md)
+- [Connector marketplace](./extending/marketplace.md)

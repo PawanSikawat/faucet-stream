@@ -35,6 +35,7 @@ pub mod notify;
 pub mod obs;
 pub mod pipeline_test;
 pub mod registry;
+pub mod registry_index;
 pub mod replication;
 pub mod scaffold;
 #[cfg(feature = "schedule")]
@@ -132,7 +133,9 @@ pub async fn run_command(cli: Cli) -> CliResult<()> {
         Command::Discover(args) => commands::discover::run(args).await,
         Command::Validate(args) => commands::validate::run(args).await,
         Command::Schema(args) => commands::schema::run(args).await,
-        Command::List => commands::list::run().await,
+        Command::List(args) => commands::list::run(args).await,
+        Command::Search(args) => commands::search::run(args).await,
+        Command::Install(args) => commands::install::run(args).await,
         Command::Preview(args) => commands::preview::run(args).await,
         Command::Init(args) => commands::init::run(args).await,
         Command::New(args) => commands::new::run(args).await,

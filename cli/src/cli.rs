@@ -36,8 +36,14 @@ pub enum Command {
     Validate(ValidateArgs),
     /// Print the JSON Schema for a specific connector.
     Schema(SchemaArgs),
-    /// List every compiled-in source, sink, and transform with a one-line description.
-    List,
+    /// List every compiled-in source, sink, and transform with a one-line
+    /// description (`--available` lists the whole connector registry instead).
+    List(ListArgs),
+    /// Search the connector registry index for connectors by name / keyword.
+    Search(SearchArgs),
+    /// Show how to install or enable a connector from the registry index
+    /// (prints the recipe; never executes anything).
+    Install(InstallArgs),
     /// Run only the source side and print records to stdout (uses the stdout sink).
     Preview(PreviewArgs),
     /// Scaffold a starter `pipeline.yaml` to disk.
@@ -865,6 +871,44 @@ pub struct InitArgs {
     /// `--discover`), e.g. `tap-github` or `/opt/taps/tap-csv`.
     #[arg(long)]
     pub executable: Option<String>,
+}
+
+/// `faucet list` arguments.
+#[derive(Debug, Parser)]
+pub struct ListArgs {
+    /// List every connector in the registry index (not just the compiled-in
+    /// ones), marking which are already in this binary.
+    #[arg(long)]
+    pub available: bool,
+    /// Read a custom registry index instead of the built-in one.
+    #[arg(long)]
+    pub index: Option<PathBuf>,
+}
+
+/// `faucet search` arguments.
+#[derive(Debug, Parser)]
+pub struct SearchArgs {
+    /// Term to match against connector name / description / keywords / crate.
+    pub term: String,
+    /// Read a custom registry index instead of the built-in one.
+    #[arg(long)]
+    pub index: Option<PathBuf>,
+    /// Emit matches as JSON.
+    #[arg(long)]
+    pub json: bool,
+}
+
+/// `faucet install` arguments.
+#[derive(Debug, Parser)]
+pub struct InstallArgs {
+    /// Connector system name (e.g. `kafka`).
+    pub name: String,
+    /// Disambiguate when a name exists as both a source and a sink.
+    #[arg(long)]
+    pub kind: Option<String>,
+    /// Read a custom registry index instead of the built-in one.
+    #[arg(long)]
+    pub index: Option<PathBuf>,
 }
 
 /// `faucet new` arguments.

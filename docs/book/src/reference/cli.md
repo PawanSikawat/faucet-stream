@@ -12,6 +12,8 @@ The `faucet` binary exposes these commands. Pass `--log-level <level>` (or set
 | `faucet list` | List every compiled-in source, sink, and transform with a one-line description. |
 | `faucet init [name]` | Scaffold a commented config skeleton from connector schemas. |
 | `faucet new connector <name> --kind <source\|sink>` | Scaffold a ready-to-build connector crate. |
+| `faucet search <term>` | Search the connector registry for connectors by name/keyword. |
+| `faucet install <name>` | Print how to enable/obtain a connector from the registry. |
 | `faucet doctor [config]` | Probe every connector (auth/network/permissions) and print a checklist. |
 | `faucet test <specs…>` | Run fixture-based offline pipeline tests from one or more spec files. |
 | `faucet replicate [config]` | Bulk-snapshot a table, then hand off to CDC for a gap-free mirror. |
@@ -228,6 +230,31 @@ overrides, the `#![cfg_attr(docsrs, feature(doc_cfg))]` crate-root line, the
 README, and a passing unit test — so `cargo test` is green out of the box with a
 trivial passthrough. Fill in the `TODO`s, then publish. See
 [Authoring a connector](../extending/authoring-connectors.md).
+
+## `search` / `install` / `list --available`
+
+Discover connectors from the [connector registry](../extending/marketplace.md) —
+a curated, feature-independent index of every built-in connector plus community
+`faucet-source-*` / `faucet-sink-*` crates.
+
+```bash
+faucet search kafka              # matches on name, description, keywords, crate
+faucet search cdc --json         # machine-readable
+faucet list --available          # the whole registry; ● = in this binary, ○ = installable
+faucet install bigquery --kind sink
+faucet install my-connector --index ./my-registry.json
+```
+
+`faucet install <name>` never runs anything — it prints the recipe:
+
+- a **built-in** already compiled in → "already available";
+- a **built-in** not compiled in → `cargo install faucet-cli --features <kind>-<name>`;
+- a **community** connector → a copy-pasteable custom-binary snippet (see
+  [Custom binaries](../../cli/README.md#custom-binaries-with-third-party-connectors)).
+
+`--index <path>` points any of these at a custom/mirror index instead of the
+built-in one. Ambiguous names (a connector that is both a source and a sink,
+e.g. `postgres`) need `--kind source|sink`.
 
 ## `doctor`
 
