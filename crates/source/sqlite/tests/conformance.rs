@@ -1,0 +1,71 @@
+//! Runs the reusable `faucet-conformance` battery against the real SQLite query
+//! source, seeded from a tempfile database — no Docker required.
+//!
+//! - check 1 `assert_config_schema_valid`
+//! - check 2 `assert_bounded_memory` (real paging over a seeded table)
+//! - check 6 `assert_errors_not_panics` (query against a missing table → typed
+//!   error, no panic)
+//!
+//! SQLite query is full-table (no bookmark), so check 3 does not apply; checks
+//! 4/5 are sink-only.
+
+use faucet_source_sqlite::{SqliteSource, SqliteSourceConfig};
+use sqlx::sqlite::SqlitePoolOptions;
+use tempfile::TempDir;
+
+async fn seed(rows: usize) -> (TempDir, String) {
+    let dir = TempDir::new().expect("tempdir");
+    let url = format!("sqlite://{}?mode=rwc", dir.path().join("t.db").display());
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect(&url)
+        .await
+        .expect("connect");
+    sqlx::query("CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT)")
+        .execute(&pool)
+        .await
+        .expect("create");
+    for i in 0..rows {
+        sqlx::query("INSERT INTO t (id, name) VALUES (?, ?)")
+            .bind(i as i64)
+            .bind(format!("row-{i}"))
+            .execute(&pool)
+            .await
+            .expect("insert");
+    }
+    pool.close().await;
+    (dir, url)
+}
+
+#[tokio::test]
+async fn conformance_config_schema_valid() {
+    let (_dir, url) = seed(1).await;
+    let source = SqliteSource::new(SqliteSourceConfig::new(url, "SELECT * FROM t"))
+        .await
+        .expect("source");
+    faucet_conformance::assert_config_schema_valid(&source);
+}
+
+#[tokio::test]
+async fn conformance_bounded_memory() {
+    let total = 500;
+    let batch = 100;
+    let (_dir, url) = seed(total).await;
+    let source = SqliteSource::new(
+        SqliteSourceConfig::new(url, "SELECT id, name FROM t ORDER BY id").with_batch_size(batch),
+    )
+    .await
+    .expect("source");
+    faucet_conformance::assert_bounded_memory(&source, batch, total).await;
+}
+
+#[tokio::test]
+async fn conformance_errors_not_panics() {
+    // Valid database, but the query references a table that does not exist — the
+    // read path must surface a typed FaucetError, never a panic.
+    let (_dir, url) = seed(1).await;
+    let source = SqliteSource::new(SqliteSourceConfig::new(url, "SELECT * FROM missing_table"))
+        .await
+        .expect("source builds; the query only fails at read time");
+    faucet_conformance::assert_errors_not_panics(&source).await;
+}

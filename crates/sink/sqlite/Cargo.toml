@@ -27,6 +27,7 @@ tempfile = "3"
 futures.workspace = true
 async-trait.workspace = true
 faucet-core.workspace = true
+faucet-conformance.workspace = true
 sqlx = { workspace = true, features = ["runtime-tokio", "sqlite", "json"] }
 
 [package.metadata.docs.rs]

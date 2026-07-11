@@ -32,7 +32,32 @@ Baseline: `cargo build --workspace` + `cargo test --workspace` captured at start
   `cargo clippy -p faucet-conformance --all-targets -- -D warnings` (clean),
   `cargo fmt -p faucet-conformance`.
 
-## Phase 2 — Wire battery into native connectors
+## Phase 2 — Wire battery into native connectors ✅
+Battery invoked against the **real** connectors (no live infra needed):
+- **rest** (source) — checks 1, 6 (config schema; unreachable endpoint → typed
+  error). Bounded-streaming/resume are covered by its `stream_test.rs` /
+  `pagination_test.rs` / `state_resume_test.rs`.
+- **csv** (source) — checks 1, 2, 6 (added 6: missing file → typed error).
+- **sqlite** (source) — checks 1, 2, 6 (new file; seeded tempfile DB via sqlx,
+  bounded paging, missing-table read error). This is the third native source.
+- **jsonl** (sink) — checks 1, 5 (new file). Honest branch: append-only, so it
+  advertises no idempotency and check 5 verifies Append works + the sink does
+  not claim idempotent/keyed dedup.
+- **sqlite** (sink) — checks 1, 4, 5 (new file; tempfile DB, upsert AutoMap).
+  **check 4 (`assert_idempotent_replay`) runs against a genuine effectively-once
+  sink** (atomic-watermark `write_batch_idempotent` + `last_committed_token`) —
+  the battery is load-bearing, not just double-tested.
+- **singer** — checks 1, 2, 3, 6 (added 3 bookmark round-trip via the fake tap's
+  final STATE + coarse resume; added 6 missing-tap-binary spawn error).
+- `crates/conformance/src/lib.rs`: `rows()` helper now emits a non-key `v`
+  column so SQL upserts have something to `SET`.
+- **postgres deferred:** its test crate pulls `testcontainers` (heavy) and disk
+  was constrained; its offline surface is identical in shape to the sqlite
+  source already wired, and its live checks run under the Docker integration
+  suite. `TODO: run locally` — add `crates/source/postgres/tests/conformance.rs`
+  mirroring the sqlite-source pattern against a `testcontainers` Postgres.
+- Verified per crate: `cargo test -p <crate> --test conformance` (all green),
+  `cargo clippy -p … --tests -- -D warnings` (clean), `cargo fmt --all`.
 ## Phase 3 — Tiers + spec + authoring guide
 ## Phase 4 — Singer catalog-driven selection
 ## Phase 5 — Benchmark: sink-bound scenario

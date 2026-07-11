@@ -1,5 +1,8 @@
 //! Proves `faucet-source-csv` upholds the shared connector contract by invoking
-//! the reusable `faucet-conformance` battery (checks 1 & 2).
+//! the reusable `faucet-conformance` battery (checks 1, 2 & 6).
+//!
+//! CSV is a full-table source (no bookmark) and not a sink, so check 3
+//! (bookmark round-trip) and checks 4/5 (sink capabilities) do not apply.
 
 use std::io::Write;
 
@@ -29,4 +32,13 @@ async fn conformance_bounded_memory() {
     };
     let source = CsvSource::new(config);
     faucet_conformance::assert_bounded_memory(&source, batch, total).await;
+}
+
+#[tokio::test]
+async fn conformance_errors_not_panics() {
+    // A missing file must surface a typed FaucetError, never a panic.
+    let source = CsvSource::new(CsvSourceConfig::new(
+        "/nonexistent/faucet-conformance/missing.csv",
+    ));
+    faucet_conformance::assert_errors_not_panics(&source).await;
 }

@@ -267,8 +267,13 @@ where
     }
 }
 
+/// Build test records keyed on `"id"` with a non-key `"v"` column, so a SQL
+/// upsert (`ON CONFLICT(id) DO UPDATE SET v = …`) has something to set — a
+/// single key-only column would produce an empty SET clause.
 fn rows(ids: &[i64]) -> Vec<Value> {
-    ids.iter().map(|i| serde_json::json!({ "id": i })).collect()
+    ids.iter()
+        .map(|i| serde_json::json!({ "id": i, "v": format!("v{i}") }))
+        .collect()
 }
 
 async fn assert_watermark_idempotent<S, F, Fut>(sink: &S, count: &F, label: &str)
