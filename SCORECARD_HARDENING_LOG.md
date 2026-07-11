@@ -58,8 +58,42 @@ Battery invoked against the **real** connectors (no live infra needed):
   mirroring the sqlite-source pattern against a `testcontainers` Postgres.
 - Verified per crate: `cargo test -p <crate> --test conformance` (all green),
   `cargo clippy -p … --tests -- -D warnings` (clean), `cargo fmt --all`.
-## Phase 3 — Tiers + spec + authoring guide
-## Phase 4 — Singer catalog-driven selection
+## Phase 3 — Tiers + spec + authoring guide ✅
+- **FCP v0 spec** committed at `docs/spec/faucet-connector-spec-v0.md` (grounded
+  in the real trait contract; says effectively-once, not exactly-once). Surfaced
+  in the book via `docs/book/src/spec/faucet-connector-spec-v0.md` (`{{#include}}`)
+  + a `SUMMARY.md` "Connector protocol (FCP v0)" entry; linked from README.
+- **Support-tier column** added to the README Sources/Sinks tables *and* the
+  docs-site capability matrix (`reference/connectors.md`): **T1 ✅** = passes the
+  `faucet-conformance` battery in CI (rest, csv, sqlite source; jsonl, sqlite
+  sink), **T2** = not yet wired (honest note: not "low quality"). Singer = T2 ⚠️
+  (passes battery, experimental v0). The battery IS the tiering mechanism.
+- **Authoring guide** (`extending/authoring-connectors.md`) gained a
+  "Self-certify with the conformance battery" section; **CONTRIBUTING.md**
+  "Adding a connector" now points at the battery + FCP spec.
+- Verified: `mdbook build docs/book` clean; spec renders in the book; both matrix
+  tables cell-count consistent.
+
+## Phase 4 — Singer catalog-driven selection ✅
+- `crates/source/singer/src/discover.rs`: new pure `select_streams(catalog,
+  target) -> StreamSelection { catalog, selected, warnings }` — marks the target
+  stream `selected` (stream-level flag + `breadcrumb: []` metadata) and includes
+  inferable **parent** streams (`parent_stream`/`parent` on the stream or its
+  metadata); warns on missing target, absent referenced parent, or an
+  un-inferrable parent among multiple streams. 6 unit tests.
+- `tests/fake_taps/fake_tap.sh`: `--parent-child` discovery mode emits an
+  `issues`→`repositories` parent-keyed catalog; new `tests/selection.rs`
+  integration test drives real discovery + selection.
+- CLI: `faucet init --source singer --discover … --stream <name>` now applies
+  selection, writes the selected catalog, sets `stream:`, and prints selected
+  streams + warnings (`cli/src/cli.rs` `--stream`, `cli/src/commands/init.rs`).
+- Singer README documents catalog-driven selection + the ACTIVATE_VERSION/
+  FULL_TABLE-into-append-sink duplicate caveat (use a keyed sink).
+- Single-stream **output** preserved (extraction may pull parents; only the
+  configured stream is emitted).
+- Verified: `cargo test -p faucet-source-singer` (27 lib + selection + others),
+  `cargo clippy -p faucet-source-singer --all-targets -- -D warnings` clean,
+  `cargo check -p faucet-cli --no-default-features --features source-singer,…` clean.
 ## Phase 5 — Benchmark: sink-bound scenario
 ## Phase 6 — effectively-once wording sweep
 ## Phase 7 — Reachability + contributor on-ramp

@@ -72,8 +72,18 @@ async fn run_singer_discover(args: &InitArgs) -> CliResult<()> {
     })?;
 
     let cfg = faucet_source_singer::SingerSourceConfig::new(executable, "");
-    let catalog = faucet_source_singer::discover(&cfg).await?; // FaucetError -> CliError
-    let streams = faucet_source_singer::catalog_stream_ids(&catalog);
+    let raw_catalog = faucet_source_singer::discover(&cfg).await?; // FaucetError -> CliError
+    let streams = faucet_source_singer::catalog_stream_ids(&raw_catalog);
+
+    // When a target stream is given, mark it (and any inferable parent streams)
+    // `selected` — most DB / SDK taps sync nothing from an unselected catalog.
+    let target = args.stream.as_deref().unwrap_or("");
+    let (catalog, selected, warnings) = if target.is_empty() {
+        (raw_catalog, Vec::new(), Vec::new())
+    } else {
+        let sel = faucet_source_singer::select_streams(&raw_catalog, target);
+        (sel.catalog, sel.selected, sel.warnings)
+    };
 
     // Write the catalog next to the output file.
     let catalog_path = match args.output.parent() {
@@ -90,7 +100,7 @@ async fn run_singer_discover(args: &InitArgs) -> CliResult<()> {
     let catalog_inline = serde_json::to_string(&catalog)
         .map_err(|e| CliError::Config(format!("failed to serialize catalog: {e}")))?;
     let name = args.name.as_deref().unwrap_or(DEFAULT_NAME);
-    let body = render_singer_config(name, executable, &catalog_inline, &streams);
+    let body = render_singer_config(name, executable, &catalog_inline, &streams, target);
     std::fs::write(&args.output, body)?;
 
     println!(
@@ -102,6 +112,16 @@ async fn run_singer_discover(args: &InitArgs) -> CliResult<()> {
             streams.join(", ")
         }
     );
+    if !selected.is_empty() {
+        println!(
+            "selected {} stream(s): {}",
+            selected.len(),
+            selected.join(", ")
+        );
+    }
+    for w in &warnings {
+        eprintln!("warning: {w}");
+    }
     println!(
         "wrote {} and {}",
         catalog_path.display(),
@@ -127,6 +147,7 @@ fn render_singer_config(
     executable: &str,
     catalog_inline: &str,
     streams: &[String],
+    stream: &str,
 ) -> String {
     let discovered = if streams.is_empty() {
         "(none discovered)".to_string()
@@ -142,10 +163,11 @@ fn render_singer_config(
          \x20   config:\n\
          \x20     executable: {executable}\n\
          \x20     # Discovered catalog, inlined as compact JSON (also saved to catalog.json).\n\
+         \x20     # With --stream, the target stream (and any parents) are marked selected.\n\
          \x20     catalog: {catalog_inline}\n\
          \x20     # stream is REQUIRED. Discovered streams: {discovered}\n\
          \x20     # Set it to one of the above; leaving it empty fails `faucet doctor`.\n\
-         \x20     stream: \"\"\n\
+         \x20     stream: \"{stream}\"\n\
          \x20     # The tap's own config (secret-resolved by faucet). Fill in as the tap needs:\n\
          \x20     tap_config: {{}}\n\
          \x20 sink:\n\
