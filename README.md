@@ -28,6 +28,8 @@ A single native binary **and** an embeddable Rust library: config-driven pipelin
 no Python runtime, no platform to stand up, no daemon to babysit — plus a typed API when
 you'd rather compile data movement straight into your own service.
 
+📖 **[Guide](https://pawansikawat.github.io/faucet-stream/)** · 📊 **[Benchmarks](BENCHMARKS.md)** · 📜 **[Connector spec (FCP v0)](docs/spec/faucet-connector-spec-v0.md)**
+
 ```bash
 brew install PawanSikawat/faucet-stream/faucet-cli   # the CLI — prebuilt, no Rust needed
 # — or —

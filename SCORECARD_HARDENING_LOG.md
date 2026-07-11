@@ -139,4 +139,24 @@ Battery invoked against the **real** connectors (no live infra needed):
 - Verified: `cargo check -p faucet-core` clean (comment-only edit); no
   guarantee-claiming prose (`provides/delivers exactly-once`) remains in
   user-facing docs.
-## Phase 7 — Reachability + contributor on-ramp
+## Phase 7 — Reachability + contributor on-ramp ✅
+- **Contributor on-ramp:**
+  - New issue template `.github/ISSUE_TEMPLATE/add_a_connector.yml` — a
+    `good first issue`-labelled "contribute a connector" walkthrough with a
+    Tier-1 checklist, pointing at the FCP spec + authoring guide + conformance
+    battery (distinct from the existing `connector_request.yml`, which is a
+    *request*).
+  - CONTRIBUTING.md "Adding a connector" already links the battery + FCP spec
+    (done in Phase 3) — verified.
+- **README discoverability:** added a top-of-README links line
+  📖 Guide · 📊 Benchmarks · 📜 Connector spec (FCP v0). (Guide badge + benchmark
+  bullet already present.)
+- **Community drafts (not posted; Discussions not enabled):**
+  `docs/community/roadmap.md` (vision + explicit non-goals, conformance-tiering
+  aligned) and `docs/community/faq.md` (honest Meltano/Airbyte comparison,
+  production-readiness by tier, effectively-once guarantee). Pasteable seeds.
+- **Reachability — `gh repo edit` commands DRAFTED for approval (NOT run).** The
+  repo description, homepage (guide URL), and 10 topics are **already well-set**;
+  the drafted command below refreshes them and adds a few discovery topics. See
+  the session summary for the exact command awaiting approval.
+- Verified: `mdbook build docs/book` clean.
