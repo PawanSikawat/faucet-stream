@@ -301,7 +301,10 @@ async fn discover_enumerates_tables_with_schemas() {
         )",
     )
     .await;
-    exec(&pool, "CREATE SCHEMA sales").await;
+    // CREATE SCHEMA must be the only statement in its batch; tiberius's
+    // execute() RPC path trips T-SQL error 156 on it — EXEC() gives it a
+    // batch of its own.
+    exec(&pool, "EXEC('CREATE SCHEMA sales')").await;
     exec(
         &pool,
         "CREATE TABLE sales.leads (id INT NOT NULL, active BIT NULL)",
