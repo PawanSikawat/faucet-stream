@@ -1,0 +1,43 @@
+# Bounded historical replay with `faucet backfill` (#282): replay June 2026
+# one day at a time, writing one JSONL file per window unit.
+#
+#   faucet backfill cli/examples/backfill_sqlite_to_jsonl.yaml \
+#     --from 2026-06-01 --to 2026-07-01
+#
+# --window / --concurrency / --timezone default to the `backfill:` block below;
+# the range itself always comes from the command line. Preview the planned
+# units with --dry-run; continue an interrupted run with --resume. `faucet run`
+# ignores the `backfill:` block, and rejects the `${backfill.*}` tokens with a
+# hint to use `faucet backfill` instead.
+version: 1
+name: backfill_sqlite_to_jsonl
+
+pipeline:
+  source:
+    type: sqlite
+    config:
+      database_url: sqlite:./app.db
+      # Scope the query to the window unit — required for a time-range
+      # backfill (an unscoped source would replay identical data into
+      # every window and is rejected at plan time).
+      query: >-
+        SELECT id, day, amount FROM events
+        WHERE day >= '${backfill.start_date}' AND day < '${backfill.end_date}'
+
+  sink:
+    type: jsonl
+    config:
+      # One output file per window unit, e.g. ./out/events-20260601T000000Z.jsonl.
+      path: ./out/events-${backfill.unit}.jsonl
+
+  # Durable state makes the progress marker survive restarts, so
+  # `--resume` skips already-completed units after an interruption.
+  state:
+    type: file
+    config: { path: ./.faucet-state }
+
+# Defaults for `faucet backfill` (overridable per invocation via flags).
+backfill:
+  window: 1d          # chunk the range into one-day units
+  concurrency: 1      # max window units running at once (default 1)
+  timezone: UTC       # date boundaries interpreted at midnight in this zone

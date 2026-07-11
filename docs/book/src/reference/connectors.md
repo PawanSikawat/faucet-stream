@@ -13,33 +13,36 @@ Legend: ✓ supported · ✗ not applicable.
 
 ## Sources
 
-| Connector | Feature | Streams¹ | Resumable² | Effectively-once³ | Compression | Underlying primitive |
-|-----------|---------|:---:|:---:|:---:|:---:|----------------------|
-| REST | `source-rest` | ✓ | ✓ | ✗ | ✗ | HTTP + 6 pagination styles, JSONPath extraction |
-| GraphQL | `source-graphql` | ✓ | ✗ | ✗ | ✗ | cursor pagination, variable injection |
-| XML / SOAP | `source-xml` | ✓ | ✗ | ✗ | ✗ | streaming XML→JSON, dot-path extraction |
-| gRPC | `source-grpc` | ✓⁴ | ✗ | ✗ | ✗ | dynamic protobuf; unary + server-streaming |
-| PostgreSQL | `source-postgres` | ✓ | ✗ | ✗ | ✗ | SQL query, rows as JSON |
-| PostgreSQL CDC | `source-postgres-cdc` | ✓ | ✓ | **✓** | ✗ | logical replication (pgoutput), LSN bookmarks |
-| MySQL | `source-mysql` | ✓ | ✗ | ✗ | ✗ | SQL query, rows as JSON |
-| MySQL CDC | `source-mysql-cdc` | ✓ | ✓ | **✓** | ✗ | binlog row events, file/pos or GTID bookmarks |
-| Microsoft SQL Server | `source-mssql` | ✓ | ✓⁸ | ✗ | ✗ | SQL query (tiberius), rows as JSON |
-| SQLite | `source-sqlite` | ✓ | ✗ | ✗ | ✗ | SQL query, rows as JSON |
-| AWS S3 | `source-s3` | ✓⁵ | ✗ | ✗ | ✓ | object reader: JSONL, JSON array, raw text |
-| Google Cloud Storage | `source-gcs` | ✓⁵ | ✗ | ✗ | ✓ | object reader: JSONL, JSON array, raw text |
-| MongoDB | `source-mongodb` | ✓ | ✗ | ✗ | ✗ | `find()` with filter/projection/sort |
-| MongoDB CDC | `source-mongodb-cdc` | ✓ | ✓ | **✓** | ✗ | Change Streams, resumeToken bookmarks; `max_staged_records` buffer cap |
-| Redis | `source-redis` | ✓ | ✗ | ✗ | ✗ | streams, lists, key patterns |
-| Webhook | `source-webhook` | ✗⁶ | ✗ | ✗ | ✗ | temporary HTTP server collecting POSTs |
-| WebSocket | `source-websocket` | ✓ | ✗ | ✗ | ✗ | live push feed; subscribe frames, reconnect, ping keepalive |
-| CSV | `source-csv` | ✓ | ✗ | ✗ | ✓ | CSV files as JSON; strict field count by default (`flexible: true` to tolerate ragged rows) |
-| Elasticsearch | `source-elasticsearch` | ✓ | ✗ | ✗ | ✗ | search/scroll API |
-| Apache Kafka | `source-kafka` | ✓ | ✓ | **✓** | ✗ | consumer; idle/max-messages termination, offset bookmarks |
-| Apache Parquet | `source-parquet` | ✓ | ✗ | ✗ | ✗ | local/glob/S3, vectorized Arrow reader, projection |
-| BigQuery | `source-bigquery` | ✓ | ✗ | ✗ | ✗ | `jobs.query` + pageToken pagination |
-| Snowflake | `source-snowflake` | ✓ | ✗ | ✗ | ✗ | SQL REST API, server-side partitions |
-| Singer bridge ⚠️ | `source-singer` | ✓ | ✓⁹ | ✗ | ✗ | runs an external Singer tap; NDJSON over stdout, STATE→bookmark. **Tier-2 / experimental** |
+| Connector | Feature | Streams¹ | Resumable² | Effectively-once³ | Compression | Discover¹⁰ | Underlying primitive |
+|-----------|---------|:---:|:---:|:---:|:---:|:---:|----------------------|
+| REST | `source-rest` | ✓ | ✓ | ✗ | ✗ | ✗ | HTTP + 6 pagination styles, JSONPath extraction |
+| GraphQL | `source-graphql` | ✓ | ✗ | ✗ | ✗ | ✗ | cursor pagination, variable injection |
+| XML / SOAP | `source-xml` | ✓ | ✗ | ✗ | ✗ | ✗ | streaming XML→JSON, dot-path extraction |
+| gRPC | `source-grpc` | ✓⁴ | ✗ | ✗ | ✗ | ✗ | dynamic protobuf; unary + server-streaming |
+| PostgreSQL | `source-postgres` | ✓ | ✗ | ✗ | ✗ | ✓ | SQL query, rows as JSON |
+| PostgreSQL CDC | `source-postgres-cdc` | ✓ | ✓ | **✓** | ✗ | ✗ | logical replication (pgoutput), LSN bookmarks |
+| MySQL | `source-mysql` | ✓ | ✗ | ✗ | ✗ | ✓ | SQL query, rows as JSON |
+| MySQL CDC | `source-mysql-cdc` | ✓ | ✓ | **✓** | ✗ | ✗ | binlog row events, file/pos or GTID bookmarks |
+| Microsoft SQL Server | `source-mssql` | ✓ | ✓⁸ | ✗ | ✗ | ✓ | SQL query (tiberius), rows as JSON |
+| SQLite | `source-sqlite` | ✓ | ✗ | ✗ | ✗ | ✓ | SQL query, rows as JSON |
+| AWS S3 | `source-s3` | ✓⁵ | ✗ | ✗ | ✓ | ✓ | object reader: JSONL, JSON array, raw text |
+| Google Cloud Storage | `source-gcs` | ✓⁵ | ✗ | ✗ | ✓ | ✓ | object reader: JSONL, JSON array, raw text |
+| MongoDB | `source-mongodb` | ✓ | ✗ | ✗ | ✗ | ✓ | `find()` with filter/projection/sort |
+| MongoDB CDC | `source-mongodb-cdc` | ✓ | ✓ | **✓** | ✗ | ✗ | Change Streams, resumeToken bookmarks; `max_staged_records` buffer cap |
+| Redis | `source-redis` | ✓ | ✗ | ✗ | ✗ | ✗ | streams, lists, key patterns |
+| Webhook | `source-webhook` | ✗⁶ | ✗ | ✗ | ✗ | ✗ | temporary HTTP server collecting POSTs |
+| WebSocket | `source-websocket` | ✓ | ✗ | ✗ | ✗ | ✗ | live push feed; subscribe frames, reconnect, ping keepalive |
+| CSV | `source-csv` | ✓ | ✗ | ✗ | ✓ | ✗ | CSV files as JSON; strict field count by default (`flexible: true` to tolerate ragged rows) |
+| Elasticsearch | `source-elasticsearch` | ✓ | ✗ | ✗ | ✗ | ✓ | search/scroll API |
+| Apache Kafka | `source-kafka` | ✓ | ✓ | **✓** | ✗ | ✗ | consumer; idle/max-messages termination, offset bookmarks |
+| Apache Parquet | `source-parquet` | ✓ | ✗ | ✗ | ✗ | ✗ | local/glob/S3, vectorized Arrow reader, projection |
+| BigQuery | `source-bigquery` | ✓ | ✗ | ✗ | ✗ | ✓ | `jobs.query` + pageToken pagination |
+| Snowflake | `source-snowflake` | ✓ | ✗ | ✗ | ✗ | ✓ | SQL REST API, server-side partitions |
+| Singer bridge ⚠️ | `source-singer` | ✓ | ✓⁹ | ✗ | ✗ | ✗ | runs an external Singer tap; NDJSON over stdout, STATE→bookmark. **Tier-2 / experimental** |
 
+¹⁰ **Discover** = enumerates the datasets behind the connection for
+[`faucet discover`](../cookbook/discover.md) (tables / collections / indices /
+prefixes with schemas + row estimates where the catalog provides them).
 ¹ **Streams** = yields records in bounded-memory batches rather than buffering the
 whole result. ² **Resumable** = persists a bookmark to a [state store](../cookbook/state.md)
 so re-runs continue where they left off (incremental replication / CDC / Kafka

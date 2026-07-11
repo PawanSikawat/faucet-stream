@@ -101,6 +101,8 @@ faucet validate pipeline.yaml                               # parse + resolve se
 faucet doctor pipeline.yaml                                 # preflight: probe auth/network/permissions
 faucet test tests/*.yaml                                    # offline fixture tests for pipeline logic
 faucet run pipeline.yaml                                    # one-shot run to completion
+faucet discover conn.yaml -o pipeline.yaml                  # introspect a database and generate a config
+faucet backfill pipeline.yaml --from 2026-06-01 --to 2026-07-01 --window 1d   # resumable historical replay
 faucet schedule pipeline.yaml                               # run on a cron schedule (add a schedule: block)
 faucet serve --no-auth                                      # HTTP control plane: submit/poll/cancel runs over REST
 ```

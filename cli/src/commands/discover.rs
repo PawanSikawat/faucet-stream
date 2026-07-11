@@ -514,3 +514,123 @@ pipeline:
         assert!(err.to_string().contains("available: default"), "{err}");
     }
 }
+
+#[cfg(all(test, feature = "source-sqlite", feature = "sink-jsonl"))]
+mod run_tests {
+    //! Command-level tests driving `run()` end-to-end against a real (file)
+    //! SQLite catalog — no Docker, no network.
+    use super::run;
+    use crate::cli::DiscoverArgs;
+
+    fn args(config: std::path::PathBuf) -> DiscoverArgs {
+        DiscoverArgs {
+            config: Some(config),
+            source: None,
+            include: vec![],
+            exclude: vec![],
+            output: None,
+            force: false,
+            json: false,
+            env_file: None,
+            no_env_file: true,
+            profile: None,
+        }
+    }
+
+    fn write_config(dir: &std::path::Path, db: &str) -> std::path::PathBuf {
+        let cfg = dir.join("conn.yaml");
+        std::fs::write(
+            &cfg,
+            format!(
+                "version: 1\nname: conn\npipeline:\n  source:\n    type: sqlite\n    config:\n      database_url: \"sqlite://{db}\"\n      query: SELECT 1\n  sink:\n    type: jsonl\n    config: {{ path: ./out.jsonl }}\n"
+            ),
+        )
+        .unwrap();
+        cfg
+    }
+
+    async fn seed_db(dir: &std::path::Path) -> String {
+        let db = dir.join("cat.db").display().to_string();
+        let pool = sqlx::SqlitePool::connect(&format!("sqlite://{db}?mode=rwc"))
+            .await
+            .expect("create db");
+        sqlx::query("CREATE TABLE orders (id INTEGER PRIMARY KEY, note TEXT)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("CREATE TABLE users (id INTEGER NOT NULL, active BOOLEAN)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        pool.close().await;
+        db
+    }
+
+    #[tokio::test]
+    async fn run_errors_on_unsupported_source_kind() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = dir.path().join("conn.yaml");
+        std::fs::write(
+            &cfg,
+            "version: 1\npipeline:\n  source: { type: csv, config: { path: ./in.csv } }\n  sink: { type: jsonl, config: { path: ./o.jsonl } }\n",
+        )
+        .unwrap();
+        let err = run(args(cfg)).await.unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("does not support dataset discovery"),
+            "{err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn run_writes_generated_config_that_expands() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = seed_db(dir.path()).await;
+        let cfg = write_config(dir.path(), &db);
+        let out = dir.path().join("generated.yaml");
+
+        let mut a = args(cfg.clone());
+        a.output = Some(out.clone());
+        run(a).await.expect("discover runs");
+
+        let text = std::fs::read_to_string(&out).unwrap();
+        let generated = crate::config::parse_with_extension(&text, "yaml").unwrap();
+        let nodes = crate::expand::expand(&generated).unwrap();
+        assert_eq!(nodes.len(), 2, "one row per table: {text}");
+        assert!(text.contains("orders"), "{text}");
+        assert!(text.contains("users"), "{text}");
+
+        // Re-running without --force refuses to overwrite.
+        let mut a = args(cfg.clone());
+        a.output = Some(out.clone());
+        let err = run(a).await.unwrap_err();
+        assert!(err.to_string().contains("--force"), "{err}");
+
+        // --include narrows to one row; --json emits the descriptor list.
+        let mut a = args(cfg.clone());
+        a.output = Some(dir.path().join("orders-only.yaml"));
+        a.include = vec!["orders".into()];
+        run(a).await.expect("filtered discover runs");
+        let text = std::fs::read_to_string(dir.path().join("orders-only.yaml")).unwrap();
+        assert!(
+            text.contains("orders") && !text.contains("- id: users"),
+            "{text}"
+        );
+
+        let mut a = args(cfg);
+        a.json = true;
+        run(a).await.expect("json mode runs");
+    }
+
+    #[tokio::test]
+    async fn run_errors_when_filters_match_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = seed_db(dir.path()).await;
+        let cfg = write_config(dir.path(), &db);
+        let mut a = args(cfg);
+        a.include = vec!["nothing_matches_*".into()];
+        let err = run(a).await.unwrap_err();
+        assert!(err.to_string().contains("no datasets"), "{err}");
+    }
+}

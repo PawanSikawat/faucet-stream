@@ -271,3 +271,90 @@ mod tests {
         report(&dry, false).unwrap();
     }
 }
+
+#[cfg(all(test, feature = "source-sqlite", feature = "sink-jsonl"))]
+mod run_tests {
+    //! Command-level tests driving `run()` end-to-end (offline).
+    use super::run;
+    use crate::cli::BackfillArgs;
+
+    fn args(config: std::path::PathBuf) -> BackfillArgs {
+        BackfillArgs {
+            config: Some(config),
+            from: Some("2026-06-01".into()),
+            to: Some("2026-06-04".into()),
+            window: Some("1d".into()),
+            from_bookmark: None,
+            to_bookmark: None,
+            bookmark_field: None,
+            concurrency: None,
+            timezone: None,
+            row: None,
+            into: None,
+            dry_run: true,
+            resume: false,
+            restart: false,
+            json: false,
+            env_file: None,
+            no_env_file: true,
+            profile: None,
+        }
+    }
+
+    fn write_config(dir: &std::path::Path) -> std::path::PathBuf {
+        let cfg = dir.join("bf.yaml");
+        std::fs::write(
+            &cfg,
+            r#"
+version: 1
+name: bf
+backfill:
+  window: 1d
+  concurrency: 1
+pipeline:
+  source:
+    type: sqlite
+    config:
+      database_url: "sqlite::memory:"
+      query: "SELECT '${backfill.start}' AS s"
+  sink:
+    type: jsonl
+    config: { path: ./out.jsonl }
+"#,
+        )
+        .unwrap();
+        cfg
+    }
+
+    #[tokio::test]
+    async fn dry_run_plans_without_executing() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = write_config(dir.path());
+        run(args(cfg.clone())).await.expect("dry run succeeds");
+
+        // JSON output path.
+        let mut a = args(cfg);
+        a.json = true;
+        run(a).await.expect("json dry run succeeds");
+    }
+
+    #[tokio::test]
+    async fn missing_range_is_a_typed_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = write_config(dir.path());
+        let mut a = args(cfg);
+        a.from = None;
+        a.to = None;
+        let err = run(a).await.unwrap_err();
+        assert!(err.to_string().contains("--from"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn config_window_default_applies_when_flag_omitted() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = write_config(dir.path());
+        let mut a = args(cfg);
+        a.window = None; // falls back to backfill.window (1d) from the config
+        run(a).await.expect("config default window used");
+    }
+}
