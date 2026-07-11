@@ -6,6 +6,8 @@ pub mod backfill;
 pub mod catalog;
 #[cfg(feature = "contract")]
 pub mod contract;
+#[cfg(feature = "cli-dev")]
+pub mod dev;
 pub mod discover;
 pub mod dlq;
 pub mod doctor;
@@ -17,6 +19,7 @@ pub mod masking;
 pub mod new;
 #[cfg(feature = "notify")]
 pub mod notify;
+pub mod plan;
 pub mod preview;
 pub mod replicate;
 pub mod run;

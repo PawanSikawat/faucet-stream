@@ -46,6 +46,13 @@ pub enum Command {
     Install(InstallArgs),
     /// Run only the source side and print records to stdout (uses the stdout sink).
     Preview(PreviewArgs),
+    /// Read-only preview of what a config would do: resolved pipeline, inferred
+    /// output schema, sink schema delta, lineage, and target sinks — zero writes.
+    Plan(PlanArgs),
+    /// Watch a config and re-run a sample offline on every save, printing a
+    /// live diff of the output. Requires the `cli-dev` build feature.
+    #[cfg(feature = "cli-dev")]
+    Dev(DevArgs),
     /// Scaffold a starter `pipeline.yaml` to disk.
     Init(InitArgs),
     /// Scaffold a new artifact — currently a third-party connector crate.
@@ -871,6 +878,66 @@ pub struct InitArgs {
     /// `--discover`), e.g. `tap-github` or `/opt/taps/tap-csv`.
     #[arg(long)]
     pub executable: Option<String>,
+}
+
+/// `faucet plan` arguments.
+#[derive(Debug, Parser)]
+pub struct PlanArgs {
+    /// Path to a `.yaml`/`.yml`/`.json` config (auto-discovered if omitted).
+    pub config: Option<PathBuf>,
+    /// Which row to plan (default: the first root row).
+    #[arg(long)]
+    pub row: Option<String>,
+    /// Offline sample of input records (`.jsonl` or a `.json` array) to preview
+    /// the output schema, volume, and sink delta through — no source is touched.
+    #[arg(long)]
+    pub sample: Option<PathBuf>,
+    /// Pull a capped, read-only sample from the real source instead of a
+    /// fixture (bounded by `--limit`; no bookmark is advanced).
+    #[arg(long)]
+    pub live: bool,
+    /// Cap for `--live` sampling.
+    #[arg(long, default_value_t = 10)]
+    pub limit: usize,
+    /// Emit the plan as JSON.
+    #[arg(long)]
+    pub json: bool,
+    /// Resolve secrets-manager directives (needs network/credentials). Off by
+    /// default so `plan` works offline like `faucet test`.
+    #[arg(long)]
+    pub resolve_secrets: bool,
+    /// Select a `profiles:` overlay.
+    #[arg(long, env = "FAUCET_PROFILE")]
+    pub profile: Option<String>,
+}
+
+/// `faucet dev` arguments.
+#[derive(Debug, Parser)]
+pub struct DevArgs {
+    /// Path to the `.yaml`/`.yml`/`.json` config to watch.
+    pub config: PathBuf,
+    /// Which row to run (default: the first root row).
+    #[arg(long)]
+    pub row: Option<String>,
+    /// Offline sample of input records (`.jsonl` or `.json` array). Required
+    /// for the offline loop.
+    #[arg(long)]
+    pub sample: Option<PathBuf>,
+    /// (reserved) pull a capped read-only sample from the real source.
+    #[arg(long)]
+    pub live: bool,
+    /// Cap for `--live` sampling.
+    #[arg(long, default_value_t = 10)]
+    pub limit: usize,
+    /// Run once and exit instead of watching (also the non-TTY fallback).
+    #[arg(long)]
+    pub once: bool,
+    /// Debounce window between re-runs, in milliseconds.
+    #[arg(long, default_value_t = 300)]
+    pub debounce_ms: u64,
+    /// Select a `profiles:` overlay.
+    #[arg(long, env = "FAUCET_PROFILE")]
+    pub profile: Option<String>,
 }
 
 /// `faucet list` arguments.

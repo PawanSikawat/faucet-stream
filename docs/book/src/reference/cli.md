@@ -14,6 +14,8 @@ The `faucet` binary exposes these commands. Pass `--log-level <level>` (or set
 | `faucet new connector <name> --kind <source\|sink>` | Scaffold a ready-to-build connector crate. |
 | `faucet search <term>` | Search the connector registry for connectors by name/keyword. |
 | `faucet install <name>` | Print how to enable/obtain a connector from the registry. |
+| `faucet plan [config]` | Read-only preview of what a config would do — zero writes. |
+| `faucet dev <config> --sample <f>` | Watch + re-run a sample on save with a live diff (`cli-dev`). |
 | `faucet doctor [config]` | Probe every connector (auth/network/permissions) and print a checklist. |
 | `faucet test <specs…>` | Run fixture-based offline pipeline tests from one or more spec files. |
 | `faucet replicate [config]` | Bulk-snapshot a table, then hand off to CDC for a gap-free mirror. |
@@ -135,6 +137,44 @@ faucet preview app.yaml --profile dev --limit 5   # preview with a named profile
 
 `--profile <name>` / `FAUCET_PROFILE` selects a named overlay from `profiles:` before
 previewing. Same semantics as `run` and `validate`.
+
+## `plan`
+
+A read-only "what would this config change" preview — it runs the sink's
+non-mutating `check()` probe and pure schema/lineage analysis but **never writes
+to any sink**.
+
+```bash
+faucet plan pipeline.yaml
+faucet plan pipeline.yaml --sample fixtures.jsonl        # preview output schema/volume offline
+faucet plan pipeline.yaml --live --limit 20 --json       # capped read-only source pull, JSON out
+```
+
+Reports, for the selected row (`--row`, default the first root): the resolved
+source/sink/write-mode/delivery guarantee, the transform chain in lifecycle
+order, which quality/contract/masking/drift policies are in effect, and the
+lineage column ops. Given a sample (`--sample <fixture>` offline, or `--live
+--limit N` for a capped read-only source pull), it also reports the inferred
+output schema, the sink schema delta (adds / widenings / incompatible via
+`diff_schema` when the sink exposes `current_schema()`; "schemaless — no delta"
+otherwise), and a volume estimate. The data pass runs through the offline
+harness, so no sink is ever written. Offline by default; `--resolve-secrets`
+opts into the real secrets path.
+
+## `dev`
+
+A watch-and-diff authoring loop (requires the `cli-dev` build feature). Re-runs
+a sample through the offline harness on every config save and prints the schema,
+DLQ count, errors, and a **diff vs the previous run**.
+
+```bash
+faucet dev pipeline.yaml --sample fixtures.jsonl
+```
+
+Watches the config file's directory and the directories of any `extends:` /
+`!include` fragments, so editing an included fragment re-triggers a run. In a
+non-TTY (CI) or with `--once` it runs a single pass and exits. Debounce the
+watcher with `--debounce-ms`.
 
 ## `schema`
 

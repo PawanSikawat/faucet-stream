@@ -137,6 +137,9 @@ pub async fn run_command(cli: Cli) -> CliResult<()> {
         Command::Search(args) => commands::search::run(args).await,
         Command::Install(args) => commands::install::run(args).await,
         Command::Preview(args) => commands::preview::run(args).await,
+        Command::Plan(args) => commands::plan::run(args).await,
+        #[cfg(feature = "cli-dev")]
+        Command::Dev(args) => commands::dev::run(args).await,
         Command::Init(args) => commands::init::run(args).await,
         Command::New(args) => commands::new::run(args).await,
         Command::Doctor(args) => commands::doctor::run(args).await,
