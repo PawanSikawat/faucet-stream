@@ -2,7 +2,7 @@
 
 use crate::error::{CliError, CliResult};
 use crate::serve::config::ServeConfig;
-use crate::serve::handlers::{audit, backfill, dlq, doctor, health, logs, runs, schemas};
+use crate::serve::handlers::{audit, backfill, dlq, doctor, health, logs, reload, runs, schemas};
 use crate::serve::history::RunHistory;
 use crate::serve::state::ServerState;
 use crate::serve::{auth, metrics};
@@ -38,7 +38,8 @@ pub fn build_router(state: ServerState, config: &ServeConfig) -> Router {
         .route("/v1/dlq/inspect", post(dlq::inspect))
         .route("/v1/dlq/replay", post(dlq::replay))
         .route("/v1/dlq/discard", post(dlq::discard))
-        .route("/v1/audit", get(audit::list_audit));
+        .route("/v1/audit", get(audit::list_audit))
+        .route("/v1/reload", post(reload::reload));
     #[cfg(feature = "triggers")]
     {
         api = api.route(

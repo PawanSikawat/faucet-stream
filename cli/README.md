@@ -1112,6 +1112,60 @@ tracing_subscriber::registry().with(otel_layer).init();
 
 Faucet does not bundle an OTel exporter — wire your own to keep dependencies minimal.
 
+## Custom binaries with third-party connectors
+
+The stock `faucet` binary knows only the connectors it was compiled with. To use
+a **third-party** `faucet-source-*` / `faucet-sink-*` connector (or one of your
+own) from a `faucet.yaml` config, build your own `faucet` binary that registers
+it. This is connector *plugin loading* — no dynamic ABI, no subprocess, same
+in-process speed as a built-in.
+
+Depend on `faucet-cli` as a library plus your connector crate, then write a
+`main.rs` that hands a [`PluginRegistry`] to `run_main`:
+
+```rust,no_run
+use faucet_cli::registry::PluginRegistry;
+use faucet_source_lorem::LoremSource; // your third-party connector crate
+
+fn main() -> std::process::ExitCode {
+    let registry = PluginRegistry::with_builtins()
+        .register_source("lorem", |cfg| Ok(Box::new(LoremSource::from_value(cfg)?)))
+        // .register_sink("other", |cfg| Ok(Box::new(OtherSink::from_value(cfg)?)))
+        ;
+    faucet_cli::run_main(registry)
+}
+```
+
+```toml
+# Cargo.toml
+[dependencies]
+faucet-cli = "1"
+faucet-core = "1"
+faucet-source-lorem = "1"
+```
+
+Now `source: { type: lorem }` works in a config, and the connector shows up in
+`faucet list` and `faucet schema source lorem` — exactly like a built-in, across
+every command (`run`, `validate`, `schema`, `list`, `preview`, `serve`, …).
+
+- `register_source` / `register_sink` take a **synchronous** factory
+  `Fn(config) -> Result<Box<dyn Source|Sink>>`; connectors that need to connect
+  eagerly should do so lazily on first use (the pattern the built-ins follow).
+- Use `register_source_with` / `register_sink_with` to also supply a config
+  JSON-Schema closure and a one-line description for `faucet list` / `faucet
+  schema`.
+- Registering a name that collides with a built-in (or a duplicate) is rejected
+  at startup with a clear error.
+- Custom connectors receive their `config` verbatim; the shared top-level
+  `auth:` catalog (`auth: { ref: … }`) is **not** injected into them — a custom
+  connector manages its own auth.
+
+A complete, runnable example lives in
+[`cli/examples/custom-cli/`](examples/custom-cli/main.rs) (build it with
+`cargo run --example custom-cli -- list`).
+
+[`PluginRegistry`]: https://docs.rs/faucet-cli/latest/faucet_cli/registry/struct.PluginRegistry.html
+
 ## Troubleshooting / FAQ
 
 **"No config file found" / wrong file picked up.** With no path argument, `faucet` auto-discovers `faucet.yaml`, then `faucet.yml`, then `faucet.json` in the current directory. Pass the path explicitly (`faucet run path/to/pipeline.yaml`) when the file lives elsewhere or has a different name.

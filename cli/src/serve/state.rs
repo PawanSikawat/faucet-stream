@@ -9,7 +9,8 @@ use crate::serve::logs::LogHub;
 use crate::serve::registry::Registry;
 use metrics_exporter_prometheus::PrometheusHandle;
 use serde_json::Value;
-use std::sync::Arc;
+use std::path::PathBuf;
+use std::sync::{Arc, RwLock};
 use std::time::Duration;
 use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
@@ -27,7 +28,11 @@ struct Inner {
     semaphore: Arc<Semaphore>,
     history: Arc<dyn RunHistory>,
     log_hub: LogHub,
-    default_base: Option<Value>,
+    /// The `--default-config` merge base, hot-reloadable via `POST /v1/reload`
+    /// (#198). An `RwLock` so a reload can swap it while runs read it.
+    default_base: RwLock<Option<Value>>,
+    /// Path the default-config was loaded from, so a reload can re-read it.
+    default_config_path: Option<PathBuf>,
     idempotency_retention: Duration,
     probe_timeout: Duration,
     cluster: crate::serve::cluster::ClusterHandle,
@@ -55,7 +60,8 @@ impl ServerState {
                 semaphore: Arc::new(Semaphore::new(config.max_concurrent_runs)),
                 history,
                 log_hub,
-                default_base,
+                default_base: RwLock::new(default_base),
+                default_config_path: config.default_config_path.clone(),
                 idempotency_retention: config.idempotency_retention,
                 probe_timeout: config.probe_timeout,
                 cluster: crate::serve::cluster::ClusterHandle::from_config(config),
@@ -102,8 +108,21 @@ impl ServerState {
         &self.inner.log_hub
     }
 
-    pub fn default_base(&self) -> Option<&Value> {
-        self.inner.default_base.as_ref()
+    /// A snapshot of the `--default-config` merge base (cloned under the read
+    /// lock, so a concurrent hot reload can't tear it).
+    pub fn default_base(&self) -> Option<Value> {
+        self.inner.default_base.read().unwrap().clone()
+    }
+
+    /// Path the default-config was loaded from (`None` when `--default-config`
+    /// was not passed).
+    pub fn default_config_path(&self) -> Option<&PathBuf> {
+        self.inner.default_config_path.as_ref()
+    }
+
+    /// Atomically swap the `--default-config` merge base (hot reload, #198).
+    pub fn set_default_base(&self, base: Option<Value>) {
+        *self.inner.default_base.write().unwrap() = base;
     }
 
     pub fn idempotency_retention(&self) -> Duration {
@@ -178,6 +197,28 @@ mod tests {
     #[test]
     fn render_metrics_none_without_handle() {
         assert!(state(AuthMode::None).render_metrics().is_none());
+    }
+
+    #[test]
+    fn default_base_swaps_atomically() {
+        let s = state(AuthMode::None);
+        assert!(s.default_base().is_none());
+        assert!(s.default_config_path().is_none());
+        s.set_default_base(Some(serde_json::json!({"version": 1})));
+        assert_eq!(s.default_base(), Some(serde_json::json!({"version": 1})));
+        s.set_default_base(None);
+        assert!(s.default_base().is_none());
+    }
+
+    // The reload handler is a no-op (200 `reloaded:false`) when the server was
+    // started without `--default-config`.
+    #[tokio::test]
+    async fn reload_handler_noop_without_default_config() {
+        let s = state(AuthMode::None);
+        let axum::Json(body) = crate::serve::handlers::reload::reload(axum::extract::State(s))
+            .await
+            .expect("reload ok");
+        assert_eq!(body["reloaded"], serde_json::json!(false));
     }
 
     #[test]

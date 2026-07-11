@@ -158,6 +158,22 @@ See [`cli/examples/serve_minimal.yaml`](https://github.com/PawanSikawat/faucet-s
 > ad-hoc per-run string — or Prometheus cardinality blows up. The request-level
 > `name`/`labels` are run-record metadata only, never metric labels.
 
+### Hot-reloading the default-config
+
+After editing the `--default-config` file, reload it in place — no restart, no
+interruption to in-flight runs (they already captured their config):
+
+```bash
+curl -fsS -X POST -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8080/v1/reload
+# → {"reloaded": true, "path": "…"}
+```
+
+`POST /v1/reload` is **admin-only** (RBAC `Reload` permission). It re-reads and
+re-validates the file and atomically swaps the merge base; subsequent
+submissions merge onto the new base. An **invalid** new config returns `422` and
+the previous base is kept. When the server was started without
+`--default-config`, it is a no-op (`{"reloaded": false}`).
+
 ## Run history & persistence
 
 By default run records live in memory and are lost on restart. For durable

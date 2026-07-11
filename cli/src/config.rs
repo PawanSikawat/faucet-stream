@@ -36,7 +36,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 /// Top-level pipeline definition.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct PipelineConfig {
     /// Config-format version. Currently always `1`.
@@ -150,7 +150,7 @@ pub struct PipelineConfig {
 /// The base pipeline definition. Each matrix row is resolved against the
 /// template catalogs below; the singular `source` / `sink` fields are the
 /// legacy way to declare a single template (internally named `default`).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct PipelineSpec {
     /// Legacy singular source — registers as a template named `default`.
@@ -240,7 +240,7 @@ pub struct ConnectorSpec {
 /// `pipeline.sources` / `pipeline.sinks` this row instantiates; when absent,
 /// the row inherits the legacy singular `pipeline.source` / `pipeline.sink`
 /// (registered internally as a template named `default`).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct PartialConnector {
     /// Name of the template under `pipeline.sources` / `pipeline.sinks` to
@@ -272,7 +272,7 @@ pub struct TransformSpec {
 }
 
 /// State-store backend selector.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct StateStoreSpec {
     /// Store type: `file`, `memory`, `redis`, or `postgres`.
@@ -285,7 +285,7 @@ pub struct StateStoreSpec {
 }
 
 /// One row of the `matrix:` block.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct MatrixRow {
     /// Row identifier. Required for parent/child references and runtime

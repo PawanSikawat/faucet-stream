@@ -737,6 +737,12 @@ to wrap any `std::error::Error` without losing the chain). Publish under the nam
 convention `faucet-source-<name>` / `faucet-sink-<name>`. Full walkthrough:
 [authoring connectors](https://pawansikawat.github.io/faucet-stream/extending/authoring-connectors.html).
 
+To use a third-party connector **from a `faucet.yaml` config** (not just from Rust), build a
+custom `faucet` binary that registers it via `PluginRegistry` and `faucet_cli::run_main` — the
+connector then works as `type: <name>` across every CLI command with zero runtime overhead. See
+[Custom binaries with third-party connectors](cli/README.md#custom-binaries-with-third-party-connectors)
+and the runnable [`cli/examples/custom-cli/`](cli/examples/custom-cli/main.rs).
+
 ## Project structure
 
 ```

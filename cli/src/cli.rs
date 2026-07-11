@@ -36,12 +36,27 @@ pub enum Command {
     Validate(ValidateArgs),
     /// Print the JSON Schema for a specific connector.
     Schema(SchemaArgs),
-    /// List every compiled-in source, sink, and transform with a one-line description.
-    List,
+    /// List every compiled-in source, sink, and transform with a one-line
+    /// description (`--available` lists the whole connector registry instead).
+    List(ListArgs),
+    /// Search the connector registry index for connectors by name / keyword.
+    Search(SearchArgs),
+    /// Show how to install or enable a connector from the registry index
+    /// (prints the recipe; never executes anything).
+    Install(InstallArgs),
     /// Run only the source side and print records to stdout (uses the stdout sink).
     Preview(PreviewArgs),
+    /// Read-only preview of what a config would do: resolved pipeline, inferred
+    /// output schema, sink schema delta, lineage, and target sinks — zero writes.
+    Plan(PlanArgs),
+    /// Watch a config and re-run a sample offline on every save, printing a
+    /// live diff of the output. Requires the `cli-dev` build feature.
+    #[cfg(feature = "cli-dev")]
+    Dev(DevArgs),
     /// Scaffold a starter `pipeline.yaml` to disk.
     Init(InitArgs),
+    /// Scaffold a new artifact — currently a third-party connector crate.
+    New(NewArgs),
     /// Probe every connector in a config (auth / network / permissions) and
     /// print a green/red checklist. Exits non-zero if any probe fails.
     Doctor(DoctorArgs),
@@ -739,6 +754,10 @@ pub struct SchemaArgs {
 /// Schema subcommand target — which connector or system component to describe.
 #[derive(Debug, Subcommand)]
 pub enum SchemaTarget {
+    /// Composed JSON Schema for the **entire** `faucet.yaml` / `faucet.json`
+    /// config document (top-level grammar + per-connector `type` discrimination).
+    /// Point an editor at it with a `# yaml-language-server: $schema=…` header.
+    Config,
     /// JSON Schema for a source connector config.
     Source {
         /// Connector name (e.g. `rest`, `graphql`, `postgres`).
@@ -859,4 +878,138 @@ pub struct InitArgs {
     /// `--discover`), e.g. `tap-github` or `/opt/taps/tap-csv`.
     #[arg(long)]
     pub executable: Option<String>,
+}
+
+/// `faucet plan` arguments.
+#[derive(Debug, Parser)]
+pub struct PlanArgs {
+    /// Path to a `.yaml`/`.yml`/`.json` config (auto-discovered if omitted).
+    pub config: Option<PathBuf>,
+    /// Which row to plan (default: the first root row).
+    #[arg(long)]
+    pub row: Option<String>,
+    /// Offline sample of input records (`.jsonl` or a `.json` array) to preview
+    /// the output schema, volume, and sink delta through — no source is touched.
+    #[arg(long)]
+    pub sample: Option<PathBuf>,
+    /// Pull a capped, read-only sample from the real source instead of a
+    /// fixture (bounded by `--limit`; no bookmark is advanced).
+    #[arg(long)]
+    pub live: bool,
+    /// Cap for `--live` sampling.
+    #[arg(long, default_value_t = 10)]
+    pub limit: usize,
+    /// Emit the plan as JSON.
+    #[arg(long)]
+    pub json: bool,
+    /// Resolve secrets-manager directives (needs network/credentials). Off by
+    /// default so `plan` works offline like `faucet test`.
+    #[arg(long)]
+    pub resolve_secrets: bool,
+    /// Select a `profiles:` overlay.
+    #[arg(long, env = "FAUCET_PROFILE")]
+    pub profile: Option<String>,
+}
+
+/// `faucet dev` arguments.
+#[derive(Debug, Parser)]
+pub struct DevArgs {
+    /// Path to the `.yaml`/`.yml`/`.json` config to watch.
+    pub config: PathBuf,
+    /// Which row to run (default: the first root row).
+    #[arg(long)]
+    pub row: Option<String>,
+    /// Offline sample of input records (`.jsonl` or `.json` array). Required
+    /// for the offline loop.
+    #[arg(long)]
+    pub sample: Option<PathBuf>,
+    /// (reserved) pull a capped read-only sample from the real source.
+    #[arg(long)]
+    pub live: bool,
+    /// Cap for `--live` sampling.
+    #[arg(long, default_value_t = 10)]
+    pub limit: usize,
+    /// Run once and exit instead of watching (also the non-TTY fallback).
+    #[arg(long)]
+    pub once: bool,
+    /// Debounce window between re-runs, in milliseconds.
+    #[arg(long, default_value_t = 300)]
+    pub debounce_ms: u64,
+    /// Select a `profiles:` overlay.
+    #[arg(long, env = "FAUCET_PROFILE")]
+    pub profile: Option<String>,
+}
+
+/// `faucet list` arguments.
+#[derive(Debug, Parser)]
+pub struct ListArgs {
+    /// List every connector in the registry index (not just the compiled-in
+    /// ones), marking which are already in this binary.
+    #[arg(long)]
+    pub available: bool,
+    /// Read a custom registry index instead of the built-in one.
+    #[arg(long)]
+    pub index: Option<PathBuf>,
+}
+
+/// `faucet search` arguments.
+#[derive(Debug, Parser)]
+pub struct SearchArgs {
+    /// Term to match against connector name / description / keywords / crate.
+    pub term: String,
+    /// Read a custom registry index instead of the built-in one.
+    #[arg(long)]
+    pub index: Option<PathBuf>,
+    /// Emit matches as JSON.
+    #[arg(long)]
+    pub json: bool,
+}
+
+/// `faucet install` arguments.
+#[derive(Debug, Parser)]
+pub struct InstallArgs {
+    /// Connector system name (e.g. `kafka`).
+    pub name: String,
+    /// Disambiguate when a name exists as both a source and a sink.
+    #[arg(long)]
+    pub kind: Option<String>,
+    /// Read a custom registry index instead of the built-in one.
+    #[arg(long)]
+    pub index: Option<PathBuf>,
+}
+
+/// `faucet new` arguments.
+#[derive(Debug, Parser)]
+pub struct NewArgs {
+    #[command(subcommand)]
+    pub target: NewTarget,
+}
+
+/// What `faucet new` scaffolds.
+#[derive(Debug, Subcommand)]
+pub enum NewTarget {
+    /// Scaffold a ready-to-build `faucet-source-<name>` / `faucet-sink-<name>`
+    /// connector crate following every repo convention.
+    Connector(NewConnectorArgs),
+}
+
+/// `faucet new connector` arguments.
+#[derive(Debug, Parser)]
+pub struct NewConnectorArgs {
+    /// Connector system name (lowercase, e.g. `acme` or `acme-widgets`). Becomes
+    /// the crate name `faucet-<kind>-<name>` and the YAML `type:` value.
+    pub name: String,
+    /// Whether to scaffold a `source` or a `sink`.
+    #[arg(long)]
+    pub kind: String,
+    /// Also scaffold a `faucet-common-<name>` crate for config shared between a
+    /// source/sink pair.
+    #[arg(long)]
+    pub common: bool,
+    /// Directory to write the new crate(s) into. Defaults to the current dir.
+    #[arg(long, short = 'o', default_value = ".")]
+    pub output: PathBuf,
+    /// Overwrite any existing files.
+    #[arg(long)]
+    pub force: bool,
 }

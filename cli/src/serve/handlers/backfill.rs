@@ -98,8 +98,12 @@ pub async fn submit_backfill(
     // Validate the config loads/expands and gate the window scoping exactly
     // like the CLI: every root's source must reference a `${backfill.*}` /
     // `${now.*}` token or each unit would replay identical data.
-    let loaded =
-        load_submission(&req.config, req.config_format.into(), state.default_base()).await?;
+    let loaded = load_submission(
+        &req.config,
+        req.config_format.into(),
+        state.default_base().as_ref(),
+    )
+    .await?;
     let unscoped: Vec<&str> = loaded
         .nodes
         .iter()

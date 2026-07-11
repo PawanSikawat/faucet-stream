@@ -23,8 +23,12 @@ pub async fn doctor(
     State(state): State<ServerState>,
     Json(req): Json<DoctorRequest>,
 ) -> Result<Json<Value>, ServeError> {
-    let loaded =
-        load_submission(&req.config, req.config_format.into(), state.default_base()).await?;
+    let loaded = load_submission(
+        &req.config,
+        req.config_format.into(),
+        state.default_base().as_ref(),
+    )
+    .await?;
     let report = run_doctor_first(&state, &loaded).await?;
     Ok(Json(report))
 }

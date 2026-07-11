@@ -56,6 +56,7 @@
 - [Choosing a connector](./reference/choosing.md)
 - [CLI commands](./reference/cli.md)
 - [Configuration file format](./reference/config.md)
+- [Editor setup (autocomplete & validation)](./reference/editor-setup.md)
 - [HTTP API (`faucet serve`)](./reference/http-api.md)
 - [Triggers](./reference/triggers.md)
 
@@ -69,3 +70,4 @@
 # Extending
 
 - [Authoring a connector](./extending/authoring-connectors.md)
+- [Connector marketplace](./extending/marketplace.md)

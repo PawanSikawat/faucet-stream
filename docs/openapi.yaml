@@ -499,6 +499,31 @@ paths:
         "400": { description: Malformed `since` / `until` timestamp }
         "401": { description: Missing or invalid bearer token }
         "403": { description: Principal's role lacks the AuditRead permission }
+  /v1/reload:
+    post:
+      summary: Hot-reload the server's --default-config merge base (admin-only)
+      description: >
+        Re-reads and re-validates the `--default-config` file and atomically
+        swaps the in-memory merge base — without restarting or interrupting
+        in-flight runs (which already captured their config). An invalid new
+        config is rejected (422) and the previous base is kept. When the server
+        was started without `--default-config`, this is a no-op (200,
+        `reloaded: false`). Requires the `Reload` permission (admin role).
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: Reloaded (or a no-op when no --default-config is set).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  reloaded: { type: boolean }
+                  path: { type: string }
+                  reason: { type: string }
+        "401": { description: Missing or invalid bearer token }
+        "403": { description: Principal's role lacks the Reload permission }
+        "422": { description: New config invalid; previous config kept }
   /healthz:
     get:
       summary: Liveness probe (unauthenticated)

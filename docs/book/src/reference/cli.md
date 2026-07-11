@@ -8,9 +8,14 @@ The `faucet` binary exposes these commands. Pass `--log-level <level>` (or set
 | `faucet run [config]` | Run the pipeline(s) in a config file. |
 | `faucet validate [config]` | Parse, expand, and validate a config without running it. |
 | `faucet preview [config]` | Run only the source side and print records to stdout. |
-| `faucet schema <target>` | Print the JSON Schema for a connector, transform, or the DLQ. |
+| `faucet schema <target>` | Print the JSON Schema for the whole config (`config`), a connector, a transform, or any block. |
 | `faucet list` | List every compiled-in source, sink, and transform with a one-line description. |
 | `faucet init [name]` | Scaffold a commented config skeleton from connector schemas. |
+| `faucet new connector <name> --kind <source\|sink>` | Scaffold a ready-to-build connector crate. |
+| `faucet search <term>` | Search the connector registry for connectors by name/keyword. |
+| `faucet install <name>` | Print how to enable/obtain a connector from the registry. |
+| `faucet plan [config]` | Read-only preview of what a config would do — zero writes. |
+| `faucet dev <config> --sample <f>` | Watch + re-run a sample on save with a live diff (`cli-dev`). |
 | `faucet doctor [config]` | Probe every connector (auth/network/permissions) and print a checklist. |
 | `faucet test <specs…>` | Run fixture-based offline pipeline tests from one or more spec files. |
 | `faucet replicate [config]` | Bulk-snapshot a table, then hand off to CDC for a gap-free mirror. |
@@ -133,9 +138,48 @@ faucet preview app.yaml --profile dev --limit 5   # preview with a named profile
 `--profile <name>` / `FAUCET_PROFILE` selects a named overlay from `profiles:` before
 previewing. Same semantics as `run` and `validate`.
 
+## `plan`
+
+A read-only "what would this config change" preview — it runs the sink's
+non-mutating `check()` probe and pure schema/lineage analysis but **never writes
+to any sink**.
+
+```bash
+faucet plan pipeline.yaml
+faucet plan pipeline.yaml --sample fixtures.jsonl        # preview output schema/volume offline
+faucet plan pipeline.yaml --live --limit 20 --json       # capped read-only source pull, JSON out
+```
+
+Reports, for the selected row (`--row`, default the first root): the resolved
+source/sink/write-mode/delivery guarantee, the transform chain in lifecycle
+order, which quality/contract/masking/drift policies are in effect, and the
+lineage column ops. Given a sample (`--sample <fixture>` offline, or `--live
+--limit N` for a capped read-only source pull), it also reports the inferred
+output schema, the sink schema delta (adds / widenings / incompatible via
+`diff_schema` when the sink exposes `current_schema()`; "schemaless — no delta"
+otherwise), and a volume estimate. The data pass runs through the offline
+harness, so no sink is ever written. Offline by default; `--resolve-secrets`
+opts into the real secrets path.
+
+## `dev`
+
+A watch-and-diff authoring loop (requires the `cli-dev` build feature). Re-runs
+a sample through the offline harness on every config save and prints the schema,
+DLQ count, errors, and a **diff vs the previous run**.
+
+```bash
+faucet dev pipeline.yaml --sample fixtures.jsonl
+```
+
+Watches the config file's directory and the directories of any `extends:` /
+`!include` fragments, so editing an included fragment re-triggers a run. In a
+non-TTY (CI) or with `--once` it runs a single pass and exits. Debounce the
+watcher with `--debounce-ms`.
+
 ## `schema`
 
 ```bash
+faucet schema config          # the WHOLE config document (top-level grammar)
 faucet schema source rest
 faucet schema sink bigquery
 faucet schema transform keys_case
@@ -149,6 +193,16 @@ faucet schema secrets
 faucet schema triggers
 faucet schema catalog
 ```
+
+`faucet schema config` prints a composed JSON Schema for the **entire**
+`faucet.yaml` / `faucet.json` document — the top-level grammar (`version`,
+`name`, `vars`, `auth`, `pipeline`, `matrix`, `execution`, and every optional
+block such as `schedule` / `lineage` / `quality` / `dlq` / `resilience` that is
+compiled into your binary) plus per-connector `type` discrimination: the
+`source` / `sink` positions become a `oneOf` over the connector kinds your
+binary knows, each branch embedding that connector's own config schema. Point an
+editor at it for autocomplete and validation as you type — see
+[Editor setup](./editor-setup.md).
 
 `faucet schema transform <name>` prints the inline config schema for a
 transform (e.g. `keys_case` lists the valid `mode:` values). Run
@@ -197,6 +251,50 @@ faucet init --source singer --discover --executable tap-github -o pipeline.yaml
 
 `faucet doctor` then verifies the tap resolves on `PATH` and that the selected
 `stream` exists in the catalog.
+
+## `new`
+
+Scaffold a new **connector crate** (not a config) that follows every repo
+convention — ready to `cargo build` and publish:
+
+```bash
+faucet new connector acme --kind source            # → faucet-source-acme/
+faucet new connector acme --kind sink --common      # + a faucet-common-acme/ crate
+faucet new connector acme --kind source -o crates/  # write into crates/
+```
+
+The generated crate has the standard module layout (`config.rs`, `stream.rs` or
+`sink.rs`), a `JsonSchema`-deriving config, `config_schema()` / `connector_name()`
+overrides, the `#![cfg_attr(docsrs, feature(doc_cfg))]` crate-root line, the
+`[package.metadata.docs.rs]` block, system-name-first crates.io keywords, a
+README, and a passing unit test — so `cargo test` is green out of the box with a
+trivial passthrough. Fill in the `TODO`s, then publish. See
+[Authoring a connector](../extending/authoring-connectors.md).
+
+## `search` / `install` / `list --available`
+
+Discover connectors from the [connector registry](../extending/marketplace.md) —
+a curated, feature-independent index of every built-in connector plus community
+`faucet-source-*` / `faucet-sink-*` crates.
+
+```bash
+faucet search kafka              # matches on name, description, keywords, crate
+faucet search cdc --json         # machine-readable
+faucet list --available          # the whole registry; ● = in this binary, ○ = installable
+faucet install bigquery --kind sink
+faucet install my-connector --index ./my-registry.json
+```
+
+`faucet install <name>` never runs anything — it prints the recipe:
+
+- a **built-in** already compiled in → "already available";
+- a **built-in** not compiled in → `cargo install faucet-cli --features <kind>-<name>`;
+- a **community** connector → a copy-pasteable custom-binary snippet (see
+  [Custom binaries](../../cli/README.md#custom-binaries-with-third-party-connectors)).
+
+`--index <path>` points any of these at a custom/mirror index instead of the
+built-in one. Ambiguous names (a connector that is both a source and a sink,
+e.g. `postgres`) need `--kind source|sink`.
 
 ## `doctor`
 

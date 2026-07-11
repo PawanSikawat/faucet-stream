@@ -54,7 +54,15 @@ state:
   type: postgres
   config:
     url: postgres://user:pass@localhost/faucet
+    table: faucet_state     # optional, default `faucet_state`
+    ensure_table: true      # optional, run CREATE TABLE IF NOT EXISTS on startup
+    max_connections: 10     # optional, default 5 — pool size for the state store
 ```
+
+`max_connections` sizes the Postgres state-store connection pool (default `5`).
+Raise it when many concurrent matrix rows share one state store; lower it
+against a connection-limited managed Postgres. A value of `0` is rejected at
+config-load time.
 
 ## How bookmarks advance
 

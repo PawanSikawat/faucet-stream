@@ -18,6 +18,10 @@ pub fn describe() {
         "faucet_schedule_overlaps_total",
         "Scheduler ticks that overlapped an in-flight run, by policy (skip|queue|forbid)."
     );
+    describe_counter!(
+        "faucet_schedule_reloads_total",
+        "Hot config reloads (SIGHUP), by outcome (ok|error)."
+    );
     describe_gauge!(
         "faucet_schedule_next_tick_unix_seconds",
         "Unix timestamp of the next scheduled tick."
@@ -59,6 +63,12 @@ pub fn run_outcome(pipeline: &str, outcome: &'static str) {
 }
 
 /// `policy ∈ {"skip", "queue", "forbid"}`.
+/// Count a hot config reload attempt (`outcome` = `ok` | `error`).
+pub fn reload(pipeline: &str, outcome: &'static str) {
+    counter!("faucet_schedule_reloads_total", "pipeline" => pipeline.to_string(), "outcome" => outcome)
+        .increment(1);
+}
+
 pub fn overlap(pipeline: &str, policy: &'static str) {
     counter!("faucet_schedule_overlaps_total", "pipeline" => pipeline.to_string(), "policy" => policy)
         .increment(1);

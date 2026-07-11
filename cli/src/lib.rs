@@ -35,9 +35,12 @@ pub mod notify;
 pub mod obs;
 pub mod pipeline_test;
 pub mod registry;
+pub mod registry_index;
 pub mod replication;
+pub mod scaffold;
 #[cfg(feature = "schedule")]
 pub mod schedule;
+pub mod schema_compose;
 pub mod secrets;
 #[cfg(feature = "serve")]
 pub mod serve;
@@ -46,6 +49,132 @@ pub mod state;
 pub mod transforms;
 
 pub use error::{CliError, CliResult};
+
+use crate::cli::{Cli, Command};
+use crate::registry::PluginRegistry;
+
+/// Entry point for a custom `faucet` binary that bundles third-party
+/// connectors.
+///
+/// A custom-CLI author writes a tiny `main.rs` that builds a [`PluginRegistry`]
+/// with their connectors registered on top of the built-ins and hands it here:
+///
+/// ```no_run
+/// use faucet_cli::registry::PluginRegistry;
+/// fn main() -> std::process::ExitCode {
+///     faucet_cli::run_main(PluginRegistry::with_builtins())
+/// }
+/// ```
+///
+/// This installs `registry` as the process-global connector registry (so every
+/// command — `run`, `validate`, `schema`, `list`, `preview`, `serve`, … — sees
+/// the custom connectors), parses argv, installs the tracing subscriber, and
+/// dispatches. The return value is the process exit code (the failed-probe /
+/// failed-case / failed-unit count for `doctor` / `test` / `backfill`, `1` for
+/// any other error, `0` on success). The stock `faucet` binary calls this with
+/// `PluginRegistry::with_builtins()`.
+pub fn run_main(registry: PluginRegistry) -> std::process::ExitCode {
+    use clap::Parser;
+    use std::process::ExitCode;
+
+    if let Err(err) = registry.install() {
+        commands::report(&err);
+        return ExitCode::from(1);
+    }
+    let cli = Cli::parse();
+    #[cfg(feature = "serve")]
+    let is_serve = matches!(cli.command, Command::Serve(_));
+    #[cfg(not(feature = "serve"))]
+    let is_serve = false;
+    // `serve` installs its own (redacting, run-scoped) subscriber; every other
+    // command uses the plain redacting fmt subscriber.
+    if !is_serve {
+        install_tracing(&cli.log_level);
+    }
+
+    let runtime = match tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(rt) => rt,
+        Err(e) => {
+            eprintln!("error: failed to start async runtime: {e}");
+            return ExitCode::from(1);
+        }
+    };
+
+    runtime.block_on(async move {
+        match run_command(cli).await {
+            Ok(()) => ExitCode::SUCCESS,
+            // `doctor` / `test` / `backfill` already printed their report; the
+            // exit code is the failed count (clamped to 255).
+            Err(CliError::DoctorFailed { failed }) => ExitCode::from(failed.min(255) as u8),
+            Err(CliError::TestsFailed { failed }) => ExitCode::from(failed.min(255) as u8),
+            Err(CliError::BackfillFailed { failed }) => ExitCode::from(failed.min(255) as u8),
+            Err(err) => {
+                commands::report(&err);
+                ExitCode::from(1)
+            }
+        }
+    })
+}
+
+/// Dispatch a parsed [`Cli`] to the matching command. Public so custom hosts and
+/// integration tests can drive the exact same code path as [`run_main`] with a
+/// programmatically-built `Cli` (and a registry installed via
+/// [`PluginRegistry::install`]).
+pub async fn run_command(cli: Cli) -> CliResult<()> {
+    #[cfg(feature = "serve")]
+    let serve_log_level = cli.log_level.clone();
+    match cli.command {
+        Command::Run(args) => commands::run::run(args).await,
+        Command::Backfill(args) => commands::backfill::run(args).await,
+        Command::Replicate(args) => commands::replicate::run(args).await,
+        Command::Discover(args) => commands::discover::run(args).await,
+        Command::Validate(args) => commands::validate::run(args).await,
+        Command::Schema(args) => commands::schema::run(args).await,
+        Command::List(args) => commands::list::run(args).await,
+        Command::Search(args) => commands::search::run(args).await,
+        Command::Install(args) => commands::install::run(args).await,
+        Command::Preview(args) => commands::preview::run(args).await,
+        Command::Plan(args) => commands::plan::run(args).await,
+        #[cfg(feature = "cli-dev")]
+        Command::Dev(args) => commands::dev::run(args).await,
+        Command::Init(args) => commands::init::run(args).await,
+        Command::New(args) => commands::new::run(args).await,
+        Command::Doctor(args) => commands::doctor::run(args).await,
+        Command::Test(args) => commands::test::run(args).await,
+        Command::Dlq(args) => commands::dlq::run(args).await,
+        #[cfg(feature = "contract")]
+        Command::Contract(args) => commands::contract::run(args).await,
+        #[cfg(feature = "masking")]
+        Command::Masking(args) => commands::masking::run(args).await,
+        #[cfg(feature = "schedule")]
+        Command::Schedule(args) => commands::schedule::run(args).await,
+        #[cfg(feature = "serve")]
+        Command::Serve(args) => commands::serve::run(args, serve_log_level).await,
+        #[cfg(feature = "notify")]
+        Command::Notify(args) => commands::notify::run(args).await,
+        #[cfg(feature = "catalog")]
+        Command::Catalog(args) => commands::catalog::run(args).await,
+    }
+}
+
+#[cfg(feature = "observability")]
+fn install_tracing(level: &str) {
+    use crate::secrets::registry::RedactingMakeWriter;
+    use tracing_subscriber::EnvFilter;
+    let filter = EnvFilter::try_new(level).unwrap_or_else(|_| EnvFilter::new("info"));
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_writer(RedactingMakeWriter)
+        .try_init();
+}
+
+/// Stub used when the `observability` feature is disabled. Logging falls back to
+/// whatever the host environment has wired (or nothing).
+#[cfg(not(feature = "observability"))]
+fn install_tracing(_level: &str) {}
 
 /// Convenience entry point for integration tests and custom hosts: parse a
 /// YAML config string, expand the matrix, and run all rows.
