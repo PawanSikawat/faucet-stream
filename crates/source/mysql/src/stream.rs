@@ -384,10 +384,15 @@ impl faucet_core::Source for MysqlSource {
     /// data scan).
     async fn discover(&self) -> Result<Vec<faucet_core::DatasetDescriptor>, FaucetError> {
         // The lowercase aliases matter: MySQL 8 returns information_schema
-        // result columns as UPPERCASE (`TABLE_NAME`, …) without them.
+        // result columns as UPPERCASE (`TABLE_NAME`, …) without them. The
+        // CAST(… AS CHAR) wrappers matter too: MySQL 8 reports several
+        // information_schema string columns with a binary collation, which
+        // sqlx surfaces as VARBINARY and refuses to decode as String.
         let sql = "\
-            SELECT c.table_name AS table_name, c.column_name AS column_name, \
-                   c.data_type AS data_type, c.is_nullable AS is_nullable, \
+            SELECT CAST(c.table_name AS CHAR) AS table_name, \
+                   CAST(c.column_name AS CHAR) AS column_name, \
+                   CAST(c.data_type AS CHAR) AS data_type, \
+                   CAST(c.is_nullable AS CHAR) AS is_nullable, \
                    t.table_rows AS estimated_rows \
               FROM information_schema.columns c \
               JOIN information_schema.tables t \
