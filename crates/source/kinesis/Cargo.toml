@@ -27,6 +27,9 @@ base64.workspace = true
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 serde_yaml = "0.9"
+# LocalStack-backed integration tests (Docker), mirroring the kafka pair.
+testcontainers = "0.27"
+testcontainers-modules = { version = "0.15", features = ["localstack"] }
 
 [package.metadata.docs.rs]
 all-features = true

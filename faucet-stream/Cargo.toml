@@ -21,6 +21,7 @@ source = [
     "source-xml",
     "source-grpc",
     "source-kafka",
+    "source-kinesis",
     "source-postgres",
     "source-postgres-cdc",
     "source-mysql",
@@ -48,6 +49,7 @@ sink = [
     "sink-jsonl",
     "sink-snowflake",
     "sink-kafka",
+    "sink-kinesis",
     "sink-mysql",
     "sink-mssql",
     "sink-sqlite",
@@ -125,6 +127,7 @@ source-websocket = ["dep:faucet-source-websocket"]
 source-csv = ["dep:faucet-source-csv"]
 source-elasticsearch = ["dep:faucet-source-elasticsearch"]
 source-kafka = ["dep:faucet-source-kafka", "dep:faucet-common-kafka"]
+source-kinesis = ["dep:faucet-source-kinesis", "dep:faucet-common-kinesis"]
 source-parquet = ["dep:faucet-source-parquet"]
 source-gcs = ["dep:faucet-source-gcs", "dep:faucet-common-gcs"]
 source-bigquery = ["dep:faucet-source-bigquery", "dep:faucet-common-bigquery"]
@@ -152,6 +155,7 @@ sink-elasticsearch = ["dep:faucet-sink-elasticsearch"]
 sink-http = ["dep:faucet-sink-http"]
 sink-stdout = ["dep:faucet-sink-stdout"]
 sink-kafka = ["dep:faucet-sink-kafka", "dep:faucet-common-kafka"]
+sink-kinesis = ["dep:faucet-sink-kinesis", "dep:faucet-common-kinesis"]
 sink-parquet = ["dep:faucet-sink-parquet"]
 sink-gcs = ["dep:faucet-sink-gcs", "dep:faucet-common-gcs"]
 
@@ -189,6 +193,7 @@ faucet-auth = { workspace = true, optional = true }
 faucet-common-bigquery = { workspace = true, optional = true }
 faucet-common-gcs = { workspace = true, optional = true }
 faucet-common-kafka = { workspace = true, optional = true }
+faucet-common-kinesis = { workspace = true, optional = true }
 faucet-common-snowflake = { workspace = true, optional = true }
 faucet-source-rest = { workspace = true, optional = true }
 faucet-source-singer = { workspace = true, optional = true }
@@ -196,6 +201,7 @@ faucet-source-graphql = { workspace = true, optional = true }
 faucet-source-xml = { workspace = true, optional = true }
 faucet-source-grpc = { workspace = true, optional = true }
 faucet-source-kafka = { workspace = true, optional = true }
+faucet-source-kinesis = { workspace = true, optional = true }
 faucet-source-postgres = { workspace = true, optional = true }
 faucet-source-postgres-cdc = { workspace = true, optional = true }
 faucet-source-mysql = { workspace = true, optional = true }
@@ -220,6 +226,7 @@ faucet-sink-postgres = { workspace = true, optional = true }
 faucet-sink-jsonl = { workspace = true, optional = true }
 faucet-sink-snowflake = { workspace = true, optional = true }
 faucet-sink-kafka = { workspace = true, optional = true }
+faucet-sink-kinesis = { workspace = true, optional = true }
 faucet-sink-mysql = { workspace = true, optional = true }
 faucet-sink-mssql = { workspace = true, optional = true }
 faucet-sink-sqlite = { workspace = true, optional = true }

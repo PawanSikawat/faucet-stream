@@ -75,6 +75,7 @@ source = [
     "source-csv",
     "source-elasticsearch",
     "source-kafka",
+    "source-kinesis",
     "source-parquet",
     "source-gcs",
     "source-bigquery",
@@ -97,6 +98,7 @@ sink = [
     "sink-http",
     "sink-stdout",
     "sink-kafka",
+    "sink-kinesis",
     "sink-parquet",
     "sink-gcs",
     "sink-iceberg",
@@ -122,6 +124,7 @@ source-websocket = ["dep:faucet-source-websocket"]
 source-csv = ["dep:faucet-source-csv"]
 source-elasticsearch = ["dep:faucet-source-elasticsearch"]
 source-kafka = ["dep:faucet-source-kafka"]
+source-kinesis = ["dep:faucet-source-kinesis"]
 source-parquet = ["dep:faucet-source-parquet"]
 source-gcs = ["dep:faucet-source-gcs"]
 source-bigquery = ["dep:faucet-source-bigquery"]
@@ -144,6 +147,7 @@ sink-elasticsearch = ["dep:faucet-sink-elasticsearch"]
 sink-http = ["dep:faucet-sink-http"]
 sink-stdout = ["dep:faucet-sink-stdout"]
 sink-kafka = ["dep:faucet-sink-kafka"]
+sink-kinesis = ["dep:faucet-sink-kinesis"]
 sink-parquet = ["dep:faucet-sink-parquet"]
 sink-gcs = ["dep:faucet-sink-gcs"]
 
@@ -265,6 +269,7 @@ faucet-source-websocket = { workspace = true, optional = true }
 faucet-source-csv = { workspace = true, optional = true }
 faucet-source-elasticsearch = { workspace = true, optional = true }
 faucet-source-kafka = { workspace = true, optional = true }
+faucet-source-kinesis = { workspace = true, optional = true }
 faucet-source-parquet = { workspace = true, optional = true }
 faucet-source-gcs = { workspace = true, optional = true }
 faucet-source-bigquery = { workspace = true, optional = true }
@@ -285,6 +290,7 @@ faucet-sink-csv = { workspace = true, optional = true }
 faucet-sink-elasticsearch = { workspace = true, optional = true }
 faucet-sink-http = { workspace = true, optional = true }
 faucet-sink-kafka = { workspace = true, optional = true }
+faucet-sink-kinesis = { workspace = true, optional = true }
 faucet-sink-stdout = { workspace = true, optional = true }
 faucet-sink-parquet = { workspace = true, optional = true }
 faucet-sink-gcs = { workspace = true, optional = true }
