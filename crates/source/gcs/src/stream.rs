@@ -467,7 +467,7 @@ impl faucet_core::Source for GcsSource {
     /// **one** delimiter (`/`) listing page — each common prefix becomes a
     /// `prefix` dataset. When the listing returns no common prefixes but does
     /// return objects directly under the prefix, each object (first page
-    /// only, ≤ [`DISCOVER_MAX_OBJECTS`]) becomes an `object` dataset instead,
+    /// only, ≤ `DISCOVER_MAX_OBJECTS`) becomes an `object` dataset instead,
     /// selected via the exact-match `object_keys` config field. No recursion
     /// and no data scan — object counts would require paging the whole
     /// listing, so `estimated_rows` is never set.
@@ -503,7 +503,7 @@ const DISCOVER_MAX_OBJECTS: usize = 1000;
 /// Build one [`DatasetDescriptor`](faucet_core::DatasetDescriptor) per common
 /// prefix from a single delimiter listing; when the listing yielded no common
 /// prefixes, fall back to one descriptor per object (capped at
-/// [`DISCOVER_MAX_OBJECTS`]). Prefix datasets patch the source's `prefix`
+/// `DISCOVER_MAX_OBJECTS`). Prefix datasets patch the source's `prefix`
 /// config field; object datasets patch `object_keys` (which selects exactly
 /// that object and makes `prefix` inert). Pure — unit-testable without a GCS
 /// client.

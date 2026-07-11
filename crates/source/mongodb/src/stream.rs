@@ -279,7 +279,7 @@ impl faucet_core::Source for MongoSource {
     /// Enumerate the collections in the configured database (excluding
     /// `system.*`), with a row estimate from `estimated_document_count`
     /// (collection metadata — no scan) and a schema inferred from a bounded
-    /// [`DISCOVER_SAMPLE_SIZE`]-document sample per collection.
+    /// `DISCOVER_SAMPLE_SIZE`-document sample per collection.
     async fn discover(&self) -> Result<Vec<faucet_core::DatasetDescriptor>, FaucetError> {
         let db = self.client.database(&self.config.database);
         let mut names: Vec<String> = db

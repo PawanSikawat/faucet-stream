@@ -95,7 +95,7 @@ impl BigQuerySource {
     /// [`Source::discover`] with explicit caps — split out so tests can
     /// exercise the truncation branches without mocking hundreds of tables.
     /// Production code goes through [`Source::discover`], which applies
-    /// [`MAX_DISCOVER_TABLES`] / [`MAX_DISCOVER_SCHEMA_FETCHES`].
+    /// `MAX_DISCOVER_TABLES` / `MAX_DISCOVER_SCHEMA_FETCHES`.
     #[doc(hidden)]
     pub async fn discover_with_caps(
         &self,
@@ -402,8 +402,8 @@ impl faucet_core::Source for BigQuerySource {
     /// `tables.get` schemas and a row estimate from `numRows` (catalog
     /// metadata only — no data scan, no billed query). Datasets are listed
     /// via `datasets.list`, tables per dataset via `tables.list` (both
-    /// paged); enumeration is capped at [`MAX_DISCOVER_TABLES`] tables and
-    /// per-table schema fetches at [`MAX_DISCOVER_SCHEMA_FETCHES`] (tables
+    /// paged); enumeration is capped at `MAX_DISCOVER_TABLES` tables and
+    /// per-table schema fetches at `MAX_DISCOVER_SCHEMA_FETCHES` (tables
     /// past that cap are emitted without a schema / estimate).
     async fn discover(&self) -> Result<Vec<DatasetDescriptor>, FaucetError> {
         self.discover_with_caps(MAX_DISCOVER_TABLES, MAX_DISCOVER_SCHEMA_FETCHES)

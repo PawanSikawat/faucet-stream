@@ -517,7 +517,7 @@ impl faucet_core::Source for S3Source {
     /// **one** `ListObjectsV2` delimiter (`/`) listing — each common prefix
     /// becomes a `prefix` dataset. When the listing returns no common
     /// prefixes but does return objects directly under the prefix, each
-    /// object (first page only, ≤ [`DISCOVER_MAX_OBJECTS`]) becomes an
+    /// object (first page only, capped at `DISCOVER_MAX_OBJECTS` = 1000) becomes an
     /// `object` dataset instead. No recursion and no data scan — object
     /// counts would require paging the whole listing, so `estimated_rows`
     /// is never set.
@@ -562,7 +562,7 @@ const DISCOVER_MAX_OBJECTS: usize = 1000;
 /// Build one [`DatasetDescriptor`](faucet_core::DatasetDescriptor) per common
 /// prefix from a single delimiter listing; when the listing yielded no common
 /// prefixes, fall back to one descriptor per object (capped at
-/// [`DISCOVER_MAX_OBJECTS`]). Each patch selects the dataset via the source's
+/// `DISCOVER_MAX_OBJECTS`). Each patch selects the dataset via the source's
 /// `prefix` config field — a full object key used as a prefix selects exactly
 /// that object. Pure — unit-testable without an S3 client.
 fn descriptors_from_listing(
