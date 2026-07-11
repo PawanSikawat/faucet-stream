@@ -24,6 +24,8 @@
 - [Upsert / mirror tables](./cookbook/upsert.md)
 - [Schema drift](./cookbook/schema-drift.md)
 - [Replication (snapshot → CDC)](./cookbook/replication.md)
+- [Backfill (historical replay)](./cookbook/backfill.md)
+- [Source discovery (auto-generate configs)](./cookbook/discover.md)
 - [Dead-letter queues](./cookbook/dlq.md)
 - [Resilience (retry / circuit breaker / poison-pill)](./cookbook/resilience.md)
 - [Data-quality checks](./cookbook/quality.md)

@@ -219,6 +219,17 @@ let schema = source.config_schema();
 println!("{}", serde_json::to_string_pretty(&schema)?);
 ```
 
+## Dataset discovery
+
+The source supports live introspection via `Source::discover()` (#211): it enumerates every user table in `sqlite_master` (internal `sqlite_*` tables excluded, ordered by name) and returns one dataset descriptor per table with:
+
+- `name` — the table name; `kind: table`
+- `schema` — the column shape from `pragma_table_info` as a JSON-Schema object (declared type names mapped to JSON types; columns without `NOT NULL` become `["T", "null"]`; a typeless column maps to `string`)
+- `estimated_rows` — always absent: SQLite keeps no cheap row-count statistic, and discovery never scans data to count
+- `config_patch` — `` { "query": "SELECT * FROM `table`" } ``, backtick-quoted (interior backticks doubled), ready to deep-merge over the connection config as a matrix row
+
+Discovery reads catalog metadata only — it never scans table data.
+
 ## Library usage
 
 ```rust

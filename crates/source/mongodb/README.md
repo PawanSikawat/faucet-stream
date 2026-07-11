@@ -225,6 +225,17 @@ This source is **not resumable** and does not support effectively-once delivery.
 
 To approximate incremental loads with this query source, add a high-watermark clause to `filter` and parameterize it (e.g. `created_at: { $gt: "${env:SINCE}" }`) at the orchestration layer.
 
+## Dataset discovery
+
+The source implements [`Source::discover`](https://docs.rs/faucet-core/latest/faucet_core/trait.Source.html#method.discover) (#211): it enumerates every collection in the configured `database` (excluding `system.*`) and returns one `DatasetDescriptor` per collection with
+
+- `name` — the collection name; `kind` — `"collection"`;
+- `config_patch` — `{"collection": "<name>"}`, ready to deep-merge over the connection config (one matrix row per collection);
+- `estimated_rows` — from `estimated_document_count()` (collection metadata, no scan);
+- `schema` — inferred from a bounded 10-document sample per collection (relaxed extended JSON, same conversion as the fetch path). An empty collection reports no schema.
+
+Discovery is read-only and cheap: one `listCollections`, plus one metadata count and one 10-document `find` per collection.
+
 ## BSON ↔ JSON conversion
 
 - **Inputs** (`filter`, `projection`, `sort`) are converted from JSON to BSON `Document`s at query time. Each must be a JSON **object** — passing an array or scalar produces a `FaucetError::Config`.

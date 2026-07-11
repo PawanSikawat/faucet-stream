@@ -12,6 +12,7 @@
 //! integrations and tests can reuse them.
 
 pub mod auth_catalog;
+pub mod backfill;
 #[cfg(feature = "catalog")]
 pub mod catalog;
 pub mod cli;

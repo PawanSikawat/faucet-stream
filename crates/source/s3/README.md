@@ -326,6 +326,15 @@ To run a full pipeline, wrap the source with any sink in `faucet_core::Pipeline`
 
 Throughput scales with `concurrency` and is ultimately bounded by S3 / network bandwidth — benchmark with your own object sizes and parallelism.
 
+## Dataset discovery
+
+The source supports live introspection via `Source::discover()`: one `ListObjectsV2` delimiter (`/`) listing under the configured `prefix` (bucket root when unset) enumerates the "directories" directly below it, returning one dataset descriptor per common prefix with:
+
+- `name` — the full key prefix (e.g. `raw/orders/`), `kind: prefix`
+- `config_patch` — `{ "prefix": "raw/orders/" }`, ready to deep-merge over the connection config as a matrix row
+
+When the listing returns no common prefixes but does return objects directly under the prefix (a "leaf directory"), each object becomes a descriptor instead (`kind: object`, `config_patch: { "prefix": "<full key>" }`), capped at the single listing page of 1000. `schema` and `estimated_rows` are never set — either would require reading or paging the whole listing. Discovery issues exactly one listing call and never recurses.
+
 ## Lineage dataset URI
 
 `s3://<bucket>` or `s3://<bucket>/<prefix>` — e.g. `s3://my-bucket/data/2026/`.

@@ -20,6 +20,10 @@ pub async fn run(args: SchemaArgs) -> CliResult<()> {
             let s = faucet_core::schema_for!(crate::replication::spec::ReplicationSpec);
             serde_json::to_value(s).unwrap_or_else(|_| serde_json::json!({"type": "object"}))
         }
+        SchemaTarget::Backfill => {
+            let s = faucet_core::schema_for!(crate::backfill::BackfillSpec);
+            serde_json::to_value(s).unwrap_or_else(|_| serde_json::json!({"type": "object"}))
+        }
         SchemaTarget::Execution => {
             let s = faucet_core::schema_for!(crate::config::ExecutionSpec);
             serde_json::to_value(s).unwrap_or_else(|_| serde_json::json!({"type": "object"}))

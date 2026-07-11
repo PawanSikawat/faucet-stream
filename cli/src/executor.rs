@@ -793,6 +793,13 @@ async fn run_one_invocation(
     // before the parent-record pass. Leaves all other tokens verbatim.
     resolve_now_inplace(&mut source_cfg, opts.clock)?;
     resolve_now_inplace(&mut sink_cfg, opts.clock)?;
+    // `${backfill.*}` tokens are substituted by the `faucet backfill`
+    // orchestrator before nodes reach the executor. One still present here
+    // means a window-scoped config is being driven by `run`/`schedule`/
+    // `serve` — fail loudly instead of handing the literal token to the
+    // connector (#282).
+    reject_unresolved_backfill_tokens(&source_cfg, "source")?;
+    reject_unresolved_backfill_tokens(&sink_cfg, "sink")?;
 
     if let (Some(record), NodeRole::Child { parent_id, .. }) = (parent_record, &node.role) {
         let ctx: HashMap<String, Value> = HashMap::from([(parent_id.clone(), record.clone())]);
@@ -1468,6 +1475,24 @@ fn faucet_error_kind(err: &FaucetError) -> &'static str {
 /// leaf and rewrites `${now.<token>}`; all other `${...}` tokens are untouched.
 /// Shared with `faucet test`, which applies the same pre-pass to transform
 /// configs under the case clock.
+/// Error on a leftover `${backfill.*}` token: those resolve only inside
+/// `faucet backfill`, which substitutes them per window unit before the
+/// executor runs. Reaching here means another runtime picked up a
+/// window-scoped config.
+fn reject_unresolved_backfill_tokens(value: &Value, owner: &str) -> CliResult<()> {
+    fn walk(value: &Value, owner: &str) -> CliResult<()> {
+        match value {
+            Value::String(s) if s.contains("${backfill.") => Err(CliError::Config(format!(
+                "the {owner} config references a `${{backfill.*}}` token, which only                  `faucet backfill` resolves — run this config via `faucet backfill                  --from … --to …`, or remove the token"
+            ))),
+            Value::Array(a) => a.iter().try_for_each(|v| walk(v, owner)),
+            Value::Object(m) => m.values().try_for_each(|v| walk(v, owner)),
+            _ => Ok(()),
+        }
+    }
+    walk(value, owner)
+}
+
 pub(crate) fn resolve_now_inplace(
     value: &mut Value,
     clock: DateTime<FixedOffset>,
@@ -1788,6 +1813,7 @@ mod tests {
             sla: None,
             shard: None,
             replication: None,
+            backfill: None,
             #[cfg(feature = "schedule")]
             schedule: None,
             #[cfg(feature = "lineage")]

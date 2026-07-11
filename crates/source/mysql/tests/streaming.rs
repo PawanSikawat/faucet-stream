@@ -534,3 +534,81 @@ async fn unsharded_config_enumerates_one_whole_shard() {
     assert_eq!(shards.len(), 1);
     assert!(shards[0].is_whole());
 }
+
+/// `discover()` enumerates real tables with column schemas, a row estimate
+/// from `information_schema.tables.table_rows`, and a ready-to-run `query`
+/// config patch (#211).
+#[tokio::test(flavor = "multi_thread")]
+async fn discover_enumerates_tables_with_schemas() {
+    use sqlx::Connection;
+
+    let (_container, url) = start_mysql().await;
+    let mut conn = sqlx::MySqlConnection::connect(&url).await.expect("connect");
+    sqlx::query(
+        "CREATE TABLE orders (id BIGINT NOT NULL PRIMARY KEY, note TEXT, total DECIMAL(10,2))",
+    )
+    .execute(&mut conn)
+    .await
+    .expect("create orders");
+    sqlx::query("CREATE TABLE leads (id INT NOT NULL, active BOOLEAN)")
+        .execute(&mut conn)
+        .await
+        .expect("create leads");
+    sqlx::query("INSERT INTO orders (id) VALUES (1), (2), (3), (4), (5)")
+        .execute(&mut conn)
+        .await
+        .expect("seed orders");
+    // Refresh InnoDB statistics so table_rows carries a real estimate.
+    sqlx::query("ANALYZE TABLE orders")
+        .execute(&mut conn)
+        .await
+        .expect("analyze");
+    conn.close().await.expect("close conn");
+
+    let source = MysqlSource::new(MysqlSourceConfig::new(&url, "SELECT 1"))
+        .await
+        .expect("source");
+    assert!(source.supports_discover());
+    let datasets = source.discover().await.expect("discover");
+
+    let names: Vec<&str> = datasets.iter().map(|d| d.name.as_str()).collect();
+    assert!(names.contains(&"orders"), "got: {names:?}");
+    assert!(names.contains(&"leads"), "got: {names:?}");
+
+    let orders = datasets
+        .iter()
+        .find(|d| d.name == "orders")
+        .expect("orders dataset");
+    assert_eq!(orders.kind, "table");
+    assert_eq!(orders.config_patch["query"], "SELECT * FROM `orders`");
+    // InnoDB's table_rows is approximate; after ANALYZE on a 5-row table it
+    // must be a small positive number (assert the range, not the exact
+    // value, to stay robust across MySQL versions).
+    let est = orders.estimated_rows.expect("table_rows estimate");
+    assert!((1..=50).contains(&est), "estimate near 5, got {est}");
+    let schema = orders.schema.as_ref().expect("schema");
+    assert_eq!(schema["properties"]["id"]["type"], "integer");
+    assert_eq!(
+        schema["properties"]["total"]["type"],
+        serde_json::json!(["number", "null"]),
+        "nullable DECIMAL column"
+    );
+    assert_eq!(
+        schema["properties"]["note"]["type"],
+        serde_json::json!(["string", "null"]),
+        "nullable TEXT column"
+    );
+
+    let leads = datasets
+        .iter()
+        .find(|d| d.name == "leads")
+        .expect("leads dataset");
+    let lschema = leads.schema.as_ref().expect("schema");
+    assert_eq!(lschema["properties"]["id"]["type"], "integer");
+    // MySQL's BOOLEAN is an alias for TINYINT(1); information_schema reports
+    // data_type = "tinyint", which maps to JSON integer.
+    assert_eq!(
+        lschema["properties"]["active"]["type"],
+        serde_json::json!(["integer", "null"])
+    );
+}

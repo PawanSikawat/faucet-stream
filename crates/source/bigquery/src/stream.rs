@@ -13,8 +13,10 @@ use crate::convert::row_to_json;
 use async_trait::async_trait;
 use faucet_common_bigquery::build_client;
 use faucet_core::util::substitute_context_bind_params;
-use faucet_core::{FaucetError, Stream, StreamPage};
+use faucet_core::{DatasetDescriptor, FaucetError, Stream, StreamPage};
 use gcp_bigquery_client::Client;
+use gcp_bigquery_client::dataset::ListOptions as DatasetListOptions;
+use gcp_bigquery_client::model::field_type::FieldType;
 use gcp_bigquery_client::model::get_query_results_parameters::GetQueryResultsParameters;
 use gcp_bigquery_client::model::query_parameter::QueryParameter;
 use gcp_bigquery_client::model::query_parameter_type::QueryParameterType;
@@ -23,10 +25,23 @@ use gcp_bigquery_client::model::query_request::QueryRequest;
 use gcp_bigquery_client::model::query_response::QueryResponse;
 use gcp_bigquery_client::model::table_field_schema::TableFieldSchema;
 use gcp_bigquery_client::model::table_row::TableRow;
-use serde_json::Value;
+use gcp_bigquery_client::table::ListOptions as TableListOptions;
+use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::pin::Pin;
 use std::time::Duration;
+
+/// Hard cap on the total number of tables [`Source::discover`] enumerates
+/// across all datasets in the project. Discovery is a preflight convenience —
+/// a project with thousands of tables should not turn it into an API storm.
+/// When the cap is hit, enumeration stops and a warning names the cap.
+const MAX_DISCOVER_TABLES: usize = 500;
+
+/// Hard cap on per-table `tables.get` schema/row-count fetches during
+/// [`Source::discover`]. Tables beyond this cap are still emitted (name +
+/// `config_patch`), just without a `schema` / `estimated_rows`, and a warning
+/// names the cap.
+const MAX_DISCOVER_SCHEMA_FETCHES: usize = 100;
 
 /// A source that runs a SQL query against BigQuery and yields rows as JSON.
 pub struct BigQuerySource {
@@ -76,6 +91,190 @@ impl BigQuerySource {
     fn build_query_request(&self, query: String, bindings: &[Value]) -> QueryRequest {
         build_query_request(&self.config, query, bindings)
     }
+
+    /// [`Source::discover`] with explicit caps — split out so tests can
+    /// exercise the truncation branches without mocking hundreds of tables.
+    /// Production code goes through [`Source::discover`], which applies
+    /// `MAX_DISCOVER_TABLES` / `MAX_DISCOVER_SCHEMA_FETCHES`.
+    #[doc(hidden)]
+    pub async fn discover_with_caps(
+        &self,
+        max_tables: usize,
+        max_schema_fetches: usize,
+    ) -> Result<Vec<DatasetDescriptor>, FaucetError> {
+        let project = &self.config.project_id;
+        let discovery_err = |e: gcp_bigquery_client::error::BQError| -> FaucetError {
+            FaucetError::Source(format!("bigquery: catalog discovery failed: {e}"))
+        };
+
+        // 1. Enumerate every dataset in the project (paged).
+        let mut dataset_ids: Vec<String> = Vec::new();
+        let mut page_token: Option<String> = None;
+        loop {
+            let mut opts = DatasetListOptions::default();
+            if let Some(t) = page_token.take() {
+                opts = opts.page_token(t);
+            }
+            let resp = self
+                .client
+                .dataset()
+                .list(project, opts)
+                .await
+                .map_err(discovery_err)?;
+            dataset_ids.extend(
+                resp.datasets
+                    .iter()
+                    .map(|d| d.dataset_reference.dataset_id.clone()),
+            );
+            page_token = resp.next_page_token;
+            if page_token.is_none() {
+                break;
+            }
+        }
+
+        // 2. Enumerate physical tables per dataset (paged), capped in total.
+        let mut refs: Vec<(String, String)> = Vec::new();
+        let mut truncated = false;
+        'datasets: for dataset_id in &dataset_ids {
+            let mut page_token: Option<String> = None;
+            loop {
+                let mut opts = TableListOptions::default();
+                if let Some(t) = page_token.take() {
+                    opts = opts.page_token(t);
+                }
+                let resp = self
+                    .client
+                    .table()
+                    .list(project, dataset_id, opts)
+                    .await
+                    .map_err(discovery_err)?;
+                for table in resp.tables.unwrap_or_default() {
+                    // Physical tables only — views / materialized views /
+                    // external tables are not `SELECT *`-scannable datasets in
+                    // the same cheap sense. A missing `type` is treated as a
+                    // table (BigQuery always sets it in practice).
+                    if let Some(kind) = table.r#type.as_deref()
+                        && !kind.eq_ignore_ascii_case("TABLE")
+                    {
+                        continue;
+                    }
+                    if refs.len() >= max_tables {
+                        truncated = true;
+                        break 'datasets;
+                    }
+                    refs.push((dataset_id.clone(), table.table_reference.table_id));
+                }
+                page_token = resp.next_page_token;
+                if page_token.is_none() {
+                    break;
+                }
+            }
+        }
+        if truncated {
+            tracing::warn!(
+                cap = max_tables,
+                "BigQuery discovery hit the {max_tables}-table cap; remaining tables were not enumerated",
+            );
+        }
+        if refs.len() > max_schema_fetches {
+            tracing::warn!(
+                cap = max_schema_fetches,
+                total = refs.len(),
+                "BigQuery discovery found more than {max_schema_fetches} tables; \
+                 only the first {max_schema_fetches} get a schema / row estimate",
+            );
+        }
+
+        // 3. Fetch schema + row count for the first `max_schema_fetches`
+        //    tables; the rest are emitted name-only.
+        let mut out = Vec::with_capacity(refs.len());
+        for (i, (dataset_id, table_id)) in refs.iter().enumerate() {
+            if i < max_schema_fetches {
+                let table = self
+                    .client
+                    .table()
+                    .get(project, dataset_id, table_id, None)
+                    .await
+                    .map_err(discovery_err)?;
+                let fields = table.schema.fields.unwrap_or_default();
+                out.push(table_descriptor(
+                    project,
+                    dataset_id,
+                    table_id,
+                    Some(&fields),
+                    table.num_rows.as_deref(),
+                ));
+            } else {
+                out.push(table_descriptor(project, dataset_id, table_id, None, None));
+            }
+        }
+        Ok(out)
+    }
+}
+
+/// Map one BigQuery table-schema field to a JSON-Schema type fragment
+/// matching the shape [`faucet_core::schema::infer_schema`] produces.
+///
+/// `mode: REPEATED` → `array`; `mode: NULLABLE` (BigQuery's default when the
+/// mode is omitted) wraps the base type as `["T", "null"]`; `mode: REQUIRED`
+/// keeps the bare base type.
+fn bq_field_to_json_schema(field: &TableFieldSchema) -> Value {
+    let base = match field.r#type {
+        FieldType::Integer | FieldType::Int64 => "integer",
+        FieldType::Float | FieldType::Float64 | FieldType::Numeric | FieldType::Bignumeric => {
+            "number"
+        }
+        FieldType::Boolean | FieldType::Bool => "boolean",
+        FieldType::Record | FieldType::Struct | FieldType::Json => "object",
+        // STRING, BYTES, DATE, DATETIME, TIME, TIMESTAMP, GEOGRAPHY,
+        // INTERVAL — all serialized as JSON strings by this source.
+        _ => "string",
+    };
+    match field.mode.as_deref() {
+        Some(mode) if mode.eq_ignore_ascii_case("REPEATED") => json!({ "type": "array" }),
+        Some(mode) if mode.eq_ignore_ascii_case("REQUIRED") => json!({ "type": base }),
+        // NULLABLE, or absent (NULLABLE is the BigQuery default).
+        _ => faucet_core::nullable_type(json!({ "type": base })),
+    }
+}
+
+/// Backtick-quote a fully-qualified `project.dataset.table` path for Standard
+/// SQL. Backslashes and backticks inside an identifier are escaped (`\\` /
+/// `` \` ``) so a hostile identifier cannot break out of the quoted path.
+fn bq_quote_path(project: &str, dataset: &str, table: &str) -> String {
+    let esc = |s: &str| s.replace('\\', r"\\").replace('`', r"\`");
+    format!("`{}.{}.{}`", esc(project), esc(dataset), esc(table))
+}
+
+/// Build one [`DatasetDescriptor`] for a BigQuery table. Pure —
+/// unit-testable without a live client. `fields`/`num_rows` are `None` for
+/// tables past the schema-fetch cap (emitted name-only).
+fn table_descriptor(
+    project: &str,
+    dataset: &str,
+    table: &str,
+    fields: Option<&[TableFieldSchema]>,
+    num_rows: Option<&str>,
+) -> DatasetDescriptor {
+    let query = format!("SELECT * FROM {}", bq_quote_path(project, dataset, table));
+    let mut descriptor = DatasetDescriptor::new(
+        format!("{dataset}.{table}"),
+        "table",
+        json!({ "query": query }),
+    );
+    if let Some(fields) = fields {
+        descriptor = descriptor.with_schema(faucet_core::columns_to_schema(
+            fields
+                .iter()
+                .map(|f| (f.name.clone(), bq_field_to_json_schema(f))),
+        ));
+    }
+    // `numRows` arrives as a decimal string; a missing/unparseable value
+    // simply means no estimate.
+    if let Some(n) = num_rows.and_then(|s| s.trim().parse::<u64>().ok()) {
+        descriptor = descriptor.with_estimated_rows(n);
+    }
+    descriptor
 }
 
 /// Free-standing version of [`BigQuerySource::build_query_request`] — kept
@@ -193,6 +392,22 @@ impl faucet_core::Source for BigQuerySource {
             "bigquery://{}?query={}",
             self.config.project_id, self.config.query
         )
+    }
+
+    fn supports_discover(&self) -> bool {
+        true
+    }
+
+    /// Enumerate every physical table in the project, with column types from
+    /// `tables.get` schemas and a row estimate from `numRows` (catalog
+    /// metadata only — no data scan, no billed query). Datasets are listed
+    /// via `datasets.list`, tables per dataset via `tables.list` (both
+    /// paged); enumeration is capped at `MAX_DISCOVER_TABLES` tables and
+    /// per-table schema fetches at `MAX_DISCOVER_SCHEMA_FETCHES` (tables
+    /// past that cap are emitted without a schema / estimate).
+    async fn discover(&self) -> Result<Vec<DatasetDescriptor>, FaucetError> {
+        self.discover_with_caps(MAX_DISCOVER_TABLES, MAX_DISCOVER_SCHEMA_FETCHES)
+            .await
     }
 
     /// Preflight probe for `faucet doctor`. Overrides the default (which pulls a
@@ -560,6 +775,113 @@ mod tests {
             }
             _ => panic!("expected a batch_size Config error"),
         }
+    }
+
+    // ── discover: pure descriptor-building helpers ───────────────────────────
+
+    fn field(name: &str, ty: FieldType, mode: Option<&str>) -> TableFieldSchema {
+        let mut f = TableFieldSchema::new(name, ty);
+        f.mode = mode.map(str::to_owned);
+        f
+    }
+
+    #[test]
+    fn bq_field_types_map_to_json_types() {
+        for (ty, want) in [
+            (FieldType::Integer, "integer"),
+            (FieldType::Int64, "integer"),
+            (FieldType::Float, "number"),
+            (FieldType::Float64, "number"),
+            (FieldType::Numeric, "number"),
+            (FieldType::Bignumeric, "number"),
+            (FieldType::Boolean, "boolean"),
+            (FieldType::Bool, "boolean"),
+            (FieldType::Record, "object"),
+            (FieldType::Struct, "object"),
+            (FieldType::Json, "object"),
+            (FieldType::String, "string"),
+            (FieldType::Bytes, "string"),
+            (FieldType::Date, "string"),
+            (FieldType::Datetime, "string"),
+            (FieldType::Time, "string"),
+            (FieldType::Timestamp, "string"),
+            (FieldType::Geography, "string"),
+            (FieldType::Interval, "string"),
+        ] {
+            let f = field("c", ty.clone(), Some("REQUIRED"));
+            assert_eq!(
+                bq_field_to_json_schema(&f),
+                json!({ "type": want }),
+                "for BigQuery type {ty:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn bq_field_mode_nullable_and_absent_wrap_as_nullable() {
+        // Explicit NULLABLE and an absent mode (BigQuery's default) both wrap.
+        for mode in [Some("NULLABLE"), None] {
+            let f = field("c", FieldType::Integer, mode);
+            assert_eq!(
+                bq_field_to_json_schema(&f),
+                json!({ "type": ["integer", "null"] }),
+                "for mode {mode:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn bq_field_mode_repeated_maps_to_array() {
+        let f = field("tags", FieldType::String, Some("REPEATED"));
+        assert_eq!(bq_field_to_json_schema(&f), json!({ "type": "array" }));
+    }
+
+    #[test]
+    fn bq_quote_path_backtick_quotes_and_escapes() {
+        assert_eq!(
+            bq_quote_path("proj", "sales", "orders"),
+            "`proj.sales.orders`"
+        );
+        // A hostile identifier cannot break out of the quoted path.
+        assert_eq!(bq_quote_path("p", "d", r"we`ird\x"), r"`p.d.we\`ird\\x`");
+    }
+
+    #[test]
+    fn table_descriptor_carries_schema_estimate_and_patch() {
+        let fields = vec![
+            field("id", FieldType::Integer, Some("REQUIRED")),
+            field("note", FieldType::String, Some("NULLABLE")),
+        ];
+        let d = table_descriptor("proj", "sales", "orders", Some(&fields), Some("120"));
+        assert_eq!(d.name, "sales.orders");
+        assert_eq!(d.kind, "table");
+        assert_eq!(d.estimated_rows, Some(120));
+        assert_eq!(d.config_patch["query"], "SELECT * FROM `proj.sales.orders`");
+        let schema = d.schema.as_ref().unwrap();
+        assert_eq!(schema["type"], "object");
+        assert_eq!(schema["properties"]["id"]["type"], "integer");
+        assert_eq!(
+            schema["properties"]["note"]["type"],
+            json!(["string", "null"])
+        );
+    }
+
+    #[test]
+    fn table_descriptor_without_schema_fetch_is_name_only() {
+        // Past the schema-fetch cap: still a full config_patch, no schema/rows.
+        let d = table_descriptor("proj", "ops", "events", None, None);
+        assert_eq!(d.name, "ops.events");
+        assert!(d.schema.is_none());
+        assert_eq!(d.estimated_rows, None);
+        assert_eq!(d.config_patch["query"], "SELECT * FROM `proj.ops.events`");
+    }
+
+    #[test]
+    fn table_descriptor_unparseable_num_rows_means_no_estimate() {
+        let d = table_descriptor("p", "d", "t", Some(&[]), Some("not-a-number"));
+        assert_eq!(d.estimated_rows, None);
+        // An empty schema fetch still yields an (empty) object schema.
+        assert_eq!(d.schema.as_ref().unwrap()["type"], "object");
     }
 
     #[test]

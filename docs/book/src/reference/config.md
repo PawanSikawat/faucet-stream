@@ -668,6 +668,32 @@ See the [replication cookbook](../cookbook/replication.md) for the correctness
 model (capture-before-snapshot + upsert idempotency), the resume behaviour, and
 the per-database log-retention caveats.
 
+## `backfill`
+
+Optional **defaults** for [`faucet backfill`](cli.md#backfill) — the range
+itself always comes from the command line. `faucet run` ignores this block, the
+same way it ignores `schedule:` / `replication:`. Whenever the block is
+present, `faucet validate` also checks that at least one root source references
+a `${backfill.*}` / `${now.*}` scoping token (an unscoped source would replay
+identical data into every window).
+
+```yaml
+backfill:
+  window: 1d                  # default --window: 45s / 30m / 6h / 1d / 1w
+  concurrency: 4              # default --concurrency (max units in flight); default 1
+  timezone: America/New_York  # default --timezone (IANA); default UTC
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `window` | string | — (whole range as one unit) | Chunk duration for the requested range. |
+| `concurrency` | int ≥ 1 | `1` | Max concurrently-running window units. |
+| `timezone` | string | `UTC` | IANA zone for date boundaries and `${now.*}` rendering. |
+
+`faucet schema backfill` prints the JSON Schema. See the
+[backfill cookbook](../cookbook/backfill.md) for the token table, resume
+semantics, and the HTTP endpoint.
+
 ## `schedule`
 
 Present only when you run `faucet schedule`. Absent configs are rejected by that

@@ -111,6 +111,12 @@ pub struct PipelineConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub replication: Option<crate::replication::spec::ReplicationSpec>,
 
+    /// Optional backfill defaults (window/concurrency/timezone, #282).
+    /// Consumed only by `faucet backfill`; ignored by `faucet run` (like
+    /// `schedule:` / `replication:`). See `faucet schema backfill`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backfill: Option<crate::backfill::BackfillSpec>,
+
     /// Optional cron schedule. Only consumed by `faucet schedule`; ignored by
     /// `faucet run`. Presence makes the config runnable on a schedule.
     #[cfg(feature = "schedule")]

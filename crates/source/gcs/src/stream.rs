@@ -458,6 +458,77 @@ impl faucet_core::Source for GcsSource {
         *self.applied_shard.lock().expect("shard mutex poisoned") = parse_hash_shard(shard, "gcs")?;
         Ok(())
     }
+
+    fn supports_discover(&self) -> bool {
+        true
+    }
+
+    /// Enumerate the "directories" directly under the configured prefix via
+    /// **one** delimiter (`/`) listing page — each common prefix becomes a
+    /// `prefix` dataset. When the listing returns no common prefixes but does
+    /// return objects directly under the prefix, each object (first page
+    /// only, ≤ `DISCOVER_MAX_OBJECTS`) becomes an `object` dataset instead,
+    /// selected via the exact-match `object_keys` config field. No recursion
+    /// and no data scan — object counts would require paging the whole
+    /// listing, so `estimated_rows` is never set.
+    async fn discover(&self) -> Result<Vec<faucet_core::DatasetDescriptor>, FaucetError> {
+        let mut req = self
+            .control
+            .list_objects()
+            .set_parent(self.bucket_path())
+            .set_delimiter("/")
+            .set_page_size(DISCOVER_MAX_OBJECTS as i32);
+        if let Some(p) = self.config.prefix.as_deref() {
+            req = req.set_prefix(p.to_string());
+        }
+        let response = req
+            .send()
+            .await
+            .map_err(|e| FaucetError::Source(format!("gcs: catalog discovery failed: {e}")))?;
+
+        let objects: Vec<String> = response
+            .objects
+            .into_iter()
+            .map(|o| o.name)
+            .filter(|n| !n.is_empty())
+            .collect();
+        Ok(descriptors_from_listing(response.prefixes, objects))
+    }
+}
+
+/// Cap on object-fallback descriptors — one delimiter-listing page, matching
+/// the `page_size` requested from GCS.
+const DISCOVER_MAX_OBJECTS: usize = 1000;
+
+/// Build one [`DatasetDescriptor`](faucet_core::DatasetDescriptor) per common
+/// prefix from a single delimiter listing; when the listing yielded no common
+/// prefixes, fall back to one descriptor per object (capped at
+/// `DISCOVER_MAX_OBJECTS`). Prefix datasets patch the source's `prefix`
+/// config field; object datasets patch `object_keys` (which selects exactly
+/// that object and makes `prefix` inert). Pure — unit-testable without a GCS
+/// client.
+fn descriptors_from_listing(
+    prefixes: Vec<String>,
+    objects: Vec<String>,
+) -> Vec<faucet_core::DatasetDescriptor> {
+    let prefixes: Vec<String> = prefixes.into_iter().filter(|p| !p.is_empty()).collect();
+    if !prefixes.is_empty() {
+        return prefixes
+            .into_iter()
+            .map(|p| {
+                let patch = serde_json::json!({ "prefix": p });
+                faucet_core::DatasetDescriptor::new(p, "prefix", patch)
+            })
+            .collect();
+    }
+    objects
+        .into_iter()
+        .take(DISCOVER_MAX_OBJECTS)
+        .map(|k| {
+            let patch = serde_json::json!({ "object_keys": [k] });
+            faucet_core::DatasetDescriptor::new(k, "object", patch)
+        })
+        .collect()
 }
 
 /// Truncate an explicit object-key list to the `max_objects` cap.
@@ -617,6 +688,75 @@ mod tests {
     fn no_applied_shard_reads_everything() {
         let keys: Vec<String> = (0..20).map(|i| format!("k{i}")).collect();
         assert_eq!(filter_shard_keys(keys.clone(), None), keys);
+    }
+
+    // ── discover: pure listing → descriptor mapping ─────────────────────────
+
+    #[test]
+    fn descriptors_from_listing_maps_common_prefixes() {
+        let out = descriptors_from_listing(
+            vec!["raw/orders/".to_string(), "raw/users/".to_string()],
+            vec![],
+        );
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].name, "raw/orders/");
+        assert_eq!(out[0].kind, "prefix");
+        assert_eq!(out[0].config_patch, json!({ "prefix": "raw/orders/" }));
+        assert!(out[0].schema.is_none());
+        assert!(out[0].estimated_rows.is_none());
+        assert_eq!(out[1].name, "raw/users/");
+        assert_eq!(out[1].config_patch, json!({ "prefix": "raw/users/" }));
+    }
+
+    // Prefixes win: objects sitting alongside common prefixes are not
+    // enumerated as datasets (they'd be a mixed listing at the same level).
+    #[test]
+    fn descriptors_from_listing_prefers_prefixes_over_objects() {
+        let out = descriptors_from_listing(
+            vec!["raw/orders/".to_string()],
+            vec!["raw/readme.txt".to_string()],
+        );
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].kind, "prefix");
+        assert_eq!(out[0].name, "raw/orders/");
+    }
+
+    #[test]
+    fn descriptors_from_listing_falls_back_to_objects_via_object_keys() {
+        let out = descriptors_from_listing(
+            vec![],
+            vec!["raw/a.jsonl".to_string(), "raw/b.jsonl".to_string()],
+        );
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].name, "raw/a.jsonl");
+        assert_eq!(out[0].kind, "object");
+        assert_eq!(
+            out[0].config_patch,
+            json!({ "object_keys": ["raw/a.jsonl"] })
+        );
+        assert!(out[0].schema.is_none());
+        assert!(out[0].estimated_rows.is_none());
+    }
+
+    #[test]
+    fn descriptors_from_listing_empty_listing_yields_no_datasets() {
+        assert!(descriptors_from_listing(vec![], vec![]).is_empty());
+    }
+
+    #[test]
+    fn descriptors_from_listing_skips_empty_prefixes() {
+        let out = descriptors_from_listing(vec![String::new(), "raw/orders/".to_string()], vec![]);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].name, "raw/orders/");
+    }
+
+    #[test]
+    fn descriptors_from_listing_caps_object_fallback() {
+        let objects: Vec<String> = (0..DISCOVER_MAX_OBJECTS + 500)
+            .map(|i| format!("obj-{i}.jsonl"))
+            .collect();
+        let out = descriptors_from_listing(vec![], objects);
+        assert_eq!(out.len(), DISCOVER_MAX_OBJECTS);
     }
 
     // GcsSource requires an async constructor that tries to connect to GCS,

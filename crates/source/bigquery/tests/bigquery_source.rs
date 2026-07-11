@@ -630,6 +630,242 @@ async fn check_probe_passes_on_successful_dry_run() {
     assert_eq!(body["dryRun"], true);
 }
 
+/// Mount the dataset/table catalog mocks used by the discover tests:
+/// two datasets (`sales`, `ops`); `sales` holds a table + a view (the view
+/// must be skipped), `ops` holds one table. `tables.get` returns a schema for
+/// both tables and a `numRows` for `orders` only.
+async fn mount_discover_catalog(server: &MockServer) {
+    Mock::given(method("GET"))
+        .and(path(format!("/projects/{PROJECT_ID}/datasets")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "kind": "bigquery#datasetList",
+            "etag": "e",
+            "datasets": [
+                {"datasetReference": {"projectId": PROJECT_ID, "datasetId": "sales"}},
+                {"datasetReference": {"projectId": PROJECT_ID, "datasetId": "ops"}}
+            ]
+        })))
+        .mount(server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path(format!("/projects/{PROJECT_ID}/datasets/sales/tables")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "tables": [
+                {
+                    "tableReference": {"projectId": PROJECT_ID, "datasetId": "sales", "tableId": "orders"},
+                    "type": "TABLE"
+                },
+                {
+                    "tableReference": {"projectId": PROJECT_ID, "datasetId": "sales", "tableId": "orders_view"},
+                    "type": "VIEW"
+                }
+            ]
+        })))
+        .mount(server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path(format!("/projects/{PROJECT_ID}/datasets/ops/tables")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "tables": [
+                {
+                    "tableReference": {"projectId": PROJECT_ID, "datasetId": "ops", "tableId": "events"},
+                    "type": "TABLE"
+                }
+            ]
+        })))
+        .mount(server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path(format!(
+            "/projects/{PROJECT_ID}/datasets/sales/tables/orders"
+        )))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "tableReference": {"projectId": PROJECT_ID, "datasetId": "sales", "tableId": "orders"},
+            "schema": {
+                "fields": [
+                    {"name": "id", "type": "INTEGER", "mode": "REQUIRED"},
+                    {"name": "note", "type": "STRING", "mode": "NULLABLE"},
+                    {"name": "tags", "type": "STRING", "mode": "REPEATED"}
+                ]
+            },
+            "numRows": "120"
+        })))
+        .mount(server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path(format!(
+            "/projects/{PROJECT_ID}/datasets/ops/tables/events"
+        )))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "tableReference": {"projectId": PROJECT_ID, "datasetId": "ops", "tableId": "events"},
+            "schema": {
+                "fields": [
+                    {"name": "payload", "type": "JSON"}
+                ]
+            }
+        })))
+        .mount(server)
+        .await;
+}
+
+#[tokio::test]
+async fn discover_enumerates_tables_with_schemas_and_estimates() {
+    let server = MockServer::start().await;
+    mount_token(&server).await;
+    mount_discover_catalog(&server).await;
+
+    let (src, _f) = build_source(&server, default_config()).await;
+    assert!(src.supports_discover());
+    let datasets = src.discover().await.unwrap();
+
+    assert_eq!(datasets.len(), 2, "the view must be skipped: {datasets:?}");
+
+    assert_eq!(datasets[0].name, "sales.orders");
+    assert_eq!(datasets[0].kind, "table");
+    assert_eq!(datasets[0].estimated_rows, Some(120));
+    assert_eq!(
+        datasets[0].config_patch,
+        json!({"query": "SELECT * FROM `test-project.sales.orders`"})
+    );
+    let schema = datasets[0].schema.as_ref().unwrap();
+    assert_eq!(schema["properties"]["id"]["type"], "integer");
+    assert_eq!(
+        schema["properties"]["note"]["type"],
+        json!(["string", "null"])
+    );
+    assert_eq!(schema["properties"]["tags"]["type"], "array");
+
+    assert_eq!(datasets[1].name, "ops.events");
+    assert_eq!(datasets[1].estimated_rows, None, "no numRows = no estimate");
+    let schema = datasets[1].schema.as_ref().unwrap();
+    assert_eq!(
+        schema["properties"]["payload"]["type"],
+        json!(["object", "null"])
+    );
+}
+
+#[tokio::test]
+async fn discover_caps_table_count_and_schema_fetches() {
+    let server = MockServer::start().await;
+    mount_token(&server).await;
+    mount_discover_catalog(&server).await;
+
+    // max_tables = 1 → only `sales.orders` is enumerated (truncation branch);
+    // max_schema_fetches = 0 → it is emitted name-only (no tables.get at all).
+    let (src, _f) = build_source(&server, default_config()).await;
+    let datasets = src.discover_with_caps(1, 0).await.unwrap();
+    assert_eq!(datasets.len(), 1);
+    assert_eq!(datasets[0].name, "sales.orders");
+    assert!(datasets[0].schema.is_none(), "past the schema-fetch cap");
+    assert_eq!(datasets[0].estimated_rows, None);
+    assert_eq!(
+        datasets[0].config_patch["query"],
+        "SELECT * FROM `test-project.sales.orders`"
+    );
+
+    // No tables.get request may have been issued (schema fetches capped at 0).
+    let reqs = server.received_requests().await.unwrap();
+    assert!(
+        !reqs.iter().any(|r| r.url.path().contains("/tables/orders")),
+        "schema fetch must be skipped when past the cap"
+    );
+}
+
+#[tokio::test]
+async fn discover_paginates_dataset_and_table_lists() {
+    let server = MockServer::start().await;
+    mount_token(&server).await;
+
+    // Dataset page 2 (matched only when pageToken=ds-2 is present).
+    Mock::given(method("GET"))
+        .and(path(format!("/projects/{PROJECT_ID}/datasets")))
+        .and(wiremock::matchers::query_param("pageToken", "ds-2"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "kind": "bigquery#datasetList",
+            "etag": "e",
+            "datasets": [
+                {"datasetReference": {"projectId": PROJECT_ID, "datasetId": "b"}}
+            ]
+        })))
+        .mount(&server)
+        .await;
+    // Dataset page 1 (no pageToken) — carries the next-page token.
+    Mock::given(method("GET"))
+        .and(path(format!("/projects/{PROJECT_ID}/datasets")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "kind": "bigquery#datasetList",
+            "etag": "e",
+            "datasets": [
+                {"datasetReference": {"projectId": PROJECT_ID, "datasetId": "a"}}
+            ],
+            "nextPageToken": "ds-2"
+        })))
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+
+    // Dataset `a`: two table-list pages.
+    Mock::given(method("GET"))
+        .and(path(format!("/projects/{PROJECT_ID}/datasets/a/tables")))
+        .and(wiremock::matchers::query_param("pageToken", "t-2"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "tables": [
+                {"tableReference": {"projectId": PROJECT_ID, "datasetId": "a", "tableId": "t2"}, "type": "TABLE"}
+            ]
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(format!("/projects/{PROJECT_ID}/datasets/a/tables")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "tables": [
+                {"tableReference": {"projectId": PROJECT_ID, "datasetId": "a", "tableId": "t1"}, "type": "TABLE"}
+            ],
+            "nextPageToken": "t-2"
+        })))
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+
+    // Dataset `b`: an empty dataset (no `tables` key at all).
+    Mock::given(method("GET"))
+        .and(path(format!("/projects/{PROJECT_ID}/datasets/b/tables")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({})))
+        .mount(&server)
+        .await;
+
+    let (src, _f) = build_source(&server, default_config()).await;
+    // Schema fetches capped at 0 so the catalog paging is what's under test.
+    let datasets = src.discover_with_caps(500, 0).await.unwrap();
+    let names: Vec<&str> = datasets.iter().map(|d| d.name.as_str()).collect();
+    assert_eq!(names, vec!["a.t1", "a.t2"]);
+}
+
+#[tokio::test]
+async fn discover_surfaces_typed_error_on_catalog_failure() {
+    let server = MockServer::start().await;
+    mount_token(&server).await;
+    Mock::given(method("GET"))
+        .and(path(format!("/projects/{PROJECT_ID}/datasets")))
+        .respond_with(ResponseTemplate::new(403).set_body_json(json!({
+            "error": {"code": 403, "message": "Access Denied"}
+        })))
+        .mount(&server)
+        .await;
+
+    let (src, _f) = build_source(&server, default_config()).await;
+    match src.discover().await {
+        Err(faucet_core::FaucetError::Source(m)) => {
+            assert!(m.contains("catalog discovery failed"), "got: {m}");
+        }
+        other => panic!("expected Source error, got: {other:?}"),
+    }
+}
+
 #[tokio::test]
 async fn check_probe_fails_on_dry_run_error() {
     use faucet_core::check::{CheckContext, ProbeStatus};

@@ -24,7 +24,9 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 
 /// Row ids that callers can never use because they collide with
 /// load-time interpolation prefixes or future runtime scopes.
-pub const RESERVED_IDS: &[&str] = &["env", "file", "secret", "matrix", "pipeline", "now"];
+pub const RESERVED_IDS: &[&str] = &[
+    "env", "file", "secret", "matrix", "pipeline", "now", "backfill",
+];
 
 /// One fully-merged matrix row, ready for the executor.
 #[derive(Debug, Clone)]
@@ -859,9 +861,11 @@ fn check_refs(value: &Value, id_set: &HashSet<&str>, owner: &str) -> CliResult<(
             // Load-time / template directives (`${env:..}`, `${vars.X}`, …) are
             // resolved before expansion; only deferred `${id.path}` references
             // are validated here, against the known row ids.
-            // `now` is a reserved built-in deferred id resolved at run time.
+            // `now` and `backfill` are reserved built-in deferred ids
+            // resolved at run time (`backfill` by `faucet backfill`, #282).
             if let Directive::Deferred { id, .. } = dir
                 && id != "now"
+                && id != "backfill"
                 && !id_set.contains(id)
             {
                 return Err(CliError::UnknownInterpolationId {
@@ -900,10 +904,10 @@ fn collect_deferred(value: &Value, out: &mut Vec<DeferredRef>) {
     let _ = walk_strings(value, &mut |s| {
         for (token, dir) in iter_directives(s) {
             if let Directive::Deferred { id, path } = dir {
-                // `now` is a reserved built-in resolved at run time, not a
-                // parent-record dependency — skip it so the executor doesn't
-                // treat it as a deferred parent-record reference.
-                if id == "now" {
+                // `now` / `backfill` are reserved built-ins resolved at run
+                // time, not parent-record dependencies — skip them so the
+                // executor doesn't treat them as deferred parent-record refs.
+                if id == "now" || id == "backfill" {
                     continue;
                 }
                 out.push(DeferredRef {

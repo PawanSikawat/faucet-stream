@@ -441,3 +441,65 @@ async fn unsharded_config_enumerates_one_whole_shard() {
     assert_eq!(shards.len(), 1);
     assert!(shards[0].is_whole());
 }
+
+/// `discover()` enumerates real tables with column schemas, row estimates,
+/// and a ready-to-run `query` config patch (#211).
+#[tokio::test(flavor = "multi_thread")]
+async fn discover_enumerates_tables_with_schemas() {
+    let (_container, url) = start_postgres().await;
+    let pool = sqlx::PgPool::connect(&url).await.expect("pool connect");
+    sqlx::query("CREATE TABLE orders (id BIGINT PRIMARY KEY, note TEXT, total NUMERIC(10,2))")
+        .execute(&pool)
+        .await
+        .expect("create orders");
+    sqlx::query("CREATE SCHEMA sales")
+        .execute(&pool)
+        .await
+        .expect("create schema");
+    sqlx::query("CREATE TABLE sales.leads (id INT NOT NULL, active BOOLEAN)")
+        .execute(&pool)
+        .await
+        .expect("create leads");
+    sqlx::query("INSERT INTO orders (id) SELECT generate_series(1, 50)")
+        .execute(&pool)
+        .await
+        .expect("seed orders");
+    sqlx::query("ANALYZE orders")
+        .execute(&pool)
+        .await
+        .expect("analyze");
+    pool.close().await;
+
+    let source = PostgresSource::new(PostgresSourceConfig::new(&url, "SELECT 1"))
+        .await
+        .expect("source");
+    assert!(source.supports_discover());
+    let datasets = source.discover().await.expect("discover");
+
+    let names: Vec<&str> = datasets.iter().map(|d| d.name.as_str()).collect();
+    assert!(names.contains(&"public.orders"), "got: {names:?}");
+    assert!(names.contains(&"sales.leads"), "got: {names:?}");
+
+    let orders = datasets
+        .iter()
+        .find(|d| d.name == "public.orders")
+        .expect("orders dataset");
+    assert_eq!(orders.kind, "table");
+    assert_eq!(
+        orders.config_patch["query"],
+        r#"SELECT * FROM "public"."orders""#
+    );
+    assert_eq!(orders.estimated_rows, Some(50), "reltuples after ANALYZE");
+    let schema = orders.schema.as_ref().expect("schema");
+    assert_eq!(schema["properties"]["id"]["type"], "integer");
+    assert_eq!(
+        schema["properties"]["total"]["type"],
+        serde_json::json!(["number", "null"]),
+        "total is declared without NOT NULL, so it is nullable-wrapped"
+    );
+    assert_eq!(
+        schema["properties"]["note"]["type"],
+        serde_json::json!(["string", "null"]),
+        "nullable column"
+    );
+}

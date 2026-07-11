@@ -292,6 +292,15 @@ println!("records: {}", records.len());
 4. Objects are read concurrently via `buffer_unordered(concurrency)` and parsed per `file_format`.
 5. `stream_pages` re-frames the decoded records into `batch_size` pages and yields them to the pipeline, keeping peak memory bounded for the streaming formats.
 
+## Dataset discovery
+
+The source supports live introspection via `Source::discover()`: one control-plane delimiter (`/`) listing under the configured `prefix` (bucket root when unset) enumerates the "directories" directly below it, returning one dataset descriptor per common prefix with:
+
+- `name` — the full object-name prefix (e.g. `raw/orders/`), `kind: prefix`
+- `config_patch` — `{ "prefix": "raw/orders/" }`, ready to deep-merge over the connection config as a matrix row
+
+When the listing returns no common prefixes but does return objects directly under the prefix (a "leaf directory"), each object becomes a descriptor instead (`kind: object`, `config_patch: { "object_keys": ["<full name>"] }` — the exact-match field, which makes `prefix` inert), capped at the single listing page of 1000. `schema` and `estimated_rows` are never set — either would require reading or paging the whole listing. Discovery issues exactly one listing call and never recurses.
+
 ## Lineage dataset URI
 
 `gs://<bucket>` or `gs://<bucket>/<prefix>` — e.g. `gs://my-bucket/events/2026/`.

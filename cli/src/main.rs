@@ -22,7 +22,9 @@ async fn main() {
 
     let result = match cli.command {
         Command::Run(args) => commands::run::run(args).await,
+        Command::Backfill(args) => commands::backfill::run(args).await,
         Command::Replicate(args) => commands::replicate::run(args).await,
+        Command::Discover(args) => commands::discover::run(args).await,
         Command::Validate(args) => commands::validate::run(args).await,
         Command::Schema(args) => commands::schema::run(args).await,
         Command::List => commands::list::run().await,
@@ -54,6 +56,11 @@ async fn main() {
         // Same shape for `test`: the report is already printed; the exit code
         // is the failed-case count (clamped to 255).
         if let CliError::TestsFailed { failed } = &err {
+            std::process::exit((*failed).min(255) as i32);
+        }
+        // Same shape for `backfill`: the per-unit report is already printed;
+        // the exit code is the failed-unit count (clamped to 255).
+        if let CliError::BackfillFailed { failed } = &err {
             std::process::exit((*failed).min(255) as i32);
         }
         commands::report(&err);

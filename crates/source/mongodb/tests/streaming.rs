@@ -390,6 +390,65 @@ async fn stream_pages_substitutes_context_into_filter() {
     );
 }
 
+// --- discover(): live catalog introspection (#211) ---
+
+#[tokio::test(flavor = "multi_thread")]
+async fn discover_enumerates_collections_with_schemas() {
+    let (_container, uri) = start_mongo().await;
+    let client = Client::with_uri_str(&uri).await.expect("client");
+    let db = client.database("shop");
+    db.collection::<Document>("orders")
+        .insert_many(vec![
+            doc! { "id": 1, "note": "a" },
+            doc! { "id": 2, "note": "b" },
+            doc! { "id": 3, "note": "c" },
+        ])
+        .await
+        .expect("seed orders");
+    db.collection::<Document>("carts")
+        .insert_many(vec![doc! { "id": 1, "open": true }])
+        .await
+        .expect("seed carts");
+
+    let config = MongoSourceConfig::new(uri, "shop", "orders");
+    let source = MongoSource::new(config).await.expect("source new");
+    assert!(source.supports_discover());
+    let datasets = source.discover().await.expect("discover");
+
+    let names: Vec<&str> = datasets.iter().map(|d| d.name.as_str()).collect();
+    assert!(names.contains(&"orders"), "got: {names:?}");
+    assert!(names.contains(&"carts"), "got: {names:?}");
+    assert!(
+        !names.iter().any(|n| n.starts_with("system.")),
+        "system collections must be excluded: {names:?}"
+    );
+
+    let orders = datasets
+        .iter()
+        .find(|d| d.name == "orders")
+        .expect("orders dataset");
+    assert_eq!(orders.kind, "collection");
+    assert_eq!(
+        orders.config_patch,
+        serde_json::json!({ "collection": "orders" })
+    );
+    assert_eq!(orders.estimated_rows, Some(3));
+    let schema = orders.schema.as_ref().expect("schema from sampled docs");
+    assert_eq!(schema["type"], "object");
+    assert_eq!(schema["properties"]["id"]["type"], "integer");
+    assert_eq!(schema["properties"]["note"]["type"], "string");
+
+    let carts = datasets
+        .iter()
+        .find(|d| d.name == "carts")
+        .expect("carts dataset");
+    assert_eq!(carts.estimated_rows, Some(1));
+    assert_eq!(
+        carts.schema.as_ref().expect("carts schema")["properties"]["open"]["type"],
+        "boolean"
+    );
+}
+
 // --- instance trait methods (require a live server via new()) ---
 
 #[tokio::test(flavor = "multi_thread")]

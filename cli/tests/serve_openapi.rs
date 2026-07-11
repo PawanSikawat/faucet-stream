@@ -28,6 +28,7 @@ const ROUTES_BASE: &[(&str, &str)] = &[
     ("GET", "/v1/schemas"),
     ("GET", "/v1/schemas/{kind}/{name}"),
     ("POST", "/v1/doctor"),
+    ("POST", "/v1/backfill"),
     ("POST", "/v1/dlq/inspect"),
     ("POST", "/v1/dlq/replay"),
     ("POST", "/v1/dlq/discard"),

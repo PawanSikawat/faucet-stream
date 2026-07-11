@@ -217,6 +217,17 @@ The source overrides `Source::stream_pages`. It submits the statement, then walk
 
 This is a one-shot query source — it has no incremental bookmark / resume support, so each run re-executes the query. For incremental loads, encode the watermark in the query (e.g. `WHERE created_at >= ?`) and drive it from a `params` entry, a matrix context, or a `${now.*}` token.
 
+## Dataset discovery
+
+The source supports live introspection via `Source::discover()`: it runs one catalog statement (through the same SQL REST API path as ordinary queries, async-202 polling and partition paging included) that enumerates every base table in the configured database from `information_schema.columns` / `information_schema.tables` (the `INFORMATION_SCHEMA` schema itself is excluded), and returns one dataset descriptor per table with:
+
+- `name` — `SCHEMA.TABLE` (e.g. `PUBLIC.ORDERS`), `kind: table`
+- `schema` — the column shape as a JSON-Schema object (`TEXT`/`DATE`/`TIMESTAMP_*`/`BINARY` → string; `NUMBER`/`FLOAT` → number; `BOOLEAN` → boolean; `VARIANT`/`OBJECT` → object; `ARRAY` → array; nullable columns become `["T", "null"]`). Note `NUMBER(38,0)` maps to the conservative `number`, not `integer`.
+- `estimated_rows` — the table's `row_count` from `information_schema.tables` (omitted when NULL)
+- `config_patch` — `{ "query": "SELECT * FROM \"SCHEMA\".\"TABLE\"" }`, double-quote-quoted (interior quotes doubled), ready to deep-merge over the connection config as a matrix row
+
+Discovery reads catalog metadata only — it never scans table data.
+
 ## Config loading & schema introspection
 
 Configs load from YAML/JSON files, environment variables, or `.env` files via the helpers in `faucet_core::config`. Inspect the full JSON Schema with:

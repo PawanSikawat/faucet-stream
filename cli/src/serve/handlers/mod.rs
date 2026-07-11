@@ -1,5 +1,6 @@
 //! serve HTTP handlers.
 pub mod audit;
+pub mod backfill;
 #[cfg(feature = "catalog")]
 pub mod catalog;
 pub mod dlq;

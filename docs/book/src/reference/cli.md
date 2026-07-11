@@ -92,6 +92,33 @@ faucet validate app.yaml --show-composed       # print the fully merged config
   `extends:` / `profiles:` metadata stripped — *before* `${...}` interpolation.
   It's the fastest way to confirm a multi-file setup resolves to what you expect.
 
+## `discover`
+
+```bash
+faucet discover conn.yaml                      # print a generated config to stdout
+faucet discover conn.yaml -o pipeline.yaml     # write it to a file (--force to overwrite)
+faucet discover conn.yaml --include 'public.*' --exclude '*.tmp_*'
+faucet discover conn.yaml --source warehouse   # introspect a named pipeline.sources template
+faucet discover conn.yaml --json               # machine-readable dataset list
+```
+
+Connects to the config's source, enumerates the datasets behind it (tables /
+collections / indices / object-store prefixes), and emits a ready-to-run config
+with **one matrix row per dataset** — the input document with its `matrix:`
+block replaced, secrets echoed as raw `${…}` references. The generated config
+passes `faucet validate`. Supported sources: `postgres`, `mysql`, `mssql`,
+`sqlite`, `mongodb`, `elasticsearch`, `bigquery`, `snowflake`, `s3`, `gcs`.
+
+| Flag | Purpose |
+|------|---------|
+| `--source <name>` | Which `pipeline.sources` template to introspect (default `default`, the singular `pipeline.source`). |
+| `--include <glob>` / `--exclude <glob>` | Repeatable `*`-wildcard filters on dataset names (no includes = everything; excludes win). |
+| `-o, --output <file>` / `--force` | Write the generated config to a file instead of stdout; `--force` overwrites. |
+| `--json` | Emit the discovered `DatasetDescriptor` list as JSON instead of a config. |
+| `--profile` / `--env-file` / `--no-env-file` | Same semantics as `run` / `validate`. |
+
+See the [source discovery cookbook](../cookbook/discover.md).
+
 ## `preview`
 
 Runs the first root row's source and prints records (via the stdout sink).
@@ -388,6 +415,41 @@ Flags:
 
 See the [replication cookbook](../cookbook/replication.md) for the correctness
 model, the resume behaviour, and the per-database retention caveats.
+
+## `backfill`
+
+```bash
+faucet backfill pipeline.yaml --from 2026-06-01 --to 2026-07-01 --window 1d
+faucet backfill pipeline.yaml --from 2026-06-01 --to 2026-07-01 --window 1d --dry-run
+faucet backfill pipeline.yaml --from 2026-06-01 --to 2026-07-01 --window 1d --resume
+faucet backfill pipeline.yaml --from-bookmark '42' --to-bookmark '99' --bookmark-field seq
+```
+
+Replays a bounded historical window: chunks `[from, to)` into contiguous
+half-open window units, runs each through the normal pipeline path with its
+`${backfill.*}` tokens substituted and the `${now.*}` clock set to the window
+start, and records durable, resumable progress in the config's `state:` store.
+Unit state keys are namespaced (`{name}::backfill::{unit}`) so the forward-sync
+bookmark is never touched; delivery is forced to at-least-once (pair with
+`write_mode: upsert`). Exits non-zero with the failed-unit count.
+
+| Flag | Purpose |
+|------|---------|
+| `--from` / `--to` | Wall-clock range: RFC3339 or `YYYY-MM-DD` (midnight in `--timezone`). Half-open. |
+| `--window <dur>` | Chunk size (`45s`, `30m`, `6h`, `1d`, `1w`). Default: the config's `backfill.window`; omitted = one unit. |
+| `--from-bookmark <v>` | Bookmark mode: seed the scoped state key with this value (JSON or bare string) and run one unit. Requires a `state:` block. |
+| `--to-bookmark <v>` / `--bookmark-field <f>` | Upper bookmark bound: drop records whose field orders after the bound. |
+| `--concurrency <n>` | Max window units in flight. Default: `backfill.concurrency`, else 1. |
+| `--timezone <IANA>` | Date-boundary / `${now.*}` timezone. Default: `backfill.timezone`, else UTC. |
+| `--row <id>` | Which root row to backfill (required when the config has several). |
+| `--into <sink>` | Redirect writes to a named `pipeline.sinks` template (staging-first). |
+| `--dry-run` | Print the planned units without executing. |
+| `--resume` / `--restart` | Continue a prior backfill of the same range / discard its marker and start over. |
+| `--json` | Machine-readable plan/report. |
+| `--profile` / `--env-file` / `--no-env-file` | Same semantics as `run` / `validate`. |
+
+See the [backfill cookbook](../cookbook/backfill.md) and the
+[`backfill:` config block](config.md#backfill).
 
 ## `schedule`
 

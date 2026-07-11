@@ -206,6 +206,64 @@ fn bind_params<'q>(
     query
 }
 
+/// One flattened `information_schema.columns` row used by [`discover`].
+///
+/// (schema, table, column, data_type, is_nullable, estimated_rows)
+type CatalogRow = (String, String, String, String, bool, Option<i64>);
+
+/// A table mid-accumulation while grouping catalog rows:
+/// (schema, table, estimated_rows, columns).
+type PendingTable = (String, String, Option<i64>, Vec<(String, Value)>);
+
+/// Group flattened catalog rows (ordered by schema, table, ordinal position)
+/// into one [`DatasetDescriptor`] per table. Pure — unit-testable without a
+/// live server. `quote` is the dialect's identifier quoter.
+fn descriptors_from_catalog(
+    rows: Vec<CatalogRow>,
+    quote: fn(&str) -> String,
+) -> Vec<faucet_core::DatasetDescriptor> {
+    let mut out: Vec<faucet_core::DatasetDescriptor> = Vec::new();
+    let mut current: Option<PendingTable> = None;
+
+    let flush = |cur: Option<PendingTable>, out: &mut Vec<faucet_core::DatasetDescriptor>| {
+        if let Some((schema, table, est, cols)) = cur {
+            let query = format!("SELECT * FROM {}.{}", quote(&schema), quote(&table));
+            let mut d = faucet_core::DatasetDescriptor::new(
+                format!("{schema}.{table}"),
+                "table",
+                serde_json::json!({ "query": query }),
+            )
+            .with_schema(faucet_core::columns_to_schema(cols));
+            // reltuples is -1 for a never-analyzed table — no estimate.
+            if let Some(n) = est
+                && n >= 0
+            {
+                d = d.with_estimated_rows(n as u64);
+            }
+            out.push(d);
+        }
+    };
+
+    for (schema, table, column, data_type, is_nullable, est) in rows {
+        let same = current
+            .as_ref()
+            .is_some_and(|(s, t, _, _)| *s == schema && *t == table);
+        if !same {
+            flush(current.take(), &mut out);
+            current = Some((schema, table, est, Vec::new()));
+        }
+        let mut fragment = faucet_core::sql_type_to_json_schema(&data_type);
+        if is_nullable {
+            fragment = faucet_core::nullable_type(fragment);
+        }
+        if let Some((_, _, _, cols)) = current.as_mut() {
+            cols.push((column, fragment));
+        }
+    }
+    flush(current, &mut out);
+    out
+}
+
 /// Convert a single `PgRow` into a JSON object whose keys are the row's
 /// column names.
 fn row_to_json(row: &sqlx::postgres::PgRow) -> Value {
@@ -309,6 +367,55 @@ impl faucet_core::Source for PostgresSource {
             faucet_core::redact_uri_credentials(&self.config.connection_url),
             self.config.query
         )
+    }
+
+    fn supports_discover(&self) -> bool {
+        true
+    }
+
+    /// Enumerate every base table outside `pg_catalog` / `information_schema`,
+    /// with column types from `information_schema.columns` and a row estimate
+    /// from `pg_class.reltuples` (catalog metadata only — no data scan).
+    async fn discover(&self) -> Result<Vec<faucet_core::DatasetDescriptor>, FaucetError> {
+        let sql = r#"
+            SELECT c.table_schema, c.table_name, c.column_name, c.data_type,
+                   (c.is_nullable = 'YES') AS is_nullable,
+                   (SELECT pc.reltuples::bigint
+                      FROM pg_class pc
+                      JOIN pg_namespace pn ON pn.oid = pc.relnamespace
+                     WHERE pn.nspname = c.table_schema
+                       AND pc.relname = c.table_name) AS estimated_rows
+              FROM information_schema.columns c
+              JOIN information_schema.tables t
+                ON t.table_schema = c.table_schema AND t.table_name = c.table_name
+             WHERE t.table_type = 'BASE TABLE'
+               AND c.table_schema NOT IN ('pg_catalog', 'information_schema')
+             ORDER BY c.table_schema, c.table_name, c.ordinal_position"#;
+        let rows = sqlx::query(sql)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| FaucetError::Source(format!("postgres: catalog discovery failed: {e}")))?;
+
+        let catalog: Vec<CatalogRow> = rows
+            .iter()
+            .map(|row| -> Result<CatalogRow, FaucetError> {
+                let decode = |col: &str| -> Result<String, FaucetError> {
+                    row.try_get::<String, _>(col).map_err(|e| {
+                        FaucetError::Source(format!("postgres: catalog decode failed ({col}): {e}"))
+                    })
+                };
+                Ok((
+                    decode("table_schema")?,
+                    decode("table_name")?,
+                    decode("column_name")?,
+                    decode("data_type")?,
+                    row.try_get::<bool, _>("is_nullable").unwrap_or(true),
+                    row.try_get::<i64, _>("estimated_rows").ok(),
+                ))
+            })
+            .collect::<Result<_, _>>()?;
+
+        Ok(descriptors_from_catalog(catalog, quote_ident))
     }
 
     /// Shardable when a [`ShardConfig`](crate::config::ShardConfig) is set.
@@ -659,6 +766,108 @@ mod tests {
         let sql = b.wrap("SELECT * FROM t", quote_ident);
         assert!(sql.contains("WHERE TRUE"), "whole-dataset predicate: {sql}");
         assert!(!sql.contains(">="), "no bounds on a lone shard: {sql}");
+    }
+
+    // ── discover: pure catalog-row grouping ─────────────────────────────────
+
+    #[test]
+    fn descriptors_group_catalog_rows_per_table() {
+        let rows = vec![
+            (
+                "public".to_string(),
+                "orders".to_string(),
+                "id".to_string(),
+                "integer".to_string(),
+                false,
+                Some(120i64),
+            ),
+            (
+                "public".to_string(),
+                "orders".to_string(),
+                "note".to_string(),
+                "text".to_string(),
+                true,
+                Some(120i64),
+            ),
+            (
+                "sales".to_string(),
+                "orders".to_string(),
+                "total".to_string(),
+                "numeric".to_string(),
+                false,
+                None,
+            ),
+        ];
+        let ds = descriptors_from_catalog(rows, quote_ident);
+        assert_eq!(ds.len(), 2, "same table name in two schemas = two datasets");
+
+        assert_eq!(ds[0].name, "public.orders");
+        assert_eq!(ds[0].kind, "table");
+        assert_eq!(ds[0].estimated_rows, Some(120));
+        assert_eq!(
+            ds[0].config_patch["query"],
+            r#"SELECT * FROM "public"."orders""#
+        );
+        let schema = ds[0].schema.as_ref().unwrap();
+        assert_eq!(schema["properties"]["id"]["type"], "integer");
+        assert_eq!(
+            schema["properties"]["note"]["type"],
+            serde_json::json!(["string", "null"])
+        );
+
+        assert_eq!(ds[1].name, "sales.orders");
+        assert_eq!(ds[1].estimated_rows, None);
+        assert_eq!(schema["type"], "object");
+    }
+
+    #[test]
+    fn descriptors_negative_reltuples_means_no_estimate() {
+        let rows = vec![(
+            "public".to_string(),
+            "fresh".to_string(),
+            "id".to_string(),
+            "bigint".to_string(),
+            false,
+            Some(-1i64),
+        )];
+        let ds = descriptors_from_catalog(rows, quote_ident);
+        assert_eq!(ds.len(), 1);
+        assert_eq!(ds[0].estimated_rows, None, "-1 = never analyzed");
+    }
+
+    #[test]
+    fn descriptors_quote_hostile_identifiers() {
+        let rows = vec![(
+            "public".to_string(),
+            "weird\"; DROP".to_string(),
+            "id".to_string(),
+            "integer".to_string(),
+            false,
+            None,
+        )];
+        let ds = descriptors_from_catalog(rows, quote_ident);
+        let q = ds[0].config_patch["query"].as_str().unwrap();
+        assert!(q.contains(r#""weird""; DROP""#), "quoted identifier: {q}");
+    }
+
+    #[test]
+    fn descriptors_empty_catalog_is_empty() {
+        assert!(descriptors_from_catalog(Vec::new(), quote_ident).is_empty());
+    }
+
+    #[tokio::test]
+    async fn source_advertises_discover() {
+        use faucet_core::Source as _;
+        let config = PostgresSourceConfig::new("postgres://u@127.0.0.1:1/db", "SELECT 1");
+        let source = lazy_source(config);
+        assert!(source.supports_discover());
+        // Against an unreachable server the catalog query surfaces the typed
+        // discovery error (exercises the error path without Docker).
+        let err = source.discover().await.unwrap_err();
+        assert!(
+            err.to_string().contains("catalog discovery failed"),
+            "typed error: {err}"
+        );
     }
 
     // dataset_uri is a pure-config method; the source requires a live DB to

@@ -178,6 +178,56 @@ fn bind_params<'q>(
     query
 }
 
+/// One flattened `pragma_table_info` row used by [`discover`].
+///
+/// (table, column, declared_type, is_nullable)
+type CatalogRow = (String, String, String, bool);
+
+/// Group flattened catalog rows (ordered by table name, column id) into one
+/// [`DatasetDescriptor`] per table. Pure — unit-testable without a database.
+///
+/// SQLite keeps no cheap row-count statistic (`COUNT(*)` is a full scan and
+/// discovery must never scan data), so descriptors never carry
+/// `estimated_rows`.
+fn descriptors_from_catalog(rows: Vec<CatalogRow>) -> Vec<faucet_core::DatasetDescriptor> {
+    let mut out: Vec<faucet_core::DatasetDescriptor> = Vec::new();
+    let mut current: Option<(String, Vec<(String, Value)>)> = None;
+
+    let flush = |cur: Option<(String, Vec<(String, Value)>)>,
+                 out: &mut Vec<faucet_core::DatasetDescriptor>| {
+        if let Some((table, cols)) = cur {
+            let query = format!("SELECT * FROM {}", quote_ident_sqlite(&table));
+            out.push(
+                faucet_core::DatasetDescriptor::new(
+                    table,
+                    "table",
+                    serde_json::json!({ "query": query }),
+                )
+                .with_schema(faucet_core::columns_to_schema(cols)),
+            );
+        }
+    };
+
+    for (table, column, data_type, is_nullable) in rows {
+        let same = current.as_ref().is_some_and(|(t, _)| *t == table);
+        if !same {
+            flush(current.take(), &mut out);
+            current = Some((table, Vec::new()));
+        }
+        // A typeless column (`CREATE TABLE t(x)`) has an empty declared type;
+        // `sql_type_to_json_schema` maps unknown/empty to the safe `string`.
+        let mut fragment = faucet_core::sql_type_to_json_schema(&data_type);
+        if is_nullable {
+            fragment = faucet_core::nullable_type(fragment);
+        }
+        if let Some((_, cols)) = current.as_mut() {
+            cols.push((column, fragment));
+        }
+    }
+    flush(current, &mut out);
+    out
+}
+
 /// Convert a single `SqliteRow` into a JSON object whose keys are the row's
 /// column names.
 fn row_to_json(row: &sqlx::sqlite::SqliteRow) -> Value {
@@ -284,6 +334,66 @@ impl faucet_core::Source for SqliteSource {
             .trim_start_matches("sqlite://")
             .trim_start_matches("sqlite:");
         format!("sqlite://{}?query={}", path, self.config.query)
+    }
+
+    fn supports_discover(&self) -> bool {
+        true
+    }
+
+    /// Enumerate every user table in `sqlite_master` (internal `sqlite_*`
+    /// tables excluded), with column types and nullability from
+    /// `pragma_table_info` — catalog metadata only, no data scan. SQLite has
+    /// no cheap row-count statistic, so `estimated_rows` is always `None`.
+    async fn discover(&self) -> Result<Vec<faucet_core::DatasetDescriptor>, FaucetError> {
+        let tables = sqlx::query(
+            "SELECT name FROM sqlite_master \
+              WHERE type = 'table' AND name NOT LIKE 'sqlite_%' \
+              ORDER BY name",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| FaucetError::Source(format!("sqlite: catalog discovery failed: {e}")))?;
+
+        let mut catalog: Vec<CatalogRow> = Vec::new();
+        for table_row in &tables {
+            let table: String = table_row.try_get("name").map_err(|e| {
+                FaucetError::Source(format!("sqlite: catalog decode failed (name): {e}"))
+            })?;
+            // `pragma_table_info(?)` is the table-valued-function form of
+            // `PRAGMA table_info` — it takes a bound parameter, so the table
+            // name is never spliced into the SQL text. `notnull` is
+            // backtick-quoted because NOTNULL is a SQLite operator keyword
+            // (and double quotes are a misfeature here — see
+            // `quote_ident_sqlite`).
+            let columns =
+                sqlx::query("SELECT name, type, `notnull` FROM pragma_table_info(?) ORDER BY cid")
+                    .bind(&table)
+                    .fetch_all(&self.pool)
+                    .await
+                    .map_err(|e| {
+                        FaucetError::Source(format!(
+                            "sqlite: catalog discovery failed (table_info for {table}): {e}"
+                        ))
+                    })?;
+            for col in &columns {
+                let decode = |c: &str| -> Result<String, FaucetError> {
+                    col.try_get::<String, _>(c).map_err(|e| {
+                        FaucetError::Source(format!("sqlite: catalog decode failed ({c}): {e}"))
+                    })
+                };
+                let notnull: i64 = col.try_get("notnull").map_err(|e| {
+                    FaucetError::Source(format!("sqlite: catalog decode failed (notnull): {e}"))
+                })?;
+                catalog.push((
+                    table.clone(),
+                    decode("name")?,
+                    decode("type")?,
+                    notnull == 0,
+                ));
+            }
+        }
+
+        Ok(descriptors_from_catalog(catalog))
     }
 
     /// Shardable when a [`ShardConfig`](crate::config::ShardConfig) is set.
@@ -574,6 +684,128 @@ mod tests {
         let uri = source.dataset_uri();
         assert!(uri.contains("SELECT 42 AS n"), "got: {uri}");
         assert!(uri.starts_with("sqlite://"), "got: {uri}");
+    }
+
+    // ── discover: pure catalog-row grouping (#211) ───────────────────────────
+
+    #[test]
+    fn descriptors_group_catalog_rows_per_table() {
+        let rows: Vec<CatalogRow> = vec![
+            (
+                "orders".to_string(),
+                "id".to_string(),
+                "INTEGER".to_string(),
+                false,
+            ),
+            (
+                "orders".to_string(),
+                "note".to_string(),
+                "TEXT".to_string(),
+                true,
+            ),
+            (
+                "users".to_string(),
+                "total".to_string(),
+                "REAL".to_string(),
+                false,
+            ),
+        ];
+        let ds = descriptors_from_catalog(rows);
+        assert_eq!(ds.len(), 2, "rows group into one descriptor per table");
+
+        assert_eq!(ds[0].name, "orders");
+        assert_eq!(ds[0].kind, "table");
+        assert_eq!(
+            ds[0].estimated_rows, None,
+            "SQLite has no cheap estimate — discovery never scans"
+        );
+        assert_eq!(ds[0].config_patch["query"], "SELECT * FROM `orders`");
+        let schema = ds[0].schema.as_ref().unwrap();
+        assert_eq!(schema["type"], "object");
+        assert_eq!(schema["properties"]["id"]["type"], "integer");
+        assert_eq!(
+            schema["properties"]["note"]["type"],
+            serde_json::json!(["string", "null"]),
+            "nullable column"
+        );
+
+        assert_eq!(ds[1].name, "users");
+        assert_eq!(
+            ds[1].schema.as_ref().unwrap()["properties"]["total"]["type"],
+            "number"
+        );
+    }
+
+    #[test]
+    fn descriptors_quote_hostile_identifiers() {
+        let rows: Vec<CatalogRow> = vec![(
+            "we`ird".to_string(),
+            "id".to_string(),
+            "INTEGER".to_string(),
+            false,
+        )];
+        let ds = descriptors_from_catalog(rows);
+        assert_eq!(
+            ds[0].config_patch["query"], "SELECT * FROM `we``ird`",
+            "embedded backticks are doubled"
+        );
+    }
+
+    #[test]
+    fn descriptors_typeless_column_maps_to_string() {
+        // `CREATE TABLE t(x)` — a column with no declared type.
+        let rows: Vec<CatalogRow> = vec![("t".to_string(), "x".to_string(), String::new(), true)];
+        let ds = descriptors_from_catalog(rows);
+        assert_eq!(
+            ds[0].schema.as_ref().unwrap()["properties"]["x"]["type"],
+            serde_json::json!(["string", "null"]),
+            "empty declared type falls back to the safe string"
+        );
+    }
+
+    #[test]
+    fn descriptors_empty_catalog_is_empty() {
+        assert!(descriptors_from_catalog(Vec::new()).is_empty());
+    }
+
+    /// End-to-end through the real `discover()` I/O path against an in-memory
+    /// database (`max_connections(1)` keeps every query on the one connection
+    /// that owns the `:memory:` DB).
+    #[tokio::test]
+    async fn discover_enumerates_memory_tables() {
+        let config = SqliteSourceConfig::new("sqlite::memory:", "SELECT 1").with_max_connections(1);
+        let source = SqliteSource::new(config).await.unwrap();
+        assert!(source.supports_discover());
+
+        // No user tables yet → empty catalog (sqlite_master exists but is
+        // internal).
+        assert!(source.discover().await.unwrap().is_empty());
+
+        sqlx::query("CREATE TABLE zebra (id INTEGER NOT NULL, note TEXT)")
+            .execute(&source.pool)
+            .await
+            .unwrap();
+        sqlx::query("CREATE TABLE apple (v REAL NOT NULL)")
+            .execute(&source.pool)
+            .await
+            .unwrap();
+
+        let ds = source.discover().await.unwrap();
+        assert_eq!(ds.len(), 2);
+        assert_eq!(ds[0].name, "apple", "tables ordered by name");
+        assert_eq!(ds[1].name, "zebra");
+        assert_eq!(ds[0].config_patch["query"], "SELECT * FROM `apple`");
+        assert_eq!(
+            ds[0].schema.as_ref().unwrap()["properties"]["v"]["type"],
+            "number"
+        );
+        let zebra = ds[1].schema.as_ref().unwrap();
+        assert_eq!(zebra["properties"]["id"]["type"], "integer");
+        assert_eq!(
+            zebra["properties"]["note"]["type"],
+            serde_json::json!(["string", "null"])
+        );
+        assert_eq!(ds[1].estimated_rows, None);
     }
 
     // ── PK-range sharding (Mode B, #262) ─────────────────────────────────────

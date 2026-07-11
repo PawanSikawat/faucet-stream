@@ -132,7 +132,12 @@ pub(crate) fn json_compare(a: &Value, b: &Value) -> Ordering {
     }
 }
 
-fn json_gt(a: &Value, b: &Value) -> bool {
+/// Total-order "greater than" over JSON values, using the same comparison
+/// [`filter_incremental`] applies to replication keys (numbers numerically,
+/// strings lexicographically — so RFC3339 timestamps order correctly). Public
+/// so callers bounding a replay window (e.g. `faucet backfill --to-bookmark`)
+/// compare exactly like the incremental filter does.
+pub fn json_gt(a: &Value, b: &Value) -> bool {
     json_compare(a, b) == Ordering::Greater
 }
 

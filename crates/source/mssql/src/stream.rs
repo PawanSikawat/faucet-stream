@@ -180,6 +180,63 @@ impl OwnedParam {
     }
 }
 
+/// One flattened `INFORMATION_SCHEMA.COLUMNS` row used by
+/// [`Source::discover`]: `(schema, table, column, data_type, is_nullable)`.
+type CatalogRow = (String, String, String, String, bool);
+
+/// Group flattened catalog rows (ordered by schema, table, ordinal position)
+/// into one [`DatasetDescriptor`](faucet_core::DatasetDescriptor) per table,
+/// merging in per-table row estimates keyed by `(schema, table)`. Pure —
+/// unit-testable without a live server. `quote` is the dialect's identifier
+/// quoter ([`bracket_quote`] for T-SQL).
+fn descriptors_from_catalog(
+    rows: Vec<CatalogRow>,
+    estimates: &HashMap<(String, String), u64>,
+    quote: fn(&str) -> String,
+) -> Vec<faucet_core::DatasetDescriptor> {
+    /// In-progress per-table accumulator: `(schema, table, columns)`.
+    type PendingTable = (String, String, Vec<(String, Value)>);
+
+    let mut out: Vec<faucet_core::DatasetDescriptor> = Vec::new();
+    let mut current: Option<PendingTable> = None;
+
+    let flush = |cur: Option<PendingTable>, out: &mut Vec<faucet_core::DatasetDescriptor>| {
+        if let Some((schema, table, cols)) = cur {
+            let est = estimates.get(&(schema.clone(), table.clone())).copied();
+            let query = format!("SELECT * FROM {}.{}", quote(&schema), quote(&table));
+            let mut d = faucet_core::DatasetDescriptor::new(
+                format!("{schema}.{table}"),
+                "table",
+                serde_json::json!({ "query": query }),
+            )
+            .with_schema(faucet_core::columns_to_schema(cols));
+            if let Some(n) = est {
+                d = d.with_estimated_rows(n);
+            }
+            out.push(d);
+        }
+    };
+
+    for (schema, table, column, data_type, is_nullable) in rows {
+        let same = current
+            .as_ref()
+            .is_some_and(|(s, t, _)| *s == schema && *t == table);
+        if !same {
+            flush(current.take(), &mut out);
+            current = Some((schema, table, Vec::new()));
+        }
+        let mut fragment = faucet_core::sql_type_to_json_schema(&data_type);
+        if is_nullable {
+            fragment = faucet_core::nullable_type(fragment);
+        }
+        if let Some((_, _, cols)) = current.as_mut() {
+            cols.push((column, fragment));
+        }
+    }
+    flush(current, &mut out);
+    out
+}
+
 /// Derive a default state-store key from the connection host + a query
 /// fingerprint, stable across runs.
 fn default_state_key(config: &MssqlSourceConfig) -> String {
@@ -364,6 +421,128 @@ impl Source for MssqlSource {
             ),
         };
         Ok(CheckReport::single(probe))
+    }
+
+    fn supports_discover(&self) -> bool {
+        true
+    }
+
+    /// Enumerate every base table visible to the connection, with column
+    /// types from `INFORMATION_SCHEMA.COLUMNS` and a row estimate from
+    /// `sys.partitions` (catalog metadata only — no data scan). The estimate
+    /// query degrades gracefully: when the `sys.*` views aren't readable
+    /// (permissions), tables are returned without estimates rather than
+    /// failing discovery.
+    async fn discover(&self) -> Result<Vec<faucet_core::DatasetDescriptor>, FaucetError> {
+        const CATALOG_SQL: &str = "SELECT c.TABLE_SCHEMA, c.TABLE_NAME, c.COLUMN_NAME, \
+                c.DATA_TYPE, c.IS_NULLABLE \
+           FROM INFORMATION_SCHEMA.COLUMNS c \
+           JOIN INFORMATION_SCHEMA.TABLES t \
+             ON t.TABLE_SCHEMA = c.TABLE_SCHEMA AND t.TABLE_NAME = c.TABLE_NAME \
+          WHERE t.TABLE_TYPE = 'BASE TABLE' \
+          ORDER BY c.TABLE_SCHEMA, c.TABLE_NAME, c.ORDINAL_POSITION";
+        // Heap (index_id 0) or clustered-index (index_id 1) partitions carry
+        // the table's row count; secondary indexes would double-count.
+        const ESTIMATE_SQL: &str = "SELECT s.name AS sch, o.name AS tbl, SUM(p.rows) AS est \
+           FROM sys.objects o \
+           JOIN sys.schemas s ON s.schema_id = o.schema_id \
+           JOIN sys.partitions p ON p.object_id = o.object_id AND p.index_id IN (0, 1) \
+          WHERE o.type = 'U' \
+          GROUP BY s.name, o.name";
+
+        let map_err = |e: tiberius::error::Error| {
+            FaucetError::Source(format!("mssql: catalog discovery failed: {e}"))
+        };
+
+        let mut conn =
+            self.pool.get().await.map_err(|e| {
+                FaucetError::Source(format!("mssql: catalog discovery failed: {e}"))
+            })?;
+
+        let rows = {
+            let run = async {
+                conn.query(CATALOG_SQL, &[])
+                    .await
+                    .map_err(map_err)?
+                    .into_first_result()
+                    .await
+                    .map_err(map_err)
+            };
+            match self.timeout() {
+                Some(t) => {
+                    with_statement_timeout(t, run, || {
+                        FaucetError::Source("mssql: catalog discovery timed out".into())
+                    })
+                    .await?
+                }
+                None => run.await?,
+            }
+        };
+
+        let mut catalog: Vec<CatalogRow> = Vec::with_capacity(rows.len());
+        for row in &rows {
+            let v = row_to_json(row)?;
+            let decode = |col: &str| -> Result<String, FaucetError> {
+                v.get(col)
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+                    .ok_or_else(|| {
+                        FaucetError::Source(format!("mssql: catalog decode failed ({col})"))
+                    })
+            };
+            catalog.push((
+                decode("TABLE_SCHEMA")?,
+                decode("TABLE_NAME")?,
+                decode("COLUMN_NAME")?,
+                decode("DATA_TYPE")?,
+                // Absent/odd IS_NULLABLE over-approximates to nullable.
+                decode("IS_NULLABLE")
+                    .map(|s| s.eq_ignore_ascii_case("YES"))
+                    .unwrap_or(true),
+            ));
+        }
+
+        let mut estimates: HashMap<(String, String), u64> = HashMap::new();
+        let est_rows = {
+            let run = async {
+                conn.query(ESTIMATE_SQL, &[])
+                    .await
+                    .map_err(map_err)?
+                    .into_first_result()
+                    .await
+                    .map_err(map_err)
+            };
+            match self.timeout() {
+                Some(t) => {
+                    with_statement_timeout(t, run, || {
+                        FaucetError::Source("mssql: catalog discovery timed out".into())
+                    })
+                    .await
+                }
+                None => run.await,
+            }
+        };
+        match est_rows {
+            Ok(rows) => {
+                for row in &rows {
+                    if let Ok(v) = row_to_json(row)
+                        && let (Some(sch), Some(tbl)) = (v["sch"].as_str(), v["tbl"].as_str())
+                        && let Some(est) = v["est"].as_i64()
+                        && est >= 0
+                    {
+                        estimates.insert((sch.to_string(), tbl.to_string()), est as u64);
+                    }
+                }
+            }
+            // Permissions on sys.* vary by principal — estimates are
+            // best-effort metadata, never worth failing discovery over.
+            Err(e) => tracing::debug!(
+                error = %e,
+                "mssql: row-estimate query failed; discovery continues without estimates"
+            ),
+        }
+
+        Ok(descriptors_from_catalog(catalog, &estimates, bracket_quote))
     }
 
     /// Shardable when a [`ShardConfig`](crate::config::ShardConfig) is set.
@@ -762,5 +941,61 @@ mod tests {
             .wrap(&q, bracket_quote);
         assert!(wrapped.contains("@P1"), "bind marker survives: {wrapped}");
         assert_eq!(v.len(), 1, "one bound value for the bookmark");
+    }
+
+    // ── discover: pure catalog-row grouping (#211) ───────────────────────────
+
+    fn cat_row(s: &str, t: &str, c: &str, dt: &str, nullable: bool) -> CatalogRow {
+        (s.into(), t.into(), c.into(), dt.into(), nullable)
+    }
+
+    #[test]
+    fn descriptors_group_catalog_rows_per_table() {
+        let rows = vec![
+            cat_row("dbo", "orders", "id", "int", false),
+            cat_row("dbo", "orders", "note", "nvarchar", true),
+            cat_row("sales", "orders", "total", "decimal", false),
+        ];
+        let mut estimates = HashMap::new();
+        estimates.insert(("dbo".to_string(), "orders".to_string()), 120u64);
+        let ds = descriptors_from_catalog(rows, &estimates, bracket_quote);
+        assert_eq!(ds.len(), 2, "same table name in two schemas = two datasets");
+
+        assert_eq!(ds[0].name, "dbo.orders");
+        assert_eq!(ds[0].kind, "table");
+        assert_eq!(ds[0].estimated_rows, Some(120));
+        assert_eq!(ds[0].config_patch["query"], "SELECT * FROM [dbo].[orders]");
+        let schema = ds[0].schema.as_ref().unwrap();
+        assert_eq!(schema["type"], "object");
+        assert_eq!(schema["properties"]["id"]["type"], "integer");
+        assert_eq!(
+            schema["properties"]["note"]["type"],
+            json!(["string", "null"]),
+            "nullable column"
+        );
+
+        // Estimate-merge miss: sales.orders has no sys.partitions entry.
+        assert_eq!(ds[1].name, "sales.orders");
+        assert_eq!(ds[1].estimated_rows, None, "missing estimate = no field");
+        assert_eq!(
+            ds[1].schema.as_ref().unwrap()["properties"]["total"]["type"],
+            "number"
+        );
+    }
+
+    #[test]
+    fn descriptors_quote_hostile_identifiers() {
+        let rows = vec![cat_row("dbo", "wei]rd", "id", "int", false)];
+        let ds = descriptors_from_catalog(rows, &HashMap::new(), bracket_quote);
+        let q = ds[0].config_patch["query"].as_str().unwrap();
+        assert_eq!(
+            q, "SELECT * FROM [dbo].[wei]]rd]",
+            "interior ] must be doubled"
+        );
+    }
+
+    #[test]
+    fn descriptors_empty_catalog_is_empty() {
+        assert!(descriptors_from_catalog(Vec::new(), &HashMap::new(), bracket_quote).is_empty());
     }
 }

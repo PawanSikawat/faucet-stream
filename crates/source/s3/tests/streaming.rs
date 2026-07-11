@@ -371,3 +371,60 @@ async fn stream_pages_first_page_completes_without_parsing_full_object() {
          first page took {first_elapsed:?}, full drain took {full_elapsed:?}"
     );
 }
+
+// ── Dataset discovery (#211) ────────────────────────────────────────────────
+
+#[tokio::test(flavor = "multi_thread")]
+async fn discover_enumerates_common_prefixes() {
+    let (_container, endpoint) = start_minio().await;
+    seed_bucket(
+        &endpoint,
+        &[
+            ("raw/orders/part-1.jsonl".to_string(), jsonl_body(1, 3)),
+            ("raw/orders/part-2.jsonl".to_string(), jsonl_body(4, 6)),
+            ("raw/users/part-1.jsonl".to_string(), jsonl_body(1, 3)),
+        ],
+    )
+    .await;
+
+    let config = S3SourceConfig::new(TEST_BUCKET).prefix("raw/");
+    let source = build_source(&endpoint, config).await;
+
+    assert!(source.supports_discover());
+    let datasets = source.discover().await.expect("discover");
+    let names: Vec<&str> = datasets.iter().map(|d| d.name.as_str()).collect();
+    assert_eq!(names, vec!["raw/orders/", "raw/users/"]);
+    for d in &datasets {
+        assert_eq!(d.kind, "prefix");
+        assert_eq!(d.config_patch["prefix"], d.name.as_str());
+        assert!(d.schema.is_none());
+        assert!(d.estimated_rows.is_none());
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn discover_falls_back_to_objects_under_leaf_prefix() {
+    let (_container, endpoint) = start_minio().await;
+    seed_bucket(
+        &endpoint,
+        &[
+            ("raw/orders/part-1.jsonl".to_string(), jsonl_body(1, 3)),
+            ("raw/orders/part-2.jsonl".to_string(), jsonl_body(4, 6)),
+        ],
+    )
+    .await;
+
+    let config = S3SourceConfig::new(TEST_BUCKET).prefix("raw/orders/");
+    let source = build_source(&endpoint, config).await;
+
+    let datasets = source.discover().await.expect("discover");
+    let names: Vec<&str> = datasets.iter().map(|d| d.name.as_str()).collect();
+    assert_eq!(
+        names,
+        vec!["raw/orders/part-1.jsonl", "raw/orders/part-2.jsonl"]
+    );
+    for d in &datasets {
+        assert_eq!(d.kind, "object");
+        assert_eq!(d.config_patch["prefix"], d.name.as_str());
+    }
+}

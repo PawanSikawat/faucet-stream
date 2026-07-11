@@ -65,6 +65,7 @@ for the SQL backends; an in-memory ring otherwise) and expire with the
 | `DELETE` | `/v1/runs/{id}` | `204` | Remove a terminal run from history |
 | `POST` | `/v1/runs/{id}/cancel` | `202` / `200` | Request cancel (202) or no-op if terminal (200) |
 | `GET` | `/v1/runs/{id}/logs` | `200` | Stream the run's logs as `text/event-stream` |
+| `POST` | `/v1/backfill` | `202` | Submit a windowed backfill: one tracked run per window unit (operator) |
 | `GET` | `/v1/audit` | `200` | Read the audit log — **admin only** (RBAC). Filters: `principal`, `action`, `since`, `until`, `limit` |
 | `GET` | `/v1/catalog/datasets` | `200` | List catalogued datasets (`kind`, `q`, `limit`, `cursor`) — requires the `catalog` build feature |
 | `GET` | `/v1/catalog/datasets/{id}` | `200` | One dataset's detail: schema timeline, volume, edges |
@@ -187,6 +188,47 @@ it automatically). Viewer-readable under RBAC; requires a build with the
 curl -H "Authorization: Bearer $TOKEN" \
   "http://127.0.0.1:8080/v1/catalog/datasets?kind=postgres&limit=20"
 ```
+
+### `POST /v1/backfill`
+
+Plans a `[from, to)` range into window units (chunked by `window`) and submits
+**one tracked run per unit** — see the [backfill
+cookbook](../cookbook/backfill.md) for the model.
+
+```json
+{
+  "config": "version: 1\nname: orders\npipeline: {...}\n",
+  "config_format": "yaml",
+  "from": "2026-06-01",
+  "to": "2026-07-01",
+  "window": "1d",
+  "timezone": "UTC",
+  "name": "orders",
+  "labels": {"requester": "airflow"},
+  "timeout_secs": 3600
+}
+```
+
+- **`config`** (required) — every root source must reference a `${backfill.*}`
+  or `${now.*}` scoping token (400 otherwise). Bookmark-range backfills are
+  CLI-only.
+- **`from`** / **`to`** (required) — RFC3339 or `YYYY-MM-DD` (midnight in
+  `timezone`), half-open.
+- **`window`** / **`timezone`** — default to the config's `backfill:` block.
+- **`name`** — base run name; unit runs are `{name}-backfill-{unit}` (the
+  pipeline `name` is rewritten per unit so state keys never touch the live
+  bookmark). `delivery` is forced to `at_least_once`; `timeout_secs` applies
+  per unit.
+
+`202` response: `{backfill, descriptor, planned, submitted, units: [{unit,
+start, end, status, run_id?, error?}]}` where `backfill` is the stable range
+hash carried as the `backfill` label on every unit run (plus a `backfill_unit`
+label). Each unit is submitted with the deterministic idempotency key
+`backfill:{hash}:{unit}`, so **re-POSTing the same body is replay-safe** —
+already-submitted units replay their existing run, the rest submit (a full
+queue marks the remainder `not_submitted`; re-POST to continue). A config
+carrying `shard: {count}` makes each unit a sharded run tracked via shard
+progress. Requires `RunWrite` (operator); audited as `backfill.submit`.
 
 ## Error envelope
 

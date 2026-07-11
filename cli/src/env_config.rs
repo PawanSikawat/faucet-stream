@@ -332,6 +332,7 @@ pub fn build_pipeline_config(env: &HashMap<String, String>) -> CliResult<Pipelin
         sla: None,
         shard: None,
         replication: None,
+        backfill: None,
         #[cfg(feature = "schedule")]
         schedule: None,
         #[cfg(feature = "lineage")]
