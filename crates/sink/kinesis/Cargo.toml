@@ -1,0 +1,33 @@
+[package]
+name = "faucet-sink-kinesis"
+version = "1.0.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "AWS Kinesis Data Streams sink connector for faucet-stream (batched PutRecords, partition-key routing, partial-failure retry)"
+readme = "README.md"
+keywords = ["kinesis", "aws", "streaming", "etl", "connector"]
+categories.workspace = true
+
+[dependencies]
+faucet-core.workspace = true
+faucet-common-kinesis.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+schemars.workspace = true
+aws-sdk-kinesis.workspace = true
+async-trait.workspace = true
+async-stream.workspace = true
+futures.workspace = true
+tokio = { workspace = true, features = ["rt", "macros", "sync", "time"] }
+tracing.workspace = true
+base64.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+serde_yaml = "0.9"
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
