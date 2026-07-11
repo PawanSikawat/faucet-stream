@@ -116,5 +116,27 @@ Battery invoked against the **real** connectors (no live infra needed):
   `make bench-postgres` (or `scripts/run-bench.sh --postgres --rows 1000000`).
 - Verified: `bash -n scripts/run-bench.sh` clean; sink config fields checked
   against `crates/sink/postgres/src/config.rs`.
-## Phase 6 — effectively-once wording sweep
+## Phase 6 — effectively-once wording sweep ✅
+- **Finding:** a prior "docs precision" pass (`REVIEW_FIXES_LOG.md`) had already
+  swept the docs. In the current tree, every `exactly_once` is the **API config
+  value** (the literal `delivery: exactly_once` knob / `DeliveryMode::ExactlyOnce`
+  — a stable 1.0 identifier, must NOT be renamed), the guarantee is framed as
+  **effectively-once** throughout (state.md has the canonical boundary), and the
+  only hyphenated `exactly-once` in user docs were correct **contrastive** uses
+  ("not distributed-consensus exactly-once").
+- **Fixed 4 residual stragglers** (naming consistency, not guarantee-claims):
+  `docs/book/src/cookbook/dashboards.md` + `observability/README.md`
+  ("exactly-once page skips" → "effectively-once page skips"),
+  `crates/sink/mongodb/README.md` ("exactly-once path" → "effectively-once path"),
+  and the public rustdoc on `Source::supports_exactly_once` in
+  `crates/core/src/traits.rs` ("requirement for exactly-once delivery" →
+  "requirement for the atomic-watermark effectively-once path").
+- **Deliberately kept** (verified, not defects): the `exactly_once` config value /
+  `ExactlyOnce` enum (API), correct contrastive phrases, generated `CHANGELOG.md`
+  entries (historical), the mongodb runtime **error-string** doc (quotes the code),
+  and internal `//` implementation comments + test-file titles in `.rs` (out of
+  the docs-prose scope; the 1.0 API name can't change without a breaking release).
+- Verified: `cargo check -p faucet-core` clean (comment-only edit); no
+  guarantee-claiming prose (`provides/delivers exactly-once`) remains in
+  user-facing docs.
 ## Phase 7 — Reachability + contributor on-ramp

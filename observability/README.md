@@ -10,7 +10,7 @@ in sync with the code.
 
 | Dashboard | uid | Shows |
 |-----------|-----|-------|
-| `faucet-pipeline-overview.json` | `faucet-pipeline-overview` | Runs by status, run-duration p50/p95, source/sink throughput + errors by connector, transform in/out, bookmark staleness, exactly-once page skips, state-store ops. A `faucet_build_info` annotation marks version rollouts. |
+| `faucet-pipeline-overview.json` | `faucet-pipeline-overview` | Runs by status, run-duration p50/p95, source/sink throughput + errors by connector, transform in/out, bookmark staleness, effectively-once page skips, state-store ops. A `faucet_build_info` annotation marks version rollouts. |
 | `faucet-reliability.json` | `faucet-reliability` | Resilience retries / give-ups / circuit state, DLQ traffic, poison rows, quality quarantines + aborts, contract violations, schema drift, PII masking activity, SLA violations, backfill progress. |
 | `faucet-schedule.json` | `faucet-schedule` | Scheduled runs by outcome, heartbeat staleness (alert at 90 s), next-tick countdown, lateness p95, overlap policy hits, consecutive-failure streak. |
 | `faucet-serve.json` | `faucet-serve` | HTTP request rate/latency by path, run queue depth, terminal run statuses, history-degraded flag, idempotency replays, cluster membership + claim/reclaim rates, trigger health/fires/drops. |
