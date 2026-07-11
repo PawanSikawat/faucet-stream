@@ -9,7 +9,7 @@ FAUCET_DEMO := cargo run -q -p faucet-cli --no-default-features --features "$(DE
 
 .DEFAULT_GOAL := help
 
-.PHONY: help demo infra-up infra-down infra-logs infra-ps bench bench-smoke bench-build
+.PHONY: help demo infra-up infra-down infra-logs infra-ps bench bench-smoke bench-postgres bench-build
 
 help: ## List available targets
 	@grep -hE '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | sort | \
@@ -23,13 +23,16 @@ demo: ## Run a no-infrastructure smoke test (CSV -> JSONL)
 	@cat target/demo/out.jsonl
 
 bench-build: ## Build the release faucet binary used by the benchmark harness
-	cargo build -p faucet-cli --release --no-default-features --features "source-csv,sink-jsonl,source-postgres"
+	cargo build -p faucet-cli --release --no-default-features --features "source-csv,sink-jsonl,source-postgres,sink-postgres"
 
-bench: bench-build ## Run the Meltano comparison benchmark (1M rows) — see BENCHMARKS.md
+bench: bench-build ## Run the Meltano comparison benchmark (1M rows, CSV->JSONL) — see BENCHMARKS.md
 	scripts/run-bench.sh
 
 bench-smoke: bench-build ## Fast benchmark validation (100k rows)
 	scripts/run-bench.sh --smoke
+
+bench-postgres: bench-build ## Run all scenarios incl. Postgres->Postgres (sink-bound); needs Docker
+	scripts/run-bench.sh --postgres
 
 infra-up: ## Start the local example stack (Postgres, MySQL, Kafka, Redis, Mongo, ES, MinIO)
 	$(COMPOSE) up -d

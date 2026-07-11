@@ -94,6 +94,27 @@ Battery invoked against the **real** connectors (no live infra needed):
 - Verified: `cargo test -p faucet-source-singer` (27 lib + selection + others),
   `cargo clippy -p faucet-source-singer --all-targets -- -D warnings` clean,
   `cargo check -p faucet-cli --no-default-features --features source-singer,…` clean.
-## Phase 5 — Benchmark: sink-bound scenario
+## Phase 5 — Benchmark: sink-bound scenario ✅
+- **Scenario C — Postgres → Postgres (sink-bound)** added: faucet config
+  `benchmarks/faucet/postgres_to_postgres.yaml` (source-postgres → sink-postgres
+  AutoMap, `batch_size: 5000`), Meltano `target-postgres` loader in `meltano.yml`.
+- **`scripts/run-bench.sh`**: replaced the Scenario B stub with a real
+  `run_pg_scenarios` (Docker Postgres 16, `COPY`-load `bench`, typed `bench_dest`,
+  runs B pg→jsonl and C pg→pg for both tools, TRUNCATE/ DROP SCHEMA prepares,
+  appends results). `bash -n` clean.
+- **Makefile**: `bench-build` now includes `sink-postgres`; new `bench-postgres`
+  target runs `--postgres`.
+- **Headline reframed honestly** in BENCHMARKS.md + README: "**~1–2 orders of
+  magnitude on single-machine batch throughput**", CSV→JSONL called out as a
+  *best case* (upper bound), sink-bound moves narrow the gap. Kept faucet's own
+  A/B throughput+RSS rows.
+- **"Reproduce and report" callout** added (one independent confirmation > a new
+  connector). New caveat #0 (best-case vs sink-bound).
+- **Scenario C numbers are `TODO: run locally`** — Docker/Postgres + a Meltano
+  venv weren't available in this authoring environment; scenario/configs/harness
+  are fully wired and the placeholder is never fabricated. Exact repro command:
+  `make bench-postgres` (or `scripts/run-bench.sh --postgres --rows 1000000`).
+- Verified: `bash -n scripts/run-bench.sh` clean; sink config fields checked
+  against `crates/sink/postgres/src/config.rs`.
 ## Phase 6 — effectively-once wording sweep
 ## Phase 7 — Reachability + contributor on-ramp

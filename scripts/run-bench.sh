@@ -182,14 +182,116 @@ log "Writing results fragment -> $RES_DIR/results.md"
 } > "$RES_DIR/results.md"
 cat "$RES_DIR/results.md"
 
-# ---- Scenario B (optional) ------------------------------------------------
-if [ "$DO_PG" = 1 ]; then
-  log "Scenario B: Postgres -> JSONL"
+# ---- Scenarios B & C (optional, Docker) -----------------------------------
+# B: Postgres -> JSONL      (read/decode-bound: destination is a fast local file)
+# C: Postgres -> Postgres   (sink-bound: destination is a real DB write)
+#
+# Scenario C is the honest "move data between two databases on one machine"
+# shape — both tools become bounded by the same Postgres write path rather than
+# by per-row interpreter overhead, so the gap narrows vs the CSV->JSONL best case.
+PG_CONTAINER="faucet-bench-pg"
+PG_IMAGE="postgres:16"
+PG_DSN_PSQL="postgresql://postgres:postgres@127.0.0.1:55432/postgres"
+
+pg_psql() { docker exec -i "$PG_CONTAINER" psql -v ON_ERROR_STOP=1 -U postgres -d postgres "$@"; }
+
+run_pg_scenarios() {
   if ! have docker || ! docker info >/dev/null 2>&1; then
-    echo "Docker not available — Scenario B skipped. See benchmarks/README.md." >&2
-  else
-    echo "Scenario B orchestration is documented in benchmarks/README.md; wire up here as needed." >&2
+    echo "Docker not available — Scenarios B & C skipped. See BENCHMARKS.md." >&2
+    return 0
   fi
+  log "Starting Postgres ($PG_IMAGE) for Scenarios B & C"
+  docker rm -f "$PG_CONTAINER" >/dev/null 2>&1 || true
+  docker run -d --name "$PG_CONTAINER" -e POSTGRES_PASSWORD=postgres \
+    -p 55432:5432 "$PG_IMAGE" >/dev/null || { echo "postgres container failed to start" >&2; return 1; }
+  # Wait for readiness.
+  for _ in $(seq 1 30); do
+    docker exec "$PG_CONTAINER" pg_isready -U postgres >/dev/null 2>&1 && break
+    sleep 1
+  done
+
+  log "Loading $DATA_CSV into Postgres (bench) + creating bench_dest"
+  pg_psql <<'SQL'
+DROP TABLE IF EXISTS bench, bench_dest;
+CREATE TABLE bench (id bigint, first_name text, country text, amount double precision,
+                    created_at timestamptz, active boolean, attributes jsonb);
+-- bench_dest mirrors bench but keeps created_at as text so faucet AutoMap can
+-- write the source's RFC3339 string without a per-value cast.
+CREATE TABLE bench_dest (id bigint, first_name text, country text, amount double precision,
+                         created_at text, active boolean, attributes jsonb);
+SQL
+  docker exec -i "$PG_CONTAINER" psql -v ON_ERROR_STOP=1 -U postgres -d postgres \
+    -c "\copy bench FROM STDIN WITH (FORMAT csv, HEADER true)" < "$DATA_CSV" \
+    || { echo "COPY into bench failed" >&2; docker rm -f "$PG_CONTAINER" >/dev/null 2>&1; return 1; }
+
+  export BENCH_PG_URL="postgresql://postgres:postgres@127.0.0.1:55432/postgres"
+  export TAP_POSTGRES_SQLALCHEMY_URL="$BENCH_PG_URL"
+  export TARGET_POSTGRES_SQLALCHEMY_URL="$BENCH_PG_URL"
+  local pg_meltano_ok=0
+  if [ "$MELTANO_OK" = 1 ]; then
+    ( cd benchmarks/meltano \
+        && "$VENV/bin/meltano" install extractor tap-postgres >/dev/null 2>&1 \
+        && "$VENV/bin/meltano" install loader target-jsonl >/dev/null 2>&1 \
+        && "$VENV/bin/meltano" install loader target-postgres >/dev/null 2>&1 ) \
+      && pg_meltano_ok=1 || echo "meltano postgres plugins failed to install" >&2
+  fi
+
+  # Scenario B: Postgres -> JSONL
+  log "Scenario B: Postgres -> JSONL"
+  hyperfine --warmup 1 --runs "$RUNS" --export-json "$RAW_DIR/faucet_pg_jsonl.json" \
+    --command-name "faucet pg->jsonl" \
+    "'$FAUCET_BIN' run benchmarks/faucet/postgres_to_jsonl.yaml" \
+    || echo "faucet pg->jsonl run failed" >&2
+  if [ "$pg_meltano_ok" = 1 ]; then
+    hyperfine --warmup 1 --runs "$RUNS" --export-json "$RAW_DIR/meltano_pg_jsonl.json" \
+      --command-name "meltano tap-postgres->target-jsonl" \
+      --prepare "rm -rf benchmarks/meltano/output" \
+      "cd benchmarks/meltano && '$VENV/bin/meltano' run tap-postgres target-jsonl" \
+      || echo "meltano pg->jsonl run failed" >&2
+  fi
+
+  # Scenario C: Postgres -> Postgres (sink-bound)
+  log "Scenario C: Postgres -> Postgres (sink-bound)"
+  hyperfine --warmup 1 --runs "$RUNS" --export-json "$RAW_DIR/faucet_pg_pg.json" \
+    --command-name "faucet pg->pg" \
+    --prepare "docker exec $PG_CONTAINER psql -U postgres -d postgres -c 'TRUNCATE bench_dest'" \
+    "'$FAUCET_BIN' run benchmarks/faucet/postgres_to_postgres.yaml" \
+    || echo "faucet pg->pg run failed" >&2
+  if [ "$pg_meltano_ok" = 1 ]; then
+    hyperfine --warmup 1 --runs "$RUNS" --export-json "$RAW_DIR/meltano_pg_pg.json" \
+      --command-name "meltano tap-postgres->target-postgres" \
+      --prepare "docker exec $PG_CONTAINER psql -U postgres -d postgres -c 'DROP SCHEMA IF EXISTS bench_meltano CASCADE'" \
+      "cd benchmarks/meltano && '$VENV/bin/meltano' run tap-postgres target-postgres" \
+      || echo "meltano pg->pg run failed" >&2
+  fi
+
+  # Append a results fragment for the Postgres scenarios.
+  local fb_med fc_med
+  fb_med=$(read_stat "$RAW_DIR/faucet_pg_jsonl.json" median)
+  fc_med=$(read_stat "$RAW_DIR/faucet_pg_pg.json" median)
+  {
+    echo
+    echo "### Scenario B — Postgres → JSONL ($ROWS rows, $RUNS runs, seed $SEED)"
+    echo
+    echo "| Tool | Median wall-clock (s) | Throughput (rows/s) |"
+    echo "|---|---|---|"
+    echo "| faucet-stream | $fb_med | $(thr "$ROWS" "$fb_med") |"
+    echo "| Meltano (Singer) | $(read_stat "$RAW_DIR/meltano_pg_jsonl.json" median) | |"
+    echo
+    echo "### Scenario C — Postgres → Postgres (sink-bound; $ROWS rows, $RUNS runs, seed $SEED)"
+    echo
+    echo "| Tool | Median wall-clock (s) | Throughput (rows/s) |"
+    echo "|---|---|---|"
+    echo "| faucet-stream | $fc_med | $(thr "$ROWS" "$fc_med") |"
+    echo "| Meltano (Singer) | $(read_stat "$RAW_DIR/meltano_pg_pg.json" median) | |"
+  } >> "$RES_DIR/results.md"
+
+  log "Tearing down Postgres container"
+  docker rm -f "$PG_CONTAINER" >/dev/null 2>&1 || true
+}
+
+if [ "$DO_PG" = 1 ]; then
+  run_pg_scenarios
 fi
 
 log "Done. Raw hyperfine JSON in $RAW_DIR/, env in $RES_DIR/versions.txt"

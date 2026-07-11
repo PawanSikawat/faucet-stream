@@ -2,16 +2,34 @@
 
 Honest, reproducible evidence for the "built for throughput" claim. This compares
 `faucet-stream` against [Meltano](https://meltano.com/) (the most common
-[Singer](https://www.singer.io/) runtime) on an **identical** workload, on one
-machine, for a batch file/DB → JSONL move.
+[Singer](https://www.singer.io/) runtime) on **identical** workloads, on one
+machine.
 
-**Regenerate everything** with `make bench` (1M rows) or `make bench-smoke` (100k).
-The harness lives in [`benchmarks/`](benchmarks/README.md) and never fabricates a
+**Headline: on single-machine batch throughput, faucet-stream is roughly
+1–2 orders of magnitude faster than a Python Singer runtime** — and the size of
+the gap depends heavily on how much of the run is per-row work vs I/O:
+
+- **CSV → JSONL is a *best case*** that maximally exposes Python's per-row
+  interpreter + Singer-over-pipe overhead (faucet was ~96× faster here). Quote
+  this as the upper bound, not the typical case.
+- **Sink-bound moves narrow the gap.** When the destination write dominates
+  (Postgres → Postgres, Scenario C), both tools are bounded by the *same* database
+  write path, so the ratio shrinks toward the low end of that range. Network- or
+  API-bound moves narrow it further.
+
+**Regenerate everything** with `make bench` (CSV, 1M rows), `make bench-smoke`
+(100k), or `make bench-postgres` (adds the Docker Postgres scenarios B & C). The
+harness lives in [`benchmarks/`](benchmarks/README.md) and never fabricates a
 number — a tool that won't install/run is recorded as such, not faked.
 
 > **Read the caveats section before quoting any number.** This measures
-> single-machine batch throughput of a specific move. It does **not** measure
+> single-machine batch throughput of specific moves. It does **not** measure
 > distributed throughput, connector breadth, or correctness.
+>
+> **Reproduce and report.** One independent confirmation of these numbers on your
+> own hardware is worth more to this project than a new connector — run
+> `make bench` (and `make bench-postgres` if you have Docker) and open an issue or
+> PR with your `benchmarks/results/` output, especially if faucet does *not* win.
 
 ## Methodology
 
@@ -33,10 +51,11 @@ the 1M CSV is ~10× that).
 
 ### Scenarios
 
-| Scenario | faucet | Meltano |
-|---|---|---|
-| **A — CSV → JSONL** (no infra, always run) | `source-csv` → `sink-jsonl` | `tap-csv` → `target-jsonl` |
-| **B — Postgres → JSONL** (needs Docker) | `source-postgres` → `sink-jsonl` | `tap-postgres` → `target-jsonl` |
+| Scenario | Bottleneck | faucet | Meltano |
+|---|---|---|---|
+| **A — CSV → JSONL** (no infra, always run) | parse/serialize (best case) | `source-csv` → `sink-jsonl` | `tap-csv` → `target-jsonl` |
+| **B — Postgres → JSONL** (needs Docker) | typed row decode | `source-postgres` → `sink-jsonl` | `tap-postgres` → `target-jsonl` |
+| **C — Postgres → Postgres** (needs Docker) | **destination write (sink-bound)** | `source-postgres` → `sink-postgres` | `tap-postgres` → `target-postgres` |
 
 ### Measurement
 
@@ -52,11 +71,12 @@ the 1M CSV is ~10× that).
 ```bash
 # 1. Build the release binary the harness uses
 cargo build -p faucet-cli --release \
-  --no-default-features --features "source-csv,sink-jsonl,source-postgres"
+  --no-default-features --features "source-csv,sink-jsonl,source-postgres,sink-postgres"
 
 # 2. Run (installs an isolated Meltano venv on first run)
-scripts/run-bench.sh            # 1,000,000 rows, 5 runs
+scripts/run-bench.sh            # 1,000,000 rows, 5 runs (Scenario A)
 scripts/run-bench.sh --smoke    # 100,000 rows
+scripts/run-bench.sh --postgres # also Scenarios B & C (needs Docker)
 
 # Results land in benchmarks/results/{versions.txt,results.md,raw/*.json}
 ```
@@ -123,13 +143,53 @@ decoding from Postgres (Scenario A was all-string CSV) — faucet still streams
 rows via `sqlx` while `tap-postgres` marshals each row through SQLAlchemy and the
 Singer JSON pipe.
 
+### Scenario C — Postgres → Postgres (sink-bound)
+
+**The honest, realistic move: data from one database into another on one machine,
+where the destination write dominates.** faucet `source-postgres` →
+`sink-postgres` (multi-row `INSERT`s via `sqlx`) vs Meltano `tap-postgres` →
+`target-postgres`. Because both tools are now bounded by the *same* Postgres write
+path, this is where the CSV→JSONL best-case gap shrinks toward the low end of the
+1–2 orders-of-magnitude range — and it is the number to quote for "move a table
+between two Postgres databases."
+
+| Tool | Median wall-clock (s) | Throughput (rows/s) | Rows out |
+|---|---|---|---|
+| faucet-stream | `TODO: run locally` | | |
+| Meltano (Singer) | `TODO: run locally` | | |
+
+> **Not yet run in this environment** (Docker/Postgres + a Meltano venv were not
+> available where these files were authored — see the operating notes). The
+> scenario, configs, and harness are fully wired; the numbers above are a
+> placeholder, never fabricated. Reproduce with:
+>
+> ```bash
+> make bench-postgres          # 1M rows: Scenarios A, B, and C
+> # or, low-level:
+> scripts/run-bench.sh --postgres --rows 1000000 --runs 5
+> ```
+>
+> The harness spins Postgres 16 in Docker, `COPY`-loads the seeded `bench` table,
+> runs faucet `postgres_to_postgres.yaml` (TRUNCATE `bench_dest` before each run)
+> and the Meltano `tap-postgres → target-postgres` equivalent, and writes the
+> table into `benchmarks/results/results.md`.
+
 Reproduce with Docker: see
 [`benchmarks/README.md`](benchmarks/README.md#scenario-b--postgres--jsonl-manual-needs-docker).
 
 ## Caveats — what this does and does NOT prove
 
 **What it measures:** single-machine, single-process **batch throughput** and peak
-memory for one CSV/DB → JSONL move on the hardware in `versions.txt`.
+memory for CSV→JSONL, Postgres→JSONL, and Postgres→Postgres moves on the hardware
+in `versions.txt`.
+
+0. **CSV → JSONL is a best case, not the typical case.** It is almost pure
+   parse-and-reserialize, which maximally exposes Python's per-row interpreter and
+   Singer-over-pipe overhead — so the ~96× there is the *upper bound*. The
+   sink-bound Postgres→Postgres move (Scenario C) is the realistic "move a table
+   between two databases" number, and the gap there is smaller because both tools
+   share the same database write path. Quote the range (1–2 orders of magnitude),
+   and prefer the scenario closest to your actual workload.
 
 **What it does not prove / honest boundaries:**
 

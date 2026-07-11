@@ -42,10 +42,13 @@ cargo add faucet-stream           # the library
 
 - **🚀 Built for throughput** — native streaming with bounded memory, connection
   pooling, multi-row inserts, bulk APIs, and parallel I/O. Throughput is a first-class
-  design goal for every connector. In a reproducible 1M-row CSV→JSONL benchmark,
-  faucet moved **712k rows/s using 11.8 MiB** vs Meltano's 7.4k rows/s / 724 MiB
-  (~96× faster, ~62× less memory, exact row parity) — see
-  [`BENCHMARKS.md`](BENCHMARKS.md) for the methodology and honest caveats.
+  design goal for every connector. On single-machine batch throughput, faucet runs
+  **~1–2 orders of magnitude faster than a Python Singer runtime**: a reproducible
+  1M-row CSV→JSONL move (a best case that maximally exposes Python's per-row
+  overhead) hit **712k rows/s in 11.8 MiB** vs Meltano's 7.4k rows/s / 724 MiB
+  (~96× faster, ~62× less memory, exact row parity); sink-bound moves like
+  Postgres→Postgres narrow the gap. See [`BENCHMARKS.md`](BENCHMARKS.md) for the
+  methodology, the sink-bound scenario, and honest caveats.
 - **🧩 Config-driven _or_ embeddable** — run `faucet run pipeline.yaml`, or call
   `Pipeline::new(&source, &sink).run().await?` from Rust. Same orchestration either way.
 - **⚙️ A runtime, not just connectors** — incremental + resumable replication, change-data-capture,

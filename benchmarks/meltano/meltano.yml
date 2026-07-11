@@ -37,3 +37,12 @@ plugins:
       pip_url: target-jsonl==0.1.4
       config:
         destination_path: output
+    - name: target-postgres
+      variant: meltanolabs
+      pip_url: meltanolabs-target-postgres==0.0.14
+      # Scenario C (sink-bound): tap-postgres -> target-postgres. Connection is
+      # injected at runtime from $BENCH_PG_URL by run-bench.sh
+      # (TARGET_POSTGRES_SQLALCHEMY_URL). No credentials are committed. Writes to
+      # its own schema so it never collides with faucet's `bench_dest` table.
+      config:
+        default_target_schema: bench_meltano
