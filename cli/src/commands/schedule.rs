@@ -71,6 +71,83 @@ impl Shutdown {
     }
 }
 
+/// Cross-platform hot-reload signal source (SIGHUP on Unix). On non-Unix
+/// platforms `recv()` never resolves, so the reload arm simply never fires.
+struct Reload {
+    #[cfg(unix)]
+    sighup: tokio::signal::unix::Signal,
+}
+
+impl Reload {
+    fn new() -> CliResult<Self> {
+        #[cfg(unix)]
+        {
+            use tokio::signal::unix::{SignalKind, signal};
+            let sighup = signal(SignalKind::hangup()).map_err(|e| {
+                CliError::Internal(format!("failed to install SIGHUP handler: {e}"))
+            })?;
+            Ok(Self { sighup })
+        }
+        #[cfg(not(unix))]
+        {
+            Ok(Self {})
+        }
+    }
+
+    /// Resolve when SIGHUP is received (Unix); never resolves elsewhere.
+    async fn recv(&mut self) {
+        #[cfg(unix)]
+        {
+            self.sighup.recv().await;
+        }
+        #[cfg(not(unix))]
+        {
+            std::future::pending::<()>().await;
+        }
+    }
+}
+
+/// The config-derived fields a hot reload (SIGHUP) swaps. Auth catalog, lineage
+/// emitter, notifier, and catalog handle are deliberately NOT reloaded — they
+/// hold pooled connections / cached tokens reused across ticks (reloading them
+/// would churn connections and could leak auth-catalog tokens).
+struct ReloadedBundle {
+    compiled: CompiledSchedule,
+    nodes: Vec<ExpandedNode>,
+    execution: Option<crate::config::ExecutionSpec>,
+    resilience: Option<faucet_core::ResiliencePolicy>,
+    sla: Option<crate::sla::SlaSpec>,
+    cron: String,
+    timezone: String,
+}
+
+/// Re-read + re-validate the config file and build a fresh [`ReloadedBundle`].
+/// Any error (parse, missing `schedule:`, invalid cron, expand failure) is
+/// returned so the caller can keep running on the previous config.
+async fn reload_bundle(path: &std::path::Path, profile: Option<&str>) -> CliResult<ReloadedBundle> {
+    let cfg = PipelineConfig::from_path_async(path, profile).await?;
+    let spec = cfg.schedule.as_ref().ok_or_else(|| {
+        CliError::Config("reload: config no longer has a `schedule:` block".into())
+    })?;
+    let compiled = CompiledSchedule::compile(spec)?;
+    let cron = spec.cron.clone();
+    let timezone = spec.timezone.clone();
+    let nodes = expand(&cfg)?;
+    let resilience = match &cfg.resilience {
+        Some(spec) => Some(spec.to_policy()?),
+        None => None,
+    };
+    Ok(ReloadedBundle {
+        compiled,
+        nodes,
+        execution: cfg.execution.clone(),
+        resilience,
+        sla: cfg.sla.clone(),
+        cron,
+        timezone,
+    })
+}
+
 /// Max time to sleep before re-reading the wall clock. Caps clock-step / DST
 /// drift to one chunk and keeps the heartbeat fresh.
 const MAX_SLEEP: Duration = Duration::from_secs(30);
@@ -163,6 +240,8 @@ pub async fn run(args: ScheduleArgs) -> CliResult<()> {
         timezone,
         resilience,
         cfg.sla.clone(),
+        path,
+        args.profile,
         #[cfg(feature = "lineage")]
         lineage,
         #[cfg(feature = "lineage")]
@@ -361,16 +440,19 @@ async fn run_once(
 
 /// The scheduling loop.
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)]
 async fn run_loop(
-    compiled: CompiledSchedule,
-    nodes: Vec<ExpandedNode>,
+    mut compiled: CompiledSchedule,
+    mut nodes: Vec<ExpandedNode>,
     auth: AuthCatalog,
-    execution: Option<crate::config::ExecutionSpec>,
+    mut execution: Option<crate::config::ExecutionSpec>,
     pipeline_name: String,
-    cron: String,
-    timezone: String,
-    resilience: Option<faucet_core::ResiliencePolicy>,
-    sla: Option<crate::sla::SlaSpec>,
+    mut cron: String,
+    mut timezone: String,
+    mut resilience: Option<faucet_core::ResiliencePolicy>,
+    mut sla: Option<crate::sla::SlaSpec>,
+    path: std::path::PathBuf,
+    profile: Option<String>,
     #[cfg(feature = "lineage")] lineage: Option<std::sync::Arc<faucet_lineage::LineageEmitter>>,
     #[cfg(feature = "lineage")] lineage_cfg: Option<faucet_lineage::LineageConfig>,
     #[cfg(feature = "notify")] notifier: Option<std::sync::Arc<crate::notify::Notifier>>,
@@ -378,12 +460,13 @@ async fn run_loop(
 ) -> CliResult<()> {
     let mut state = SchedulerState::new(&compiled);
     // The circuit-breaker re-entry cooldown, if a breaker is configured. Used to
-    // delay the next tick after a run trips the breaker.
-    let breaker_cooldown = resilience
+    // delay the next tick after a run trips the breaker. Recomputed on reload.
+    let mut breaker_cooldown = resilience
         .as_ref()
         .and_then(|r| r.circuit_breaker)
         .map(|cb| cb.cooldown);
     let mut shutdown = Shutdown::new()?;
+    let mut reload = Reload::new()?;
     let mut running: Option<RunningRun> = None;
     let mut pending_scheduled_for: Option<DateTime<Utc>> = None;
     let mut run_ordinal: u64 = 0;
@@ -614,6 +697,45 @@ async fn run_loop(
                 }
             }
 
+            _ = reload.recv() => {
+                // Hot config reload (SIGHUP): re-read + re-validate the config.
+                // On success, atomically swap the config-derived state and
+                // recompute the next tick; the scheduler's run counters and any
+                // in-flight run are untouched. On failure, keep the old config.
+                match reload_bundle(&path, profile.as_deref()).await {
+                    Ok(b) => {
+                        compiled = b.compiled;
+                        nodes = b.nodes;
+                        execution = b.execution;
+                        resilience = b.resilience;
+                        sla = b.sla;
+                        cron = b.cron;
+                        timezone = b.timezone;
+                        breaker_cooldown = resilience
+                            .as_ref()
+                            .and_then(|r| r.circuit_breaker)
+                            .map(|cb| cb.cooldown);
+                        next_due = if compiled.start_immediately {
+                            Utc::now()
+                        } else {
+                            compiled.next_after(Utc::now()).unwrap_or(next_due)
+                        };
+                        m::reload(&pipeline_name, "ok");
+                        tracing::info!(
+                            pipeline = %pipeline_name, cron = %cron, timezone = %timezone,
+                            next_due = %next_due, "config reloaded (SIGHUP)"
+                        );
+                    }
+                    Err(e) => {
+                        m::reload(&pipeline_name, "error");
+                        tracing::error!(
+                            pipeline = %pipeline_name, error = %e,
+                            "config reload failed; keeping the previous config"
+                        );
+                    }
+                }
+            }
+
             _ = tokio::time::sleep(chunk) => { /* re-loop: re-read wall clock */ }
         }
     }
@@ -659,6 +781,35 @@ mod tests {
     fn compiled(yaml: &str) -> CompiledSchedule {
         let spec: ScheduleSpec = serde_yaml::from_str(yaml).unwrap();
         CompiledSchedule::compile(&spec).unwrap()
+    }
+
+    // A valid scheduled config reloads into a fresh bundle; a config that lost
+    // its `schedule:` block (or is otherwise invalid) is rejected so the loop
+    // can keep the previous config.
+    #[tokio::test]
+    async fn reload_bundle_validates_and_builds() {
+        let dir = tempfile::tempdir().unwrap();
+        let good = dir.path().join("good.yaml");
+        std::fs::write(
+            &good,
+            "version: 1\nname: sch\npipeline:\n  source:\n    type: csv\n    config:\n      path: in.csv\n  sink:\n    type: jsonl\n    config:\n      path: out.jsonl\nschedule:\n  cron: \"*/5 * * * *\"\n  timezone: UTC\n",
+        )
+        .unwrap();
+        let b = reload_bundle(&good, None)
+            .await
+            .expect("valid config reloads");
+        assert_eq!(b.cron, "*/5 * * * *");
+        assert_eq!(b.timezone, "UTC");
+        assert_eq!(b.nodes.len(), 1);
+
+        // Missing `schedule:` → rejected.
+        let bad = dir.path().join("bad.yaml");
+        std::fs::write(
+            &bad,
+            "version: 1\npipeline:\n  source:\n    type: csv\n    config:\n      path: in.csv\n  sink:\n    type: jsonl\n    config:\n      path: out.jsonl\n",
+        )
+        .unwrap();
+        assert!(reload_bundle(&bad, None).await.is_err());
     }
 
     fn summary(failures: usize, total: usize) -> RunSummary {

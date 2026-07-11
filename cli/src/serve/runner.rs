@@ -95,7 +95,7 @@ pub fn resume_claimed_run(state: ServerState, rec: RunRecord) {
             return;
         };
         let format = rec.config_format.unwrap_or_default();
-        let loaded = match load_submission(body, format, state.default_base()).await {
+        let loaded = match load_submission(body, format, state.default_base().as_ref()).await {
             Ok(l) => l,
             Err(e) => {
                 finalize(
@@ -286,7 +286,7 @@ pub fn resume_claimed_shard(state: ServerState, claimed: ClaimedShard) {
             return;
         };
         let format = run.config_format.unwrap_or_default();
-        let loaded = match load_submission(&body, format, state.default_base()).await {
+        let loaded = match load_submission(&body, format, state.default_base().as_ref()).await {
             Ok(l) => l,
             Err(e) => {
                 tracing::error!(
@@ -616,7 +616,7 @@ pub async fn submit(
     actor: AuthContext,
 ) -> Result<SubmitResponse, ServeError> {
     let format: ConfigFormat = req.config_format.into();
-    let loaded = load_submission(&req.config, format, state.default_base()).await?;
+    let loaded = load_submission(&req.config, format, state.default_base().as_ref()).await?;
 
     // At-least-once duplicate-write warning for clustered / source-sharded runs
     // with an append-mode destination (F26/F39).

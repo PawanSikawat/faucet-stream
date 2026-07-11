@@ -202,6 +202,28 @@ schedule:
   shutdown_grace_secs: 120
 ```
 
+## Hot config reload (SIGHUP)
+
+Edit the config and send the scheduler **SIGHUP** to reload it in place — no
+restart, no dropped ticks, and any in-flight run keeps running:
+
+```bash
+kill -HUP $(pgrep -f 'faucet schedule')
+```
+
+On SIGHUP faucet re-reads and re-validates the config file (cron, timezone,
+pipeline, execution, resilience, SLA) and atomically swaps the schedule for the
+next tick. If the new config is **invalid** (bad cron, missing `schedule:`,
+unknown connector, …) the reload is rejected, an error is logged, and the
+scheduler keeps running on the previous config. The consecutive-failure counter
+and run ordinal are preserved across a reload. Each attempt is counted in
+`faucet_schedule_reloads_total{pipeline,outcome=ok|error}`.
+
+The shared `auth:` catalog (cached tokens), lineage emitter, notifier, and
+catalog handle are **not** rebuilt on reload — they hold pooled connections /
+tokens reused across ticks, so an `auth:` change needs a restart. (SIGHUP is a
+Unix signal; on other platforms use a restart.)
+
 ## Dated outputs with `${now.*}`
 
 `${now.*}` tokens let you inject the run's wall time into source and sink config

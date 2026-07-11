@@ -33,6 +33,7 @@ const ROUTES_BASE: &[(&str, &str)] = &[
     ("POST", "/v1/dlq/replay"),
     ("POST", "/v1/dlq/discard"),
     ("GET", "/v1/audit"),
+    ("POST", "/v1/reload"),
     ("GET", "/healthz"),
     ("GET", "/readyz"),
     ("GET", "/metrics"),

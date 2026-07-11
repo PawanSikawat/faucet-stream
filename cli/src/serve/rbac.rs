@@ -40,6 +40,8 @@ pub enum Permission {
     CatalogRead,
     /// Read the audit log (`GET /v1/audit`) — admin-only.
     AuditRead,
+    /// Hot-reload the server's `--default-config` (`POST /v1/reload`) — admin-only.
+    Reload,
 }
 
 /// A named role. Roles are a fixed, built-in ladder — `viewer` ⊂ `operator` ⊂
@@ -245,6 +247,7 @@ pub fn required_permission(method: &Method, matched_path: &str) -> Option<Permis
         (&Method::GET, "/v1/catalog/datasets") => Some(CatalogRead),
         (&Method::GET, "/v1/catalog/datasets/{id}") => Some(CatalogRead),
         (&Method::GET, "/v1/catalog/lineage") => Some(CatalogRead),
+        (&Method::POST, "/v1/reload") => Some(Reload),
         _ => None,
     }
 }
@@ -270,6 +273,7 @@ pub fn audit_action(method: &Method, matched_path: &str) -> &'static str {
         (&Method::GET, "/v1/catalog/datasets") => "catalog.list",
         (&Method::GET, "/v1/catalog/datasets/{id}") => "catalog.get",
         (&Method::GET, "/v1/catalog/lineage") => "catalog.lineage",
+        (&Method::POST, "/v1/reload") => "config.reload",
         _ => "unknown",
     }
 }
@@ -403,9 +407,14 @@ mod tests {
             (Method::GET, "/v1/catalog/datasets", CatalogRead),
             (Method::GET, "/v1/catalog/datasets/{id}", CatalogRead),
             (Method::GET, "/v1/catalog/lineage", CatalogRead),
+            (Method::POST, "/v1/reload", Reload),
         ] {
             assert_eq!(required_permission(&m, path), Some(want), "{m} {path}");
         }
+        // Reload is admin-only.
+        assert!(!Role::Viewer.grants(Permission::Reload));
+        assert!(!Role::Operator.grants(Permission::Reload));
+        assert!(Role::Admin.grants(Permission::Reload));
         // Every role can read the catalog; a viewer still can't write runs.
         assert!(Role::Viewer.grants(Permission::CatalogRead));
         assert!(Role::Operator.grants(Permission::CatalogRead));

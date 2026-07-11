@@ -89,8 +89,12 @@ pub async fn replay(
     Extension(actor): Extension<AuthContext>,
     Json(req): Json<DlqReplayRequest>,
 ) -> Result<Json<Value>, ServeError> {
-    let loaded =
-        load_submission(&req.config, req.config_format.into(), state.default_base()).await?;
+    let loaded = load_submission(
+        &req.config,
+        req.config_format.into(),
+        state.default_base().as_ref(),
+    )
+    .await?;
     let auth = build_auth_catalog(loaded.cfg.auth.as_ref()).map_err(cli_to_serve)?;
     let pipeline_name = loaded
         .cfg
