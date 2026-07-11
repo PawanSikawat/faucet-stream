@@ -1,0 +1,146 @@
+# Prometheus alert rules for faucet-stream (issue #200).
+#
+# Load via prometheus.yml:
+#   rule_files:
+#     - /etc/prometheus/faucet-alerts.yml
+#
+# Every metric name here is checked against the codebase by the
+# `observability_artifacts` test in `cli/tests/` — if a metric is renamed,
+# CI fails until this file is updated.
+
+groups:
+  - name: faucet-pipeline
+    rules:
+      - alert: FaucetPipelineErrorRateSpike
+        expr: |
+          sum by (pipeline) (rate(faucet_pipeline_runs_total{status="err"}[15m]))
+            / clamp_min(sum by (pipeline) (rate(faucet_pipeline_runs_total[15m])), 1e-10)
+            > 0.5
+        for: 15m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Pipeline {{ $labels.pipeline }} failing more than half its runs"
+          description: >
+            Over the last 15 minutes more than 50% of runs of pipeline
+            {{ $labels.pipeline }} ended in status="err". Check the run logs
+            (`faucet_pipeline_runs_total` carries an error `kind` label) and
+            the connector error counters.
+
+      - alert: FaucetNoBookmarkProgress
+        expr: faucet_pipeline_seconds_since_last_bookmark > 3600
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Pipeline {{ $labels.pipeline }} bookmark stale for over 1h"
+          description: >
+            No bookmark has been persisted for pipeline {{ $labels.pipeline }}
+            (row {{ $labels.row }}) in over an hour — the incremental sync is
+            not making durable progress.
+
+      - alert: FaucetNoBookmarkProgressCritical
+        expr: faucet_pipeline_seconds_since_last_bookmark > 21600
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Pipeline {{ $labels.pipeline }} bookmark stale for over 6h"
+          description: >
+            No durable progress for six hours. Downstream data is stale;
+            investigate the source connection and the state store.
+
+      - alert: FaucetSlaViolations
+        expr: increase(faucet_pipeline_sla_violations_total[1h]) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "SLA violation on pipeline {{ $labels.pipeline }} ({{ $labels.kind }})"
+          description: >
+            The `sla:` monitor recorded a {{ $labels.kind }} violation
+            (staleness / min_rows / volume anomaly) in the last hour.
+
+      - alert: FaucetCircuitBreakerOpen
+        expr: faucet_resilience_circuit_state == 1
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Circuit breaker open on pipeline {{ $labels.pipeline }}"
+          description: >
+            The resilience circuit breaker has been open for 5 minutes —
+            consecutive fully-failed pages exceeded the configured threshold
+            and writes are suspended.
+
+  - name: faucet-schedule
+    rules:
+      - alert: FaucetStuckScheduler
+        expr: time() - faucet_schedule_heartbeat_unix_seconds > 90
+        labels:
+          severity: critical
+        annotations:
+          summary: "Scheduler for {{ $labels.pipeline }} missed its heartbeat"
+          description: >
+            `faucet schedule` updates its heartbeat at least every 30s; 90s of
+            silence means the scheduler process is stuck or dead.
+
+      - alert: FaucetScheduleRunLateness
+        expr: |
+          histogram_quantile(0.95,
+            sum by (pipeline, le) (rate(faucet_schedule_run_lateness_seconds_bucket[15m])))
+            > 60
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Scheduled runs of {{ $labels.pipeline }} starting over 60s late (p95)"
+          description: >
+            Ticks are firing significantly later than their cron schedule —
+            look for overlapping runs (`faucet_schedule_overlaps_total`) or
+            resource starvation.
+
+      - alert: FaucetConsecutiveScheduleFailures
+        expr: faucet_schedule_consecutive_failures >= 3
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.pipeline }} has failed 3+ consecutive scheduled runs"
+          description: >
+            The scheduler exits after `max_consecutive_failures`; intervene
+            before the resilience limit is reached.
+
+  - name: faucet-serve
+    rules:
+      - alert: FaucetServeHistoryDegraded
+        expr: faucet_serve_history_degraded == 1
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "faucet serve run-history backend degraded"
+          description: >
+            The persistent history backend is unreachable and the server has
+            fallen back to in-memory records — run history and idempotency
+            guarantees are not durable. /readyz is reporting 503.
+
+  - name: faucet-telemetry
+    rules:
+      - alert: FaucetOtelExportFailures
+        expr: increase(faucet_otel_export_failures_total[15m]) > 0
+        labels:
+          severity: info
+        annotations:
+          summary: "OTLP telemetry exports failing ({{ $labels.signal }})"
+          description: >
+            Traces/metrics are not reaching the OTLP collector. Pipelines are
+            unaffected (export failures never propagate).
+
+      - alert: FaucetLineageEventsDropped
+        expr: increase(faucet_lineage_dropped_total[15m]) > 0
+        labels:
+          severity: info
+        annotations:
+          summary: "OpenLineage events dropped ({{ $labels.reason }})"
+          description: >
+            Lineage emission is failing (transport error or queue overflow).
+            Pipelines are unaffected; the lineage graph has gaps.

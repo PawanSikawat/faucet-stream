@@ -1,0 +1,40 @@
+# AWS Kinesis Data Streams → JSON Lines (#117).
+#
+# Consumes every shard of a stream with resumable per-shard sequence
+# checkpoints (state key `kinesis:events`), stopping after 30 idle seconds.
+# Works against LocalStack out of the box:
+#
+#   docker run --rm -p 4566:4566 -e SERVICES=kinesis localstack/localstack
+#   aws --endpoint-url http://localhost:4566 kinesis create-stream \
+#     --stream-name events --shard-count 2
+#   faucet run cli/examples/kinesis_to_jsonl.yaml
+#
+# Against real AWS: drop `endpoint_url` + the static credentials (the SDK
+# default chain picks up your environment / profile / instance role).
+version: 1
+name: kinesis_to_jsonl
+
+pipeline:
+  source:
+    type: kinesis
+    config:
+      stream_name: events
+      region: us-east-1
+      endpoint_url: http://localhost:4566
+      credentials:
+        type: access_key
+        config: { access_key_id: test, secret_access_key: test }
+      start_position: { type: trim_horizon }
+      idle_termination_secs: 30      # at least one termination knob is required
+      value_format: json
+
+  sink:
+    type: jsonl
+    config:
+      path: ./out/kinesis-events.jsonl
+
+  # Durable checkpoints: a re-run resumes each shard after its last-emitted
+  # sequence number instead of re-reading from trim_horizon.
+  state:
+    type: file
+    config: { path: ./.faucet-state }

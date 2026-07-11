@@ -194,6 +194,14 @@ pub async fn build_source(
             let cfg = decode::<faucet_source_kafka::KafkaSourceConfig>("source", "kafka", config)?;
             Ok(Box::new(faucet_source_kafka::KafkaSource::new(cfg).await?))
         }
+        #[cfg(feature = "source-kinesis")]
+        "kinesis" => {
+            let cfg =
+                decode::<faucet_source_kinesis::KinesisSourceConfig>("source", "kinesis", config)?;
+            Ok(Box::new(
+                faucet_source_kinesis::KinesisSource::new(cfg).await?,
+            ))
+        }
         #[cfg(feature = "source-parquet")]
         "parquet" => {
             let cfg =
@@ -327,6 +335,11 @@ pub async fn build_sink(kind: &str, config: Value, auth: &AuthCatalog) -> CliRes
         "kafka" => {
             let cfg = decode::<faucet_sink_kafka::KafkaSinkConfig>("sink", "kafka", config)?;
             Ok(Box::new(faucet_sink_kafka::KafkaSink::new(cfg).await?))
+        }
+        #[cfg(feature = "sink-kinesis")]
+        "kinesis" => {
+            let cfg = decode::<faucet_sink_kinesis::KinesisSinkConfig>("sink", "kinesis", config)?;
+            Ok(Box::new(faucet_sink_kinesis::KinesisSink::new(cfg).await?))
         }
         #[cfg(feature = "sink-http")]
         "http" => {
@@ -503,6 +516,8 @@ pub fn source_schema(kind: &str) -> CliResult<Value> {
         >()),
         #[cfg(feature = "source-kafka")]
         "kafka" => Ok(schema::<faucet_source_kafka::KafkaSourceConfig>()),
+        #[cfg(feature = "source-kinesis")]
+        "kinesis" => Ok(schema::<faucet_source_kinesis::KinesisSourceConfig>()),
         #[cfg(feature = "source-parquet")]
         "parquet" => Ok(schema::<faucet_source_parquet::ParquetSourceConfig>()),
         #[cfg(feature = "source-gcs")]
@@ -556,6 +571,8 @@ pub fn sink_schema(kind: &str) -> CliResult<Value> {
         "elasticsearch" => Ok(schema::<faucet_sink_elasticsearch::ElasticsearchSinkConfig>()),
         #[cfg(feature = "sink-kafka")]
         "kafka" => Ok(schema::<faucet_sink_kafka::KafkaSinkConfig>()),
+        #[cfg(feature = "sink-kinesis")]
+        "kinesis" => Ok(schema::<faucet_sink_kinesis::KinesisSinkConfig>()),
         #[cfg(feature = "sink-http")]
         "http" => Ok(schema::<faucet_sink_http::HttpSinkConfig>()),
         #[cfg(feature = "sink-stdout")]
@@ -621,6 +638,8 @@ pub fn source_descriptions() -> Vec<(&'static str, &'static str)> {
     v.push(("elasticsearch", "Elasticsearch search / scroll source"));
     #[cfg(feature = "source-kafka")]
     v.push(("kafka", "Apache Kafka consumer (rdkafka). Subscribes to topics and drains messages with idle/max-messages termination."));
+    #[cfg(feature = "source-kinesis")]
+    v.push(("kinesis", "AWS Kinesis Data Streams consumer. Per-shard workers with resumable sequence-number checkpoints and idle/max-messages termination."));
     #[cfg(feature = "source-parquet")]
     v.push(("parquet", "Apache Parquet file source (local path, glob, or S3). Streams record batches via the Arrow async reader."));
     #[cfg(feature = "source-gcs")]
@@ -679,6 +698,8 @@ pub fn sink_descriptions() -> Vec<(&'static str, &'static str)> {
     v.push(("elasticsearch", "Elasticsearch bulk index sink"));
     #[cfg(feature = "sink-kafka")]
     v.push(("kafka", "Apache Kafka producer (rdkafka). FuturesUnordered batched sends with QueueFull retry; supports fixed or per-record topic routing."));
+    #[cfg(feature = "sink-kinesis")]
+    v.push(("kinesis", "AWS Kinesis Data Streams producer. Batched PutRecords with partition-key routing and partial-failure retry (DLQ-routable)."));
     #[cfg(feature = "sink-http")]
     v.push(("http", "HTTP POST sink (individual or array batch)"));
     #[cfg(feature = "sink-stdout")]

@@ -925,6 +925,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "aws-sdk-kinesis"
+version = "1.104.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "77dde56b538e97f5d4a17db0dd401a560c148535bc35e56fa8252723b211caaf"
+dependencies = [
+ "aws-credential-types",
+ "aws-runtime",
+ "aws-smithy-async",
+ "aws-smithy-eventstream",
+ "aws-smithy-http",
+ "aws-smithy-json",
+ "aws-smithy-observability",
+ "aws-smithy-runtime",
+ "aws-smithy-runtime-api",
+ "aws-smithy-types",
+ "aws-types",
+ "bytes",
+ "fastrand",
+ "http 0.2.12",
+ "http 1.4.0",
+ "regex-lite",
+ "tracing",
+]
+
+[[package]]
 name = "aws-sdk-s3"
 version = "1.132.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3096,6 +3121,7 @@ dependencies = [
  "faucet-sink-iceberg",
  "faucet-sink-jsonl",
  "faucet-sink-kafka",
+ "faucet-sink-kinesis",
  "faucet-sink-mongodb",
  "faucet-sink-mssql",
  "faucet-sink-mysql",
@@ -3113,6 +3139,7 @@ dependencies = [
  "faucet-source-graphql",
  "faucet-source-grpc",
  "faucet-source-kafka",
+ "faucet-source-kinesis",
  "faucet-source-mongodb",
  "faucet-source-mongodb-cdc",
  "faucet-source-mssql",
@@ -3230,6 +3257,21 @@ dependencies = [
  "url",
  "urlencoding",
  "wiremock",
+]
+
+[[package]]
+name = "faucet-common-kinesis"
+version = "1.0.0"
+dependencies = [
+ "aws-config",
+ "aws-sdk-kinesis",
+ "faucet-core",
+ "schemars 1.2.1",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -3493,6 +3535,29 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "faucet-sink-kinesis"
+version = "1.0.0"
+dependencies = [
+ "async-stream",
+ "async-trait",
+ "aws-sdk-kinesis",
+ "base64 0.22.1",
+ "faucet-common-kinesis",
+ "faucet-core",
+ "futures",
+ "md-5 0.10.6",
+ "schemars 1.2.1",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "testcontainers",
+ "testcontainers-modules",
+ "tokio",
+ "tracing",
+ "uuid",
 ]
 
 [[package]]
@@ -3811,6 +3876,27 @@ dependencies = [
  "testcontainers",
  "testcontainers-modules",
  "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "faucet-source-kinesis"
+version = "1.0.0"
+dependencies = [
+ "async-stream",
+ "async-trait",
+ "aws-sdk-kinesis",
+ "base64 0.22.1",
+ "faucet-common-kinesis",
+ "faucet-core",
+ "futures",
+ "schemars 1.2.1",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "testcontainers",
+ "testcontainers-modules",
  "tokio",
  "tracing",
 ]
@@ -4193,6 +4279,7 @@ dependencies = [
  "faucet-common-bigquery",
  "faucet-common-gcs",
  "faucet-common-kafka",
+ "faucet-common-kinesis",
  "faucet-common-snowflake",
  "faucet-core",
  "faucet-lineage",
@@ -4204,6 +4291,7 @@ dependencies = [
  "faucet-sink-iceberg",
  "faucet-sink-jsonl",
  "faucet-sink-kafka",
+ "faucet-sink-kinesis",
  "faucet-sink-mongodb",
  "faucet-sink-mssql",
  "faucet-sink-mysql",
@@ -4221,6 +4309,7 @@ dependencies = [
  "faucet-source-graphql",
  "faucet-source-grpc",
  "faucet-source-kafka",
+ "faucet-source-kinesis",
  "faucet-source-mongodb",
  "faucet-source-mongodb-cdc",
  "faucet-source-mssql",

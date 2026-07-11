@@ -31,6 +31,7 @@
 //! | `source-csv` | CSV file source |
 //! | `source-elasticsearch` | Elasticsearch search/scroll source |
 //! | `source-kafka` | Apache Kafka consumer source |
+//! | `source-kinesis` | AWS Kinesis Data Streams source |
 //! | `source-parquet` | Apache Parquet file source (local, glob, S3) |
 //! | `sink-bigquery` | Google BigQuery streaming insert sink |
 //! | `sink-iceberg` | Apache Iceberg sink (append-only, REST/Glue/SQL/HMS catalogs) |
@@ -48,6 +49,7 @@
 //! | `sink-elasticsearch` | Elasticsearch bulk index sink |
 //! | `sink-http` | HTTP POST sink |
 //! | `sink-kafka` | Apache Kafka producer sink |
+//! | `sink-kinesis` | AWS Kinesis Data Streams sink |
 //! | `sink-parquet` | Apache Parquet file sink (local, S3) |
 //! | `kafka-schema-registry` | Schema Registry support for Kafka connectors |
 //! | `source` | All source connectors |
@@ -169,6 +171,11 @@ pub mod source {
         pub use faucet_source_kafka::*;
     }
 
+    #[cfg(feature = "source-kinesis")]
+    pub mod kinesis {
+        pub use faucet_source_kinesis::*;
+    }
+
     #[cfg(feature = "source-parquet")]
     pub mod parquet {
         pub use faucet_source_parquet::*;
@@ -278,6 +285,11 @@ pub mod source {
         pub use faucet_source_kafka::*;
     }
 
+    #[cfg(feature = "source-kinesis")]
+    pub mod kinesis {
+        pub use faucet_source_kinesis::*;
+    }
+
     #[cfg(feature = "source-parquet")]
     pub mod parquet {
         pub use faucet_source_parquet::*;
@@ -385,6 +397,11 @@ pub mod sink {
         pub use faucet_sink_kafka::*;
     }
 
+    #[cfg(feature = "sink-kinesis")]
+    pub mod kinesis {
+        pub use faucet_sink_kinesis::*;
+    }
+
     #[cfg(feature = "sink-parquet")]
     pub mod parquet {
         pub use faucet_sink_parquet::*;
@@ -408,6 +425,13 @@ pub mod common_gcs {
 #[cfg(any(feature = "source-kafka", feature = "sink-kafka"))]
 pub mod common_kafka {
     pub use faucet_common_kafka::*;
+}
+
+/// Shared AWS Kinesis types (credentials enum, client builder), re-exported
+/// for library callers when either Kinesis connector is enabled.
+#[cfg(any(feature = "source-kinesis", feature = "sink-kinesis"))]
+pub mod common_kinesis {
+    pub use faucet_common_kinesis::*;
 }
 
 // ── State-store backends ─────────────────────────────────────────────────────

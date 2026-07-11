@@ -68,16 +68,20 @@ S3 source in front of it.)
 inbound HTTP POST payloads → `source-webhook`; durable, replayable event stream →
 `source-kafka` or `source-redis`.
 
-## Streaming: Redis vs. Kafka
+## Streaming: Redis vs. Kafka vs. Kinesis
 
 - **`source-redis`** reads streams, lists, or key patterns. Great when Redis is
   already in your stack and volumes are modest.
 - **`source-kafka`** is a real consumer with consumer-group offsets and
   resumable bookmarks. Use it for high-throughput event pipelines and durable,
   replayable streams.
+- **`source-kinesis`** consumes AWS Kinesis Data Streams shard-by-shard with
+  resumable per-shard sequence checkpoints. Use it when your event stream is
+  already on AWS — same termination knobs as the Kafka source.
 
-**Rule of thumb:** durable, high-volume event stream → Kafka; lightweight
-queue/cache already on hand → Redis.
+**Rule of thumb:** durable, high-volume event stream → Kafka (self-managed /
+Confluent) or Kinesis (AWS-native); lightweight queue/cache already on hand →
+Redis.
 
 ## HTTP APIs: REST vs. GraphQL vs. XML vs. gRPC
 
