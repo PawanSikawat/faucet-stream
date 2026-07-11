@@ -235,6 +235,7 @@ for help picking between overlapping connectors (Postgres query vs CDC, S3 vs Pa
 | [`faucet-source-mongodb-cdc`](crates/source/mongodb-cdc) | MongoDB CDC — Change Streams, resumable via resumeToken |
 | [`faucet-source-redis`](crates/source/redis) | Redis — read from streams, lists, or key patterns |
 | [`faucet-source-kafka`](crates/source/kafka) | Apache Kafka — consumer with idle/max-messages termination |
+| [`faucet-source-kinesis`](crates/source/kinesis) | AWS Kinesis Data Streams — sharded consumer with resumable sequence checkpoints |
 | [`faucet-source-s3`](crates/source/s3) | AWS S3 — read objects as JSONL, JSON array, or raw text |
 | [`faucet-source-gcs`](crates/source/gcs) | Google Cloud Storage — read objects as JSONL, JSON array, or raw text |
 | [`faucet-source-parquet`](crates/source/parquet) | Apache Parquet — local file, glob, or S3; vectorized Arrow reader, projection |
@@ -260,6 +261,7 @@ for help picking between overlapping connectors (Postgres query vs CDC, S3 vs Pa
 | [`faucet-sink-mongodb`](crates/sink/mongodb) | MongoDB — insert_many; upsert/delete by key |
 | [`faucet-sink-redis`](crates/sink/redis) | Redis — write to streams, lists, or key-value |
 | [`faucet-sink-kafka`](crates/sink/kafka) | Apache Kafka — producer with batching, multi-topic routing |
+| [`faucet-sink-kinesis`](crates/sink/kinesis) | AWS Kinesis Data Streams — batched PutRecords with partition-key routing |
 | [`faucet-sink-elasticsearch`](crates/sink/elasticsearch) | Elasticsearch — bulk index API; upsert/delete by `_id` |
 | [`faucet-sink-s3`](crates/sink/s3) | AWS S3 — write JSONL files to bucket |
 | [`faucet-sink-gcs`](crates/sink/gcs) | Google Cloud Storage — write JSONL files to bucket |
@@ -406,7 +408,7 @@ flowchart LR
     P -.->|metrics + spans| O
 ```
 
-faucet-stream is a Cargo workspace with **57 crates** — 24 sources, 18 sinks, 6 shared
+faucet-stream is a Cargo workspace with **60 crates** — 25 sources, 19 sinks, 7 shared
 connector libraries, the shared auth-provider library, 2 state-store backends, the lineage
 crate, the SQL transform crate, the conformance test battery, the shared core, the umbrella
 crate, and the CLI binary. See
@@ -463,6 +465,7 @@ Default features: `source-rest`, `transform-flatten`, `transform-rename-keys`,
 | `source-mongodb-cdc` | no | MongoDB CDC source (Change Streams) |
 | `source-redis` | no | Redis source |
 | `source-kafka` | no | Apache Kafka consumer source |
+| `source-kinesis` | no | AWS Kinesis Data Streams source |
 | `source-s3` | no | AWS S3 file source |
 | `source-gcs` | no | Google Cloud Storage file source |
 | `source-parquet` | no | Apache Parquet file source (local, glob, S3) |
@@ -482,6 +485,7 @@ Default features: `source-rest`, `transform-flatten`, `transform-rename-keys`,
 | `sink-mongodb` | no | MongoDB sink |
 | `sink-redis` | no | Redis sink |
 | `sink-kafka` | no | Apache Kafka producer sink |
+| `sink-kinesis` | no | AWS Kinesis Data Streams sink |
 | `sink-elasticsearch` | no | Elasticsearch bulk index sink |
 | `sink-s3` | no | AWS S3 file sink |
 | `sink-gcs` | no | Google Cloud Storage file sink |
@@ -736,7 +740,7 @@ convention `faucet-source-<name>` / `faucet-sink-<name>`. Full walkthrough:
 ## Project structure
 
 ```
-Cargo.toml                    — workspace manifest (57 crates)
+Cargo.toml                    — workspace manifest (60 crates)
 crates/
   core/                       — faucet-core: shared types, traits, pipeline, transforms, config
   auth/                       — faucet-auth: shared OAuth2 / token-endpoint providers

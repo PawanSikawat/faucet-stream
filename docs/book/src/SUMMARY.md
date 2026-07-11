@@ -46,6 +46,7 @@
 - [Running a cluster](./cookbook/cluster.md)
 - [Event-driven triggers](./cookbook/triggers.md)
 - [Lineage (OpenLineage)](./cookbook/lineage.md)
+- [Dashboards & alerts](./cookbook/dashboards.md)
 - [Data Movement Catalog](./cookbook/catalog.md)
 - [Troubleshooting with faucet doctor](./cookbook/troubleshooting.md)
 

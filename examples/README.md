@@ -42,12 +42,27 @@ These run immediately after installing the CLI — great for a first smoke test:
 | `shared_auth_rest.yaml` | one OAuth2 provider in the top-level `auth:` block shared across four matrix rows via `auth: { ref }` — single token, single-flight refresh (point `base_url` / token endpoint at a real API) |
 | `rest_to_jsonl_with_vault.yaml` | Vault KV v2 secret injected as a Bearer token via `${vault:…#field}`; requires `VAULT_ADDR` + `VAULT_TOKEN` and `--features secrets-vault` |
 | `websocket_to_jsonl.yaml` | none (live public WS endpoint — Binance BTC/USDT trade stream, no auth) |
+| `kinesis_to_jsonl.yaml` | AWS Kinesis → JSONL with resumable per-shard checkpoints; runs against LocalStack (`docker run -p 4566:4566 -e SERVICES=kinesis localstack/localstack`) |
 | `backfill_sqlite_to_jsonl.yaml` | `faucet backfill` — replay a date range from a local SQLite table one day per window unit, one JSONL file per unit (`${backfill.*}` tokens, durable `--resume` marker) |
 | `scheduled_nightly.yaml` | `faucet schedule` — CSV→JSONL pipeline on a nightly cron at 02:00 Pacific; demonstrates timezone, overlap_policy, and max_consecutive_failures |
 
 > REST / GraphQL / XML / gRPC / webhook source examples hit an external endpoint
 > (the configs use a placeholder `base_url`). Edit it to a real API — there's no
 > mock server in the stack.
+
+## Dashboards & alerts
+
+The stack also provisions the shipped observability artifacts (issue #200):
+
+```bash
+docker compose -f examples/docker-compose.yml up -d prometheus grafana
+```
+
+Grafana at <http://localhost:3000> (admin / admin) pre-loads the four
+`observability/grafana/` dashboards; Prometheus at <http://localhost:9095>
+evaluates `observability/prometheus/alerts.yml` and scrapes a faucet process
+on the host (enable the exporter with
+`observability: { prometheus: { listen_addr: 0.0.0.0:9464 } }`).
 
 ## Covered by the local Docker stack
 

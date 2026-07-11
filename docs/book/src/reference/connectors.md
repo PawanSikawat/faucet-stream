@@ -35,6 +35,7 @@ Legend: ✓ supported · ✗ not applicable.
 | CSV | `source-csv` | ✓ | ✗ | ✗ | ✓ | ✗ | CSV files as JSON; strict field count by default (`flexible: true` to tolerate ragged rows) |
 | Elasticsearch | `source-elasticsearch` | ✓ | ✗ | ✗ | ✗ | ✓ | search/scroll API |
 | Apache Kafka | `source-kafka` | ✓ | ✓ | **✓** | ✗ | ✗ | consumer; idle/max-messages termination, offset bookmarks |
+| AWS Kinesis | `source-kinesis` | ✓ | ✓ | ✗ | ✗ | ✗ | per-shard GetRecords workers; sequence-number bookmarks, idle/max-messages termination |
 | Apache Parquet | `source-parquet` | ✓ | ✗ | ✗ | ✗ | ✗ | local/glob/S3, vectorized Arrow reader, projection |
 | BigQuery | `source-bigquery` | ✓ | ✗ | ✗ | ✗ | ✓ | `jobs.query` + pageToken pagination |
 | Snowflake | `source-snowflake` | ✓ | ✗ | ✗ | ✗ | ✓ | SQL REST API, server-side partitions |
@@ -93,6 +94,7 @@ file/append sinks (`jsonl`, `csv`, `stdout`) it's a no-op — they write per rec
 | HTTP | `sink-http` | ✓ | ✗ | ✗ | ✗ | POST, concurrent under a semaphore |
 | Stdout | `sink-stdout` | no-op | ✗ | ✗ | ✗ | JSON Lines / pretty JSON / TSV |
 | Apache Kafka | `sink-kafka` | ✓ | ✗ | ✗ | **✓** | producer, batched sends, multi-topic routing; transactional producer + compacted watermark side-topic for effectively-once |
+| AWS Kinesis | `sink-kinesis` | ✓ | ✗ | ✗ | ✗ | batched PutRecords; partition-key routing, per-entry partial-failure retry (DLQ-routable) |
 | Apache Parquet | `sink-parquet` | ✓ | ✗⁶ | ✗ | ✗ | local/S3, schema inference (re-inferred per file on rollover), row/byte rollover |
 | Apache Iceberg | `sink-iceberg` | ✓ | ✗⁶ | ✗ | **✓** | REST/Glue/SQL/HMS catalog, local + cloud (S3/GCS) warehouses, `fast_append` snapshot, Parquet data files |
 
