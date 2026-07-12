@@ -375,3 +375,80 @@ impl Sink for LyingKeyedSink {
         "lying-keyed-sink"
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+    use std::collections::HashMap;
+
+    #[tokio::test]
+    async fn counting_source_resumes_and_ignores_when_non_resumable() {
+        let s = CountingSource::new(5, 2);
+        assert_eq!(s.state_key().as_deref(), Some("conformance:counting"));
+        assert_eq!(s.connector_name(), "counting-source");
+        assert_eq!(
+            s.fetch_with_context(&HashMap::new()).await.unwrap().len(),
+            5
+        );
+        // Resume from the terminal bookmark → no records left.
+        s.apply_start_bookmark(json!({ "n": 5 })).await.unwrap();
+        assert!(
+            s.fetch_with_context(&HashMap::new())
+                .await
+                .unwrap()
+                .is_empty()
+        );
+
+        // A non-resumable source ignores the applied bookmark.
+        let nr = CountingSource::non_resumable(5, 2);
+        nr.apply_start_bookmark(json!({ "n": 5 })).await.unwrap();
+        assert_eq!(
+            nr.fetch_with_context(&HashMap::new()).await.unwrap().len(),
+            5
+        );
+    }
+
+    #[tokio::test]
+    async fn test_sink_accessors() {
+        let s = TestSink::new();
+        assert!(s.is_empty());
+        s.write_batch(&[json!({ "id": 1 })]).await.unwrap();
+        assert!(!s.is_empty());
+        assert_eq!(s.len(), 1);
+        assert_eq!(s.total_written(), 1);
+        assert_eq!(s.connector_name(), "test-sink");
+    }
+
+    #[tokio::test]
+    async fn lying_idempotent_sink_never_persists_a_token() {
+        let s = LyingIdempotentSink::new();
+        assert!(s.is_empty());
+        assert!(s.supports_idempotent_writes());
+        assert_eq!(s.connector_name(), "lying-idempotent-sink");
+        s.write_batch_idempotent(&[json!({ "id": 1 })], "scope", "00000000000000000001")
+            .await
+            .unwrap();
+        assert_eq!(s.len(), 1);
+        assert!(s.last_committed_token("scope").await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn lying_keyed_sink_appends_duplicates() {
+        let s = LyingKeyedSink::new();
+        assert!(s.is_empty());
+        assert!(s.dedups_by_key());
+        assert!(s.supported_write_modes().contains(&WriteMode::Upsert));
+        assert_eq!(s.connector_name(), "lying-keyed-sink");
+        s.write_batch(&[json!({ "id": 1 })]).await.unwrap();
+        s.write_batch(&[json!({ "id": 1 })]).await.unwrap();
+        assert_eq!(s.len(), 2, "lying keyed sink does not dedup");
+    }
+
+    #[tokio::test]
+    async fn failing_and_panicking_source_labels() {
+        assert_eq!(FailingSource.connector_name(), "failing-source");
+        assert_eq!(PanickingSource.connector_name(), "panicking-source");
+        assert!(FailingSource.fetch_all().await.is_err());
+    }
+}
