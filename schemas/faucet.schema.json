@@ -9948,8 +9948,13 @@
                       "default": null
                     },
                     "column_mapping": {
-                      "description": "How to map JSON records to columns.",
-                      "$ref": "#/$defs/sink_postgres__PostgresColumnMapping"
+                      "description": "How to map JSON records to columns. Defaults to a single `jsonb`\ncolumn named `data`.",
+                      "$ref": "#/$defs/sink_postgres__PostgresColumnMapping",
+                      "default": {
+                        "jsonb": {
+                          "column": "data"
+                        }
+                      }
                     },
                     "batch_size": {
                       "description": "Maximum rows per multi-row `INSERT` statement. Defaults to\n[`DEFAULT_BATCH_SIZE`].\n\nWhen the upstream `StreamPage` carries more records than `batch_size`,\nthe sink slices the page into `batch_size`-row chunks and issues one\nmulti-row `INSERT` per chunk. When `batch_size = 0`, the entire slice\nis sent in a single `INSERT` — useful when the source already chunks\nto a Postgres-friendly size.\n\n`batch_size = 0` is the \"no batching\" sentinel: the entire upstream\npage is forwarded in one statement, subject to Postgres' natural\nper-statement bind-parameter limit of 65 535. AutoMap mode binds one\nparameter per column per row, so the safe ceiling is roughly\n`65_535 / num_columns` rows per call; JSONB mode binds a single\narray parameter and has no such ceiling. Keep the default unless the\nupstream page size is already tuned for Postgres.\n\n**Recommended value: ~1000** — Postgres' multi-row `INSERT` sweet\nspot. Larger chunks rarely add throughput and risk hitting the\n65 535-parameter ceiling in AutoMap mode.",
@@ -9962,13 +9967,14 @@
                       "default": 1000
                     },
                     "max_connections": {
-                      "description": "Maximum number of connections in the pool. Defaults to 5.",
+                      "description": "Maximum number of connections in the pool. Defaults to 5.\n\nBounded on purpose: the pool must be finite so a wide fan-out (many\nmatrix rows / shards) cannot exhaust the server's own `max_connections`.\nThere is no \"unlimited\" setting — raise this explicitly if you need more.",
                       "type": [
                         "integer",
                         "string"
                       ],
                       "format": "uint32",
-                      "minimum": 0
+                      "minimum": 0,
+                      "default": 5
                     },
                     "write_mode": {
                       "description": "Append (default), upsert, or delete.",
@@ -10157,8 +10163,13 @@
                       "type": "string"
                     },
                     "column_mapping": {
-                      "description": "How to map JSON records to columns.",
-                      "$ref": "#/$defs/sink_mysql__MysqlColumnMapping"
+                      "description": "How to map JSON records to columns. Defaults to a single JSON column.",
+                      "$ref": "#/$defs/sink_mysql__MysqlColumnMapping",
+                      "default": {
+                        "json": {
+                          "column": "data"
+                        }
+                      }
                     },
                     "batch_size": {
                       "description": "Maximum rows per multi-row `INSERT` statement. Defaults to\n[`DEFAULT_BATCH_SIZE`].\n\nWhen the upstream `StreamPage` carries more records than `batch_size`,\nthe sink slices the page into `batch_size`-row chunks and issues one\nmulti-row `INSERT INTO ... VALUES (...), (...), ...` statement per\nchunk. When `batch_size = 0`, the entire upstream page is forwarded\nin a single multi-row `INSERT` — useful when the source already\nchunks to a size tuned for MySQL.\n\n`batch_size = 0` is the \"no batching\" sentinel: the full upstream\npage is forwarded as one `INSERT`, subject to MySQL's\n`max_allowed_packet` limit (default 64MB). Keep the default unless\nthe upstream `StreamPage` size is already tuned for MySQL.",
@@ -10171,13 +10182,14 @@
                       "default": 1000
                     },
                     "max_connections": {
-                      "description": "Maximum number of connections in the pool. Defaults to 5.",
+                      "description": "Maximum number of connections in the pool. Defaults to 5.\n\nBounded on purpose: a finite pool keeps a wide fan-out from exhausting\nthe server's own connection limit. There is no \"unlimited\" setting.",
                       "type": [
                         "integer",
                         "string"
                       ],
                       "format": "uint32",
-                      "minimum": 0
+                      "minimum": 0,
+                      "default": 5
                     },
                     "write_mode": {
                       "description": "Append (default), upsert, or delete.",
