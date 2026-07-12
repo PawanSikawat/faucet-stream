@@ -31,7 +31,8 @@ pub struct MysqlSinkConfig {
     pub connection_url: String,
     /// Target table name.
     pub table_name: String,
-    /// How to map JSON records to columns.
+    /// How to map JSON records to columns. Defaults to a single JSON column.
+    #[serde(default)]
     pub column_mapping: MysqlColumnMapping,
     /// Maximum rows per multi-row `INSERT` statement. Defaults to
     /// [`DEFAULT_BATCH_SIZE`].
@@ -50,6 +51,10 @@ pub struct MysqlSinkConfig {
     #[serde(default = "default_batch_size")]
     pub batch_size: usize,
     /// Maximum number of connections in the pool. Defaults to 5.
+    ///
+    /// Bounded on purpose: a finite pool keeps a wide fan-out from exhausting
+    /// the server's own connection limit. There is no "unlimited" setting.
+    #[serde(default = "default_max_connections")]
     pub max_connections: u32,
     /// Write mode: `append` (default), `upsert`, or `delete`.
     ///
@@ -64,6 +69,10 @@ pub struct MysqlSinkConfig {
 
 fn default_batch_size() -> usize {
     DEFAULT_BATCH_SIZE
+}
+
+fn default_max_connections() -> u32 {
+    5
 }
 
 impl std::fmt::Debug for MysqlSinkConfig {
@@ -211,5 +220,22 @@ mod tests {
             .with_batch_size(100)
             .with_batch_size(2_000);
         assert_eq!(config.batch_size, 2_000);
+    }
+
+    #[test]
+    fn max_connections_and_column_mapping_default_when_absent_in_json() {
+        // Only the two genuinely-required fields are supplied; pool size and
+        // column mapping must fall back to their documented defaults.
+        let json = r#"{
+            "connection_url": "mysql://localhost/test",
+            "table_name": "events"
+        }"#;
+        let config: MysqlSinkConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(config.max_connections, 5);
+        assert!(matches!(
+            config.column_mapping,
+            MysqlColumnMapping::Json { .. }
+        ));
+        assert_eq!(config.batch_size, DEFAULT_BATCH_SIZE);
     }
 }
