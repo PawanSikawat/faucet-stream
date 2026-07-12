@@ -236,54 +236,77 @@ SQL
       && pg_meltano_ok=1 || echo "meltano postgres plugins failed to install" >&2
   fi
 
-  # Scenario B: Postgres -> JSONL
+  # Row count for a Postgres table (0 on error).
+  pg_count() {
+    docker exec "$PG_CONTAINER" psql -tA -U postgres -d postgres \
+      -c "SELECT count(*) FROM $1" 2>/dev/null | tr -d ' ' || echo 0
+  }
+
+  # Scenario B: Postgres -> JSONL. Timed runs, then one sampled run for peak RSS
+  # (same methodology as Scenario A) + a row-count parity check.
   log "Scenario B: Postgres -> JSONL"
   hyperfine --warmup 1 --runs "$RUNS" --export-json "$RAW_DIR/faucet_pg_jsonl.json" \
     --command-name "faucet pg->jsonl" \
     "'$FAUCET_BIN' run benchmarks/faucet/postgres_to_jsonl.yaml" \
     || echo "faucet pg->jsonl run failed" >&2
+  FB_RSS=$(peak_rss_mib "$FAUCET_BIN" run benchmarks/faucet/postgres_to_jsonl.yaml)
+  FB_ROWS=$(count_lines "$OUT_DIR/faucet_pg_out.jsonl")
+  MB_RSS="NA"; MB_ROWS=0
   if [ "$pg_meltano_ok" = 1 ]; then
     hyperfine --warmup 1 --runs "$RUNS" --export-json "$RAW_DIR/meltano_pg_jsonl.json" \
       --command-name "meltano tap-postgres->target-jsonl" \
       --prepare "rm -rf benchmarks/meltano/output" \
       "cd benchmarks/meltano && '$VENV/bin/meltano' run tap-postgres target-jsonl" \
       || echo "meltano pg->jsonl run failed" >&2
+    rm -rf benchmarks/meltano/output
+    MB_RSS=$(cd benchmarks/meltano && peak_rss_mib "$VENV/bin/meltano" run tap-postgres target-jsonl)
+    MB_ROWS=$(cat benchmarks/meltano/output/*.jsonl 2>/dev/null | wc -l | tr -d ' ')
   fi
 
-  # Scenario C: Postgres -> Postgres (sink-bound)
+  # Scenario C: Postgres -> Postgres (sink-bound). Same shape as B.
   log "Scenario C: Postgres -> Postgres (sink-bound)"
   hyperfine --warmup 1 --runs "$RUNS" --export-json "$RAW_DIR/faucet_pg_pg.json" \
     --command-name "faucet pg->pg" \
     --prepare "docker exec $PG_CONTAINER psql -U postgres -d postgres -c 'TRUNCATE bench_dest'" \
     "'$FAUCET_BIN' run benchmarks/faucet/postgres_to_postgres.yaml" \
     || echo "faucet pg->pg run failed" >&2
+  docker exec "$PG_CONTAINER" psql -U postgres -d postgres -c 'TRUNCATE bench_dest' >/dev/null 2>&1
+  FC_RSS=$(peak_rss_mib "$FAUCET_BIN" run benchmarks/faucet/postgres_to_postgres.yaml)
+  FC_ROWS=$(pg_count bench_dest)
+  MC_RSS="NA"; MC_ROWS=0
   if [ "$pg_meltano_ok" = 1 ]; then
     hyperfine --warmup 1 --runs "$RUNS" --export-json "$RAW_DIR/meltano_pg_pg.json" \
       --command-name "meltano tap-postgres->target-postgres" \
       --prepare "docker exec $PG_CONTAINER psql -U postgres -d postgres -c 'DROP SCHEMA IF EXISTS bench_meltano CASCADE'" \
       "cd benchmarks/meltano && '$VENV/bin/meltano' run tap-postgres target-postgres" \
       || echo "meltano pg->pg run failed" >&2
+    docker exec "$PG_CONTAINER" psql -U postgres -d postgres -c 'DROP SCHEMA IF EXISTS bench_meltano CASCADE' >/dev/null 2>&1
+    MC_RSS=$(cd benchmarks/meltano && peak_rss_mib "$VENV/bin/meltano" run tap-postgres target-postgres)
+    MC_ROWS=$(pg_count bench_meltano.bench)
   fi
 
-  # Append a results fragment for the Postgres scenarios.
-  local fb_med fc_med
-  fb_med=$(read_stat "$RAW_DIR/faucet_pg_jsonl.json" median)
-  fc_med=$(read_stat "$RAW_DIR/faucet_pg_pg.json" median)
+  # Append a results fragment for the Postgres scenarios (same columns as A:
+  # median, stddev, throughput, peak RSS, rows out).
+  local fb_med fb_std fc_med fc_std mb_med mb_std mc_med mc_std
+  fb_med=$(read_stat "$RAW_DIR/faucet_pg_jsonl.json" median); fb_std=$(read_stat "$RAW_DIR/faucet_pg_jsonl.json" stddev)
+  mb_med=$(read_stat "$RAW_DIR/meltano_pg_jsonl.json" median); mb_std=$(read_stat "$RAW_DIR/meltano_pg_jsonl.json" stddev)
+  fc_med=$(read_stat "$RAW_DIR/faucet_pg_pg.json" median);     fc_std=$(read_stat "$RAW_DIR/faucet_pg_pg.json" stddev)
+  mc_med=$(read_stat "$RAW_DIR/meltano_pg_pg.json" median);    mc_std=$(read_stat "$RAW_DIR/meltano_pg_pg.json" stddev)
   {
     echo
     echo "### Scenario B — Postgres → JSONL ($ROWS rows, $RUNS runs, seed $SEED)"
     echo
-    echo "| Tool | Median wall-clock (s) | Throughput (rows/s) |"
-    echo "|---|---|---|"
-    echo "| faucet-stream | $fb_med | $(thr "$ROWS" "$fb_med") |"
-    echo "| Meltano (Singer) | $(read_stat "$RAW_DIR/meltano_pg_jsonl.json" median) | |"
+    echo "| Tool | Median wall-clock (s) | Stddev (s) | Throughput (rows/s) | Peak RSS (MiB) | Rows out |"
+    echo "|---|---|---|---|---|---|"
+    echo "| faucet-stream | $fb_med | $fb_std | $(thr "$ROWS" "$fb_med") | $FB_RSS | $FB_ROWS |"
+    echo "| Meltano (Singer) | $mb_med | $mb_std | $(thr "$ROWS" "$mb_med") | $MB_RSS | $MB_ROWS |"
     echo
     echo "### Scenario C — Postgres → Postgres (sink-bound; $ROWS rows, $RUNS runs, seed $SEED)"
     echo
-    echo "| Tool | Median wall-clock (s) | Throughput (rows/s) |"
-    echo "|---|---|---|"
-    echo "| faucet-stream | $fc_med | $(thr "$ROWS" "$fc_med") |"
-    echo "| Meltano (Singer) | $(read_stat "$RAW_DIR/meltano_pg_pg.json" median) | |"
+    echo "| Tool | Median wall-clock (s) | Stddev (s) | Throughput (rows/s) | Peak RSS (MiB) | Rows out |"
+    echo "|---|---|---|---|---|---|"
+    echo "| faucet-stream | $fc_med | $fc_std | $(thr "$ROWS" "$fc_med") | $FC_RSS | $FC_ROWS |"
+    echo "| Meltano (Singer) | $mc_med | $mc_std | $(thr "$ROWS" "$mc_med") | $MC_RSS | $MC_ROWS |"
   } >> "$RES_DIR/results.md"
 
   log "Tearing down Postgres container"
