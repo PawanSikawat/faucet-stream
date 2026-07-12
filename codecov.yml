@@ -10,7 +10,7 @@ coverage:
                               # `codecov/project` check, so a regression blocks the PR.
     patch:
       default:
-        target: 80%           # new/changed code must be >=80% covered
+        target: 90%           # new/changed code must be >=90% covered
         informational: false  # enforced gate: under-covered new code fails `codecov/patch`.
 
 # Exclude non-library code from the coverage denominator. Mirrors the lcov
