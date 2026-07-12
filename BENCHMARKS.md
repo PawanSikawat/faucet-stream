@@ -158,15 +158,18 @@ Postgres 16 in Docker (colima) on an Apple M3 Pro; faucet `source-postgres` →
 `sink-postgres` (multi-row `INSERT`s via `sqlx`, AutoMap columns) vs Meltano
 `tap-postgres` → `target-postgres` 0.8.0.
 
-| Tool | Median wall-clock (s) | Throughput (rows/s) | Rows out |
-|---|---|---|---|
-| **faucet-stream** | **11.17** (±0.3) | **89,500** | 1,000,000 |
-| Meltano (Singer) | 129.8 (±34) | 7,706 | 1,000,000 |
+| Tool | Median wall-clock (s) | Stddev (s) | Throughput (rows/s) | Peak RSS (MiB) | Rows out |
+|---|---|---|---|---|---|
+| **faucet-stream** | **11.17** | 0.335 | **89,500** | **35.9** | 1,000,000 |
+| Meltano (Singer) | 129.8 | 34.347 | 7,706 | 485.7 | 1,000,000 |
 
-On this workload/hardware faucet was **~11.6× faster** — and that is the whole
-point of this scenario: **the gap collapses from ~96× to ~12× as the workload
-moves from parse-bound to sink-bound**, because both tools become bounded by the
-same Postgres write path. The narrowing, all at 1M rows on the same machine:
+On this workload/hardware faucet was **~11.6× faster** and used **~13.5× less peak
+memory** (35.9 vs 485.7 MiB), with **exact row-count parity** (1,000,000 =
+1,000,000). Note also the stddev: faucet is tight (±0.3s) while Meltano's Python/
+pipe runtime jitters badly at scale (±34s). This is the whole point of the
+scenario: **the gap collapses from ~96× to ~12× as the workload moves from
+parse-bound to sink-bound**, because both tools become bounded by the same
+Postgres write path. The narrowing, all at 1M rows on the same machine:
 
 | Scenario | Bottleneck | faucet (rows/s) | Meltano (rows/s) | Gap |
 |---|---|---|---|---|
@@ -186,8 +189,7 @@ task where you are the one feeding it. Batch size is *not* the lever (throughput
 is flat from 500→5000 rows/`INSERT` and worsens past the 65 535 bind-param cap);
 the real headroom is a `COPY`-based bulk-load fast-path (~5–10× faster than
 `INSERT`), which would widen this gap further since Meltano's target uses
-`INSERT` too. Note also faucet's tight variance (±0.3s) vs Meltano's ±34s — the
-Python/pipe runtime jitters badly at scale.
+`INSERT` too.
 
 > **Reproduce.** `make bench-postgres` (needs Docker) runs all three scenarios;
 > `scripts/run-bench.sh --postgres --rows 1000000` scales Scenario C to the 1M
