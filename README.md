@@ -238,7 +238,7 @@ wired into the battery (see the support-tiers note above).
 | [`faucet-source-graphql`](crates/source/graphql) | T2 | GraphQL API — cursor-based pagination, variable injection |
 | [`faucet-source-xml`](crates/source/xml) | T2 | XML/SOAP API — XML-to-JSON conversion, dot-path extraction |
 | [`faucet-source-grpc`](crates/source/grpc) | T2 | gRPC — dynamic protobuf via `prost-reflect`, unary + server-streaming |
-| [`faucet-source-postgres`](crates/source/postgres) | T2 | PostgreSQL — run SQL queries, return rows as JSON |
+| [`faucet-source-postgres`](crates/source/postgres) | **T1 ✅** | PostgreSQL — run SQL queries, return rows as JSON |
 | [`faucet-source-postgres-cdc`](crates/source/postgres-cdc) | T2 | PostgreSQL CDC — logical replication via pgoutput, resumable |
 | [`faucet-source-mysql`](crates/source/mysql) | T2 | MySQL — run SQL queries, return rows as JSON |
 | [`faucet-source-mysql-cdc`](crates/source/mysql-cdc) | T2 | MySQL CDC — binlog row events, resumable via file/pos or GTID |
