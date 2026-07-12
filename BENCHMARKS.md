@@ -153,40 +153,51 @@ path, this is where the CSV→JSONL best-case gap shrinks toward the low end of 
 1–2 orders-of-magnitude range — and it is the number to quote for "move a table
 between two Postgres databases."
 
-**100,000 rows** (`bench` → `bench_dest`, seed 42, 1 warmup + 5 timed runs).
+**1,000,000 rows** (`bench` → `bench_dest`, seed 42, 1 warmup + 3 timed runs).
 Postgres 16 in Docker (colima) on an Apple M3 Pro; faucet `source-postgres` →
 `sink-postgres` (multi-row `INSERT`s via `sqlx`, AutoMap columns) vs Meltano
 `tap-postgres` → `target-postgres` 0.8.0.
 
 | Tool | Median wall-clock (s) | Throughput (rows/s) | Rows out |
 |---|---|---|---|
-| **faucet-stream** | **1.26** | **79,669** | 100,000 |
-| Meltano (Singer) | 12.80 | 7,813 | 100,000 |
+| **faucet-stream** | **11.17** (±0.3) | **89,500** | 1,000,000 |
+| Meltano (Singer) | 129.8 (±34) | 7,706 | 1,000,000 |
 
-On this workload/hardware faucet was **~10× faster** — and that is the whole
-point of this scenario: **the gap collapses from ~92× to ~10× as the workload
+On this workload/hardware faucet was **~11.6× faster** — and that is the whole
+point of this scenario: **the gap collapses from ~96× to ~12× as the workload
 moves from parse-bound to sink-bound**, because both tools become bounded by the
-same Postgres write path. The narrowing, all at 100k rows on the same machine:
+same Postgres write path. The narrowing, all at 1M rows on the same machine:
 
 | Scenario | Bottleneck | faucet (rows/s) | Meltano (rows/s) | Gap |
 |---|---|---|---|---|
-| A — CSV → JSONL | parse/serialize (best case) | 595,948 | 6,503 | **~92×** |
-| B — Postgres → JSONL | typed row decode | 155,860 | 5,872 | **~27×** |
-| C — Postgres → Postgres | **destination write (sink-bound)** | 79,669 | 7,813 | **~10×** |
+| A — CSV → JSONL | parse/serialize (best case) | 712,403 | 7,383 | **~96×** |
+| B — Postgres → JSONL | typed row decode | 179,700 | 7,184 | **~25×** |
+| C — Postgres → Postgres | **destination write (sink-bound)** | 89,500 | 7,706 | **~12×** |
 
-So quote **~10×** for a realistic DB→DB move, and treat the ~92× CSV→JSONL figure
+So quote **~12×** for a realistic DB→DB move, and treat the ~96× CSV→JSONL figure
 as the upper bound, not the typical case.
+
+**Why ~12× and not more?** It is near the ceiling for this shape, and the profile
+proves it: at 1M, faucet spends ~62% of its wall on CPU (decode Postgres rows →
+JSON → re-encode/bind) and the rest blocked on the destination's `INSERT` +
+WAL — i.e. faucet is already feeding Postgres near its ingest rate and adds
+little overhead, while Meltano adds ~12×. You cannot out-run the database at a
+task where you are the one feeding it. Batch size is *not* the lever (throughput
+is flat from 500→5000 rows/`INSERT` and worsens past the 65 535 bind-param cap);
+the real headroom is a `COPY`-based bulk-load fast-path (~5–10× faster than
+`INSERT`), which would widen this gap further since Meltano's target uses
+`INSERT` too. Note also faucet's tight variance (±0.3s) vs Meltano's ±34s — the
+Python/pipe runtime jitters badly at scale.
 
 > **Reproduce.** `make bench-postgres` (needs Docker) runs all three scenarios;
 > `scripts/run-bench.sh --postgres --rows 1000000` scales Scenario C to the 1M
 > headline size. The harness spins Postgres 16 in Docker, `COPY`-loads the seeded
 > `bench` table, times faucet `postgres_to_postgres.yaml` (TRUNCATE `bench_dest`
 > before each run) against Meltano `tap-postgres → target-postgres`, and writes
-> the table into `benchmarks/results/results.md`. The numbers above are the smoke
-> (100k) size; Scenarios A & B headline figures elsewhere in this doc are 1M.
-> (Meltano's loader is pinned to `meltanolabs-target-postgres==0.8.0` — older
-> `0.0.x` pins bundle a `singer_sdk` that needs `pkg_resources`, removed from
-> modern setuptools on Python 3.12.)
+> the table into `benchmarks/results/results.md`. All three scenarios above are
+> 1M rows. (Meltano's loader is pinned to `meltanolabs-target-postgres==0.8.0` —
+> older `0.0.x` pins bundle a `singer_sdk` that needs `pkg_resources`, removed
+> from modern setuptools on Python 3.12.)
 
 Reproduce with Docker: see
 [`benchmarks/README.md`](benchmarks/README.md#scenario-b--postgres--jsonl-manual-needs-docker).
