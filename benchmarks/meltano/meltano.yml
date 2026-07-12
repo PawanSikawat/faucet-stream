@@ -39,7 +39,9 @@ plugins:
         destination_path: output
     - name: target-postgres
       variant: meltanolabs
-      pip_url: meltanolabs-target-postgres==0.0.14
+      # A modern release — older pins (0.0.x) bundle an ancient singer_sdk that
+      # imports `pkg_resources`, removed from modern setuptools on Python 3.12.
+      pip_url: meltanolabs-target-postgres==0.8.0
       # Scenario C (sink-bound): tap-postgres -> target-postgres. Connection is
       # injected at runtime from $BENCH_PG_URL by run-bench.sh
       # (TARGET_POSTGRES_SQLALCHEMY_URL). No credentials are committed. Writes to

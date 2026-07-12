@@ -28,4 +28,5 @@ pipeline:
       connection_url: ${env:BENCH_PG_URL}
       table_name: bench_dest
       column_mapping: auto_map
+      max_connections: 8
       batch_size: 5000

@@ -153,26 +153,40 @@ path, this is where the CSV→JSONL best-case gap shrinks toward the low end of 
 1–2 orders-of-magnitude range — and it is the number to quote for "move a table
 between two Postgres databases."
 
+**100,000 rows** (`bench` → `bench_dest`, seed 42, 1 warmup + 5 timed runs).
+Postgres 16 in Docker (colima) on an Apple M3 Pro; faucet `source-postgres` →
+`sink-postgres` (multi-row `INSERT`s via `sqlx`, AutoMap columns) vs Meltano
+`tap-postgres` → `target-postgres` 0.8.0.
+
 | Tool | Median wall-clock (s) | Throughput (rows/s) | Rows out |
 |---|---|---|---|
-| faucet-stream | `TODO: run locally` | | |
-| Meltano (Singer) | `TODO: run locally` | | |
+| **faucet-stream** | **1.26** | **79,669** | 100,000 |
+| Meltano (Singer) | 12.80 | 7,813 | 100,000 |
 
-> **Not yet run in this environment** (Docker/Postgres + a Meltano venv were not
-> available where these files were authored — see the operating notes). The
-> scenario, configs, and harness are fully wired; the numbers above are a
-> placeholder, never fabricated. Reproduce with:
->
-> ```bash
-> make bench-postgres          # 1M rows: Scenarios A, B, and C
-> # or, low-level:
-> scripts/run-bench.sh --postgres --rows 1000000 --runs 5
-> ```
->
-> The harness spins Postgres 16 in Docker, `COPY`-loads the seeded `bench` table,
-> runs faucet `postgres_to_postgres.yaml` (TRUNCATE `bench_dest` before each run)
-> and the Meltano `tap-postgres → target-postgres` equivalent, and writes the
-> table into `benchmarks/results/results.md`.
+On this workload/hardware faucet was **~10× faster** — and that is the whole
+point of this scenario: **the gap collapses from ~92× to ~10× as the workload
+moves from parse-bound to sink-bound**, because both tools become bounded by the
+same Postgres write path. The narrowing, all at 100k rows on the same machine:
+
+| Scenario | Bottleneck | faucet (rows/s) | Meltano (rows/s) | Gap |
+|---|---|---|---|---|
+| A — CSV → JSONL | parse/serialize (best case) | 595,948 | 6,503 | **~92×** |
+| B — Postgres → JSONL | typed row decode | 155,860 | 5,872 | **~27×** |
+| C — Postgres → Postgres | **destination write (sink-bound)** | 79,669 | 7,813 | **~10×** |
+
+So quote **~10×** for a realistic DB→DB move, and treat the ~92× CSV→JSONL figure
+as the upper bound, not the typical case.
+
+> **Reproduce.** `make bench-postgres` (needs Docker) runs all three scenarios;
+> `scripts/run-bench.sh --postgres --rows 1000000` scales Scenario C to the 1M
+> headline size. The harness spins Postgres 16 in Docker, `COPY`-loads the seeded
+> `bench` table, times faucet `postgres_to_postgres.yaml` (TRUNCATE `bench_dest`
+> before each run) against Meltano `tap-postgres → target-postgres`, and writes
+> the table into `benchmarks/results/results.md`. The numbers above are the smoke
+> (100k) size; Scenarios A & B headline figures elsewhere in this doc are 1M.
+> (Meltano's loader is pinned to `meltanolabs-target-postgres==0.8.0` — older
+> `0.0.x` pins bundle a `singer_sdk` that needs `pkg_resources`, removed from
+> modern setuptools on Python 3.12.)
 
 Reproduce with Docker: see
 [`benchmarks/README.md`](benchmarks/README.md#scenario-b--postgres--jsonl-manual-needs-docker).
