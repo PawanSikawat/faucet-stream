@@ -20,6 +20,7 @@ fn init_args(output: PathBuf, source: Option<&str>, sink: Option<&str>) -> InitA
         template: "default".to_string(),
         discover: false,
         executable: None,
+        stream: None,
     }
 }
 
@@ -82,6 +83,7 @@ async fn init_defaults_to_rest_to_jsonl() {
         template: "default".to_string(),
         discover: false,
         executable: None,
+        stream: None,
     };
     init::run(args).await.expect("init defaults should write");
 

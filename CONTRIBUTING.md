@@ -70,10 +70,19 @@ faucet-stream connectors follow a fixed shape. To add `faucet-source-foo` /
    [connector catalog](./docs/book/src/reference/connectors.md), and a runnable
    example under `cli/examples/`.
 
+To reach **Tier-1 / conformant**, ship a `tests/conformance.rs` that invokes the
+reusable `faucet-conformance` battery against the real connector (valid config
+schema, bounded-memory streaming, honest capabilities) and passes it in CI —
+that battery is the single source of truth for the tier. Where a connector
+legitimately can't satisfy a check, assert the honest branch instead. See the
+docs-site [authoring guide](./docs/book/src/extending/authoring-connectors.md)
+for a worked example and the
+[Faucet Connector Protocol (FCP v0)](./docs/spec/faucet-connector-spec-v0.md)
+for the full contract.
+
 Shared types for a source/sink pair (auth, formats) go in a
 `faucet-common-<name>` crate that both depend on. See `faucet-source-rest` for a
-reference implementation, and the docs-site
-[authoring guide](./docs/book/src/extending/authoring-connectors.md).
+reference implementation.
 
 ## Filing issues
 

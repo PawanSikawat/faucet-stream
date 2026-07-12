@@ -13,8 +13,8 @@ runtime) on an identical workload. The results and full caveats live in
 
 ```
 benchmarks/
-  faucet/        faucet pipeline YAMLs (csv_to_jsonl.yaml, postgres_to_jsonl.yaml)
-  meltano/       pinned Meltano project (meltano.yml: tap-csv/tap-postgres -> target-jsonl)
+  faucet/        faucet pipeline YAMLs (csv_to_jsonl, postgres_to_jsonl, postgres_to_postgres)
+  meltano/       pinned Meltano project (meltano.yml: tap-csv/tap-postgres -> target-jsonl/target-postgres)
   data/          generated dataset (gitignored)
   out/           faucet output (gitignored)
   results/       generated results: versions.txt, results.md, raw/*.json (gitignored)
@@ -25,10 +25,10 @@ benchmarks/
 
 ## Prerequisites
 
-- A release `faucet` binary with the CSV/JSONL (and Postgres) features:
+- A release `faucet` binary with the CSV/JSONL and Postgres source+sink features:
   ```bash
   cargo build -p faucet-cli --release \
-    --no-default-features --features "source-csv,sink-jsonl,source-postgres"
+    --no-default-features --features "source-csv,sink-jsonl,source-postgres,sink-postgres"
   ```
 - [`hyperfine`](https://github.com/sharkdp/hyperfine) for wall-clock timing.
 - A Meltano-compatible Python (3.9–3.12; the harness defaults to `python3.12`,
@@ -47,7 +47,16 @@ scripts/run-bench.sh
 
 # Tweak:
 scripts/run-bench.sh --rows 500000 --runs 7 --seed 42
+
+# Scenarios B (Postgres -> JSONL) and C (Postgres -> Postgres, sink-bound) — needs Docker:
+scripts/run-bench.sh --postgres
 ```
+
+Scenario C spins Postgres 16 in Docker, `COPY`-loads the seeded `bench` table,
+then times faucet `postgres_to_postgres.yaml` against Meltano
+`tap-postgres → target-postgres`. It's the sink-bound "move a table between two
+databases" shape, where the destination write — not per-row parsing — dominates,
+so it is the fairest single number for a DB→DB move.
 
 Or via make:
 

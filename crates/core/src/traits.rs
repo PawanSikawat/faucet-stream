@@ -163,9 +163,10 @@ pub trait Source: Send + Sync {
     }
 
     /// Whether this source **deterministically replays** the same page sequence
-    /// from a given bookmark — the requirement for exactly-once delivery (a
-    /// non-deterministic replay could cause the pipeline to skip a page whose
-    /// contents differ from the one already committed). Default: `false`.
+    /// from a given bookmark — the requirement for the atomic-watermark
+    /// effectively-once path (a non-deterministic replay could cause the pipeline
+    /// to skip a page whose contents differ from the one already committed).
+    /// Default: `false`.
     ///
     /// Sources with a durable monotonic position and per-page bookmarks (CDC)
     /// override this to return `true`. The pipeline rejects

@@ -41,7 +41,9 @@ pub struct PostgresSinkConfig {
     /// AutoMap column set (#146 M13).
     #[serde(default)]
     pub schema: Option<String>,
-    /// How to map JSON records to columns.
+    /// How to map JSON records to columns. Defaults to a single `jsonb`
+    /// column named `data`.
+    #[serde(default)]
     pub column_mapping: PostgresColumnMapping,
     /// Maximum rows per multi-row `INSERT` statement. Defaults to
     /// [`DEFAULT_BATCH_SIZE`].
@@ -66,6 +68,11 @@ pub struct PostgresSinkConfig {
     #[serde(default = "default_batch_size")]
     pub batch_size: usize,
     /// Maximum number of connections in the pool. Defaults to 5.
+    ///
+    /// Bounded on purpose: the pool must be finite so a wide fan-out (many
+    /// matrix rows / shards) cannot exhaust the server's own `max_connections`.
+    /// There is no "unlimited" setting — raise this explicitly if you need more.
+    #[serde(default = "default_max_connections")]
     pub max_connections: u32,
     /// Write mode, key columns, and optional delete marker. `write_mode`
     /// defaults to `append`. Upsert/delete require `column_mapping: auto_map`
@@ -76,6 +83,10 @@ pub struct PostgresSinkConfig {
 
 fn default_batch_size() -> usize {
     DEFAULT_BATCH_SIZE
+}
+
+fn default_max_connections() -> u32 {
+    5
 }
 
 impl std::fmt::Debug for PostgresSinkConfig {
@@ -228,5 +239,34 @@ mod tests {
             .with_batch_size(100)
             .with_batch_size(250);
         assert_eq!(config.batch_size, 250);
+    }
+
+    #[test]
+    fn max_connections_and_column_mapping_default_when_absent_in_json() {
+        // Only the two genuinely-required fields are supplied; the pool size and
+        // column mapping must fall back to their documented defaults rather than
+        // failing to deserialize.
+        let json = r#"{
+            "connection_url": "postgres://localhost/test",
+            "table_name": "events"
+        }"#;
+        let config: PostgresSinkConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(config.max_connections, 5);
+        assert!(matches!(
+            config.column_mapping,
+            PostgresColumnMapping::Jsonb { .. }
+        ));
+        assert_eq!(config.batch_size, DEFAULT_BATCH_SIZE);
+    }
+
+    #[test]
+    fn max_connections_deserializes_when_present() {
+        let json = r#"{
+            "connection_url": "postgres://localhost/test",
+            "table_name": "events",
+            "max_connections": 20
+        }"#;
+        let config: PostgresSinkConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(config.max_connections, 20);
     }
 }

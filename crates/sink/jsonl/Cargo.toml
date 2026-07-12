@@ -23,6 +23,8 @@ tokio = { workspace = true, features = ["fs", "io-util"] }
 tokio = { workspace = true, features = ["macros", "rt", "fs", "io-util"] }
 serde_json.workspace = true
 tempfile = "3"
+faucet-core.workspace = true
+faucet-conformance.workspace = true
 
 [features]
 compression = ["faucet-core/compression"]

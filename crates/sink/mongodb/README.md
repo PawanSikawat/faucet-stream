@@ -171,7 +171,7 @@ Each `replace_one` / `delete_one` is a per-document primitive (not the namespace
 
 > **A replica set (or sharded cluster) is required.** MongoDB multi-document transactions are unavailable on a standalone server — `write_batch_idempotent` surfaces that as a typed error naming the requirement (`… requires a replica set or sharded cluster …`). A **single-node** replica set is sufficient (e.g. `mongod --replSet rs0` + `rs.initiate()`); no second member is needed.
 
-Semantics on the exactly-once path (vs. the at-least-once `write_batch`):
+Semantics on the effectively-once path (vs. the at-least-once `write_batch`):
 
 - **One page = one transaction.** In append mode the whole page goes in a single `insert_many` — the sink's `batch_size` re-chunking knob does **not** apply on this path (chunking would break page↔watermark atomicity). Size pages with the **source's** `batch_size` instead, keeping each page within MongoDB's per-transaction limits.
 - **Upsert/delete ops run sequentially inside the transaction.** A MongoDB `ClientSession` cannot be used concurrently, so the planned `replace_one(upsert)` / `delete_one` ops are issued one at a time — a throughput tradeoff versus the at-least-once path's concurrent fan-out. Atomicity requires the single session.

@@ -45,6 +45,27 @@ pipeline.
 | `idle_timeout_secs` | int | — | Abort if no output arrives within this many seconds |
 | `on_malformed` | `skip` \| `fail` | `skip` | What to do with a non-Singer output line |
 
+## Catalog-driven stream selection
+
+Most database and Meltano-SDK taps **sync nothing** unless the target stream is
+marked `selected` in the catalog — a catalog passed through verbatim is a silent
+no-op. Parent-keyed taps go further: `tap-github`'s `issues` stream only syncs
+when its parent `repositories` stream is *also* selected, even though faucet
+emits just `issues`.
+
+`faucet init --source singer --discover --executable <tap> --stream <name>` runs
+the tap's discovery and writes a catalog with `<name>` — **and any inferable
+parent streams** — marked `selected` (both the stream-level flag and the
+`breadcrumb: []` metadata). When the tap doesn't express a parent relationship in
+its catalog, `faucet init` prints a warning listing the other streams so you can
+select a parent manually. Extraction may be multi-stream (parents are pulled to
+satisfy the child), but faucet still **emits only the configured `stream`**.
+
+> **`ACTIVATE_VERSION` / `FULL_TABLE` + an append sink can accumulate
+> duplicates.** A tap doing full-table reloads re-emits every row each run; an
+> append-only sink (jsonl/csv/stdout) keeps them all. Pair such taps with a
+> **keyed sink** (`write_mode: upsert`, `key: [...]`) so re-emitted rows converge.
+
 ## Example
 
 ```yaml

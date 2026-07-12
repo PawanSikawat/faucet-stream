@@ -1,0 +1,32 @@
+# Benchmark pipeline — Scenario C: PostgreSQL -> PostgreSQL (sink-bound).
+#
+# Unlike Scenarios A/B (whose destination is a fast local file), here the
+# destination is a real database write — multi-row INSERTs into `bench_dest` —
+# so the *write* is the bottleneck. This is the realistic "move data between two
+# databases on one machine" shape, and it narrows the gap vs a Python runtime
+# because both tools are now bounded by the same Postgres write path rather than
+# by per-row interpreter overhead.
+#
+# Requires a running Postgres with the `bench` source table loaded and an empty
+# typed `bench_dest` table (see benchmarks/README.md / run-bench.sh --postgres).
+# The connection URL is read from $BENCH_PG_URL at load time so no credentials
+# are committed.
+version: 1
+name: bench_postgres_to_postgres
+
+pipeline:
+  source:
+    type: postgres
+    config:
+      connection_url: ${env:BENCH_PG_URL}
+      query: "SELECT id, first_name, country, amount, created_at, active, attributes FROM bench ORDER BY id"
+      batch_size: 5000
+
+  sink:
+    type: postgres
+    config:
+      connection_url: ${env:BENCH_PG_URL}
+      table_name: bench_dest
+      column_mapping: auto_map
+      max_connections: 8
+      batch_size: 5000

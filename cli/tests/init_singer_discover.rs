@@ -15,6 +15,15 @@ fn fake_tap() -> String {
 }
 
 fn init_args(output: PathBuf, executable: Option<String>, discover: bool) -> InitArgs {
+    init_args_stream(output, executable, discover, None)
+}
+
+fn init_args_stream(
+    output: PathBuf,
+    executable: Option<String>,
+    discover: bool,
+    stream: Option<String>,
+) -> InitArgs {
     InitArgs {
         name: Some("t".into()),
         source: Some("singer".into()),
@@ -25,6 +34,7 @@ fn init_args(output: PathBuf, executable: Option<String>, discover: bool) -> Ini
         template: "default".into(),
         discover,
         executable,
+        stream,
     }
 }
 
@@ -53,6 +63,47 @@ async fn discover_writes_catalog_and_scaffold() {
     let cat: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(catalog).unwrap()).unwrap();
     assert!(cat.get("streams").is_some());
+}
+
+#[tokio::test]
+async fn discover_with_stream_marks_it_selected() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("pipeline.yaml");
+    // The fake tap's discovery advertises streams "s" and "audit_log".
+    let args = init_args_stream(out.clone(), Some(fake_tap()), true, Some("s".into()));
+
+    faucet_cli::commands::init::run(args)
+        .await
+        .expect("init --discover --stream s");
+
+    let yaml = std::fs::read_to_string(&out).unwrap();
+    // The scaffold's stream is set to the target.
+    assert!(yaml.contains("stream: \"s\""), "yaml:\n{yaml}");
+
+    // The written catalog marks stream "s" selected (stream-level flag + the
+    // breadcrumb-[] metadata that DB/SDK taps require).
+    let cat: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(dir.path().join("catalog.json")).unwrap())
+            .unwrap();
+    let s = cat["streams"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|st| st["tap_stream_id"] == "s")
+        .expect("stream s in catalog");
+    assert_eq!(
+        s["selected"],
+        serde_json::json!(true),
+        "stream-level selected"
+    );
+    let root_selected = s["metadata"].as_array().unwrap().iter().any(|m| {
+        m["breadcrumb"]
+            .as_array()
+            .map(|b| b.is_empty())
+            .unwrap_or(false)
+            && m["metadata"]["selected"] == serde_json::json!(true)
+    });
+    assert!(root_selected, "breadcrumb-[] metadata selected: {s}");
 }
 
 #[tokio::test]

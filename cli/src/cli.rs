@@ -878,6 +878,13 @@ pub struct InitArgs {
     /// `--discover`), e.g. `tap-github` or `/opt/taps/tap-csv`.
     #[arg(long)]
     pub executable: Option<String>,
+    /// (singer only) The target stream to emit. When given with `--discover`,
+    /// the written catalog marks this stream — and any inferable parent
+    /// streams (e.g. a parent-keyed tap's parent) — `selected`, and the
+    /// scaffolded config's `stream:` is set to it. Most DB / SDK taps sync
+    /// nothing unless a stream is selected in the catalog.
+    #[arg(long)]
+    pub stream: Option<String>,
 }
 
 /// `faucet plan` arguments.

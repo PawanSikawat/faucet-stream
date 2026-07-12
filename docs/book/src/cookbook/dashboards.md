@@ -11,7 +11,7 @@ name that no longer exists in the code.
 
 | Dashboard (uid) | Focus |
 |-----------------|-------|
-| `faucet-pipeline-overview` | Run outcomes + duration percentiles, source/sink throughput and errors by connector, transform in/out, bookmark staleness, exactly-once page skips, state-store traffic. `faucet_build_info` annotates version rollouts. |
+| `faucet-pipeline-overview` | Run outcomes + duration percentiles, source/sink throughput and errors by connector, transform in/out, bookmark staleness, effectively-once page skips, state-store traffic. `faucet_build_info` annotates version rollouts. |
 | `faucet-reliability` | Retries / give-ups / circuit-breaker state, DLQ traffic, poison rows, quality quarantines, contract violations, schema drift, PII masking activity, SLA violations, backfill progress. |
 | `faucet-schedule` | Scheduled-run outcomes, heartbeat staleness, next-tick countdown, lateness p95, overlaps, consecutive-failure streak. |
 | `faucet-serve` | Control-plane request rate/latency, run queue, terminal statuses, history degradation, idempotency replays, cluster claims/reclaims, trigger health. |

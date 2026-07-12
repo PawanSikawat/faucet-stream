@@ -28,6 +28,8 @@ A single native binary **and** an embeddable Rust library: config-driven pipelin
 no Python runtime, no platform to stand up, no daemon to babysit — plus a typed API when
 you'd rather compile data movement straight into your own service.
 
+📖 **[Guide](https://pawansikawat.github.io/faucet-stream/)** · 📊 **[Benchmarks](BENCHMARKS.md)** · 📜 **[Connector spec (FCP v0)](docs/spec/faucet-connector-spec-v0.md)**
+
 ```bash
 brew install PawanSikawat/faucet-stream/faucet-cli   # the CLI — prebuilt, no Rust needed
 # — or —
@@ -42,10 +44,13 @@ cargo add faucet-stream           # the library
 
 - **🚀 Built for throughput** — native streaming with bounded memory, connection
   pooling, multi-row inserts, bulk APIs, and parallel I/O. Throughput is a first-class
-  design goal for every connector. In a reproducible 1M-row CSV→JSONL benchmark,
-  faucet moved **712k rows/s using 11.8 MiB** vs Meltano's 7.4k rows/s / 724 MiB
-  (~96× faster, ~62× less memory, exact row parity) — see
-  [`BENCHMARKS.md`](BENCHMARKS.md) for the methodology and honest caveats.
+  design goal for every connector. On single-machine batch throughput, faucet runs
+  **~1–2 orders of magnitude faster than a Python Singer runtime**: a reproducible
+  1M-row CSV→JSONL move (a best case that maximally exposes Python's per-row
+  overhead) hit **712k rows/s in 11.8 MiB** vs Meltano's 7.4k rows/s / 724 MiB
+  (~96× faster, ~62× less memory, exact row parity); sink-bound moves like
+  Postgres→Postgres narrow the gap. See [`BENCHMARKS.md`](BENCHMARKS.md) for the
+  methodology, the sink-bound scenario, and honest caveats.
 - **🧩 Config-driven _or_ embeddable** — run `faucet run pipeline.yaml`, or call
   `Pipeline::new(&source, &sink).run().await?` from Rust. Same orchestration either way.
 - **⚙️ A runtime, not just connectors** — incremental + resumable replication, change-data-capture,
@@ -210,66 +215,74 @@ the [connector capability matrix](https://pawansikawat.github.io/faucet-stream/r
 [choosing-a-connector guide](https://pawansikawat.github.io/faucet-stream/reference/choosing.html)
 for help picking between overlapping connectors (Postgres query vs CDC, S3 vs Parquet, Redis vs Kafka, …).
 
-> **Support tiers.** A connector is **Tier-1 (supported)** when it invokes and
-> passes the [`faucet-conformance`](crates/conformance) battery in CI (valid
-> config schema, bounded-memory streaming, …) — that battery *is* the tiering
-> mechanism, there is no separate scheme. Connectors marked **Tier-2 /
-> experimental ⚠️** are best-effort: correctness bugs are fixed, but breadth of
-> testing and upstream-drift tracking are not guaranteed.
+> **Support tiers** (the **Tier** column below). A connector is **Tier-1 ✅** when
+> it invokes and passes the [`faucet-conformance`](crates/conformance) battery in
+> CI against the real connector — valid config schema, bounded-memory streaming,
+> bookmark round-trip, idempotent replay, truthful capabilities, errors-not-panics
+> (see the [Faucet Connector Protocol spec](docs/spec/faucet-connector-spec-v0.md)).
+> **That battery *is* the tiering mechanism** — there is no separate scheme, and
+> the Tier-1 set grows as more connectors wire it in.
+> **Tier-2** connectors are **not yet wired into the battery**; most still have
+> their own extensive integration tests (wiremock / testcontainers) and are used
+> in production — Tier-2 means "not conformance-certified," **not** "low quality."
+> The Singer bridge is additionally **experimental (v0, single-stream)** ⚠️.
 
 ### Sources (24)
 
-| Crate | Description |
-|-------|-------------|
-| [`faucet-source-rest`](crates/source/rest) | REST API — auth, pagination, extraction, schema inference |
-| [`faucet-source-graphql`](crates/source/graphql) | GraphQL API — cursor-based pagination, variable injection |
-| [`faucet-source-xml`](crates/source/xml) | XML/SOAP API — XML-to-JSON conversion, dot-path extraction |
-| [`faucet-source-grpc`](crates/source/grpc) | gRPC — dynamic protobuf via `prost-reflect`, unary + server-streaming |
-| [`faucet-source-postgres`](crates/source/postgres) | PostgreSQL — run SQL queries, return rows as JSON |
-| [`faucet-source-postgres-cdc`](crates/source/postgres-cdc) | PostgreSQL CDC — logical replication via pgoutput, resumable |
-| [`faucet-source-mysql`](crates/source/mysql) | MySQL — run SQL queries, return rows as JSON |
-| [`faucet-source-mysql-cdc`](crates/source/mysql-cdc) | MySQL CDC — binlog row events, resumable via file/pos or GTID |
-| [`faucet-source-mssql`](crates/source/mssql) | Microsoft SQL Server — streaming queries, incremental replication |
-| [`faucet-source-sqlite`](crates/source/sqlite) | SQLite — run SQL queries, return rows as JSON |
-| [`faucet-source-mongodb`](crates/source/mongodb) | MongoDB — find() with filter, projection, sort |
-| [`faucet-source-mongodb-cdc`](crates/source/mongodb-cdc) | MongoDB CDC — Change Streams, resumable via resumeToken |
-| [`faucet-source-redis`](crates/source/redis) | Redis — read from streams, lists, or key patterns |
-| [`faucet-source-kafka`](crates/source/kafka) | Apache Kafka — consumer with idle/max-messages termination |
-| [`faucet-source-kinesis`](crates/source/kinesis) | AWS Kinesis Data Streams — sharded consumer with resumable sequence checkpoints |
-| [`faucet-source-s3`](crates/source/s3) | AWS S3 — read objects as JSONL, JSON array, or raw text |
-| [`faucet-source-gcs`](crates/source/gcs) | Google Cloud Storage — read objects as JSONL, JSON array, or raw text |
-| [`faucet-source-parquet`](crates/source/parquet) | Apache Parquet — local file, glob, or S3; vectorized Arrow reader, projection |
-| [`faucet-source-elasticsearch`](crates/source/elasticsearch) | Elasticsearch — search/scroll API |
-| [`faucet-source-bigquery`](crates/source/bigquery) | Google BigQuery — `jobs.query` + `getQueryResults`, type-aware decoding |
-| [`faucet-source-snowflake`](crates/source/snowflake) | Snowflake — SQL REST API, server-side partition pagination, JWT / OAuth |
-| [`faucet-source-webhook`](crates/source/webhook) | Webhook — temporary HTTP server collecting POST payloads |
-| [`faucet-source-websocket`](crates/source/websocket) | WebSocket — live streaming feed; subscribe frames, reconnect, keepalive |
-| [`faucet-source-csv`](crates/source/csv) | CSV — read CSV files as JSON objects |
-| [`faucet-source-singer`](crates/source/singer) | **Singer tap bridge** — run any Singer tap and adapt its output (single-stream v0). **Tier-2 / experimental** ⚠️ |
+`Tier`: **T1 ✅** = passes the `faucet-conformance` battery in CI; **T2** = not yet
+wired into the battery (see the support-tiers note above).
+
+| Crate | Tier | Description |
+|-------|------|-------------|
+| [`faucet-source-rest`](crates/source/rest) | **T1 ✅** | REST API — auth, pagination, extraction, schema inference |
+| [`faucet-source-graphql`](crates/source/graphql) | T2 | GraphQL API — cursor-based pagination, variable injection |
+| [`faucet-source-xml`](crates/source/xml) | T2 | XML/SOAP API — XML-to-JSON conversion, dot-path extraction |
+| [`faucet-source-grpc`](crates/source/grpc) | T2 | gRPC — dynamic protobuf via `prost-reflect`, unary + server-streaming |
+| [`faucet-source-postgres`](crates/source/postgres) | **T1 ✅** | PostgreSQL — run SQL queries, return rows as JSON |
+| [`faucet-source-postgres-cdc`](crates/source/postgres-cdc) | T2 | PostgreSQL CDC — logical replication via pgoutput, resumable |
+| [`faucet-source-mysql`](crates/source/mysql) | T2 | MySQL — run SQL queries, return rows as JSON |
+| [`faucet-source-mysql-cdc`](crates/source/mysql-cdc) | T2 | MySQL CDC — binlog row events, resumable via file/pos or GTID |
+| [`faucet-source-mssql`](crates/source/mssql) | T2 | Microsoft SQL Server — streaming queries, incremental replication |
+| [`faucet-source-sqlite`](crates/source/sqlite) | **T1 ✅** | SQLite — run SQL queries, return rows as JSON |
+| [`faucet-source-mongodb`](crates/source/mongodb) | T2 | MongoDB — find() with filter, projection, sort |
+| [`faucet-source-mongodb-cdc`](crates/source/mongodb-cdc) | T2 | MongoDB CDC — Change Streams, resumable via resumeToken |
+| [`faucet-source-redis`](crates/source/redis) | T2 | Redis — read from streams, lists, or key patterns |
+| [`faucet-source-kafka`](crates/source/kafka) | T2 | Apache Kafka — consumer with idle/max-messages termination |
+| [`faucet-source-kinesis`](crates/source/kinesis) | T2 | AWS Kinesis Data Streams — sharded consumer with resumable sequence checkpoints |
+| [`faucet-source-s3`](crates/source/s3) | T2 | AWS S3 — read objects as JSONL, JSON array, or raw text |
+| [`faucet-source-gcs`](crates/source/gcs) | T2 | Google Cloud Storage — read objects as JSONL, JSON array, or raw text |
+| [`faucet-source-parquet`](crates/source/parquet) | T2 | Apache Parquet — local file, glob, or S3; vectorized Arrow reader, projection |
+| [`faucet-source-elasticsearch`](crates/source/elasticsearch) | T2 | Elasticsearch — search/scroll API |
+| [`faucet-source-bigquery`](crates/source/bigquery) | T2 | Google BigQuery — `jobs.query` + `getQueryResults`, type-aware decoding |
+| [`faucet-source-snowflake`](crates/source/snowflake) | T2 | Snowflake — SQL REST API, server-side partition pagination, JWT / OAuth |
+| [`faucet-source-webhook`](crates/source/webhook) | T2 | Webhook — temporary HTTP server collecting POST payloads |
+| [`faucet-source-websocket`](crates/source/websocket) | T2 | WebSocket — live streaming feed; subscribe frames, reconnect, keepalive |
+| [`faucet-source-csv`](crates/source/csv) | **T1 ✅** | CSV — read CSV files as JSON objects |
+| [`faucet-source-singer`](crates/source/singer) | T2 ⚠️ | **Singer tap bridge** — run any Singer tap and adapt its output. Passes the battery, but **experimental (v0, single-stream)** |
 
 ### Sinks (18)
 
-| Crate | Description |
-|-------|-------------|
-| [`faucet-sink-bigquery`](crates/sink/bigquery) | Google BigQuery — streaming inserts; effectively-once via MERGE |
-| [`faucet-sink-iceberg`](crates/sink/iceberg) | Apache Iceberg — append snapshots via REST/Glue/SQL/HMS catalogs |
-| [`faucet-sink-postgres`](crates/sink/postgres) | PostgreSQL — JSONB or auto-mapped columns; upsert/delete |
-| [`faucet-sink-mysql`](crates/sink/mysql) | MySQL — JSON column or auto-mapped columns; upsert/delete |
-| [`faucet-sink-mssql`](crates/sink/mssql) | Microsoft SQL Server — JSON or auto-mapped columns, 2100-param split |
-| [`faucet-sink-sqlite`](crates/sink/sqlite) | SQLite — JSON column or auto-mapped columns; upsert/delete |
-| [`faucet-sink-snowflake`](crates/sink/snowflake) | Snowflake — SQL REST API with JWT/OAuth |
-| [`faucet-sink-mongodb`](crates/sink/mongodb) | MongoDB — insert_many; upsert/delete by key |
-| [`faucet-sink-redis`](crates/sink/redis) | Redis — write to streams, lists, or key-value |
-| [`faucet-sink-kafka`](crates/sink/kafka) | Apache Kafka — producer with batching, multi-topic routing |
-| [`faucet-sink-kinesis`](crates/sink/kinesis) | AWS Kinesis Data Streams — batched PutRecords with partition-key routing |
-| [`faucet-sink-elasticsearch`](crates/sink/elasticsearch) | Elasticsearch — bulk index API; upsert/delete by `_id` |
-| [`faucet-sink-s3`](crates/sink/s3) | AWS S3 — write JSONL files to bucket |
-| [`faucet-sink-gcs`](crates/sink/gcs) | Google Cloud Storage — write JSONL files to bucket |
-| [`faucet-sink-parquet`](crates/sink/parquet) | Apache Parquet — local file or S3; schema inference, row/byte rollover |
-| [`faucet-sink-jsonl`](crates/sink/jsonl) | JSON Lines — file output with append/truncate |
-| [`faucet-sink-csv`](crates/sink/csv) | CSV — write JSON records as CSV rows |
-| [`faucet-sink-http`](crates/sink/http) | HTTP — POST records to any endpoint |
-| [`faucet-sink-stdout`](crates/sink/stdout) | Stdout/stderr — JSON Lines, pretty JSON, or TSV |
+| Crate | Tier | Description |
+|-------|------|-------------|
+| [`faucet-sink-bigquery`](crates/sink/bigquery) | T2 | Google BigQuery — streaming inserts; effectively-once via MERGE |
+| [`faucet-sink-iceberg`](crates/sink/iceberg) | T2 | Apache Iceberg — append snapshots via REST/Glue/SQL/HMS catalogs |
+| [`faucet-sink-postgres`](crates/sink/postgres) | T2 | PostgreSQL — JSONB or auto-mapped columns; upsert/delete |
+| [`faucet-sink-mysql`](crates/sink/mysql) | T2 | MySQL — JSON column or auto-mapped columns; upsert/delete |
+| [`faucet-sink-mssql`](crates/sink/mssql) | T2 | Microsoft SQL Server — JSON or auto-mapped columns, 2100-param split |
+| [`faucet-sink-sqlite`](crates/sink/sqlite) | **T1 ✅** | SQLite — JSON column or auto-mapped columns; upsert/delete; effectively-once |
+| [`faucet-sink-snowflake`](crates/sink/snowflake) | T2 | Snowflake — SQL REST API with JWT/OAuth |
+| [`faucet-sink-mongodb`](crates/sink/mongodb) | T2 | MongoDB — insert_many; upsert/delete by key |
+| [`faucet-sink-redis`](crates/sink/redis) | T2 | Redis — write to streams, lists, or key-value |
+| [`faucet-sink-kafka`](crates/sink/kafka) | T2 | Apache Kafka — producer with batching, multi-topic routing |
+| [`faucet-sink-kinesis`](crates/sink/kinesis) | T2 | AWS Kinesis Data Streams — batched PutRecords with partition-key routing |
+| [`faucet-sink-elasticsearch`](crates/sink/elasticsearch) | T2 | Elasticsearch — bulk index API; upsert/delete by `_id` |
+| [`faucet-sink-s3`](crates/sink/s3) | T2 | AWS S3 — write JSONL files to bucket |
+| [`faucet-sink-gcs`](crates/sink/gcs) | T2 | Google Cloud Storage — write JSONL files to bucket |
+| [`faucet-sink-parquet`](crates/sink/parquet) | T2 | Apache Parquet — local file or S3; schema inference, row/byte rollover |
+| [`faucet-sink-jsonl`](crates/sink/jsonl) | **T1 ✅** | JSON Lines — file output with append/truncate |
+| [`faucet-sink-csv`](crates/sink/csv) | T2 | CSV — write JSON records as CSV rows |
+| [`faucet-sink-http`](crates/sink/http) | T2 | HTTP — POST records to any endpoint |
+| [`faucet-sink-stdout`](crates/sink/stdout) | T2 | Stdout/stderr — JSON Lines, pretty JSON, or TSV |
 
 <details>
 <summary><b>Supporting crates</b> — core, shared connector libraries, state stores, lineage, transforms, umbrella, CLI</summary>

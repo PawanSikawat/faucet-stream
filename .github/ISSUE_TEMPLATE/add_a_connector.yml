@@ -1,0 +1,45 @@
+name: "Add a connector (contribute one)"
+description: "Claim a connector to build and land as Tier-1. A great first contribution."
+labels: ["good first issue", "feature"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Building a `faucet-source-*` / `faucet-sink-*` crate is the highest-leverage
+        way to contribute. This template tracks that work end-to-end.
+
+        **Read first:**
+        - [Faucet Connector Protocol (FCP v0)](https://github.com/PawanSikawat/faucet-stream/blob/main/docs/spec/faucet-connector-spec-v0.md) — the contract.
+        - [Authoring a connector](https://pawansikawat.github.io/faucet-stream/extending/authoring-connectors.html) — the walkthrough, incl. self-certifying with the conformance battery.
+        - `faucet-core` is the only required dependency; scaffold with `faucet new connector`.
+  - type: input
+    id: system
+    attributes:
+      label: System & direction
+      description: Which external system, and source / sink / both?
+      placeholder: "ClickHouse — source"
+    validations:
+      required: true
+  - type: textarea
+    id: shape
+    attributes:
+      label: Protocol / API shape
+      description: REST/gRPC/native driver, auth methods, pagination or streaming model, official client crate (if any).
+    validations:
+      required: false
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Tier-1 checklist
+      description: A connector is **Tier-1 / conformant** when it invokes and passes the `faucet-conformance` battery in CI.
+      options:
+        - label: "`config.rs` — config struct derives `Serialize + Deserialize + JsonSchema`; no I/O here"
+        - label: "`stream.rs` / `sink.rs` — implements `Source` / `Sink`; reuses clients from `new()`"
+        - label: "Unit + integration tests (wiremock / testcontainers) with real assertions"
+        - label: "`tests/conformance.rs` invokes the applicable `faucet-conformance` checks and passes (or asserts the honest branch where a check does not apply)"
+        - label: "`README.md`, the connector matrix, and the CI `feature-check` matrix updated"
+        - label: "Delivery guarantee described as **effectively-once** (never distributed-consensus exactly-once)"
+  - type: markdown
+    attributes:
+      value: |
+        Comment to claim it. Questions welcome — open a discussion or ask here.
