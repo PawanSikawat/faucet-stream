@@ -22,6 +22,8 @@ tokio = { workspace = true, features = ["io-util", "io-std", "sync"] }
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt", "io-util", "sync"] }
 serde_json.workspace = true
+faucet-conformance.workspace = true
+schemars.workspace = true
 
 [package.metadata.docs.rs]
 all-features = true

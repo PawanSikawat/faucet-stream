@@ -1,0 +1,123 @@
+//! `faucet-conformance` Tier-1 battery for the Snowflake source.
+//!
+//! Check 1 — the connector's config JSON Schema is a valid, well-formed value.
+//! Check 2 — `stream_pages` pages under a bounded batch size (every record
+//! streamed; peak page ≤ batch_size and < total), i.e. memory is O(batch_size)
+//! regardless of total volume.
+//!
+//! The bounded-memory check drives the source against a wiremock fake of the
+//! Snowflake SQL REST API. The result set is split into 12 server-side
+//! partitions of 500 rows (6 000 total): partition 0 rides the initial
+//! `POST /api/v2/statements` response, partitions 1..12 are fetched via
+//! `GET /api/v2/statements/{handle}?partition=N`. The source re-frames those
+//! partitions into pages of the configured `batch_size` (250), so peak page is
+//! 250 < 6 000.
+
+use faucet_conformance::{
+    assert_bounded_memory, assert_config_schema_valid_value, assert_errors_not_panics,
+};
+use faucet_source_snowflake::{SnowflakeAuth, SnowflakeSource, SnowflakeSourceConfig};
+use serde_json::{Value, json};
+use wiremock::matchers::{method, path, query_param};
+use wiremock::{Mock, MockServer, ResponseTemplate};
+
+const HANDLE: &str = "conformance-handle";
+const NUM_PARTITIONS: usize = 12;
+const ROWS_PER_PARTITION: usize = 500;
+
+fn metadata() -> Value {
+    let partition_info: Vec<Value> = (0..NUM_PARTITIONS)
+        .map(|_| json!({"rowCount": ROWS_PER_PARTITION}))
+        .collect();
+    json!({
+        "rowType": [
+            {"name": "ID", "type": "fixed"}
+        ],
+        "partitionInfo": partition_info,
+        "format": "jsonv2",
+        "numRows": (NUM_PARTITIONS * ROWS_PER_PARTITION) as u64,
+    })
+}
+
+/// Rows for partition `p`: `ROWS_PER_PARTITION` single-column rows, globally
+/// numbered so every id across the result set is unique.
+fn rows_for_partition(p: usize) -> Vec<Vec<Value>> {
+    (0..ROWS_PER_PARTITION)
+        .map(|i| vec![json!((p * ROWS_PER_PARTITION + i).to_string())])
+        .collect()
+}
+
+#[test]
+fn conformance_config_schema_valid() {
+    let schema = serde_json::to_value(schemars::schema_for!(SnowflakeSourceConfig)).unwrap();
+    assert_config_schema_valid_value(&schema, "faucet-source-snowflake");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn conformance_bounded_memory() {
+    let server = MockServer::start().await;
+
+    // Initial statement submission returns partition 0 inline + the full
+    // partition manifest.
+    Mock::given(method("POST"))
+        .and(path("/api/v2/statements"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "code": "090001",
+            "statementHandle": HANDLE,
+            "resultSetMetaData": metadata(),
+            "data": rows_for_partition(0),
+        })))
+        .mount(&server)
+        .await;
+
+    // Partitions 1..NUM_PARTITIONS are fetched on demand.
+    for p in 1..NUM_PARTITIONS {
+        Mock::given(method("GET"))
+            .and(path(format!("/api/v2/statements/{HANDLE}")))
+            .and(query_param("partition", p.to_string()))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "code": "090001",
+                "data": rows_for_partition(p),
+            })))
+            .mount(&server)
+            .await;
+    }
+
+    // Config batch_size must equal the batch passed to the battery — this
+    // overriding source treats its config batch_size as authoritative.
+    let config = SnowflakeSourceConfig::new(
+        "xy12345",
+        "WH",
+        "DB",
+        "PUBLIC",
+        SnowflakeAuth::OAuth { token: "t".into() },
+        "SELECT id FROM events",
+    )
+    .with_batch_size(250);
+    let source = SnowflakeSource::new(config)
+        .expect("source new")
+        .with_endpoint_base(server.uri());
+
+    assert_bounded_memory(&source, 250, NUM_PARTITIONS * ROWS_PER_PARTITION).await;
+}
+
+// ── Check 6: errors, not panics ──────────────────────────────────────────────
+
+#[tokio::test]
+async fn conformance_errors_not_panics() {
+    // Unreachable endpoint: `new()` builds (lazy HTTP client), the first read
+    // errors with a typed `FaucetError` (connection refused) without panicking.
+    // Port 1 refuses connections immediately on all platforms.
+    let config = SnowflakeSourceConfig::new(
+        "xy12345",
+        "WH",
+        "DB",
+        "PUBLIC",
+        SnowflakeAuth::OAuth { token: "t".into() },
+        "SELECT id FROM events",
+    );
+    let source = SnowflakeSource::new(config)
+        .expect("source new")
+        .with_endpoint_base("http://127.0.0.1:1");
+    assert_errors_not_panics(&source).await;
+}

@@ -1,0 +1,128 @@
+//! `faucet-conformance` battery for the GraphQL source.
+//!
+//! Check 1: the connector's config JSON Schema is a well-formed schema value.
+//! Check 2: `stream_pages` bounds peak memory — a Relay cursor endpoint of
+//! 6_000 records served 100-per-page must stream in bounded pages (peak page ≤
+//! the batch cap and strictly < the total).
+
+use faucet_conformance::{
+    assert_bounded_memory, assert_config_schema_valid_value, assert_errors_not_panics,
+};
+use faucet_source_graphql::config::GraphqlPagination;
+use faucet_source_graphql::{GraphqlStream, GraphqlStreamConfig};
+use serde_json::{Value, json};
+use wiremock::matchers::{method, path};
+use wiremock::{Mock, MockServer, Request, ResponseTemplate};
+
+const RECORDS_PER_PAGE: u64 = 100;
+const TOTAL: u64 = 6_000;
+const BATCH: usize = 250;
+
+// ── Check 1: config schema validity ──────────────────────────────────────────
+
+#[test]
+fn conformance_config_schema_valid() {
+    let schema = serde_json::to_value(schemars::schema_for!(GraphqlStreamConfig)).unwrap();
+    assert_config_schema_valid_value(&schema, "faucet-source-graphql");
+}
+
+// ── Check 2: bounded-memory streaming ────────────────────────────────────────
+
+/// Read the `after` cursor variable from a GraphQL request body.
+fn request_cursor(req: &Request) -> Option<String> {
+    let body: Value = serde_json::from_slice(&req.body).expect("request body is JSON");
+    body.get("variables")
+        .and_then(|v| v.get("after"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+}
+
+/// Build a Relay-style page of `n` records starting at `start`, advertising
+/// `next_cursor` in `pageInfo`.
+fn make_page(start: u64, n: u64, next_cursor: Option<&str>) -> Value {
+    let edges: Vec<Value> = (start..start + n)
+        .map(|i| json!({ "node": { "id": i } }))
+        .collect();
+    json!({
+        "data": {
+            "users": {
+                "edges": edges,
+                "pageInfo": {
+                    "hasNextPage": next_cursor.is_some(),
+                    "endCursor": next_cursor,
+                }
+            }
+        }
+    })
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn conformance_bounded_memory() {
+    let server = MockServer::start().await;
+
+    // Cursor-driven pagination: the upstream serves RECORDS_PER_PAGE records per
+    // response regardless of the client's `first`, so peak page = 100 ≤ BATCH.
+    Mock::given(method("POST"))
+        .and(path("/"))
+        .respond_with(move |req: &Request| {
+            let page_index: u64 = match request_cursor(req).as_deref() {
+                None => 0,
+                Some(s) => s
+                    .strip_prefix("cursor-")
+                    .and_then(|n| n.parse::<u64>().ok())
+                    .expect("cursor must be `cursor-<N>`"),
+            };
+            let start = page_index * RECORDS_PER_PAGE;
+            if start >= TOTAL {
+                return ResponseTemplate::new(200).set_body_json(make_page(start, 0, None));
+            }
+            let remaining = TOTAL - start;
+            let this_page = remaining.min(RECORDS_PER_PAGE);
+            let next = start + this_page;
+            let next_cursor = if next < TOTAL {
+                Some(format!("cursor-{}", page_index + 1))
+            } else {
+                None
+            };
+            ResponseTemplate::new(200).set_body_json(make_page(
+                start,
+                this_page,
+                next_cursor.as_deref(),
+            ))
+        })
+        .mount(&server)
+        .await;
+
+    let config = GraphqlStreamConfig::new(
+        server.uri(),
+        "query($first: Int, $after: String) { users(first: $first, after: $after) { \
+         edges { node { id } } pageInfo { hasNextPage endCursor } } }",
+    )
+    .records_path("$.data.users.edges[*].node")
+    .pagination(GraphqlPagination {
+        has_next_page_path: "$.data.users.pageInfo.hasNextPage".into(),
+        cursor_path: "$.data.users.pageInfo.endCursor".into(),
+        cursor_variable: "after".into(),
+        page_size_variable: "first".into(),
+    })
+    // Config batch_size is the authoritative knob for the overriding source.
+    .with_batch_size(BATCH);
+
+    let source = GraphqlStream::new(config);
+
+    assert_bounded_memory(&source, BATCH, TOTAL as usize).await;
+}
+
+// ── Check 6: errors, not panics ──────────────────────────────────────────────
+
+#[tokio::test]
+async fn conformance_errors_not_panics() {
+    // Unreachable endpoint: `new()` builds (lazy HTTP client), the first read
+    // errors with a typed `FaucetError` (connection refused) without panicking.
+    // Port 1 refuses connections immediately on all platforms.
+    let source = GraphqlStream::new(GraphqlStreamConfig::new(
+        "http://127.0.0.1:1",
+        "query { users { edges { node { id } } } }",
+    ));
+    assert_errors_not_panics(&source).await;
+}
