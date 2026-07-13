@@ -129,11 +129,12 @@ Not every sink can evolve, and a schemaless sink has no schema to diverge from.
 | `postgres`, `mysql`, `mssql`, `sqlite` | ✅ | ✅ |
 | `bigquery` | ✅ | ✅ |
 | `elasticsearch` | ✅ | ✅ (add fields only) |
+| `spanner` | ✅ | ✅ (add + NOT NULL relax; no base-type widening) |
 | `iceberg` | ✅ | ❌ detect-only |
 | `jsonl`, `csv`, `stdout`, `mongodb`, `redis`, `http`, `kafka`, `s3`, `gcs`, `snowflake`, `parquet` | — (inert) | — |
 
-- **Evolvable** (six sinks): postgres, mysql, mssql, sqlite, bigquery,
-  elasticsearch. They implement in-place additive DDL.
+- **Evolvable** (seven sinks): postgres, mysql, mssql, sqlite, bigquery,
+  elasticsearch, spanner. They implement in-place additive DDL.
 - **Iceberg** reports its current schema so detection modes work, but **cannot
   `evolve`** — schema evolution is blocked on upstream `iceberg-rust 0.9.1`
   (issue #255). `on_drift: evolve` against iceberg is rejected at config-load
@@ -151,6 +152,11 @@ Not every sink can evolve, and a schemaless sink has no schema to diverge from.
 - **Elasticsearch** — can only **add** fields. Changing the type of an existing
   field is impossible in Elasticsearch mappings, so an existing-field type change
   is always treated as incompatible (routed by `on_incompatible`).
+- **Cloud Spanner** — adds columns and relaxes NOT NULL (by re-emitting the
+  column without the constraint), but Spanner cannot change a column's base
+  type (e.g. INT64→FLOAT64), so a base-type widening fails with guidance to set
+  `allow_type_widening: false` (classifying it incompatible instead). DDL runs
+  as a bounded long-running operation via the admin API.
 
 ## Composition rules
 

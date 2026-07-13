@@ -32,6 +32,7 @@
 //! | `source-elasticsearch` | Elasticsearch search/scroll source |
 //! | `source-kafka` | Apache Kafka consumer source |
 //! | `source-kinesis` | AWS Kinesis Data Streams source |
+//! | `source-spanner` | Google Cloud Spanner query source |
 //! | `source-parquet` | Apache Parquet file source (local, glob, S3) |
 //! | `sink-bigquery` | Google BigQuery streaming insert sink |
 //! | `sink-iceberg` | Apache Iceberg sink (append-only, REST/Glue/SQL/HMS catalogs) |
@@ -50,6 +51,7 @@
 //! | `sink-http` | HTTP POST sink |
 //! | `sink-kafka` | Apache Kafka producer sink |
 //! | `sink-kinesis` | AWS Kinesis Data Streams sink |
+//! | `sink-spanner` | Google Cloud Spanner mutation sink |
 //! | `sink-parquet` | Apache Parquet file sink (local, S3) |
 //! | `kafka-schema-registry` | Schema Registry support for Kafka connectors |
 //! | `source` | All source connectors |
@@ -176,6 +178,21 @@ pub mod source {
         pub use faucet_source_kinesis::*;
     }
 
+    #[cfg(feature = "source-bigquery")]
+    pub mod bigquery {
+        pub use faucet_source_bigquery::*;
+    }
+
+    #[cfg(feature = "source-snowflake")]
+    pub mod snowflake {
+        pub use faucet_source_snowflake::*;
+    }
+
+    #[cfg(feature = "source-spanner")]
+    pub mod spanner {
+        pub use faucet_source_spanner::*;
+    }
+
     #[cfg(feature = "source-parquet")]
     pub mod parquet {
         pub use faucet_source_parquet::*;
@@ -290,6 +307,21 @@ pub mod source {
         pub use faucet_source_kinesis::*;
     }
 
+    #[cfg(feature = "source-bigquery")]
+    pub mod bigquery {
+        pub use faucet_source_bigquery::*;
+    }
+
+    #[cfg(feature = "source-snowflake")]
+    pub mod snowflake {
+        pub use faucet_source_snowflake::*;
+    }
+
+    #[cfg(feature = "source-spanner")]
+    pub mod spanner {
+        pub use faucet_source_spanner::*;
+    }
+
     #[cfg(feature = "source-parquet")]
     pub mod parquet {
         pub use faucet_source_parquet::*;
@@ -402,6 +434,11 @@ pub mod sink {
         pub use faucet_sink_kinesis::*;
     }
 
+    #[cfg(feature = "sink-spanner")]
+    pub mod spanner {
+        pub use faucet_sink_spanner::*;
+    }
+
     #[cfg(feature = "sink-parquet")]
     pub mod parquet {
         pub use faucet_sink_parquet::*;
@@ -432,6 +469,14 @@ pub mod common_kafka {
 #[cfg(any(feature = "source-kinesis", feature = "sink-kinesis"))]
 pub mod common_kinesis {
     pub use faucet_common_kinesis::*;
+}
+
+/// Shared Cloud Spanner types (credentials enum, connection block, value
+/// conversion), re-exported for library callers when either Spanner
+/// connector is enabled.
+#[cfg(any(feature = "source-spanner", feature = "sink-spanner"))]
+pub mod common_spanner {
+    pub use faucet_common_spanner::*;
 }
 
 // ── State-store backends ─────────────────────────────────────────────────────

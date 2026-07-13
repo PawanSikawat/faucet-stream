@@ -42,7 +42,7 @@ pub async fn run(args: DiscoverArgs) -> CliResult<()> {
         return Err(CliError::Config(format!(
             "source '{}' does not support dataset discovery — discovery is available for \
              catalog-backed sources (postgres, mysql, mssql, sqlite, mongodb, elasticsearch, \
-             bigquery, snowflake, s3, gcs)",
+             bigquery, snowflake, spanner, s3, gcs)",
             spec.kind
         )));
     }

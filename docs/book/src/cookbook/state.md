@@ -149,6 +149,11 @@ records and the token atomically inside its own transaction:
   page and the watermark in a single Snowflake transaction.
 - **Redis sink** — one `MULTI`/`EXEC` transaction appends the page's commands
   plus a `SET _faucet_commit_token:<scope> <token>`.
+- **Cloud Spanner sink** — one read-write transaction buffers the page's
+  mutations plus an `InsertOrUpdate` on the `faucet_commit_token` table (no
+  leading underscore — Spanner identifiers must start with a letter), so
+  data and watermark commit atomically (the client retries `ABORTED` commits
+  automatically).
 - **MongoDB sink** — one multi-document transaction (replica set required)
   commits the page plus a `{_id: scope, token}` watermark document in the
   `_faucet_commit_token` collection.
@@ -169,11 +174,11 @@ Only certain connectors are allowed in an effectively-once (`delivery: exactly_o
 | Role | Allowed connectors | Why others are excluded |
 |------|--------------------|------------------------|
 | Source | `postgres-cdc`, `mysql-cdc`, `mongodb-cdc`, `kafka` | The source must emit a complete resume position (bookmark) on every page, over an immutable log, so resuming from a bookmark continues the record stream at exactly that position. Query-based sources (REST, SQL query, etc.) can return different data on replay — the pipeline would silently skip records it never wrote. |
-| Sink | `sqlite`, `postgres`, `mysql`, `mssql`, `iceberg`, `bigquery`, `kafka`, `snowflake`, `redis`, `mongodb` | The sink must be able to commit data and a watermark token atomically in a single transaction or snapshot. Sinks without transaction support cannot provide this guarantee (they can still reach effectively-once via keyed upsert, below). The MongoDB sink requires a replica set (or sharded cluster) — multi-document transactions are unavailable on a standalone server. |
+| Sink | `sqlite`, `postgres`, `mysql`, `mssql`, `iceberg`, `bigquery`, `kafka`, `snowflake`, `redis`, `mongodb`, `spanner` | The sink must be able to commit data and a watermark token atomically in a single transaction or snapshot. Sinks without transaction support cannot provide this guarantee (they can still reach effectively-once via keyed upsert, below). The MongoDB sink requires a replica set (or sharded cluster) — multi-document transactions are unavailable on a standalone server. |
 
 **Keyed upsert relaxes the source restriction entirely**: any source feeding an
 upsert-capable sink (`postgres`, `sqlite`, `mysql`, `mssql`, `mongodb`,
-`elasticsearch`, `bigquery`) configured with `write_mode: upsert` + `key` is
+`elasticsearch`, `bigquery`, `spanner`) configured with `write_mode: upsert` + `key` is
 accepted under `delivery: exactly_once` and reported as
 `effectively-once (keyed upsert)`. There is no watermark in this mode — the
 idempotence comes from the sink converging on the keyed row.

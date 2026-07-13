@@ -29,7 +29,7 @@ the top level of the sink's `config`, alongside `table_name` etc.):
 
 ## Supported sinks and their native primitives
 
-Seven sinks support `upsert`/`delete`; every other sink is append-only.
+Eight sinks support `upsert`/`delete`; every other sink is append-only.
 
 | Sink | Requires | Native primitive |
 |------|----------|------------------|
@@ -40,6 +40,7 @@ Seven sinks support `upsert`/`delete`; every other sink is append-only.
 | `mongodb` | — (schemaless) | `replace_one(upsert)` / `delete_one`, `key` → match filter |
 | `elasticsearch` | — (schemaless) | `_bulk` `index` / `delete`, `key` → `_id` |
 | `bigquery` | a defined table schema + `key` columns | in-place `MERGE … USING UNNEST(@payload)` (no staging table) |
+| `spanner` | `key` must equal the table's primary-key columns | `InsertOrUpdate` / `Delete` mutations (mutations always address the PK) |
 
 The **SQL sinks require column-mapping mode** — `column_mapping: auto_map`
 (postgres/mysql/sqlite) or `auto_columns` (mssql). The single-JSONB-column blob
