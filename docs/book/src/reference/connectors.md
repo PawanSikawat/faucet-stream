@@ -1,6 +1,6 @@
 # Connector catalog
 
-faucet-stream ships **24 sources** and **18 sinks**. Each is a Cargo feature
+faucet-stream ships **25 sources** and **20 sinks**. Each is a Cargo feature
 (`source-<name>` / `sink-<name>`) and an independently published crate. Full API
 docs are on [docs.rs](https://docs.rs/faucet-stream).
 
@@ -39,6 +39,7 @@ Legend: ✓ supported · ✗ not applicable. Tier: T1 = passes the faucet-confor
 | Apache Parquet | T1 ✅ | `source-parquet` | ✓ | ✗ | ✗ | ✗ | ✗ | local/glob/S3, vectorized Arrow reader, projection |
 | BigQuery | T1 ✅ᵐ | `source-bigquery` | ✓ | ✗ | ✗ | ✗ | ✓ | `jobs.query` + pageToken pagination |
 | Snowflake | T1 ✅ᵐ | `source-snowflake` | ✓ | ✗ | ✗ | ✗ | ✓ | SQL REST API, server-side partitions |
+| Cloud Spanner | T1 ✅ᵉ | `source-spanner` | ✓ | ✓⁸ | ✗ | ✗ | ✓ | streaming SQL (gRPC), incremental `@bookmark` replication, stale reads, PK-range sharding |
 | Singer bridge ⚠️ | T2 ⚠️ | `source-singer` | ✓ | ✓⁹ | ✗ | ✗ | ✗ | runs an external Singer tap; NDJSON over stdout, STATE→bookmark. **Tier-2 / experimental** |
 
 ¹⁰ **Discover** = enumerates the datasets behind the connection for
@@ -77,7 +78,10 @@ individual tap — pair it with a keyed/upsert sink for clean, effectively-once
 > `elasticsearch`, `bigquery`, and `snowflake` sources and the `http` sink. The
 > mock faithfully drives the paging, schema, and error-handling behavior the
 > checks assert, but it is not an end-to-end test against the real system (no
-> credentialed cloud/service backend runs in CI).
+> credentialed cloud/service backend runs in CI). **ᵉ** marks the Cloud Spanner
+> pair, whose battery runs against Google's official **Spanner emulator**
+> (Docker) — a real gRPC Spanner implementation, closer to end-to-end than a
+> wiremock but still not the managed service.
 >
 > The connectors still marked **Tier-2** are the ones whose full battery cannot
 > run in CI (so they are not conformance-certified — Tier-2 means "not certified,"
@@ -116,6 +120,7 @@ file/append sinks (`jsonl`, `csv`, `stdout`) it's a no-op — they write per rec
 | Stdout | T1 ✅ | `sink-stdout` | no-op | ✗ | ✗ | ✗ | JSON Lines / pretty JSON / TSV |
 | Apache Kafka | T1 ✅ | `sink-kafka` | ✓ | ✗ | ✗ | **✓** | producer, batched sends, multi-topic routing; transactional producer + compacted watermark side-topic for effectively-once |
 | AWS Kinesis | T1 ✅ | `sink-kinesis` | ✓ | ✗ | ✗ | ✗ | batched PutRecords; partition-key routing, per-entry partial-failure retry (DLQ-routable) |
+| Cloud Spanner | T1 ✅ᵉ | `sink-spanner` | ✓ | ✗ | **✓** | **✓** | batched mutations (`insert` / `insert_or_update` / `delete`), cell-budget chunking, commit-token transaction for effectively-once |
 | Apache Parquet | T1 ✅ | `sink-parquet` | ✓ | ✗⁶ | ✗ | ✗ | local/S3, schema inference (re-inferred per file on rollover), row/byte rollover |
 | Apache Iceberg | T2 | `sink-iceberg` | ✓ | ✗⁶ | ✗ | **✓** | REST/Glue/SQL/HMS catalog, local + cloud (S3/GCS) warehouses, `fast_append` snapshot, Parquet data files |
 
@@ -129,7 +134,9 @@ commit-token record into a compacted side-topic in one Kafka transaction; the
 Snowflake sink runs one multi-statement `BEGIN;INSERT;MERGE;COMMIT` request; the
 Redis sink wraps the page plus a `_faucet_commit_token:<scope>` key in one
 `MULTI`/`EXEC`; the MongoDB sink commits the page plus a watermark document in
-one multi-document transaction (replica set required). Sinks configured with
+one multi-document transaction (replica set required); the Cloud Spanner sink
+buffers the page's mutations plus a `faucet_commit_token` row in one
+read-write transaction. Sinks configured with
 `write_mode: upsert` + `key` also reach effectively-once via keyed dedup, with
 any source. See
 [Effectively-once delivery](../cookbook/state.md#effectively-once-delivery).
@@ -172,6 +179,7 @@ sinks can actually *act* on it varies:
 |------|------------------|
 | `postgres`, `mysql`, `mssql`, `sqlite`, `bigquery` | **✓ evolve** — in-place additive/widening DDL |
 | `elasticsearch` | **✓ evolve** — can add fields only (existing-field type change is incompatible) |
+| `spanner` | **✓ evolve** — additive columns + NOT NULL relax; base-type widening is not supported by Spanner (use `allow_type_widening: false`) |
 | `iceberg` | detect-only — `warn`/`ignore`/`fail`/`quarantine` work; `evolve` blocked on upstream `iceberg-rust` (#255) |
 | `jsonl`, `csv`, `stdout`, `mongodb`, `redis`, `http`, `kafka`, `s3`, `gcs`, `snowflake`, `parquet` | — (schemaless; the `schema:` policy is inert) |
 
@@ -186,6 +194,7 @@ nuances (e.g. SQLite widening is a no-op; Elasticsearch can only add fields).
 | REST / GraphQL / XML | Bearer, Basic, ApiKey (header), ApiKeyQuery, OAuth2 (client-credentials), TokenEndpoint, Custom headers — see [Auth cookbook](../cookbook/auth.md) |
 | BigQuery | service-account key (path or inline JSON), application-default credentials |
 | Snowflake | JWT key-pair, OAuth |
+| Cloud Spanner | service-account key (path or inline JSON), application-default credentials |
 | Kafka | SASL (PLAIN/SCRAM) + TLS |
 | WebSocket | none, Bearer token, Custom headers |
 | Elasticsearch | basic, API key, bearer, none |

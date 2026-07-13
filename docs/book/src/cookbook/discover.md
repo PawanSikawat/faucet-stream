@@ -86,6 +86,7 @@ listing, never a data scan.
 | `elasticsearch` | indices (non-`.`-system) | `_mapping` field types | `_cat/indices` docs.count | `index` |
 | `bigquery` | `dataset.table` (physical tables; capped at 500 enumerated / 100 schema fetches, warned) | `tables.get` | `numRows` | `query` |
 | `snowflake` | `schema.table` (base tables) | `information_schema.columns` | `row_count` | `query` |
+| `spanner` | base tables (default schema) | `INFORMATION_SCHEMA.COLUMNS` | — | `query` |
 | `s3` | common prefixes under the configured prefix (one delimiter listing; falls back to per-object entries) | — | — | `prefix` |
 | `gcs` | same as s3 | — | — | `prefix` (objects: `object_keys`) |
 

@@ -162,6 +162,7 @@ jobs:
           - source-gcs
           - source-bigquery
           - source-snowflake
+          - source-spanner
           - source-singer
           # Sinks
           - sink-bigquery
@@ -181,6 +182,7 @@ jobs:
           - sink-stdout
           - sink-kafka
           - sink-kinesis
+          - sink-spanner
           - sink-parquet
           - sink-gcs
           # Kafka extras
