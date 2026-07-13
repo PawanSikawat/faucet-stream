@@ -155,41 +155,50 @@ between two Postgres databases."
 
 **1,000,000 rows** (`bench` → `bench_dest`, seed 42, 1 warmup + 3 timed runs).
 Postgres 16 in Docker (colima) on an Apple M3 Pro; faucet `source-postgres` →
-`sink-postgres` (multi-row `INSERT`s via `sqlx`, AutoMap columns) vs Meltano
-`tap-postgres` → `target-postgres` 0.8.0.
+`sink-postgres` (AutoMap columns) vs Meltano `tap-postgres` →
+`target-postgres` 0.8.0. faucet is measured on both of its append write paths:
+multi-row `INSERT`s and the `write_method: copy` bulk-load fast-path (#308,
+`COPY … FROM STDIN` — the benchmark config's default since it is the best
+append path).
 
 | Tool | Median wall-clock (s) | Stddev (s) | Throughput (rows/s) | Peak RSS (MiB) | Rows out |
 |---|---|---|---|---|---|
-| **faucet-stream** | **11.17** | 0.335 | **89,500** | **35.9** | 1,000,000 |
+| **faucet-stream (`write_method: copy`)** | **8.12** | 0.142 | **123,200** | **35.9** | 1,000,000 |
+| faucet-stream (multi-row `INSERT`) | 10.10 | 0.112 | 99,000 | 35.9 | 1,000,000 |
 | Meltano (Singer) | 129.8 | 34.347 | 7,706 | 485.7 | 1,000,000 |
 
-On this workload/hardware faucet was **~11.6× faster** and used **~13.5× less peak
-memory** (35.9 vs 485.7 MiB), with **exact row-count parity** (1,000,000 =
-1,000,000). Note also the stddev: faucet is tight (±0.3s) while Meltano's Python/
-pipe runtime jitters badly at scale (±34s). This is the whole point of the
-scenario: **the gap collapses from ~96× to ~12× as the workload moves from
-parse-bound to sink-bound**, because both tools become bounded by the same
-Postgres write path. The narrowing, all at 1M rows on the same machine:
+On this workload/hardware faucet's COPY path was **~16× faster** than Meltano
+(and its INSERT path ~12.9×), with **~13.5× less peak memory** (35.9 vs 485.7
+MiB) and **exact row-count parity** (1,000,000 = 1,000,000). Note also the
+stddev: faucet is tight (±0.1s) while Meltano's Python/pipe runtime jitters
+badly at scale (±34s). (The Meltano row is from the same-machine PR #307 run;
+the faucet rows were re-measured when the COPY fast-path landed. faucet's
+INSERT number improved slightly between runs — 11.17s → 10.10s — normal
+machine-load drift.) This is the whole point of the scenario: **the gap
+collapses from ~96× to ~16× as the workload moves from parse-bound to
+sink-bound**, because both tools become bounded by the same Postgres write
+path. The narrowing, all at 1M rows on the same machine:
 
 | Scenario | Bottleneck | faucet (rows/s) | Meltano (rows/s) | Gap |
 |---|---|---|---|---|
 | A — CSV → JSONL | parse/serialize (best case) | 712,403 | 7,383 | **~96×** |
 | B — Postgres → JSONL | typed row decode | 179,700 | 7,184 | **~25×** |
-| C — Postgres → Postgres | **destination write (sink-bound)** | 89,500 | 7,706 | **~12×** |
+| C — Postgres → Postgres | **destination write (sink-bound)** | 123,200 (`copy`) / 99,000 (`insert`) | 7,706 | **~16× / ~13×** |
 
-So quote **~12×** for a realistic DB→DB move, and treat the ~96× CSV→JSONL figure
-as the upper bound, not the typical case.
+So quote **~16×** for a realistic DB→DB move (with `write_method: copy`), and
+treat the ~96× CSV→JSONL figure as the upper bound, not the typical case.
 
-**Why ~12× and not more?** It is near the ceiling for this shape, and the profile
-proves it: at 1M, faucet spends ~62% of its wall on CPU (decode Postgres rows →
-JSON → re-encode/bind) and the rest blocked on the destination's `INSERT` +
-WAL — i.e. faucet is already feeding Postgres near its ingest rate and adds
-little overhead, while Meltano adds ~12×. You cannot out-run the database at a
-task where you are the one feeding it. Batch size is *not* the lever (throughput
-is flat from 500→5000 rows/`INSERT` and worsens past the 65 535 bind-param cap);
-the real headroom is a `COPY`-based bulk-load fast-path (~5–10× faster than
-`INSERT`), which would widen this gap further since Meltano's target uses
-`INSERT` too.
+**Why ~16× and not more?** It is near the ceiling for this shape, and the
+profile proves it: at 1M, faucet spends ~62% of its wall on CPU (decode
+Postgres rows → JSON → re-encode) and the rest blocked on the destination
+write. `COPY` roughly halves the write step vs multi-row `INSERT` (the 5–10×
+folk number applies to the write step in isolation, and Amdahl caps the
+end-to-end gain at ~1.6× when 62% of the time is decode) — measured end-to-end
+it bought **1.24×** (10.10s → 8.12s). Meltano's `target-postgres` uses
+`INSERT`, so it cannot follow. The remaining headroom is the decode side
+(skipping the JSON intermediate for same-engine moves), which is niche and
+high-complexity — see issue #308. Batch size is *not* the lever (throughput is
+flat from 500→5000 rows/`INSERT` and worsens past the 65 535 bind-param cap).
 
 > **Reproduce.** `make bench-postgres` (needs Docker) runs all three scenarios;
 > `scripts/run-bench.sh --postgres --rows 1000000` scales Scenario C to the 1M
