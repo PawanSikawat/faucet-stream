@@ -30,6 +30,8 @@ bytes.workspace = true
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "fs", "io-util"] }
 serde_json.workspace = true
+faucet-conformance.workspace = true
+schemars.workspace = true
 tempfile = "3"
 
 [package.metadata.docs.rs]

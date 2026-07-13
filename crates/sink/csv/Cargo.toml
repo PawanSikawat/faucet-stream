@@ -23,6 +23,8 @@ tokio.workspace = true
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt", "fs"] }
 serde_json.workspace = true
+faucet-conformance.workspace = true
+schemars.workspace = true
 tempfile = "3"
 
 [features]

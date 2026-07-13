@@ -15,30 +15,30 @@ Legend: ✓ supported · ✗ not applicable. Tier: T1 = passes the faucet-confor
 
 | Connector | Tier¹¹ | Feature | Streams¹ | Resumable² | Effectively-once³ | Compression | Discover¹⁰ | Underlying primitive |
 |-----------|:---:|---------|:---:|:---:|:---:|:---:|:---:|----------------------|
-| REST | T1 ✅ | `source-rest` | ✓ | ✓ | ✗ | ✗ | ✗ | HTTP + 6 pagination styles, JSONPath extraction |
-| GraphQL | T2 | `source-graphql` | ✓ | ✗ | ✗ | ✗ | ✗ | cursor pagination, variable injection |
-| XML / SOAP | T2 | `source-xml` | ✓ | ✗ | ✗ | ✗ | ✗ | streaming XML→JSON, dot-path extraction |
-| gRPC | T2 | `source-grpc` | ✓⁴ | ✗ | ✗ | ✗ | ✗ | dynamic protobuf; unary + server-streaming |
+| REST | T1 ✅ᵐ | `source-rest` | ✓ | ✓ | ✗ | ✗ | ✗ | HTTP + 6 pagination styles, JSONPath extraction |
+| GraphQL | T1 ✅ᵐ | `source-graphql` | ✓ | ✗ | ✗ | ✗ | ✗ | cursor pagination, variable injection |
+| XML / SOAP | T1 ✅ᵐ | `source-xml` | ✓ | ✗ | ✗ | ✗ | ✗ | streaming XML→JSON, dot-path extraction |
+| gRPC | T1 ✅ | `source-grpc` | ✓⁴ | ✗ | ✗ | ✗ | ✗ | dynamic protobuf; unary + server-streaming |
 | PostgreSQL | T1 ✅ | `source-postgres` | ✓ | ✗ | ✗ | ✗ | ✓ | SQL query, rows as JSON |
-| PostgreSQL CDC | T2 | `source-postgres-cdc` | ✓ | ✓ | **✓** | ✗ | ✗ | logical replication (pgoutput), LSN bookmarks |
-| MySQL | T2 | `source-mysql` | ✓ | ✗ | ✗ | ✗ | ✓ | SQL query, rows as JSON |
-| MySQL CDC | T2 | `source-mysql-cdc` | ✓ | ✓ | **✓** | ✗ | ✗ | binlog row events, file/pos or GTID bookmarks |
-| Microsoft SQL Server | T2 | `source-mssql` | ✓ | ✓⁸ | ✗ | ✗ | ✓ | SQL query (tiberius), rows as JSON |
+| PostgreSQL CDC | T1 ✅ | `source-postgres-cdc` | ✓ | ✓ | **✓** | ✗ | ✗ | logical replication (pgoutput), LSN bookmarks |
+| MySQL | T1 ✅ | `source-mysql` | ✓ | ✗ | ✗ | ✗ | ✓ | SQL query, rows as JSON |
+| MySQL CDC | T1 ✅ | `source-mysql-cdc` | ✓ | ✓ | **✓** | ✗ | ✗ | binlog row events, file/pos or GTID bookmarks |
+| Microsoft SQL Server | T1 ✅ | `source-mssql` | ✓ | ✓⁸ | ✗ | ✗ | ✓ | SQL query (tiberius), rows as JSON |
 | SQLite | T1 ✅ | `source-sqlite` | ✓ | ✗ | ✗ | ✗ | ✓ | SQL query, rows as JSON |
-| AWS S3 | T2 | `source-s3` | ✓⁵ | ✗ | ✗ | ✓ | ✓ | object reader: JSONL, JSON array, raw text |
+| AWS S3 | T1 ✅ | `source-s3` | ✓⁵ | ✗ | ✗ | ✓ | ✓ | object reader: JSONL, JSON array, raw text |
 | Google Cloud Storage | T2 | `source-gcs` | ✓⁵ | ✗ | ✗ | ✓ | ✓ | object reader: JSONL, JSON array, raw text |
-| MongoDB | T2 | `source-mongodb` | ✓ | ✗ | ✗ | ✗ | ✓ | `find()` with filter/projection/sort |
-| MongoDB CDC | T2 | `source-mongodb-cdc` | ✓ | ✓ | **✓** | ✗ | ✗ | Change Streams, resumeToken bookmarks; `max_staged_records` buffer cap |
-| Redis | T2 | `source-redis` | ✓ | ✗ | ✗ | ✗ | ✗ | streams, lists, key patterns |
+| MongoDB | T1 ✅ | `source-mongodb` | ✓ | ✗ | ✗ | ✗ | ✓ | `find()` with filter/projection/sort |
+| MongoDB CDC | T1 ✅ | `source-mongodb-cdc` | ✓ | ✓ | **✓** | ✗ | ✗ | Change Streams, resumeToken bookmarks; `max_staged_records` buffer cap |
+| Redis | T1 ✅ | `source-redis` | ✓ | ✗ | ✗ | ✗ | ✗ | streams, lists, key patterns |
 | Webhook | T2 | `source-webhook` | ✗⁶ | ✗ | ✗ | ✗ | ✗ | temporary HTTP server collecting POSTs |
-| WebSocket | T2 | `source-websocket` | ✓ | ✗ | ✗ | ✗ | ✗ | live push feed; subscribe frames, reconnect, ping keepalive |
+| WebSocket | T1 ✅ | `source-websocket` | ✓ | ✗ | ✗ | ✗ | ✗ | live push feed; subscribe frames, reconnect, ping keepalive |
 | CSV | T1 ✅ | `source-csv` | ✓ | ✗ | ✗ | ✓ | ✗ | CSV files as JSON; strict field count by default (`flexible: true` to tolerate ragged rows) |
-| Elasticsearch | T2 | `source-elasticsearch` | ✓ | ✗ | ✗ | ✗ | ✓ | search/scroll API |
-| Apache Kafka | T2 | `source-kafka` | ✓ | ✓ | **✓** | ✗ | ✗ | consumer; idle/max-messages termination, offset bookmarks |
-| AWS Kinesis | T2 | `source-kinesis` | ✓ | ✓ | ✗ | ✗ | ✗ | per-shard GetRecords workers; sequence-number bookmarks, idle/max-messages termination |
-| Apache Parquet | T2 | `source-parquet` | ✓ | ✗ | ✗ | ✗ | ✗ | local/glob/S3, vectorized Arrow reader, projection |
-| BigQuery | T2 | `source-bigquery` | ✓ | ✗ | ✗ | ✗ | ✓ | `jobs.query` + pageToken pagination |
-| Snowflake | T2 | `source-snowflake` | ✓ | ✗ | ✗ | ✗ | ✓ | SQL REST API, server-side partitions |
+| Elasticsearch | T1 ✅ᵐ | `source-elasticsearch` | ✓ | ✗ | ✗ | ✗ | ✓ | search/scroll API |
+| Apache Kafka | T1 ✅ | `source-kafka` | ✓ | ✓ | **✓** | ✗ | ✗ | consumer; idle/max-messages termination, offset bookmarks |
+| AWS Kinesis | T1 ✅ | `source-kinesis` | ✓ | ✓ | ✗ | ✗ | ✗ | per-shard GetRecords workers; sequence-number bookmarks, idle/max-messages termination |
+| Apache Parquet | T1 ✅ | `source-parquet` | ✓ | ✗ | ✗ | ✗ | ✗ | local/glob/S3, vectorized Arrow reader, projection |
+| BigQuery | T1 ✅ᵐ | `source-bigquery` | ✓ | ✗ | ✗ | ✗ | ✓ | `jobs.query` + pageToken pagination |
+| Snowflake | T1 ✅ᵐ | `source-snowflake` | ✓ | ✗ | ✗ | ✗ | ✓ | SQL REST API, server-side partitions |
 | Singer bridge ⚠️ | T2 ⚠️ | `source-singer` | ✓ | ✓⁹ | ✗ | ✗ | ✗ | runs an external Singer tap; NDJSON over stdout, STATE→bookmark. **Tier-2 / experimental** |
 
 ¹⁰ **Discover** = enumerates the datasets behind the connection for
@@ -63,13 +63,34 @@ persists a tracking-column bookmark); in `full` mode it is not.
 individual tap — pair it with a keyed/upsert sink for clean, effectively-once
 (idempotent at-least-once) behavior.
 
-> **Support tiers.** A connector is **Tier-1 (supported)** when it invokes and
-> passes the `faucet-conformance` battery in CI (valid config schema,
-> bounded-memory streaming, and the further checks as they land). That battery
-> **is** the tiering mechanism — there is no separate scheme. Connectors marked
-> **⚠️ Tier-2 / experimental** (currently the Singer bridge) are best-effort:
-> correctness bugs are fixed, but breadth of testing and upstream-drift tracking
-> are not guaranteed.
+> **Support tiers** (the **Tier** column above). A connector is **Tier-1 ✅**
+> when it invokes and passes the `faucet-conformance` battery in CI against the
+> connector's real backend — config-schema validity, bounded-memory streaming,
+> and (where applicable) bookmark round-trip, idempotent replay, truthful
+> capabilities, and errors-not-panics (see the Faucet Connector Protocol spec,
+> `docs/spec/faucet-connector-spec-v0.md`). Each Tier-1 connector wires the
+> battery from its own `tests/conformance.rs`; that battery **is** the tiering
+> mechanism — there is no separate scheme.
+>
+> **ᵐ** marks a connector whose battery runs in CI against a **wiremock HTTP
+> mock**, not a live service instance — the `rest`, `graphql`, `xml`,
+> `elasticsearch`, `bigquery`, and `snowflake` sources and the `http` sink. The
+> mock faithfully drives the paging, schema, and error-handling behavior the
+> checks assert, but it is not an end-to-end test against the real system (no
+> credentialed cloud/service backend runs in CI).
+>
+> The connectors still marked **Tier-2** are the ones whose full battery cannot
+> run in CI (so they are not conformance-certified — Tier-2 means "not certified,"
+> **not** "low quality"; they keep their own extensive wiremock/testcontainers
+> tests): the **BigQuery** and **Snowflake** sinks and the **Elasticsearch** sink
+> are cloud-only and tested against wiremock, which cannot validate real
+> idempotent dedup; the **GCS** source's bounded-memory check needs a real gRPC
+> backend (the emulator is REST-only); the **GCS** sink cannot be durably counted
+> against the emulator; the **webhook** source is buffer-shaped (no bounded-memory
+> page check); and the **Iceberg** sink is append-only with a terminal `flush`
+> that does not fit the effectively-once replay check on iceberg-rust 0.9.1. The
+> **Singer bridge ⚠️** passes the battery but is additionally **experimental
+> (v0, single-stream)**.
 
 ## Sinks
 
@@ -79,23 +100,23 @@ file/append sinks (`jsonl`, `csv`, `stdout`) it's a no-op — they write per rec
 | Connector | Tier¹¹ | Feature | `batch_size` | Compression | Upsert⁸ | Effectively-once⁷ | Write unit |
 |-----------|:---:|---------|:---:|:---:|:---:|:---:|------------|
 | BigQuery | T2 | `sink-bigquery` | ✓ | ✗ | **✓** | **✓** | `tabledata.insertAll` streaming; in-place `MERGE` for upsert + effectively-once |
-| PostgreSQL | T2 | `sink-postgres` | ✓ | ✗ | **✓** | **✓** | multi-row `INSERT` (JSONB or mapped cols) |
+| PostgreSQL | T1 ✅ | `sink-postgres` | ✓ | ✗ | **✓** | **✓** | multi-row `INSERT` (JSONB or mapped cols) |
 | JSON Lines | T1 ✅ | `sink-jsonl` | no-op | ✓ | ✗ | ✗ | buffered file append |
 | Snowflake | T2 | `sink-snowflake` | ✓ | ✗ | ✗ | **✓** | SQL REST API; multi-statement `BEGIN;INSERT;MERGE;COMMIT` transaction for effectively-once |
-| MySQL | T2 | `sink-mysql` | ✓ | ✗ | **✓** | **✓** | multi-row `INSERT` |
-| Microsoft SQL Server | T2 | `sink-mssql` | ✓ | ✗ | **✓** | **✓** | multi-row `INSERT` (2100-param auto-split, per-row DLQ) |
+| MySQL | T1 ✅ | `sink-mysql` | ✓ | ✗ | **✓** | **✓** | multi-row `INSERT` |
+| Microsoft SQL Server | T1 ✅ | `sink-mssql` | ✓ | ✗ | **✓** | **✓** | multi-row `INSERT` (2100-param auto-split, per-row DLQ) |
 | SQLite | T1 ✅ | `sink-sqlite` | ✓ | ✗ | **✓** | **✓** | transaction-wrapped batch |
-| AWS S3 | T2 | `sink-s3` | ✓ | ✓ | ✗ | ✗ | JSONL objects, parallel uploads |
+| AWS S3 | T1 ✅ | `sink-s3` | ✓ | ✓ | ✗ | ✗ | JSONL objects, parallel uploads |
 | Google Cloud Storage | T2 | `sink-gcs` | ✓ | ✓ | ✗ | ✗ | JSONL objects |
-| MongoDB | T2 | `sink-mongodb` | ✓ | ✗ | **✓** | **✓** | `insert_many`; multi-document transaction for effectively-once (replica set required) |
-| Redis | T2 | `sink-redis` | ✓ | ✗ | ✗ | **✓** | streams, lists, key-value (pipelined); `MULTI`/`EXEC` transaction for effectively-once |
-| CSV | T2 | `sink-csv` | no-op | ✓ | ✗ | ✗ | buffered file rows; column set frozen from first batch (`on_unknown_field: warn`/`error`) |
+| MongoDB | T1 ✅ | `sink-mongodb` | ✓ | ✗ | **✓** | **✓** | `insert_many`; multi-document transaction for effectively-once (replica set required) |
+| Redis | T1 ✅ | `sink-redis` | ✓ | ✗ | ✗ | **✓** | streams, lists, key-value (pipelined); `MULTI`/`EXEC` transaction for effectively-once |
+| CSV | T1 ✅ | `sink-csv` | no-op | ✓ | ✗ | ✗ | buffered file rows; column set frozen from first batch (`on_unknown_field: warn`/`error`) |
 | Elasticsearch | T2 | `sink-elasticsearch` | ✓ | ✗ | **✓** | ✗ | `_bulk` NDJSON (per-row DLQ) |
-| HTTP | T2 | `sink-http` | ✓ | ✗ | ✗ | ✗ | POST, concurrent under a semaphore |
-| Stdout | T2 | `sink-stdout` | no-op | ✗ | ✗ | ✗ | JSON Lines / pretty JSON / TSV |
-| Apache Kafka | T2 | `sink-kafka` | ✓ | ✗ | ✗ | **✓** | producer, batched sends, multi-topic routing; transactional producer + compacted watermark side-topic for effectively-once |
-| AWS Kinesis | T2 | `sink-kinesis` | ✓ | ✗ | ✗ | ✗ | batched PutRecords; partition-key routing, per-entry partial-failure retry (DLQ-routable) |
-| Apache Parquet | T2 | `sink-parquet` | ✓ | ✗⁶ | ✗ | ✗ | local/S3, schema inference (re-inferred per file on rollover), row/byte rollover |
+| HTTP | T1 ✅ᵐ | `sink-http` | ✓ | ✗ | ✗ | ✗ | POST, concurrent under a semaphore |
+| Stdout | T1 ✅ | `sink-stdout` | no-op | ✗ | ✗ | ✗ | JSON Lines / pretty JSON / TSV |
+| Apache Kafka | T1 ✅ | `sink-kafka` | ✓ | ✗ | ✗ | **✓** | producer, batched sends, multi-topic routing; transactional producer + compacted watermark side-topic for effectively-once |
+| AWS Kinesis | T1 ✅ | `sink-kinesis` | ✓ | ✗ | ✗ | ✗ | batched PutRecords; partition-key routing, per-entry partial-failure retry (DLQ-routable) |
+| Apache Parquet | T1 ✅ | `sink-parquet` | ✓ | ✗⁶ | ✗ | ✗ | local/S3, schema inference (re-inferred per file on rollover), row/byte rollover |
 | Apache Iceberg | T2 | `sink-iceberg` | ✓ | ✗⁶ | ✗ | **✓** | REST/Glue/SQL/HMS catalog, local + cloud (S3/GCS) warehouses, `fast_append` snapshot, Parquet data files |
 
 ⁶ Parquet and Iceberg both handle compression internally at the Parquet column

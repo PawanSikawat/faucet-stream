@@ -29,8 +29,10 @@ url.workspace = true
 bytes.workspace = true
 
 [dev-dependencies]
+faucet-conformance.workspace = true
 tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "fs", "io-util"] }
 serde_json.workspace = true
+schemars.workspace = true
 futures.workspace = true
 tempfile = "3"
 

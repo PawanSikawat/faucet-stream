@@ -34,9 +34,11 @@ md-5.workspace = true
 compression = ["faucet-core/compression"]
 
 [dev-dependencies]
+faucet-conformance.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 serde_json.workspace = true
-futures.workspace = true
+schemars.workspace = true
+futures = { workspace = true }
 testcontainers = "0.27"
 reqwest = { workspace = true }
 urlencoding.workspace = true

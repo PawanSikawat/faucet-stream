@@ -24,6 +24,8 @@ tokio.workspace = true
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt"] }
 serde_json.workspace = true
+faucet-conformance.workspace = true
+schemars.workspace = true
 wiremock = "0.6"
 
 [package.metadata.docs.rs]

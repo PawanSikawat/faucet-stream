@@ -31,9 +31,11 @@ url.workspace = true
 tokio.workspace = true
 
 [dev-dependencies]
+faucet-conformance.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync"] }
 serde_json.workspace = true
-futures.workspace = true
+schemars.workspace = true
+futures = { workspace = true }
 testcontainers = "0.27"
 testcontainers-modules = { version = "0.15", features = ["mssql_server"] }
 

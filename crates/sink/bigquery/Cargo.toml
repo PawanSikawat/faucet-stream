@@ -22,6 +22,9 @@ tracing.workspace = true
 async-trait.workspace = true
 
 [dev-dependencies]
+faucet-conformance.workspace = true
+serde_json.workspace = true
+schemars.workspace = true
 tokio = { version = "1", features = ["full", "test-util"] }
 wiremock = "0.6"
 tempfile = "3"

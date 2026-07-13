@@ -89,6 +89,7 @@ pub struct ServerHandle {
     #[allow(dead_code)]
     pub addr: SocketAddr,
     pub endpoint: String,
+    #[allow(dead_code)]
     pub tail_attempts: Arc<AtomicU32>,
     shutdown: Option<oneshot::Sender<()>>,
     join: Option<tokio::task::JoinHandle<()>>,

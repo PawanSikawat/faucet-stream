@@ -27,6 +27,7 @@ futures-core.workspace = true
 base64.workspace = true
 
 [dev-dependencies]
+faucet-conformance.workspace = true
 tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "net", "time", "sync"] }
 serde_json.workspace = true
 tonic = { workspace = true, features = ["transport", "server"] }
