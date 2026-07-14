@@ -332,6 +332,157 @@ mod tests {
         }
     }
 
+    fn buffer_text(terminal: &ratatui::Terminal<ratatui::backend::TestBackend>) -> String {
+        terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect()
+    }
+
+    fn sample_model() -> TuiModel {
+        let mut model = TuiModel::default();
+        let mut healthy = RowStats {
+            source: "rest".into(),
+            sink: "jsonl".into(),
+            records_in: 12_500,
+            records_out: 12_400,
+            rate: 830.0,
+            ..Default::default()
+        };
+        healthy.in_flight = true;
+        model.rows.insert("orders".into(), healthy);
+        model.rows.insert(
+            "users".into(),
+            RowStats {
+                source: "postgres".into(),
+                sink: "spanner".into(),
+                records_in: 4,
+                records_out: 2,
+                source_errors: 1,
+                sink_errors: 2,
+                dlq_records: 7,
+                // Recent enough that the rendered age ("1m30s ago") fits
+                // the bookmark column; an epoch-old bookmark would clip the
+                // "ago" suffix this test asserts on.
+                last_bookmark_unix: std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .expect("clock")
+                    .as_secs_f64()
+                    - 90.0,
+                finished: Some(false),
+                ..Default::default()
+            },
+        );
+        model.total_out = 12_402;
+        model.total_rate = 830.0;
+        model
+    }
+
+    fn draw_at(width: u16, height: u16, model: &TuiModel, cancelling: bool) -> String {
+        let backend = ratatui::backend::TestBackend::new(width, height);
+        let mut terminal = ratatui::Terminal::new(backend).expect("test terminal");
+        terminal
+            .draw(|frame| {
+                draw(
+                    frame,
+                    "demo-pipeline",
+                    model,
+                    std::time::Duration::from_secs(65),
+                    &["log line one".to_string(), "log line two".to_string()],
+                    cancelling,
+                )
+            })
+            .expect("draw");
+        buffer_text(&terminal)
+    }
+
+    #[test]
+    fn draws_header_table_logs_and_footer_at_full_width() {
+        let text = draw_at(120, 24, &sample_model(), false);
+        // Header: pipeline name, elapsed, totals.
+        assert!(text.contains("faucet run · demo-pipeline"), "{text}");
+        assert!(text.contains("1m05s"), "{text}");
+        assert!(text.contains("12,402 out"), "{text}");
+        // Table: both rows with routes, counts, statuses.
+        assert!(text.contains("source → sink"), "{text}");
+        assert!(text.contains("rest → jsonl"), "{text}");
+        assert!(text.contains("postgres → spanner"), "{text}");
+        assert!(text.contains("12,400"), "{text}");
+        assert!(text.contains("running"), "{text}");
+        assert!(text.contains("failed"), "{text}");
+        // Errors + DLQ + bookmark columns present at this width.
+        assert!(text.contains("dlq"), "{text}");
+        assert!(text.contains("bookmark"), "{text}");
+        assert!(text.contains("ago"), "{text}");
+        // Log pane + footer.
+        assert!(text.contains("log line two"), "{text}");
+        assert!(text.contains("cancel (flush at page boundary)"), "{text}");
+        assert!(!text.contains("cancelling…"), "{text}");
+    }
+
+    #[test]
+    fn cancelling_banner_shows_when_requested() {
+        let text = draw_at(120, 24, &sample_model(), true);
+        assert!(text.contains("cancelling…"), "{text}");
+    }
+
+    #[test]
+    fn narrow_terminal_drops_optional_columns_but_renders() {
+        let text = draw_at(40, 16, &sample_model(), false);
+        // Essentials survive.
+        assert!(text.contains("row"), "{text}");
+        assert!(text.contains("out"), "{text}");
+        assert!(text.contains("status"), "{text}");
+        assert!(text.contains("running"), "{text}");
+        // Route/bookmark columns are gone at 40 cells.
+        assert!(!text.contains("source → sink"), "{text}");
+        assert!(!text.contains("bookmark"), "{text}");
+    }
+
+    #[test]
+    fn empty_model_renders_headers_and_placeholder_free_table() {
+        let text = draw_at(80, 12, &TuiModel::default(), false);
+        assert!(text.contains("faucet run · demo-pipeline"), "{text}");
+        assert!(text.contains("invocations"), "{text}");
+        assert!(text.contains("0 out"), "{text}");
+    }
+
+    #[test]
+    fn anonymous_row_and_unknown_connectors_render_placeholders() {
+        let mut model = TuiModel::default();
+        model.rows.insert(String::new(), RowStats::default());
+        let text = draw_at(120, 16, &model, false);
+        // Empty row id renders as `-`, unknown connectors as `?`.
+        assert!(text.contains("? → ?"), "{text}");
+        assert!(text.contains("pending"), "{text}");
+    }
+
+    #[test]
+    fn log_pane_shows_only_the_tail_that_fits() {
+        let logs: Vec<String> = (0..40).map(|i| format!("logline-{i:02}")).collect();
+        let backend = ratatui::backend::TestBackend::new(100, 20);
+        let mut terminal = ratatui::Terminal::new(backend).expect("test terminal");
+        terminal
+            .draw(|frame| {
+                draw(
+                    frame,
+                    "p",
+                    &TuiModel::default(),
+                    std::time::Duration::from_secs(1),
+                    &logs,
+                    false,
+                )
+            })
+            .expect("draw");
+        let text = buffer_text(&terminal);
+        // The pane is 6 rows (1 border + 5 lines): newest lines win.
+        assert!(text.contains("logline-39"), "{text}");
+        assert!(!text.contains("logline-00"), "{text}");
+    }
+
     #[test]
     fn statuses_map_from_row_state() {
         let mut row = RowStats::default();

@@ -126,37 +126,35 @@ const DEFAULT_BUCKETS: &[f64] = &[
     0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0, 5.0, 10.0, 30.0, 60.0, 300.0,
 ];
 
+/// The handle of the recorder this module installed, if any — makes
+/// [`install_metrics_recorder`] idempotent (second call returns the same
+/// handle instead of racing on the process-global recorder slot).
+static RECORDER_HANDLE: OnceLock<PrometheusHandle> = OnceLock::new();
+
 /// Install the Prometheus recorder for a TUI session and return its render
 /// handle. When the config carries an `observability.prometheus` block the
 /// `/metrics` HTTP endpoint is preserved (recorder + listener, exactly what
 /// `install_observability` would have set up); otherwise a listener-less
-/// recorder is installed purely as the TUI's data source.
+/// recorder is installed purely as the TUI's data source. Idempotent: a
+/// second call returns the first call's handle.
 pub fn install_metrics_recorder(
     prom: Option<&faucet_core::PrometheusConfig>,
 ) -> CliResult<PrometheusHandle> {
-    let already = |handle: PrometheusHandle, ok: bool| {
-        if !ok {
-            tracing::warn!(
-                "metrics recorder already installed; the TUI may show no data (was a recorder installed before `faucet run --tui`?)"
-            );
-        }
-        Ok(handle)
-    };
-    match prom {
-        None => {
-            let recorder = PrometheusBuilder::new()
-                .set_buckets(DEFAULT_BUCKETS)
-                .map_err(|e| CliError::Observability(e.to_string()))?
-                .build_recorder();
-            let handle = recorder.handle();
-            let ok = ::metrics::set_global_recorder(recorder).is_ok();
-            already(handle, ok)
-        }
-        Some(p) => {
-            let listen: std::net::SocketAddr = p
-                .listen
+    // Validate the listener address up front so a config error surfaces even
+    // when the recorder slot is already occupied.
+    let listen: Option<std::net::SocketAddr> = match prom {
+        Some(p) => Some(
+            p.listen
                 .parse()
-                .map_err(|e| CliError::Observability(format!("prometheus listen: {e}")))?;
+                .map_err(|e| CliError::Observability(format!("prometheus listen: {e}")))?,
+        ),
+        None => None,
+    };
+    if let Some(handle) = RECORDER_HANDLE.get() {
+        return Ok(handle.clone());
+    }
+    let handle = match (prom, listen) {
+        (Some(p), Some(listen)) => {
             let (recorder, exporter) = PrometheusBuilder::new()
                 .with_http_listener(listen)
                 .set_buckets(p.buckets.as_deref().unwrap_or(DEFAULT_BUCKETS))
@@ -164,13 +162,77 @@ pub fn install_metrics_recorder(
                 .build()
                 .map_err(|e| CliError::Observability(e.to_string()))?;
             let handle = recorder.handle();
-            let ok = ::metrics::set_global_recorder(recorder).is_ok();
-            if ok {
+            if ::metrics::set_global_recorder(recorder).is_ok() {
                 tokio::spawn(exporter);
                 tracing::info!("Prometheus /metrics listening on {}", p.listen);
+            } else {
+                warn_recorder_occupied();
             }
-            already(handle, ok)
+            handle
         }
+        _ => {
+            let recorder = PrometheusBuilder::new()
+                .set_buckets(DEFAULT_BUCKETS)
+                .map_err(|e| CliError::Observability(e.to_string()))?
+                .build_recorder();
+            let handle = recorder.handle();
+            if ::metrics::set_global_recorder(recorder).is_err() {
+                warn_recorder_occupied();
+            }
+            handle
+        }
+    };
+    Ok(RECORDER_HANDLE.get_or_init(|| handle).clone())
+}
+
+fn warn_recorder_occupied() {
+    tracing::warn!(
+        "metrics recorder already installed; the TUI may show no data (was a recorder installed before `faucet run --tui`?)"
+    );
+}
+
+/// Install the TUI session's observability: the TUI owns the metrics
+/// recorder (keeping the `/metrics` endpoint when one is configured) so it
+/// can render the recorder's output; the rest of the observability config
+/// (OTLP traces — the tracing level was already routed into the TUI log ring
+/// by `run_main`) installs as usual with the prometheus block taken out.
+pub fn setup_observability(cfg: &crate::config::PipelineConfig) -> CliResult<PrometheusHandle> {
+    let mut obs_cfg = crate::obs::build_observability_config(cfg);
+    let prom = obs_cfg.prometheus.take();
+    let handle = install_metrics_recorder(prom.as_ref())?;
+    faucet_core::install_observability(&obs_cfg)?;
+    Ok(handle)
+}
+
+/// Source of user cancel requests — abstracted from crossterm so
+/// [`drive_loop`] is testable against a scripted sequence.
+pub trait CancelEvents {
+    /// Drain any pending input; `true` when the user asked to cancel
+    /// (`q` / `Ctrl-C`).
+    fn cancel_requested(&mut self) -> bool;
+}
+
+/// The real, non-blocking crossterm key poll.
+struct CrosstermEvents;
+
+impl CancelEvents for CrosstermEvents {
+    fn cancel_requested(&mut self) -> bool {
+        use ratatui::crossterm::event::{Event, KeyCode, KeyModifiers};
+        let mut requested = false;
+        while ratatui::crossterm::event::poll(std::time::Duration::ZERO).unwrap_or(false) {
+            match ratatui::crossterm::event::read() {
+                Ok(Event::Key(key)) => {
+                    let ctrl_c = key.code == KeyCode::Char('c')
+                        && key.modifiers.contains(KeyModifiers::CONTROL);
+                    if key.code == KeyCode::Char('q') || ctrl_c {
+                        requested = true;
+                    }
+                }
+                Ok(_) => {}
+                Err(_) => break,
+            }
+        }
+        requested
     }
 }
 
@@ -183,36 +245,52 @@ pub async fn drive<T>(
     handle: PrometheusHandle,
     cancel: CancellationToken,
 ) -> T {
-    use ratatui::crossterm::event::{Event, KeyCode, KeyModifiers};
-
     // `ratatui::init` enters the alternate screen + raw mode and installs a
     // panic hook that restores the terminal before the default hook runs.
     let mut terminal = ratatui::init();
+    let result = drive_loop(
+        &mut terminal,
+        CrosstermEvents,
+        run,
+        pipeline,
+        handle,
+        cancel,
+        std::time::Duration::from_millis(250),
+    )
+    .await;
+    ratatui::restore();
+    result
+}
+
+/// The render/cancel loop behind [`drive`], generic over the terminal
+/// backend and the event source so it runs headless under test.
+pub async fn drive_loop<B, E, T>(
+    terminal: &mut ratatui::Terminal<B>,
+    mut events: E,
+    run: impl Future<Output = T>,
+    pipeline: &str,
+    handle: PrometheusHandle,
+    cancel: CancellationToken,
+    tick: std::time::Duration,
+) -> T
+where
+    B: ratatui::backend::Backend,
+    E: CancelEvents,
+{
     let started = std::time::Instant::now();
     let mut sampler = metrics::Sampler::new(pipeline);
     let logs = log_buffer().unwrap_or_default();
-    let mut interval = tokio::time::interval(std::time::Duration::from_millis(250));
+    let mut interval = tokio::time::interval(tick);
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     tokio::pin!(run);
-    let result = loop {
+    loop {
         tokio::select! {
             biased;
             result = &mut run => break result,
             _ = interval.tick() => {
-                // Non-blocking key poll: q / Ctrl-C cancel cooperatively.
-                while ratatui::crossterm::event::poll(std::time::Duration::ZERO).unwrap_or(false) {
-                    match ratatui::crossterm::event::read() {
-                        Ok(Event::Key(key)) => {
-                            let ctrl_c = key.code == KeyCode::Char('c')
-                                && key.modifiers.contains(KeyModifiers::CONTROL);
-                            if key.code == KeyCode::Char('q') || ctrl_c {
-                                cancel.cancel();
-                            }
-                        }
-                        Ok(_) => {}
-                        Err(_) => break,
-                    }
+                if events.cancel_requested() {
+                    cancel.cancel();
                 }
                 handle.run_upkeep();
                 let model = sampler.observe(&handle.render(), started.elapsed());
@@ -223,9 +301,7 @@ pub async fn drive<T>(
                 });
             }
         }
-    };
-    ratatui::restore();
-    result
+    }
 }
 
 /// Flush the tail of the buffered log ring to stderr — called after terminal
@@ -292,5 +368,143 @@ mod tests {
         // not start a session — this is the CI/pipe fallback contract.
         assert!(!is_tui_session(true) || std::io::stdout().is_terminal());
         assert!(!is_tui_session(false));
+    }
+
+    /// Scripted event source: yields `true` once at the configured tick.
+    struct ScriptedEvents {
+        cancel_on_call: usize,
+        calls: usize,
+    }
+
+    impl CancelEvents for ScriptedEvents {
+        fn cancel_requested(&mut self) -> bool {
+            self.calls += 1;
+            self.calls == self.cancel_on_call
+        }
+    }
+
+    /// Never cancels.
+    struct NoEvents;
+    impl CancelEvents for NoEvents {
+        fn cancel_requested(&mut self) -> bool {
+            false
+        }
+    }
+
+    fn test_terminal() -> ratatui::Terminal<ratatui::backend::TestBackend> {
+        ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 24)).expect("terminal")
+    }
+
+    fn recorder_handle() -> PrometheusHandle {
+        // The process-global recorder slot may be taken by any other test in
+        // this binary; install_metrics_recorder tolerates that and hands back
+        // a usable handle either way.
+        install_metrics_recorder(None).expect("recorder")
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn drive_loop_ticks_render_and_exit_on_run_completion() {
+        let mut terminal = test_terminal();
+        let cancel = CancellationToken::new();
+        let result = drive_loop(
+            &mut terminal,
+            NoEvents,
+            async {
+                tokio::time::sleep(std::time::Duration::from_millis(320)).await;
+                42
+            },
+            "loop-pipeline",
+            recorder_handle(),
+            cancel.clone(),
+            std::time::Duration::from_millis(100),
+        )
+        .await;
+        assert_eq!(result, 42);
+        assert!(!cancel.is_cancelled());
+        // At least one tick rendered the header into the test buffer.
+        let text: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(text.contains("faucet run · loop-pipeline"), "{text}");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn drive_loop_fires_the_cancel_token_on_user_request() {
+        let mut terminal = test_terminal();
+        let cancel = CancellationToken::new();
+        let run_cancel = cancel.clone();
+        let result = drive_loop(
+            &mut terminal,
+            ScriptedEvents {
+                cancel_on_call: 2,
+                calls: 0,
+            },
+            async move {
+                // A cooperative pipeline: winds down when cancelled.
+                run_cancel.cancelled().await;
+                "cancelled"
+            },
+            "loop-pipeline",
+            recorder_handle(),
+            cancel.clone(),
+            std::time::Duration::from_millis(50),
+        )
+        .await;
+        assert_eq!(result, "cancelled");
+        assert!(cancel.is_cancelled());
+        // The frame after the cancel shows the banner.
+        let text: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(text.contains("cancelling…"), "{text}");
+    }
+
+    #[test]
+    fn install_metrics_recorder_is_idempotent() {
+        let first = install_metrics_recorder(None).expect("first install");
+        let second = install_metrics_recorder(None).expect("second install");
+        // Both render (same underlying registry once cached).
+        let _ = first.render();
+        let _ = second.render();
+    }
+
+    #[test]
+    fn install_metrics_recorder_rejects_a_bad_listen_address() {
+        let prom = faucet_core::PrometheusConfig {
+            listen: "not-an-address".into(),
+            buckets: None,
+        };
+        let err = install_metrics_recorder(Some(&prom)).expect_err("bad listen");
+        assert!(matches!(err, CliError::Observability(_)), "{err:?}");
+    }
+
+    #[tokio::test]
+    async fn install_metrics_recorder_accepts_a_listener_config() {
+        // Ephemeral port; whichever install wins the process-global slot,
+        // the call must succeed and hand back a handle.
+        let prom = faucet_core::PrometheusConfig {
+            listen: "127.0.0.1:0".into(),
+            buckets: None,
+        };
+        let handle = install_metrics_recorder(Some(&prom)).expect("listener install");
+        let _ = handle.render();
+    }
+
+    #[test]
+    fn flush_logs_to_stderr_replays_the_tail() {
+        let buffer = install_tui_tracing("info");
+        buffer.push_line("tail line A");
+        buffer.push_line("tail line B");
+        // Covers the ring lookup + tail slicing; output goes to stderr.
+        flush_logs_to_stderr(1);
+        flush_logs_to_stderr(1000);
     }
 }

@@ -78,16 +78,7 @@ pub async fn run(args: RunArgs) -> CliResult<()> {
     let tui_active = crate::tui::is_tui_session(args.tui);
     #[cfg(feature = "cli-tui")]
     let tui_handle = if tui_active {
-        // The TUI owns the metrics recorder (keeping the /metrics endpoint
-        // when one is configured) so it can render the recorder's output;
-        // the rest of the observability config (tracing level was already
-        // routed into the TUI log ring by `run_main`; OTLP traces) installs
-        // as usual with the prometheus block taken out.
-        let mut obs_cfg = crate::obs::build_observability_config(&cfg);
-        let prom = obs_cfg.prometheus.take();
-        let handle = crate::tui::install_metrics_recorder(prom.as_ref())?;
-        faucet_core::install_observability(&obs_cfg)?;
-        Some(handle)
+        Some(crate::tui::setup_observability(&cfg)?)
     } else {
         if args.tui {
             tracing::info!("--tui: stdout is not a terminal; running without the TUI");

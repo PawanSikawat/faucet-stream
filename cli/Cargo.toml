@@ -379,6 +379,7 @@ redis = { workspace = true, optional = true }
 rdkafka = { workspace = true, optional = true }
 
 [dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
 tempfile = "3"
 # `faucet schema config` composed-schema tests (#213): validate the shipped
 # example configs against the emitted top-level JSON Schema.
