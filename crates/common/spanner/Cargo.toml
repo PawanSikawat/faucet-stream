@@ -1,0 +1,29 @@
+[package]
+name = "faucet-common-spanner"
+version = "1.0.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Shared Cloud Spanner credentials, client construction, and value conversion for the faucet-stream Spanner source and sink connectors"
+readme = "README.md"
+keywords = ["spanner", "gcp", "etl", "pipeline", "faucet"]
+categories.workspace = true
+
+[dependencies]
+faucet-core.workspace = true
+gcloud-spanner.workspace = true
+gcloud-googleapis.workspace = true
+gcloud-gax.workspace = true
+prost-types = "0.14"
+base64.workspace = true
+schemars.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt"] }
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

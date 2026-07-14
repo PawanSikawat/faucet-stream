@@ -17,8 +17,8 @@
 
 **The fast, config-driven way to move data in Rust.**
 
-faucet-stream is a complete **ETL** toolkit: **24 source** and **18 sink** connectors
-(**42 in total**) plus in-flight transforms — including a page-level embedded-DuckDB `sql`
+faucet-stream is a complete **ETL** toolkit: **25 source** and **20 sink** connectors
+(**45 in total**) plus in-flight transforms — including a page-level embedded-DuckDB `sql`
 transform — wired together by a single `faucet` binary that runs pipelines declaratively
 from a YAML/JSON file, no Rust code required. Or skip the binary and embed the same engine
 in your own service through the typed `Source` / `Sink` traits. One toolkit, whether you
@@ -60,7 +60,7 @@ cargo add faucet-stream           # the library
   cron scheduling, an HTTP control plane with event-driven triggers, OpenLineage emission, and
   built-in Prometheus metrics + `tracing` spans — all with zero per-connector code.
 - **📦 Pay only for what you use** — every connector is a Cargo feature, so a slim build can
-  be just REST + JSONL, or pull in all 42 connectors with `--features full`.
+  be just REST + JSONL, or pull in all 45 connectors with `--features full`.
 
 **Documentation:** the [faucet-stream guide](https://pawansikawat.github.io/faucet-stream/)
 (getting started, tutorials, cookbook, operations) · API reference on
@@ -226,7 +226,8 @@ for help picking between overlapping connectors (Postgres query vs CDC, S3 vs Pa
 > service (the `rest`, `graphql`, `xml`, `elasticsearch`, `bigquery`, `snowflake`
 > sources and the `http` sink): the mock faithfully drives the paging / schema /
 > error paths the checks assert, but it is not an end-to-end test against the real
-> system.
+> system. **ᵉ** marks the Cloud Spanner pair, whose battery runs against Google's
+> official **Spanner emulator** (Docker) — a real gRPC Spanner implementation.
 > **Tier-2** connectors are **not conformance-certified in CI** — either their
 > full battery can't run without a live cloud backend (the BigQuery / Snowflake /
 > Elasticsearch sinks are tested against wiremock, which can't prove real
@@ -238,7 +239,7 @@ for help picking between overlapping connectors (Postgres query vs CDC, S3 vs Pa
 > production — Tier-2 means "not certified," **not** "low quality." The Singer
 > bridge is additionally **experimental (v0, single-stream)** ⚠️.
 
-### Sources (24)
+### Sources (25)
 
 `Tier`: **T1 ✅** = passes the `faucet-conformance` battery in CI; **T2** = not yet
 wired into the battery (see the support-tiers note above).
@@ -266,12 +267,13 @@ wired into the battery (see the support-tiers note above).
 | [`faucet-source-elasticsearch`](crates/source/elasticsearch) | T1 ✅ᵐ | Elasticsearch — search/scroll API |
 | [`faucet-source-bigquery`](crates/source/bigquery) | T1 ✅ᵐ | Google BigQuery — `jobs.query` + `getQueryResults`, type-aware decoding |
 | [`faucet-source-snowflake`](crates/source/snowflake) | T1 ✅ᵐ | Snowflake — SQL REST API, server-side partition pagination, JWT / OAuth |
+| [`faucet-source-spanner`](crates/source/spanner) | T1 ✅ᵉ | Google Cloud Spanner — streaming SQL over gRPC, incremental replication, stale reads, PK-range sharding |
 | [`faucet-source-webhook`](crates/source/webhook) | T2 | Webhook — temporary HTTP server collecting POST payloads |
 | [`faucet-source-websocket`](crates/source/websocket) | T1 ✅ | WebSocket — live streaming feed; subscribe frames, reconnect, keepalive |
 | [`faucet-source-csv`](crates/source/csv) | **T1 ✅** | CSV — read CSV files as JSON objects |
 | [`faucet-source-singer`](crates/source/singer) | T2 ⚠️ | **Singer tap bridge** — run any Singer tap and adapt its output. Passes the battery, but **experimental (v0, single-stream)** |
 
-### Sinks (18)
+### Sinks (20)
 
 | Crate | Tier | Description |
 |-------|------|-------------|
@@ -286,6 +288,7 @@ wired into the battery (see the support-tiers note above).
 | [`faucet-sink-redis`](crates/sink/redis) | T1 ✅ | Redis — write to streams, lists, or key-value |
 | [`faucet-sink-kafka`](crates/sink/kafka) | T1 ✅ | Apache Kafka — producer with batching, multi-topic routing |
 | [`faucet-sink-kinesis`](crates/sink/kinesis) | T1 ✅ | AWS Kinesis Data Streams — batched PutRecords with partition-key routing |
+| [`faucet-sink-spanner`](crates/sink/spanner) | T1 ✅ᵉ | Google Cloud Spanner — batched mutations; upsert/delete, effectively-once commit tokens, schema evolution |
 | [`faucet-sink-elasticsearch`](crates/sink/elasticsearch) | T2 | Elasticsearch — bulk index API; upsert/delete by `_id` |
 | [`faucet-sink-s3`](crates/sink/s3) | T1 ✅ | AWS S3 — write JSONL files to bucket |
 | [`faucet-sink-gcs`](crates/sink/gcs) | T2 | Google Cloud Storage — write JSONL files to bucket |
@@ -307,6 +310,7 @@ wired into the battery (see the support-tiers note above).
 | [`faucet-common-gcs`](crates/common/gcs) | Shared GCS types — credentials enum, Storage/StorageControl client builders |
 | [`faucet-common-kafka`](crates/common/kafka) | Shared Kafka types — auth, value formats, Schema Registry client |
 | [`faucet-common-snowflake`](crates/common/snowflake) | Shared Snowflake types — `SnowflakeAuth` enum + auth header helpers |
+| [`faucet-common-spanner`](crates/common/spanner) | Shared Cloud Spanner types — credentials enum, connection/client builders, value conversion |
 | [`faucet-common-mssql`](crates/common/mssql) | Shared MSSQL types — connection/TLS config, `tiberius`+`bb8` pool builder, identifier quoting |
 | [`faucet-state-redis`](crates/state/redis) | Redis-backed `StateStore` for persistent bookmarks |
 | [`faucet-state-postgres`](crates/state/postgres) | PostgreSQL-backed `StateStore` for persistent bookmarks |
@@ -432,7 +436,7 @@ flowchart LR
     P -.->|metrics + spans| O
 ```
 
-faucet-stream is a Cargo workspace with **60 crates** — 25 sources, 19 sinks, 7 shared
+faucet-stream is a Cargo workspace with **63 crates** — 26 sources, 20 sinks, 8 shared
 connector libraries, the shared auth-provider library, 2 state-store backends, the lineage
 crate, the SQL transform crate, the conformance test battery, the shared core, the umbrella
 crate, and the CLI binary. See
@@ -496,6 +500,7 @@ Default features: `source-rest`, `transform-flatten`, `transform-rename-keys`,
 | `source-elasticsearch` | no | Elasticsearch source |
 | `source-bigquery` | no | Google BigQuery query source |
 | `source-snowflake` | no | Snowflake query source |
+| `source-spanner` | no | Google Cloud Spanner query source |
 | `source-webhook` | no | Webhook HTTP receiver |
 | `source-websocket` | no | WebSocket live streaming source |
 | `source-csv` | no | CSV file source |
@@ -510,6 +515,7 @@ Default features: `source-rest`, `transform-flatten`, `transform-rename-keys`,
 | `sink-redis` | no | Redis sink |
 | `sink-kafka` | no | Apache Kafka producer sink |
 | `sink-kinesis` | no | AWS Kinesis Data Streams sink |
+| `sink-spanner` | no | Google Cloud Spanner sink |
 | `sink-elasticsearch` | no | Elasticsearch bulk index sink |
 | `sink-s3` | no | AWS S3 file sink |
 | `sink-gcs` | no | Google Cloud Storage file sink |

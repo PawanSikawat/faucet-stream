@@ -103,6 +103,17 @@ Use **`source-bigquery`** / **`source-snowflake`** to *read out of* a warehouse
 **sink**. To transform data already inside the warehouse, reach for
 [dbt](https://www.getdbt.com/) — that's not faucet's job.
 
+## Cloud Spanner: OLTP system of record
+
+Use **`source-spanner`** to move data *out of* Spanner into a warehouse or lake
+(the common direction — Spanner is an expensive OLTP system of record). It
+streams arbitrary SQL over gRPC, supports incremental replication via a
+monotonic column (`@bookmark`), stale reads to offload the leader, and PK-range
+sharding. Use **`sink-spanner`** when Spanner *is* the destination — its
+mutation API pairs naturally with `write_mode: upsert` (`InsertOrUpdate` keyed
+on the primary key) and supports effectively-once delivery via a commit-token
+read-write transaction.
+
 ## Sinks: column-mapped vs. JSON blob (SQL databases)
 
 The Postgres/MySQL/SQLite/SQL Server sinks can write either:

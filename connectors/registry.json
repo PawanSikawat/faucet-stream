@@ -27,6 +27,7 @@
     { "name": "parquet", "kind": "source", "verified": true, "description": "Apache Parquet file source (local, glob, or S3)" },
     { "name": "bigquery", "kind": "source", "verified": true, "description": "Google BigQuery query source" },
     { "name": "snowflake", "kind": "source", "verified": true, "description": "Snowflake query source (SQL REST API)" },
+    { "name": "spanner", "kind": "source", "verified": true, "description": "Google Cloud Spanner query source (streaming SQL, incremental replication)" },
 
     { "name": "bigquery", "kind": "sink", "verified": true, "description": "Google BigQuery streaming-insert sink" },
     { "name": "iceberg", "kind": "sink", "verified": true, "description": "Apache Iceberg sink (append; REST/Glue/SQL/HMS catalogs)" },
@@ -44,6 +45,7 @@
     { "name": "elasticsearch", "kind": "sink", "verified": true, "description": "Elasticsearch bulk index sink" },
     { "name": "kafka", "kind": "sink", "verified": true, "description": "Apache Kafka producer with QueueFull retry and topic routing" },
     { "name": "kinesis", "kind": "sink", "verified": true, "description": "AWS Kinesis Data Streams producer with partial-failure retry" },
+    { "name": "spanner", "kind": "sink", "verified": true, "description": "Google Cloud Spanner mutation sink (upsert/delete, exactly-once)" },
     { "name": "http", "kind": "sink", "verified": true, "description": "HTTP POST sink (individual or array batch)" },
     { "name": "stdout", "kind": "sink", "verified": true, "description": "Stdout / stderr sink (JSON Lines, pretty, TSV)" },
     { "name": "parquet", "kind": "sink", "verified": true, "description": "Apache Parquet file sink (local path or S3)" }

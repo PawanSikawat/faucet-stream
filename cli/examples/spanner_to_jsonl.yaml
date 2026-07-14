@@ -1,0 +1,45 @@
+# Google Cloud Spanner → JSON Lines (#304).
+#
+# Streams a SQL query out of Spanner with incremental replication: on each
+# run only rows whose `updated_at` is past the persisted bookmark are read
+# (the `@bookmark` named parameter is bound from the state store).
+#
+# Works against the Spanner emulator out of the box:
+#
+#   docker run --rm -p 9010:9010 gcr.io/cloud-spanner-emulator/emulator
+#   # create the instance/database with gcloud or your own bootstrap, then:
+#   faucet run cli/examples/spanner_to_jsonl.yaml
+#
+# Against real Spanner: drop `emulator_host` (Application Default Credentials
+# are used unless an `auth:` block selects a service-account key).
+version: 1
+name: spanner_to_jsonl
+
+pipeline:
+  source:
+    type: spanner
+    config:
+      project_id: local-project
+      instance: test-instance
+      database: local-database
+      emulator_host: localhost:9010   # remove for real Spanner
+      query: >-
+        SELECT id, name, updated_at FROM users
+        WHERE updated_at > TIMESTAMP(@bookmark)
+        ORDER BY updated_at
+      replication:
+        type: incremental
+        column: updated_at
+        initial_value: "1970-01-01T00:00:00Z"
+      batch_size: 1000
+
+  sink:
+    type: jsonl
+    config:
+      path: ./out/spanner-users.jsonl
+
+  # Durable bookmark: a re-run continues from the newest `updated_at` the
+  # sink confirmed instead of re-reading the whole table.
+  state:
+    type: file
+    config: { path: ./.faucet-state }

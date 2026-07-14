@@ -12,6 +12,7 @@ members = [
     "crates/common/snowflake",
     "crates/common/mssql",
     "crates/common/kinesis",
+    "crates/common/spanner",
     "crates/source/rest",
     "crates/source/singer",
     "crates/conformance",
@@ -39,6 +40,7 @@ members = [
     "crates/source/postgres-cdc",
     "crates/source/bigquery",
     "crates/source/snowflake",
+    "crates/source/spanner",
     "crates/sink/bigquery",
     "crates/sink/postgres",
     "crates/sink/jsonl",
@@ -59,6 +61,7 @@ members = [
     "crates/sink/stdout",
     "crates/sink/parquet",
     "crates/sink/iceberg",
+    "crates/sink/spanner",
     "crates/state/redis",
     "crates/state/postgres",
     "faucet-stream",
@@ -87,6 +90,7 @@ faucet-common-gcs = { path = "crates/common/gcs", version = "1.0.4" }
 faucet-common-kafka = { path = "crates/common/kafka", version = "1.0.4" }
 faucet-common-kinesis = { path = "crates/common/kinesis", version = "1.0.0" }
 faucet-common-snowflake = { path = "crates/common/snowflake", version = "1.0.4" }
+faucet-common-spanner = { path = "crates/common/spanner", version = "1.0.0" }
 faucet-common-mssql = { path = "crates/common/mssql", version = "1.0.5" }
 faucet-source-rest = { path = "crates/source/rest", version = "1.2.2" }
 faucet-source-singer = { path = "crates/source/singer", version = "1.0.0" }
@@ -122,6 +126,7 @@ faucet-source-elasticsearch = { path = "crates/source/elasticsearch", version = 
 faucet-source-parquet = { path = "crates/source/parquet", version = "1.2.1" }
 faucet-source-bigquery = { path = "crates/source/bigquery", version = "1.1.3" }
 faucet-source-snowflake = { path = "crates/source/snowflake", version = "1.1.3" }
+faucet-source-spanner = { path = "crates/source/spanner", version = "1.0.0" }
 faucet-sink-mysql = { path = "crates/sink/mysql", version = "1.3.0" }
 faucet-sink-sqlite = { path = "crates/sink/sqlite", version = "1.3.0" }
 faucet-sink-mssql = { path = "crates/sink/mssql", version = "1.3.0" }
@@ -138,6 +143,7 @@ faucet-sink-kinesis = { path = "crates/sink/kinesis", version = "1.0.0" }
 faucet-sink-stdout = { path = "crates/sink/stdout", version = "1.1.3" }
 faucet-sink-parquet = { path = "crates/sink/parquet", version = "1.1.3" }
 faucet-sink-iceberg = { path = "crates/sink/iceberg", version = "1.2.0" }
+faucet-sink-spanner = { path = "crates/sink/spanner", version = "1.0.0" }
 faucet-state-redis = { path = "crates/state/redis", version = "1.0.5" }
 faucet-state-postgres = { path = "crates/state/postgres", version = "1.1.0" }
 faucet-cli = { path = "cli", version = "1.4.0" }
@@ -186,6 +192,18 @@ dashmap = "6"
 uuid = { version = "1", features = ["v4", "v7"] }
 google-cloud-storage = "1.12"
 google-cloud-auth = "1.10"
+# Cloud Spanner stack: the mature community client (yoshidan/google-cloud-rust,
+# renamed gcloud-*). The official `google-cloud-spanner` is still `-preview`, so
+# per the dependency policy the stable community client is the pick. Default
+# features are off to swap `jwt-aws-lc-rs` for the pure-Rust `jwt-rust-crypto`
+# signer (no aws-lc build dep for JWT signing).
+gcloud-spanner = { version = "1.8", default-features = false, features = ["auth", "rustls-tls", "jwt-rust-crypto"] }
+# Raw protobuf types (Mutation, TypeCode, Field, …) used by the Spanner pair;
+# not re-exported from gcloud-spanner's root.
+gcloud-googleapis = { version = "1.3", features = ["spanner"] }
+# gRPC plumbing for gcloud-spanner; needed directly only for
+# `google_cloud_gax::conn::Environment` (the emulator-endpoint override).
+gcloud-gax = "1.4"
 aws-sdk-kinesis = "1"
 aws-sdk-s3 = "1"
 aws-sdk-secretsmanager = "1"
