@@ -20,7 +20,7 @@ use crate::executor::{ExecuteOptions, run_expanded};
 use chrono::{DateTime, FixedOffset};
 use faucet_core::UnwrappedEnvelope;
 use plan::{build_replay_node, default_failed_dlq_path, validate_reason};
-use reader::{expand_location, reason_matches, scan_files};
+use reader::{DlqDecryptor, expand_location, reason_matches, scan_files};
 use serde::Serialize;
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -63,6 +63,9 @@ pub struct InspectSummary {
     pub malformed: usize,
     /// Valid-JSON lines that were not DLQ envelopes.
     pub non_envelope: usize,
+    /// Sealed (encrypted) lines that could not be decrypted with the
+    /// available keys — pass `--encryption-key` to read them.
+    pub undecryptable: usize,
     pub by_reason: BTreeMap<String, usize>,
     pub by_error_kind: BTreeMap<String, usize>,
     pub sample: Vec<EnvelopeSummary>,
@@ -97,10 +100,11 @@ pub fn inspect(
     location: &str,
     reason: Option<&str>,
     sample_limit: usize,
+    dec: &DlqDecryptor,
 ) -> CliResult<InspectSummary> {
     let reason = validate_reason(reason)?;
     let files = expand_location(location)?;
-    let scan = scan_files(&files)?;
+    let scan = scan_files(&files, dec)?;
     let envs: Vec<UnwrappedEnvelope> = scan
         .envelopes
         .into_iter()
@@ -129,6 +133,7 @@ pub fn inspect(
         total_envelopes: envs.len(),
         malformed: scan.malformed,
         non_envelope: scan.non_envelope,
+        undecryptable: scan.undecryptable,
         by_reason,
         by_error_kind,
         sample,
@@ -148,6 +153,9 @@ pub struct ReplayInputs<'a> {
     pub execution: Option<ExecutionSpec>,
     pub auth: AuthCatalog,
     pub clock: DateTime<FixedOffset>,
+    /// Decryption for sealed DLQ lines. When inert, the referenced config's
+    /// own dlq jsonl `encryption` block is picked up automatically.
+    pub decryptor: DlqDecryptor,
 }
 
 /// Reconstruct a pipeline whose source is the DLQ location (envelopes →
@@ -166,15 +174,36 @@ pub async fn replay(
         .map(PathBuf::from)
         .unwrap_or_else(|| default_failed_dlq_path(&files));
 
-    // Count candidates up front (cheap; the reader scans again at run time).
-    let scan = scan_files(&files)?;
+    // Resolve the effective decryptor once: explicit keys win; otherwise the
+    // `encryption` block of the config's own dlq jsonl sink applies (the file
+    // being replayed was almost always written by exactly that sink).
+    let decryptor = if inputs.decryptor.is_active() {
+        inputs.decryptor.clone()
+    } else {
+        let nodes = crate::expand::expand(cfg)?;
+        let original_dlq = nodes
+            .iter()
+            .find(|n| matches!(n.role, crate::expand::NodeRole::Root))
+            .and_then(|n| n.dlq.as_ref());
+        DlqDecryptor::from_config_value(plan::dlq_encryption_value(original_dlq))?
+    };
+
+    let node = build_replay_node(
+        cfg,
+        files.clone(),
+        reason.clone(),
+        &failed,
+        inputs.row,
+        decryptor.clone(),
+    )?;
+
+    // Count candidates up front with the same decryptor the reader will use.
+    let scan = scan_files(&files, &decryptor)?;
     let candidates = scan
         .envelopes
         .iter()
         .filter(|e| reason_matches(e, reason.as_deref()))
         .count();
-
-    let node = build_replay_node(cfg, files, reason, &failed, inputs.row)?;
 
     let summary = run_expanded(
         vec![node],
@@ -236,6 +265,7 @@ pub fn discard(
     reason: Option<&str>,
     before_ms: Option<i64>,
     delete: bool,
+    dec: &DlqDecryptor,
 ) -> CliResult<DiscardOutcome> {
     let reason = validate_reason(reason)?;
     let files = expand_location(location)?;
@@ -252,7 +282,7 @@ pub fn discard(
         let mut removed = String::new();
         let mut file_discarded = 0usize;
         for line in text.lines() {
-            if plan::discard_keep_line(line, reason.as_deref(), before_ms) {
+            if plan::discard_keep_line(line, dec, reason.as_deref(), before_ms) {
                 kept.push_str(line);
                 kept.push('\n');
             } else {
@@ -340,7 +370,7 @@ mod tests {
             env_line("contract", "ContractViolation", 3, json!({"id": 3})),
         );
         let path = write(dir.path(), "dlq.jsonl", &body);
-        let s = inspect(path.to_str().unwrap(), None, 10).unwrap();
+        let s = inspect(path.to_str().unwrap(), None, 10, &DlqDecryptor::default()).unwrap();
         assert_eq!(s.total_envelopes, 3);
         assert_eq!(s.malformed, 1);
         assert_eq!(s.non_envelope, 1);
@@ -360,7 +390,13 @@ mod tests {
             env_line("contract", "ContractViolation", 3, json!({"id": 3})),
         );
         let path = write(dir.path(), "dlq.jsonl", &body);
-        let s = inspect(path.to_str().unwrap(), Some("quality"), 1).unwrap();
+        let s = inspect(
+            path.to_str().unwrap(),
+            Some("quality"),
+            1,
+            &DlqDecryptor::default(),
+        )
+        .unwrap();
         assert_eq!(s.total_envelopes, 2);
         assert_eq!(s.by_reason.len(), 1);
         assert_eq!(s.sample.len(), 1);
@@ -375,7 +411,14 @@ mod tests {
             env_line("contract", "ContractViolation", 2, json!({"id": 2})),
         );
         let path = write(dir.path(), "dlq.jsonl", &body);
-        let out = discard(path.to_str().unwrap(), Some("quality"), None, false).unwrap();
+        let out = discard(
+            path.to_str().unwrap(),
+            Some("quality"),
+            None,
+            false,
+            &DlqDecryptor::default(),
+        )
+        .unwrap();
         assert_eq!(out.discarded, 1);
         assert_eq!(out.files_rewritten, 1);
         assert_eq!(out.archived_to.len(), 1);
@@ -398,7 +441,14 @@ mod tests {
             env_line("quality", "QualityFailure", 1, json!({"id": 1}))
         );
         let path = write(dir.path(), "dlq.jsonl", &body);
-        let out = discard(path.to_str().unwrap(), None, None, true).unwrap();
+        let out = discard(
+            path.to_str().unwrap(),
+            None,
+            None,
+            true,
+            &DlqDecryptor::default(),
+        )
+        .unwrap();
         assert_eq!(out.discarded, 1);
         assert!(out.archived_to.is_empty());
         assert!(!dir.path().join("dlq.archived.jsonl").exists());
@@ -413,7 +463,14 @@ mod tests {
             env_line("quality", "QualityFailure", 5000, json!({"id": 2})),
         );
         let path = write(dir.path(), "dlq.jsonl", &body);
-        let out = discard(path.to_str().unwrap(), None, Some(1000), true).unwrap();
+        let out = discard(
+            path.to_str().unwrap(),
+            None,
+            Some(1000),
+            true,
+            &DlqDecryptor::default(),
+        )
+        .unwrap();
         assert_eq!(out.discarded, 1);
         let remaining = std::fs::read_to_string(&path).unwrap();
         assert!(remaining.contains("\"id\":2") || remaining.contains("\"id\": 2"));
@@ -428,7 +485,14 @@ mod tests {
         );
         let path = write(dir.path(), "dlq.jsonl", &body);
         let before = std::fs::read_to_string(&path).unwrap();
-        let out = discard(path.to_str().unwrap(), Some("contract"), None, false).unwrap();
+        let out = discard(
+            path.to_str().unwrap(),
+            Some("contract"),
+            None,
+            false,
+            &DlqDecryptor::default(),
+        )
+        .unwrap();
         assert_eq!(out.discarded, 0);
         assert_eq!(out.files_rewritten, 0);
         assert_eq!(std::fs::read_to_string(&path).unwrap(), before);

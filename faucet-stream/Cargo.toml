@@ -105,8 +105,13 @@ lineage = ["dep:faucet-lineage"]
 lineage-kafka = ["lineage", "faucet-lineage/transport-kafka"]
 ## SQL-as-transform via embedded DuckDB.
 transform-sql = ["dep:faucet-transform-sql"]
+## Encryption at rest (#207): AES-256-GCM for FileStateStore bookmarks and,
+## when `sink-jsonl` is also enabled, per-line JSONL output (the file DLQ
+## shape). Forwarded to `faucet-core` (and the jsonl sink via optional-dep
+## syntax, so this flag never pulls the connector itself).
+encryption = ["faucet-core/encryption", "faucet-sink-jsonl?/encryption"]
 ## Every connector and state backend.
-full = ["source", "sink", "state", "auth", "kafka-schema-registry", "compression", "quality", "quality-jsonschema", "contract", "masking", "lineage", "lineage-kafka", "transform-sql", "transform-cdc-unwrap"]
+full = ["source", "sink", "state", "auth", "kafka-schema-registry", "compression", "quality", "quality-jsonschema", "contract", "masking", "lineage", "lineage-kafka", "transform-sql", "transform-cdc-unwrap", "encryption"]
 
 ## Individual source connectors.
 source-rest = ["dep:faucet-source-rest"]

@@ -64,6 +64,43 @@ Raise it when many concurrent matrix rows share one state store; lower it
 against a connection-limited managed Postgres. A value of `0` is rejected at
 config-load time.
 
+### Encryption at rest (`file` backend)
+
+Bookmarks can embed source positions and key values. On a shared or
+compliance-scoped host, seal the `file` backend's bookmark files with
+AES-256-GCM (requires a build with the `encryption` feature — included in
+`--features full`):
+
+```yaml
+state:
+  type: file
+  config:
+    path: ./state
+    encryption:
+      key: ${vault:secret/faucet#state-key}   # or ${env:FAUCET_STATE_KEY}
+      # previous_keys: ["${env:OLD_KEY}"]     # rotation: read-only candidates
+      # algorithm: aes-256-gcm                # default (and only) option
+```
+
+- **Key handling** — the 32-byte AES key is derived as SHA-256 of the key
+  string. That is a derivation, not a stretching KDF: use high-entropy
+  material from a secrets manager, not a human password. The `state:` block
+  is covered by the secrets pass, so `${vault:…}` / `${aws-sm:…}` keys work
+  and are redacted from faucet's logs.
+- **Rotation** — move the old key into `previous_keys` and set the new `key`:
+  old files stay readable and every write re-seals with the new key.
+- **Backward compatible** — plaintext bookmarks written before encryption was
+  enabled remain readable and are sealed on their next write.
+- **Failure behavior** — a wrong/rotated-away key or a tampered file is a
+  *typed error*, never a silent "no bookmark" (which would trigger a full
+  re-sync); an encrypted file read by a store with no `encryption` block
+  errors with instructions rather than parsing garbage. The atomic
+  temp-file + fsync + rename write path is unchanged.
+
+For the Redis / Postgres backends, rely on the backend's own at-rest
+encryption. To seal a **file-backed DLQ** the same way, see
+[Dead-letter queues](./dlq.md#encryption-at-rest).
+
 ## How bookmarks advance
 
 The pipeline reads the bookmark before fetching, and persists a new one **only

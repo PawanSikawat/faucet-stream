@@ -280,6 +280,11 @@ pub struct DlqInspectArgs {
     /// Number of sample records to show. Default: 5.
     #[arg(long, default_value_t = 5)]
     pub limit: usize,
+    /// Key for a DLQ sealed at rest by the jsonl sink's `encryption` block.
+    /// Repeat the flag to also try older (rotated) keys. Requires a build
+    /// with the `encryption` feature.
+    #[arg(long = "encryption-key")]
+    pub encryption_key: Vec<String>,
     /// Emit a machine-readable JSON summary instead of the human report.
     #[arg(long)]
     pub json: bool,
@@ -307,6 +312,13 @@ pub struct DlqReplayArgs {
     /// Report what would be replayed without writing to the sink.
     #[arg(long)]
     pub dry_run: bool,
+    /// Key for a DLQ sealed at rest by the jsonl sink's `encryption` block.
+    /// Repeat the flag to also try older (rotated) keys. Requires a build
+    /// with the `encryption` feature.
+    #[arg(long = "encryption-key")]
+    pub encryption_key: Vec<String>,
+    /// (Replay picks up the config's own dlq `encryption` block automatically
+    /// when no key is passed.)
     /// Emit a machine-readable JSON result instead of the human summary.
     #[arg(long)]
     pub json: bool,
@@ -337,6 +349,11 @@ pub struct DlqDiscardArgs {
     /// `<file>.archived.jsonl` sibling.
     #[arg(long)]
     pub delete: bool,
+    /// Key for a DLQ sealed at rest by the jsonl sink's `encryption` block.
+    /// Repeat the flag to also try older (rotated) keys. Requires a build
+    /// with the `encryption` feature.
+    #[arg(long = "encryption-key")]
+    pub encryption_key: Vec<String>,
     /// Emit a machine-readable JSON result instead of the human summary.
     #[arg(long)]
     pub json: bool,
@@ -580,6 +597,14 @@ pub struct RunArgs {
     /// Not applicable in `--from-env` mode (no config file to compose).
     #[arg(long, env = "FAUCET_PROFILE")]
     pub profile: Option<String>,
+    /// Show a live full-screen terminal UI (per-invocation throughput, errors,
+    /// DLQ counts, bookmark age) while the pipeline runs. Requires a binary
+    /// built with the `cli-tui` feature and a real terminal on stdout —
+    /// on a non-TTY (CI, pipes) the run proceeds normally with a notice.
+    /// Press `q` to cancel cooperatively (in-flight work flushes at the next
+    /// page boundary).
+    #[arg(long)]
+    pub tui: bool,
 }
 
 /// `faucet backfill` arguments.

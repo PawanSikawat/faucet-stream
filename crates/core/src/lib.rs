@@ -22,6 +22,8 @@ pub mod contract;
 pub mod discover;
 pub mod dlq;
 pub mod drift;
+#[cfg(feature = "encryption")]
+pub mod encryption;
 pub mod error;
 pub mod idempotency;
 #[cfg(feature = "masking")]
@@ -61,6 +63,8 @@ pub use drift::{
     ColumnChange, OnDrift, OnIncompatible, SchemaDiff, SchemaDriftPolicy, SchemaDriftSpec,
     SchemaEvolution, SqlBaseType, adds_null, base_widened, json_schema_base_type,
 };
+#[cfg(feature = "encryption")]
+pub use encryption::{CompiledEncryption, EncryptionAlgorithm, EncryptionSpec};
 pub use error::FaucetError;
 pub use idempotency::{
     DeliveryGuarantee, DeliveryMode, EffectivelyOnceMechanism, GuaranteeInputs, ReplayGuarantee,

@@ -38,6 +38,7 @@ fn dlq_file(dir: &Path) -> PathBuf {
 fn inspect_args(location: &Path, reason: Option<&str>, json: bool) -> DlqArgs {
     DlqArgs {
         command: DlqCommand::Inspect(DlqInspectArgs {
+            encryption_key: vec![],
             location: location.to_string_lossy().into_owned(),
             reason: reason.map(str::to_owned),
             limit: 5,
@@ -77,6 +78,7 @@ async fn discard_human_and_json_render() {
     // Archive one reason (human render), then delete the rest (JSON render).
     let archive = DlqArgs {
         command: DlqCommand::Discard(DlqDiscardArgs {
+            encryption_key: vec![],
             location: dlq.to_string_lossy().into_owned(),
             reason: Some("quality".into()),
             before: Some("1s".into()),
@@ -87,6 +89,7 @@ async fn discard_human_and_json_render() {
     dlq::run(archive).await.unwrap();
     let delete = DlqArgs {
         command: DlqCommand::Discard(DlqDiscardArgs {
+            encryption_key: vec![],
             location: dlq.to_string_lossy().into_owned(),
             reason: None,
             before: None,
@@ -98,6 +101,7 @@ async fn discard_human_and_json_render() {
     // A bad --before is rejected.
     let bad = DlqArgs {
         command: DlqCommand::Discard(DlqDiscardArgs {
+            encryption_key: vec![],
             location: dlq.to_string_lossy().into_owned(),
             reason: None,
             before: Some("soon".into()),
@@ -111,6 +115,7 @@ async fn discard_human_and_json_render() {
 fn replay_args(config: PathBuf, from: &Path, dry_run: bool, json: bool) -> DlqArgs {
     DlqArgs {
         command: DlqCommand::Replay(DlqReplayArgs {
+            encryption_key: vec![],
             config: Some(config),
             from: from.to_string_lossy().into_owned(),
             reason: None,

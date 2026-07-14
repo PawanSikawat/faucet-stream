@@ -204,6 +204,8 @@ jobs:
           - auth
           - full
           - compression
+          # Encryption at rest (state bookmarks + JSONL/DLQ, #207)
+          - encryption
           # Quality checks
           - quality
           - quality-jsonschema
@@ -234,6 +236,8 @@ jobs:
           - notify
           # Local dev loop — `faucet dev` filesystem watch (CLI-only)
           - cli-dev
+          # Live terminal UI — `faucet run --tui` (CLI-only)
+          - cli-tui
           # Secrets backends
           - secrets-vault
           - secrets-aws-sm
@@ -268,7 +272,7 @@ jobs:
           # Secrets, schedule, serve, catalog, and triggers features live in
           # faucet-cli (CLI layer), not in the faucet-stream umbrella crate.
           # Route accordingly.
-          if [[ "${{ matrix.feature }}" == secrets-* || "${{ matrix.feature }}" == "schedule" || "${{ matrix.feature }}" == serve* || "${{ matrix.feature }}" == "catalog" || "${{ matrix.feature }}" == triggers* || "${{ matrix.feature }}" == "notify" || "${{ matrix.feature }}" == "cli-dev" ]]; then
+          if [[ "${{ matrix.feature }}" == secrets-* || "${{ matrix.feature }}" == "schedule" || "${{ matrix.feature }}" == serve* || "${{ matrix.feature }}" == "catalog" || "${{ matrix.feature }}" == triggers* || "${{ matrix.feature }}" == "notify" || "${{ matrix.feature }}" == "cli-dev" || "${{ matrix.feature }}" == "cli-tui" ]]; then
             cargo check -p faucet-cli --no-default-features --features ${{ matrix.feature }}
           else
             cargo check -p faucet-stream --no-default-features --features ${{ matrix.feature }}

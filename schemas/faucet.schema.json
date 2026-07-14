@@ -5594,6 +5594,39 @@
         }
       ]
     },
+    "sink_jsonl__EncryptionSpec": {
+      "description": "The user-facing `encryption:` config block (state store / jsonl sink).\n\n```yaml\nencryption:\n  key: ${vault:secret/faucet#state-key}\n  # previous_keys: [\"${env:OLD_STATE_KEY}\"]   # rotation: read-only\n  # algorithm: aes-256-gcm                     # default\n```",
+      "type": "object",
+      "properties": {
+        "key": {
+          "description": "Key material used to seal new writes (and tried first on reads).\nShould come from a secrets manager; derived to a 32-byte AES key via\nSHA-256.",
+          "type": "string"
+        },
+        "previous_keys": {
+          "description": "Older keys tried (in order) when decrypting, for rotation. Never used\nto seal new writes.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "algorithm": {
+          "description": "AEAD algorithm. Only `aes-256-gcm` today.",
+          "$ref": "#/$defs/sink_jsonl__EncryptionAlgorithm",
+          "default": "aes-256-gcm"
+        }
+      },
+      "additionalProperties": true
+    },
+    "sink_jsonl__EncryptionAlgorithm": {
+      "description": "Supported AEAD algorithms. A single variant today; the format byte in the\non-disk header leaves room for more without breaking old files.",
+      "oneOf": [
+        {
+          "description": "AES-256-GCM authenticated encryption (the default and only option).",
+          "type": "string",
+          "const": "aes-256-gcm"
+        }
+      ]
+    },
     "sink_snowflake__AuthSpec": {
       "description": "A connector's `auth:` field: **either** an inline auth definition `A`\n(the `{ type, config }` shape), **or** a `{ ref: <name> }` reference to a\nshared provider defined in the top-level `auth:` catalog.\n\n`ref` is mutually exclusive with inline fields — supplying both is a\ndeserialization error.",
       "anyOf": [
@@ -10389,6 +10422,17 @@
                       "description": "Compression codec for the output file. Defaults to\n[`CompressionConfig::Auto`](faucet_core::CompressionConfig::Auto) —\n`.gz` / `.zst` suffix selects gzip / zstd, anything else writes\nuncompressed. Requires the crate-local `compression` feature.",
                       "$ref": "#/$defs/sink_jsonl__CompressionConfig",
                       "default": "auto"
+                    },
+                    "encryption": {
+                      "description": "Encryption at rest (#207): seal every record line with AES-256-GCM and\nwrite it base64-encoded (one sealed record per line, append-safe).\nThe natural fit for a file-backed DLQ holding sensitive failed rows;\n`faucet dlq inspect/replay/discard` decrypt transparently given the\nkey. Mutually exclusive with `compression`. Requires the crate-local\n`encryption` feature.",
+                      "anyOf": [
+                        {
+                          "$ref": "#/$defs/sink_jsonl__EncryptionSpec"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
                     }
                   },
                   "title": "JsonlSinkConfig",

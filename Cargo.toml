@@ -183,6 +183,8 @@ jsonwebtoken = "9"
 base64 = "0.22"
 rsa = "0.9"
 sha2 = "0.10"
+# AEAD for encryption-at-rest of FileStateStore bookmarks + JSONL/DLQ output (#207).
+aes-gcm = "0.11"
 hmac = "0.12"
 crc = "3"
 md-5 = "0.10"
@@ -261,6 +263,9 @@ zstd = "0.13"
 glob = "0.3"
 duckdb = "1.10503"
 tempfile = "3"
+# Live terminal UI for `faucet run --tui` (#203, CLI-only `cli-tui` feature).
+# Default features include the crossterm backend.
+ratatui = "0.30"
 
 # The profile that 'dist' will build with
 [profile.dist]

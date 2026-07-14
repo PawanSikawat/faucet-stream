@@ -47,6 +47,8 @@ pub mod serve;
 pub mod sla;
 pub mod state;
 pub mod transforms;
+#[cfg(feature = "cli-tui")]
+pub mod tui;
 
 pub use error::{CliError, CliResult};
 
@@ -86,10 +88,20 @@ pub fn run_main(registry: PluginRegistry) -> std::process::ExitCode {
     let is_serve = matches!(cli.command, Command::Serve(_));
     #[cfg(not(feature = "serve"))]
     let is_serve = false;
+    // A `--tui` run on a real terminal routes logs into the TUI's in-memory
+    // ring (the stdout subscriber would corrupt the alternate screen).
+    #[cfg(feature = "cli-tui")]
+    let is_tui = matches!(&cli.command, Command::Run(a) if tui::is_tui_session(a.tui));
+    #[cfg(not(feature = "cli-tui"))]
+    let is_tui = false;
     // `serve` installs its own (redacting, run-scoped) subscriber; every other
     // command uses the plain redacting fmt subscriber.
-    if !is_serve {
+    if !is_serve && !is_tui {
         install_tracing(&cli.log_level);
+    }
+    #[cfg(feature = "cli-tui")]
+    if is_tui {
+        tui::install_tui_tracing(&cli.log_level);
     }
 
     let runtime = match tokio::runtime::Builder::new_multi_thread()

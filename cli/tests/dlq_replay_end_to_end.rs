@@ -42,6 +42,7 @@ fn read_lines(path: &Path) -> Vec<Value> {
 
 async fn inputs(pipeline: &str, dry_run: bool) -> ReplayInputs<'static> {
     ReplayInputs {
+        decryptor: Default::default(),
         reason: None,
         failed_dlq: None,
         row: None,

@@ -66,6 +66,27 @@ pub async fn run(args: RunArgs) -> CliResult<()> {
         .await?
     };
 
+    #[cfg(not(feature = "cli-tui"))]
+    if args.tui {
+        return Err(CliError::Config(
+            "--tui requires a binary built with the `cli-tui` feature \
+             (e.g. `cargo install faucet-cli --features cli-tui`)"
+                .into(),
+        ));
+    }
+    #[cfg(feature = "cli-tui")]
+    let tui_active = crate::tui::is_tui_session(args.tui);
+    #[cfg(feature = "cli-tui")]
+    let tui_handle = if tui_active {
+        Some(crate::tui::setup_observability(&cfg)?)
+    } else {
+        if args.tui {
+            tracing::info!("--tui: stdout is not a terminal; running without the TUI");
+        }
+        crate::obs::install(&cfg)?;
+        None
+    };
+    #[cfg(not(feature = "cli-tui"))]
     crate::obs::install(&cfg)?;
 
     let pipeline_name = cfg.name.clone().unwrap_or_else(|| {
@@ -93,7 +114,13 @@ pub async fn run(args: RunArgs) -> CliResult<()> {
         None => None,
     };
     let nodes = expand(&cfg)?;
-    let summary = run_expanded(
+    // The TUI wires `q` / Ctrl-C to this token: in-flight invocations stop at
+    // their next page boundary and flush (#146 H16). Plain runs keep `None`.
+    #[cfg(feature = "cli-tui")]
+    let tui_cancel = tui_active.then(faucet_core::CancellationToken::new);
+    #[cfg(not(feature = "cli-tui"))]
+    let tui_cancel: Option<faucet_core::CancellationToken> = None;
+    let run_fut = run_expanded(
         nodes,
         ExecuteOptions {
             pipeline_name: pipeline_name.clone(),
@@ -104,9 +131,10 @@ pub async fn run(args: RunArgs) -> CliResult<()> {
             shard: None,
             auth,
             clock: resolve_run_clock(args.clock.as_deref())?,
-            // `faucet run` has no external cancel signal; the executor still
-            // cooperatively cancels in-flight rows on `on_error: stop`.
-            cancel: None,
+            // Plain runs have no external cancel signal (the executor still
+            // cooperatively cancels in-flight rows on `on_error: stop`); a
+            // TUI session cancels via `q` / Ctrl-C.
+            cancel: tui_cancel.clone(),
             resilience,
             sla: cfg.sla.clone(),
             #[cfg(feature = "lineage")]
@@ -118,8 +146,26 @@ pub async fn run(args: RunArgs) -> CliResult<()> {
             #[cfg(feature = "catalog")]
             catalog,
         },
-    )
-    .await?;
+    );
+    #[cfg(feature = "cli-tui")]
+    let summary = match (tui_handle, tui_cancel) {
+        (Some(handle), Some(cancel)) => {
+            let result = crate::tui::drive(run_fut, &pipeline_name, handle, cancel).await;
+            if result
+                .as_ref()
+                .map(|s| s.failure_count() > 0)
+                .unwrap_or(true)
+            {
+                // The failure context lived on the alternate screen — replay
+                // the tail of the log ring to stderr now that it's gone.
+                crate::tui::flush_logs_to_stderr(25);
+            }
+            result?
+        }
+        _ => run_fut.await?,
+    };
+    #[cfg(not(feature = "cli-tui"))]
+    let summary = run_fut.await?;
 
     let total_written: usize = summary.invocations.iter().map(|i| i.records_written).sum();
     let success = summary

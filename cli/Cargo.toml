@@ -28,7 +28,7 @@ default = ["observability", "source", "sink", "state", "transforms", "compressio
 
 # Everything the default build ships, plus the long-running runtime modes:
 # `schedule` (cron scheduler) and `serve` (HTTP control plane).
-full = ["default", "otel", "schedule", "serve", "serve-ui", "serve-history-postgres", "serve-history-sqlite", "catalog", "lineage", "lineage-kafka", "notify", "transform-sql", "triggers", "triggers-object-store", "triggers-redis", "triggers-kafka", "cli-dev"]
+full = ["default", "otel", "schedule", "serve", "serve-ui", "serve-history-postgres", "serve-history-sqlite", "catalog", "lineage", "lineage-kafka", "notify", "transform-sql", "triggers", "triggers-object-store", "triggers-redis", "triggers-kafka", "cli-dev", "encryption", "cli-tui"]
 
 # Data Movement Catalog (#279): the `catalog:` config block + post-run
 # recording (datasets, schema timelines, volume/freshness stats, lineage
@@ -54,6 +54,12 @@ contract = ["faucet-core/contract"]
 # masking` verb, #206): classify sensitive fields and redact/hash/tokenize/
 # partial-mask them per page, before every sink. Forwarded to `faucet-core`.
 masking = ["faucet-core/masking"]
+
+# Encryption at rest (#207): the `encryption:` block on the `file` state store
+# (AES-256-GCM bookmark files) and on the jsonl sink (per-line sealing — the
+# file-DLQ-at-rest shape), plus decryption support in `faucet dlq
+# inspect/replay/discard`. Opt-in; included in `full`.
+encryption = ["faucet-core/encryption", "faucet-sink-jsonl?/encryption", "dep:base64"]
 
 source = [
     "source-rest",
@@ -205,6 +211,10 @@ cli-interactive = ["dep:inquire"]
 # `faucet dev` — filesystem-watch dev loop (`faucet plan` needs no feature and
 # ships in default).
 cli-dev = ["dep:notify-fs"]
+# Live terminal UI for `faucet run --tui` (#203): full-screen ratatui view of
+# per-row throughput/errors/DLQ/bookmark age, sampled from the in-process
+# Prometheus recorder (implies `observability`). Opt-in; not in `default`.
+cli-tui = ["observability", "dep:ratatui"]
 
 transforms = [
     "faucet-core/transforms",
@@ -326,6 +336,7 @@ inquire = { version = "0.9", optional = true, default-features = false, features
 # `faucet dev` filesystem watch (#283). Renamed key so it doesn't collide with
 # the `notify` *feature* (the notification/incident-routing layer).
 notify-fs = { package = "notify", version = "8", optional = true }
+ratatui = { workspace = true, optional = true }
 futures = { workspace = true }
 glob = { workspace = true }
 reqwest = { workspace = true, optional = true }
@@ -368,6 +379,7 @@ redis = { workspace = true, optional = true }
 rdkafka = { workspace = true, optional = true }
 
 [dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
 tempfile = "3"
 # `faucet schema config` composed-schema tests (#213): validate the shipped
 # example configs against the emitted top-level JSON Schema.
