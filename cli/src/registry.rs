@@ -451,6 +451,14 @@ pub async fn build_source(
                 faucet_source_kinesis::KinesisSource::new(cfg).await?,
             ))
         }
+        #[cfg(feature = "source-spanner")]
+        "spanner" => {
+            let cfg =
+                decode::<faucet_source_spanner::SpannerSourceConfig>("source", "spanner", config)?;
+            Ok(Box::new(
+                faucet_source_spanner::SpannerSource::new(cfg).await?,
+            ))
+        }
         #[cfg(feature = "source-parquet")]
         "parquet" => {
             let cfg =
@@ -593,6 +601,11 @@ pub async fn build_sink(kind: &str, config: Value, auth: &AuthCatalog) -> CliRes
             let cfg = decode::<faucet_sink_kinesis::KinesisSinkConfig>("sink", "kinesis", config)?;
             Ok(Box::new(faucet_sink_kinesis::KinesisSink::new(cfg).await?))
         }
+        #[cfg(feature = "sink-spanner")]
+        "spanner" => {
+            let cfg = decode::<faucet_sink_spanner::SpannerSinkConfig>("sink", "spanner", config)?;
+            Ok(Box::new(faucet_sink_spanner::SpannerSink::new(cfg).await?))
+        }
         #[cfg(feature = "sink-http")]
         "http" => {
             let cfg = decode::<faucet_sink_http::HttpSinkConfig>("sink", "http", config)?;
@@ -645,6 +658,7 @@ pub const IDEMPOTENT_SINK_KINDS: &[&str] = &[
     "snowflake",
     "redis",
     "mongodb",
+    "spanner",
 ];
 
 /// Sink kinds that can apply additive/widening DDL via `Sink::evolve_schema`.
@@ -657,6 +671,7 @@ pub const SCHEMA_EVOLUTION_SINK_KINDS: &[&str] = &[
     "sqlite",
     "bigquery",
     "elasticsearch",
+    "spanner",
 ];
 
 /// Sink kinds that support `write_mode: upsert|delete`. Mirrors each sink's
@@ -670,6 +685,7 @@ pub const UPSERT_SINK_KINDS: &[&str] = &[
     "mongodb",
     "elasticsearch",
     "bigquery",
+    "spanner",
 ];
 
 /// The typed replay capability a source kind advertises
@@ -773,6 +789,8 @@ pub fn source_schema(kind: &str) -> CliResult<Value> {
         "kafka" => Ok(schema::<faucet_source_kafka::KafkaSourceConfig>()),
         #[cfg(feature = "source-kinesis")]
         "kinesis" => Ok(schema::<faucet_source_kinesis::KinesisSourceConfig>()),
+        #[cfg(feature = "source-spanner")]
+        "spanner" => Ok(schema::<faucet_source_spanner::SpannerSourceConfig>()),
         #[cfg(feature = "source-parquet")]
         "parquet" => Ok(schema::<faucet_source_parquet::ParquetSourceConfig>()),
         #[cfg(feature = "source-gcs")]
@@ -831,6 +849,8 @@ pub fn sink_schema(kind: &str) -> CliResult<Value> {
         "kafka" => Ok(schema::<faucet_sink_kafka::KafkaSinkConfig>()),
         #[cfg(feature = "sink-kinesis")]
         "kinesis" => Ok(schema::<faucet_sink_kinesis::KinesisSinkConfig>()),
+        #[cfg(feature = "sink-spanner")]
+        "spanner" => Ok(schema::<faucet_sink_spanner::SpannerSinkConfig>()),
         #[cfg(feature = "sink-http")]
         "http" => Ok(schema::<faucet_sink_http::HttpSinkConfig>()),
         #[cfg(feature = "sink-stdout")]
@@ -907,6 +927,8 @@ fn builtin_source_descriptions() -> Vec<(&'static str, &'static str)> {
     v.push(("kafka", "Apache Kafka consumer (rdkafka). Subscribes to topics and drains messages with idle/max-messages termination."));
     #[cfg(feature = "source-kinesis")]
     v.push(("kinesis", "AWS Kinesis Data Streams consumer. Per-shard workers with resumable sequence-number checkpoints and idle/max-messages termination."));
+    #[cfg(feature = "source-spanner")]
+    v.push(("spanner", "Google Cloud Spanner query source. Streaming SQL reads with incremental replication bookmarks, stale reads, and PK-range sharding."));
     #[cfg(feature = "source-parquet")]
     v.push(("parquet", "Apache Parquet file source (local path, glob, or S3). Streams record batches via the Arrow async reader."));
     #[cfg(feature = "source-gcs")]
@@ -976,6 +998,8 @@ fn builtin_sink_descriptions() -> Vec<(&'static str, &'static str)> {
     v.push(("kafka", "Apache Kafka producer (rdkafka). FuturesUnordered batched sends with QueueFull retry; supports fixed or per-record topic routing."));
     #[cfg(feature = "sink-kinesis")]
     v.push(("kinesis", "AWS Kinesis Data Streams producer. Batched PutRecords with partition-key routing and partial-failure retry (DLQ-routable)."));
+    #[cfg(feature = "sink-spanner")]
+    v.push(("spanner", "Google Cloud Spanner sink. Batched mutations with upsert/delete write modes, exactly-once commit tokens, and schema evolution."));
     #[cfg(feature = "sink-http")]
     v.push(("http", "HTTP POST sink (individual or array batch)"));
     #[cfg(feature = "sink-stdout")]

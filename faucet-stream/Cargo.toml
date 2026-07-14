@@ -40,6 +40,7 @@ source = [
     "source-gcs",
     "source-bigquery",
     "source-snowflake",
+    "source-spanner",
     "source-singer",
 ]
 ## All sink connectors.
@@ -63,6 +64,7 @@ sink = [
     "sink-parquet",
     "sink-gcs",
     "sink-iceberg",
+    "sink-spanner",
 ]
 ## All state-store backends (file backend is exposed via `faucet-core` directly).
 state = [
@@ -132,6 +134,8 @@ source-parquet = ["dep:faucet-source-parquet"]
 source-gcs = ["dep:faucet-source-gcs", "dep:faucet-common-gcs"]
 source-bigquery = ["dep:faucet-source-bigquery", "dep:faucet-common-bigquery"]
 source-snowflake = ["dep:faucet-source-snowflake", "dep:faucet-common-snowflake"]
+## Enable the Google Cloud Spanner query source.
+source-spanner = ["dep:faucet-source-spanner", "dep:faucet-common-spanner"]
 
 ## Individual sink connectors.
 sink-bigquery = ["dep:faucet-sink-bigquery"]
@@ -156,6 +160,8 @@ sink-http = ["dep:faucet-sink-http"]
 sink-stdout = ["dep:faucet-sink-stdout"]
 sink-kafka = ["dep:faucet-sink-kafka", "dep:faucet-common-kafka"]
 sink-kinesis = ["dep:faucet-sink-kinesis", "dep:faucet-common-kinesis"]
+## Enable the Google Cloud Spanner sink.
+sink-spanner = ["dep:faucet-sink-spanner", "dep:faucet-common-spanner"]
 sink-parquet = ["dep:faucet-sink-parquet"]
 sink-gcs = ["dep:faucet-sink-gcs", "dep:faucet-common-gcs"]
 
@@ -195,6 +201,7 @@ faucet-common-gcs = { workspace = true, optional = true }
 faucet-common-kafka = { workspace = true, optional = true }
 faucet-common-kinesis = { workspace = true, optional = true }
 faucet-common-snowflake = { workspace = true, optional = true }
+faucet-common-spanner = { workspace = true, optional = true }
 faucet-source-rest = { workspace = true, optional = true }
 faucet-source-singer = { workspace = true, optional = true }
 faucet-source-graphql = { workspace = true, optional = true }
@@ -220,6 +227,7 @@ faucet-source-parquet = { workspace = true, optional = true }
 faucet-source-gcs = { workspace = true, optional = true }
 faucet-source-bigquery = { workspace = true, optional = true }
 faucet-source-snowflake = { workspace = true, optional = true }
+faucet-source-spanner = { workspace = true, optional = true }
 faucet-sink-bigquery = { workspace = true, optional = true }
 faucet-sink-iceberg = { workspace = true, optional = true }
 faucet-sink-postgres = { workspace = true, optional = true }
@@ -227,6 +235,7 @@ faucet-sink-jsonl = { workspace = true, optional = true }
 faucet-sink-snowflake = { workspace = true, optional = true }
 faucet-sink-kafka = { workspace = true, optional = true }
 faucet-sink-kinesis = { workspace = true, optional = true }
+faucet-sink-spanner = { workspace = true, optional = true }
 faucet-sink-mysql = { workspace = true, optional = true }
 faucet-sink-mssql = { workspace = true, optional = true }
 faucet-sink-sqlite = { workspace = true, optional = true }

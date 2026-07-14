@@ -89,6 +89,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Free runner disk space
+        # The all-features instrumented build (bundled DuckDB + the full
+        # connector tree) exceeds the hosted runner's free disk. Drop the
+        # large preinstalled toolchains we never use (~25-30 GB).
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h /
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: "1.96.0"
@@ -162,6 +169,7 @@ jobs:
           - source-gcs
           - source-bigquery
           - source-snowflake
+          - source-spanner
           - source-singer
           # Sinks
           - sink-bigquery
@@ -181,6 +189,7 @@ jobs:
           - sink-stdout
           - sink-kafka
           - sink-kinesis
+          - sink-spanner
           - sink-parquet
           - sink-gcs
           # Kafka extras
@@ -405,6 +414,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Free runner disk space
+        # The all-features instrumented build (bundled DuckDB + the full
+        # connector tree) exceeds the hosted runner's free disk. Drop the
+        # large preinstalled toolchains we never use (~25-30 GB).
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h /
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: "1.96.0"

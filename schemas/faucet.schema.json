@@ -4876,6 +4876,101 @@
         }
       ]
     },
+    "source_spanner__SpannerCredentials": {
+      "description": "Credentials used to authenticate against Cloud Spanner.\n\nSerialized in the project-wide adjacently-tagged shape:\n\n```yaml\nauth:\n  type: service_account_key_path\n  config:\n    path: /secrets/sa.json\n```",
+      "oneOf": [
+        {
+          "description": "Load a service-account key from a JSON file on disk.",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "service_account_key_path"
+            },
+            "config": {
+              "type": "object",
+              "properties": {
+                "path": {
+                  "description": "Filesystem path to the service-account key JSON.",
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        {
+          "description": "Inline service-account key JSON (prefer `${vault:…}` / `${env:…}`\ninterpolation over literal keys in config files).",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "service_account_key"
+            },
+            "config": {
+              "type": "object",
+              "properties": {
+                "json": {
+                  "description": "The full service-account key JSON document.",
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        {
+          "description": "Application Default Credentials: `GOOGLE_APPLICATION_CREDENTIALS`,\n`gcloud auth application-default login`, or the GCE/GKE metadata\nserver.",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "application_default"
+            }
+          }
+        }
+      ]
+    },
+    "source_spanner__SpannerReplication": {
+      "description": "How the source replicates rows across runs.\n\nSerializes as `{ type: full }` or\n`{ type: incremental, column: \"...\", initial_value: ... }`.",
+      "oneOf": [
+        {
+          "description": "Every run fetches the full result set (default).",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "full"
+            }
+          }
+        },
+        {
+          "description": "Only rows whose `column` is strictly greater than the stored bookmark\n(or `initial_value` on the first run) are emitted.\n\nThe bookmark is applied two ways: if the query contains the named\nparameter `@bookmark`, it is bound so the server filters (efficient);\nthe source *also* filters client-side as a correctness backstop. The\nnew maximum of `column` is persisted on the final page.\n\nSpanner does not implicitly coerce parameter types: a string bookmark\ncompared against a `TIMESTAMP` column needs an explicit cast in the\nquery, e.g. `WHERE updated_at > TIMESTAMP(@bookmark)`.",
+          "type": "object",
+          "properties": {
+            "column": {
+              "description": "Column whose value is the replication cursor (e.g. `updated_at`).",
+              "type": "string"
+            },
+            "initial_value": {
+              "description": "Lower bound used on the first run, before any bookmark is stored."
+            },
+            "type": {
+              "type": "string",
+              "const": "incremental"
+            }
+          }
+        }
+      ]
+    },
+    "source_spanner__ShardConfig": {
+      "description": "Primary-key range sharding settings for the Spanner source (clustered\nMode B execution).\n\nThe source is split by contiguous ranges of an **INT64-typed** column:\neach shard runs ``SELECT * FROM (<query>) AS _faucet_shard WHERE `key` >=\nlo AND `key` < hi``. The column must be present in the query's output.\n\n**Nullable keys:** rows whose key is NULL are invisible to the `MIN`/`MAX`\nrange enumeration but are still read — exactly one shard (the last)\nadditionally matches ``key IS NULL``, so NULL-key rows are covered by\nprecisely one shard with no loss and no duplication.",
+      "type": "object",
+      "properties": {
+        "key": {
+          "description": "INT64 column to range-partition on. Backtick-quoted before use, so it\nis safe against injection but must name a real output column.",
+          "type": "string"
+        }
+      }
+    },
     "source_parquet__ParquetLocation": {
       "description": "Where to read Parquet data from.",
       "oneOf": [
@@ -6648,6 +6743,96 @@
           "const": "bytes"
         }
       ]
+    },
+    "sink_spanner__SpannerCredentials": {
+      "description": "Credentials used to authenticate against Cloud Spanner.\n\nSerialized in the project-wide adjacently-tagged shape:\n\n```yaml\nauth:\n  type: service_account_key_path\n  config:\n    path: /secrets/sa.json\n```",
+      "oneOf": [
+        {
+          "description": "Load a service-account key from a JSON file on disk.",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "service_account_key_path"
+            },
+            "config": {
+              "type": "object",
+              "properties": {
+                "path": {
+                  "description": "Filesystem path to the service-account key JSON.",
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        {
+          "description": "Inline service-account key JSON (prefer `${vault:…}` / `${env:…}`\ninterpolation over literal keys in config files).",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "service_account_key"
+            },
+            "config": {
+              "type": "object",
+              "properties": {
+                "json": {
+                  "description": "The full service-account key JSON document.",
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        {
+          "description": "Application Default Credentials: `GOOGLE_APPLICATION_CREDENTIALS`,\n`gcloud auth application-default login`, or the GCE/GKE metadata\nserver.",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "application_default"
+            }
+          }
+        }
+      ]
+    },
+    "sink_spanner__WriteMode": {
+      "description": "Write semantics for a sink. Serialized snake_case. Default `Append`.",
+      "oneOf": [
+        {
+          "description": "Insert every record (today's behaviour).",
+          "type": "string",
+          "const": "append"
+        },
+        {
+          "description": "Insert-or-update by `key`; optionally route delete-marked rows to deletes.",
+          "type": "string",
+          "const": "upsert"
+        },
+        {
+          "description": "Delete by `key` for every record.",
+          "type": "string",
+          "const": "delete"
+        }
+      ]
+    },
+    "sink_spanner__DeleteMarker": {
+      "description": "Identifies a record as a delete (vs. an upsert) by a marker field's value.\ne.g. `{ field: \"__op\", values: [\"d\", \"delete\"] }`.",
+      "type": "object",
+      "properties": {
+        "field": {
+          "description": "Field name whose value flags a delete.",
+          "type": "string"
+        },
+        "values": {
+          "description": "Values of `field` that mean \"this row is a delete\".",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
     },
     "sink_http__AuthSpec": {
       "description": "A connector's `auth:` field: **either** an inline auth definition `A`\n(the `{ type, config }` shape), **or** a `{ ref: <name> }` reference to a\nshared provider defined in the top-level `auth:` catalog.\n\n`ref` is mutually exclusive with inline fields — supplying both is a\ndeserialization error.",
@@ -9331,6 +9516,131 @@
         },
         {
           "type": "object",
+          "title": "spanner",
+          "properties": {
+            "type": {
+              "const": "spanner"
+            },
+            "config": {
+              "anyOf": [
+                {
+                  "properties": {
+                    "project_id": {
+                      "description": "GCP project ID that owns the Spanner instance.",
+                      "type": "string"
+                    },
+                    "instance": {
+                      "description": "Spanner instance ID.",
+                      "type": "string"
+                    },
+                    "database": {
+                      "description": "Database name within the instance.",
+                      "type": "string"
+                    },
+                    "auth": {
+                      "description": "Credentials. Defaults to Application Default Credentials.",
+                      "$ref": "#/$defs/source_spanner__SpannerCredentials",
+                      "default": {
+                        "type": "application_default"
+                      }
+                    },
+                    "max_sessions": {
+                      "description": "Upper bound on pooled Spanner sessions (server-side resources).\nChannels are sized automatically at one per 100 sessions.",
+                      "type": [
+                        "integer",
+                        "string"
+                      ],
+                      "format": "uint",
+                      "minimum": 0,
+                      "default": 100
+                    },
+                    "emulator_host": {
+                      "description": "Emulator endpoint override (`host:port`, e.g. `localhost:9010`).\nWhen set, the connection is plaintext and unauthenticated — exactly\nwhat `SPANNER_EMULATOR_HOST` does, but scoped to this connector so\nparallel pipelines/tests don't race on a process-global env var.\nThe env var is still honored when this field is unset.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "query": {
+                      "description": "GoogleSQL query to run. Use named parameters (`@name`) for\n[`params`](Self::params), and the named parameter `@bookmark` to bind\nthe incremental cursor server-side.",
+                      "type": "string"
+                    },
+                    "params": {
+                      "description": "Named bind parameters for the query. Values must be scalars (string,\ninteger, float, or boolean) — Spanner parameters are typed, and\nnull/array/object values have no unambiguous parameter type.",
+                      "type": "object",
+                      "additionalProperties": true,
+                      "default": {}
+                    },
+                    "batch_size": {
+                      "description": "Records per emitted [`StreamPage`](faucet_core::StreamPage). `0` emits\nthe whole result set as a single page. Defaults to\n[`DEFAULT_BATCH_SIZE`].",
+                      "type": [
+                        "integer",
+                        "string"
+                      ],
+                      "format": "uint",
+                      "minimum": 0,
+                      "default": 1000
+                    },
+                    "exact_staleness_secs": {
+                      "description": "Read at a timestamp this many seconds in the past instead of a strong\nread. Stale reads can be served by any replica, offloading the leader\n— at the cost of missing rows committed within the staleness window.",
+                      "type": [
+                        "integer",
+                        "null",
+                        "string"
+                      ],
+                      "format": "uint64",
+                      "minimum": 0
+                    },
+                    "replication": {
+                      "description": "Replication mode. Defaults to [`SpannerReplication::Full`].",
+                      "$ref": "#/$defs/source_spanner__SpannerReplication",
+                      "default": {
+                        "type": "full"
+                      }
+                    },
+                    "state_key": {
+                      "description": "Explicit state-store key for the bookmark. When unset, a key is\nderived from the database path and a query fingerprint.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "shard": {
+                      "description": "Optional primary-key range sharding for clustered (Mode B) execution.\n\nWhen set, the source advertises itself as shardable: the cluster\ncoordinator splits the query's `key` range into contiguous slices that\ndifferent workers process concurrently. Has **no effect** outside the\ncluster coordinator (a plain `faucet run` streams the whole query).",
+                      "anyOf": [
+                        {
+                          "$ref": "#/$defs/source_spanner__ShardConfig"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    }
+                  },
+                  "title": "SpannerSourceConfig",
+                  "description": "Configuration for [`SpannerSource`](crate::SpannerSource).",
+                  "type": "object"
+                },
+                true
+              ]
+            },
+            "transforms": {
+              "type": [
+                "array",
+                "null"
+              ]
+            },
+            "inherit_transforms": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
           "title": "parquet",
           "properties": {
             "type": {
@@ -11129,6 +11439,115 @@
                   },
                   "title": "KinesisSinkConfig",
                   "description": "Configuration for [`KinesisSink`](crate::KinesisSink).",
+                  "type": "object"
+                },
+                true
+              ]
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "title": "spanner",
+          "properties": {
+            "type": {
+              "const": "spanner"
+            },
+            "config": {
+              "anyOf": [
+                {
+                  "properties": {
+                    "project_id": {
+                      "description": "GCP project ID that owns the Spanner instance.",
+                      "type": "string"
+                    },
+                    "instance": {
+                      "description": "Spanner instance ID.",
+                      "type": "string"
+                    },
+                    "database": {
+                      "description": "Database name within the instance.",
+                      "type": "string"
+                    },
+                    "auth": {
+                      "description": "Credentials. Defaults to Application Default Credentials.",
+                      "$ref": "#/$defs/sink_spanner__SpannerCredentials",
+                      "default": {
+                        "type": "application_default"
+                      }
+                    },
+                    "max_sessions": {
+                      "description": "Upper bound on pooled Spanner sessions (server-side resources).\nChannels are sized automatically at one per 100 sessions.",
+                      "type": [
+                        "integer",
+                        "string"
+                      ],
+                      "format": "uint",
+                      "minimum": 0,
+                      "default": 100
+                    },
+                    "emulator_host": {
+                      "description": "Emulator endpoint override (`host:port`, e.g. `localhost:9010`).\nWhen set, the connection is plaintext and unauthenticated — exactly\nwhat `SPANNER_EMULATOR_HOST` does, but scoped to this connector so\nparallel pipelines/tests don't race on a process-global env var.\nThe env var is still honored when this field is unset.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "table_name": {
+                      "description": "Target table name.",
+                      "type": "string"
+                    },
+                    "batch_size": {
+                      "description": "Maximum rows per Spanner commit. Defaults to [`DEFAULT_BATCH_SIZE`].\n\nEach chunk is applied as one atomic commit. Spanner additionally caps\na commit at ~80,000 mutated *cells* (rows × columns, plus secondary\nindex amplification), so the sink also splits chunks to stay under a\nconservative 60,000-cell budget regardless of `batch_size`.\n\n`batch_size = 0` is the \"no batching\" sentinel: the entire upstream\npage is written in as few commits as the cell budget allows.",
+                      "type": [
+                        "integer",
+                        "string"
+                      ],
+                      "format": "uint",
+                      "minimum": 0,
+                      "default": 1000
+                    },
+                    "ddl_timeout_secs": {
+                      "description": "Upper bound (seconds) on waiting for a schema-change operation\n(`ALTER TABLE …` long-running operation) to complete. Defaults to 300.",
+                      "type": [
+                        "integer",
+                        "string"
+                      ],
+                      "format": "uint64",
+                      "minimum": 0,
+                      "default": 300
+                    },
+                    "write_mode": {
+                      "description": "Append (default), upsert, or delete.",
+                      "$ref": "#/$defs/sink_spanner__WriteMode",
+                      "default": "append"
+                    },
+                    "key": {
+                      "description": "Key columns. Required and non-empty for upsert/delete; ignored for append.",
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "default": []
+                    },
+                    "delete_marker": {
+                      "description": "Optional. Upsert only: rows whose `field` matches one of `values` are\ndeletes; all others are upserts. The marker field is stripped from\nupsert rows before writing.",
+                      "anyOf": [
+                        {
+                          "$ref": "#/$defs/sink_spanner__DeleteMarker"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    }
+                  },
+                  "title": "SpannerSinkConfig",
+                  "description": "Configuration for the Cloud Spanner sink.",
                   "type": "object"
                 },
                 true
