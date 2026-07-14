@@ -1,6 +1,7 @@
 //! PostgreSQL sink implementation.
 
-use crate::config::{PostgresColumnMapping, PostgresSinkConfig};
+use crate::config::{PostgresColumnMapping, PostgresSinkConfig, PostgresWriteMethod};
+use crate::copy::{build_auto_map_payload, build_jsonb_payload, copy_statement};
 use async_trait::async_trait;
 use faucet_core::FaucetError;
 use faucet_core::util::quote_ident;
@@ -24,7 +25,7 @@ use sqlx::{PgPool, Row};
 /// keeps its quotes and objects/arrays round-trip); the `::jsonb` cast then
 /// parses it. For every other type the scalar's plain text form is bound and
 /// the column's input function parses it via the cast.
-fn pg_bind_text(value: Option<&Value>, udt: &str) -> Option<String> {
+pub(crate) fn pg_bind_text(value: Option<&Value>, udt: &str) -> Option<String> {
     match value {
         None | Some(Value::Null) => None,
         Some(v) => {
@@ -167,6 +168,15 @@ impl PostgresSink {
                     .into(),
             ));
         }
+        if matches!(config.write_method, PostgresWriteMethod::Copy)
+            && !matches!(config.write.write_mode, faucet_core::WriteMode::Append)
+        {
+            return Err(FaucetError::Config(format!(
+                "postgres sink: write_method: copy is append-only (COPY has no ON CONFLICT); \
+                 it cannot be combined with write_mode: {} — use write_method: insert",
+                config.write.write_mode.as_str()
+            )));
+        }
 
         let pool = PgPoolOptions::new()
             .max_connections(config.max_connections)
@@ -175,6 +185,102 @@ impl PostgresSink {
             .map_err(|e| FaucetError::Sink(format!("PostgreSQL connection failed: {e}")))?;
 
         Ok(Self { config, pool })
+    }
+
+    /// Discover the target relation's column names and underlying types
+    /// (`pg_type.typname`), scoped to the *exact* relation the writes target
+    /// via `to_regclass` (#146 M13). Shared by the INSERT and COPY paths so
+    /// both see an identical column set. `::text` casts the `name`-typed
+    /// catalog columns so sqlx decodes them as `String`.
+    async fn discover_columns(
+        &self,
+        conn: &mut sqlx::PgConnection,
+        table_ref: &str,
+    ) -> Result<Vec<(String, String)>, FaucetError> {
+        let columns: Vec<(String, String)> = sqlx::query(
+            "SELECT a.attname::text AS column_name, t.typname::text AS udt_name \
+             FROM pg_catalog.pg_attribute a \
+             JOIN pg_catalog.pg_type t ON t.oid = a.atttypid \
+             WHERE a.attrelid = to_regclass($1)::oid \
+               AND a.attnum > 0 AND NOT a.attisdropped \
+             ORDER BY a.attnum",
+        )
+        .bind(table_ref)
+        .fetch_all(&mut *conn)
+        .await
+        .map_err(|e| FaucetError::Sink(format!("failed to query table columns: {e}")))?
+        .iter()
+        .map(|row| {
+            (
+                row.get::<String, _>("column_name"),
+                row.get::<String, _>("udt_name"),
+            )
+        })
+        .collect();
+
+        if columns.is_empty() {
+            return Err(FaucetError::Sink(format!(
+                "table {table_ref} has no columns or does not exist"
+            )));
+        }
+        Ok(columns)
+    }
+
+    /// Write one chunk via `COPY … FROM STDIN (FORMAT text)` — the bulk-load
+    /// fast-path (issue #308). Append-only (validated at construction); the
+    /// server parses each field with the destination column's input function,
+    /// so type semantics match the `INSERT` path exactly. A bad row fails the
+    /// whole COPY (all-or-nothing, like a failed multi-row `INSERT`).
+    async fn copy_batch(
+        &self,
+        conn: &mut sqlx::PgConnection,
+        records: &[Value],
+    ) -> Result<usize, FaucetError> {
+        if records.is_empty() {
+            return Ok(0);
+        }
+        let table_ref = qualified_table_ref(self.config.schema.as_deref(), &self.config.table_name);
+
+        let (statement, payload) = match &self.config.column_mapping {
+            PostgresColumnMapping::Jsonb { column } => {
+                let payload = build_jsonb_payload(records);
+                (
+                    copy_statement(&table_ref, std::slice::from_ref(column)),
+                    payload,
+                )
+            }
+            PostgresColumnMapping::AutoMap => {
+                let columns = self.discover_columns(&mut *conn, &table_ref).await?;
+                let Some(payload) =
+                    build_auto_map_payload(records, &columns).map_err(FaucetError::Sink)?
+                else {
+                    return Ok(0);
+                };
+                (copy_statement(&table_ref, &payload.columns), payload)
+            }
+        };
+
+        let mut copy_in = conn
+            .copy_in_raw(&statement)
+            .await
+            .map_err(|e| FaucetError::Sink(format!("PostgreSQL COPY start failed: {e}")))?;
+        // Ship in ~1 MiB slices so a huge page never materializes a second
+        // time inside sqlx's write buffer.
+        const SEND_CHUNK: usize = 1 << 20;
+        for chunk in payload.data.as_bytes().chunks(SEND_CHUNK) {
+            if let Err(e) = copy_in.send(chunk).await {
+                // Dropping the handle aborts the COPY server-side; surface
+                // the original error.
+                return Err(FaucetError::Sink(format!(
+                    "PostgreSQL COPY send failed: {e}"
+                )));
+            }
+        }
+        copy_in
+            .finish()
+            .await
+            .map_err(|e| FaucetError::Sink(format!("PostgreSQL COPY failed: {e}")))?;
+        Ok(payload.rows)
     }
 
     /// Insert a batch of records using JSONB column mode, on the given connection.
@@ -254,35 +360,9 @@ impl PostgresSink {
         // `pg_type.typname` is the concrete type (`int4`, `timestamptz`,
         // `numeric`, `jsonb`, `uuid`, `text`, …) — identical to the old
         // `information_schema.columns.udt_name` — used as the per-placeholder
-        // cast target below. `::text` casts the `name`-typed catalog columns so
-        // sqlx decodes them as `String`.
+        // cast target below.
         let table_ref = qualified_table_ref(self.config.schema.as_deref(), &self.config.table_name);
-        let columns: Vec<(String, String)> = sqlx::query(
-            "SELECT a.attname::text AS column_name, t.typname::text AS udt_name \
-             FROM pg_catalog.pg_attribute a \
-             JOIN pg_catalog.pg_type t ON t.oid = a.atttypid \
-             WHERE a.attrelid = to_regclass($1)::oid \
-               AND a.attnum > 0 AND NOT a.attisdropped \
-             ORDER BY a.attnum",
-        )
-        .bind(&table_ref)
-        .fetch_all(&mut *conn)
-        .await
-        .map_err(|e| FaucetError::Sink(format!("failed to query table columns: {e}")))?
-        .iter()
-        .map(|row| {
-            (
-                row.get::<String, _>("column_name"),
-                row.get::<String, _>("udt_name"),
-            )
-        })
-        .collect();
-
-        if columns.is_empty() {
-            return Err(FaucetError::Sink(format!(
-                "table {table_ref} has no columns or does not exist"
-            )));
-        }
+        let columns = self.discover_columns(&mut *conn, &table_ref).await?;
 
         // Pre-validate all records and collect matched (column, udt, value)
         // triples per record. The INSERT column set is the UNION of table
@@ -428,24 +508,11 @@ impl PostgresSink {
 
         // Underlying types for the key columns → drives the ::udt casts, same
         // source the insert path uses.
-        let udts: std::collections::HashMap<String, String> = sqlx::query(
-            "SELECT a.attname::text AS column_name, t.typname::text AS udt_name \
-             FROM pg_catalog.pg_attribute a \
-             JOIN pg_catalog.pg_type t ON t.oid = a.atttypid \
-             WHERE a.attrelid = to_regclass($1)::oid AND a.attnum > 0 AND NOT a.attisdropped",
-        )
-        .bind(&table_ref)
-        .fetch_all(&mut *conn)
-        .await
-        .map_err(|e| FaucetError::Sink(format!("failed to query table columns: {e}")))?
-        .iter()
-        .map(|row| {
-            (
-                row.get::<String, _>("column_name"),
-                row.get::<String, _>("udt_name"),
-            )
-        })
-        .collect();
+        let udts: std::collections::HashMap<String, String> = self
+            .discover_columns(&mut *conn, &table_ref)
+            .await?
+            .into_iter()
+            .collect();
         let key_udts: Vec<String> = key
             .iter()
             .map(|k| udts.get(k).cloned().unwrap_or_else(|| "text".to_string()))
@@ -740,11 +807,18 @@ impl faucet_core::Sink for PostgresSink {
 
         let mut total = 0;
         for chunk in chunks {
-            total += match &self.config.column_mapping {
-                PostgresColumnMapping::Jsonb { column } => {
-                    self.insert_jsonb(&mut conn, chunk, column).await?
-                }
-                PostgresColumnMapping::AutoMap => self.insert_auto_map(&mut conn, chunk).await?,
+            total += match self.config.write_method {
+                // Bulk-load fast-path: COPY the chunk instead of a multi-row
+                // INSERT (append-only; validated at construction, #308).
+                PostgresWriteMethod::Copy => self.copy_batch(&mut conn, chunk).await?,
+                PostgresWriteMethod::Insert => match &self.config.column_mapping {
+                    PostgresColumnMapping::Jsonb { column } => {
+                        self.insert_jsonb(&mut conn, chunk, column).await?
+                    }
+                    PostgresColumnMapping::AutoMap => {
+                        self.insert_auto_map(&mut conn, chunk).await?
+                    }
+                },
             };
         }
 

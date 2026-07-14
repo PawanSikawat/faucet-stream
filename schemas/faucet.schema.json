@@ -5561,6 +5561,21 @@
         }
       }
     },
+    "sink_postgres__PostgresWriteMethod": {
+      "description": "How rows are shipped to PostgreSQL in append mode.",
+      "oneOf": [
+        {
+          "description": "Multi-row `INSERT INTO … VALUES …` — the default. Works with every\nwrite mode and the exactly-once transaction path.",
+          "type": "string",
+          "const": "insert"
+        },
+        {
+          "description": "`COPY … FROM STDIN (FORMAT text)` bulk load — typically **5–10×\nfaster** than multi-row `INSERT` for bulk append (issue #308).\n\n**Append-only**: `COPY` has no `ON CONFLICT`, so combining\n`write_method: copy` with `write_mode: upsert|delete` is rejected at\nconfig load. The exactly-once path (`write_batch_idempotent`) always\nuses the `INSERT`/transaction path regardless of this setting — the\nwatermark token must commit atomically with the page's data.\n\nError semantics are all-or-nothing per batch, the same as a failed\nmulti-row `INSERT`: one bad row fails the whole `COPY` and the DLQ\nrouter's `on_batch_error` policy applies.",
+          "type": "string",
+          "const": "copy"
+        }
+      ]
+    },
     "sink_jsonl__CompressionConfig": {
       "description": "User-facing compression config. Defaults to [`Auto`](Self::Auto).",
       "oneOf": [
@@ -10342,6 +10357,11 @@
                           "type": "null"
                         }
                       ]
+                    },
+                    "write_method": {
+                      "description": "How append-mode rows are shipped: multi-row `insert` (default) or the\n`copy` bulk-load fast-path (`COPY … FROM STDIN`, typically 5–10×\nfaster for bulk append). `copy` is append-only — it is rejected with\n`write_mode: upsert|delete` — and the exactly-once path always stays\non `insert` so data + watermark commit in one transaction.",
+                      "$ref": "#/$defs/sink_postgres__PostgresWriteMethod",
+                      "default": "insert"
                     }
                   },
                   "title": "PostgresSinkConfig",
