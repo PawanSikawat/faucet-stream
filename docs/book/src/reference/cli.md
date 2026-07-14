@@ -45,6 +45,7 @@ Flags:
 | `--profile <name>` | Select a named overlay from the config's `profiles:` block (see [Config composition](config.md#config-composition)). Overrides `FAUCET_PROFILE`. |
 | `--env-file <path>` / `--no-env-file` | Same `.env` handling as `validate` / `preview`. |
 | `--from-env` | Build the pipeline entirely from `FAUCET_*` environment variables; mutually exclusive with a positional config path. |
+| `--tui` | Show a live full-screen terminal UI while the pipeline runs: per-invocation source→sink route, records in/out, records/s, errors, DLQ counts, bookmark age, and a scrolling log pane. Press `q` (or `Ctrl-C`) to cancel cooperatively — in-flight invocations stop at their next page boundary and flush their sinks. Requires a binary built with the `cli-tui` feature (`cargo install faucet-cli --features cli-tui`); on a non-TTY stdout (CI, pipes) the flag logs a notice and runs normally. When the config has an `observability.prometheus` block, the `/metrics` endpoint stays up alongside the TUI; OTLP *metrics* export is skipped under `--tui` (traces are unaffected). |
 
 ## `validate`
 

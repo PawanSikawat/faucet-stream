@@ -597,6 +597,14 @@ pub struct RunArgs {
     /// Not applicable in `--from-env` mode (no config file to compose).
     #[arg(long, env = "FAUCET_PROFILE")]
     pub profile: Option<String>,
+    /// Show a live full-screen terminal UI (per-invocation throughput, errors,
+    /// DLQ counts, bookmark age) while the pipeline runs. Requires a binary
+    /// built with the `cli-tui` feature and a real terminal on stdout —
+    /// on a non-TTY (CI, pipes) the run proceeds normally with a notice.
+    /// Press `q` to cancel cooperatively (in-flight work flushes at the next
+    /// page boundary).
+    #[arg(long)]
+    pub tui: bool,
 }
 
 /// `faucet backfill` arguments.

@@ -28,7 +28,7 @@ default = ["observability", "source", "sink", "state", "transforms", "compressio
 
 # Everything the default build ships, plus the long-running runtime modes:
 # `schedule` (cron scheduler) and `serve` (HTTP control plane).
-full = ["default", "otel", "schedule", "serve", "serve-ui", "serve-history-postgres", "serve-history-sqlite", "catalog", "lineage", "lineage-kafka", "notify", "transform-sql", "triggers", "triggers-object-store", "triggers-redis", "triggers-kafka", "cli-dev", "encryption"]
+full = ["default", "otel", "schedule", "serve", "serve-ui", "serve-history-postgres", "serve-history-sqlite", "catalog", "lineage", "lineage-kafka", "notify", "transform-sql", "triggers", "triggers-object-store", "triggers-redis", "triggers-kafka", "cli-dev", "encryption", "cli-tui"]
 
 # Data Movement Catalog (#279): the `catalog:` config block + post-run
 # recording (datasets, schema timelines, volume/freshness stats, lineage
@@ -207,6 +207,10 @@ cli-interactive = ["dep:inquire"]
 # `faucet dev` — filesystem-watch dev loop (`faucet plan` needs no feature and
 # ships in default).
 cli-dev = ["dep:notify-fs"]
+# Live terminal UI for `faucet run --tui` (#203): full-screen ratatui view of
+# per-row throughput/errors/DLQ/bookmark age, sampled from the in-process
+# Prometheus recorder (implies `observability`). Opt-in; not in `default`.
+cli-tui = ["observability", "dep:ratatui"]
 
 transforms = [
     "faucet-core/transforms",
@@ -326,6 +330,7 @@ inquire = { version = "0.9", optional = true, default-features = false, features
 # `faucet dev` filesystem watch (#283). Renamed key so it doesn't collide with
 # the `notify` *feature* (the notification/incident-routing layer).
 notify-fs = { package = "notify", version = "8", optional = true }
+ratatui = { workspace = true, optional = true }
 futures = { workspace = true }
 glob = { workspace = true }
 reqwest = { workspace = true, optional = true }

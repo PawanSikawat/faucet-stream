@@ -79,6 +79,8 @@ impl DlqDecryptor {
     /// Build from a jsonl sink config's raw `encryption` block (as found in a
     /// config's `dlq:` sink), if present.
     pub fn from_config_value(value: Option<&Value>) -> Result<Self, FaucetError> {
+        // The binding is only consumed under the `encryption` feature.
+        #[cfg_attr(not(feature = "encryption"), allow(unused_variables))]
         let Some(value) = value else {
             return Ok(Self::default());
         };
