@@ -24,6 +24,29 @@ impl Default for PostgresColumnMapping {
     }
 }
 
+/// How rows are shipped to PostgreSQL in append mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum PostgresWriteMethod {
+    /// Multi-row `INSERT INTO … VALUES …` — the default. Works with every
+    /// write mode and the exactly-once transaction path.
+    #[default]
+    Insert,
+    /// `COPY … FROM STDIN (FORMAT text)` bulk load — typically **5–10×
+    /// faster** than multi-row `INSERT` for bulk append (issue #308).
+    ///
+    /// **Append-only**: `COPY` has no `ON CONFLICT`, so combining
+    /// `write_method: copy` with `write_mode: upsert|delete` is rejected at
+    /// config load. The exactly-once path (`write_batch_idempotent`) always
+    /// uses the `INSERT`/transaction path regardless of this setting — the
+    /// watermark token must commit atomically with the page's data.
+    ///
+    /// Error semantics are all-or-nothing per batch, the same as a failed
+    /// multi-row `INSERT`: one bad row fails the whole `COPY` and the DLQ
+    /// router's `on_batch_error` policy applies.
+    Copy,
+}
+
 /// Configuration for the PostgreSQL sink.
 #[derive(Clone, Serialize, Deserialize, JsonSchema)]
 pub struct PostgresSinkConfig {
@@ -79,6 +102,13 @@ pub struct PostgresSinkConfig {
     /// and a UNIQUE/PRIMARY KEY constraint on `key`.
     #[serde(flatten)]
     pub write: faucet_core::WriteSpec,
+    /// How append-mode rows are shipped: multi-row `insert` (default) or the
+    /// `copy` bulk-load fast-path (`COPY … FROM STDIN`, typically 5–10×
+    /// faster for bulk append). `copy` is append-only — it is rejected with
+    /// `write_mode: upsert|delete` — and the exactly-once path always stays
+    /// on `insert` so data + watermark commit in one transaction.
+    #[serde(default)]
+    pub write_method: PostgresWriteMethod,
 }
 
 fn default_batch_size() -> usize {
@@ -98,6 +128,7 @@ impl std::fmt::Debug for PostgresSinkConfig {
             .field("column_mapping", &self.column_mapping)
             .field("batch_size", &self.batch_size)
             .field("max_connections", &self.max_connections)
+            .field("write_method", &self.write_method)
             .finish()
     }
 }
@@ -113,6 +144,7 @@ impl PostgresSinkConfig {
             batch_size: DEFAULT_BATCH_SIZE,
             max_connections: 5,
             write: faucet_core::WriteSpec::default(),
+            write_method: PostgresWriteMethod::default(),
         }
     }
 
@@ -142,6 +174,13 @@ impl PostgresSinkConfig {
     /// Set the maximum number of connections in the pool.
     pub fn max_connections(mut self, n: u32) -> Self {
         self.max_connections = n;
+        self
+    }
+
+    /// Choose how append-mode rows are shipped (`insert` vs the `copy`
+    /// bulk-load fast-path). See [`PostgresWriteMethod`].
+    pub fn with_write_method(mut self, method: PostgresWriteMethod) -> Self {
+        self.write_method = method;
         self
     }
 }
@@ -268,5 +307,39 @@ mod tests {
         }"#;
         let config: PostgresSinkConfig = serde_json::from_str(json).unwrap();
         assert_eq!(config.max_connections, 20);
+    }
+
+    #[test]
+    fn write_method_defaults_to_insert() {
+        let config = PostgresSinkConfig::new("postgres://localhost/test", "events");
+        assert_eq!(config.write_method, PostgresWriteMethod::Insert);
+
+        // Absent in JSON → insert (back-compat: existing configs unchanged).
+        let json = r#"{
+            "connection_url": "postgres://localhost/test",
+            "table_name": "events"
+        }"#;
+        let config: PostgresSinkConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(config.write_method, PostgresWriteMethod::Insert);
+    }
+
+    #[test]
+    fn write_method_serde_round_trips() {
+        let json = r#"{
+            "connection_url": "postgres://localhost/test",
+            "table_name": "events",
+            "write_method": "copy"
+        }"#;
+        let config: PostgresSinkConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(config.write_method, PostgresWriteMethod::Copy);
+        let text = serde_json::to_string(&config).unwrap();
+        assert!(text.contains("\"write_method\":\"copy\""));
+    }
+
+    #[test]
+    fn with_write_method_builder() {
+        let config = PostgresSinkConfig::new("postgres://localhost/test", "events")
+            .with_write_method(PostgresWriteMethod::Copy);
+        assert_eq!(config.write_method, PostgresWriteMethod::Copy);
     }
 }

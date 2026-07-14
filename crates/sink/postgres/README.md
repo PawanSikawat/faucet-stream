@@ -72,8 +72,9 @@ faucet run pipeline.yaml
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `batch_size` | int | `1000` | Maximum rows per multi-row `INSERT`. **`0` = no batching** — the whole page is sent in one statement. See [Streaming & batching](#streaming--batching). |
+| `batch_size` | int | `1000` | Maximum rows per multi-row `INSERT` (or per `COPY` under `write_method: copy`). **`0` = no batching** — the whole page is sent in one statement. See [Streaming & batching](#streaming--batching). |
 | `max_connections` | int | `5` | Maximum connections in the `sqlx` pool. |
+| `write_method` | `"insert" \| "copy"` | `"insert"` | How append-mode rows are shipped. `copy` uses the `COPY … FROM STDIN` bulk-load fast-path — see [Bulk load](#bulk-load-write_method-copy). |
 
 ### Write mode
 
@@ -191,6 +192,64 @@ The sink re-chunks each incoming `StreamPage` so individual multi-row `INSERT` s
 - **`batch_size = 0`** — the "no batching" sentinel: the entire upstream page is forwarded in a single logical write. Use it when the source already emits Postgres-tuned page sizes. AutoMap still sub-splits internally to respect the 65 535-parameter ceiling.
 
 `batch_size` is purely a chunk-size knob — connection pooling, identifier quoting, and JSONB vs AutoMap behaviour are unchanged.
+
+## Bulk load (`write_method: copy`)
+
+For **append-mode bulk loads**, set `write_method: copy` to ship rows via
+`COPY … FROM STDIN (FORMAT text)` instead of multi-row `INSERT` — typically
+**5–10× faster** at the destination, because `COPY` skips per-statement
+planning/binding overhead entirely (issue #308).
+
+```yaml
+sink:
+  type: postgres
+  config:
+    connection_url: ${env:PG_URL}
+    table_name: events
+    column_mapping: auto_map     # jsonb mapping works too
+    write_method: copy
+```
+
+Semantics are identical to the `INSERT` path — same rows, same target, same
+durability. The server parses every field with the destination column's
+*input function*, exactly like the `INSERT` path's `$N::<udt>` casts, so
+timestamps, numerics, booleans, and JSONB all land the same way. Values are
+escaped for COPY's text format (tabs, newlines, backslashes, control
+characters), and the column set is the same union-of-present-fields the
+`INSERT` path computes (columns absent from every record keep their
+`DEFAULT`).
+
+Restrictions and interactions:
+
+- **Append-only.** `COPY` has no `ON CONFLICT`, so `write_method: copy` +
+  `write_mode: upsert|delete` is rejected at config load with a typed error.
+- **All-or-nothing per batch.** One bad row fails the whole `COPY` batch —
+  the same behaviour as a failed multi-row `INSERT`. With a `dlq:` block the
+  DLQ router's `on_batch_error` policy applies (`dlq_all` routes the failed
+  page's rows to the DLQ; `propagate` aborts the run).
+- **Exactly-once is unaffected.** Under `delivery: exactly_once` the
+  watermark path (`write_batch_idempotent`) always uses the
+  `INSERT`/transaction machinery regardless of `write_method`, because the
+  page and its commit token must land in one atomic transaction.
+
+## Destination tuning
+
+Knobs that make bulk loads dramatically faster but change durability or
+consistency guarantees are **left to you on the destination** — faucet never
+flips them silently:
+
+- **`UNLOGGED` tables** — skip WAL entirely for the target table. Fastest
+  possible ingest; the table is truncated on crash recovery and is not
+  replicated. Suitable for staging tables you can re-load.
+- **`SET synchronous_commit = off`** (per session/role/database) — commits
+  return before WAL reaches disk. A crash can lose the last few transactions
+  (no corruption). Often a large win on spinning disks or busy WAL devices.
+- **Drop/disable indexes and constraints before the load, rebuild after** —
+  index maintenance frequently dominates bulk-insert cost; one bulk rebuild
+  is much cheaper than a million incremental updates.
+
+See the [throughput tuning guide](https://pawansikawat.github.io/faucet-stream/cookbook/tuning.html)
+for the full decision table.
 
 ## Write modes (upsert / delete)
 

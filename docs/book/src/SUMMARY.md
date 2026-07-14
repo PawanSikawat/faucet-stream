@@ -40,6 +40,7 @@
 - [Secrets-manager interpolation](./cookbook/secrets.md)
 - [Config composition](./cookbook/composition.md)
 - [Adaptive batching](./cookbook/adaptive-batching.md)
+- [Throughput tuning](./cookbook/tuning.md)
 - [Scheduling](./cookbook/scheduling.md)
 - [Running faucet as a service](./cookbook/serve.md)
 - [Web console (`serve-ui`)](./cookbook/web-console.md)

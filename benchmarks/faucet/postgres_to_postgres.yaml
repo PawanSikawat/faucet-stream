@@ -30,3 +30,6 @@ pipeline:
       column_mapping: auto_map
       max_connections: 8
       batch_size: 5000
+      # Benchmark faucet's best append path: the COPY bulk-load fast-path
+      # (#308). Drop this line to measure the multi-row INSERT path instead.
+      write_method: copy
