@@ -36,6 +36,15 @@ pub struct JsonlSinkConfig {
     #[cfg(feature = "compression")]
     #[serde(default)]
     pub compression: faucet_core::CompressionConfig,
+    /// Encryption at rest (#207): seal every record line with AES-256-GCM and
+    /// write it base64-encoded (one sealed record per line, append-safe).
+    /// The natural fit for a file-backed DLQ holding sensitive failed rows;
+    /// `faucet dlq inspect/replay/discard` decrypt transparently given the
+    /// key. Mutually exclusive with `compression`. Requires the crate-local
+    /// `encryption` feature.
+    #[cfg(feature = "encryption")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub encryption: Option<faucet_core::EncryptionSpec>,
 }
 
 fn default_batch_size() -> usize {
@@ -52,6 +61,8 @@ impl JsonlSinkConfig {
             batch_size: DEFAULT_BATCH_SIZE,
             #[cfg(feature = "compression")]
             compression: faucet_core::CompressionConfig::Auto,
+            #[cfg(feature = "encryption")]
+            encryption: None,
         }
     }
 
@@ -72,6 +83,14 @@ impl JsonlSinkConfig {
     #[cfg(feature = "compression")]
     pub fn compression(mut self, c: faucet_core::CompressionConfig) -> Self {
         self.compression = c;
+        self
+    }
+
+    /// Seal every record line at rest (#207). Available only with the
+    /// `encryption` feature; mutually exclusive with `compression`.
+    #[cfg(feature = "encryption")]
+    pub fn encryption(mut self, e: faucet_core::EncryptionSpec) -> Self {
+        self.encryption = Some(e);
         self
     }
 

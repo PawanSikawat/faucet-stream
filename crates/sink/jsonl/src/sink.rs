@@ -23,6 +23,10 @@ use tokio::sync::Mutex;
 /// sources — every transaction appends rather than truncates.
 pub struct JsonlSink {
     config: JsonlSinkConfig,
+    /// Compiled at-rest encryption (#207), initialized on first use so
+    /// `new()` stays infallible. `Err` results surface as typed sink errors.
+    #[cfg(feature = "encryption")]
+    encryption: tokio::sync::OnceCell<Option<faucet_core::CompiledEncryption>>,
     /// Mutex-protected writer for thread-safe concurrent writes.
     writer: Mutex<Option<std::pin::Pin<Box<dyn tokio::io::AsyncWrite + Send + Unpin>>>>,
     /// Tracks whether `ensure_open` has opened the file at least once.
@@ -39,9 +43,40 @@ impl JsonlSink {
     pub fn new(config: JsonlSinkConfig) -> Self {
         Self {
             config,
+            #[cfg(feature = "encryption")]
+            encryption: tokio::sync::OnceCell::new(),
             writer: Mutex::new(None),
             opened_once: std::sync::atomic::AtomicBool::new(false),
         }
+    }
+
+    /// Compile (once) the configured at-rest encryption, validating the
+    /// compression conflict. `Ok(None)` when no `encryption:` block is set.
+    #[cfg(feature = "encryption")]
+    async fn compiled_encryption(
+        &self,
+    ) -> Result<&Option<faucet_core::CompiledEncryption>, FaucetError> {
+        self.encryption
+            .get_or_try_init(|| async {
+                let Some(spec) = &self.config.encryption else {
+                    return Ok(None);
+                };
+                #[cfg(feature = "compression")]
+                {
+                    let path_str = self.config.path.to_string_lossy();
+                    if self.config.compression.resolve(&path_str) != faucet_core::Compression::None
+                    {
+                        return Err(FaucetError::Config(
+                            "jsonl sink: `encryption` and `compression` are mutually \
+                             exclusive — per-line sealed records cannot form a valid \
+                             gzip/zstd stream"
+                                .into(),
+                        ));
+                    }
+                }
+                faucet_core::CompiledEncryption::compile(spec).map(Some)
+            })
+            .await
     }
 
     /// Ensure the file is open and return a mutable reference to the writer.
@@ -127,6 +162,11 @@ impl faucet_core::Sink for JsonlSink {
             return Ok(0);
         }
 
+        // Validate/compile encryption before touching the file so a bad
+        // `encryption:` block never creates an empty output file.
+        #[cfg(feature = "encryption")]
+        let encryption = self.compiled_encryption().await?;
+
         let mut guard = self.ensure_open().await?;
         let writer = guard.as_mut().expect("writer opened in ensure_open");
 
@@ -137,6 +177,15 @@ impl faucet_core::Sink for JsonlSink {
                 serde_json::to_string(record)
             }
             .map_err(|e| FaucetError::Sink(format!("JSON serialization failed: {e}")))?;
+
+            #[cfg(feature = "encryption")]
+            let line = match encryption {
+                Some(enc) => {
+                    use base64::Engine as _;
+                    base64::engine::general_purpose::STANDARD.encode(enc.encrypt(line.as_bytes()))
+                }
+                None => line,
+            };
 
             writer
                 .write_all(line.as_bytes())
@@ -428,5 +477,99 @@ mod tests {
         let text = String::from_utf8(decoded).unwrap();
         let lines: Vec<&str> = text.trim().split('\n').collect();
         assert_eq!(lines.len(), 2);
+    }
+
+    #[cfg(feature = "encryption")]
+    mod encryption_at_rest {
+        use super::*;
+        use base64::Engine as _;
+        use faucet_core::{EncryptionSpec, Sink};
+        use serde_json::json;
+        use tempfile::NamedTempFile;
+
+        fn spec(key: &str) -> EncryptionSpec {
+            EncryptionSpec {
+                key: key.into(),
+                previous_keys: vec![],
+                algorithm: Default::default(),
+            }
+        }
+
+        fn decrypt_lines(path: &std::path::Path, key: &str) -> Vec<Value> {
+            let enc = faucet_core::CompiledEncryption::compile(&spec(key)).unwrap();
+            std::fs::read_to_string(path)
+                .unwrap()
+                .lines()
+                .map(|line| {
+                    let sealed = base64::engine::general_purpose::STANDARD
+                        .decode(line)
+                        .expect("line is base64");
+                    let plain = enc.decrypt(&sealed).expect("line decrypts");
+                    serde_json::from_slice(&plain).expect("plaintext is JSON")
+                })
+                .collect()
+        }
+
+        #[tokio::test]
+        async fn per_line_encrypted_output_round_trips() {
+            let tmp = NamedTempFile::new().unwrap();
+            let path = tmp.path().to_path_buf();
+            let sink = JsonlSink::new(JsonlSinkConfig::new(&path).encryption(spec("dlq-key")));
+            let records = vec![json!({"id": 1, "pii": "s3cr3t"}), json!({"id": 2})];
+            sink.write_batch(&records).await.unwrap();
+            sink.flush().await.unwrap();
+
+            // Raw file: no plaintext leakage, every line base64.
+            let raw = std::fs::read_to_string(&path).unwrap();
+            assert!(!raw.contains("s3cr3t"));
+            assert_eq!(raw.trim().lines().count(), 2);
+
+            assert_eq!(decrypt_lines(&path, "dlq-key"), records);
+        }
+
+        #[tokio::test]
+        async fn append_across_flush_reopen_keeps_all_sealed_lines() {
+            let tmp = NamedTempFile::new().unwrap();
+            let path = tmp.path().to_path_buf();
+            let sink = JsonlSink::new(JsonlSinkConfig::new(&path).encryption(spec("k")));
+            sink.write_batch(&[json!({"first": 1})]).await.unwrap();
+            sink.flush().await.unwrap();
+            sink.write_batch(&[json!({"second": 2})]).await.unwrap();
+            sink.flush().await.unwrap();
+
+            let lines = decrypt_lines(&path, "k");
+            assert_eq!(lines, vec![json!({"first": 1}), json!({"second": 2})]);
+        }
+
+        #[tokio::test]
+        async fn empty_key_is_a_typed_error_before_any_file_io() {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("out.jsonl");
+            let sink = JsonlSink::new(JsonlSinkConfig::new(&path).encryption(spec(" ")));
+            let err = sink.write_batch(&[json!(1)]).await.unwrap_err();
+            assert!(matches!(err, FaucetError::Config(_)));
+            assert!(!path.exists(), "a bad config must not create the file");
+        }
+
+        #[cfg(feature = "compression")]
+        #[tokio::test]
+        async fn compression_and_encryption_are_mutually_exclusive() {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("out.jsonl.gz"); // Auto resolves gzip
+            let sink = JsonlSink::new(JsonlSinkConfig::new(&path).encryption(spec("k")));
+            let err = sink.write_batch(&[json!(1)]).await.unwrap_err();
+            assert!(err.to_string().contains("mutually"), "{err}");
+        }
+
+        #[cfg(feature = "compression")]
+        #[tokio::test]
+        async fn encryption_with_plain_path_and_auto_compression_is_fine() {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("out.jsonl"); // Auto resolves None
+            let sink = JsonlSink::new(JsonlSinkConfig::new(&path).encryption(spec("k")));
+            sink.write_batch(&[json!({"ok": true})]).await.unwrap();
+            sink.flush().await.unwrap();
+            assert_eq!(decrypt_lines(&path, "k"), vec![json!({"ok": true})]);
+        }
     }
 }

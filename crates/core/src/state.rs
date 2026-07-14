@@ -162,6 +162,11 @@ fn safe_filename(key: &str) -> String {
 pub struct FileStateStore {
     root: PathBuf,
     write_lock: Mutex<()>,
+    /// Optional at-rest encryption (#207). When set, `put` seals the JSON
+    /// bytes before the atomic write and `get` unseals; plaintext files
+    /// remain readable (and are sealed on their next write).
+    #[cfg(feature = "encryption")]
+    encryption: Option<crate::encryption::CompiledEncryption>,
 }
 
 impl FileStateStore {
@@ -170,7 +175,17 @@ impl FileStateStore {
         Self {
             root: root.into(),
             write_lock: Mutex::new(()),
+            #[cfg(feature = "encryption")]
+            encryption: None,
         }
+    }
+
+    /// Seal bookmark files at rest with the given policy (#207). Reads accept
+    /// both sealed and (legacy) plaintext files; every write seals.
+    #[cfg(feature = "encryption")]
+    pub fn with_encryption(mut self, encryption: crate::encryption::CompiledEncryption) -> Self {
+        self.encryption = Some(encryption);
+        self
     }
 
     fn entry_path(&self, key: &str) -> PathBuf {
@@ -226,6 +241,43 @@ impl StateStore for FileStateStore {
         let path = self.entry_path(key);
         match tokio::fs::read(&path).await {
             Ok(bytes) => {
+                #[cfg(feature = "encryption")]
+                let bytes: Vec<u8> = if crate::encryption::is_encrypted(&bytes) {
+                    match &self.encryption {
+                        Some(enc) => enc.decrypt(&bytes).map_err(|e| {
+                            // Wrong/rotated key must be a loud, typed error —
+                            // treating it as "no bookmark" would silently
+                            // trigger a full re-sync.
+                            FaucetError::State(format!(
+                                "state file {} could not be decrypted: {e}",
+                                path.display()
+                            ))
+                        })?,
+                        None => {
+                            return Err(FaucetError::State(format!(
+                                "state file {} is encrypted but no `encryption` block is \
+                                 configured on the file state store — add \
+                                 `state.config.encryption` with the original key",
+                                path.display()
+                            )));
+                        }
+                    }
+                } else {
+                    bytes
+                };
+                #[cfg(not(feature = "encryption"))]
+                let bytes = {
+                    // Built without the `encryption` feature: refuse to parse a
+                    // sealed file as JSON garbage.
+                    if bytes.starts_with(b"FCT1") {
+                        return Err(FaucetError::State(format!(
+                            "state file {} is encrypted but this build of faucet has no \
+                             `encryption` feature",
+                            path.display()
+                        )));
+                    }
+                    bytes
+                };
                 let value: Value = serde_json::from_slice(&bytes).map_err(|e| {
                     FaucetError::State(format!(
                         "failed to parse state file {}: {e}",
@@ -249,6 +301,11 @@ impl StateStore for FileStateStore {
         let bytes = serde_json::to_vec(value).map_err(|e| {
             FaucetError::State(format!("failed to serialize state for key '{key}': {e}"))
         })?;
+        #[cfg(feature = "encryption")]
+        let bytes = match &self.encryption {
+            Some(enc) => enc.encrypt(&bytes),
+            None => bytes,
+        };
         let final_path = self.entry_path(key);
         let tmp_path = self.temp_path(key);
 
@@ -759,5 +816,114 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(report.failed_count(), 1, "unusable root should fail");
+    }
+
+    #[cfg(feature = "encryption")]
+    mod encryption_at_rest {
+        use super::*;
+        use crate::encryption::{CompiledEncryption, EncryptionSpec, is_encrypted};
+        use serde_json::json;
+
+        fn enc(key: &str) -> CompiledEncryption {
+            CompiledEncryption::compile(&EncryptionSpec {
+                key: key.into(),
+                previous_keys: vec![],
+                algorithm: Default::default(),
+            })
+            .unwrap()
+        }
+
+        #[tokio::test]
+        async fn encrypted_round_trip_and_ciphertext_on_disk() {
+            let dir = tempfile::tempdir().unwrap();
+            let store = FileStateStore::new(dir.path()).with_encryption(enc("k1"));
+            store.put("bk", &json!({"lsn": 42})).await.unwrap();
+            assert_eq!(store.get("bk").await.unwrap(), Some(json!({"lsn": 42})));
+
+            // On disk it is ciphertext, not JSON.
+            let raw = std::fs::read(dir.path().join("bk.json")).unwrap();
+            assert!(is_encrypted(&raw));
+            assert!(serde_json::from_slice::<Value>(&raw).is_err());
+
+            store.delete("bk").await.unwrap();
+            assert_eq!(store.get("bk").await.unwrap(), None);
+        }
+
+        #[tokio::test]
+        async fn plaintext_file_stays_readable_and_is_sealed_on_next_write() {
+            let dir = tempfile::tempdir().unwrap();
+            // A pre-encryption bookmark written by an older config.
+            let plain = FileStateStore::new(dir.path());
+            plain.put("bk", &json!("legacy")).await.unwrap();
+            let before = std::fs::read(dir.path().join("bk.json")).unwrap();
+            assert!(!is_encrypted(&before));
+
+            let sealed = FileStateStore::new(dir.path()).with_encryption(enc("k1"));
+            assert_eq!(sealed.get("bk").await.unwrap(), Some(json!("legacy")));
+            sealed.put("bk", &json!("updated")).await.unwrap();
+            let after = std::fs::read(dir.path().join("bk.json")).unwrap();
+            assert!(is_encrypted(&after), "next write must seal the file");
+            assert_eq!(sealed.get("bk").await.unwrap(), Some(json!("updated")));
+        }
+
+        #[tokio::test]
+        async fn wrong_key_is_a_typed_error_not_a_missing_bookmark() {
+            let dir = tempfile::tempdir().unwrap();
+            let a = FileStateStore::new(dir.path()).with_encryption(enc("right"));
+            a.put("bk", &json!(1)).await.unwrap();
+
+            let b = FileStateStore::new(dir.path()).with_encryption(enc("wrong"));
+            let err = b.get("bk").await.unwrap_err();
+            assert!(matches!(err, FaucetError::State(_)));
+            assert!(err.to_string().contains("could not be decrypted"), "{err}");
+        }
+
+        #[tokio::test]
+        async fn encrypted_file_with_unconfigured_store_is_a_typed_error() {
+            let dir = tempfile::tempdir().unwrap();
+            let sealed = FileStateStore::new(dir.path()).with_encryption(enc("k1"));
+            sealed.put("bk", &json!(1)).await.unwrap();
+
+            let plain = FileStateStore::new(dir.path());
+            let err = plain.get("bk").await.unwrap_err();
+            assert!(err.to_string().contains("no `encryption` block"), "{err}");
+        }
+
+        #[tokio::test]
+        async fn rotation_reads_old_key_files() {
+            let dir = tempfile::tempdir().unwrap();
+            let old = FileStateStore::new(dir.path()).with_encryption(enc("old"));
+            old.put("bk", &json!("v1")).await.unwrap();
+
+            let rotated = FileStateStore::new(dir.path()).with_encryption(
+                CompiledEncryption::compile(&EncryptionSpec {
+                    key: "new".into(),
+                    previous_keys: vec!["old".into()],
+                    algorithm: Default::default(),
+                })
+                .unwrap(),
+            );
+            assert_eq!(rotated.get("bk").await.unwrap(), Some(json!("v1")));
+            // Re-seal under the new key; a store knowing only "new" can read it.
+            rotated.put("bk", &json!("v2")).await.unwrap();
+            let new_only = FileStateStore::new(dir.path()).with_encryption(enc("new"));
+            assert_eq!(new_only.get("bk").await.unwrap(), Some(json!("v2")));
+        }
+
+        #[tokio::test]
+        async fn no_temp_files_left_behind() {
+            let dir = tempfile::tempdir().unwrap();
+            let store = FileStateStore::new(dir.path()).with_encryption(enc("k1"));
+            store.put("bk", &json!(1)).await.unwrap();
+            let leftovers: Vec<_> = std::fs::read_dir(dir.path())
+                .unwrap()
+                .filter_map(Result::ok)
+                .filter(|e| e.path().to_string_lossy().ends_with(".tmp"))
+                .collect();
+            assert!(
+                leftovers.is_empty(),
+                "atomic write must leave no temp files"
+            );
+        }
     }
 }

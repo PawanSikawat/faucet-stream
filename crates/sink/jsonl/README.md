@@ -15,6 +15,7 @@ It's the workhorse local-file destination: zero credentials, zero connection set
 - **Append or truncate** — `append: true` adds to an existing file; the default truncates on open for a clean export.
 - **Auto-creates parent directories** — missing parents of `path` are created (`mkdir -p` semantics) before the file opens, so dated/partitioned subdirectory paths just work.
 - **Optional compression** — behind the `compression` feature, gzip / zstd are selected automatically from the `.gz` / `.zst` suffix (or set explicitly). Multi-member output stays decoder-compatible across mid-stream flushes.
+- **Optional encryption at rest** — behind the `encryption` feature, every record line is sealed with AES-256-GCM and written base64-encoded (#207). Append-safe; the natural fit for a file-backed DLQ. See [Encryption at rest](#encryption-at-rest).
 - **Pretty-print mode** — `pretty: true` indents each record for human reading (no longer strict JSONL — records span multiple lines).
 - **Flush-safe for CDC** — `flush()` finalises the writer and the next write reopens in append mode regardless of `append`, so a CDC source's per-transaction flush appends rather than truncates — no data loss mid-stream.
 - **`faucet doctor` preflight** — `check()` verifies the parent directory is writable (via a throwaway temp file) without ever touching your real output file.
@@ -72,6 +73,7 @@ Every row of `input.csv` is written to `./out/records.jsonl` as one compact JSON
 | `pretty` | bool | `false` | Pretty-print (indent) each record. This breaks strict JSONL — records span multiple lines. |
 | `batch_size` | int | `1000` | Records per upstream `StreamPage`. **No behavioural effect** at this per-record sink; present only for config parity. See [Streaming & batching](#streaming--batching). |
 | `compression` | `none` \| `gzip` \| `zstd` \| `auto` | `auto` | *(requires the `compression` feature)* Output codec. `auto` picks gzip/zstd from the file suffix; anything else writes uncompressed. See [Compression](#compression). |
+| `encryption` | object | — | *(requires the `encryption` feature)* Seal every line with AES-256-GCM: `{ key, previous_keys?, algorithm? }`. Mutually exclusive with `compression`. See [Encryption at rest](#encryption-at-rest). |
 
 ## Examples
 
@@ -263,6 +265,35 @@ This sink does **not** support effectively-once delivery or upsert/delete write 
 - [`faucet-sink-csv`](https://crates.io/crates/faucet-sink-csv) — CSV/TSV file output with full quoting.
 - [`faucet-sink-s3`](https://crates.io/crates/faucet-sink-s3) / [`faucet-sink-gcs`](https://crates.io/crates/faucet-sink-gcs) — the same JSONL records to object storage.
 - [`faucet-core`](https://crates.io/crates/faucet-core) — the `Sink` trait this connector implements.
+
+## Encryption at rest
+
+Behind the crate-local `encryption` Cargo feature (#207). Each serialized JSON
+line is sealed with AES-256-GCM (a fresh random nonce per record) and written
+as its base64 encoding plus a newline — the file stays line-oriented and
+append-safe across flush/reopen cycles.
+
+```yaml
+sink:
+  type: jsonl
+  config:
+    path: ./dlq/failed.jsonl
+    encryption:
+      key: ${vault:secret/faucet#dlq-key}   # high-entropy material, not a password
+      # previous_keys: ["${env:OLD_KEY}"]   # rotation: read-only candidates
+      # algorithm: aes-256-gcm              # default (and only) option
+```
+
+- The 32-byte AES key is derived as SHA-256 of the key string (a derivation,
+  not a stretching KDF — source the key from a secrets manager).
+- **Mutually exclusive with `compression`** — per-line sealed records cannot
+  form a valid gzip/zstd stream; the conflict is a typed config error before
+  any file is created.
+- `faucet dlq inspect/replay/discard` read sealed DLQ files transparently
+  (`--encryption-key`, or automatically from the config's `dlq:` block).
+- The same `encryption` block seals `file` state-store bookmarks — see the
+  state cookbook.
+
 
 ## License
 

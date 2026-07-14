@@ -537,6 +537,7 @@ Default features: `source-rest`, `transform-flatten`, `transform-rename-keys`,
 | `transforms` | no | All built-in transforms above |
 | `transform-sql` | no | Embedded DuckDB SQL transform — run DuckDB SQL over each page (`batch` relation; `batch_size: 0` for global aggregation) |
 | `compression` | no | gzip / zstd read+write on JSONL/CSV/S3/GCS source and sink connectors |
+| `encryption` | no | Encryption at rest (AES-256-GCM) for `file` state-store bookmarks and per-line JSONL/DLQ output |
 
 `RecordTransform::Custom` is always available regardless of feature flags. CLI-only features
 (`schedule`, `serve`, `serve-ui`, `serve-history-*`, `triggers*`, `lineage`, `quality`,

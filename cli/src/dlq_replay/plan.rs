@@ -4,7 +4,7 @@
 //! unit-testable; the IO shims live in [`mod`](super) and [`reader`](super::reader).
 
 use crate::config::{ConnectorSpec, DlqSpec, OnBatchErrorSpec, PipelineConfig};
-use crate::dlq_replay::reader::{DlqReaderSource, SourceOverride};
+use crate::dlq_replay::reader::{DlqDecryptor, DlqReaderSource, SourceOverride};
 use crate::error::{CliError, CliResult};
 use crate::expand::{ExpandedNode, NodeRole, expand};
 use faucet_core::{DeliveryMode, DlqReason, UnwrappedEnvelope};
@@ -125,6 +125,7 @@ pub fn build_replay_node(
     reason: Option<String>,
     failed_dlq: &Path,
     row: Option<&str>,
+    decryptor: DlqDecryptor,
 ) -> CliResult<ExpandedNode> {
     // Loop guard: the fresh DLQ must not be one of the source files.
     if from_files.iter().any(|f| same_file(f, failed_dlq)) {
@@ -142,7 +143,7 @@ pub fn build_replay_node(
         .and_then(|n| n.dlq.clone());
     let mut node = select_replay_node(nodes, row)?;
 
-    let reader = DlqReaderSource::new(from_files, reason);
+    let reader = DlqReaderSource::new(from_files, reason, decryptor);
     node.source_override = Some(SourceOverride::new(Box::new(reader)));
     // A replay reads the whole DLQ location once — no bookmarking, and never
     // exactly-once (the reader is not a deterministic-replay source).
@@ -150,6 +151,16 @@ pub fn build_replay_node(
     node.delivery = DeliveryMode::AtLeastOnce;
     node.dlq = Some(failed_dlq_spec(failed_dlq, original_dlq.as_ref()));
     Ok(node)
+}
+
+/// The raw `encryption` value of a config's dlq **jsonl** sink, if any —
+/// the key that sealed the DLQ file a replay reads back.
+pub fn dlq_encryption_value(dlq: Option<&DlqSpec>) -> Option<&serde_json::Value> {
+    let dlq = dlq?;
+    if dlq.sink.kind != "jsonl" {
+        return None;
+    }
+    dlq.sink.config.get("encryption")
 }
 
 /// Two paths refer to the same file. Uses canonicalization when both exist,
@@ -184,10 +195,18 @@ pub fn envelope_selected(
 /// Decide whether a raw discard-candidate line should be kept or discarded.
 /// Only DLQ envelopes matching the filter are discarded; blank, malformed,
 /// and non-envelope lines are always kept (we never mangle non-faucet content).
-pub fn discard_keep_line(line: &str, reason: Option<&str>, before_ms: Option<i64>) -> bool {
-    use crate::dlq_replay::reader::{LineOutcome, classify_line};
-    match classify_line(line) {
+pub fn discard_keep_line(
+    line: &str,
+    dec: &DlqDecryptor,
+    reason: Option<&str>,
+    before_ms: Option<i64>,
+) -> bool {
+    use crate::dlq_replay::reader::{LineOutcome, classify_line_with};
+    match classify_line_with(line, dec) {
         LineOutcome::Envelope(env) => !envelope_selected(&env, reason, before_ms),
+        // Blank / malformed / non-envelope / undecryptable lines are always
+        // preserved verbatim — we never mangle content we cannot prove is a
+        // matching envelope.
         _ => true,
     }
 }
@@ -290,12 +309,32 @@ mod tests {
         })
         .to_string();
         // Matching envelope with reason filter → discarded (not kept).
-        assert!(!discard_keep_line(&matching, Some("quality"), None));
+        assert!(!discard_keep_line(
+            &matching,
+            &DlqDecryptor::default(),
+            Some("quality"),
+            None
+        ));
         // Non-matching reason → kept.
-        assert!(discard_keep_line(&matching, Some("contract"), None));
+        assert!(discard_keep_line(
+            &matching,
+            &DlqDecryptor::default(),
+            Some("contract"),
+            None
+        ));
         // Non-envelope / blank / malformed → always kept.
-        assert!(discard_keep_line(r#"{"a":1}"#, None, None));
-        assert!(discard_keep_line("", None, None));
-        assert!(discard_keep_line("not json", Some("quality"), None));
+        assert!(discard_keep_line(
+            r#"{"a":1}"#,
+            &DlqDecryptor::default(),
+            None,
+            None
+        ));
+        assert!(discard_keep_line("", &DlqDecryptor::default(), None, None));
+        assert!(discard_keep_line(
+            "not json",
+            &DlqDecryptor::default(),
+            Some("quality"),
+            None
+        ));
     }
 }

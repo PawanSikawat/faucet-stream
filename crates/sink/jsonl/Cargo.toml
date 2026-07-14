@@ -18,6 +18,7 @@ serde_json.workspace = true
 async-trait.workspace = true
 tracing.workspace = true
 tokio = { workspace = true, features = ["fs", "io-util"] }
+base64 = { workspace = true, optional = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt", "fs", "io-util"] }
@@ -28,6 +29,10 @@ faucet-conformance.workspace = true
 
 [features]
 compression = ["faucet-core/compression"]
+# Per-line AES-256-GCM sealing of the output (#207) — each JSON line is
+# encrypted and written as base64. Append-safe; mutually exclusive with
+# `compression` at runtime.
+encryption = ["faucet-core/encryption", "dep:base64"]
 
 [package.metadata.docs.rs]
 all-features = true

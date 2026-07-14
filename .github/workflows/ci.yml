@@ -195,6 +195,8 @@ jobs:
           - auth
           - full
           - compression
+          # Encryption at rest (state bookmarks + JSONL/DLQ, #207)
+          - encryption
           # Quality checks
           - quality
           - quality-jsonschema

@@ -68,6 +68,10 @@ contract = ["dep:regex"]
 # explicit list) and redact/hash/tokenize/partial-mask them per page, before
 # every sink. `hmac`+`sha2` back the keyed hashing/tokenization actions.
 masking = ["dep:regex", "dep:sha2", "dep:hmac"]
+# Encryption at rest (#207): AES-256-GCM sealing for FileStateStore bookmark
+# files and per-line JSONL/DLQ output. `sha2` derives the 32-byte key from the
+# configured key string.
+encryption = ["dep:aes-gcm", "dep:sha2"]
 
 [dependencies]
 serde.workspace = true
@@ -109,6 +113,7 @@ zstd = { workspace = true, optional = true }
 chrono = { workspace = true, optional = true }
 jsonschema = { workspace = true, optional = true }
 sha2 = { workspace = true, optional = true }
+aes-gcm = { workspace = true, optional = true }
 hmac = { workspace = true, optional = true }
 
 [dev-dependencies]

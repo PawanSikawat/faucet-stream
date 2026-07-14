@@ -152,6 +152,42 @@ By default discarded envelopes are moved to a `<file>.archived.jsonl` sibling;
 or a relative age like `7d` / `24h` / `30m`) select what to discard — everything
 else, including non-envelope lines, is left untouched.
 
+## Encryption at rest
+
+DLQ envelopes carry failed records **verbatim** — on a shared or
+compliance-scoped host that can be a plaintext-at-rest gap. When the DLQ sink
+is `jsonl`, seal every envelope line with AES-256-GCM (requires a build with
+the `encryption` feature — included in `--features full`):
+
+```yaml
+dlq:
+  sink:
+    type: jsonl
+    config:
+      path: ./dlq/failed.jsonl
+      encryption:
+        key: ${vault:secret/faucet#dlq-key}
+        # previous_keys: ["${env:OLD_KEY}"]   # rotation: read-only candidates
+```
+
+Each record line is encrypted individually and written base64-encoded, so the
+file stays line-oriented and append-safe. `encryption` is mutually exclusive
+with the jsonl sink's `compression` (per-line sealed records cannot form a
+valid gzip/zstd stream).
+
+The `faucet dlq` verbs handle sealed files transparently:
+
+- `inspect` / `discard` — pass `--encryption-key <KEY>` (repeat the flag to
+  also try rotated keys). Without a key, sealed lines are counted and reported
+  as *encrypted* — never mistaken for malformed lines, never mangled.
+- `replay` — picks the key up **automatically** from the config's own
+  `dlq:` jsonl `encryption` block; `--encryption-key` overrides.
+- `discard` keeps and archives lines **verbatim** (still sealed) — filtering
+  decrypts only in memory; nothing is ever re-written in plaintext.
+
+The same `encryption` block also seals `file` state-store bookmarks — see
+[State & resumability](./state.md#encryption-at-rest-file-backend).
+
 > The full design is in
 > [`docs/superpowers/specs/2026-05-24-dlq-design.md`](https://github.com/PawanSikawat/faucet-stream/blob/main/docs)
 > and the `faucet_core::dlq` module on docs.rs.

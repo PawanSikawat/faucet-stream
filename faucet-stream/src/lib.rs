@@ -51,6 +51,7 @@
 //! | `sink-kafka` | Apache Kafka producer sink |
 //! | `sink-kinesis` | AWS Kinesis Data Streams sink |
 //! | `sink-parquet` | Apache Parquet file sink (local, S3) |
+//! | `encryption` | AES-256-GCM at-rest sealing for file state-store bookmarks and per-line JSONL/DLQ output |
 //! | `kafka-schema-registry` | Schema Registry support for Kafka connectors |
 //! | `source` | All source connectors |
 //! | `sink` | All sink connectors |

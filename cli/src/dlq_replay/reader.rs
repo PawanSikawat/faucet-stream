@@ -16,6 +16,128 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
+/// Base64 of the sealed-payload magic `FCT` — every line the jsonl sink
+/// writes under an `encryption:` block starts with this, so sealed lines are
+/// detectable even in builds without the `encryption` feature.
+const SEALED_LINE_PREFIX: &str = "RkNU";
+
+/// Optional decryption for DLQ lines sealed at rest by the jsonl sink's
+/// `encryption:` block (#207). The default carries no keys: sealed lines are
+/// still *detected* (and counted as [`LineOutcome::Undecryptable`]) so an
+/// encrypted DLQ inspected without a key reports what it is instead of "all
+/// lines malformed".
+#[derive(Clone, Default)]
+pub struct DlqDecryptor {
+    #[cfg(feature = "encryption")]
+    inner: Option<Arc<faucet_core::CompiledEncryption>>,
+}
+
+impl std::fmt::Debug for DlqDecryptor {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("DlqDecryptor(..)")
+    }
+}
+
+/// How one raw line decodes before classification.
+enum LineDecode {
+    /// Not a sealed line — classify the raw text.
+    Plain,
+    /// Sealed and successfully decrypted — classify the plaintext.
+    #[cfg(feature = "encryption")]
+    Decrypted(String),
+    /// Sealed but no key / wrong key / tampered — counted, never fatal.
+    Undecryptable,
+}
+
+impl DlqDecryptor {
+    /// Build from user-supplied keys (`--encryption-key`, repeatable): the
+    /// first entry is the current key, the rest are rotation candidates.
+    /// An empty slice builds the inert default.
+    pub fn from_keys(keys: &[String]) -> Result<Self, FaucetError> {
+        if keys.is_empty() {
+            return Ok(Self::default());
+        }
+        #[cfg(feature = "encryption")]
+        {
+            let spec = faucet_core::EncryptionSpec {
+                key: keys[0].clone(),
+                previous_keys: keys[1..].to_vec(),
+                algorithm: Default::default(),
+            };
+            Ok(Self {
+                inner: Some(Arc::new(faucet_core::CompiledEncryption::compile(&spec)?)),
+            })
+        }
+        #[cfg(not(feature = "encryption"))]
+        Err(FaucetError::Config(
+            "--encryption-key requires a faucet build with the `encryption` feature \
+             (cargo install faucet-cli --features encryption)"
+                .into(),
+        ))
+    }
+
+    /// Build from a jsonl sink config's raw `encryption` block (as found in a
+    /// config's `dlq:` sink), if present.
+    pub fn from_config_value(value: Option<&Value>) -> Result<Self, FaucetError> {
+        let Some(value) = value else {
+            return Ok(Self::default());
+        };
+        #[cfg(feature = "encryption")]
+        {
+            let spec: faucet_core::EncryptionSpec = serde_json::from_value(value.clone())
+                .map_err(|e| FaucetError::Config(format!("dlq sink `encryption` block: {e}")))?;
+            Ok(Self {
+                inner: Some(Arc::new(faucet_core::CompiledEncryption::compile(&spec)?)),
+            })
+        }
+        #[cfg(not(feature = "encryption"))]
+        Err(FaucetError::Config(
+            "the config's dlq sink has an `encryption` block, but this faucet build has no \
+             `encryption` feature"
+                .into(),
+        ))
+    }
+
+    /// Whether any key is loaded.
+    pub fn is_active(&self) -> bool {
+        #[cfg(feature = "encryption")]
+        {
+            self.inner.is_some()
+        }
+        #[cfg(not(feature = "encryption"))]
+        false
+    }
+
+    fn decode(&self, line: &str) -> LineDecode {
+        let trimmed = line.trim();
+        if !trimmed.starts_with(SEALED_LINE_PREFIX) {
+            return LineDecode::Plain;
+        }
+        #[cfg(feature = "encryption")]
+        if let Some(enc) = &self.inner {
+            use base64::Engine as _;
+            let Ok(sealed) = base64::engine::general_purpose::STANDARD.decode(trimmed) else {
+                // Starts like a sealed line but is not base64 — let the JSON
+                // classifier call it malformed.
+                return LineDecode::Plain;
+            };
+            if !faucet_core::encryption::is_encrypted(&sealed) {
+                return LineDecode::Plain;
+            }
+            return match enc.decrypt(&sealed) {
+                Ok(plain) => match String::from_utf8(plain) {
+                    Ok(text) => LineDecode::Decrypted(text),
+                    Err(_) => LineDecode::Undecryptable,
+                },
+                Err(_) => LineDecode::Undecryptable,
+            };
+        }
+        // Sealed-looking line with no key available (or an encryption-less
+        // build): report it as encrypted rather than malformed.
+        LineDecode::Undecryptable
+    }
+}
+
 /// A pre-built source attached to a single [`ExpandedNode`](crate::expand::ExpandedNode)
 /// so the executor runs it instead of building one from the connector
 /// registry. Used only by `faucet dlq replay`, which runs exactly one
@@ -53,22 +175,40 @@ pub enum LineOutcome {
     /// Valid JSON that is not a DLQ envelope (no `payload`) — skipped and
     /// counted.
     NonEnvelope,
+    /// A line sealed by the jsonl sink's `encryption:` block that could not
+    /// be decrypted (no key, wrong key, or tampering) — skipped and counted.
+    Undecryptable,
     /// A parsed DLQ envelope.
     Envelope(Box<UnwrappedEnvelope>),
 }
 
 /// Classify one raw line. Pure — no IO. Blank lines are ignored; anything
-/// else is either an envelope, malformed JSON, or valid-but-not-an-envelope.
+/// else is either an envelope, malformed JSON, valid-but-not-an-envelope, or
+/// an (un)decryptable sealed line.
 pub fn classify_line(line: &str) -> LineOutcome {
+    classify_line_with(line, &DlqDecryptor::default())
+}
+
+/// [`classify_line`] with decryption support: sealed lines are decrypted
+/// through `dec` before classification.
+pub fn classify_line_with(line: &str, dec: &DlqDecryptor) -> LineOutcome {
     if line.trim().is_empty() {
         return LineOutcome::Blank;
     }
-    match serde_json::from_str::<Value>(line) {
-        Ok(value) => match unwrap_envelope(&value) {
-            Ok(env) => LineOutcome::Envelope(Box::new(env)),
-            Err(_) => LineOutcome::NonEnvelope,
-        },
-        Err(_) => LineOutcome::Malformed,
+    fn classify_text(text: &str) -> LineOutcome {
+        match serde_json::from_str::<Value>(text) {
+            Ok(value) => match unwrap_envelope(&value) {
+                Ok(env) => LineOutcome::Envelope(Box::new(env)),
+                Err(_) => LineOutcome::NonEnvelope,
+            },
+            Err(_) => LineOutcome::Malformed,
+        }
+    }
+    match dec.decode(line) {
+        LineDecode::Plain => classify_text(line),
+        #[cfg(feature = "encryption")]
+        LineDecode::Decrypted(plain) => classify_text(&plain),
+        LineDecode::Undecryptable => LineOutcome::Undecryptable,
     }
 }
 
@@ -81,6 +221,9 @@ pub struct ScanResult {
     pub malformed: usize,
     /// Valid-JSON lines that were not DLQ envelopes (no `payload`).
     pub non_envelope: usize,
+    /// Sealed (encrypted) lines that could not be decrypted with the
+    /// available keys.
+    pub undecryptable: usize,
     /// Files that were read.
     pub files_read: usize,
 }
@@ -130,7 +273,7 @@ pub fn expand_location(location: &str) -> Result<Vec<PathBuf>, FaucetError> {
 /// Read and classify every line of every file, collecting envelopes and
 /// tallies. Blank lines are ignored; malformed / non-envelope lines are
 /// counted but never abort the scan.
-pub fn scan_files(files: &[PathBuf]) -> Result<ScanResult, FaucetError> {
+pub fn scan_files(files: &[PathBuf], dec: &DlqDecryptor) -> Result<ScanResult, FaucetError> {
     let mut out = ScanResult::default();
     for file in files {
         let text = std::fs::read_to_string(file).map_err(|e| {
@@ -138,10 +281,11 @@ pub fn scan_files(files: &[PathBuf]) -> Result<ScanResult, FaucetError> {
         })?;
         out.files_read += 1;
         for line in text.lines() {
-            match classify_line(line) {
+            match classify_line_with(line, dec) {
                 LineOutcome::Blank => {}
                 LineOutcome::Malformed => out.malformed += 1,
                 LineOutcome::NonEnvelope => out.non_envelope += 1,
+                LineOutcome::Undecryptable => out.undecryptable += 1,
                 LineOutcome::Envelope(env) => out.envelopes.push(*env),
             }
         }
@@ -168,13 +312,15 @@ pub fn reason_matches(env: &UnwrappedEnvelope, filter: Option<&str>) -> bool {
 pub struct DlqReaderSource {
     files: Vec<PathBuf>,
     reason: Option<String>,
+    dec: DlqDecryptor,
 }
 
 impl DlqReaderSource {
     /// Build a reader over the already-expanded `files`, keeping only
-    /// envelopes whose reason matches `reason` (if set).
-    pub fn new(files: Vec<PathBuf>, reason: Option<String>) -> Self {
-        Self { files, reason }
+    /// envelopes whose reason matches `reason` (if set). Sealed lines are
+    /// decrypted through `dec`.
+    pub fn new(files: Vec<PathBuf>, reason: Option<String>, dec: DlqDecryptor) -> Self {
+        Self { files, reason, dec }
     }
 }
 
@@ -186,8 +332,9 @@ impl Source for DlqReaderSource {
     ) -> Result<Vec<Value>, FaucetError> {
         let files = self.files.clone();
         let reason = self.reason.clone();
+        let dec = self.dec.clone();
         // Blocking file IO off the async runtime.
-        let scan = tokio::task::spawn_blocking(move || scan_files(&files))
+        let scan = tokio::task::spawn_blocking(move || scan_files(&files, &dec))
             .await
             .map_err(|e| FaucetError::Source(format!("DLQ reader task panicked: {e}")))??;
         Ok(scan
@@ -295,7 +442,7 @@ mod tests {
             envelope_line("contract", json!({"id": 2})),
         );
         let (_dir, path) = write_tmp("dlq.jsonl", &body);
-        let scan = scan_files(&[path]).unwrap();
+        let scan = scan_files(&[path], &DlqDecryptor::default()).unwrap();
         assert_eq!(scan.envelopes.len(), 2);
         assert_eq!(scan.malformed, 1);
         assert_eq!(scan.non_envelope, 1);
@@ -340,11 +487,12 @@ mod tests {
         );
         let (_dir, path) = write_tmp("dlq.jsonl", &body);
         // No filter → both payloads.
-        let src = DlqReaderSource::new(vec![path.clone()], None);
+        let src = DlqReaderSource::new(vec![path.clone()], None, DlqDecryptor::default());
         let all = src.fetch_all().await.unwrap();
         assert_eq!(all, vec![json!({"id": 1}), json!({"id": 2})]);
         // Reason filter → only matching payloads.
-        let src = DlqReaderSource::new(vec![path], Some("contract".into()));
+        let src =
+            DlqReaderSource::new(vec![path], Some("contract".into()), DlqDecryptor::default());
         let filtered = src.fetch_all().await.unwrap();
         assert_eq!(filtered, vec![json!({"id": 2})]);
     }
@@ -364,5 +512,85 @@ mod tests {
         let ov = SourceOverride::new(Box::new(Dummy));
         assert!(ov.take().is_some());
         assert!(ov.take().is_none());
+    }
+
+    #[cfg(feature = "encryption")]
+    mod sealed_lines {
+        use super::*;
+        use base64::Engine as _;
+
+        fn seal(key: &str, text: &str) -> String {
+            let enc = faucet_core::CompiledEncryption::compile(&faucet_core::EncryptionSpec {
+                key: key.into(),
+                previous_keys: vec![],
+                algorithm: Default::default(),
+            })
+            .unwrap();
+            base64::engine::general_purpose::STANDARD.encode(enc.encrypt(text.as_bytes()))
+        }
+
+        #[test]
+        fn sealed_envelope_classifies_with_the_right_key() {
+            let line = seal("k", &envelope_line("quality", serde_json::json!({"id": 1})));
+            let dec = DlqDecryptor::from_keys(&["k".to_string()]).unwrap();
+            assert!(matches!(
+                classify_line_with(&line, &dec),
+                LineOutcome::Envelope(_)
+            ));
+            // Rotation: the sealing key found among the later candidates.
+            let rotated = DlqDecryptor::from_keys(&["new".to_string(), "k".to_string()]).unwrap();
+            assert!(matches!(
+                classify_line_with(&line, &rotated),
+                LineOutcome::Envelope(_)
+            ));
+        }
+
+        #[test]
+        fn sealed_line_without_or_with_wrong_key_is_undecryptable_not_malformed() {
+            let line = seal("k", "{\"payload\": {}}");
+            assert_eq!(
+                classify_line_with(&line, &DlqDecryptor::default()),
+                LineOutcome::Undecryptable
+            );
+            let wrong = DlqDecryptor::from_keys(&["other".to_string()]).unwrap();
+            assert_eq!(
+                classify_line_with(&line, &wrong),
+                LineOutcome::Undecryptable
+            );
+        }
+
+        #[test]
+        fn plain_lines_pass_through_a_keyed_decryptor() {
+            let dec = DlqDecryptor::from_keys(&["k".to_string()]).unwrap();
+            assert!(matches!(
+                classify_line_with(&envelope_line("quality", serde_json::json!({"a": 1})), &dec),
+                LineOutcome::Envelope(_)
+            ));
+            assert_eq!(
+                classify_line_with("{not json", &dec),
+                LineOutcome::Malformed
+            );
+            // A line that merely starts with the sealed prefix but is not
+            // base64/sealed falls back to normal classification.
+            assert_eq!(
+                classify_line_with("RkNU-not-really-sealed!!!", &dec),
+                LineOutcome::Malformed
+            );
+        }
+
+        #[test]
+        fn from_keys_empty_is_inert_and_from_config_value_none_is_inert() {
+            assert!(!DlqDecryptor::from_keys(&[]).unwrap().is_active());
+            assert!(!DlqDecryptor::from_config_value(None).unwrap().is_active());
+            let v = serde_json::json!({"key": "k"});
+            assert!(
+                DlqDecryptor::from_config_value(Some(&v))
+                    .unwrap()
+                    .is_active()
+            );
+            assert!(
+                DlqDecryptor::from_config_value(Some(&serde_json::json!({"nope": 1}))).is_err()
+            );
+        }
     }
 }

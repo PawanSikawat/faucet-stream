@@ -383,6 +383,7 @@ with a sample.
 |------|--------|
 | `--reason <r>` | Only include envelopes with this reason (`partial` / `dlq_all` / `quality` / `schema_drift` / `contract`). |
 | `--limit <n>` | Sample size. Default: 5. |
+| `--encryption-key <k>` | Key for a DLQ sealed at rest by the jsonl sink's `encryption` block; repeat for rotated keys. Sealed lines without a matching key are counted as *encrypted*, never mistaken for malformed. Requires an `encryption`-feature build. |
 | `--json` | Emit a JSON summary. |
 
 **`faucet dlq replay <config> --from <location>`** — re-feed the quarantined
@@ -393,6 +394,7 @@ fail again go to a *fresh* DLQ, never back to the source.
 |------|--------|
 | `--from <location>` | DLQ location to replay from (required). |
 | `--reason <r>` | Replay only envelopes with this reason. |
+| `--encryption-key <k>` | Key for a sealed DLQ (repeatable). When omitted, the config's own `dlq:` jsonl `encryption` block is used automatically. |
 | `--failed-dlq <path>` | Where re-failed rows go. Default: a `replay-failed.jsonl` sibling of the source. |
 | `--row <id>` | Which root of the config to replay through. Default: the first root. |
 | `--dry-run` | Report what would be replayed without writing. |
@@ -406,6 +408,7 @@ fail again go to a *fresh* DLQ, never back to the source.
 | `--reason <r>` | Only discard envelopes with this reason. |
 | `--before <when>` | Only discard envelopes older than an RFC 3339 timestamp or a relative age (`7d` / `24h` / `30m`). |
 | `--delete` | Permanently delete instead of archiving to a `<file>.archived.jsonl` sibling. |
+| `--encryption-key <k>` | Key for a sealed DLQ (repeatable). Kept/archived lines stay sealed verbatim; decryption happens only in memory for filtering. |
 | `--json` | Emit a JSON result. |
 
 See the [Dead-letter queues](../cookbook/dlq.md) cookbook page for the envelope

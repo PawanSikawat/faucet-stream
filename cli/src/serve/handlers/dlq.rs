@@ -7,7 +7,7 @@
 //! [`crate::serve::rbac::required_permission`].
 
 use crate::auth_catalog::build_auth_catalog;
-use crate::dlq_replay::{self, ReplayInputs};
+use crate::dlq_replay::{self, ReplayInputs, reader::DlqDecryptor};
 use crate::error::CliError;
 use crate::serve::error::ServeError;
 use crate::serve::load::load_submission;
@@ -41,6 +41,9 @@ pub struct DlqInspectRequest {
     pub reason: Option<String>,
     #[serde(default = "default_sample_limit")]
     pub limit: usize,
+    /// Keys for a DLQ sealed at rest (first = current, rest = rotated).
+    #[serde(default)]
+    pub encryption_keys: Vec<String>,
 }
 
 /// `POST /v1/dlq/inspect` → 200 with the grouped
@@ -52,8 +55,11 @@ pub async fn inspect(
     let location = req.location;
     let reason = req.reason;
     let limit = req.limit;
+    let dec = DlqDecryptor::from_keys(&req.encryption_keys)
+        .map_err(CliError::from)
+        .map_err(cli_to_serve)?;
     let summary = tokio::task::spawn_blocking(move || {
-        dlq_replay::inspect(&location, reason.as_deref(), limit)
+        dlq_replay::inspect(&location, reason.as_deref(), limit, &dec)
     })
     .await
     .map_err(|e| ServeError::Internal(format!("dlq inspect task: {e}")))?
@@ -79,6 +85,10 @@ pub struct DlqReplayRequest {
     pub row: Option<String>,
     #[serde(default)]
     pub dry_run: bool,
+    /// Keys for a DLQ sealed at rest (first = current, rest = rotated). When
+    /// empty, the config's own dlq jsonl `encryption` block is used.
+    #[serde(default)]
+    pub encryption_keys: Vec<String>,
 }
 
 /// `POST /v1/dlq/replay` → 200 with the
@@ -114,6 +124,9 @@ pub async fn replay(
             execution: loaded.cfg.execution.clone(),
             auth,
             clock: Utc::now().fixed_offset(),
+            decryptor: DlqDecryptor::from_keys(&req.encryption_keys)
+                .map_err(CliError::from)
+                .map_err(cli_to_serve)?,
         },
     )
     .await;
@@ -137,6 +150,9 @@ pub struct DlqDiscardRequest {
     /// Permanently delete instead of archiving to a `<file>.archived.jsonl` sibling.
     #[serde(default)]
     pub delete: bool,
+    /// Keys for a DLQ sealed at rest (first = current, rest = rotated).
+    #[serde(default)]
+    pub encryption_keys: Vec<String>,
 }
 
 /// `POST /v1/dlq/discard` → 200 with the
@@ -151,8 +167,11 @@ pub async fn discard(
     let reason = req.reason;
     let before_ms = req.before_ms;
     let delete = req.delete;
+    let dec = DlqDecryptor::from_keys(&req.encryption_keys)
+        .map_err(CliError::from)
+        .map_err(cli_to_serve)?;
     let outcome = tokio::task::spawn_blocking(move || {
-        dlq_replay::discard(&location, reason.as_deref(), before_ms, delete)
+        dlq_replay::discard(&location, reason.as_deref(), before_ms, delete, &dec)
     })
     .await
     .map_err(|e| ServeError::Internal(format!("dlq discard task: {e}")));

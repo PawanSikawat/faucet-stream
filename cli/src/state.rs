@@ -12,6 +12,11 @@ use std::sync::Arc;
 #[derive(Debug, Deserialize)]
 struct FileStateConfig {
     path: PathBuf,
+    /// Encryption at rest for bookmark files (#207). Parsed as a raw value so
+    /// a build without the `encryption` feature can reject it with a clear
+    /// error instead of a generic unknown-field failure.
+    #[serde(default)]
+    encryption: Option<serde_json::Value>,
 }
 
 #[cfg(feature = "state-redis")]
@@ -57,7 +62,24 @@ pub async fn build_state_store(spec: &StateStoreSpec) -> CliResult<Arc<dyn State
         "memory" => Ok(Arc::new(MemoryStateStore::new())),
         "file" => {
             let cfg = decode::<FileStateConfig>("file", spec.config.clone())?;
-            Ok(Arc::new(FileStateStore::new(cfg.path)))
+            match cfg.encryption {
+                None => Ok(Arc::new(FileStateStore::new(cfg.path))),
+                #[cfg(feature = "encryption")]
+                Some(raw) => {
+                    let enc_spec: faucet_core::EncryptionSpec = serde_json::from_value(raw)
+                        .map_err(|e| CliError::Config(format!("state.config.encryption: {e}")))?;
+                    let compiled = faucet_core::CompiledEncryption::compile(&enc_spec)?;
+                    Ok(Arc::new(
+                        FileStateStore::new(cfg.path).with_encryption(compiled),
+                    ))
+                }
+                #[cfg(not(feature = "encryption"))]
+                Some(_) => Err(CliError::Config(
+                    "state.config.encryption requires a faucet build with the `encryption` \
+                     feature (cargo install faucet-cli --features encryption)"
+                        .into(),
+                )),
+            }
         }
         #[cfg(feature = "state-redis")]
         "redis" => {
@@ -156,6 +178,39 @@ mod tests {
             CliError::Config(msg) => assert!(msg.contains("max_connections"), "{msg}"),
             other => panic!("expected Config error, got {other:?}"),
         }
+    }
+
+    #[cfg(feature = "encryption")]
+    #[tokio::test]
+    async fn builds_encrypted_file_store_and_seals_bookmarks() {
+        let dir = tempfile::tempdir().unwrap();
+        let spec = StateStoreSpec {
+            kind: "file".into(),
+            config: json!({
+                "path": dir.path().to_str().unwrap(),
+                "encryption": { "key": "test-key" },
+            }),
+        };
+        let store = build_state_store(&spec).await.unwrap();
+        store.put("bk", &json!({"pos": 7})).await.unwrap();
+        assert_eq!(store.get("bk").await.unwrap(), Some(json!({"pos": 7})));
+        let raw = std::fs::read(dir.path().join("bk.json")).unwrap();
+        assert!(raw.starts_with(b"FCT1"), "bookmark must be ciphertext");
+    }
+
+    #[cfg(feature = "encryption")]
+    #[tokio::test]
+    async fn encrypted_file_store_rejects_bad_block() {
+        let spec = StateStoreSpec {
+            kind: "file".into(),
+            config: json!({"path": "/tmp/x", "encryption": {"key": ""}}),
+        };
+        assert!(build_state_store(&spec).await.is_err());
+        let spec = StateStoreSpec {
+            kind: "file".into(),
+            config: json!({"path": "/tmp/x", "encryption": {"key": "k", "nope": 1}}),
+        };
+        assert!(build_state_store(&spec).await.is_err());
     }
 
     #[tokio::test]

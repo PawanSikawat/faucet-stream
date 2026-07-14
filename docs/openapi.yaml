@@ -326,6 +326,10 @@ paths:
                 location: { type: string }
                 reason: { type: string, enum: [partial, dlq_all, quality, schema_drift, contract] }
                 limit: { type: integer, default: 5 }
+                encryption_keys:
+                  type: array
+                  items: { type: string }
+                  description: Keys for a DLQ sealed at rest by the jsonl sink's `encryption` block (first = current, rest = rotated). Requires a server built with the `encryption` feature.
       responses:
         "200":
           description: Grouped DLQ summary
@@ -357,6 +361,11 @@ paths:
                 failed_dlq: { type: string }
                 row: { type: string }
                 dry_run: { type: boolean, default: false }
+                encryption_keys:
+                  type: array
+                  items: { type: string }
+                  description: Keys for a DLQ sealed at rest by the jsonl sink's `encryption` block (first = current, rest = rotated). Requires a server built with the `encryption` feature.
+                  # When empty, the config's own dlq jsonl `encryption` block is used.
       responses:
         "200":
           description: Replay outcome (candidates, records_written, failed_dlq)
@@ -386,6 +395,10 @@ paths:
                 reason: { type: string, enum: [partial, dlq_all, quality, schema_drift, contract] }
                 before_ms: { type: integer, description: Only discard envelopes with ts_ms strictly older than this }
                 delete: { type: boolean, default: false }
+                encryption_keys:
+                  type: array
+                  items: { type: string }
+                  description: Keys for a DLQ sealed at rest by the jsonl sink's `encryption` block (first = current, rest = rotated). Requires a server built with the `encryption` feature.
       responses:
         "200":
           description: Discard outcome (discarded, files_rewritten, archived_to)

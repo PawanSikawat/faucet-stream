@@ -6,7 +6,7 @@
 
 use crate::cli::{DlqArgs, DlqCommand, DlqDiscardArgs, DlqInspectArgs, DlqReplayArgs};
 use crate::config::PipelineConfig;
-use crate::dlq_replay::{self, ReplayInputs};
+use crate::dlq_replay::{self, ReplayInputs, reader::DlqDecryptor};
 use crate::error::{CliError, CliResult};
 use chrono::{DateTime, Utc};
 
@@ -27,7 +27,8 @@ pub async fn run(args: DlqArgs) -> CliResult<()> {
 }
 
 fn inspect(args: DlqInspectArgs) -> CliResult<()> {
-    let summary = dlq_replay::inspect(&args.location, args.reason.as_deref(), args.limit)?;
+    let dec = DlqDecryptor::from_keys(&args.encryption_key)?;
+    let summary = dlq_replay::inspect(&args.location, args.reason.as_deref(), args.limit, &dec)?;
     if args.json {
         println!("{}", to_json(&summary)?);
         return Ok(());
@@ -37,6 +38,12 @@ fn inspect(args: DlqInspectArgs) -> CliResult<()> {
         "  files read: {}   envelopes: {}   malformed: {}   non-envelope: {}",
         summary.files_read, summary.total_envelopes, summary.malformed, summary.non_envelope
     );
+    if summary.undecryptable > 0 {
+        println!(
+            "  encrypted lines that could not be decrypted: {} (pass --encryption-key)",
+            summary.undecryptable
+        );
+    }
     if !summary.by_reason.is_empty() {
         println!("  by reason:");
         for (reason, count) in &summary.by_reason {
@@ -99,6 +106,7 @@ async fn replay(args: DlqReplayArgs) -> CliResult<()> {
             execution: cfg.execution.clone(),
             auth,
             clock: Utc::now().fixed_offset(),
+            decryptor: DlqDecryptor::from_keys(&args.encryption_key)?,
         },
     )
     .await?;
@@ -130,11 +138,13 @@ fn discard(args: DlqDiscardArgs) -> CliResult<()> {
         Some(s) => Some(parse_before(s, Utc::now())?),
         None => None,
     };
+    let dec = DlqDecryptor::from_keys(&args.encryption_key)?;
     let outcome = dlq_replay::discard(
         &args.location,
         args.reason.as_deref(),
         before_ms,
         args.delete,
+        &dec,
     )?;
     if args.json {
         println!("{}", to_json(&outcome)?);
