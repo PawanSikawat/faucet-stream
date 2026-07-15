@@ -25,6 +25,7 @@
     { "name": "kafka", "kind": "source", "verified": true, "description": "Apache Kafka consumer with idle/max-messages termination" },
     { "name": "kinesis", "kind": "source", "verified": true, "description": "AWS Kinesis Data Streams consumer with per-shard checkpoints" },
     { "name": "parquet", "kind": "source", "verified": true, "description": "Apache Parquet file source (local, glob, or S3)" },
+    { "name": "delta", "kind": "source", "verified": true, "description": "Apache Delta Lake source (local FS or S3/Azure/GCS; time travel, projection)" },
     { "name": "bigquery", "kind": "source", "verified": true, "description": "Google BigQuery query source" },
     { "name": "snowflake", "kind": "source", "verified": true, "description": "Snowflake query source (SQL REST API)" },
     { "name": "spanner", "kind": "source", "verified": true, "description": "Google Cloud Spanner query source (streaming SQL, incremental replication)" },
@@ -48,6 +49,7 @@
     { "name": "spanner", "kind": "sink", "verified": true, "description": "Google Cloud Spanner mutation sink (upsert/delete, exactly-once)" },
     { "name": "http", "kind": "sink", "verified": true, "description": "HTTP POST sink (individual or array batch)" },
     { "name": "stdout", "kind": "sink", "verified": true, "description": "Stdout / stderr sink (JSON Lines, pretty, TSV)" },
-    { "name": "parquet", "kind": "sink", "verified": true, "description": "Apache Parquet file sink (local path or S3)" }
+    { "name": "parquet", "kind": "sink", "verified": true, "description": "Apache Parquet file sink (local path or S3)" },
+    { "name": "delta", "kind": "sink", "verified": true, "description": "Apache Delta Lake sink (append-only; local FS or S3/Azure/GCS)" }
   ]
 }
