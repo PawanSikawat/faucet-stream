@@ -5205,6 +5205,126 @@
         }
       }
     },
+    "source_databricks__AuthSpec": {
+      "description": "A connector's `auth:` field: **either** an inline auth definition `A`\n(the `{ type, config }` shape), **or** a `{ ref: <name> }` reference to a\nshared provider defined in the top-level `auth:` catalog.\n\n`ref` is mutually exclusive with inline fields — supplying both is a\ndeserialization error.",
+      "anyOf": [
+        {
+          "description": "Inline auth, spelled out on the connector.",
+          "$ref": "#/$defs/source_databricks__DatabricksAuth"
+        },
+        {
+          "description": "A reference to a shared provider in the top-level `auth:` catalog.",
+          "$ref": "#/$defs/source_databricks__AuthReference"
+        }
+      ]
+    },
+    "source_databricks__DatabricksAuth": {
+      "description": "Authentication for the Databricks SQL Statement Execution API.\n\nBoth variants send `Authorization: Bearer <token>` — Databricks accepts a\nPersonal Access Token (PAT) or an OAuth machine-to-machine (M2M) access\ntoken in the same header. Uses the project-wide adjacently-tagged\n`{ type, config }` shape, e.g. `auth: { type: pat, config: { token: … } }`.\nA shared `auth: { ref: <name> }` provider that yields a `Bearer`/`Token`\ncredential maps onto [`DatabricksAuth::Token`].",
+      "oneOf": [
+        {
+          "description": "Databricks Personal Access Token.",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "pat"
+            },
+            "config": {
+              "type": "object",
+              "properties": {
+                "token": {
+                  "description": "The token string (use `${env:…}` / `${vault:…}` to inject).",
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        {
+          "description": "A pre-obtained OAuth (M2M) bearer token.",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "token"
+            },
+            "config": {
+              "type": "object",
+              "properties": {
+                "token": {
+                  "description": "The bearer token string.",
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "source_databricks__AuthReference": {
+      "description": "A `{ ref: <name> }` pointer to a named provider in the top-level `auth:`\ncatalog. The only permitted key is `ref`.",
+      "type": "object",
+      "properties": {
+        "ref": {
+          "description": "Name of the provider in the top-level `auth:` catalog.",
+          "type": "string"
+        }
+      },
+      "additionalProperties": true
+    },
+    "source_databricks__DatabricksParam": {
+      "description": "A named SQL parameter passed to the statement (`:name` markers in the SQL).",
+      "type": "object",
+      "properties": {
+        "name": {
+          "description": "Parameter name (the `:name` marker in the SQL, without the colon).",
+          "type": "string"
+        },
+        "value": {
+          "description": "Parameter value. Sent to Databricks as its string form; `null` binds a\ntyped NULL.",
+          "default": null
+        },
+        "type": {
+          "description": "Optional Databricks SQL type (e.g. `INT`, `STRING`, `DATE`, `TIMESTAMP`).\nWhen omitted, Databricks treats the value as `STRING`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "source_databricks__DatabricksReplication": {
+      "description": "How the source replicates rows across runs.\n\nSerializes as `{ type: full }` or\n`{ type: incremental, column: \"...\", initial_value: ... }`.",
+      "oneOf": [
+        {
+          "description": "Every run fetches the full result set (default).",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "full"
+            }
+          }
+        },
+        {
+          "description": "Only rows whose `column` is strictly greater than the stored bookmark\n(or `initial_value` on the first run) are emitted. If the SQL contains\nthe literal token `${bookmark}`, it is bound as a `:_faucet_bookmark`\nnamed parameter so the warehouse filters server-side (efficient); the\nsource also filters client-side as a correctness backstop. The new\nmaximum of `column` is persisted on the final page.",
+          "type": "object",
+          "properties": {
+            "column": {
+              "description": "Column whose value is the replication cursor (e.g. `updated_at`).",
+              "type": "string"
+            },
+            "initial_value": {
+              "description": "Lower bound used on the first run, before any bookmark is stored."
+            },
+            "type": {
+              "type": "string",
+              "const": "incremental"
+            }
+          }
+        }
+      ]
+    },
     "source_gcs__GcsCredentials": {
       "description": "Credential source for a GCS client.\n\nSerializes as `{ type: <method>, config: { … } }` (adjacent tagging,\nsnake_case discriminators) — the consistent auth wire shape shared by\nevery faucet connector:\n`{ type: service_account_json_file, config: { path: \"/run/secrets/sa.json\" } }`.",
       "oneOf": [
@@ -10124,6 +10244,122 @@
                   },
                   "title": "DeltaSourceConfig",
                   "description": "Configuration for the Delta Lake source connector.\n\nThe `table_uri` / `credentials` / `storage_options` keys are flattened in\nfrom the shared [`DeltaConnection`]. Reads scan the table's active data\nfiles at the latest version (or a pinned `version` / `timestamp` for time\ntravel) and yield each row as a JSON object.",
+                  "type": "object"
+                },
+                true
+              ]
+            },
+            "transforms": {
+              "type": [
+                "array",
+                "null"
+              ]
+            },
+            "inherit_transforms": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "title": "databricks",
+          "properties": {
+            "type": {
+              "const": "databricks"
+            },
+            "config": {
+              "anyOf": [
+                {
+                  "properties": {
+                    "workspace_url": {
+                      "description": "Workspace base URL, e.g. `https://dbc-abc123.cloud.databricks.com`.",
+                      "type": "string"
+                    },
+                    "warehouse_id": {
+                      "description": "Target SQL Warehouse id.",
+                      "type": "string"
+                    },
+                    "sql": {
+                      "description": "The SQL statement to run. May contain `:name` parameter markers (see\n[`parameters`](Self::parameters)) and a `${bookmark}` token for\nincremental replication.",
+                      "type": "string"
+                    },
+                    "auth": {
+                      "description": "Authentication (PAT / OAuth bearer), inline or via a shared `auth: { ref }`.",
+                      "$ref": "#/$defs/source_databricks__AuthSpec"
+                    },
+                    "catalog": {
+                      "description": "Default Unity Catalog catalog for the statement.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "schema": {
+                      "description": "Default schema for the statement.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "parameters": {
+                      "description": "Named SQL parameters (`:name` markers).",
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/$defs/source_databricks__DatabricksParam"
+                      },
+                      "default": []
+                    },
+                    "wait_timeout_secs": {
+                      "description": "Server-side wait before the statement goes async (seconds). Databricks\naccepts `0` (fully async) or `5`–`50`. Defaults to `50`.",
+                      "type": [
+                        "integer",
+                        "string"
+                      ],
+                      "format": "uint64",
+                      "minimum": 0,
+                      "default": 50
+                    },
+                    "poll_interval_secs": {
+                      "description": "Client poll cadence while the statement is `PENDING`/`RUNNING` (seconds).",
+                      "type": [
+                        "integer",
+                        "string"
+                      ],
+                      "format": "uint64",
+                      "minimum": 0,
+                      "default": 1
+                    },
+                    "batch_size": {
+                      "description": "Page size — rows accumulated before a `StreamPage` is emitted.",
+                      "type": [
+                        "integer",
+                        "string"
+                      ],
+                      "format": "uint",
+                      "minimum": 0,
+                      "default": 1000
+                    },
+                    "replication": {
+                      "description": "Replication mode. Defaults to [`DatabricksReplication::Full`].",
+                      "$ref": "#/$defs/source_databricks__DatabricksReplication",
+                      "default": {
+                        "type": "full"
+                      }
+                    },
+                    "state_key": {
+                      "description": "Explicit state-store key for the incremental bookmark. When unset, a key\nis derived from the workspace/warehouse and a query fingerprint.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    }
+                  },
+                  "title": "DatabricksSourceConfig",
+                  "description": "Configuration for the Databricks SQL query source.\n\nRuns `sql` against a Databricks SQL Warehouse via the Statement Execution\nREST API and streams the result rows as typed JSON objects.",
                   "type": "object"
                 },
                 true

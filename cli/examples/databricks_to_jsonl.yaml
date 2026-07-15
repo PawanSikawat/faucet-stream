@@ -1,0 +1,39 @@
+# Run a SQL query against a Databricks SQL Warehouse (Statement Execution API)
+# and write the result rows to JSON Lines. This reads *query results* — for a
+# full-table lakehouse scan use the Delta source instead (`type: delta`).
+#
+# Set DATABRICKS_TOKEN to a Personal Access Token (or OAuth M2M token) and point
+# workspace_url / warehouse_id at your workspace, then:
+#
+#   faucet validate cli/examples/databricks_to_jsonl.yaml
+#   faucet run      cli/examples/databricks_to_jsonl.yaml
+version: 1
+name: databricks_to_jsonl
+
+pipeline:
+  source:
+    type: databricks
+    config:
+      workspace_url: https://dbc-00000000-0000.cloud.databricks.com
+      warehouse_id: 0123456789abcdef
+      catalog: samples
+      schema: tpch
+      sql: >
+        SELECT o_orderkey, o_totalprice, o_orderdate
+        FROM orders
+        WHERE o_totalprice > :min_price
+      parameters:
+        - { name: min_price, value: "100000", type: "DECIMAL(18,2)" }
+      auth:
+        type: pat
+        config:
+          token: ${env:DATABRICKS_TOKEN}
+      # Incremental replication (uncomment to only pull new rows each run):
+      # sql includes `AND o_orderdate > ${bookmark}`
+      # replication: { type: incremental, column: o_orderdate, initial_value: "1990-01-01" }
+      # state: persist the bookmark across runs (required for incremental)
+
+  sink:
+    type: jsonl
+    config:
+      path: ./out/databricks_orders.jsonl

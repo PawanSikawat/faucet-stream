@@ -38,6 +38,7 @@ source = [
     "source-elasticsearch",
     "source-parquet",
     "source-delta",
+    "source-databricks",
     "source-gcs",
     "source-bigquery",
     "source-snowflake",
@@ -139,6 +140,7 @@ source-kafka = ["dep:faucet-source-kafka", "dep:faucet-common-kafka"]
 source-kinesis = ["dep:faucet-source-kinesis", "dep:faucet-common-kinesis"]
 source-parquet = ["dep:faucet-source-parquet"]
 source-delta = ["dep:faucet-source-delta"]
+source-databricks = ["dep:faucet-source-databricks"]
 source-gcs = ["dep:faucet-source-gcs", "dep:faucet-common-gcs"]
 source-bigquery = ["dep:faucet-source-bigquery", "dep:faucet-common-bigquery"]
 source-snowflake = ["dep:faucet-source-snowflake", "dep:faucet-common-snowflake"]
@@ -239,6 +241,7 @@ faucet-source-csv = { workspace = true, optional = true }
 faucet-source-elasticsearch = { workspace = true, optional = true }
 faucet-source-parquet = { workspace = true, optional = true }
 faucet-source-delta = { workspace = true, optional = true }
+faucet-source-databricks = { workspace = true, optional = true }
 faucet-source-gcs = { workspace = true, optional = true }
 faucet-source-bigquery = { workspace = true, optional = true }
 faucet-source-snowflake = { workspace = true, optional = true }

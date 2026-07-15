@@ -792,6 +792,7 @@ fn shipped_example_yamls_pass_validate() {
         ("API_USER", "x"),
         ("API_PASS", "x"),
         ("AUTH_TOKEN", "x"),
+        ("DATABRICKS_TOKEN", "x"),
         ("ES_USER", "x"),
         ("ES_PASS", "x"),
         ("ES_API_KEY", "x"),

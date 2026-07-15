@@ -17,8 +17,8 @@
 
 **The fast, config-driven way to move data in Rust.**
 
-faucet-stream is a complete **ETL** toolkit: **27 source** and **21 sink** connectors
-(**45 in total**) plus in-flight transforms — including a page-level embedded-DuckDB `sql`
+faucet-stream is a complete **ETL** toolkit: **28 source** and **21 sink** connectors
+(**49 in total**) plus in-flight transforms — including a page-level embedded-DuckDB `sql`
 transform — wired together by a single `faucet` binary that runs pipelines declaratively
 from a YAML/JSON file, no Rust code required. Or skip the binary and embed the same engine
 in your own service through the typed `Source` / `Sink` traits. One toolkit, whether you
@@ -60,7 +60,7 @@ cargo add faucet-stream           # the library
   cron scheduling, an HTTP control plane with event-driven triggers, OpenLineage emission, and
   built-in Prometheus metrics + `tracing` spans — all with zero per-connector code.
 - **📦 Pay only for what you use** — every connector is a Cargo feature, so a slim build can
-  be just REST + JSONL, or pull in all 45 connectors with `--features full`.
+  be just REST + JSONL, or pull in all 49 connectors with `--features full`.
 
 **Documentation:** the [faucet-stream guide](https://pawansikawat.github.io/faucet-stream/)
 (getting started, tutorials, cookbook, operations) · API reference on
@@ -265,6 +265,7 @@ wired into the battery (see the support-tiers note above).
 | [`faucet-source-gcs`](crates/source/gcs) | T2 | Google Cloud Storage — read objects as JSONL, JSON array, or raw text |
 | [`faucet-source-parquet`](crates/source/parquet) | T1 ✅ | Apache Parquet — local file, glob, or S3; vectorized Arrow reader, projection |
 | [`faucet-source-delta`](crates/source/delta) | T2 | Apache Delta Lake — local FS or S3/Azure/GCS; time travel, projection pushdown |
+| [`faucet-source-databricks`](crates/source/databricks) | T3 | Databricks SQL query source (Statement Execution API) — typed rows, chunk pagination, incremental |
 | [`faucet-source-elasticsearch`](crates/source/elasticsearch) | T1 ✅ᵐ | Elasticsearch — search/scroll API |
 | [`faucet-source-bigquery`](crates/source/bigquery) | T1 ✅ᵐ | Google BigQuery — `jobs.query` + `getQueryResults`, type-aware decoding |
 | [`faucet-source-snowflake`](crates/source/snowflake) | T1 ✅ᵐ | Snowflake — SQL REST API, server-side partition pagination, JWT / OAuth |
@@ -438,7 +439,7 @@ flowchart LR
     P -.->|metrics + spans| O
 ```
 
-faucet-stream is a Cargo workspace with **66 crates** — 27 sources, 21 sinks, 9 shared
+faucet-stream is a Cargo workspace with **67 crates** — 28 sources, 21 sinks, 9 shared
 connector libraries, the shared auth-provider library, 2 state-store backends, the lineage
 crate, the SQL transform crate, the conformance test battery, the shared core, the umbrella
 crate, and the CLI binary. See
@@ -500,6 +501,7 @@ Default features: `source-rest`, `transform-flatten`, `transform-rename-keys`,
 | `source-gcs` | no | Google Cloud Storage file source |
 | `source-parquet` | no | Apache Parquet file source (local, glob, S3) |
 | `source-delta` | no | Apache Delta Lake source (local FS; S3/Azure/GCS via `delta-s3`/`delta-azure`/`delta-gcs`) |
+| `source-databricks` | no | Databricks SQL query source (Statement Execution API) |
 | `sink-delta` | no | Apache Delta Lake sink (local FS; S3/Azure/GCS via `delta-s3`/`delta-azure`/`delta-gcs`) |
 | `source-elasticsearch` | no | Elasticsearch source |
 | `source-bigquery` | no | Google BigQuery query source |
@@ -786,7 +788,7 @@ Cargo.toml                    — workspace manifest (60 crates)
 crates/
   core/                       — faucet-core: shared types, traits, pipeline, transforms, config
   auth/                       — faucet-auth: shared OAuth2 / token-endpoint providers
-  source/                     — 27 source connectors (rest, graphql, xml, grpc, *-cdc, kafka, s3, delta, singer, …)
+  source/                     — 28 source connectors (rest, graphql, xml, grpc, *-cdc, kafka, s3, delta, databricks, singer, …)
   sink/                       — 21 sink connectors (bigquery, iceberg, delta, postgres, parquet, kafka, …)
   common/                     — 6 shared connector libraries (bigquery, elasticsearch, gcs, kafka, snowflake, mssql)
   state/                      — Redis- and Postgres-backed StateStore backends
