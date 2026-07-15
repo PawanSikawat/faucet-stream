@@ -5055,6 +5055,156 @@
         }
       }
     },
+    "source_delta__DeltaCredentials": {
+      "description": "Object-store credentials for reading/writing a Delta table.\n\nUses the project-wide adjacently-tagged `{ type, config }` shape\n(snake_case discriminators): e.g. `credentials: { type: aws, config: { … } }`.\nThe default is [`DeltaCredentials::Default`], which resolves credentials from\nthe ambient environment / instance metadata via the object-store default\nprovider chain — nothing is injected into `storage_options`.",
+      "oneOf": [
+        {
+          "description": "Resolve credentials from the ambient environment / default provider\nchain (AWS instance profile, `AZURE_*` env, GCP ADC, …). Injects no\nkeys of its own.",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "default"
+            }
+          }
+        },
+        {
+          "description": "Static AWS credentials (or an S3-compatible endpoint such as MinIO).",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "aws"
+            },
+            "config": {
+              "$ref": "#/$defs/source_delta__AwsCredentials"
+            }
+          }
+        },
+        {
+          "description": "Azure Blob / ADLS Gen2 credentials.",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "azure"
+            },
+            "config": {
+              "$ref": "#/$defs/source_delta__AzureCredentials"
+            }
+          }
+        },
+        {
+          "description": "Google Cloud Storage credentials.",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "gcp"
+            },
+            "config": {
+              "$ref": "#/$defs/source_delta__GcpCredentials"
+            }
+          }
+        }
+      ]
+    },
+    "source_delta__AwsCredentials": {
+      "description": "Static AWS credentials and optional S3-compatible endpoint overrides.\n\nLeaving a field unset lets the object-store default chain resolve it (so\n`region` alone with an instance profile is valid). `endpoint_url` +\n`allow_http: true` targets MinIO / LocalStack.",
+      "type": "object",
+      "properties": {
+        "access_key_id": {
+          "description": "`AWS_ACCESS_KEY_ID`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "secret_access_key": {
+          "description": "`AWS_SECRET_ACCESS_KEY`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "session_token": {
+          "description": "`AWS_SESSION_TOKEN` (temporary credentials).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "region": {
+          "description": "`AWS_REGION`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "endpoint_url": {
+          "description": "`AWS_ENDPOINT_URL` — override for S3-compatible stores (MinIO, etc.).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "allow_http": {
+          "description": "`AWS_ALLOW_HTTP` — permit plaintext HTTP to the endpoint (MinIO in dev).",
+          "type": [
+            "boolean",
+            "null",
+            "string"
+          ]
+        }
+      }
+    },
+    "source_delta__AzureCredentials": {
+      "description": "Azure Blob / ADLS Gen2 credentials.",
+      "type": "object",
+      "properties": {
+        "account_name": {
+          "description": "`AZURE_STORAGE_ACCOUNT_NAME`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "access_key": {
+          "description": "`AZURE_STORAGE_ACCESS_KEY` (shared-key auth).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "sas_token": {
+          "description": "`AZURE_STORAGE_SAS_KEY` (SAS-token auth).",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "source_delta__GcpCredentials": {
+      "description": "Google Cloud Storage credentials.",
+      "type": "object",
+      "properties": {
+        "service_account_path": {
+          "description": "`GOOGLE_SERVICE_ACCOUNT` — path to a service-account JSON key file.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "service_account_key": {
+          "description": "`GOOGLE_SERVICE_ACCOUNT_KEY` — inline service-account JSON key.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
     "source_gcs__GcsCredentials": {
       "description": "Credential source for a GCS client.\n\nSerializes as `{ type: <method>, config: { … } }` (adjacent tagging,\nsnake_case discriminators) — the consistent auth wire shape shared by\nevery faucet connector:\n`{ type: service_account_json_file, config: { path: \"/run/secrets/sa.json\" } }`.",
       "oneOf": [
@@ -7156,6 +7306,156 @@
         "zstd",
         "lz4"
       ]
+    },
+    "sink_delta__DeltaCredentials": {
+      "description": "Object-store credentials for reading/writing a Delta table.\n\nUses the project-wide adjacently-tagged `{ type, config }` shape\n(snake_case discriminators): e.g. `credentials: { type: aws, config: { … } }`.\nThe default is [`DeltaCredentials::Default`], which resolves credentials from\nthe ambient environment / instance metadata via the object-store default\nprovider chain — nothing is injected into `storage_options`.",
+      "oneOf": [
+        {
+          "description": "Resolve credentials from the ambient environment / default provider\nchain (AWS instance profile, `AZURE_*` env, GCP ADC, …). Injects no\nkeys of its own.",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "default"
+            }
+          }
+        },
+        {
+          "description": "Static AWS credentials (or an S3-compatible endpoint such as MinIO).",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "aws"
+            },
+            "config": {
+              "$ref": "#/$defs/sink_delta__AwsCredentials"
+            }
+          }
+        },
+        {
+          "description": "Azure Blob / ADLS Gen2 credentials.",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "azure"
+            },
+            "config": {
+              "$ref": "#/$defs/sink_delta__AzureCredentials"
+            }
+          }
+        },
+        {
+          "description": "Google Cloud Storage credentials.",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "gcp"
+            },
+            "config": {
+              "$ref": "#/$defs/sink_delta__GcpCredentials"
+            }
+          }
+        }
+      ]
+    },
+    "sink_delta__AwsCredentials": {
+      "description": "Static AWS credentials and optional S3-compatible endpoint overrides.\n\nLeaving a field unset lets the object-store default chain resolve it (so\n`region` alone with an instance profile is valid). `endpoint_url` +\n`allow_http: true` targets MinIO / LocalStack.",
+      "type": "object",
+      "properties": {
+        "access_key_id": {
+          "description": "`AWS_ACCESS_KEY_ID`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "secret_access_key": {
+          "description": "`AWS_SECRET_ACCESS_KEY`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "session_token": {
+          "description": "`AWS_SESSION_TOKEN` (temporary credentials).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "region": {
+          "description": "`AWS_REGION`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "endpoint_url": {
+          "description": "`AWS_ENDPOINT_URL` — override for S3-compatible stores (MinIO, etc.).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "allow_http": {
+          "description": "`AWS_ALLOW_HTTP` — permit plaintext HTTP to the endpoint (MinIO in dev).",
+          "type": [
+            "boolean",
+            "null",
+            "string"
+          ]
+        }
+      }
+    },
+    "sink_delta__AzureCredentials": {
+      "description": "Azure Blob / ADLS Gen2 credentials.",
+      "type": "object",
+      "properties": {
+        "account_name": {
+          "description": "`AZURE_STORAGE_ACCOUNT_NAME`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "access_key": {
+          "description": "`AZURE_STORAGE_ACCESS_KEY` (shared-key auth).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "sas_token": {
+          "description": "`AZURE_STORAGE_SAS_KEY` (SAS-token auth).",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "sink_delta__GcpCredentials": {
+      "description": "Google Cloud Storage credentials.",
+      "type": "object",
+      "properties": {
+        "service_account_path": {
+          "description": "`GOOGLE_SERVICE_ACCOUNT` — path to a service-account JSON key file.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "service_account_key": {
+          "description": "`GOOGLE_SERVICE_ACCOUNT_KEY` — inline service-account JSON key.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
     },
     "sink_gcs__GcsCredentials": {
       "description": "Credential source for a GCS client.\n\nSerializes as `{ type: <method>, config: { … } }` (adjacent tagging,\nsnake_case discriminators) — the consistent auth wire shape shared by\nevery faucet connector:\n`{ type: service_account_json_file, config: { path: \"/run/secrets/sa.json\" } }`.",
@@ -9758,6 +10058,94 @@
         },
         {
           "type": "object",
+          "title": "delta",
+          "properties": {
+            "type": {
+              "const": "delta"
+            },
+            "config": {
+              "anyOf": [
+                {
+                  "properties": {
+                    "table_uri": {
+                      "description": "Delta table location URI: `file:///abs/path`, `s3://bucket/key`,\n`abfss://…`, `gs://bucket/key`. A bare local path is accepted and\ntreated as `file://`.",
+                      "type": "string"
+                    },
+                    "credentials": {
+                      "description": "Object-store credentials. Defaults to the ambient provider chain.",
+                      "$ref": "#/$defs/source_delta__DeltaCredentials",
+                      "default": {
+                        "type": "default"
+                      }
+                    },
+                    "storage_options": {
+                      "description": "Extra `storage_options` passed verbatim to delta-rs (e.g. a MinIO\nendpoint override, or any object-store key the [`DeltaCredentials`]\nenum does not model). Keys set here **win** over credential-derived\nkeys.",
+                      "type": "object",
+                      "additionalProperties": {
+                        "type": "string"
+                      },
+                      "default": {}
+                    },
+                    "version": {
+                      "description": "Time travel: read the table as of this version. Mutually exclusive with\n`timestamp`.",
+                      "type": [
+                        "integer",
+                        "null",
+                        "string"
+                      ],
+                      "format": "uint64",
+                      "minimum": 0
+                    },
+                    "timestamp": {
+                      "description": "Time travel: read the table as of this RFC 3339 timestamp. Mutually\nexclusive with `version`.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "columns": {
+                      "description": "Projection pushdown: only read these columns. Empty = all columns.",
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "default": []
+                    },
+                    "batch_size": {
+                      "description": "Page size hint for [`stream_pages`](faucet_core::Source::stream_pages).\nGoverns how many rows accumulate before a `StreamPage` is emitted; the\nunderlying parquet row-group size still bounds each read. `0` is the\n\"no batching\" sentinel — one page per file.",
+                      "type": [
+                        "integer",
+                        "string"
+                      ],
+                      "format": "uint",
+                      "minimum": 0,
+                      "default": 1000
+                    }
+                  },
+                  "title": "DeltaSourceConfig",
+                  "description": "Configuration for the Delta Lake source connector.\n\nThe `table_uri` / `credentials` / `storage_options` keys are flattened in\nfrom the shared [`DeltaConnection`]. Reads scan the table's active data\nfiles at the latest version (or a pinned `version` / `timestamp` for time\ntravel) and yield each row as a JSON object.",
+                  "type": "object"
+                },
+                true
+              ]
+            },
+            "transforms": {
+              "type": [
+                "array",
+                "null"
+              ]
+            },
+            "inherit_transforms": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
           "title": "gcs",
           "properties": {
             "type": {
@@ -11833,6 +12221,96 @@
                   },
                   "title": "ParquetSinkConfig",
                   "description": "Configuration for the Parquet sink connector.",
+                  "type": "object"
+                },
+                true
+              ]
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "title": "delta",
+          "properties": {
+            "type": {
+              "const": "delta"
+            },
+            "config": {
+              "anyOf": [
+                {
+                  "properties": {
+                    "table_uri": {
+                      "description": "Delta table location URI: `file:///abs/path`, `s3://bucket/key`,\n`abfss://…`, `gs://bucket/key`. A bare local path is accepted and\ntreated as `file://`.",
+                      "type": "string"
+                    },
+                    "credentials": {
+                      "description": "Object-store credentials. Defaults to the ambient provider chain.",
+                      "$ref": "#/$defs/sink_delta__DeltaCredentials",
+                      "default": {
+                        "type": "default"
+                      }
+                    },
+                    "storage_options": {
+                      "description": "Extra `storage_options` passed verbatim to delta-rs (e.g. a MinIO\nendpoint override, or any object-store key the [`DeltaCredentials`]\nenum does not model). Keys set here **win** over credential-derived\nkeys.",
+                      "type": "object",
+                      "additionalProperties": {
+                        "type": "string"
+                      },
+                      "default": {}
+                    },
+                    "create_if_not_missing": {
+                      "description": "Create the table (and its schema, from the inferred record shape) on the\nfirst write when it does not already exist. When `false`, an absent\ntable fails the first write with a typed error.",
+                      "type": [
+                        "boolean",
+                        "string"
+                      ],
+                      "default": true
+                    },
+                    "partition_by": {
+                      "description": "Partition columns, applied only when the table is created. Ignored when\nappending to an existing table (its stored partitioning is used).",
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "default": []
+                    },
+                    "schema_sample_size": {
+                      "description": "Records sampled to infer the Arrow/Delta schema when creating the table.",
+                      "type": [
+                        "integer",
+                        "string"
+                      ],
+                      "format": "uint",
+                      "minimum": 0,
+                      "default": 100
+                    },
+                    "batch_size": {
+                      "description": "Re-chunk size for [`Sink::write_batch`](faucet_core::Sink::write_batch).\nIncoming pages larger than this are sliced into `batch_size`-row Arrow\nbatches before writing. `0` writes each page through as one batch.",
+                      "type": [
+                        "integer",
+                        "string"
+                      ],
+                      "format": "uint",
+                      "minimum": 0,
+                      "default": 1000
+                    },
+                    "target_file_size": {
+                      "description": "Optional target data-file size (bytes) hint for the writer's rollover.\nAdvisory — delta-rs rolls files at buffer boundaries near this size.",
+                      "type": [
+                        "integer",
+                        "null",
+                        "string"
+                      ],
+                      "format": "uint",
+                      "minimum": 0
+                    }
+                  },
+                  "title": "DeltaSinkConfig",
+                  "description": "Configuration for the Delta Lake sink connector (append-only in v1).\n\nThe `table_uri` / `credentials` / `storage_options` keys are flattened in\nfrom the shared [`DeltaConnection`]. On first write the sink opens the\ntable (creating it from the inferred schema when `create_if_not_missing`),\nthen appends one Delta commit per `flush()`.",
                   "type": "object"
                 },
                 true
