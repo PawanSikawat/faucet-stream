@@ -34,6 +34,7 @@
 //! | `source-kinesis` | AWS Kinesis Data Streams source |
 //! | `source-spanner` | Google Cloud Spanner query source |
 //! | `source-parquet` | Apache Parquet file source (local, glob, S3) |
+//! | `source-delta` | Apache Delta Lake source (local FS or S3/Azure/GCS, time travel) |
 //! | `sink-bigquery` | Google BigQuery streaming insert sink |
 //! | `sink-iceberg` | Apache Iceberg sink (append-only, REST/Glue/SQL/HMS catalogs) |
 //! | `sink-postgres` | PostgreSQL sink (jsonb or auto-mapped columns) |
@@ -54,6 +55,7 @@
 //! | `sink-spanner` | Google Cloud Spanner mutation sink |
 //! | `sink-parquet` | Apache Parquet file sink (local, S3) |
 //! | `encryption` | AES-256-GCM at-rest sealing for file state-store bookmarks and per-line JSONL/DLQ output |
+//! | `sink-delta` | Apache Delta Lake sink (append-only; local FS or S3/Azure/GCS) |
 //! | `kafka-schema-registry` | Schema Registry support for Kafka connectors |
 //! | `source` | All source connectors |
 //! | `sink` | All sink connectors |
@@ -199,6 +201,11 @@ pub mod source {
         pub use faucet_source_parquet::*;
     }
 
+    #[cfg(feature = "source-delta")]
+    pub mod delta {
+        pub use faucet_source_delta::*;
+    }
+
     #[cfg(feature = "source-gcs")]
     pub mod gcs {
         pub use faucet_source_gcs::*;
@@ -328,6 +335,11 @@ pub mod source {
         pub use faucet_source_parquet::*;
     }
 
+    #[cfg(feature = "source-delta")]
+    pub mod delta {
+        pub use faucet_source_delta::*;
+    }
+
     #[cfg(feature = "source-gcs")]
     pub mod gcs {
         pub use faucet_source_gcs::*;
@@ -443,6 +455,11 @@ pub mod sink {
     #[cfg(feature = "sink-parquet")]
     pub mod parquet {
         pub use faucet_sink_parquet::*;
+    }
+
+    #[cfg(feature = "sink-delta")]
+    pub mod delta {
+        pub use faucet_sink_delta::*;
     }
 
     #[cfg(feature = "sink-gcs")]

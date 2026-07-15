@@ -1,0 +1,38 @@
+[package]
+name = "faucet-common-delta"
+version = "1.0.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Shared Delta Lake configuration and helpers for the faucet-stream source and sink connectors"
+readme = "README.md"
+keywords = ["delta", "deltalake", "lakehouse", "etl", "connector"]
+categories.workspace = true
+
+[features]
+default = []
+# Cloud object-store backends. Each forwards to the matching delta-rs feature
+# and, for S3, unlocks the `register_handlers` shim in `table.rs`.
+s3 = ["deltalake/s3"]
+azure = ["deltalake/azure"]
+gcs = ["deltalake/gcs"]
+
+[dependencies]
+faucet-core.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+schemars.workspace = true
+tracing.workspace = true
+deltalake.workspace = true
+arrow.workspace = true
+arrow-json.workspace = true
+chrono.workspace = true
+url.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

@@ -1,0 +1,25 @@
+# Read an Apache Delta Lake table (e.g. one written by csv_to_delta.yaml, or by
+# Databricks/Spark) and stream its rows out as JSON Lines. Set `version:` or
+# `timestamp:` for time travel, and `columns:` for projection pushdown.
+#
+#   faucet run cli/examples/csv_to_delta.yaml    # produce the table first
+#   faucet validate cli/examples/delta_to_jsonl.yaml
+#   faucet run      cli/examples/delta_to_jsonl.yaml
+version: 1
+name: delta_to_jsonl
+
+pipeline:
+  source:
+    type: delta
+    config:
+      table_uri: ./out/delta/events
+      # Time travel (pick at most one):
+      # version: 0
+      # timestamp: "2026-07-15T00:00:00Z"
+      # Projection pushdown (omit for all columns):
+      # columns: ["id", "name"]
+
+  sink:
+    type: jsonl
+    config:
+      path: ./out/delta_events.jsonl

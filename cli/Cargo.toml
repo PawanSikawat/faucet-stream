@@ -28,7 +28,7 @@ default = ["observability", "source", "sink", "state", "transforms", "compressio
 
 # Everything the default build ships, plus the long-running runtime modes:
 # `schedule` (cron scheduler) and `serve` (HTTP control plane).
-full = ["default", "otel", "schedule", "serve", "serve-ui", "serve-history-postgres", "serve-history-sqlite", "catalog", "lineage", "lineage-kafka", "notify", "transform-sql", "triggers", "triggers-object-store", "triggers-redis", "triggers-kafka", "cli-dev", "encryption", "cli-tui"]
+full = ["default", "otel", "schedule", "serve", "serve-ui", "serve-history-postgres", "serve-history-sqlite", "catalog", "lineage", "lineage-kafka", "notify", "transform-sql", "triggers", "triggers-object-store", "triggers-redis", "triggers-kafka", "cli-dev", "encryption", "cli-tui", "delta-s3", "delta-azure", "delta-gcs"]
 
 # Data Movement Catalog (#279): the `catalog:` config block + post-run
 # recording (datasets, schema timelines, volume/freshness stats, lineage
@@ -83,6 +83,7 @@ source = [
     "source-kafka",
     "source-kinesis",
     "source-parquet",
+    "source-delta",
     "source-gcs",
     "source-bigquery",
     "source-snowflake",
@@ -107,6 +108,7 @@ sink = [
     "sink-kafka",
     "sink-kinesis",
     "sink-parquet",
+    "sink-delta",
     "sink-gcs",
     "sink-iceberg",
     "sink-spanner",
@@ -134,6 +136,7 @@ source-elasticsearch = ["dep:faucet-source-elasticsearch"]
 source-kafka = ["dep:faucet-source-kafka"]
 source-kinesis = ["dep:faucet-source-kinesis"]
 source-parquet = ["dep:faucet-source-parquet"]
+source-delta = ["dep:faucet-source-delta"]
 source-gcs = ["dep:faucet-source-gcs"]
 source-bigquery = ["dep:faucet-source-bigquery"]
 source-snowflake = ["dep:faucet-source-snowflake"]
@@ -159,7 +162,15 @@ sink-kafka = ["dep:faucet-sink-kafka"]
 sink-kinesis = ["dep:faucet-sink-kinesis"]
 sink-spanner = ["dep:faucet-sink-spanner"]
 sink-parquet = ["dep:faucet-sink-parquet"]
+sink-delta = ["dep:faucet-sink-delta"]
 sink-gcs = ["dep:faucet-sink-gcs"]
+
+## Delta Lake cloud object-store backends. Forwarded to whichever delta
+## connector is enabled via optional-dep (`?`) syntax, so they don't pull the
+## connectors in themselves. Included in `full`; not in `default` (slim).
+delta-s3 = ["faucet-source-delta?/s3", "faucet-sink-delta?/s3"]
+delta-azure = ["faucet-source-delta?/azure", "faucet-sink-delta?/azure"]
+delta-gcs = ["faucet-source-delta?/gcs", "faucet-sink-delta?/gcs"]
 
 kafka-schema-registry = [
     "faucet-source-kafka?/schema-registry",
@@ -288,6 +299,7 @@ faucet-source-elasticsearch = { workspace = true, optional = true }
 faucet-source-kafka = { workspace = true, optional = true }
 faucet-source-kinesis = { workspace = true, optional = true }
 faucet-source-parquet = { workspace = true, optional = true }
+faucet-source-delta = { workspace = true, optional = true }
 faucet-source-gcs = { workspace = true, optional = true }
 faucet-source-bigquery = { workspace = true, optional = true }
 faucet-source-snowflake = { workspace = true, optional = true }
@@ -312,6 +324,7 @@ faucet-sink-kinesis = { workspace = true, optional = true }
 faucet-sink-spanner = { workspace = true, optional = true }
 faucet-sink-stdout = { workspace = true, optional = true }
 faucet-sink-parquet = { workspace = true, optional = true }
+faucet-sink-delta = { workspace = true, optional = true }
 faucet-sink-gcs = { workspace = true, optional = true }
 faucet-state-redis = { workspace = true, optional = true }
 faucet-state-postgres = { workspace = true, optional = true }

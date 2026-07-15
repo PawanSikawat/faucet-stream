@@ -166,6 +166,7 @@ jobs:
           - source-kafka
           - source-kinesis
           - source-parquet
+          - source-delta
           - source-gcs
           - source-bigquery
           - source-snowflake
@@ -191,6 +192,7 @@ jobs:
           - sink-kinesis
           - sink-spanner
           - sink-parquet
+          - sink-delta
           - sink-gcs
           # Kafka extras
           - kafka-schema-registry

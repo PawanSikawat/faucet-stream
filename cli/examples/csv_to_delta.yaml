@@ -1,0 +1,26 @@
+# Load a local CSV into an Apache Delta Lake table on the local filesystem.
+# Databricks (and Spark / Trino / DuckDB / Microsoft Fabric) can then read the
+# table natively. Point `table_uri` at `s3://…` / `abfss://…` / `gs://…` and
+# add a `credentials:` block to land in cloud object storage instead (requires
+# the `delta-s3` / `delta-azure` / `delta-gcs` build feature).
+#
+#   faucet validate cli/examples/csv_to_delta.yaml
+#   faucet run      cli/examples/csv_to_delta.yaml
+version: 1
+name: csv_to_delta
+
+pipeline:
+  source:
+    type: csv
+    config:
+      path: ./data/input.csv
+
+  sink:
+    type: delta
+    config:
+      # Local path (promoted to file://). Created on first write from the
+      # inferred schema when create_if_not_missing (the default) is true.
+      table_uri: ./out/delta/events
+      create_if_not_missing: true
+      # Optional Hive-style partitioning applied when the table is created:
+      # partition_by: ["region"]

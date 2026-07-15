@@ -1,0 +1,25 @@
+# faucet-common-delta
+
+Shared configuration and helpers for the [`faucet-stream`](https://crates.io/crates/faucet-stream)
+Delta Lake connectors — [`faucet-source-delta`](https://crates.io/crates/faucet-source-delta)
+and [`faucet-sink-delta`](https://crates.io/crates/faucet-sink-delta). Built on
+the Rust [`deltalake`](https://crates.io/crates/deltalake) crate (delta-rs).
+
+Provides:
+
+- **`DeltaCredentials`** — object-store credentials (`default` chain / `aws` /
+  `azure` / `gcp`), each mapping to the `storage_options` keys delta-rs expects.
+- **`DeltaConnection`** — the shared `table_uri` / `credentials` /
+  `storage_options` block (flattened into both connector configs) plus the
+  open-table, time-travel, storage-option, and handler-registration helpers.
+- **`convert`** — Arrow ⇆ JSON conversion (`record_batch_to_json`,
+  `infer_arrow_schema`) reused by the source (read) and sink (write).
+
+Cloud object-store backends are opt-in cargo features (`s3`, `azure`, `gcs`)
+that forward to the matching delta-rs feature; the default build supports the
+local filesystem only.
+
+Connector authors normally depend on `faucet-source-delta` /
+`faucet-sink-delta`, which re-export the types they need from here.
+
+License: MIT OR Apache-2.0.
