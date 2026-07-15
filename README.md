@@ -18,7 +18,7 @@
 **The fast, config-driven way to move data in Rust.**
 
 faucet-stream is a complete **ETL** toolkit: **28 source** and **21 sink** connectors
-(**46 in total**) plus in-flight transforms — including a page-level embedded-DuckDB `sql`
+(**49 in total**) plus in-flight transforms — including a page-level embedded-DuckDB `sql`
 transform — wired together by a single `faucet` binary that runs pipelines declaratively
 from a YAML/JSON file, no Rust code required. Or skip the binary and embed the same engine
 in your own service through the typed `Source` / `Sink` traits. One toolkit, whether you
@@ -60,7 +60,7 @@ cargo add faucet-stream           # the library
   cron scheduling, an HTTP control plane with event-driven triggers, OpenLineage emission, and
   built-in Prometheus metrics + `tracing` spans — all with zero per-connector code.
 - **📦 Pay only for what you use** — every connector is a Cargo feature, so a slim build can
-  be just REST + JSONL, or pull in all 46 connectors with `--features full`.
+  be just REST + JSONL, or pull in all 49 connectors with `--features full`.
 
 **Documentation:** the [faucet-stream guide](https://pawansikawat.github.io/faucet-stream/)
 (getting started, tutorials, cookbook, operations) · API reference on
