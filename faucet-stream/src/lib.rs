@@ -35,6 +35,7 @@
 //! | `source-spanner` | Google Cloud Spanner query source |
 //! | `source-parquet` | Apache Parquet file source (local, glob, S3) |
 //! | `source-delta` | Apache Delta Lake source (local FS or S3/Azure/GCS, time travel) |
+//! | `source-databricks` | Databricks SQL query source (Statement Execution API) |
 //! | `sink-bigquery` | Google BigQuery streaming insert sink |
 //! | `sink-iceberg` | Apache Iceberg sink (append-only, REST/Glue/SQL/HMS catalogs) |
 //! | `sink-postgres` | PostgreSQL sink (jsonb or auto-mapped columns) |
@@ -206,6 +207,11 @@ pub mod source {
         pub use faucet_source_delta::*;
     }
 
+    #[cfg(feature = "source-databricks")]
+    pub mod databricks {
+        pub use faucet_source_databricks::*;
+    }
+
     #[cfg(feature = "source-gcs")]
     pub mod gcs {
         pub use faucet_source_gcs::*;
@@ -338,6 +344,11 @@ pub mod source {
     #[cfg(feature = "source-delta")]
     pub mod delta {
         pub use faucet_source_delta::*;
+    }
+
+    #[cfg(feature = "source-databricks")]
+    pub mod databricks {
+        pub use faucet_source_databricks::*;
     }
 
     #[cfg(feature = "source-gcs")]

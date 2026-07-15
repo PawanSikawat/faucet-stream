@@ -173,6 +173,26 @@ Delta and Iceberg are the two open lakehouse table formats; faucet ships a sink
 **Rule of thumb:** landing data for Databricks, or you want a catalog-free Delta
 table → `delta`; an Iceberg-native platform or shared catalog → `iceberg`.
 
+## Reading from Databricks: Delta source vs. Databricks SQL source
+
+Two ways to read from Databricks — pick by whether you want a **table** or a
+**query result**:
+
+- **`source-delta`** — scans a whole Delta table on object storage. Highest
+  throughput, no running/billed compute, time travel, projection pushdown. Use
+  it for full-table extracts and backfills.
+- **`source-databricks`** — runs an arbitrary **SQL query** against a running
+  Databricks **SQL Warehouse** via the Statement Execution API and streams the
+  *result rows* (joins, aggregates, filtered slices). Use it when you need the
+  output of a query rather than a raw table, and don't mind that a warehouse
+  must be running (and billed) for the duration.
+
+**Rule of thumb:** whole table, cheapest + fastest → `delta`; the result of a
+SQL query (joins/aggregates/filters) → `databricks`. There is deliberately no
+Databricks *sink* over the SQL API — the write path is the Delta Lake sink (a
+warehouse `INSERT`/`MERGE` sink would be slow, INSERT-bound, and force billed
+compute).
+
 ## Still unsure?
 
 Run `faucet list` to see what's installed, `faucet schema source <name>` to

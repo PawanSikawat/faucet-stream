@@ -472,6 +472,19 @@ pub async fn build_source(
             let cfg = decode::<faucet_source_delta::DeltaSourceConfig>("source", "delta", config)?;
             Ok(Box::new(faucet_source_delta::DeltaSource::new(cfg).await?))
         }
+        #[cfg(feature = "source-databricks")]
+        "databricks" => {
+            let cfg = decode::<faucet_source_databricks::DatabricksSourceConfig>(
+                "source",
+                "databricks",
+                config,
+            )?;
+            let mut s = faucet_source_databricks::DatabricksSource::new(cfg)?;
+            if let Some(name) = &auth_ref {
+                s = s.with_auth_provider(auth_catalog::resolve(auth, name)?);
+            }
+            Ok(Box::new(s))
+        }
         #[cfg(feature = "source-gcs")]
         "gcs" => {
             let cfg = decode::<faucet_source_gcs::GcsSourceConfig>("source", "gcs", config)?;
@@ -805,6 +818,8 @@ pub fn source_schema(kind: &str) -> CliResult<Value> {
         "parquet" => Ok(schema::<faucet_source_parquet::ParquetSourceConfig>()),
         #[cfg(feature = "source-delta")]
         "delta" => Ok(schema::<faucet_source_delta::DeltaSourceConfig>()),
+        #[cfg(feature = "source-databricks")]
+        "databricks" => Ok(schema::<faucet_source_databricks::DatabricksSourceConfig>()),
         #[cfg(feature = "source-gcs")]
         "gcs" => Ok(schema::<faucet_source_gcs::GcsSourceConfig>()),
         #[cfg(feature = "source-bigquery")]
@@ -947,6 +962,8 @@ fn builtin_source_descriptions() -> Vec<(&'static str, &'static str)> {
     v.push(("parquet", "Apache Parquet file source (local path, glob, or S3). Streams record batches via the Arrow async reader."));
     #[cfg(feature = "source-delta")]
     v.push(("delta", "Apache Delta Lake source (local FS or S3/Azure/GCS). Streams active data files with time travel and projection pushdown."));
+    #[cfg(feature = "source-databricks")]
+    v.push(("databricks", "Databricks SQL query source (Statement Execution API). Streams typed query results with chunk pagination and incremental replication."));
     #[cfg(feature = "source-gcs")]
     v.push((
         "gcs",
@@ -1389,6 +1406,29 @@ mod tests {
             .await
             .expect("read");
         assert_eq!(rows.len(), 2);
+    }
+
+    // The Databricks source builds from the registry (no I/O in `new`), and its
+    // schema + description arms resolve.
+    #[cfg(feature = "source-databricks")]
+    #[tokio::test]
+    async fn databricks_registry_source_builds() {
+        assert!(source_schema("databricks").is_ok());
+        assert!(
+            source_descriptions()
+                .iter()
+                .any(|(n, _)| *n == "databricks")
+        );
+        let cfg = serde_json::json!({
+            "workspace_url": "https://x.cloud.databricks.com",
+            "warehouse_id": "wh1",
+            "sql": "SELECT 1",
+            "auth": { "type": "pat", "config": { "token": "t" } }
+        });
+        let src = build_source("databricks", cfg, &AuthCatalog::new(), None)
+            .await
+            .expect("databricks source builds");
+        assert_eq!(src.connector_name(), "databricks");
     }
 
     // A malformed config for a known connector must surface as a typed

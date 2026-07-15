@@ -26,6 +26,7 @@
     { "name": "kinesis", "kind": "source", "verified": true, "description": "AWS Kinesis Data Streams consumer with per-shard checkpoints" },
     { "name": "parquet", "kind": "source", "verified": true, "description": "Apache Parquet file source (local, glob, or S3)" },
     { "name": "delta", "kind": "source", "verified": true, "description": "Apache Delta Lake source (local FS or S3/Azure/GCS; time travel, projection)" },
+    { "name": "databricks", "kind": "source", "verified": true, "description": "Databricks SQL query source (Statement Execution API; typed rows, chunk pagination, incremental)" },
     { "name": "bigquery", "kind": "source", "verified": true, "description": "Google BigQuery query source" },
     { "name": "snowflake", "kind": "source", "verified": true, "description": "Snowflake query source (SQL REST API)" },
     { "name": "spanner", "kind": "source", "verified": true, "description": "Google Cloud Spanner query source (streaming SQL, incremental replication)" },

@@ -167,6 +167,7 @@ jobs:
           - source-kinesis
           - source-parquet
           - source-delta
+          - source-databricks
           - source-gcs
           - source-bigquery
           - source-snowflake

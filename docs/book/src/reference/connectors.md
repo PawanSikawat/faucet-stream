@@ -38,6 +38,7 @@ Legend: ✓ supported · ✗ not applicable. Tier: T1 = passes the faucet-confor
 | AWS Kinesis | T1 ✅ | `source-kinesis` | ✓ | ✓ | ✗ | ✗ | ✗ | per-shard GetRecords workers; sequence-number bookmarks, idle/max-messages termination |
 | Apache Parquet | T1 ✅ | `source-parquet` | ✓ | ✗ | ✗ | ✗ | ✗ | local/glob/S3, vectorized Arrow reader, projection |
 | Apache Delta Lake | T2 | `source-delta` | ✓ | ✗ | ✗ | ✗ | ✗ | local FS or S3/Azure/GCS; time travel (version/timestamp), projection pushdown, partition reconstruction |
+| Databricks SQL | T3 | `source-databricks` | ✓ | ✓ | ✗ | ✗ | ✗ | Statement Execution API; async poll, chunk pagination, typed decode, incremental `${bookmark}` |
 | BigQuery | T1 ✅ᵐ | `source-bigquery` | ✓ | ✗ | ✗ | ✗ | ✓ | `jobs.query` + pageToken pagination |
 | Snowflake | T1 ✅ᵐ | `source-snowflake` | ✓ | ✗ | ✗ | ✗ | ✓ | SQL REST API, server-side partitions |
 | Cloud Spanner | T1 ✅ᵉ | `source-spanner` | ✓ | ✓⁸ | ✗ | ✗ | ✓ | streaming SQL (gRPC), incremental `@bookmark` replication, stale reads, PK-range sharding |

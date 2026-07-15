@@ -3686,6 +3686,7 @@ dependencies = [
  "faucet-sink-stdout",
  "faucet-source-bigquery",
  "faucet-source-csv",
+ "faucet-source-databricks",
  "faucet-source-delta",
  "faucet-source-elasticsearch",
  "faucet-source-gcs",
@@ -4425,6 +4426,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "faucet-source-databricks"
+version = "1.0.0"
+dependencies = [
+ "async-stream",
+ "async-trait",
+ "faucet-conformance",
+ "faucet-core",
+ "futures",
+ "reqwest 0.13.3",
+ "schemars 1.2.1",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "wiremock",
+]
+
+[[package]]
 name = "faucet-source-delta"
 version = "1.0.0"
 dependencies = [
@@ -5026,6 +5045,7 @@ dependencies = [
  "faucet-sink-stdout",
  "faucet-source-bigquery",
  "faucet-source-csv",
+ "faucet-source-databricks",
  "faucet-source-delta",
  "faucet-source-elasticsearch",
  "faucet-source-gcs",
