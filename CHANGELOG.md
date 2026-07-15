@@ -29,6 +29,29 @@ independently).
   is the Tier-1 (supported) criterion; wired into `faucet-source-csv` and
   `faucet-source-singer`.
 
+### Testing
+
+- **Resume/checkpoint property tests** for `faucet-source-singer` — `proptest`
+  coverage of the effectively-once resume path over arbitrary Singer message
+  interleavings and arbitrary crash points, generalizing the single hand-written
+  crash-resume case. Asserts the five resume invariants: no loss, no duplicates
+  (keyed sink), the checkpoint is never ahead of durable data, monotonic
+  checkpoints, and empty-with-bookmark.
+
+### CI & Build
+
+- **API-stability gate** — a `cargo-semver-checks` CI job fails on any breaking
+  change to the public `faucet-core` API vs the last crates.io release, so the
+  connector trait surface (FCP §8) can only break with a deliberate major-version
+  bump. Documented in CONTRIBUTING.md.
+
+### Documentation
+
+- **Benchmark batch disclosure** — BENCHMARKS.md Scenario C (Postgres → Postgres)
+  now states the write-batch size and insert strategy on both sides (both pinned
+  to 5,000-row batches; Meltano's opt-in `use_copy` COPY path noted as left off),
+  so the sink-bound gap cannot be read as a Meltano batch misconfiguration.
+
 ## `faucet-cli` — [1.1.0](https://github.com/PawanSikawat/faucet-stream/compare/faucet-cli-v1.0.1...faucet-cli-v1.1.0) - 2026-06-12
 
 ### Bug Fixes
