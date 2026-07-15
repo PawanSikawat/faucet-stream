@@ -29,6 +29,9 @@ pipeline:
       table_name: bench_dest
       column_mapping: auto_map
       max_connections: 8
+      # 5000-row write batch — matches Meltano's target-postgres
+      # `batch_size_rows: 5000` (see ../meltano/meltano.yml) so Scenario C is
+      # an apples-to-apples batch-size comparison.
       batch_size: 5000
       # Benchmark faucet's best append path: the COPY bulk-load fast-path
       # (#308). Drop this line to measure the multi-row INSERT path instead.
