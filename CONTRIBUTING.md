@@ -80,6 +80,27 @@ for a worked example and the
 [Faucet Connector Protocol (FCP v0)](./docs/spec/faucet-connector-spec-v0.md)
 for the full contract.
 
+### API stability (the `faucet-core` trait surface)
+
+Third-party connectors depend on **`faucet-core`** — and only on `faucet-core`
+(FCP §8). To protect them, the CI **`API stability (cargo-semver-checks)`** job
+compares this revision's public API against the version last published to
+crates.io and **fails on any breaking change**. It is a required check, so a
+break cannot merge silently.
+
+The rule is simple: **bump the major version, or don't break it.** The only
+sanctioned way past the gate is a deliberate major-version bump (which moves the
+baseline) — there is no bypass flag, matching FCP §8 ("breaking changes bump the
+version"). Additive changes are always fine and pass the gate: new items, and —
+crucially for the object-safe `Source`/`Sink` traits — **new trait methods must
+carry a default implementation** so existing connectors keep compiling (a minor
+bump, not a breaking one). Run it locally before pushing:
+
+```bash
+cargo install cargo-semver-checks --locked   # once
+cargo semver-checks check-release --package faucet-core
+```
+
 Shared types for a source/sink pair (auth, formats) go in a
 `faucet-common-<name>` crate that both depend on. See `faucet-source-rest` for a
 reference implementation.

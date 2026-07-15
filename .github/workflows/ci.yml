@@ -413,6 +413,39 @@ jobs:
         with:
           command: check advisories
 
+  # Hard gate: the public API must not break without a deliberate major-version
+  # bump. `faucet-core` is the one crate every third-party connector depends on
+  # (the Faucet Connector Protocol, §8) — a breaking change to its object-safe
+  # trait surface would silently break every external `faucet-source-*` /
+  # `faucet-sink-*`. cargo-semver-checks compares this revision's public API
+  # against the version last published to crates.io and fails on any breaking
+  # change; the only sanctioned way past it is bumping the crate's major version
+  # (which moves the baseline). Additive changes (new defaulted trait methods,
+  # new items) are a minor bump and pass. See CONTRIBUTING.md.
+  semver-checks:
+    name: API stability (cargo-semver-checks)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.96.0"
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-semver-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-semver-
+      - name: Check faucet-core public API for breaking changes
+        uses: obi1kenobi/cargo-semver-checks-action@v2
+        with:
+          # `faucet-core` at minimum — the required connector-author dependency.
+          package: faucet-core
+          # Use the 1.96.0 toolchain installed above, not the action's default.
+          rust-toolchain: manual
+
   coverage:
     name: Coverage
     runs-on: ubuntu-latest

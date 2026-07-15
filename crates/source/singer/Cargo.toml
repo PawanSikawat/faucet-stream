@@ -32,6 +32,8 @@ libc = "0.2"
 [dev-dependencies]
 tokio = { version = "1", features = ["full", "test-util"] }
 tracing-subscriber = "0.3"
+# Property-based tests for the resume/checkpoint state machine (tests/resume_proptest.rs).
+proptest = "1"
 tempfile.workspace = true
 # Path-only (no version): cargo strips path-only dev-dependencies when
 # packaging, so publishing this crate does not require faucet-conformance to

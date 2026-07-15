@@ -48,3 +48,9 @@ plugins:
       # its own schema so it never collides with faucet's `bench_dest` table.
       config:
         default_target_schema: bench_meltano
+        # Pin the write batch to match faucet's 5000-row source page (see
+        # ../faucet/postgres_to_postgres.yaml) so Scenario C compares like-for-
+        # like batch sizes — the gap is not a batching artifact. target-postgres
+        # also exposes an opt-in COPY loader (`use_copy: true`, default off);
+        # it is left off here so this row measures its multi-row INSERT path.
+        batch_size_rows: 5000
