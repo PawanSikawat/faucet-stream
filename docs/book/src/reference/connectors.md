@@ -37,6 +37,7 @@ Legend: ✓ supported · ✗ not applicable. Tier: T1 = passes the faucet-confor
 | Apache Kafka | T1 ✅ | `source-kafka` | ✓ | ✓ | **✓** | ✗ | ✗ | consumer; idle/max-messages termination, offset bookmarks |
 | AWS Kinesis | T1 ✅ | `source-kinesis` | ✓ | ✓ | ✗ | ✗ | ✗ | per-shard GetRecords workers; sequence-number bookmarks, idle/max-messages termination |
 | Apache Parquet | T1 ✅ | `source-parquet` | ✓ | ✗ | ✗ | ✗ | ✗ | local/glob/S3, vectorized Arrow reader, projection |
+| Apache Delta Lake | T2 | `source-delta` | ✓ | ✗ | ✗ | ✗ | ✗ | local FS or S3/Azure/GCS; time travel (version/timestamp), projection pushdown, partition reconstruction |
 | BigQuery | T1 ✅ᵐ | `source-bigquery` | ✓ | ✗ | ✗ | ✗ | ✓ | `jobs.query` + pageToken pagination |
 | Snowflake | T1 ✅ᵐ | `source-snowflake` | ✓ | ✗ | ✗ | ✗ | ✓ | SQL REST API, server-side partitions |
 | Cloud Spanner | T1 ✅ᵉ | `source-spanner` | ✓ | ✓⁸ | ✗ | ✗ | ✓ | streaming SQL (gRPC), incremental `@bookmark` replication, stale reads, PK-range sharding |
@@ -122,6 +123,7 @@ file/append sinks (`jsonl`, `csv`, `stdout`) it's a no-op — they write per rec
 | AWS Kinesis | T1 ✅ | `sink-kinesis` | ✓ | ✗ | ✗ | ✗ | batched PutRecords; partition-key routing, per-entry partial-failure retry (DLQ-routable) |
 | Cloud Spanner | T1 ✅ᵉ | `sink-spanner` | ✓ | ✗ | **✓** | **✓** | batched mutations (`insert` / `insert_or_update` / `delete`), cell-budget chunking, commit-token transaction for effectively-once |
 | Apache Parquet | T1 ✅ | `sink-parquet` | ✓ | ✗⁶ | ✗ | ✗ | local/S3, schema inference (re-inferred per file on rollover), row/byte rollover |
+| Apache Delta Lake | T2 | `sink-delta` | ✓ | ✗⁶ | ✗ | ✗ | append-only; local FS or S3/Azure/GCS; schema-inferred table creation, partitioning, one commit per flush |
 | Apache Iceberg | T2 | `sink-iceberg` | ✓ | ✗⁶ | ✗ | **✓** | REST/Glue/SQL/HMS catalog, local + cloud (S3/GCS) warehouses, `fast_append` snapshot, Parquet data files |
 
 ⁶ Parquet and Iceberg both handle compression internally at the Parquet column

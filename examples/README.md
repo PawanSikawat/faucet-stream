@@ -36,6 +36,8 @@ These run immediately after installing the CLI — great for a first smoke test:
 | `csv_to_jsonl_with_sla.yaml` | freshness/volume SLA monitoring (`sla:` block) — staleness, min-rows floor, and learned-baseline volume anomaly detection |
 | `csv_to_jsonl_sql.yaml` | CSV → SQL GROUP BY + LEFT JOIN (embedded DuckDB) → JSONL; requires `--features transform-sql` |
 | `csv_to_sqlite.yaml` | CSV → local SQLite file |
+| `csv_to_delta.yaml` | CSV → local Apache Delta Lake table (point `table_uri` at `s3://…` + add `credentials:` for cloud) |
+| `delta_to_jsonl.yaml` | local Delta Lake table → JSONL (run `csv_to_delta.yaml` first); supports `version`/`timestamp` time travel |
 | `sqlite_to_jsonl.yaml`, `sqlite_to_csv.yaml` | local SQLite → file |
 | `rest_to_jsonl.yaml`, `rest_streaming.yaml`, `rest_to_stdout_preview.yaml` | point `base_url` at any HTTP API; preview needs no sink setup |
 | `rest_filter_explode_to_stdout.yaml` | `filter` + `explode` + `keys_case` against DummyJSON; demonstrates the v1 JSONPath subset and the merge rule |

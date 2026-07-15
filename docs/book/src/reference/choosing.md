@@ -155,6 +155,24 @@ Both write columnar Parquet files, but they serve different use cases:
 **Rule of thumb:** portable raw files with no catalog → `sink-parquet`; managed
 lakehouse table with snapshots, time-travel, and catalog-aware readers → `sink-iceberg`.
 
+## Lakehouse tables: Delta Lake vs. Iceberg
+
+Delta and Iceberg are the two open lakehouse table formats; faucet ships a sink
+(and source) for each. Pick by which format your query engines read:
+
+- **`sink-delta` / `source-delta`** — the **Delta Lake** format on object
+  storage, read natively by **Databricks** (via Unity Catalog) as well as Spark,
+  Trino, DuckDB, and Microsoft Fabric. No catalog service is required — the
+  transaction log lives beside the data in the table directory — so a bare
+  `table_uri` on local FS or S3/Azure/GCS is enough. Append-only today;
+  time-travel reads via `version`/`timestamp`.
+- **`sink-iceberg`** — the **Iceberg** format, registered in a catalog (REST,
+  Glue, SQL, or HMS). Choose it when your platform is Iceberg-native or you need
+  a shared catalog across engines.
+
+**Rule of thumb:** landing data for Databricks, or you want a catalog-free Delta
+table → `delta`; an Iceberg-native platform or shared catalog → `iceberg`.
+
 ## Still unsure?
 
 Run `faucet list` to see what's installed, `faucet schema source <name>` to

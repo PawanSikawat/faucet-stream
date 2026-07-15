@@ -467,6 +467,11 @@ pub async fn build_source(
                 faucet_source_parquet::ParquetSource::new(cfg).await?,
             ))
         }
+        #[cfg(feature = "source-delta")]
+        "delta" => {
+            let cfg = decode::<faucet_source_delta::DeltaSourceConfig>("source", "delta", config)?;
+            Ok(Box::new(faucet_source_delta::DeltaSource::new(cfg).await?))
+        }
         #[cfg(feature = "source-gcs")]
         "gcs" => {
             let cfg = decode::<faucet_source_gcs::GcsSourceConfig>("source", "gcs", config)?;
@@ -519,6 +524,11 @@ pub async fn build_sink(kind: &str, config: Value, auth: &AuthCatalog) -> CliRes
         "iceberg" => {
             let cfg = decode::<faucet_sink_iceberg::IcebergSinkConfig>("sink", "iceberg", config)?;
             Ok(Box::new(faucet_sink_iceberg::IcebergSink::new(cfg).await?))
+        }
+        #[cfg(feature = "sink-delta")]
+        "delta" => {
+            let cfg = decode::<faucet_sink_delta::DeltaSinkConfig>("sink", "delta", config)?;
+            Ok(Box::new(faucet_sink_delta::DeltaSink::new(cfg).await?))
         }
         #[cfg(feature = "sink-postgres")]
         "postgres" => {
@@ -793,6 +803,8 @@ pub fn source_schema(kind: &str) -> CliResult<Value> {
         "spanner" => Ok(schema::<faucet_source_spanner::SpannerSourceConfig>()),
         #[cfg(feature = "source-parquet")]
         "parquet" => Ok(schema::<faucet_source_parquet::ParquetSourceConfig>()),
+        #[cfg(feature = "source-delta")]
+        "delta" => Ok(schema::<faucet_source_delta::DeltaSourceConfig>()),
         #[cfg(feature = "source-gcs")]
         "gcs" => Ok(schema::<faucet_source_gcs::GcsSourceConfig>()),
         #[cfg(feature = "source-bigquery")]
@@ -823,6 +835,8 @@ pub fn sink_schema(kind: &str) -> CliResult<Value> {
         "bigquery" => Ok(schema::<faucet_sink_bigquery::BigQuerySinkConfig>()),
         #[cfg(feature = "sink-iceberg")]
         "iceberg" => Ok(schema::<faucet_sink_iceberg::IcebergSinkConfig>()),
+        #[cfg(feature = "sink-delta")]
+        "delta" => Ok(schema::<faucet_sink_delta::DeltaSinkConfig>()),
         #[cfg(feature = "sink-postgres")]
         "postgres" => Ok(schema::<faucet_sink_postgres::PostgresSinkConfig>()),
         #[cfg(feature = "sink-jsonl")]
@@ -931,6 +945,8 @@ fn builtin_source_descriptions() -> Vec<(&'static str, &'static str)> {
     v.push(("spanner", "Google Cloud Spanner query source. Streaming SQL reads with incremental replication bookmarks, stale reads, and PK-range sharding."));
     #[cfg(feature = "source-parquet")]
     v.push(("parquet", "Apache Parquet file source (local path, glob, or S3). Streams record batches via the Arrow async reader."));
+    #[cfg(feature = "source-delta")]
+    v.push(("delta", "Apache Delta Lake source (local FS or S3/Azure/GCS). Streams active data files with time travel and projection pushdown."));
     #[cfg(feature = "source-gcs")]
     v.push((
         "gcs",
@@ -1006,6 +1022,8 @@ fn builtin_sink_descriptions() -> Vec<(&'static str, &'static str)> {
     v.push(("stdout", "Stdout / stderr sink (JSON Lines, pretty, TSV)"));
     #[cfg(feature = "sink-parquet")]
     v.push(("parquet", "Apache Parquet file sink (local path or S3). Schema-inferred, configurable compression, row/byte rollover."));
+    #[cfg(feature = "sink-delta")]
+    v.push(("delta", "Apache Delta Lake sink (local FS or S3/Azure/GCS). Append-only, schema-inferred table creation, one commit per flush."));
     #[cfg(feature = "sink-gcs")]
     v.push(("gcs", "Google Cloud Storage sink — JSONL files"));
     v
@@ -1326,6 +1344,51 @@ mod tests {
         // The stdout sink uses the default `connector_name()` (stripped type
         // name) rather than overriding it with a friendly label.
         assert_eq!(sink.connector_name(), "StdoutSink");
+    }
+
+    // Exercise the Delta source+sink registry arms end to end: build both via
+    // the registry, round-trip a page through a real local table, and confirm
+    // the schema + description arms resolve.
+    #[cfg(all(feature = "source-delta", feature = "sink-delta"))]
+    #[tokio::test]
+    async fn delta_registry_round_trip() {
+        let dir = tempfile::tempdir().unwrap();
+        let uri = dir.path().join("reg_delta").to_string_lossy().into_owned();
+
+        assert!(source_schema("delta").is_ok());
+        assert!(sink_schema("delta").is_ok());
+        assert!(source_descriptions().iter().any(|(n, _)| *n == "delta"));
+        assert!(sink_descriptions().iter().any(|(n, _)| *n == "delta"));
+
+        let sink = build_sink(
+            "delta",
+            serde_json::json!({ "table_uri": uri }),
+            &AuthCatalog::new(),
+        )
+        .await
+        .expect("delta sink builds");
+        assert_eq!(sink.connector_name(), "delta");
+        let n = sink
+            .write_batch(&[serde_json::json!({"id": 1}), serde_json::json!({"id": 2})])
+            .await
+            .expect("write");
+        assert_eq!(n, 2);
+        sink.flush().await.expect("flush");
+
+        let source = build_source(
+            "delta",
+            serde_json::json!({ "table_uri": uri }),
+            &AuthCatalog::new(),
+            None,
+        )
+        .await
+        .expect("delta source builds");
+        assert_eq!(source.connector_name(), "delta");
+        let rows = source
+            .fetch_with_context(&std::collections::HashMap::new())
+            .await
+            .expect("read");
+        assert_eq!(rows.len(), 2);
     }
 
     // A malformed config for a known connector must surface as a typed

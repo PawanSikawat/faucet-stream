@@ -37,6 +37,7 @@ source = [
     "source-csv",
     "source-elasticsearch",
     "source-parquet",
+    "source-delta",
     "source-gcs",
     "source-bigquery",
     "source-snowflake",
@@ -62,6 +63,7 @@ sink = [
     "sink-http",
     "sink-stdout",
     "sink-parquet",
+    "sink-delta",
     "sink-gcs",
     "sink-iceberg",
     "sink-spanner",
@@ -111,7 +113,7 @@ transform-sql = ["dep:faucet-transform-sql"]
 ## syntax, so this flag never pulls the connector itself).
 encryption = ["faucet-core/encryption", "faucet-sink-jsonl?/encryption"]
 ## Every connector and state backend.
-full = ["source", "sink", "state", "auth", "kafka-schema-registry", "compression", "quality", "quality-jsonschema", "contract", "masking", "lineage", "lineage-kafka", "transform-sql", "transform-cdc-unwrap", "encryption"]
+full = ["source", "sink", "state", "auth", "kafka-schema-registry", "compression", "quality", "quality-jsonschema", "contract", "masking", "lineage", "lineage-kafka", "transform-sql", "transform-cdc-unwrap", "encryption", "delta-s3", "delta-azure", "delta-gcs"]
 
 ## Individual source connectors.
 source-rest = ["dep:faucet-source-rest"]
@@ -136,6 +138,7 @@ source-elasticsearch = ["dep:faucet-source-elasticsearch"]
 source-kafka = ["dep:faucet-source-kafka", "dep:faucet-common-kafka"]
 source-kinesis = ["dep:faucet-source-kinesis", "dep:faucet-common-kinesis"]
 source-parquet = ["dep:faucet-source-parquet"]
+source-delta = ["dep:faucet-source-delta"]
 source-gcs = ["dep:faucet-source-gcs", "dep:faucet-common-gcs"]
 source-bigquery = ["dep:faucet-source-bigquery", "dep:faucet-common-bigquery"]
 source-snowflake = ["dep:faucet-source-snowflake", "dep:faucet-common-snowflake"]
@@ -168,6 +171,12 @@ sink-kinesis = ["dep:faucet-sink-kinesis", "dep:faucet-common-kinesis"]
 ## Enable the Google Cloud Spanner sink.
 sink-spanner = ["dep:faucet-sink-spanner", "dep:faucet-common-spanner"]
 sink-parquet = ["dep:faucet-sink-parquet"]
+sink-delta = ["dep:faucet-sink-delta"]
+## Delta Lake cloud object-store backends. Forwarded to whichever delta
+## connector is enabled via optional-dep (`?`) syntax. In `full`; not default.
+delta-s3 = ["faucet-source-delta?/s3", "faucet-sink-delta?/s3"]
+delta-azure = ["faucet-source-delta?/azure", "faucet-sink-delta?/azure"]
+delta-gcs = ["faucet-source-delta?/gcs", "faucet-sink-delta?/gcs"]
 sink-gcs = ["dep:faucet-sink-gcs", "dep:faucet-common-gcs"]
 
 ## Kafka Schema Registry support (forwarded to kafka crates).
@@ -229,6 +238,7 @@ faucet-source-websocket = { workspace = true, optional = true }
 faucet-source-csv = { workspace = true, optional = true }
 faucet-source-elasticsearch = { workspace = true, optional = true }
 faucet-source-parquet = { workspace = true, optional = true }
+faucet-source-delta = { workspace = true, optional = true }
 faucet-source-gcs = { workspace = true, optional = true }
 faucet-source-bigquery = { workspace = true, optional = true }
 faucet-source-snowflake = { workspace = true, optional = true }
@@ -253,6 +263,7 @@ faucet-sink-elasticsearch = { workspace = true, optional = true }
 faucet-sink-http = { workspace = true, optional = true }
 faucet-sink-stdout = { workspace = true, optional = true }
 faucet-sink-parquet = { workspace = true, optional = true }
+faucet-sink-delta = { workspace = true, optional = true }
 faucet-sink-gcs = { workspace = true, optional = true }
 
 faucet-state-redis = { workspace = true, optional = true }

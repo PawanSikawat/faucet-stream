@@ -1,0 +1,42 @@
+[package]
+name = "faucet-sink-delta"
+version = "1.0.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Apache Delta Lake sink for the faucet-stream ecosystem — append-only, local FS + S3/Azure/GCS"
+readme = "README.md"
+keywords = ["delta", "deltalake", "lakehouse", "sink", "etl"]
+categories.workspace = true
+
+[features]
+default = []
+s3 = ["faucet-common-delta/s3"]
+azure = ["faucet-common-delta/azure"]
+gcs = ["faucet-common-delta/gcs"]
+
+[dependencies]
+faucet-core.workspace = true
+faucet-common-delta.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+schemars.workspace = true
+async-trait.workspace = true
+tracing.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync", "time"] }
+deltalake.workspace = true
+arrow.workspace = true
+arrow-json.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync", "time"] }
+tempfile = "3"
+faucet-conformance.workspace = true
+faucet-source-delta.workspace = true
+serde_json.workspace = true
+schemars.workspace = true
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
