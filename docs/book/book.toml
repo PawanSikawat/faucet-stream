@@ -11,6 +11,10 @@ preferred-dark-theme = "ayu"
 git-repository-url = "https://github.com/PawanSikawat/faucet-stream"
 edit-url-template = "https://github.com/PawanSikawat/faucet-stream/edit/main/docs/book/{path}"
 no-section-label = false
+# Powers the interactive Beginner/Architect toggle on "Learn the architecture".
+# Both files are no-ops on pages without a [data-mode-toggle] control.
+additional-css = ["learn-toggle.css"]
+additional-js = ["learn-toggle.js"]
 
 [output.html.fold]
 enable = true
