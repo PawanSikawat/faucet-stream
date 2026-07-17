@@ -197,12 +197,13 @@ fn read_last_token_blocking(
         })
     };
 
-    // Keep only the running max token for `scope` and a count of records drained
-    // (for the fail-loud message), never the records themselves — so a
-    // non-compacted or not-yet-compacted side-topic with an unbounded backlog
-    // cannot blow up memory at startup. Each polled record is folded in and
-    // discarded (no key/value allocation in the hot path).
-    let mut max_token: Option<u64> = None;
+    // Keep only the running max token for `scope` (the FULL token string, so the
+    // embedded resume bookmark survives — see `fold_token_for_scope`) and a count
+    // of records drained (for the fail-loud message), never the records
+    // themselves — so a non-compacted or not-yet-compacted side-topic with an
+    // unbounded backlog cannot blow up memory at startup. Each polled record is
+    // folded in and discarded.
+    let mut max_token: Option<String> = None;
     let mut drained: u64 = 0;
     if position_reached(&consumer, &ends) {
         // Every partition empty (or already at its watermark) — nothing to read.
@@ -244,7 +245,7 @@ fn read_last_token_blocking(
         }
     }
 
-    Ok(max_token.map(faucet_core::idempotency::format_token))
+    Ok(max_token)
 }
 
 /// Derive the producer `transactional.id` from a stable pipeline scope.
@@ -272,32 +273,51 @@ pub(crate) fn derive_transactional_id(prefix: &str, scope: &str) -> String {
     format!("{prefix}.{sanitized}")
 }
 
-/// Fold one side-topic record into a running maximum commit-token value for
-/// `scope`.
+/// Fold one side-topic record into the running maximum-sequence commit-token
+/// **string** for `scope`.
 ///
-/// Returns the updated running max: the record's token replaces `running` only
-/// when its key equals `scope`, its value parses as a commit token, and that
-/// token exceeds the current `running`. A tombstone (no value), a non-token
-/// value, or a record for a different scope leaves `running` unchanged. This is
-/// O(1) per record, so the reader keeps a single running max instead of
-/// buffering the whole side-topic — bounding memory regardless of topic size on
-/// a non-compacted (or not-yet-compacted) `commit_token_topic`.
+/// Returns the updated running max: the record's token string replaces
+/// `running` only when its key equals `scope`, its value parses as a commit
+/// token, and that token's sequence meets or exceeds the current running
+/// sequence. A tombstone (no value), a non-token value, or a record for a
+/// different scope leaves `running` unchanged.
+///
+/// Crucially this keeps the **full** token string — including any
+/// `#<bookmark-json>` suffix written by
+/// [`faucet_core::idempotency::format_token_with_bookmark`] — so
+/// `last_committed_token` can hand the embedded resume bookmark back to the
+/// pipeline for sink-anchored exactly-once resume (audit #321 C1; the pre-fix
+/// version returned only the parsed `u64`, stripping the bookmark). Comparison
+/// is on the parsed sequence; a `>=` keeps the latest record in log order on an
+/// equal sequence (the side-topic is keyed by `scope`, so compaction ultimately
+/// collapses to the newest record anyway). O(1) per record — the reader keeps a
+/// single running max instead of buffering the whole side-topic.
 pub(crate) fn fold_token_for_scope(
-    running: Option<u64>,
+    running: Option<String>,
     key: &[u8],
     value: Option<&[u8]>,
     scope: &str,
-) -> Option<u64> {
+) -> Option<String> {
     if key != scope.as_bytes() {
         return running;
     }
-    let Some(token) = value
-        .and_then(|v| std::str::from_utf8(v).ok())
-        .and_then(faucet_core::idempotency::parse_token)
-    else {
+    let Some(token_str) = value.and_then(|v| std::str::from_utf8(v).ok()) else {
         return running;
     };
-    Some(running.map_or(token, |cur| cur.max(token)))
+    let Some(seq) = faucet_core::idempotency::parse_token(token_str) else {
+        return running;
+    };
+    match &running {
+        Some(cur) => {
+            let cur_seq = faucet_core::idempotency::parse_token(cur).unwrap_or(0);
+            if seq >= cur_seq {
+                Some(token_str.to_string())
+            } else {
+                running
+            }
+        }
+        None => Some(token_str.to_string()),
+    }
 }
 
 /// Enqueue one record into the current transaction, retrying on `QueueFull`.
@@ -424,23 +444,25 @@ mod tests {
     #[test]
     fn fold_keeps_running_max_for_scope_only() {
         let tok = |n| faucet_core::idempotency::format_token(n).into_bytes();
+        let s = faucet_core::idempotency::format_token;
         // Out-of-order tokens for the target scope: running max only grows.
         let mut acc = None;
         acc = fold_token_for_scope(acc, b"s1", Some(&tok(3)), "s1");
-        assert_eq!(acc, Some(3));
+        assert_eq!(acc.as_deref(), Some(s(3).as_str()));
         acc = fold_token_for_scope(acc, b"s1", Some(&tok(7)), "s1");
-        assert_eq!(acc, Some(7));
+        assert_eq!(acc.as_deref(), Some(s(7).as_str()));
         // A lower token must not lower the running max.
         acc = fold_token_for_scope(acc, b"s1", Some(&tok(5)), "s1");
-        assert_eq!(acc, Some(7));
+        assert_eq!(acc.as_deref(), Some(s(7).as_str()));
         // A record for a different scope is ignored (does not perturb the max).
         acc = fold_token_for_scope(acc, b"s2", Some(&tok(99)), "s1");
-        assert_eq!(acc, Some(7));
+        assert_eq!(acc.as_deref(), Some(s(7).as_str()));
     }
 
     #[test]
     fn fold_ignores_tombstones_and_garbage() {
         let tok = |n| faucet_core::idempotency::format_token(n).into_bytes();
+        let s = faucet_core::idempotency::format_token;
         let mut acc = None;
         // Tombstone (no value) for the scope: running max unchanged.
         acc = fold_token_for_scope(acc, b"s1", None, "s1");
@@ -450,6 +472,30 @@ mod tests {
         assert_eq!(acc, None);
         // A valid token then sets it.
         acc = fold_token_for_scope(acc, b"s1", Some(&tok(4)), "s1");
-        assert_eq!(acc, Some(4));
+        assert_eq!(acc.as_deref(), Some(s(4).as_str()));
+    }
+
+    #[test]
+    fn fold_preserves_embedded_bookmark_of_max_token() {
+        // #321 C1: the running max must keep the FULL token string (with its
+        // `#<bookmark-json>` suffix) so sink-anchored exactly-once resume can
+        // recover the embedded resume position — not just the parsed sequence.
+        use faucet_core::idempotency::{format_token_with_bookmark, parse_token_parts};
+        let bm = serde_json::json!({"partition_offsets": [{"t": "x", "p": 0, "offset": 99}]});
+        let with_bm = format_token_with_bookmark(7, Some(&bm)).into_bytes();
+        let bare = faucet_core::idempotency::format_token(3).into_bytes();
+
+        let mut acc = None;
+        acc = fold_token_for_scope(acc, b"s1", Some(&bare), "s1");
+        acc = fold_token_for_scope(acc, b"s1", Some(&with_bm), "s1");
+        // The higher-sequence token (7, carrying the bookmark) wins, verbatim.
+        let token = acc.expect("a token survives");
+        let (seq, parsed_bm) = parse_token_parts(&token).expect("parses");
+        assert_eq!(seq, 7);
+        assert_eq!(
+            parsed_bm,
+            Some(bm),
+            "embedded bookmark must survive the fold"
+        );
     }
 }

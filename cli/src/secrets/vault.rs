@@ -87,6 +87,16 @@ impl SecretResolver for VaultResolver {
             })?;
         // KV v2: secret map lives at .data.data
         let data = &body["data"]["data"];
+        // A KV v1 mount (or any 200 whose secret map is at `.data`, not
+        // `.data.data`) leaves this path absent → `Value::Null`. Without this
+        // guard the no-field branch would return the literal string "null" as a
+        // silently-wrong credential (audit #321 H4). Fail loudly instead.
+        if data.is_null() {
+            return Err(CliError::SecretNotFound {
+                scheme: "vault".into(),
+                reference: reference.into(),
+            });
+        }
         match field {
             Some(f) => extract_field("vault", reference, &data.to_string(), f),
             None => Ok(data.to_string()),
@@ -292,6 +302,31 @@ mod tests {
         }
         unsafe {
             std::env::remove_var("VAULT_ADDR");
+        }
+    }
+    #[tokio::test]
+    async fn kv_v1_shape_is_not_found_not_literal_null() {
+        // #321 H4: a mount whose secret map is at `.data` (KV v1), not
+        // `.data.data`, must error rather than return the literal string "null".
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/secret/app"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "data": { "token": "s3cr3t" }
+            })))
+            .mount(&server)
+            .await;
+        let resolver = VaultResolver {
+            addr: server.uri(),
+            token: "t".into(),
+            namespace: None,
+            client: reqwest::Client::new(),
+        };
+        // No `#field`: the missing `.data.data` must surface as SecretNotFound,
+        // never Ok("null").
+        match resolver.resolve("secret/app").await.unwrap_err() {
+            CliError::SecretNotFound { .. } => {}
+            other => panic!("expected SecretNotFound, got {other:?}"),
         }
     }
 }

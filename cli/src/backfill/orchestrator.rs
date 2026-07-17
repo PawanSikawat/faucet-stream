@@ -482,6 +482,17 @@ pub async fn run_backfill(
             token
         }
     };
+    // `--restart` means "start over": besides resetting the progress marker
+    // (done above), delete every planned unit's scoped state key so the run
+    // genuinely re-backfills from the start. Without this a bookmark-mode unit's
+    // surviving `{name}::backfill::{unit}` bookmark is kept (the seed is guarded
+    // `if is_none()`), silently resuming instead of restarting (audit #321 H3).
+    // Done here (execute path only) so a `--restart --dry-run` never mutates
+    // state. `units` still reflects the full plan (the marker was just reset).
+    if opts.restart {
+        clear_scoped_unit_state(&store, &opts.pipeline_name, &units).await?;
+    }
+
     // Persist the (possibly reset) marker up front so an early crash leaves a
     // resumable record of the attempt.
     store.put(&marker_k, &marker.to_value()?).await?;
@@ -571,6 +582,22 @@ pub async fn run_backfill(
         dry_run: false,
         units: reports,
     })
+}
+
+/// Delete every planned unit's scoped state key (`{name}::backfill::{unit}`).
+/// Called on `--restart` so a re-backfill starts from scratch rather than
+/// silently resuming a surviving bookmark (audit #321 H3).
+async fn clear_scoped_unit_state(
+    store: &Arc<dyn StateStore>,
+    pipeline_name: &str,
+    units: &[BackfillUnit],
+) -> CliResult<()> {
+    for unit in units {
+        store
+            .delete(&unit_state_key(pipeline_name, &unit.id))
+            .await?;
+    }
+    Ok(())
 }
 
 /// Run one unit end-to-end through the executor.
@@ -818,6 +845,31 @@ matrix:
         let url = node.source.config["url"].as_str().unwrap();
         assert!(url.contains("since=2026-06-01T00:00:00+00:00"), "{url}");
         assert!(url.contains("until=2026-06-02T00:00:00+00:00"), "{url}");
+    }
+
+    #[tokio::test]
+    async fn restart_clears_scoped_unit_state() {
+        // #321 H3: --restart must delete each planned unit's scoped bookmark so
+        // the run genuinely starts over. A surviving bookmark would otherwise
+        // make run_one_unit skip its re-seed and resume mid-range.
+        let store: Arc<dyn StateStore> = Arc::new(faucet_core::MemoryStateStore::new());
+        let key = unit_state_key("orders", "bookmark");
+        store.put(&key, &json!(500)).await.unwrap();
+
+        let tz: chrono_tz::Tz = "UTC".parse().unwrap();
+        let unit = BackfillUnit {
+            id: "bookmark".into(),
+            start: crate::backfill::plan::parse_boundary("2026-06-01", tz).unwrap(),
+            end: crate::backfill::plan::parse_boundary("2026-06-02", tz).unwrap(),
+        };
+        clear_scoped_unit_state(&store, "orders", std::slice::from_ref(&unit))
+            .await
+            .unwrap();
+        assert_eq!(
+            store.get(&key).await.unwrap(),
+            None,
+            "restart must delete the surviving scoped bookmark"
+        );
     }
 
     #[test]

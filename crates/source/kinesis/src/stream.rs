@@ -198,11 +198,18 @@ impl faucet_core::Source for KinesisSource {
                     None => rx.recv().await,
                 };
                 match event {
-                    Some(ShardEvent::Records { shard_id, records, last_sequence }) => {
-                        cumulative.advance(&shard_id, &last_sequence);
-                        for record in records {
+                    Some(ShardEvent::Records { shard_id, records }) => {
+                        for (sequence, record) in records {
                             buffer.push(record);
                             total += 1;
+                            // Advance the shard bookmark to THIS record's sequence
+                            // before any page emit, so a yielded page's bookmark
+                            // never runs ahead of the records it actually carries
+                            // (audit #321 C2 — the old code jumped to the batch's
+                            // last sequence up front, so a mid-batch page emit
+                            // persisted a bookmark past un-emitted records → silent
+                            // loss on resume).
+                            cumulative.advance(&shard_id, &sequence);
                             if buffer.len() >= chunk {
                                 let page = std::mem::take(&mut buffer);
                                 yield StreamPage {

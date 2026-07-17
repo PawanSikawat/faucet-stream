@@ -190,6 +190,61 @@ async fn consumes_across_shards_with_metadata_and_bookmarks() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn mid_batch_page_bookmark_is_a_valid_resume_point() {
+    // #321 C2: a single GetRecords batch returns all 30 records
+    // (records_per_request high), but batch_size = 10 forces the generator to
+    // emit 3 pages. Each page's bookmark must equal its own last record's
+    // sequence — NOT the batch-final sequence. Resuming from the FIRST page's
+    // bookmark must therefore see records 10..30 (nothing before is skipped).
+    let (_container, endpoint) = start_localstack().await;
+    let client = raw_client(&endpoint).await;
+    create_stream(&client, "midbatch", 1).await;
+    put_records(&client, "midbatch", 0, 30).await;
+
+    let mut cfg = source_config(&endpoint, "midbatch");
+    cfg.batch_size = 10;
+    cfg.records_per_request = 10_000; // one GetRecords returns the whole shard
+    let source = KinesisSource::new(cfg).await.expect("source");
+    let ctx: HashMap<String, serde_json::Value> = HashMap::new();
+    let mut pages = source.stream_pages(&ctx, 10);
+
+    // Capture the FIRST full page (10 records) and its bookmark.
+    let first = pages.next().await.expect("a page").expect("ok");
+    assert_eq!(
+        first.records.len(),
+        10,
+        "first page holds one batch_size chunk"
+    );
+    let first_bookmark = first.bookmark.expect("first page carries a bookmark");
+    // Drain the rest so the source terminates cleanly.
+    while let Some(p) = pages.next().await {
+        let _ = p.expect("ok");
+    }
+
+    // Resume a fresh source from the FIRST page's bookmark: it must replay
+    // exactly records 10..30 — proving the bookmark did not run ahead of the
+    // page's own contents.
+    let mut rcfg = source_config(&endpoint, "midbatch");
+    rcfg.records_per_request = 10_000;
+    let resumed = KinesisSource::new(rcfg).await.expect("resumed source");
+    resumed
+        .apply_start_bookmark(first_bookmark)
+        .await
+        .expect("apply bookmark");
+    let records = resumed.fetch_all().await.expect("resume fetch");
+    let mut is: Vec<i64> = records
+        .iter()
+        .map(|r| r["data"]["i"].as_i64().unwrap())
+        .collect();
+    is.sort_unstable();
+    assert_eq!(
+        is,
+        (10..30).collect::<Vec<i64>>(),
+        "resume from the first page's bookmark must lose none of records 10..30"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn max_messages_and_check_probe() {
     let (_container, endpoint) = start_localstack().await;
     let client = raw_client(&endpoint).await;

@@ -75,10 +75,16 @@ where
             dec.multiple_members(true);
             Box::pin(tokio::io::BufReader::new(dec))
         }
-        // zstd handles concatenated frames natively, so no `multiple_members`-
-        // equivalent flag is needed (the spec is part of zstd itself).
+        // `async-compression`'s `multiple_members` flag is codec-agnostic and
+        // defaults to `false`, so the async zstd decoder stops after the FIRST
+        // frame — silently dropping every later frame of a multi-frame `.zst`
+        // file (the jsonl/csv sinks emit one frame per flush segment). Enable it
+        // so concatenated frames are all read (audit #321 H8). The sync
+        // `zstd::stream::read::Decoder` already concatenates frames until EOF by
+        // default (only `.single_frame()` limits it), so it needs no change.
         Compression::Zstd => {
-            let dec = async_compression::tokio::bufread::ZstdDecoder::new(r);
+            let mut dec = async_compression::tokio::bufread::ZstdDecoder::new(r);
+            dec.multiple_members(true);
             Box::pin(tokio::io::BufReader::new(dec))
         }
     }
@@ -349,6 +355,45 @@ mod tests {
         let mut r = wrap_async_reader(BufReader::new(&buf[..]), Compression::Zstd);
         r.read_to_end(&mut decompressed).await.unwrap();
         assert_eq!(decompressed, original);
+    }
+
+    #[tokio::test]
+    async fn async_multi_frame_zstd_reads_every_frame() {
+        // #321 H8: two concatenated zstd frames (as the file sinks produce, one
+        // per flush segment). Before the fix the async decoder stopped after the
+        // first frame and silently dropped the second.
+        let frame_a = b"first-frame-payload\n".repeat(10);
+        let frame_b = b"second-frame-payload\n".repeat(10);
+        let mut buf = Vec::new();
+        for frame in [&frame_a, &frame_b] {
+            let mut w = wrap_async_writer(&mut buf, Compression::Zstd);
+            w.write_all(frame).await.unwrap();
+            w.shutdown().await.unwrap();
+        }
+        let mut decompressed = Vec::new();
+        let mut r = wrap_async_reader(BufReader::new(&buf[..]), Compression::Zstd);
+        r.read_to_end(&mut decompressed).await.unwrap();
+        let mut expected = frame_a.clone();
+        expected.extend_from_slice(&frame_b);
+        assert_eq!(decompressed, expected, "both zstd frames must be read back");
+    }
+
+    #[test]
+    fn sync_multi_frame_zstd_reads_every_frame() {
+        // The sync decoder already concatenates frames by default; guard against
+        // a regression (e.g. an accidental `.single_frame()`).
+        use std::io::Read;
+        let frame_a = b"sync-frame-a\n".repeat(8);
+        let frame_b = b"sync-frame-b\n".repeat(8);
+        let mut buf = compress_buf(&frame_a, Compression::Zstd).unwrap();
+        buf.extend_from_slice(&compress_buf(&frame_b, Compression::Zstd).unwrap());
+        let mut decompressed = Vec::new();
+        wrap_sync_reader(&buf[..], Compression::Zstd)
+            .read_to_end(&mut decompressed)
+            .unwrap();
+        let mut expected = frame_a.clone();
+        expected.extend_from_slice(&frame_b);
+        assert_eq!(decompressed, expected);
     }
 
     #[tokio::test]
