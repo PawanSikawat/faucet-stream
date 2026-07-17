@@ -6,6 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 (see the versioning policy in CONTRIBUTING.md — connector crates version
 independently).
+## [1.5.0](https://github.com/PawanSikawat/faucet-stream/compare/faucet-core-v1.4.0...faucet-core-v1.5.0) - 2026-07-17
+
+### Bug Fixes
+
+- Resolve #321 medium/low audit findings (quality/contract equality, CDC, pagination, serve, observability) ([#323](https://github.com/PawanSikawat/faucet-stream/pull/323))
+- Resolve #321 critical/high audit findings (exactly-once, cluster, transform-sql, compression) ([#322](https://github.com/PawanSikawat/faucet-stream/pull/322))
+
+### Features
+
+- Encryption at rest for state/DLQ + live TUI for faucet run ([#315](https://github.com/PawanSikawat/faucet-stream/pull/315))
+- Connector conformance battery + tiers, FCP spec, sink-bound benchmark, sink config fixes ([#307](https://github.com/PawanSikawat/faucet-stream/pull/307))
+- Faucet discover (live source introspection) + faucet backfill (resumable historical replay)
+
 ## [1.4.0](https://github.com/PawanSikawat/faucet-stream/compare/faucet-core-v1.3.0...faucet-core-v1.4.0) - 2026-07-10
 
 ### Features
