@@ -188,13 +188,13 @@ async fn test_offset_pagination_terminates_when_server_ignores_offset() {
         .expect("offset pagination must terminate, not loop forever")
         .unwrap();
 
-    // The repeated page is emitted twice: once as the legitimate first page,
-    // then once more before the guard detects the identical body and stops.
-    // Critically it is bounded — NOT 1000 * 2 records.
+    // #321 L1: only the legitimate first page is emitted. The second, identical
+    // page is detected by the content-stagnation guard and DROPPED rather than
+    // emitted a second time (previously it leaked 4 records = 2 duplicate pages).
     assert_eq!(
         records.len(),
-        4,
-        "stagnation guard must bound emission to the first two identical pages"
+        2,
+        "the duplicate page must be dropped, not emitted again"
     );
 }
 

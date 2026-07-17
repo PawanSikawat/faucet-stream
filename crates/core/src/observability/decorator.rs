@@ -184,6 +184,12 @@ impl<'a, S: Source + ?Sized> Source for InstrumentedSource<'a, S> {
                         counter!("faucet_source_pages_total", metric_labels.clone()).increment(1);
                         counter!("faucet_source_records_total", metric_labels.clone())
                             .increment(page.records.len() as u64);
+                        // Close the timing window BEFORE yielding: in an
+                        // `async_stream` the timer local persists across the
+                        // yield, so dropping it at scope-exit would fold the
+                        // downstream sink/consumer latency into the source's
+                        // page-duration histogram (audit #321 M10).
+                        _timer.record_now();
                         yield page;
                     }
                     Ok(Some(Err(e))) => {

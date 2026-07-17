@@ -428,6 +428,12 @@ impl RestStream {
                     // Intermediate page — yield without bookmark so the
                     // pipeline does not persist a partial checkpoint.
                     yield faucet_core::StreamPage { records, bookmark: None };
+                } else if state.current_page_is_duplicate {
+                    // The content-stagnation guard flagged this page as a
+                    // duplicate of the previous one — DROP it (do not emit the
+                    // repeated records to the sink) and stop. The trailing
+                    // bookmark checkpoint below still fires (#321 L1).
+                    break;
                 } else {
                     // Final page — attach the consolidated bookmark.
                     bookmark_emitted = running_max.is_some();
@@ -742,7 +748,12 @@ impl RestStream {
         // returning the error. This gives callers (and logs) the server's
         // error message rather than just a status code.
         if !status.is_success() {
-            let resp_url = resp.url().to_string();
+            // Redact any auth secret carried in the query string before it lands
+            // in the error (which renders the URL in `Display` → logs). The
+            // `api_key_query` value is user-configured, so it is not marked
+            // sensitive like a Bearer/Basic header and would otherwise leak on
+            // any 4xx/5xx (audit #321 L2).
+            let resp_url = redact_error_url(resp.url(), &self.config.auth);
             let body_text = resp.text().await.unwrap_or_default();
             // Truncate very long error bodies to avoid bloating logs/errors.
             let truncated = if body_text.len() > 1024 {
@@ -776,6 +787,35 @@ impl RestStream {
         let body: Value = serde_json::from_slice(&bytes)?;
         Ok((body, resp_headers))
     }
+}
+
+/// Render a response URL for an error message with any auth secret in the query
+/// string redacted (audit #321 L2). Redacts the user-configured
+/// `api_key_query` parameter by name (which `redact_uri_credentials` cannot
+/// know), then applies the shared credential/query-secret redaction for the
+/// common key names and any URL userinfo.
+fn redact_error_url(url: &reqwest::Url, auth: &AuthSpec<Auth>) -> String {
+    let mut redacted = url.clone();
+    if let AuthSpec::Inline(Auth::ApiKeyQuery { param, .. }) = auth {
+        let pairs: Vec<(String, String)> = url
+            .query_pairs()
+            .map(|(k, v)| {
+                if k == param.as_str() {
+                    (k.into_owned(), "***".to_string())
+                } else {
+                    (k.into_owned(), v.into_owned())
+                }
+            })
+            .collect();
+        redacted.set_query(None);
+        if !pairs.is_empty() {
+            let mut qp = redacted.query_pairs_mut();
+            for (k, v) in &pairs {
+                qp.append_pair(k, v);
+            }
+        }
+    }
+    faucet_core::redact_uri_credentials(redacted.as_str())
 }
 
 /// Parse the `Retry-After` header. RFC 7231 permits **either** delta-seconds
@@ -917,6 +957,42 @@ mod tests {
         // Unchanged: the legacy max_retries(7) still wins.
         assert_eq!(stream.retry_policy.max_attempts, 8);
         assert_eq!(stream.retry_policy.base, DEFAULT_RETRY_BACKOFF);
+    }
+
+    #[test]
+    fn redact_error_url_hides_api_key_query_param() {
+        // #321 L2: a custom `api_key_query` param name is redacted by name.
+        let auth = AuthSpec::Inline(Auth::ApiKeyQuery {
+            param: "api_token".into(),
+            value: "SUPERSECRET".into(),
+        });
+        let url =
+            reqwest::Url::parse("https://api.example.com/v1/items?page=2&api_token=SUPERSECRET")
+                .unwrap();
+        let redacted = redact_error_url(&url, &auth);
+        assert!(
+            !redacted.contains("SUPERSECRET"),
+            "secret must be gone: {redacted}"
+        );
+        assert!(redacted.contains("api_token=%2A%2A%2A") || redacted.contains("api_token=***"));
+        assert!(
+            redacted.contains("page=2"),
+            "non-secret param kept: {redacted}"
+        );
+    }
+
+    #[test]
+    fn redact_error_url_without_api_key_query_still_scrubs_common_keys() {
+        // Non-ApiKeyQuery auth: the shared redaction still strips common secret
+        // query keys and userinfo.
+        let auth: AuthSpec<Auth> = AuthSpec::Inline(Auth::None);
+        let url = reqwest::Url::parse("https://u:pw@api.example.com/v1/items?token=abc").unwrap();
+        let redacted = redact_error_url(&url, &auth);
+        assert!(
+            !redacted.contains("abc"),
+            "common secret key redacted: {redacted}"
+        );
+        assert!(!redacted.contains("pw@"), "userinfo redacted: {redacted}");
     }
 
     #[test]

@@ -38,12 +38,12 @@ pub fn evaluate_record_check(c: &CompiledRecordCheck, rec: &Value) -> Result<(),
             None => Err("field was missing".into()),
         },
         CompiledRecordKind::ValueInSet { path, values } => match path.resolve(rec).ok().flatten() {
-            Some(v) if values.contains(v) => Ok(()),
+            Some(v) if set_contains(values, v) => Ok(()),
             Some(_) => Err("value not in allowed set".into()),
             None => Err("field was missing".into()),
         },
         CompiledRecordKind::NotInSet { path, values } => match path.resolve(rec).ok().flatten() {
-            Some(v) if values.contains(v) => Err("value is in the forbidden set".into()),
+            Some(v) if set_contains(values, v) => Err("value is in the forbidden set".into()),
             // present-and-not-in-set OR missing -> pass
             _ => Ok(()),
         },
@@ -138,6 +138,14 @@ fn values_equal(a: &Value, b: &Value) -> bool {
         }
         _ => a == b,
     }
+}
+
+/// Set membership for `value_in_set` / `not_in_set` using numeric-aware
+/// equality ([`values_equal`]) rather than structural `Vec::contains`, so an
+/// int/float spelling difference (`0` vs `0.0`) does not bypass the check or
+/// cause a false quarantine (audit #321 M1).
+fn set_contains(values: &[Value], v: &Value) -> bool {
+    values.iter().any(|candidate| values_equal(candidate, v))
 }
 
 /// Evaluate a `compare` check. Ordering ops (`gt`/`gte`/`lt`/`lte`) compare
@@ -283,6 +291,26 @@ mod tests {
         assert!(evaluate_record_check(&not_in, &json!({"status": "active"})).is_ok());
         assert!(evaluate_record_check(&not_in, &json!({"status": "banned"})).is_err());
         assert!(evaluate_record_check(&not_in, &json!({})).is_ok()); // missing -> pass
+    }
+
+    #[test]
+    fn set_checks_match_numerically_not_structurally() {
+        // #321 M1: int/float spelling must not bypass the set checks.
+        let in_set = one(RecordCheck::ValueInSet {
+            field: "n".into(),
+            values: vec![json!(5)],
+            on_failure: OnFailure::Quarantine,
+        });
+        // 5.0 is in {5} numerically → must pass (was wrongly quarantined before).
+        assert!(evaluate_record_check(&in_set, &json!({"n": 5.0})).is_ok());
+
+        let not_in = one(RecordCheck::NotInSet {
+            field: "n".into(),
+            values: vec![json!(0)],
+            on_failure: OnFailure::Quarantine,
+        });
+        // 0.0 is in the forbidden set {0} numerically → must fail (was bypassed).
+        assert!(evaluate_record_check(&not_in, &json!({"n": 0.0})).is_err());
     }
 
     #[test]

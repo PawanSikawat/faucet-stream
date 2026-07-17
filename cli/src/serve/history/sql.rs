@@ -327,9 +327,13 @@ impl Stmts {
                 WHERE status = 'running' \
                 AND (lease_expires_at IS NULL OR lease_expires_at < $1)"
                 .into(),
+            // Preserve `cancel_requested` across a requeue (audit #321 M7): a
+            // cross-instance cancel acknowledged while the owner was partitioned
+            // must survive re-queueing so the next owner still honours it, rather
+            // than the run silently running to completion despite the cancel.
             reclaim_requeue: "UPDATE faucet_serve_runs \
                 SET status = 'pending', owner = NULL, lease_expires_at = NULL, \
-                    cancel_requested = NULL, body = $1 \
+                    body = $1 \
                 WHERE run_id = $2 AND status = 'running' \
                 AND (lease_expires_at IS NULL OR lease_expires_at < $3)"
                 .into(),
@@ -338,9 +342,14 @@ impl Stmts {
                 WHERE run_id = $3 AND status = 'running' \
                 AND (lease_expires_at IS NULL OR lease_expires_at < $4)"
                 .into(),
+            // Status-fenced (audit #321 L5): only finalize a still-non-terminal
+            // record, so a stale zombie execution that shares the same owner (a
+            // lease-lapse re-claim by the same instance) can never overwrite the
+            // terminal record written by the live execution. First finalizer wins.
             finalize_owned: "UPDATE faucet_serve_runs \
                 SET status = $1, finished_at = $2, lease_expires_at = $3, body = $4 \
-                WHERE run_id = $5 AND owner = $6"
+                WHERE run_id = $5 AND owner = $6 \
+                AND status NOT IN ('completed','failed','cancelled')"
                 .into(),
             cancel_pending: "UPDATE faucet_serve_runs \
                 SET status = 'cancelled', finished_at = $1, body = $2 \
@@ -527,9 +536,10 @@ impl Stmts {
                 WHERE status = 'running' \
                 AND (lease_expires_at IS NULL OR lease_expires_at < ?)"
                 .into(),
+            // Preserve `cancel_requested` across a requeue (audit #321 M7).
             reclaim_requeue: "UPDATE faucet_serve_runs \
                 SET status = 'pending', owner = NULL, lease_expires_at = NULL, \
-                    cancel_requested = NULL, body = ? \
+                    body = ? \
                 WHERE run_id = ? AND status = 'running' \
                 AND (lease_expires_at IS NULL OR lease_expires_at < ?)"
                 .into(),
@@ -538,9 +548,11 @@ impl Stmts {
                 WHERE run_id = ? AND status = 'running' \
                 AND (lease_expires_at IS NULL OR lease_expires_at < ?)"
                 .into(),
+            // Status-fenced (audit #321 L5): first finalizer wins.
             finalize_owned: "UPDATE faucet_serve_runs \
                 SET status = ?, finished_at = ?, lease_expires_at = ?, body = ? \
-                WHERE run_id = ? AND owner = ?"
+                WHERE run_id = ? AND owner = ? \
+                AND status NOT IN ('completed','failed','cancelled')"
                 .into(),
             cancel_pending: "UPDATE faucet_serve_runs \
                 SET status = 'cancelled', finished_at = ?, body = ? \

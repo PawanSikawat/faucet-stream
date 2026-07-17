@@ -111,6 +111,12 @@ impl Notifier {
                 }
             }
             Err(e) => {
+                // The leading-edge delivery failed: roll back the coalesce
+                // timestamp so a retry of an identical event within the window
+                // is NOT silently dropped — otherwise the operator gets zero
+                // notifications about an ongoing outage until the window elapses
+                // (audit #321 L4).
+                self.uncoalesce(rule, event);
                 metrics::record_sent(channel, event.kind.as_str(), false);
                 metrics::record_dropped(channel, "channel_error");
                 tracing::warn!(rule = %rule.name, channel, error = %e, "notification delivery failed");
@@ -209,6 +215,18 @@ impl Notifier {
         }
         map.insert(key, now);
         false
+    }
+
+    /// Remove the coalesce timestamp recorded by [`Self::coalesce`] for this
+    /// (rule, event). Called when the leading-edge delivery fails so the next
+    /// identical event re-attempts delivery instead of being coalesced away
+    /// (audit #321 L4).
+    fn uncoalesce(&self, rule: &NotificationSpec, event: &NotifyEvent) {
+        if rule.dedupe_window_secs.filter(|w| *w > 0).is_none() {
+            return;
+        }
+        let key = format!("{}::{}", rule.name, event.dedupe_key());
+        self.dedupe.lock().unwrap().remove(&key);
     }
 
     /// Test-only view of open incidents.
@@ -346,6 +364,26 @@ mod tests {
         let e = NotifyEvent::run_failure("p", "", "s", "m");
         assert!(!n.coalesce(&r, &e));
         assert!(!n.coalesce(&r, &e));
+    }
+
+    #[test]
+    fn uncoalesce_lets_the_next_event_retry_after_failure() {
+        // #321 L4: a leading-edge failure rolls the coalesce timestamp back, so
+        // the next identical event is delivered rather than silently coalesced.
+        let mut r = rule("a", vec![], slack());
+        r.dedupe_window_secs = Some(3600);
+        let n = Notifier::from_specs(&[r.clone()]).unwrap().unwrap();
+        let e = NotifyEvent::run_failure("p", "", "s", "m");
+        assert!(!n.coalesce(&r, &e), "leading edge records the instant");
+        // Simulate the delivery having failed:
+        n.uncoalesce(&r, &e);
+        // The next identical event must NOT be coalesced (retry allowed).
+        assert!(
+            !n.coalesce(&r, &e),
+            "after rollback the next event retries instead of being dropped"
+        );
+        // And a subsequent one (whose leading edge succeeded) does coalesce.
+        assert!(n.coalesce(&r, &e));
     }
 
     #[test]

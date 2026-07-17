@@ -154,7 +154,7 @@ fn evaluate_record(
             ));
         }
         if let Some(values) = &f.allowed_values
-            && !values.iter().any(|v| v == value)
+            && !enum_contains(values, value)
         {
             return Some(violation(
                 "enum",
@@ -244,6 +244,26 @@ fn json_type_name(v: &Value) -> &'static str {
     }
 }
 
+/// Enum membership with numeric-aware equality: two JSON numbers compare by
+/// value (so an integer-spelled enum member `1` matches a conforming `1.0` on a
+/// `number` field), everything else by exact structural equality. `compile`
+/// already accepts an integer enum on a number field, and the per-record type
+/// check runs before this, so no cross-type coercion sneaks in (audit #321 M2).
+fn enum_contains(allowed: &[Value], value: &Value) -> bool {
+    allowed.iter().any(|v| match (v, value) {
+        (Value::Number(a), Value::Number(b)) => {
+            if let (Some(x), Some(y)) = (a.as_i64(), b.as_i64()) {
+                x == y
+            } else if let (Some(x), Some(y)) = (a.as_u64(), b.as_u64()) {
+                x == y
+            } else {
+                matches!((a.as_f64(), b.as_f64()), (Some(x), Some(y)) if x == y)
+            }
+        }
+        _ => v == value,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -278,6 +298,24 @@ mod tests {
         assert_eq!(out.survivors, page);
         assert!(out.quarantined.is_empty());
         assert!(out.warned.is_empty());
+    }
+
+    #[test]
+    fn numeric_enum_matches_across_int_float_spelling() {
+        // #321 M2: an integer-spelled enum on a `number` field must accept a
+        // conforming float value (and vice-versa) instead of spuriously breaching.
+        let c = compiled(json!({
+            "version": "1.0.0",
+            "on_breach": "fail",
+            "fields": [ { "name": "rate", "type": "number", "enum": [1, 2] } ]
+        }));
+        // 1.0 conforms to enum {1, 2} — must pass (was a false breach before).
+        let out = apply_contract(vec![json!({"rate": 1.0})], &c).unwrap();
+        assert_eq!(out.survivors.len(), 1);
+        assert!(out.quarantined.is_empty());
+        // A genuinely out-of-set value still breaches.
+        let err = apply_contract(vec![json!({"rate": 3.0})], &c).unwrap_err();
+        assert!(matches!(err, FaucetError::ContractViolation { .. }));
     }
 
     #[test]

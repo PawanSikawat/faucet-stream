@@ -215,9 +215,17 @@ mod tests {
     #[tokio::test]
     async fn reload_handler_noop_without_default_config() {
         let s = state(AuthMode::None);
-        let axum::Json(body) = crate::serve::handlers::reload::reload(axum::extract::State(s))
-            .await
-            .expect("reload ok");
+        let actor = crate::serve::rbac::AuthContext {
+            principal: "admin".into(),
+            role: crate::serve::rbac::Role::Admin,
+            source_ip: None,
+        };
+        let axum::Json(body) = crate::serve::handlers::reload::reload(
+            axum::extract::State(s),
+            axum::extract::Extension(actor),
+        )
+        .await
+        .expect("reload ok");
         assert_eq!(body["reloaded"], serde_json::json!(false));
     }
 

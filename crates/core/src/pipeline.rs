@@ -783,9 +783,17 @@ where
                         page
                     };
 
+                    // True page positions of the records currently flowing, kept
+                    // in lockstep as quality/contract remove rows, so a later
+                    // schema-drift quarantine annotates the envelope with the
+                    // record's real page index — not a survivor-relative one
+                    // (audit #321 L6). Quality's own quarantine already uses the
+                    // true `page_index`; this carries the same truth to drift.
+                    let page_len = page.records.len();
+
                     // ── Quality pass (after transforms, before sink) ─────────
                     #[cfg(feature = "quality")]
-                    let (records, quality_envelopes): (Vec<Value>, Vec<Value>) =
+                    let (records, quality_envelopes, page_indices): (Vec<Value>, Vec<Value>, Vec<usize>) =
                         if let Some(q) = quality.as_ref() {
                             let labels =
                                 crate::observability::Labels::new(&*pipeline_name, &*row, &*run_id);
@@ -794,6 +802,8 @@ where
                                 q,
                                 &labels,
                             )?;
+                            let quarantined_idx: std::collections::HashSet<usize> =
+                                outcome.quarantined.iter().map(|qr| qr.page_index).collect();
                             let envelopes: Vec<Value> = outcome
                                 .quarantined
                                 .iter()
@@ -816,13 +826,15 @@ where
                                     )
                                 })
                                 .collect();
-                            (outcome.survivors, envelopes)
+                            let survivor_idx: Vec<usize> =
+                                (0..page_len).filter(|i| !quarantined_idx.contains(i)).collect();
+                            (outcome.survivors, envelopes, survivor_idx)
                         } else {
-                            (page.records, Vec::new())
+                            (page.records, Vec::new(), (0..page_len).collect())
                         };
                     #[cfg(not(feature = "quality"))]
-                    let (records, quality_envelopes): (Vec<Value>, Vec<Value>) =
-                        (page.records, Vec::new());
+                    let (records, quality_envelopes, page_indices): (Vec<Value>, Vec<Value>, Vec<usize>) =
+                        (page.records, Vec::new(), (0..page_len).collect());
 
                     // ── Contract pass (after quality, before schema drift) ───
                     // `fail` mirrors a quality `abort`: the breach error
@@ -831,7 +843,7 @@ where
                     // (unlike drift `fail`, which defers because its records
                     // are individually fine).
                     #[cfg(feature = "contract")]
-                    let (records, contract_envelopes): (Vec<Value>, Vec<Value>) =
+                    let (records, contract_envelopes, page_indices): (Vec<Value>, Vec<Value>, Vec<usize>) =
                         if let Some(c) = contract.as_ref() {
                             let labels =
                                 crate::observability::Labels::new(&*pipeline_name, &*row, &*run_id);
@@ -869,9 +881,25 @@ where
                                     )
                                 })
                                 .collect();
-                            (outcome.survivors, envelopes)
+                            // Contract's `page_index` is the position within ITS
+                            // input (the quality survivors) — aligned with the
+                            // incoming `page_indices`. Drop those positions so the
+                            // vector still maps each remaining record to its true
+                            // original page index (#321 L6).
+                            let contract_quarantined: std::collections::HashSet<usize> = outcome
+                                .quarantined
+                                .iter()
+                                .map(|vr| vr.violation.page_index)
+                                .collect();
+                            let survivor_idx: Vec<usize> = page_indices
+                                .iter()
+                                .enumerate()
+                                .filter(|(pos, _)| !contract_quarantined.contains(pos))
+                                .map(|(_, orig)| *orig)
+                                .collect();
+                            (outcome.survivors, envelopes, survivor_idx)
                         } else {
-                            (records, Vec::new())
+                            (records, Vec::new(), page_indices)
                         };
 
                     // ── Schema-drift pass (after quality, before sink) ───────
@@ -914,6 +942,7 @@ where
                                             &diff,
                                             &dest_owned,
                                             records,
+                                            &page_indices,
                                             sink,
                                             sink_name,
                                             &pipeline_name,
@@ -1628,6 +1657,7 @@ async fn apply_drift_policy<Si: Sink + ?Sized>(
     diff: &crate::drift::SchemaDiff,
     dest: &Value,
     records: Vec<Value>,
+    page_indices: &[usize],
     sink: &Si,
     sink_name: &str,
     pipeline_name: &str,
@@ -1715,7 +1745,8 @@ async fn apply_drift_policy<Si: Sink + ?Sized>(
             Ok((trimmed, None))
         }
         OnDrift::Quarantine => {
-            let (kept, env) = quarantine_drift_rows(diff, records, sink_name, pipeline_name, row);
+            let (kept, env) =
+                quarantine_drift_rows(diff, records, page_indices, sink_name, pipeline_name, row);
             drift_envelopes.extend(env);
             Ok((kept, None))
         }
@@ -1784,6 +1815,7 @@ async fn apply_drift_policy<Si: Sink + ?Sized>(
                         let (kept, env) = quarantine_drift_rows(
                             &incompat_only,
                             records,
+                            page_indices,
                             sink_name,
                             pipeline_name,
                             row,
@@ -1809,6 +1841,7 @@ async fn apply_drift_policy<Si: Sink + ?Sized>(
 fn quarantine_drift_rows(
     diff: &crate::drift::SchemaDiff,
     records: Vec<Value>,
+    page_indices: &[usize],
     sink_name: &str,
     pipeline_name: &str,
     row: &str,
@@ -1840,6 +1873,9 @@ fn quarantine_drift_rows(
                 columns: diff.changed_columns(),
                 message: "row exhibits schema drift (on_drift=quarantine)".into(),
             };
+            // Map the survivor-relative position back to the record's true page
+            // index so the envelope annotation matches quality/contract (#321 L6).
+            let page_index = page_indices.get(idx).copied().unwrap_or(idx);
             envelopes.push(build_envelope(
                 &rec,
                 &err,
@@ -1847,7 +1883,7 @@ fn quarantine_drift_rows(
                 sink_name,
                 pipeline_name,
                 row,
-                idx,
+                page_index,
             ));
         } else {
             kept.push(rec);
@@ -5335,13 +5371,22 @@ mod tests {
             json!({"id": 3, "legacy": "z"}),                // no widened col, has legacy → kept
             json!({"id": 4}),                               // missing required `legacy` → DLQ
         ];
-        let (kept, env) = quarantine_drift_rows(&diff, records, "sink", "pl", "");
+        // page_indices offset by 10 to prove the envelope carries the TRUE page
+        // index, not the survivor-relative one (#321 L6).
+        let page_indices = vec![10, 11, 12, 13];
+        let (kept, env) = quarantine_drift_rows(&diff, records, &page_indices, "sink", "pl", "");
         assert_eq!(kept, vec![json!({"id": 3, "legacy": "z"})]);
         assert_eq!(
             env.len(),
             3,
             "widening rows + the missing-required row quarantined"
         );
+        // The three quarantined rows are at page positions 10, 11, 13.
+        let indices: Vec<i64> = env
+            .iter()
+            .map(|e| e["record_index"].as_i64().unwrap())
+            .collect();
+        assert_eq!(indices, vec![10, 11, 13]);
     }
 
     #[tokio::test]

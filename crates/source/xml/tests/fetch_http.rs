@@ -347,8 +347,10 @@ async fn identical_page_loop_guard_stops_fetch() {
             page_size_param: None,
         });
     let records = XmlStream::new(config).fetch_all().await.unwrap();
-    // Page 1 + identical page 2 (which trips the guard) = 4 records, no loop.
-    assert_eq!(records.len(), 4);
+    // #321 M4: only page 1 is emitted (2 records). The identical page 2 trips
+    // the stagnation guard and is DROPPED rather than emitted a second time
+    // (previously it leaked 4 records = the duplicate page appended).
+    assert_eq!(records.len(), 2);
 }
 
 #[tokio::test]

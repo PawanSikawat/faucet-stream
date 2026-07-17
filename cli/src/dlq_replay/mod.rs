@@ -302,9 +302,7 @@ pub fn discard(
             append_to(&archive, &removed)?;
             archived_to.push(archive.to_string_lossy().into_owned());
         }
-        std::fs::write(file, kept.as_bytes()).map_err(|e| {
-            CliError::Internal(format!("rewriting DLQ file '{}': {e}", file.display()))
-        })?;
+        atomic_rewrite(file, kept.as_bytes())?;
         files_rewritten += 1;
     }
 
@@ -313,6 +311,31 @@ pub fn discard(
         files_rewritten,
         archived_to,
     })
+}
+
+/// Rewrite `file` atomically: write the surviving lines to a temp file in the
+/// same directory, then `rename` it over the original. A process kill mid-write
+/// leaves the original intact (the incomplete write lands only in the temp
+/// file), so the un-discarded kept envelopes can never be lost to a truncated
+/// prefix — unlike a direct `fs::write` truncate-then-write (audit #321 L3).
+fn atomic_rewrite(file: &std::path::Path, contents: &[u8]) -> CliResult<()> {
+    let parent = file.parent().unwrap_or_else(|| std::path::Path::new("."));
+    let name = file
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("dlq.jsonl");
+    // Same-directory temp so the rename is atomic (same filesystem). The pid
+    // keeps concurrent discards on the same file from colliding on the temp name.
+    let tmp = parent.join(format!(".{name}.{}.tmp", std::process::id()));
+    std::fs::write(&tmp, contents).map_err(|e| {
+        CliError::Internal(format!("writing temp DLQ file '{}': {e}", tmp.display()))
+    })?;
+    std::fs::rename(&tmp, file).map_err(|e| {
+        // Best-effort cleanup of the temp file if the rename failed.
+        let _ = std::fs::remove_file(&tmp);
+        CliError::Internal(format!("rewriting DLQ file '{}': {e}", file.display()))
+    })?;
+    Ok(())
 }
 
 /// The archive sibling for a DLQ file: `dlq.jsonl` → `dlq.archived.jsonl`.
@@ -431,6 +454,16 @@ mod tests {
         // The archive holds the discarded envelope.
         let archived = std::fs::read_to_string(dir.path().join("dlq.archived.jsonl")).unwrap();
         assert!(archived.contains("QualityFailure"));
+        // #321 L3: the atomic rewrite leaves no lingering temp file behind.
+        let leftover: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|e| e.file_name().to_string_lossy().ends_with(".tmp"))
+            .collect();
+        assert!(
+            leftover.is_empty(),
+            "no .tmp file should remain: {leftover:?}"
+        );
     }
 
     #[test]

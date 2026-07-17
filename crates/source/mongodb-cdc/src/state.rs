@@ -32,10 +32,25 @@ pub fn state_key(scope: &Scope) -> String {
 }
 
 /// Durable bookmark wrapping a resume token.
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 pub struct Bookmark {
     /// The opaque resume token as relaxed extended JSON (e.g. `{"_data": "..."}`).
     pub resume_token: Value,
+    /// True when this token was captured from an **Invalidate** change event
+    /// (the collection was dropped/renamed, or a dropDatabase for db scope).
+    /// MongoDB forbids `resumeAfter` on an invalidate token — only `startAfter`
+    /// — so on resume the source must open the next stream with `start_after`,
+    /// or every subsequent watch open fails and the CDC pipeline wedges
+    /// permanently (audit #321 M3). Absent from older bookmarks (defaults
+    /// `false`) and omitted from the serialized state when `false`.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub invalidate: bool,
+}
+
+/// `skip_serializing_if` predicate keeping non-invalidate bookmarks byte-compatible
+/// with the pre-#321 state format.
+fn is_false(b: &bool) -> bool {
+    !*b
 }
 
 impl Bookmark {
@@ -45,6 +60,7 @@ impl Bookmark {
             .map_err(|e| FaucetError::State(format!("mongodb-cdc resume token serialize: {e}")))?;
         Ok(Self {
             resume_token: bson.into_relaxed_extjson(),
+            invalidate: false,
         })
     }
 
@@ -104,6 +120,7 @@ mod tests {
     fn bookmark_value_round_trip() {
         let b = Bookmark {
             resume_token: json!({ "_data": "8264AB" }),
+            ..Default::default()
         };
         let v = b.to_value().unwrap();
         let parsed = Bookmark::from_value(v).unwrap();
@@ -114,6 +131,7 @@ mod tests {
     fn bookmark_token_round_trip() {
         let b = Bookmark {
             resume_token: json!({ "_data": "8264AB00" }),
+            ..Default::default()
         };
         let token = b.to_token().unwrap();
         let b2 = Bookmark::from_token(&token).unwrap();
@@ -124,5 +142,26 @@ mod tests {
     fn from_value_rejects_garbage() {
         assert!(Bookmark::from_value(json!({})).is_err());
         assert!(Bookmark::from_value(json!("bare")).is_err());
+    }
+
+    #[test]
+    fn invalidate_flag_serde_is_backward_compatible() {
+        // #321 M3: a legacy bookmark without the field parses as invalidate=false
+        // and a non-invalidate bookmark omits the field entirely (compact state).
+        let legacy = Bookmark::from_value(json!({ "resume_token": { "_data": "AA" } })).unwrap();
+        assert!(!legacy.invalidate);
+        let normal = Bookmark {
+            resume_token: json!({ "_data": "AA" }),
+            invalidate: false,
+        };
+        let v = normal.to_value().unwrap();
+        assert!(v.get("invalidate").is_none(), "false flag is omitted: {v}");
+        // An invalidate bookmark serializes the flag and round-trips.
+        let inv = Bookmark {
+            resume_token: json!({ "_data": "BB" }),
+            invalidate: true,
+        };
+        let back = Bookmark::from_value(inv.to_value().unwrap()).unwrap();
+        assert!(back.invalidate);
     }
 }

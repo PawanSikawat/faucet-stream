@@ -16,50 +16,89 @@ use serde_json::Value;
 /// 2. **Credential redaction** — via `faucet_core::redact_uri_credentials`,
 ///    so a `postgres://user:pass@host/db` URI never lands in the store.
 pub fn canonicalize_uri(uri: &str, raw_config: &Value, clock: DateTime<FixedOffset>) -> String {
-    let mut tokens: Vec<String> = Vec::new();
-    collect_now_tokens(raw_config, &mut tokens);
-    tokens.sort();
-    tokens.dedup();
+    let mut ctxs: Vec<TokenCtx> = Vec::new();
+    collect_now_token_contexts(raw_config, &mut ctxs);
 
-    // Render each token with the same clock the run used, then substitute the
-    // rendered text back to the token — longest rendering first, so e.g.
-    // `${now.datetime}` wins over the `${now.year}` embedded within it.
-    let mut pairs: Vec<(String, String)> = tokens
+    // Each token is folded back **anchored to the literal characters that
+    // surround it in the config template** — not by a blind global replace of
+    // the rendered value (audit #321 L8). A short rendering like `${now.month}`
+    // → "07" would otherwise fold a coincidental `bucket-07` on days whose
+    // digits collide, splitting one physical sink into several catalog datasets
+    // with unstable identity. Anchoring `/07/` (the token's real `.../${now.month}/…`
+    // context) leaves `bucket-07` untouched.
+    let mut pairs: Vec<(String, String)> = ctxs
         .into_iter()
-        .filter_map(|t| {
-            crate::interpolate::resolve_now(&t, clock)
-                .ok()
-                .filter(|rendered| !rendered.is_empty() && rendered != &t)
-                .map(|rendered| (rendered, t))
+        .filter_map(|c| {
+            let rendered = crate::interpolate::resolve_now(&c.token, clock).ok()?;
+            if rendered.is_empty() || rendered == c.token {
+                return None;
+            }
+            let mut search = String::new();
+            let mut replace = String::new();
+            if let Some(l) = c.left {
+                search.push(l);
+                replace.push(l);
+            }
+            search.push_str(&rendered);
+            replace.push_str(&c.token);
+            if let Some(r) = c.right {
+                search.push(r);
+                replace.push(r);
+            }
+            Some((search, replace))
         })
         .collect();
-    pairs.sort_by_key(|(rendered, _)| std::cmp::Reverse(rendered.len()));
+    // Dedup identical (search, replace) folds, then apply longest-search first
+    // so `${now.datetime}` wins over the `${now.year}` embedded within it.
+    pairs.sort();
+    pairs.dedup();
+    pairs.sort_by_key(|(search, _)| std::cmp::Reverse(search.len()));
 
     let mut out = uri.to_string();
-    for (rendered, token) in pairs {
-        out = out.replace(&rendered, &token);
+    for (search, replace) in pairs {
+        out = out.replace(&search, &replace);
     }
     faucet_core::redact_uri_credentials(&out)
 }
 
-/// Collect every `${now.…}` token appearing in the string values of `v`.
-fn collect_now_tokens(v: &Value, out: &mut Vec<String>) {
+/// A `${now.*}` token together with the literal characters that immediately
+/// precede and follow it in its config string (used as fold anchors). `None`
+/// when the token sits at the very start / end of the string.
+struct TokenCtx {
+    token: String,
+    left: Option<char>,
+    right: Option<char>,
+}
+
+/// Collect every `${now.…}` token in the string values of `v`, each with its
+/// surrounding-character context. The context anchors keep a short rendered
+/// value from folding coincidental look-alike substrings elsewhere in the URI.
+fn collect_now_token_contexts(v: &Value, out: &mut Vec<TokenCtx>) {
     match v {
         Value::String(s) => {
-            let mut rest = s.as_str();
-            while let Some(start) = rest.find("${now.") {
-                let tail = &rest[start..];
+            let mut search_from = 0;
+            while let Some(rel) = s[search_from..].find("${now.") {
+                let start = search_from + rel;
+                let tail = &s[start..];
                 match tail.find('}') {
-                    Some(end) => {
-                        out.push(tail[..=end].to_string());
-                        rest = &tail[end + 1..];
+                    Some(end_rel) => {
+                        let end = start + end_rel; // index of '}'
+                        let token = s[start..=end].to_string();
+                        let left = s[..start].chars().next_back();
+                        let right = s[end + 1..].chars().next();
+                        out.push(TokenCtx { token, left, right });
+                        search_from = end + 1;
                     }
                     None => break,
                 }
             }
         }
-        Value::Array(items) => items.iter().for_each(|i| collect_now_tokens(i, out)),
-        Value::Object(map) => map.values().for_each(|i| collect_now_tokens(i, out)),
+        Value::Array(items) => items
+            .iter()
+            .for_each(|i| collect_now_token_contexts(i, out)),
+        Value::Object(map) => map
+            .values()
+            .for_each(|i| collect_now_token_contexts(i, out)),
         _ => {}
     }
 }
@@ -112,18 +151,39 @@ mod tests {
     }
 
     #[test]
-    fn collect_finds_multiple_tokens_in_one_string() {
+    fn collect_finds_tokens_with_surrounding_context() {
         let mut out = Vec::new();
-        collect_now_tokens(&json!("a-${now.year}-${now.month}-b"), &mut out);
-        assert_eq!(out, vec!["${now.year}", "${now.month}"]);
+        collect_now_token_contexts(&json!("a-${now.year}-${now.month}-b"), &mut out);
+        let got: Vec<(&str, Option<char>, Option<char>)> = out
+            .iter()
+            .map(|c| (c.token.as_str(), c.left, c.right))
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                ("${now.year}", Some('-'), Some('-')),
+                ("${now.month}", Some('-'), Some('-')),
+            ]
+        );
         // Unterminated token is ignored, not a panic.
         out.clear();
-        collect_now_tokens(&json!("broken ${now.date"), &mut out);
+        collect_now_token_contexts(&json!("broken ${now.date"), &mut out);
         assert!(out.is_empty());
         // Tokens inside arrays (e.g. a list-valued config field) are found too.
         out.clear();
-        collect_now_tokens(&json!({"paths": ["x", "${now.date}"]}), &mut out);
-        assert_eq!(out, vec!["${now.date}"]);
+        collect_now_token_contexts(&json!({"paths": ["x", "${now.date}"]}), &mut out);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].token, "${now.date}");
+        assert_eq!((out[0].left, out[0].right), (None, None));
+    }
+
+    #[test]
+    fn anchored_fold_does_not_touch_coincidental_substrings() {
+        // #321 L8: a short `${now.month}` → "07" must fold only the real
+        // `.../07/...` path segment, not a coincidental `bucket-07`.
+        let raw = json!({"path": "s3://bucket-07/data/${now.month}/part.jsonl"});
+        let uri = canonicalize_uri("s3://bucket-07/data/07/part.jsonl", &raw, clock());
+        assert_eq!(uri, "s3://bucket-07/data/${now.month}/part.jsonl");
     }
 
     #[test]

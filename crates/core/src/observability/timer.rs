@@ -33,6 +33,21 @@ impl DurationGuard {
         self.armed = false;
     }
 
+    /// Record the elapsed sample now and disarm (so a later `Drop` does not
+    /// double-record). Used to close the timing window at a generator `yield`
+    /// point: locals persist across a `yield`, so a drop-on-scope-exit timer
+    /// would wrongly include the time the downstream consumer spends before
+    /// polling the next item. Recording before the yield measures only the
+    /// producer's own work (audit #321 M10).
+    pub fn record_now(&mut self) {
+        if !self.armed {
+            return;
+        }
+        let elapsed = self.started_at.elapsed().as_secs_f64();
+        histogram!(self.name.clone(), self.labels.clone()).record(elapsed);
+        self.armed = false;
+    }
+
     /// Build the canonical (name, pipeline, row, connector) label trio.
     pub fn with_connector(
         name: impl Into<KeyName>,
@@ -102,6 +117,42 @@ mod tests {
             found,
             "expected a histogram sample > 0 on test_duration_records_sample"
         );
+    }
+
+    #[test]
+    fn record_now_records_once_and_disarms() {
+        // #321 M10: record_now() emits exactly one sample and the later drop
+        // does not double-record.
+        let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let snap = snapshotter();
+        {
+            let mut guard = DurationGuard::with_connector(
+                "test_duration_record_now",
+                SharedString::const_str("p"),
+                SharedString::const_str("r"),
+                SharedString::const_str("c"),
+            );
+            thread::sleep(Duration::from_millis(2));
+            guard.record_now();
+        } // drop here must be a no-op (already disarmed)
+        let snapshot = snap.snapshot();
+        let samples = snapshot
+            .into_vec()
+            .into_iter()
+            .find_map(|(key, _u, _d, value)| {
+                (key.key().name() == "test_duration_record_now").then_some(value)
+            });
+        match samples {
+            Some(DebugValue::Histogram(s)) => {
+                assert_eq!(
+                    s.len(),
+                    1,
+                    "record_now + drop must record exactly one sample"
+                );
+                assert!(s[0].into_inner() > 0.0);
+            }
+            other => panic!("expected one histogram sample, got {other:?}"),
+        }
     }
 
     #[test]
