@@ -17,7 +17,7 @@
 
 **The fast, config-driven way to move data in Rust.**
 
-faucet-stream is a complete **ETL** platform: **28 source** and **21 sink** connectors
+faucet-stream is a **data-movement platform** for Rust — with governance built in: **28 source** and **21 sink** connectors
 (**49 in total**) plus in-flight transforms — including a page-level embedded-DuckDB `sql`
 transform — wired together by a single `faucet` binary that runs pipelines declaratively
 from a YAML/JSON file, no Rust code required. Or skip the binary and embed the same engine
@@ -54,11 +54,14 @@ cargo add faucet-stream           # the library
 - **🧩 Config-driven _or_ embeddable** — run `faucet run pipeline.yaml`, or call
   `Pipeline::new(&source, &sink).run().await?` from Rust. Same orchestration either way.
 - **⚙️ A runtime, not just connectors** — incremental + resumable replication, change-data-capture,
-  effectively-once delivery (idempotent dedup-on-resume), upsert/delete write modes, data-quality checks, data contracts,
-  freshness/volume SLA monitoring, dead-letter queues, automatic retries, adaptive batch sizing,
-  secrets-manager interpolation,
-  cron scheduling, an HTTP control plane with event-driven triggers, OpenLineage emission, and
-  built-in Prometheus metrics + `tracing` spans — all with zero per-connector code.
+  effectively-once delivery (idempotent dedup-on-resume), upsert/delete write modes, dead-letter
+  queues, automatic retries, adaptive batch sizing, secrets-manager interpolation, cron scheduling,
+  and an HTTP control plane with event-driven triggers — plus built-in Prometheus metrics +
+  `tracing` spans, all with zero per-connector code.
+- **🛡️ Governance in the movement path** — the guardrails most pipelines bolt on downstream, native
+  and zero-config: data-quality checks, versioned data contracts, PII masking (applied *before* any
+  sink sees a row), schema-drift detection & policy, column-level lineage (OpenLineage) + a
+  data-movement catalog, and freshness/volume SLA monitoring.
 - **📦 Pay only for what you use** — every connector is a Cargo feature, so a slim build can
   be just REST + JSONL, or pull in all 49 connectors with `--features full`.
 
