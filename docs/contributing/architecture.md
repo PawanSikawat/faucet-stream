@@ -47,7 +47,7 @@ umbrella, or on the CLI. This is what lets a third party publish a
 | Connector dispatch + plugin registry | `cli/src/registry.rs` |
 | The CLI verbs (`run`, `validate`, `doctor`, `test`, …) | `cli/src/commands/` |
 | The HTTP control plane | `cli/src/serve/` |
-| The connector inventory used by the CLI's `registry_index` test | [`connectors/registry.json`](../../connectors/registry.json) |
+| The connector inventory used by the CLI's `registry_index` test | [`cli/connectors/registry.json`](../../cli/connectors/registry.json) |
 
 The authoritative, always-current crate table is in
 `.claude/rules/architecture.md`.
