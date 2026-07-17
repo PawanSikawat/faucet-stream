@@ -28,9 +28,9 @@ through the tap, and out into the **sink**. faucet-stream is the tap — you say
 where the data comes from and where it goes, and it moves the data reliably,
 without losing or scrambling it.
 
-```text
-Source  ─(records)─▶  faucet pipeline  ─(records)─▶  Sink
-(where it comes from)                                (where it goes)
+```mermaid
+flowchart LR
+    S["Source"] -->|records| P["faucet pipeline"] -->|records| K["Sink"]
 ```
 
 Everything else — pages, bookmarks, retries, exactly-once — exists to keep that
@@ -58,8 +58,9 @@ records, write them"). That's a working connector; everything else is optional.
 Connect a Source to a Sink and you have a **pipeline**: read everything, write
 everything.
 
-```text
-source.fetch (read all)  ─▶  sink.write  ─▶  done: "wrote N records"
+```mermaid
+flowchart LR
+    A["source.fetch<br/>read all"] --> B["sink.write"] --> C["done — wrote N records"]
 ```
 
 For a one-time copy, this is all you need. Two real-world problems push us
@@ -89,8 +90,9 @@ Reading a billion rows into memory won't work. So instead of "all the data," the
 Source produces a stream of **pages** — chunks of, say, 1,000 records at a time —
 and the pipeline handles one page at a time:
 
-```text
-page 1 ─▶ write ─▶ page 2 ─▶ write ─▶ page 3 (+bookmark) ─▶ write ─▶ flush ─▶ save bookmark
+```mermaid
+flowchart LR
+    P1["page 1"] --> W1["write"] --> P2["page 2"] --> W2["write"] --> P3["page 3<br/>+ bookmark"] --> W3["write"] --> F["flush"] --> CK["save bookmark"]
 ```
 
 Only one page is ever in memory, so a thousand rows or a billion, memory stays
@@ -165,8 +167,9 @@ When several of the *data-guarding* tools are on, each page runs them in a fixed
 *safe* order — mask first (so PII can't leak), then validate (so bad data never
 lands), then write, then save the bookmark last:
 
-```text
-page ─▶ mask ─▶ quality ─▶ contract ─▶ drift ─▶ write ─▶ flush ─▶ save bookmark
+```mermaid
+flowchart LR
+    PAGE["page"] --> M["mask"] --> Q["quality"] --> C["contract"] --> D["drift"] --> W["write"] --> FL["flush"] --> CK["save bookmark"]
 ```
 
 The golden rule never bends, no matter how many tools you add.
@@ -199,8 +202,9 @@ repository under [`docs/architecture/`](https://github.com/PawanSikawat/faucet-s
 
 ### How a run is assembled
 
-```text
-config → compose → interpolate → secrets → parse → expand → executor → Pipeline → run_stream
+```mermaid
+flowchart LR
+    cfg["config"] --> comp["compose"] --> interp["interpolate"] --> sec["secrets"] --> parse["parse"] --> exp["expand"] --> exe["executor"] --> pipe["Pipeline"] --> rs["run_stream"]
 ```
 
 `expand` is where a config becomes runnable and where the **load-time gates** run
@@ -213,8 +217,9 @@ topology fails `faucet validate` before any record moves. Deep dive:
 `run_stream` consumes one `StreamPage { records, bookmark }` at a time and, per
 page, runs the fixed-order passes then one of three write paths:
 
-```text
-page → mask → quality → contract → drift → [write path] → flush → checkpoint
+```mermaid
+flowchart LR
+    PAGE["page"] --> M["mask"] --> Q["quality"] --> C["contract"] --> D["drift"] --> WR["write path"] --> FL["flush"] --> CK["checkpoint"]
 ```
 
 - **Default (at-least-once):** `write_batch` → flush → persist bookmark.

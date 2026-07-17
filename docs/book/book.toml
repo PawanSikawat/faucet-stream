@@ -19,7 +19,7 @@ no-section-label = false
 # learn-toggle — powers the Beginner/Architect toggle; both files are no-ops on
 #                pages without a [data-mode-toggle] control.
 additional-css = ["custom.css", "learn-toggle.css"]
-additional-js = ["learn-toggle.js"]
+additional-js = ["learn-toggle.js", "mermaid.min.js", "mermaid-init.js"]
 
 [output.html.fold]
 enable = true
@@ -27,3 +27,8 @@ level = 1
 
 [output.html.search]
 enable = true
+
+[preprocessor]
+
+[preprocessor.mermaid]
+command = "mdbook-mermaid"
