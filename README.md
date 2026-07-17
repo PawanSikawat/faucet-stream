@@ -17,16 +17,17 @@
 
 **The fast, config-driven way to move data in Rust.**
 
-faucet-stream is a **data-movement platform** for Rust — with governance built in: **28 source** and **21 sink** connectors
-(**49 in total**) plus in-flight transforms — including a page-level embedded-DuckDB `sql`
-transform — wired together by a single `faucet` binary that runs pipelines declaratively
-from a YAML/JSON file, no Rust code required. Or skip the binary and embed the same engine
-in your own service through the typed `Source` / `Sink` traits. One platform, whether you
-want a CLI you can drop on any box or a library you compile in.
+**Move data at Rust speed, govern it in flight, and ship it as a single binary.** On a
+1M-row CSV→JSONL move, faucet sustains **712k rows/s in 11.8 MiB of RAM** — **~96× faster and
+~62× less memory than Meltano**, output identical row-for-row ([see the benchmarks](BENCHMARKS.md)).
+No Python runtime, no platform to stand up, no daemon to babysit.
 
-A single native binary **and** an embeddable Rust library: config-driven pipelines with
-no Python runtime, no platform to stand up, no daemon to babysit — plus a typed API when
-you'd rather compile data movement straight into your own service.
+faucet-stream is a **data-movement platform** for Rust — with governance built in: **28 source**
+and **21 sink** connectors (**49 in total**) plus in-flight transforms, including a page-level
+embedded-DuckDB `sql` transform — wired by a single `faucet` binary that runs pipelines
+declaratively from YAML/JSON (no Rust code required), or embedded in your own service through
+the typed `Source` / `Sink` traits. One platform, whether you want a CLI you can drop on any
+box or a library you compile in.
 
 📖 **[Guide](https://pawansikawat.github.io/faucet-stream/)** · 📊 **[Benchmarks](BENCHMARKS.md)** · 📜 **[Connector spec (FCP v0)](docs/spec/faucet-connector-spec-v0.md)**
 
