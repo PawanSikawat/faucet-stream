@@ -102,46 +102,64 @@ page is safely written — Chapter 3's rule, now per-page.
 You now understand the **spine**: a source streams pages, the pipeline writes each
 page and checkpoints safely, so you can resume after a crash. Everything below is
 **optional** — a toolbox you pull from the day you hit the problem a tool solves.
-The one almost every real pipeline uses, transforms, comes first.
+Find your situation, then follow the tool to its how-to. The family almost every
+real pipeline reaches for — shaping the data — comes first.
 
-**Shaping the data — transforms.** Records rarely arrive in the shape the
-destination wants, so a **transform** rewrites each record as it flows through:
-`flatten` nested JSON, `select`/`drop` fields, `rename` / re-case, `cast` types,
-`redact`. Need query power? the **SQL transform** runs DuckDB over each page
-(`SELECT … FROM batch`); mirroring a change-feed? **`cdc_unwrap`** turns a CDC
-envelope into a clean row. → [Transforms](../cookbook/transforms.md) ·
-[SQL transform](../cookbook/sql-transform.md)
+**Shaping the data**
 
-**Guarding the data.** Validate and quarantine bad rows
-([quality](../cookbook/quality.md)), promise a stable output shape
-([contracts](../cookbook/contracts.md)), never leak PII
-([masking](../cookbook/masking.md) — runs first), react when the shape drifts
-([schema drift](../cookbook/schema-drift.md)).
+| The situation you're in | The tool you reach for |
+|---|---|
+| The data isn't in the shape the destination wants | [Transforms](../cookbook/transforms.md) |
+| You need joins, aggregates, or real query power | [SQL transform](../cookbook/sql-transform.md) |
 
-**Moving it reliably.** Keep going past bad rows ([DLQ](../cookbook/dlq.md)),
-survive flaky networks ([resilience](../cookbook/resilience.md)), never write a
-row twice ([exactly-once](../cookbook/state.md)), keep a table mirrored
-([upsert](../cookbook/upsert.md)).
+**Guarding the data**
 
-**Getting data in and out at scale.** Split a source across workers
-([sharding](../cookbook/cluster.md)), bootstrap then follow changes
-([replication](../cookbook/replication.md)), replay a window
-([backfill](../cookbook/backfill.md)), auto-generate configs
-([discovery](../cookbook/discover.md)), handle compressed files
-([compression](../cookbook/compression.md)).
+| The situation you're in | The tool you reach for |
+|---|---|
+| Some incoming rows are garbage (nulls, out-of-range) | [Quality checks](../cookbook/quality.md) |
+| Downstream must never get a surprise shape | [Contracts](../cookbook/contracts.md) |
+| The data has PII you must never leak | [Masking](../cookbook/masking.md) |
+| The incoming shape drifts from the destination's | [Schema drift](../cookbook/schema-drift.md) |
 
-**Running & operating it.** On a cron schedule
-([scheduling](../cookbook/scheduling.md)), as an HTTP service
-([serve](../cookbook/serve.md)), across machines ([cluster](../cookbook/cluster.md)),
-on events ([triggers](../cookbook/triggers.md)), fanned into a DAG
-([composition](../cookbook/composition.md)), with managed secrets
-([secrets](../cookbook/secrets.md)).
+**Moving it reliably**
 
-**Seeing what happened.** Metrics & traces
-([observability](../operations/observability.md)), data lineage
-([lineage](../cookbook/lineage.md)), freshness / volume alerts
-([SLA](../cookbook/sla.md)), a dataset catalog ([catalog](../cookbook/catalog.md)),
-incident alerts ([notifications](../cookbook/notifications.md)).
+| The situation you're in | The tool you reach for |
+|---|---|
+| A few bad rows keep killing the whole run | [Dead-letter queue](../cookbook/dlq.md) |
+| The network or endpoint is flaky | [Retries & resilience](../cookbook/resilience.md) |
+| You must never write a row twice, even after a crash | [Exactly-once](../cookbook/state.md) |
+| You need a destination table kept mirrored (upserts, deletes) | [Upsert / write modes](../cookbook/upsert.md) |
+
+**Getting data in and out at scale**
+
+| The situation you're in | The tool you reach for |
+|---|---|
+| One source is too big for a single worker | [Sharding](../cookbook/cluster.md) |
+| Bootstrap a table, then follow its changes with no gap | [Replication](../cookbook/replication.md) |
+| Replay a bounded slice of history | [Backfill](../cookbook/backfill.md) |
+| Auto-generate configs from a live catalog | [Discovery](../cookbook/discover.md) |
+| Read or write compressed files | [Compression](../cookbook/compression.md) |
+
+**Running & operating it**
+
+| The situation you're in | The tool you reach for |
+|---|---|
+| Run on a cron schedule | [Scheduling](../cookbook/scheduling.md) |
+| Run as a long-lived HTTP service | [Serve](../cookbook/serve.md) |
+| Spread runs across many machines | [Cluster](../cookbook/cluster.md) |
+| Start runs on events (a file lands, a webhook, a queue fills) | [Triggers](../cookbook/triggers.md) |
+| Turn one config into many pipelines (a DAG) | [Matrix & composition](../cookbook/composition.md) |
+| Pull credentials from a secrets manager | [Secrets](../cookbook/secrets.md) |
+
+**Seeing what happened**
+
+| The situation you're in | The tool you reach for |
+|---|---|
+| Get metrics and traces | [Observability](../operations/observability.md) |
+| See where data came from and went | [Lineage](../cookbook/lineage.md) |
+| Alert when data goes stale or volume looks wrong | [SLA monitoring](../cookbook/sla.md) |
+| Browse every dataset your pipelines have touched | [Data Movement Catalog](../cookbook/catalog.md) |
+| Get paged (Slack / PagerDuty) when something breaks | [Notifications](../cookbook/notifications.md) |
 
 When several of the *data-guarding* tools are on, each page runs them in a fixed,
 *safe* order — mask first (so PII can't leak), then validate (so bad data never

@@ -207,97 +207,69 @@ You now understand the **spine**: a source streams pages, the pipeline writes ea
 page and checkpoints safely, so you can resume after a crash. That's the whole
 core — and it's all you need to move data.
 
-Everything below is **optional**: a toolbox bolted onto the spine. Pull out each
-tool the day you hit the problem it solves. The tools fall into a few families —
-and the one almost every real pipeline reaches for, transforms, comes first.
+Everything below is **optional**: a toolbox bolted onto the spine. **Find the
+situation you're in, then click the tool to jump to its details below.** The
+family almost every real pipeline reaches for — shaping the data — comes first.
 
-### Shaping the data — transforms
+### Shaping the data
 
-Records rarely arrive in exactly the shape the destination wants, which is why
-this is the most-used tool in the box. A **transform** rewrites each record as it
-flows between the source and the sink — you don't write plumbing, the transform
-just sits in the pipe.
-
-```text
-source ─▶ [ transform · transform · … ] ─▶ (validation) ─▶ sink
-```
-
-The everyday transforms are small and composable:
-
-- **`flatten`** — collapse nested JSON into flat columns.
-- **`select` / `drop`** — keep or remove fields.
-- **`rename_field` / `keys_case`** — rename fields, or normalise their casing (snake / camel / …).
-- **`cast`** — change a field's type (string → number, …), with a policy for bad values.
-- **`redact` / `value_case` / `set`** — mask a value, change text case, or add a constant field.
-
-Need real query power? The **SQL transform** runs an embedded DuckDB query over
-each page — `SELECT … FROM batch` — so you can filter, join, or aggregate with
-plain SQL. And when you're mirroring a database change-feed, **`cdc_unwrap`**
-turns a raw CDC envelope (`{op, before, after}`) into a clean row plus a
-delete/upsert marker, ready for the destination table.
-
-Transforms layer at three levels — **pipeline-wide**, **per-source**, and
-**per-row** (in a matrix) — and compose in that order, so shared shaping lives in
-one place while a single row can still add its own tweak.
-
-> 🔍 **Go deeper:** [Record transforms](../book/src/cookbook/transforms.md) ·
-> [SQL transform](../book/src/cookbook/sql-transform.md) ·
-> [Upsert / mirror tables](../book/src/cookbook/upsert.md) (the `cdc_unwrap` pairing).
+| The situation you're in | The tool you reach for |
+|---|---|
+| The data isn't in the shape the destination wants | [Transforms](#transforms) |
+| You need joins, aggregates, or real query power | [SQL transform](#sql-transform) |
 
 ### Guarding the data
 
-| When you need to… | Reach for |
+| The situation you're in | The tool you reach for |
 |---|---|
-| Validate records and drop/quarantine the bad ones | **Quality checks** — [deep dive](./quality.md) |
-| Promise downstream a stable, versioned output shape | **Contracts** — [deep dive](./contracts.md) |
-| Never leak PII (runs *first*, before anything else sees it) | **Masking** — [deep dive](./masking.md) |
-| React when the incoming shape drifts from the destination | **Schema drift** — [deep dive](./schema.md) |
+| Some incoming rows are garbage (nulls, out-of-range) | [Quality checks](#quality-checks) |
+| Downstream must never get a surprise shape | [Contracts](#contracts) |
+| The data has PII you must never leak | [Masking](#masking) |
+| The incoming shape drifts from the destination's | [Schema drift](#schema-drift) |
 
 ### Moving it reliably
 
-| When you need to… | Reach for |
+| The situation you're in | The tool you reach for |
 |---|---|
-| Keep going when a few rows fail, instead of aborting | **Dead-letter queue** — [deep dive](../book/src/cookbook/dlq.md) |
-| Survive flaky networks (backoff, circuit breaker, poison-pill) | **Retries / resilience** — [retries](./retries.md), [resilience](./resilience.md) |
-| Never write a row twice, even after a crash | **Exactly-once** — [deep dive](./recovery.md) |
-| Keep a destination table mirrored (insert-or-update, deletes) | **Upsert / write modes** — [deep dive](../book/src/cookbook/upsert.md) |
+| A few bad rows keep killing the whole run | [Dead-letter queue](#dead-letter-queue) |
+| The network or endpoint is flaky | [Retries and resilience](#retries-and-resilience) |
+| You must never write a row twice, even after a crash | [Exactly-once](#exactly-once) |
+| You need a destination table kept mirrored (upserts, deletes) | [Upsert and write modes](#upsert-and-write-modes) |
 
 ### Getting data in and out at scale
 
-| When you need to… | Reach for |
+| The situation you're in | The tool you reach for |
 |---|---|
-| Split one big source across workers | **Sharding** — [deep dive](../book/src/cookbook/cluster.md) |
-| Bootstrap a table, then follow its changes with no gap | **Replication (snapshot → CDC)** — [deep dive](../book/src/cookbook/replication.md) |
-| Replay a bounded historical window | **Backfill** — [deep dive](../book/src/cookbook/backfill.md) |
-| Auto-generate configs from a live catalog | **Discovery** — [deep dive](../book/src/cookbook/discover.md) |
-| Read/write compressed files transparently | **Compression** — [deep dive](../book/src/cookbook/compression.md) |
+| One source is too big for a single worker | [Sharding](#sharding) |
+| Bootstrap a table, then follow its changes with no gap | [Replication](#replication) |
+| Replay a bounded slice of history | [Backfill](#backfill) |
+| Auto-generate configs from a live catalog | [Discovery](#discovery) |
+| Read or write compressed files | [Compression](#compression) |
 
 ### Running & operating it
 
-| When you need to… | Reach for |
+| The situation you're in | The tool you reach for |
 |---|---|
-| Run on a cron schedule | **Scheduling** — [deep dive](../book/src/cookbook/scheduling.md) |
-| Run as a long-lived HTTP service | **Serve** — [deep dive](../book/src/cookbook/serve.md) |
-| Spread runs across many machines | **Cluster** — [deep dive](../book/src/cookbook/cluster.md) |
-| Kick off runs on events (object arrival, webhook, queue depth) | **Triggers** — [deep dive](../book/src/cookbook/triggers.md) |
-| Fan one config into many pipelines (a DAG) | **Matrix + config composition** — [execution](./execution.md) |
-| Pull credentials from a secrets manager | **Secrets** — [deep dive](../book/src/cookbook/secrets.md) |
+| Run on a cron schedule | [Scheduling](#scheduling) |
+| Run as a long-lived HTTP service | [Serve](#serve) |
+| Spread runs across many machines | [Cluster](#cluster) |
+| Start runs on events (a file lands, a webhook, a queue fills) | [Triggers](#triggers) |
+| Turn one config into many pipelines (a DAG) | [Matrix and composition](#matrix-and-composition) |
+| Pull credentials from a secrets manager | [Secrets](#secrets) |
 
 ### Seeing what happened
 
-| When you need to… | Reach for |
+| The situation you're in | The tool you reach for |
 |---|---|
-| Metrics, traces, and OTLP export (automatic — no code) | **Observability** — [deep dive](./observability.md) |
-| Track where data came from and went | **Lineage (OpenLineage)** — [deep dive](../book/src/cookbook/lineage.md) |
-| Alert on staleness or volume anomalies | **SLA monitoring** — [deep dive](../book/src/cookbook/sla.md) |
-| Browse every dataset a pipeline has touched | **Data Movement Catalog** — [deep dive](../book/src/cookbook/catalog.md) |
-| Send Slack / PagerDuty / webhook alerts | **Notifications** — [deep dive](../book/src/cookbook/notifications.md) |
+| Get metrics, traces, and where the data came from | [Observability and lineage](#observability-and-lineage) |
+| Alert when data goes stale or volume looks wrong | [SLA monitoring](#sla-monitoring) |
+| Browse every dataset your pipelines have touched | [Data Movement Catalog](#data-movement-catalog) |
+| Get paged (Slack / PagerDuty) when something breaks | [Notifications](#notifications) |
 
 ### How the per-page pieces fit together (still respecting Chapter 3's rule)
 
 When several of the *data-guarding* tools are on, the pipeline runs them in a
-fixed, safe order on each page — and the order is chosen to be *safe*, not
-arbitrary:
+fixed, safe order on each page — chosen to be *safe*, not arbitrary:
 
 ```mermaid
 flowchart LR
@@ -307,6 +279,191 @@ flowchart LR
 Masking is first so PII can't leak anywhere. Validation happens before the write
 so bad data never lands. And the bookmark is still saved *last* — the golden rule
 from Chapter 3 never bends, no matter how many tools you add.
+
+## The toolbox in detail
+
+Short, friendly notes on each tool, in the order of the tables above — each links
+to its full how-to.
+
+### Transforms
+
+Records rarely arrive in exactly the shape the destination wants, so this is the
+most-used tool in the box. A **transform** rewrites each record as it flows
+between the source and the sink — you don't write plumbing, it just sits in the
+pipe (`source ─▶ transform · transform · … ─▶ sink`). The everyday ones are small
+and composable: **`flatten`** (nested JSON → flat columns), **`select` / `drop`**
+(keep or remove fields), **`rename_field` / `keys_case`** (rename or re-case),
+**`cast`** (change a field's type, with a policy for bad values), and
+**`redact` / `value_case` / `set`**. Transforms layer at three levels —
+pipeline-wide, per-source, and per-row — and compose in that order.
+→ [Record transforms](../book/src/cookbook/transforms.md)
+
+### SQL transform
+
+When simple field-shaping isn't enough, the **SQL transform** runs an embedded
+DuckDB query over each page — `SELECT … FROM batch` — so you can filter, join, or
+aggregate with plain SQL and hand the result straight to the sink.
+→ [SQL transform](../book/src/cookbook/sql-transform.md)
+
+### Quality checks
+
+Not all incoming data is clean. **Quality checks** validate each record (and the
+whole batch) against rules you declare; a failing row is dropped, sent to the
+dead-letter queue, or aborts the run — your choice, per check.
+→ [Quality checks](./quality.md)
+
+### Contracts
+
+A **contract** is a versioned promise about your *output* shape — required
+fields, types, allowed values. A record that would break the promise is blocked
+or quarantined, so downstream consumers never get a nasty surprise.
+→ [Contracts](./contracts.md)
+
+### Masking
+
+When records carry PII, **masking** redacts, hashes, or tokenises the sensitive
+fields — and it runs **first**, before every other stage, so nothing downstream
+(not even the dead-letter queue or a lineage sample) ever sees the raw value.
+Hashing is deterministic, so masked values still join.
+→ [Masking](./masking.md)
+
+### Schema drift
+
+Sources change. **Schema-drift handling** compares each page against the
+destination's shape and reacts on your terms — warn, evolve the destination, drop
+unknown fields, quarantine, or fail — instead of silently corrupting the target.
+→ [Schema drift](./schema.md)
+
+### Dead-letter queue
+
+A single bad row shouldn't kill a whole run. A **dead-letter queue (DLQ)** catches
+the rows that fail to write (or that a check quarantines), wraps them in an
+envelope, and sends them aside so the rest of the page still lands.
+→ [Dead-letter queue](../book/src/cookbook/dlq.md)
+
+### Retries and resilience
+
+Networks blip. The **resilience** policy retries transient failures with backoff,
+trips a circuit breaker if a sink stays down, and can quarantine a persistently
+"poison" row. Crucially, it refuses to retry a write that isn't safe to repeat,
+so it never duplicates data.
+→ [Retries](./retries.md) · [Resilience](./resilience.md)
+
+### Exactly-once
+
+By default a crash may replay a page (at-least-once). **Exactly-once** upgrades
+that: the sink commits the data and a watermark together, so a replayed page is
+skipped or re-anchored — each row lands once, even across crashes.
+→ [Exactly-once & recovery](./recovery.md)
+
+### Upsert and write modes
+
+To keep a destination table *mirrored* rather than append-only, set
+`write_mode: upsert` (insert-or-update by key) or `delete`. Paired with
+**`cdc_unwrap`** — which turns a raw CDC envelope into a clean row plus a
+delete/upsert marker — a database change-feed becomes a live mirror of the source
+table.
+→ [Upsert / mirror tables](../book/src/cookbook/upsert.md)
+
+### Sharding
+
+When one source is too big for a single worker, **sharding** splits it — by
+primary-key range, by hash, or by Kafka partition — so several workers pull
+disjoint slices in parallel.
+→ [Sharding & cluster](../book/src/cookbook/cluster.md)
+
+### Replication
+
+**Replication** does the snapshot-then-follow dance for you: it bookmarks the
+change-feed position, bulk-copies the table, then streams changes from that exact
+point — no gap, no duplicates, a true mirror.
+→ [Replication](../book/src/cookbook/replication.md)
+
+### Backfill
+
+Need to (re)load a slice of history? **Backfill** replays a bounded `--from/--to`
+window in chunks, using its own state so it never disturbs your live bookmark.
+→ [Backfill](../book/src/cookbook/backfill.md)
+
+### Discovery
+
+Pointing faucet at a new database or bucket? **`faucet discover`** introspects the
+live catalog and writes you a ready-to-edit config with one pipeline per
+table / collection / prefix it finds.
+→ [Discovery](../book/src/cookbook/discover.md)
+
+### Compression
+
+File sources and sinks read and write **gzip / zstd** transparently — usually just
+from the filename (`.jsonl.gz`) — so you move compressed data without extra code.
+→ [Compression](../book/src/cookbook/compression.md)
+
+### Scheduling
+
+**`faucet schedule`** runs a pipeline on a cron schedule in a long-lived process,
+with timezone/DST-correct ticks, an overlap policy, and per-run timeouts.
+→ [Scheduling](../book/src/cookbook/scheduling.md)
+
+### Serve
+
+**`faucet serve`** turns faucet into an HTTP control plane: submit pipelines over a
+REST API, track runs, stream logs, and optionally drive it from a built-in web
+console.
+→ [Serve](../book/src/cookbook/serve.md)
+
+### Cluster
+
+For scale or resilience, **cluster mode** spreads runs — and shards of one run —
+across several `serve` instances that coordinate through a shared database.
+→ [Cluster](../book/src/cookbook/cluster.md)
+
+### Triggers
+
+Instead of polling, **triggers** start a run on an event — an object landing in
+S3/GCS, an incoming webhook, or a queue crossing a depth threshold.
+→ [Triggers](../book/src/cookbook/triggers.md)
+
+### Matrix and composition
+
+One config can fan out into many pipelines with a **matrix** (a DAG with parent /
+child / dependency edges), and **composition** (`extends` / `!include` /
+`profiles`) keeps shared config DRY across environments.
+→ [Execution model](./execution.md)
+
+### Secrets
+
+Never hard-code credentials. **Secret interpolation** pulls them at load time from
+Vault, AWS/GCP Secret Manager, or Azure Key Vault via `${vault:…}`-style
+references, and redacts them from faucet's own logs.
+→ [Secrets](../book/src/cookbook/secrets.md)
+
+### Observability and lineage
+
+Every run emits **metrics and traces automatically** (Prometheus, plus OTLP if you
+want it) with no per-connector code, and can emit **OpenLineage** events so you see
+exactly which datasets a run read and wrote.
+→ [Observability](./observability.md) · [Lineage](../book/src/cookbook/lineage.md)
+
+### SLA monitoring
+
+**SLA monitoring** watches data *freshness* and *volume* — it can alert when a
+pipeline hasn't succeeded recently, or when a run's row count looks anomalous
+against its own history.
+→ [SLA monitoring](../book/src/cookbook/sla.md)
+
+### Data Movement Catalog
+
+The **catalog** is a persistent record of every dataset your pipelines touch — its
+schema over time, per-run volume and freshness, and the source→sink lineage edges
+— browsable via the API or the web console.
+→ [Data Movement Catalog](../book/src/cookbook/catalog.md)
+
+### Notifications
+
+**Notifications** route run outcomes and incidents to Slack, PagerDuty, or a
+webhook, so a failure or an SLA breach pages the right people instead of sitting
+in a log.
+→ [Notifications](../book/src/cookbook/notifications.md)
 
 ---
 
