@@ -35,6 +35,12 @@ flowchart TD
 
 ### [Architecture](./architecture/README.md)
 
+**New here? Read the [🎓 Beginner's guide](./architecture/learn.md) first** — it
+tells the whole architecture as a story, building it up one idea at a time
+(connectors → fetch → incremental → streaming → the production extras), and links
+into the reference pages as you go. When you have the mental model, switch to the
+🏛 architect reference below.
+
 How each subsystem works and the trade-offs behind it. Start with the
 [overview](./architecture/overview.md), then the execution spine:
 [execution](./architecture/execution.md) →
