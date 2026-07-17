@@ -201,48 +201,112 @@ they can plug that in for extra efficiency.
 
 ---
 
-## Chapter 5 — Making it production-grade (the extras you add when ready)
+## Chapter 5 — The production toolbox (reach for these when you need them)
 
-You now understand the **spine** of faucet-stream: *a source streams pages, the
-pipeline writes each page and checkpoints safely, so you can resume after a
-crash.* That's the whole core.
+You now understand the **spine**: a source streams pages, the pipeline writes each
+page and checkpoints safely, so you can resume after a crash. That's the whole
+core — and it's all you need to move data.
 
-Everything below is **optional**. You don't need any of it to move data — you add
-each piece the day you hit the problem it solves. Think of them as upgrades you
-bolt onto the spine.
+Everything below is **optional**: a toolbox bolted onto the spine. Pull out each
+tool the day you hit the problem it solves. The tools fall into a few families —
+and the one almost every real pipeline reaches for, transforms, comes first.
 
-| The problem you hit | The upgrade you add |
+### Shaping the data — transforms
+
+Records rarely arrive in exactly the shape the destination wants, which is why
+this is the most-used tool in the box. A **transform** rewrites each record as it
+flows between the source and the sink — you don't write plumbing, the transform
+just sits in the pipe.
+
+```text
+source ─▶ [ transform · transform · … ] ─▶ (validation) ─▶ sink
+```
+
+The everyday transforms are small and composable:
+
+- **`flatten`** — collapse nested JSON into flat columns.
+- **`select` / `drop`** — keep or remove fields.
+- **`rename_field` / `keys_case`** — rename fields, or normalise their casing (snake / camel / …).
+- **`cast`** — change a field's type (string → number, …), with a policy for bad values.
+- **`redact` / `value_case` / `set`** — mask a value, change text case, or add a constant field.
+
+Need real query power? The **SQL transform** runs an embedded DuckDB query over
+each page — `SELECT … FROM batch` — so you can filter, join, or aggregate with
+plain SQL. And when you're mirroring a database change-feed, **`cdc_unwrap`**
+turns a raw CDC envelope (`{op, before, after}`) into a clean row plus a
+delete/upsert marker, ready for the destination table.
+
+Transforms layer at three levels — **pipeline-wide**, **per-source**, and
+**per-row** (in a matrix) — and compose in that order, so shared shaping lives in
+one place while a single row can still add its own tweak.
+
+> 🔍 **Go deeper:** [Record transforms](../book/src/cookbook/transforms.md) ·
+> [SQL transform](../book/src/cookbook/sql-transform.md) ·
+> [Upsert / mirror tables](../book/src/cookbook/upsert.md) (the `cdc_unwrap` pairing).
+
+### Guarding the data
+
+| When you need to… | Reach for |
 |---|---|
-| "A few bad rows keep killing the whole run." | **Dead-letter queue (DLQ)** — send the failing rows to a side location and keep going, instead of aborting. |
-| "Some incoming rows are garbage (nulls, out-of-range)." | **Quality checks** — validate each record; drop/quarantine the bad ones. |
-| "Downstream expects a specific shape and must never get surprised." | **Contracts** — declare a versioned output schema; block anything that breaks it. |
-| "The data has PII I must not leak." | **Masking** — redact/hash sensitive fields. It runs *first*, so no other stage (not even the DLQ) ever sees raw PII. |
-| "The network is flaky and requests fail sometimes." | **Retries / resilience** — automatic backoff, a circuit breaker, and a poison-pill policy. |
-| "I must never write a row twice, even after a crash." | **Exactly-once** (effectively-once) — the sink commits data + a watermark together, so replays are skipped. |
-| "I need this to run every hour / as a service / across many machines." | **schedule**, **serve**, and **cluster** modes — orchestration layered on top of the same engine. |
+| Validate records and drop/quarantine the bad ones | **Quality checks** — [deep dive](./quality.md) |
+| Promise downstream a stable, versioned output shape | **Contracts** — [deep dive](./contracts.md) |
+| Never leak PII (runs *first*, before anything else sees it) | **Masking** — [deep dive](./masking.md) |
+| React when the incoming shape drifts from the destination | **Schema drift** — [deep dive](./schema.md) |
 
-### How they fit together (still respecting Chapter 3's rule)
+### Moving it reliably
 
-When several of these are on, the pipeline runs them in a fixed order on each
-page — and the order is chosen to be *safe*, not arbitrary:
+| When you need to… | Reach for |
+|---|---|
+| Keep going when a few rows fail, instead of aborting | **Dead-letter queue** — [deep dive](../book/src/cookbook/dlq.md) |
+| Survive flaky networks (backoff, circuit breaker, poison-pill) | **Retries / resilience** — [retries](./retries.md), [resilience](./resilience.md) |
+| Never write a row twice, even after a crash | **Exactly-once** — [deep dive](./recovery.md) |
+| Keep a destination table mirrored (insert-or-update, deletes) | **Upsert / write modes** — [deep dive](../book/src/cookbook/upsert.md) |
+
+### Getting data in and out at scale
+
+| When you need to… | Reach for |
+|---|---|
+| Split one big source across workers | **Sharding** — [deep dive](../book/src/cookbook/cluster.md) |
+| Bootstrap a table, then follow its changes with no gap | **Replication (snapshot → CDC)** — [deep dive](../book/src/cookbook/replication.md) |
+| Replay a bounded historical window | **Backfill** — [deep dive](../book/src/cookbook/backfill.md) |
+| Auto-generate configs from a live catalog | **Discovery** — [deep dive](../book/src/cookbook/discover.md) |
+| Read/write compressed files transparently | **Compression** — [deep dive](../book/src/cookbook/compression.md) |
+
+### Running & operating it
+
+| When you need to… | Reach for |
+|---|---|
+| Run on a cron schedule | **Scheduling** — [deep dive](../book/src/cookbook/scheduling.md) |
+| Run as a long-lived HTTP service | **Serve** — [deep dive](../book/src/cookbook/serve.md) |
+| Spread runs across many machines | **Cluster** — [deep dive](../book/src/cookbook/cluster.md) |
+| Kick off runs on events (object arrival, webhook, queue depth) | **Triggers** — [deep dive](../book/src/cookbook/triggers.md) |
+| Fan one config into many pipelines (a DAG) | **Matrix + config composition** — [execution](./execution.md) |
+| Pull credentials from a secrets manager | **Secrets** — [deep dive](../book/src/cookbook/secrets.md) |
+
+### Seeing what happened
+
+| When you need to… | Reach for |
+|---|---|
+| Metrics, traces, and OTLP export (automatic — no code) | **Observability** — [deep dive](./observability.md) |
+| Track where data came from and went | **Lineage (OpenLineage)** — [deep dive](../book/src/cookbook/lineage.md) |
+| Alert on staleness or volume anomalies | **SLA monitoring** — [deep dive](../book/src/cookbook/sla.md) |
+| Browse every dataset a pipeline has touched | **Data Movement Catalog** — [deep dive](../book/src/cookbook/catalog.md) |
+| Send Slack / PagerDuty / webhook alerts | **Notifications** — [deep dive](../book/src/cookbook/notifications.md) |
+
+### How the per-page pieces fit together (still respecting Chapter 3's rule)
+
+When several of the *data-guarding* tools are on, the pipeline runs them in a
+fixed, safe order on each page — and the order is chosen to be *safe*, not
+arbitrary:
 
 ```mermaid
 flowchart LR
-    PAGE[page arrives] --> MASK[1 mask PII] --> Q[2 quality] --> C[3 contract] --> D[4 schema drift] --> WRITE[write to sink] --> FLUSH[flush] --> CK[save bookmark]
+    PAGE[page arrives] --> MASK[1 mask PII] --> Q[2 quality] --> C[3 contract] --> D[4 schema drift] --> WRITE[5 write to sink] --> FLUSH[flush] --> CK[save bookmark]
 ```
 
 Masking is first so PII can't leak anywhere. Validation happens before the write
 so bad data never lands. And the bookmark is still saved *last* — the golden rule
-from Chapter 3 never bends, no matter how many upgrades you add.
-
-> 🔍 **Go deeper (pick what you need):**
-> [DLQ](../book/src/cookbook/dlq.md) ·
-> [Quality](./quality.md) ·
-> [Contracts](./contracts.md) ·
-> [Masking](./masking.md) ·
-> [Retries](./retries.md) & [Resilience](./resilience.md) ·
-> [Recovery / exactly-once](./recovery.md) ·
-> [Execution & orchestration](./execution.md)
+from Chapter 3 never bends, no matter how many tools you add.
 
 ---
 

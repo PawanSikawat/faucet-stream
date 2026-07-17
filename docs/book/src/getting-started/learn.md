@@ -13,6 +13,10 @@ switch remembers your choice as you browse.
 </div>
 </div>
 
+> The buttons above switch this page in place **on the published documentation
+> site**. If you're reading the raw Markdown on GitHub (which doesn't run the
+> site's scripts), both sections simply appear one after the other below.
+
 <div class="mode-content active" data-mode="beginner">
 
 ## The one-sentence idea
@@ -93,31 +97,61 @@ Only one page is ever in memory, so a thousand rows or a billion, memory stays
 flat. The bookmark rides along on the pages, and it's still saved *after* the
 page is safely written — Chapter 3's rule, now per-page.
 
-### Chapter 5 — The production extras (add them when you need them)
+### Chapter 5 — The production toolbox (reach for these when you need them)
 
 You now understand the **spine**: a source streams pages, the pipeline writes each
 page and checkpoints safely, so you can resume after a crash. Everything below is
-optional — add each piece the day you hit the problem it solves:
+**optional** — a toolbox you pull from the day you hit the problem a tool solves.
+The one almost every real pipeline uses, transforms, comes first.
 
-| The problem you hit | The upgrade you add |
-|---|---|
-| A few bad rows keep killing the run | **Dead-letter queue** — send failures aside, keep going |
-| Some incoming rows are garbage | **Quality checks** — validate, drop/quarantine the bad ones |
-| Downstream must never get a surprise shape | **Contracts** — a versioned output promise |
-| The data has PII | **Masking** — runs *first*, so nothing downstream sees it raw |
-| The network is flaky | **Retries / resilience** — backoff, circuit breaker |
-| Never write a row twice | **Exactly-once** — commit data + a watermark together |
-| Run on a schedule / as a service / clustered | **schedule**, **serve**, **cluster** modes |
+**Shaping the data — transforms.** Records rarely arrive in the shape the
+destination wants, so a **transform** rewrites each record as it flows through:
+`flatten` nested JSON, `select`/`drop` fields, `rename` / re-case, `cast` types,
+`redact`. Need query power? the **SQL transform** runs DuckDB over each page
+(`SELECT … FROM batch`); mirroring a change-feed? **`cdc_unwrap`** turns a CDC
+envelope into a clean row. → [Transforms](../cookbook/transforms.md) ·
+[SQL transform](../cookbook/sql-transform.md)
 
-When several are on, each page runs them in a fixed, *safe* order — mask first
-(so PII can't leak), then validate (so bad data never lands), then write, then
-save the bookmark last:
+**Guarding the data.** Validate and quarantine bad rows
+([quality](../cookbook/quality.md)), promise a stable output shape
+([contracts](../cookbook/contracts.md)), never leak PII
+([masking](../cookbook/masking.md) — runs first), react when the shape drifts
+([schema drift](../cookbook/schema-drift.md)).
+
+**Moving it reliably.** Keep going past bad rows ([DLQ](../cookbook/dlq.md)),
+survive flaky networks ([resilience](../cookbook/resilience.md)), never write a
+row twice ([exactly-once](../cookbook/state.md)), keep a table mirrored
+([upsert](../cookbook/upsert.md)).
+
+**Getting data in and out at scale.** Split a source across workers
+([sharding](../cookbook/cluster.md)), bootstrap then follow changes
+([replication](../cookbook/replication.md)), replay a window
+([backfill](../cookbook/backfill.md)), auto-generate configs
+([discovery](../cookbook/discover.md)), handle compressed files
+([compression](../cookbook/compression.md)).
+
+**Running & operating it.** On a cron schedule
+([scheduling](../cookbook/scheduling.md)), as an HTTP service
+([serve](../cookbook/serve.md)), across machines ([cluster](../cookbook/cluster.md)),
+on events ([triggers](../cookbook/triggers.md)), fanned into a DAG
+([composition](../cookbook/composition.md)), with managed secrets
+([secrets](../cookbook/secrets.md)).
+
+**Seeing what happened.** Metrics & traces
+([observability](../operations/observability.md)), data lineage
+([lineage](../cookbook/lineage.md)), freshness / volume alerts
+([SLA](../cookbook/sla.md)), a dataset catalog ([catalog](../cookbook/catalog.md)),
+incident alerts ([notifications](../cookbook/notifications.md)).
+
+When several of the *data-guarding* tools are on, each page runs them in a fixed,
+*safe* order — mask first (so PII can't leak), then validate (so bad data never
+lands), then write, then save the bookmark last:
 
 ```text
 page ─▶ mask ─▶ quality ─▶ contract ─▶ drift ─▶ write ─▶ flush ─▶ save bookmark
 ```
 
-The golden rule never bends, no matter how many upgrades you add.
+The golden rule never bends, no matter how many tools you add.
 
 ### The one rule that ties it all together
 
