@@ -414,10 +414,20 @@ pub async fn serve(config: ServeConfig) -> CliResult<()> {
         None => Vec::new(),
     };
 
-    // The HTTP graceful-shutdown future resolves on signal and stops accepting
-    // new connections / drains in-flight HTTP — it does NOT cancel run tasks.
+    // The HTTP graceful-shutdown future resolves on signal, then drives the run
+    // drain *inside itself* — this is load-bearing: `axum::serve(...).await` does
+    // not return until every open connection closes, and an open SSE
+    // `/v1/runs/{id}/logs` stream stays open until its run ends. If we deferred
+    // `shutdown.cancel()` to after the `.await` (as before), a long run with an
+    // open SSE stream would deadlock shutdown forever (audit #321 M9): axum waits
+    // on the SSE, the SSE waits on the run, the run waits on a cancel that never
+    // fires. Draining + cancelling from within the signal handler breaks that
+    // cycle — cancelled runs end, their SSE streams close, and axum can return.
     // `into_make_service_with_connect_info` exposes the peer address so the auth
     // layer can record a `source_ip` on audit records (#205).
+    let drain_state = state.clone();
+    let drain_shutdown = shutdown.clone();
+    let drain_grace = config.shutdown_grace;
     axum::serve(
         listener,
         app.into_make_service_with_connect_info::<SocketAddr>(),
@@ -425,32 +435,33 @@ pub async fn serve(config: ServeConfig) -> CliResult<()> {
     .with_graceful_shutdown(async move {
         wait_for_signal().await;
         tracing::info!("shutdown signal received; draining in-flight runs");
+        // Stop pulling NEW work the moment we begin draining.
+        if let Some(claim) = claim {
+            claim.abort();
+        }
+        // Grace for in-flight runs to finish naturally, then cooperatively
+        // cancel any still running so their sinks flush at the next page
+        // boundary AND their SSE streams close.
+        let drained =
+            tokio::time::timeout(drain_grace, drain_state.registry().wait_drained()).await;
+        if drained.is_err() {
+            let remaining = drain_state.registry().in_flight();
+            tracing::warn!(remaining, "grace window expired; cancelling in-flight runs");
+            drain_shutdown.cancel();
+        }
     })
     .await
     .map_err(|e| CliError::Serve(format!("server error: {e}")))?;
 
-    // Stop pulling NEW work the moment we begin draining: abort the claim loop so
-    // a shutting-down instance drains its in-flight runs rather than claiming more.
-    // The lease loop keeps heartbeating in-flight runs during the drain so peers
-    // don't reclaim them mid-shutdown.
-    if let Some(claim) = claim {
-        claim.abort();
-    }
-
-    // Now drain run tasks: wait up to the grace window, then cancel the rest.
-    let drained =
-        tokio::time::timeout(config.shutdown_grace, state.registry().wait_drained()).await;
-    if drained.is_err() {
-        let remaining = state.registry().in_flight();
-        tracing::warn!(remaining, "grace window expired; cancelling in-flight runs");
-        shutdown.cancel();
-        // Give cancelled tasks a brief moment to write their terminal status.
-        let _ = tokio::time::timeout(
-            std::time::Duration::from_secs(5),
-            state.registry().wait_drained(),
-        )
-        .await;
-    }
+    // Serve has returned (connections closed). Give any just-cancelled runs the
+    // full cooperative-flush grace to write their terminal status / complete an
+    // S3 multipart upload — matching the pipeline's own `RUN_FLUSH_GRACE`, not
+    // the old hardcoded 5s that cut buffered sinks off early (audit #321 M8).
+    let _ = tokio::time::timeout(
+        crate::serve::runner::RUN_FLUSH_GRACE,
+        state.registry().wait_drained(),
+    )
+    .await;
     maintenance.abort();
     leases.abort();
     #[cfg(feature = "triggers")]

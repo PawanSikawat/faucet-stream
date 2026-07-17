@@ -29,7 +29,7 @@ const QUEUE_FULL_RETRY_AFTER_SECS: u64 = 5;
 /// aborts the pipeline's task set, the backstop for a run stuck mid-write so a
 /// hung run can't wedge shutdown). Generous enough for an S3 multipart
 /// completion (#146 H16).
-const RUN_FLUSH_GRACE: Duration = Duration::from_secs(30);
+pub(crate) const RUN_FLUSH_GRACE: Duration = Duration::from_secs(30);
 
 /// `POST /v1/runs` request body.
 #[derive(Debug, Deserialize)]

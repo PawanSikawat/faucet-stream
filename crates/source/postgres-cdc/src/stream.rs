@@ -59,7 +59,12 @@ impl PostgresCdcSource {
     /// active (in use by a live replication connection). Call this when
     /// decommissioning a `permanent` slot so it doesn't leak WAL (#78/#12).
     pub async fn drop_slot(&self) -> Result<(), FaucetError> {
-        replication::drop_slot(&self.config.connection_url, &self.config.slot_name).await
+        replication::drop_slot(
+            &self.config.connection_url,
+            &self.config.slot_name,
+            &self.config.tls,
+        )
+        .await
     }
 }
 
@@ -166,6 +171,7 @@ impl Source for PostgresCdcSource {
             &self.config.slot_name,
             self.config.create_slot_if_missing,
             self.config.slot_type,
+            &self.config.tls,
         )
         .await?;
         Ok(Some(crate::state::Bookmark::from_u64(lsn).to_value()?))
@@ -337,6 +343,7 @@ impl PostgresCdcSource {
                 &self.config.slot_name,
                 self.config.create_slot_if_missing,
                 self.config.slot_type,
+                &self.config.tls,
             )
             .await?;
 
@@ -360,6 +367,7 @@ impl PostgresCdcSource {
                         &self.config.connection_url,
                         &self.config.slot_name,
                         lsn,
+                        &self.config.tls,
                     )
                 })
                 .await?;

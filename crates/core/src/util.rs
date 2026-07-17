@@ -284,9 +284,12 @@ pub fn redact_uri_credentials(uri: &str) -> String {
             out.replace_range(after..after + at + 1, "");
         }
     }
-    // 2) ADO.NET-style and query-string Password=/Pwd= tokens. Splitting on both
-    //    ';' (ADO.NET) and '&'/'?' (URL query) catches a password carried as a
-    //    query parameter (`...?password=secret`) as well as keyword form.
+    // 2) ADO.NET-style and query-string secret tokens. Splitting on both
+    //    ';' (ADO.NET) and '&'/'?' (URL query) catches a secret carried as a
+    //    query parameter (`...?token=secret`) as well as keyword form. The key
+    //    denylist covers the common secret parameter names, not just
+    //    password/pwd (audit #321 M11): a leaked `?api_key=…` or SAS `?sig=…`
+    //    was previously passed through verbatim into lineage / catalog output.
     if out.contains('=') {
         out = out
             .split_inclusive([';', '&', '?'])
@@ -297,12 +300,7 @@ pub fn redact_uri_credentials(uri: &str) -> String {
                     _ => (seg, ""),
                 };
                 match body.find('=') {
-                    Some(eq)
-                        if {
-                            let k = body[..eq].trim();
-                            k.eq_ignore_ascii_case("password") || k.eq_ignore_ascii_case("pwd")
-                        } =>
-                    {
+                    Some(eq) if is_secret_kv_key(&body[..eq]) => {
                         format!("{}=***{delim}", &body[..eq])
                     }
                     _ => seg.to_string(),
@@ -311,6 +309,43 @@ pub fn redact_uri_credentials(uri: &str) -> String {
             .collect::<String>();
     }
     out
+}
+
+/// Whether a connection-string / query-string key names a credential whose
+/// value must be redacted from a lineage / catalog URI.
+///
+/// Matches a denylist case-insensitively after stripping `-`/`_`/space, so
+/// `api_key`, `api-key`, and `apikey` all match one entry. Covers the common
+/// secret parameter names beyond `password`/`pwd` (audit #321 M11).
+fn is_secret_kv_key(key: &str) -> bool {
+    let norm: String = key
+        .trim()
+        .chars()
+        .filter(|c| !matches!(c, '-' | '_' | ' '))
+        .flat_map(char::to_lowercase)
+        .collect();
+    matches!(
+        norm.as_str(),
+        "password"
+            | "pwd"
+            | "token"
+            | "apikey"
+            | "accesstoken"
+            | "refreshtoken"
+            | "sessiontoken"
+            | "clientsecret"
+            | "secret"
+            | "secretkey"
+            | "accesskey"
+            | "accesskeyid"
+            | "secretaccesskey"
+            | "sig"
+            | "sas"
+            | "accountkey"
+            | "sharedaccesskey"
+            | "authorization"
+            | "auth"
+    )
 }
 
 /// Best-effort check that a string looks like a `host[:port]` authority — used
@@ -768,6 +803,34 @@ mod tests {
         assert_eq!(
             redact_uri_credentials("snowflake://host/db?password=secret"),
             "snowflake://host/db?password=***"
+        );
+    }
+
+    #[test]
+    fn redact_strips_common_secret_query_keys() {
+        // #321 M11: secret parameter names beyond password/pwd must be redacted
+        // before a URI is emitted to lineage / the catalog.
+        assert_eq!(
+            redact_uri_credentials("https://api.example.com/v2/?api_key=SECRET"),
+            "https://api.example.com/v2/?api_key=***"
+        );
+        assert_eq!(
+            redact_uri_credentials("https://h/?token=abc&access_token=xyz&keep=1"),
+            "https://h/?token=***&access_token=***&keep=1"
+        );
+        // Azure SAS style, and separator/casing variants normalize to one key.
+        assert_eq!(
+            redact_uri_credentials("https://acct.blob.core.windows.net/c?sig=DEAD&sp=r"),
+            "https://acct.blob.core.windows.net/c?sig=***&sp=r"
+        );
+        assert_eq!(
+            redact_uri_credentials("db=x;Client-Secret=shh;Account_Key=k"),
+            "db=x;Client-Secret=***;Account_Key=***"
+        );
+        // A non-secret key is untouched.
+        assert_eq!(
+            redact_uri_credentials("https://h/?region=us-east-1"),
+            "https://h/?region=us-east-1"
         );
     }
 }

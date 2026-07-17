@@ -199,9 +199,28 @@ pub fn install_observability(cfg: &ObservabilityConfig) -> Result<InstallReport,
         }
 
         if !installed {
+            // Install the OTLP export-error counter layer whenever ANY otel
+            // signal is exported — not only when a trace layer was installed —
+            // so `faucet_otel_export_failures_total` still fires under
+            // `otel.export: [metrics]` (audit #321 L7). `Option<Layer>` is a
+            // no-op when `None`, so this composes for the non-otel build too.
+            #[cfg(feature = "otel")]
+            let otel_error_layer = cfg
+                .otel
+                .as_ref()
+                .map(|o| {
+                    o.exports(crate::observability::otel::OtelSignal::Traces)
+                        || o.exports(crate::observability::otel::OtelSignal::Metrics)
+                })
+                .unwrap_or(false)
+                .then_some(crate::observability::otel::OtelErrorCountLayer);
+            #[cfg(not(feature = "otel"))]
+            let otel_error_layer: Option<tracing_subscriber::layer::Identity> = None;
+
             let reg = tracing_subscriber::registry()
                 .with(make_filter())
-                .with(tracing_subscriber::fmt::layer());
+                .with(tracing_subscriber::fmt::layer())
+                .with(otel_error_layer);
             if reg.try_init().is_err() {
                 // Some other code path has already set a global default. Log and
                 // continue — observability still works through the previously-

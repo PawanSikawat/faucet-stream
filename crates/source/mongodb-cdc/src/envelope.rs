@@ -123,6 +123,7 @@ mod tests {
     fn bookmark() -> Bookmark {
         Bookmark {
             resume_token: json!({ "_data": "8264AB00" }),
+            ..Default::default()
         }
     }
 

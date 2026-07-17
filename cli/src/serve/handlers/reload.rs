@@ -8,14 +8,24 @@
 //! (RBAC [`Permission::Reload`](crate::serve::rbac::Permission::Reload)).
 
 use crate::serve::error::ServeError;
+use crate::serve::rbac::AuthContext;
 use crate::serve::state::ServerState;
 use axum::Json;
-use axum::extract::State;
+use axum::extract::{Extension, State};
 use serde_json::{Value, json};
 
 /// `POST /v1/reload` → 200 `{reloaded, path?}` / 422 (invalid new config).
-pub async fn reload(State(state): State<ServerState>) -> Result<Json<Value>, ServeError> {
+///
+/// Writes a `config.reload` audit record on every outcome — this is a
+/// server-wide privileged mutation (it swaps the config merge base every later
+/// run inherits), so it must be attributable in `GET /v1/audit` like the other
+/// privileged mutations (audit #321 M6).
+pub async fn reload(
+    State(state): State<ServerState>,
+    Extension(actor): Extension<AuthContext>,
+) -> Result<Json<Value>, ServeError> {
     let Some(path) = state.default_config_path().cloned() else {
+        crate::serve::audit::write(&state, &actor, "config.reload", None, None, "noop").await;
         return Ok(Json(json!({
             "reloaded": false,
             "reason": "no --default-config configured; nothing to reload",
@@ -31,14 +41,19 @@ pub async fn reload(State(state): State<ServerState>) -> Result<Json<Value>, Ser
             })?;
             state.set_default_base(Some(value));
             tracing::info!(path = %path.display(), "reloaded --default-config (POST /v1/reload)");
+            crate::serve::audit::write(&state, &actor, "config.reload", None, None, "ok").await;
             Ok(Json(json!({
                 "reloaded": true,
                 "path": path.display().to_string(),
             })))
         }
-        Err(e) => Err(ServeError::Unprocessable {
-            message: format!("reload rejected — keeping previous config: {e}"),
-            details: None,
-        }),
+        Err(e) => {
+            crate::serve::audit::write(&state, &actor, "config.reload", None, None, "rejected")
+                .await;
+            Err(ServeError::Unprocessable {
+                message: format!("reload rejected — keeping previous config: {e}"),
+                details: None,
+            })
+        }
     }
 }

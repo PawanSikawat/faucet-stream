@@ -23,6 +23,9 @@ pub(crate) enum StartPosition {
     AtOperationTime(Timestamp),
     /// `resume_after(token)`.
     ResumeAfter(ResumeToken),
+    /// `start_after(token)` — required (not `resume_after`) when resuming from an
+    /// **invalidate** token, which MongoDB rejects for `resumeAfter` (#321 M3).
+    StartAfter(ResumeToken),
 }
 
 /// Resolve the effective start position from config + any persisted bookmark.
@@ -37,6 +40,7 @@ pub(crate) fn resolve_start(
         StartFrom::ResumeToken { token } => {
             let b = Bookmark {
                 resume_token: token.clone(),
+                ..Default::default()
             };
             Ok(StartPosition::ResumeAfter(b.to_token()?))
         }
@@ -46,7 +50,14 @@ pub(crate) fn resolve_start(
         })),
         StartFrom::Now | StartFrom::Earliest => {
             if let Some(b) = pending {
-                Ok(StartPosition::ResumeAfter(b.to_token()?))
+                // A bookmark captured from an invalidate event must resume with
+                // `start_after` — `resume_after` on an invalidate token is
+                // rejected by MongoDB and would wedge the pipeline (#321 M3).
+                if b.invalidate {
+                    Ok(StartPosition::StartAfter(b.to_token()?))
+                } else {
+                    Ok(StartPosition::ResumeAfter(b.to_token()?))
+                }
             } else if matches!(start_from, StartFrom::Earliest) {
                 // Earliest retained oplog entry (errors at open if rolled).
                 Ok(StartPosition::AtOperationTime(Timestamp {
@@ -359,6 +370,7 @@ impl MongoCdcSource {
                         StartPosition::Now => w,
                         StartPosition::AtOperationTime(ts) => w.start_at_operation_time(*ts),
                         StartPosition::ResumeAfter(tok) => w.resume_after(tok.clone()),
+                        StartPosition::StartAfter(tok) => w.start_after(tok.clone()),
                     };
                     w.await
                         .map_err(|e| FaucetError::Source(format!("mongodb-cdc watch failed: {e}")))?
@@ -381,6 +393,7 @@ impl MongoCdcSource {
                         StartPosition::Now => w,
                         StartPosition::AtOperationTime(ts) => w.start_at_operation_time(*ts),
                         StartPosition::ResumeAfter(tok) => w.resume_after(tok.clone()),
+                        StartPosition::StartAfter(tok) => w.start_after(tok.clone()),
                     };
                     w.await
                         .map_err(|e| FaucetError::Source(format!("mongodb-cdc watch failed: {e}")))?
@@ -402,6 +415,7 @@ impl MongoCdcSource {
                         StartPosition::Now => w,
                         StartPosition::AtOperationTime(ts) => w.start_at_operation_time(*ts),
                         StartPosition::ResumeAfter(tok) => w.resume_after(tok.clone()),
+                        StartPosition::StartAfter(tok) => w.start_after(tok.clone()),
                     };
                     w.await
                         .map_err(|e| FaucetError::Source(format!("mongodb-cdc watch failed: {e}")))?
@@ -437,7 +451,15 @@ impl MongoCdcSource {
                         // past the cap rather than risk an OOM-kill.
                         check_staging_cap(buffer.len(), max_staged)?;
                         buffer.push(to_envelope(&event, &bookmark)?);
-                        last_bookmark = Some(bookmark.to_value()?);
+                        // The persisted bookmark records whether it is an
+                        // invalidate token, so resume uses `start_after` not
+                        // `resume_after` (#321 M3). The envelope above keeps the
+                        // plain token — only the durable state carries the flag.
+                        let persisted = Bookmark {
+                            invalidate: is_invalidate,
+                            ..bookmark
+                        };
+                        last_bookmark = Some(persisted.to_value()?);
 
                         // An invalidate closes the stream server-side: flush the
                         // page (including the invalidate event) and end.
@@ -547,6 +569,7 @@ mod tests {
     fn explicit_timestamp_overrides_bookmark() {
         let pending = Bookmark {
             resume_token: json!({ "_data": "AA" }),
+            ..Default::default()
         };
         let pos = resolve_start(
             &StartFrom::Timestamp {
@@ -570,6 +593,7 @@ mod tests {
         // bookmark and resolve to ResumeAfter(token).
         let pending = Bookmark {
             resume_token: json!({ "_data": "PENDING" }),
+            ..Default::default()
         };
         let pos = resolve_start(
             &StartFrom::ResumeToken {
@@ -593,9 +617,34 @@ mod tests {
     fn now_yields_to_bookmark() {
         let pending = Bookmark {
             resume_token: json!({ "_data": "8264AB00" }),
+            ..Default::default()
         };
         let pos = resolve_start(&StartFrom::Now, Some(&pending)).unwrap();
         assert!(matches!(pos, StartPosition::ResumeAfter(_)));
+    }
+
+    #[test]
+    fn invalidate_bookmark_resumes_with_start_after() {
+        // #321 M3: a bookmark captured from an invalidate event must resolve to
+        // StartAfter (MongoDB rejects resumeAfter on an invalidate token).
+        let pending = Bookmark {
+            resume_token: json!({ "_data": "8264AB00" }),
+            invalidate: true,
+        };
+        let pos = resolve_start(&StartFrom::Now, Some(&pending)).unwrap();
+        assert!(
+            matches!(pos, StartPosition::StartAfter(_)),
+            "invalidate bookmark must use start_after, got {pos:?}"
+        );
+        // A non-invalidate bookmark still uses resume_after.
+        let normal = Bookmark {
+            resume_token: json!({ "_data": "8264AB00" }),
+            invalidate: false,
+        };
+        assert!(matches!(
+            resolve_start(&StartFrom::Earliest, Some(&normal)).unwrap(),
+            StartPosition::ResumeAfter(_)
+        ));
     }
 
     #[test]

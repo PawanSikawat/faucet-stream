@@ -181,12 +181,14 @@ pub async fn ensure_slot(
     slot_name: &str,
     create_if_missing: bool,
     slot_type: crate::config::SlotType,
+    tls: &crate::config::CdcTls,
 ) -> Result<(), FaucetError> {
     use crate::config::SlotType;
     // Use sqlx for the control-plane query (not a replication connection).
     let opts: PgConnectOptions = connection_url
         .parse()
         .map_err(|e| FaucetError::Config(format!("postgres-cdc: invalid connection URL: {e}")))?;
+    let opts = apply_cdc_tls(opts, tls);
 
     use sqlx::ConnectOptions as _;
     let mut conn: PgConnection = opts
@@ -247,10 +249,15 @@ pub async fn ensure_slot(
 /// Drop a logical replication slot via a control-plane SQL call
 /// (`pg_drop_replication_slot`). A missing slot is treated as success (no-op);
 /// an active slot (currently in use by another connection) surfaces an error.
-pub async fn drop_slot(connection_url: &str, slot_name: &str) -> Result<(), FaucetError> {
+pub async fn drop_slot(
+    connection_url: &str,
+    slot_name: &str,
+    tls: &crate::config::CdcTls,
+) -> Result<(), FaucetError> {
     let opts: PgConnectOptions = connection_url
         .parse()
         .map_err(|e| FaucetError::Config(format!("postgres-cdc: invalid connection URL: {e}")))?;
+    let opts = apply_cdc_tls(opts, tls);
     use sqlx::ConnectOptions as _;
     let mut conn: PgConnection = opts
         .connect()
@@ -275,6 +282,37 @@ pub async fn drop_slot(connection_url: &str, slot_name: &str) -> Result<(), Fauc
         .map_err(|e| FaucetError::Source(format!("postgres-cdc drop slot: {e}")))?;
     debug!("postgres-cdc: dropped replication slot '{slot_name}'");
     Ok(())
+}
+
+/// Apply the CDC [`CdcTls`](crate::config::CdcTls) policy onto the sqlx
+/// `PgConnectOptions` used for the **control-plane** connections (slot
+/// create/drop/advance, LSN capture). Without this these privileged
+/// connections would use sqlx's default `Prefer` SSL mode — opportunistic and
+/// unverified — so `tls: verify_full` would silently fail to protect them, a
+/// TLS-downgrade / MITM window on the same credentials the replication stream
+/// guards (audit #321 M5). The explicit policy overrides any `sslmode=` in the
+/// URL (the config is authoritative).
+fn apply_cdc_tls(opts: PgConnectOptions, tls: &crate::config::CdcTls) -> PgConnectOptions {
+    use crate::config::CdcTls;
+    use sqlx::postgres::PgSslMode;
+    match tls {
+        CdcTls::Disable => opts.ssl_mode(PgSslMode::Disable),
+        CdcTls::Require => opts.ssl_mode(PgSslMode::Require),
+        CdcTls::VerifyCa { ca_path } => {
+            let o = opts.ssl_mode(PgSslMode::VerifyCa);
+            match ca_path {
+                Some(p) => o.ssl_root_cert(p),
+                None => o,
+            }
+        }
+        CdcTls::VerifyFull { ca_path } => {
+            let o = opts.ssl_mode(PgSslMode::VerifyFull);
+            match ca_path {
+                Some(p) => o.ssl_root_cert(p),
+                None => o,
+            }
+        }
+    }
 }
 
 /// Map the user-facing [`CdcTls`](crate::config::CdcTls) config onto
@@ -311,6 +349,7 @@ pub async fn advance_slot(
     connection_url: &str,
     slot_name: &str,
     lsn: u64,
+    tls: &crate::config::CdcTls,
 ) -> Result<(), FaucetError> {
     if lsn == 0 {
         return Ok(());
@@ -318,6 +357,7 @@ pub async fn advance_slot(
     let opts: PgConnectOptions = connection_url
         .parse()
         .map_err(|e| FaucetError::Config(format!("postgres-cdc: invalid connection URL: {e}")))?;
+    let opts = apply_cdc_tls(opts, tls);
 
     use sqlx::ConnectOptions as _;
     let mut conn: PgConnection = opts
@@ -360,6 +400,7 @@ pub async fn ensure_slot_and_current_lsn(
     slot_name: &str,
     create_if_missing: bool,
     slot_type: crate::config::SlotType,
+    tls: &crate::config::CdcTls,
 ) -> Result<u64, FaucetError> {
     // `ensure_slot`'s `_client` arg is unused; `Client` is constructible here
     // (same module). This reuses the existing slot existence/create logic.
@@ -370,12 +411,14 @@ pub async fn ensure_slot_and_current_lsn(
         slot_name,
         create_if_missing,
         slot_type,
+        tls,
     )
     .await?;
 
     let opts: PgConnectOptions = connection_url
         .parse()
         .map_err(|e| FaucetError::Config(format!("postgres-cdc: invalid connection URL: {e}")))?;
+    let opts = apply_cdc_tls(opts, tls);
     use sqlx::ConnectOptions as _;
     let mut conn: PgConnection = opts
         .connect()
@@ -629,6 +672,27 @@ mod tests {
     use crate::config::CdcTls;
     use chrono::{TimeZone, Utc};
     use pgwire_replication::SslMode;
+
+    #[test]
+    fn apply_cdc_tls_sets_ssl_mode_on_control_plane_options() {
+        // #321 M5: the control-plane PgConnectOptions must carry the configured
+        // SSL mode, not sqlx's default `Prefer`. Assert via the Debug view.
+        let base: PgConnectOptions = "postgres://u:p@h:5432/db".parse().unwrap();
+        let dbg = |tls: &CdcTls| format!("{:?}", apply_cdc_tls(base.clone(), tls));
+        assert!(
+            dbg(&CdcTls::Disable).contains("Disable"),
+            "{}",
+            dbg(&CdcTls::Disable)
+        );
+        assert!(dbg(&CdcTls::Require).contains("Require"));
+        assert!(dbg(&CdcTls::VerifyCa { ca_path: None }).contains("VerifyCa"));
+        assert!(
+            dbg(&CdcTls::VerifyFull {
+                ca_path: Some("/ca.pem".into())
+            })
+            .contains("VerifyFull")
+        );
+    }
 
     #[test]
     fn tls_config_maps_each_mode() {

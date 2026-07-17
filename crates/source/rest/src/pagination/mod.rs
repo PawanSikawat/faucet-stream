@@ -61,6 +61,13 @@ pub struct PaginationState {
     /// re-return it (non-empty) would otherwise loop until `max_pages`.
     #[doc(hidden)]
     pub previous_page_fingerprint: Option<u64>,
+    /// Set by [`PaginationStyle::advance`] when the body-fingerprint stagnation
+    /// guard fires: the page just handed to `advance` is a duplicate of the
+    /// previous one and the caller must **drop** it rather than emit it a second
+    /// time (audit #321 L1). Only the content-stagnation guards set it; a normal
+    /// last-page stop leaves it `false` so the final page is still emitted.
+    #[doc(hidden)]
+    pub current_page_is_duplicate: bool,
 }
 
 /// Cheap, stable fingerprint of a response body for content-stagnation
@@ -184,6 +191,9 @@ impl PaginationStyle {
                     tracing::warn!(
                         "pagination loop detected: PageNumber returned an identical page — stopping"
                     );
+                    // The current page IS the duplicate — signal the caller to
+                    // drop it rather than emit it a second time (#321 L1).
+                    state.current_page_is_duplicate = true;
                     return Ok(false);
                 }
                 state.previous_page_fingerprint = Some(fp);
@@ -221,6 +231,8 @@ impl PaginationStyle {
                             "pagination loop detected: Offset returned an identical page \
                              (server likely ignoring the offset parameter) — stopping"
                         );
+                        // Drop this duplicate page rather than emit it (#321 L1).
+                        state.current_page_is_duplicate = true;
                         return Ok(false);
                     }
                     state.previous_page_fingerprint = Some(fp);
