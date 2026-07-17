@@ -83,10 +83,13 @@ Forward-looking design proposals for cross-cutting or breaking changes.
 
 ### Cross-cutting documents
 
+- [Glossary](./glossary.md) — the canonical vocabulary (bookmark, page, watermark, effectively-once, …).
+- [Security model](./architecture/security.md) — how faucet handles credentials and data; the redaction boundary and hardening checklist.
 - [Engineering principles](./engineering-principles.md) — the values the code embodies.
-- [Architecture review](./architecture-review.md) — an objective critique of the current state.
+- [Architecture review](./architecture-review.md) — a dated, objective critique of the current state.
 - [Stability policy](./stability.md) — what's Stable / Experimental / Internal.
 - [Roadmap](./roadmap.md) — architectural direction.
+- [Releasing](../RELEASING.md) — the maintainer release runbook.
 
 ## Relationship to the always-on maintainer rules
 

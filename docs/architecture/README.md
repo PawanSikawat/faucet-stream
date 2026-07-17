@@ -64,6 +64,7 @@ flowchart LR
 - **[quality](./quality.md)** · **[contracts](./contracts.md)** · **[masking](./masking.md)** — the validation/protection passes.
 - **[observability](./observability.md)** — automatic metrics, spans, and OTLP.
 - **[performance](./performance.md)** — the Primary Goal and how it is upheld.
+- **[security](./security.md)** — credential/secret handling, the redaction boundary, and the hardening checklist.
 - **[extensibility](./extensibility.md)** — the third-party connector ecosystem.
 - **[invariants](./invariants.md)** — the load-bearing guarantees, in one place.
 - **[roadmap](./roadmap.md)** — architectural direction for these subsystems.

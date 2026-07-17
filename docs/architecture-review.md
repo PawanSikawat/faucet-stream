@@ -2,6 +2,16 @@
 
 *An objective senior-maintainer review of faucet-stream. Every observation is backed by evidence from the implementation; strengths and weaknesses are reported honestly.*
 
+> **Point-in-time snapshot.** Last reviewed: **2026-07-17**. Suggested cadence:
+> re-review each **minor release** (or ~quarterly). This document is a dated
+> assessment, not a permanent statement of fact — treat any finding older than
+> the last review date with suspicion and verify against the code.
+>
+> **This review drives work, it is not a graveyard.** Every concrete weakness
+> below should map to a tracked GitHub issue or a [roadmap](./roadmap.md) item;
+> when a finding is resolved, mark it here on the next review and link the PR. If
+> a finding has no issue, filing one is the first action.
+
 This review is written for maintainers deciding where to invest and for
 prospective adopters assessing risk. It is deliberately balanced: the project has
 unusual strengths for its age, and it also carries real debt. Nothing below is
