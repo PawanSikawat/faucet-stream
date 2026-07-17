@@ -53,12 +53,19 @@ pub fn json_to_record_batch(
 
 /// Decode one or more [`RecordBatch`]es into JSON objects (one per row).
 ///
-/// Uses `arrow-json`'s [`ArrayWriter`][arrow_json::ArrayWriter], which produces
-/// a JSON array. An empty input returns an empty `Vec`.
+/// Uses `arrow-json`'s array writer with **explicit nulls enabled**, so a
+/// null-valued column is emitted as `"key": null` rather than omitted from the
+/// object. Without this, `SELECT * FROM batch` silently deletes every
+/// explicit-null field — e.g. a CDC update `{"id":1,"email":null}` loses
+/// `email`, so a downstream upsert never nulls the column and the mirror
+/// diverges from the source (audit #321 H6). An empty input returns an empty
+/// `Vec`.
 pub fn record_batches_to_json(batches: &[RecordBatch]) -> Result<Vec<Value>, FaucetError> {
     let mut buf = Vec::new();
     {
-        let mut writer = arrow_json::ArrayWriter::new(&mut buf);
+        let mut writer = arrow_json::writer::WriterBuilder::new()
+            .with_explicit_nulls(true)
+            .build::<_, arrow_json::writer::JsonArray>(&mut buf);
         for b in batches {
             writer.write(b).map_err(|e| te("json write", e))?;
         }
@@ -166,8 +173,32 @@ mod tests {
         assert_eq!(back[0]["label"], json!("hello"));
         assert_eq!(back[0]["nested"], json!({"inner": 1, "deep": {"x": "y"}}));
         assert_eq!(back[0]["list"], json!([1, 2, 3]));
-        // A null-valued field is dropped by the arrow-json writer (sparse output).
-        assert!(back[0].get("n").is_none() || back[0]["n"] == json!(null));
+        // #321 H6: an explicit null-valued field is preserved (not dropped) so
+        // `SELECT *` is a true identity transform.
+        assert!(
+            back[0].as_object().unwrap().contains_key("n"),
+            "explicit-null field must be present: {:?}",
+            back[0]
+        );
+        assert_eq!(back[0]["n"], json!(null));
+    }
+
+    #[test]
+    fn explicit_null_fields_survive_round_trip() {
+        // #321 H6: a mixed page where some rows carry a null value. The null
+        // must round-trip as `"key": null`, not be silently deleted — otherwise
+        // a CDC → upsert pipeline never nulls the column and the mirror diverges.
+        let recs = vec![
+            json!({"id": 1, "email": "a@x.y"}),
+            json!({"id": 2, "email": null}),
+        ];
+        let schema = infer_schema(&recs).unwrap();
+        let batch = json_to_record_batch(&recs, schema).unwrap();
+        let back = record_batches_to_json(&[batch]).unwrap();
+        assert_eq!(back.len(), 2);
+        let row1 = back[1].as_object().unwrap();
+        assert!(row1.contains_key("email"), "null email must be present");
+        assert_eq!(back[1]["email"], json!(null));
     }
 
     #[test]

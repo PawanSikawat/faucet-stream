@@ -685,12 +685,22 @@ impl RestStream {
         }
 
         if let Some(body) = &self.config.body {
-            // Substitute context into body string values when available.
+            // Substitute context into body string values when available. Use the
+            // JSON-safe variant: `substitute_context` does NOT escape the value,
+            // so a context value carrying a JSON metacharacter (`"`, `\`, newline)
+            // corrupts the serialized body — the old `unwrap_or(Value::String(..))`
+            // fallback then silently coerced the whole object into a bare string
+            // and POSTed garbage (audit #321 H7). `substitute_context_json`
+            // JSON-escapes string values; an un-parseable result is now a hard
+            // error rather than a silently-wrong payload.
             if let Some(ctx) = path_context {
                 let body_str = body.to_string();
-                let substituted = faucet_core::util::substitute_context(&body_str, ctx);
-                let substituted_value: Value =
-                    serde_json::from_str(&substituted).unwrap_or(Value::String(substituted));
+                let substituted = faucet_core::util::substitute_context_json(&body_str, ctx);
+                let substituted_value: Value = serde_json::from_str(&substituted).map_err(|e| {
+                    FaucetError::Source(format!(
+                        "REST source: context substitution produced an invalid JSON body: {e}"
+                    ))
+                })?;
                 req = req.json(&substituted_value);
             } else {
                 req = req.json(body);

@@ -130,6 +130,25 @@ impl Registry {
         self.tokens.remove(&shard_key(run_id, shard_id));
     }
 
+    /// A claimed shard began executing: bump `in_flight` so the shutdown drain
+    /// (`wait_drained` + `shutdown.cancel()`) accounts for it. Without this,
+    /// running Mode-B shards are invisible to `wait_drained`, so SIGTERM sees
+    /// `in_flight == 0`, `shutdown.cancel()` never fires, and the detached shard
+    /// tasks are hard-dropped mid-write with no cooperative flush (audit #321
+    /// H5). Pairs with [`Self::mark_shard_finished`].
+    pub fn mark_shard_running(&self) {
+        self.in_flight.fetch_add(1, Ordering::AcqRel);
+    }
+
+    /// A shard reached a terminal state: decrement `in_flight`, drop its token,
+    /// and wake any drain waiter. The shard-specific analogue of
+    /// [`Self::mark_finished`].
+    pub fn mark_shard_finished(&self, run_id: &str, shard_id: &str) {
+        self.dec_in_flight();
+        self.deregister_shard(run_id, shard_id);
+        self.drained.notify_waiters();
+    }
+
     /// Fire every registered shard token whose key belongs to `run_id` (key
     /// prefix `{run_id}::`). Returns how many tokens were fired. Drives a
     /// cross-instance cancel of a sharded run: the claim loop calls this for each
@@ -267,6 +286,25 @@ mod tests {
 
         // No shards for a run → fires nothing.
         assert_eq!(r.cancel_run_shards("C"), 0);
+    }
+
+    #[test]
+    fn shard_running_counts_toward_in_flight_and_drain() {
+        // #321 H5: a running shard must be visible to the shutdown drain so
+        // `wait_drained` blocks on it and `shutdown.cancel()` gets a chance to
+        // fire the cooperative flush.
+        let r = Registry::new(4);
+        r.register_shard("A", "0", CancellationToken::new());
+        r.mark_shard_running();
+        assert_eq!(r.in_flight(), 1, "a running shard bumps in_flight");
+        // Finishing drops the token, decrements in_flight, and wakes the drain.
+        r.mark_shard_finished("A", "0");
+        assert_eq!(r.in_flight(), 0);
+        assert_eq!(
+            r.cancel_run_shards("A"),
+            0,
+            "the shard token was removed on finish"
+        );
     }
 
     #[test]

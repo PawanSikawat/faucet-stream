@@ -587,11 +587,14 @@ impl MysqlSink {
     /// Create the commit-token watermark table if it does not yet exist.
     ///
     /// The table holds one row per pipeline scope (state key). MySQL requires a
-    /// fixed-length column as the primary key, so `scope` is `VARCHAR(255)` and
-    /// `token` is `VARCHAR(32)` (tokens are 20-char ulids, 32 chars is ample).
+    /// fixed-length column as the primary key, so `scope` is `VARCHAR(255)`; the
+    /// `token` column is `TEXT` because a `#291` commit token embeds the page's
+    /// resume bookmark (`{20-digit seq}#{bookmark-json}`) and easily exceeds the
+    /// old `VARCHAR(32)`, which truncated/rejected every bookmark-bearing page
+    /// and broke exactly-once delivery (audit #321 C3).
     async fn ensure_commit_table(&self) -> Result<(), FaucetError> {
         let sql = format!(
-            "CREATE TABLE IF NOT EXISTS {t} ({s} VARCHAR(255) PRIMARY KEY, {k} VARCHAR(32) NOT NULL, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)",
+            "CREATE TABLE IF NOT EXISTS {t} ({s} VARCHAR(255) PRIMARY KEY, {k} TEXT NOT NULL, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)",
             t = quote_ident_mysql(faucet_core::idempotency::COMMIT_TOKEN_TABLE),
             s = quote_ident_mysql(faucet_core::idempotency::COMMIT_TOKEN_SCOPE_COL),
             k = quote_ident_mysql(faucet_core::idempotency::COMMIT_TOKEN_TOKEN_COL),

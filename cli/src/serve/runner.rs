@@ -325,6 +325,16 @@ pub fn resume_claimed_shard(state: ServerState, claimed: ClaimedShard) {
         state
             .registry()
             .register_shard(&run_id, &shard_id, coop.clone());
+        // Count the shard in `in_flight` so the shutdown drain waits for it and
+        // fires the cooperative-flush cancel (audit #321 H5). The guard releases
+        // the slot + token on EVERY return path (including panic), so a shard can
+        // never leak the counter and wedge graceful shutdown.
+        state.registry().mark_shard_running();
+        let _shard_guard = ShardInFlightGuard {
+            state: state.clone(),
+            run_id: run_id.clone(),
+            shard_id: shard_id.clone(),
+        };
         let success = execute_shard(
             &state,
             loaded,
@@ -337,7 +347,6 @@ pub fn resume_claimed_shard(state: ServerState, claimed: ClaimedShard) {
             run.submitted_at,
         )
         .await;
-        state.registry().deregister_shard(&run_id, &shard_id);
 
         match state
             .history()
@@ -887,6 +896,25 @@ struct InFlightGuard {
 impl Drop for InFlightGuard {
     fn drop(&mut self) {
         self.state.registry().mark_finished(&self.run_id);
+        metrics::set_run_gauges(&self.state);
+    }
+}
+
+/// Releases a claimed shard's in-flight slot (decrement `in_flight`, drop the
+/// shard cancel token, wake the shutdown drain) on drop — on EVERY path
+/// including panic. Mirrors [`InFlightGuard`] but keys on the per-shard token so
+/// a Mode-B shard participates in the graceful-shutdown drain (audit #321 H5).
+struct ShardInFlightGuard {
+    state: ServerState,
+    run_id: String,
+    shard_id: String,
+}
+
+impl Drop for ShardInFlightGuard {
+    fn drop(&mut self) {
+        self.state
+            .registry()
+            .mark_shard_finished(&self.run_id, &self.shard_id);
         metrics::set_run_gauges(&self.state);
     }
 }

@@ -272,12 +272,17 @@ impl MssqlSink {
         conn: &mut MssqlPooledConnection<'_>,
     ) -> Result<(), FaucetError> {
         // NVARCHAR(450) is the maximum SQL Server index key byte budget (900 B /
-        // 2 bytes-per-char = 450 chars). The table / column names are the fixed
-        // constants — no user-controlled input in this string.
+        // 2 bytes-per-char = 450 chars) — fine for the PRIMARY KEY `scope`. The
+        // `token` column is `NVARCHAR(MAX)` because a `#291` commit token embeds
+        // the page's resume bookmark (`{20-digit seq}#{bookmark-json}`) and
+        // exceeds the old `NVARCHAR(32)`, which raised "String or binary data
+        // would be truncated" and broke exactly-once delivery (audit #321 C4).
+        // The table / column names are the fixed constants — no user-controlled
+        // input in this string.
         let sql = format!(
             "IF OBJECT_ID(N'{tbl}', N'U') IS NULL \
              CREATE TABLE [{tbl}] ([scope] NVARCHAR(450) PRIMARY KEY, \
-             [token] NVARCHAR(32) NOT NULL, \
+             [token] NVARCHAR(MAX) NOT NULL, \
              [updated_at] DATETIME2 DEFAULT SYSUTCDATETIME())",
             tbl = faucet_core::idempotency::COMMIT_TOKEN_TABLE,
         );

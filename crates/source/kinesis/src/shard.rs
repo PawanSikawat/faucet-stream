@@ -116,11 +116,14 @@ pub(crate) fn assemble_record(
 /// A chunk of decoded records from one shard, or the worker's terminal state.
 #[derive(Debug)]
 pub(crate) enum ShardEvent {
-    /// Decoded records + the last sequence number in the chunk.
+    /// Decoded records paired with their per-record sequence numbers, in shard
+    /// order. The consumer advances the shard bookmark **per record** as it
+    /// buffers, so any emitted page's bookmark equals the sequence of its last
+    /// included record — never a batch-final sequence that runs ahead of records
+    /// still buffered but not yet emitted (audit #321 C2).
     Records {
         shard_id: String,
-        records: Vec<Value>,
-        last_sequence: String,
+        records: Vec<(String, Value)>,
     },
     /// The shard is fully consumed (closed shard reached its end).
     Done { shard_id: String },
@@ -193,20 +196,21 @@ pub(crate) async fn run_shard(
                             }
                         };
                         last_sequence = Some(sequence.to_string());
-                        decoded.push(assemble_record(
-                            payload,
-                            partition_key,
-                            sequence,
-                            &shard_id,
-                            arrival_ms,
+                        decoded.push((
+                            sequence.to_string(),
+                            assemble_record(
+                                payload,
+                                partition_key,
+                                sequence,
+                                &shard_id,
+                                arrival_ms,
+                            ),
                         ));
                     }
-                    let last = last_sequence.clone().unwrap_or_default();
                     if tx
                         .send(ShardEvent::Records {
                             shard_id: shard_id.clone(),
                             records: decoded,
-                            last_sequence: last,
                         })
                         .await
                         .is_err()

@@ -937,6 +937,16 @@ async fn run_one_invocation(
     //    executor's per-row state key is used instead of the source's natural
     //    one (which is shared across all matrix rows of the same kind).
     let state = build_state_for_node(node, opts.state_path_override.as_deref()).await?;
+    // Preview modes must not persist bookmarks: the counting/truncating sinks
+    // return `Ok` without a real write, so a persisted (advanced) bookmark would
+    // make the next real run skip unwritten records (#321 H1). Wrap the store so
+    // reads still resume faithfully but writes are dropped.
+    let state: Option<Arc<dyn StateStore>> = match state {
+        Some(inner) if opts.dry_run || opts.limit.is_some() => {
+            Some(Arc::new(ReadOnlyStateStore { inner }))
+        }
+        other => other,
+    };
     // Keep a handle for the post-run SLA pass (#202) — `state` itself is moved
     // into the pipeline below.
     let sla_store = state.clone();
@@ -1527,6 +1537,33 @@ fn resolve_inplace(value: &mut Value, ctx: &HashMap<String, Value>) -> CliResult
 }
 
 // ── Adapter sinks/sources ───────────────────────────────────────────────────
+
+/// Wraps a [`StateStore`] so reads pass through but writes/deletes are dropped.
+///
+/// Attached under `--dry-run` / `--limit`: those modes swap in counting /
+/// truncating sinks that return `Ok` without a real durable write, and
+/// `run_stream` persists a page's bookmark after any `Ok`. Persisting an
+/// advanced bookmark from a preview would make the next *real* run resume past
+/// records that were never written — a `--dry-run` silently causing data loss
+/// (audit #321 H1; for postgres-cdc it also lets Postgres recycle WAL for
+/// undelivered changes). Reads still pass through so the preview faithfully
+/// resumes from the existing bookmark.
+struct ReadOnlyStateStore {
+    inner: Arc<dyn StateStore>,
+}
+
+#[async_trait]
+impl StateStore for ReadOnlyStateStore {
+    async fn get(&self, key: &str) -> Result<Option<Value>, FaucetError> {
+        self.inner.get(key).await
+    }
+    async fn put(&self, _key: &str, _value: &Value) -> Result<(), FaucetError> {
+        Ok(())
+    }
+    async fn delete(&self, _key: &str) -> Result<(), FaucetError> {
+        Ok(())
+    }
+}
 
 /// Wraps a source so its `state_key()` returns the executor-provided value
 /// instead of the source's natural one. Lets every matrix invocation use a
@@ -2946,6 +2983,55 @@ matrix:
         assert!(
             !output.exists(),
             "dry-run must not create the real sink file"
+        );
+    }
+
+    #[tokio::test]
+    async fn read_only_state_store_drops_writes_keeps_reads() {
+        // #321 H1: reads pass through; put/delete are dropped so a preview never
+        // mutates the durable bookmark.
+        let inner = Arc::new(faucet_core::MemoryStateStore::new()) as Arc<dyn StateStore>;
+        inner.put("k", &json!("v0")).await.unwrap();
+        let ro = ReadOnlyStateStore {
+            inner: inner.clone(),
+        };
+        assert_eq!(ro.get("k").await.unwrap(), Some(json!("v0")));
+        // A write must be a no-op — the inner store keeps its original value.
+        ro.put("k", &json!("advanced")).await.unwrap();
+        assert_eq!(inner.get("k").await.unwrap(), Some(json!("v0")));
+        // A delete must be a no-op too.
+        ro.delete("k").await.unwrap();
+        assert_eq!(inner.get("k").await.unwrap(), Some(json!("v0")));
+    }
+
+    #[tokio::test]
+    async fn dry_run_with_state_does_not_persist_bookmark() {
+        // #321 H1: a `--dry-run` with a durable state store must not advance the
+        // persisted bookmark. Pre-seed a bookmark file, run dry, and confirm it is
+        // byte-for-byte unchanged (the ReadOnlyStateStore wrapper drops writes).
+        let dir = tempfile::tempdir().unwrap();
+        let input = dir.path().join("in.csv");
+        let output = dir.path().join("out.jsonl");
+        let state_dir = dir.path().join("state");
+        std::fs::create_dir_all(&state_dir).unwrap();
+        std::fs::write(&input, "name\nalice\nbob\n").unwrap();
+        let cfg = cfg_csv_to_jsonl(&input, &output);
+        let nodes = expand(&cfg).unwrap();
+        let mut o = opts("drystate");
+        o.dry_run = true;
+        o.state_path_override = Some(state_dir.clone());
+        let summary = run_expanded(nodes, o).await.unwrap();
+        assert!(!summary.had_failures());
+        assert!(!output.exists(), "dry-run must not write the sink file");
+        // The state store is wrapped read-only under dry-run, so no bookmark
+        // file is ever persisted — the state dir stays empty.
+        let persisted: Vec<_> = std::fs::read_dir(&state_dir)
+            .unwrap()
+            .filter_map(Result::ok)
+            .collect();
+        assert!(
+            persisted.is_empty(),
+            "dry-run must not persist any bookmark file, found: {persisted:?}"
         );
     }
 
