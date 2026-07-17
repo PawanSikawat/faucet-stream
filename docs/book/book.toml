@@ -6,14 +6,19 @@ language = "en"
 src = "src"
 
 [output.html]
-default-theme = "rust"
-preferred-dark-theme = "ayu"
+# Clean light default + navy dark — the brand accent in custom.css is tuned for
+# both. (Was rust/ayu; light/navy reads more modern and closer to the reference
+# docs sites.)
+default-theme = "light"
+preferred-dark-theme = "navy"
 git-repository-url = "https://github.com/PawanSikawat/faucet-stream"
 edit-url-template = "https://github.com/PawanSikawat/faucet-stream/edit/main/docs/book/{path}"
 no-section-label = false
-# Powers the interactive Beginner/Architect toggle on "Learn the architecture".
-# Both files are no-ops on pages without a [data-mode-toggle] control.
-additional-css = ["learn-toggle.css"]
+# custom.css   — site-wide visual polish (brand accent, typography, callouts,
+#                tables, landing hero). Native additional-css; no preprocessor.
+# learn-toggle — powers the Beginner/Architect toggle; both files are no-ops on
+#                pages without a [data-mode-toggle] control.
+additional-css = ["custom.css", "learn-toggle.css"]
 additional-js = ["learn-toggle.js"]
 
 [output.html.fold]
