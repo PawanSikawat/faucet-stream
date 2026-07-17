@@ -383,7 +383,7 @@ own service.
 | Single static binary | ✓ | ✗ | ✗ | ✓ | ✓ | n/a |
 | Config-driven (YAML/JSON) | ✓ | ✓ | via UI/API | ✓ | ✓ | via UI |
 | Embeddable as a library | ✓ (Rust) | ✗ | ✗ | ✓ (Go) | ✗ | ✗ |
-| Connector count | 41, growing | 600+ taps | 350+ | dozens | dozens | 500+ |
+| Connector count | 49, growing | 600+ taps | 350+ | dozens | dozens | 500+ |
 | Change data capture | ✓ Postgres / MySQL / Mongo | partial¹ | ✓ | partial | ✗ | ✓ |
 | Incremental + resumable state | ✓ | ✓ | ✓ | partial | n/a | ✓ |
 | Effectively-once delivery³ | ✓ (SQL / Iceberg / BigQuery) | ✗ | partial | ✗ | ✗ | ✓ |
@@ -402,6 +402,8 @@ extract-and-load. **[dbt](https://www.getdbt.com/) is complementary, not a compe
 it models transformations *in the warehouse* on data already loaded (the "T" of ELT, at
 warehouse scale) — pair the two when you need heavy in-warehouse modeling on top of what
 faucet extracts, transforms, and loads.
+
+**Deep dives** (detailed, and honest about where each tool wins): [vs. Meltano](https://pawansikawat.github.io/faucet-stream/comparison/meltano.html) · [vs. Airbyte](https://pawansikawat.github.io/faucet-stream/comparison/airbyte.html) · [vs. Singer](https://pawansikawat.github.io/faucet-stream/comparison/singer.html).
 
 ## When to use faucet-stream
 
@@ -808,6 +810,15 @@ docs/book/                    — mdBook documentation site (source under docs/b
 .github/workflows/            — ci.yml, release-plz.yml, docs.yml (mdBook → GitHub Pages)
 .github/assets/               — brand assets: logo, wordmark, social-preview banner, favicon
 ```
+
+## Star history
+
+<a href="https://star-history.com/#PawanSikawat/faucet-stream&Date">
+  <img alt="Star history chart for faucet-stream" src="https://api.star-history.com/svg?repos=PawanSikawat/faucet-stream&type=Date" width="600">
+</a>
+
+**Using faucet-stream in production?** Open a PR to add your team here — real adopters are the
+best signal for the next person deciding whether to bet a pipeline on it.
 
 ## Contributing
 
