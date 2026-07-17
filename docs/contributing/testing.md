@@ -1,0 +1,82 @@
+# Testing
+
+*What to test, where it lives, and why the 90% patch-coverage gate is a floor, not a target.*
+
+Untested public API surface is a liability. This page covers the philosophy and
+the practical techniques; the repository-wide conventions are in
+[`docs/standards/testing.md`](../standards/testing.md), and the PR mechanics are
+in [`CONTRIBUTING.md`](../../CONTRIBUTING.md).
+
+## Two kinds of test, two homes
+
+- **Unit tests** live in `#[cfg(test)]` modules at the bottom of the source file
+  they exercise. Use them for anything that doesn't need real I/O: pagination
+  state transitions, JSONPath extraction, auth-header generation, config
+  validation, error/`match` branches. This is the bulk of the suite.
+- **Integration tests** live in the crate's `tests/` directory. HTTP connectors
+  use [`wiremock`](https://docs.rs/wiremock); database/queue connectors use
+  [`testcontainers`](https://docs.rs/testcontainers) (these need Docker and are
+  CI-gated).
+
+## The coverage gate
+
+`codecov/patch` is a **required** merge check at **90%** — a PR whose changed
+lines are under 90% covered *cannot merge*. Treat 90% as the floor.
+
+The critical subtlety: **Docker-backed integration tests do not count toward
+patch coverage.** The coverage run is not instrumented with the containers, so
+lines only exercised by a `testcontainers` test show as uncovered. **Unit-test
+your changed lines.** If a line "can't" be unit-tested, that is usually a design
+smell — extract the pure logic and make the I/O a thin shim:
+
+```mermaid
+flowchart LR
+    A["new / changed code"] --> B{needs real I/O?}
+    B -- no --> C["#[cfg(test)] unit test<br/>counts toward patch coverage"]
+    B -- yes --> D["extract pure logic → unit test it<br/>keep I/O a thin shim"]
+    D --> E["cover the shim with wiremock/testcontainers<br/>(does NOT count toward patch)"]
+```
+
+Genuinely untestable surface (a SIGTERM handler, a `main()` dispatch arm, an
+infinite supervisory loop) is the only sanctioned exception — keep it to the few
+unreachable lines and say so in the PR.
+
+Verify locally before pushing, so the gate never surprises you:
+
+```bash
+cargo llvm-cov --workspace --all-features   # then intersect with your diff
+```
+
+## Techniques worth knowing
+
+- **Offline pool tests.** You can unit-test a pool-backed SQL source *without*
+  Docker using `sqlx`'s `connect_lazy` (plus a short `acquire_timeout`): the
+  pool is created but never connects until first use, so you can exercise query
+  building, identifier quoting, and config paths offline. (This does **not** work
+  for MSSQL/`tiberius`, whose `bb8` pool connects eagerly.)
+- **TUI / terminal paths.** Interactive code never runs in CI, so render it
+  through `ratatui`'s `TestBackend` and split the drive-loop from the crossterm
+  setup so the loop is testable.
+- **Spawned-binary tests** need a `CARGO_LLVM_COV` skip-guard, or they fail under
+  the instrumented coverage run.
+
+## Rules
+
+- **Assert the specific outcome, not "no panic".** A test that only checks the
+  call didn't panic proves almost nothing.
+- **New code always gets tests** — non-negotiable.
+- **Do not blindly update an existing test to make it pass.** If your change
+  breaks a test, investigate *why* first — silently rewriting the assertion to
+  match new behavior is how a regression sails through. Modified tests deserve
+  the same scrutiny as modified code.
+- **Watch feature unification in assertions.** `serde_json::Map` iteration order
+  flips between `BTreeMap` and `IndexMap` depending on the `preserve_order`
+  feature, which `--all-features` turns on. Assert the *set* of keys, not the
+  *sequence*, or your test passes under `-p crate` and fails in CI.
+
+## Related
+
+- [Testing standards](../standards/testing.md)
+- [Debugging](./debugging.md)
+- [Common mistakes](./common-mistakes.md)
+- [Performance](./performance.md)
