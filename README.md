@@ -17,11 +17,11 @@
 
 **The fast, config-driven way to move data in Rust.**
 
-faucet-stream is a complete **ETL** toolkit: **28 source** and **21 sink** connectors
+faucet-stream is a complete **ETL** platform: **28 source** and **21 sink** connectors
 (**49 in total**) plus in-flight transforms — including a page-level embedded-DuckDB `sql`
 transform — wired together by a single `faucet` binary that runs pipelines declaratively
 from a YAML/JSON file, no Rust code required. Or skip the binary and embed the same engine
-in your own service through the typed `Source` / `Sink` traits. One toolkit, whether you
+in your own service through the typed `Source` / `Sink` traits. One platform, whether you
 want a CLI you can drop on any box or a library you compile in.
 
 A single native binary **and** an embeddable Rust library: config-driven pipelines with
