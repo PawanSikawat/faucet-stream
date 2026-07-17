@@ -6,6 +6,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 (see the versioning policy in CONTRIBUTING.md — connector crates version
 independently).
+## [1.4.0](https://github.com/PawanSikawat/faucet-stream/compare/faucet-stream-v1.3.0...faucet-stream-v1.4.0) - 2026-07-17
+
+### Features
+
+- *(databricks)* Databricks SQL query source via Statement Execution API ([#320](https://github.com/PawanSikawat/faucet-stream/pull/320))
+- *(delta)* Apache Delta Lake source + sink via delta-rs ([#319](https://github.com/PawanSikawat/faucet-stream/pull/319))
+- Encryption at rest for state/DLQ + live TUI for faucet run ([#315](https://github.com/PawanSikawat/faucet-stream/pull/315))
+- Google Cloud Spanner source + sink connectors ([#312](https://github.com/PawanSikawat/faucet-stream/pull/312))
+- Connector conformance battery + tiers, FCP spec, sink-bound benchmark, sink config fixes ([#307](https://github.com/PawanSikawat/faucet-stream/pull/307))
+- *(cli)* Plugin loading, schema config, connector scaffolding + registry, plan/dev, hot reload ([#306](https://github.com/PawanSikawat/faucet-stream/pull/306))
+- AWS Kinesis source + sink connectors and shipped Grafana dashboards / Prometheus alerts
+- Faucet discover (live source introspection) + faucet backfill (resumable historical replay)
+
+### Testing
+
+- *(conformance)* Promote connectors to Tier-1 with the full conformance battery ([#311](https://github.com/PawanSikawat/faucet-stream/pull/311))
+
 ## [1.3.0](https://github.com/PawanSikawat/faucet-stream/compare/faucet-stream-v1.2.0...faucet-stream-v1.3.0) - 2026-07-10
 
 ### Features

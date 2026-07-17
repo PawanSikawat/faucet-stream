@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 (see the versioning policy in CONTRIBUTING.md — connector crates version
 independently).
+## [1.5.0](https://github.com/PawanSikawat/faucet-stream/compare/faucet-source-postgres-v1.4.0...faucet-source-postgres-v1.5.0) - 2026-07-17
+
+### Features
+
+- Connector conformance battery + tiers, FCP spec, sink-bound benchmark, sink config fixes ([#307](https://github.com/PawanSikawat/faucet-stream/pull/307))
+- Faucet discover (live source introspection) + faucet backfill (resumable historical replay)
+
 ## [1.4.0](https://github.com/PawanSikawat/faucet-stream/compare/faucet-source-postgres-v1.3.0...faucet-source-postgres-v1.4.0) - 2026-07-10
 
 ### Features
