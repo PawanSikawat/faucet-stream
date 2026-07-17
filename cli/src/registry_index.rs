@@ -94,7 +94,8 @@ fn default_version() -> u32 {
 impl RegistryIndex {
     /// The embedded built-in index.
     pub fn embedded() -> Self {
-        serde_json::from_str(EMBEDDED_INDEX).expect("embedded cli/connectors/registry.json is valid")
+        serde_json::from_str(EMBEDDED_INDEX)
+            .expect("embedded cli/connectors/registry.json is valid")
     }
 
     /// Load from `path`, or the embedded index when `None`.
