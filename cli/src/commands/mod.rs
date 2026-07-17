@@ -4,6 +4,7 @@
 pub mod backfill;
 #[cfg(feature = "catalog")]
 pub mod catalog;
+pub mod conformance;
 #[cfg(feature = "contract")]
 pub mod contract;
 #[cfg(feature = "cli-dev")]

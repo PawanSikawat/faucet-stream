@@ -1,0 +1,404 @@
+//! Connector conformance scoring (#330).
+//!
+//! Grades every built-in source/sink against the faucet connector contract and
+//! its capabilities, assigns a 0–100 score and a maturity tier
+//! (`Stable` / `Experimental` / `Beta` / `Draft`), and lists capability badges.
+//!
+//! The score is computed from **authoritative, instantiation-free** signals the
+//! CLI already tracks — the registry index (`cli/connectors/registry.json`) and
+//! the per-kind capability functions in [`crate::registry`] — so it is
+//! deterministic and cannot drift from the code.
+//!
+//! Scoring model (max 100): the **core contract** is the `Stable` gate — a
+//! verified registry entry (40) + a real config schema (30) = 70. Everything
+//! else is a bonus that lifts the score without gating the tier: documentation
+//! (10), exactly-once delivery (10), and one kind-specific capability
+//! (source: dataset discovery 10; sink: upsert 6 + schema evolution 4). So every
+//! conforming built-in lands at `Stable` with capability badges, while an
+//! incomplete third-party connector (no verified entry / no schema) drops to
+//! `Experimental` / `Beta`.
+
+use crate::registry;
+use crate::registry_index::RegistryIndex;
+use serde::Serialize;
+
+/// Maturity tier derived from the conformance score.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Tier {
+    Stable,
+    Experimental,
+    Beta,
+    Draft,
+}
+
+impl Tier {
+    /// Human label.
+    pub fn label(self) -> &'static str {
+        match self {
+            Tier::Stable => "Stable",
+            Tier::Experimental => "Experimental",
+            Tier::Beta => "Beta",
+            Tier::Draft => "Draft",
+        }
+    }
+
+    /// A colored dot for the terminal / catalog.
+    pub fn badge(self) -> &'static str {
+        match self {
+            Tier::Stable => "🟢",
+            Tier::Experimental => "🟡",
+            Tier::Beta => "🟠",
+            Tier::Draft => "⚪",
+        }
+    }
+
+    /// Derive the tier from a 0–100 conformance score.
+    pub fn from_score(score: u32) -> Tier {
+        match score {
+            70..=u32::MAX => Tier::Stable,
+            45..=69 => Tier::Experimental,
+            20..=44 => Tier::Beta,
+            _ => Tier::Draft,
+        }
+    }
+}
+
+/// Authoritative, instantiation-free capability signals for one connector.
+#[derive(Debug, Clone)]
+pub struct ConnectorFacts {
+    pub name: String,
+    pub is_source: bool,
+    /// A verified entry exists in `cli/connectors/registry.json`.
+    pub verified: bool,
+    /// `config_schema()` returns a non-empty object schema.
+    pub has_config_schema: bool,
+    /// A one-line description is present in the connector catalog.
+    pub documented: bool,
+    /// Deterministic replay (source) / atomic-watermark idempotent writes (sink).
+    pub exactly_once: bool,
+    /// Sink supports `write_mode: upsert|delete` (sink only).
+    pub upsert: bool,
+    /// Sink can evolve the destination schema on drift (sink only).
+    pub schema_evolution: bool,
+    /// Source supports `faucet discover` (source only).
+    pub discover: bool,
+}
+
+/// One scored dimension of a connector's conformance.
+#[derive(Debug, Clone, Serialize)]
+pub struct Dimension {
+    pub name: &'static str,
+    pub met: bool,
+    pub points: u32,
+    pub note: &'static str,
+}
+
+/// A connector's full conformance report.
+#[derive(Debug, Clone, Serialize)]
+pub struct Report {
+    pub name: String,
+    pub kind: &'static str,
+    pub score: u32,
+    pub tier: Tier,
+    pub dimensions: Vec<Dimension>,
+    pub badges: Vec<&'static str>,
+}
+
+/// Score a single connector from its facts. Pure and deterministic.
+pub fn score(f: &ConnectorFacts) -> Report {
+    let mut dims: Vec<Dimension> = Vec::new();
+
+    // ── Core contract (the Stable gate: 70 pts) ─────────────────────────────
+    dims.push(Dimension {
+        name: "Registered & verified",
+        met: f.verified,
+        points: 40,
+        note: "verified entry in cli/connectors/registry.json",
+    });
+    dims.push(Dimension {
+        name: "Config schema",
+        met: f.has_config_schema,
+        points: 30,
+        note: "config_schema() powers faucet init / validate / schema",
+    });
+
+    // ── Bonuses (lift the score, never gate the tier) ───────────────────────
+    dims.push(Dimension {
+        name: "Documented",
+        met: f.documented,
+        points: 10,
+        note: "one-line description in the connector catalog",
+    });
+    dims.push(Dimension {
+        name: "Exactly-once delivery",
+        met: f.exactly_once,
+        points: 10,
+        note: if f.is_source {
+            "deterministic replay from a bookmark"
+        } else {
+            "atomic-watermark idempotent writes"
+        },
+    });
+    if f.is_source {
+        dims.push(Dimension {
+            name: "Dataset discovery",
+            met: f.discover,
+            points: 10,
+            note: "faucet discover introspects the catalog",
+        });
+    } else {
+        dims.push(Dimension {
+            name: "Upsert / mirror",
+            met: f.upsert,
+            points: 6,
+            note: "write_mode: upsert|delete",
+        });
+        dims.push(Dimension {
+            name: "Schema evolution",
+            met: f.schema_evolution,
+            points: 4,
+            note: "evolves the destination schema on drift",
+        });
+    }
+
+    let score: u32 = dims.iter().filter(|d| d.met).map(|d| d.points).sum();
+    let tier = Tier::from_score(score);
+
+    let mut badges: Vec<&'static str> = Vec::new();
+    if f.exactly_once {
+        badges.push("exactly-once");
+    }
+    if f.is_source && f.discover {
+        badges.push("discover");
+    }
+    if !f.is_source && f.upsert {
+        badges.push("upsert");
+    }
+    if !f.is_source && f.schema_evolution {
+        badges.push("schema-evolution");
+    }
+
+    Report {
+        name: f.name.clone(),
+        kind: if f.is_source { "source" } else { "sink" },
+        score,
+        tier,
+        dimensions: dims,
+        badges,
+    }
+}
+
+/// Gather facts for one built-in connector kind from the registry.
+pub fn facts_for(kind: &str, is_source: bool, index: &RegistryIndex) -> ConnectorFacts {
+    let role = if is_source { "source" } else { "sink" };
+    let verified = index
+        .connectors
+        .iter()
+        .any(|e| e.name == kind && e.kind == role && e.verified);
+
+    let schema = if is_source {
+        registry::source_schema(kind)
+    } else {
+        registry::sink_schema(kind)
+    };
+    let has_config_schema = schema
+        .ok()
+        .and_then(|s| {
+            s.get("properties")
+                .and_then(|p| p.as_object())
+                .map(|o| !o.is_empty())
+        })
+        .unwrap_or(false);
+
+    let descs = if is_source {
+        registry::source_descriptions()
+    } else {
+        registry::sink_descriptions()
+    };
+    let documented = descs.iter().any(|(k, d)| *k == kind && !d.is_empty());
+
+    let exactly_once = if is_source {
+        registry::source_supports_exactly_once(kind)
+    } else {
+        registry::sink_supports_idempotent_writes(kind)
+    };
+    let upsert = !is_source
+        && registry::sink_supported_write_modes(kind)
+            .iter()
+            .any(|m| matches!(m, faucet_core::WriteMode::Upsert));
+    let schema_evolution = !is_source && registry::sink_supports_schema_evolution(kind);
+    let discover = is_source && registry::source_supports_discover(kind);
+
+    ConnectorFacts {
+        name: kind.to_string(),
+        is_source,
+        verified,
+        has_config_schema,
+        documented,
+        exactly_once,
+        upsert,
+        schema_evolution,
+        discover,
+    }
+}
+
+/// Build conformance reports for every compiled-in connector, sources first.
+pub fn build_reports() -> Vec<Report> {
+    let index = RegistryIndex::embedded();
+    let mut out = Vec::new();
+    for kind in registry::source_kinds() {
+        out.push(score(&facts_for(kind, true, &index)));
+    }
+    for kind in registry::sink_kinds() {
+        out.push(score(&facts_for(kind, false, &index)));
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn conforming(is_source: bool) -> ConnectorFacts {
+        ConnectorFacts {
+            name: "acme".into(),
+            is_source,
+            verified: true,
+            has_config_schema: true,
+            documented: true,
+            exactly_once: false,
+            upsert: false,
+            schema_evolution: false,
+            discover: false,
+        }
+    }
+
+    #[test]
+    fn tier_boundaries() {
+        assert_eq!(Tier::from_score(100), Tier::Stable);
+        assert_eq!(Tier::from_score(70), Tier::Stable);
+        assert_eq!(Tier::from_score(69), Tier::Experimental);
+        assert_eq!(Tier::from_score(45), Tier::Experimental);
+        assert_eq!(Tier::from_score(44), Tier::Beta);
+        assert_eq!(Tier::from_score(20), Tier::Beta);
+        assert_eq!(Tier::from_score(19), Tier::Draft);
+        assert_eq!(Tier::from_score(0), Tier::Draft);
+    }
+
+    #[test]
+    fn tier_label_and_badge() {
+        for t in [Tier::Stable, Tier::Experimental, Tier::Beta, Tier::Draft] {
+            assert!(!t.label().is_empty());
+            assert!(!t.badge().is_empty());
+        }
+    }
+
+    #[test]
+    fn conforming_source_is_stable_with_docs() {
+        let r = score(&conforming(true)); // 40 + 30 + 10 = 80
+        assert_eq!(r.score, 80);
+        assert_eq!(r.tier, Tier::Stable);
+        assert_eq!(r.kind, "source");
+        assert!(r.badges.is_empty());
+    }
+
+    #[test]
+    fn source_capabilities_add_points_and_badges() {
+        let mut f = conforming(true);
+        f.exactly_once = true;
+        f.discover = true;
+        let r = score(&f); // 80 + 10 + 10 = 100
+        assert_eq!(r.score, 100);
+        assert_eq!(r.tier, Tier::Stable);
+        assert!(r.badges.contains(&"exactly-once"));
+        assert!(r.badges.contains(&"discover"));
+    }
+
+    #[test]
+    fn sink_upsert_and_evolution() {
+        let mut f = conforming(false);
+        f.upsert = true;
+        f.schema_evolution = true;
+        let r = score(&f); // 80 + 6 + 4 = 90
+        assert_eq!(r.score, 90);
+        assert_eq!(r.kind, "sink");
+        assert!(r.badges.contains(&"upsert"));
+        assert!(r.badges.contains(&"schema-evolution"));
+        // A sink is never scored on discover.
+        assert!(!r.badges.contains(&"discover"));
+    }
+
+    #[test]
+    fn unregistered_no_schema_is_draft() {
+        let mut f = conforming(true);
+        f.verified = false;
+        f.has_config_schema = false;
+        f.documented = false;
+        let r = score(&f);
+        assert_eq!(r.score, 0);
+        assert_eq!(r.tier, Tier::Draft);
+    }
+
+    #[test]
+    fn schema_only_is_beta() {
+        let mut f = conforming(false);
+        f.verified = false;
+        f.documented = false; // only config schema (30)
+        let r = score(&f);
+        assert_eq!(r.score, 30);
+        assert_eq!(r.tier, Tier::Beta);
+    }
+
+    #[test]
+    fn verified_only_is_experimental() {
+        let mut f = conforming(true);
+        f.has_config_schema = false;
+        f.documented = false; // only verified (40)
+        let r = score(&f);
+        assert_eq!(r.score, 40);
+        assert_eq!(r.tier, Tier::Beta); // 40 is Beta; 45+ is Experimental
+    }
+
+    #[test]
+    fn every_builtin_meets_the_bar() {
+        let reports = build_reports();
+        assert!(!reports.is_empty());
+        for r in &reports {
+            // Every shipped built-in has a verified entry + a config schema, so
+            // it must be at least Stable-gate-eligible (>= Experimental).
+            assert!(
+                r.score >= 45,
+                "{} `{}` scored {} ({:?})",
+                r.kind,
+                r.name,
+                r.score,
+                r.tier
+            );
+            assert!(matches!(r.tier, Tier::Stable | Tier::Experimental));
+        }
+    }
+
+    #[test]
+    fn known_capabilities_surface_in_reports() {
+        let reports = build_reports();
+        // postgres source is discoverable.
+        if let Some(pg) = reports
+            .iter()
+            .find(|r| r.name == "postgres" && r.kind == "source")
+        {
+            assert!(
+                pg.badges.contains(&"discover"),
+                "postgres source should discover"
+            );
+        }
+        // bigquery sink is exactly-once + upsert-capable.
+        if let Some(bq) = reports
+            .iter()
+            .find(|r| r.name == "bigquery" && r.kind == "sink")
+        {
+            assert!(bq.badges.contains(&"exactly-once"));
+            assert!(bq.badges.contains(&"upsert"));
+        }
+    }
+}
