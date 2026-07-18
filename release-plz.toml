@@ -76,6 +76,13 @@ release_always = false
 # bumped. To resume, merge a trivial PR from a `release-plz-*` branch — the
 # publish job keys on that branch prefix and is idempotent (skips
 # already-published crates).
+# Recovery log (2026-07-18): the 1.5.0 release published every crate except
+# `faucet-cli` (last in dependency order) — its publish failed on the
+# `include_str!` path that read `connectors/registry.json` from outside the
+# crate (fixed in #329). With `faucet-cli` at 1.5.0 in Cargo.toml but 1.4.0 on
+# crates.io and no `faucet-cli-v1.5.0` tag, release-plz opened no new PR. This
+# trivial `release-plz-*` PR re-fires the idempotent publish job to ship the
+# missing `faucet-cli` 1.5.0.
 
 # Disable cargo-semver-checks for all packages. Semver-checks compiles each
 # crate's local and registry sources to compare API surface — for a 47-crate
