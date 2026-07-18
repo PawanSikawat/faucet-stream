@@ -1,51 +1,67 @@
 /* ── faucet-stream documentation theme ──────────────────────────────────────
-   A natural, harmonious teal identity. The left sidebar carries the logo teal
-   — a soft light teal in the light theme, a deep teal in the dark theme — so
-   each mode flows: a light sidebar beside light content, a deep sidebar beside
-   dark content. Everything else is a quiet teal accent. No gradients, no
-   decorative noise, and the browser's blue focus ring is replaced with teal.
-   Loaded via `additional-css`, after mdBook's own CSS, so these rules win.
+   Warm, restrained identity: a greige paper background with black text as the
+   default, and a single dark-green accent used only for emphasis — links,
+   the active nav item, buttons, callouts. The rule is strict: wherever a
+   dark-green fill appears, its text is white. No teal, no gradients, no noise.
+   Light/rust = warm paper; navy/coal/ayu = warm charcoal. Loaded via
+   `additional-css` after mdBook's own CSS, so these rules win.
    ──────────────────────────────────────────────────────────────────────── */
 
 :root {
-  --fs-teal: #14b8a6; /* the logo teal */
-  --fs-teal-deep: #0f766e;
-  --fs-teal-bright: #2dd4bf;
-  --content-max-width: 62rem;
+  --fs-green: #247368; /* the accent — dark pine green (fills; white text on it) */
+  --fs-green-deep: #17544a; /* hover / link text where more contrast is needed */
+  --fs-green-bright: #57a894; /* accent on dark grounds */
+  --fs-ink: #1b1b18; /* near-black, warm */
 }
 
-/* ── Light theme: soft light-teal sidebar + dark-teal text, a whisper of teal
-   in the reading area so the two surfaces belong to one palette. ──────────── */
+/* ── Light / rust: warm greige paper, black text ──────────────────────────── */
 .light,
 .rust {
-  --sidebar-bg: #d7f2ec; /* soft light teal, from the logo family */
-  --sidebar-fg: #1c2b3a; /* dark slate — crisp, high-contrast on light teal */
-  --sidebar-non-existant: #6b8a86;
-  --sidebar-active: #0f766e;
-  --sidebar-spacer: rgba(28, 43, 58, 0.12);
-  --scrollbar: rgba(28, 43, 58, 0.28);
-  --sidebar-header-border-color: #0f766e; /* active-section accent bar → teal, not the stock indigo */
-  --links: #0f766e;
+  --bg: #dcdcd6; /* warm greige paper */
+  --fg: var(--fs-ink);
+  --sidebar-bg: #d0d0c7; /* a touch deeper for separation */
+  --sidebar-fg: var(--fs-ink);
+  --sidebar-non-existant: #8a8a7e;
+  --sidebar-active: #ffffff;
+  --sidebar-spacer: rgba(27, 27, 24, 0.14);
+  --scrollbar: rgba(27, 27, 24, 0.3);
+  --sidebar-header-border-color: var(--fs-green);
+  --links: #1e6055; /* dark green, readable on warm paper */
+  --inline-code-color: #17544a;
+  --quote-bg: #e4e4dd;
+  --quote-border: #c9c9bf;
+  --table-border-color: #c6c6bc;
+  --table-header-bg: #d3d3ca;
+  --table-alternate-bg: #d7d7cf;
+  --theme-popup-bg: #e2e2db;
+  --theme-popup-border: #c6c6bc;
+  --theme-hover: rgba(27, 27, 24, 0.08);
 }
 
-/* ── Dark themes: deep-teal sidebar + light-teal text, flowing with the dark
-   content surface. ────────────────────────────────────────────────────────── */
+/* ── Navy / coal / ayu: warm charcoal, off-white text ─────────────────────── */
 .navy,
 .coal,
 .ayu {
-  --sidebar-bg: #0d302c; /* deep teal */
-  --sidebar-fg: #e4eaef; /* light neutral slate — crisp, NOT teal-on-teal */
-  --sidebar-non-existant: #7f96a0;
+  --bg: #201f1b;
+  --fg: #e8e6dd;
+  --sidebar-bg: #1a1a16;
+  --sidebar-fg: #e8e6dd;
+  --sidebar-non-existant: #8f8d82;
   --sidebar-active: #ffffff;
-  --sidebar-spacer: rgba(255, 255, 255, 0.1);
-  --scrollbar: rgba(255, 255, 255, 0.28);
-  --sidebar-header-border-color: #2dd4bf; /* active-section accent bar → teal, not the stock indigo */
-  --links: #2dd4bf;
+  --sidebar-spacer: rgba(255, 255, 255, 0.09);
+  --scrollbar: rgba(255, 255, 255, 0.26);
+  --sidebar-header-border-color: var(--fs-green-bright);
+  --links: var(--fs-green-bright);
+  --inline-code-color: var(--fs-green-bright);
+  --quote-bg: #2a2924;
+  --quote-border: #3a3931;
+  --table-border-color: #38372f;
+  --table-header-bg: #26251f;
+  --table-alternate-bg: #232219;
+  --theme-hover: rgba(255, 255, 255, 0.08);
 }
 
-/* ── Sidebar TOC: rounded hover / active pills that adapt to the sidebar's own
-   tone (the hover wash is derived from the text color, so it darkens on the
-   light sidebar and lightens on the dark one — one rule, both themes). ─────── */
+/* ── Sidebar TOC: black text; the active item is a green pill with white text ─ */
 .sidebar .sidebar-scrollbox {
   padding: 0.6rem 0.8rem;
 }
@@ -60,22 +76,21 @@
   transition: background 0.13s ease, color 0.13s ease;
 }
 .chapter li.chapter-item > a:hover {
-  background: color-mix(in srgb, var(--sidebar-fg) 12%, transparent);
+  background: color-mix(in srgb, var(--sidebar-fg) 10%, transparent);
   color: var(--sidebar-fg);
 }
 .chapter li.chapter-item > a.active {
-  background: var(--fs-teal-deep);
+  background: var(--fs-green);
   color: #fff;
   font-weight: 600;
 }
 .chapter .part-title {
   color: var(--sidebar-fg);
-  opacity: 0.72;
+  opacity: 0.62;
   letter-spacing: 0.04em;
 }
 
-/* ── Kill the browser's blue focus ring — teal for keyboard users, nothing on
-   a mouse click (this is the "blue line on expanding a section"). ─────────── */
+/* ── Focus: green ring, not the browser's blue ────────────────────────────── */
 .sidebar a:focus:not(:focus-visible),
 .content a:focus:not(:focus-visible) {
   outline: none;
@@ -83,7 +98,7 @@
 a:focus-visible,
 button:focus-visible,
 summary:focus-visible {
-  outline: 2px solid var(--fs-teal);
+  outline: 2px solid var(--fs-green);
   outline-offset: 2px;
   border-radius: 4px;
 }
@@ -92,12 +107,12 @@ summary:focus-visible {
   border-radius: 7px;
 }
 
-/* ── Top menu bar: clean, tied to the theme with one soft teal hairline ────── */
+/* ── Top menu bar: one soft green hairline ────────────────────────────────── */
 .menu-bar {
-  border-bottom: 1px solid color-mix(in srgb, var(--fs-teal) 20%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, var(--fs-green) 22%, transparent);
 }
 
-/* ── Content links + text accents (quiet) ─────────────────────────────────── */
+/* ── Content links + accents (quiet) ──────────────────────────────────────── */
 .content a:not(.header) {
   text-decoration: none;
 }
@@ -107,50 +122,41 @@ summary:focus-visible {
   text-decoration-thickness: 1.5px;
 }
 ::selection {
-  background: color-mix(in srgb, var(--fs-teal) 24%, transparent);
-}
-.content :not(pre) > code {
-  color: var(--fs-teal-deep);
-}
-.navy .content :not(pre) > code,
-.coal .content :not(pre) > code,
-.ayu .content :not(pre) > code {
-  color: var(--fs-teal-bright);
+  background: color-mix(in srgb, var(--fs-green) 24%, transparent);
 }
 .content a.header:hover {
-  color: var(--fs-teal);
+  color: var(--fs-green);
 }
 
-/* ── Blockquote → quiet teal callout ──────────────────────────────────────── */
+/* ── Blockquote → quiet green callout ─────────────────────────────────────── */
 .content blockquote {
-  border-inline-start: 3px solid var(--fs-teal);
-  background: color-mix(in srgb, var(--fs-teal) 7%, transparent);
+  border-inline-start: 3px solid var(--fs-green);
+  background: color-mix(in srgb, var(--fs-green) 7%, transparent);
   border-radius: 0 6px 6px 0;
   margin-inline: 0;
   padding: 0.6rem 1rem;
   color: inherit;
 }
 
-/* ── Tables: clean, with a soft teal header ───────────────────────────────── */
+/* ── Tables: clean, soft warm header ──────────────────────────────────────── */
 .content table thead th {
-  background: color-mix(in srgb, var(--fs-teal) 12%, transparent);
   font-weight: 600;
 }
 
-/* ── Navigation + search pick up teal ─────────────────────────────────────── */
+/* ── Navigation + search pick up green ────────────────────────────────────── */
 .nav-chapters:hover {
-  color: var(--fs-teal);
+  color: var(--fs-green);
 }
 #searchbar:focus {
-  border-color: var(--fs-teal);
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--fs-teal) 22%, transparent);
+  border-color: var(--fs-green);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--fs-green) 22%, transparent);
   outline: none;
 }
 mark {
-  background: color-mix(in srgb, var(--fs-teal) 28%, transparent);
+  background: color-mix(in srgb, var(--fs-green) 30%, transparent);
 }
 
-/* ── Typography: a little more air, prose held to a readable measure ──────── */
+/* ── Typography ───────────────────────────────────────────────────────────── */
 .content {
   line-height: 1.7;
 }
@@ -175,7 +181,7 @@ mark {
 .content h2 {
   margin-top: 2.3rem;
   padding-bottom: 0.2em;
-  border-bottom: 1px solid var(--table-border-color, rgba(0, 0, 0, 0.08));
+  border-bottom: 1px solid var(--table-border-color, rgba(0, 0, 0, 0.1));
 }
 .content pre {
   border-radius: 8px;
@@ -198,7 +204,7 @@ mark {
 .fs-hero .fs-tagline {
   font-size: 1.3rem;
   font-weight: 500;
-  color: var(--fs-teal-deep);
+  color: var(--fs-green-deep);
   margin: 1rem auto 1.4rem;
   max-width: 34rem;
   line-height: 1.45;
@@ -206,7 +212,7 @@ mark {
 .navy .fs-hero .fs-tagline,
 .coal .fs-hero .fs-tagline,
 .ayu .fs-hero .fs-tagline {
-  color: var(--fs-teal-bright);
+  color: var(--fs-green-bright);
 }
 .fs-cta {
   display: inline-flex;
@@ -227,21 +233,21 @@ mark {
   transform: translateY(-1px);
 }
 .fs-cta a.primary {
-  background: var(--fs-teal-deep);
+  background: var(--fs-green);
   color: #fff !important;
 }
 .fs-cta a.primary:hover {
-  background: var(--fs-teal);
+  background: var(--fs-green-deep);
 }
 .fs-cta a.secondary {
-  border: 1px solid var(--fs-teal-deep) !important;
-  color: var(--fs-teal-deep) !important;
+  border: 1px solid var(--fs-green) !important;
+  color: var(--fs-green-deep) !important;
 }
 .navy .fs-cta a.secondary,
 .coal .fs-cta a.secondary,
 .ayu .fs-cta a.secondary {
-  border-color: var(--fs-teal-bright) !important;
-  color: var(--fs-teal-bright) !important;
+  border-color: var(--fs-green-bright) !important;
+  color: var(--fs-green-bright) !important;
 }
 .fs-cards {
   display: grid;
@@ -250,21 +256,21 @@ mark {
   margin: 1.5rem 0;
 }
 .fs-card {
-  border: 1px solid var(--table-border-color, rgba(128, 128, 128, 0.2));
+  border: 1px solid var(--table-border-color, rgba(0, 0, 0, 0.12));
   border-radius: 10px;
   padding: 1rem 1.15rem;
   transition: border-color 0.14s ease, transform 0.14s ease;
 }
 .fs-card:hover {
-  border-color: var(--fs-teal);
+  border-color: var(--fs-green);
   transform: translateY(-2px);
 }
 .fs-card h3 {
   margin-top: 0;
-  color: var(--fs-teal-deep);
+  color: var(--fs-green-deep);
 }
 .navy .fs-card h3,
 .coal .fs-card h3,
 .ayu .fs-card h3 {
-  color: var(--fs-teal-bright);
+  color: var(--fs-green-bright);
 }
