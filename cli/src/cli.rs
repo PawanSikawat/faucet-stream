@@ -41,6 +41,9 @@ pub enum Command {
     List(ListArgs),
     /// Search the connector registry index for connectors by name / keyword.
     Search(SearchArgs),
+    /// Score each connector's conformance to the faucet SDK contract and print
+    /// its maturity tier (Stable / Experimental / Beta / Draft) + capabilities.
+    Conformance(ConformanceArgs),
     /// Show how to install or enable a connector from the registry index
     /// (prints the recipe; never executes anything).
     Install(InstallArgs),
@@ -982,6 +985,20 @@ pub struct ListArgs {
     /// Read a custom registry index instead of the built-in one.
     #[arg(long)]
     pub index: Option<PathBuf>,
+}
+
+/// `faucet conformance` arguments.
+#[derive(Debug, Parser)]
+pub struct ConformanceArgs {
+    /// Only score the connector with this system name (e.g. `postgres`); prints
+    /// a detailed scorecard. Omit to score every compiled-in connector.
+    pub name: Option<String>,
+    /// Restrict to `source` or `sink`.
+    #[arg(long)]
+    pub kind: Option<String>,
+    /// Emit the full scorecards as JSON.
+    #[arg(long)]
+    pub json: bool,
 }
 
 /// `faucet search` arguments.

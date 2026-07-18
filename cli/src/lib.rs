@@ -19,6 +19,7 @@ pub mod cli;
 pub mod commands;
 pub mod compose;
 pub mod config;
+pub mod conformance;
 pub mod dlq_replay;
 pub mod env_config;
 pub mod env_loader;
@@ -147,6 +148,7 @@ pub async fn run_command(cli: Cli) -> CliResult<()> {
         Command::Schema(args) => commands::schema::run(args).await,
         Command::List(args) => commands::list::run(args).await,
         Command::Search(args) => commands::search::run(args).await,
+        Command::Conformance(args) => commands::conformance::run(args).await,
         Command::Install(args) => commands::install::run(args).await,
         Command::Preview(args) => commands::preview::run(args).await,
         Command::Plan(args) => commands::plan::run(args).await,

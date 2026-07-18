@@ -711,6 +711,28 @@ pub const UPSERT_SINK_KINDS: &[&str] = &[
     "spanner",
 ];
 
+/// Source kinds that implement live dataset discovery (`Source::discover`,
+/// issue #211) — mirrors the discoverable-source list in the connector docs.
+/// Single source of truth for the conformance scorecard (#330).
+pub const DISCOVER_SOURCE_KINDS: &[&str] = &[
+    "postgres",
+    "mysql",
+    "mssql",
+    "sqlite",
+    "mongodb",
+    "elasticsearch",
+    "bigquery",
+    "snowflake",
+    "spanner",
+    "s3",
+    "gcs",
+];
+
+/// Whether a source kind supports `faucet discover` (dataset introspection).
+pub fn source_supports_discover(kind: &str) -> bool {
+    DISCOVER_SOURCE_KINDS.contains(&kind)
+}
+
 /// The typed replay capability a source kind advertises
 /// (`Source::replay_guarantee`, issue #292). Derived from
 /// [`EXACTLY_ONCE_SOURCE_KINDS`] — the kind table stays the single source of

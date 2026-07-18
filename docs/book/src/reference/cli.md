@@ -14,6 +14,7 @@ The `faucet` binary exposes these commands. Pass `--log-level <level>` (or set
 | `faucet new connector <name> --kind <source\|sink>` | Scaffold a ready-to-build connector crate. |
 | `faucet search <term>` | Search the connector registry for connectors by name/keyword. |
 | `faucet install <name>` | Print how to enable/obtain a connector from the registry. |
+| `faucet conformance [name]` | Score each connector against the SDK contract; print its maturity tier + capabilities. |
 | `faucet plan [config]` | Read-only preview of what a config would do — zero writes. |
 | `faucet dev <config> --sample <f>` | Watch + re-run a sample on save with a live diff (`cli-dev`). |
 | `faucet doctor [config]` | Probe every connector (auth/network/permissions) and print a checklist. |
@@ -296,6 +297,27 @@ faucet install my-connector --index ./my-registry.json
 `--index <path>` points any of these at a custom/mirror index instead of the
 built-in one. Ambiguous names (a connector that is both a source and a sink,
 e.g. `postgres`) need `--kind source|sink`.
+
+## `conformance`
+
+Score every compiled-in connector against the faucet SDK contract and print its
+**maturity tier** — 🟢 `Stable`, 🟡 `Experimental`, 🟠 `Beta`, ⚪ `Draft` — plus its
+capability badges (exactly-once, discover, upsert, schema-evolution).
+
+```bash
+faucet conformance                 # score every connector, highest first
+faucet conformance --kind sink     # sinks only
+faucet conformance postgres        # a detailed scorecard for one connector
+faucet conformance --json          # machine-readable scorecards
+```
+
+The score (0–100) is computed from authoritative, instantiation-free signals: a
+verified `cli/connectors/registry.json` entry (40) + a real config schema (30)
+form the `Stable` gate at 70; documentation, exactly-once delivery, and the
+kind-specific capability (source discovery / sink upsert + schema evolution) are
+bonuses on top. Every conforming built-in is `Stable` with capability badges; an
+incomplete third-party connector (missing a verified entry or a schema) lands at
+`Experimental` / `Beta`.
 
 ## `doctor`
 
