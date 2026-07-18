@@ -1,7 +1,13 @@
 <!-- Injected into <head> on every page (mdBook theme override).
      Adds social-share / SEO metadata; the rest of the <head> uses mdBook
-     defaults. Keep values in sync with the README hero + elevator pitch. -->
-<meta name="description" content="faucet-stream — the fast, config-driven way to move data in Rust. Pluggable source and sink connectors plus a declarative CLI: run production data pipelines from YAML, no Rust code required." />
+     defaults. Keep values in sync with the README hero + elevator pitch.
+
+     These og:/twitter: values are site-wide DEFAULTS. On a built site the CI
+     step `scripts/inject-page-meta.py` rewrites og:title / og:description /
+     twitter:title / twitter:description (and mdBook's own description meta)
+     per page from each page's <h1> + first paragraph. The page-level
+     description meta comes from book.toml [book].description; it is
+     intentionally NOT duplicated here so there is exactly one to rewrite. -->
 <meta name="theme-color" content="#14b8a6" />
 
 <!-- Open Graph -->
