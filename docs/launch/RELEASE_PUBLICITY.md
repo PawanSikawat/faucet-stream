@@ -53,6 +53,9 @@ Front-load the high-signal, low-effort channels; do the rest as time allows.
 7. [ ] **Aggregator refresh (major releases only)** — bump the entry/description on
        AlternativeTo, StackShare, LibHunt, and the awesome-lists (status in
        [`DISTRIBUTION.md`](./DISTRIBUTION.md)).
+8. [ ] **Recirculate an evergreen post** — the deep-dives and migration guides in
+       [`../blog/`](../blog/) don't expire. Each release, re-share one (dev.to / lobste.rs /
+       the relevant subreddit) alongside the changelog post to reach people who missed it.
 
 ## Copy templates
 

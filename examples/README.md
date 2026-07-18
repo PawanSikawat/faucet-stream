@@ -53,6 +53,16 @@ These run immediately after installing the CLI — great for a first smoke test:
 > (the configs use a placeholder `base_url`). Edit it to a real API — there's no
 > mock server in the stack.
 
+## Orchestration (Airflow / Dagster + dbt)
+
+[`orchestration/`](orchestration/) is a complete **ELT** recipe: load with
+faucet, transform with dbt, schedule with Airflow or Dagster. faucet is
+complementary to dbt — it owns Extract + Load (raw lossless rows into Postgres),
+dbt owns Transform (typed, tested staging models), and because faucet is a single
+binary the orchestrator just shells out to `faucet run`. See
+[`orchestration/README.md`](orchestration/README.md) and the
+[Orchestration cookbook page](../docs/book/src/cookbook/orchestration.md).
+
 ## Dashboards & alerts
 
 The stack also provisions the shipped observability artifacts (issue #200):

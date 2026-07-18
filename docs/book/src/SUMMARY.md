@@ -43,6 +43,7 @@
 - [Adaptive batching](./cookbook/adaptive-batching.md)
 - [Throughput tuning](./cookbook/tuning.md)
 - [Scheduling](./cookbook/scheduling.md)
+- [Orchestration (Airflow / Dagster + dbt)](./cookbook/orchestration.md)
 - [Running faucet as a service](./cookbook/serve.md)
 - [Web console (`serve-ui`)](./cookbook/web-console.md)
 - [Running a cluster](./cookbook/cluster.md)
