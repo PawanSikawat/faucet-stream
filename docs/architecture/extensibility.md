@@ -44,7 +44,7 @@ through "does this keep the barrier to a third-party connector low?"
 ## Capability model
 
 ```mermaid
-%%{init: {'theme':'base','themeVariables':{'primaryColor':'#ccfbf1','primaryTextColor':'#0f172a','primaryBorderColor':'#0d9488','lineColor':'#0f766e','secondaryColor':'#e0f2fe','tertiaryColor':'#f0fdfa','fontFamily':'-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif'}}}%%
+%%{init: {'theme':'base','flowchart':{'curve':'basis','nodeSpacing':50,'rankSpacing':72,'padding':14},'themeVariables':{'fontFamily':'-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif','fontSize':'14px','lineColor':'#a5b4c4','clusterBkg':'#f8fafc','clusterBorder':'#e2e8f0'}}}%%
 flowchart LR
     T[Source / Sink trait] --> B[required: fetch/write + config_schema]
     T --> D1[default: supports_exactly_once -> false]
@@ -55,6 +55,12 @@ flowchart LR
     D2 -.override.-> S[PK-range / hash-shardable sources]
     D3 -.override.-> DIS[catalog-backed sources]
     D4 -.override.-> EV[evolvable SQL sinks]
+    classDef src fill:#e0f2f1,stroke:#26a69a,stroke-width:1.5px,color:#00695c
+    classDef proc fill:#eceff8,stroke:#7986cb,stroke-width:1.5px,color:#303f9f
+    classDef good fill:#e8f5e9,stroke:#66bb6a,stroke-width:1.5px,color:#2e7d32
+    class T src
+    class B,D1,D2,D3,D4 proc
+    class C,S,DIS,EV good
 ```
 
 A connector opts into a capability by overriding one defaulted method — it never

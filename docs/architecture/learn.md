@@ -27,9 +27,15 @@ the tap. You tell it where the data comes from and where it goes, and it moves
 the data — reliably, without losing or scrambling it.
 
 ```mermaid
-%%{init: {'theme':'base','themeVariables':{'primaryColor':'#ccfbf1','primaryTextColor':'#0f172a','primaryBorderColor':'#0d9488','lineColor':'#0f766e','secondaryColor':'#e0f2fe','tertiaryColor':'#f0fdfa','fontFamily':'-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif'}}}%%
+%%{init: {'theme':'base','flowchart':{'curve':'basis','nodeSpacing':50,'rankSpacing':72,'padding':14},'themeVariables':{'fontFamily':'-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif','fontSize':'14px','lineColor':'#a5b4c4','clusterBkg':'#f8fafc','clusterBorder':'#e2e8f0'}}}%%
 flowchart LR
     SRC[(Source<br/>where data comes from)] -->|records| PIPE[faucet pipeline] -->|records| SNK[(Sink<br/>where data goes)]
+    classDef src fill:#e0f2f1,stroke:#26a69a,stroke-width:1.5px,color:#00695c
+    classDef proc fill:#eceff8,stroke:#7986cb,stroke-width:1.5px,color:#303f9f
+    classDef sink fill:#e3f2fd,stroke:#42a5f5,stroke-width:1.5px,color:#1565c0
+    class SRC src
+    class PIPE proc
+    class SNK sink
 ```
 
 Everything else in this project — pages, bookmarks, retries, exactly-once — exists
@@ -100,9 +106,15 @@ println!("wrote {} records", result.records_written);
 What happens under the hood, in the simplest case:
 
 ```mermaid
-%%{init: {'theme':'base','themeVariables':{'primaryColor':'#ccfbf1','primaryTextColor':'#0f172a','primaryBorderColor':'#0d9488','lineColor':'#0f766e','secondaryColor':'#e0f2fe','tertiaryColor':'#f0fdfa','fontFamily':'-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif'}}}%%
+%%{init: {'theme':'base','flowchart':{'curve':'basis','nodeSpacing':50,'rankSpacing':72,'padding':14},'themeVariables':{'fontFamily':'-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif','fontSize':'14px','lineColor':'#a5b4c4','clusterBkg':'#f8fafc','clusterBorder':'#e2e8f0'}}}%%
 flowchart LR
     A["source.fetch — read ALL records"] --> B["sink.write_batch — write them"] --> C["done: records_written"]
+    classDef src fill:#e0f2f1,stroke:#26a69a,stroke-width:1.5px,color:#00695c
+    classDef good fill:#e8f5e9,stroke:#66bb6a,stroke-width:1.5px,color:#2e7d32
+    classDef sink fill:#e3f2fd,stroke:#42a5f5,stroke-width:1.5px,color:#1565c0
+    class A src
+    class C good
+    class B sink
 ```
 
 Read everything, write everything, report how many. For a one-time copy — "move
@@ -134,10 +146,14 @@ a Kafka offset. On the next run, the Source reads that note and resumes from tha
 point instead of the beginning.
 
 ```mermaid
-%%{init: {'theme':'base','themeVariables':{'primaryColor':'#ccfbf1','primaryTextColor':'#0f172a','primaryBorderColor':'#0d9488','lineColor':'#0f766e','secondaryColor':'#e0f2fe','tertiaryColor':'#f0fdfa','fontFamily':'-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif'}}}%%
+%%{init: {'theme':'base','flowchart':{'curve':'basis','nodeSpacing':50,'rankSpacing':72,'padding':14},'themeVariables':{'fontFamily':'-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif','fontSize':'14px','lineColor':'#a5b4c4','clusterBkg':'#f8fafc','clusterBorder':'#e2e8f0'}}}%%
 flowchart LR
     R1["run #1: read rows, remember bookmark = 'updated_at ≤ 09:00'"] --> S[(saved bookmark)]
     S --> R2["run #2: resume from 09:00, only read newer rows"]
+    classDef proc fill:#eceff8,stroke:#7986cb,stroke-width:1.5px,color:#303f9f
+    classDef store fill:#f3e5f5,stroke:#ab47bc,stroke-width:1.5px,color:#6a1b9a
+    class R1,R2 proc
+    class S store
 ```
 
 Two small additions make a Source resumable:
@@ -180,9 +196,15 @@ an optional bookmark attached. Instead of one giant read, the Source produces a
 *stream* of pages, and the pipeline handles them one at a time:
 
 ```mermaid
-%%{init: {'theme':'base','themeVariables':{'primaryColor':'#ccfbf1','primaryTextColor':'#0f172a','primaryBorderColor':'#0d9488','lineColor':'#0f766e','secondaryColor':'#e0f2fe','tertiaryColor':'#f0fdfa','fontFamily':'-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif'}}}%%
+%%{init: {'theme':'base','flowchart':{'curve':'basis','nodeSpacing':50,'rankSpacing':72,'padding':14},'themeVariables':{'fontFamily':'-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif','fontSize':'14px','lineColor':'#a5b4c4','clusterBkg':'#f8fafc','clusterBorder':'#e2e8f0'}}}%%
 flowchart LR
     P1[page 1] --> W1[write it] --> P2[page 2] --> W2[write it] --> P3[page 3 + bookmark] --> W3[write it] --> CK[flush + save bookmark]
+    classDef proc fill:#eceff8,stroke:#7986cb,stroke-width:1.5px,color:#303f9f
+    classDef store fill:#f3e5f5,stroke:#ab47bc,stroke-width:1.5px,color:#6a1b9a
+    classDef sink fill:#e3f2fd,stroke:#42a5f5,stroke-width:1.5px,color:#1565c0
+    class P1,P2,P3 proc
+    class CK store
+    class W1,W2,W3 sink
 ```
 
 Read a page, write a page, move on. Only one page is ever in memory, so it
@@ -276,9 +298,17 @@ When several of the *data-guarding* tools are on, the pipeline runs them in a
 fixed, safe order on each page — chosen to be *safe*, not arbitrary:
 
 ```mermaid
-%%{init: {'theme':'base','themeVariables':{'primaryColor':'#ccfbf1','primaryTextColor':'#0f172a','primaryBorderColor':'#0d9488','lineColor':'#0f766e','secondaryColor':'#e0f2fe','tertiaryColor':'#f0fdfa','fontFamily':'-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif'}}}%%
+%%{init: {'theme':'base','flowchart':{'curve':'basis','nodeSpacing':50,'rankSpacing':72,'padding':14},'themeVariables':{'fontFamily':'-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif','fontSize':'14px','lineColor':'#a5b4c4','clusterBkg':'#f8fafc','clusterBorder':'#e2e8f0'}}}%%
 flowchart LR
     PAGE[page arrives] --> MASK[1 mask PII] --> Q[2 quality] --> C[3 contract] --> D[4 schema drift] --> WRITE[5 write to sink] --> FLUSH[flush] --> CK[save bookmark]
+    classDef src fill:#e0f2f1,stroke:#26a69a,stroke-width:1.5px,color:#00695c
+    classDef proc fill:#eceff8,stroke:#7986cb,stroke-width:1.5px,color:#303f9f
+    classDef store fill:#f3e5f5,stroke:#ab47bc,stroke-width:1.5px,color:#6a1b9a
+    classDef sink fill:#e3f2fd,stroke:#42a5f5,stroke-width:1.5px,color:#1565c0
+    class PAGE src
+    class MASK,Q,C,D,FLUSH proc
+    class CK store
+    class WRITE sink
 ```
 
 Masking is first so PII can't leak anywhere. Validation happens before the write

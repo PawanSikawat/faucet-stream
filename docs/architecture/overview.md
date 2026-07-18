@@ -17,7 +17,7 @@ A run is, at its heart, one loop: pull a page of records from a source, protect
 and validate it, write it to a sink, checkpoint, repeat.
 
 ```mermaid
-%%{init: {'theme':'base','themeVariables':{'primaryColor':'#ccfbf1','primaryTextColor':'#0f172a','primaryBorderColor':'#0d9488','lineColor':'#0f766e','secondaryColor':'#e0f2fe','tertiaryColor':'#f0fdfa','fontFamily':'-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif'}}}%%
+%%{init: {'theme':'base','flowchart':{'curve':'basis','nodeSpacing':50,'rankSpacing':72,'padding':14},'themeVariables':{'fontFamily':'-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif','fontSize':'14px','lineColor':'#a5b4c4','clusterBkg':'#f8fafc','clusterBorder':'#e2e8f0'}}}%%
 flowchart LR
     subgraph Source
       SP[stream_pages]
@@ -36,6 +36,14 @@ flowchart LR
     WR --> WB
     CK --> SS
     SS -.resume bookmark.-> SP
+    classDef src fill:#e0f2f1,stroke:#26a69a,stroke-width:1.5px,color:#00695c
+    classDef proc fill:#eceff8,stroke:#7986cb,stroke-width:1.5px,color:#303f9f
+    classDef store fill:#f3e5f5,stroke:#ab47bc,stroke-width:1.5px,color:#6a1b9a
+    classDef sink fill:#e3f2fd,stroke:#42a5f5,stroke-width:1.5px,color:#1565c0
+    class SP src
+    class MK,QL,CT,DR,FL,CK proc
+    class SS store
+    class WR,WB sink
 ```
 
 The per-page passes and their fixed order are covered in [schema](./schema.md);
@@ -49,7 +57,7 @@ binary). The topology encodes a hard rule: **connectors depend only on
 `faucet-core`.**
 
 ```mermaid
-%%{init: {'theme':'base','themeVariables':{'primaryColor':'#ccfbf1','primaryTextColor':'#0f172a','primaryBorderColor':'#0d9488','lineColor':'#0f766e','secondaryColor':'#e0f2fe','tertiaryColor':'#f0fdfa','fontFamily':'-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif'}}}%%
+%%{init: {'theme':'base','flowchart':{'curve':'basis','nodeSpacing':50,'rankSpacing':72,'padding':14},'themeVariables':{'fontFamily':'-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif','fontSize':'14px','lineColor':'#a5b4c4','clusterBkg':'#f8fafc','clusterBorder':'#e2e8f0'}}}%%
 flowchart TD
     CORE[faucet-core<br/>traits, pipeline, transforms, error, state]
     SRC[faucet-source-*<br/>rest, postgres, kafka, s3, ...]
@@ -67,6 +75,14 @@ flowchart TD
     SNK -.uses.-> CMN
     UMB --> SRC & SNK & STATE
     CLI --> UMB
+    classDef src fill:#e0f2f1,stroke:#26a69a,stroke-width:1.5px,color:#00695c
+    classDef proc fill:#eceff8,stroke:#7986cb,stroke-width:1.5px,color:#303f9f
+    classDef store fill:#f3e5f5,stroke:#ab47bc,stroke-width:1.5px,color:#6a1b9a
+    classDef sink fill:#e3f2fd,stroke:#42a5f5,stroke-width:1.5px,color:#1565c0
+    class SRC src
+    class CMN,UMB,CLI proc
+    class CORE,STATE store
+    class SNK sink
 ```
 
 - **`faucet-core`** — the only crate every connector depends on. Holds the

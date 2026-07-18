@@ -13,7 +13,7 @@ faucet-stream is a Cargo workspace of ~63 crates. They fall into four layers,
 and the dependency direction only ever flows downward:
 
 ```mermaid
-%%{init: {'theme':'base','themeVariables':{'primaryColor':'#ccfbf1','primaryTextColor':'#0f172a','primaryBorderColor':'#0d9488','lineColor':'#0f766e','secondaryColor':'#e0f2fe','tertiaryColor':'#f0fdfa','fontFamily':'-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif'}}}%%
+%%{init: {'theme':'base','flowchart':{'curve':'basis','nodeSpacing':50,'rankSpacing':72,'padding':14},'themeVariables':{'fontFamily':'-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif','fontSize':'14px','lineColor':'#a5b4c4','clusterBkg':'#f8fafc','clusterBorder':'#e2e8f0'}}}%%
 flowchart TD
     CLI["faucet-cli (cli/)<br/>config · expand · executor · serve · schedule · replicate · backfill"]
     UMB["faucet-stream (faucet-stream/)<br/>umbrella: feature-gated re-exports"]
@@ -25,6 +25,12 @@ flowchart TD
     UMB --> CONN
     CONN --> CORE
     CLI --> CORE
+    classDef src fill:#e0f2f1,stroke:#26a69a,stroke-width:1.5px,color:#00695c
+    classDef proc fill:#eceff8,stroke:#7986cb,stroke-width:1.5px,color:#303f9f
+    classDef store fill:#f3e5f5,stroke:#ab47bc,stroke-width:1.5px,color:#6a1b9a
+    class CLI src
+    class UMB,CONN proc
+    class CORE store
 ```
 
 The invariant that keeps the ecosystem healthy: **every connector crate depends
@@ -59,7 +65,7 @@ When you need to understand how a record actually moves, read the layers in the
 order the data does. Each hop below has a "start here" file:
 
 ```mermaid
-%%{init: {'theme':'base','themeVariables':{'primaryColor':'#ccfbf1','primaryTextColor':'#0f172a','primaryBorderColor':'#0d9488','lineColor':'#0f766e','secondaryColor':'#e0f2fe','tertiaryColor':'#f0fdfa','fontFamily':'-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif'}}}%%
+%%{init: {'theme':'base','flowchart':{'curve':'basis','nodeSpacing':50,'rankSpacing':72,'padding':14},'themeVariables':{'fontFamily':'-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif','fontSize':'14px','lineColor':'#a5b4c4','clusterBkg':'#f8fafc','clusterBorder':'#e2e8f0'}}}%%
 flowchart LR
     A["YAML/JSON config"] --> B["cli/src/config.rs<br/>parse + interpolate + secrets"]
     B --> C["cli/src/expand.rs<br/>matrix → ExpandedNode[]"]
@@ -67,6 +73,12 @@ flowchart LR
     D --> E["Pipeline::run<br/>crates/core/src/pipeline.rs"]
     E --> F["run_stream loop<br/>mask → quality → contract → drift → write → flush → checkpoint"]
     F --> G["Source::stream_pages / Sink::write_batch<br/>crates/{source,sink}/*"]
+    classDef src fill:#e0f2f1,stroke:#26a69a,stroke-width:1.5px,color:#00695c
+    classDef proc fill:#eceff8,stroke:#7986cb,stroke-width:1.5px,color:#303f9f
+    classDef sink fill:#e3f2fd,stroke:#42a5f5,stroke-width:1.5px,color:#1565c0
+    class A src
+    class B,C,D,E,F proc
+    class G sink
 ```
 
 1. **Config** — `cli/src/config.rs` defines `PipelineConfig`; `interpolate.rs`,

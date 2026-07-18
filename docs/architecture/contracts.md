@@ -38,13 +38,21 @@ Under `crates/core/src/contract/`:
 ## Execution flow
 
 ```mermaid
-%%{init: {'theme':'base','themeVariables':{'primaryColor':'#ccfbf1','primaryTextColor':'#0f172a','primaryBorderColor':'#0d9488','lineColor':'#0f766e','secondaryColor':'#e0f2fe','tertiaryColor':'#f0fdfa','fontFamily':'-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif'}}}%%
+%%{init: {'theme':'base','flowchart':{'curve':'basis','nodeSpacing':50,'rankSpacing':72,'padding':14},'themeVariables':{'fontFamily':'-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif','fontSize':'14px','lineColor':'#a5b4c4','clusterBkg':'#f8fafc','clusterBorder':'#e2e8f0'}}}%%
 flowchart TD
     PG[quality survivors] --> AP[apply_contract]
     AP -->|on_breach fail| AB[FaucetError::ContractViolation — write NOTHING]
     AP -->|on_breach quarantine| DLQ[DLQ envelope DlqReason::Contract]
     AP -->|on_breach warn| WRN[log once/run, count, write anyway]
     AP -->|clean| SUR[survivors to drift pass then sink]
+    classDef src fill:#e0f2f1,stroke:#26a69a,stroke-width:1.5px,color:#00695c
+    classDef proc fill:#eceff8,stroke:#7986cb,stroke-width:1.5px,color:#303f9f
+    classDef good fill:#e8f5e9,stroke:#66bb6a,stroke-width:1.5px,color:#2e7d32
+    classDef bad fill:#fdecec,stroke:#ef9a9a,stroke-width:1.5px,color:#c62828
+    class PG src
+    class AP proc
+    class WRN,SUR good
+    class AB,DLQ bad
 ```
 
 Runs after the quality pass and before the schema-drift pass (see
