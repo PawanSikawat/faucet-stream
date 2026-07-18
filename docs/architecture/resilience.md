@@ -30,7 +30,7 @@ no `resilience:` block is configured.
 ## How the three mechanisms compose
 
 ```mermaid
-%%{init: {'theme':'base','themeVariables':{'primaryColor':'#ccfbf1','primaryTextColor':'#0f172a','primaryBorderColor':'#0d9488','lineColor':'#0f766e','secondaryColor':'#e0f2fe','tertiaryColor':'#f0fdfa','fontFamily':'-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif'}}}%%
+%%{init: {'theme':'base','flowchart':{'curve':'basis','nodeSpacing':50,'rankSpacing':72,'padding':14},'themeVariables':{'fontFamily':'-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif','fontSize':'14px','lineColor':'#a5b4c4','clusterBkg':'#f8fafc','clusterBorder':'#e2e8f0'}}}%%
 flowchart TD
     OP[sink write / flush / state_put] --> RETRY{retriable class?}
     RETRY -->|yes| BACKOFF[backoff + jitter, retry up to max_attempts]
@@ -42,6 +42,14 @@ flowchart TD
     ROW[single bad row] --> POISON{poison policy}
     POISON -->|dlq| Q[route row to DLQ]
     POISON -->|skip| DROP[drop row + warn]
+    classDef src fill:#e0f2f1,stroke:#26a69a,stroke-width:1.5px,color:#00695c
+    classDef proc fill:#eceff8,stroke:#7986cb,stroke-width:1.5px,color:#303f9f
+    classDef dec fill:#fff3e0,stroke:#ffa726,stroke-width:1.5px,color:#e65100
+    classDef bad fill:#fdecec,stroke:#ef9a9a,stroke-width:1.5px,color:#c62828
+    class OP,ROW src
+    class BACKOFF,CONT proc
+    class RETRY,CB,POISON dec
+    class FAILPAGE,OPEN,Q,DROP bad
 ```
 
 - **Retry** handles transient, self-healing failures (see [retries](./retries.md)).

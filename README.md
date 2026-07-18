@@ -429,7 +429,7 @@ regardless of total volume. The pipeline also drives the cross-cutting runtime (
 dead-letter routing, quality checks, metrics) so connectors stay simple:
 
 ```mermaid
-%%{init: {'theme':'base','themeVariables':{'primaryColor':'#ccfbf1','primaryTextColor':'#0f172a','primaryBorderColor':'#0d9488','lineColor':'#0f766e','secondaryColor':'#e0f2fe','tertiaryColor':'#f0fdfa','fontFamily':'-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif'}}}%%
+%%{init: {'theme':'base','flowchart':{'curve':'basis','nodeSpacing':50,'rankSpacing':72,'padding':14},'themeVariables':{'fontFamily':'-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif','fontSize':'14px','lineColor':'#a5b4c4','clusterBkg':'#f8fafc','clusterBorder':'#e2e8f0'}}}%%
 flowchart LR
     S["<b>Source</b><br/>REST · DB · CDC<br/>Kafka · S3 · Parquet"]
     T["<b>Transforms</b><br/>flatten · rename · keys_case<br/>select · drop · set · cast<br/>redact · value_case · spell_symbols<br/>sql (DuckDB, page-level)"]
@@ -444,6 +444,18 @@ flowchart LR
     ST -.->|resume from bookmark| S
     P -.->|failed rows| D
     P -.->|metrics + spans| O
+    classDef src fill:#e0f2f1,stroke:#26a69a,stroke-width:1.5px,color:#00695c
+    classDef proc fill:#eceff8,stroke:#7986cb,stroke-width:1.5px,color:#303f9f
+    classDef dec fill:#fff3e0,stroke:#ffa726,stroke-width:1.5px,color:#e65100
+    classDef bad fill:#fdecec,stroke:#ef9a9a,stroke-width:1.5px,color:#c62828
+    classDef store fill:#f3e5f5,stroke:#ab47bc,stroke-width:1.5px,color:#6a1b9a
+    classDef sink fill:#e3f2fd,stroke:#42a5f5,stroke-width:1.5px,color:#1565c0
+    class S src
+    class T,O proc
+    class P dec
+    class D bad
+    class ST store
+    class K sink
 ```
 
 faucet-stream is a Cargo workspace with **67 crates** — 28 sources, 21 sinks, 9 shared
