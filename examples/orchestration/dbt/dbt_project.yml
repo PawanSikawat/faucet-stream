@@ -1,0 +1,15 @@
+# Minimal dbt project that transforms the raw table faucet loads
+# (public.charges_raw) into a typed staging model. This is the "T" in ELT —
+# faucet owns extract + load, dbt owns transform. See ../README.md.
+name: faucet_charges
+version: "1.0.0"
+config-version: 2
+
+profile: faucet_charges
+
+model-paths: ["models"]
+
+models:
+  faucet_charges:
+    staging:
+      +materialized: view
