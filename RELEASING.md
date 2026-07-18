@@ -124,7 +124,7 @@ Verify locally:
 - [ ] `cargo publish --dry-run` passes for changed crates.
 - [ ] For a new crate: version is `1.0.0`, keywords/categories set, docs.rs
   block + `doc_cfg` present, added to the umbrella + CLI features, the CI
-  `feature-check` matrix, and (if a connector) `connectors/registry.json`.
+  `feature-check` matrix, and (if a connector) `cli/connectors/registry.json`.
 
 ## Related
 

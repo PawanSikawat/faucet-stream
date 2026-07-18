@@ -2,7 +2,7 @@
 //! `faucet search`, `faucet install`, and `faucet list --available`.
 //!
 //! The index is a committed, **feature-independent** JSON catalog
-//! (`connectors/registry.json`, embedded at build time) of every connector the
+//! (`cli/connectors/registry.json`, embedded at build time) of every connector the
 //! ecosystem knows about — the built-in `verified` ones plus any community
 //! `faucet-source-*` / `faucet-sink-*` crates added by PR. It is deliberately
 //! decoupled from which connectors a given binary compiled in, so `search` can
@@ -15,7 +15,7 @@ use std::path::Path;
 
 /// The committed built-in index, embedded so `search`/`install` work offline
 /// and regardless of compiled features.
-const EMBEDDED_INDEX: &str = include_str!("../../connectors/registry.json");
+const EMBEDDED_INDEX: &str = include_str!("../connectors/registry.json");
 
 /// One connector in the registry index.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -94,7 +94,8 @@ fn default_version() -> u32 {
 impl RegistryIndex {
     /// The embedded built-in index.
     pub fn embedded() -> Self {
-        serde_json::from_str(EMBEDDED_INDEX).expect("embedded connectors/registry.json is valid")
+        serde_json::from_str(EMBEDDED_INDEX)
+            .expect("embedded cli/connectors/registry.json is valid")
     }
 
     /// Load from `path`, or the embedded index when `None`.
@@ -258,13 +259,13 @@ mod tests {
         for k in crate::registry::source_kinds() {
             assert!(
                 idx.find(k, Some("source")).iter().any(|c| c.verified),
-                "built-in source `{k}` is missing a verified entry in connectors/registry.json"
+                "built-in source `{k}` is missing a verified entry in cli/connectors/registry.json"
             );
         }
         for k in crate::registry::sink_kinds() {
             assert!(
                 idx.find(k, Some("sink")).iter().any(|c| c.verified),
-                "built-in sink `{k}` is missing a verified entry in connectors/registry.json"
+                "built-in sink `{k}` is missing a verified entry in cli/connectors/registry.json"
             );
         }
     }

@@ -48,7 +48,7 @@ runtime surface.
   documented capability sets reduces the cognitive load without breaking object
   safety. Design in [RFC 0001](../rfcs/0001-capability-traits.md).
 - **Connector SDK ergonomics.** Reduce the boilerplate checklist a new connector
-  must satisfy (feature flags in three places, `connectors/registry.json`, the CI
+  must satisfy (feature flags in three places, `cli/connectors/registry.json`, the CI
   matrix, the docs capability table). Candidate direction: a proc-macro or code
   generator that derives the wiring. See
   [Extensibility](./architecture/extensibility.md) and

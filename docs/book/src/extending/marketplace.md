@@ -13,7 +13,7 @@ discovered and consumed by others. Three commands power this:
 ## The registry index
 
 The index is a committed JSON file,
-[`connectors/registry.json`](https://github.com/PawanSikawat/faucet-stream/blob/main/connectors/registry.json),
+[`cli/connectors/registry.json`](https://github.com/PawanSikawat/faucet-stream/blob/main/cli/connectors/registry.json),
 embedded into the binary so `search` / `install` work offline and independently
 of which connectors you compiled in. Each entry:
 
@@ -50,5 +50,5 @@ Trust is explicit: community connectors are marked, and `install` only ever
 1. Scaffold it: `faucet new connector <name> --kind source|sink` (see
    [Authoring a connector](./authoring-connectors.md)).
 2. Publish to crates.io with system-name-first keywords.
-3. Open a PR adding an entry to `connectors/registry.json` with
+3. Open a PR adding an entry to `cli/connectors/registry.json` with
    `verified: false` so `faucet search` surfaces it.

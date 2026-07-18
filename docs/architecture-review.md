@@ -131,7 +131,7 @@ limitation. Where a risk already has a mitigation planned, the relevant
   `enforce_admins: false`). The documentation effort this review is part of
   directly mitigates the knowledge-concentration risk.
 - **Docs-sync burden.** Adding a connector requires touching features in three
-  places, `connectors/registry.json`, the CI matrix, the docs capability table,
+  places, `cli/connectors/registry.json`, the CI matrix, the docs capability table,
   and the crate README. This is documented as a trigger→update table, but it is
   manual and easy to get partially wrong. SDK-ergonomics work (near-term roadmap)
   targets this.

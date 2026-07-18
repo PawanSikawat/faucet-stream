@@ -109,7 +109,7 @@ wired into every surface. Miss one and a CI job — or a downstream user — bre
 - [ ] **CLI dispatch** — add the arm to `build_source`/`build_sink` (and the
       `*_schema` / `*_descriptions` helpers) in [`cli/src/registry.rs`](../../cli/src/registry.rs).
 - [ ] **Registry index** — add a verified entry to
-      [`connectors/registry.json`](../../connectors/registry.json), or the CLI
+      [`cli/connectors/registry.json`](../../cli/connectors/registry.json), or the CLI
       `registry_index` test panics under `--all-features`.
 - [ ] **CI matrix** — add the connector to the `feature-check` matrix in
       `.github/workflows/ci.yml` (feature-isolation builds each connector alone).

@@ -83,7 +83,7 @@ crate `Cargo.toml` and its `[workspace.dependencies]` path entry.
 ## 7. Adding a connector without the registry entry
 
 **Mistake:** wiring a new source/sink into the CLI but forgetting
-[`connectors/registry.json`](../../connectors/registry.json).
+[`cli/connectors/registry.json`](../../cli/connectors/registry.json).
 
 **Why it bites:** the CLI `registry_index` test panics under `--all-features`
 (`Test`/`Coverage` jobs) — and this isn't in the docs-sync trigger table, so it's
