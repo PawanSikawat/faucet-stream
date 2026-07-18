@@ -32,6 +32,9 @@ You'd reach for faucet-stream when **throughput, operational simplicity, or in-f
 - **[faucet-stream vs. Meltano (Singer)](./meltano.md)** — the Python-runtime comparison most people are weighing.
 - **[faucet-stream vs. Airbyte](./airbyte.md)** — binary-and-library vs. a platform you operate.
 - **[faucet-stream vs. Singer](./singer.md)** — native connectors vs. the tap/target spec.
+- **[faucet-stream vs. Redpanda Connect (Benthos)](./redpanda-connect.md)** — the other declarative-YAML single binary: batch/ELT vs. continuous streaming.
+- **[faucet-stream vs. Vector](./vector.md)** — the closest architectural cousin (Rust, single binary), but a different domain.
+- **[faucet-stream vs. Fivetran](./fivetran.md)** — a binary you own vs. a fully-managed SaaS.
 
 ## dbt is complementary, not a competitor
 

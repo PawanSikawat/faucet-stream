@@ -47,6 +47,27 @@ jobs:
           curl -sSL "$url" | tar -xz -C "$HOME/.local/bin"
       - name: Build
         run: mdbook build docs/book
+      - name: Generate sitemap.xml
+        # mdBook has no native sitemap (rust-lang/mdBook#1491); generate one from
+        # the built HTML so search engines can crawl every page. Uses the full
+        # Pages origin (site-url in book.toml is only a path prefix).
+        env:
+          BASE_URL: "https://pawansikawat.github.io/faucet-stream"
+        run: |
+          cd docs/book/book
+          {
+            echo '<?xml version="1.0" encoding="UTF-8"?>'
+            echo '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">'
+            find . -type f -name '*.html' ! -name '404.html' ! -name 'print.html' \
+              | sed 's|^\./||' \
+              | LC_ALL=C sort \
+              | while IFS= read -r f; do
+                  loc="${f%index.html}"
+                  echo "  <url><loc>${BASE_URL}/${loc}</loc></url>"
+                done
+            echo '</urlset>'
+          } > sitemap.xml
+          echo "Wrote $(grep -c '<url>' sitemap.xml) URLs to sitemap.xml"
       - name: Upload Pages artifact
         if: github.ref == 'refs/heads/main'
         uses: actions/upload-pages-artifact@v3

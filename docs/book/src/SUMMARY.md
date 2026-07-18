@@ -68,6 +68,9 @@
 - [vs. Meltano (Singer)](./comparison/meltano.md)
 - [vs. Airbyte](./comparison/airbyte.md)
 - [vs. Singer](./comparison/singer.md)
+- [vs. Redpanda Connect (Benthos)](./comparison/redpanda-connect.md)
+- [vs. Vector](./comparison/vector.md)
+- [vs. Fivetran](./comparison/fivetran.md)
 
 # Operations
 
