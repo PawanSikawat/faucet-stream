@@ -52,6 +52,10 @@ jobs:
           curl -sSL "$url" | tar -xz -C "$HOME/.local/bin"
       - name: Build
         run: mdbook build docs/book
+      - name: Inject per-page SEO metadata
+        # mdBook's head.hbs is site-wide; rewrite per-page description + Open
+        # Graph / Twitter title & description from each page's <h1>/first <p>.
+        run: python3 scripts/inject-page-meta.py docs/book/book
       - name: Generate sitemap.xml
         # mdBook has no native sitemap (rust-lang/mdBook#1491); generate one from
         # the built HTML so search engines can crawl every page. Uses the full

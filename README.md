@@ -243,7 +243,7 @@ for help picking between overlapping connectors (Postgres query vs CDC, S3 vs Pa
 > production — Tier-2 means "not certified," **not** "low quality." The Singer
 > bridge is additionally **experimental (v0, single-stream)** ⚠️.
 
-### Sources (25)
+### Sources (28)
 
 `Tier`: **T1 ✅** = passes the `faucet-conformance` battery in CI; **T2** = not yet
 wired into the battery (see the support-tiers note above).
@@ -279,7 +279,7 @@ wired into the battery (see the support-tiers note above).
 | [`faucet-source-csv`](crates/source/csv) | **T1 ✅** | CSV — read CSV files as JSON objects |
 | [`faucet-source-singer`](crates/source/singer) | T2 ⚠️ | **Singer tap bridge** — run any Singer tap and adapt its output. Passes the battery, but **experimental (v0, single-stream)** |
 
-### Sinks (20)
+### Sinks (21)
 
 | Crate | Tier | Description |
 |-------|------|-------------|
@@ -803,7 +803,7 @@ and the runnable [`cli/examples/custom-cli/`](cli/examples/custom-cli/main.rs).
 ## Project structure
 
 ```
-Cargo.toml                    — workspace manifest (60 crates)
+Cargo.toml                    — workspace manifest (67 crates)
 crates/
   core/                       — faucet-core: shared types, traits, pipeline, transforms, config
   auth/                       — faucet-auth: shared OAuth2 / token-endpoint providers

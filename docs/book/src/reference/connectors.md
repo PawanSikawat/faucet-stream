@@ -1,6 +1,6 @@
 # Connector catalog
 
-faucet-stream ships **25 sources** and **20 sinks**. Each is a Cargo feature
+faucet-stream ships **28 sources** and **21 sinks**. Each is a Cargo feature
 (`source-<name>` / `sink-<name>`) and an independently published crate. Full API
 docs are on [docs.rs](https://docs.rs/faucet-stream).
 
