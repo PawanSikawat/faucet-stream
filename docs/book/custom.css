@@ -34,12 +34,12 @@
 .coal,
 .ayu {
   --sidebar-bg: #0d302c; /* deep teal */
-  --sidebar-fg: #c9ede6;
-  --sidebar-non-existant: #5f918a;
+  --sidebar-fg: #e4eaef; /* light neutral slate — crisp, NOT teal-on-teal */
+  --sidebar-non-existant: #7f96a0;
   --sidebar-active: #ffffff;
   --sidebar-spacer: rgba(255, 255, 255, 0.1);
   --scrollbar: rgba(255, 255, 255, 0.28);
-  --sidebar-header-border-color: #2dd4bf; /* the active-section accent bar → teal, not the stock indigo */
+  --sidebar-header-border-color: #2dd4bf; /* active-section accent bar → teal, not the stock indigo */
   --links: #2dd4bf;
 }
 
