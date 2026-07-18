@@ -1,99 +1,135 @@
 /* ── faucet-stream documentation theme ──────────────────────────────────────
-   Brand-grounded visual identity layered on mdBook via `additional-css`
-   (no preprocessor — a bare `mdbook build` still works). The accent is the
-   faucet-stream icon's own teal (#14B8A6) on slate neutrals (#0F172A), so the
-   docs match the logo, the favicon, and the wordmark. Tuned for the two themes
-   we ship (light default + navy dark → restyled to slate); the others still
-   inherit the teal accent and stay legible.
+   A restrained teal identity. One bold move — a deep-teal left sidebar — with
+   quiet teal accents everywhere else (links, selection, callouts, table
+   headers, focus rings, navigation). No gradients, no decorative dots, no
+   heavy shadows. Tuned for the light default and the navy dark theme;
+   coal / ayu / rust inherit the accents and stay legible.
+   Loaded via `additional-css`, after mdBook's own CSS, so these rules win.
    ──────────────────────────────────────────────────────────────────────── */
 
 :root {
-  /* Brand — the icon's teal on slate. */
-  --fs-teal: #14b8a6; /* logo-mark / favicon / wordmark */
-  --fs-teal-strong: #0d9488;
+  --fs-teal: #14b8a6;
   --fs-teal-deep: #0f766e;
-  --fs-teal-bright: #2dd4bf; /* legible on dark grounds */
-  --fs-cyan: #06b6d4; /* gradient partner (the "stream") */
-  --fs-slate: #0f172a; /* wordmark ink / dark ground */
-  --fs-slate-2: #1e293b;
-
-  --fs-brand: var(--fs-teal);
-  --fs-brand-strong: var(--fs-teal-strong);
-  --fs-radius: 10px;
-  --fs-shadow: 0 1px 2px rgba(15, 23, 42, 0.06), 0 10px 30px rgba(15, 23, 42, 0.06);
-  /* mdBook defaults to a ~750px column tuned for a short prose line length.
-     These docs lean on wide reference tables (the connector capability matrix,
-     feature grids), so give the column real room — ~1000px. Prose paragraphs
-     are held back to a comfortable measure via `.content p` below so long
-     lines don't hurt readability. */
+  --fs-teal-bright: #2dd4bf;
   --content-max-width: 62rem;
 }
 
-/* Per-theme accent + ground overrides (mdBook stamps the theme on <html>). */
-.light {
-  --links: var(--fs-teal-deep);
-  --sidebar-active: var(--fs-teal-deep);
-  --fs-brand: var(--fs-teal-deep);
-  --fs-brand-strong: var(--fs-teal);
-  --fs-card-bg: rgba(20, 184, 166, 0.05);
-  --fs-line: #e2e8f0;
-}
-/* Dark theme (navy) → restyle to brand slate + bright teal for legibility. */
-.navy {
-  --bg: #0b1120;
-  --fg: #e2e8f0;
-  --sidebar-bg: #0a0f1c;
-  --sidebar-fg: #cbd5e1;
-  --sidebar-non-existant: #64748b;
-  --links: var(--fs-teal-bright);
-  --sidebar-active: var(--fs-teal-bright);
-  --inline-code-color: var(--fs-teal-bright);
-  --theme-popup-bg: #0f172a;
-  --theme-popup-border: #1e293b;
-  --quote-bg: #101a2e;
-  --quote-border: #1e293b;
-  --table-border-color: #1e293b;
-  --table-header-bg: #0f172a;
-  --table-alternate-bg: #0d1526;
-  --fs-brand: var(--fs-teal-bright);
-  --fs-brand-strong: var(--fs-teal);
-  --fs-card-bg: rgba(45, 212, 191, 0.06);
-  --fs-line: #1e293b;
-}
+/* ── The signature: a deep-teal sidebar, consistent across every theme ─────── */
+.light,
+.navy,
 .coal,
-.ayu {
-  --links: var(--fs-teal-bright);
-  --sidebar-active: var(--fs-teal-bright);
-  --fs-brand: var(--fs-teal-bright);
-  --fs-brand-strong: var(--fs-teal);
-  --fs-card-bg: rgba(45, 212, 191, 0.06);
-  --fs-line: rgba(148, 163, 184, 0.2);
+.ayu,
+.rust {
+  --sidebar-bg: #115e59; /* teal-800 */
+  --sidebar-fg: #d5f7f2;
+  --sidebar-non-existant: #6fb4ac;
+  --sidebar-active: #ffffff;
+  --sidebar-spacer: rgba(255, 255, 255, 0.12);
+  --scrollbar: rgba(255, 255, 255, 0.28);
+}
+.sidebar .sidebar-scrollbox {
+  padding: 0.6rem 0.8rem;
+}
+.chapter li.chapter-item {
+  margin: 0.12rem 0;
+  line-height: 1.5;
+}
+/* Rounded hover / active "pill" for each TOC entry. */
+.chapter li.chapter-item > a,
+.chapter li.chapter-item > div {
+  border-radius: 7px;
+  padding: 0.28rem 0.55rem;
+  transition: background 0.13s ease, color 0.13s ease;
+}
+.chapter li.chapter-item > a:hover {
+  background: rgba(255, 255, 255, 0.09);
+  color: #fff;
+}
+.chapter li.chapter-item > a.active {
+  background: rgba(255, 255, 255, 0.15);
+  color: #fff;
+  font-weight: 600;
+}
+.chapter .part-title {
+  color: #9fe6dc;
+  letter-spacing: 0.04em;
+}
+
+/* ── Top menu bar: clean, tied to the sidebar with a single teal hairline ──── */
+.menu-bar {
+  border-bottom: 1px solid color-mix(in srgb, var(--fs-teal) 22%, transparent);
+}
+
+/* ── Content links + text accents ─────────────────────────────────────────── */
+.light {
+  --links: #0f766e;
 }
 .rust {
-  --links: var(--fs-teal-deep);
-  --fs-brand: var(--fs-teal-deep);
-  --fs-brand-strong: var(--fs-teal);
-  --fs-card-bg: rgba(20, 184, 166, 0.06);
-  --fs-line: rgba(148, 163, 184, 0.25);
+  --links: #0f766e;
+}
+.navy,
+.coal,
+.ayu {
+  --links: #2dd4bf;
+}
+.content a:not(.header) {
+  text-decoration: none;
+}
+.content a:not(.header):hover {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  text-decoration-thickness: 1.5px;
+}
+::selection {
+  background: color-mix(in srgb, var(--fs-teal) 25%, transparent);
+}
+/* Inline code: a hint of teal, not a shout. */
+.content :not(pre) > code {
+  color: var(--fs-teal-deep);
+}
+.navy .content :not(pre) > code,
+.coal .content :not(pre) > code,
+.ayu .content :not(pre) > code {
+  color: var(--fs-teal-bright);
+}
+/* The heading-anchor mark turns teal on hover. */
+.content a.header:hover {
+  color: var(--fs-teal);
 }
 
-/* ── Signature gradient rail at the very top ─────────────────────────────── */
-#menu-bar {
-  border-top: 3px solid transparent;
-  border-image: linear-gradient(90deg, var(--fs-teal), var(--fs-cyan)) 1;
+/* ── Blockquote → quiet teal callout ──────────────────────────────────────── */
+.content blockquote {
+  border-inline-start: 3px solid var(--fs-teal);
+  background: color-mix(in srgb, var(--fs-teal) 6%, transparent);
+  border-radius: 0 6px 6px 0;
+  margin-inline: 0;
+  padding: 0.6rem 1rem;
+  color: inherit;
 }
 
-/* ── Typography ──────────────────────────────────────────────────────────── */
-html {
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica,
-    Arial, "Noto Sans", sans-serif, "Apple Color Emoji", "Segoe UI Emoji";
-  scroll-behavior: smooth;
+/* ── Tables: clean, with a soft teal header ───────────────────────────────── */
+.content table thead th {
+  background: color-mix(in srgb, var(--fs-teal) 12%, transparent);
+  font-weight: 600;
 }
+
+/* ── Navigation + search pick up teal ─────────────────────────────────────── */
+.nav-chapters:hover {
+  color: var(--fs-teal);
+}
+#searchbar:focus {
+  border-color: var(--fs-teal);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--fs-teal) 25%, transparent);
+  outline: none;
+}
+mark {
+  background: color-mix(in srgb, var(--fs-teal) 30%, transparent);
+}
+
+/* ── Typography: a little more air, prose held to a readable measure ──────── */
 .content {
-  line-height: 1.68;
+  line-height: 1.7;
 }
-/* Hold running prose to a comfortable measure even though the column is wide,
-   while tables, code blocks, diagrams, and the hero/cards use the full width. */
 .content p,
 .content ul,
 .content ol,
@@ -109,174 +145,80 @@ html {
 }
 .content h1,
 .content h2,
-.content h3,
-.content h4 {
-  font-weight: 700;
-  letter-spacing: -0.02em;
-  line-height: 1.2;
-}
-.content h1 {
-  font-size: 2.15rem;
-  padding-bottom: 0.35em;
-  background: linear-gradient(90deg, var(--fs-teal), var(--fs-cyan)) bottom left / 3.5rem 3px no-repeat;
+.content h3 {
+  letter-spacing: -0.012em;
 }
 .content h2 {
-  margin-top: 2.4rem;
-  padding-bottom: 0.25em;
-  border-bottom: 1px solid var(--fs-line);
+  margin-top: 2.3rem;
+  padding-bottom: 0.2em;
+  border-bottom: 1px solid color-mix(in srgb, var(--fs-teal) 16%, transparent);
 }
-.content h2::before {
-  content: "";
-  display: inline-block;
-  width: 0.45rem;
-  height: 0.45rem;
-  margin-right: 0.55rem;
-  border-radius: 2px;
-  background: var(--fs-brand);
-  vertical-align: middle;
-  transform: translateY(-0.15em);
-}
-
-/* ── Links ───────────────────────────────────────────────────────────────── */
-.content a:not(.header) {
-  color: var(--fs-brand);
-  text-decoration: none;
-  border-bottom: 1px solid color-mix(in srgb, var(--fs-brand) 30%, transparent);
-  transition: border-color 0.12s ease, color 0.12s ease;
-}
-.content a:not(.header):hover {
-  color: var(--fs-brand-strong);
-  border-bottom-color: currentColor;
-}
-::selection {
-  background: color-mix(in srgb, var(--fs-teal) 28%, transparent);
-}
-
-/* ── Code ────────────────────────────────────────────────────────────────── */
 .content pre {
-  border-radius: var(--fs-radius);
-  border: 1px solid var(--fs-line);
-  box-shadow: var(--fs-shadow);
+  border-radius: 8px;
 }
-.content pre > .buttons {
-  opacity: 0.75;
-}
-.content :not(pre) > code {
-  border-radius: 5px;
-  padding: 0.1em 0.35em;
-}
-
-/* ── Blockquote → callout ────────────────────────────────────────────────── */
-.content blockquote {
-  border-inline-start: 4px solid var(--fs-brand);
-  background: color-mix(in srgb, var(--fs-teal) 9%, transparent);
-  border-radius: 0 var(--fs-radius) var(--fs-radius) 0;
-  padding: 0.7rem 1.1rem;
-  margin-inline: 0;
-  color: inherit;
-}
-
-/* ── Tables ──────────────────────────────────────────────────────────────── */
-.content table {
-  border-radius: var(--fs-radius);
-  overflow: hidden;
-  border-collapse: collapse;
-  width: 100%;
-  box-shadow: var(--fs-shadow);
-}
-.content table thead th {
-  background: var(--table-header-bg, color-mix(in srgb, var(--fs-teal) 14%, transparent));
-  color: inherit;
-  font-weight: 650;
-  border-bottom: 2px solid color-mix(in srgb, var(--fs-teal) 45%, transparent);
-}
-.content table td,
-.content table th {
-  border: 1px solid var(--fs-line);
-  padding: 0.5rem 0.75rem;
-}
-
-/* ── Sidebar ─────────────────────────────────────────────────────────────── */
-.chapter li.chapter-item a.active {
-  color: var(--fs-brand);
-  font-weight: 650;
-}
-.chapter li.chapter-item a:hover {
-  color: var(--fs-brand);
-}
-.sidebar .sidebar-scrollbox {
-  padding: 0.75rem 1rem;
-}
-
-/* ── Mermaid diagrams — let them breathe ─────────────────────────────────── */
 .content .mermaid {
-  margin: 1.4rem 0;
+  margin: 1.5rem 0;
   text-align: center;
 }
 
-/* ── Landing hero (introduction.md) ──────────────────────────────────────── */
+/* ── Landing hero + cards (introduction.md) ───────────────────────────────── */
 .fs-hero {
   text-align: center;
-  padding: 2.5rem 1rem 1rem;
-  margin: -1rem -1rem 0;
-  border-radius: 0 0 20px 20px;
-  background: radial-gradient(
-    60% 120% at 50% -10%,
-    color-mix(in srgb, var(--fs-teal) 16%, transparent),
-    transparent 70%
-  );
+  padding: 2rem 1rem 0.5rem;
 }
 .fs-hero img {
-  max-width: 440px;
-  width: 72%;
+  max-width: 420px;
+  width: 70%;
   height: auto;
 }
 .fs-hero .fs-tagline {
-  font-size: 1.35rem;
+  font-size: 1.3rem;
   font-weight: 500;
-  margin: 1rem auto 1.5rem;
+  color: var(--fs-teal-deep);
+  margin: 1rem auto 1.4rem;
   max-width: 34rem;
   line-height: 1.45;
 }
-.fs-hero .fs-tagline strong,
-.fs-hero .fs-tagline b {
-  background: linear-gradient(90deg, var(--fs-teal), var(--fs-cyan));
-  -webkit-background-clip: text;
-  background-clip: text;
-  -webkit-text-fill-color: transparent;
+.navy .fs-hero .fs-tagline,
+.coal .fs-hero .fs-tagline,
+.ayu .fs-hero .fs-tagline {
+  color: var(--fs-teal-bright);
 }
 .fs-cta {
   display: inline-flex;
-  gap: 0.75rem;
+  gap: 0.7rem;
   flex-wrap: wrap;
   justify-content: center;
   margin-bottom: 0.5rem;
 }
 .fs-cta a {
   display: inline-block;
-  padding: 0.65rem 1.25rem;
-  border-radius: var(--fs-radius);
-  font-weight: 650;
+  padding: 0.6rem 1.2rem;
+  border-radius: 8px;
+  font-weight: 600;
   border-bottom: none !important;
-  transition: transform 0.12s ease, box-shadow 0.12s ease, background 0.12s ease;
+  transition: transform 0.12s ease, background 0.12s ease;
 }
 .fs-cta a:hover {
-  transform: translateY(-2px);
+  transform: translateY(-1px);
 }
 .fs-cta a.primary {
-  background: linear-gradient(135deg, var(--fs-teal), var(--fs-teal-deep));
+  background: var(--fs-teal-deep);
   color: #fff !important;
-  box-shadow: 0 6px 18px color-mix(in srgb, var(--fs-teal) 35%, transparent);
+}
+.fs-cta a.primary:hover {
+  background: var(--fs-teal);
 }
 .fs-cta a.secondary {
-  border: 1px solid color-mix(in srgb, var(--fs-teal) 55%, transparent) !important;
-  color: var(--fs-brand) !important;
+  border: 1px solid var(--fs-teal-deep) !important;
+  color: var(--fs-teal-deep) !important;
 }
-.fs-cta a.secondary:hover {
-  background: color-mix(in srgb, var(--fs-teal) 8%, transparent);
+.navy .fs-cta a.secondary,
+.coal .fs-cta a.secondary,
+.ayu .fs-cta a.secondary {
+  border-color: var(--fs-teal-bright) !important;
+  color: var(--fs-teal-bright) !important;
 }
-
-/* Card grid for the landing "why" / quick-links. */
 .fs-cards {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
@@ -284,18 +226,21 @@ html {
   margin: 1.5rem 0;
 }
 .fs-card {
-  border: 1px solid var(--fs-line);
-  border-radius: var(--fs-radius);
-  padding: 1.1rem 1.2rem;
-  background: var(--fs-card-bg);
-  transition: transform 0.14s ease, box-shadow 0.14s ease, border-color 0.14s ease;
+  border: 1px solid var(--table-border-color, rgba(128, 128, 128, 0.2));
+  border-radius: 10px;
+  padding: 1rem 1.15rem;
+  transition: border-color 0.14s ease, transform 0.14s ease;
 }
 .fs-card:hover {
-  transform: translateY(-3px);
-  box-shadow: var(--fs-shadow);
-  border-color: color-mix(in srgb, var(--fs-teal) 45%, transparent);
+  border-color: var(--fs-teal);
+  transform: translateY(-2px);
 }
 .fs-card h3 {
   margin-top: 0;
-  color: var(--fs-brand);
+  color: var(--fs-teal-deep);
+}
+.navy .fs-card h3,
+.coal .fs-card h3,
+.ayu .fs-card h3 {
+  color: var(--fs-teal-bright);
 }
