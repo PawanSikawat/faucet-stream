@@ -66,13 +66,13 @@
   padding: 0.6rem 0.8rem;
 }
 .chapter li.chapter-item {
-  margin: 0.12rem 0;
-  line-height: 1.5;
+  margin: 0.04rem 0;
+  line-height: 1.85; /* match the roomy rhythm mdBook gives nested sections */
 }
 .chapter li.chapter-item > a,
 .chapter li.chapter-item > div {
   border-radius: 7px;
-  padding: 0.28rem 0.55rem;
+  padding: 0.32rem 0.55rem;
   transition: background 0.13s ease, color 0.13s ease;
 }
 .chapter li.chapter-item > a:hover {
