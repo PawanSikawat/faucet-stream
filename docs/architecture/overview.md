@@ -44,7 +44,7 @@ the loop itself in [pipeline](./pipeline.md); the streaming model in
 
 ## Crate topology
 
-The workspace is a Cargo workspace of 63 crates (62 libraries + the `faucet` CLI
+The workspace is a Cargo workspace of 67 crates (66 libraries + the `faucet` CLI
 binary). The topology encodes a hard rule: **connectors depend only on
 `faucet-core`.**
 

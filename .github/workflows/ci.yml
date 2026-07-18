@@ -33,6 +33,14 @@ jobs:
           components: rustfmt
       - run: cargo fmt --all --check
 
+  doc-counts:
+    name: Doc counts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check connector counts in docs match connector crates
+        run: bash scripts/check-doc-counts.sh
+
   clippy:
     name: Clippy
     runs-on: ubuntu-latest
