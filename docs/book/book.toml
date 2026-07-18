@@ -6,6 +6,9 @@ language = "en"
 src = "src"
 
 [output.html]
+# Full origin path for the GitHub Pages project site — fixes 404-page asset/nav
+# links and gives the generated site a stable base URL (pairs with the sitemap).
+site-url = "/faucet-stream/"
 # Clean light default + navy dark — the brand accent in custom.css is tuned for
 # both. (Was rust/ayu; light/navy reads more modern and closer to the reference
 # docs sites.)
