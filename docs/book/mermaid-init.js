@@ -62,7 +62,7 @@
         startOnLoad: true,
         theme: 'base',
         themeVariables: lastThemeWasLight ? lightVars : darkVars,
-        flowchart: { htmlLabels: true, padding: 12 },
+        flowchart: { htmlLabels: true, padding: 12, useMaxWidth: true, nodeSpacing: 36, rankSpacing: 44 },
     });
 
     // Re-render diagrams in the new palette when the reader switches theme.
