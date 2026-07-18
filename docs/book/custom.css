@@ -21,7 +21,12 @@
   --fs-brand-strong: var(--fs-teal-strong);
   --fs-radius: 10px;
   --fs-shadow: 0 1px 2px rgba(15, 23, 42, 0.06), 0 10px 30px rgba(15, 23, 42, 0.06);
-  --content-max-width: 46rem;
+  /* mdBook defaults to a ~750px column tuned for a short prose line length.
+     These docs lean on wide reference tables (the connector capability matrix,
+     feature grids), so give the column real room — ~1000px. Prose paragraphs
+     are held back to a comfortable measure via `.content p` below so long
+     lines don't hurt readability. */
+  --content-max-width: 62rem;
 }
 
 /* Per-theme accent + ground overrides (mdBook stamps the theme on <html>). */
@@ -86,6 +91,21 @@ html {
 }
 .content {
   line-height: 1.68;
+}
+/* Hold running prose to a comfortable measure even though the column is wide,
+   while tables, code blocks, diagrams, and the hero/cards use the full width. */
+.content p,
+.content ul,
+.content ol,
+.content blockquote {
+  max-width: 46rem;
+}
+.content table,
+.content pre,
+.content .mermaid,
+.content .fs-hero,
+.content .fs-cards {
+  max-width: none;
 }
 .content h1,
 .content h2,
