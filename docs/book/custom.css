@@ -160,15 +160,8 @@ mark {
 .content {
   line-height: 1.7;
 }
-.content p,
-.content ul,
-.content ol,
-.content blockquote {
-  max-width: 46rem;
-}
 .content table,
 .content pre,
-
 .content .fs-hero,
 .content .fs-cards {
   max-width: none;
@@ -187,9 +180,14 @@ mark {
   border-radius: 8px;
 }
 .content .mermaid {
-  margin: 1.5rem 0;
-  max-width: 46rem;
-  text-align: center;
+  width: fit-content;
+  max-width: 100%;
+  margin: 1.6rem auto; /* center the box on the page */
+  padding: 1.1rem 1.35rem;
+  border: 1px solid var(--table-border-color, #c6c6bc);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--fs-green) 4%, transparent);
+  text-align: center; /* center the diagram inside the box */
   overflow-x: auto;
 }
 .content .mermaid svg {
