@@ -177,7 +177,7 @@ and [`benchmarks/meltano/meltano.yml`](benchmarks/meltano/meltano.yml).
 |---|---|---|---|---|---|
 | **faucet-stream (`write_method: copy`)** | **8.12** | 0.142 | **123,200** | **35.9** | 1,000,000 |
 | faucet-stream (multi-row `INSERT`) | 10.10 | 0.112 | 99,000 | 35.9 | 1,000,000 |
-| Meltano (Singer) | 129.8 | 34.347 | 7,706 | 485.7 | 1,000,000 |
+| Meltano (Singer)† | 129.8 | 34.347 | 7,706 | 485.7 | 1,000,000 |
 
 On this workload/hardware faucet's COPY path was **~16× faster** than Meltano
 (and its INSERT path ~12.9×), with **~13.5× less peak memory** (35.9 vs 485.7
@@ -188,15 +188,16 @@ the faucet rows were re-measured when the COPY fast-path landed. faucet's
 INSERT number improved slightly between runs — 11.17s → 10.10s — normal
 machine-load drift.)
 
-> **Numbers predate the `batch_size_rows: 5000` pin.** The Meltano row above was
-> captured before the explicit batch pin was added to `meltano.yml` (it used
-> `target-postgres`'s prior default); the batch pin makes both sides literally
-> 5,000 rows. In this regime batch size is not the lever (faucet's throughput is
-> flat 500→5000 rows/`INSERT`), so the number is not expected to move materially —
-> but it has not been re-measured under the pinned config. **TODO: run locally**
-> (needs Docker + a Meltano venv, not available in this change):
-> `scripts/run-bench.sh --postgres --rows 1000000`, then refresh this table and
-> `benchmarks/results/results_pg_1m.md` from the real run.
+> **† The Meltano row predates the `batch_size_rows: 5000` pin.** It was captured
+> on the same-machine PR #307 run, *before* the explicit batch pin was added to
+> `meltano.yml` (it used `target-postgres`'s prior default). The config is now
+> pinned so both sides write 5,000-row batches, but **this specific Meltano number
+> has not been re-measured under the pin** — read it as pre-pin. In this regime
+> batch size is not the lever (faucet's throughput is flat 500→5000 rows/`INSERT`),
+> so it is not expected to move materially. Re-measuring needs Docker + a Meltano
+> venv on the bench host: run `scripts/run-bench.sh --postgres --rows 1000000` and
+> refresh this table + `benchmarks/results/results_pg_1m.md` when that environment
+> is available (tracked in [#336](https://github.com/PawanSikawat/faucet-stream/issues/336)).
 
 This is the whole point of the scenario: **the gap
 collapses from ~96× to ~16× as the workload moves from parse-bound to
