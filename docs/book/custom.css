@@ -19,7 +19,7 @@
 .rust {
   --bg: #dcdcd6; /* warm greige paper */
   --fg: var(--fs-ink);
-  --sidebar-bg: #d0d0c7; /* a touch deeper for separation */
+  --sidebar-bg: #c6c6ba; /* deeper warm greige for clearer separation from the paper */
   --sidebar-fg: var(--fs-ink);
   --sidebar-non-existant: #8a8a7e;
   --sidebar-active: #ffffff;
