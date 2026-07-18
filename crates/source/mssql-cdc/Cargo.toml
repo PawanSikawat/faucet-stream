@@ -1,0 +1,40 @@
+[package]
+name = "faucet-source-mssql-cdc"
+version = "1.0.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Microsoft SQL Server CDC (change data capture) source for the faucet-stream ecosystem"
+readme = "README.md"
+keywords = ["mssql", "cdc", "sqlserver", "replication", "connector"]
+categories.workspace = true
+
+[dependencies]
+faucet-core.workspace = true
+faucet-common-mssql.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+schemars.workspace = true
+async-trait.workspace = true
+tracing.workspace = true
+tiberius.workspace = true
+chrono.workspace = true
+base64.workspace = true
+url.workspace = true
+futures.workspace = true
+async-stream.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync", "time"] }
+
+[dev-dependencies]
+faucet-conformance.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync", "time", "test-util"] }
+serde_json.workspace = true
+schemars.workspace = true
+futures.workspace = true
+testcontainers = "0.27"
+testcontainers-modules = { version = "0.15", features = ["mssql_server"] }
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

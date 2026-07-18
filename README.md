@@ -22,8 +22,8 @@
 ~62× less memory than Meltano**, output identical row-for-row ([see the benchmarks](BENCHMARKS.md)).
 No Python runtime, no platform to stand up, no daemon to babysit.
 
-faucet-stream is a **data-movement platform** for Rust — with governance built in: **28 source**
-and **21 sink** connectors (**49 in total**) plus in-flight transforms, including a page-level
+faucet-stream is a **data-movement platform** for Rust — with governance built in: **33 source**
+and **25 sink** connectors (**58 in total**) plus in-flight transforms, including a page-level
 embedded-DuckDB `sql` transform — wired by a single `faucet` binary that runs pipelines
 declaratively from YAML/JSON (no Rust code required), or embedded in your own service through
 the typed `Source` / `Sink` traits. One platform, whether you want a CLI you can drop on any
@@ -64,7 +64,7 @@ cargo add faucet-stream           # the library
   sink sees a row), schema-drift detection & policy, column-level lineage (OpenLineage) + a
   data-movement catalog, and freshness/volume SLA monitoring.
 - **📦 Pay only for what you use** — every connector is a Cargo feature, so a slim build can
-  be just REST + JSONL, or pull in all 49 connectors with `--features full`.
+  be just REST + JSONL, or pull in all 58 connectors with `--features full`.
 
 **Documentation:** the [faucet-stream guide](https://pawansikawat.github.io/faucet-stream/)
 (getting started, tutorials, cookbook, operations) · API reference on
@@ -195,7 +195,7 @@ one-block addition to your YAML:
 |---|---|---|
 | **Streaming, bounded memory** | Sources stream page-by-page; sinks write each page as it arrives — memory stays at one `batch_size` regardless of total volume. | [concepts](https://pawansikawat.github.io/faucet-stream/getting-started/concepts.html) |
 | **Incremental + resumable** | Bookmark-based replication: only fetch what changed, resume mid-run from a durable state store (file / Redis / Postgres). | [state](https://pawansikawat.github.io/faucet-stream/cookbook/state.html) |
-| **Change data capture** | Streaming row-level CDC for **PostgreSQL** (logical replication), **MySQL** (binlog), and **MongoDB** (change streams) — resumable. | [CDC guide](https://pawansikawat.github.io/faucet-stream/reference/connectors.html) |
+| **Change data capture** | Streaming row-level CDC for **PostgreSQL** (logical replication), **MySQL** (binlog), **MongoDB** (change streams), and **SQL Server** (CDC change tables) — resumable. | [CDC guide](https://pawansikawat.github.io/faucet-stream/reference/connectors.html) |
 | **Effectively-once delivery** | Monotonic per-page commit tokens committed atomically with the data (SQL sinks, Iceberg, BigQuery), so a resumed run re-delivers no duplicates. This is idempotent at-least-once (dedup on resume), not distributed-consensus exactly-once. | [state](https://pawansikawat.github.io/faucet-stream/cookbook/state.html) |
 | **Upsert / delete write modes** | `write_mode: upsert \| delete` with a `key` + `delete_marker` — merge by key on Postgres / MySQL / SQL Server / SQLite / Mongo / Elasticsearch. | [upsert](https://pawansikawat.github.io/faucet-stream/cookbook/upsert.html) |
 | **Data-quality checks** | 13 per-record and per-batch assertions (not-null, regex, ranges, uniqueness, row-count, JSON Schema, …) with quarantine routing or abort policies. | [quality](https://pawansikawat.github.io/faucet-stream/cookbook/quality.html) |
@@ -243,7 +243,7 @@ for help picking between overlapping connectors (Postgres query vs CDC, S3 vs Pa
 > production — Tier-2 means "not certified," **not** "low quality." The Singer
 > bridge is additionally **experimental (v0, single-stream)** ⚠️.
 
-### Sources (28)
+### Sources (33)
 
 `Tier`: **T1 ✅** = passes the `faucet-conformance` battery in CI; **T2** = not yet
 wired into the battery (see the support-tiers note above).
@@ -259,17 +259,22 @@ wired into the battery (see the support-tiers note above).
 | [`faucet-source-mysql`](crates/source/mysql) | T1 ✅ | MySQL — run SQL queries, return rows as JSON |
 | [`faucet-source-mysql-cdc`](crates/source/mysql-cdc) | T1 ✅ | MySQL CDC — binlog row events, resumable via file/pos or GTID |
 | [`faucet-source-mssql`](crates/source/mssql) | T1 ✅ | Microsoft SQL Server — streaming queries, incremental replication |
+| [`faucet-source-mssql-cdc`](crates/source/mssql-cdc) | T1 ✅ | Microsoft SQL Server CDC — change tables (`fn_cdc_get_all_changes`), LSN bookmarks, resumable |
 | [`faucet-source-sqlite`](crates/source/sqlite) | **T1 ✅** | SQLite — run SQL queries, return rows as JSON |
 | [`faucet-source-mongodb`](crates/source/mongodb) | T1 ✅ | MongoDB — find() with filter, projection, sort |
 | [`faucet-source-mongodb-cdc`](crates/source/mongodb-cdc) | T1 ✅ | MongoDB CDC — Change Streams, resumable via resumeToken |
 | [`faucet-source-redis`](crates/source/redis) | T1 ✅ | Redis — read from streams, lists, or key patterns |
 | [`faucet-source-kafka`](crates/source/kafka) | T1 ✅ | Apache Kafka — consumer with idle/max-messages termination |
 | [`faucet-source-kinesis`](crates/source/kinesis) | T1 ✅ | AWS Kinesis Data Streams — sharded consumer with resumable sequence checkpoints |
+| [`faucet-source-pubsub`](crates/source/pubsub) | T2 | Google Cloud Pub/Sub — streaming pull; per-message records + attributes, resumable |
 | [`faucet-source-s3`](crates/source/s3) | T1 ✅ | AWS S3 — read objects as JSONL, JSON array, or raw text |
 | [`faucet-source-gcs`](crates/source/gcs) | T2 | Google Cloud Storage — read objects as JSONL, JSON array, or raw text |
+| [`faucet-source-azure-blob`](crates/source/azure-blob) | T1 ✅ | Azure Blob / ADLS Gen2 — read objects as JSONL, JSON array, or raw text |
 | [`faucet-source-parquet`](crates/source/parquet) | T1 ✅ | Apache Parquet — local file, glob, or S3; vectorized Arrow reader, projection |
 | [`faucet-source-delta`](crates/source/delta) | T2 | Apache Delta Lake — local FS or S3/Azure/GCS; time travel, projection pushdown |
 | [`faucet-source-databricks`](crates/source/databricks) | T3 | Databricks SQL query source (Statement Execution API) — typed rows, chunk pagination, incremental |
+| [`faucet-source-redshift`](crates/source/redshift) | T1 ✅ | Amazon Redshift — SQL query over the PostgreSQL wire, incremental replication |
+| [`faucet-source-clickhouse`](crates/source/clickhouse) | T2 | ClickHouse — HTTP interface, `FORMAT JSONEachRow` streaming, incremental replication |
 | [`faucet-source-elasticsearch`](crates/source/elasticsearch) | T1 ✅ᵐ | Elasticsearch — search/scroll API |
 | [`faucet-source-bigquery`](crates/source/bigquery) | T1 ✅ᵐ | Google BigQuery — `jobs.query` + `getQueryResults`, type-aware decoding |
 | [`faucet-source-snowflake`](crates/source/snowflake) | T1 ✅ᵐ | Snowflake — SQL REST API, server-side partition pagination, JWT / OAuth |
@@ -279,7 +284,7 @@ wired into the battery (see the support-tiers note above).
 | [`faucet-source-csv`](crates/source/csv) | **T1 ✅** | CSV — read CSV files as JSON objects |
 | [`faucet-source-singer`](crates/source/singer) | T2 ⚠️ | **Singer tap bridge** — run any Singer tap and adapt its output. Passes the battery, but **experimental (v0, single-stream)** |
 
-### Sinks (21)
+### Sinks (25)
 
 | Crate | Tier | Description |
 |-------|------|-------------|
@@ -290,14 +295,18 @@ wired into the battery (see the support-tiers note above).
 | [`faucet-sink-mssql`](crates/sink/mssql) | T1 ✅ | Microsoft SQL Server — JSON or auto-mapped columns, 2100-param split |
 | [`faucet-sink-sqlite`](crates/sink/sqlite) | **T1 ✅** | SQLite — JSON column or auto-mapped columns; upsert/delete; effectively-once |
 | [`faucet-sink-snowflake`](crates/sink/snowflake) | T2 | Snowflake — SQL REST API with JWT/OAuth |
+| [`faucet-sink-redshift`](crates/sink/redshift) | T1 ✅ | Amazon Redshift — COPY-from-S3 (staged) or multi-row `INSERT`; append-only |
+| [`faucet-sink-clickhouse`](crates/sink/clickhouse) | T2 | ClickHouse — `INSERT … FORMAT JSONEachRow`; optional `async_insert`; append-only |
 | [`faucet-sink-mongodb`](crates/sink/mongodb) | T1 ✅ | MongoDB — insert_many; upsert/delete by key |
 | [`faucet-sink-redis`](crates/sink/redis) | T1 ✅ | Redis — write to streams, lists, or key-value |
 | [`faucet-sink-kafka`](crates/sink/kafka) | T1 ✅ | Apache Kafka — producer with batching, multi-topic routing |
 | [`faucet-sink-kinesis`](crates/sink/kinesis) | T1 ✅ | AWS Kinesis Data Streams — batched PutRecords with partition-key routing |
+| [`faucet-sink-pubsub`](crates/sink/pubsub) | T2 | Google Cloud Pub/Sub — batched publish; optional ordering key, per-entry retry |
 | [`faucet-sink-spanner`](crates/sink/spanner) | T1 ✅ᵉ | Google Cloud Spanner — batched mutations; upsert/delete, effectively-once commit tokens, schema evolution |
 | [`faucet-sink-elasticsearch`](crates/sink/elasticsearch) | T2 | Elasticsearch — bulk index API; upsert/delete by `_id` |
 | [`faucet-sink-s3`](crates/sink/s3) | T1 ✅ | AWS S3 — write JSONL files to bucket |
 | [`faucet-sink-gcs`](crates/sink/gcs) | T2 | Google Cloud Storage — write JSONL files to bucket |
+| [`faucet-sink-azure-blob`](crates/sink/azure-blob) | T2 | Azure Blob / ADLS Gen2 — write JSONL blobs; batch/byte rollover |
 | [`faucet-sink-parquet`](crates/sink/parquet) | T1 ✅ | Apache Parquet — local file or S3; schema inference, row/byte rollover |
 | [`faucet-sink-delta`](crates/sink/delta) | T2 | Apache Delta Lake — append-only; local FS or S3/Azure/GCS; one commit per flush |
 | [`faucet-sink-jsonl`](crates/sink/jsonl) | **T1 ✅** | JSON Lines — file output with append/truncate |
@@ -383,8 +392,8 @@ own service.
 | Single static binary | ✓ | ✗ | ✗ | ✓ | ✓ | n/a |
 | Config-driven (YAML/JSON) | ✓ | ✓ | via UI/API | ✓ | ✓ | via UI |
 | Embeddable as a library | ✓ (Rust) | ✗ | ✗ | ✓ (Go) | ✗ | ✗ |
-| Connector count | 49, growing | 600+ taps | 350+ | dozens | dozens | 500+ |
-| Change data capture | ✓ Postgres / MySQL / Mongo | partial¹ | ✓ | partial | ✗ | ✓ |
+| Connector count | 58, growing | 600+ taps | 350+ | dozens | dozens | 500+ |
+| Change data capture | ✓ Postgres / MySQL / Mongo / SQL Server | partial¹ | ✓ | partial | ✗ | ✓ |
 | Incremental + resumable state | ✓ | ✓ | ✓ | partial | n/a | ✓ |
 | Effectively-once delivery³ | ✓ (11 sinks incl. Kafka, Iceberg, BigQuery) | ✗ | partial | ✗ | ✗ | ✓ |
 | Built-in data-quality checks | ✓ native | ✗ | paywalled add-on | ✗ | ✗ | paywalled add-on |
@@ -458,7 +467,7 @@ flowchart LR
     class K sink
 ```
 
-faucet-stream is a Cargo workspace with **67 crates** — 28 sources, 21 sinks, 9 shared
+faucet-stream is a Cargo workspace with **80 crates** — 33 sources, 25 sinks, 13 shared
 connector libraries, the shared auth-provider library, 2 state-store backends, the lineage
 crate, the SQL transform crate, the conformance test battery, the shared core, the umbrella
 crate, and the CLI binary. See
@@ -510,14 +519,17 @@ Default features: `source-rest`, `transform-flatten`, `transform-rename-keys`,
 | `source-mysql` | no | MySQL query source |
 | `source-mysql-cdc` | no | MySQL CDC source (binlog replication) |
 | `source-mssql` | no | Microsoft SQL Server query source |
+| `source-mssql-cdc` | no | Microsoft SQL Server CDC source (change tables) |
 | `source-sqlite` | no | SQLite query source |
 | `source-mongodb` | no | MongoDB query source |
 | `source-mongodb-cdc` | no | MongoDB CDC source (Change Streams) |
 | `source-redis` | no | Redis source |
 | `source-kafka` | no | Apache Kafka consumer source |
 | `source-kinesis` | no | AWS Kinesis Data Streams source |
+| `source-pubsub` | no | Google Cloud Pub/Sub source |
 | `source-s3` | no | AWS S3 file source |
 | `source-gcs` | no | Google Cloud Storage file source |
+| `source-azure-blob` | no | Azure Blob / ADLS Gen2 file source |
 | `source-parquet` | no | Apache Parquet file source (local, glob, S3) |
 | `source-delta` | no | Apache Delta Lake source (local FS; S3/Azure/GCS via `delta-s3`/`delta-azure`/`delta-gcs`) |
 | `source-databricks` | no | Databricks SQL query source (Statement Execution API) |
@@ -525,6 +537,8 @@ Default features: `source-rest`, `transform-flatten`, `transform-rename-keys`,
 | `source-elasticsearch` | no | Elasticsearch source |
 | `source-bigquery` | no | Google BigQuery query source |
 | `source-snowflake` | no | Snowflake query source |
+| `source-redshift` | no | Amazon Redshift query source (PostgreSQL wire) |
+| `source-clickhouse` | no | ClickHouse query source (HTTP interface) |
 | `source-spanner` | no | Google Cloud Spanner query source |
 | `source-webhook` | no | Webhook HTTP receiver |
 | `source-websocket` | no | WebSocket live streaming source |
@@ -536,14 +550,18 @@ Default features: `source-rest`, `transform-flatten`, `transform-rename-keys`,
 | `sink-mssql` | no | Microsoft SQL Server sink |
 | `sink-sqlite` | no | SQLite sink |
 | `sink-snowflake` | no | Snowflake sink |
+| `sink-redshift` | no | Amazon Redshift sink (COPY-from-S3 or multi-row INSERT) |
+| `sink-clickhouse` | no | ClickHouse sink (INSERT … FORMAT JSONEachRow) |
 | `sink-mongodb` | no | MongoDB sink |
 | `sink-redis` | no | Redis sink |
 | `sink-kafka` | no | Apache Kafka producer sink |
 | `sink-kinesis` | no | AWS Kinesis Data Streams sink |
+| `sink-pubsub` | no | Google Cloud Pub/Sub sink |
 | `sink-spanner` | no | Google Cloud Spanner sink |
 | `sink-elasticsearch` | no | Elasticsearch bulk index sink |
 | `sink-s3` | no | AWS S3 file sink |
 | `sink-gcs` | no | Google Cloud Storage file sink |
+| `sink-azure-blob` | no | Azure Blob / ADLS Gen2 file sink |
 | `sink-parquet` | no | Apache Parquet file sink (local, S3) |
 | `sink-jsonl` | no | JSON Lines file sink |
 | `sink-csv` | no | CSV file sink |
@@ -803,13 +821,13 @@ and the runnable [`cli/examples/custom-cli/`](cli/examples/custom-cli/main.rs).
 ## Project structure
 
 ```
-Cargo.toml                    — workspace manifest (67 crates)
+Cargo.toml                    — workspace manifest (80 crates)
 crates/
   core/                       — faucet-core: shared types, traits, pipeline, transforms, config
   auth/                       — faucet-auth: shared OAuth2 / token-endpoint providers
-  source/                     — 28 source connectors (rest, graphql, xml, grpc, *-cdc, kafka, s3, delta, databricks, singer, …)
-  sink/                       — 21 sink connectors (bigquery, iceberg, delta, postgres, parquet, kafka, …)
-  common/                     — 6 shared connector libraries (bigquery, elasticsearch, gcs, kafka, snowflake, mssql)
+  source/                     — 33 source connectors (rest, graphql, xml, grpc, *-cdc, kafka, s3, azure-blob, redshift, clickhouse, pubsub, delta, databricks, singer, …)
+  sink/                       — 25 sink connectors (bigquery, iceberg, delta, postgres, parquet, kafka, redshift, clickhouse, pubsub, azure-blob, …)
+  common/                     — 13 shared connector libraries (bigquery, elasticsearch, gcs, kafka, snowflake, mssql, kinesis, spanner, delta, redshift, pubsub, clickhouse, azure)
   state/                      — Redis- and Postgres-backed StateStore backends
   lineage/                    — faucet-lineage: OpenLineage event emission
   transform-sql/              — faucet-transform-sql: embedded DuckDB SQL transform

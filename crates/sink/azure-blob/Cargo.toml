@@ -1,0 +1,49 @@
+[package]
+name = "faucet-sink-azure-blob"
+version = "1.0.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Azure Blob Storage / ADLS Gen2 sink connector for the faucet-stream ecosystem"
+readme = "README.md"
+keywords = ["azure", "blob", "adls", "storage", "sink"]
+categories.workspace = true
+
+[dependencies]
+faucet-core.workspace = true
+faucet-common-azure.workspace = true
+schemars.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+async-trait.workspace = true
+tracing.workspace = true
+tokio.workspace = true
+futures.workspace = true
+bytes.workspace = true
+uuid.workspace = true
+object_store = { workspace = true, features = ["azure"] }
+
+[features]
+compression = ["faucet-core/compression"]
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "io-util", "sync"] }
+serde_json.workspace = true
+faucet-conformance.workspace = true
+schemars.workspace = true
+futures.workspace = true
+testcontainers = "0.27"
+testcontainers-modules = { version = "0.15", features = ["azurite"] }
+# Verifies written blobs against Azurite through the same `object_store` Azure
+# client the connector uses (available to the integration-test target because
+# `object_store` is a normal dependency).
+object_store = { workspace = true, features = ["azure"] }
+# `object_store` cannot create a blob container; the Azure SDK does (this is the
+# proven Azurite path used by `testcontainers-modules`' own tests).
+azure_storage = "0.21"
+azure_storage_blobs = "0.21"
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

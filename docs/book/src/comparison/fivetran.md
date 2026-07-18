@@ -34,7 +34,7 @@ Straight with you — a managed service earns its keep in real ways:
 |---|---|---|
 | Model | self-hosted open-source binary + library | fully-managed proprietary SaaS |
 | Pipeline definition | version-controlled YAML/JSON | UI (also API / Terraform) |
-| Connectors | 49 built-in | 500+ managed |
+| Connectors | 58 built-in | 500+ managed |
 | Change data capture | ✓ Postgres / MySQL / Mongo | ✓ log-based |
 | Where data / credentials live | your infrastructure | Fivetran's infrastructure |
 | Cost model | free (compute you already run) | usage-based (monthly active rows) |

@@ -210,7 +210,7 @@ Only certain connectors are allowed in an effectively-once (`delivery: exactly_o
 
 | Role | Allowed connectors | Why others are excluded |
 |------|--------------------|------------------------|
-| Source | `postgres-cdc`, `mysql-cdc`, `mongodb-cdc`, `kafka` | The source must emit a complete resume position (bookmark) on every page, over an immutable log, so resuming from a bookmark continues the record stream at exactly that position. Query-based sources (REST, SQL query, etc.) can return different data on replay — the pipeline would silently skip records it never wrote. |
+| Source | `postgres-cdc`, `mysql-cdc`, `mssql-cdc`, `mongodb-cdc`, `kafka` | The source must emit a complete resume position (bookmark) on every page, over an immutable log, so resuming from a bookmark continues the record stream at exactly that position. Query-based sources (REST, SQL query, etc.) can return different data on replay — the pipeline would silently skip records it never wrote. |
 | Sink | `sqlite`, `postgres`, `mysql`, `mssql`, `iceberg`, `bigquery`, `kafka`, `snowflake`, `redis`, `mongodb`, `spanner` | The sink must be able to commit data and a watermark token atomically in a single transaction or snapshot. Sinks without transaction support cannot provide this guarantee (they can still reach effectively-once via keyed upsert, below). The MongoDB sink requires a replica set (or sharded cluster) — multi-document transactions are unavailable on a standalone server. |
 
 **Keyed upsert relaxes the source restriction entirely**: any source feeding an

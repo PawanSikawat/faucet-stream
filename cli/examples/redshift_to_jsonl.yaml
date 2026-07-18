@@ -1,0 +1,34 @@
+# Amazon Redshift -> JSONL.
+#
+# Runs a SQL query over the Redshift PostgreSQL wire protocol and writes the
+# rows to a local JSON Lines file. Add a `replication:` block to track a
+# monotonically increasing column across runs (incremental replication).
+#
+# Run:
+#   faucet run cli/examples/redshift_to_jsonl.yaml
+#
+# Prereqs:
+#   - A reachable Redshift cluster with an `events` table.
+version: 1
+name: redshift_to_jsonl
+
+pipeline:
+  source:
+    type: redshift
+    config:
+      host: my-cluster.abc123.us-east-1.redshift.amazonaws.com
+      database: dev
+      user: admin
+      credentials:
+        type: password
+        config:
+          # Prefer ${env:...} / ${vault:...} in real configs; literal here so the
+          # shipped example validates offline.
+          password: changeme
+      query: SELECT id, email, updated_at FROM events ORDER BY updated_at
+      batch_size: 1000
+
+  sink:
+    type: jsonl
+    config:
+      path: ./out/events.jsonl

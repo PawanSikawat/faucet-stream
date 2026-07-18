@@ -118,6 +118,12 @@ files as each config shows:
 | Example | Notes |
 |---------|-------|
 | `postgres_to_bigquery_with_lineage.yaml` | Postgres → BigQuery with a top-level `lineage:` block — emits OpenLineage RunEvents (schema + column-lineage facets) to a Marquez HTTP endpoint. Needs `--features lineage`, a BigQuery project (`GCP_KEY_JSON`), and `MARQUEZ_URL` (or swap in the commented `transport: { type: file }` for local testing) |
+| `clickhouse_to_jsonl.yaml` | ClickHouse query source (HTTP `JSONEachRow`) → JSONL |
+| `csv_to_clickhouse.yaml` | CSV → ClickHouse sink (`INSERT … FORMAT JSONEachRow`, optional `async_insert`) |
+| `redshift_to_jsonl.yaml` | Amazon Redshift query source (Postgres wire) → JSONL |
+| `pubsub_to_jsonl.yaml` | Google Cloud Pub/Sub subscription → JSONL (streaming pull, at-least-once ack at page boundaries) |
+| `azure_blob_to_jsonl.yaml` | Azure Blob / ADLS Gen2 object source → JSONL |
+| `mssql_cdc_to_postgres_upsert.yaml` | SQL Server CDC → Postgres upsert mirror (`cdc_unwrap` + `write_mode: upsert`) |
 
 ## Tips
 

@@ -162,6 +162,11 @@ jobs:
           - source-mysql
           - source-mysql-cdc
           - source-mssql
+          - source-mssql-cdc
+          - source-redshift
+          - source-pubsub
+          - source-clickhouse
+          - source-azure-blob
           - source-sqlite
           - source-s3
           - source-mongodb
@@ -203,6 +208,10 @@ jobs:
           - sink-parquet
           - sink-delta
           - sink-gcs
+          - sink-redshift
+          - sink-pubsub
+          - sink-clickhouse
+          - sink-azure-blob
           # Kafka extras
           - kafka-schema-registry
           # State-store backends

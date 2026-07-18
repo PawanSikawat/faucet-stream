@@ -1,0 +1,29 @@
+# ClickHouse -> JSONL.
+#
+# Streams rows from ClickHouse over the HTTP interface (FORMAT JSONEachRow) and
+# writes them to a local JSON Lines file.
+#
+# Run:
+#   faucet run cli/examples/clickhouse_to_jsonl.yaml
+#
+# Prereqs:
+#   - ClickHouse reachable at http://clickhouse:8123 with an `events` table.
+#   - Do NOT append a FORMAT clause to `query` — the source sets JSONEachRow.
+version: 1
+name: clickhouse_to_jsonl
+
+pipeline:
+  source:
+    type: clickhouse
+    config:
+      # Endpoint — either `url` OR `host` (+ optional `http_port` / `tls`).
+      url: http://clickhouse:8123
+      database: default
+      user: default
+      query: SELECT id, email, updated_at FROM events
+      batch_size: 1000
+
+  sink:
+    type: jsonl
+    config:
+      path: ./out/events.jsonl

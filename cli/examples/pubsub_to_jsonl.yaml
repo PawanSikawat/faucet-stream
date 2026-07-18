@@ -1,0 +1,34 @@
+# Google Cloud Pub/Sub -> JSONL.
+#
+# Streams messages from a Pub/Sub subscription (streaming pull) and writes each
+# message body to a local JSON Lines file. Messages are acked at the durable
+# page boundary (at-least-once). The fetch cycle ends after `idle_termination_secs`
+# of quiet or after `max_messages` messages.
+#
+# Run:
+#   faucet run cli/examples/pubsub_to_jsonl.yaml
+#
+# Prereqs:
+#   - A Pub/Sub subscription `orders-sub` in project `my-gcp-project`, or point
+#     `emulator_host` at a running Pub/Sub emulator.
+version: 1
+name: pubsub_to_jsonl
+
+pipeline:
+  source:
+    type: pubsub
+    config:
+      subscription: orders-sub
+      project_id: my-gcp-project
+      # emulator_host: "localhost:8085"   # or set PUBSUB_EMULATOR_HOST
+      credentials: { type: application_default }
+      value_format: json
+      attributes_key: __attributes
+      idle_termination_secs: 30
+      max_messages: 100000
+      batch_size: 1000
+
+  sink:
+    type: jsonl
+    config:
+      path: ./out/orders.jsonl
