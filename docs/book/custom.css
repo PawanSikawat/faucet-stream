@@ -1,18 +1,86 @@
 /* ── faucet-stream documentation theme ──────────────────────────────────────
-   Visual polish layered on top of mdBook's built-in themes via
-   `additional-css` (no preprocessor — a bare `mdbook build` still works).
-   Loaded after mdBook's own CSS, so these rules win. Tuned for the two themes
-   we ship by default (light + navy); the others (rust/coal/ayu) still inherit
-   the brand accent and remain fully legible.
+   Brand-grounded visual identity layered on mdBook via `additional-css`
+   (no preprocessor — a bare `mdbook build` still works). The accent is the
+   faucet-stream icon's own teal (#14B8A6) on slate neutrals (#0F172A), so the
+   docs match the logo, the favicon, and the wordmark. Tuned for the two themes
+   we ship (light default + navy dark → restyled to slate); the others still
+   inherit the teal accent and stay legible.
    ──────────────────────────────────────────────────────────────────────── */
 
 :root {
-  /* faucet-stream brand — a "water/flow" blue, legible on both light and dark. */
-  --fs-brand: #2f7fe0;
-  --fs-brand-strong: #1f66c2;
-  --fs-accent: #0ea5b7;
-  --fs-radius: 8px;
-  --content-max-width: 46rem; /* a touch wider than default for tables/code */
+  /* Brand — the icon's teal on slate. */
+  --fs-teal: #14b8a6; /* logo-mark / favicon / wordmark */
+  --fs-teal-strong: #0d9488;
+  --fs-teal-deep: #0f766e;
+  --fs-teal-bright: #2dd4bf; /* legible on dark grounds */
+  --fs-cyan: #06b6d4; /* gradient partner (the "stream") */
+  --fs-slate: #0f172a; /* wordmark ink / dark ground */
+  --fs-slate-2: #1e293b;
+
+  --fs-brand: var(--fs-teal);
+  --fs-brand-strong: var(--fs-teal-strong);
+  --fs-radius: 10px;
+  --fs-shadow: 0 1px 2px rgba(15, 23, 42, 0.06), 0 10px 30px rgba(15, 23, 42, 0.06);
+  /* mdBook defaults to a ~750px column tuned for a short prose line length.
+     These docs lean on wide reference tables (the connector capability matrix,
+     feature grids), so give the column real room — ~1000px. Prose paragraphs
+     are held back to a comfortable measure via `.content p` below so long
+     lines don't hurt readability. */
+  --content-max-width: 62rem;
+}
+
+/* Per-theme accent + ground overrides (mdBook stamps the theme on <html>). */
+.light {
+  --links: var(--fs-teal-deep);
+  --sidebar-active: var(--fs-teal-deep);
+  --fs-brand: var(--fs-teal-deep);
+  --fs-brand-strong: var(--fs-teal);
+  --fs-card-bg: rgba(20, 184, 166, 0.05);
+  --fs-line: #e2e8f0;
+}
+/* Dark theme (navy) → restyle to brand slate + bright teal for legibility. */
+.navy {
+  --bg: #0b1120;
+  --fg: #e2e8f0;
+  --sidebar-bg: #0a0f1c;
+  --sidebar-fg: #cbd5e1;
+  --sidebar-non-existant: #64748b;
+  --links: var(--fs-teal-bright);
+  --sidebar-active: var(--fs-teal-bright);
+  --inline-code-color: var(--fs-teal-bright);
+  --theme-popup-bg: #0f172a;
+  --theme-popup-border: #1e293b;
+  --quote-bg: #101a2e;
+  --quote-border: #1e293b;
+  --table-border-color: #1e293b;
+  --table-header-bg: #0f172a;
+  --table-alternate-bg: #0d1526;
+  --fs-brand: var(--fs-teal-bright);
+  --fs-brand-strong: var(--fs-teal);
+  --fs-card-bg: rgba(45, 212, 191, 0.06);
+  --fs-line: #1e293b;
+}
+.coal,
+.ayu {
+  --links: var(--fs-teal-bright);
+  --sidebar-active: var(--fs-teal-bright);
+  --fs-brand: var(--fs-teal-bright);
+  --fs-brand-strong: var(--fs-teal);
+  --fs-card-bg: rgba(45, 212, 191, 0.06);
+  --fs-line: rgba(148, 163, 184, 0.2);
+}
+.rust {
+  --links: var(--fs-teal-deep);
+  --fs-brand: var(--fs-teal-deep);
+  --fs-brand-strong: var(--fs-teal);
+  --fs-card-bg: rgba(20, 184, 166, 0.06);
+  --fs-line: rgba(148, 163, 184, 0.25);
+}
+
+/* ── Signature gradient rail at the very top ─────────────────────────────── */
+#menu-bar {
+  border-top: 3px solid transparent;
+  border-image: linear-gradient(90deg, var(--fs-teal), var(--fs-cyan)) 1;
 }
 
 /* ── Typography ──────────────────────────────────────────────────────────── */
@@ -22,58 +90,88 @@ html {
   scroll-behavior: smooth;
 }
 .content {
-  line-height: 1.65;
+  line-height: 1.68;
+}
+/* Hold running prose to a comfortable measure even though the column is wide,
+   while tables, code blocks, diagrams, and the hero/cards use the full width. */
+.content p,
+.content ul,
+.content ol,
+.content blockquote {
+  max-width: 46rem;
+}
+.content table,
+.content pre,
+.content .mermaid,
+.content .fs-hero,
+.content .fs-cards {
+  max-width: none;
 }
 .content h1,
 .content h2,
 .content h3,
 .content h4 {
-  font-weight: 650;
-  letter-spacing: -0.01em;
-  line-height: 1.25;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  line-height: 1.2;
 }
 .content h1 {
-  font-size: 2.1rem;
-  padding-bottom: 0.3em;
-  border-bottom: 2px solid color-mix(in srgb, var(--fs-brand) 30%, transparent);
+  font-size: 2.15rem;
+  padding-bottom: 0.35em;
+  background: linear-gradient(90deg, var(--fs-teal), var(--fs-cyan)) bottom left / 3.5rem 3px no-repeat;
 }
 .content h2 {
-  margin-top: 2.2rem;
-  padding-bottom: 0.2em;
-  border-bottom: 1px solid var(--table-border-color, rgba(128, 128, 128, 0.25));
+  margin-top: 2.4rem;
+  padding-bottom: 0.25em;
+  border-bottom: 1px solid var(--fs-line);
+}
+.content h2::before {
+  content: "";
+  display: inline-block;
+  width: 0.45rem;
+  height: 0.45rem;
+  margin-right: 0.55rem;
+  border-radius: 2px;
+  background: var(--fs-brand);
+  vertical-align: middle;
+  transform: translateY(-0.15em);
 }
 
 /* ── Links ───────────────────────────────────────────────────────────────── */
 .content a:not(.header) {
   color: var(--fs-brand);
   text-decoration: none;
-  border-bottom: 1px solid transparent;
+  border-bottom: 1px solid color-mix(in srgb, var(--fs-brand) 30%, transparent);
   transition: border-color 0.12s ease, color 0.12s ease;
 }
 .content a:not(.header):hover {
   color: var(--fs-brand-strong);
   border-bottom-color: currentColor;
 }
+::selection {
+  background: color-mix(in srgb, var(--fs-teal) 28%, transparent);
+}
 
 /* ── Code ────────────────────────────────────────────────────────────────── */
 .content pre {
   border-radius: var(--fs-radius);
-  border: 1px solid var(--table-border-color, rgba(128, 128, 128, 0.2));
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
-}
-.content code {
-  border-radius: 4px;
+  border: 1px solid var(--fs-line);
+  box-shadow: var(--fs-shadow);
 }
 .content pre > .buttons {
-  opacity: 0.7;
+  opacity: 0.75;
+}
+.content :not(pre) > code {
+  border-radius: 5px;
+  padding: 0.1em 0.35em;
 }
 
-/* ── Blockquotes → callouts ──────────────────────────────────────────────── */
+/* ── Blockquote → callout ────────────────────────────────────────────────── */
 .content blockquote {
   border-inline-start: 4px solid var(--fs-brand);
-  background: color-mix(in srgb, var(--fs-brand) 8%, transparent);
+  background: color-mix(in srgb, var(--fs-teal) 9%, transparent);
   border-radius: 0 var(--fs-radius) var(--fs-radius) 0;
-  padding: 0.6rem 1rem;
+  padding: 0.7rem 1.1rem;
   margin-inline: 0;
   color: inherit;
 }
@@ -84,16 +182,18 @@ html {
   overflow: hidden;
   border-collapse: collapse;
   width: 100%;
+  box-shadow: var(--fs-shadow);
 }
 .content table thead th {
-  background: color-mix(in srgb, var(--fs-brand) 12%, transparent);
+  background: var(--table-header-bg, color-mix(in srgb, var(--fs-teal) 14%, transparent));
+  color: inherit;
   font-weight: 650;
-  border-bottom: 2px solid color-mix(in srgb, var(--fs-brand) 30%, transparent);
+  border-bottom: 2px solid color-mix(in srgb, var(--fs-teal) 45%, transparent);
 }
 .content table td,
 .content table th {
-  border: 1px solid var(--table-border-color, rgba(128, 128, 128, 0.18));
-  padding: 0.45rem 0.7rem;
+  border: 1px solid var(--fs-line);
+  padding: 0.5rem 0.75rem;
 }
 
 /* ── Sidebar ─────────────────────────────────────────────────────────────── */
@@ -101,66 +201,101 @@ html {
   color: var(--fs-brand);
   font-weight: 650;
 }
+.chapter li.chapter-item a:hover {
+  color: var(--fs-brand);
+}
 .sidebar .sidebar-scrollbox {
   padding: 0.75rem 1rem;
 }
 
-/* ── Landing hero (used by introduction.md) ──────────────────────────────── */
+/* ── Mermaid diagrams — let them breathe ─────────────────────────────────── */
+.content .mermaid {
+  margin: 1.4rem 0;
+  text-align: center;
+}
+
+/* ── Landing hero (introduction.md) ──────────────────────────────────────── */
 .fs-hero {
   text-align: center;
-  padding: 1.5rem 0 0.5rem;
+  padding: 2.5rem 1rem 1rem;
+  margin: -1rem -1rem 0;
+  border-radius: 0 0 20px 20px;
+  background: radial-gradient(
+    60% 120% at 50% -10%,
+    color-mix(in srgb, var(--fs-teal) 16%, transparent),
+    transparent 70%
+  );
 }
 .fs-hero img {
-  max-width: 460px;
-  width: 70%;
+  max-width: 440px;
+  width: 72%;
   height: auto;
 }
 .fs-hero .fs-tagline {
-  font-size: 1.25rem;
-  opacity: 0.85;
-  margin: 0.75rem auto 1.25rem;
+  font-size: 1.35rem;
+  font-weight: 500;
+  margin: 1rem auto 1.5rem;
   max-width: 34rem;
-  line-height: 1.5;
+  line-height: 1.45;
+}
+.fs-hero .fs-tagline strong,
+.fs-hero .fs-tagline b {
+  background: linear-gradient(90deg, var(--fs-teal), var(--fs-cyan));
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
 }
 .fs-cta {
   display: inline-flex;
   gap: 0.75rem;
   flex-wrap: wrap;
   justify-content: center;
-  margin-bottom: 1rem;
+  margin-bottom: 0.5rem;
 }
 .fs-cta a {
   display: inline-block;
-  padding: 0.6rem 1.15rem;
+  padding: 0.65rem 1.25rem;
   border-radius: var(--fs-radius);
-  font-weight: 600;
+  font-weight: 650;
   border-bottom: none !important;
+  transition: transform 0.12s ease, box-shadow 0.12s ease, background 0.12s ease;
+}
+.fs-cta a:hover {
+  transform: translateY(-2px);
 }
 .fs-cta a.primary {
-  background: var(--fs-brand);
+  background: linear-gradient(135deg, var(--fs-teal), var(--fs-teal-deep));
   color: #fff !important;
-}
-.fs-cta a.primary:hover {
-  background: var(--fs-brand-strong);
+  box-shadow: 0 6px 18px color-mix(in srgb, var(--fs-teal) 35%, transparent);
 }
 .fs-cta a.secondary {
-  border: 1px solid var(--fs-brand) !important;
+  border: 1px solid color-mix(in srgb, var(--fs-teal) 55%, transparent) !important;
   color: var(--fs-brand) !important;
 }
+.fs-cta a.secondary:hover {
+  background: color-mix(in srgb, var(--fs-teal) 8%, transparent);
+}
 
-/* Card grid for the landing "why" / quick-links sections. */
+/* Card grid for the landing "why" / quick-links. */
 .fs-cards {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
   gap: 1rem;
-  margin: 1.25rem 0;
+  margin: 1.5rem 0;
 }
 .fs-card {
-  border: 1px solid var(--table-border-color, rgba(128, 128, 128, 0.22));
+  border: 1px solid var(--fs-line);
   border-radius: var(--fs-radius);
-  padding: 1rem 1.1rem;
-  background: color-mix(in srgb, var(--fs-brand) 4%, transparent);
+  padding: 1.1rem 1.2rem;
+  background: var(--fs-card-bg);
+  transition: transform 0.14s ease, box-shadow 0.14s ease, border-color 0.14s ease;
+}
+.fs-card:hover {
+  transform: translateY(-3px);
+  box-shadow: var(--fs-shadow);
+  border-color: color-mix(in srgb, var(--fs-teal) 45%, transparent);
 }
 .fs-card h3 {
   margin-top: 0;
+  color: var(--fs-brand);
 }

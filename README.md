@@ -386,9 +386,9 @@ own service.
 | Connector count | 49, growing | 600+ taps | 350+ | dozens | dozens | 500+ |
 | Change data capture | ✓ Postgres / MySQL / Mongo | partial¹ | ✓ | partial | ✗ | ✓ |
 | Incremental + resumable state | ✓ | ✓ | ✓ | partial | n/a | ✓ |
-| Effectively-once delivery³ | ✓ (SQL / Iceberg / BigQuery) | ✗ | partial | ✗ | ✗ | ✓ |
+| Effectively-once delivery³ | ✓ (11 sinks incl. Kafka, Iceberg, BigQuery) | ✗ | partial | ✗ | ✗ | ✓ |
 | Built-in data-quality checks | ✓ native | ✗ | paywalled add-on | ✗ | ✗ | paywalled add-on |
-| Built-in metrics + tracing | ✓ Prometheus + `tracing` | partial | ✓ (platform) | ✓ | ✓ | ✓ (hosted) |
+| Built-in metrics + tracing | ✓ Prometheus + OTLP + `tracing` | partial | ✓ (platform) | ✓ | ✓ | ✓ (hosted) |
 | Self-hosted, no daemon | ✓ run-to-completion | ✓ | ✗ needs platform | usually a service | agent | ✗ SaaS |
 | License | MIT / Apache-2.0 | MIT | ELv2 + MIT | Apache-2.0 / source-available² | MPL-2.0 | Proprietary |
 
@@ -396,9 +396,9 @@ own service.
 
 For reference: **[Singer](https://www.singer.io/)** is a connector spec and **[Meltano](https://meltano.com/)**
 is its most common runtime; both appear above. faucet-stream is a full **ETL** tool — it
-transforms data *in flight* as it moves (13 record transforms plus a page-level
-embedded-DuckDB `sql` transform for aggregation, joins, and filtering), not just
-extract-and-load. **[dbt](https://www.getdbt.com/) is complementary, not a competitor:**
+transforms data *in flight* as it moves (11 record transforms plus filter,
+explode, and CDC-unwrap stages and a page-level embedded-DuckDB `sql` transform
+for aggregation, joins, and filtering), not just extract-and-load. **[dbt](https://www.getdbt.com/) is complementary, not a competitor:**
 it models transformations *in the warehouse* on data already loaded (the "T" of ELT, at
 warehouse scale) — pair the two when you need heavy in-warehouse modeling on top of what
 faucet extracts, transforms, and loads.

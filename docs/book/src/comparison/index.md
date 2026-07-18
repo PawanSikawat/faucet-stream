@@ -19,9 +19,9 @@ You'd reach for faucet-stream when **throughput, operational simplicity, or in-f
 | Connector count | 49, growing | 600+ taps | 350+ | dozens | dozens | 500+ |
 | Change data capture | ✓ Postgres / MySQL / Mongo | partial¹ | ✓ | partial | ✗ | ✓ |
 | Incremental + resumable state | ✓ | ✓ | ✓ | partial | n/a | ✓ |
-| Effectively-once delivery³ | ✓ (SQL / Iceberg / BigQuery) | ✗ | partial | ✗ | ✗ | ✓ |
+| Effectively-once delivery³ | ✓ (11 sinks incl. Kafka, Iceberg, BigQuery) | ✗ | partial | ✗ | ✗ | ✓ |
 | Governance in-path (quality / contracts / masking / lineage / SLA) | ✓ native | assemble | partial / paywalled | ✗ | ✗ | partial / paywalled |
-| Built-in metrics + tracing | ✓ Prometheus + `tracing` | partial | ✓ (platform) | ✓ | ✓ | ✓ (hosted) |
+| Built-in metrics + tracing | ✓ Prometheus + OTLP + `tracing` | partial | ✓ (platform) | ✓ | ✓ | ✓ (hosted) |
 | Self-hosted, no daemon | ✓ run-to-completion | ✓ | ✗ needs platform | usually a service | agent | ✗ SaaS |
 | License | MIT / Apache-2.0 | MIT | ELv2 + MIT | Apache-2.0 / source-available² | MPL-2.0 | Proprietary |
 
