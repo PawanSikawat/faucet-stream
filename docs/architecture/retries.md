@@ -17,7 +17,7 @@ that downside.
 Retries happen in two distinct places, for two distinct reasons:
 
 ```mermaid
-%%{init: {'theme':'base','themeVariables':{'primaryColor':'#ccfbf1','primaryTextColor':'#0f172a','primaryBorderColor':'#0d9488','lineColor':'#0f766e','secondaryColor':'#e0f2fe','tertiaryColor':'#f0fdfa','fontFamily':'-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif'}}}%%
+%%{init: {'theme':'base','flowchart':{'curve':'basis','nodeSpacing':50,'rankSpacing':72,'padding':14},'themeVariables':{'fontFamily':'-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif','fontSize':'14px','lineColor':'#a5b4c4','clusterBkg':'#f8fafc','clusterBorder':'#e2e8f0'}}}%%
 flowchart TD
     subgraph Source side
       REST[rest / xml / graphql] -->|with_retry_policy| RS[execute_with_retry]
@@ -25,6 +25,12 @@ flowchart TD
     subgraph Sink side
       RS2[run_stream with_retry! macro] --> WB[write_batch* / flush / state_put]
     end
+    classDef src fill:#e0f2f1,stroke:#26a69a,stroke-width:1.5px,color:#00695c
+    classDef proc fill:#eceff8,stroke:#7986cb,stroke-width:1.5px,color:#303f9f
+    classDef sink fill:#e3f2fd,stroke:#42a5f5,stroke-width:1.5px,color:#1565c0
+    class REST src
+    class RS,RS2 proc
+    class WB sink
 ```
 
 1. **Source side** — HTTP sources (`rest`, `xml`, `graphql`) retry their own

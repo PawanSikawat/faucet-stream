@@ -7,6 +7,11 @@ name: Docs site
 # to "GitHub Actions" (Settings → Pages → Build and deployment → GitHub Actions).
 
 on:
+  # Manual trigger so the site can be re-deployed on demand — e.g. when a docs
+  # change lands via a PR that did NOT touch docs/book/** (the path filter below
+  # only fires the deploy on docs/book changes, so a teal-theme rebuild can be
+  # forced from the Actions tab without a dummy commit).
+  workflow_dispatch:
   push:
     branches: [main]
     paths:
@@ -47,6 +52,10 @@ jobs:
           curl -sSL "$url" | tar -xz -C "$HOME/.local/bin"
       - name: Build
         run: mdbook build docs/book
+      - name: Inject per-page SEO metadata
+        # mdBook's head.hbs is site-wide; rewrite per-page description + Open
+        # Graph / Twitter title & description from each page's <h1>/first <p>.
+        run: python3 scripts/inject-page-meta.py docs/book/book
       - name: Generate sitemap.xml
         # mdBook has no native sitemap (rust-lang/mdBook#1491); generate one from
         # the built HTML so search engines can crawl every page. Uses the full

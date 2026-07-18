@@ -55,13 +55,19 @@ method plus the methods that implement it. A sink advertises exactly-once with
 `last_committed_token`. The pipeline queries the capability and selects a code path.
 
 ```mermaid
-%%{init: {'theme':'base','themeVariables':{'primaryColor':'#ccfbf1','primaryTextColor':'#0f172a','primaryBorderColor':'#0d9488','lineColor':'#0f766e','secondaryColor':'#e0f2fe','tertiaryColor':'#f0fdfa','fontFamily':'-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif'}}}%%
+%%{init: {'theme':'base','flowchart':{'curve':'basis','nodeSpacing':50,'rankSpacing':72,'padding':14},'themeVariables':{'fontFamily':'-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif','fontSize':'14px','lineColor':'#a5b4c4','clusterBkg':'#f8fafc','clusterBorder':'#e2e8f0'}}}%%
 flowchart LR
     P[run_stream] --> Q{sink.supports_idempotent_writes?}
     Q -->|yes| EO[write_batch_idempotent path]
     Q -->|no| DEF[write_batch path]
     P --> R{sink.dedups_by_key?}
     R -->|yes| KU[keyed-upsert effectively-once]
+    classDef src fill:#e0f2f1,stroke:#26a69a,stroke-width:1.5px,color:#00695c
+    classDef dec fill:#fff3e0,stroke:#ffa726,stroke-width:1.5px,color:#e65100
+    classDef sink fill:#e3f2fd,stroke:#42a5f5,stroke-width:1.5px,color:#1565c0
+    class P src
+    class Q,R dec
+    class EO,DEF,KU sink
 ```
 
 This keeps the traits object-safe (no associated types, no generic methods) while
