@@ -1,6 +1,6 @@
 <div class="fs-hero">
   <img src="assets/wordmark.svg" alt="faucet-stream" />
-  <p class="fs-tagline">The fast, config-driven way to move data in Rust.</p>
+  <p class="fs-tagline">The fast, config-driven way to <strong>move data in Rust</strong>.</p>
   <div class="fs-cta">
     <a class="primary" href="getting-started/installation.html">Get started →</a>
     <a class="secondary" href="getting-started/learn.html">Learn the architecture</a>
