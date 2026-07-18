@@ -25,6 +25,7 @@
   --sidebar-active: #0d5c54;
   --sidebar-spacer: rgba(15, 118, 110, 0.16);
   --scrollbar: rgba(15, 118, 110, 0.35);
+  --sidebar-header-border-color: #0f766e; /* the active-section accent bar → teal, not the stock indigo */
   --links: #0f766e;
 }
 
@@ -39,6 +40,7 @@
   --sidebar-active: #ffffff;
   --sidebar-spacer: rgba(255, 255, 255, 0.1);
   --scrollbar: rgba(255, 255, 255, 0.28);
+  --sidebar-header-border-color: #2dd4bf; /* the active-section accent bar → teal, not the stock indigo */
   --links: #2dd4bf;
 }
 
