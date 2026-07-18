@@ -18,14 +18,13 @@
    in the reading area so the two surfaces belong to one palette. ──────────── */
 .light,
 .rust {
-  --bg: #f8fcfb; /* content: near-white with a hint of teal */
-  --sidebar-bg: #d5f2ec; /* soft light teal, from the logo family */
-  --sidebar-fg: #124f4a; /* dark teal — easy to read on light teal */
-  --sidebar-non-existant: #78b3ab;
-  --sidebar-active: #0d5c54;
-  --sidebar-spacer: rgba(15, 118, 110, 0.16);
-  --scrollbar: rgba(15, 118, 110, 0.35);
-  --sidebar-header-border-color: #0f766e; /* the active-section accent bar → teal, not the stock indigo */
+  --sidebar-bg: #d7f2ec; /* soft light teal, from the logo family */
+  --sidebar-fg: #1c2b3a; /* dark slate — crisp, high-contrast on light teal */
+  --sidebar-non-existant: #6b8a86;
+  --sidebar-active: #0f766e;
+  --sidebar-spacer: rgba(28, 43, 58, 0.12);
+  --scrollbar: rgba(28, 43, 58, 0.28);
+  --sidebar-header-border-color: #0f766e; /* active-section accent bar → teal, not the stock indigo */
   --links: #0f766e;
 }
 
@@ -176,7 +175,7 @@ mark {
 .content h2 {
   margin-top: 2.3rem;
   padding-bottom: 0.2em;
-  border-bottom: 1px solid color-mix(in srgb, var(--fs-teal) 15%, transparent);
+  border-bottom: 1px solid var(--table-border-color, rgba(0, 0, 0, 0.08));
 }
 .content pre {
   border-radius: 8px;
