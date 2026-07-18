@@ -818,6 +818,7 @@ cli/                          — faucet-cli: `faucet` binary, YAML/JSON pipelin
   examples/                   — ready-to-run pipeline YAMLs
   tests/                      — assert_cmd + wiremock integration tests
 examples/                     — repo-level examples: docker-compose infra stack + run index
+  orchestration/              — ELT recipe: faucet (EL) + dbt (T) + Airflow/Dagster
 scripts/                      — helper scripts (try-local.sh interactive demo, cleanup-artifacts.sh)
 docs/book/                    — mdBook documentation site (source under docs/book/src)
 .github/workflows/            — ci.yml, release-plz.yml, docs.yml (mdBook → GitHub Pages)

@@ -1,0 +1,19 @@
+version: 2
+
+models:
+  - name: stg_charges
+    description: Typed, one-row-per-charge staging model over the raw faucet load.
+    columns:
+      - name: charge_id
+        description: Stripe charge id.
+        data_tests:
+          - unique
+          - not_null
+      - name: amount_cents
+        description: Charge amount in the smallest currency unit.
+      - name: status
+        description: Charge status (succeeded / pending / failed).
+      - name: created_at
+        description: Charge creation timestamp.
+        data_tests:
+          - not_null
