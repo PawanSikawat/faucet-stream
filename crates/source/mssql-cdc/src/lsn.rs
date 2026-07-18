@@ -32,7 +32,7 @@ impl Lsn {
         Lsn(bytes)
     }
 
-    /// Build an LSN from a byte slice. The slice must be exactly [`LSN_BYTES`]
+    /// Build an LSN from a byte slice. The slice must be exactly `LSN_BYTES`
     /// long; any other length is a typed error (SQL Server always returns
     /// `binary(10)`, so a different width means a decode bug, not a data value).
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, FaucetError> {
