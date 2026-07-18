@@ -1,32 +1,50 @@
 /* ── faucet-stream documentation theme ──────────────────────────────────────
-   A restrained teal identity. One bold move — a deep-teal left sidebar — with
-   quiet teal accents everywhere else (links, selection, callouts, table
-   headers, focus rings, navigation). No gradients, no decorative dots, no
-   heavy shadows. Tuned for the light default and the navy dark theme;
-   coal / ayu / rust inherit the accents and stay legible.
+   A natural, harmonious teal identity. The left sidebar carries the logo teal
+   — a soft light teal in the light theme, a deep teal in the dark theme — so
+   each mode flows: a light sidebar beside light content, a deep sidebar beside
+   dark content. Everything else is a quiet teal accent. No gradients, no
+   decorative noise, and the browser's blue focus ring is replaced with teal.
    Loaded via `additional-css`, after mdBook's own CSS, so these rules win.
    ──────────────────────────────────────────────────────────────────────── */
 
 :root {
-  --fs-teal: #14b8a6;
+  --fs-teal: #14b8a6; /* the logo teal */
   --fs-teal-deep: #0f766e;
   --fs-teal-bright: #2dd4bf;
   --content-max-width: 62rem;
 }
 
-/* ── The signature: a deep-teal sidebar, consistent across every theme ─────── */
+/* ── Light theme: soft light-teal sidebar + dark-teal text, a whisper of teal
+   in the reading area so the two surfaces belong to one palette. ──────────── */
 .light,
+.rust {
+  --bg: #f8fcfb; /* content: near-white with a hint of teal */
+  --sidebar-bg: #d5f2ec; /* soft light teal, from the logo family */
+  --sidebar-fg: #124f4a; /* dark teal — easy to read on light teal */
+  --sidebar-non-existant: #78b3ab;
+  --sidebar-active: #0d5c54;
+  --sidebar-spacer: rgba(15, 118, 110, 0.16);
+  --scrollbar: rgba(15, 118, 110, 0.35);
+  --links: #0f766e;
+}
+
+/* ── Dark themes: deep-teal sidebar + light-teal text, flowing with the dark
+   content surface. ────────────────────────────────────────────────────────── */
 .navy,
 .coal,
-.ayu,
-.rust {
-  --sidebar-bg: #115e59; /* teal-800 */
-  --sidebar-fg: #d5f7f2;
-  --sidebar-non-existant: #6fb4ac;
+.ayu {
+  --sidebar-bg: #0d302c; /* deep teal */
+  --sidebar-fg: #c9ede6;
+  --sidebar-non-existant: #5f918a;
   --sidebar-active: #ffffff;
-  --sidebar-spacer: rgba(255, 255, 255, 0.12);
+  --sidebar-spacer: rgba(255, 255, 255, 0.1);
   --scrollbar: rgba(255, 255, 255, 0.28);
+  --links: #2dd4bf;
 }
+
+/* ── Sidebar TOC: rounded hover / active pills that adapt to the sidebar's own
+   tone (the hover wash is derived from the text color, so it darkens on the
+   light sidebar and lightens on the dark one — one rule, both themes). ─────── */
 .sidebar .sidebar-scrollbox {
   padding: 0.6rem 0.8rem;
 }
@@ -34,7 +52,6 @@
   margin: 0.12rem 0;
   line-height: 1.5;
 }
-/* Rounded hover / active "pill" for each TOC entry. */
 .chapter li.chapter-item > a,
 .chapter li.chapter-item > div {
   border-radius: 7px;
@@ -42,36 +59,44 @@
   transition: background 0.13s ease, color 0.13s ease;
 }
 .chapter li.chapter-item > a:hover {
-  background: rgba(255, 255, 255, 0.09);
-  color: #fff;
+  background: color-mix(in srgb, var(--sidebar-fg) 12%, transparent);
+  color: var(--sidebar-fg);
 }
 .chapter li.chapter-item > a.active {
-  background: rgba(255, 255, 255, 0.15);
+  background: var(--fs-teal-deep);
   color: #fff;
   font-weight: 600;
 }
 .chapter .part-title {
-  color: #9fe6dc;
+  color: var(--sidebar-fg);
+  opacity: 0.72;
   letter-spacing: 0.04em;
 }
 
-/* ── Top menu bar: clean, tied to the sidebar with a single teal hairline ──── */
-.menu-bar {
-  border-bottom: 1px solid color-mix(in srgb, var(--fs-teal) 22%, transparent);
+/* ── Kill the browser's blue focus ring — teal for keyboard users, nothing on
+   a mouse click (this is the "blue line on expanding a section"). ─────────── */
+.sidebar a:focus:not(:focus-visible),
+.content a:focus:not(:focus-visible) {
+  outline: none;
+}
+a:focus-visible,
+button:focus-visible,
+summary:focus-visible {
+  outline: 2px solid var(--fs-teal);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+.sidebar a:focus-visible {
+  outline-offset: -2px;
+  border-radius: 7px;
 }
 
-/* ── Content links + text accents ─────────────────────────────────────────── */
-.light {
-  --links: #0f766e;
+/* ── Top menu bar: clean, tied to the theme with one soft teal hairline ────── */
+.menu-bar {
+  border-bottom: 1px solid color-mix(in srgb, var(--fs-teal) 20%, transparent);
 }
-.rust {
-  --links: #0f766e;
-}
-.navy,
-.coal,
-.ayu {
-  --links: #2dd4bf;
-}
+
+/* ── Content links + text accents (quiet) ─────────────────────────────────── */
 .content a:not(.header) {
   text-decoration: none;
 }
@@ -81,9 +106,8 @@
   text-decoration-thickness: 1.5px;
 }
 ::selection {
-  background: color-mix(in srgb, var(--fs-teal) 25%, transparent);
+  background: color-mix(in srgb, var(--fs-teal) 24%, transparent);
 }
-/* Inline code: a hint of teal, not a shout. */
 .content :not(pre) > code {
   color: var(--fs-teal-deep);
 }
@@ -92,7 +116,6 @@
 .ayu .content :not(pre) > code {
   color: var(--fs-teal-bright);
 }
-/* The heading-anchor mark turns teal on hover. */
 .content a.header:hover {
   color: var(--fs-teal);
 }
@@ -100,7 +123,7 @@
 /* ── Blockquote → quiet teal callout ──────────────────────────────────────── */
 .content blockquote {
   border-inline-start: 3px solid var(--fs-teal);
-  background: color-mix(in srgb, var(--fs-teal) 6%, transparent);
+  background: color-mix(in srgb, var(--fs-teal) 7%, transparent);
   border-radius: 0 6px 6px 0;
   margin-inline: 0;
   padding: 0.6rem 1rem;
@@ -119,11 +142,11 @@
 }
 #searchbar:focus {
   border-color: var(--fs-teal);
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--fs-teal) 25%, transparent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--fs-teal) 22%, transparent);
   outline: none;
 }
 mark {
-  background: color-mix(in srgb, var(--fs-teal) 30%, transparent);
+  background: color-mix(in srgb, var(--fs-teal) 28%, transparent);
 }
 
 /* ── Typography: a little more air, prose held to a readable measure ──────── */
@@ -151,7 +174,7 @@ mark {
 .content h2 {
   margin-top: 2.3rem;
   padding-bottom: 0.2em;
-  border-bottom: 1px solid color-mix(in srgb, var(--fs-teal) 16%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, var(--fs-teal) 15%, transparent);
 }
 .content pre {
   border-radius: 8px;
