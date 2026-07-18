@@ -17,6 +17,7 @@ A run is, at its heart, one loop: pull a page of records from a source, protect
 and validate it, write it to a sink, checkpoint, repeat.
 
 ```mermaid
+%%{init: {'theme':'base','themeVariables':{'primaryColor':'#ccfbf1','primaryTextColor':'#0f172a','primaryBorderColor':'#0d9488','lineColor':'#0f766e','secondaryColor':'#e0f2fe','tertiaryColor':'#f0fdfa','fontFamily':'-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif'}}}%%
 flowchart LR
     subgraph Source
       SP[stream_pages]
@@ -48,6 +49,7 @@ binary). The topology encodes a hard rule: **connectors depend only on
 `faucet-core`.**
 
 ```mermaid
+%%{init: {'theme':'base','themeVariables':{'primaryColor':'#ccfbf1','primaryTextColor':'#0f172a','primaryBorderColor':'#0d9488','lineColor':'#0f766e','secondaryColor':'#e0f2fe','tertiaryColor':'#f0fdfa','fontFamily':'-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif'}}}%%
 flowchart TD
     CORE[faucet-core<br/>traits, pipeline, transforms, error, state]
     SRC[faucet-source-*<br/>rest, postgres, kafka, s3, ...]

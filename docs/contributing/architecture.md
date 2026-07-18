@@ -13,6 +13,7 @@ faucet-stream is a Cargo workspace of ~63 crates. They fall into four layers,
 and the dependency direction only ever flows downward:
 
 ```mermaid
+%%{init: {'theme':'base','themeVariables':{'primaryColor':'#ccfbf1','primaryTextColor':'#0f172a','primaryBorderColor':'#0d9488','lineColor':'#0f766e','secondaryColor':'#e0f2fe','tertiaryColor':'#f0fdfa','fontFamily':'-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif'}}}%%
 flowchart TD
     CLI["faucet-cli (cli/)<br/>config · expand · executor · serve · schedule · replicate · backfill"]
     UMB["faucet-stream (faucet-stream/)<br/>umbrella: feature-gated re-exports"]
@@ -58,6 +59,7 @@ When you need to understand how a record actually moves, read the layers in the
 order the data does. Each hop below has a "start here" file:
 
 ```mermaid
+%%{init: {'theme':'base','themeVariables':{'primaryColor':'#ccfbf1','primaryTextColor':'#0f172a','primaryBorderColor':'#0d9488','lineColor':'#0f766e','secondaryColor':'#e0f2fe','tertiaryColor':'#f0fdfa','fontFamily':'-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif'}}}%%
 flowchart LR
     A["YAML/JSON config"] --> B["cli/src/config.rs<br/>parse + interpolate + secrets"]
     B --> C["cli/src/expand.rs<br/>matrix → ExpandedNode[]"]

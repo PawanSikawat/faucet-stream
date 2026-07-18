@@ -44,6 +44,7 @@ through "does this keep the barrier to a third-party connector low?"
 ## Capability model
 
 ```mermaid
+%%{init: {'theme':'base','themeVariables':{'primaryColor':'#ccfbf1','primaryTextColor':'#0f172a','primaryBorderColor':'#0d9488','lineColor':'#0f766e','secondaryColor':'#e0f2fe','tertiaryColor':'#f0fdfa','fontFamily':'-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif'}}}%%
 flowchart LR
     T[Source / Sink trait] --> B[required: fetch/write + config_schema]
     T --> D1[default: supports_exactly_once -> false]

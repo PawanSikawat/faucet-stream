@@ -30,6 +30,7 @@ no `resilience:` block is configured.
 ## How the three mechanisms compose
 
 ```mermaid
+%%{init: {'theme':'base','themeVariables':{'primaryColor':'#ccfbf1','primaryTextColor':'#0f172a','primaryBorderColor':'#0d9488','lineColor':'#0f766e','secondaryColor':'#e0f2fe','tertiaryColor':'#f0fdfa','fontFamily':'-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif'}}}%%
 flowchart TD
     OP[sink write / flush / state_put] --> RETRY{retriable class?}
     RETRY -->|yes| BACKOFF[backoff + jitter, retry up to max_attempts]

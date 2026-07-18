@@ -35,6 +35,7 @@ policies run per page, in a fixed order, inside `run_stream`.
 ## Execution flow — the per-page pipeline
 
 ```mermaid
+%%{init: {'theme':'base','themeVariables':{'primaryColor':'#ccfbf1','primaryTextColor':'#0f172a','primaryBorderColor':'#0d9488','lineColor':'#0f766e','secondaryColor':'#e0f2fe','tertiaryColor':'#f0fdfa','fontFamily':'-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif'}}}%%
 flowchart TD
     PG[StreamPage records] --> M[masking pass FIRST]
     M --> Q[quality: per-record then per-batch]

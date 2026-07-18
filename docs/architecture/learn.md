@@ -27,6 +27,7 @@ the tap. You tell it where the data comes from and where it goes, and it moves
 the data — reliably, without losing or scrambling it.
 
 ```mermaid
+%%{init: {'theme':'base','themeVariables':{'primaryColor':'#ccfbf1','primaryTextColor':'#0f172a','primaryBorderColor':'#0d9488','lineColor':'#0f766e','secondaryColor':'#e0f2fe','tertiaryColor':'#f0fdfa','fontFamily':'-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif'}}}%%
 flowchart LR
     SRC[(Source<br/>where data comes from)] -->|records| PIPE[faucet pipeline] -->|records| SNK[(Sink<br/>where data goes)]
 ```
@@ -99,6 +100,7 @@ println!("wrote {} records", result.records_written);
 What happens under the hood, in the simplest case:
 
 ```mermaid
+%%{init: {'theme':'base','themeVariables':{'primaryColor':'#ccfbf1','primaryTextColor':'#0f172a','primaryBorderColor':'#0d9488','lineColor':'#0f766e','secondaryColor':'#e0f2fe','tertiaryColor':'#f0fdfa','fontFamily':'-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif'}}}%%
 flowchart LR
     A["source.fetch — read ALL records"] --> B["sink.write_batch — write them"] --> C["done: records_written"]
 ```
@@ -132,6 +134,7 @@ a Kafka offset. On the next run, the Source reads that note and resumes from tha
 point instead of the beginning.
 
 ```mermaid
+%%{init: {'theme':'base','themeVariables':{'primaryColor':'#ccfbf1','primaryTextColor':'#0f172a','primaryBorderColor':'#0d9488','lineColor':'#0f766e','secondaryColor':'#e0f2fe','tertiaryColor':'#f0fdfa','fontFamily':'-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif'}}}%%
 flowchart LR
     R1["run #1: read rows, remember bookmark = 'updated_at ≤ 09:00'"] --> S[(saved bookmark)]
     S --> R2["run #2: resume from 09:00, only read newer rows"]
@@ -177,6 +180,7 @@ an optional bookmark attached. Instead of one giant read, the Source produces a
 *stream* of pages, and the pipeline handles them one at a time:
 
 ```mermaid
+%%{init: {'theme':'base','themeVariables':{'primaryColor':'#ccfbf1','primaryTextColor':'#0f172a','primaryBorderColor':'#0d9488','lineColor':'#0f766e','secondaryColor':'#e0f2fe','tertiaryColor':'#f0fdfa','fontFamily':'-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif'}}}%%
 flowchart LR
     P1[page 1] --> W1[write it] --> P2[page 2] --> W2[write it] --> P3[page 3 + bookmark] --> W3[write it] --> CK[flush + save bookmark]
 ```
@@ -272,6 +276,7 @@ When several of the *data-guarding* tools are on, the pipeline runs them in a
 fixed, safe order on each page — chosen to be *safe*, not arbitrary:
 
 ```mermaid
+%%{init: {'theme':'base','themeVariables':{'primaryColor':'#ccfbf1','primaryTextColor':'#0f172a','primaryBorderColor':'#0d9488','lineColor':'#0f766e','secondaryColor':'#e0f2fe','tertiaryColor':'#f0fdfa','fontFamily':'-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif'}}}%%
 flowchart LR
     PAGE[page arrives] --> MASK[1 mask PII] --> Q[2 quality] --> C[3 contract] --> D[4 schema drift] --> WRITE[5 write to sink] --> FLUSH[flush] --> CK[save bookmark]
 ```

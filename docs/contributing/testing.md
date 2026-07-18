@@ -30,6 +30,7 @@ your changed lines.** If a line "can't" be unit-tested, that is usually a design
 smell — extract the pure logic and make the I/O a thin shim:
 
 ```mermaid
+%%{init: {'theme':'base','themeVariables':{'primaryColor':'#ccfbf1','primaryTextColor':'#0f172a','primaryBorderColor':'#0d9488','lineColor':'#0f766e','secondaryColor':'#e0f2fe','tertiaryColor':'#f0fdfa','fontFamily':'-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif'}}}%%
 flowchart LR
     A["new / changed code"] --> B{needs real I/O?}
     B -- no --> C["#[cfg(test)] unit test<br/>counts toward patch coverage"]

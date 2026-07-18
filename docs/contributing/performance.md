@@ -45,6 +45,7 @@ the harness, not intuition. The benchmark VM and scenarios are documented there
 (Scenario C is the head-to-head throughput comparison).
 
 ```mermaid
+%%{init: {'theme':'base','themeVariables':{'primaryColor':'#ccfbf1','primaryTextColor':'#0f172a','primaryBorderColor':'#0d9488','lineColor':'#0f766e','secondaryColor':'#e0f2fe','tertiaryColor':'#f0fdfa','fontFamily':'-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif'}}}%%
 flowchart LR
     A["hypothesis:<br/>'X is slow'"] --> B["measure with BENCHMARKS.md harness"]
     B --> C{evidence of a<br/>real bottleneck?}

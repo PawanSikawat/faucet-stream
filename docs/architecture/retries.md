@@ -17,6 +17,7 @@ that downside.
 Retries happen in two distinct places, for two distinct reasons:
 
 ```mermaid
+%%{init: {'theme':'base','themeVariables':{'primaryColor':'#ccfbf1','primaryTextColor':'#0f172a','primaryBorderColor':'#0d9488','lineColor':'#0f766e','secondaryColor':'#e0f2fe','tertiaryColor':'#f0fdfa','fontFamily':'-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif'}}}%%
 flowchart TD
     subgraph Source side
       REST[rest / xml / graphql] -->|with_retry_policy| RS[execute_with_retry]

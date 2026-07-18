@@ -32,6 +32,7 @@ network segmentation, the security of the external systems faucet connects to,
 and the secrecy of the environment faucet runs in.
 
 ```mermaid
+%%{init: {'theme':'base','themeVariables':{'primaryColor':'#ccfbf1','primaryTextColor':'#0f172a','primaryBorderColor':'#0d9488','lineColor':'#0f766e','secondaryColor':'#e0f2fe','tertiaryColor':'#f0fdfa','fontFamily':'-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif'}}}%%
 flowchart LR
     subgraph Trusted[Trust boundary: the faucet process]
       cfg[config + resolved secrets in memory]
