@@ -45,6 +45,7 @@ correct). Connectors that can stream from their underlying primitive **override*
 `stream_pages` to be truly incremental:
 
 ```mermaid
+%%{init: {'theme':'base','themeVariables':{'primaryColor':'#ccfbf1','primaryTextColor':'#0f172a','primaryBorderColor':'#0d9488','lineColor':'#0f766e','secondaryColor':'#e0f2fe','tertiaryColor':'#f0fdfa','fontFamily':'-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif'}}}%%
 flowchart LR
     subgraph Native override
       DB[(database cursor)] --> P1[page] --> P2[page] --> P3[page bookmark]

@@ -429,6 +429,7 @@ regardless of total volume. The pipeline also drives the cross-cutting runtime (
 dead-letter routing, quality checks, metrics) so connectors stay simple:
 
 ```mermaid
+%%{init: {'theme':'base','themeVariables':{'primaryColor':'#ccfbf1','primaryTextColor':'#0f172a','primaryBorderColor':'#0d9488','lineColor':'#0f766e','secondaryColor':'#e0f2fe','tertiaryColor':'#f0fdfa','fontFamily':'-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif'}}}%%
 flowchart LR
     S["<b>Source</b><br/>REST · DB · CDC<br/>Kafka · S3 · Parquet"]
     T["<b>Transforms</b><br/>flatten · rename · keys_case<br/>select · drop · set · cast<br/>redact · value_case · spell_symbols<br/>sql (DuckDB, page-level)"]

@@ -18,6 +18,7 @@ order matters: composition happens before interpolation, secrets resolve last at
 load time, and expansion produces the executable node set.
 
 ```mermaid
+%%{init: {'theme':'base','themeVariables':{'primaryColor':'#ccfbf1','primaryTextColor':'#0f172a','primaryBorderColor':'#0d9488','lineColor':'#0f766e','secondaryColor':'#e0f2fe','tertiaryColor':'#f0fdfa','fontFamily':'-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif'}}}%%
 flowchart TD
     F[config file] --> CP[compose: extends / !include / profiles]
     CP --> IN[interpolate: env / file / vars / templates]

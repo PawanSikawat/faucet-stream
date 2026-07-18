@@ -55,6 +55,7 @@ method plus the methods that implement it. A sink advertises exactly-once with
 `last_committed_token`. The pipeline queries the capability and selects a code path.
 
 ```mermaid
+%%{init: {'theme':'base','themeVariables':{'primaryColor':'#ccfbf1','primaryTextColor':'#0f172a','primaryBorderColor':'#0d9488','lineColor':'#0f766e','secondaryColor':'#e0f2fe','tertiaryColor':'#f0fdfa','fontFamily':'-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif'}}}%%
 flowchart LR
     P[run_stream] --> Q{sink.supports_idempotent_writes?}
     Q -->|yes| EO[write_batch_idempotent path]

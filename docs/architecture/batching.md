@@ -44,6 +44,7 @@ re-chunks the page the sink *writes*. When adaptive batching is enabled
 sub-batches:
 
 ```mermaid
+%%{init: {'theme':'base','themeVariables':{'primaryColor':'#ccfbf1','primaryTextColor':'#0f172a','primaryBorderColor':'#0d9488','lineColor':'#0f766e','secondaryColor':'#e0f2fe','tertiaryColor':'#f0fdfa','fontFamily':'-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif'}}}%%
 flowchart LR
     S[Source page: N records] --> A{adaptive enabled?}
     A -->|no| W[sink.write_batch of N]
