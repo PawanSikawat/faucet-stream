@@ -168,7 +168,7 @@ mark {
 }
 .content table,
 .content pre,
-.content .mermaid,
+
 .content .fs-hero,
 .content .fs-cards {
   max-width: none;
@@ -188,6 +188,7 @@ mark {
 }
 .content .mermaid {
   margin: 1.5rem 0;
+  max-width: 46rem;
   text-align: center;
   overflow-x: auto;
 }
