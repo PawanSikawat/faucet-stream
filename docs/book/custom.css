@@ -189,6 +189,11 @@ mark {
 .content .mermaid {
   margin: 1.5rem 0;
   text-align: center;
+  overflow-x: auto;
+}
+.content .mermaid svg {
+  max-width: 100%;
+  height: auto;
 }
 
 /* ── Landing hero + cards (introduction.md) ───────────────────────────────── */
