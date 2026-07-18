@@ -8,6 +8,7 @@
 - [Your first pipeline](./getting-started/first-pipeline.md)
 - [Try it locally (interactive demo)](./getting-started/try-it-locally.md)
 - [Core concepts](./getting-started/concepts.md)
+- [Learn the architecture (interactive)](./getting-started/learn.md)
 
 # Tutorials
 
@@ -60,6 +61,13 @@
 - [Editor setup (autocomplete & validation)](./reference/editor-setup.md)
 - [HTTP API (`faucet serve`)](./reference/http-api.md)
 - [Triggers](./reference/triggers.md)
+
+# Comparisons
+
+- [How faucet-stream compares](./comparison/index.md)
+- [vs. Meltano (Singer)](./comparison/meltano.md)
+- [vs. Airbyte](./comparison/airbyte.md)
+- [vs. Singer](./comparison/singer.md)
 
 # Operations
 

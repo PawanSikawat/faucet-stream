@@ -1,0 +1,166 @@
+/* ── faucet-stream documentation theme ──────────────────────────────────────
+   Visual polish layered on top of mdBook's built-in themes via
+   `additional-css` (no preprocessor — a bare `mdbook build` still works).
+   Loaded after mdBook's own CSS, so these rules win. Tuned for the two themes
+   we ship by default (light + navy); the others (rust/coal/ayu) still inherit
+   the brand accent and remain fully legible.
+   ──────────────────────────────────────────────────────────────────────── */
+
+:root {
+  /* faucet-stream brand — a "water/flow" blue, legible on both light and dark. */
+  --fs-brand: #2f7fe0;
+  --fs-brand-strong: #1f66c2;
+  --fs-accent: #0ea5b7;
+  --fs-radius: 8px;
+  --content-max-width: 46rem; /* a touch wider than default for tables/code */
+}
+
+/* ── Typography ──────────────────────────────────────────────────────────── */
+html {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica,
+    Arial, "Noto Sans", sans-serif, "Apple Color Emoji", "Segoe UI Emoji";
+  scroll-behavior: smooth;
+}
+.content {
+  line-height: 1.65;
+}
+.content h1,
+.content h2,
+.content h3,
+.content h4 {
+  font-weight: 650;
+  letter-spacing: -0.01em;
+  line-height: 1.25;
+}
+.content h1 {
+  font-size: 2.1rem;
+  padding-bottom: 0.3em;
+  border-bottom: 2px solid color-mix(in srgb, var(--fs-brand) 30%, transparent);
+}
+.content h2 {
+  margin-top: 2.2rem;
+  padding-bottom: 0.2em;
+  border-bottom: 1px solid var(--table-border-color, rgba(128, 128, 128, 0.25));
+}
+
+/* ── Links ───────────────────────────────────────────────────────────────── */
+.content a:not(.header) {
+  color: var(--fs-brand);
+  text-decoration: none;
+  border-bottom: 1px solid transparent;
+  transition: border-color 0.12s ease, color 0.12s ease;
+}
+.content a:not(.header):hover {
+  color: var(--fs-brand-strong);
+  border-bottom-color: currentColor;
+}
+
+/* ── Code ────────────────────────────────────────────────────────────────── */
+.content pre {
+  border-radius: var(--fs-radius);
+  border: 1px solid var(--table-border-color, rgba(128, 128, 128, 0.2));
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+}
+.content code {
+  border-radius: 4px;
+}
+.content pre > .buttons {
+  opacity: 0.7;
+}
+
+/* ── Blockquotes → callouts ──────────────────────────────────────────────── */
+.content blockquote {
+  border-inline-start: 4px solid var(--fs-brand);
+  background: color-mix(in srgb, var(--fs-brand) 8%, transparent);
+  border-radius: 0 var(--fs-radius) var(--fs-radius) 0;
+  padding: 0.6rem 1rem;
+  margin-inline: 0;
+  color: inherit;
+}
+
+/* ── Tables ──────────────────────────────────────────────────────────────── */
+.content table {
+  border-radius: var(--fs-radius);
+  overflow: hidden;
+  border-collapse: collapse;
+  width: 100%;
+}
+.content table thead th {
+  background: color-mix(in srgb, var(--fs-brand) 12%, transparent);
+  font-weight: 650;
+  border-bottom: 2px solid color-mix(in srgb, var(--fs-brand) 30%, transparent);
+}
+.content table td,
+.content table th {
+  border: 1px solid var(--table-border-color, rgba(128, 128, 128, 0.18));
+  padding: 0.45rem 0.7rem;
+}
+
+/* ── Sidebar ─────────────────────────────────────────────────────────────── */
+.chapter li.chapter-item a.active {
+  color: var(--fs-brand);
+  font-weight: 650;
+}
+.sidebar .sidebar-scrollbox {
+  padding: 0.75rem 1rem;
+}
+
+/* ── Landing hero (used by introduction.md) ──────────────────────────────── */
+.fs-hero {
+  text-align: center;
+  padding: 1.5rem 0 0.5rem;
+}
+.fs-hero img {
+  max-width: 460px;
+  width: 70%;
+  height: auto;
+}
+.fs-hero .fs-tagline {
+  font-size: 1.25rem;
+  opacity: 0.85;
+  margin: 0.75rem auto 1.25rem;
+  max-width: 34rem;
+  line-height: 1.5;
+}
+.fs-cta {
+  display: inline-flex;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  justify-content: center;
+  margin-bottom: 1rem;
+}
+.fs-cta a {
+  display: inline-block;
+  padding: 0.6rem 1.15rem;
+  border-radius: var(--fs-radius);
+  font-weight: 600;
+  border-bottom: none !important;
+}
+.fs-cta a.primary {
+  background: var(--fs-brand);
+  color: #fff !important;
+}
+.fs-cta a.primary:hover {
+  background: var(--fs-brand-strong);
+}
+.fs-cta a.secondary {
+  border: 1px solid var(--fs-brand) !important;
+  color: var(--fs-brand) !important;
+}
+
+/* Card grid for the landing "why" / quick-links sections. */
+.fs-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 1rem;
+  margin: 1.25rem 0;
+}
+.fs-card {
+  border: 1px solid var(--table-border-color, rgba(128, 128, 128, 0.22));
+  border-radius: var(--fs-radius);
+  padding: 1rem 1.1rem;
+  background: color-mix(in srgb, var(--fs-brand) 4%, transparent);
+}
+.fs-card h3 {
+  margin-top: 0;
+}

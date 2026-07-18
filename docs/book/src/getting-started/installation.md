@@ -51,17 +51,34 @@ cargo install faucet-cli --features full     # everything (DuckDB, otel, trigger
 This gives you a `faucet` binary with **every** first-party connector compiled in,
 so it can run any of the published example configs out of the box.
 
-### Slim builds
+### Choose your build (feature flags)
 
-Every connector is a Cargo feature, so you can build a smaller binary with only
-what you need:
+Every connector and runtime capability is a **Cargo feature**, so you can build exactly the
+binary you need. Connector features are named **`source-<name>`** and **`sink-<name>`**.
+
+**Bare minimum** — the smallest useful binary (REST in, JSON Lines out):
+
+```bash
+cargo install faucet-cli --no-default-features --features "source-rest,sink-jsonl"
+```
+
+**Add a source or sink** — list the connectors you want (plus `transforms` if you need in-flight shaping):
 
 ```bash
 cargo install faucet-cli --no-default-features \
-  --features "source-rest,sink-jsonl,sink-stdout,transforms"
+  --features "source-postgres,sink-bigquery,transforms"
 ```
 
-Run `faucet list` to see which sources and sinks are compiled into your binary.
+**Add a runtime capability** — compose any of `serve`, `serve-ui`, `schedule`, `lineage`,
+`transform-sql` (embedded DuckDB), `triggers`, `catalog`, `otel`, `compression`, `quality`,
+`contract`, `masking`:
+
+```bash
+cargo install faucet-cli --features "serve,schedule,transform-sql,lineage"
+```
+
+Run `faucet list` to see which sources, sinks, and transforms are compiled into your binary,
+and the [connector catalog](../reference/connectors.md) for every feature name.
 
 ## The library
 

@@ -2,6 +2,19 @@
 
 *The maintainer's map of how faucet-stream is built and why — read this before changing the runtime.*
 
+<table>
+<tr>
+<td><a href="./learn.md">🎓 Beginner's guide →</a><br/><sub>learn the whole system as a story, from zero</sub></td>
+<td>🏛 <b>Architect reference</b><br/><sub>you're here — subsystem-by-subsystem depth</sub></td>
+</tr>
+</table>
+
+> **New to faucet-stream?** Start with the **[🎓 Beginner's guide](./learn.md)** —
+> it builds the architecture up one idea at a time (connectors → fetch →
+> incremental → streaming → the production extras) and links back into these
+> reference pages as you go. This page is the deep reference for people who
+> already have the mental model.
+
 This directory is the **internal engineering reference** for faucet-stream. It
 explains the *why* behind the system: the invariants that protect data, the
 trade-offs that shaped each subsystem, and the failure modes each was designed to

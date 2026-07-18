@@ -17,16 +17,17 @@
 
 **The fast, config-driven way to move data in Rust.**
 
-faucet-stream is a complete **ETL** toolkit: **28 source** and **21 sink** connectors
-(**49 in total**) plus in-flight transforms — including a page-level embedded-DuckDB `sql`
-transform — wired together by a single `faucet` binary that runs pipelines declaratively
-from a YAML/JSON file, no Rust code required. Or skip the binary and embed the same engine
-in your own service through the typed `Source` / `Sink` traits. One toolkit, whether you
-want a CLI you can drop on any box or a library you compile in.
+**Move data at Rust speed, govern it in flight, and ship it as a single binary.** On a
+1M-row CSV→JSONL move, faucet sustains **712k rows/s in 11.8 MiB of RAM** — **~96× faster and
+~62× less memory than Meltano**, output identical row-for-row ([see the benchmarks](BENCHMARKS.md)).
+No Python runtime, no platform to stand up, no daemon to babysit.
 
-A single native binary **and** an embeddable Rust library: config-driven pipelines with
-no Python runtime, no platform to stand up, no daemon to babysit — plus a typed API when
-you'd rather compile data movement straight into your own service.
+faucet-stream is a **data-movement platform** for Rust — with governance built in: **28 source**
+and **21 sink** connectors (**49 in total**) plus in-flight transforms, including a page-level
+embedded-DuckDB `sql` transform — wired by a single `faucet` binary that runs pipelines
+declaratively from YAML/JSON (no Rust code required), or embedded in your own service through
+the typed `Source` / `Sink` traits. One platform, whether you want a CLI you can drop on any
+box or a library you compile in.
 
 📖 **[Guide](https://pawansikawat.github.io/faucet-stream/)** · 📊 **[Benchmarks](BENCHMARKS.md)** · 📜 **[Connector spec (FCP v0)](docs/spec/faucet-connector-spec-v0.md)**
 
@@ -54,11 +55,14 @@ cargo add faucet-stream           # the library
 - **🧩 Config-driven _or_ embeddable** — run `faucet run pipeline.yaml`, or call
   `Pipeline::new(&source, &sink).run().await?` from Rust. Same orchestration either way.
 - **⚙️ A runtime, not just connectors** — incremental + resumable replication, change-data-capture,
-  effectively-once delivery (idempotent dedup-on-resume), upsert/delete write modes, data-quality checks, data contracts,
-  freshness/volume SLA monitoring, dead-letter queues, automatic retries, adaptive batch sizing,
-  secrets-manager interpolation,
-  cron scheduling, an HTTP control plane with event-driven triggers, OpenLineage emission, and
-  built-in Prometheus metrics + `tracing` spans — all with zero per-connector code.
+  effectively-once delivery (idempotent dedup-on-resume), upsert/delete write modes, dead-letter
+  queues, automatic retries, adaptive batch sizing, secrets-manager interpolation, cron scheduling,
+  and an HTTP control plane with event-driven triggers — plus built-in Prometheus metrics +
+  `tracing` spans, all with zero per-connector code.
+- **🛡️ Governance in the movement path** — the guardrails most pipelines bolt on downstream, native
+  and zero-config: data-quality checks, versioned data contracts, PII masking (applied *before* any
+  sink sees a row), schema-drift detection & policy, column-level lineage (OpenLineage) + a
+  data-movement catalog, and freshness/volume SLA monitoring.
 - **📦 Pay only for what you use** — every connector is a Cargo feature, so a slim build can
   be just REST + JSONL, or pull in all 49 connectors with `--features full`.
 
@@ -379,7 +383,7 @@ own service.
 | Single static binary | ✓ | ✗ | ✗ | ✓ | ✓ | n/a |
 | Config-driven (YAML/JSON) | ✓ | ✓ | via UI/API | ✓ | ✓ | via UI |
 | Embeddable as a library | ✓ (Rust) | ✗ | ✗ | ✓ (Go) | ✗ | ✗ |
-| Connector count | 41, growing | 600+ taps | 350+ | dozens | dozens | 500+ |
+| Connector count | 49, growing | 600+ taps | 350+ | dozens | dozens | 500+ |
 | Change data capture | ✓ Postgres / MySQL / Mongo | partial¹ | ✓ | partial | ✗ | ✓ |
 | Incremental + resumable state | ✓ | ✓ | ✓ | partial | n/a | ✓ |
 | Effectively-once delivery³ | ✓ (SQL / Iceberg / BigQuery) | ✗ | partial | ✗ | ✗ | ✓ |
@@ -398,6 +402,8 @@ extract-and-load. **[dbt](https://www.getdbt.com/) is complementary, not a compe
 it models transformations *in the warehouse* on data already loaded (the "T" of ELT, at
 warehouse scale) — pair the two when you need heavy in-warehouse modeling on top of what
 faucet extracts, transforms, and loads.
+
+**Deep dives** (detailed, and honest about where each tool wins): [vs. Meltano](https://pawansikawat.github.io/faucet-stream/comparison/meltano.html) · [vs. Airbyte](https://pawansikawat.github.io/faucet-stream/comparison/airbyte.html) · [vs. Singer](https://pawansikawat.github.io/faucet-stream/comparison/singer.html).
 
 ## When to use faucet-stream
 
@@ -804,6 +810,15 @@ docs/book/                    — mdBook documentation site (source under docs/b
 .github/workflows/            — ci.yml, release-plz.yml, docs.yml (mdBook → GitHub Pages)
 .github/assets/               — brand assets: logo, wordmark, social-preview banner, favicon
 ```
+
+## Star history
+
+<a href="https://star-history.com/#PawanSikawat/faucet-stream&Date">
+  <img alt="Star history chart for faucet-stream" src="https://api.star-history.com/svg?repos=PawanSikawat/faucet-stream&type=Date" width="600">
+</a>
+
+**Using faucet-stream in production?** Open a PR to add your team here — real adopters are the
+best signal for the next person deciding whether to bet a pipeline on it.
 
 ## Contributing
 
