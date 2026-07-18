@@ -1,0 +1,63 @@
+# EL step, owned by faucet: extract from a REST API and load raw rows into
+# Postgres. Transformation (T) is left to dbt — see ./dbt. An orchestrator
+# (Airflow or Dagster) runs this config, then runs `dbt build`; see README.md.
+#
+# faucet lands the source payload verbatim in a single JSONB column so the load
+# stays lossless and schema-agnostic — dbt does the typed unpacking downstream.
+# Incremental replication + a durable bookmark mean re-runs only fetch new rows,
+# so the orchestrator can schedule this every few minutes cheaply.
+#
+# Required env vars:
+#   PG_URL        — Postgres connection URL, e.g.
+#                   postgres://faucet:faucet@localhost:5432/appdb
+#   STRIPE_TOKEN  — bearer token for the source API
+#
+# Run standalone:
+#   faucet run examples/orchestration/faucet_pipeline.yaml
+version: 1
+name: charges_el
+
+pipeline:
+  source:
+    type: rest
+    config:
+      base_url: https://api.stripe.com/v1
+      path: /charges
+      method: GET
+      auth:
+        type: bearer
+        config:
+          token: ${env:STRIPE_TOKEN}
+      query_params:
+        limit: "100"
+      pagination:
+        type: Cursor
+        next_token_path: $.next_page
+        param_name: starting_after
+      max_retries: 5
+      retry_backoff: 2
+      replication_method:
+        type: Incremental
+      replication_key: created
+      primary_keys: ["id"]
+      schema_sample_size: 200
+      state_key: charges:raw
+
+  sink:
+    type: postgres
+    config:
+      connection_url: ${env:PG_URL}
+      # dbt reads from this raw landing table (source: raw.charges_raw).
+      table_name: charges_raw
+      column_mapping:
+        type: jsonb
+        column: data
+      batch_size: 500
+      max_connections: 5
+
+  # Durable bookmark so the orchestrator can run this on a schedule and only
+  # pull new charges each tick.
+  state:
+    type: file
+    config:
+      path: ./.faucet-state

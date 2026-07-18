@@ -1,0 +1,15 @@
+# Example dbt profile pointing at the same Postgres faucet loaded into.
+# In real use, keep this in ~/.dbt/profiles.yml and read secrets from the env.
+# The orchestrator examples set DBT_PROFILES_DIR to this directory.
+faucet_charges:
+  target: dev
+  outputs:
+    dev:
+      type: postgres
+      host: "{{ env_var('PGHOST', 'localhost') }}"
+      port: "{{ env_var('PGPORT', '5432') | int }}"
+      user: "{{ env_var('PGUSER', 'faucet') }}"
+      password: "{{ env_var('PGPASSWORD', 'faucet') }}"
+      dbname: "{{ env_var('PGDATABASE', 'appdb') }}"
+      schema: analytics
+      threads: 4

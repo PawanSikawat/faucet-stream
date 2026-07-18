@@ -55,7 +55,9 @@ The mental model maps cleanly:
 | Singer `STATE` | a resumable `state:` bookmark |
 | stream maps / mappers | `transforms:` (incl. the `sql` transform) |
 
-Start from [your first pipeline](../getting-started/first-pipeline.md) and the [connector catalog](../reference/connectors.md).
+For a full step-by-step walkthrough with before/after configs, see the
+[**Migrating from Meltano/Singer** guide](https://github.com/PawanSikawat/faucet-stream/blob/main/docs/blog/migrating-from-meltano.md).
+Then start from [your first pipeline](../getting-started/first-pipeline.md) and the [connector catalog](../reference/connectors.md).
 
 ## See for yourself
 
