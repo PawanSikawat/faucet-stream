@@ -21,7 +21,7 @@ faucet run pipeline.yaml
 version: 1
 pipeline:
   source: { type: postgres, config: { connection_url: "${env:PG_URL}", query: "select * from events" } }
-  transforms: [{ type: snake_case }]
+  transforms: [{ type: keys_case, config: { mode: snake } }]
   sink: { type: bigquery, config: { project_id: my-proj, dataset_id: analytics, table_id: events } }
 ```
 
@@ -31,7 +31,7 @@ pipeline from Rust with typed `Source`/`Sink` traits.
 
 ## What's in the box
 
-- **35 connectors** across REST, GraphQL, gRPC, Kafka, Postgres/MySQL/SQLite,
+- **49 connectors** across REST, GraphQL, gRPC, Kafka, Postgres/MySQL/SQLite,
   Postgres CDC, S3/GCS, Parquet, MongoDB, Redis, Elasticsearch, BigQuery, and
   Snowflake.
 - **A real runtime, not just connectors:** native streaming with bounded memory,
