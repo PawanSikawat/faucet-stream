@@ -189,6 +189,11 @@ mark {
 .content .mermaid {
   margin: 1.5rem 0;
   text-align: center;
+  overflow-x: auto; /* a genuinely wide diagram scrolls instead of getting cut */
+}
+.content .mermaid svg {
+  max-width: 100%;
+  height: auto; /* scale to the content width, keep aspect ratio */
 }
 
 /* ── Landing hero + cards (introduction.md) ───────────────────────────────── */
