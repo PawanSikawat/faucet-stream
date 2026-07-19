@@ -94,7 +94,11 @@ impl Tier {
             Tier::Beta => "orange",
             Tier::Draft => "lightgrey",
         };
-        format!("https://img.shields.io/badge/faucet-{}-{}", self.as_str(), color)
+        format!(
+            "https://img.shields.io/badge/faucet-{}-{}",
+            self.as_str(),
+            color
+        )
     }
 
     /// Derive the tier from a 0–100 conformance score.
