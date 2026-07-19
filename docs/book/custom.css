@@ -161,7 +161,8 @@ mark {
    Typographic Style" + WCAG 1.4.8), applied site-wide so every chapter reads
    like the Learn page:
      · measure  — ~66–72 characters/line is the ideal for sustained reading
-                  (readable range 45–75); set with `ch` so it tracks the font.
+                  (readable range 45–75); prose AND code share one --fs-measure
+                  (in rem, so both fonts land at the same width and line up).
      · leading  — 1.6–1.8 line-height for body copy (WCAG asks for ≥1.5).
      · size     — 17px body; 16px is the floor, 17–18px is the long-form optimum.
      · gutters  — wider page padding so text/tables/code never hug the right
@@ -170,7 +171,9 @@ mark {
    ──────────────────────────────────────────────────────────────────────────── */
 :root {
   --page-padding: 24px; /* was 15px — symmetric breathing room on both edges */
-  --content-max-width: 860px; /* was 750px — roomier column for tables/code */
+  --content-max-width: 860px; /* was 750px — roomier column for wide tables */
+  --fs-measure: 67rem; /* ~670px — one reading width shared by prose AND code
+                          (rem, not ch, so sans prose & mono code match exactly) */
 }
 .content {
   font-family: "Open Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
@@ -182,13 +185,15 @@ mark {
 .content ul,
 .content ol,
 .content blockquote {
-  max-width: 72ch; /* ~66–72 characters/line — a generous, readable measure */
+  max-width: var(--fs-measure); /* ~66–72 characters/line — readable measure */
 }
 .content p {
   margin: 0 0 1.05em; /* clear separation between paragraphs */
 }
+/* Code blocks share the prose measure so they line up with the text column
+   instead of running wider. Tables stay full-width — they're data grids that
+   genuinely need the room; the landing hero/cards are full-bleed by design. */
 .content table,
-.content pre,
 .content .fs-hero,
 .content .fs-cards {
   max-width: none;
@@ -204,6 +209,7 @@ mark {
   border-bottom: 1px solid var(--table-border-color, rgba(0, 0, 0, 0.1));
 }
 .content pre {
+  max-width: var(--fs-measure); /* match the prose column width */
   border-radius: 8px;
 }
 .content .mermaid {
