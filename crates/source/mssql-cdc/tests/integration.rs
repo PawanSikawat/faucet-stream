@@ -1,9 +1,12 @@
 //! Integration tests for `MssqlCdcSource` against a real SQL Server in Docker.
 //!
 //! Requires Docker (the `mcr.microsoft.com/mssql/server` image) with SQL Server
-//! Agent enabled so the CDC capture job populates the change tables. Skipped by
-//! a plain `cargo test --lib`, mirroring the postgres-cdc / mysql-cdc pattern.
-//! On an ARM Mac these run in CI only.
+//! Agent enabled so the CDC capture job populates the change tables. These are
+//! `#[ignore]`d: the ~2 GB SQL Server image is too heavy/slow to come up
+//! reliably on the shared CI runner (unlike the lighter Postgres/MySQL/ClickHouse
+//! containers), so the general `cargo test` run skips them. Run them explicitly
+//! against a real SQL Server with
+//! `cargo test -p faucet-source-mssql-cdc -- --ignored`.
 //!
 //! Change capture is asynchronous, so every test seeds its writes, waits for the
 //! capture job to move them into the change table, and then drains the source
@@ -208,6 +211,10 @@ async fn drain(source: &MssqlCdcSource) -> (Vec<Value>, Option<Value>) {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "needs a SQL Server (mssql) container: the ~2 GB image is too heavy/slow \
+            to come up reliably on the shared CI runner (unlike the lighter \
+            Postgres/MySQL/ClickHouse ones). Run explicitly with \
+            `cargo test -p faucet-source-mssql-cdc -- --ignored`."]
 async fn cdc_captures_crud_then_resumes_without_replay() {
     let _serial = SERIAL.lock().await;
     let Some((_c, port)) = start_mssql_cdc().await else {
@@ -289,6 +296,10 @@ async fn cdc_captures_crud_then_resumes_without_replay() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "needs a SQL Server (mssql) container: the ~2 GB image is too heavy/slow \
+            to come up reliably on the shared CI runner (unlike the lighter \
+            Postgres/MySQL/ClickHouse ones). Run explicitly with \
+            `cargo test -p faucet-source-mssql-cdc -- --ignored`."]
 async fn source_metadata_and_check_probes_pass() {
     let _serial = SERIAL.lock().await;
     let Some((_c, port)) = start_mssql_cdc().await else {
@@ -349,6 +360,10 @@ async fn source_metadata_and_check_probes_pass() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "needs a SQL Server (mssql) container: the ~2 GB image is too heavy/slow \
+            to come up reliably on the shared CI runner (unlike the lighter \
+            Postgres/MySQL/ClickHouse ones). Run explicitly with \
+            `cargo test -p faucet-source-mssql-cdc -- --ignored`."]
 async fn new_rejects_missing_capture_instance() {
     let _serial = SERIAL.lock().await;
     let Some((_c, port)) = start_mssql_cdc().await else {
@@ -377,6 +392,10 @@ async fn new_rejects_missing_capture_instance() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "needs a SQL Server (mssql) container: the ~2 GB image is too heavy/slow \
+            to come up reliably on the shared CI runner (unlike the lighter \
+            Postgres/MySQL/ClickHouse ones). Run explicitly with \
+            `cargo test -p faucet-source-mssql-cdc -- --ignored`."]
 async fn new_rejects_cdc_disabled_database() {
     let _serial = SERIAL.lock().await;
     let Some((_c, port)) = start_mssql_cdc().await else {

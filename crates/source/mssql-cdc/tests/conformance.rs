@@ -19,7 +19,11 @@
 //! no clean "builds but fails at first read" state to exercise.
 //!
 //! The Docker checks require SQL Server with the Agent enabled (so the capture
-//! job populates the change tables) and are skipped when Docker is absent.
+//! job populates the change tables). They are `#[ignore]`d — the ~2 GB SQL Server
+//! image is too heavy/slow to come up reliably on the shared CI runner — so the
+//! general `cargo test` run skips them (only the offline schema check runs). Run
+//! them explicitly with `cargo test -p faucet-source-mssql-cdc -- --ignored`.
+//! The offline `conformance_config_schema_valid` check always runs.
 
 use std::time::Duration;
 
@@ -232,6 +236,10 @@ fn build_config(conn: &MssqlConnectionConfig) -> MssqlCdcSourceConfig {
 // ── Check 2: bounded-memory streaming (Docker) ───────────────────────────────
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "needs a SQL Server (mssql) container: the ~2 GB image is too heavy/slow \
+            to come up reliably on the shared CI runner (unlike the lighter \
+            Postgres/MySQL/ClickHouse ones). Run explicitly with \
+            `cargo test -p faucet-source-mssql-cdc -- --ignored`."]
 async fn conformance_bounded_memory() {
     let _serial = SERIAL.lock().await;
     let Some((_c, port)) = start_mssql_cdc().await else {
@@ -251,6 +259,10 @@ async fn conformance_bounded_memory() {
 // ── Check 3: bookmark round-trip (Docker) ────────────────────────────────────
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "needs a SQL Server (mssql) container: the ~2 GB image is too heavy/slow \
+            to come up reliably on the shared CI runner (unlike the lighter \
+            Postgres/MySQL/ClickHouse ones). Run explicitly with \
+            `cargo test -p faucet-source-mssql-cdc -- --ignored`."]
 async fn conformance_bookmark_roundtrip() {
     let _serial = SERIAL.lock().await;
     const N: usize = 300;

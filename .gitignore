@@ -35,6 +35,10 @@ docs/superpowers/
 !/scripts/try-local.sh
 !/scripts/gen_bench_data.py
 !/scripts/run-bench.sh
+# CI-invoked docs helpers (tracked; must not be ignored or cargo/release-plz's
+# working-tree dirty check fails on "tracked but ignored" files).
+!/scripts/check-doc-counts.sh
+!/scripts/inject-page-meta.py
 
 # Benchmark generated artifacts (harness + configs are tracked; outputs are not)
 /.bench-venv/
