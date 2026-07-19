@@ -1,0 +1,22 @@
+[package]
+name = "faucet-common-clickhouse"
+version = "1.0.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Shared configuration and HTTP-protocol helpers for the faucet-stream ClickHouse source and sink connectors"
+readme = "README.md"
+keywords = ["clickhouse", "olap", "etl", "pipeline", "faucet"]
+categories.workspace = true
+
+[dependencies]
+faucet-core.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+schemars.workspace = true
+reqwest.workspace = true
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

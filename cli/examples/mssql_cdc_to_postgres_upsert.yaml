@@ -1,0 +1,64 @@
+# End-to-end SQL Server CDC -> Postgres upsert mirror, exactly-once.
+#
+# Streams change-table rows from SQL Server CDC (fn_cdc_get_all_changes; LSN
+# bookmarks), normalizes the change envelope with `cdc_unwrap`, and mirrors them
+# into a destination Postgres table with `write_mode: upsert` — inserts/updates
+# become UPSERTs and deletes become row deletes, so the mirror table stays an
+# exact replica of the captured source table.
+#
+# Setup on the SOURCE SQL Server (CDC must be enabled on DB + tables):
+#   EXEC sys.sp_cdc_enable_db;
+#   EXEC sys.sp_cdc_enable_table @source_schema='dbo', @source_name='Orders',
+#        @role_name=NULL, @capture_instance='dbo_Orders';
+#
+# Setup on the DEST Postgres (upsert/delete need a UNIQUE/PRIMARY KEY on `key`):
+#   CREATE TABLE IF NOT EXISTS orders_mirror (id int4 PRIMARY KEY, total numeric);
+#
+# Then:
+#   faucet run cli/examples/mssql_cdc_to_postgres_upsert.yaml
+version: 1
+name: mssql_cdc_mirror
+
+# Exactly-once delivery: a keyed upsert into an idempotent SQL sink makes each
+# committed batch replay-safe, so a crash/resume never re-applies or skips a row.
+delivery: exactly_once
+
+pipeline:
+  source:
+    type: mssql-cdc
+    config:
+      connection_url: "mssql://faucet:Str0ng%40Pass@sqlserver:1433/sales"
+      # Self-signed dev cert: trust it. Use `require`/`verify_ca` in production.
+      tls:
+        type: trust_server_certificate
+      capture_instances: ["dbo_Orders"]
+      start_position: { type: current }
+      poll_interval: 1
+      idle_timeout: 30
+      batch_size: 1000
+      max_connections: 5
+
+  # Normalize the CDC envelope ({op, before, after}) into a flat row plus a
+  # `__op` marker. Inserts/updates emit the post-image; deletes emit the key
+  # from the pre-image. DDL/truncate events are dropped.
+  transforms:
+    - type: cdc_unwrap
+
+  sink:
+    type: postgres
+    config:
+      connection_url: "postgres://faucet:faucet@localhost:5432/warehouse"
+      table_name: orders_mirror
+      # Upsert/delete require column-mapping mode (not the JSONB blob mode).
+      column_mapping: auto_map
+      max_connections: 5
+      # Insert-or-update by `id` (the mirror table needs a UNIQUE/PRIMARY KEY on
+      # it); rows whose `__op` is "d" are routed to DELETE instead.
+      write_mode: upsert
+      key: [id]
+      delete_marker: { field: __op, values: [d] }
+
+  state:
+    type: file
+    config:
+      path: ./state

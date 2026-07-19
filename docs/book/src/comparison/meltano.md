@@ -24,7 +24,7 @@ Move to faucet-stream when **throughput, operational simplicity, or in-flight go
 
 Straight with you, because it's what makes the rest credible:
 
-- **Connector breadth.** 600+ Singer taps vs faucet's **49** built-in connectors. Need a long-tail SaaS source today? Meltano (or a Singer tap) probably already has it.
+- **Connector breadth.** 600+ Singer taps vs faucet's **58** built-in connectors. Need a long-tail SaaS source today? Meltano (or a Singer tap) probably already has it.
 - **A mature ecosystem & community.** Years of taps, docs, Meltano Hub, and an active community. faucet is younger.
 - **You're already invested in Singer/dbt.** If your stack is Singer taps + dbt and it's working, switching only pays off where the wins above are things you actually feel.
 
@@ -34,7 +34,7 @@ Straight with you, because it's what makes the rest credible:
 |---|---|---|
 | Runtime | Rust, single native binary | Python |
 | Install | one binary / `brew` / `cargo` | Python env + plugins |
-| Connectors | 49 (28 sources, 21 sinks), growing | 600+ taps |
+| Connectors | 58 (33 sources, 25 sinks), growing | 600+ taps |
 | Throughput (1M-row CSV→JSONL) | **712k rows/s, 11.8 MiB** | 7.4k rows/s, 724 MiB |
 | In-flight transforms | ✓ 11 record transforms + filter/explode/CDC-unwrap + embedded-DuckDB `sql` | mappers; dbt post-load |
 | Data quality / contracts / masking | ✓ native, in-path | assemble (mappers, dbt tests) |

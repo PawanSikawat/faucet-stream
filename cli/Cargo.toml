@@ -75,6 +75,11 @@ source = [
     "source-mongodb",
     "source-mongodb-cdc",
     "source-mysql-cdc",
+    "source-mssql-cdc",
+    "source-redshift",
+    "source-pubsub",
+    "source-clickhouse",
+    "source-azure-blob",
     "source-redis",
     "source-webhook",
     "source-websocket",
@@ -113,6 +118,10 @@ sink = [
     "sink-gcs",
     "sink-iceberg",
     "sink-spanner",
+    "sink-redshift",
+    "sink-pubsub",
+    "sink-clickhouse",
+    "sink-azure-blob",
 ]
 state = ["state-redis", "state-postgres"]
 
@@ -129,6 +138,11 @@ source-s3 = ["dep:faucet-source-s3"]
 source-mongodb = ["dep:faucet-source-mongodb"]
 source-mongodb-cdc = ["dep:faucet-source-mongodb-cdc"]
 source-mysql-cdc = ["dep:faucet-source-mysql-cdc"]
+source-mssql-cdc = ["dep:faucet-source-mssql-cdc"]
+source-redshift = ["dep:faucet-source-redshift"]
+source-pubsub = ["dep:faucet-source-pubsub"]
+source-clickhouse = ["dep:faucet-source-clickhouse"]
+source-azure-blob = ["dep:faucet-source-azure-blob"]
 source-redis = ["dep:faucet-source-redis"]
 source-webhook = ["dep:faucet-source-webhook"]
 source-websocket = ["dep:faucet-source-websocket"]
@@ -166,6 +180,10 @@ sink-spanner = ["dep:faucet-sink-spanner"]
 sink-parquet = ["dep:faucet-sink-parquet"]
 sink-delta = ["dep:faucet-sink-delta"]
 sink-gcs = ["dep:faucet-sink-gcs"]
+sink-redshift = ["dep:faucet-sink-redshift"]
+sink-pubsub = ["dep:faucet-sink-pubsub"]
+sink-clickhouse = ["dep:faucet-sink-clickhouse"]
+sink-azure-blob = ["dep:faucet-sink-azure-blob"]
 
 ## Delta Lake cloud object-store backends. Forwarded to whichever delta
 ## connector is enabled via optional-dep (`?`) syntax, so they don't pull the
@@ -191,6 +209,8 @@ compression = [
     "faucet-sink-csv?/compression",
     "faucet-sink-s3?/compression",
     "faucet-sink-gcs?/compression",
+    "faucet-source-azure-blob?/compression",
+    "faucet-sink-azure-blob?/compression",
 ]
 
 # Secrets-manager interpolation resolvers for the config layer. None in
@@ -293,6 +313,11 @@ faucet-source-s3 = { workspace = true, optional = true }
 faucet-source-mongodb = { workspace = true, optional = true }
 faucet-source-mongodb-cdc = { workspace = true, optional = true }
 faucet-source-mysql-cdc = { workspace = true, optional = true }
+faucet-source-mssql-cdc = { workspace = true, optional = true }
+faucet-source-redshift = { workspace = true, optional = true }
+faucet-source-pubsub = { workspace = true, optional = true }
+faucet-source-clickhouse = { workspace = true, optional = true }
+faucet-source-azure-blob = { workspace = true, optional = true }
 faucet-source-redis = { workspace = true, optional = true }
 faucet-source-webhook = { workspace = true, optional = true }
 faucet-source-websocket = { workspace = true, optional = true }
@@ -329,6 +354,10 @@ faucet-sink-stdout = { workspace = true, optional = true }
 faucet-sink-parquet = { workspace = true, optional = true }
 faucet-sink-delta = { workspace = true, optional = true }
 faucet-sink-gcs = { workspace = true, optional = true }
+faucet-sink-redshift = { workspace = true, optional = true }
+faucet-sink-pubsub = { workspace = true, optional = true }
+faucet-sink-clickhouse = { workspace = true, optional = true }
+faucet-sink-azure-blob = { workspace = true, optional = true }
 faucet-state-redis = { workspace = true, optional = true }
 faucet-state-postgres = { workspace = true, optional = true }
 faucet-lineage = { workspace = true, optional = true }

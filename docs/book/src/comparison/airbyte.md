@@ -19,7 +19,7 @@
 
 ## Where Airbyte is the better choice
 
-- **Connector catalog.** 350+ connectors, plus a low-code connector builder. faucet has **49** first-party connectors.
+- **Connector catalog.** 350+ connectors, plus a low-code connector builder. faucet has **58** first-party connectors.
 - **A no-code UI for non-engineers.** Airbyte's web app lets analysts add sources, configure syncs, and browse schemas entirely by point-and-click, with a low-code connector builder for new APIs. faucet ships a web console too (`faucet serve` with the `serve-ui` feature — submit and monitor runs, browse connector schemas, and view the data catalog + lineage), but it's an **operations control plane for engineers**, not a no-code sync builder: pipelines are still authored as config.
 - **Managed Cloud.** If you'd rather not run anything yourself, Airbyte Cloud is a turnkey option. faucet is self-hosted by design.
 - **Maturity & normalization.** A large user base and built-in normalization patterns.
@@ -30,7 +30,7 @@
 |---|---|---|
 | Shape | single binary + library | platform (Docker/K8s) or Cloud |
 | To run one pipeline | a process that exits | a deployed control plane |
-| Connectors | 49, growing | 350+ |
+| Connectors | 58, growing | 350+ |
 | Per-connector runtime | compiled in | a container each |
 | Web console | ✓ ops control plane (`serve`) | ✓ |
 | No-code sync builder for non-engineers | ✗ (pipelines are config) | ✓ |

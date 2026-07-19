@@ -34,7 +34,7 @@ Straight with you — it's a different job, and Vector is superb at it:
 |---|---|---|
 | Language / runtime | Rust, single binary | Rust, single binary |
 | Domain | ETL / CDC / warehouse data movement | observability (logs / metrics / traces) |
-| Connectors | 49 DB / API / object-store / warehouse | dozens, observability-oriented |
+| Connectors | 58 DB / API / object-store / warehouse | dozens, observability-oriented |
 | Change data capture | ✓ Postgres / MySQL / Mongo | ✗ |
 | Warehouse / ELT sinks | ✓ BigQuery, Snowflake, Iceberg, Delta, … | ✗ |
 | In-flight transforms | 11 record transforms + embedded-DuckDB `sql` | VRL (Vector Remap Language) |

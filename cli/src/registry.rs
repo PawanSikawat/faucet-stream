@@ -512,6 +512,54 @@ pub async fn build_source(
             }
             Ok(Box::new(s))
         }
+        #[cfg(feature = "source-mssql-cdc")]
+        "mssql-cdc" => {
+            let cfg = decode::<faucet_source_mssql_cdc::MssqlCdcSourceConfig>(
+                "source",
+                "mssql-cdc",
+                config,
+            )?;
+            Ok(Box::new(
+                faucet_source_mssql_cdc::MssqlCdcSource::new(cfg).await?,
+            ))
+        }
+        #[cfg(feature = "source-redshift")]
+        "redshift" => {
+            let cfg = decode::<faucet_source_redshift::RedshiftSourceConfig>(
+                "source", "redshift", config,
+            )?;
+            Ok(Box::new(faucet_source_redshift::RedshiftSource::new(cfg)?))
+        }
+        #[cfg(feature = "source-pubsub")]
+        "pubsub" => {
+            let cfg =
+                decode::<faucet_source_pubsub::PubsubSourceConfig>("source", "pubsub", config)?;
+            Ok(Box::new(
+                faucet_source_pubsub::PubsubSource::new(cfg).await?,
+            ))
+        }
+        #[cfg(feature = "source-clickhouse")]
+        "clickhouse" => {
+            let cfg = decode::<faucet_source_clickhouse::ClickHouseSourceConfig>(
+                "source",
+                "clickhouse",
+                config,
+            )?;
+            Ok(Box::new(faucet_source_clickhouse::ClickHouseSource::new(
+                cfg,
+            )?))
+        }
+        #[cfg(feature = "source-azure-blob")]
+        "azure-blob" => {
+            let cfg = decode::<faucet_source_azure_blob::AzureBlobSourceConfig>(
+                "source",
+                "azure-blob",
+                config,
+            )?;
+            Ok(Box::new(
+                faucet_source_azure_blob::AzureBlobSource::new(cfg).await?,
+            ))
+        }
         other => Err(unknown(other, "source", source_kinds())),
     }
 }
@@ -653,6 +701,39 @@ pub async fn build_sink(kind: &str, config: Value, auth: &AuthCatalog) -> CliRes
             let cfg = decode::<faucet_sink_gcs::GcsSinkConfig>("sink", "gcs", config)?;
             Ok(Box::new(faucet_sink_gcs::GcsSink::new(cfg).await?))
         }
+        #[cfg(feature = "sink-redshift")]
+        "redshift" => {
+            let cfg =
+                decode::<faucet_sink_redshift::RedshiftSinkConfig>("sink", "redshift", config)?;
+            Ok(Box::new(
+                faucet_sink_redshift::RedshiftSink::new(cfg).await?,
+            ))
+        }
+        #[cfg(feature = "sink-pubsub")]
+        "pubsub" => {
+            let cfg = decode::<faucet_sink_pubsub::PubsubSinkConfig>("sink", "pubsub", config)?;
+            Ok(Box::new(faucet_sink_pubsub::PubsubSink::new(cfg).await?))
+        }
+        #[cfg(feature = "sink-clickhouse")]
+        "clickhouse" => {
+            let cfg = decode::<faucet_sink_clickhouse::ClickHouseSinkConfig>(
+                "sink",
+                "clickhouse",
+                config,
+            )?;
+            Ok(Box::new(faucet_sink_clickhouse::ClickHouseSink::new(cfg)?))
+        }
+        #[cfg(feature = "sink-azure-blob")]
+        "azure-blob" => {
+            let cfg = decode::<faucet_sink_azure_blob::AzureBlobSinkConfig>(
+                "sink",
+                "azure-blob",
+                config,
+            )?;
+            Ok(Box::new(
+                faucet_sink_azure_blob::AzureBlobSink::new(cfg).await?,
+            ))
+        }
         other => Err(unknown(other, "sink", sink_kinds())),
     }
 }
@@ -663,8 +744,13 @@ pub async fn build_sink(kind: &str, config: Value, auth: &AuthCatalog) -> CliRes
 /// human-readable list shown in error messages (F44). `kafka` qualifies because
 /// partitions are immutable logs and every page carries a complete offsets
 /// bookmark (#291).
-pub const EXACTLY_ONCE_SOURCE_KINDS: &[&str] =
-    &["postgres-cdc", "mysql-cdc", "mongodb-cdc", "kafka"];
+pub const EXACTLY_ONCE_SOURCE_KINDS: &[&str] = &[
+    "postgres-cdc",
+    "mysql-cdc",
+    "mssql-cdc",
+    "mongodb-cdc",
+    "kafka",
+];
 
 /// Sink connector kinds that can durably commit a token atomically with data.
 /// Mirrors `Sink::supports_idempotent_writes` overrides — keep in sync when a
@@ -848,6 +934,16 @@ pub fn source_schema(kind: &str) -> CliResult<Value> {
         "bigquery" => Ok(schema::<faucet_source_bigquery::BigQuerySourceConfig>()),
         #[cfg(feature = "source-snowflake")]
         "snowflake" => Ok(schema::<faucet_source_snowflake::SnowflakeSourceConfig>()),
+        #[cfg(feature = "source-mssql-cdc")]
+        "mssql-cdc" => Ok(schema::<faucet_source_mssql_cdc::MssqlCdcSourceConfig>()),
+        #[cfg(feature = "source-redshift")]
+        "redshift" => Ok(schema::<faucet_source_redshift::RedshiftSourceConfig>()),
+        #[cfg(feature = "source-pubsub")]
+        "pubsub" => Ok(schema::<faucet_source_pubsub::PubsubSourceConfig>()),
+        #[cfg(feature = "source-clickhouse")]
+        "clickhouse" => Ok(schema::<faucet_source_clickhouse::ClickHouseSourceConfig>()),
+        #[cfg(feature = "source-azure-blob")]
+        "azure-blob" => Ok(schema::<faucet_source_azure_blob::AzureBlobSourceConfig>()),
         other => Err(unknown(other, "source", source_kinds())),
     }
 }
@@ -910,6 +1006,14 @@ pub fn sink_schema(kind: &str) -> CliResult<Value> {
         "parquet" => Ok(schema::<faucet_sink_parquet::ParquetSinkConfig>()),
         #[cfg(feature = "sink-gcs")]
         "gcs" => Ok(schema::<faucet_sink_gcs::GcsSinkConfig>()),
+        #[cfg(feature = "sink-redshift")]
+        "redshift" => Ok(schema::<faucet_sink_redshift::RedshiftSinkConfig>()),
+        #[cfg(feature = "sink-pubsub")]
+        "pubsub" => Ok(schema::<faucet_sink_pubsub::PubsubSinkConfig>()),
+        #[cfg(feature = "sink-clickhouse")]
+        "clickhouse" => Ok(schema::<faucet_sink_clickhouse::ClickHouseSinkConfig>()),
+        #[cfg(feature = "sink-azure-blob")]
+        "azure-blob" => Ok(schema::<faucet_sink_azure_blob::AzureBlobSinkConfig>()),
         other => Err(unknown(other, "sink", sink_kinds())),
     }
 }
@@ -956,6 +1060,31 @@ fn builtin_source_descriptions() -> Vec<(&'static str, &'static str)> {
     v.push(("mongodb-cdc", "MongoDB CDC source (Change Streams)"));
     #[cfg(feature = "source-mysql-cdc")]
     v.push(("mysql-cdc", "MySQL CDC source (binlog replication)"));
+    #[cfg(feature = "source-mssql-cdc")]
+    v.push((
+        "mssql-cdc",
+        "Microsoft SQL Server CDC source (change data capture, exactly-once capable)",
+    ));
+    #[cfg(feature = "source-redshift")]
+    v.push((
+        "redshift",
+        "Amazon Redshift query source (PostgreSQL wire; streaming rows, incremental replication)",
+    ));
+    #[cfg(feature = "source-pubsub")]
+    v.push((
+        "pubsub",
+        "Google Cloud Pub/Sub consumer — streaming pull with per-message records, attribute mapping, and ack at durable page boundaries (at-least-once)",
+    ));
+    #[cfg(feature = "source-clickhouse")]
+    v.push((
+        "clickhouse",
+        "ClickHouse query source (HTTP interface, JSONEachRow streaming)",
+    ));
+    #[cfg(feature = "source-azure-blob")]
+    v.push((
+        "azure-blob",
+        "Azure Blob Storage / ADLS Gen2 source — JSONL, JSON array, or raw text",
+    ));
     #[cfg(feature = "source-redis")]
     v.push(("redis", "Redis (streams, lists, keys) source"));
     #[cfg(feature = "source-webhook")]
@@ -1065,6 +1194,26 @@ fn builtin_sink_descriptions() -> Vec<(&'static str, &'static str)> {
     v.push(("delta", "Apache Delta Lake sink (local FS or S3/Azure/GCS). Append-only, schema-inferred table creation, one commit per flush."));
     #[cfg(feature = "sink-gcs")]
     v.push(("gcs", "Google Cloud Storage sink — JSONL files"));
+    #[cfg(feature = "sink-redshift")]
+    v.push((
+        "redshift",
+        "Amazon Redshift sink (COPY-from-S3 or multi-row INSERT)",
+    ));
+    #[cfg(feature = "sink-pubsub")]
+    v.push((
+        "pubsub",
+        "Google Cloud Pub/Sub producer — batched publish with optional ordering keys, bounded concurrency, and partial-failure retry (DLQ-routable)",
+    ));
+    #[cfg(feature = "sink-clickhouse")]
+    v.push((
+        "clickhouse",
+        "ClickHouse sink (HTTP INSERT … FORMAT JSONEachRow; optional async inserts)",
+    ));
+    #[cfg(feature = "sink-azure-blob")]
+    v.push((
+        "azure-blob",
+        "Azure Blob Storage / ADLS Gen2 sink — JSONL files",
+    ));
     v
 }
 
